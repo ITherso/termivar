@@ -1,242 +1,70 @@
-name: Publish & Distribute
+name: Publish Release
 
 on:
   push:
     tags:
-      - 'v*'
+      - "v*"
 
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
 
 jobs:
-  publish-github:
-    name: Publish to GitHub Releases
+  github-release:
+    name: Validate and publish GitHub release
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
 
-      - name: Run tests
-        run: cargo test --release --locked
-
-      - name: Generate changelog
-        id: changelog
+      - name: Verify tag matches workspace version
+        shell: bash
         run: |
-          git log $(git describe --tags --abbrev=0 HEAD^)..HEAD --pretty=format:"%h %s" > CHANGELOG.txt
-          cat CHANGELOG.txt
+          set -euo pipefail
+          tag_version="${GITHUB_REF_NAME#v}"
+          cargo_version="$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\([^"]*\)"/\1/p' Cargo.toml)"
+          if [[ "$tag_version" != "$cargo_version" ]]; then
+            echo "Tag version $tag_version does not match Cargo version $cargo_version" >&2
+            exit 1
+          fi
+
+      - name: Test release build
+        run: cargo test --release --workspace --locked
+
+      - name: Build CLI artifact
+        run: cargo build --release --locked -p venom-cli
+
+      - name: Package artifact and checksum
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          archive="venom-${version}-x86_64-unknown-linux-gnu.tar.gz"
+          tar -czf "$archive" -C target/release venom
+          sha256sum "$archive" > "${archive}.sha256"
 
       - name: Create GitHub release
-        uses: softprops/action-gh-release@v1
-        with:
-          body_path: CHANGELOG.txt
-          draft: false
-          prerelease: false
+        shell: bash
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-  publish-docker:
-    name: Publish Docker Images
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
-    steps:
-      - uses: actions/checkout@v4
-      - uses: docker/setup-buildx-action@v2
-
-      - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v2
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Log in to Docker Hub
-        uses: docker/login-action@v2
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      - name: Extract version
-        id: version
-        run: echo "tag=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
-
-      - name: Build and push images
-        uses: docker/build-push-action@v4
-        with:
-          context: .
-          file: ./Dockerfile.multi
-          push: true
-          tags: |
-            ghcr.io/${{ github.repository }}:latest
-            ghcr.io/${{ github.repository }}:${{ steps.version.outputs.tag }}
-            ${{ secrets.DOCKERHUB_USERNAME }}/venom:latest
-            ${{ secrets.DOCKERHUB_USERNAME }}/venom:${{ steps.version.outputs.tag }}
-
-      - name: Build slim image
-        uses: docker/build-push-action@v4
-        with:
-          context: .
-          file: ./Dockerfile.multi
-          target: slim
-          push: true
-          tags: |
-            ghcr.io/${{ github.repository }}:slim
-            ghcr.io/${{ github.repository }}:${{ steps.version.outputs.tag }}-slim
-            ${{ secrets.DOCKERHUB_USERNAME }}/venom:slim
-
-  publish-cargo:
-    name: Publish to Crates.io
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-
-      - name: Publish to crates.io
-        run: cargo publish --token ${{ secrets.CARGO_TOKEN }}
-
-  publish-homebrew:
-    name: Update Homebrew Formula
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Extract version
-        id: version
-        run: echo "tag=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
-
-      - name: Get release SHA256
-        id: sha256
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          URL=$(curl -s https://api.github.com/repos/${{ github.repository }}/releases/latest | jq -r '.assets[0].browser_download_url')
-          SHA=$(curl -fsSL "$URL" | sha256sum | awk '{print $1}')
-          echo "sha=$SHA" >> $GITHUB_OUTPUT
-
-      - name: Update Homebrew Formula
-        uses: actions/github-script@v6
-        with:
-          github-token: ${{ secrets.HOMEBREW_GITHUB_TOKEN }}
-          script: |
-            const fs = require('fs');
-            const version = '${{ steps.version.outputs.tag }}';
-            const sha = '${{ steps.sha256.outputs.sha }}';
-
-            const formula = `class Venom < Formula
-  desc "VENOM Pentesting Platform"
-  homepage "https://github.com/ITherso/venom"
-  url "https://github.com/ITherso/venom/archive/v${version}.tar.gz"
-  sha256 "${sha}"
-  license "MIT"
-
-  depends_on "rust" => :build
-  depends_on "pkg-config" => :build
-  depends_on "openssl"
-
-  def install
-    system "cargo", "install", "--locked", "--root", prefix, "--path", "."
-  end
-
-  test do
-    system bin/"venom", "--version"
-  end
-end`;
-
-            await github.rest.repos.createOrUpdateFileContents({
-              owner: 'ITherso',
-              repo: 'homebrew-venom',
-              path: 'Formula/venom.rb',
-              message: `venom ${version}`,
-              content: Buffer.from(formula).toString('base64'),
-              branch: 'main'
-            });
-
-  publish-package-managers:
-    name: Update Package Managers
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Extract version
-        id: version
-        run: echo "tag=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
-
-      - name: Update AUR PKGBUILD
-        run: |
-          git clone ssh://aur@aur.archlinux.org/venom.git aur-venom
-          cd aur-venom
-          git config user.email "bot@venom.dev"
-          git config user.name "VENOM Bot"
-          # Update PKGBUILD with new version
-          git add PKGBUILD
-          git commit -m "venom ${{ steps.version.outputs.tag }}"
-          git push
-
-      - name: Update Chocolatey Package
-        run: |
-          # Push to chocolatey repository
-          echo "Updating Chocolatey package for v${{ steps.version.outputs.tag }}"
-
-  publish-helm:
-    name: Publish Helm Chart
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Helm
-        uses: azure/setup-helm@v3
-
-      - name: Package Helm Chart
-        run: |
-          helm package helm/
-
-      - name: Upload to Helm Repository
-        run: |
-          echo "Uploading Helm chart to repository"
-
-  publish-cloud-images:
-    name: Publish Cloud Marketplace Images
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Extract version
-        id: version
-        run: echo "tag=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
-
-      - name: Build AWS AMI
-        run: |
-          echo "Building AWS AMI for v${{ steps.version.outputs.tag }}"
-          # Packer build for AWS
-
-      - name: Build Azure Image
-        run: |
-          echo "Building Azure image for v${{ steps.version.outputs.tag }}"
-          # Azure image build
-
-      - name: Build GCP Image
-        run: |
-          echo "Building GCP image for v${{ steps.version.outputs.tag }}"
-          # GCP image build
-
-  notify:
-    name: Notify Release
-    runs-on: ubuntu-latest
-    needs: [publish-github, publish-docker, publish-cargo]
-    steps:
-      - name: Extract version
-        id: version
-        run: echo "tag=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
-
-      - name: Send notification
-        run: |
-          echo "✅ VENOM v${{ steps.version.outputs.tag }} released!"
-          echo "Available at:"
-          echo "  - GitHub: https://github.com/ITherso/venom/releases/tag/v${{ steps.version.outputs.tag }}"
-          echo "  - Crates.io: https://crates.io/crates/venom"
-          echo "  - Docker: ghcr.io/itherso/venom:${{ steps.version.outputs.tag }}"
-          echo "  - Homebrew: brew install itherso/venom/venom"
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          archive="venom-${version}-x86_64-unknown-linux-gnu.tar.gz"
+          release_args=(
+            "$GITHUB_REF_NAME"
+            "$archive"
+            "${archive}.sha256"
+            --verify-tag
+            --generate-notes
+            --title "Venom $GITHUB_REF_NAME"
+          )
+          if [[ "$version" == *-* ]]; then
+            release_args+=(--prerelease)
+          fi
+          gh release create "${release_args[@]}"
