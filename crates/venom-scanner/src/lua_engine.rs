@@ -3,7 +3,7 @@
 //! Execute Lua scripts for custom scanning logic, similar to Nmap's NSE.
 
 use crate::config::LuaEngineConfig;
-use mlua::{Lua, Table};
+use mlua::Lua;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};

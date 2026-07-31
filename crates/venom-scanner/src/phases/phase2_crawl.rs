@@ -17,7 +17,11 @@
 //! ## Output
 //! Populates `ctx.discovered_endpoints` map: URL → [param1, param2, ...]
 
-use crate::{context::ScanContext, error::ScannerError, ScanFinding, ScanPhase};
+use crate::{
+    context::ScanContext,
+    contracts::{ScanFinding, ScanPhase},
+    error::ScannerError,
+};
 use async_trait::async_trait;
 use regex::Regex;
 use url::Url;

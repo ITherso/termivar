@@ -2,7 +2,7 @@
 
 ## Overview
 
-VENOM v1.0.0 REST API provides complete access to all pentesting capabilities.
+Venom v0.9.0-alpha exposes an experimental REST API for supported scanner capabilities.
 
 **Base URL:** `http://localhost:3000/api`  
 **Version:** 1.0.0  

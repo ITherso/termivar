@@ -1,0 +1,36 @@
+site_name: Venom Documentation
+site_description: Architecture and operating documentation for Venom
+site_url: https://itherso.github.io/venom/
+repo_url: https://github.com/ITherso/venom
+repo_name: ITherso/venom
+docs_dir: docs
+theme:
+  name: readthedocs
+nav:
+  - Home: index.md
+  - Getting Started: GETTING_STARTED.md
+  - Architecture:
+      - Overview: architecture.md
+      - Runner: runner.md
+      - Scanner: scanner.md
+      - Plugins: plugin.md
+      - Lua: lua.md
+      - Distributed: distributed.md
+      - Anomaly detection: anomaly.md
+  - Engineering:
+      - Testing: TESTING.md
+      - Benchmarks: benchmarks.md
+      - Profiling: profiling.md
+      - Fuzzing: fuzzing.md
+      - Code quality: CODE_QUALITY.md
+      - Observability: OBSERVABILITY.md
+  - Reference:
+      - API: API.md
+      - Compliance: COMPLIANCE.md
+      - Distribution: DISTRIBUTION.md
+  - Project:
+      - Contributing: CONTRIBUTING.md
+      - Release process: RELEASE.md
+markdown_extensions:
+  - admonition
+  - tables

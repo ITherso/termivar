@@ -1,6 +1,6 @@
 # VENOM Testing Framework
 
-Complete enterprise-grade testing infrastructure for pentesting applications. VENOM v1.0.0 includes comprehensive testing frameworks covering unit tests, integration tests, E2E tests, performance tests, security tests, and compatibility tests.
+Testing guidance for Venom v0.9.0-alpha, covering unit, integration, performance, security, and compatibility checks.
 
 ## Testing Architecture
 

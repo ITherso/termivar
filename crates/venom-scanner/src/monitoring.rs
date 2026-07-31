@@ -4,7 +4,6 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::time::Instant;
 
 /// Phase execution metrics
 #[derive(Debug, Clone, Serialize, Deserialize)]

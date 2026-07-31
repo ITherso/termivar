@@ -6,7 +6,8 @@ use venom_scanner::{phases, ScanContext, ScanRunner};
 
 #[derive(Parser)]
 #[command(name = "venom")]
-#[command(about = "VENOM - Enterprise Pentesting Platform", long_about = None)]
+#[command(about = "Venom - modular web security testing framework", long_about = None)]
+#[command(version)]
 struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,
@@ -91,7 +92,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         },
         None => {
-            println!("VENOM v1.0.0 - Enterprise Pentesting Platform");
+            println!("Venom v{}", env!("CARGO_PKG_VERSION"));
             println!("Use --help for more information");
         },
     }

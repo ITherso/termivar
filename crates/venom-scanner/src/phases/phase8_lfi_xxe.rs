@@ -13,7 +13,11 @@
 //! - **Blind OOB**: DNS/HTTP callback verification with UUID tracking
 //! - Supports external OOB domain configuration
 
-use crate::{context::ScanContext, error::ScannerError, ScanFinding, ScanPhase};
+use crate::{
+    context::ScanContext,
+    contracts::{ScanFinding, ScanPhase},
+    error::ScannerError,
+};
 use async_trait::async_trait;
 use reqwest::StatusCode;
 use url::Url;

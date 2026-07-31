@@ -2,7 +2,7 @@
 //!
 //! Comprehensive modular plugin architecture for vulnerability scanning.
 
-use crate::ScanFinding;
+use crate::contracts::ScanFinding;
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;

@@ -18,7 +18,11 @@
 //! - HTTP/DNS response logging
 //! - Optional external OOB domain
 
-use crate::{context::ScanContext, error::ScannerError, ScanFinding, ScanPhase};
+use crate::{
+    context::ScanContext,
+    contracts::{ScanFinding, ScanPhase},
+    error::ScannerError,
+};
 use async_trait::async_trait;
 use reqwest::StatusCode;
 use url::Url;

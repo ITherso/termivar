@@ -2,7 +2,7 @@
 
 ## Current Status: EXPERIMENTAL / BETA
 
-VENOM v1.0.0 is **NOT** production-ready. This document outlines what is required before production deployment.
+Venom v0.9.0-alpha is **NOT** production-ready. This document outlines what is required before production deployment.
 
 ---
 

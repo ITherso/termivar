@@ -23,6 +23,9 @@ nom = { workspace = true }
 mlua = { version = "0.9", features = ["lua54", "serialize", "vendored"] }
 tempfile = "3.8"
 
+[dev-dependencies]
+criterion = "0.5"
+
 [features]
 # Default features: core scanner with detection capabilities
 default = ["core", "scanning", "detection"]
@@ -69,3 +72,7 @@ research = ["full"]
 [lib]
 name = "venom_scanner"
 path = "src/lib.rs"
+
+[[bench]]
+name = "scanner_benchmarks"
+harness = false

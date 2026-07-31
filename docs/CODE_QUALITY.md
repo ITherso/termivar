@@ -1,6 +1,6 @@
 # VENOM Code Quality Standards
 
-Professional code quality standards for VENOM v1.0.0.
+Code quality practices for Venom v0.9.0-alpha.
 
 ## Overview
 

@@ -12,7 +12,11 @@
 //! - 3xx (Redirect): Follow with caution
 //! - 401/403: Protected endpoint (still valuable intel)
 
-use crate::{context::ScanContext, error::ScannerError, ScanFinding, ScanPhase};
+use crate::{
+    context::ScanContext,
+    contracts::{ScanFinding, ScanPhase},
+    error::ScannerError,
+};
 use async_trait::async_trait;
 use reqwest::StatusCode;
 use std::sync::Arc;

@@ -843,14 +843,14 @@ mod tests {
             image_id: "sha256:abc123".to_string(),
             image_name: "myapp".to_string(),
             registry: "registry.example.com".to_string(),
-            tag: "v1.0.0".to_string(),
+            tag: "v0.9.0-alpha".to_string(),
             is_public: false,
             base_image: "ubuntu:20.04".to_string(),
             vulnerabilities: 5,
             scan_results: vec!["CVE-2021-1234".to_string()],
         };
 
-        assert_eq!(image.tag, "v1.0.0");
+        assert_eq!(image.tag, "v0.9.0-alpha");
         assert_eq!(image.vulnerabilities, 5);
     }
 

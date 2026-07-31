@@ -1,6 +1,6 @@
 # VENOM Observability & Monitoring
 
-Complete observability stack for VENOM v1.0.0 including health checks, logging, metrics, telemetry, and distributed tracing.
+Observability design notes for Venom v0.9.0-alpha.
 
 ## Observability Architecture
 

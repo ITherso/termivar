@@ -1,6 +1,6 @@
 # VENOM Distribution & Installation Guide
 
-Complete distribution channels for VENOM v1.0.0 across multiple platforms and package managers.
+Planned distribution channels for Venom v0.9.0-alpha.
 
 ## Installation Overview
 
@@ -318,21 +318,21 @@ networks:
 
 **Download URL Pattern:**
 ```
-https://github.com/ITherso/venom/releases/download/v1.0.0/venom-1.0.0-{os}-{arch}
+https://github.com/ITherso/venom/releases/download/v0.9.0-alpha/venom-0.9.0-alpha-{os}-{arch}
 ```
 
 **Examples:**
 ```bash
 # macOS arm64
-curl -L https://github.com/ITherso/venom/releases/download/v1.0.0/venom-1.0.0-aarch64-apple-darwin -o venom
+curl -L https://github.com/ITherso/venom/releases/download/v0.9.0-alpha/venom-0.9.0-alpha-aarch64-apple-darwin -o venom
 chmod +x venom
 
 # Linux x86_64
-curl -L https://github.com/ITherso/venom/releases/download/v1.0.0/venom-1.0.0-x86_64-unknown-linux-gnu -o venom
+curl -L https://github.com/ITherso/venom/releases/download/v0.9.0-alpha/venom-0.9.0-alpha-x86_64-unknown-linux-gnu -o venom
 chmod +x venom
 
 # Windows x86_64
-Invoke-WebRequest -Uri "https://github.com/ITherso/venom/releases/download/v1.0.0/venom-1.0.0-x86_64-pc-windows-msvc.exe" -OutFile "venom.exe"
+Invoke-WebRequest -Uri "https://github.com/ITherso/venom/releases/download/v0.9.0-alpha/venom-0.9.0-alpha-x86_64-pc-windows-msvc.exe" -OutFile "venom.exe"
 ```
 
 ### Verification
@@ -340,7 +340,7 @@ Invoke-WebRequest -Uri "https://github.com/ITherso/venom/releases/download/v1.0.
 **Verify SHA256 checksums:**
 ```bash
 # Download checksums
-curl -L https://github.com/ITherso/venom/releases/download/v1.0.0/SHA256SUMS -o SHA256SUMS
+curl -L https://github.com/ITherso/venom/releases/download/v0.9.0-alpha/SHA256SUMS -o SHA256SUMS
 
 # Verify (macOS/Linux)
 shasum -a 256 -c SHA256SUMS
@@ -352,7 +352,7 @@ shasum -a 256 -c SHA256SUMS
 **Verify GPG signature:**
 ```bash
 # Download signature
-curl -L https://github.com/ITherso/venom/releases/download/v1.0.0/venom.asc -o venom.asc
+curl -L https://github.com/ITherso/venom/releases/download/v0.9.0-alpha/venom.asc -o venom.asc
 
 # Import public key
 gpg --import https://keybase.io/itherso/pgp_keys.asc

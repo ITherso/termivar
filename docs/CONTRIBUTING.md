@@ -1,12 +1,12 @@
 # Contributing to VENOM
 
-Thank you for interest in contributing to VENOM v1.0.0! This guide will help you get started.
+Thank you for your interest in contributing to Venom v0.9.0-alpha.
 
 ---
 
 ## Code of Conduct
 
-We are committed to providing a welcoming and inspiring community for all. Please read and follow our [Code of Conduct](CODE_OF_CONDUCT.md).
+We are committed to providing a welcoming and inspiring community for all. Please follow the [Contributor Covenant](https://www.contributor-covenant.org/version/2/1/code_of_conduct/).
 
 ---
 
@@ -364,7 +364,7 @@ cargo bench
 ### Updating Docs
 
 1. **API Changes:** Update [docs/API.md](API.md)
-2. **Architecture:** Update [docs/ARCHITECTURE.md](ARCHITECTURE.md)
+2. **Architecture:** Update [docs/architecture.md](architecture.md)
 3. **New Features:** Add to [docs/GETTING_STARTED.md](GETTING_STARTED.md)
 4. **Module Guide:** Create [docs/modules/your_module.md]
 
@@ -399,8 +399,8 @@ Only maintainers can cut releases, but here's what happens:
 
 1. Bump version in `Cargo.toml`
 2. Update `CHANGELOG.md`
-3. Tag commit: `git tag v1.0.0`
-4. Push tag: `git push origin v1.0.0`
+3. Tag commit: `git tag vX.Y.Z`
+4. Push tag: `git push origin vX.Y.Z`
 5. GitHub Actions builds and releases
 
 ---
@@ -417,7 +417,7 @@ Only maintainers can cut releases, but here's what happens:
 ## Recognition
 
 Contributors are listed in:
-- [CONTRIBUTORS.md](CONTRIBUTORS.md)
+- [GitHub contributors](https://github.com/ITherso/venom/graphs/contributors)
 - GitHub contributors page
 - Release notes
 

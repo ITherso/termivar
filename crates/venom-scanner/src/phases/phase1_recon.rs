@@ -33,7 +33,11 @@
 //! - Timeout: 5 seconds
 //! - False positive rate: ~2% (based on header variance)
 
-use crate::{context::ScanContext, error::ScannerError, ScanFinding, ScanPhase};
+use crate::{
+    context::ScanContext,
+    contracts::{ScanFinding, ScanPhase},
+    error::ScannerError,
+};
 use async_trait::async_trait;
 
 /// Server reconnaissance scanner for passive fingerprinting

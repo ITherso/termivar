@@ -1,72 +1,77 @@
 # Security Policy
 
-## Reporting Security Vulnerabilities
+Venom is security-testing software. Its alpha releases may contain defects that affect confidentiality, integrity, availability, or scan accuracy. Use Venom only on systems you own or are explicitly authorized to test.
 
-If you discover a security vulnerability in VENOM, please email **security@venom.local** instead of using the issue tracker.
+## Supported versions
 
-**DO NOT** publicly disclose security vulnerabilities before they are fixed.
+| Version | Supported | Notes |
+| --- | --- | --- |
+| `main` | Yes | Security fixes land here first |
+| `0.9.0-alpha` | Yes | Best-effort support until the next pre-release |
+| Earlier snapshots | No | Upgrade before reporting a defect |
 
-Include:
-- Type of vulnerability
-- Location in code (file, line)
-- Proof of concept
-- Suggested fix (if available)
+Support means the maintainers will assess valid reports; it does not imply a production-readiness guarantee.
 
-We will respond within 48 hours.
+## Responsible disclosure
 
-## Security Considerations
+Do not open a public issue for a suspected vulnerability.
 
-### Certificate Management
+Use [GitHub private vulnerability reporting](https://github.com/ITherso/venom/security/advisories/new). Include:
 
-VENOM generates self-signed certificates for MITM proxy operations:
-- CA certificates are stored in `.venom/ca.key` (never commit to git)
-- Per-domain certificates are cached in `.venom/certs/`
-- Private keys are generated at runtime and NOT stored in the repository
+- affected version or commit;
+- affected component and configuration;
+- impact and realistic attack scenario;
+- minimal reproduction or proof of concept;
+- suggested mitigation, if known;
+- whether you want public credit.
 
-### Secrets Management
+Avoid accessing data that is not yours, disrupting third-party services, or testing beyond the minimum needed to demonstrate impact.
 
-- Private keys, API keys, and credentials MUST NOT be committed
-- Use environment variables or `.env` files (add to .gitignore)
-- Example: `export VENOM_API_KEY=your_key_here`
+## PGP
 
-### Compliance
+The project does not currently publish a PGP key. Use GitHub's private vulnerability reporting channel, which keeps the report within the repository's security advisory workflow. A future project key and fingerprint will be published here before encrypted email reporting is accepted.
 
-VENOM is designed for authorized security testing only:
-- Obtain written permission before scanning targets
-- Comply with GDPR, CFAA, and local laws
-- Respect rate limits and infrastructure constraints
+## Response targets
 
-## Production Deployment
+These are targets, not contractual guarantees.
 
-**Current Status: NOT PRODUCTION READY**
+| Stage | Target |
+| --- | --- |
+| Automated receipt | Immediate |
+| Human acknowledgement | 2 business days |
+| Initial severity assessment | 5 business days |
+| Remediation plan for confirmed critical issues | 7 business days |
+| Coordinated disclosure | Normally within 90 days |
 
-Before deploying to production, ensure:
+Complex issues, incomplete reports, maintainer availability, or upstream dependencies may affect timing. We will communicate material delays through the private advisory.
 
-- [ ] Security audit completed (3rd party review)
-- [ ] Penetration testing against VENOM itself
-- [ ] Dependency vulnerability scan (cargo audit)
-- [ ] All tests passing (573+ test suite)
-- [ ] Benchmark results documented
-- [ ] Memory profiling completed
-- [ ] Fuzz testing results analyzed
-- [ ] Load testing completed
-- [ ] Incident response plan established
+## CVE process
 
-## Known Limitations
+1. The maintainers reproduce and validate the report.
+2. Severity and affected versions are agreed with the reporter where practical.
+3. A fix and regression test are prepared privately.
+4. A GitHub Security Advisory is drafted. A CVE is requested when the issue meets CVE assignment criteria.
+5. Supported branches and release notes are updated.
+6. The advisory is published after a fix is available or at the coordinated disclosure deadline.
 
-- **Stability**: Beta-level (active development)
-- **Performance**: Not yet benchmarked at scale
-- **Security**: Pending formal security audit
-- **Production**: Experimental features should not be used in production
+Duplicate reports are handled in order of the first complete, reproducible submission.
 
-## Version Support
+## Credits and Hall of Fame
 
-| Version | Status | Support Until |
-|---------|--------|---------------|
-| 1.0.0   | Alpha  | TBD           |
-| 2.0.0   | Planned| TBD           |
+Researchers with a confirmed report may be credited in the advisory and in this section, with their consent. Anonymous credit is also available.
 
----
+No researchers are listed yet.
 
-**Last Updated:** 2026-07-17
-**Maintainer:** ITherso
+## Scope notes
+
+Reports about the following are particularly useful:
+
+- proxy certificate or key handling;
+- authentication and authorization bypass;
+- unsafe Lua or plugin sandbox escape;
+- request smuggling or parser differentials;
+- secret exposure in logs or reports;
+- malicious scan target responses causing code execution, denial of service, or data exposure;
+- dependency vulnerabilities with a demonstrated impact on Venom.
+
+General hardening suggestions, unsupported-version bugs, and scan findings against third-party targets should use normal project discussions after removing sensitive data.

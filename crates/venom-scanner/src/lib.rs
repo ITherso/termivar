@@ -17,6 +17,7 @@ pub mod cache;
 pub mod config;
 pub mod config_loader;
 pub mod context;
+pub mod contracts;
 pub mod error;
 pub mod logging;
 pub mod metrics;
@@ -105,6 +106,7 @@ pub use cache::{CacheEntry, CacheStats, LruCache, ResponseCache};
 pub use config::{ScanConfig, ScanIntensity};
 pub use config_loader::{ConfigLoader, ScanProfile as ScanningProfile};
 pub use context::ScanContext;
+pub use contracts::{ScanFinding, ScanPhase};
 pub use error::{Result, ScannerError};
 pub use event_bus::{Event, EventBus, EventHandler, EventSeverity, EventType};
 pub use logging::{LogEntry, LogLevel, Logger};
@@ -211,27 +213,3 @@ pub use plugins::{LFIPlugin, SQLiPlugin, SSRFPlugin, SSTIPlugin, XSSPlugin, XXEP
 pub use lua_engine::{
     LuaContext, LuaExecutionResult, LuaScript, LuaScriptRegistry, LuaScriptStatus,
 };
-
-use async_trait::async_trait;
-use serde::{Deserialize, Serialize};
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ScanFinding {
-    pub phase: u8,
-    pub module_name: String,
-    pub severity: String, // "CRITICAL", "HIGH", "MEDIUM", "LOW"
-    pub description: String,
-    pub evidence: String,
-}
-
-#[async_trait]
-pub trait ScanPhase: Send + Sync {
-    /// Phase number (1-10)
-    fn phase_number(&self) -> u8;
-
-    /// Phase name
-    fn name(&self) -> &'static str;
-
-    /// Execute phase logic
-    async fn execute(&self, ctx: &ScanContext) -> Result<Vec<ScanFinding>>;
-}

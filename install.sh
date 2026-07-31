@@ -1,5 +1,5 @@
 #!/bin/bash
-# VENOM v1.0.0 Universal Installer
+# Venom v0.9.0-alpha installer
 # Supports: macOS, Linux (Ubuntu/Debian/Arch), Windows (WSL), Docker
 
 set -e

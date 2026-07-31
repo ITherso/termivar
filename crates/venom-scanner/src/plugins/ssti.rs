@@ -1,7 +1,7 @@
 //! Server-Side Template Injection (SSTI) Vulnerability Plugin
 
+use crate::contracts::ScanFinding;
 use crate::plugin::{Plugin, PluginCategory, PluginConfig, PluginError};
-use crate::ScanFinding;
 
 pub struct SSTIPlugin;
 

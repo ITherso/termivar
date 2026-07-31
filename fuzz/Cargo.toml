@@ -1,0 +1,54 @@
+[package]
+name = "venom-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+httparse = "1"
+libfuzzer-sys = "0.4"
+quick-xml = "0.37"
+serde_json = "1"
+serde_yaml = "0.9"
+url = "2"
+
+[workspace]
+members = ["."]
+
+[[bin]]
+name = "http_parser"
+path = "fuzz_targets/http_parser.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "json_parser"
+path = "fuzz_targets/json_parser.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "yaml_parser"
+path = "fuzz_targets/yaml_parser.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "xml_parser"
+path = "fuzz_targets/xml_parser.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "text_parser"
+path = "fuzz_targets/text_parser.rs"
+test = false
+doc = false
+bench = false

@@ -1,4 +1,4 @@
-# Multi-stage Dockerfile for VENOM v1.0.0
+# Multi-stage Dockerfile for Venom v0.9.0-alpha
 # Produces: latest (full), slim (minimal), full (with tools)
 
 # Stage 1: Builder

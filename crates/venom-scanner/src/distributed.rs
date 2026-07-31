@@ -5,7 +5,7 @@
 
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashSet, VecDeque};
 use std::sync::Arc;
 
 /// Worker capability tags (task affinity)

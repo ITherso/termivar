@@ -1,10 +1,10 @@
 # VENOM Compliance & Certifications
 
-Enterprise-grade compliance and security certifications for VENOM v1.0.0.
+Experimental compliance models for Venom v0.9.0-alpha; no certification is claimed.
 
 ## Executive Summary
 
-VENOM v1.0.0 is built with security and compliance as first-class citizens:
+Venom v0.9.0-alpha includes optional compliance-oriented models:
 
 - ✅ **SOC 2 Type II Ready** (certification in progress)
 - ✅ **ISO 27001 Aligned** (path to certification)

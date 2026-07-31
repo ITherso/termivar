@@ -3,7 +3,12 @@
 //! The ScanRunner coordinates sequential execution of all 9 scanning phases,
 //! manages error handling, and aggregates findings with timing metrics.
 
-use crate::{context::ScanContext, Event, EventType, LogEntry, LogLevel, ScanFinding, ScanPhase};
+use crate::{
+    context::ScanContext,
+    contracts::{ScanFinding, ScanPhase},
+    event_bus::{Event, EventType},
+    logging::{LogEntry, LogLevel},
+};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::time::timeout;

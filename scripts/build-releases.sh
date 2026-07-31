@@ -1,5 +1,5 @@
 #!/bin/bash
-# Multi-platform release builder for VENOM v1.0.0
+# Multi-platform release builder for Venom v0.9.0-alpha
 # Produces binaries for macOS (arm64 + x86_64), Linux (musl + glibc), Windows (MSVC)
 
 set -e

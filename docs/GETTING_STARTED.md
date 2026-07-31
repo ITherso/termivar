@@ -1,6 +1,6 @@
 # VENOM Getting Started Guide
 
-Welcome to VENOM v1.0.0! This guide will get you up and running in 5 minutes.
+Welcome to Venom v0.9.0-alpha. This guide covers a local development build.
 
 ---
 
@@ -50,7 +50,7 @@ docker run -p 8080:8080 -p 3000:3000 venom:latest
 
 Output:
 ```
-🔴 VENOM - Pentesting Framework v1.0.0
+Venom - modular web security testing framework v0.9.0-alpha
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 [+] CA Generated: ~/.venom/ca.crt
 [+] Database: ~/.venom/history.db
@@ -297,10 +297,10 @@ rm ~/.venom/history.db
 ## Next Steps
 
 1. **Read API Docs:** [docs/API.md](API.md)
-2. **Learn Architecture:** [docs/ARCHITECTURE.md](ARCHITECTURE.md)
-3. **CLI Reference:** [docs/CLI.md](CLI.md)
-4. **Advanced Guide:** [docs/ADVANCED.md](ADVANCED.md)
-5. **Security Best Practices:** [docs/SECURITY.md](SECURITY.md)
+2. **Learn Architecture:** [docs/architecture.md](architecture.md)
+3. **CLI Reference:** [README Quick Start](https://github.com/ITherso/venom#quick-start)
+4. **Advanced Guide:** [Scanner](scanner.md)
+5. **Security Best Practices:** [Security policy](https://github.com/ITherso/venom/blob/main/SECURITY.md)
 
 ---
 
