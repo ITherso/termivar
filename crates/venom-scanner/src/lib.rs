@@ -42,6 +42,7 @@ pub mod logging;
 pub mod metrics;
 pub mod planner;
 pub mod rules;
+pub mod verification;
 
 // Scanning engine (feature: scanning)
 #[cfg(feature = "scanning")]
@@ -149,6 +150,12 @@ pub use rules::{
     EvidenceCalibration, EvidenceSelector, Expression, ExpressionEvaluation, ExpressionTrace,
     HypothesisConclusion, KnowledgeLayer, ReasoningRule, RuleApplication, RuleEngine,
     RuleEngineError, RuleEvaluation, RuleWrite,
+};
+pub use venom_core::{Outcome, OutcomeError, OutcomeStatus, VerificationStage};
+pub use verification::{
+    apply_outcome, ActiveVerifier, PassiveVerifier, VerificationCase, VerificationError,
+    VerificationPipeline, VerificationPipelineReport, VerificationReport, VerificationRule,
+    VerificationRuleEvaluation, VerifierWrite,
 };
 
 // Scanning engine exports (feature: scanning)

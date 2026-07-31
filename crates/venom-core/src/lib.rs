@@ -29,6 +29,7 @@ pub mod error;
 pub mod events;
 pub mod models;
 pub mod ontology;
+pub mod outcome;
 pub mod reasoning;
 
 pub use config::{Config, ConfigBuilder, ConfigError, ScanIntensity};
@@ -39,6 +40,7 @@ pub use ontology::{
     ConceptId, Ontology, OntologyAxiom, OntologyConcept, OntologyError, OntologyRecordKind,
     OntologyRelationType, OntologyStats, OntologyWrite, RelationSemantics, RelationTypeId,
 };
+pub use outcome::{Outcome, OutcomeError, OutcomeStatus, VerificationStage};
 pub use reasoning::{
     BayesianBelief, BayesianEvidence, BayesianUpdate, BeliefWrite, ConfidenceScore,
     ContributionDirection, EntityId, EntityKind, Evidence, EvidenceContribution, EvidenceId,
