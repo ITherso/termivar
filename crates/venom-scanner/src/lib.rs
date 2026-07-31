@@ -108,7 +108,7 @@ pub use config_loader::{ConfigLoader, ScanProfile as ScanningProfile};
 pub use context::ScanContext;
 pub use contracts::{ScanFinding, ScanPhase};
 pub use error::{Result, ScannerError};
-pub use event_bus::{Event, EventBus, EventHandler, EventSeverity, EventType};
+pub use event_bus::{Event, EventBuilder, EventBus, EventHandler, EventSeverity, EventType};
 pub use logging::{LogEntry, LogLevel, Logger};
 pub use metrics::{MetricsCollector, MetricsSummary, PhaseMetrics};
 

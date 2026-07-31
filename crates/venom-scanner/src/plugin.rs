@@ -8,8 +8,49 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::Instant;
 
-/// Plugin trait for custom vulnerability scanners
-#[async_trait::async_trait]
+/// Extension contract for custom scanner plugins.
+///
+/// The registry only knows this trait; it never inspects a plugin's concrete
+/// type. Plugins return findings and must not reach into runner internals.
+///
+/// # Examples
+///
+/// ```
+/// use async_trait::async_trait;
+/// use venom_scanner::{Plugin, PluginCategory, PluginError, ScanFinding};
+///
+/// struct MarkerPlugin;
+///
+/// #[async_trait]
+/// impl Plugin for MarkerPlugin {
+///     fn id(&self) -> &str { "marker" }
+///     fn name(&self) -> &str { "Marker Plugin" }
+///     fn version(&self) -> &str { "0.1.0" }
+///     fn description(&self) -> &str { "Finds an example response marker" }
+///     fn author(&self) -> &str { "Example Author" }
+///     fn category(&self) -> PluginCategory { PluginCategory::Custom }
+///     fn enabled(&self) -> bool { true }
+///
+///     async fn execute(
+///         &self,
+///         target: &str,
+///         payload: &str,
+///     ) -> Result<Vec<ScanFinding>, PluginError> {
+///         if !payload.contains("example-marker") {
+///             return Ok(Vec::new());
+///         }
+///
+///         Ok(vec![ScanFinding {
+///             phase: 0,
+///             module_name: self.id().into(),
+///             severity: "INFO".into(),
+///             description: "Example marker observed".into(),
+///             evidence: target.into(),
+///         }])
+///     }
+/// }
+/// ```
+#[async_trait]
 pub trait Plugin: Send + Sync {
     /// Plugin identifier
     fn id(&self) -> &str;

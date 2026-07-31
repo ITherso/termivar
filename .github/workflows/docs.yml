@@ -6,6 +6,11 @@ on:
       - "docs/**"
       - "mkdocs.yml"
       - "requirements-docs.txt"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "crates/**/*.rs"
+      - "crates/**/Cargo.toml"
+      - "templates/**"
       - ".github/workflows/docs.yml"
   push:
     branches: [main]
@@ -13,6 +18,11 @@ on:
       - "docs/**"
       - "mkdocs.yml"
       - "requirements-docs.txt"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "crates/**/*.rs"
+      - "crates/**/Cargo.toml"
+      - "templates/**"
       - ".github/workflows/docs.yml"
   workflow_dispatch:
 
@@ -35,8 +45,15 @@ jobs:
           python-version: "3.12"
           cache: pip
           cache-dependency-path: requirements-docs.txt
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
       - run: pip install --requirement requirements-docs.txt
       - run: mkdocs build --strict
+      - name: Build Rust API documentation
+        run: |
+          cargo doc --workspace --all-features --no-deps
+          mkdir -p site/rust
+          cp -R target/doc/. site/rust/
       - uses: actions/configure-pages@v6
         if: github.event_name != 'pull_request'
         with:

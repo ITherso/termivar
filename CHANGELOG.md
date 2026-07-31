@@ -9,12 +9,17 @@ All notable changes to Venom are recorded here. Releases use the categories from
 - Focused architecture, runner, scanner, plugin, Lua, distributed, anomaly, benchmark, profiling, and fuzzing documentation.
 - Editable Draw.io architecture and crate dependency diagrams.
 - Criterion microbenchmark target and cargo-fuzz harnesses.
+- A `cargo-generate` plugin starter with a CI smoke test.
+- Automated compile-time, binary-size, peak-memory, and Criterion workflow artifacts.
+- Published workspace API documentation and a conservative release-readiness matrix.
 
 ### Changed
 
 - Replaced the long-form promotional README with a concise project guide.
 - Standardized the pre-release version as `0.9.0-alpha`.
 - Replaced absolute completion claims with lifecycle labels such as Beta, Preview, and Experimental.
+- Moved shared event and finding contracts into `venom-core` while preserving scanner re-exports.
+- Documented the plugin system as a source-level preview instead of implying dynamic discovery.
 
 ### Fixed
 

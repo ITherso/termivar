@@ -8,6 +8,8 @@ cargo bench -p venom-scanner --bench scanner_benchmarks
 
 The active suite measures cache access, WAF header detection, and payload encoding. Criterion stores reports under `target/criterion/`.
 
+The `Quality Metrics` GitHub Actions workflow runs this suite on every push and pull request, then uploads Criterion output with build timing, binary size, and runner peak-RSS measurements. See [Quality metrics](quality-metrics.md).
+
 ## Release baseline
 
 Endpoint-scale numbers have not yet been published. Do not substitute synthetic or estimated results for measurements. The first release baseline should record:

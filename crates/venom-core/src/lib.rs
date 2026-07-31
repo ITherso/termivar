@@ -9,7 +9,10 @@
 
 pub mod config;
 pub mod error;
+pub mod events;
 pub mod models;
 
 pub use config::{Config, ConfigBuilder, ConfigError, ScanIntensity};
 pub use error::{Error, Result};
+pub use events::{Event, EventBuilder, EventSeverity, EventType};
+pub use models::{HttpRequest, HttpResponse, ScanFinding, ScanResult, Vulnerability};

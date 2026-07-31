@@ -1,5 +1,31 @@
 use serde::{Deserialize, Serialize};
 
+/// A structured observation produced by a scan phase or plugin.
+///
+/// # Examples
+///
+/// ```
+/// use venom_core::ScanFinding;
+///
+/// let finding = ScanFinding {
+///     phase: 1,
+///     module_name: "example-plugin".into(),
+///     severity: "LOW".into(),
+///     description: "Example observation".into(),
+///     evidence: "response marker".into(),
+/// };
+///
+/// assert_eq!(finding.phase, 1);
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScanFinding {
+    pub phase: u8,
+    pub module_name: String,
+    pub severity: String,
+    pub description: String,
+    pub evidence: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Vulnerability {
     pub id: String,

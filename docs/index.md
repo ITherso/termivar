@@ -7,6 +7,8 @@ Venom is an experimental modular web security testing framework. The current rel
 - [Getting started](GETTING_STARTED.md)
 - [Architecture](architecture.md)
 - [Scanner](scanner.md)
+- [Rust API documentation](https://itherso.github.io/venom/rust/venom_scanner/)
+- [Quality metrics](quality-metrics.md)
 - [Security policy](https://github.com/ITherso/venom/blob/main/SECURITY.md)
 - [Contributing](CONTRIBUTING.md)
 

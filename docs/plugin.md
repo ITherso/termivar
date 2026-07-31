@@ -1,6 +1,24 @@
-# Plugin system
+# Plugin SDK preview
 
-Native plugins implement the `Plugin` trait and are stored as `Arc<dyn Plugin>` in `PluginRegistry`. The registry owns lookup, configuration, execution metrics, and error normalization.
+Native plugins implement `Plugin` and are stored as `Arc<dyn Plugin>` in `PluginRegistry`. The registry owns validation, lookup, configuration, execution accounting, and error normalization; it does not inspect concrete plugin types.
+
+The API is **Preview**. It is currently a source-level Rust extension API, not a stable dynamic ABI. A host application must link and register third-party plugin crates explicitly.
+
+## Generate a plugin
+
+Install [`cargo-generate`](https://cargo-generate.github.io/cargo-generate/) and expand the repository template:
+
+```bash
+cargo install cargo-generate
+cargo generate \
+  --git https://github.com/ITherso/venom \
+  --subfolder templates/venom-plugin \
+  --name my-venom-plugin
+cd my-venom-plugin
+cargo test
+```
+
+The template asks for a stable plugin ID, implements the complete trait, and includes a registry/execution test. During alpha it tracks Venom `main`; pin the dependency to a tag or commit before publishing.
 
 ## Contract
 
@@ -10,6 +28,9 @@ pub trait Plugin: Send + Sync {
     fn id(&self) -> &str;
     fn name(&self) -> &str;
     fn version(&self) -> &str;
+    fn description(&self) -> &str;
+    fn author(&self) -> &str;
+    fn category(&self) -> PluginCategory;
     fn enabled(&self) -> bool;
     async fn execute(
         &self,
@@ -19,23 +40,44 @@ pub trait Plugin: Send + Sync {
 }
 ```
 
-Metadata and validation methods are omitted here for brevity; `src/plugin.rs` is authoritative during the alpha period.
+The generated crate contains a compilable implementation. The public Rust API documentation also contains an inline trait example.
+
+## Host integration
+
+Add the generated crate to a host application and register it:
+
+```rust
+use std::sync::Arc;
+use my_venom_plugin::GeneratedPlugin;
+use venom_scanner::PluginRegistry;
+
+let registry = PluginRegistry::new();
+registry
+    .register(Arc::new(GeneratedPlugin))
+    .expect("plugin must validate");
+```
+
+The stock CLI does not discover arbitrary shared libraries or crates at runtime. Dynamic discovery requires an explicit ABI, signing/trust policy, version negotiation, and sandbox decision; those are pre-stable design work.
 
 ## Design rules
 
-- The runner must not inspect plugin concrete types.
-- A plugin communicates through inputs, findings, errors, and public events.
-- A plugin must not render reports, start transports, or mutate registry internals.
-- Configuration is explicit and serializable where practical.
-- Plugin IDs are stable identifiers; display names are not identifiers.
-- Timeouts and payload limits must be enforced at the execution boundary.
+- Runner and registry code may call `Plugin::execute`; it must not branch on concrete plugin types.
+- Plugins communicate through inputs, findings, errors, and versioned public events.
+- Plugins must not render reports, start transports, mutate registry internals, or assume dashboard availability.
+- Plugin IDs are stable machine identifiers; display names are not identifiers.
+- Configuration must be explicit and serializable where practical.
+- Hosts must enforce timeout, payload-size, and authorization policies at the execution boundary.
 
 ## Lifecycle
 
 ```text
-construct → validate → register → execute → collect findings → update metrics
+generate -> implement -> test -> validate -> register -> execute -> collect findings
 ```
 
-## Stability
+## Stable SDK exit criteria
 
-The plugin API is Preview. Before a stable SDK, Venom needs a dedicated contracts module, capability declarations, API-version negotiation, and compatibility tests for third-party plugins.
+- Replace target/payload strings with a versioned request context.
+- Converge the plugin and ordered phase execution paths.
+- Define capability declarations and API-version negotiation.
+- Add compatibility tests across released SDK versions.
+- Decide whether runtime plugins are linked, process-isolated, WebAssembly, or another sandboxed format.

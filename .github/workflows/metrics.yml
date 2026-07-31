@@ -1,0 +1,89 @@
+name: Quality Metrics
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: quality-metrics-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  metrics:
+    name: Build and Benchmark Metrics
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Measure release build
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p target/quality-metrics
+          build_started=$(date +%s)
+          /usr/bin/time -v -o target/quality-metrics/build-time.txt \
+            cargo build --locked --release -p venom-cli --timings
+          build_seconds=$(($(date +%s) - build_started))
+          binary_bytes=$(stat --format=%s target/release/venom)
+          build_peak_kib=$(awk -F: '/Maximum resident set size/ {gsub(/^[[:space:]]+/, "", $2); print $2}' target/quality-metrics/build-time.txt)
+          cp target/cargo-timings/cargo-timing.html target/quality-metrics/
+          printf '%s\n' "$build_seconds" > target/quality-metrics/build-seconds.txt
+          printf '%s\n' "$binary_bytes" > target/quality-metrics/binary-bytes.txt
+          printf '%s\n' "$build_peak_kib" > target/quality-metrics/build-peak-rss-kib.txt
+
+      - name: Measure Criterion suite
+        shell: bash
+        run: |
+          set -euo pipefail
+          benchmark_started=$(date +%s)
+          /usr/bin/time -v -o target/quality-metrics/benchmark-time.txt \
+            cargo bench --locked -p venom-scanner --bench scanner_benchmarks -- --noplot
+          benchmark_seconds=$(($(date +%s) - benchmark_started))
+          benchmark_peak_kib=$(awk -F: '/Maximum resident set size/ {gsub(/^[[:space:]]+/, "", $2); print $2}' target/quality-metrics/benchmark-time.txt)
+          printf '%s\n' "$benchmark_seconds" > target/quality-metrics/benchmark-seconds.txt
+          printf '%s\n' "$benchmark_peak_kib" > target/quality-metrics/benchmark-peak-rss-kib.txt
+
+      - name: Create metrics summary
+        shell: bash
+        run: |
+          set -euo pipefail
+          build_seconds=$(cat target/quality-metrics/build-seconds.txt)
+          binary_bytes=$(cat target/quality-metrics/binary-bytes.txt)
+          build_peak_kib=$(cat target/quality-metrics/build-peak-rss-kib.txt)
+          benchmark_seconds=$(cat target/quality-metrics/benchmark-seconds.txt)
+          benchmark_peak_kib=$(cat target/quality-metrics/benchmark-peak-rss-kib.txt)
+          {
+            echo "# Venom quality metrics"
+            echo
+            echo "Commit: \`${GITHUB_SHA}\`"
+            echo
+            echo "| Metric | Value |"
+            echo "| --- | ---: |"
+            echo "| Release compile time | ${build_seconds} s |"
+            echo "| Release binary size | ${binary_bytes} bytes |"
+            echo "| Build peak RSS | ${build_peak_kib} KiB |"
+            echo "| Criterion suite wall time | ${benchmark_seconds} s |"
+            echo "| Criterion peak RSS | ${benchmark_peak_kib} KiB |"
+            echo
+            echo "Rust: \`$(rustc --version)\`"
+            echo
+            echo "These runner-local values are regression signals, not published capacity claims."
+          } | tee target/quality-metrics/summary.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload metrics
+        uses: actions/upload-artifact@v5
+        with:
+          name: quality-metrics-${{ github.sha }}
+          path: |
+            target/quality-metrics/
+            target/criterion/
+          if-no-files-found: error
+          retention-days: 30

@@ -1,0 +1,6 @@
+[template]
+cargo_generate_version = ">=0.23.0"
+
+[placeholders]
+plugin_id = { type = "string", prompt = "Stable plugin ID", default = "custom-plugin" }
+plugin_description = { type = "string", prompt = "Plugin description", default = "A third-party Venom plugin" }

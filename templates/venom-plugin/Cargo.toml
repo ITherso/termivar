@@ -1,0 +1,13 @@
+[package]
+name = "{{ project-name }}"
+version = "0.1.0"
+edition = "2021"
+authors = ["{{ authors }}"]
+license = "MIT"
+
+[dependencies]
+async-trait = "0.1"
+venom-scanner = { git = "https://github.com/ITherso/venom", branch = "main", default-features = false, features = ["plugins"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

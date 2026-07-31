@@ -20,6 +20,7 @@ nav:
   - Engineering:
       - Testing: TESTING.md
       - Benchmarks: benchmarks.md
+      - Quality metrics: quality-metrics.md
       - Profiling: profiling.md
       - Fuzzing: fuzzing.md
       - Code quality: CODE_QUALITY.md

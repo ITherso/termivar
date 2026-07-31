@@ -59,6 +59,32 @@ jobs:
           DATABASE_URL: postgres://test:test@localhost:5432/venom_test
           REDIS_URL: redis://localhost:6379
 
+  plugin-template:
+    name: Plugin Template
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Render and test generated plugin
+        shell: bash
+        run: |
+          set -euo pipefail
+          plugin_dir=$(mktemp -d)
+          cp -R templates/venom-plugin/. "$plugin_dir/"
+          sed -i \
+            -e 's/{{ project-name }}/venom-plugin-smoke/g' \
+            -e 's/{{ authors }}/Venom CI/g' \
+            -e 's/{{ plugin_id }}/smoke-plugin/g' \
+            -e 's/{{ plugin_description }}/CI smoke plugin/g' \
+            "$plugin_dir/Cargo.toml" \
+            "$plugin_dir/src/lib.rs" \
+            "$plugin_dir/README.md"
+          sed -i \
+            "s#venom-scanner = .*#venom-scanner = { path = \"${GITHUB_WORKSPACE}/crates/venom-scanner\", default-features = false, features = [\"plugins\"] }#" \
+            "$plugin_dir/Cargo.toml"
+          cargo test --manifest-path "$plugin_dir/Cargo.toml"
+
   security-tests:
     name: Security Tests
     runs-on: ubuntu-latest
