@@ -55,12 +55,21 @@ impl<K: Eq + std::hash::Hash + Clone, V: Clone> LruCache<K, V> {
 
     /// Inserts a value with TTL
     pub fn insert(&self, key: K, value: V, ttl_secs: u64) {
+        if self.max_size == 0 {
+            return;
+        }
+
         if self.cache.len() >= self.max_size {
-            // Remove oldest entry
-            if let Some(entry) = self.cache.iter().next() {
-                let k = entry.key().clone();
-                drop(entry);
-                self.cache.remove(&k);
+            // Clone the eviction key while the iterator holds DashMap's shard
+            // lock, then drop the iterator before mutating the same map.
+            let eviction_key = self
+                .cache
+                .iter()
+                .min_by_key(|entry| entry.created_at)
+                .map(|entry| entry.key().clone());
+
+            if let Some(eviction_key) = eviction_key {
+                self.cache.remove(&eviction_key);
             }
         }
         self.cache.insert(key, CacheEntry::new(value, ttl_secs));
@@ -248,6 +257,15 @@ mod tests {
         cache.insert(3, "value3".to_string(), 3600);
 
         assert!(cache.stats().size <= 2);
+    }
+
+    #[test]
+    fn test_zero_size_cache_does_not_store_entries() {
+        let cache: LruCache<usize, String> = LruCache::new(0);
+        cache.insert(1, "value1".to_string(), 3600);
+
+        assert_eq!(cache.stats().size, 0);
+        assert!(cache.get(&1).is_none());
     }
 
     #[test]
