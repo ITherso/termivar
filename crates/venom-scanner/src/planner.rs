@@ -1046,12 +1046,12 @@ fn build_eligible_closure(
 mod tests {
     use super::*;
     use crate::{
-        EvidenceCalibration, EvidenceSelector, HypothesisConclusion, KnowledgeLayer, ReasoningRule,
-        RuleEngine,
+        EvidenceCalibration, EvidenceSelector, ExperiencePolicy, ExperienceStore,
+        HypothesisConclusion, KnowledgeLayer, ReasoningRule, RuleEngine,
     };
     use venom_core::{
         BayesianEvidence, ConfidenceScore, Evidence, EvidenceKind, EvidenceSource, HypothesisState,
-        KnowledgePredicate,
+        KnowledgePredicate, Outcome, OutcomeStatus, VerificationStage,
     };
 
     fn subject() -> EntityId {
@@ -1180,6 +1180,50 @@ mod tests {
                 context(100),
                 &BTreeSet::from(["alpha".into()]),
             )
+            .unwrap();
+
+        assert_eq!(plan.steps().len(), 1);
+        assert_eq!(plan.steps()[0].action_id(), "zeta");
+        assert_eq!(plan.excluded()[0].action_id(), "alpha");
+        assert_eq!(
+            plan.excluded()[0].reason(),
+            &ExclusionReason::PolicySuppressed
+        );
+    }
+
+    #[test]
+    fn planner_consumes_suppressions_derived_from_experience() {
+        let knowledge = knowledge_with_hypothesis((80, 20));
+        let evidence_id = knowledge.snapshot_for_subject(&subject()).evidence()[0]
+            .id()
+            .clone();
+        let mut experience = ExperienceStore::new();
+        for attempt in 0..10 {
+            experience
+                .observe(
+                    Outcome::verified(
+                        format!("case:alpha:{attempt}"),
+                        subject(),
+                        "alpha",
+                        "hypothesis:laravel",
+                        "verify.alpha",
+                        VerificationStage::Active,
+                        OutcomeStatus::Blocked,
+                        Probability::from_percent(80).unwrap(),
+                        "alpha remained blocked",
+                        BTreeSet::from([evidence_id.clone()]),
+                    )
+                    .unwrap(),
+                )
+                .unwrap();
+        }
+        let suppressed = experience.suppressed_actions(&subject(), ExperiencePolicy::default());
+        let mut planner = AttackPlanner::new();
+        planner.register(action("alpha", 80, 10, 20, &[])).unwrap();
+        planner.register(action("zeta", 80, 10, 20, &[])).unwrap();
+
+        let plan = planner
+            .plan_with_suppressed(&knowledge, &subject(), context(100), &suppressed)
             .unwrap();
 
         assert_eq!(plan.steps().len(), 1);

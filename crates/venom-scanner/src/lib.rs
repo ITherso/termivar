@@ -37,6 +37,7 @@ pub mod config_loader;
 pub mod context;
 pub mod contracts;
 pub mod error;
+pub mod experience;
 pub mod knowledge;
 pub mod logging;
 pub mod metrics;
@@ -134,6 +135,10 @@ pub use context::ScanContext;
 pub use contracts::{ScanFinding, ScanPhase};
 pub use error::{Result, ScannerError};
 pub use event_bus::{Event, EventBuilder, EventBus, EventHandler, EventSeverity, EventType};
+pub use experience::{
+    ExperienceAssessment, ExperiencePolicy, ExperienceRecommendation, ExperienceRecord,
+    ExperienceStore, ExperienceStoreError, ExperienceWrite,
+};
 #[allow(deprecated)]
 pub use knowledge::{
     KnowledgeBase, KnowledgeBaseError, KnowledgeBaseStats, KnowledgeRecordKind, KnowledgeSnapshot,

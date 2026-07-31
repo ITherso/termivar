@@ -222,6 +222,17 @@ impl PipelineDirective {
             _ => None,
         }
     }
+
+    fn repeated_action_id<'a>(&'a self, source_action_id: &'a str) -> Option<&'a str> {
+        match self {
+            Self::ScheduleAction { action_id } => Some(action_id),
+            Self::Throttle {
+                retry_current_action: true,
+                ..
+            } => Some(source_action_id),
+            _ => None,
+        }
+    }
 }
 
 /// Declarative mapping from an outcome and optional evidence expression to a directive.
@@ -569,6 +580,7 @@ pub struct AdaptationRuleEvaluation {
     outcome_evidence_matched: bool,
     rule_limit_exhausted: bool,
     action_limit_exhausted: bool,
+    policy_suppressed: bool,
     eligible: bool,
     selected: bool,
 }
@@ -602,6 +614,11 @@ impl AdaptationRuleEvaluation {
     /// Returns whether the scheduled action reached its global limit.
     pub fn action_limit_exhausted(&self) -> bool {
         self.action_limit_exhausted
+    }
+
+    /// Returns whether learned, adaptive, or operator policy suppressed the repeated action.
+    pub fn policy_suppressed(&self) -> bool {
+        self.policy_suppressed
     }
 
     /// Returns whether the rule could participate in winner selection.
@@ -808,6 +825,22 @@ impl AdaptivePipeline {
         ledger: &AdaptationLedger,
         limits: AdaptationLimits,
     ) -> Result<AdaptiveDecision, AdaptivePipelineError> {
+        self.decide_with_suppressed_actions(outcome, snapshot, ledger, limits, &BTreeSet::new())
+    }
+
+    /// Produces a pure decision while excluding actions suppressed by external policy.
+    ///
+    /// The set may be derived from an [`crate::ExperienceStore`], operator
+    /// policy, or another scheduler concern. Ledger suppressions are always
+    /// merged with the supplied set.
+    pub fn decide_with_suppressed_actions(
+        &self,
+        outcome: &Outcome,
+        snapshot: &KnowledgeSnapshot,
+        ledger: &AdaptationLedger,
+        limits: AdaptationLimits,
+        suppressed_actions: &BTreeSet<String>,
+    ) -> Result<AdaptiveDecision, AdaptivePipelineError> {
         validate_snapshot(outcome, snapshot)?;
         if ledger.transitions >= limits.max_transitions {
             return Ok(AdaptiveDecision {
@@ -857,11 +890,19 @@ impl AdaptivePipeline {
                     .is_some_and(|action_id| {
                         ledger.action_schedules(action_id) >= limits.max_action_schedules
                     });
+            let policy_suppressed = rule
+                .directive
+                .repeated_action_id(outcome.action_id())
+                .is_some_and(|action_id| {
+                    suppressed_actions.contains(action_id)
+                        || ledger.suppressed_actions().contains(action_id)
+                });
             let eligible = selector_matched
                 && condition_matched
                 && outcome_evidence_matched
                 && !rule_limit_exhausted
-                && !action_limit_exhausted;
+                && !action_limit_exhausted
+                && !policy_suppressed;
             evaluations.push(AdaptationRuleEvaluation {
                 rule_id: rule.id.clone(),
                 selector_matched,
@@ -869,6 +910,7 @@ impl AdaptivePipeline {
                 outcome_evidence_matched,
                 rule_limit_exhausted,
                 action_limit_exhausted,
+                policy_suppressed,
                 eligible,
                 selected: false,
             });
@@ -926,7 +968,31 @@ impl AdaptivePipeline {
         ledger: &mut AdaptationLedger,
         limits: AdaptationLimits,
     ) -> Result<AdaptiveDecision, AdaptivePipelineError> {
-        let decision = self.decide(outcome, snapshot, ledger, limits)?;
+        self.decide_and_record_with_suppressed_actions(
+            outcome,
+            snapshot,
+            ledger,
+            limits,
+            &BTreeSet::new(),
+        )
+    }
+
+    /// Produces and records a decision with explicit policy suppressions.
+    pub fn decide_and_record_with_suppressed_actions(
+        &self,
+        outcome: &Outcome,
+        snapshot: &KnowledgeSnapshot,
+        ledger: &mut AdaptationLedger,
+        limits: AdaptationLimits,
+        suppressed_actions: &BTreeSet<String>,
+    ) -> Result<AdaptiveDecision, AdaptivePipelineError> {
+        let decision = self.decide_with_suppressed_actions(
+            outcome,
+            snapshot,
+            ledger,
+            limits,
+            suppressed_actions,
+        )?;
         ledger.record(&decision)?;
         Ok(decision)
     }
@@ -991,7 +1057,10 @@ fn validate_snapshot(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{PassiveVerifier, VerificationCase, VerificationRule, VerifierWrite};
+    use crate::{
+        ExperiencePolicy, ExperienceStore, PassiveVerifier, VerificationCase, VerificationRule,
+        VerifierWrite,
+    };
     use venom_core::{
         BayesianEvidence, ConfidenceScore, Evidence, EvidenceKind, EvidenceSource, Hypothesis,
         HypothesisState, HypothesisStrength, Probability,
@@ -1231,6 +1300,56 @@ mod tests {
                 retry_current_action: true
             }
         );
+    }
+
+    #[test]
+    fn learned_suppression_prevents_repeating_a_scheduled_action() {
+        let fixture = fixture(403);
+        let mut experience = ExperienceStore::new();
+        for attempt in 0..10 {
+            experience
+                .observe(
+                    Outcome::verified(
+                        format!("case:bypass:{attempt}"),
+                        subject(),
+                        "http.403-bypass",
+                        "hypothesis:http",
+                        "verify.403-bypass",
+                        VerificationStage::Active,
+                        OutcomeStatus::Blocked,
+                        Probability::from_percent(90).unwrap(),
+                        "bypass attempt remained blocked",
+                        BTreeSet::from([fixture.evidence_id.clone()]),
+                    )
+                    .unwrap(),
+                )
+                .unwrap();
+        }
+        let suppressed = experience.suppressed_actions(&subject(), ExperiencePolicy::default());
+        let outcome = verified_outcome(
+            OutcomeStatus::Blocked,
+            VerificationStage::Passive,
+            fixture.evidence_id,
+        );
+        let decision = AdaptivePipeline::with_standard_policies()
+            .unwrap()
+            .decide_with_suppressed_actions(
+                &outcome,
+                &fixture.knowledge.snapshot_for_subject(&subject()),
+                &AdaptationLedger::new(),
+                AdaptationLimits::default(),
+                &suppressed,
+            )
+            .unwrap();
+
+        assert_eq!(decision.directive(), &PipelineDirective::AwaitHumanReview);
+        let bypass = decision
+            .evaluations()
+            .iter()
+            .find(|evaluation| evaluation.rule_id() == "http.403.bypass")
+            .unwrap();
+        assert!(bypass.policy_suppressed());
+        assert!(!bypass.eligible());
     }
 
     #[test]
