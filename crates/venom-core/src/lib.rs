@@ -28,12 +28,17 @@ pub mod config;
 pub mod error;
 pub mod events;
 pub mod models;
+pub mod ontology;
 pub mod reasoning;
 
 pub use config::{Config, ConfigBuilder, ConfigError, ScanIntensity};
 pub use error::{Error, Result};
 pub use events::{Event, EventBuilder, EventSeverity, EventType};
 pub use models::{HttpRequest, HttpResponse, ScanFinding, ScanResult, Vulnerability};
+pub use ontology::{
+    ConceptId, Ontology, OntologyAxiom, OntologyConcept, OntologyError, OntologyRecordKind,
+    OntologyRelationType, OntologyStats, OntologyWrite, RelationSemantics, RelationTypeId,
+};
 pub use reasoning::{
     ConfidenceScore, ContributionDirection, EntityId, EntityKind, Evidence, EvidenceContribution,
     EvidenceId, EvidenceKind, EvidenceSource, EvidenceValue, Fact, Hypothesis, HypothesisState,

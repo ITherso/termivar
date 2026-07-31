@@ -6,8 +6,8 @@
 //! - `Plugin` defines the source-level Preview plugin contract when the
 //!   `plugins` feature is enabled.
 //!
-//! [`KnowledgeStore`] provides shared evidence-driven memory without coupling
-//! producers to reasoning or execution policy.
+//! [`KnowledgeBase`] separates ontology, instance knowledge, and observations
+//! without coupling evidence producers to decision policy.
 //!
 //! The runner owns ordering, timeouts, cancellation, event publication, and
 //! finding aggregation. Extensions own detection behavior.
@@ -131,8 +131,10 @@ pub use context::ScanContext;
 pub use contracts::{ScanFinding, ScanPhase};
 pub use error::{Result, ScannerError};
 pub use event_bus::{Event, EventBuilder, EventBus, EventHandler, EventSeverity, EventType};
+#[allow(deprecated)]
 pub use knowledge::{
-    KnowledgeRecordKind, KnowledgeStore, KnowledgeStoreError, KnowledgeStoreStats, KnowledgeWrite,
+    KnowledgeBase, KnowledgeBaseError, KnowledgeBaseStats, KnowledgeRecordKind, KnowledgeStore,
+    KnowledgeStoreError, KnowledgeStoreStats, KnowledgeWrite,
 };
 pub use logging::{LogEntry, LogLevel, Logger};
 pub use metrics::{MetricsCollector, MetricsSummary, PhaseMetrics};

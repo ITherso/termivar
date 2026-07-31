@@ -1,9 +1,10 @@
-//! Thread-safe in-memory storage for evidence-driven scan knowledge.
+//! Thread-safe in-memory knowledge base for evidence-driven reasoning.
 //!
-//! The store owns indexing and identity rules, but deliberately contains no
-//! detection, scoring, planning, or persistence behavior. Producers can write
-//! observations in any order; referential integrity is therefore eventual so
-//! discovery modules remain independent from one another.
+//! The base owns ontology, instance relationships, evidence, facts, and
+//! hypotheses, but deliberately contains no detection, scoring, planning, or
+//! persistence behavior. Producers can write observations in any order;
+//! referential integrity is therefore eventual so discovery modules remain
+//! independent from one another.
 
 use std::collections::{BTreeSet, HashMap};
 use std::fmt;
@@ -11,11 +12,12 @@ use std::hash::Hash;
 use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use venom_core::{
-    EntityId, Evidence, EvidenceId, Fact, Hypothesis, KnowledgeEntity, KnowledgePredicate,
-    KnowledgeRelation, RelationId,
+    ConceptId, EntityId, Evidence, EvidenceId, Fact, Hypothesis, KnowledgeEntity,
+    KnowledgePredicate, KnowledgeRelation, Ontology, OntologyAxiom, OntologyConcept, OntologyError,
+    OntologyRelationType, OntologyStats, OntologyWrite, RelationId, RelationTypeId,
 };
 
-/// Result of an idempotent write to the knowledge store.
+/// Result of an idempotent write to the knowledge base.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum KnowledgeWrite {
@@ -59,7 +61,7 @@ impl fmt::Display for KnowledgeRecordKind {
 /// Errors raised when a record attempts to reuse an identity for new meaning.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
-pub enum KnowledgeStoreError {
+pub enum KnowledgeBaseError {
     /// The identity exists, but its immutable claim or graph identity differs.
     IdentityConflict {
         /// Category of the conflicting record.
@@ -69,7 +71,7 @@ pub enum KnowledgeStoreError {
     },
 }
 
-impl fmt::Display for KnowledgeStoreError {
+impl fmt::Display for KnowledgeBaseError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::IdentityConflict { kind, id } => {
@@ -82,12 +84,12 @@ impl fmt::Display for KnowledgeStoreError {
     }
 }
 
-impl std::error::Error for KnowledgeStoreError {}
+impl std::error::Error for KnowledgeBaseError {}
 
-/// Counts of records currently held by a [`KnowledgeStore`].
+/// Counts of records currently held by a [`KnowledgeBase`].
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 #[non_exhaustive]
-pub struct KnowledgeStoreStats {
+pub struct KnowledgeBaseStats {
     /// Number of immutable observations.
     pub evidence: usize,
     /// Number of materialized facts.
@@ -98,10 +100,13 @@ pub struct KnowledgeStoreStats {
     pub entities: usize,
     /// Number of evidence-backed graph relations.
     pub relations: usize,
+    /// Counts for ontology concepts, relation types, and axioms.
+    pub ontology: OntologyStats,
 }
 
 #[derive(Debug, Default)]
 struct KnowledgeState {
+    ontology: Ontology,
     evidence: HashMap<EvidenceId, Evidence>,
     facts: HashMap<String, Fact>,
     hypotheses: HashMap<String, Hypothesis>,
@@ -117,15 +122,16 @@ struct KnowledgeState {
     relations_to: HashMap<EntityId, BTreeSet<RelationId>>,
 }
 
-/// Thread-safe, indexed memory shared by discovery, reasoning, and execution.
+/// Thread-safe, indexed knowledge shared by evidence and decision engines.
 ///
 /// Writes are atomic across primary records and secondary indexes. Read methods
 /// return owned snapshots, so callers never keep an internal lock while doing
 /// asynchronous work.
 ///
-/// Evidence and entities are immutable once their IDs are observed. Facts,
-/// hypotheses, and relations may be updated only while their claim identity or
-/// graph identity remains unchanged.
+/// Ontology definitions provide domain meaning, while entities and relations
+/// form the instance graph. Evidence and entities are immutable once their IDs
+/// are observed. Facts, hypotheses, and relations may be updated only while
+/// their claim identity or graph identity remains unchanged.
 ///
 /// # Examples
 ///
@@ -134,10 +140,10 @@ struct KnowledgeState {
 ///     ConfidenceScore, EntityId, Evidence, EvidenceKind, EvidenceSource,
 ///     EvidenceValue, KnowledgePredicate,
 /// };
-/// use venom_scanner::{KnowledgeStore, KnowledgeWrite};
+/// use venom_scanner::{KnowledgeBase, KnowledgeWrite};
 ///
 /// # fn example() -> Result<(), Box<dyn std::error::Error>> {
-/// let store = KnowledgeStore::new();
+/// let knowledge = KnowledgeBase::new();
 /// let subject = EntityId::new("endpoint:https://example.test")?;
 /// let predicate = KnowledgePredicate::new("http.header", "server")?;
 /// let evidence = Evidence::new(
@@ -149,21 +155,68 @@ struct KnowledgeState {
 ///     ConfidenceScore::from_percent(85)?,
 /// );
 ///
-/// assert_eq!(store.insert_evidence(evidence)?, KnowledgeWrite::Inserted);
-/// assert_eq!(store.evidence_for_subject(&subject).len(), 1);
-/// assert_eq!(store.evidence_for_predicate(&predicate).len(), 1);
+/// assert_eq!(knowledge.insert_evidence(evidence)?, KnowledgeWrite::Inserted);
+/// assert_eq!(knowledge.evidence_for_subject(&subject).len(), 1);
+/// assert_eq!(knowledge.evidence_for_predicate(&predicate).len(), 1);
 /// # Ok(())
 /// # }
 /// ```
 #[derive(Debug, Clone, Default)]
-pub struct KnowledgeStore {
+pub struct KnowledgeBase {
     state: Arc<RwLock<KnowledgeState>>,
 }
 
-impl KnowledgeStore {
-    /// Creates an empty store.
+impl KnowledgeBase {
+    /// Creates an empty knowledge base with standard ontology relation types.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Registers a domain concept in the ontology.
+    pub fn register_concept(
+        &self,
+        concept: OntologyConcept,
+    ) -> Result<OntologyWrite, OntologyError> {
+        self.write_state().ontology.add_concept(concept)
+    }
+
+    /// Registers a custom semantic relation type in the ontology.
+    pub fn register_relation_type(
+        &self,
+        relation_type: OntologyRelationType,
+    ) -> Result<OntologyWrite, OntologyError> {
+        self.write_state().ontology.add_relation_type(relation_type)
+    }
+
+    /// Registers a validated semantic axiom in the ontology.
+    pub fn register_axiom(&self, axiom: OntologyAxiom) -> Result<OntologyWrite, OntologyError> {
+        self.write_state().ontology.add_axiom(axiom)
+    }
+
+    /// Returns an owned, internally consistent ontology snapshot.
+    pub fn ontology_snapshot(&self) -> Ontology {
+        self.read_state().ontology.clone()
+    }
+
+    /// Evaluates a semantic relationship using the registered ontology.
+    pub fn ontology_is_related(
+        &self,
+        subject: &ConceptId,
+        relation: &RelationTypeId,
+        object: &ConceptId,
+    ) -> Result<bool, OntologyError> {
+        self.read_state()
+            .ontology
+            .is_related(subject, relation, object)
+    }
+
+    /// Evaluates the canonical transitive ontology hierarchy.
+    pub fn ontology_is_a(
+        &self,
+        child: &ConceptId,
+        ancestor: &ConceptId,
+    ) -> Result<bool, OntologyError> {
+        self.read_state().ontology.is_a(child, ancestor)
     }
 
     /// Inserts one immutable observation.
@@ -173,7 +226,7 @@ impl KnowledgeStore {
     pub fn insert_evidence(
         &self,
         evidence: Evidence,
-    ) -> Result<KnowledgeWrite, KnowledgeStoreError> {
+    ) -> Result<KnowledgeWrite, KnowledgeBaseError> {
         let id = evidence.id().clone();
         let subject = evidence.subject().clone();
         let predicate = evidence.predicate().clone();
@@ -197,7 +250,7 @@ impl KnowledgeStore {
     ///
     /// The subject, predicate, and value form the immutable claim identity for
     /// an existing fact ID.
-    pub fn upsert_fact(&self, fact: Fact) -> Result<KnowledgeWrite, KnowledgeStoreError> {
+    pub fn upsert_fact(&self, fact: Fact) -> Result<KnowledgeWrite, KnowledgeBaseError> {
         let id = fact.id().to_owned();
         let subject = fact.subject().clone();
         let predicate = fact.predicate().clone();
@@ -230,7 +283,7 @@ impl KnowledgeStore {
     pub fn upsert_hypothesis(
         &self,
         hypothesis: Hypothesis,
-    ) -> Result<KnowledgeWrite, KnowledgeStoreError> {
+    ) -> Result<KnowledgeWrite, KnowledgeBaseError> {
         let id = hypothesis.id().to_owned();
         let subject = hypothesis.subject().clone();
         let predicate = hypothesis.predicate().clone();
@@ -260,7 +313,7 @@ impl KnowledgeStore {
     pub fn insert_entity(
         &self,
         entity: KnowledgeEntity,
-    ) -> Result<KnowledgeWrite, KnowledgeStoreError> {
+    ) -> Result<KnowledgeWrite, KnowledgeBaseError> {
         let id = entity.id().clone();
         let mut state = self.write_state();
 
@@ -283,7 +336,7 @@ impl KnowledgeStore {
     pub fn upsert_relation(
         &self,
         relation: KnowledgeRelation,
-    ) -> Result<KnowledgeWrite, KnowledgeStoreError> {
+    ) -> Result<KnowledgeWrite, KnowledgeBaseError> {
         let id = relation.id().clone();
         let from = relation.from().clone();
         let to = relation.to().clone();
@@ -386,14 +439,15 @@ impl KnowledgeStore {
     }
 
     /// Returns a consistent count snapshot under one read lock.
-    pub fn stats(&self) -> KnowledgeStoreStats {
+    pub fn stats(&self) -> KnowledgeBaseStats {
         let state = self.read_state();
-        KnowledgeStoreStats {
+        KnowledgeBaseStats {
             evidence: state.evidence.len(),
             facts: state.facts.len(),
             hypotheses: state.hypotheses.len(),
             entities: state.entities.len(),
             relations: state.relations.len(),
+            ontology: state.ontology.stats(),
         }
     }
 
@@ -410,8 +464,20 @@ impl KnowledgeStore {
     }
 }
 
-fn identity_conflict(kind: KnowledgeRecordKind, id: &impl fmt::Display) -> KnowledgeStoreError {
-    KnowledgeStoreError::IdentityConflict {
+/// Compatibility alias for the original storage-oriented name.
+#[deprecated(note = "use KnowledgeBase; the base also owns ontology semantics")]
+pub type KnowledgeStore = KnowledgeBase;
+
+/// Compatibility alias for [`KnowledgeBaseError`].
+#[deprecated(note = "use KnowledgeBaseError")]
+pub type KnowledgeStoreError = KnowledgeBaseError;
+
+/// Compatibility alias for [`KnowledgeBaseStats`].
+#[deprecated(note = "use KnowledgeBaseStats")]
+pub type KnowledgeStoreStats = KnowledgeBaseStats;
+
+fn identity_conflict(kind: KnowledgeRecordKind, id: &impl fmt::Display) -> KnowledgeBaseError {
+    KnowledgeBaseError::IdentityConflict {
         kind,
         id: id.to_string(),
     }
@@ -465,7 +531,7 @@ mod tests {
 
     #[test]
     fn evidence_writes_are_idempotent_and_identity_safe() {
-        let store = KnowledgeStore::new();
+        let store = KnowledgeBase::new();
         let evidence = evidence_for(subject(1), "Laravel");
 
         assert_eq!(
@@ -485,7 +551,7 @@ mod tests {
         let conflicting: Evidence = serde_json::from_value(conflicting_wire).unwrap();
         assert_eq!(
             store.insert_evidence(conflicting),
-            Err(KnowledgeStoreError::IdentityConflict {
+            Err(KnowledgeBaseError::IdentityConflict {
                 kind: KnowledgeRecordKind::Evidence,
                 id: evidence.id().to_string(),
             })
@@ -495,7 +561,7 @@ mod tests {
 
     #[test]
     fn evidence_is_indexed_by_subject_and_predicate() {
-        let store = KnowledgeStore::new();
+        let store = KnowledgeBase::new();
         let first_subject = subject(1);
         let second_subject = subject(2);
         store
@@ -513,7 +579,7 @@ mod tests {
 
     #[test]
     fn fact_updates_preserve_claim_identity_and_index_cardinality() {
-        let store = KnowledgeStore::new();
+        let store = KnowledgeBase::new();
         let evidence = evidence_for(subject(1), "Laravel");
         let fact = Fact::new(
             evidence.subject().clone(),
@@ -542,7 +608,7 @@ mod tests {
 
     #[test]
     fn hypothesis_updates_replace_evaluation_without_duplicate_indexes() {
-        let store = KnowledgeStore::new();
+        let store = KnowledgeBase::new();
         let evidence = evidence_for(subject(1), "Laravel");
         let mut hypothesis = Hypothesis::new(
             evidence.subject().clone(),
@@ -583,7 +649,7 @@ mod tests {
 
     #[test]
     fn entities_and_relations_are_queryable_in_both_directions() {
-        let store = KnowledgeStore::new();
+        let store = KnowledgeBase::new();
         let host_id = EntityId::new("host:example.test").unwrap();
         let service_id = EntityId::new("service:https:example.test:443").unwrap();
         let host = KnowledgeEntity::new(host_id.clone(), EntityKind::Host, "example.test").unwrap();
@@ -613,7 +679,7 @@ mod tests {
 
     #[test]
     fn relation_provenance_updates_do_not_duplicate_edges() {
-        let store = KnowledgeStore::new();
+        let store = KnowledgeBase::new();
         let first_evidence = evidence_for(subject(1), "nginx");
         let second_evidence = evidence_for(subject(1), "HTTP/2");
         let from = EntityId::new("host:example.test").unwrap();
@@ -641,7 +707,7 @@ mod tests {
 
     #[test]
     fn concurrent_writers_keep_primary_records_and_indexes_consistent() {
-        let store = KnowledgeStore::new();
+        let store = KnowledgeBase::new();
         let shared_subject = subject(1);
         let writers: Vec<_> = (0..16)
             .map(|writer| {
@@ -665,5 +731,42 @@ mod tests {
         assert_eq!(store.stats().evidence, 16);
         assert_eq!(store.evidence_for_subject(&shared_subject).len(), 16);
         assert_eq!(store.evidence_for_predicate(&predicate()).len(), 16);
+    }
+
+    #[test]
+    fn knowledge_base_keeps_ontology_separate_from_instance_graph() {
+        let knowledge = KnowledgeBase::new();
+        let laravel = ConceptId::new("laravel").unwrap();
+        let framework = ConceptId::new("framework").unwrap();
+        let technology = ConceptId::new("technology").unwrap();
+        for (id, label) in [
+            (laravel.clone(), "Laravel"),
+            (framework.clone(), "Framework"),
+            (technology.clone(), "Technology"),
+        ] {
+            knowledge
+                .register_concept(OntologyConcept::new(id, label).unwrap())
+                .unwrap();
+        }
+        knowledge
+            .register_axiom(OntologyAxiom::new(
+                laravel.clone(),
+                Ontology::relation_id(Ontology::IS_A).unwrap(),
+                framework.clone(),
+            ))
+            .unwrap();
+        knowledge
+            .register_axiom(OntologyAxiom::new(
+                framework,
+                Ontology::relation_id(Ontology::IS_A).unwrap(),
+                technology.clone(),
+            ))
+            .unwrap();
+
+        assert!(knowledge.ontology_is_a(&laravel, &technology).unwrap());
+        assert_eq!(knowledge.stats().ontology.concepts, 3);
+        assert_eq!(knowledge.stats().ontology.axioms, 2);
+        assert_eq!(knowledge.stats().entities, 0);
+        assert_eq!(knowledge.stats().relations, 0);
     }
 }

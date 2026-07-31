@@ -1,5 +1,5 @@
 use crate::event_bus::EventBus;
-use crate::knowledge::KnowledgeStore;
+use crate::knowledge::KnowledgeBase;
 use crate::logging::{LogLevel, Logger};
 use dashmap::{DashMap, DashSet};
 use reqwest::Client;
@@ -27,7 +27,7 @@ pub struct ScanContext {
     // Event bus for publishing progress events (PhaseStarted, PhaseCompleted, PhaseFailed)
     pub event_bus: Arc<EventBus>,
     // Evidence-driven memory shared by discovery, reasoning, and execution phases
-    pub knowledge: KnowledgeStore,
+    pub knowledge: KnowledgeBase,
 }
 
 impl ScanContext {
@@ -89,7 +89,7 @@ impl ScanContext {
             phase_timeout_secs,
             cancel_token,
             event_bus,
-            knowledge: KnowledgeStore::new(),
+            knowledge: KnowledgeBase::new(),
         }
     }
 
