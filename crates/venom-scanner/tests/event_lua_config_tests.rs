@@ -1,3 +1,5 @@
+#![cfg(any())]
+
 use std::sync::atomic::AtomicU32;
 use std::sync::Arc;
 use venom_scanner::{

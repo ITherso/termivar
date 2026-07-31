@@ -54,7 +54,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Run integration tests
-        run: cargo test --test '*' --verbose
+        run: cargo test --test '*' --all-features --verbose
         env:
           DATABASE_URL: postgres://test:test@localhost:5432/venom_test
           REDIS_URL: redis://localhost:6379

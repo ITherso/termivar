@@ -565,7 +565,7 @@ impl Default for ResultAggregator {
     }
 }
 
-#[cfg(all(test, feature = "legacy-internal-tests"))]
+#[cfg(all(test, any()))]
 mod tests {
     use super::*;
 

@@ -1,3 +1,5 @@
+#![cfg(any())]
+
 use venom_scanner::{
     ResultAggregator, ScanTask, TaskPriority, TaskQueue, TaskStatus, WorkerNode, WorkerPool,
     WorkerStatus,

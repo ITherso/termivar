@@ -48,9 +48,6 @@ monitoring = ["scanning"]
 # Compliance & audit logging
 compliance = ["scanning"]
 
-# Temporarily opt in to pre-refactor unit fixtures that still target legacy models.
-legacy-internal-tests = []
-
 # Threat intelligence feeds & correlation
 threat-intel = ["detection"]
 

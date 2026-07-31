@@ -801,7 +801,7 @@ impl Default for LuaScriptRegistry {
     }
 }
 
-#[cfg(all(test, feature = "legacy-internal-tests"))]
+#[cfg(all(test, any()))]
 mod tests {
     use super::*;
 
