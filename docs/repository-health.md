@@ -7,7 +7,7 @@ This page records enforced repository controls and known gaps. A configured tool
 | CodeQL | Automated for JavaScript/TypeScript | Advanced setup scans `web/`; Rust remains covered by Rust-native and language-agnostic controls |
 | `cargo-deny` | Required | CI checks advisories, licenses, duplicate-policy warnings, and dependency sources |
 | `cargo-audit` | Required | Test and security workflows fail on RustSec advisories |
-| `cargo-fuzz` | Scheduled | Five parser targets run in bounded weekly campaigns; crash artifacts are retained |
+| `cargo-fuzz` | Scheduled + evidenced | Five parser targets run in bounded weekly campaigns; the [first committed baseline](reports/fuzzing/7515b79.md) records 32,500,714 executions and no observed crash |
 | MSRV | Required | Workspace packages declare Rust `1.88`; CI builds that toolchain plus stable, beta, and nightly |
 | SemVer | Documented | Plugin preview policy is enforced at registration; automated public-API baselines start after the first release |
 

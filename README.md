@@ -81,8 +81,8 @@ The workspace map and dependency rules are expanded in [Architecture](docs/archi
 | Integration tests | Automated | Service-backed test job |
 | Coverage | Automated | Tarpaulin report uploaded to Codecov |
 | Compile time and binary size | Automated | Quality Metrics workflow artifact |
-| Criterion microbenchmarks | Partial | Automated suite; endpoint baseline not published |
-| Fuzzing | Scheduled | Five bounded parser campaigns retain crash artifacts |
+| Criterion microbenchmarks | Published microbaseline | CI artifact and committed baseline; endpoint-scale results remain pending |
+| Fuzzing | Scheduled + evidenced | Five bounded parser campaigns publish logs, summaries, and crash artifacts |
 | Mutation testing | Missing | Mutation score is not yet measured |
 | External security audit | Missing | No independent audit has been completed |
 | Performance report | Missing | Controlled CPU, RAM, throughput, and latency report pending |

@@ -1,0 +1,99 @@
+{
+  "schema_version": 1,
+  "captured_at": "2026-07-31",
+  "commit": "7515b79f8ab02a35cd21575ff5171e854d514ecc",
+  "workflow_run": "https://github.com/ITherso/venom/actions/runs/30650839395",
+  "environment": {
+    "runner": "ubuntu-24.04",
+    "rustc": "rustc 1.99.0-nightly (8ab9fdff5 2026-07-30)",
+    "engine": "cargo-fuzz/libFuzzer with AddressSanitizer"
+  },
+  "campaign": {
+    "budget_seconds_per_target": 60,
+    "libfuzzer_reported_seconds_per_target": 61,
+    "total_executions": 32500714,
+    "total_new_units": 32679,
+    "total_corpus_files_after_run": 8396,
+    "total_crash_artifacts": 0,
+    "targets": {
+      "http_parser": {
+        "executions": 19583851,
+        "average_exec_per_sec": 321046,
+        "new_units": 3912,
+        "corpus_files_after_run": 369,
+        "peak_rss_mb": 504,
+        "workflow_step_wall_seconds": 99,
+        "crash_artifacts": 0
+      },
+      "json_parser": {
+        "executions": 5599000,
+        "average_exec_per_sec": 91786,
+        "new_units": 7795,
+        "corpus_files_after_run": 1435,
+        "peak_rss_mb": 570,
+        "workflow_step_wall_seconds": 91,
+        "crash_artifacts": 0
+      },
+      "yaml_parser": {
+        "executions": 1569703,
+        "average_exec_per_sec": 25732,
+        "new_units": 7330,
+        "corpus_files_after_run": 2747,
+        "peak_rss_mb": 283,
+        "workflow_step_wall_seconds": 105,
+        "crash_artifacts": 0
+      },
+      "xml_parser": {
+        "executions": 3919957,
+        "average_exec_per_sec": 64261,
+        "new_units": 5389,
+        "corpus_files_after_run": 778,
+        "peak_rss_mb": 553,
+        "workflow_step_wall_seconds": 90,
+        "crash_artifacts": 0
+      },
+      "text_parser": {
+        "executions": 1828203,
+        "average_exec_per_sec": 29970,
+        "new_units": 8253,
+        "corpus_files_after_run": 3067,
+        "peak_rss_mb": 564,
+        "workflow_step_wall_seconds": 92,
+        "crash_artifacts": 0
+      }
+    }
+  },
+  "artifacts": [
+    {
+      "id": 8801344455,
+      "target": "http_parser",
+      "sha256": "906a29743b30f62ec93a7bd5c8a8a3c3f4134ebf0d25b64562e369953a38fa52"
+    },
+    {
+      "id": 8801341227,
+      "target": "json_parser",
+      "sha256": "9833c915e47eac952dfce70a2af039e3204b146ae0a0cfa76f0a7441a6ee3b5a"
+    },
+    {
+      "id": 8801349865,
+      "target": "yaml_parser",
+      "sha256": "8f21f49ca30a828c60267a8f60fd23419ba35b04b251d0e9902bff3a611f2abc"
+    },
+    {
+      "id": 8801341089,
+      "target": "xml_parser",
+      "sha256": "979a2f714528d730132d8b144aafefb2b5390a6daa75c4d237f0b2d0bd896282"
+    },
+    {
+      "id": 8801373480,
+      "target": "text_parser",
+      "sha256": "6fd3aa2cf225669608390098308afaf5d7edc43cc5545039d5cf6f5549b4e449"
+    }
+  ],
+  "remediation": {
+    "failed_pre_campaign_run": "https://github.com/ITherso/venom/actions/runs/30650512500",
+    "root_cause": "Workspace release LTO conflicted with nightly sanitizer coverage at link time.",
+    "fix": "Disable release LTO and stripping only in the fuzz campaign step."
+  },
+  "limitations": "No crash in a bounded run is a regression signal, not proof of parser safety. Execution rates are harness rates on isolated hosted runners, not application throughput."
+}

@@ -26,6 +26,7 @@ nav:
       - Quality metrics: quality-metrics.md
       - Profiling: profiling.md
       - Fuzzing: fuzzing.md
+      - Fuzz baseline 7515b79: reports/fuzzing/7515b79.md
       - Code quality: CODE_QUALITY.md
       - Repository health: repository-health.md
       - Observability: OBSERVABILITY.md

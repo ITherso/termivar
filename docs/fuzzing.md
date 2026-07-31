@@ -29,3 +29,5 @@ Fuzz harnesses should have no network, filesystem, clock, or random dependencies
 ## Published reports
 
 Reports committed under `docs/reports/fuzzing/` record the exact commit, bounded runtime, target outcomes, corpus counts, and workflow provenance. A report is published only after all target jobs complete; absence of a crash in a bounded run is not a safety claim.
+
+- [`7515b79`: five 60-second campaigns, 32,500,714 executions, no observed crashes](reports/fuzzing/7515b79.md)
