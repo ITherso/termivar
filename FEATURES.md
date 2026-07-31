@@ -17,6 +17,7 @@ This document is the capability map for Venom `0.9.0-alpha`. It records what exi
 | --- | --- | --- |
 | Core contracts | Beta | Shared events, findings, configuration, models, and errors in `venom-core` |
 | Scanner pipeline | Beta | Ordered phases, cancellation, aggregation, and reporting in `venom-scanner` |
+| Scanner SDK | Preview | Application-defined phases composed through `ScannerSdk` and a generated starter |
 | CLI | Beta | Composition root for scans, API hosting, and proxy commands |
 | HTTP API | Beta | Application transport over core and scanner contracts |
 | Proxy | Experimental | HTTP/TLS interception for explicitly authorized environments |
@@ -49,7 +50,7 @@ This document is the capability map for Venom `0.9.0-alpha`. It records what exi
 | Source coverage | Automated | Tarpaulin output is uploaded to Codecov |
 | Criterion microbenchmarks | Automated | Artifacts are produced; historical reports are not yet published |
 | Compile time, binary size, and peak memory | Automated | Runner-local regression signals are stored as workflow artifacts |
-| Fuzzing | Partial | Parser targets exist; a continuous bounded campaign is pending |
+| Fuzzing | Scheduled | Five parser targets run in bounded weekly campaigns with crash artifacts |
 | Mutation score | Missing | No automated mutation baseline has been published |
 | Independent security audit | Missing | No external audit has been completed |
 | Stable public API | Preview | Compatibility is not guaranteed before a stable release |

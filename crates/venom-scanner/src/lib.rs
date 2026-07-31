@@ -30,6 +30,9 @@ pub mod phases;
 pub mod runner;
 
 #[cfg(feature = "scanning")]
+pub mod sdk;
+
+#[cfg(feature = "scanning")]
 pub mod waf;
 
 #[cfg(feature = "scanning")]
@@ -119,6 +122,9 @@ pub use metrics::{MetricsCollector, MetricsSummary, PhaseMetrics};
 pub use runner::ScanRunner;
 
 #[cfg(feature = "scanning")]
+pub use sdk::{ScanReport, ScannerBuilder, ScannerSdk};
+
+#[cfg(feature = "scanning")]
 pub use waf::{EvisionTechnique, PayloadEncoder, WafDetector, WafProduct};
 
 #[cfg(feature = "scanning")]
@@ -203,7 +209,7 @@ pub use threat_intelligence::{
 #[cfg(feature = "plugins")]
 pub use plugin::{
     Plugin, PluginCategory, PluginConfig, PluginError, PluginExecutionResult, PluginMetadata,
-    PluginRegistry,
+    PluginRegistry, PLUGIN_API_VERSION,
 };
 
 #[cfg(feature = "plugins")]

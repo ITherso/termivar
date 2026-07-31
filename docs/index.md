@@ -8,10 +8,14 @@ Venom is a modular Rust-based penetration testing framework focused on research 
 - [Architecture](architecture.md)
 - [Editable Draw.io architecture source](architecture.drawio)
 - [Scanner](scanner.md)
+- [Scanner SDK](sdk.md)
 - [Feature lifecycle](https://github.com/ITherso/venom/blob/main/FEATURES.md)
+- [Architecture decisions](adr/README.md)
+- [Repository health](repository-health.md)
 - [Rust API documentation](https://itherso.github.io/venom/rust/venom_scanner/)
 - [Quality metrics](quality-metrics.md)
 - [Security policy](https://github.com/ITherso/venom/blob/main/SECURITY.md)
 - [Contributing](CONTRIBUTING.md)
+- [Code of Conduct](https://github.com/ITherso/venom/blob/main/CODE_OF_CONDUCT.md)
 
 Use the navigation to explore individual component boundaries, testing, benchmarks, profiling, fuzzing, and release policy. The repository [README](https://github.com/ITherso/venom#readme) remains the concise project entry point.

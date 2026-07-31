@@ -4,6 +4,8 @@ Venom uses Criterion for repeatable microbenchmarks. Run:
 
 ```bash
 cargo bench -p venom-scanner --bench scanner_benchmarks
+# or
+cargo xtask benchmark
 ```
 
 The active suite measures cache access, WAF header detection, and payload encoding. Criterion stores reports under `target/criterion/`.

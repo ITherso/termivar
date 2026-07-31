@@ -6,6 +6,11 @@ on:
       - "README.md"
       - "FEATURES.md"
       - "LICENSE"
+      - "CONTRIBUTING.md"
+      - "CODE_OF_CONDUCT.md"
+      - "deny.toml"
+      - ".cargo/config.toml"
+      - "xtask/**"
       - "docs/**"
       - "mkdocs.yml"
       - "requirements-docs.txt"
@@ -21,6 +26,11 @@ on:
       - "README.md"
       - "FEATURES.md"
       - "LICENSE"
+      - "CONTRIBUTING.md"
+      - "CODE_OF_CONDUCT.md"
+      - "deny.toml"
+      - ".cargo/config.toml"
+      - "xtask/**"
       - "docs/**"
       - "mkdocs.yml"
       - "requirements-docs.txt"
@@ -45,8 +55,8 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
           cache: pip
@@ -64,7 +74,7 @@ jobs:
         if: github.event_name != 'pull_request'
         with:
           enablement: true
-      - uses: actions/upload-pages-artifact@v5
+      - uses: actions/upload-pages-artifact@v3
         if: github.event_name != 'pull_request'
         with:
           path: site
@@ -79,4 +89,4 @@ jobs:
     steps:
       - name: Deploy to GitHub Pages
         id: deployment
-        uses: actions/deploy-pages@v5
+        uses: actions/deploy-pages@v4

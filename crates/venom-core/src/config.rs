@@ -46,11 +46,12 @@ pub struct Config {
 }
 
 /// Scan intensity levels
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ScanIntensity {
     #[serde(rename = "light")]
     Light,
     #[serde(rename = "normal")]
+    #[default]
     Normal,
     #[serde(rename = "aggressive")]
     Aggressive,
@@ -66,12 +67,6 @@ impl ScanIntensity {
             ScanIntensity::Aggressive => "aggressive",
             ScanIntensity::Stealth => "stealth",
         }
-    }
-}
-
-impl Default for ScanIntensity {
-    fn default() -> Self {
-        ScanIntensity::Normal
     }
 }
 
@@ -114,12 +109,14 @@ impl Config {
         }
 
         // Basic URL validation (should start with http:// or https://)
-        if !self.target.starts_with("http://") && !self.target.starts_with("https://") {
-            if !self.target.contains(':') && !self.target.contains('.') {
-                return Err(ConfigError::InvalidTarget(
-                    "Must be valid URL or IP address".to_string(),
-                ));
-            }
+        if !self.target.starts_with("http://")
+            && !self.target.starts_with("https://")
+            && !self.target.contains(':')
+            && !self.target.contains('.')
+        {
+            return Err(ConfigError::InvalidTarget(
+                "Must be valid URL or IP address".to_string(),
+            ));
         }
 
         // Timeout validation

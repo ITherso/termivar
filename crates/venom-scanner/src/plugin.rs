@@ -8,6 +8,13 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::Instant;
 
+/// Source-level plugin API version supported by this host.
+///
+/// During Preview, host and plugin versions must share the same major and
+/// minor components. See `docs/plugin-api-policy.md` for the compatibility
+/// policy.
+pub const PLUGIN_API_VERSION: &str = "0.1.0";
+
 /// Extension contract for custom scanner plugins.
 ///
 /// The registry only knows this trait; it never inspects a plugin's concrete
@@ -52,6 +59,14 @@ use std::time::Instant;
 /// ```
 #[async_trait::async_trait]
 pub trait Plugin: Send + Sync {
+    /// Plugin API line targeted by this implementation.
+    ///
+    /// The default tracks the API exposed by the dependency used to compile
+    /// the plugin. Override this only for compatibility testing or an adapter.
+    fn api_version(&self) -> &str {
+        PLUGIN_API_VERSION
+    }
+
     /// Plugin identifier
     fn id(&self) -> &str;
 
@@ -88,6 +103,7 @@ pub trait Plugin: Send + Sync {
 }
 
 /// Plugin vulnerability categories
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum PluginCategory {
     #[serde(rename = "xss")]
@@ -124,6 +140,7 @@ impl PluginCategory {
 }
 
 /// Plugin errors
+#[non_exhaustive]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum PluginError {
     #[serde(rename = "execution_failed")]
@@ -136,6 +153,8 @@ pub enum PluginError {
     Timeout,
     #[serde(rename = "disabled")]
     Disabled,
+    #[serde(rename = "incompatible_api_version")]
+    IncompatibleApiVersion { expected: String, actual: String },
 }
 
 impl std::fmt::Display for PluginError {
@@ -146,6 +165,11 @@ impl std::fmt::Display for PluginError {
             PluginError::InvalidConfig(e) => write!(f, "Invalid config: {}", e),
             PluginError::Timeout => write!(f, "Plugin execution timeout"),
             PluginError::Disabled => write!(f, "Plugin is disabled"),
+            PluginError::IncompatibleApiVersion { expected, actual } => write!(
+                f,
+                "Incompatible plugin API version: expected {}, received {}",
+                expected, actual
+            ),
         }
     }
 }
@@ -153,6 +177,7 @@ impl std::fmt::Display for PluginError {
 impl std::error::Error for PluginError {}
 
 /// Plugin configuration
+#[non_exhaustive]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PluginConfig {
     pub timeout_ms: u64,
@@ -175,6 +200,7 @@ impl Default for PluginConfig {
 }
 
 /// Plugin metadata
+#[non_exhaustive]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PluginMetadata {
     pub id: String,
@@ -191,6 +217,7 @@ pub struct PluginMetadata {
 }
 
 /// Plugin execution result
+#[non_exhaustive]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PluginExecutionResult {
     pub plugin_id: String,
@@ -219,6 +246,13 @@ impl PluginRegistry {
 
     /// Registers plugin
     pub fn register(&self, plugin: Arc<dyn Plugin>) -> Result<(), PluginError> {
+        if !plugin_api_compatible(plugin.api_version()) {
+            return Err(PluginError::IncompatibleApiVersion {
+                expected: PLUGIN_API_VERSION.to_string(),
+                actual: plugin.api_version().to_string(),
+            });
+        }
+
         plugin
             .validate()
             .map_err(|e| PluginError::InvalidConfig(e))?;
@@ -365,6 +399,15 @@ impl Default for PluginRegistry {
     }
 }
 
+fn plugin_api_compatible(actual: &str) -> bool {
+    fn api_line(version: &str) -> Option<(&str, &str)> {
+        let mut components = version.split('.');
+        Some((components.next()?, components.next()?))
+    }
+
+    api_line(actual) == api_line(PLUGIN_API_VERSION)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -424,6 +467,15 @@ mod tests {
         assert_eq!(PluginCategory::XSS.as_str(), "xss");
         assert_eq!(PluginCategory::SQLi.as_str(), "sqli");
         assert_eq!(PluginCategory::LFI.as_str(), "lfi");
+    }
+
+    #[test]
+    fn test_plugin_api_compatibility() {
+        assert!(plugin_api_compatible("0.1.0"));
+        assert!(plugin_api_compatible("0.1.9"));
+        assert!(!plugin_api_compatible("0.2.0"));
+        assert!(!plugin_api_compatible("1.0.0"));
+        assert!(!plugin_api_compatible("invalid"));
     }
 
     #[test]

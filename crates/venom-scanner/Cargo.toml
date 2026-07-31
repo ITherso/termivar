@@ -2,11 +2,12 @@
 name = "venom-scanner"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 authors.workspace = true
 license.workspace = true
 
 [dependencies]
-venom-core = { path = "../venom-core" }
+venom-core = { version = "0.9.0-alpha", path = "../venom-core" }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
 reqwest = { workspace = true, features = ["json", "cookies"] }

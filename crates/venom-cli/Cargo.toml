@@ -2,6 +2,7 @@
 name = "venom-cli"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 authors.workspace = true
 license.workspace = true
 
@@ -10,10 +11,10 @@ name = "venom"
 path = "src/main.rs"
 
 [dependencies]
-venom-core = { path = "../venom-core" }
-venom-scanner = { path = "../venom-scanner" }
-venom-api = { path = "../venom-api" }
-venom-proxy = { path = "../venom-proxy" }
+venom-core = { version = "0.9.0-alpha", path = "../venom-core" }
+venom-scanner = { version = "0.9.0-alpha", path = "../venom-scanner" }
+venom-api = { version = "0.9.0-alpha", path = "../venom-api" }
+venom-proxy = { version = "0.9.0-alpha", path = "../venom-proxy" }
 tokio = { workspace = true }
 reqwest = { workspace = true }
 url = "2.5"

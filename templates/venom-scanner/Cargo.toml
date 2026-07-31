@@ -5,10 +5,9 @@ edition = "2021"
 rust-version = "1.88"
 authors = ["{{ authors }}"]
 license = "MIT"
+description = "{{ scanner_description }}"
 
 [dependencies]
 async-trait = "0.1"
-venom-scanner = { git = "https://github.com/ITherso/venom", branch = "main", default-features = false, features = ["plugins"] }
-
-[dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+venom-scanner = { git = "https://github.com/ITherso/venom", branch = "main", default-features = false, features = ["scanning"] }

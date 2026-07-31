@@ -63,7 +63,7 @@ jobs:
     name: Plugin Template
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Render and test generated plugin
@@ -84,6 +84,30 @@ jobs:
             "s#venom-scanner = .*#venom-scanner = { path = \"${GITHUB_WORKSPACE}/crates/venom-scanner\", default-features = false, features = [\"plugins\"] }#" \
             "$plugin_dir/Cargo.toml"
           cargo test --manifest-path "$plugin_dir/Cargo.toml"
+
+  scanner-template:
+    name: Scanner SDK Template
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Render and test generated scanner
+        shell: bash
+        run: |
+          set -euo pipefail
+          scanner_dir=$(mktemp -d)
+          cp -R templates/venom-scanner/. "$scanner_dir/"
+          sed -i \
+            -e 's/{{ project-name }}/venom-scanner-smoke/g' \
+            -e 's/{{ authors }}/Venom CI/g' \
+            -e 's/{{ scanner_description }}/CI scanner SDK smoke project/g' \
+            "$scanner_dir/Cargo.toml" \
+            "$scanner_dir/README.md"
+          sed -i \
+            "s#venom-scanner = .*#venom-scanner = { path = \"${GITHUB_WORKSPACE}/crates/venom-scanner\", default-features = false, features = [\"scanning\"] }#" \
+            "$scanner_dir/Cargo.toml"
+          cargo test --manifest-path "$scanner_dir/Cargo.toml"
 
   security-tests:
     name: Security Tests
@@ -121,7 +145,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        rust: [stable, beta, nightly]
+        rust: ["1.88.0", stable, beta, nightly]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master

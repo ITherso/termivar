@@ -1,0 +1,5 @@
+[template]
+cargo_generate_version = ">=0.23.0"
+
+[placeholders]
+scanner_description = { type = "string", prompt = "Scanner description", default = "A custom scanner built with the Venom SDK" }

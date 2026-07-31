@@ -13,6 +13,9 @@ All notable changes to Venom are recorded here. Releases use the categories from
 - Automated compile-time, binary-size, peak-memory, and Criterion workflow artifacts.
 - Published workspace API documentation and a conservative release-readiness matrix.
 - A dedicated feature-lifecycle reference, repository map, design principles, project badges, and explicit MIT license file.
+- Root contribution and conduct policies, architecture decision records, and a repository-health reference.
+- A `ScannerSdk` composition API, generated scanner starter, and `cargo xtask` maintenance commands.
+- CodeQL web analysis, cargo-deny policy, scheduled parser fuzzing, and Rust 1.88 MSRV enforcement.
 
 ### Changed
 
@@ -22,6 +25,8 @@ All notable changes to Venom are recorded here. Releases use the categories from
 - Moved shared event and finding contracts into `venom-core` while preserving scanner re-exports.
 - Documented the plugin system as a source-level preview instead of implying dynamic discovery.
 - Moved the editable Draw.io architecture source directly under `docs/` for discoverability.
+- Made plugin API compatibility explicit with version negotiation and non-exhaustive public types.
+- Added publishable version requirements to internal crate dependencies and removed the unused, unmaintained `rustls-pemfile` dependency.
 
 ### Fixed
 

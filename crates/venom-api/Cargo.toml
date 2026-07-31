@@ -2,12 +2,13 @@
 name = "venom-api"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 authors.workspace = true
 license.workspace = true
 
 [dependencies]
-venom-core = { path = "../venom-core" }
-venom-scanner = { path = "../venom-scanner" }
+venom-core = { version = "0.9.0-alpha", path = "../venom-core" }
+venom-scanner = { version = "0.9.0-alpha", path = "../venom-scanner" }
 axum = { workspace = true }
 tokio = { workspace = true }
 tower = { workspace = true }

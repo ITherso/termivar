@@ -14,6 +14,8 @@ The editable diagrams.net source is [architecture.drawio](architecture.drawio). 
 | `venom-api` | HTTP application transport | `venom-core`, `venom-scanner` |
 | `venom-cli` | Composition root and command routing | All application crates |
 
+`xtask` is repository tooling rather than a runtime layer. It may orchestrate workspace commands but application crates must not depend on it.
+
 ```mermaid
 flowchart TD
     CLI[venom-cli] --> Scanner[venom-scanner]
