@@ -1,6 +1,6 @@
 use venom_scanner::{
-    RateLimitStrategy, RateLimitPolicy, ApiQuota, RateLimiter, QuotaManager, RouteConfig,
-    ApiGateway,
+    ApiGateway, ApiQuota, QuotaManager, RateLimitPolicy, RateLimitStrategy, RateLimiter,
+    RouteConfig,
 };
 
 #[test]

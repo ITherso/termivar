@@ -14,7 +14,7 @@
 //! - Mako: `sys.modules['os'].system('id')`
 //! - FreeMarker: `freemarker.template.utility.Execute`
 
-use crate::{ScanFinding, ScanPhase, context::ScanContext, error::ScannerError};
+use crate::{context::ScanContext, error::ScannerError, ScanFinding, ScanPhase};
 use async_trait::async_trait;
 use reqwest::StatusCode;
 use url::Url;
@@ -24,6 +24,7 @@ use url::Url;
 pub struct SstiScanner;
 
 #[derive(Debug, Clone, PartialEq)]
+#[allow(dead_code)]
 enum TemplateEngine {
     Jinja2,
     Twig,
@@ -37,11 +38,11 @@ impl SstiScanner {
     /// Diagnostic payloads to identify template engine via mathematical expressions
     fn diagnostic_payloads() -> Vec<(&'static str, &'static str)> {
         vec![
-            ("{{7*7}}", "jinja2_twig_mako"),         // All return 49
-            ("{{7*'7'}}", "jinja2_specific"),        // Jinja2: 7777777, others: error
-            ("${7*7}", "mako"),                       // Mako returns 49
-            ("<#assign x=7*7>${x}", "freemarker"),   // FreeMarker returns 49
-            ("{{7*7}}", "tornado"),                   // Tornado returns 49
+            ("{{7*7}}", "jinja2_twig_mako"),       // All return 49
+            ("{{7*'7'}}", "jinja2_specific"),      // Jinja2: 7777777, others: error
+            ("${7*7}", "mako"),                    // Mako returns 49
+            ("<#assign x=7*7>${x}", "freemarker"), // FreeMarker returns 49
+            ("{{7*7}}", "tornado"),                // Tornado returns 49
         ]
     }
 
@@ -134,7 +135,8 @@ impl ScanPhase for SstiScanner {
                                         let engine = Self::detect_engine(&body);
 
                                         if engine != TemplateEngine::Unknown {
-                                            let exploit_payload = Self::generate_exploit_payload(engine.clone());
+                                            let exploit_payload =
+                                                Self::generate_exploit_payload(engine.clone());
 
                                             findings.push(ScanFinding {
                                                 phase: self.phase_number(),
@@ -158,8 +160,8 @@ impl ScanPhase for SstiScanner {
                                         }
                                     }
                                 }
-                            }
-                            _ => {}
+                            },
+                            _ => {},
                         }
                     }
                 }

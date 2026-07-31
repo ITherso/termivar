@@ -45,18 +45,18 @@ impl StrategySelector {
                 strategies.push(AdaptationStrategy::IncreaseEncoding);
                 strategies.push(AdaptationStrategy::CommentInjection);
                 strategies.push(AdaptationStrategy::AddDecoys);
-            }
+            },
             Some(DetectionPattern::RateLimiting) => {
                 strategies.push(AdaptationStrategy::AddDelay);
                 strategies.push(AdaptationStrategy::ChangeMethod);
-            }
+            },
             Some(DetectionPattern::ContentFiltering) => {
                 strategies.push(AdaptationStrategy::CaseVariation);
                 strategies.push(AdaptationStrategy::ReducePayload);
-            }
+            },
             None => {
                 strategies.push(AdaptationStrategy::ParameterPollution);
-            }
+            },
         }
 
         strategies
@@ -69,7 +69,8 @@ mod tests {
 
     #[test]
     fn test_recommend_for_status_blocking() {
-        let strategies = StrategySelector::recommend(Some(DetectionPattern::StatusCodeBlocking(403)));
+        let strategies =
+            StrategySelector::recommend(Some(DetectionPattern::StatusCodeBlocking(403)));
         assert!(strategies.contains(&AdaptationStrategy::IncreaseEncoding));
         assert!(strategies.contains(&AdaptationStrategy::CommentInjection));
         assert!(strategies.contains(&AdaptationStrategy::AddDecoys));

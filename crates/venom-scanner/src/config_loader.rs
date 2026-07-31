@@ -5,7 +5,6 @@
 use crate::config::ScanIntensity;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::path::PathBuf;
 
 /// Scan profile configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -48,10 +47,7 @@ impl ScanProfile {
                 "compliance_check".to_string(),
                 "risk_assessment".to_string(),
             ],
-            event_subscriptions: vec![
-                "finding_found".to_string(),
-                "scan_completed".to_string(),
-            ],
+            event_subscriptions: vec!["finding_found".to_string(), "scan_completed".to_string()],
             options: {
                 let mut opts = HashMap::new();
                 opts.insert("report_format".to_string(), "pdf".to_string());
@@ -75,14 +71,8 @@ impl ScanProfile {
                 "xss_plugin".to_string(),
                 "ssrf_plugin".to_string(),
             ],
-            lua_scripts_enabled: vec![
-                "cloud_config_check".to_string(),
-                "api_security".to_string(),
-            ],
-            event_subscriptions: vec![
-                "finding_found".to_string(),
-                "worker_finished".to_string(),
-            ],
+            lua_scripts_enabled: vec!["cloud_config_check".to_string(), "api_security".to_string()],
+            event_subscriptions: vec!["finding_found".to_string(), "worker_finished".to_string()],
             options: {
                 let mut opts = HashMap::new();
                 opts.insert("aws_detection".to_string(), "true".to_string());
@@ -110,10 +100,7 @@ impl ScanProfile {
                 "ssrf_plugin".to_string(),
                 "ssti_plugin".to_string(),
             ],
-            lua_scripts_enabled: vec![
-                "aggressive_scan".to_string(),
-                "waf_bypass".to_string(),
-            ],
+            lua_scripts_enabled: vec!["aggressive_scan".to_string(), "waf_bypass".to_string()],
             event_subscriptions: vec![
                 "finding_found".to_string(),
                 "worker_finished".to_string(),
@@ -138,10 +125,7 @@ impl ScanProfile {
             rate_limit_rps: 5,
             concurrent_workers: 2,
             plugins_enabled: vec![],
-            lua_scripts_enabled: vec![
-                "passive_recon".to_string(),
-                "header_analysis".to_string(),
-            ],
+            lua_scripts_enabled: vec!["passive_recon".to_string(), "header_analysis".to_string()],
             event_subscriptions: vec!["finding_found".to_string()],
             options: {
                 let mut opts = HashMap::new();
@@ -243,13 +227,17 @@ impl ConfigLoader {
 
     /// Lists all available profiles
     pub fn list_profiles(&self) -> Vec<String> {
-        self.profiles.iter().map(|ref_multi| ref_multi.key().clone()).collect()
+        self.profiles
+            .iter()
+            .map(|ref_multi| ref_multi.key().clone())
+            .collect()
     }
 
     /// Gets currently active profile
     pub fn get_active_profile(&self) -> ScanProfile {
         let name = self.active_profile.lock().unwrap().clone();
-        self.get_profile(&name).unwrap_or_else(|| ScanProfile::enterprise())
+        self.get_profile(&name)
+            .unwrap_or_else(|| ScanProfile::enterprise())
     }
 
     /// Sets active profile
@@ -269,9 +257,11 @@ impl ConfigLoader {
 
     /// Merges profiles (overlay custom on base)
     pub fn merge_profiles(&self, base: &str, overlay: &str) -> Result<ScanProfile, String> {
-        let base_profile = self.get_profile(base)
+        let base_profile = self
+            .get_profile(base)
             .ok_or_else(|| format!("Base profile '{}' not found", base))?;
-        let overlay_profile = self.get_profile(overlay)
+        let overlay_profile = self
+            .get_profile(overlay)
             .ok_or_else(|| format!("Overlay profile '{}' not found", overlay))?;
 
         let mut merged = base_profile;
@@ -279,8 +269,12 @@ impl ConfigLoader {
         merged.timeout_secs = overlay_profile.timeout_secs;
         merged.rate_limit_rps = overlay_profile.rate_limit_rps;
         merged.concurrent_workers = overlay_profile.concurrent_workers;
-        merged.plugins_enabled.extend(overlay_profile.plugins_enabled);
-        merged.lua_scripts_enabled.extend(overlay_profile.lua_scripts_enabled);
+        merged
+            .plugins_enabled
+            .extend(overlay_profile.plugins_enabled);
+        merged
+            .lua_scripts_enabled
+            .extend(overlay_profile.lua_scripts_enabled);
         merged.options.extend(overlay_profile.options);
 
         Ok(merged)
@@ -436,14 +430,15 @@ mod tests {
     fn test_config_loader_merge_profiles() {
         let loader = ConfigLoader::new();
 
-        let custom = ScanProfile::custom("custom", ScanIntensity::Normal)
-            .add_plugin("test_plugin");
+        let custom = ScanProfile::custom("custom", ScanIntensity::Normal).add_plugin("test_plugin");
         loader.register_profile(custom);
 
         let merged = loader.merge_profiles("enterprise", "custom");
         assert!(merged.is_ok());
 
         let merged_profile = merged.unwrap();
-        assert!(merged_profile.plugins_enabled.contains(&"test_plugin".to_string()));
+        assert!(merged_profile
+            .plugins_enabled
+            .contains(&"test_plugin".to_string()));
     }
 }

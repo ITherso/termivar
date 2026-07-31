@@ -53,7 +53,10 @@ impl Plugin for XSSPlugin {
                     phase: 3,
                     module_name: "XSS Detector".to_string(),
                     severity: "HIGH".to_string(),
-                    description: format!("XSS vulnerability detected with payload: {}", test_payload),
+                    description: format!(
+                        "XSS vulnerability detected with payload: {}",
+                        test_payload
+                    ),
                     evidence: format!("Target: {}, Payload: {}", target, test_payload),
                 });
             }
@@ -96,7 +99,10 @@ mod tests {
     #[tokio::test]
     async fn test_xss_payload_detection() {
         let plugin = XSSPlugin;
-        let result = plugin.execute("http://target.com", "<script>alert('xss')</script>").await.unwrap();
+        let result = plugin
+            .execute("http://target.com", "<script>alert('xss')</script>")
+            .await
+            .unwrap();
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].severity, "HIGH");
     }

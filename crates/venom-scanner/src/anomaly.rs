@@ -190,13 +190,7 @@ impl Confidence {
     ///
     /// Confidence = how sure we are about the anomaly
     /// Based on: number of signals, agreement between them, and score strength
-    pub fn from_signals(
-        base_score: f32,
-        timing: f32,
-        size: f32,
-        error: f32,
-        status: f32,
-    ) -> Self {
+    pub fn from_signals(base_score: f32, timing: f32, size: f32, error: f32, status: f32) -> Self {
         let scores = [timing, size, error, status];
 
         // Count how many signals triggered (>0.0)
@@ -227,7 +221,7 @@ impl Confidence {
             let spread = (max_fired - min_fired) / max_fired;
             (1.0 - spread).max(0.0)
         } else if fired.len() == 1 {
-            1.0  // Single fired signal "agrees with itself"
+            1.0 // Single fired signal "agrees with itself"
         } else {
             0.0
         };
@@ -236,10 +230,10 @@ impl Confidence {
         // More signals = higher confidence (less likely to be noise)
         let consistency = match signal_count {
             0 => 0.0,
-            1 => 0.4,  // Single signal could be noise
-            2 => 0.7,  // Two signals, more reliable
-            3 => 0.9,  // Three signals, quite reliable
-            _ => 1.0,  // All four signals all agree = very reliable
+            1 => 0.4, // Single signal could be noise
+            2 => 0.7, // Two signals, more reliable
+            3 => 0.9, // Three signals, quite reliable
+            _ => 1.0, // All four signals all agree = very reliable
         };
 
         // Overall confidence formula
@@ -492,10 +486,7 @@ impl AnomalyDetector {
         }
 
         let median = Self::median(values);
-        let mut deviations: Vec<f32> = values
-            .iter()
-            .map(|v| (v - median).abs())
-            .collect();
+        let mut deviations: Vec<f32> = values.iter().map(|v| (v - median).abs()).collect();
 
         deviations.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
         Self::median(&deviations)
@@ -517,7 +508,11 @@ impl AnomalyDetector {
         let mad_time = Self::mad(&times);
 
         // Calculate size statistics with median
-        let mut sizes: Vec<f32> = self.responses.iter().map(|r| r.content_length as f32).collect();
+        let mut sizes: Vec<f32> = self
+            .responses
+            .iter()
+            .map(|r| r.content_length as f32)
+            .collect();
         sizes.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
 
         let median_size = Self::median(&sizes);
@@ -525,22 +520,23 @@ impl AnomalyDetector {
 
         // Legacy: still calculate mean/stddev for backward compatibility
         let avg_time = times.iter().sum::<f32>() / count;
-        let variance_time = times.iter()
-            .map(|t| (t - avg_time).powi(2))
-            .sum::<f32>() / count;
+        let variance_time = times.iter().map(|t| (t - avg_time).powi(2)).sum::<f32>() / count;
         let std_dev_time = variance_time.sqrt();
 
         let avg_size = sizes.iter().sum::<f32>() / count;
-        let variance_size = sizes.iter()
-            .map(|s| (s - avg_size).powi(2))
-            .sum::<f32>() / count;
+        let variance_size = sizes.iter().map(|s| (s - avg_size).powi(2)).sum::<f32>() / count;
         let std_dev_size = variance_size.sqrt();
 
         // Find most common status code
-        let expected_status = self.responses.iter()
+        let expected_status = self
+            .responses
+            .iter()
             .map(|r| r.status)
             .max_by_key(|status| {
-                self.responses.iter().filter(|r| r.status == *status).count()
+                self.responses
+                    .iter()
+                    .filter(|r| r.status == *status)
+                    .count()
             })
             .unwrap_or(200);
 
@@ -571,17 +567,25 @@ impl AnomalyDetector {
                     status_anomaly: 0.0,
                     combined_score: 0.0,
                     confidence,
-                }
-            }
+                };
+            },
         };
 
         let timing_anomaly = self.calculate_timing_anomaly(response, baseline);
         let size_anomaly = self.calculate_size_anomaly(response, baseline);
         // P1: Use regex matcher for flexible error detection
-        let error_anomaly = if matcher.contains_error(&response.body) { 0.5 } else { 0.0 };
+        let error_anomaly = if matcher.contains_error(&response.body) {
+            0.5
+        } else {
+            0.0
+        };
         // P1: Use status whitelist instead of single expected_status
         // Allows redirects (301, 302, 307, 308) and other normal codes
-        let status_anomaly = if !self.status_whitelist.is_normal(response.status) { 0.3 } else { 0.0 };
+        let status_anomaly = if !self.status_whitelist.is_normal(response.status) {
+            0.3
+        } else {
+            0.0
+        };
 
         let combined_score = (timing_anomaly * 0.3
             + size_anomaly * 0.3
@@ -590,7 +594,13 @@ impl AnomalyDetector {
             .min(1.0);
 
         // P1: Calculate confidence based on signal agreement
-        let confidence = Confidence::from_signals(combined_score, timing_anomaly, size_anomaly, error_anomaly, status_anomaly);
+        let confidence = Confidence::from_signals(
+            combined_score,
+            timing_anomaly,
+            size_anomaly,
+            error_anomaly,
+            status_anomaly,
+        );
 
         AnomalyScore {
             timing_anomaly,
@@ -645,13 +655,22 @@ impl AnomalyDetector {
     }
 
     /// Detects if response should trigger investigation (P1 - Regex matcher support)
-    pub fn is_anomalous(&self, response: &ResponseData, matcher: &ErrorKeywordMatcher, threshold: f32) -> bool {
+    pub fn is_anomalous(
+        &self,
+        response: &ResponseData,
+        matcher: &ErrorKeywordMatcher,
+        threshold: f32,
+    ) -> bool {
         let score = self.analyze(response, matcher);
         score.combined_score > threshold
     }
 
     /// Gets severity classification of anomaly (P1 - Regex matcher support)
-    pub fn classify_severity(&self, response: &ResponseData, matcher: &ErrorKeywordMatcher) -> SeverityClass {
+    pub fn classify_severity(
+        &self,
+        response: &ResponseData,
+        matcher: &ErrorKeywordMatcher,
+    ) -> SeverityClass {
         let score = self.analyze(response, matcher);
 
         match score.combined_score {
@@ -896,7 +915,7 @@ mod tests {
     fn test_median_with_even_count() {
         let values = vec![100.0, 200.0, 300.0, 400.0];
         let median = AnomalyDetector::median(&values);
-        assert_eq!(median, 250.0);  // (200 + 300) / 2
+        assert_eq!(median, 250.0); // (200 + 300) / 2
     }
 
     #[test]
@@ -935,11 +954,17 @@ mod tests {
         assert_eq!(baseline.median_time, 100.0, "Median should ignore outlier");
 
         // With mean: pulled up significantly (~170ms)
-        assert!(baseline.avg_time > 150.0, "Mean should be affected by outlier");
+        assert!(
+            baseline.avg_time > 150.0,
+            "Mean should be affected by outlier"
+        );
         assert!(baseline.avg_time < 200.0);
 
         // MAD should be low (just the spread in normal responses)
-        assert!(baseline.mad_time < 10.0, "MAD should be small for normal-only spread");
+        assert!(
+            baseline.mad_time < 10.0,
+            "MAD should be small for normal-only spread"
+        );
     }
 
     #[test]
@@ -951,7 +976,7 @@ mod tests {
             detector.record_response(ResponseData {
                 status: 200,
                 content_length: 1000,
-                elapsed_ms: 90 + i as u64 * 5,  // 90, 95, 100, 105, 110
+                elapsed_ms: 90 + i as u64 * 5, // 90, 95, 100, 105, 110
                 body: String::new(),
             });
         }
@@ -965,7 +990,10 @@ mod tests {
         };
 
         let score = detector.analyze(&normal, &default_matcher());
-        assert_eq!(score.timing_anomaly, 0.0, "105ms should not be anomalous vs 90-110ms baseline");
+        assert_eq!(
+            score.timing_anomaly, 0.0,
+            "105ms should not be anomalous vs 90-110ms baseline"
+        );
 
         // Test: truly anomalous (500ms) - SHOULD be anomalous
         let very_slow = ResponseData {
@@ -976,7 +1004,10 @@ mod tests {
         };
 
         let score = detector.analyze(&very_slow, &default_matcher());
-        assert!(score.timing_anomaly > 0.0, "500ms should be anomalous vs 90-110ms baseline");
+        assert!(
+            score.timing_anomaly > 0.0,
+            "500ms should be anomalous vs 90-110ms baseline"
+        );
     }
 
     #[test]
@@ -1004,10 +1035,16 @@ mod tests {
         let baseline = detector.baseline.as_ref().unwrap();
 
         // Median should still be 1000 (unaffected by outlier)
-        assert_eq!(baseline.median_size, 1000.0, "Median size should ignore 100KB outlier");
+        assert_eq!(
+            baseline.median_size, 1000.0,
+            "Median size should ignore 100KB outlier"
+        );
 
         // Mean should be dragged up significantly
-        assert!(baseline.avg_size > 1000.0, "Mean should be affected by outlier");
+        assert!(
+            baseline.avg_size > 1000.0,
+            "Mean should be affected by outlier"
+        );
     }
 
     #[test]
@@ -1042,10 +1079,16 @@ mod tests {
         let stddev2 = baseline2.std_dev_time;
 
         // MAD should barely change
-        assert!((mad2 - mad1).abs() < 10.0, "MAD should be resilient to outlier");
+        assert!(
+            (mad2 - mad1).abs() < 10.0,
+            "MAD should be resilient to outlier"
+        );
 
         // stddev should increase significantly
-        assert!(stddev2 > stddev1 * 3.0, "stddev should increase dramatically with outlier");
+        assert!(
+            stddev2 > stddev1 * 3.0,
+            "stddev should increase dramatically with outlier"
+        );
     }
 
     // ═════════════════════════════════════════════════════════════════════
@@ -1079,7 +1122,11 @@ mod tests {
         }
 
         // Should only keep last 10 (window is bounded)
-        assert_eq!(detector.response_count(), 10, "Should enforce window_size limit");
+        assert_eq!(
+            detector.response_count(),
+            10,
+            "Should enforce window_size limit"
+        );
     }
 
     #[test]
@@ -1102,7 +1149,10 @@ mod tests {
         // Baseline should reflect last 5 responses (most recent)
         let baseline = detector.baseline.as_ref().unwrap();
         // Sorted: [600, 700, 800, 900, 1000], median = 800
-        assert_eq!(baseline.median_time, 800.0, "Median should be from last 5 (600-1000)");
+        assert_eq!(
+            baseline.median_time, 800.0,
+            "Median should be from last 5 (600-1000)"
+        );
     }
 
     #[test]
@@ -1111,7 +1161,7 @@ mod tests {
         // Recalculating baseline on 100 items vs 5000 items
 
         let mut detector_small = AnomalyDetector::with_window_size(100);
-        let mut detector_large = AnomalyDetector::new();  // 100 default
+        let mut detector_large = AnomalyDetector::new(); // 100 default
 
         // Small detector: 100 responses
         for i in 0..100 {
@@ -1136,7 +1186,11 @@ mod tests {
 
         // Both should have same response count (bounded to 100)
         assert_eq!(detector_small.response_count(), 100);
-        assert_eq!(detector_large.response_count(), 100, "Sliding window prevents unbounded growth");
+        assert_eq!(
+            detector_large.response_count(),
+            100,
+            "Sliding window prevents unbounded growth"
+        );
 
         // Baselines should be similar (same recent data)
         let baseline_small = detector_small.baseline.as_ref().unwrap();
@@ -1171,8 +1225,15 @@ mod tests {
 
         // With sliding window (last 20), baseline should reflect NEW (200ms) not old (100ms)
         let baseline = detector.baseline.as_ref().unwrap();
-        assert!(baseline.median_time > 150.0, "Should reflect recent WAF changes");
-        assert_eq!(detector.response_count(), 20, "Window should contain only recent responses");
+        assert!(
+            baseline.median_time > 150.0,
+            "Should reflect recent WAF changes"
+        );
+        assert_eq!(
+            detector.response_count(),
+            20,
+            "Window should contain only recent responses"
+        );
     }
 
     // ═════════════════════════════════════════════════════════════════════
@@ -1201,9 +1262,10 @@ mod tests {
     #[test]
     fn test_error_keyword_matcher_regex_patterns() {
         let matcher = ErrorKeywordMatcher::with_patterns(vec![
-            r"ORA-\d+",           // Oracle errors: ORA-00942, ORA-01234
-            r"SQL.*syntax",       // SQL syntax errors (case-insensitive)
-        ]).unwrap();
+            r"ORA-\d+",     // Oracle errors: ORA-00942, ORA-01234
+            r"SQL.*syntax", // SQL syntax errors (case-insensitive)
+        ])
+        .unwrap();
 
         assert!(matcher.contains_error("ORA-00942: table does not exist"));
         assert!(matcher.contains_error("ORA-01234: privilege denied"));
@@ -1216,7 +1278,8 @@ mod tests {
         let matcher = ErrorKeywordMatcher::with_keywords_and_patterns(
             vec!["error", "failed"],
             vec![r"ORA-\d+", r"Warning:.*"],
-        ).unwrap();
+        )
+        .unwrap();
 
         // Should match keywords
         assert!(matcher.contains_error("error message"));
@@ -1243,9 +1306,7 @@ mod tests {
     #[test]
     fn test_error_keyword_matcher_regex_case_insensitive() {
         // Regex patterns should use (?i) for case-insensitivity
-        let matcher = ErrorKeywordMatcher::with_patterns(vec![
-            r"(?i)warning.*",
-        ]).unwrap();
+        let matcher = ErrorKeywordMatcher::with_patterns(vec![r"(?i)warning.*"]).unwrap();
 
         assert!(matcher.contains_error("warning: deprecated"));
         assert!(matcher.contains_error("WARNING: DANGER"));
@@ -1257,7 +1318,8 @@ mod tests {
         let matcher = ErrorKeywordMatcher::with_keywords_and_patterns(
             vec!["error", "failed"],
             vec![r"ORA-\d+"],
-        ).unwrap();
+        )
+        .unwrap();
 
         assert_eq!(matcher.matched_patterns("no match"), 0);
         assert_eq!(matcher.matched_patterns("error occurred"), 1);
@@ -1269,10 +1331,7 @@ mod tests {
     #[test]
     fn test_anomaly_detection_with_regex_errors() {
         let mut detector = AnomalyDetector::new();
-        let matcher = ErrorKeywordMatcher::with_patterns(vec![
-            r"SQL.*syntax",
-            r"ORA-\d+",
-        ]).unwrap();
+        let matcher = ErrorKeywordMatcher::with_patterns(vec![r"SQL.*syntax", r"ORA-\d+"]).unwrap();
 
         // Build baseline with normal responses
         for _ in 0..5 {
@@ -1293,7 +1352,10 @@ mod tests {
         };
 
         let score = detector.analyze(&sql_error, &matcher);
-        assert!(score.error_anomaly > 0.0, "Should detect SQL syntax error via regex");
+        assert!(
+            score.error_anomaly > 0.0,
+            "Should detect SQL syntax error via regex"
+        );
 
         // Test: Response with Oracle error code
         let oracle_error = ResponseData {
@@ -1304,15 +1366,16 @@ mod tests {
         };
 
         let score = detector.analyze(&oracle_error, &matcher);
-        assert!(score.error_anomaly > 0.0, "Should detect ORA error code via regex");
+        assert!(
+            score.error_anomaly > 0.0,
+            "Should detect ORA error code via regex"
+        );
     }
 
     #[test]
     fn test_anomaly_detection_no_false_positives() {
         let mut detector = AnomalyDetector::new();
-        let strict_matcher = ErrorKeywordMatcher::with_patterns(vec![
-            r"SQL.*syntax",
-        ]).unwrap();
+        let strict_matcher = ErrorKeywordMatcher::with_patterns(vec![r"SQL.*syntax"]).unwrap();
 
         // Build baseline
         for _ in 0..5 {
@@ -1329,26 +1392,30 @@ mod tests {
             status: 200,
             content_length: 1000,
             elapsed_ms: 100,
-            body: "SELECT * FROM users".to_string(),  // Contains SQL keyword but not pattern
+            body: "SELECT * FROM users".to_string(), // Contains SQL keyword but not pattern
         };
 
         let score = detector.analyze(&response, &strict_matcher);
-        assert_eq!(score.error_anomaly, 0.0, "Should not trigger on partial SQL matches");
+        assert_eq!(
+            score.error_anomaly, 0.0,
+            "Should not trigger on partial SQL matches"
+        );
     }
 
     #[test]
     fn test_error_regex_production_patterns() {
         // Real-world error patterns (P1 - Production ready)
         let matcher = ErrorKeywordMatcher::with_patterns(vec![
-            r"(?i)(error|exception|failed|fatal|critical)",  // Case-insensitive errors
-            r"ORA-\d+",                                       // Oracle errors
-            r"(?i)SQL.*syntax",                               // SQL syntax errors
-            r"(?i)warning",                                   // Warnings
-            r"(?i)denied|forbidden|unauthorized",             // Access errors
-            r"\[Errno \d+\]",                                 // System errors
-            r"Traceback.*in <module>",                        // Python errors
-            r"at \w+\.\w+.*\.java:\d+",                      // Java stack trace (simplified)
-        ]).unwrap();
+            r"(?i)(error|exception|failed|fatal|critical)", // Case-insensitive errors
+            r"ORA-\d+",                                     // Oracle errors
+            r"(?i)SQL.*syntax",                             // SQL syntax errors
+            r"(?i)warning",                                 // Warnings
+            r"(?i)denied|forbidden|unauthorized",           // Access errors
+            r"\[Errno \d+\]",                               // System errors
+            r"Traceback.*in <module>",                      // Python errors
+            r"at \w+\.\w+.*\.java:\d+",                     // Java stack trace (simplified)
+        ])
+        .unwrap();
 
         // Should detect various error patterns
         assert!(matcher.contains_error("ERROR: Cannot connect"));
@@ -1357,7 +1424,9 @@ mod tests {
         assert!(matcher.contains_error("WARNING: Configuration invalid"));
         assert!(matcher.contains_error("Access denied"));
         assert!(matcher.contains_error("[Errno 404]"));
-        assert!(matcher.contains_error("Traceback (most recent call last): File \"app.py\", line 42, in <module>"));
+        assert!(matcher.contains_error(
+            "Traceback (most recent call last): File \"app.py\", line 42, in <module>"
+        ));
         assert!(matcher.contains_error("at com.app.UserService.getUser(UserService.java:100)"));
     }
 
@@ -1398,7 +1467,10 @@ mod tests {
         let whitelist = StatusWhitelist::strict();
         assert!(whitelist.is_normal(200), "Only 200 allowed");
         assert!(!whitelist.is_normal(201), "201 not allowed in strict mode");
-        assert!(!whitelist.is_normal(301), "Redirects not allowed in strict mode");
+        assert!(
+            !whitelist.is_normal(301),
+            "Redirects not allowed in strict mode"
+        );
     }
 
     #[test]
@@ -1413,7 +1485,10 @@ mod tests {
 
         // Remove 200
         whitelist.remove(200);
-        assert!(!whitelist.is_normal(200), "Should not allow 200 after remove");
+        assert!(
+            !whitelist.is_normal(200),
+            "Should not allow 200 after remove"
+        );
     }
 
     #[test]
@@ -1449,7 +1524,10 @@ mod tests {
             body: String::new(),
         };
         let score = detector.analyze(&redirect, &matcher);
-        assert_eq!(score.status_anomaly, 0.0, "301 redirect should not be anomalous");
+        assert_eq!(
+            score.status_anomaly, 0.0,
+            "301 redirect should not be anomalous"
+        );
 
         // 404 should be anomalous (not whitelisted)
         let not_found = ResponseData {
@@ -1459,7 +1537,10 @@ mod tests {
             body: String::new(),
         };
         let score = detector.analyze(&not_found, &matcher);
-        assert!(score.status_anomaly > 0.0, "404 should be anomalous when not whitelisted");
+        assert!(
+            score.status_anomaly > 0.0,
+            "404 should be anomalous when not whitelisted"
+        );
     }
 
     #[test]
@@ -1490,8 +1571,11 @@ mod tests {
                 body: String::new(),
             };
             let score = detector.analyze(&response, &matcher);
-            assert_eq!(score.status_anomaly, 0.0,
-                "Status {} should be normal with redirect whitelist", status);
+            assert_eq!(
+                score.status_anomaly, 0.0,
+                "Status {} should be normal with redirect whitelist",
+                status
+            );
         }
     }
 
@@ -1521,7 +1605,10 @@ mod tests {
             body: String::new(),
         };
         let score = detector.analyze(&created, &matcher);
-        assert!(score.status_anomaly > 0.0, "201 should be anomalous in strict mode");
+        assert!(
+            score.status_anomaly > 0.0,
+            "201 should be anomalous in strict mode"
+        );
 
         // 301 should be anomalous in strict mode
         let redirect = ResponseData {
@@ -1531,13 +1618,20 @@ mod tests {
             body: String::new(),
         };
         let score = detector.analyze(&redirect, &matcher);
-        assert!(score.status_anomaly > 0.0, "301 should be anomalous in strict mode");
+        assert!(
+            score.status_anomaly > 0.0,
+            "301 should be anomalous in strict mode"
+        );
     }
 
     #[test]
     fn test_status_whitelist_default() {
         let whitelist = StatusWhitelist::default();
-        assert_eq!(whitelist.codes().len(), 8, "Default should have 8 common codes");
+        assert_eq!(
+            whitelist.codes().len(),
+            8,
+            "Default should have 8 common codes"
+        );
         assert!(whitelist.is_normal(200));
         assert!(whitelist.is_normal(301));
         assert!(whitelist.is_normal(307));
@@ -1554,7 +1648,10 @@ mod tests {
 
         assert_eq!(confidence.base_score, 0.8);
         assert_eq!(confidence.signal_count, 1);
-        assert!(confidence.confidence < 0.5, "Single signal = low confidence");
+        assert!(
+            confidence.confidence < 0.5,
+            "Single signal = low confidence"
+        );
         assert_eq!(confidence.level, ConfidenceLevel::Low);
     }
 
@@ -1565,7 +1662,10 @@ mod tests {
 
         assert_eq!(confidence.base_score, 0.8);
         assert_eq!(confidence.signal_count, 2);
-        assert!(confidence.confidence > 0.5, "Two agreeing signals = better confidence");
+        assert!(
+            confidence.confidence > 0.5,
+            "Two agreeing signals = better confidence"
+        );
         assert_eq!(confidence.level, ConfidenceLevel::Medium);
     }
 
@@ -1576,7 +1676,10 @@ mod tests {
 
         assert_eq!(confidence.base_score, 0.8);
         assert_eq!(confidence.signal_count, 4);
-        assert!(confidence.confidence >= 0.8, "All signals agree = very high confidence");
+        assert!(
+            confidence.confidence >= 0.8,
+            "All signals agree = very high confidence"
+        );
         assert_eq!(confidence.level, ConfidenceLevel::VeryHigh);
     }
 
@@ -1585,10 +1688,13 @@ mod tests {
         // Signals partially disagree (timing high, size low)
         let confidence = Confidence::from_signals(0.5, 0.8, 0.1, 0.0, 0.0);
 
-        assert_eq!(confidence.signal_count, 2);  // Timing and size both triggered
-        // Agreement: spread = (0.8 - 0.1) / 0.8 = 0.875, agreement = 1.0 - 0.875 = 0.125
+        assert_eq!(confidence.signal_count, 2); // Timing and size both triggered
+                                                // Agreement: spread = (0.8 - 0.1) / 0.8 = 0.875, agreement = 1.0 - 0.875 = 0.125
         assert!(confidence.signal_agreement < 0.2, "Signals disagree");
-        assert!(confidence.confidence < 0.3, "Disagreement reduces confidence");
+        assert!(
+            confidence.confidence < 0.3,
+            "Disagreement reduces confidence"
+        );
     }
 
     #[test]
@@ -1630,8 +1736,14 @@ mod tests {
         let high_conf = Confidence::from_signals(0.9, 0.9, 0.9, 0.9, 0.9);
         let low_conf = Confidence::from_signals(0.5, 0.3, 0.0, 0.0, 0.0);
 
-        assert!(high_conf.is_reportable(0.7), "High confidence should report");
-        assert!(!low_conf.is_reportable(0.7), "Low confidence should not report");
+        assert!(
+            high_conf.is_reportable(0.7),
+            "High confidence should report"
+        );
+        assert!(
+            !low_conf.is_reportable(0.7),
+            "Low confidence should not report"
+        );
     }
 
     #[test]
@@ -1679,9 +1791,9 @@ mod tests {
 
         // Response with only slight timing variation (weak signal)
         let response = ResponseData {
-            status: 200,  // Normal
-            content_length: 1000,  // Normal
-            elapsed_ms: 110,  // Slightly slow
+            status: 200,          // Normal
+            content_length: 1000, // Normal
+            elapsed_ms: 110,      // Slightly slow
             body: String::new(),  // No error
         };
 
@@ -1701,9 +1813,15 @@ mod tests {
         let confidence = Confidence::from_signals(0.9, 0.9, 0.9, 0.9, 0.9);
 
         assert_eq!(confidence.signal_count, 4, "All four signals");
-        assert_eq!(confidence.signal_agreement, 1.0, "Perfect agreement (all same)");
+        assert_eq!(
+            confidence.signal_agreement, 1.0,
+            "Perfect agreement (all same)"
+        );
         assert_eq!(confidence.consistency, 1.0, "Maximum consistency");
-        assert!(confidence.confidence > 0.8, "Very high confidence (0.9 * 1.0 * 1.0)");
+        assert!(
+            confidence.confidence > 0.8,
+            "Very high confidence (0.9 * 1.0 * 1.0)"
+        );
     }
 
     #[test]
@@ -1711,7 +1829,7 @@ mod tests {
         // Scenario: Some signals strong, some weak
         let confidence = Confidence::from_signals(0.8, 0.9, 0.1, 0.0, 0.0);
 
-        assert_eq!(confidence.signal_count, 2);  // Timing and size
+        assert_eq!(confidence.signal_count, 2); // Timing and size
         assert!(confidence.signal_agreement < 1.0, "Partial agreement");
         assert!(
             confidence.confidence < 0.8,
@@ -1727,7 +1845,10 @@ mod tests {
         let bad = Confidence::from_signals(0.8, 0.8, 0.1, 0.0, 0.0);
 
         assert!(good.confidence > bad.confidence, "Agreement matters");
-        assert_eq!(good.signal_count, bad.signal_count, "Same number of signals");
+        assert_eq!(
+            good.signal_count, bad.signal_count,
+            "Same number of signals"
+        );
     }
 
     #[test]
@@ -1772,8 +1893,14 @@ mod tests {
         );
 
         // This is why confidence matters (P1)
-        assert!(weak.is_reportable(0.2), "Weak: might report if threshold very low");
-        assert!(strong.is_reportable(0.7), "Strong: confident enough to report");
+        assert!(
+            weak.is_reportable(0.2),
+            "Weak: might report if threshold very low"
+        );
+        assert!(
+            strong.is_reportable(0.7),
+            "Strong: confident enough to report"
+        );
         assert!(
             !weak.is_reportable(0.5),
             "Weak: not confident enough for strict threshold"

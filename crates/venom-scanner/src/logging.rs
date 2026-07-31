@@ -3,8 +3,8 @@
 //! Provides consistent, contextualized logging across all scanning phases
 //! with performance metrics, timing information, and structured output.
 
-use std::time::{SystemTime, UNIX_EPOCH};
 use std::fmt;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Log severity levels
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]

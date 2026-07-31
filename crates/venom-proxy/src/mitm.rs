@@ -1,10 +1,10 @@
-use std::sync::Arc;
-use std::net::SocketAddr;
-use std::collections::HashMap;
-use tokio::net::{TcpListener, TcpStream};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::sync::RwLock;
 use rcgen::generate_simple_self_signed;
+use std::collections::HashMap;
+use std::net::SocketAddr;
+use std::sync::Arc;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::RwLock;
 
 #[derive(Clone)]
 pub struct CachedCert {
@@ -32,8 +32,8 @@ impl CertCache {
         }
 
         let subject_alt_names = vec![domain.to_string()];
-        let cert = generate_simple_self_signed(subject_alt_names)
-            .expect("Failed to generate certificate");
+        let cert =
+            generate_simple_self_signed(subject_alt_names).expect("Failed to generate certificate");
 
         let cert_der = cert.serialize_der().expect("Failed to serialize cert");
         let key_der = cert.serialize_private_key_der();
@@ -88,7 +88,7 @@ impl AsyncMitmProxy {
                             eprintln!("Connection error: {}", e);
                         }
                     });
-                }
+                },
                 Err(e) => eprintln!("Accept error: {}", e),
             }
         }
@@ -112,7 +112,7 @@ impl AsyncMitmProxy {
                     0 => break,
                     n => {
                         upstream_write.write_all(&buffer[..n]).await?;
-                    }
+                    },
                 }
             }
             Ok::<_, tokio::io::Error>(())
@@ -125,7 +125,7 @@ impl AsyncMitmProxy {
                     0 => break,
                     n => {
                         client_write.write_all(&buffer[..n]).await?;
-                    }
+                    },
                 }
             }
             Ok::<_, tokio::io::Error>(())

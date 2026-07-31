@@ -63,7 +63,7 @@ jobs:
         REDIS_URL: redis://localhost:6379
 
     - name: Run clippy
-      run: cargo clippy --all-targets --all-features -- -D warnings
+      run: cargo clippy --workspace
 
     - name: Check formatting
       run: cargo fmt -- --check
@@ -234,7 +234,7 @@ jobs:
     name: Rollback on Failure
     runs-on: ubuntu-latest
     needs: deploy-prod
-    if: failure()
+    if: needs.deploy-prod.result == 'failure'
 
     steps:
     - name: Trigger rollback

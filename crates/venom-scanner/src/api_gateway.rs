@@ -2,11 +2,11 @@
 //!
 //! Request throttling, quota management, and intelligent routing.
 
+use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
-use dashmap::DashMap;
 
 /// Rate limit strategy
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -83,7 +83,8 @@ impl ApiQuota {
     }
 
     pub fn requests_remaining(&self) -> u64 {
-        self.requests_per_day.saturating_sub(self.requests_used_today)
+        self.requests_per_day
+            .saturating_sub(self.requests_used_today)
     }
 
     pub fn credits_remaining(&self) -> u64 {
@@ -181,7 +182,7 @@ impl RateLimiter {
     }
 
     /// Gets remaining tokens for client
-    pub fn remaining_tokens(&self, client_id: &str, policy_id: &str) -> Option<f32> {
+    pub fn remaining_tokens(&self, client_id: &str, _policy_id: &str) -> Option<f32> {
         self.client_tokens
             .get(client_id)
             .map(|bucket| bucket.tokens)
@@ -310,12 +311,11 @@ impl ApiGateway {
                     reason: "Route not found".to_string(),
                     remaining_quota: 0,
                 }
-            }
+            },
         };
 
         // Check role
-        if !route.allowed_roles.is_empty()
-            && !route.allowed_roles.contains(&user_role.to_string())
+        if !route.allowed_roles.is_empty() && !route.allowed_roles.contains(&user_role.to_string())
         {
             return RequestValidationResult {
                 allowed: false,
@@ -464,9 +464,6 @@ mod tests {
     #[test]
     fn test_rate_limit_strategy() {
         assert_eq!(RateLimitStrategy::TokenBucket.as_str(), "token_bucket");
-        assert_eq!(
-            RateLimitStrategy::SlidingWindow.as_str(),
-            "sliding_window"
-        );
+        assert_eq!(RateLimitStrategy::SlidingWindow.as_str(), "sliding_window");
     }
 }

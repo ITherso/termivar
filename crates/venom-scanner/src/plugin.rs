@@ -178,7 +178,9 @@ impl PluginRegistry {
 
     /// Registers plugin
     pub fn register(&self, plugin: Arc<dyn Plugin>) -> Result<(), PluginError> {
-        plugin.validate().map_err(|e| PluginError::InvalidConfig(e))?;
+        plugin
+            .validate()
+            .map_err(|e| PluginError::InvalidConfig(e))?;
 
         let config = plugin.get_config();
         let metadata = PluginMetadata {
@@ -232,7 +234,9 @@ impl PluginRegistry {
         target: &str,
         payload: &str,
     ) -> Result<PluginExecutionResult, PluginError> {
-        let plugin = self.get(plugin_id).ok_or_else(|| PluginError::NotFound(plugin_id.to_string()))?;
+        let plugin = self
+            .get(plugin_id)
+            .ok_or_else(|| PluginError::NotFound(plugin_id.to_string()))?;
 
         if !plugin.enabled() {
             return Err(PluginError::Disabled);
@@ -252,7 +256,7 @@ impl PluginRegistry {
                     error: None,
                     execution_time_ms: elapsed,
                 })
-            }
+            },
             Err(e) => {
                 self.update_metadata(plugin_id, false);
                 Ok(PluginExecutionResult {
@@ -262,7 +266,7 @@ impl PluginRegistry {
                     error: Some(e.to_string()),
                     execution_time_ms: start.elapsed().as_millis() as u64,
                 })
-            }
+            },
         }
     }
 
@@ -359,7 +363,11 @@ mod tests {
             true
         }
 
-        async fn execute(&self, _target: &str, _payload: &str) -> Result<Vec<ScanFinding>, PluginError> {
+        async fn execute(
+            &self,
+            _target: &str,
+            _payload: &str,
+        ) -> Result<Vec<ScanFinding>, PluginError> {
             Ok(vec![ScanFinding {
                 phase: 1,
                 module_name: "test".to_string(),
@@ -411,7 +419,10 @@ mod tests {
         });
 
         registry.register(plugin).unwrap();
-        let result = registry.execute("test_1", "http://target.com", "<script>").await.unwrap();
+        let result = registry
+            .execute("test_1", "http://target.com", "<script>")
+            .await
+            .unwrap();
 
         assert!(result.success);
         assert_eq!(result.findings.len(), 1);
@@ -487,7 +498,10 @@ mod tests {
         registry.register(plugin).unwrap();
 
         for _ in 0..3 {
-            registry.execute("test_5", "target", "payload").await.is_ok();
+            registry
+                .execute("test_5", "target", "payload")
+                .await
+                .is_ok();
         }
 
         let meta = registry.get_metadata("test_5").unwrap();

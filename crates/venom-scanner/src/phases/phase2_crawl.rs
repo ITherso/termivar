@@ -17,7 +17,7 @@
 //! ## Output
 //! Populates `ctx.discovered_endpoints` map: URL → [param1, param2, ...]
 
-use crate::{ScanFinding, ScanPhase, context::ScanContext, error::ScannerError};
+use crate::{context::ScanContext, error::ScannerError, ScanFinding, ScanPhase};
 use async_trait::async_trait;
 use regex::Regex;
 use url::Url;
@@ -73,10 +73,8 @@ impl CrawlPhase {
                                 ctx.log(format!("Found endpoint: {}", link_str));
 
                                 // Extract query parameters
-                                let params: Vec<String> = link_url
-                                    .query_pairs()
-                                    .map(|(k, _)| k.to_string())
-                                    .collect();
+                                let params: Vec<String> =
+                                    link_url.query_pairs().map(|(k, _)| k.to_string()).collect();
 
                                 ctx.add_endpoint(link_str, params);
                             }
@@ -87,7 +85,8 @@ impl CrawlPhase {
                     let form_regex = Regex::new(r#"<form[^>]*>(.*?)</form>"#).unwrap();
                     for form_match in form_regex.captures_iter(&html) {
                         let form_html = &form_match[1];
-                        let input_regex = Regex::new(r#"<input[^>]*name=["']([^"']+)["']"#).unwrap();
+                        let input_regex =
+                            Regex::new(r#"<input[^>]*name=["']([^"']+)["']"#).unwrap();
 
                         let mut form_params = Vec::new();
                         for input_cap in input_regex.captures_iter(form_html) {
@@ -100,10 +99,10 @@ impl CrawlPhase {
                         }
                     }
                 }
-            }
+            },
             Err(e) => {
                 ctx.log(format!("Failed to crawl {}: {}", url_str, e));
-            }
+            },
         }
 
         Ok(())

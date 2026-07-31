@@ -4,7 +4,6 @@
 //! findings explorer, and interactive reporting.
 
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 
 /// Dashboard data model for scan overview
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -37,7 +36,8 @@ impl DashboardOverview {
 
     pub fn calculate_success_rate(&mut self) {
         if self.total_scans > 0 {
-            self.scan_success_rate = (self.completed_scans as f32 / self.total_scans as f32) * 100.0;
+            self.scan_success_rate =
+                (self.completed_scans as f32 / self.total_scans as f32) * 100.0;
         }
     }
 }

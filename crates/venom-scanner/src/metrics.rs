@@ -48,7 +48,8 @@ impl MetricsCollector {
     /// Records a response
     pub fn record_response(&self, bytes: u64) {
         self.total_responses.fetch_add(1, Ordering::Relaxed);
-        self.total_bytes_received.fetch_add(bytes, Ordering::Relaxed);
+        self.total_bytes_received
+            .fetch_add(bytes, Ordering::Relaxed);
     }
 
     /// Records a finding
@@ -161,7 +162,8 @@ impl MetricsSummary {
             "errors": self.total_errors,
             "success_rate": format!("{:.2}%", self.success_rate),
             "finding_density": format!("{:.2}%", self.finding_density),
-        }).to_string()
+        })
+        .to_string()
     }
 }
 
@@ -230,7 +232,9 @@ mod tests {
     #[test]
     fn test_bytes_per_finding() {
         let collector = MetricsCollector::new();
-        collector.total_bytes_received.store(1000, Ordering::Relaxed);
+        collector
+            .total_bytes_received
+            .store(1000, Ordering::Relaxed);
         collector.total_findings.store(10, Ordering::Relaxed);
 
         let bpf = collector.bytes_per_finding();

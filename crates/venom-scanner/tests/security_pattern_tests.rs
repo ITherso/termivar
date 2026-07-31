@@ -19,7 +19,8 @@ fn test_sqli_basic_patterns() {
     ];
 
     for (text, should_match) in patterns {
-        let is_sqli = text.contains("'") && (text.contains("OR") || text.contains("UNION") || text.contains("DROP"));
+        let is_sqli = text.contains("'")
+            && (text.contains("OR") || text.contains("UNION") || text.contains("DROP"));
         // Note: Simple pattern, real detection is more complex
     }
 }
@@ -56,12 +57,7 @@ fn test_sqli_dbms_specific() {
 
 #[test]
 fn test_xss_reflection_detection() {
-    let user_inputs = vec![
-        "search_term",
-        "user_id",
-        "comment",
-        "name",
-    ];
+    let user_inputs = vec!["search_term", "user_id", "comment", "name"];
 
     let sensitive_contexts = vec![
         "<div>{}</div>",
@@ -77,8 +73,13 @@ fn test_xss_reflection_detection() {
 #[test]
 fn test_xss_event_handler_patterns() {
     let handlers = vec![
-        "onload", "onerror", "onmouseover", "onclick",
-        "onkeyup", "onfocus", "onblur",
+        "onload",
+        "onerror",
+        "onmouseover",
+        "onclick",
+        "onkeyup",
+        "onfocus",
+        "onblur",
     ];
 
     for handler in handlers {
@@ -118,13 +119,7 @@ fn test_xss_svg_vector() {
 
 #[test]
 fn test_ssti_template_marker_detection() {
-    let markers = vec![
-        "{{", "}}",
-        "<%", "%>",
-        "${", "}",
-        "[%", "%]",
-        "<#", "#>",
-    ];
+    let markers = vec!["{{", "}}", "<%", "%>", "${", "}", "[%", "%]", "<#", "#>"];
 
     for marker in markers {
         assert!(!marker.is_empty());
@@ -134,9 +129,9 @@ fn test_ssti_template_marker_detection() {
 #[test]
 fn test_ssti_expression_evaluation() {
     let expressions = vec![
-        "{{7*7}}", // Expected: 49
-        "{{7*'7'}}", // Expected: 7777777 (Jinja2)
-        "${7*7}", // Expected: 49
+        "{{7*7}}",             // Expected: 49
+        "{{7*'7'}}",           // Expected: 7777777 (Jinja2)
+        "${7*7}",              // Expected: 49
         "<#assign x=7*7>${x}", // Expected: 49 (FreeMarker)
     ];
 
@@ -148,9 +143,9 @@ fn test_ssti_expression_evaluation() {
 #[test]
 fn test_ssti_sandbox_escape_chains() {
     let chains = vec![
-        "__class__.__mro__", // Jinja2
-        "sys.modules", // Mako
-        "registerUndefinedFilterCallback", // Twig
+        "__class__.__mro__",                   // Jinja2
+        "sys.modules",                         // Mako
+        "registerUndefinedFilterCallback",     // Twig
         "freemarker.template.utility.Execute", // FreeMarker
     ];
 
@@ -165,11 +160,7 @@ fn test_ssti_sandbox_escape_chains() {
 
 #[test]
 fn test_lfi_path_traversal_patterns() {
-    let patterns = vec![
-        "../", "..\\",
-        "%2e%2e/", "%2e%2e\\",
-        "..;/", "..%3b/",
-    ];
+    let patterns = vec!["../", "..\\", "%2e%2e/", "%2e%2e\\", "..;/", "..%3b/"];
 
     for pattern in patterns {
         assert!(pattern.contains(".") || pattern.contains("%"));
@@ -253,13 +244,7 @@ fn test_xxe_blind_oob_detection() {
 
 #[test]
 fn test_ssrf_loopback_addresses() {
-    let loopback = vec![
-        "127.0.0.1",
-        "localhost",
-        "0.0.0.0",
-        "::1",
-        "127.1",
-    ];
+    let loopback = vec!["127.0.0.1", "localhost", "0.0.0.0", "::1", "127.1"];
 
     for addr in loopback {
         assert!(addr.contains(".") || addr.contains(":") || addr == "localhost");
@@ -419,8 +404,8 @@ fn test_error_based_detection() {
 
 #[test]
 fn test_timing_based_detection_thresholds() {
-    let normal_response = 100u64;      // 100ms
-    let delayed_response = 5100u64;    // 5100ms (5s sleep + overhead)
+    let normal_response = 100u64; // 100ms
+    let delayed_response = 5100u64; // 5100ms (5s sleep + overhead)
 
     assert!(delayed_response > normal_response * 50);
 }

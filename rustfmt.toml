@@ -26,7 +26,6 @@ force_single_line = false
 
 # Functions & Structs
 fn_args_layout = "Tall"
-edition = "2021"
 
 # Spaces
 space_after_colon = true

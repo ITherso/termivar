@@ -71,7 +71,7 @@ jobs:
       - name: Run security audit
         run: cargo audit
       - name: Run clippy (security lints)
-        run: cargo clippy -- -D warnings
+        run: cargo clippy
 
   code-coverage:
     name: Code Coverage

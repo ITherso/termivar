@@ -2,8 +2,8 @@
 //!
 //! Validates performance characteristics and concurrent phase execution
 
-use venom_scanner::{ScanFinding, LogLevel, Logger};
 use std::time::Instant;
+use venom_scanner::{LogLevel, Logger, ScanFinding};
 
 /// Tests concurrent finding collection performance
 #[test]
@@ -82,10 +82,7 @@ fn test_finding_aggregation_performance() {
     }
 
     // Aggregate all findings
-    let all_findings: Vec<ScanFinding> = phase_results
-        .into_iter()
-        .flatten()
-        .collect();
+    let all_findings: Vec<ScanFinding> = phase_results.into_iter().flatten().collect();
 
     let elapsed = start.elapsed();
 
@@ -192,9 +189,7 @@ fn test_dedup_memory_efficiency() {
 
     // Dedup
     findings.dedup_by(|a, b| {
-        a.phase == b.phase
-            && a.description == b.description
-            && a.evidence == b.evidence
+        a.phase == b.phase && a.description == b.description && a.evidence == b.evidence
     });
 
     let elapsed = start.elapsed();

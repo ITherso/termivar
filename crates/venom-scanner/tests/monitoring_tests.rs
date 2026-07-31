@@ -1,6 +1,6 @@
 use venom_scanner::{
-    PhaseProfile, ScanProfile, PerformanceAnalyzer, BenchmarkSuite, BenchmarkResult,
-    RecommendationCategory,
+    BenchmarkResult, BenchmarkSuite, PerformanceAnalyzer, PhaseProfile, RecommendationCategory,
+    ScanProfile,
 };
 
 #[test]

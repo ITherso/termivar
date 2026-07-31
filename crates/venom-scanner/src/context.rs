@@ -1,10 +1,10 @@
-use std::sync::Arc;
+use crate::event_bus::EventBus;
+use crate::logging::{LogLevel, Logger};
 use dashmap::{DashMap, DashSet};
 use reqwest::Client;
-use url::Url;
-use crate::logging::{Logger, LogLevel};
-use crate::event_bus::EventBus;
+use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
+use url::Url;
 
 /// Zero-copy shared state across all scan phases
 #[derive(Clone)]
@@ -33,7 +33,7 @@ impl ScanContext {
         client: Client,
         telemetry_tx: tokio::sync::mpsc::UnboundedSender<String>,
     ) -> Self {
-        Self::with_timeout(target, client, telemetry_tx, 300)  // 5 min default
+        Self::with_timeout(target, client, telemetry_tx, 300) // 5 min default
     }
 
     pub fn with_timeout(
@@ -42,7 +42,13 @@ impl ScanContext {
         telemetry_tx: tokio::sync::mpsc::UnboundedSender<String>,
         phase_timeout_secs: u64,
     ) -> Self {
-        Self::with_cancellation(target, client, telemetry_tx, phase_timeout_secs, CancellationToken::new())
+        Self::with_cancellation(
+            target,
+            client,
+            telemetry_tx,
+            phase_timeout_secs,
+            CancellationToken::new(),
+        )
     }
 
     pub fn with_cancellation(
@@ -52,7 +58,14 @@ impl ScanContext {
         phase_timeout_secs: u64,
         cancel_token: CancellationToken,
     ) -> Self {
-        Self::with_event_bus(target, client, telemetry_tx, phase_timeout_secs, cancel_token, Arc::new(EventBus::new()))
+        Self::with_event_bus(
+            target,
+            client,
+            telemetry_tx,
+            phase_timeout_secs,
+            cancel_token,
+            Arc::new(EventBus::new()),
+        )
     }
 
     pub fn with_event_bus(
@@ -118,7 +131,10 @@ mod tests {
         let client = Client::new();
         let ctx = ScanContext::new(url, client, tx);
 
-        ctx.add_endpoint("/api/users".to_string(), vec!["id".to_string(), "email".to_string()]);
+        ctx.add_endpoint(
+            "/api/users".to_string(),
+            vec!["id".to_string(), "email".to_string()],
+        );
         assert_eq!(ctx.endpoint_count(), 1);
 
         let endpoints = ctx.discovered_endpoints.clone();

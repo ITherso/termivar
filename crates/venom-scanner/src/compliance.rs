@@ -113,7 +113,10 @@ impl AuditLogger {
 
     /// Gets logs by user
     pub fn get_logs_by_user(&self, user_id: &str) -> Vec<&AuditLogEntry> {
-        self.logs.iter().filter(|log| log.user_id == user_id).collect()
+        self.logs
+            .iter()
+            .filter(|log| log.user_id == user_id)
+            .collect()
     }
 
     /// Gets logs in time range
@@ -271,7 +274,10 @@ impl DataProtectionManager {
     }
 
     /// Gets records by classification
-    pub fn get_by_classification(&self, classification: DataClassification) -> Vec<&DataProtectionRecord> {
+    pub fn get_by_classification(
+        &self,
+        classification: DataClassification,
+    ) -> Vec<&DataProtectionRecord> {
         self.records
             .iter()
             .filter(|r| r.classification == classification)
@@ -282,9 +288,7 @@ impl DataProtectionManager {
     pub fn get_unencrypted_sensitive(&self) -> Vec<&DataProtectionRecord> {
         self.records
             .iter()
-            .filter(|r| {
-                !r.encrypted && r.classification.security_level() >= 3
-            })
+            .filter(|r| !r.encrypted && r.classification.security_level() >= 3)
             .collect()
     }
 
@@ -330,10 +334,7 @@ impl ComplianceReporter {
 
     /// Gets latest report for framework
     pub fn get_latest_report(&self, framework: ComplianceFramework) -> Option<&ComplianceReport> {
-        self.reports
-            .iter()
-            .rev()
-            .find(|r| r.framework == framework)
+        self.reports.iter().rev().find(|r| r.framework == framework)
     }
 
     /// Gets report trend (compliance scores over time)

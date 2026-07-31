@@ -1,6 +1,6 @@
 use venom_scanner::{
-    PatternLearner, VulnerabilityPattern, ExploitBuilder, ExploitStage, AnomalyClassifier,
-    AnomalyPattern, AnomalyType,
+    AnomalyClassifier, AnomalyPattern, AnomalyType, ExploitBuilder, ExploitStage, PatternLearner,
+    VulnerabilityPattern,
 };
 
 #[test]
@@ -244,7 +244,10 @@ fn test_exploit_chain_with_fallbacks() {
 
     let chain = builder.get_chain("sqli_chain").unwrap();
     assert_eq!(chain.stages[0].fallback, Some("' AND 1=2".to_string()));
-    assert_eq!(chain.stages[1].fallback, Some("Time-based blind SQL".to_string()));
+    assert_eq!(
+        chain.stages[1].fallback,
+        Some("Time-based blind SQL".to_string())
+    );
 }
 
 #[test]
@@ -277,8 +280,14 @@ fn test_pattern_confidence_scoring() {
     learner.register_pattern(low_conf);
 
     let patterns = learner.get_patterns();
-    let high_pattern = patterns.iter().find(|p| p.pattern_id == "high_conf").unwrap();
-    let low_pattern = patterns.iter().find(|p| p.pattern_id == "low_conf").unwrap();
+    let high_pattern = patterns
+        .iter()
+        .find(|p| p.pattern_id == "high_conf")
+        .unwrap();
+    let low_pattern = patterns
+        .iter()
+        .find(|p| p.pattern_id == "low_conf")
+        .unwrap();
 
     assert!(high_pattern.confidence > low_pattern.confidence);
 }

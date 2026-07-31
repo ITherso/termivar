@@ -137,13 +137,20 @@ impl PayloadEncoder {
         payload
             .chars()
             .enumerate()
-            .map(|(i, c)| if i % 2 == 0 { c.to_uppercase().to_string() } else { c.to_string() })
+            .map(|(i, c)| {
+                if i % 2 == 0 {
+                    c.to_uppercase().to_string()
+                } else {
+                    c.to_string()
+                }
+            })
             .collect()
     }
 
     /// Injects comments into SQL payload
     pub fn comment_injection_sql(payload: &str) -> String {
-        payload.replace("select", "sel/**/ect")
+        payload
+            .replace("select", "sel/**/ect")
             .replace("SELECT", "SEL/**/ECT")
             .replace("union", "un/**/ion")
             .replace("UNION", "UN/**/ION")
@@ -245,10 +252,7 @@ mod tests {
     #[test]
     fn test_evasion_techniques() {
         let payload = "select";
-        let techniques = vec![
-            EvisionTechnique::CaseVariation,
-            EvisionTechnique::Encoding,
-        ];
+        let techniques = vec![EvisionTechnique::CaseVariation, EvisionTechnique::Encoding];
         let variations = PayloadEncoder::apply_evasion(payload, &techniques);
         assert_eq!(variations.len(), 2);
         // One variation should be different from original (case variation)

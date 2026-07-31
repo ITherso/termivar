@@ -211,8 +211,7 @@ impl SchemaManager {
 
     /// Registers a table schema
     pub fn register_schema(&mut self, schema: TableSchema) {
-        self.schemas
-            .insert(schema.table_name.clone(), schema);
+        self.schemas.insert(schema.table_name.clone(), schema);
     }
 
     /// Gets schema by table name

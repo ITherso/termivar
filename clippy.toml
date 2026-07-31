@@ -42,12 +42,7 @@ doc-valid-idents = [
 type-complexity-threshold = 250
 
 # Configuration for specific lints
-trivial-numeric-casts-threshold = 256
 single-char-binding-names-threshold = 4
 
 # Documentation requirements
 missing-docs-in-crate-items = false
-
-# Safety
-# We want to be strict about unsafe code usage
-unsafe-derive-derive-usage = true

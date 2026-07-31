@@ -47,12 +47,16 @@ impl Plugin for XXEPlugin {
         ];
 
         for test_payload in payloads {
-            if payload.contains(test_payload) || target.contains("xxe=1") || payload.contains("<!DOCTYPE") {
+            if payload.contains(test_payload)
+                || target.contains("xxe=1")
+                || payload.contains("<!DOCTYPE")
+            {
                 findings.push(ScanFinding {
                     phase: 8,
                     module_name: "XXE Detector".to_string(),
                     severity: "HIGH".to_string(),
-                    description: "XXE vulnerability detected - External entity processing enabled".to_string(),
+                    description: "XXE vulnerability detected - External entity processing enabled"
+                        .to_string(),
                     evidence: format!("Target: {}, XML payload detected", target),
                 });
                 break;

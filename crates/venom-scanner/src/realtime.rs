@@ -2,10 +2,9 @@
 //!
 //! Provides streaming updates for live scan progress, findings, and metrics.
 
-use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-use std::sync::Arc;
 use dashmap::DashMap;
+use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 
 /// Real-time event types
 #[derive(Debug, Clone, Serialize, Deserialize)]
