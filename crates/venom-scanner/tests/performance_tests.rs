@@ -2,6 +2,11 @@
 //!
 //! Validates performance characteristics and concurrent phase execution
 
+// Coverage instrumentation changes timing enough to invalidate the strict
+// micro-benchmarks in this file. They still run in the normal test workflow.
+#![allow(unexpected_cfgs)]
+#![cfg(not(tarpaulin))]
+
 use std::time::Instant;
 use venom_scanner::{LogLevel, Logger, ScanFinding};
 
