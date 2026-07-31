@@ -45,4 +45,4 @@ Distributed multi-node production readiness is tracked separately for v1.1 and d
 - [Plugin API policy](docs/plugin-api-policy.md)
 - [Security policy](SECURITY.md)
 
-Milestones and the [Venom Roadmap project](https://github.com/users/ITherso/projects) are the operational source of truth for planned work. This document defines release gates; it is not a delivery guarantee.
+Milestones and the [Venom Roadmap project](https://github.com/users/ITherso/projects/1) are the operational source of truth for planned work. This document defines release gates; it is not a delivery guarantee.
