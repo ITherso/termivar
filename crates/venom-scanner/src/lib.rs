@@ -61,6 +61,9 @@ pub mod waf;
 #[cfg(feature = "scanning")]
 pub mod adaptive;
 
+#[cfg(feature = "scanning")]
+pub mod decision_loop;
+
 // Detection capabilities (feature: detection)
 #[cfg(feature = "detection")]
 pub mod advanced_detection;
@@ -181,6 +184,13 @@ pub use adaptive::{
     AdaptationStrategy, AdaptiveDecision, AdaptiveEngine, AdaptivePipeline, AdaptivePipelineError,
     AdaptiveRuleWrite, DetectionPattern, OutcomeSelector, PayloadMutator, PipelineDirective,
     ResponseMetrics,
+};
+
+#[cfg(feature = "scanning")]
+pub use decision_loop::{
+    DecisionActionOrigin, DecisionLoop, DecisionLoopCommand, DecisionLoopConfig, DecisionLoopError,
+    DecisionLoopState, DecisionOutcomeReport, DecisionPlanningReport, DecisionSession,
+    DecisionStopReason,
 };
 
 #[cfg(feature = "scanning")]

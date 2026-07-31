@@ -824,6 +824,9 @@ impl RuleEngine {
     }
 
     /// Evaluates one decision cycle and writes matched hypotheses.
+    ///
+    /// Existing verifier-owned `Confirmed` and `Rejected` states survive
+    /// recalibration, so a reasoning pass cannot reverse a verification result.
     pub fn apply(
         &self,
         knowledge: &KnowledgeBase,
@@ -836,7 +839,17 @@ impl RuleEngine {
                 let write = evaluation
                     .hypothesis()
                     .cloned()
-                    .map(|hypothesis| knowledge.upsert_hypothesis(hypothesis))
+                    .map(|mut hypothesis| {
+                        if let Some(existing) = knowledge.hypothesis(hypothesis.id()) {
+                            if matches!(
+                                existing.state(),
+                                HypothesisState::Confirmed | HypothesisState::Rejected
+                            ) {
+                                hypothesis.set_state(existing.state());
+                            }
+                        }
+                        knowledge.upsert_hypothesis(hypothesis)
+                    })
                     .transpose()?;
                 Ok(RuleApplication { evaluation, write })
             })
