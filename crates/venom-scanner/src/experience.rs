@@ -470,6 +470,17 @@ mod tests {
         stage: VerificationStage,
         status: OutcomeStatus,
     ) -> Outcome {
+        if status == OutcomeStatus::Unknown {
+            return Outcome::unknown(
+                format!("case:{case_number}"),
+                subject,
+                action_id,
+                "hypothesis:http-control",
+                stage,
+                "deterministic fixture is inconclusive",
+            )
+            .unwrap();
+        }
         Outcome::verified(
             format!("case:{case_number}"),
             subject,
