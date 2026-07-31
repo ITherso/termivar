@@ -12,6 +12,7 @@ All notable changes to Venom are recorded here. Releases use the categories from
 - A `cargo-generate` plugin starter with a CI smoke test.
 - Automated compile-time, binary-size, peak-memory, and Criterion workflow artifacts.
 - Published workspace API documentation and a conservative release-readiness matrix.
+- A dedicated feature-lifecycle reference, repository map, design principles, project badges, and explicit MIT license file.
 
 ### Changed
 
@@ -20,6 +21,7 @@ All notable changes to Venom are recorded here. Releases use the categories from
 - Replaced absolute completion claims with lifecycle labels such as Beta, Preview, and Experimental.
 - Moved shared event and finding contracts into `venom-core` while preserving scanner re-exports.
 - Documented the plugin system as a source-level preview instead of implying dynamic discovery.
+- Moved the editable Draw.io architecture source directly under `docs/` for discoverability.
 
 ### Fixed
 

@@ -1,12 +1,14 @@
 # Venom documentation
 
-Venom is an experimental modular web security testing framework. The current release line is `0.9.0-alpha` and is not production-ready.
+Venom is a modular Rust-based penetration testing framework focused on research and extensibility. The current release line is `0.9.0-alpha` and is not production-ready.
 
 ## Start here
 
 - [Getting started](GETTING_STARTED.md)
 - [Architecture](architecture.md)
+- [Editable Draw.io architecture source](architecture.drawio)
 - [Scanner](scanner.md)
+- [Feature lifecycle](https://github.com/ITherso/venom/blob/main/FEATURES.md)
 - [Rust API documentation](https://itherso.github.io/venom/rust/venom_scanner/)
 - [Quality metrics](quality-metrics.md)
 - [Security policy](https://github.com/ITherso/venom/blob/main/SECURITY.md)

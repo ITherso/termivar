@@ -3,6 +3,9 @@ name: Documentation
 on:
   pull_request:
     paths:
+      - "README.md"
+      - "FEATURES.md"
+      - "LICENSE"
       - "docs/**"
       - "mkdocs.yml"
       - "requirements-docs.txt"
@@ -15,6 +18,9 @@ on:
   push:
     branches: [main]
     paths:
+      - "README.md"
+      - "FEATURES.md"
+      - "LICENSE"
       - "docs/**"
       - "mkdocs.yml"
       - "requirements-docs.txt"

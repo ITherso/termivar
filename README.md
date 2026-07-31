@@ -1,22 +1,25 @@
 # Venom
 
+[![CI](https://github.com/ITherso/venom/actions/workflows/tests.yml/badge.svg?branch=main)](https://github.com/ITherso/venom/actions/workflows/tests.yml)
+[![Docs](https://github.com/ITherso/venom/actions/workflows/docs.yml/badge.svg?branch=main)](https://itherso.github.io/venom/)
+[![License](https://img.shields.io/github/license/ITherso/venom)](LICENSE)
+[![Rust](https://img.shields.io/badge/Rust-stable-orange?logo=rust)](https://www.rust-lang.org/)
+[![Coverage](https://codecov.io/gh/ITherso/venom/branch/main/graph/badge.svg)](https://codecov.io/gh/ITherso/venom)
+
 Venom is a modular Rust-based penetration testing framework focused on research and extensibility.
 
 > Current release: **v0.9.0-alpha**. Venom is not production-ready. Use it only on systems you own or have explicit permission to test.
 
-## Components
+Capability maturity and known gaps are maintained in [FEATURES.md](FEATURES.md). Labels such as Beta, Preview, and Experimental describe lifecycle maturity, not completeness.
 
-| Area | Status | Responsibility |
-| --- | --- | --- |
-| Core | Beta | Shared events, findings, configuration, models, and errors |
-| Scanner | Beta | Runner, ordered phases, detection, and reporting |
-| Plugins | Preview | Trait-based native extension API and registry |
-| Distributed | Experimental | Worker, queue, and result aggregation APIs |
-| Lua | Preview | Script execution boundary and lifecycle controls |
-| Dashboard | Experimental | Scanner state projection and application views |
-| Compliance | Preview | Optional audit and compliance models |
+## Design principles
 
-Lifecycle labels describe maturity, not completeness. Experimental and Preview APIs may change before a stable release.
+- **Safe Rust by default.** Unsafe code must be isolated, justified, and reviewed.
+- **Dependency inversion.** Contracts point inward; entry points compose lower-level crates.
+- **Async first.** Network and scan execution avoid blocking the runtime.
+- **Modular boundaries.** Runners, phases, plugins, events, and reports communicate through narrow APIs.
+- **Testability.** Behavior should be reproducible without starting the full application stack.
+- **Security by default.** Authorization, least privilege, bounded inputs, and explicit failure are design requirements.
 
 ## Architecture
 
@@ -54,6 +57,20 @@ flowchart TD
 ```
 
 Dependencies point inward toward `venom-core`. Entry-point and product features must never become dependencies of lower-level crates. See [Architecture](docs/architecture.md) for module ownership, the editable Draw.io source, and the target product-layer split.
+
+## Repository structure
+
+```text
+venom/
+|-- crates/       Rust workspace crates: core, scanner, API, proxy, and CLI
+|-- docs/         Focused design, operating guides, and architecture.drawio
+|-- templates/    cargo-generate starters, including the plugin SDK preview
+|-- web/          Dashboard application and frontend assets
+|-- fuzz/         cargo-fuzz targets and seed corpora
+`-- examples/     Example configurations and authorized usage
+```
+
+The workspace map and dependency rules are expanded in [Architecture](docs/architecture.md).
 
 ## Release readiness
 
@@ -105,7 +122,9 @@ The template implements `Plugin`, registers it in a test, and tracks Venom `main
 
 ## Documentation
 
+- [Feature lifecycle](FEATURES.md)
 - [Architecture](docs/architecture.md)
+- [Editable architecture diagram](docs/architecture.drawio)
 - [Runner](docs/runner.md)
 - [Scanner](docs/scanner.md)
 - [Plugin development](docs/plugin.md)
@@ -120,7 +139,11 @@ The template implements `Plugin`, registers it in a test, and tracks Venom `main
 
 - Converge native plugins and ordered scan phases behind one versioned execution contract.
 - Move dashboard, distributed orchestration, and compliance into an optional product layer.
-- Publish controlled performance, fuzzing, mutation, and independent audit results.
+- Publish browsable Criterion history and controlled performance baselines.
+- Run bounded cargo-fuzz campaigns in CI and retain crash artifacts.
+- Require cargo-deny alongside cargo-audit before release.
+- Cut the first `v0.9.0-alpha` GitHub release after the published readiness gates pass.
+- Continue hardening contribution rules, mutation testing, and independent security review.
 
 Roadmap items are intentions, not delivery guarantees. See [CHANGELOG.md](CHANGELOG.md) for shipped changes.
 
