@@ -33,6 +33,11 @@ jobs:
       - name: Run bounded campaign
         working-directory: fuzz
         shell: bash
+        env:
+          # Sanitizer coverage and whole-program LTO do not compose reliably.
+          # Keep release LTO for product binaries, but disable it for fuzz harnesses.
+          CARGO_PROFILE_RELEASE_LTO: "false"
+          CARGO_PROFILE_RELEASE_STRIP: "none"
         run: |
           set -uo pipefail
           mkdir -p "reports/${{ matrix.target }}"
