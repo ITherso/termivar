@@ -1,12 +1,10 @@
-name: Build and Deploy VENOM
+name: Container Build
 
 on:
   push:
     branches:
       - main
       - develop
-    tags:
-      - 'v*'
   pull_request:
     branches:
       - main
@@ -18,9 +16,10 @@ env:
 
 jobs:
   test:
-    name: Test & Quality Checks
+    name: Test and quality checks
     runs-on: ubuntu-latest
-
+    permissions:
+      contents: read
     services:
       postgres:
         image: postgres:16-alpine
@@ -34,7 +33,6 @@ jobs:
           --health-retries 5
         ports:
           - 5432:5432
-
       redis:
         image: redis:7-alpine
         options: >-
@@ -44,216 +42,57 @@ jobs:
           --health-retries 5
         ports:
           - 6379:6379
-
     steps:
-    - uses: actions/checkout@v4
-
-    - name: Install Rust
-      uses: dtolnay/rust-toolchain@stable
-      with:
-        toolchain: stable
-
-    - name: Cache Rust dependencies
-      uses: Swatinem/rust-cache@v2
-
-    - name: Run tests
-      run: cargo test --lib --verbose
-      env:
-        DATABASE_URL: postgres://postgres:postgres@localhost:5432/test_db
-        REDIS_URL: redis://localhost:6379
-
-    - name: Run clippy
-      run: cargo clippy --workspace
-
-    - name: Check formatting
-      run: cargo fmt -- --check
-
-    - name: Build release binary
-      run: cargo build --release
-
-    - name: Upload coverage
-      uses: codecov/codecov-action@v3
-      with:
-        files: ./coverage.xml
+      - uses: actions/checkout@v6
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+      - name: Run tests
+        run: cargo test --lib --locked --verbose
+        env:
+          DATABASE_URL: postgres://postgres:postgres@localhost:5432/test_db
+          REDIS_URL: redis://localhost:6379
+      - name: Run Clippy
+        run: cargo clippy --workspace --all-targets --all-features
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+      - name: Build release binary
+        run: cargo build --release --locked -p venom-cli
 
   build:
-    name: Build Docker Image
+    name: Build container image
     runs-on: ubuntu-latest
     needs: test
-    if: github.event_name == 'push' || github.event_name == 'pull_request'
-
     permissions:
       contents: read
       packages: write
-
     steps:
-    - uses: actions/checkout@v4
-
-    - name: Set up Docker Buildx
-      uses: docker/setup-buildx-action@v2
-
-    - name: Log in to Container Registry
-      if: github.event_name == 'push'
-      uses: docker/login-action@v2
-      with:
-        registry: ${{ env.REGISTRY }}
-        username: ${{ github.actor }}
-        password: ${{ secrets.GITHUB_TOKEN }}
-
-    - name: Extract metadata
-      id: meta
-      uses: docker/metadata-action@v4
-      with:
-        images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-        tags: |
-          type=ref,event=branch
-          type=semver,pattern={{version}}
-          type=semver,pattern={{major}}.{{minor}}
-          type=sha,prefix={{branch}}-
-
-    - name: Build and push Docker image
-      uses: docker/build-push-action@v4
-      with:
-        context: .
-        push: ${{ github.event_name == 'push' }}
-        tags: ${{ steps.meta.outputs.tags }}
-        labels: ${{ steps.meta.outputs.labels }}
-        cache-from: type=gha
-        cache-to: type=gha,mode=max
-
-  deploy-dev:
-    name: Deploy to Development
-    runs-on: ubuntu-latest
-    needs: build
-    if: github.ref == 'refs/heads/develop' && github.event_name == 'push'
-
-    steps:
-    - uses: actions/checkout@v4
-
-    - name: Deploy to k8s dev cluster
-      run: |
-        curl -X POST ${{ secrets.DEV_DEPLOY_WEBHOOK }} \
-          -H 'Authorization: Bearer ${{ secrets.DEV_DEPLOY_TOKEN }}' \
-          -d "image=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}"
-
-    - name: Wait for deployment
-      run: |
-        kubectl rollout status deployment/venom-proxy \
-          -n venom \
-          --kubeconfig=${{ secrets.DEV_KUBECONFIG }} \
-          --timeout=5m
-
-  deploy-prod:
-    name: Deploy to Production
-    runs-on: ubuntu-latest
-    needs: build
-    if: startsWith(github.ref, 'refs/tags/v') && github.event_name == 'push'
-
-    environment:
-      name: production
-      url: https://venom.example.com
-
-    steps:
-    - uses: actions/checkout@v4
-
-    - name: Notify deployment start
-      uses: 8398a7/action-slack@v3
-      with:
-        status: custom
-        custom_payload: |
-          {
-            text: "🚀 VENOM Production Deployment Started",
-            attachments: [{
-              color: 'warning',
-              text: `Version: ${{ github.ref_name }}\nCommit: ${{ github.sha }}`
-            }]
-          }
-        webhook_url: ${{ secrets.SLACK_WEBHOOK }}
-
-    - name: Create deployment
-      id: deployment
-      run: |
-        DEPLOYMENT=$(curl -X POST https://api.github.com/repos/${{ github.repository }}/deployments \
-          -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
-          -H "Accept: application/vnd.github.v3+json" \
-          -d '{"ref":"${{ github.ref }}","environment":"production","auto_merge":false,"required_contexts":[]}' \
-          | jq -r '.id')
-        echo "deployment_id=$DEPLOYMENT" >> $GITHUB_OUTPUT
-
-    - name: Deploy to k8s prod cluster
-      run: |
-        curl -X POST ${{ secrets.PROD_DEPLOY_WEBHOOK }} \
-          -H 'Authorization: Bearer ${{ secrets.PROD_DEPLOY_TOKEN }}' \
-          -d "image=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.ref_name }}" \
-          -d "deployment_id=${{ steps.deployment.outputs.deployment_id }}"
-
-    - name: Wait for deployment
-      run: |
-        kubectl rollout status deployment/venom-proxy \
-          -n venom \
-          --kubeconfig=${{ secrets.PROD_KUBECONFIG }} \
-          --timeout=10m
-
-    - name: Run smoke tests
-      run: |
-        curl -f https://venom.example.com/health || exit 1
-        curl -f https://venom.example.com/api/health || exit 1
-
-    - name: Create deployment status
-      if: success()
-      run: |
-        curl -X POST https://api.github.com/repos/${{ github.repository }}/deployments/${{ steps.deployment.outputs.deployment_id }}/statuses \
-          -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
-          -H "Accept: application/vnd.github.v3+json" \
-          -d '{"state":"success","environment_url":"https://venom.example.com","description":"Deployment succeeded"}'
-
-    - name: Create deployment status (failure)
-      if: failure()
-      run: |
-        curl -X POST https://api.github.com/repos/${{ github.repository }}/deployments/${{ steps.deployment.outputs.deployment_id }}/statuses \
-          -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
-          -H "Accept: application/vnd.github.v3+json" \
-          -d '{"state":"failure","description":"Deployment failed"}'
-
-    - name: Notify deployment result
-      if: always()
-      uses: 8398a7/action-slack@v3
-      with:
-        status: ${{ job.status }}
-        custom_payload: |
-          {
-            text: "${{ job.status == 'success' && '✅ VENOM Production Deployment Succeeded' || '❌ VENOM Production Deployment Failed' }}",
-            attachments: [{
-              color: "${{ job.status == 'success' && 'good' || 'danger' }}",
-              text: `Version: ${{ github.ref_name }}\nCommit: ${{ github.sha }}`
-            }]
-          }
-        webhook_url: ${{ secrets.SLACK_WEBHOOK }}
-
-  rollback:
-    name: Rollback on Failure
-    runs-on: ubuntu-latest
-    needs: deploy-prod
-    if: needs.deploy-prod.result == 'failure'
-
-    steps:
-    - name: Trigger rollback
-      run: |
-        curl -X POST ${{ secrets.PROD_DEPLOY_WEBHOOK }} \
-          -H 'Authorization: Bearer ${{ secrets.PROD_DEPLOY_TOKEN }}' \
-          -d "action=rollback" \
-          -d "reason=deployment_failed"
-
-    - name: Notify rollback
-      uses: 8398a7/action-slack@v3
-      with:
-        status: custom
-        custom_payload: |
-          {
-            text: "🔄 VENOM Production Rollback Initiated",
-            attachments: [{
-              color: 'danger',
-              text: `Version: ${{ github.ref_name }}\nReason: Deployment failed`
-            }]
-          }
-        webhook_url: ${{ secrets.SLACK_WEBHOOK }}
+      - uses: actions/checkout@v6
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+      - name: Log in to GitHub Container Registry
+        if: github.event_name == 'push'
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Extract image metadata
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=sha
+      - name: Build container image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          push: ${{ github.event_name == 'push' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
