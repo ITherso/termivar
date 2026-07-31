@@ -40,6 +40,7 @@ pub mod error;
 pub mod knowledge;
 pub mod logging;
 pub mod metrics;
+pub mod planner;
 pub mod rules;
 
 // Scanning engine (feature: scanning)
@@ -139,6 +140,11 @@ pub use knowledge::{
 };
 pub use logging::{LogEntry, LogLevel, Logger};
 pub use metrics::{MetricsCollector, MetricsSummary, PhaseMetrics};
+pub use planner::{
+    ActionCost, AttackAction, AttackPlan, AttackPlanner, BenefitScore, ExcludedAction,
+    ExclusionReason, HypothesisSelector, PlanStep, PlannerError, PlannerWrite, PlanningContext,
+    RequiredStrength, RiskScore, UtilityBreakdown, UtilityScore,
+};
 pub use rules::{
     EvidenceCalibration, EvidenceSelector, Expression, ExpressionEvaluation, ExpressionTrace,
     HypothesisConclusion, KnowledgeLayer, ReasoningRule, RuleApplication, RuleEngine,
