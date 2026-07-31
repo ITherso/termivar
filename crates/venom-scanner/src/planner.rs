@@ -586,6 +586,8 @@ impl PlanningContext {
 #[serde(tag = "reason", rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum ExclusionReason {
+    /// An adaptive or operator policy suppressed this action.
+    PolicySuppressed,
     /// The action's expression did not match the snapshot.
     RequirementsNotMet,
     /// No supported hypothesis met the selector threshold.
@@ -790,17 +792,43 @@ impl AttackPlanner {
         self.plan_snapshot(&snapshot, context)
     }
 
+    /// Produces a plan while excluding actions suppressed by adaptive policy.
+    pub fn plan_with_suppressed(
+        &self,
+        knowledge: &KnowledgeBase,
+        subject: &EntityId,
+        context: PlanningContext,
+        suppressed_actions: &BTreeSet<String>,
+    ) -> Result<AttackPlan, PlannerError> {
+        let snapshot = knowledge.snapshot_for_subject(subject);
+        self.plan_snapshot_with_suppressed(&snapshot, context, suppressed_actions)
+    }
+
     /// Produces a plan from an explicit immutable snapshot.
     pub fn plan_snapshot(
         &self,
         snapshot: &KnowledgeSnapshot,
         context: PlanningContext,
     ) -> Result<AttackPlan, PlannerError> {
+        self.plan_snapshot_with_suppressed(snapshot, context, &BTreeSet::new())
+    }
+
+    /// Produces a plan from a snapshot and an explicit policy suppression set.
+    pub fn plan_snapshot_with_suppressed(
+        &self,
+        snapshot: &KnowledgeSnapshot,
+        context: PlanningContext,
+        suppressed_actions: &BTreeSet<String>,
+    ) -> Result<AttackPlan, PlannerError> {
         self.validate_dependencies()?;
 
         let mut eligible = BTreeMap::<String, EligibleCandidate>::new();
         let mut exclusions = BTreeMap::<String, ExclusionReason>::new();
         for action in self.actions.values() {
+            if suppressed_actions.contains(action.id()) {
+                exclusions.insert(action.id.clone(), ExclusionReason::PolicySuppressed);
+                continue;
+            }
             let requirements = action.requirements.evaluate(snapshot)?;
             if !requirements.matched() {
                 exclusions.insert(action.id.clone(), ExclusionReason::RequirementsNotMet);
@@ -1136,6 +1164,31 @@ mod tests {
         assert_eq!(first.steps()[0].action_id(), "alpha");
         assert_eq!(first.steps()[1].action_id(), "zeta");
         assert_eq!(first.total_cost(), 20);
+    }
+
+    #[test]
+    fn replanning_excludes_policy_suppressed_actions() {
+        let knowledge = knowledge_with_hypothesis((80, 20));
+        let mut planner = AttackPlanner::new();
+        planner.register(action("zeta", 80, 10, 20, &[])).unwrap();
+        planner.register(action("alpha", 80, 10, 20, &[])).unwrap();
+
+        let plan = planner
+            .plan_with_suppressed(
+                &knowledge,
+                &subject(),
+                context(100),
+                &BTreeSet::from(["alpha".into()]),
+            )
+            .unwrap();
+
+        assert_eq!(plan.steps().len(), 1);
+        assert_eq!(plan.steps()[0].action_id(), "zeta");
+        assert_eq!(plan.excluded()[0].action_id(), "alpha");
+        assert_eq!(
+            plan.excluded()[0].reason(),
+            &ExclusionReason::PolicySuppressed
+        );
     }
 
     #[test]

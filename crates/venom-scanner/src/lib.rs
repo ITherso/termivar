@@ -172,7 +172,10 @@ pub use waf::{EvisionTechnique, PayloadEncoder, WafDetector, WafProduct};
 
 #[cfg(feature = "scanning")]
 pub use adaptive::{
-    AdaptationStrategy, AdaptiveEngine, DetectionPattern, PayloadMutator, ResponseMetrics,
+    AdaptationLedger, AdaptationLimits, AdaptationRule, AdaptationRuleEvaluation,
+    AdaptationStrategy, AdaptiveDecision, AdaptiveEngine, AdaptivePipeline, AdaptivePipelineError,
+    AdaptiveRuleWrite, DetectionPattern, OutcomeSelector, PayloadMutator, PipelineDirective,
+    ResponseMetrics,
 };
 
 #[cfg(feature = "scanning")]

@@ -1,18 +1,25 @@
-//! Adaptive Payload Engine
+//! Adaptive execution policy and payload mutation.
 //!
-//! Analyzes responses and intelligently adapts payloads based on:
+//! The deterministic pipeline maps evidence-backed outcomes to runner
+//! directives. The legacy payload engine analyzes recent response metrics and
+//! recommends payload transformations based on:
 //! - Detection patterns (blacklist detection)
 //! - Response timing (rate limiting)
 //! - Status codes (WAF blocking patterns)
 //! - Content changes (response filtering)
 
 pub mod payloads;
+pub mod pipeline;
 pub mod scoring;
 pub mod strategy;
 
 use std::collections::VecDeque;
 
 pub use payloads::PayloadMutator;
+pub use pipeline::{
+    AdaptationLedger, AdaptationLimits, AdaptationRule, AdaptationRuleEvaluation, AdaptiveDecision,
+    AdaptivePipeline, AdaptivePipelineError, AdaptiveRuleWrite, OutcomeSelector, PipelineDirective,
+};
 pub use scoring::{ResponseMetrics, ScoringEngine};
 pub use strategy::{AdaptationStrategy, DetectionPattern, StrategySelector};
 
