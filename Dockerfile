@@ -1,61 +1,46 @@
-# Multi-stage build for optimal size and performance
-# Stage 1: Builder
-FROM rust:1.75-slim as builder
+# syntax=docker/dockerfile:1
+
+FROM rust:slim-bookworm AS builder
 
 WORKDIR /usr/src/venom
 
-# Install build dependencies
-RUN apt-get update && apt-get install -y \
-    pkg-config \
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    cmake \
     libssl-dev \
+    perl \
+    pkg-config \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy manifests
-COPY Cargo.toml Cargo.lock ./
+COPY . .
 
-# Build dependencies (caches layer)
-RUN mkdir src && \
-    echo "fn main() {}" > src/main.rs && \
-    cargo build --release && \
-    rm -rf src
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/src/venom/target \
+    cargo build --locked --release -p venom-cli \
+    && cp target/release/venom /tmp/venom \
+    && strip /tmp/venom
 
-# Copy source code
-COPY src ./src
+FROM debian:bookworm-slim AS runtime
 
-# Build application
-RUN cargo build --release && \
-    strip target/release/venom
-
-# Stage 2: Runtime (Alpine)
-FROM alpine:3.18
-
-# Install runtime dependencies only
-RUN apk add --no-cache \
+RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
-    libssl3 \
-    libcrypto3 \
-    && addgroup -g 1000 venom \
-    && adduser -D -u 1000 -G venom venom
+    netcat-openbsd \
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd --gid 1000 venom \
+    && useradd --uid 1000 --gid venom --create-home venom
 
 WORKDIR /app
 
-# Copy binary from builder
-COPY --from=builder /usr/src/venom/target/release/venom /app/venom
+COPY --from=builder --chown=venom:venom /tmp/venom /usr/local/bin/venom
 
-# Create .venom directory for CA and database
-RUN mkdir -p /app/.venom && \
-    chown -R venom:venom /app
+RUN mkdir -p /app/.venom && chown -R venom:venom /app
 
-# Change to non-root user
 USER venom
 
-# Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD /app/venom ping || exit 1
+HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
+    CMD ["nc", "-z", "127.0.0.1", "8080"]
 
-# Expose ports
-EXPOSE 8080 3000
+EXPOSE 8080
 
-# Run application
-ENTRYPOINT ["/app/venom"]
-CMD ["proxy", "--host", "0.0.0.0", "--port", "8080"]
+ENTRYPOINT ["venom"]
+CMD ["proxy", "--addr", "0.0.0.0:8080"]

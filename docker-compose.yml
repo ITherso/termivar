@@ -9,7 +9,6 @@ services:
     container_name: venom-proxy
     ports:
       - "8080:8080"    # MITM Proxy
-      - "3000:3000"    # REST API
     environment:
       - RUST_LOG=info
       - DATABASE_URL=postgres://venom:venom@postgres:5432/venom_db
@@ -26,7 +25,7 @@ services:
       - venom_network
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      test: ["CMD", "nc", "-z", "127.0.0.1", "8080"]
       interval: 30s
       timeout: 10s
       retries: 3
