@@ -13,24 +13,25 @@ Venom is currently **v0.9.0-alpha**. It is a modular Rust-based penetration test
 
 ## v1 release gates
 
-| Gate | Current evidence | Exit criterion | Target milestone |
-| --- | --- | --- | --- |
-| Stable SDK and plugin contracts | Preview API, compatibility line, SemVer checks | Public contracts documented, baselined, and protected by compatibility tests | v1.0 |
-| Reproducible performance report | Criterion microbaseline | Publish controlled 100/1,000 endpoint and 10,000-request CPU, RAM, latency, and throughput results | v1.0 |
-| Fuzzing maturity | Scheduled bounded campaigns and committed baseline | Expand corpus/coverage, retain crash artifacts, and document a repeatable triage path | v1.0 |
-| Security readiness | CodeQL, `cargo audit`, `cargo deny`, private reporting policy | Close audit-readiness gaps and publish the scope/outcome of an independent review | v1.0 |
-| Distributed semantics | In-memory queue, worker scoring, retry, heartbeat primitives | Define durability, leases, retry ownership, failure recovery, and transport boundaries | v1.1 |
-| Adoption evidence | Examples and generated starters | Validate the 10-minute path with at least one external adopter or contributor | v1.0 |
+| Gate | Current evidence | Exit criterion | Tracking | Target milestone |
+| --- | --- | --- | --- | --- |
+| Stable SDK and plugin contracts | Preview API, compatibility line, SemVer checks | Public contracts documented, baselined, and protected by compatibility tests | [#4](https://github.com/ITherso/venom/issues/4) | v1.0 |
+| Reproducible performance report | Criterion microbaseline | Publish controlled 100/1,000 endpoint and 10,000-request CPU, RAM, latency, and throughput results | [#5](https://github.com/ITherso/venom/issues/5) | v1.0 |
+| Fuzzing maturity | Scheduled bounded campaigns and committed baseline | Expand corpus/coverage, retain crash artifacts, and document a repeatable triage path | Backlog | v1.0 |
+| Security readiness | CodeQL, `cargo audit`, `cargo deny`, private reporting policy | Close audit-readiness gaps and publish the scope/outcome of an independent review | [#6](https://github.com/ITherso/venom/issues/6) | v1.0 |
+| Distributed semantics | In-memory queue, worker scoring, retry, heartbeat primitives | Define durability, leases, retry ownership, failure recovery, and transport boundaries | [#7](https://github.com/ITherso/venom/issues/7) | v1.1 |
+| Adoption evidence | Examples, generated starters, and a scoped first issue | Validate the 10-minute path with at least one external adopter or contributor | [#3](https://github.com/ITherso/venom/issues/3) | v1.0 |
+| Upgrade lifecycle | Pre-stable plugin policy | Define supported release lines, deprecation windows, and migration requirements | [#8](https://github.com/ITherso/venom/issues/8) | v1.0 |
 
 ## Active blockers
 
 The following conditions block a stable v1.0 claim:
 
-1. No stable public API baseline and compatibility window.
-2. No controlled endpoint-scale performance report.
-3. No independent security assessment.
-4. Insufficient external adoption evidence for the SDK and plugin workflow.
-5. No documented upgrade and deprecation lifecycle for stable consumers.
+1. No stable public API baseline and compatibility window ([#4](https://github.com/ITherso/venom/issues/4)).
+2. No controlled endpoint-scale performance report ([#5](https://github.com/ITherso/venom/issues/5)).
+3. No independent security assessment ([#6](https://github.com/ITherso/venom/issues/6)).
+4. Insufficient external adoption evidence for the SDK and plugin workflow ([#3](https://github.com/ITherso/venom/issues/3)).
+5. No documented upgrade and deprecation lifecycle for stable consumers ([#8](https://github.com/ITherso/venom/issues/8)).
 
 Distributed multi-node production readiness is tracked separately for v1.1 and does not block a focused single-node v1.0 SDK release if its Preview status remains explicit.
 
