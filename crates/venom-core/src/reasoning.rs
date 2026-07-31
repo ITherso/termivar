@@ -11,6 +11,7 @@ use std::fmt;
 use thiserror::Error;
 
 const MAX_CONFIDENCE_BASIS_POINTS: u16 = 10_000;
+const MAX_PROBABILITY_PARTS_PER_MILLION: u32 = 1_000_000;
 
 /// Validation errors for decision-engine domain contracts.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
@@ -23,6 +24,14 @@ pub enum ReasoningModelError {
     /// A confidence score exceeded the inclusive `0..=10_000` range.
     #[error("confidence score {0} exceeds 10,000 basis points")]
     ConfidenceOutOfRange(u16),
+
+    /// A probability exceeded the inclusive `0..=1_000_000` range.
+    #[error("probability {0} exceeds 1,000,000 parts per million")]
+    ProbabilityOutOfRange(u32),
+
+    /// Bayes' theorem had a zero denominator for the supplied observation.
+    #[error("Bayesian posterior is undefined for the supplied likelihoods")]
+    UndefinedPosterior,
 }
 
 fn non_empty(value: impl Into<String>, field: &'static str) -> Result<String, ReasoningModelError> {
@@ -235,6 +244,86 @@ impl<'de> Deserialize<'de> for ConfidenceScore {
     {
         let value = u16::deserialize(deserializer)?;
         Self::from_basis_points(value).map_err(serde::de::Error::custom)
+    }
+}
+
+/// A calibrated probability represented as fixed-point parts per million.
+///
+/// Unlike [`ConfidenceScore`], this value has a statistical meaning. Decision
+/// code uses integer arithmetic so the same prior and observations produce the
+/// same posterior on every supported platform. Floating-point conversion is
+/// provided only for display and analytics.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
+#[serde(transparent)]
+pub struct Probability(u32);
+
+impl Probability {
+    /// An impossible event.
+    pub const ZERO: Self = Self(0);
+
+    /// A certain event.
+    pub const ONE: Self = Self(MAX_PROBABILITY_PARTS_PER_MILLION);
+
+    /// Creates a probability from fixed-point parts per million.
+    pub fn from_parts_per_million(value: u32) -> Result<Self, ReasoningModelError> {
+        if value > MAX_PROBABILITY_PARTS_PER_MILLION {
+            return Err(ReasoningModelError::ProbabilityOutOfRange(value));
+        }
+        Ok(Self(value))
+    }
+
+    /// Creates a probability from basis points.
+    pub fn from_basis_points(value: u16) -> Result<Self, ReasoningModelError> {
+        Self::from_parts_per_million(u32::from(value) * 100)
+    }
+
+    /// Creates a probability from an integer percentage.
+    pub fn from_percent(value: u8) -> Result<Self, ReasoningModelError> {
+        Self::from_parts_per_million(u32::from(value) * 10_000)
+    }
+
+    /// Returns the fixed-point value in parts per million.
+    pub const fn parts_per_million(self) -> u32 {
+        self.0
+    }
+
+    /// Returns the probability as a ratio for presentation or analytics.
+    pub fn ratio(self) -> f64 {
+        f64::from(self.0) / f64::from(MAX_PROBABILITY_PARTS_PER_MILLION)
+    }
+
+    /// Applies one Bayesian observation to this prior.
+    ///
+    /// `likelihood_if_true` is `P(E|H)` and `likelihood_if_false` is
+    /// `P(E|not H)`. The result is rounded to the nearest part per million.
+    pub fn update(
+        self,
+        likelihood_if_true: Self,
+        likelihood_if_false: Self,
+    ) -> Result<Self, ReasoningModelError> {
+        let scale = u128::from(MAX_PROBABILITY_PARTS_PER_MILLION);
+        let prior = u128::from(self.0);
+        let true_weight = u128::from(likelihood_if_true.0) * prior;
+        let false_weight = u128::from(likelihood_if_false.0) * (scale - prior);
+        let denominator = true_weight + false_weight;
+
+        if denominator == 0 {
+            return Err(ReasoningModelError::UndefinedPosterior);
+        }
+
+        let rounded = (true_weight * scale + denominator / 2) / denominator;
+        let value = u32::try_from(rounded).expect("posterior is bounded by the probability scale");
+        Self::from_parts_per_million(value)
+    }
+}
+
+impl<'de> Deserialize<'de> for Probability {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = u32::deserialize(deserializer)?;
+        Self::from_parts_per_million(value).map_err(serde::de::Error::custom)
     }
 }
 
@@ -623,6 +712,262 @@ impl EvidenceContribution {
     }
 }
 
+/// Likelihoods contributed by one immutable evidence record.
+///
+/// # Example
+///
+/// ```rust
+/// use venom_core::{BayesianEvidence, EvidenceId, Probability};
+///
+/// let observation = BayesianEvidence::new(
+///     EvidenceId::parse("cookie-xsrf-token")?,
+///     Probability::from_percent(80)?,
+///     Probability::from_percent(20)?,
+///     "XSRF-TOKEN is more likely when the framework is present",
+/// )?;
+///
+/// assert_eq!(observation.likelihood_if_true().parts_per_million(), 800_000);
+/// # Ok::<(), venom_core::ReasoningModelError>(())
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BayesianEvidence {
+    evidence_id: EvidenceId,
+    likelihood_if_true: Probability,
+    likelihood_if_false: Probability,
+    #[serde(deserialize_with = "deserialize_non_empty_string")]
+    rationale: String,
+}
+
+impl BayesianEvidence {
+    /// Creates one explainable likelihood observation.
+    pub fn new(
+        evidence_id: EvidenceId,
+        likelihood_if_true: Probability,
+        likelihood_if_false: Probability,
+        rationale: impl Into<String>,
+    ) -> Result<Self, ReasoningModelError> {
+        Ok(Self {
+            evidence_id,
+            likelihood_if_true,
+            likelihood_if_false,
+            rationale: non_empty(rationale, "Bayesian evidence rationale")?,
+        })
+    }
+
+    /// Returns the referenced evidence identifier.
+    pub fn evidence_id(&self) -> &EvidenceId {
+        &self.evidence_id
+    }
+
+    /// Returns `P(E|H)`.
+    pub fn likelihood_if_true(&self) -> Probability {
+        self.likelihood_if_true
+    }
+
+    /// Returns `P(E|not H)`.
+    pub fn likelihood_if_false(&self) -> Probability {
+        self.likelihood_if_false
+    }
+
+    /// Returns the human-readable reason for these likelihoods.
+    pub fn rationale(&self) -> &str {
+        &self.rationale
+    }
+}
+
+/// Result of adding evidence to a Bayesian belief.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum BeliefWrite {
+    /// A new evidence identifier was added.
+    Inserted,
+    /// Existing likelihoods for the evidence identifier were replaced.
+    Replaced,
+    /// The same evidence and likelihoods were already present.
+    Unchanged,
+}
+
+/// One explainable step in a posterior calculation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BayesianUpdate {
+    evidence_id: EvidenceId,
+    prior: Probability,
+    likelihood_if_true: Probability,
+    likelihood_if_false: Probability,
+    posterior: Probability,
+    rationale: String,
+}
+
+impl BayesianUpdate {
+    /// Returns the evidence applied in this step.
+    pub fn evidence_id(&self) -> &EvidenceId {
+        &self.evidence_id
+    }
+
+    /// Returns the probability before this observation.
+    pub fn prior(&self) -> Probability {
+        self.prior
+    }
+
+    /// Returns `P(E|H)` for this observation.
+    pub fn likelihood_if_true(&self) -> Probability {
+        self.likelihood_if_true
+    }
+
+    /// Returns `P(E|not H)` for this observation.
+    pub fn likelihood_if_false(&self) -> Probability {
+        self.likelihood_if_false
+    }
+
+    /// Returns the probability after this observation.
+    pub fn posterior(&self) -> Probability {
+        self.posterior
+    }
+
+    /// Returns the explanation attached to this observation.
+    pub fn rationale(&self) -> &str {
+        &self.rationale
+    }
+}
+
+/// Deterministic Bayesian state for one hypothesis.
+///
+/// Evidence is stored and replayed in [`EvidenceId`] order. Inserting the same
+/// set in a different arrival order therefore produces an identical posterior
+/// and audit trail. Reusing an evidence identifier replaces its likelihoods
+/// instead of double counting the observation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct BayesianBelief {
+    prior: Probability,
+    posterior: Probability,
+    evidence: Vec<BayesianEvidence>,
+    #[serde(skip)]
+    updates: Vec<BayesianUpdate>,
+}
+
+impl BayesianBelief {
+    /// Starts a belief at a calibrated prior.
+    pub fn new(prior: Probability) -> Self {
+        Self {
+            prior,
+            posterior: prior,
+            evidence: Vec::new(),
+            updates: Vec::new(),
+        }
+    }
+
+    /// Adds or replaces one observation and recomputes the posterior.
+    ///
+    /// The operation is transactional: an undefined update leaves the belief
+    /// unchanged.
+    pub fn observe(
+        &mut self,
+        observation: BayesianEvidence,
+    ) -> Result<BeliefWrite, ReasoningModelError> {
+        let mut candidate = self.evidence.clone();
+        let write = match candidate
+            .binary_search_by(|existing| existing.evidence_id.cmp(&observation.evidence_id))
+        {
+            Ok(index) if candidate[index] == observation => return Ok(BeliefWrite::Unchanged),
+            Ok(index) => {
+                candidate[index] = observation;
+                BeliefWrite::Replaced
+            },
+            Err(index) => {
+                candidate.insert(index, observation);
+                BeliefWrite::Inserted
+            },
+        };
+        let (posterior, updates) = calculate_bayesian_updates(self.prior, &candidate)?;
+
+        self.posterior = posterior;
+        self.evidence = candidate;
+        self.updates = updates;
+        Ok(write)
+    }
+
+    /// Returns the initial probability before observations.
+    pub fn prior(&self) -> Probability {
+        self.prior
+    }
+
+    /// Returns the current posterior probability.
+    pub fn posterior(&self) -> Probability {
+        self.posterior
+    }
+
+    /// Returns observations in deterministic evidence-identifier order.
+    pub fn evidence(&self) -> &[BayesianEvidence] {
+        &self.evidence
+    }
+
+    /// Returns every intermediate Bayesian update in evaluation order.
+    pub fn updates(&self) -> &[BayesianUpdate] {
+        &self.updates
+    }
+}
+
+impl<'de> Deserialize<'de> for BayesianBelief {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct WireBelief {
+            prior: Probability,
+            posterior: Probability,
+            evidence: Vec<BayesianEvidence>,
+        }
+
+        let wire = WireBelief::deserialize(deserializer)?;
+        let mut belief = Self::new(wire.prior);
+        let mut evidence_ids = BTreeSet::new();
+        for observation in wire.evidence {
+            if !evidence_ids.insert(observation.evidence_id.clone()) {
+                return Err(serde::de::Error::custom(format!(
+                    "duplicate Bayesian evidence id {}",
+                    observation.evidence_id
+                )));
+            }
+            belief
+                .observe(observation)
+                .map_err(serde::de::Error::custom)?;
+        }
+        if belief.posterior != wire.posterior {
+            return Err(serde::de::Error::custom(format!(
+                "serialized posterior {} does not match computed posterior {}",
+                wire.posterior.parts_per_million(),
+                belief.posterior.parts_per_million()
+            )));
+        }
+        Ok(belief)
+    }
+}
+
+fn calculate_bayesian_updates(
+    prior: Probability,
+    evidence: &[BayesianEvidence],
+) -> Result<(Probability, Vec<BayesianUpdate>), ReasoningModelError> {
+    let mut current = prior;
+    let mut updates = Vec::with_capacity(evidence.len());
+    for observation in evidence {
+        let posterior = current.update(
+            observation.likelihood_if_true,
+            observation.likelihood_if_false,
+        )?;
+        updates.push(BayesianUpdate {
+            evidence_id: observation.evidence_id.clone(),
+            prior: current,
+            likelihood_if_true: observation.likelihood_if_true,
+            likelihood_if_false: observation.likelihood_if_false,
+            posterior,
+            rationale: observation.rationale.clone(),
+        });
+        current = posterior;
+    }
+    Ok((current, updates))
+}
+
 /// Lifecycle state for an evaluated hypothesis.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -640,7 +985,23 @@ pub enum HypothesisState {
     Rejected,
 }
 
-/// Explainable claim whose score is maintained by a reasoning engine.
+/// Rule-assigned evidence strength for a hypothesis.
+///
+/// Strength is intentionally separate from posterior probability. A rule can
+/// require independent evidence sources before marking a highly probable claim
+/// as strong.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum HypothesisStrength {
+    /// Evidence has not yet satisfied the rule's strong-evidence criteria.
+    #[default]
+    Weak,
+    /// The rule considers the evidence sufficiently independent and specific.
+    Strong,
+}
+
+/// Explainable claim whose belief is maintained by a reasoning engine.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Hypothesis {
     #[serde(deserialize_with = "deserialize_non_empty_string")]
@@ -648,54 +1009,53 @@ pub struct Hypothesis {
     subject: EntityId,
     predicate: KnowledgePredicate,
     value: EvidenceValue,
-    confidence: ConfidenceScore,
+    belief: BayesianBelief,
+    strength: HypothesisStrength,
     state: HypothesisState,
-    contributions: Vec<EvidenceContribution>,
     updated_at_ms: u64,
 }
 
 impl Hypothesis {
-    /// Creates a proposed claim with no confidence or evidence.
-    pub fn new(subject: EntityId, predicate: KnowledgePredicate, value: EvidenceValue) -> Self {
+    /// Creates a weak, proposed claim at the supplied calibrated prior.
+    pub fn new(
+        subject: EntityId,
+        predicate: KnowledgePredicate,
+        value: EvidenceValue,
+        prior: Probability,
+    ) -> Self {
         Self {
             id: uuid::Uuid::new_v4().to_string(),
             subject,
             predicate,
             value,
-            confidence: ConfidenceScore::NONE,
+            belief: BayesianBelief::new(prior),
+            strength: HypothesisStrength::Weak,
             state: HypothesisState::Proposed,
-            contributions: Vec::new(),
             updated_at_ms: now_ms(),
         }
     }
 
-    /// Replaces the score assigned by the reasoning engine.
-    pub fn set_confidence(&mut self, confidence: ConfidenceScore) {
-        self.confidence = confidence;
+    /// Applies one observation to the Bayesian belief.
+    pub fn observe(
+        &mut self,
+        observation: BayesianEvidence,
+    ) -> Result<BeliefWrite, ReasoningModelError> {
+        let write = self.belief.observe(observation)?;
+        if write != BeliefWrite::Unchanged {
+            self.updated_at_ms = now_ms();
+        }
+        Ok(write)
+    }
+
+    /// Replaces the strength assigned by a deterministic rule.
+    pub fn set_strength(&mut self, strength: HypothesisStrength) {
+        self.strength = strength;
         self.updated_at_ms = now_ms();
     }
 
     /// Replaces the lifecycle state assigned by the reasoning engine or verifier.
     pub fn set_state(&mut self, state: HypothesisState) {
         self.state = state;
-        self.updated_at_ms = now_ms();
-    }
-
-    /// Adds or replaces one evidence contribution.
-    ///
-    /// An evidence record can affect a hypothesis only once, preventing an
-    /// accidental double count when a module reports the same observation
-    /// repeatedly.
-    pub fn add_contribution(&mut self, contribution: EvidenceContribution) {
-        if let Some(existing) = self
-            .contributions
-            .iter_mut()
-            .find(|existing| existing.evidence_id == contribution.evidence_id)
-        {
-            *existing = contribution;
-        } else {
-            self.contributions.push(contribution);
-        }
         self.updated_at_ms = now_ms();
     }
 
@@ -719,19 +1079,29 @@ impl Hypothesis {
         &self.value
     }
 
-    /// Returns the current confidence score.
-    pub fn confidence(&self) -> ConfidenceScore {
-        self.confidence
+    /// Returns the complete Bayesian belief and audit trail.
+    pub fn belief(&self) -> &BayesianBelief {
+        &self.belief
+    }
+
+    /// Returns the calibrated prior probability.
+    pub fn prior(&self) -> Probability {
+        self.belief.prior()
+    }
+
+    /// Returns the current posterior probability.
+    pub fn posterior(&self) -> Probability {
+        self.belief.posterior()
+    }
+
+    /// Returns the rule-assigned evidence strength.
+    pub fn strength(&self) -> HypothesisStrength {
+        self.strength
     }
 
     /// Returns the current evaluation state.
     pub fn state(&self) -> HypothesisState {
         self.state
-    }
-
-    /// Returns the explainable evidence contributions.
-    pub fn contributions(&self) -> &[EvidenceContribution] {
-        &self.contributions
     }
 
     /// Returns when the hypothesis last changed in Unix milliseconds.
@@ -956,6 +1326,36 @@ mod tests {
     }
 
     #[test]
+    fn probability_rejects_out_of_range_values() {
+        assert_eq!(
+            Probability::from_parts_per_million(1_000_001),
+            Err(ReasoningModelError::ProbabilityOutOfRange(1_000_001))
+        );
+        assert_eq!(
+            Probability::from_percent(101),
+            Err(ReasoningModelError::ProbabilityOutOfRange(1_010_000))
+        );
+        assert!(serde_json::from_str::<Probability>("1000001").is_err());
+    }
+
+    #[test]
+    fn probability_applies_bayes_theorem_with_fixed_point_rounding() {
+        let posterior = Probability::from_percent(10)
+            .unwrap()
+            .update(
+                Probability::from_percent(80).unwrap(),
+                Probability::from_percent(20).unwrap(),
+            )
+            .unwrap();
+
+        assert_eq!(posterior.parts_per_million(), 307_692);
+        assert_eq!(
+            Probability::ZERO.update(Probability::ZERO, Probability::ZERO),
+            Err(ReasoningModelError::UndefinedPosterior)
+        );
+    }
+
+    #[test]
     fn evidence_round_trip_preserves_provenance() {
         let evidence = evidence();
         let encoded = serde_json::to_string(&evidence).unwrap();
@@ -986,41 +1386,159 @@ mod tests {
     }
 
     #[test]
-    fn hypothesis_replaces_duplicate_contributions() {
+    fn hypothesis_uses_bayesian_belief_and_explicit_strength() {
         let evidence = evidence();
         let mut hypothesis = Hypothesis::new(
             evidence.subject().clone(),
             evidence.predicate().clone(),
             evidence.value().clone(),
+            Probability::from_percent(10).unwrap(),
         );
-        hypothesis.add_contribution(
-            EvidenceContribution::new(
-                evidence.id().clone(),
-                ContributionDirection::Supporting,
-                ConfidenceScore::from_percent(25).unwrap(),
-                "framework header observed",
-            )
-            .unwrap(),
+        assert_eq!(hypothesis.strength(), HypothesisStrength::Weak);
+        assert_eq!(
+            hypothesis
+                .observe(
+                    BayesianEvidence::new(
+                        evidence.id().clone(),
+                        Probability::from_percent(80).unwrap(),
+                        Probability::from_percent(20).unwrap(),
+                        "framework header observed",
+                    )
+                    .unwrap(),
+                )
+                .unwrap(),
+            BeliefWrite::Inserted
         );
-        hypothesis.add_contribution(
-            EvidenceContribution::new(
-                evidence.id().clone(),
-                ContributionDirection::Contradicting,
-                ConfidenceScore::from_percent(10).unwrap(),
-                "header may be forged",
-            )
-            .unwrap(),
-        );
-        hypothesis.set_confidence(ConfidenceScore::from_percent(15).unwrap());
+        assert_eq!(hypothesis.posterior().parts_per_million(), 307_692);
+        hypothesis.set_strength(HypothesisStrength::Strong);
         hypothesis.set_state(HypothesisState::Supported);
 
-        assert_eq!(hypothesis.contributions().len(), 1);
-        assert_eq!(
-            hypothesis.contributions().first().unwrap().direction(),
-            ContributionDirection::Contradicting
-        );
-        assert_eq!(hypothesis.confidence().basis_points(), 1_500);
+        assert_eq!(hypothesis.belief().evidence().len(), 1);
+        assert_eq!(hypothesis.belief().updates().len(), 1);
+        assert_eq!(hypothesis.strength(), HypothesisStrength::Strong);
         assert_eq!(hypothesis.state(), HypothesisState::Supported);
+    }
+
+    #[test]
+    fn bayesian_belief_is_idempotent_and_order_independent() {
+        let first = BayesianEvidence::new(
+            EvidenceId::parse("evidence:a").unwrap(),
+            Probability::from_percent(80).unwrap(),
+            Probability::from_percent(20).unwrap(),
+            "specific cookie",
+        )
+        .unwrap();
+        let second = BayesianEvidence::new(
+            EvidenceId::parse("evidence:b").unwrap(),
+            Probability::from_percent(70).unwrap(),
+            Probability::from_percent(30).unwrap(),
+            "framework header",
+        )
+        .unwrap();
+        let mut forward = BayesianBelief::new(Probability::from_percent(10).unwrap());
+        let mut reverse = BayesianBelief::new(Probability::from_percent(10).unwrap());
+
+        assert_eq!(
+            forward.observe(first.clone()).unwrap(),
+            BeliefWrite::Inserted
+        );
+        assert_eq!(
+            forward.observe(second.clone()).unwrap(),
+            BeliefWrite::Inserted
+        );
+        assert_eq!(
+            forward.observe(first.clone()).unwrap(),
+            BeliefWrite::Unchanged
+        );
+        reverse.observe(second).unwrap();
+        reverse.observe(first).unwrap();
+
+        assert_eq!(forward, reverse);
+        assert_eq!(forward.evidence().len(), 2);
+        assert_eq!(forward.updates()[0].evidence_id().as_str(), "evidence:a");
+        assert_eq!(forward.updates()[1].evidence_id().as_str(), "evidence:b");
+    }
+
+    #[test]
+    fn bayesian_belief_replaces_likelihoods_transactionally() {
+        let evidence_id = EvidenceId::parse("evidence:cookie").unwrap();
+        let mut belief = BayesianBelief::new(Probability::from_percent(10).unwrap());
+        belief
+            .observe(
+                BayesianEvidence::new(
+                    evidence_id.clone(),
+                    Probability::from_percent(80).unwrap(),
+                    Probability::from_percent(20).unwrap(),
+                    "initial calibration",
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let original = belief.clone();
+
+        assert_eq!(
+            belief
+                .observe(
+                    BayesianEvidence::new(
+                        evidence_id.clone(),
+                        Probability::from_percent(90).unwrap(),
+                        Probability::from_percent(10).unwrap(),
+                        "recalibrated",
+                    )
+                    .unwrap(),
+                )
+                .unwrap(),
+            BeliefWrite::Replaced
+        );
+        assert_eq!(belief.evidence().len(), 1);
+        assert_ne!(belief.posterior(), original.posterior());
+
+        let before_invalid_update = belief.clone();
+        assert_eq!(
+            belief.observe(
+                BayesianEvidence::new(
+                    evidence_id,
+                    Probability::ZERO,
+                    Probability::ZERO,
+                    "invalid calibration",
+                )
+                .unwrap()
+            ),
+            Err(ReasoningModelError::UndefinedPosterior)
+        );
+        assert_eq!(belief, before_invalid_update);
+    }
+
+    #[test]
+    fn bayesian_belief_wire_format_recomputes_posterior() {
+        let evidence = evidence();
+        let mut belief = BayesianBelief::new(Probability::from_percent(10).unwrap());
+        belief
+            .observe(
+                BayesianEvidence::new(
+                    evidence.id().clone(),
+                    Probability::from_percent(80).unwrap(),
+                    Probability::from_percent(20).unwrap(),
+                    "framework header observed",
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let encoded = serde_json::to_value(&belief).unwrap();
+        let decoded: BayesianBelief = serde_json::from_value(encoded.clone()).unwrap();
+        assert_eq!(decoded, belief);
+
+        let mut tampered = encoded;
+        tampered["posterior"] = serde_json::json!(500_000);
+        assert!(serde_json::from_value::<BayesianBelief>(tampered).is_err());
+
+        let mut duplicated = serde_json::to_value(&belief).unwrap();
+        let first_observation = duplicated["evidence"][0].clone();
+        duplicated["evidence"]
+            .as_array_mut()
+            .unwrap()
+            .push(first_observation);
+        assert!(serde_json::from_value::<BayesianBelief>(duplicated).is_err());
     }
 
     #[test]

@@ -40,8 +40,9 @@ pub use ontology::{
     OntologyRelationType, OntologyStats, OntologyWrite, RelationSemantics, RelationTypeId,
 };
 pub use reasoning::{
-    ConfidenceScore, ContributionDirection, EntityId, EntityKind, Evidence, EvidenceContribution,
-    EvidenceId, EvidenceKind, EvidenceSource, EvidenceValue, Fact, Hypothesis, HypothesisState,
-    KnowledgeEntity, KnowledgePredicate, KnowledgeRelation, ReasoningModelError, RelationId,
-    RelationKind,
+    BayesianBelief, BayesianEvidence, BayesianUpdate, BeliefWrite, ConfidenceScore,
+    ContributionDirection, EntityId, EntityKind, Evidence, EvidenceContribution, EvidenceId,
+    EvidenceKind, EvidenceSource, EvidenceValue, Fact, Hypothesis, HypothesisState,
+    HypothesisStrength, KnowledgeEntity, KnowledgePredicate, KnowledgeRelation, Probability,
+    ReasoningModelError, RelationId, RelationKind,
 };

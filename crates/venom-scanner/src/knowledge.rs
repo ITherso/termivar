@@ -506,8 +506,8 @@ where
 mod tests {
     use super::*;
     use venom_core::{
-        ConfidenceScore, ContributionDirection, EntityKind, EvidenceContribution, EvidenceKind,
-        EvidenceSource, EvidenceValue, HypothesisState, RelationKind,
+        BayesianEvidence, ConfidenceScore, EntityKind, EvidenceKind, EvidenceSource, EvidenceValue,
+        HypothesisState, HypothesisStrength, Probability, RelationKind,
     };
 
     fn subject(id: usize) -> EntityId {
@@ -614,22 +614,25 @@ mod tests {
             evidence.subject().clone(),
             evidence.predicate().clone(),
             evidence.value().clone(),
+            Probability::from_percent(10).unwrap(),
         );
 
         assert_eq!(
             store.upsert_hypothesis(hypothesis.clone()).unwrap(),
             KnowledgeWrite::Inserted
         );
-        hypothesis.add_contribution(
-            EvidenceContribution::new(
-                evidence.id().clone(),
-                ContributionDirection::Supporting,
-                ConfidenceScore::from_percent(82).unwrap(),
-                "framework header and cookie agree",
+        hypothesis
+            .observe(
+                BayesianEvidence::new(
+                    evidence.id().clone(),
+                    Probability::from_percent(90).unwrap(),
+                    Probability::from_percent(10).unwrap(),
+                    "framework header and cookie agree",
+                )
+                .unwrap(),
             )
-            .unwrap(),
-        );
-        hypothesis.set_confidence(ConfidenceScore::from_percent(82).unwrap());
+            .unwrap();
+        hypothesis.set_strength(HypothesisStrength::Strong);
         hypothesis.set_state(HypothesisState::Supported);
         assert_eq!(
             store.upsert_hypothesis(hypothesis.clone()).unwrap(),
@@ -641,9 +644,9 @@ mod tests {
             store
                 .hypothesis(hypothesis.id())
                 .unwrap()
-                .confidence()
-                .basis_points(),
-            8_200
+                .posterior()
+                .parts_per_million(),
+            500_000
         );
     }
 
