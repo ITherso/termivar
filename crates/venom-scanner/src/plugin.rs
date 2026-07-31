@@ -50,7 +50,7 @@ use std::time::Instant;
 ///     }
 /// }
 /// ```
-#[async_trait]
+#[async_trait::async_trait]
 pub trait Plugin: Send + Sync {
     /// Plugin identifier
     fn id(&self) -> &str;
