@@ -40,6 +40,7 @@ pub mod error;
 pub mod knowledge;
 pub mod logging;
 pub mod metrics;
+pub mod rules;
 
 // Scanning engine (feature: scanning)
 #[cfg(feature = "scanning")]
@@ -133,11 +134,16 @@ pub use error::{Result, ScannerError};
 pub use event_bus::{Event, EventBuilder, EventBus, EventHandler, EventSeverity, EventType};
 #[allow(deprecated)]
 pub use knowledge::{
-    KnowledgeBase, KnowledgeBaseError, KnowledgeBaseStats, KnowledgeRecordKind, KnowledgeStore,
-    KnowledgeStoreError, KnowledgeStoreStats, KnowledgeWrite,
+    KnowledgeBase, KnowledgeBaseError, KnowledgeBaseStats, KnowledgeRecordKind, KnowledgeSnapshot,
+    KnowledgeStore, KnowledgeStoreError, KnowledgeStoreStats, KnowledgeWrite,
 };
 pub use logging::{LogEntry, LogLevel, Logger};
 pub use metrics::{MetricsCollector, MetricsSummary, PhaseMetrics};
+pub use rules::{
+    EvidenceCalibration, EvidenceSelector, Expression, ExpressionEvaluation, ExpressionTrace,
+    HypothesisConclusion, KnowledgeLayer, ReasoningRule, RuleApplication, RuleEngine,
+    RuleEngineError, RuleEvaluation, RuleWrite,
+};
 
 // Scanning engine exports (feature: scanning)
 // Note: phases module is re-exported automatically

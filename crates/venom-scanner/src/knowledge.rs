@@ -11,6 +11,7 @@ use std::fmt;
 use std::hash::Hash;
 use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
+use serde::{Deserialize, Serialize};
 use venom_core::{
     ConceptId, EntityId, Evidence, EvidenceId, Fact, Hypothesis, KnowledgeEntity,
     KnowledgePredicate, KnowledgeRelation, Ontology, OntologyAxiom, OntologyConcept, OntologyError,
@@ -18,7 +19,8 @@ use venom_core::{
 };
 
 /// Result of an idempotent write to the knowledge base.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum KnowledgeWrite {
     /// A new identity was stored and indexed.
@@ -102,6 +104,46 @@ pub struct KnowledgeBaseStats {
     pub relations: usize,
     /// Counts for ontology concepts, relation types, and axioms.
     pub ontology: OntologyStats,
+}
+
+/// Consistent, immutable knowledge for one subject at one point in time.
+///
+/// Rule evaluation uses this snapshot so every expression in one decision
+/// cycle observes the same ontology, evidence, facts, and hypotheses.
+#[derive(Debug, Clone)]
+pub struct KnowledgeSnapshot {
+    subject: EntityId,
+    ontology: Ontology,
+    evidence: Vec<Evidence>,
+    facts: Vec<Fact>,
+    hypotheses: Vec<Hypothesis>,
+}
+
+impl KnowledgeSnapshot {
+    /// Returns the subject captured by this snapshot.
+    pub fn subject(&self) -> &EntityId {
+        &self.subject
+    }
+
+    /// Returns evidence ordered by stable evidence ID.
+    pub fn evidence(&self) -> &[Evidence] {
+        &self.evidence
+    }
+
+    /// Returns facts ordered by stable fact ID.
+    pub fn facts(&self) -> &[Fact] {
+        &self.facts
+    }
+
+    /// Returns hypotheses ordered by stable hypothesis ID.
+    pub fn hypotheses(&self) -> &[Hypothesis] {
+        &self.hypotheses
+    }
+
+    /// Returns the ontology captured in the same read transaction.
+    pub fn ontology(&self) -> &Ontology {
+        &self.ontology
+    }
 }
 
 #[derive(Debug, Default)]
@@ -276,7 +318,7 @@ impl KnowledgeBase {
         Ok(KnowledgeWrite::Inserted)
     }
 
-    /// Inserts a hypothesis or updates its evaluation and contributions.
+    /// Inserts a hypothesis or updates its Bayesian evaluation.
     ///
     /// The subject, predicate, and value form the immutable claim identity for
     /// an existing hypothesis ID.
@@ -290,7 +332,7 @@ impl KnowledgeBase {
         let mut state = self.write_state();
 
         if let Some(existing) = state.hypotheses.get(&id) {
-            if existing == &hypothesis {
+            if existing.same_evaluation_as(&hypothesis) {
                 return Ok(KnowledgeWrite::Unchanged);
             }
             if existing.subject() != hypothesis.subject()
@@ -438,6 +480,21 @@ impl KnowledgeBase {
         collect_indexed(state.relations_to.get(entity_id), &state.relations)
     }
 
+    /// Captures all rule-visible knowledge for a subject under one read lock.
+    pub fn snapshot_for_subject(&self, subject: &EntityId) -> KnowledgeSnapshot {
+        let state = self.read_state();
+        KnowledgeSnapshot {
+            subject: subject.clone(),
+            ontology: state.ontology.clone(),
+            evidence: collect_indexed(state.evidence_by_subject.get(subject), &state.evidence),
+            facts: collect_indexed(state.facts_by_subject.get(subject), &state.facts),
+            hypotheses: collect_indexed(
+                state.hypotheses_by_subject.get(subject),
+                &state.hypotheses,
+            ),
+        }
+    }
+
     /// Returns a consistent count snapshot under one read lock.
     pub fn stats(&self) -> KnowledgeBaseStats {
         let state = self.read_state();
@@ -575,6 +632,27 @@ mod tests {
         assert_eq!(store.evidence_for_subject(&second_subject).len(), 1);
         assert_eq!(store.evidence_for_predicate(&predicate()).len(), 2);
         assert!(store.evidence_for_subject(&subject(3)).is_empty());
+    }
+
+    #[test]
+    fn subject_snapshot_is_consistent_and_immutable() {
+        let store = KnowledgeBase::new();
+        let shared_subject = subject(1);
+        store
+            .insert_evidence(evidence_for(shared_subject.clone(), "Laravel"))
+            .unwrap();
+        let snapshot = store.snapshot_for_subject(&shared_subject);
+
+        store
+            .insert_evidence(evidence_for(shared_subject.clone(), "Livewire"))
+            .unwrap();
+
+        assert_eq!(snapshot.subject(), &shared_subject);
+        assert_eq!(snapshot.evidence().len(), 1);
+        assert_eq!(
+            store.snapshot_for_subject(&shared_subject).evidence().len(),
+            2
+        );
     }
 
     #[test]

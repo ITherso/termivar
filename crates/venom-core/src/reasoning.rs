@@ -1023,8 +1023,29 @@ impl Hypothesis {
         value: EvidenceValue,
         prior: Probability,
     ) -> Self {
-        Self {
-            id: uuid::Uuid::new_v4().to_string(),
+        Self::with_id(
+            uuid::Uuid::new_v4().to_string(),
+            subject,
+            predicate,
+            value,
+            prior,
+        )
+        .expect("generated UUID is a non-empty hypothesis identifier")
+    }
+
+    /// Creates a hypothesis with a stable host-assigned identifier.
+    ///
+    /// Deterministic decision engines should use this constructor so repeated
+    /// evaluation updates one hypothesis instead of creating duplicates.
+    pub fn with_id(
+        id: impl Into<String>,
+        subject: EntityId,
+        predicate: KnowledgePredicate,
+        value: EvidenceValue,
+        prior: Probability,
+    ) -> Result<Self, ReasoningModelError> {
+        Ok(Self {
+            id: non_empty(id, "hypothesis id")?,
             subject,
             predicate,
             value,
@@ -1032,7 +1053,7 @@ impl Hypothesis {
             strength: HypothesisStrength::Weak,
             state: HypothesisState::Proposed,
             updated_at_ms: now_ms(),
-        }
+        })
     }
 
     /// Applies one observation to the Bayesian belief.
@@ -1107,6 +1128,20 @@ impl Hypothesis {
     /// Returns when the hypothesis last changed in Unix milliseconds.
     pub fn updated_at_ms(&self) -> u64 {
         self.updated_at_ms
+    }
+
+    /// Returns whether two records carry the same decision state.
+    ///
+    /// Wall-clock update timestamps are deliberately ignored so deterministic
+    /// re-evaluation can remain idempotent.
+    pub fn same_evaluation_as(&self, other: &Self) -> bool {
+        self.id == other.id
+            && self.subject == other.subject
+            && self.predicate == other.predicate
+            && self.value == other.value
+            && self.belief == other.belief
+            && self.strength == other.strength
+            && self.state == other.state
     }
 }
 
@@ -1417,6 +1452,37 @@ mod tests {
         assert_eq!(hypothesis.belief().updates().len(), 1);
         assert_eq!(hypothesis.strength(), HypothesisStrength::Strong);
         assert_eq!(hypothesis.state(), HypothesisState::Supported);
+    }
+
+    #[test]
+    fn hypothesis_stable_identity_ignores_wall_clock_for_idempotency() {
+        let evidence = evidence();
+        let first = Hypothesis::with_id(
+            "rule:laravel:endpoint",
+            evidence.subject().clone(),
+            evidence.predicate().clone(),
+            evidence.value().clone(),
+            Probability::from_percent(10).unwrap(),
+        )
+        .unwrap();
+        let second = Hypothesis::with_id(
+            "rule:laravel:endpoint",
+            evidence.subject().clone(),
+            evidence.predicate().clone(),
+            evidence.value().clone(),
+            Probability::from_percent(10).unwrap(),
+        )
+        .unwrap();
+
+        assert!(first.same_evaluation_as(&second));
+        assert!(Hypothesis::with_id(
+            " ",
+            evidence.subject().clone(),
+            evidence.predicate().clone(),
+            evidence.value().clone(),
+            Probability::from_percent(10).unwrap(),
+        )
+        .is_err());
     }
 
     #[test]
