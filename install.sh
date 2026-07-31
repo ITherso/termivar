@@ -4,7 +4,7 @@
 
 set -e
 
-VERSION="1.0.0"
+VERSION="0.9.0-alpha"
 REPO="ITherso/venom"
 GITHUB_API="https://api.github.com/repos/${REPO}"
 
@@ -159,8 +159,8 @@ install_via_docker() {
 
     cat > "${INSTALL_DIR}/venom" << 'EOF'
 #!/bin/bash
-docker run --rm -v $(pwd):/app -p 8080:8080 -p 3000:3000 \
-    ghcr.io/itherso/venom:1.0.0 "$@"
+docker run --rm -v $(pwd):/app -p 8080:8080 \
+    ghcr.io/itherso/venom:0.9.0-alpha "$@"
 EOF
 
     chmod +x "${INSTALL_DIR}/venom"

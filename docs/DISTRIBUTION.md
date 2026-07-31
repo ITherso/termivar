@@ -198,13 +198,13 @@ cargo install --force venom
 docker pull ghcr.io/itherso/venom:latest
 
 # Specific version
-docker pull ghcr.io/itherso/venom:1.0.0
+docker pull ghcr.io/itherso/venom:0.9.0-alpha
 
 # Slim image (minimal)
-docker pull ghcr.io/itherso/venom:1.0.0-slim
+docker pull ghcr.io/itherso/venom:0.9.0-alpha-slim
 
 # Full image (with tools)
-docker pull ghcr.io/itherso/venom:1.0.0-full
+docker pull ghcr.io/itherso/venom:0.9.0-alpha-full
 ```
 
 **Run Examples:**

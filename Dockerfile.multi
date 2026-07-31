@@ -2,35 +2,38 @@
 # Produces: latest (full), slim (minimal), full (with tools)
 
 # Stage 1: Builder
-FROM rust:1.75-slim as builder
+FROM rust:slim-bookworm AS builder
 
 WORKDIR /build
 
 # Install dependencies
 RUN apt-get update && apt-get install -y \
+    build-essential \
+    cmake \
     pkg-config \
     libssl-dev \
     libpq-dev \
+    perl \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy source
 COPY . .
 
 # Build release
-RUN cargo build --release --locked
+RUN cargo build --release --locked -p venom-cli
 
 # Stage 2: Runtime base
-FROM debian:bookworm-slim as runtime-base
+FROM debian:bookworm-slim AS runtime-base
 
 RUN apt-get update && apt-get install -y \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 # Stage 3: Slim image (minimal)
-FROM runtime-base as slim
+FROM runtime-base AS slim
 
 LABEL maintainer="VENOM Team <team@venom.dev>"
-LABEL version="1.0.0"
+LABEL version="0.9.0-alpha"
 LABEL description="VENOM Pentesting Platform - Slim"
 
 WORKDIR /app
@@ -51,10 +54,10 @@ ENTRYPOINT ["venom"]
 CMD ["--help"]
 
 # Stage 4: Full image (with tools)
-FROM runtime-base as full
+FROM runtime-base AS full
 
 LABEL maintainer="VENOM Team <team@venom.dev>"
-LABEL version="1.0.0"
+LABEL version="0.9.0-alpha"
 LABEL description="VENOM Pentesting Platform - Full"
 
 # Install additional tools
@@ -68,22 +71,15 @@ RUN apt-get update && apt-get install -y \
     postgresql-client \
     redis-tools \
     python3 \
-    python3-pip \
+    python3-jinja2 \
+    python3-requests \
+    python3-yaml \
     && rm -rf /var/lib/apt/lists/*
-
-# Install Python tools
-RUN pip3 install --no-cache-dir \
-    requests \
-    pyyaml \
-    jinja2
 
 WORKDIR /app
 
 # Copy binary from builder
 COPY --from=builder /build/target/release/venom /usr/local/bin/venom
-
-# Copy web dashboard
-COPY web/build /app/web
 
 # Copy documentation
 COPY docs /app/docs
@@ -93,7 +89,7 @@ RUN mkdir -p /app/data /app/config && chmod 777 /app/data
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD curl -f http://localhost:3000 || exit 1
+    CMD venom --version || exit 1
 
 EXPOSE 8080 3000
 
@@ -105,7 +101,7 @@ ENTRYPOINT ["venom"]
 CMD ["--help"]
 
 # Stage 5: Development image (with dev tools)
-FROM full as dev
+FROM full AS dev
 
 # Install development tools
 RUN apt-get update && apt-get install -y \

@@ -63,7 +63,7 @@ Response:
 {
   "status": "Healthy",
   "timestamp": "2026-07-15T10:30:00Z",
-  "version": "1.0.0",
+  "version": "0.9.0-alpha",
   "uptime_seconds": 86400,
   "checks_passed": 5,
   "checks_failed": 0,

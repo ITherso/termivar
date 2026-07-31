@@ -4,7 +4,7 @@
 
 set -e
 
-VERSION="1.0.0"
+VERSION="0.9.0-alpha"
 CARGO_RELEASE_DIR="target/release"
 RELEASE_DIR="releases/${VERSION}"
 CHECKSUM_FILE="${RELEASE_DIR}/SHA256SUMS"

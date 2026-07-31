@@ -374,8 +374,8 @@ The SBOM includes:
 ### SBOM Distribution
 
 Published with each release:
-- `venom-1.0.0-sbom.json` (GitHub Releases)
-- `venom-1.0.0-sbom-spdx.json` (SPDX format)
+- `venom-0.9.0-alpha-sbom.json` (GitHub Releases)
+- `venom-0.9.0-alpha-sbom-spdx.json` (SPDX format)
 - `sbom.json` (Latest version)
 
 ## Continuous Integration
@@ -431,7 +431,7 @@ Maximum allowed:
 Minimum required:
 - Overall: 80%
 - Critical paths: 95%
-- Security code: 100%
+- Security code: enforced review
 
 ## Pre-commit Hooks
 

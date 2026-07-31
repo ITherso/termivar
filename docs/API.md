@@ -5,7 +5,7 @@
 Venom v0.9.0-alpha exposes an experimental REST API for supported scanner capabilities.
 
 **Base URL:** `http://localhost:3000/api`  
-**Version:** 1.0.0  
+**Version:** 0.9.0-alpha
 **Authentication:** API Key (Bearer token)
 
 ---
