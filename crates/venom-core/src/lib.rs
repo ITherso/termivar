@@ -28,8 +28,15 @@ pub mod config;
 pub mod error;
 pub mod events;
 pub mod models;
+pub mod reasoning;
 
 pub use config::{Config, ConfigBuilder, ConfigError, ScanIntensity};
 pub use error::{Error, Result};
 pub use events::{Event, EventBuilder, EventSeverity, EventType};
 pub use models::{HttpRequest, HttpResponse, ScanFinding, ScanResult, Vulnerability};
+pub use reasoning::{
+    ConfidenceScore, ContributionDirection, EntityId, EntityKind, Evidence, EvidenceContribution,
+    EvidenceId, EvidenceKind, EvidenceSource, EvidenceValue, Fact, Hypothesis, HypothesisState,
+    KnowledgeEntity, KnowledgePredicate, KnowledgeRelation, ReasoningModelError, RelationId,
+    RelationKind,
+};
