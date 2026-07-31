@@ -24,6 +24,12 @@ cargo xtask generate plugin my-plugin
 
 The generate commands require `cargo-generate` (`cargo install cargo-generate`).
 
+## First contribution
+
+Start with a scoped [`good first issue`](https://github.com/ITherso/venom/labels/good%20first%20issue). Comment before implementation, keep the first pull request to one observable outcome, and ask for scope clarification on the issue if an acceptance criterion is ambiguous.
+
+Good first contributions usually add focused contract tests, correct an evidence-backed documentation gap, improve a generator example, or reduce a specific lint without changing architecture. New scan techniques, public API redesigns, and distributed execution changes need a design discussion first.
+
 ## Coding style
 
 - Prefer safe Rust. Any `unsafe` block requires a `SAFETY:` rationale, isolation, and focused tests.

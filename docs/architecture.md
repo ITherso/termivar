@@ -2,7 +2,9 @@
 
 This document defines dependency direction and runtime ownership for Venom `0.9.0-alpha`. It is a design contract, not a production-readiness claim.
 
-The editable diagrams.net source is [architecture.drawio](architecture.drawio). It is stored directly in `docs/` so contributors can find and update the non-Mermaid source without searching the repository.
+The editable diagrams.net source is [architecture.drawio](architecture.drawio). A presentation- and print-friendly export is available as [architecture.svg](images/architecture.svg).
+
+![Venom runtime and crate architecture](images/architecture.svg)
 
 ## Current workspace
 

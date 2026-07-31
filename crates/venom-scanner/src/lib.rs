@@ -1,13 +1,28 @@
-// VENOM Scanner - Professional multi-phase vulnerability scanner
+//! Composable scanning contracts and execution behavior for Venom.
 //!
-//! A sophisticated, multi-phase vulnerability detection and exploitation framework
-//! built in Rust for maximum performance and safety.
+//! The crate exposes two extension surfaces:
 //!
-//! ## Architecture
-//! - **10 Phases**: Sequential vulnerability detection across different categories
-//! - **Async/Await**: Native Tokio-based concurrency for high-throughput scanning
-//! - **Zero-Copy**: DashMap for efficient, lock-free inter-phase communication
-//! - **Type-Safe**: Compile-time guarantees eliminate entire classes of bugs
+//! - [`ScannerSdk`] composes application-defined [`ScanPhase`] values;
+//! - `Plugin` defines the source-level Preview plugin contract when the
+//!   `plugins` feature is enabled.
+//!
+//! The runner owns ordering, timeouts, cancellation, event publication, and
+//! finding aggregation. Extensions own detection behavior.
+//!
+//! # Scanner SDK
+//!
+//! ```rust,no_run
+//! use venom_scanner::ScannerSdk;
+//!
+//! # async fn run() -> venom_scanner::Result<()> {
+//! let scanner = ScannerSdk::builder().build();
+//! let report = scanner.scan("https://example.test").await?;
+//! assert!(report.findings.is_empty());
+//! # Ok(())
+//! # }
+//! ```
+
+#![deny(rustdoc::broken_intra_doc_links)]
 
 // Core modules (always compiled)
 pub mod api;

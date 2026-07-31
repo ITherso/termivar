@@ -1,6 +1,11 @@
 name: Scheduled Fuzzing
 
 on:
+  push:
+    branches: [main]
+    paths:
+      - "fuzz/**"
+      - ".github/workflows/fuzz.yml"
   schedule:
     - cron: "43 3 * * 1"
   workflow_dispatch:
@@ -27,7 +32,46 @@ jobs:
         run: cargo install cargo-fuzz --locked
       - name: Run bounded campaign
         working-directory: fuzz
-        run: cargo fuzz run "${{ matrix.target }}" -- -max_total_time=60 -print_final_stats=1
+        shell: bash
+        run: |
+          set -uo pipefail
+          mkdir -p "reports/${{ matrix.target }}"
+          started_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          started_epoch=$(date +%s)
+          cargo fuzz run "${{ matrix.target }}" -- \
+            -max_total_time=60 \
+            -print_final_stats=1 \
+            2>&1 | tee "reports/${{ matrix.target }}/libfuzzer.log"
+          fuzz_exit=${PIPESTATUS[0]}
+          elapsed_seconds=$(($(date +%s) - started_epoch))
+          corpus_files=$(find "corpus/${{ matrix.target }}" -type f 2>/dev/null | wc -l | tr -d ' ')
+          artifact_files=$(find "artifacts/${{ matrix.target }}" -type f 2>/dev/null | wc -l | tr -d ' ')
+          if [ "$fuzz_exit" -eq 0 ]; then outcome=passed; else outcome=failed; fi
+          {
+            echo "# Bounded fuzz report: ${{ matrix.target }}"
+            echo
+            echo "| Field | Value |"
+            echo "| --- | --- |"
+            echo "| Commit | \`${GITHUB_SHA}\` |"
+            echo "| Started | ${started_at} |"
+            echo "| Wall time | ${elapsed_seconds} s |"
+            echo "| Budget | 60 s |"
+            echo "| Outcome | ${outcome} |"
+            echo "| Exit code | ${fuzz_exit} |"
+            echo "| Corpus files after run | ${corpus_files} |"
+            echo "| Crash artifacts | ${artifact_files} |"
+            echo
+            echo "This bounded CI campaign is a regression signal, not proof of parser safety."
+          } | tee "reports/${{ matrix.target }}/summary.md" >> "$GITHUB_STEP_SUMMARY"
+          exit "$fuzz_exit"
+      - name: Upload campaign report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: fuzz-report-${{ matrix.target }}-${{ github.sha }}
+          path: fuzz/reports/${{ matrix.target }}/
+          if-no-files-found: error
+          retention-days: 90
       - name: Upload crash artifacts
         if: failure()
         uses: actions/upload-artifact@v7

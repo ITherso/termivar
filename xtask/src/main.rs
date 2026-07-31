@@ -57,7 +57,13 @@ fn main() -> TaskResult {
             run(
                 &root,
                 "cargo",
-                &["doc", "--workspace", "--all-features", "--no-deps"],
+                &[
+                    "doc",
+                    "--workspace",
+                    "--all-features",
+                    "--no-deps",
+                    "--locked",
+                ],
             )?;
             run_mkdocs(&root)
         },

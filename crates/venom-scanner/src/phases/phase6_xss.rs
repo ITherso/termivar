@@ -12,7 +12,7 @@
 //! ## Payloads
 //! - Event handlers: onload, onerror, onmouseover
 //! - Data URIs: javascript: protocol
-//! - SVG vectors: <svg> with event attributes
+//! - SVG vectors: `<svg>` with event attributes
 
 use crate::{
     context::ScanContext,

@@ -2,8 +2,16 @@ name: Release
 
 on:
   push:
+    branches:
+      - main
     tags:
-      - 'v*'
+      - "v*"
+    paths:
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "crates/**"
+      - ".github/workflows/release.yml"
+      - ".github/release-notes/**"
 
 env:
   CARGO_TERM_COLOR: always
@@ -11,86 +19,124 @@ env:
 
 jobs:
   test-before-release:
-    name: Test Before Release
+    name: Release gates
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
-      - name: Run all tests
-        run: cargo test --all --verbose
-      - name: Run clippy
-        run: cargo clippy
+      - name: Verify tag matches workspace version
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag_version="${GITHUB_REF_NAME#v}"
+          workspace_version=$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["workspace"]["package"]["version"])')
+          test "$tag_version" = "$workspace_version"
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+      - name: Run Clippy
+        run: cargo clippy --workspace --all-targets --all-features
+      - name: Run workspace tests
+        run: cargo test --workspace --all-features --locked
+      - name: Enforce dependency policy
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          rust-version: "1.88.0"
 
   build-release:
-    name: Build Release
+    name: Build ${{ matrix.target }}
     needs: test-before-release
     runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
     strategy:
+      fail-fast: false
       matrix:
         include:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-            artifact_name: venom
-          - os: macos-latest
+            binary: venom
+          - os: macos-15-intel
             target: x86_64-apple-darwin
-            artifact_name: venom
-          - os: macos-latest
+            binary: venom
+          - os: macos-15
             target: aarch64-apple-darwin
-            artifact_name: venom
+            binary: venom
           - os: windows-latest
             target: x86_64-pc-windows-msvc
-            artifact_name: venom.exe
+            binary: venom.exe
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
-      - name: Build release
-        run: cargo build --release --target ${{ matrix.target }}
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
+      - name: Build release binary
+        run: cargo build --locked --release --target ${{ matrix.target }} -p venom-cli
+      - name: Package Unix archive
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist/stage
+          cp "target/${{ matrix.target }}/release/${{ matrix.binary }}" dist/stage/venom
+          tar -C dist/stage -czf "dist/venom-${GITHUB_REF_NAME}-${{ matrix.target }}.tar.gz" venom
+      - name: Package Windows archive
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path dist/stage -Force | Out-Null
+          Copy-Item "target/${{ matrix.target }}/release/${{ matrix.binary }}" "dist/stage/venom.exe"
+          Compress-Archive -Path "dist/stage/venom.exe" -DestinationPath "dist/venom-$env:GITHUB_REF_NAME-${{ matrix.target }}.zip"
+      - name: Generate build provenance
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: actions/attest@v4
         with:
-          name: ${{ matrix.target }}
-          path: target/${{ matrix.target }}/release/${{ matrix.artifact_name }}
+          subject-path: "dist/venom-*"
+      - name: Upload release archive
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-${{ matrix.target }}
+          path: dist/venom-*
+          if-no-files-found: error
+          retention-days: 30
 
   create-release:
-    name: Create Release
+    name: Publish GitHub Release
+    if: startsWith(github.ref, 'refs/tags/')
     needs: build-release
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
-      - name: Download artifacts
-        uses: actions/download-artifact@v4
-      - name: Generate changelog
-        id: changelog
-        run: |
-          git log $(git describe --tags --abbrev=0 HEAD^)..HEAD --pretty=format:"%h %s" > CHANGELOG_TEMP.txt
-          echo "changelog<<EOF" >> $GITHUB_OUTPUT
-          cat CHANGELOG_TEMP.txt >> $GITHUB_OUTPUT
-          echo "EOF" >> $GITHUB_OUTPUT
-      - name: Create release
-        uses: softprops/action-gh-release@v1
+      - uses: actions/checkout@v6
+      - name: Download release archives
+        uses: actions/download-artifact@v8
         with:
+          pattern: release-*
+          path: release-assets
+          merge-multiple: true
+      - name: Generate SHA256 checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd release-assets
+          sha256sum venom-* | sort -k2 > ../SHA256SUMS
+      - name: Create prerelease
+        uses: softprops/action-gh-release@v3
+        with:
+          name: Venom ${{ github.ref_name }}
+          body_path: .github/release-notes/v0.9.0-alpha.md
+          prerelease: true
+          make_latest: false
+          fail_on_unmatched_files: true
           files: |
-            x86_64-unknown-linux-gnu/venom
-            x86_64-apple-darwin/venom
-            aarch64-apple-darwin/venom
-            x86_64-pc-windows-msvc/venom.exe
-          body: ${{ steps.changelog.outputs.changelog }}
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-  publish-crates:
-    name: Publish to crates.io
-    needs: test-before-release
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - name: Publish to crates.io
-        run: cargo publish --token ${{ secrets.CARGO_TOKEN }}
+            release-assets/venom-*
+            SHA256SUMS

@@ -22,6 +22,7 @@ nav:
   - Engineering:
       - Testing: TESTING.md
       - Benchmarks: benchmarks.md
+      - Benchmark baseline f7d5120: reports/benchmarks/f7d5120.md
       - Quality metrics: quality-metrics.md
       - Profiling: profiling.md
       - Fuzzing: fuzzing.md
@@ -34,6 +35,7 @@ nav:
       - Distribution: DISTRIBUTION.md
   - Project:
       - Contributing: CONTRIBUTING.md
+      - Contributors: contributors.md
       - Architecture decisions: adr/README.md
       - ADR 0001 - Cargo workspace: adr/0001-use-workspace.md
       - ADR 0002 - Plugin boundary: adr/0002-plugin-boundary.md

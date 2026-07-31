@@ -1,0 +1,42 @@
+name: Starter task proposal
+description: Propose or refine a small, well-scoped task suitable for a first contribution.
+title: "[Starter]: "
+labels:
+  - good first issue
+  - help wanted
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Starter tasks should be independently testable, avoid unstable architecture changes, and take a new contributor to one clear outcome.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What concrete gap should this task close?
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: Scope
+      description: Name the files or modules in scope and anything explicitly out of scope.
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: List observable outcomes and the exact validation command.
+      placeholder: |
+        - [ ] Behavior is covered by a focused test.
+        - [ ] `cargo test -p venom-core` passes.
+    validations:
+      required: true
+  - type: checkboxes
+    id: conduct
+    attributes:
+      label: Contribution rules
+      options:
+        - label: This task is for authorized, defensive security work and follows the Code of Conduct.
+          required: true

@@ -4,7 +4,7 @@
 //! Identifies AWS/GCP metadata access with out-of-band callback verification.
 //!
 //! ## Local Payloads
-//! - Loopback: 127.0.0.1, localhost, [::1]
+//! - Loopback: `127.0.0.1`, `localhost`, `[::1]`
 //! - Link-Local: 169.254.169.254 (AWS metadata)
 //! - Internal: 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16
 //!

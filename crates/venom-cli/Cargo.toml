@@ -5,6 +5,11 @@ edition.workspace = true
 rust-version.workspace = true
 authors.workspace = true
 license.workspace = true
+repository.workspace = true
+description = "Command-line composition layer for the Venom security-testing framework"
+homepage = "https://github.com/ITherso/venom"
+keywords = ["security", "scanner", "pentesting", "cli"]
+categories = ["command-line-utilities"]
 
 [[bin]]
 name = "venom"

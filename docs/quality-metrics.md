@@ -2,6 +2,8 @@
 
 Venom publishes measurements as CI artifacts instead of embedding hand-maintained numbers in the README.
 
+Evidence-backed release baselines are committed under `docs/reports/benchmarks/`. The latest published record is [commit `f7d5120`](reports/benchmarks/f7d5120.md), with raw values in [JSON](reports/benchmarks/f7d5120.json).
+
 ## Every push and pull request
 
 The `Quality Metrics` workflow records:

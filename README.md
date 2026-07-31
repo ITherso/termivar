@@ -135,6 +135,7 @@ The template implements `Plugin`, registers it in a test, and tracks Venom `main
 - [Feature lifecycle](FEATURES.md)
 - [Architecture](docs/architecture.md)
 - [Editable architecture diagram](docs/architecture.drawio)
+- [Portable architecture SVG](docs/images/architecture.svg)
 - [Runner](docs/runner.md)
 - [Scanner](docs/scanner.md)
 - [Scanner SDK](docs/sdk.md)
@@ -163,7 +164,7 @@ Roadmap items are intentions, not delivery guarantees. See [CHANGELOG.md](CHANGE
 
 ## Contributing
 
-Read [CONTRIBUTING.md](CONTRIBUTING.md) and the [Code of Conduct](CODE_OF_CONDUCT.md), keep dependencies pointed inward, and run formatting, Clippy, and tests before opening a pull request. Report vulnerabilities privately according to [SECURITY.md](SECURITY.md).
+Read [CONTRIBUTING.md](CONTRIBUTING.md) and the [Code of Conduct](CODE_OF_CONDUCT.md), or start with a scoped [`good first issue`](https://github.com/ITherso/venom/labels/good%20first%20issue). Keep dependencies pointed inward and run formatting, Clippy, and tests before opening a pull request. Report vulnerabilities privately according to [SECURITY.md](SECURITY.md).
 
 ## License
 

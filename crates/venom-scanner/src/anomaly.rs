@@ -19,14 +19,14 @@
 //! Why regex error patterns (not exact keywords)?
 //! - SQL error: "SQL syntax error" vs "SQL: syntax error" vs "SQLSyntaxError"
 //! - Oracle: "ORA-00942" vs "ORA-01234" (regex: ORA-\d+)
-//! - Warnings: "Warning: unsafe" vs "WARNING: do not use" (regex: [Ww][Aa][Rr][Nn][Ii][Nn][Gg].*)
+//! - Warnings: "Warning: unsafe" vs "WARNING: do not use" (regex: `[Ww][Aa][Rr][Nn][Ii][Nn][Gg].*`)
 
 /// Error keyword matcher with regex support (P1 - Flexible pattern matching)
 ///
 /// Supports both exact keywords and regex patterns for error detection.
 /// Examples:
 /// - Keywords: ["error", "failed", "exception"]
-/// - Patterns: ["SQL.*syntax", "ORA-\\d+", "[Ww][Aa][Rr][Nn][Ii][Nn][Gg].*"]
+/// - Patterns: `SQL.*syntax`, `ORA-\\d+`, `[Ww][Aa][Rr][Nn][Ii][Nn][Gg].*`
 #[derive(Debug, Clone)]
 pub struct ErrorKeywordMatcher {
     /// Exact keywords to search for (case-sensitive)

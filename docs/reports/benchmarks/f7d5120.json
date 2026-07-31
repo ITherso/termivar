@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "captured_at": "2026-07-31",
+  "commit": "f7d5120741ae1c2328e1b82b6cec50664a947528",
+  "workflow_run": "https://github.com/ITherso/venom/actions/runs/30648542265",
+  "artifact": {
+    "id": 8800471858,
+    "name": "quality-metrics-f7d5120741ae1c2328e1b82b6cec50664a947528",
+    "sha256": "1a0896de51a3cfa017b36fc32a84b5a20de41b47bc8fbdd25ea7aaf9d0c914c4"
+  },
+  "environment": {
+    "runner": "ubuntu-latest",
+    "rustc": "rustc 1.97.1 (8bab26f4f 2026-07-14)",
+    "cpu_model": null,
+    "note": "GitHub-hosted runner values are regression signals, not capacity claims. The workflow did not capture the CPU model."
+  },
+  "criterion": {
+    "command": "cargo bench --locked -p venom-scanner --bench scanner_benchmarks -- --noplot",
+    "suite_wall_time_seconds": 58,
+    "peak_rss_kib": 550932,
+    "benchmarks": {
+      "response_cache_hit_4k": {
+        "mean_ns": 213.71,
+        "confidence_interval_95_ns": [213.00, 214.86]
+      },
+      "waf_header_detection": {
+        "mean_ns": 152.28,
+        "confidence_interval_95_ns": [151.27, 153.99]
+      },
+      "payload_double_url_encode": {
+        "mean_ns": 3112.95,
+        "confidence_interval_95_ns": [3106.44, 3123.72]
+      }
+    }
+  },
+  "release_build": {
+    "command": "cargo build --locked --release -p venom-cli --timings",
+    "wall_time_seconds": 43,
+    "binary_size_bytes": 4551632,
+    "peak_rss_kib": 579340
+  }
+}
