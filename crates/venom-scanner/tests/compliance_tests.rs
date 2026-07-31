@@ -1,7 +1,7 @@
 use venom_scanner::{
-    ComplianceFramework, ComplianceRequirement, AuditEventType, AuditLogEntry, AuditLogger,
-    ComplianceAssessment, ComplianceAssessor, DataProtectionRecord, DataClassification,
-    DataProtectionManager, ComplianceReport, ComplianceReporter,
+    AuditEventType, AuditLogEntry, AuditLogger, ComplianceAssessment, ComplianceAssessor,
+    ComplianceFramework, ComplianceReport, ComplianceReporter, ComplianceRequirement,
+    DataClassification, DataProtectionManager, DataProtectionRecord,
 };
 
 #[test]
@@ -29,7 +29,10 @@ fn test_compliance_requirement() {
 #[test]
 fn test_audit_event_types() {
     assert_eq!(AuditEventType::ScanInitiated.as_str(), "scan_initiated");
-    assert_eq!(AuditEventType::FindingDiscovered.as_str(), "finding_discovered");
+    assert_eq!(
+        AuditEventType::FindingDiscovered.as_str(),
+        "finding_discovered"
+    );
     assert_eq!(AuditEventType::DataAccessed.as_str(), "data_accessed");
     assert_eq!(AuditEventType::UserLogin.as_str(), "user_login");
     assert_eq!(AuditEventType::AccessDenied.as_str(), "access_denied");
@@ -425,7 +428,10 @@ fn test_multi_framework_compliance() {
 
     assert_eq!(assessor.assessment_count(), 4);
 
-    assert_eq!(assessor.get_framework_score(ComplianceFramework::GDPR), Some(90.0));
+    assert_eq!(
+        assessor.get_framework_score(ComplianceFramework::GDPR),
+        Some(90.0)
+    );
     assert_eq!(
         assessor.get_framework_score(ComplianceFramework::HIPAA),
         Some(91.0)

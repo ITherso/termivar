@@ -202,8 +202,8 @@ impl PerformanceAnalyzer {
                         description: format!("Error rate is {:.1}%", error_rate),
                         impact: "High error rates indicate potential connectivity issues"
                             .to_string(),
-                        suggested_action:
-                            "Check network stability and target server availability".to_string(),
+                        suggested_action: "Check network stability and target server availability"
+                            .to_string(),
                     });
                 }
             }
@@ -258,8 +258,7 @@ impl PerformanceAnalyzer {
         let profile2 = self.profiles.get(scan_id2)?;
 
         let duration_diff = profile2.total_duration_ms as i64 - profile1.total_duration_ms as i64;
-        let success_rate_diff =
-            profile2.overall_success_rate() - profile1.overall_success_rate();
+        let success_rate_diff = profile2.overall_success_rate() - profile1.overall_success_rate();
         let finding_diff = profile2.total_findings as i64 - profile1.total_findings as i64;
 
         Some(ScanComparison {
@@ -268,7 +267,12 @@ impl PerformanceAnalyzer {
             duration_diff_ms: duration_diff,
             success_rate_diff: success_rate_diff,
             finding_diff,
-            faster: if duration_diff > 0 { "scan_1" } else { "scan_2" }.to_string(),
+            faster: if duration_diff > 0 {
+                "scan_1"
+            } else {
+                "scan_2"
+            }
+            .to_string(),
         })
     }
 

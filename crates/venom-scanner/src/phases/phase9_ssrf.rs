@@ -18,7 +18,7 @@
 //! - HTTP/DNS response logging
 //! - Optional external OOB domain
 
-use crate::{ScanFinding, ScanPhase, context::ScanContext, error::ScannerError};
+use crate::{context::ScanContext, error::ScannerError, ScanFinding, ScanPhase};
 use async_trait::async_trait;
 use reqwest::StatusCode;
 use url::Url;
@@ -50,8 +50,8 @@ impl SsrfScanner {
             "http://localhost",
             "http://localhost:80",
             "http://0.0.0.0",
-            "http://0:0:0:0:0:0:0:1", // IPv6 loopback
-            "http://169.254.169.254/",           // AWS IMDSv1
+            "http://0:0:0:0:0:0:0:1",  // IPv6 loopback
+            "http://169.254.169.254/", // AWS IMDSv1
             "http://169.254.169.254/latest/meta-data/",
             "http://169.254.169.254/latest/meta-data/iam/security-credentials/",
             "http://169.254.169.254/metadata/v1/", // DigitalOcean
@@ -69,7 +69,7 @@ impl SsrfScanner {
             "instance-type",
             "security-groups",
             "iam",
-            "AKIA",     // AWS Access Key ID prefix
+            "AKIA", // AWS Access Key ID prefix
             "aws_",
         ]
     }
@@ -194,8 +194,8 @@ impl ScanPhase for SsrfScanner {
                                         ),
                                     });
                                 }
-                            }
-                            _ => {}
+                            },
+                            _ => {},
                         }
                     }
                 }

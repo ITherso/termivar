@@ -3,8 +3,8 @@
 //! ML-driven vulnerability detection using clustering, pattern learning,
 //! and automated exploitation discovery.
 
-use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 /// Vulnerability pattern for ML clustering
 #[derive(Debug, Clone, Serialize, Deserialize)]

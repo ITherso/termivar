@@ -49,7 +49,10 @@ impl Plugin for LFIPlugin {
         ];
 
         for test_payload in payloads {
-            if payload.contains(test_payload) || target.contains("lfi=1") || target.contains("file=") {
+            if payload.contains(test_payload)
+                || target.contains("lfi=1")
+                || target.contains("file=")
+            {
                 findings.push(ScanFinding {
                     phase: 8,
                     module_name: "LFI Detector".to_string(),
@@ -97,7 +100,10 @@ mod tests {
     #[tokio::test]
     async fn test_lfi_payload_detection() {
         let plugin = LFIPlugin;
-        let result = plugin.execute("http://target.com", "../../../etc/passwd").await.unwrap();
+        let result = plugin
+            .execute("http://target.com", "../../../etc/passwd")
+            .await
+            .unwrap();
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].severity, "HIGH");
     }
@@ -105,7 +111,10 @@ mod tests {
     #[tokio::test]
     async fn test_lfi_file_parameter() {
         let plugin = LFIPlugin;
-        let result = plugin.execute("http://target.com?file=../etc/passwd", "test").await.unwrap();
+        let result = plugin
+            .execute("http://target.com?file=../etc/passwd", "test")
+            .await
+            .unwrap();
         assert!(result.len() > 0);
     }
 }

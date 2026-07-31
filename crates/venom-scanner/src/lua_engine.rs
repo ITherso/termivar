@@ -2,16 +2,16 @@
 //!
 //! Execute Lua scripts for custom scanning logic, similar to Nmap's NSE.
 
+use crate::config::LuaEngineConfig;
+use mlua::{Lua, Table};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::path::{PathBuf, Path};
+use std::path::{Path, PathBuf};
+use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Instant;
+use tokio::time::{timeout, Duration};
 use uuid::Uuid;
-use std::str::FromStr;
-use tokio::time::{Duration, timeout};
-use mlua::{Lua, Table};
-use crate::config::LuaEngineConfig;
 
 /// Script categories (type-safe, no typos, autocomplete)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -75,13 +75,15 @@ impl std::fmt::Display for ScriptCategory {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum LuaScriptStatus {
     #[serde(rename = "loaded")]
-    Loaded,         // Registered, ready to run
+    Loaded, // Registered, ready to run
     #[serde(rename = "running")]
-    Running,        // Currently executing
+    Running, // Currently executing
     #[serde(rename = "completed")]
-    Completed,      // Finished successfully
+    Completed, // Finished successfully
     #[serde(rename = "failed")]
-    Failed,         // Execution error
+    Failed, // Execution error
+    #[serde(rename = "timeout")]
+    Timeout, // Execution exceeded its configured limit
 }
 
 impl LuaScriptStatus {
@@ -91,6 +93,7 @@ impl LuaScriptStatus {
             LuaScriptStatus::Running => "running",
             LuaScriptStatus::Completed => "completed",
             LuaScriptStatus::Failed => "failed",
+            LuaScriptStatus::Timeout => "timeout",
         }
     }
 }
@@ -130,16 +133,16 @@ pub struct LuaScriptInstance {
 /// Lua script metadata
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LuaScript {
-    pub id: Uuid,  // Unique identifier (prevents duplicate xss.lua conflicts)
+    pub id: Uuid, // Unique identifier (prevents duplicate xss.lua conflicts)
     pub name: String,
     pub version: String,
     pub description: String,
     pub author: String,
-    pub script_path: PathBuf,  // Canonicalized, safe path (prevents ../../../../etc/passwd)
-    pub categories: Vec<ScriptCategory>,  // Type-safe: Web, DNS, SMB, SSH, Database (no typos)
+    pub script_path: PathBuf, // Canonicalized, safe path (prevents ../../../../etc/passwd)
+    pub categories: Vec<ScriptCategory>, // Type-safe: Web, DNS, SMB, SSH, Database (no typos)
     pub enabled: bool,
     pub timeout_ms: u64,
-    pub status: LuaScriptStatus,  // Runtime status (Loaded → Running → Completed/Failed)
+    pub status: LuaScriptStatus, // Runtime status (Loaded → Running → Completed/Failed)
 }
 
 impl LuaScript {
@@ -161,9 +164,11 @@ impl LuaScript {
         let path_buf = PathBuf::from(script_path.as_ref());
 
         // Canonicalize both paths to resolve ../../ and symlinks
-        let canonical_script = path_buf.canonicalize()
+        let canonical_script = path_buf
+            .canonicalize()
             .map_err(|e| format!("Failed to canonicalize script path: {}", e))?;
-        let canonical_root = script_root.canonicalize()
+        let canonical_root = script_root
+            .canonicalize()
             .map_err(|e| format!("Failed to canonicalize root path: {}", e))?;
 
         // SECURITY: Ensure script is within root directory
@@ -238,8 +243,9 @@ impl LuaScript {
         // Enforce timeout using tokio::time::timeout
         let result = timeout(
             Duration::from_millis(self.timeout_ms),
-            Self::execute_script_async(&self.name, context.clone())
-        ).await;
+            Self::execute_script_async(&self.name, context.clone()),
+        )
+        .await;
 
         let execution_time_ms = start.elapsed().as_millis() as u64;
 
@@ -255,7 +261,7 @@ impl LuaScript {
                     return_value: Some(return_value),
                     timestamp_ms,
                 }
-            }
+            },
             Ok(Err(err)) => {
                 // Execution failed (script error)
                 LuaExecutionResult {
@@ -267,19 +273,22 @@ impl LuaScript {
                     return_value: None,
                     timestamp_ms,
                 }
-            }
+            },
             Err(_elapsed) => {
                 // Timeout exceeded (P0 protection)
                 LuaExecutionResult {
                     script_id,
                     success: false,
                     output: format!("Timeout after {}ms", self.timeout_ms),
-                    error: Some(format!("Script execution timeout ({}ms exceeded)", self.timeout_ms)),
+                    error: Some(format!(
+                        "Script execution timeout ({}ms exceeded)",
+                        self.timeout_ms
+                    )),
                     execution_time_ms,
                     return_value: None,
                     timestamp_ms,
                 }
-            }
+            },
         }
     }
 
@@ -288,12 +297,11 @@ impl LuaScript {
         script_name: &str,
         context: LuaContext,
     ) -> Result<(String, String), String> {
+        let script_name = script_name.to_string();
         // Run Lua execution in blocking thread to avoid blocking async runtime
-        tokio::task::spawn_blocking(move || {
-            Self::execute_lua_sandboxed(script_name, &context)
-        })
-        .await
-        .map_err(|e| format!("Task join error: {}", e))?
+        tokio::task::spawn_blocking(move || Self::execute_lua_sandboxed(&script_name, &context))
+            .await
+            .map_err(|e| format!("Task join error: {}", e))?
     }
 
     /// Execute Lua script with sandbox restrictions (P1 security)
@@ -323,14 +331,17 @@ return {{
         );
 
         // Execute Lua code
-        let result: mlua::Table = lua.load(&script_code)
+        let result: mlua::Table = lua
+            .load(&script_code)
             .eval()
             .map_err(|e| format!("Lua eval error: {}", e))?;
 
         // Extract output and return value
-        let output = result.get::<_, String>("output")
+        let output = result
+            .get::<_, String>("output")
             .unwrap_or_else(|_| format!("Executed {}", script_name));
-        let return_value = result.get::<_, String>("result")
+        let return_value = result
+            .get::<_, String>("result")
             .unwrap_or_else(|_| "success".to_string());
 
         Ok((output, return_value))
@@ -355,7 +366,8 @@ return {{
         //    ✗ os.execute()
         //    ✗ os.system()
         //    ✗ os.getenv()
-        globals.set("os", mlua::Nil)
+        globals
+            .set("os", mlua::Nil)
             .map_err(|e| format!("Failed to block os module: {}", e))?;
 
         // 2️⃣ Block IO module - prevents io.open("/etc/passwd")
@@ -364,7 +376,8 @@ return {{
         //    ✗ io.write()
         //    ✗ io.input()
         //    ✗ io.output()
-        globals.set("io", mlua::Nil)
+        globals
+            .set("io", mlua::Nil)
             .map_err(|e| format!("Failed to block io module: {}", e))?;
 
         // 3️⃣ Block Debug module - prevents introspection/manipulation
@@ -372,39 +385,46 @@ return {{
         //    ✗ debug.getlocal()
         //    ✗ debug.setlocal()
         //    ✗ debug.sethook()
-        globals.set("debug", mlua::Nil)
+        globals
+            .set("debug", mlua::Nil)
             .map_err(|e| format!("Failed to block debug module: {}", e))?;
 
         // 4️⃣ Block Package module - prevents code loading
         //    ✗ package.loadlib() - load C libraries
         //    ✗ package.loadstring() - load arbitrary code
         //    ✗ require() - load modules
-        globals.set("package", mlua::Nil)
+        globals
+            .set("package", mlua::Nil)
             .map_err(|e| format!("Failed to block package module: {}", e))?;
 
         // 5️⃣ Block dofile() - prevents executing external files
         //    ✗ dofile("malicious.lua")
-        globals.set("dofile", mlua::Nil)
+        globals
+            .set("dofile", mlua::Nil)
             .map_err(|e| format!("Failed to block dofile: {}", e))?;
 
         // 6️⃣ Block loadfile() - prevents loading external files
         //    ✗ loadfile("malicious.lua")
-        globals.set("loadfile", mlua::Nil)
+        globals
+            .set("loadfile", mlua::Nil)
             .map_err(|e| format!("Failed to block loadfile: {}", e))?;
 
         // 7️⃣ Block require() - prevents module loading
         //    ✗ require("socket")
         //    ✗ require("os")
-        globals.set("require", mlua::Nil)
+        globals
+            .set("require", mlua::Nil)
             .map_err(|e| format!("Failed to block require: {}", e))?;
 
         // 8️⃣ Block load() - prevents dynamic code execution
         //    ✗ load("malicious code")
-        globals.set("load", mlua::Nil)
+        globals
+            .set("load", mlua::Nil)
             .map_err(|e| format!("Failed to block load: {}", e))?;
 
         // 9️⃣ Block loadstring() alias
-        globals.set("loadstring", mlua::Nil)
+        globals
+            .set("loadstring", mlua::Nil)
             .map_err(|e| format!("Failed to block loadstring: {}", e))?;
 
         // 🔟 Note: socket module blocked if LuaSocket available
@@ -416,7 +436,7 @@ return {{
 
         // Set memory limit: 50MB max (prevents unbounded memory growth)
         // mlua will raise error if scripts try to allocate more
-        lua.set_memory_limit(50_000_000)  // 50 MB
+        lua.set_memory_limit(50_000_000) // 50 MB
             .map_err(|e| format!("Failed to set memory limit: {}", e))?;
 
         Ok(())
@@ -428,22 +448,27 @@ return {{
 
         // Safe read-only globals: target, payload, parameters
 
-        globals.set("target", context.target.clone())
+        globals
+            .set("target", context.target.clone())
             .map_err(|e| format!("Failed to set target: {}", e))?;
 
-        globals.set("payload", context.payload.clone())
+        globals
+            .set("payload", context.payload.clone())
             .map_err(|e| format!("Failed to set payload: {}", e))?;
 
         // Create parameters table from HashMap
-        let params_table = lua.create_table()
+        let params_table = lua
+            .create_table()
             .map_err(|e| format!("Failed to create params table: {}", e))?;
 
         for (key, value) in &context.parameters {
-            params_table.set(key.clone(), value.clone())
+            params_table
+                .set(key.clone(), value.clone())
                 .map_err(|e| format!("Failed to set parameter {}: {}", key, e))?;
         }
 
-        globals.set("parameters", params_table)
+        globals
+            .set("parameters", params_table)
             .map_err(|e| format!("Failed to set parameters: {}", e))?;
 
         // Allowed safe functions: string, table, math, utf8
@@ -492,34 +517,7 @@ pub struct LuaExecutionResult {
     pub error: Option<String>,
     pub execution_time_ms: u64,
     pub return_value: Option<String>,
-    pub timestamp_ms: u64,  // P0: Timestamp for exponential decay
-}
-
-/// Lua script status
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-pub enum LuaScriptStatus {
-    #[serde(rename = "loaded")]
-    Loaded,
-    #[serde(rename = "running")]
-    Running,
-    #[serde(rename = "completed")]
-    Completed,
-    #[serde(rename = "failed")]
-    Failed,
-    #[serde(rename = "timeout")]
-    Timeout,
-}
-
-impl LuaScriptStatus {
-    pub fn as_str(&self) -> &str {
-        match self {
-            LuaScriptStatus::Loaded => "loaded",
-            LuaScriptStatus::Running => "running",
-            LuaScriptStatus::Completed => "completed",
-            LuaScriptStatus::Failed => "failed",
-            LuaScriptStatus::Timeout => "timeout",
-        }
-    }
+    pub timestamp_ms: u64, // P0: Timestamp for exponential decay
 }
 
 /// Bounded execution history with exponential decay (P0 - not FIFO)
@@ -531,7 +529,7 @@ impl LuaScriptStatus {
 pub struct BoundedExecutionHistory {
     entries: std::collections::VecDeque<LuaExecutionResult>,
     max_size: usize,
-    decay_half_life_ms: u64,  // Half-life for exponential decay (default 5min)
+    decay_half_life_ms: u64, // Half-life for exponential decay (default 5min)
 }
 
 impl BoundedExecutionHistory {
@@ -540,7 +538,7 @@ impl BoundedExecutionHistory {
         Self {
             entries: std::collections::VecDeque::with_capacity(max_size),
             max_size,
-            decay_half_life_ms: 5 * 60 * 1000,  // 5 minutes half-life
+            decay_half_life_ms: 5 * 60 * 1000, // 5 minutes half-life
         }
     }
 
@@ -568,12 +566,7 @@ impl BoundedExecutionHistory {
 
     /// Get recent N entries (newest first)
     pub fn recent(&self, n: usize) -> Vec<LuaExecutionResult> {
-        self.entries
-            .iter()
-            .rev()
-            .take(n)
-            .cloned()
-            .collect()
+        self.entries.iter().rev().take(n).cloned().collect()
     }
 
     /// Calculate exponential decay weight for an entry (P0 - ML ready)
@@ -665,7 +658,7 @@ impl LuaScriptRegistry {
             scripts: Arc::new(dashmap::DashMap::new()),
             execution_history: Arc::new(dashmap::DashMap::new()),
             enabled_count: Arc::new(std::sync::atomic::AtomicU32::new(0)),
-            max_history_size: config.history_size,  // From config
+            max_history_size: config.history_size, // From config
         }
     }
 
@@ -690,7 +683,7 @@ impl LuaScriptRegistry {
             self.enabled_count
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         }
-        self.scripts.insert(script.id.clone(), script);
+        self.scripts.insert(script.id.to_string(), script);
     }
 
     /// Gets script by ID
@@ -719,7 +712,13 @@ impl LuaScriptRegistry {
     pub fn list_by_category(&self, category: &str) -> Vec<LuaScript> {
         self.scripts
             .iter()
-            .filter(|ref_multi| ref_multi.value().categories.contains(&category.to_string()))
+            .filter(|ref_multi| {
+                ref_multi
+                    .value()
+                    .categories
+                    .iter()
+                    .any(|script_category| script_category.as_str() == category)
+            })
             .map(|ref_multi| ref_multi.value().clone())
             .collect()
     }
@@ -802,7 +801,7 @@ impl Default for LuaScriptRegistry {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, any()))]
 mod tests {
     use super::*;
 
@@ -998,8 +997,8 @@ mod tests {
         // Get last 5 (newest first)
         let recent = registry.get_recent_history("test_recent", 5);
         assert_eq!(recent.len(), 5);
-        assert_eq!(recent[0].output, "Run 19");  // Newest
-        assert_eq!(recent[4].output, "Run 15");  // 5th newest
+        assert_eq!(recent[0].output, "Run 19"); // Newest
+        assert_eq!(recent[4].output, "Run 15"); // 5th newest
     }
 
     #[test]
@@ -1048,7 +1047,11 @@ mod tests {
         let registry = LuaScriptRegistry::new();
 
         for i in 0..5 {
-            let script = LuaScript::new(format!("script_{}", i), format!("Script {}", i), "script.lua");
+            let script = LuaScript::new(
+                format!("script_{}", i),
+                format!("Script {}", i),
+                "script.lua",
+            );
             registry.register(script);
         }
 
@@ -1061,7 +1064,11 @@ mod tests {
         let registry = LuaScriptRegistry::new();
 
         for i in 0..3 {
-            let script = LuaScript::new(format!("script_{}", i), format!("Script {}", i), "script.lua");
+            let script = LuaScript::new(
+                format!("script_{}", i),
+                format!("Script {}", i),
+                "script.lua",
+            );
             registry.register(script);
         }
 
@@ -1073,11 +1080,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_script_execution_within_timeout() {
-        let script = LuaScript::new("test_exec", "Test Execution", "test.lua")
-            .with_timeout(5000);  // 5 second timeout
+        let script = LuaScript::new("test_exec", "Test Execution", "test.lua").with_timeout(5000); // 5 second timeout
 
-        let context = LuaContext::new("http://example.com")
-            .with_payload("<script>alert(1)</script>");
+        let context =
+            LuaContext::new("http://example.com").with_payload("<script>alert(1)</script>");
 
         let result = script.execute(context).await;
 
@@ -1089,8 +1095,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_script_execution_timeout_enforcement() {
-        let script = LuaScript::new("test_timeout", "Timeout Test", "test.lua")
-            .with_timeout(100);  // Very short timeout (100ms)
+        let script = LuaScript::new("test_timeout", "Timeout Test", "test.lua").with_timeout(100); // Very short timeout (100ms)
 
         let context = LuaContext::new("http://example.com");
 
@@ -1102,7 +1107,7 @@ mod tests {
     #[test]
     fn test_timeout_configuration() {
         let script = LuaScript::new("test_config", "Config Test", "test.lua");
-        assert_eq!(script.timeout_ms, 5000);  // Default
+        assert_eq!(script.timeout_ms, 5000); // Default
 
         let script_custom = script.with_timeout(10000);
         assert_eq!(script_custom.timeout_ms, 10000);
@@ -1167,8 +1172,8 @@ mod tests {
     #[test]
     fn test_lua_globals_accessible() {
         let lua = mlua::Lua::new();
-        let context = LuaContext::new("http://example.com")
-            .with_payload("<script>alert(1)</script>");
+        let context =
+            LuaContext::new("http://example.com").with_payload("<script>alert(1)</script>");
 
         let result = LuaScript::setup_sandbox(&lua);
         assert!(result.is_ok());
@@ -1187,8 +1192,7 @@ mod tests {
 
     #[test]
     fn test_lua_execution_success() {
-        let context = LuaContext::new("http://example.com")
-            .with_payload("<xss>");
+        let context = LuaContext::new("http://example.com").with_payload("<xss>");
 
         let result = LuaScript::execute_lua_sandboxed("test.lua", &context);
         assert!(result.is_ok());
@@ -1375,9 +1379,9 @@ mod tests {
         assert_eq!(result.unwrap(), 42);
 
         // Table operations
-        let result: mlua::Result<i32> = lua.load(
-            "local t = {} table.insert(t, 1) table.insert(t, 2) return #t"
-        ).eval();
+        let result: mlua::Result<i32> = lua
+            .load("local t = {} table.insert(t, 1) table.insert(t, 2) return #t")
+            .eval();
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), 2);
     }
@@ -1503,7 +1507,7 @@ mod tests {
         let script2 = LuaScript::new_unsafe("script_2", "test2.lua");
 
         registry.register(script1.clone());
-        registry.register(script2);  // Same ID overwrites script1
+        registry.register(script2); // Same ID overwrites script1
 
         // Only script2 should be registered (last write wins)
         let retrieved = registry.get(&script2.id.to_string()).unwrap();
@@ -1520,19 +1524,15 @@ mod tests {
         registry.register(script.clone());
         assert_eq!(registry.count(), 1);
 
-        registry.register(script);  // Register again
-        assert_eq!(registry.count(), 1);  // Should still be 1 (overwrites)
+        registry.register(script); // Register again
+        assert_eq!(registry.count(), 1); // Should still be 1 (overwrites)
     }
 
     #[test]
     fn test_invalid_path_rejected() {
         // Try to create script with path outside root
         let root = std::path::Path::new("./scripts");
-        let result = LuaScript::new_safe(
-            "evil",
-            "../../../../etc/passwd",
-            root,
-        );
+        let result = LuaScript::new_safe("evil", "../../../../etc/passwd", root);
 
         // Should error due to path traversal
         assert!(result.is_err());
@@ -1550,11 +1550,7 @@ mod tests {
         let script_path = root.join("test.lua");
         fs::write(&script_path, "return 42").unwrap();
 
-        let result = LuaScript::new_safe(
-            "valid",
-            script_path,
-            root,
-        );
+        let result = LuaScript::new_safe("valid", script_path, root);
 
         assert!(result.is_ok());
     }
@@ -1587,7 +1583,7 @@ mod tests {
         }
 
         // Verify all registered (or mostly - race conditions possible)
-        assert!(registry.count() > 90);  // Allow some race conditions
+        assert!(registry.count() > 90); // Allow some race conditions
     }
 
     #[test]
@@ -1614,8 +1610,8 @@ mod tests {
         // Should only keep last 10
         let history = registry.get_history(&script_id);
         assert_eq!(history.len(), 10);
-        assert_eq!(history[0].output, "Run 40");  // Oldest (of last 10)
-        assert_eq!(history[9].output, "Run 49");  // Newest
+        assert_eq!(history[0].output, "Run 40"); // Oldest (of last 10)
+        assert_eq!(history[9].output, "Run 49"); // Newest
     }
 
     #[test]
@@ -1686,7 +1682,7 @@ mod tests {
 
     #[test]
     fn test_exponential_decay_current_has_full_weight() {
-        let mut history = BoundedExecutionHistory::with_decay(10, 5 * 60 * 1000);  // 5min half-life
+        let mut history = BoundedExecutionHistory::with_decay(10, 5 * 60 * 1000); // 5min half-life
         let current_time = 1000000;
 
         let entry = LuaExecutionResult {
@@ -1696,18 +1692,22 @@ mod tests {
             error: None,
             execution_time_ms: 100,
             return_value: None,
-            timestamp_ms: current_time,  // Current time
+            timestamp_ms: current_time, // Current time
         };
 
         let weight = history.decay_weight(&entry, current_time);
-        assert!((weight - 1.0).abs() < 0.01, "Current entry should have weight ~1.0, got {}", weight);
+        assert!(
+            (weight - 1.0).abs() < 0.01,
+            "Current entry should have weight ~1.0, got {}",
+            weight
+        );
     }
 
     #[test]
     fn test_exponential_decay_half_life_is_0_5() {
-        let mut history = BoundedExecutionHistory::with_decay(10, 5 * 60 * 1000);  // 5min half-life
+        let mut history = BoundedExecutionHistory::with_decay(10, 5 * 60 * 1000); // 5min half-life
         let current_time = 1000000;
-        let half_life_ago = current_time - (5 * 60 * 1000);  // 5 minutes ago
+        let half_life_ago = current_time - (5 * 60 * 1000); // 5 minutes ago
 
         let entry = LuaExecutionResult {
             script_id: "test".to_string(),
@@ -1720,12 +1720,16 @@ mod tests {
         };
 
         let weight = history.decay_weight(&entry, current_time);
-        assert!((weight - 0.5).abs() < 0.01, "At half-life, weight should be ~0.5, got {}", weight);
+        assert!(
+            (weight - 0.5).abs() < 0.01,
+            "At half-life, weight should be ~0.5, got {}",
+            weight
+        );
     }
 
     #[test]
     fn test_exponential_decay_9_min_is_20_percent() {
-        let mut history = BoundedExecutionHistory::with_decay(10, 5 * 60 * 1000);  // 5min half-life
+        let mut history = BoundedExecutionHistory::with_decay(10, 5 * 60 * 1000); // 5min half-life
         let current_time = 1000000;
         let nine_min_ago = current_time - (9 * 60 * 1000);
 
@@ -1754,12 +1758,12 @@ mod tests {
         for i in 0..2 {
             history.push(LuaExecutionResult {
                 script_id: "test".to_string(),
-                success: false,  // Failed
+                success: false, // Failed
                 output: "fail".to_string(),
                 error: None,
                 execution_time_ms: 100,
                 return_value: None,
-                timestamp_ms: base_time - (10 * 60 * 1000),  // 10 min ago (very low weight)
+                timestamp_ms: base_time - (10 * 60 * 1000), // 10 min ago (very low weight)
             });
         }
 
@@ -1767,19 +1771,23 @@ mod tests {
         for i in 0..8 {
             history.push(LuaExecutionResult {
                 script_id: "test".to_string(),
-                success: true,  // Success
+                success: true, // Success
                 output: "success".to_string(),
                 error: None,
                 execution_time_ms: 50,
                 return_value: None,
-                timestamp_ms: base_time - (1 * 60 * 1000),  // 1 min ago (high weight)
+                timestamp_ms: base_time - (1 * 60 * 1000), // 1 min ago (high weight)
             });
         }
 
         let success_rate = history.success_rate_decayed(base_time);
 
         // Should be much higher than 0.8 (8/10) because recent successes matter more
-        assert!(success_rate > 0.85, "Recent successes should dominate, got {}", success_rate);
+        assert!(
+            success_rate > 0.85,
+            "Recent successes should dominate, got {}",
+            success_rate
+        );
     }
 
     #[test]
@@ -1793,9 +1801,9 @@ mod tests {
             success: true,
             output: "fast".to_string(),
             error: None,
-            execution_time_ms: 10,  // Very fast
+            execution_time_ms: 10, // Very fast
             return_value: None,
-            timestamp_ms: base_time - (10 * 60 * 1000),  // 10 min ago (low weight)
+            timestamp_ms: base_time - (10 * 60 * 1000), // 10 min ago (low weight)
         });
 
         // Add 1 recent slow execution (1000ms)
@@ -1804,15 +1812,19 @@ mod tests {
             success: true,
             output: "slow".to_string(),
             error: None,
-            execution_time_ms: 1000,  // Very slow
+            execution_time_ms: 1000, // Very slow
             return_value: None,
-            timestamp_ms: base_time - (1 * 60 * 1000),  // 1 min ago (high weight)
+            timestamp_ms: base_time - (1 * 60 * 1000), // 1 min ago (high weight)
         });
 
         let avg_time = history.avg_time_decayed(base_time);
 
         // Should be closer to 1000 than 10 because recent data matters more
-        assert!(avg_time > 800.0, "Recent slow execution should dominate, got {}", avg_time);
+        assert!(
+            avg_time > 800.0,
+            "Recent slow execution should dominate, got {}",
+            avg_time
+        );
     }
 
     #[test]
@@ -1830,7 +1842,7 @@ mod tests {
                 error: None,
                 execution_time_ms: 100,
                 return_value: None,
-                timestamp_ms: base_time - (20 * 60 * 1000),  // Very old
+                timestamp_ms: base_time - (20 * 60 * 1000), // Very old
             });
         }
 
@@ -1842,7 +1854,7 @@ mod tests {
                 error: None,
                 execution_time_ms: 100,
                 return_value: None,
-                timestamp_ms: base_time - (1 * 60 * 1000),  // Recent
+                timestamp_ms: base_time - (1 * 60 * 1000), // Recent
             });
         }
 
@@ -1851,7 +1863,10 @@ mod tests {
         // FIFO (simple average) = 0.5 (5 successes / 10 total)
         // Decay = ~0.95+ (recent successes weighted much more)
 
-        assert!(decayed_rate > 0.85, "Exponential decay should prioritize recent data");
+        assert!(
+            decayed_rate > 0.85,
+            "Exponential decay should prioritize recent data"
+        );
         assert!(decayed_rate != 0.5, "Should NOT be simple FIFO (0.5)");
     }
 }

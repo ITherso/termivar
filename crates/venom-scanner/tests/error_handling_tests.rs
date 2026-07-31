@@ -2,7 +2,7 @@
 //!
 //! Verifies proper error propagation and handling across scanner
 
-use venom_scanner::{ScannerError, Result};
+use venom_scanner::{Result, ScannerError};
 
 /// Tests ScannerError creation
 #[test]
@@ -88,7 +88,8 @@ fn test_error_recovery() {
 #[test]
 fn test_option_to_result() {
     let opt: Option<i32> = None;
-    let result: Result<i32> = opt.ok_or_else(|| ScannerError::NetworkError("not found".to_string()));
+    let result: Result<i32> =
+        opt.ok_or_else(|| ScannerError::NetworkError("not found".to_string()));
 
     assert!(result.is_err());
 }
@@ -130,10 +131,7 @@ fn test_mixed_error_handling() {
         Ok("success".to_string()),
     ];
 
-    let successful: Vec<String> = errors
-        .into_iter()
-        .filter_map(|r| r.ok())
-        .collect();
+    let successful: Vec<String> = errors.into_iter().filter_map(|r| r.ok()).collect();
 
     assert_eq!(successful.len(), 2);
 }

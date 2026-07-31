@@ -2,9 +2,8 @@
 //!
 //! LRU cache for responses, patterns, and scan results.
 
-use std::collections::HashMap;
-use std::sync::Arc;
 use dashmap::DashMap;
+use std::sync::Arc;
 
 /// Cache entry with TTL
 #[derive(Debug, Clone)]
@@ -73,7 +72,8 @@ impl<K: Eq + std::hash::Hash + Clone, V: Clone> LruCache<K, V> {
             if entry.is_expired() {
                 drop(entry);
                 self.cache.remove(key);
-                self.misses.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                self.misses
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 None
             } else {
                 let value = entry.value.clone();
@@ -81,7 +81,8 @@ impl<K: Eq + std::hash::Hash + Clone, V: Clone> LruCache<K, V> {
                 Some(value)
             }
         } else {
-            self.misses.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            self.misses
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             None
         }
     }

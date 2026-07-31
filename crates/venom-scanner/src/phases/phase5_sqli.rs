@@ -14,7 +14,7 @@
 //! - Oracle (ORA-, Oracle error)
 //! - MSSQL (SQL Server, Msg)
 
-use crate::{ScanFinding, ScanPhase, context::ScanContext, error::ScannerError};
+use crate::{context::ScanContext, error::ScannerError, ScanFinding, ScanPhase};
 use async_trait::async_trait;
 use reqwest::StatusCode;
 use url::Url;
@@ -66,16 +66,17 @@ impl ScanPhase for SqliScanner {
                                     ),
                                 });
                             }
-                        }
+                        },
                         Err(_e) => {
                             ctx.log(format!("Failed to test {} - network error", test_url));
-                        }
+                        },
                     }
                 }
 
                 // STEP 2: Time-based blind SQLi (SLEEP() payload)
                 if let Ok(mut test_url) = Url::parse(&url_str) {
-                    test_url.query_pairs_mut()
+                    test_url
+                        .query_pairs_mut()
                         .append_pair(&param, "1' OR SLEEP(5)--");
 
                     let start = std::time::Instant::now();
@@ -102,17 +103,18 @@ impl ScanPhase for SqliScanner {
                                     ),
                                 });
                             }
-                        }
-                        Ok(Err(_)) => {}
+                        },
+                        Ok(Err(_)) => {},
                         Err(_) => {
                             ctx.log(format!("Timeout testing {} - possible SQLi", test_url));
-                        }
+                        },
                     }
                 }
 
                 // STEP 3: Error-based SQLi (UNION SELECT exploitation)
                 if let Ok(mut test_url) = Url::parse(&url_str) {
-                    test_url.query_pairs_mut()
+                    test_url
+                        .query_pairs_mut()
                         .append_pair(&param, "1' UNION SELECT NULL,NULL,NULL--");
 
                     match ctx.client.get(test_url.as_str()).send().await {
@@ -134,14 +136,17 @@ impl ScanPhase for SqliScanner {
                                     });
                                 }
                             }
-                        }
-                        Err(_) => {}
+                        },
+                        Err(_) => {},
                     }
                 }
             }
         }
 
-        ctx.log(format!("Phase 5: SQLi scanning completed. Found {} vulnerabilities.", findings.len()));
+        ctx.log(format!(
+            "Phase 5: SQLi scanning completed. Found {} vulnerabilities.",
+            findings.len()
+        ));
         Ok(findings)
     }
 }

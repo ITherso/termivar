@@ -67,8 +67,8 @@ fn test_phase2_parameter_extraction() {
 #[test]
 fn test_phase3_wordlist_coverage() {
     let wordlist = vec![
-        "/admin", "/api/v1", "/swagger", "/.git", "/.env",
-        "/backup", "/test", "/config", "/uploads", "/health",
+        "/admin", "/api/v1", "/swagger", "/.git", "/.env", "/backup", "/test", "/config",
+        "/uploads", "/health",
     ];
 
     assert!(wordlist.len() >= 50 / 5); // At least 10 entries for this test
@@ -79,17 +79,18 @@ fn test_phase3_wordlist_coverage() {
 #[test]
 fn test_phase3_status_code_detection() {
     let status_codes = vec![
-        (200, true),   // OK
-        (301, true),   // Redirect
-        (302, true),   // Found
-        (401, true),   // Unauthorized
-        (403, true),   // Forbidden
-        (404, false),  // Not Found
-        (500, false),  // Server Error
+        (200, true),  // OK
+        (301, true),  // Redirect
+        (302, true),  // Found
+        (401, true),  // Unauthorized
+        (403, true),  // Forbidden
+        (404, false), // Not Found
+        (500, false), // Server Error
     ];
 
     for (code, should_report) in status_codes {
-        let is_interesting = code == 200 || code == 301 || code == 302 || code == 401 || code == 403;
+        let is_interesting =
+            code == 200 || code == 301 || code == 302 || code == 401 || code == 403;
         assert_eq!(is_interesting, should_report);
     }
 }
@@ -113,8 +114,8 @@ fn test_phase3_url_construction() {
 #[test]
 fn test_phase4_param_wordlist() {
     let params = vec![
-        "id", "user_id", "admin", "debug", "api_key",
-        "token", "password", "email", "username", "redirect",
+        "id", "user_id", "admin", "debug", "api_key", "token", "password", "email", "username",
+        "redirect",
     ];
 
     assert!(!params.is_empty());
@@ -164,11 +165,7 @@ fn test_phase5_sql_error_patterns() {
 
 #[test]
 fn test_phase5_sqli_payload_construction() {
-    let payloads = vec![
-        "' OR '1'='1",
-        "1 UNION SELECT NULL--",
-        "admin' --",
-    ];
+    let payloads = vec!["' OR '1'='1", "1 UNION SELECT NULL--", "admin' --"];
 
     for payload in payloads {
         assert!(payload.contains("'") || payload.contains("NULL"));
@@ -177,7 +174,7 @@ fn test_phase5_sqli_payload_construction() {
 
 #[test]
 fn test_phase5_timing_based_detection() {
-    let normal_response = 50u64;    // 50ms
+    let normal_response = 50u64; // 50ms
     let delayed_response = 5050u64; // 5050ms (5 second delay + overhead)
 
     assert!(delayed_response > normal_response * 100); // At least 100x difference
@@ -327,12 +324,7 @@ fn test_phase8_xxe_payload_structure() {
 
 #[test]
 fn test_phase9_loopback_payloads() {
-    let payloads = vec![
-        "127.0.0.1",
-        "localhost",
-        "0.0.0.0",
-        "[::1]",
-    ];
+    let payloads = vec!["127.0.0.1", "localhost", "0.0.0.0", "[::1]"];
 
     for payload in payloads {
         assert!(!payload.is_empty());
@@ -341,16 +333,9 @@ fn test_phase9_loopback_payloads() {
 
 #[test]
 fn test_phase9_aws_metadata() {
-    let payloads = vec![
-        "169.254.169.254",
-        "169.254.169.254/latest/meta-data",
-    ];
+    let payloads = vec!["169.254.169.254", "169.254.169.254/latest/meta-data"];
 
-    let markers = vec![
-        "ami-id",
-        "instance-id",
-        "AKIA",
-    ];
+    let markers = vec!["ami-id", "instance-id", "AKIA"];
 
     for payload in payloads {
         assert!(payload.contains("169.254"));
@@ -363,15 +348,9 @@ fn test_phase9_aws_metadata() {
 
 #[test]
 fn test_phase9_gcp_metadata() {
-    let endpoints = vec![
-        "metadata.google.internal",
-        "169.254.169.254",
-    ];
+    let endpoints = vec!["metadata.google.internal", "169.254.169.254"];
 
-    let markers = vec![
-        "google-cloud-account",
-        "service-accounts",
-    ];
+    let markers = vec!["google-cloud-account", "service-accounts"];
 
     for endpoint in endpoints {
         assert!(!endpoint.is_empty());

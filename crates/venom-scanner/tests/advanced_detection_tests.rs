@@ -1,7 +1,7 @@
 use venom_scanner::{
-    BehavioralSignature, BehaviorIndicator, IndicatorType, ComparisonOperator,
-    BehavioralAnalyzer, BehavioralAnalysisData, WafBypassTechnique, BypassCategory,
-    WafBypassSelector, SignatureEvasionEngine, EversionRule, EversionType,
+    BehaviorIndicator, BehavioralAnalysisData, BehavioralAnalyzer, BehavioralSignature,
+    BypassCategory, ComparisonOperator, EversionRule, EversionType, IndicatorType,
+    SignatureEvasionEngine, WafBypassSelector, WafBypassTechnique,
 };
 
 #[test]

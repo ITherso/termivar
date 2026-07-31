@@ -1,7 +1,7 @@
 use venom_scanner::{
-    ThreatFeedSource, CVERecord, ThreatFeedEntry, ThreatSeverity, CVECorrelator,
-    ThreatFeedManager, AlertRule, AlertAction, AlertEngine, SecurityAlert,
-    ThreatActorProfile, ThreatIntelligenceRepo,
+    AlertAction, AlertEngine, AlertRule, CVECorrelator, CVERecord, SecurityAlert,
+    ThreatActorProfile, ThreatFeedEntry, ThreatFeedManager, ThreatFeedSource,
+    ThreatIntelligenceRepo, ThreatSeverity,
 };
 
 #[test]

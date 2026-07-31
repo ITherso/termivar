@@ -33,7 +33,7 @@
 //! - Timeout: 5 seconds
 //! - False positive rate: ~2% (based on header variance)
 
-use crate::{ScanFinding, ScanPhase, context::ScanContext, error::ScannerError};
+use crate::{context::ScanContext, error::ScannerError, ScanFinding, ScanPhase};
 use async_trait::async_trait;
 
 /// Server reconnaissance scanner for passive fingerprinting
@@ -53,14 +53,24 @@ impl ReconPhase {
     }
 
     /// List of known vulnerable server versions with their CVE information
+    #[allow(dead_code)]
     fn vulnerable_versions() -> Vec<(&'static str, &'static str, &'static str)> {
         vec![
-            ("Apache/2.4.49", "CVE-2021-41773", "Path Traversal via URL path"),
-            ("Apache/2.4.50", "CVE-2021-41773", "Path Traversal via URL path"),
+            (
+                "Apache/2.4.49",
+                "CVE-2021-41773",
+                "Path Traversal via URL path",
+            ),
+            (
+                "Apache/2.4.50",
+                "CVE-2021-41773",
+                "Path Traversal via URL path",
+            ),
         ]
     }
 
     /// Analyzes server header for version information
+    #[allow(dead_code)]
     fn analyze_server_header(header: &str) -> Option<(&'static str, &'static str)> {
         for (version, cve, description) in Self::vulnerable_versions() {
             if header.contains(version) {
@@ -105,7 +115,10 @@ impl ScanPhase for ReconPhase {
         let target_str = ctx.target.to_string();
         match ctx.client.head(&target_str).send().await {
             Ok(response) => {
-                ctx.log(format!("Target responded with status: {}", response.status()));
+                ctx.log(format!(
+                    "Target responded with status: {}",
+                    response.status()
+                ));
 
                 // Check for Server header leakage
                 if let Some(server) = response.headers().get("server") {
@@ -113,7 +126,9 @@ impl ScanPhase for ReconPhase {
                         ctx.log(format!("Server header: {}", server_str));
 
                         // Common vulnerable server versions
-                        if server_str.contains("Apache/2.4.49") || server_str.contains("Apache/2.4.50") {
+                        if server_str.contains("Apache/2.4.49")
+                            || server_str.contains("Apache/2.4.50")
+                        {
                             findings.push(ScanFinding {
                                 phase: self.phase_number(),
                                 module_name: self.name().to_string(),
@@ -138,11 +153,11 @@ impl ScanPhase for ReconPhase {
                         });
                     }
                 }
-            }
+            },
             Err(e) => {
                 ctx.log(format!("Failed to reach target: {}", e));
                 return Err(ScannerError::from(e));
-            }
+            },
         }
 
         ctx.log("Phase 1: Reconnaissance completed.".to_string());

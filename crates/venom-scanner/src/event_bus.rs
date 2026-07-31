@@ -5,7 +5,6 @@
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use std::any::Any;
 
 /// Event types in the scanning lifecycle
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
@@ -292,7 +291,8 @@ impl EventBus {
 
     /// Publishes event to all subscribers
     pub fn publish(&self, event: Event) {
-        self.event_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.event_count
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
 
         // Store in history
         self.event_history
@@ -343,10 +343,7 @@ impl EventBus {
     }
 
     /// Gets all events for a specific correlation ID (scan)
-    pub fn get_events_by_correlation(
-        &self,
-        correlation_id: &str,
-    ) -> Vec<Event> {
+    pub fn get_events_by_correlation(&self, correlation_id: &str) -> Vec<Event> {
         self.get_all_events()
             .into_iter()
             .filter(|e| e.correlation_id == correlation_id)
@@ -412,16 +409,15 @@ mod tests {
 
     #[test]
     fn test_event_severity() {
-        let event = Event::new(EventType::ScanFailed, "worker")
-            .with_severity(EventSeverity::Critical);
+        let event =
+            Event::new(EventType::ScanFailed, "worker").with_severity(EventSeverity::Critical);
 
         assert_eq!(event.severity, EventSeverity::Critical);
     }
 
     #[test]
     fn test_event_versioning() {
-        let event = Event::new(EventType::ScanStarted, "scanner")
-            .with_version(2);
+        let event = Event::new(EventType::ScanStarted, "scanner").with_version(2);
 
         assert_eq!(event.version, 2);
     }
@@ -429,8 +425,7 @@ mod tests {
     #[test]
     fn test_event_correlation_id() {
         let scan_id = "scan_12345";
-        let event = Event::new(EventType::FindingFound, "scanner")
-            .with_correlation_id(scan_id);
+        let event = Event::new(EventType::FindingFound, "scanner").with_correlation_id(scan_id);
 
         assert_eq!(event.correlation_id, scan_id);
     }
@@ -448,7 +443,10 @@ mod tests {
         assert_eq!(event.correlation_id, scan_id);
         assert_eq!(event.version, 1);
         assert_eq!(event.severity, EventSeverity::Info);
-        assert_eq!(event.data.get("target"), Some(&"http://example.com".to_string()));
+        assert_eq!(
+            event.data.get("target"),
+            Some(&"http://example.com".to_string())
+        );
     }
 
     #[test]
@@ -516,16 +514,8 @@ mod tests {
     fn test_event_unsubscribe() {
         let bus = EventBus::new();
 
-        bus.subscribe(
-            EventType::ScanCompleted,
-            "handler1",
-            Arc::new(|_| {}),
-        );
-        bus.subscribe(
-            EventType::ScanCompleted,
-            "handler2",
-            Arc::new(|_| {}),
-        );
+        bus.subscribe(EventType::ScanCompleted, "handler1", Arc::new(|_| {}));
+        bus.subscribe(EventType::ScanCompleted, "handler2", Arc::new(|_| {}));
 
         assert_eq!(bus.subscriber_count(&EventType::ScanCompleted), 2);
 
@@ -585,16 +575,12 @@ mod tests {
         let scan_id = "scan_001";
 
         // Create events for same scan
-        bus.publish(Event::new(EventType::ScanStarted, "test")
-            .with_correlation_id(scan_id));
-        bus.publish(Event::new(EventType::FindingFound, "test")
-            .with_correlation_id(scan_id));
-        bus.publish(Event::new(EventType::FindingFound, "test")
-            .with_correlation_id(scan_id));
+        bus.publish(Event::new(EventType::ScanStarted, "test").with_correlation_id(scan_id));
+        bus.publish(Event::new(EventType::FindingFound, "test").with_correlation_id(scan_id));
+        bus.publish(Event::new(EventType::FindingFound, "test").with_correlation_id(scan_id));
 
         // Create events for different scan
-        bus.publish(Event::new(EventType::ScanStarted, "test")
-            .with_correlation_id("scan_002"));
+        bus.publish(Event::new(EventType::ScanStarted, "test").with_correlation_id("scan_002"));
 
         let events = bus.get_events_by_correlation(scan_id);
         assert_eq!(events.len(), 3);
@@ -639,15 +625,21 @@ mod tests {
             .as_millis() as u64;
 
         // Add events in random order
-        bus.publish(Event::builder(EventType::FindingFound, "test")
-            .timestamp_ms(now + 2000)
-            .build());
-        bus.publish(Event::builder(EventType::ScanStarted, "test")
-            .timestamp_ms(now)
-            .build());
-        bus.publish(Event::builder(EventType::WorkerFinished, "test")
-            .timestamp_ms(now + 1000)
-            .build());
+        bus.publish(
+            Event::builder(EventType::FindingFound, "test")
+                .timestamp_ms(now + 2000)
+                .build(),
+        );
+        bus.publish(
+            Event::builder(EventType::ScanStarted, "test")
+                .timestamp_ms(now)
+                .build(),
+        );
+        bus.publish(
+            Event::builder(EventType::WorkerFinished, "test")
+                .timestamp_ms(now + 1000)
+                .build(),
+        );
 
         let sorted = bus.get_events_sorted();
         assert_eq!(sorted.len(), 3);
@@ -711,8 +703,9 @@ mod tests {
         for i in 0..500 {
             let bus_clone = bus.clone();
             let task = tokio::spawn(async move {
-                let event = Event::builder(EventType::WorkerFinished, format!("async_worker_{}", i))
-                    .build();
+                let event =
+                    Event::builder(EventType::WorkerFinished, format!("async_worker_{}", i))
+                        .build();
                 bus_clone.publish(event);
             });
             tasks.push(task);
@@ -906,10 +899,7 @@ mod tests {
 
         let retrieved = bus.get_all_events();
         assert_eq!(retrieved.len(), 1);
-        assert_eq!(
-            retrieved[0].data.get("large_payload"),
-            Some(&large_data)
-        );
+        assert_eq!(retrieved[0].data.get("large_payload"), Some(&large_data));
     }
 
     #[test]
@@ -935,10 +925,7 @@ mod tests {
         bus.publish(event);
 
         // All subscribers called
-        assert_eq!(
-            counter.load(std::sync::atomic::Ordering::SeqCst),
-            500
-        );
+        assert_eq!(counter.load(std::sync::atomic::Ordering::SeqCst), 500);
     }
 
     #[test]

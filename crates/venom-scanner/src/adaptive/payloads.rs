@@ -52,7 +52,9 @@ pub trait PayloadTransformer: Send + Sync {
 pub struct EncodingTransformer;
 
 impl PayloadTransformer for EncodingTransformer {
-    fn name(&self) -> &str { "encoding" }
+    fn name(&self) -> &str {
+        "encoding"
+    }
 
     fn transform(&self, payload: &str) -> String {
         payload
@@ -77,7 +79,9 @@ impl PayloadTransformer for EncodingTransformer {
 pub struct CaseTransformer;
 
 impl PayloadTransformer for CaseTransformer {
-    fn name(&self) -> &str { "case" }
+    fn name(&self) -> &str {
+        "case"
+    }
 
     fn transform(&self, payload: &str) -> String {
         payload
@@ -103,7 +107,9 @@ impl PayloadTransformer for CaseTransformer {
 pub struct PollutionTransformer;
 
 impl PayloadTransformer for PollutionTransformer {
-    fn name(&self) -> &str { "pollution" }
+    fn name(&self) -> &str {
+        "pollution"
+    }
 
     fn transform(&self, payload: &str) -> String {
         let timestamp = SystemTime::now()
@@ -119,7 +125,9 @@ impl PayloadTransformer for PollutionTransformer {
 pub struct CommentTransformer;
 
 impl PayloadTransformer for CommentTransformer {
-    fn name(&self) -> &str { "comment" }
+    fn name(&self) -> &str {
+        "comment"
+    }
 
     fn transform(&self, payload: &str) -> String {
         format!("{}/**/", payload)
@@ -131,7 +139,9 @@ impl PayloadTransformer for CommentTransformer {
 pub struct DecoyTransformer;
 
 impl PayloadTransformer for DecoyTransformer {
-    fn name(&self) -> &str { "decoy" }
+    fn name(&self) -> &str {
+        "decoy"
+    }
 
     fn transform(&self, payload: &str) -> String {
         format!("{}&x=1&y=2&z=3", payload)
@@ -145,7 +155,9 @@ pub struct ReductionTransformer {
 }
 
 impl PayloadTransformer for ReductionTransformer {
-    fn name(&self) -> &str { "reduction" }
+    fn name(&self) -> &str {
+        "reduction"
+    }
 
     fn transform(&self, payload: &str) -> String {
         if payload.len() > self.max_size {
@@ -174,7 +186,9 @@ impl CompositeTransformer {
 }
 
 impl PayloadTransformer for CompositeTransformer {
-    fn name(&self) -> &str { "composite" }
+    fn name(&self) -> &str {
+        "composite"
+    }
 
     fn transform(&self, payload: &str) -> String {
         let mut result = payload.to_string();
@@ -263,7 +277,8 @@ mod tests {
     #[test]
     fn test_mutation_status_blocking() {
         let original = "SELECT * FROM users";
-        let mutated = PayloadMutator::mutate(original, Some(DetectionPattern::StatusCodeBlocking(403)));
+        let mutated =
+            PayloadMutator::mutate(original, Some(DetectionPattern::StatusCodeBlocking(403)));
         assert_ne!(original, mutated);
     }
 
@@ -368,7 +383,9 @@ mod tests {
         struct UppercaseTransformer;
 
         impl PayloadTransformer for UppercaseTransformer {
-            fn name(&self) -> &str { "uppercase_plugin" }
+            fn name(&self) -> &str {
+                "uppercase_plugin"
+            }
 
             fn transform(&self, payload: &str) -> String {
                 payload.to_uppercase()
@@ -385,10 +402,8 @@ mod tests {
     #[test]
     fn test_composite_transformer_chain() {
         // Chain multiple transformers
-        let transformers: Vec<Box<dyn PayloadTransformer>> = vec![
-            Box::new(EncodingTransformer),
-            Box::new(CommentTransformer),
-        ];
+        let transformers: Vec<Box<dyn PayloadTransformer>> =
+            vec![Box::new(EncodingTransformer), Box::new(CommentTransformer)];
 
         let composite = CompositeTransformer::new(transformers);
         let original = "SELECT";

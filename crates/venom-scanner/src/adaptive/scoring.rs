@@ -40,7 +40,7 @@ impl ScoringWeights {
     /// Default balanced weights
     pub fn default() -> Self {
         Self {
-            status_weight: 0.4,   // Status code matters most
+            status_weight: 0.4, // Status code matters most
             timing_weight: 0.3,
             content_weight: 0.3,
         }
@@ -49,7 +49,7 @@ impl ScoringWeights {
     /// Status-heavy detection (good for strict WAF)
     pub fn status_heavy() -> Self {
         Self {
-            status_weight: 0.6,   // Status matters more
+            status_weight: 0.6, // Status matters more
             timing_weight: 0.2,
             content_weight: 0.2,
         }
@@ -59,7 +59,7 @@ impl ScoringWeights {
     pub fn timing_heavy() -> Self {
         Self {
             status_weight: 0.2,
-            timing_weight: 0.6,   // Timing matters more
+            timing_weight: 0.6, // Timing matters more
             content_weight: 0.2,
         }
     }
@@ -69,7 +69,7 @@ impl ScoringWeights {
         Self {
             status_weight: 0.2,
             timing_weight: 0.2,
-            content_weight: 0.6,  // Content matters more
+            content_weight: 0.6, // Content matters more
         }
     }
 
@@ -158,7 +158,8 @@ impl ScoringEngine {
             .rev()
             .take(recent_count)
             .filter(|r| r.status == 403 || r.status == 406 || r.status == 418)
-            .count() as f32 / recent_count as f32;
+            .count() as f32
+            / recent_count as f32;
         score += blocked_ratio * self.weights.status_weight;
 
         // Timing analysis (configurable weight)
@@ -167,7 +168,8 @@ impl ScoringEngine {
             .rev()
             .take(recent_count)
             .filter(|r| r.elapsed_ms > 5000)
-            .count() as f32 / recent_count as f32;
+            .count() as f32
+            / recent_count as f32;
         score += slow_ratio * self.weights.timing_weight;
 
         // Error keyword analysis (configurable weight)
@@ -176,7 +178,8 @@ impl ScoringEngine {
             .rev()
             .take(recent_count)
             .filter(|r| r.has_error_keywords)
-            .count() as f32 / recent_count as f32;
+            .count() as f32
+            / recent_count as f32;
         score += error_ratio * self.weights.content_weight;
 
         (score * 100.0).min(1.0)
@@ -200,21 +203,24 @@ impl ScoringEngine {
             .rev()
             .take(recent_count)
             .filter(|r| r.status == 403 || r.status == 406 || r.status == 418)
-            .count() as f32 / recent_count as f32;
+            .count() as f32
+            / recent_count as f32;
 
         let timing_score = history
             .iter()
             .rev()
             .take(recent_count)
             .filter(|r| r.elapsed_ms > 5000)
-            .count() as f32 / recent_count as f32;
+            .count() as f32
+            / recent_count as f32;
 
         let content_score = history
             .iter()
             .rev()
             .take(recent_count)
             .filter(|r| r.has_error_keywords)
-            .count() as f32 / recent_count as f32;
+            .count() as f32
+            / recent_count as f32;
 
         ScoreBreakdown {
             status_score,
@@ -323,7 +329,7 @@ mod tests {
         let weights = ScoringWeights::status_heavy();
         assert!(weights.status_weight > weights.timing_weight);
         assert!(weights.status_weight > weights.content_weight);
-        weights.validate().unwrap();  // Must be valid
+        weights.validate().unwrap(); // Must be valid
     }
 
     #[test]
@@ -350,7 +356,7 @@ mod tests {
 
     #[test]
     fn test_scoring_weights_custom_invalid_sum() {
-        let weights = ScoringWeights::custom(0.5, 0.3, 0.3);  // Sums to 1.1
+        let weights = ScoringWeights::custom(0.5, 0.3, 0.3); // Sums to 1.1
         assert!(weights.is_err());
     }
 
@@ -369,10 +375,10 @@ mod tests {
         // Add responses with only status blocks (no timing/content signals)
         for _ in 0..5 {
             history.push_back(ResponseMetrics {
-                status: 403,  // ← Status block
+                status: 403, // ← Status block
                 content_length: 100,
-                elapsed_ms: 100,  // ← Normal timing
-                has_error_keywords: false,  // ← No error keywords
+                elapsed_ms: 100,           // ← Normal timing
+                has_error_keywords: false, // ← No error keywords
                 redirect_count: 0,
             });
         }
@@ -380,7 +386,7 @@ mod tests {
         let prob = engine.detection_probability(&history);
         // With status_heavy (0.6 weight), status blocks = 100%, so score ≈ 0.6
         assert!(prob > 0.5);
-        assert!(prob < 0.7);  // Less than if all signals present
+        assert!(prob < 0.7); // Less than if all signals present
     }
 
     #[test]
@@ -392,9 +398,9 @@ mod tests {
         // Add responses with only timing signals (slow responses)
         for _ in 0..5 {
             history.push_back(ResponseMetrics {
-                status: 200,  // ← Normal response
+                status: 200, // ← Normal response
                 content_length: 100,
-                elapsed_ms: 6000,  // ← Slow (>5000ms)
+                elapsed_ms: 6000, // ← Slow (>5000ms)
                 has_error_keywords: false,
                 redirect_count: 0,
             });
@@ -502,8 +508,10 @@ mod tests {
         }
 
         let engine_default = ScoringEngine::new();
-        let engine_status_heavy = ScoringEngine::with_weights(ScoringWeights::status_heavy()).unwrap();
-        let engine_timing_heavy = ScoringEngine::with_weights(ScoringWeights::timing_heavy()).unwrap();
+        let engine_status_heavy =
+            ScoringEngine::with_weights(ScoringWeights::status_heavy()).unwrap();
+        let engine_timing_heavy =
+            ScoringEngine::with_weights(ScoringWeights::timing_heavy()).unwrap();
 
         let score_a_default = engine_default.detection_probability(&history_a);
         let score_a_status = engine_status_heavy.detection_probability(&history_a);

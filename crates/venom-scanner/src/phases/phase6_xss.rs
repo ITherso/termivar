@@ -14,7 +14,7 @@
 //! - Data URIs: javascript: protocol
 //! - SVG vectors: <svg> with event attributes
 
-use crate::{ScanFinding, ScanPhase, context::ScanContext, error::ScannerError};
+use crate::{context::ScanContext, error::ScannerError, ScanFinding, ScanPhase};
 use async_trait::async_trait;
 use reqwest::StatusCode;
 use url::Url;
@@ -128,7 +128,9 @@ impl ScanPhase for XssScanner {
 
                                         // Verify payload execution
                                         if let Ok(mut exploit_url) = Url::parse(&url_str) {
-                                            exploit_url.query_pairs_mut().append_pair(&param, payload);
+                                            exploit_url
+                                                .query_pairs_mut()
+                                                .append_pair(&param, payload);
 
                                             match tokio::time::timeout(
                                                 std::time::Duration::from_secs(5),
@@ -137,7 +139,8 @@ impl ScanPhase for XssScanner {
                                             .await
                                             {
                                                 Ok(Ok(verify_res)) => {
-                                                    if let Ok(verify_body) = verify_res.text().await {
+                                                    if let Ok(verify_body) = verify_res.text().await
+                                                    {
                                                         if verify_body.contains(payload) {
                                                             findings.push(ScanFinding {
                                                                 phase: self.phase_number(),
@@ -154,15 +157,15 @@ impl ScanPhase for XssScanner {
                                                             });
                                                         }
                                                     }
-                                                }
-                                                _ => {}
+                                                },
+                                                _ => {},
                                             }
                                         }
                                     }
                                 }
                             }
-                        }
-                        _ => {}
+                        },
+                        _ => {},
                     }
                 }
             }

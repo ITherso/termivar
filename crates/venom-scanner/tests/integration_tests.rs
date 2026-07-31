@@ -2,9 +2,9 @@
 //!
 //! Tests phase execution, finding generation, and inter-phase data flow
 
-use venom_scanner::{ScanContext, ScanPhase, ScanFinding, LogLevel, Logger};
 use std::sync::Arc;
 use url::Url;
+use venom_scanner::{LogLevel, Logger, ScanContext, ScanFinding, ScanPhase};
 
 /// Verifies that all phases have correct metadata
 #[test]
@@ -164,12 +164,7 @@ fn test_payload_categories() {
 /// Tests finding severity comparison
 #[test]
 fn test_severity_comparison() {
-    let severities = vec![
-        ("CRITICAL", 4),
-        ("HIGH", 3),
-        ("MEDIUM", 2),
-        ("LOW", 1),
-    ];
+    let severities = vec![("CRITICAL", 4), ("HIGH", 3), ("MEDIUM", 2), ("LOW", 1)];
 
     // Verify ordering makes sense
     for i in 0..severities.len() - 1 {
@@ -229,10 +224,7 @@ fn test_concurrent_finding_collection() {
 
     // Verify each phase has exactly 2 findings
     for phase in 1..=5 {
-        let phase_findings: Vec<_> = findings
-            .iter()
-            .filter(|f| f.phase == phase)
-            .collect();
+        let phase_findings: Vec<_> = findings.iter().filter(|f| f.phase == phase).collect();
         assert_eq!(phase_findings.len(), 2);
     }
 }

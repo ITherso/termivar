@@ -98,7 +98,10 @@ mod tests {
     #[tokio::test]
     async fn test_sqli_payload_detection() {
         let plugin = SQLiPlugin;
-        let result = plugin.execute("http://target.com", "' OR '1'='1").await.unwrap();
+        let result = plugin
+            .execute("http://target.com", "' OR '1'='1")
+            .await
+            .unwrap();
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].severity, "CRITICAL");
     }

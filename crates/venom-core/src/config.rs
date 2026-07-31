@@ -193,9 +193,9 @@ impl Config {
 
         // Override rate_limit_rps
         if let Ok(rate_limit) = env::var("VENOM_RATE_LIMIT_RPS") {
-            self.rate_limit_rps = rate_limit.parse().map_err(|_| {
-                ConfigError::ParseError("Invalid VENOM_RATE_LIMIT_RPS".to_string())
-            })?;
+            self.rate_limit_rps = rate_limit
+                .parse()
+                .map_err(|_| ConfigError::ParseError("Invalid VENOM_RATE_LIMIT_RPS".to_string()))?;
         }
 
         // Override intensity
@@ -424,14 +424,15 @@ mod tests {
 
         assert_eq!(config.intensity, ScanIntensity::Aggressive);
         assert!(config.aggressive);
-        assert_eq!(config.options.get("custom_key"), Some(&"custom_value".to_string()));
+        assert_eq!(
+            config.options.get("custom_key"),
+            Some(&"custom_value".to_string())
+        );
     }
 
     #[test]
     fn test_builder_validation_fails() {
-        let result = Config::builder("http://localhost")
-            .timeout(0)
-            .build();
+        let result = Config::builder("http://localhost").timeout(0).build();
 
         assert!(result.is_err());
     }

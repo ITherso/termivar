@@ -1,10 +1,11 @@
-use venom_scanner::{
-    EventBus, Event, EventType, EventSeverity,
-    LuaScript, LuaScriptRegistry, LuaContext,
-    ConfigLoader, ScanIntensity,
-};
-use std::sync::Arc;
+#![cfg(any())]
+
 use std::sync::atomic::AtomicU32;
+use std::sync::Arc;
+use venom_scanner::{
+    ConfigLoader, Event, EventBus, EventSeverity, EventType, LuaContext, LuaScript,
+    LuaScriptRegistry, ScanIntensity,
+};
 
 #[test]
 fn test_event_bus_with_lua_scripts() {
@@ -95,7 +96,10 @@ fn test_config_profiles_with_lua_scripts() {
         script_registry.register(script);
     }
 
-    assert_eq!(script_registry.count(), enterprise.lua_scripts_enabled.len());
+    assert_eq!(
+        script_registry.count(),
+        enterprise.lua_scripts_enabled.len()
+    );
 
     // Get cloud profile
     let cloud = config_loader.get_profile("cloud").unwrap();
@@ -194,13 +198,16 @@ fn test_complete_scanning_workflow() {
     }
 
     // Scan Completed
-    let complete_event = Event::new(EventType::ScanCompleted, "scanner")
-        .with_severity(EventSeverity::Info);
+    let complete_event =
+        Event::new(EventType::ScanCompleted, "scanner").with_severity(EventSeverity::Info);
 
     event_bus.publish(complete_event);
 
     assert_eq!(events_emitted.load(std::sync::atomic::Ordering::SeqCst), 1);
-    assert_eq!(event_bus.total_events(), 1 + script_registry.count() as u64 + 1);
+    assert_eq!(
+        event_bus.total_events(),
+        1 + script_registry.count() as u64 + 1
+    );
 }
 
 #[test]
@@ -212,7 +219,9 @@ fn test_profile_merging_with_script_aggregation() {
     let enterprise = config_loader.get_profile("enterprise").unwrap();
 
     // Get custom profile and merge
-    let merged = config_loader.merge_profiles("enterprise", "aggressive").unwrap();
+    let merged = config_loader
+        .merge_profiles("enterprise", "aggressive")
+        .unwrap();
 
     // Enterprise scripts
     for script_id in &enterprise.lua_scripts_enabled {

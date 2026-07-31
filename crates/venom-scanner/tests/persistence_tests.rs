@@ -1,7 +1,6 @@
 use venom_scanner::{
-    DbConfig, EntityType, ScanRecord, FindingRecord, EndpointRecord, QueryBuilder,
-    SchemaManager, TableSchema, ColumnDef, ConnectionPool, TransactionManager,
-    TransactionStatus,
+    ColumnDef, ConnectionPool, DbConfig, EndpointRecord, EntityType, FindingRecord, QueryBuilder,
+    ScanRecord, SchemaManager, TableSchema, TransactionManager, TransactionStatus,
 };
 
 #[test]

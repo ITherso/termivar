@@ -1,8 +1,8 @@
 use clap::{Parser, Subcommand};
-use venom_scanner::{ScanRunner, ScanContext, phases};
+use url::Url;
 use venom_api;
 use venom_proxy::ProxyServer;
-use url::Url;
+use venom_scanner::{phases, ScanContext, ScanRunner};
 
 #[derive(Parser)]
 #[command(name = "venom")]
@@ -44,16 +44,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             runner.register_phase(Box::new(phases::ReconPhase));
             runner.register_phase(Box::new(phases::CrawlPhase));
             runner.register_phase(Box::new(phases::DirectoryFuzzer::with_default_wordlist(20)));
-            runner.register_phase(Box::new(phases::ParameterDiscoverer::with_default_wordlist(20)));
+            runner.register_phase(Box::new(
+                phases::ParameterDiscoverer::with_default_wordlist(20),
+            ));
             runner.register_phase(Box::new(phases::SqliScanner));
             runner.register_phase(Box::new(phases::XssScanner));
             runner.register_phase(Box::new(phases::SstiScanner));
             runner.register_phase(Box::new(phases::LfiXxeScanner::new()));
             runner.register_phase(Box::new(phases::SsrfScanner::new()));
 
-            let scan_task = tokio::spawn(async move {
-                runner.run_pipeline(ctx).await
-            });
+            let scan_task = tokio::spawn(async move { runner.run_pipeline(ctx).await });
 
             let log_task = tokio::spawn(async move {
                 while let Some(msg) = rx.recv().await {
@@ -62,31 +62,38 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             });
 
             let findings = scan_task.await.unwrap_or_default();
-            println!("\n[*] Scan completed. Found {} vulnerabilities.", findings.len());
+            println!(
+                "\n[*] Scan completed. Found {} vulnerabilities.",
+                findings.len()
+            );
 
             for finding in findings {
                 println!(
                     "\n[{}] {} ({})\n  Description: {}\n  Evidence: {}",
-                    finding.severity, finding.description, finding.module_name, finding.description, finding.evidence
+                    finding.severity,
+                    finding.description,
+                    finding.module_name,
+                    finding.description,
+                    finding.evidence
                 );
             }
 
             let _ = log_task.abort();
-        }
+        },
         Some(Commands::Api { addr }) => {
             venom_api::start_api(&addr).await?;
-        }
+        },
         Some(Commands::Proxy { addr }) => {
             let parts: Vec<&str> = addr.split(':').collect();
             if parts.len() == 2 {
                 let proxy = ProxyServer::new(parts[0].to_string(), parts[1].parse()?);
                 proxy.start().await?;
             }
-        }
+        },
         None => {
             println!("VENOM v1.0.0 - Enterprise Pentesting Platform");
             println!("Use --help for more information");
-        }
+        },
     }
 
     Ok(())

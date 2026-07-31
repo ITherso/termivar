@@ -20,9 +20,9 @@ impl LuaEngineConfig {
     /// Default config: reasonable limits for production
     pub fn default() -> Self {
         Self {
-            history_size: 100,          // Keep last 100 executions
+            history_size: 100,            // Keep last 100 executions
             max_memory_bytes: 50_000_000, // 50MB per script
-            default_timeout_ms: 5000,   // 5 second default
+            default_timeout_ms: 5000,     // 5 second default
         }
     }
 
@@ -38,9 +38,9 @@ impl LuaEngineConfig {
     /// Extended config: for dashboards/analysis
     pub fn extended() -> Self {
         Self {
-            history_size: 500,          // Keep more history
+            history_size: 500,             // Keep more history
             max_memory_bytes: 100_000_000, // 100MB per script
-            default_timeout_ms: 30000,  // 30 second limit
+            default_timeout_ms: 30000,     // 30 second limit
         }
     }
 
@@ -184,10 +184,11 @@ impl ScanConfig {
             enable_anomaly_detection: true,
             max_payload_size: 2000,
             phases: vec![1, 2, 3, 5, 6, 7, 8],
-            headers: vec![
-                ("User-Agent".to_string(), "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36".to_string()),
-            ],
-            lua_engine: LuaEngineConfig::extended(),  // Extended history for stealth
+            headers: vec![(
+                "User-Agent".to_string(),
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36".to_string(),
+            )],
+            lua_engine: LuaEngineConfig::extended(), // Extended history for stealth
         }
     }
 
@@ -281,7 +282,8 @@ mod tests {
     #[test]
     fn test_custom_headers() {
         let mut cfg = ScanConfig::normal();
-        cfg.headers.push(("X-Custom".to_string(), "value".to_string()));
+        cfg.headers
+            .push(("X-Custom".to_string(), "value".to_string()));
         assert_eq!(cfg.headers.len(), 1);
     }
 }

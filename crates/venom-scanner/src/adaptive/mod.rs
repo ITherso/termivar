@@ -52,7 +52,10 @@ impl AdaptiveEngine {
         }
 
         let recent = self.history.iter().rev().take(5);
-        let blocked_count = recent.clone().filter(|r| r.status == 403 || r.status == 406).count();
+        let blocked_count = recent
+            .clone()
+            .filter(|r| r.status == 403 || r.status == 406)
+            .count();
         let timeout_count = recent.clone().filter(|r| r.elapsed_ms > 5000).count();
 
         if blocked_count >= 3 {

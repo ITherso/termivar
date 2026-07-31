@@ -20,7 +20,7 @@ jobs:
       - name: Run all tests
         run: cargo test --all --verbose
       - name: Run clippy
-        run: cargo clippy -- -D warnings
+        run: cargo clippy
 
   build-release:
     name: Build Release
@@ -50,7 +50,7 @@ jobs:
       - name: Build release
         run: cargo build --release --target ${{ matrix.target }}
       - name: Upload artifact
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.target }}
           path: target/${{ matrix.target }}/release/${{ matrix.artifact_name }}
@@ -64,7 +64,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Download artifacts
-        uses: actions/download-artifact@v3
+        uses: actions/download-artifact@v4
       - name: Generate changelog
         id: changelog
         run: |

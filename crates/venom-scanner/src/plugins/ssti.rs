@@ -56,7 +56,8 @@ impl Plugin for SSTIPlugin {
                     phase: 7,
                     module_name: "SSTI Detector".to_string(),
                     severity: "CRITICAL".to_string(),
-                    description: "SSTI vulnerability detected - template code execution possible".to_string(),
+                    description: "SSTI vulnerability detected - template code execution possible"
+                        .to_string(),
                     evidence: format!("Target: {}, Template payload: {}", target, test_payload),
                 });
                 break;
@@ -101,7 +102,10 @@ mod tests {
     #[tokio::test]
     async fn test_ssti_jinja_detection() {
         let plugin = SSTIPlugin;
-        let result = plugin.execute("http://target.com", "{{7*7}}").await.unwrap();
+        let result = plugin
+            .execute("http://target.com", "{{7*7}}")
+            .await
+            .unwrap();
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].severity, "CRITICAL");
     }
@@ -109,7 +113,10 @@ mod tests {
     #[tokio::test]
     async fn test_ssti_erb_detection() {
         let plugin = SSTIPlugin;
-        let result = plugin.execute("http://target.com", "<%= 7*7 %>").await.unwrap();
+        let result = plugin
+            .execute("http://target.com", "<%= 7*7 %>")
+            .await
+            .unwrap();
         assert_eq!(result.len(), 1);
     }
 

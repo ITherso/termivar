@@ -35,15 +35,19 @@ impl UserRole {
             UserRole::Analyst => {
                 matches!(
                     permission,
-                    "view_scans" | "create_scan" | "modify_scan" | "view_findings" | "export_report"
+                    "view_scans"
+                        | "create_scan"
+                        | "modify_scan"
+                        | "view_findings"
+                        | "export_report"
                 )
-            }
+            },
             UserRole::Viewer => {
                 matches!(permission, "view_scans" | "view_findings" | "export_report")
-            }
+            },
             UserRole::ApiOnly => {
                 matches!(permission, "api_access")
-            }
+            },
         }
     }
 }
@@ -203,13 +207,10 @@ impl UserManager {
 
     /// Validates token
     pub fn validate_token(&self, token: &str) -> Option<AuthToken> {
-        self.tokens.get(token).cloned().and_then(|t| {
-            if t.is_expired() {
-                None
-            } else {
-                Some(t)
-            }
-        })
+        self.tokens
+            .get(token)
+            .cloned()
+            .and_then(|t| if t.is_expired() { None } else { Some(t) })
     }
 
     /// Revokes token
@@ -242,7 +243,11 @@ mod tests {
 
     #[test]
     fn test_user_creation() {
-        let user = User::new("testuser".to_string(), "test@example.com".to_string(), UserRole::Analyst);
+        let user = User::new(
+            "testuser".to_string(),
+            "test@example.com".to_string(),
+            UserRole::Analyst,
+        );
         assert_eq!(user.username, "testuser");
         assert_eq!(user.role, UserRole::Analyst);
         assert!(user.active);
@@ -250,7 +255,11 @@ mod tests {
 
     #[test]
     fn test_api_key_generation() {
-        let mut user = User::new("testuser".to_string(), "test@example.com".to_string(), UserRole::Analyst);
+        let mut user = User::new(
+            "testuser".to_string(),
+            "test@example.com".to_string(),
+            UserRole::Analyst,
+        );
         let key = user.generate_api_key();
         assert!(key.starts_with("venom_"));
         assert_eq!(user.api_key, Some(key));
@@ -275,16 +284,27 @@ mod tests {
     #[test]
     fn test_user_manager() {
         let mut manager = UserManager::new();
-        let user = manager.create_user("testuser".to_string(), "test@example.com".to_string(), UserRole::Analyst);
+        let user = manager.create_user(
+            "testuser".to_string(),
+            "test@example.com".to_string(),
+            UserRole::Analyst,
+        );
 
         assert_eq!(manager.user_count(), 1);
-        assert_eq!(manager.get_user(&user.user_id).unwrap().username, "testuser");
+        assert_eq!(
+            manager.get_user(&user.user_id).unwrap().username,
+            "testuser"
+        );
     }
 
     #[test]
     fn test_token_generation_and_validation() {
         let mut manager = UserManager::new();
-        let user = manager.create_user("testuser".to_string(), "test@example.com".to_string(), UserRole::Analyst);
+        let user = manager.create_user(
+            "testuser".to_string(),
+            "test@example.com".to_string(),
+            UserRole::Analyst,
+        );
 
         let token = manager.generate_token(user.user_id.clone(), 3600).unwrap();
         let validated = manager.validate_token(&token.token);
@@ -295,7 +315,11 @@ mod tests {
     #[test]
     fn test_token_revocation() {
         let mut manager = UserManager::new();
-        let user = manager.create_user("testuser".to_string(), "test@example.com".to_string(), UserRole::Analyst);
+        let user = manager.create_user(
+            "testuser".to_string(),
+            "test@example.com".to_string(),
+            UserRole::Analyst,
+        );
         let token = manager.generate_token(user.user_id, 3600).unwrap();
 
         assert!(manager.revoke_token(&token.token));

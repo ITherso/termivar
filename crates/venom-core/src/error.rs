@@ -6,8 +6,8 @@
 //! - Type-safe error variants
 //! - Easy logging integration
 
-use thiserror::Error;
 use std::io;
+use thiserror::Error;
 
 /// VENOM Error types with rich context
 #[derive(Error, Debug)]
@@ -174,10 +174,7 @@ impl Error {
     pub fn is_critical(&self) -> bool {
         matches!(
             self,
-            Error::Config(_)
-                | Error::Tls(_)
-                | Error::Target(_)
-                | Error::Database(_)
+            Error::Config(_) | Error::Tls(_) | Error::Target(_) | Error::Database(_)
         )
     }
 }

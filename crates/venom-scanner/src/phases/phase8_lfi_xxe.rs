@@ -13,7 +13,7 @@
 //! - **Blind OOB**: DNS/HTTP callback verification with UUID tracking
 //! - Supports external OOB domain configuration
 
-use crate::{ScanFinding, ScanPhase, context::ScanContext, error::ScannerError};
+use crate::{context::ScanContext, error::ScannerError, ScanFinding, ScanPhase};
 use async_trait::async_trait;
 use reqwest::StatusCode;
 use url::Url;
@@ -136,14 +136,17 @@ impl ScanPhase for LfiXxeScanner {
                                                         sig, sig_type
                                                     ),
                                                 });
-                                                ctx.log(format!("LFI found (Linux) on {}?{}", endpoint, param));
+                                                ctx.log(format!(
+                                                    "LFI found (Linux) on {}?{}",
+                                                    endpoint, param
+                                                ));
                                                 return Ok(findings);
                                             }
                                         }
                                     }
                                 }
-                            }
-                            _ => {}
+                            },
+                            _ => {},
                         }
                     }
                 }
@@ -178,14 +181,17 @@ impl ScanPhase for LfiXxeScanner {
                                                         sig, sig_type
                                                     ),
                                                 });
-                                                ctx.log(format!("LFI found (Windows) on {}?{}", endpoint, param));
+                                                ctx.log(format!(
+                                                    "LFI found (Windows) on {}?{}",
+                                                    endpoint, param
+                                                ));
                                                 return Ok(findings);
                                             }
                                         }
                                     }
                                 }
-                            }
-                            _ => {}
+                            },
+                            _ => {},
                         }
                     }
                 }
@@ -227,16 +233,19 @@ impl ScanPhase for LfiXxeScanner {
                                     return Ok(findings);
                                 }
                             }
-                        }
-                        _ => {}
+                        },
+                        _ => {},
                     }
 
                     // Blind OOB-XXE detection (if OOB domain configured)
                     if let Some(ref oob_domain) = self.oob_domain {
-                        let unique_id = format!("xxe_{}", std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .map(|d| d.as_millis())
-                            .unwrap_or(0));
+                        let unique_id = format!(
+                            "xxe_{}",
+                            std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .map(|d| d.as_millis())
+                                .unwrap_or(0)
+                        );
 
                         let oob_host = format!("{}.{}", unique_id, oob_domain);
                         let oob_xxe = format!(
@@ -274,8 +283,8 @@ impl ScanPhase for LfiXxeScanner {
                                         oob_host
                                     ),
                                 });
-                            }
-                            _ => {}
+                            },
+                            _ => {},
                         }
                     }
                 }

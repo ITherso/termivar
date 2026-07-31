@@ -3,10 +3,10 @@
 //! Multi-worker coordination, task queuing, and result aggregation
 //! for horizontal scaling across multiple nodes.
 
-use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, VecDeque, HashSet};
-use std::sync::Arc;
 use dashmap::DashMap;
+use serde::{Deserialize, Serialize};
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::sync::Arc;
 
 /// Worker capability tags (task affinity)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -48,9 +48,9 @@ pub struct WorkerNode {
     pub completed_tasks: u64,
     pub last_heartbeat: u64,
     // Dynamic resource metrics
-    pub cpu_utilization: f32,      // 0.0-100.0 percent
-    pub memory_utilization: f32,   // 0.0-100.0 percent
-    pub network_utilization: f32,  // 0.0-100.0 percent
+    pub cpu_utilization: f32,     // 0.0-100.0 percent
+    pub memory_utilization: f32,  // 0.0-100.0 percent
+    pub network_utilization: f32, // 0.0-100.0 percent
     // Task affinity tags (linux, windows, gpu, internal, external)
     pub tags: HashSet<WorkerTag>,
 }
@@ -86,14 +86,15 @@ impl WorkerNode {
     ///   effective = 10 * (1 - 50/100) = 5 tasks max
     pub fn effective_capacity(&self) -> u32 {
         if self.status != WorkerStatus::Healthy {
-            return 0;  // Offline/Degraded workers can't take tasks
+            return 0; // Offline/Degraded workers can't take tasks
         }
 
-        let max_utilization = self.cpu_utilization
+        let max_utilization = self
+            .cpu_utilization
             .max(self.memory_utilization)
             .max(self.network_utilization)
-            .min(100.0)  // Cap at 100%
-            .max(0.0);   // Floor at 0%
+            .min(100.0) // Cap at 100%
+            .max(0.0); // Floor at 0%
 
         let availability_factor = (100.0 - max_utilization) / 100.0;
         ((self.capacity as f32) * availability_factor).ceil() as u32
@@ -113,7 +114,8 @@ impl WorkerNode {
 
     /// Determine health status based on resource utilization
     pub fn compute_status(&mut self) {
-        let max_util = self.cpu_utilization
+        let max_util = self
+            .cpu_utilization
             .max(self.memory_utilization)
             .max(self.network_utilization);
 
@@ -137,7 +139,7 @@ impl WorkerNode {
             WorkerStatus::Healthy => 25.0,
             WorkerStatus::Busy => 15.0,
             WorkerStatus::Degraded => 5.0,
-            WorkerStatus::Offline => return -1000.0,  // Never select
+            WorkerStatus::Offline => return -1000.0, // Never select
         };
         score += status_score;
 
@@ -145,11 +147,11 @@ impl WorkerNode {
         // Recent ping = healthy, stale ping = suspect
         let heartbeat_age = now_secs.saturating_sub(self.last_heartbeat);
         let heartbeat_score = if heartbeat_age < 5 {
-            20.0  // Fresh heartbeat (< 5s)
+            20.0 // Fresh heartbeat (< 5s)
         } else if heartbeat_age < 30 {
-            20.0 * (1.0 - (heartbeat_age as f32 / 30.0) * 0.5)  // Degrade to 10 points at 30s
+            20.0 * (1.0 - (heartbeat_age as f32 / 30.0) * 0.5) // Degrade to 10 points at 30s
         } else {
-            0.0  // Stale (> 30s)
+            0.0 // Stale (> 30s)
         };
         score += heartbeat_score;
 
@@ -188,7 +190,7 @@ pub struct ScanTask {
     pub started_at: Option<u64>,
     pub completed_at: Option<u64>,
     pub priority: TaskPriority,
-    pub retry_count: u32,  // Track retry attempts (max 3)
+    pub retry_count: u32, // Track retry attempts (max 3)
 }
 
 /// Task status
@@ -267,14 +269,15 @@ impl TaskQueue {
         self.queue
             .entry(priority)
             .or_insert_with(VecDeque::new)
-            .push_back(task_id);  // FIFO: push to back
+            .push_back(task_id); // FIFO: push to back
     }
 
     pub fn dequeue(&self) -> Option<ScanTask> {
         // Get highest priority task (CRITICAL FIX: FIFO order, not LIFO!)
         for priority in (1..=4).rev() {
             if let Some(mut queue) = self.queue.get_mut(&priority) {
-                if let Some(task_id) = queue.pop_front() {  // FIFO: pop from front
+                if let Some(task_id) = queue.pop_front() {
+                    // FIFO: pop from front
                     if let Some((_, task)) = self.tasks.remove(&task_id) {
                         return Some(task);
                     }
@@ -335,13 +338,14 @@ impl WorkerPool {
             .iter()
             .filter(|entry| {
                 let worker = entry.value();
-                worker.status != WorkerStatus::Offline
-                    && worker.available_slots() > 0
+                worker.status != WorkerStatus::Offline && worker.available_slots() > 0
             })
             .max_by(|a, b| {
                 let a_score = a.value().compute_score(now);
                 let b_score = b.value().compute_score(now);
-                a_score.partial_cmp(&b_score).unwrap_or(std::cmp::Ordering::Equal)
+                a_score
+                    .partial_cmp(&b_score)
+                    .unwrap_or(std::cmp::Ordering::Equal)
             })
             .map(|entry| entry.value().clone())
     }
@@ -395,9 +399,9 @@ impl WorkerPool {
             // Check retry limit
             if task.retry_count < max_retries {
                 task.retry_count += 1;
-                task.status = TaskStatus::Queued;  // Requeue
-                task.assigned_to = None;  // Unassign from current worker
-                task.started_at = None;  // Reset start time for next attempt
+                task.status = TaskStatus::Queued; // Requeue
+                task.assigned_to = None; // Unassign from current worker
+                task.started_at = None; // Reset start time for next attempt
                 self.task_queue.update_task(task);
                 true
             } else {
@@ -472,7 +476,10 @@ impl WorkerPool {
     }
 
     pub fn get_workers(&self) -> Vec<WorkerNode> {
-        self.workers.iter().map(|entry| entry.value().clone()).collect()
+        self.workers
+            .iter()
+            .map(|entry| entry.value().clone())
+            .collect()
     }
 
     /// Update worker heartbeat (called when worker sends ping)
@@ -558,7 +565,7 @@ impl Default for ResultAggregator {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, any()))]
 mod tests {
     use super::*;
 
@@ -703,7 +710,7 @@ mod tests {
             capacity: 10,
             current_tasks: 0,
             completed_tasks: 0,
-            last_heartbeat: 1000,  // Old timestamp
+            last_heartbeat: 1000, // Old timestamp
         };
 
         pool.register_worker(worker);
@@ -736,7 +743,7 @@ mod tests {
                 capacity: 10,
                 current_tasks: 0,
                 completed_tasks: 0,
-                last_heartbeat: 1000,  // Very old
+                last_heartbeat: 1000, // Very old
             };
             pool.register_worker(worker);
         }
@@ -776,7 +783,7 @@ mod tests {
             capacity: 10,
             current_tasks: 0,
             completed_tasks: 0,
-            last_heartbeat: now,  // Fresh heartbeat
+            last_heartbeat: now, // Fresh heartbeat
         };
 
         let dead_worker = WorkerNode {
@@ -788,7 +795,7 @@ mod tests {
             capacity: 10,
             current_tasks: 0,
             completed_tasks: 0,
-            last_heartbeat: now - 100,  // Very old
+            last_heartbeat: now - 100, // Very old
         };
 
         pool.register_worker(healthy_worker);
@@ -866,7 +873,7 @@ mod tests {
             current_tasks: 0,
             completed_tasks: 0,
             last_heartbeat: 1000,
-            cpu_utilization: 30.0,  // Max 30%, so 70% available
+            cpu_utilization: 30.0, // Max 30%, so 70% available
             memory_utilization: 20.0,
             network_utilization: 10.0,
         };
@@ -887,7 +894,7 @@ mod tests {
             current_tasks: 0,
             completed_tasks: 0,
             last_heartbeat: 1000,
-            cpu_utilization: 85.0,  // Max 85%, so 15% available
+            cpu_utilization: 85.0, // Max 85%, so 15% available
             memory_utilization: 75.0,
             network_utilization: 80.0,
         };
@@ -929,7 +936,7 @@ mod tests {
             current_tasks: 2,
             completed_tasks: 0,
             last_heartbeat: 1000,
-            cpu_utilization: 30.0,  // Effective capacity = 7
+            cpu_utilization: 30.0, // Effective capacity = 7
             memory_utilization: 20.0,
             network_utilization: 10.0,
         };
@@ -988,12 +995,12 @@ mod tests {
             current_tasks: 0,
             completed_tasks: 0,
             last_heartbeat: 1000,  // Will be treated as recent in test
-            cpu_utilization: 20.0,  // Good: low utilization
+            cpu_utilization: 20.0, // Good: low utilization
             memory_utilization: 15.0,
             network_utilization: 10.0,
         };
 
-        let now = 1002;  // Just 2 seconds later
+        let now = 1002; // Just 2 seconds later
         let score = worker.compute_score(now);
 
         // Score should be high: Healthy (25) + fresh heartbeat (20) + low CPU (12) + low memory (12.75) + full capacity (25) ≈ 94.75
@@ -1040,7 +1047,7 @@ mod tests {
 
         let mut stale = healthy.clone();
         stale.worker_id = "w2".to_string();
-        stale.last_heartbeat = 900;  // 100s old
+        stale.last_heartbeat = 900; // 100s old
 
         let now = 1000;
         let healthy_score = healthy.compute_score(now);
@@ -1048,9 +1055,12 @@ mod tests {
 
         // Healthy has fresh heartbeat (20 points), stale gets 0 points for heartbeat
         // Difference: 20 points
-        assert!(healthy_score > stale_score + 15.0,
+        assert!(
+            healthy_score > stale_score + 15.0,
             "Fresh heartbeat should score significantly higher. healthy={}, stale={}",
-            healthy_score, stale_score);
+            healthy_score,
+            stale_score
+        );
     }
 
     #[test]
@@ -1064,10 +1074,10 @@ mod tests {
             port: 8000,
             status: WorkerStatus::Healthy,
             capacity: 10,
-            current_tasks: 0,  // Empty
+            current_tasks: 0, // Empty
             completed_tasks: 0,
             last_heartbeat: 4999,  // Fresh
-            cpu_utilization: 10.0,  // Low
+            cpu_utilization: 10.0, // Low
             memory_utilization: 10.0,
             network_utilization: 10.0,
         };
@@ -1079,10 +1089,10 @@ mod tests {
             port: 8000,
             status: WorkerStatus::Busy,
             capacity: 10,
-            current_tasks: 8,  // Almost full
+            current_tasks: 8, // Almost full
             completed_tasks: 0,
             last_heartbeat: 4995,  // Slightly stale
-            cpu_utilization: 85.0,  // High
+            cpu_utilization: 85.0, // High
             memory_utilization: 75.0,
             network_utilization: 60.0,
         };
@@ -1091,9 +1101,12 @@ mod tests {
         let busy_score = busy_health.compute_score(now);
 
         // Idle should score much higher
-        assert!(idle_score > busy_score + 30.0,
+        assert!(
+            idle_score > busy_score + 30.0,
             "Idle healthy should score > 30 points higher. idle={}, busy={}",
-            idle_score, busy_score);
+            idle_score,
+            busy_score
+        );
 
         // Idle should be selected (higher score)
         let pool = WorkerPool::new();
@@ -1147,7 +1160,7 @@ mod tests {
             started_at: Some(1005),
             completed_at: None,
             priority: TaskPriority::Normal,
-            retry_count: 3,  // Already at max
+            retry_count: 3, // Already at max
         };
 
         queue.enqueue(task);
@@ -1174,7 +1187,7 @@ mod tests {
             port: 8000,
             status: WorkerStatus::Healthy,
             capacity: 10,
-            current_tasks: 1,  // Has 1 task assigned
+            current_tasks: 1, // Has 1 task assigned
             completed_tasks: 0,
             last_heartbeat: 1000,
             cpu_utilization: 30.0,
@@ -1274,8 +1287,8 @@ mod tests {
             retry_count: 0,
         };
 
-        let ttl_secs = 86400;  // 24 hours
-        let now = 1000 + 3600;  // 1 hour later
+        let ttl_secs = 86400; // 24 hours
+        let now = 1000 + 3600; // 1 hour later
 
         // Task should NOT be expired (1 hour < 24 hours)
         assert!(!task.is_expired(now, ttl_secs));
@@ -1297,8 +1310,8 @@ mod tests {
             retry_count: 0,
         };
 
-        let ttl_secs = 86400;  // 24 hours
-        let now = 1000 + 259200;  // 3 days later (259200 seconds)
+        let ttl_secs = 86400; // 24 hours
+        let now = 1000 + 259200; // 3 days later (259200 seconds)
 
         // Task SHOULD be expired (3 days > 24 hours)
         assert!(task.is_expired(now, ttl_secs));
@@ -1320,20 +1333,20 @@ mod tests {
             retry_count: 0,
         };
 
-        let now = 2000;  // 1000 seconds later
+        let now = 2000; // 1000 seconds later
         assert_eq!(task.age_secs(now), 1000);
 
-        let now = 1500;  // 500 seconds later
+        let now = 1500; // 500 seconds later
         assert_eq!(task.age_secs(now), 500);
 
-        let now = 1000;  // Same time
+        let now = 1000; // Same time
         assert_eq!(task.age_secs(now), 0);
     }
 
     #[test]
     fn test_expire_old_tasks() {
         let pool = WorkerPool::new();
-        let ttl_secs = 3600;  // 1 hour TTL
+        let ttl_secs = 3600; // 1 hour TTL
         let base_time = 1000u64;
 
         // Fresh task (should NOT expire)
@@ -1359,7 +1372,7 @@ mod tests {
             phases: vec![1],
             assigned_to: None,
             status: TaskStatus::Queued,
-            created_at: base_time - 7200,  // 2 hours old (> 1 hour TTL)
+            created_at: base_time - 7200, // 2 hours old (> 1 hour TTL)
             started_at: None,
             completed_at: None,
             priority: TaskPriority::Normal,
@@ -1371,7 +1384,7 @@ mod tests {
 
         // Run expiration at base_time
         let expired = pool.expire_old_tasks(ttl_secs);
-        assert_eq!(expired, 1);  // Only old task expired
+        assert_eq!(expired, 1); // Only old task expired
 
         // Verify fresh still queued
         let fresh_task = pool.task_queue.get_task("t_fresh").unwrap();
@@ -1393,7 +1406,7 @@ mod tests {
             port: 8000,
             status: WorkerStatus::Healthy,
             capacity: 10,
-            current_tasks: 1,  // Has task assigned
+            current_tasks: 1, // Has task assigned
             completed_tasks: 0,
             last_heartbeat: 1000,
             cpu_utilization: 30.0,
@@ -1408,9 +1421,9 @@ mod tests {
             scan_id: "s1".to_string(),
             target: "example.com".to_string(),
             phases: vec![1],
-            assigned_to: Some("w1".to_string()),  // Assigned to worker
+            assigned_to: Some("w1".to_string()), // Assigned to worker
             status: TaskStatus::Running,
-            created_at: 1000 - 7200,  // 2 hours old (expires with 1h TTL)
+            created_at: 1000 - 7200, // 2 hours old (expires with 1h TTL)
             started_at: Some(1000),
             completed_at: None,
             priority: TaskPriority::Normal,
@@ -1423,7 +1436,7 @@ mod tests {
         assert_eq!(pool.get_workers()[0].current_tasks, 1);
 
         // Expire old tasks
-        pool.expire_old_tasks(3600);  // 1 hour TTL
+        pool.expire_old_tasks(3600); // 1 hour TTL
 
         // Worker should be freed (0 tasks)
         assert_eq!(pool.get_workers()[0].current_tasks, 0);

@@ -34,23 +34,38 @@ impl fmt::Display for ScannerError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             ScannerError::NetworkError(e) => {
-                write!(f, "Network error: {}. Check connectivity and target availability.", e)
-            }
+                write!(
+                    f,
+                    "Network error: {}. Check connectivity and target availability.",
+                    e
+                )
+            },
             ScannerError::UrlParseError(e) => {
-                write!(f, "URL parse error: {}. Ensure URL is valid and properly formatted.", e)
-            }
+                write!(
+                    f,
+                    "URL parse error: {}. Ensure URL is valid and properly formatted.",
+                    e
+                )
+            },
             ScannerError::PayloadGenerationError(e) => {
-                write!(f, "Payload generation error: {}. Check payload parameters and syntax.", e)
-            }
+                write!(
+                    f,
+                    "Payload generation error: {}. Check payload parameters and syntax.",
+                    e
+                )
+            },
             ScannerError::PhaseTimeout => {
-                write!(f, "Phase execution timeout. Increase timeout or reduce scan scope.")
-            }
+                write!(
+                    f,
+                    "Phase execution timeout. Increase timeout or reduce scan scope."
+                )
+            },
             ScannerError::InvalidTarget => {
                 write!(f, "Invalid target URL. Provide valid HTTP/HTTPS URL.")
-            }
+            },
             ScannerError::IoError(e) => {
                 write!(f, "IO error: {}. Check file permissions and disk space.", e)
-            }
+            },
         }
     }
 }
@@ -103,13 +118,23 @@ mod tests {
         let errors = vec![
             (ScannerError::PhaseTimeout, "timeout"),
             (ScannerError::InvalidTarget, "Invalid target"),
-            (ScannerError::NetworkError("connection refused".to_string()), "Network error"),
-            (ScannerError::UrlParseError("invalid scheme".to_string()), "URL parse error"),
+            (
+                ScannerError::NetworkError("connection refused".to_string()),
+                "Network error",
+            ),
+            (
+                ScannerError::UrlParseError("invalid scheme".to_string()),
+                "URL parse error",
+            ),
         ];
 
         for (err, expected_text) in errors {
             let display = format!("{}", err);
-            assert!(display.contains(expected_text), "Error message: {}", display);
+            assert!(
+                display.contains(expected_text),
+                "Error message: {}",
+                display
+            );
         }
     }
 
@@ -128,4 +153,3 @@ mod tests {
         assert!(scanner_err.source().is_some());
     }
 }
-

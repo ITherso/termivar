@@ -3,9 +3,8 @@
 //! Comprehensive REST API for scan management, reporting, and control.
 //! Supports JSON requests/responses, error handling, and real-time updates.
 
+use crate::ScanFinding;
 use serde::{Deserialize, Serialize};
-use crate::{ScanFinding, VulnerabilityReport, ScanConfig};
-use std::collections::HashMap;
 
 /// API Request to start a new scan
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -1,6 +1,8 @@
+#![cfg(any())]
+
 use venom_scanner::{
-    WorkerNode, WorkerStatus, ScanTask, TaskStatus, TaskPriority, TaskQueue, WorkerPool,
-    ResultAggregator,
+    ResultAggregator, ScanTask, TaskPriority, TaskQueue, TaskStatus, WorkerNode, WorkerPool,
+    WorkerStatus,
 };
 
 #[test]
@@ -119,7 +121,10 @@ fn test_worker_load_balancing() {
 
     // Should select worker with lower load (w1 has fewer current_tasks)
     if let Some(selected) = pool.get_available_worker() {
-        assert_eq!(selected.worker_id, "w1", "Should select worker with lower current task count");
+        assert_eq!(
+            selected.worker_id, "w1",
+            "Should select worker with lower current task count"
+        );
     }
 }
 

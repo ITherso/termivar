@@ -57,14 +57,25 @@ impl VulnerabilityReport {
             return 0.0;
         }
 
-        let critical_count = self.findings.iter().filter(|f| f.severity == "CRITICAL").count();
-        let high_count = self.findings.iter().filter(|f| f.severity == "HIGH").count();
-        let medium_count = self.findings.iter().filter(|f| f.severity == "MEDIUM").count();
+        let critical_count = self
+            .findings
+            .iter()
+            .filter(|f| f.severity == "CRITICAL")
+            .count();
+        let high_count = self
+            .findings
+            .iter()
+            .filter(|f| f.severity == "HIGH")
+            .count();
+        let medium_count = self
+            .findings
+            .iter()
+            .filter(|f| f.severity == "MEDIUM")
+            .count();
 
-        let score = (critical_count as f32 * 0.4
-            + high_count as f32 * 0.2
-            + medium_count as f32 * 0.1)
-            / self.findings.len() as f32;
+        let score =
+            (critical_count as f32 * 0.4 + high_count as f32 * 0.2 + medium_count as f32 * 0.1)
+                / self.findings.len() as f32;
 
         score.min(1.0)
     }
@@ -80,7 +91,8 @@ impl VulnerabilityReport {
             "severity_stats": self.severity_stats(),
             "phase_stats": self.phase_stats(),
             "findings": self.findings,
-        }).to_string()
+        })
+        .to_string()
     }
 
     /// Generates CSV report
@@ -108,23 +120,28 @@ impl VulnerabilityReport {
         let medium = severity_stats.get("MEDIUM").unwrap_or(&0);
         let low = severity_stats.get("LOW").unwrap_or(&0);
 
-        let findings_html = self.findings.iter().map(|f| {
-            format!(
-                r#"<div class="finding {}">
+        let findings_html = self
+            .findings
+            .iter()
+            .map(|f| {
+                format!(
+                    r#"<div class="finding {}">
                     <div class="finding-title">Phase {}: {}</div>
                     <div class="finding-meta">{} | {}</div>
                     <div class="finding-desc">{}</div>
                     <div class="finding-evidence">{}</div>
                 </div>"#,
-                f.severity.to_lowercase(),
-                f.phase,
-                f.module_name,
-                f.severity,
-                f.description,
-                f.evidence,
-                f.evidence
-            )
-        }).collect::<Vec<_>>().join("\n");
+                    f.severity.to_lowercase(),
+                    f.phase,
+                    f.module_name,
+                    f.severity,
+                    f.description,
+                    f.evidence,
+                    f.evidence
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
 
         let html = format!(
             r#"<!DOCTYPE html>
@@ -226,9 +243,18 @@ impl VulnerabilityReport {
 
         let stats = self.severity_stats();
         md.push_str("## Summary\n\n");
-        md.push_str(&format!("- **CRITICAL:** {}\n", stats.get("CRITICAL").unwrap_or(&0)));
-        md.push_str(&format!("- **HIGH:** {}\n", stats.get("HIGH").unwrap_or(&0)));
-        md.push_str(&format!("- **MEDIUM:** {}\n", stats.get("MEDIUM").unwrap_or(&0)));
+        md.push_str(&format!(
+            "- **CRITICAL:** {}\n",
+            stats.get("CRITICAL").unwrap_or(&0)
+        ));
+        md.push_str(&format!(
+            "- **HIGH:** {}\n",
+            stats.get("HIGH").unwrap_or(&0)
+        ));
+        md.push_str(&format!(
+            "- **MEDIUM:** {}\n",
+            stats.get("MEDIUM").unwrap_or(&0)
+        ));
         md.push_str(&format!("- **LOW:** {}\n", stats.get("LOW").unwrap_or(&0)));
         md.push_str(&format!("- **TOTAL:** {}\n\n", self.findings.len()));
 
@@ -285,15 +311,13 @@ mod tests {
 
     #[test]
     fn test_report_creation() {
-        let findings = vec![
-            ScanFinding {
-                phase: 1,
-                module_name: "Recon".to_string(),
-                severity: "HIGH".to_string(),
-                description: "Test".to_string(),
-                evidence: "Evidence".to_string(),
-            },
-        ];
+        let findings = vec![ScanFinding {
+            phase: 1,
+            module_name: "Recon".to_string(),
+            severity: "HIGH".to_string(),
+            description: "Test".to_string(),
+            evidence: "Evidence".to_string(),
+        }];
 
         let report = VulnerabilityReport::new("https://example.com".to_string(), findings, 100);
         assert_eq!(report.findings.len(), 1);
@@ -326,15 +350,13 @@ mod tests {
 
     #[test]
     fn test_risk_score() {
-        let findings = vec![
-            ScanFinding {
-                phase: 1,
-                module_name: "Test".to_string(),
-                severity: "CRITICAL".to_string(),
-                description: "Test".to_string(),
-                evidence: "Test".to_string(),
-            },
-        ];
+        let findings = vec![ScanFinding {
+            phase: 1,
+            module_name: "Test".to_string(),
+            severity: "CRITICAL".to_string(),
+            description: "Test".to_string(),
+            evidence: "Test".to_string(),
+        }];
 
         let report = VulnerabilityReport::new("https://example.com".to_string(), findings, 100);
         let score = report.risk_score();
@@ -352,15 +374,13 @@ mod tests {
 
     #[test]
     fn test_csv_export() {
-        let findings = vec![
-            ScanFinding {
-                phase: 1,
-                module_name: "Module".to_string(),
-                severity: "HIGH".to_string(),
-                description: "Desc".to_string(),
-                evidence: "Evidence".to_string(),
-            },
-        ];
+        let findings = vec![ScanFinding {
+            phase: 1,
+            module_name: "Module".to_string(),
+            severity: "HIGH".to_string(),
+            description: "Desc".to_string(),
+            evidence: "Evidence".to_string(),
+        }];
 
         let report = VulnerabilityReport::new("https://example.com".to_string(), findings, 100);
         let csv = report.to_csv();

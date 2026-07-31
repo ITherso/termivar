@@ -159,10 +159,7 @@ impl ThreatFeedManager {
 
     /// Gets entries by source
     pub fn get_by_source(&self, source: ThreatFeedSource) -> Vec<&ThreatFeedEntry> {
-        self.feeds
-            .values()
-            .filter(|e| e.source == source)
-            .collect()
+        self.feeds.values().filter(|e| e.source == source).collect()
     }
 
     /// Gets critical threats

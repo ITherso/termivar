@@ -152,11 +152,14 @@ impl BehavioralAnalyzer {
                 results.push(DetectionResult {
                     detection_id: format!(
                         "det_{}",
-                        signature.signature_id.split('_').next().unwrap_or("unknown")
+                        signature
+                            .signature_id
+                            .split('_')
+                            .next()
+                            .unwrap_or("unknown")
                     ),
                     vulnerability_type: signature.vulnerability_type.clone(),
-                    confidence: (confidence_score / signature.indicators.len() as f32)
-                        .min(1.0),
+                    confidence: (confidence_score / signature.indicators.len() as f32).min(1.0),
                     matched_indicators,
                     total_indicators: signature.indicators.len(),
                 });
@@ -174,7 +177,9 @@ impl BehavioralAnalyzer {
         match indicator.operator {
             ComparisonOperator::GreaterThan => data.get_metric(&indicator.metric) > indicator.value,
             ComparisonOperator::LessThan => data.get_metric(&indicator.metric) < indicator.value,
-            ComparisonOperator::Equals => (data.get_metric(&indicator.metric) - indicator.value).abs() < 0.01,
+            ComparisonOperator::Equals => {
+                (data.get_metric(&indicator.metric) - indicator.value).abs() < 0.01
+            },
             ComparisonOperator::Contains => false, // Pattern matching would be implemented here
         }
     }

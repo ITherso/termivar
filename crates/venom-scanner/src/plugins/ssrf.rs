@@ -49,12 +49,16 @@ impl Plugin for SSRFPlugin {
         ];
 
         for test_payload in payloads {
-            if payload.contains(test_payload) || payload.contains("127.0.0.1") || payload.contains("localhost") {
+            if payload.contains(test_payload)
+                || payload.contains("127.0.0.1")
+                || payload.contains("localhost")
+            {
                 findings.push(ScanFinding {
                     phase: 9,
                     module_name: "SSRF Detector".to_string(),
                     severity: "HIGH".to_string(),
-                    description: "SSRF vulnerability detected - server can make arbitrary requests".to_string(),
+                    description: "SSRF vulnerability detected - server can make arbitrary requests"
+                        .to_string(),
                     evidence: format!("Target: {}, SSRF payload: {}", target, test_payload),
                 });
                 break;
@@ -98,7 +102,10 @@ mod tests {
     #[tokio::test]
     async fn test_ssrf_localhost_detection() {
         let plugin = SSRFPlugin;
-        let result = plugin.execute("http://target.com", "http://localhost/admin").await.unwrap();
+        let result = plugin
+            .execute("http://target.com", "http://localhost/admin")
+            .await
+            .unwrap();
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].severity, "HIGH");
     }

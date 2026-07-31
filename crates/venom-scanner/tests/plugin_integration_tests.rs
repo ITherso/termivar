@@ -1,8 +1,8 @@
-use venom_scanner::{
-    Plugin, PluginRegistry, PluginCategory, PluginConfig, PluginError,
-    XSSPlugin, SQLiPlugin, LFIPlugin, XXEPlugin, SSRFPlugin, SSTIPlugin,
-};
 use std::sync::Arc;
+use venom_scanner::{
+    LFIPlugin, Plugin, PluginCategory, PluginConfig, PluginError, PluginRegistry, SQLiPlugin,
+    SSRFPlugin, SSTIPlugin, XSSPlugin, XXEPlugin,
+};
 
 #[tokio::test]
 async fn test_plugin_registry_multi_plugin_loading() {
@@ -27,7 +27,11 @@ async fn test_plugin_execution_workflow() {
     registry.register(xss).unwrap();
 
     let result = registry
-        .execute("xss_plugin", "http://target.com", "<script>alert('xss')</script>")
+        .execute(
+            "xss_plugin",
+            "http://target.com",
+            "<script>alert('xss')</script>",
+        )
         .await
         .unwrap();
 
@@ -138,7 +142,11 @@ async fn test_comprehensive_vulnerability_scanning() {
 
     // Execute each plugin with vulnerable payloads
     let test_cases = vec![
-        ("xss_plugin", "http://target.com", "<script>alert('xss')</script>"),
+        (
+            "xss_plugin",
+            "http://target.com",
+            "<script>alert('xss')</script>",
+        ),
         ("sqli_plugin", "http://target.com", "' OR '1'='1"),
         (
             "lfi_plugin",
@@ -159,11 +167,7 @@ async fn test_comprehensive_vulnerability_scanning() {
     for (plugin_id, target, payload) in test_cases {
         let result = registry.execute(plugin_id, target, payload).await.unwrap();
 
-        println!(
-            "Plugin {}: {} findings",
-            plugin_id,
-            result.findings.len()
-        );
+        println!("Plugin {}: {} findings", plugin_id, result.findings.len());
 
         total_findings += result.findings.len();
     }
@@ -238,8 +242,5 @@ async fn test_plugin_performance_tracking() {
         .await
         .unwrap();
 
-    println!(
-        "Plugin execution time: {} ms",
-        result.execution_time_ms
-    );
+    println!("Plugin execution time: {} ms", result.execution_time_ms);
 }

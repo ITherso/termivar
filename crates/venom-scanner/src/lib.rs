@@ -10,16 +10,16 @@
 //! - **Type-Safe**: Compile-time guarantees eliminate entire classes of bugs
 
 // Core modules (always compiled)
-pub mod error;
+pub mod api;
+pub mod api_gateway;
+pub mod auth;
+pub mod cache;
 pub mod config;
 pub mod config_loader;
 pub mod context;
+pub mod error;
 pub mod logging;
 pub mod metrics;
-pub mod cache;
-pub mod auth;
-pub mod api;
-pub mod api_gateway;
 
 // Scanning engine (feature: scanning)
 #[cfg(feature = "scanning")]
@@ -92,17 +92,23 @@ pub mod dashboard;
 pub mod event_bus;
 
 // Core exports (always available)
-pub use api::{ApiResponse, ScanStatus, ScanStatusType, StartScanRequest, ScanResultResponse, ApiEndpoints, ApiError};
-pub use api_gateway::{RateLimitStrategy, RateLimitPolicy, RateLimitStatus, ApiQuota, RateLimiter, TokenBucket, QuotaManager, RouteConfig, ApiGateway, RequestValidationResult};
-pub use auth::{User, UserRole, AuthToken, UserManager, UserInfo, LoginRequest, LoginResponse};
-pub use cache::{LruCache, CacheEntry, ResponseCache, CacheStats};
+pub use api::{
+    ApiEndpoints, ApiError, ApiResponse, ScanResultResponse, ScanStatus, ScanStatusType,
+    StartScanRequest,
+};
+pub use api_gateway::{
+    ApiGateway, ApiQuota, QuotaManager, RateLimitPolicy, RateLimitStatus, RateLimitStrategy,
+    RateLimiter, RequestValidationResult, RouteConfig, TokenBucket,
+};
+pub use auth::{AuthToken, LoginRequest, LoginResponse, User, UserInfo, UserManager, UserRole};
+pub use cache::{CacheEntry, CacheStats, LruCache, ResponseCache};
 pub use config::{ScanConfig, ScanIntensity};
-pub use config_loader::{ScanProfile as ScanningProfile, ConfigLoader};
+pub use config_loader::{ConfigLoader, ScanProfile as ScanningProfile};
 pub use context::ScanContext;
-pub use error::{ScannerError, Result};
+pub use error::{Result, ScannerError};
+pub use event_bus::{Event, EventBus, EventHandler, EventSeverity, EventType};
 pub use logging::{LogEntry, LogLevel, Logger};
 pub use metrics::{MetricsCollector, MetricsSummary, PhaseMetrics};
-pub use event_bus::{EventBus, Event, EventType, EventSeverity, EventHandler};
 
 // Scanning engine exports (feature: scanning)
 // Note: phases module is re-exported automatically
@@ -111,62 +117,100 @@ pub use event_bus::{EventBus, Event, EventType, EventSeverity, EventHandler};
 pub use runner::ScanRunner;
 
 #[cfg(feature = "scanning")]
-pub use waf::{WafDetector, WafProduct, PayloadEncoder, EvisionTechnique};
+pub use waf::{EvisionTechnique, PayloadEncoder, WafDetector, WafProduct};
 
 #[cfg(feature = "scanning")]
-pub use adaptive::{AdaptiveEngine, AdaptationStrategy, DetectionPattern, PayloadMutator, ResponseMetrics};
+pub use adaptive::{
+    AdaptationStrategy, AdaptiveEngine, DetectionPattern, PayloadMutator, ResponseMetrics,
+};
 
 #[cfg(feature = "scanning")]
-pub use persistence::{DbConfig, EntityType, ScanRecord, FindingRecord, EndpointRecord, QueryBuilder, SchemaManager, TableSchema, ColumnDef, IndexDef, ConnectionPool, TransactionManager, Transaction, TransactionStatus, QueryResult};
+pub use persistence::{
+    ColumnDef, ConnectionPool, DbConfig, EndpointRecord, EntityType, FindingRecord, IndexDef,
+    QueryBuilder, QueryResult, ScanRecord, SchemaManager, TableSchema, Transaction,
+    TransactionManager, TransactionStatus,
+};
 
 #[cfg(feature = "scanning")]
-pub use post_exploitation::{PayloadType, ReverseShell, Webshell, PersistenceMechanism, PersistenceTechnique, ExploitPayload, PostExploitSession, PrivilegeLevel, LateralTarget, PostExploitationManager};
+pub use post_exploitation::{
+    ExploitPayload, LateralTarget, PayloadType, PersistenceMechanism, PersistenceTechnique,
+    PostExploitSession, PostExploitationManager, PrivilegeLevel, ReverseShell, Webshell,
+};
 
 #[cfg(feature = "scanning")]
-pub use reporting::{VulnerabilityReport, ReportGenerator, ReportFormat};
+pub use reporting::{ReportFormat, ReportGenerator, VulnerabilityReport};
 
 #[cfg(feature = "scanning")]
-pub use realtime::{RealtimeEvent, EventStream, ConnectionManager, Subscription};
+pub use realtime::{ConnectionManager, EventStream, RealtimeEvent, Subscription};
 
 #[cfg(feature = "scanning")]
-pub use dashboard::{DashboardOverview, DashboardService, DashboardConfig, ScanCard, FindingCard, FindingStatus, WidgetType};
+pub use dashboard::{
+    DashboardConfig, DashboardOverview, DashboardService, FindingCard, FindingStatus, ScanCard,
+    WidgetType,
+};
 
 // Detection exports (feature: detection)
 #[cfg(feature = "detection")]
-pub use advanced_detection::{BehavioralSignature, BehaviorIndicator, IndicatorType, ComparisonOperator, WafBypassTechnique, BypassCategory, BehavioralAnalyzer, BehavioralAnalysisData, DetectionResult, WafBypassSelector, SignatureEvasionEngine, EversionRule, EversionType};
+pub use advanced_detection::{
+    BehaviorIndicator, BehavioralAnalysisData, BehavioralAnalyzer, BehavioralSignature,
+    BypassCategory, ComparisonOperator, DetectionResult, EversionRule, EversionType, IndicatorType,
+    SignatureEvasionEngine, WafBypassSelector, WafBypassTechnique,
+};
 
 #[cfg(feature = "detection")]
-pub use anomaly::{AnomalyDetector, AnomalyScore, AnomalyInterpreter, SeverityClass, ResponseData};
+pub use anomaly::{AnomalyDetector, AnomalyInterpreter, AnomalyScore, ResponseData, SeverityClass};
 
 // Machine learning exports (feature: ml)
 #[cfg(feature = "ml")]
-pub use ml::{PatternLearner, VulnerabilityPattern, ClusterResult, ExploitBuilder, ExploitationChain, ExploitStage, AnomalyClassifier, AnomalyPattern, AnomalyType};
+pub use ml::{
+    AnomalyClassifier, AnomalyPattern, AnomalyType, ClusterResult, ExploitBuilder, ExploitStage,
+    ExploitationChain, PatternLearner, VulnerabilityPattern,
+};
 
 // Distributed scaling exports (feature: distributed)
 #[cfg(feature = "distributed")]
-pub use distributed::{WorkerNode, WorkerStatus, ScanTask, TaskStatus, TaskPriority, TaskQueue, WorkerPool, ResultAggregator};
+pub use distributed::{
+    ResultAggregator, ScanTask, TaskPriority, TaskQueue, TaskStatus, WorkerNode, WorkerPool,
+    WorkerStatus,
+};
 
 // Monitoring exports (feature: monitoring)
 #[cfg(feature = "monitoring")]
-pub use monitoring::{PhaseProfile, ResourceMetrics, ScanProfile, PerformanceAnalyzer, OptimizationRecommendation, RecommendationCategory, BenchmarkSuite, BenchmarkResult, ScanComparison};
+pub use monitoring::{
+    BenchmarkResult, BenchmarkSuite, OptimizationRecommendation, PerformanceAnalyzer, PhaseProfile,
+    RecommendationCategory, ResourceMetrics, ScanComparison, ScanProfile,
+};
 
 // Compliance exports (feature: compliance)
 #[cfg(feature = "compliance")]
-pub use compliance::{ComplianceFramework, ComplianceRequirement, AuditEventType, AuditLogEntry, AuditLogger, ComplianceAssessment, ComplianceAssessor, DataProtectionRecord, DataClassification, DataProtectionManager, ComplianceReport, ComplianceReporter};
+pub use compliance::{
+    AuditEventType, AuditLogEntry, AuditLogger, ComplianceAssessment, ComplianceAssessor,
+    ComplianceFramework, ComplianceReport, ComplianceReporter, ComplianceRequirement,
+    DataClassification, DataProtectionManager, DataProtectionRecord,
+};
 
 // Threat intelligence exports (feature: threat-intel)
 #[cfg(feature = "threat-intel")]
-pub use threat_intelligence::{ThreatFeedSource, CVERecord, ThreatFeedEntry, ThreatSeverity, CVECorrelator, ThreatFeedManager, AlertRule, AlertAction, AlertEngine, SecurityAlert, ThreatActorProfile, ThreatIntelligenceRepo};
+pub use threat_intelligence::{
+    AlertAction, AlertEngine, AlertRule, CVECorrelator, CVERecord, SecurityAlert,
+    ThreatActorProfile, ThreatFeedEntry, ThreatFeedManager, ThreatFeedSource,
+    ThreatIntelligenceRepo, ThreatSeverity,
+};
 
 // Plugin system exports (feature: plugins)
 #[cfg(feature = "plugins")]
-pub use plugin::{Plugin, PluginRegistry, PluginMetadata, PluginConfig, PluginCategory, PluginError, PluginExecutionResult};
+pub use plugin::{
+    Plugin, PluginCategory, PluginConfig, PluginError, PluginExecutionResult, PluginMetadata,
+    PluginRegistry,
+};
 
 #[cfg(feature = "plugins")]
-pub use plugins::{XSSPlugin, SQLiPlugin, LFIPlugin, XXEPlugin, SSRFPlugin, SSTIPlugin};
+pub use plugins::{LFIPlugin, SQLiPlugin, SSRFPlugin, SSTIPlugin, XSSPlugin, XXEPlugin};
 
 #[cfg(feature = "plugins")]
-pub use lua_engine::{LuaScript, LuaContext, LuaExecutionResult, LuaScriptStatus, LuaScriptRegistry};
+pub use lua_engine::{
+    LuaContext, LuaExecutionResult, LuaScript, LuaScriptRegistry, LuaScriptStatus,
+};
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};

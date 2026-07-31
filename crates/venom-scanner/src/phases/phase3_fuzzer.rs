@@ -12,7 +12,7 @@
 //! - 3xx (Redirect): Follow with caution
 //! - 401/403: Protected endpoint (still valuable intel)
 
-use crate::{ScanFinding, ScanPhase, context::ScanContext, error::ScannerError};
+use crate::{context::ScanContext, error::ScannerError, ScanFinding, ScanPhase};
 use async_trait::async_trait;
 use reqwest::StatusCode;
 use std::sync::Arc;
@@ -37,35 +37,85 @@ impl DirectoryFuzzer {
     pub fn with_default_wordlist(concurrency_limit: usize) -> Self {
         let wordlist = vec![
             // Admin panels
-            "/admin", "/admin/", "/administrator", "/admin/login",
+            "/admin",
+            "/admin/",
+            "/administrator",
+            "/admin/login",
             // API endpoints
-            "/api", "/api/", "/api/v1", "/api/v2", "/api/v3",
-            "/api/public", "/api/private", "/api/internal",
+            "/api",
+            "/api/",
+            "/api/v1",
+            "/api/v2",
+            "/api/v3",
+            "/api/public",
+            "/api/private",
+            "/api/internal",
             // Version control
-            "/.git", "/.git/", "/.gitconfig", "/.github", "/.github/workflows",
-            "/.svn", "/.hg",
+            "/.git",
+            "/.git/",
+            "/.gitconfig",
+            "/.github",
+            "/.github/workflows",
+            "/.svn",
+            "/.hg",
             // Configuration files
-            "/config", "/config/", "/configuration", "/settings",
-            "/.env", "/web.config", "/app.config", "/.htaccess",
+            "/config",
+            "/config/",
+            "/configuration",
+            "/settings",
+            "/.env",
+            "/web.config",
+            "/app.config",
+            "/.htaccess",
             // Common directories
-            "/uploads", "/upload", "/files", "/attachments",
-            "/backup", "/backups", "/.backup",
-            "/logs", "/log", "/.logs",
-            "/data", "/database", "/db",
-            "/tmp", "/temp", "/.tmp",
+            "/uploads",
+            "/upload",
+            "/files",
+            "/attachments",
+            "/backup",
+            "/backups",
+            "/.backup",
+            "/logs",
+            "/log",
+            "/.logs",
+            "/data",
+            "/database",
+            "/db",
+            "/tmp",
+            "/temp",
+            "/.tmp",
             // Testing/debugging endpoints
-            "/test", "/tests", "/testing",
-            "/debug", "/debugger", "/.debug",
-            "/status", "/health", "/healthcheck",
+            "/test",
+            "/tests",
+            "/testing",
+            "/debug",
+            "/debugger",
+            "/.debug",
+            "/status",
+            "/health",
+            "/healthcheck",
             // Documentation
-            "/docs", "/doc", "/documentation",
-            "/swagger", "/swagger-ui", "/swagger.json",
-            "/graphql", "/graphql-ui",
+            "/docs",
+            "/doc",
+            "/documentation",
+            "/swagger",
+            "/swagger-ui",
+            "/swagger.json",
+            "/graphql",
+            "/graphql-ui",
             // Backup extensions
-            "/.bak", "/.backup", "/.old", "/.orig",
+            "/.bak",
+            "/.backup",
+            "/.old",
+            "/.orig",
             // Hidden directories
-            "/.well-known", "/.well-known/", "/.well-known/acme-challenge",
-        ].iter().map(|s| s.to_string()).collect();
+            "/.well-known",
+            "/.well-known/",
+            "/.well-known/acme-challenge",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
 
         Self {
             wordlist,
@@ -124,18 +174,24 @@ impl ScanPhase for DirectoryFuzzer {
                         let status = res.status();
 
                         if status.is_success() || status.is_redirection() {
-                            ctx_clone.discovered_endpoints.insert(url_clone.clone(), Vec::new());
+                            ctx_clone
+                                .discovered_endpoints
+                                .insert(url_clone.clone(), Vec::new());
                             ctx_clone.log(format!("Found: {} ({})", url_clone, status));
                             Some((url_clone, status))
-                        } else if status == StatusCode::FORBIDDEN || status == StatusCode::UNAUTHORIZED {
+                        } else if status == StatusCode::FORBIDDEN
+                            || status == StatusCode::UNAUTHORIZED
+                        {
                             // Protected endpoint (likely exists)
-                            ctx_clone.discovered_endpoints.insert(url_clone.clone(), Vec::new());
+                            ctx_clone
+                                .discovered_endpoints
+                                .insert(url_clone.clone(), Vec::new());
                             ctx_clone.log(format!("Protected: {} ({})", url_clone, status));
                             Some((url_clone, status))
                         } else {
                             None
                         }
-                    }
+                    },
                     _ => None,
                 }
             }));

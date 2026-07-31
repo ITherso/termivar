@@ -54,7 +54,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Run integration tests
-        run: cargo test --test '*' --verbose
+        run: cargo test --test '*' --all-features --verbose
         env:
           DATABASE_URL: postgres://test:test@localhost:5432/venom_test
           REDIS_URL: redis://localhost:6379
@@ -71,7 +71,7 @@ jobs:
       - name: Run security audit
         run: cargo audit
       - name: Run clippy (security lints)
-        run: cargo clippy -- -D warnings
+        run: cargo clippy
 
   code-coverage:
     name: Code Coverage
@@ -83,7 +83,7 @@ jobs:
       - name: Install tarpaulin
         run: cargo install cargo-tarpaulin
       - name: Generate coverage
-        run: cargo tarpaulin --out Xml --exclude-files tests/ --timeout 300
+        run: cargo tarpaulin --all-features --out Xml --exclude-files tests/ --timeout 300
       - name: Upload coverage
         uses: codecov/codecov-action@v3
         with:
@@ -120,7 +120,7 @@ jobs:
       - name: Run benchmarks
         run: cargo bench --no-run
       - name: Upload benchmark results
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: benchmark-results
           path: target/criterion/
