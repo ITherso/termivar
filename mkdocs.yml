@@ -30,11 +30,18 @@ nav:
       - Code quality: CODE_QUALITY.md
       - Repository health: repository-health.md
       - Observability: OBSERVABILITY.md
+  - Internals:
+      - Overview: internals/README.md
+      - Scheduler: internals/scheduler.md
+      - Event bus: internals/event-bus.md
+      - Runner: internals/runner.md
+      - Plugin registry: internals/plugin-registry.md
   - Reference:
       - API: API.md
       - Compliance: COMPLIANCE.md
       - Distribution: DISTRIBUTION.md
   - Project:
+      - Project status: https://github.com/ITherso/venom/blob/main/PROJECT_STATUS.md
       - Contributing: CONTRIBUTING.md
       - Contributors: contributors.md
       - Architecture decisions: adr/README.md

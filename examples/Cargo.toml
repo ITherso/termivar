@@ -1,0 +1,24 @@
+[package]
+name = "venom-examples"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+async-trait.workspace = true
+tokio.workspace = true
+venom-scanner = { path = "../crates/venom-scanner", features = ["distributed", "plugins"] }
+
+[[bin]]
+name = "basic_scan"
+path = "basic_scan.rs"
+
+[[bin]]
+name = "custom_plugin"
+path = "custom_plugin.rs"
+
+[[bin]]
+name = "distributed_scan"
+path = "distributed_scan.rs"

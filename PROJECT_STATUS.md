@@ -1,0 +1,47 @@
+# Project Status
+
+Venom is currently **v0.9.0-alpha**. It is a modular Rust-based penetration testing framework focused on research and extensibility; it is not production-ready.
+
+## Why alpha
+
+- The Scanner SDK and plugin API are public and usable, but their contracts may still change before v1.
+- The distributed worker pool is an in-process scheduling preview, not a durable multi-node control plane.
+- Criterion and fuzz baselines exist, but endpoint-scale CPU, memory, latency, and throughput evidence is incomplete.
+- No independent security audit has been completed.
+- Upgrade compatibility, long-term support, and operational service-level objectives are not defined.
+- External adopter and contributor feedback is still limited.
+
+## v1 release gates
+
+| Gate | Current evidence | Exit criterion | Target milestone |
+| --- | --- | --- | --- |
+| Stable SDK and plugin contracts | Preview API, compatibility line, SemVer checks | Public contracts documented, baselined, and protected by compatibility tests | v1.0 |
+| Reproducible performance report | Criterion microbaseline | Publish controlled 100/1,000 endpoint and 10,000-request CPU, RAM, latency, and throughput results | v1.0 |
+| Fuzzing maturity | Scheduled bounded campaigns and committed baseline | Expand corpus/coverage, retain crash artifacts, and document a repeatable triage path | v1.0 |
+| Security readiness | CodeQL, `cargo audit`, `cargo deny`, private reporting policy | Close audit-readiness gaps and publish the scope/outcome of an independent review | v1.0 |
+| Distributed semantics | In-memory queue, worker scoring, retry, heartbeat primitives | Define durability, leases, retry ownership, failure recovery, and transport boundaries | v1.1 |
+| Adoption evidence | Examples and generated starters | Validate the 10-minute path with at least one external adopter or contributor | v1.0 |
+
+## Active blockers
+
+The following conditions block a stable v1.0 claim:
+
+1. No stable public API baseline and compatibility window.
+2. No controlled endpoint-scale performance report.
+3. No independent security assessment.
+4. Insufficient external adoption evidence for the SDK and plugin workflow.
+5. No documented upgrade and deprecation lifecycle for stable consumers.
+
+Distributed multi-node production readiness is tracked separately for v1.1 and does not block a focused single-node v1.0 SDK release if its Preview status remains explicit.
+
+## Evidence
+
+- [v0.9.0-alpha release](https://github.com/ITherso/venom/releases/tag/v0.9.0-alpha)
+- [Feature lifecycle](FEATURES.md)
+- [Repository health](docs/repository-health.md)
+- [Benchmark evidence](docs/benchmarks.md)
+- [Fuzzing evidence](docs/fuzzing.md)
+- [Plugin API policy](docs/plugin-api-policy.md)
+- [Security policy](SECURITY.md)
+
+Milestones and the [Venom Roadmap project](https://github.com/users/ITherso/projects) are the operational source of truth for planned work. This document defines release gates; it is not a delivery guarantee.

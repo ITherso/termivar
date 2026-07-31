@@ -30,6 +30,8 @@ Start with a scoped [`good first issue`](https://github.com/ITherso/venom/labels
 
 Good first contributions usually add focused contract tests, correct an evidence-backed documentation gap, improve a generator example, or reduce a specific lint without changing architecture. New scan techniques, public API redesigns, and distributed execution changes need a design discussion first.
 
+Use [GitHub Discussions](https://github.com/ITherso/venom/discussions) for usage questions, design proposals, and contributor help. Use Issues for reproducible bugs and accepted, scoped work. Never use either public channel for a vulnerability; follow the private reporting process below.
+
 ## Coding style
 
 - Prefer safe Rust. Any `unsafe` block requires a `SAFETY:` rationale, isolation, and focused tests.

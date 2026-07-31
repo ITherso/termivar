@@ -5,6 +5,7 @@ members = [
     "crates/venom-scanner",
     "crates/venom-api",
     "crates/venom-cli",
+    "examples",
     "xtask",
 ]
 resolver = "2"

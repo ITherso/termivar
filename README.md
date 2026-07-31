@@ -12,6 +12,8 @@ Venom is a modular Rust-based penetration testing framework focused on research 
 
 Capability maturity and known gaps are maintained in [FEATURES.md](FEATURES.md). Labels such as Beta, Preview, and Experimental describe lifecycle maturity, not completeness.
 
+Release gates, alpha rationale, and active blockers are maintained in [PROJECT_STATUS.md](PROJECT_STATUS.md).
+
 ## Design principles
 
 - **Safe Rust by default.** Unsafe code must be isolated, justified, and reviewed.
@@ -108,6 +110,18 @@ Run an authorized scan:
 cargo run -p venom-cli -- scan https://test.example
 ```
 
+## Examples
+
+The repository includes small programs that compile in CI and exercise only public APIs:
+
+```bash
+cargo run -p venom-examples --bin basic_scan
+cargo run -p venom-examples --bin custom_plugin
+cargo run -p venom-examples --bin distributed_scan
+```
+
+`basic_scan` and `custom_plugin` use the reserved `.test` domain and perform no network request. `distributed_scan` demonstrates the in-process scheduling model; it is not a multi-node deployment example. Replace example targets only with systems you own or have explicit permission to test.
+
 ## Scanner SDK preview
 
 Build a scanner from application-defined phases while Venom owns ordering, timeouts, events, telemetry, and finding aggregation:
@@ -133,6 +147,7 @@ The template implements `Plugin`, registers it in a test, and tracks Venom `main
 ## Documentation
 
 - [Feature lifecycle](FEATURES.md)
+- [Project status and v1 gates](PROJECT_STATUS.md)
 - [Architecture](docs/architecture.md)
 - [Editable architecture diagram](docs/architecture.drawio)
 - [Portable architecture SVG](docs/images/architecture.svg)
@@ -142,6 +157,7 @@ The template implements `Plugin`, registers it in a test, and tracks Venom `main
 - [Plugin development](docs/plugin.md)
 - [Plugin API and SemVer policy](docs/plugin-api-policy.md)
 - [Architecture decisions](docs/adr/README.md)
+- [Contributor internals](docs/internals/README.md)
 - [Repository health](docs/repository-health.md)
 - [Distributed execution](docs/distributed.md)
 - [Lua](docs/lua.md)
@@ -157,7 +173,7 @@ The template implements `Plugin`, registers it in a test, and tracks Venom `main
 - Publish browsable Criterion history and controlled performance baselines.
 - Expand fuzz corpora and publish triage guidance for reproducible crashes.
 - Establish an automated SemVer baseline after the first published release.
-- Cut the first `v0.9.0-alpha` GitHub release after the published readiness gates pass.
+- Validate the 10-minute SDK and plugin path with external adopters and contributors.
 - Continue hardening contribution rules, mutation testing, and independent security review.
 
 Roadmap items are intentions, not delivery guarantees. See [CHANGELOG.md](CHANGELOG.md) for shipped changes.
