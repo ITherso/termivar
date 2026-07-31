@@ -34,7 +34,7 @@ impl ScanProfile {
         Self {
             name: "enterprise".to_string(),
             description: "Compliance-focused scanning with detailed reporting".to_string(),
-            scan_intensity: ScanIntensity::Light,
+            scan_intensity: ScanIntensity::Normal,
             timeout_secs: 300,
             rate_limit_rps: 10,
             concurrent_workers: 4,

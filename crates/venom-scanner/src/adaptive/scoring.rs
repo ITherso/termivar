@@ -182,7 +182,7 @@ impl ScoringEngine {
             / recent_count as f32;
         score += error_ratio * self.weights.content_weight;
 
-        (score * 100.0).min(1.0)
+        score.clamp(0.0, 1.0)
     }
 
     /// Checks if payload should be adjusted based on metrics
