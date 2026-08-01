@@ -78,6 +78,9 @@ pub mod http_evidence;
 #[cfg(feature = "scanning")]
 pub mod web_execution;
 
+#[cfg(feature = "scanning")]
+pub mod web_decision;
+
 // Detection capabilities (feature: detection)
 #[cfg(feature = "detection")]
 pub mod advanced_detection;
@@ -239,6 +242,11 @@ pub use web_execution::{
     StandardWebDiscoveryExecutorProfile, StandardWebDiscoveryInstallReport,
     StandardWebExecutionError, STANDARD_WEB_DISCOVERY_ACTIONS,
     STANDARD_WEB_DISCOVERY_EXECUTOR_COUNT,
+};
+
+#[cfg(feature = "scanning")]
+pub use web_decision::{
+    StandardWebDecisionError, StandardWebDecisionInstallReport, StandardWebDecisionProfile,
 };
 
 #[cfg(all(feature = "scanning", feature = "plugins"))]

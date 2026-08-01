@@ -7,7 +7,7 @@ use serde::Serialize;
 use thiserror::Error;
 use venom_core::{
     ConceptId, EvidenceValue, HypothesisState, HypothesisStrength, KnowledgePredicate, Ontology,
-    OntologyAxiom, OntologyConcept, OntologyError, OntologyWrite, Probability,
+    OntologyAxiom, OntologyConcept, OntologyError, Probability,
 };
 
 use crate::{
@@ -122,22 +122,6 @@ impl StandardWebReasoning {
         knowledge: &KnowledgeBase,
         engine: &mut RuleEngine,
     ) -> Result<StandardWebInstallReport, StandardWebReasoningError> {
-        let mut prospective_ontology = knowledge.ontology_snapshot();
-        let mut concepts_inserted = 0;
-        let mut axioms_inserted = 0;
-        for concept in &self.concepts {
-            concepts_inserted += usize::from(matches!(
-                prospective_ontology.add_concept(concept.clone())?,
-                OntologyWrite::Inserted
-            ));
-        }
-        for axiom in &self.axioms {
-            axioms_inserted += usize::from(matches!(
-                prospective_ontology.add_axiom(axiom.clone())?,
-                OntologyWrite::Inserted
-            ));
-        }
-
         let mut prospective_engine = engine.clone();
         let mut rules_inserted = 0;
         for rule in &self.rules {
@@ -147,12 +131,8 @@ impl StandardWebReasoning {
             ));
         }
 
-        for concept in &self.concepts {
-            knowledge.register_concept(concept.clone())?;
-        }
-        for axiom in &self.axioms {
-            knowledge.register_axiom(axiom.clone())?;
-        }
+        let (concepts_inserted, axioms_inserted) =
+            knowledge.install_ontology_definitions(&self.concepts, &self.axioms)?;
         *engine = prospective_engine;
 
         Ok(StandardWebInstallReport {

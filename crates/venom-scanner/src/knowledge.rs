@@ -250,6 +250,33 @@ impl KnowledgeBase {
         self.write_state().ontology.add_axiom(axiom)
     }
 
+    pub(crate) fn install_ontology_definitions(
+        &self,
+        concepts: &[OntologyConcept],
+        axioms: &[OntologyAxiom],
+    ) -> Result<(usize, usize), OntologyError> {
+        let mut state = self.write_state();
+        let mut prospective = state.ontology.clone();
+        let mut concepts_inserted = 0;
+        let mut axioms_inserted = 0;
+
+        for concept in concepts {
+            concepts_inserted += usize::from(matches!(
+                prospective.add_concept(concept.clone())?,
+                OntologyWrite::Inserted
+            ));
+        }
+        for axiom in axioms {
+            axioms_inserted += usize::from(matches!(
+                prospective.add_axiom(axiom.clone())?,
+                OntologyWrite::Inserted
+            ));
+        }
+
+        state.ontology = prospective;
+        Ok((concepts_inserted, axioms_inserted))
+    }
+
     /// Returns an owned, internally consistent ontology snapshot.
     pub fn ontology_snapshot(&self) -> Ontology {
         self.read_state().ontology.clone()

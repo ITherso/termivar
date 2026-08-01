@@ -54,6 +54,8 @@ Installation clones and preflights the registry, then replaces it only after eve
 
 A pre-existing executor with a standard identity is treated as a deliberate host override and is never replaced. A conflicting action route rejects the complete installation, preserving the original registry.
 
+Hosts using the complete built-in stack can install reasoning, planning, execution, and verification through the transactional [standard web decision profile](web-decision.md).
+
 ## Evidence and verification
 
 Each semantic executor has its own source component ID. The decision runner rejects a complete result batch unless every observation:
