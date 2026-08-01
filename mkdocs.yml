@@ -36,6 +36,7 @@ nav:
       - Event bus: internals/event-bus.md
       - Runner: internals/runner.md
       - Decision runner: internals/decision-runner.md
+      - HTTP evidence executor: internals/http-evidence.md
       - Plugin registry: internals/plugin-registry.md
   - Reference:
       - API: API.md

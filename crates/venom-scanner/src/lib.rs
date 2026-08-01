@@ -67,6 +67,9 @@ pub mod decision_loop;
 #[cfg(feature = "scanning")]
 pub mod decision_runner;
 
+#[cfg(feature = "scanning")]
+pub mod http_evidence;
+
 // Detection capabilities (feature: detection)
 #[cfg(feature = "detection")]
 pub mod advanced_detection;
@@ -201,6 +204,13 @@ pub use decision_runner::{
     DecisionActionExecutor, DecisionEvidenceReceipt, DecisionExecutionRequest,
     DecisionExecutionStage, DecisionExecutorError, DecisionExecutorRegistry, DecisionRunnerAdapter,
     DecisionRunnerError, DecisionRunnerTurn,
+};
+
+#[cfg(feature = "scanning")]
+pub use http_evidence::{
+    HttpBodyCapture, HttpEvidenceError, HttpEvidenceExecutor, HttpEvidencePolicy, HttpProbe,
+    HttpProbeMethod, HttpProbeProvider, SubjectHttpProbeProvider, DEFAULT_HTTP_BODY_LIMIT,
+    HTTP_EVIDENCE_EXECUTOR_ID, MAX_HTTP_BODY_LIMIT,
 };
 
 #[cfg(all(feature = "scanning", feature = "plugins"))]
