@@ -104,6 +104,12 @@ enum ExpressionNode {
         predicate: KnowledgePredicate,
         value: Option<EvidenceValue>,
     },
+    TextContains {
+        layer: KnowledgeLayer,
+        predicate: KnowledgePredicate,
+        needle: String,
+        ascii_case_insensitive: bool,
+    },
     OntologyRelation {
         subject: ConceptId,
         relation: RelationTypeId,
@@ -189,6 +195,37 @@ impl Expression {
         })
     }
 
+    /// Matches a substring in a text or text-list claim value.
+    pub fn text_contains(
+        layer: KnowledgeLayer,
+        predicate: KnowledgePredicate,
+        needle: impl Into<String>,
+    ) -> Result<Self, RuleEngineError> {
+        Ok(Self(ExpressionNode::TextContains {
+            layer,
+            predicate,
+            needle: non_empty(needle, "text-match needle")?,
+            ascii_case_insensitive: false,
+        }))
+    }
+
+    /// Matches an ASCII case-insensitive substring in a text claim value.
+    ///
+    /// This comparison is deterministic and locale-independent, making it
+    /// suitable for protocol tokens and product fingerprints.
+    pub fn text_contains_ascii_case_insensitive(
+        layer: KnowledgeLayer,
+        predicate: KnowledgePredicate,
+        needle: impl Into<String>,
+    ) -> Result<Self, RuleEngineError> {
+        Ok(Self(ExpressionNode::TextContains {
+            layer,
+            predicate,
+            needle: non_empty(needle, "text-match needle")?,
+            ascii_case_insensitive: true,
+        }))
+    }
+
     /// Matches one semantic relationship in the captured ontology.
     pub fn ontology_relation(
         subject: ConceptId,
@@ -228,6 +265,11 @@ impl<'de> Deserialize<'de> for Expression {
             ExpressionNode::Any { expressions } if expressions.is_empty() => {
                 return Err(serde::de::Error::custom(RuleEngineError::EmptyExpression {
                     operator: "any",
+                }));
+            },
+            ExpressionNode::TextContains { needle, .. } if needle.trim().is_empty() => {
+                return Err(serde::de::Error::custom(RuleEngineError::EmptyValue {
+                    field: "text-match needle",
                 }));
             },
             _ => {},
@@ -339,6 +381,18 @@ fn evaluate_node(
             predicate,
             value,
         } => Ok(evaluate_claim(*layer, predicate, value.as_ref(), snapshot)),
+        ExpressionNode::TextContains {
+            layer,
+            predicate,
+            needle,
+            ascii_case_insensitive,
+        } => Ok(evaluate_text_contains(
+            *layer,
+            predicate,
+            needle,
+            *ascii_case_insensitive,
+            snapshot,
+        )),
         ExpressionNode::OntologyRelation {
             subject,
             relation,
@@ -349,6 +403,92 @@ fn evaluate_node(
             evidence_ids: BTreeSet::new(),
             children: Vec::new(),
         }),
+    }
+}
+
+fn evaluate_text_contains(
+    layer: KnowledgeLayer,
+    predicate: &KnowledgePredicate,
+    needle: &str,
+    ascii_case_insensitive: bool,
+    snapshot: &KnowledgeSnapshot,
+) -> ExpressionTrace {
+    let matches_text = |value: &EvidenceValue| {
+        evidence_value_texts(value).any(|text| text_contains(text, needle, ascii_case_insensitive))
+    };
+    let mut evidence_ids = BTreeSet::new();
+    let matched = match layer {
+        KnowledgeLayer::Evidence => {
+            let matches: Vec<_> = snapshot
+                .evidence()
+                .iter()
+                .filter(|evidence| {
+                    evidence.predicate() == predicate && matches_text(evidence.value())
+                })
+                .collect();
+            evidence_ids.extend(matches.iter().map(|evidence| evidence.id().clone()));
+            !matches.is_empty()
+        },
+        KnowledgeLayer::Fact => {
+            let matches: Vec<_> = snapshot
+                .facts()
+                .iter()
+                .filter(|fact| fact.predicate() == predicate && matches_text(fact.value()))
+                .collect();
+            evidence_ids.extend(
+                matches
+                    .iter()
+                    .flat_map(|fact| fact.evidence_ids().iter().cloned()),
+            );
+            !matches.is_empty()
+        },
+        KnowledgeLayer::Hypothesis => {
+            let matches: Vec<_> = snapshot
+                .hypotheses()
+                .iter()
+                .filter(|hypothesis| {
+                    hypothesis.predicate() == predicate && matches_text(hypothesis.value())
+                })
+                .collect();
+            evidence_ids.extend(matches.iter().flat_map(|hypothesis| {
+                hypothesis
+                    .belief()
+                    .evidence()
+                    .iter()
+                    .map(|observation| observation.evidence_id().clone())
+            }));
+            !matches.is_empty()
+        },
+    };
+
+    let comparison = if ascii_case_insensitive {
+        "contains-ascii-ci"
+    } else {
+        "contains"
+    };
+    ExpressionTrace {
+        label: format!("{layer:?}:{}:{comparison}:{needle}", predicate.dotted()),
+        matched,
+        evidence_ids,
+        children: Vec::new(),
+    }
+}
+
+fn evidence_value_texts(value: &EvidenceValue) -> Box<dyn Iterator<Item = &str> + '_> {
+    match value {
+        EvidenceValue::Text(text) => Box::new(std::iter::once(text.as_str())),
+        EvidenceValue::TextList(values) => Box::new(values.iter().map(String::as_str)),
+        _ => Box::new(std::iter::empty()),
+    }
+}
+
+fn text_contains(value: &str, needle: &str, ascii_case_insensitive: bool) -> bool {
+    if ascii_case_insensitive {
+        value
+            .to_ascii_lowercase()
+            .contains(&needle.to_ascii_lowercase())
+    } else {
+        value.contains(needle)
     }
 }
 
@@ -435,10 +575,12 @@ fn evaluate_claim(
 }
 
 /// Selects raw evidence for one Bayesian calibration.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct EvidenceSelector {
     predicate: KnowledgePredicate,
     value: Option<EvidenceValue>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    text_contains_ascii_case_insensitive: Option<String>,
 }
 
 impl EvidenceSelector {
@@ -447,6 +589,7 @@ impl EvidenceSelector {
         Self {
             predicate,
             value: Some(value),
+            text_contains_ascii_case_insensitive: None,
         }
     }
 
@@ -455,7 +598,23 @@ impl EvidenceSelector {
         Self {
             predicate,
             value: None,
+            text_contains_ascii_case_insensitive: None,
         }
+    }
+
+    /// Selects text evidence containing a locale-independent protocol token.
+    pub fn text_contains_ascii_case_insensitive(
+        predicate: KnowledgePredicate,
+        needle: impl Into<String>,
+    ) -> Result<Self, RuleEngineError> {
+        Ok(Self {
+            predicate,
+            value: None,
+            text_contains_ascii_case_insensitive: Some(non_empty(
+                needle,
+                "evidence-selector text needle",
+            )?),
+        })
     }
 
     /// Returns the selected predicate.
@@ -468,12 +627,60 @@ impl EvidenceSelector {
         self.value.as_ref()
     }
 
+    /// Returns the optional ASCII case-insensitive text constraint.
+    pub fn text_needle(&self) -> Option<&str> {
+        self.text_contains_ascii_case_insensitive.as_deref()
+    }
+
     fn matches(&self, evidence: &venom_core::Evidence) -> bool {
         evidence.predicate() == &self.predicate
             && self
                 .value
                 .as_ref()
                 .is_none_or(|expected| evidence.value() == expected)
+            && self
+                .text_contains_ascii_case_insensitive
+                .as_ref()
+                .is_none_or(|needle| {
+                    evidence_value_texts(evidence.value())
+                        .any(|text| text_contains(text, needle, true))
+                })
+    }
+}
+
+impl<'de> Deserialize<'de> for EvidenceSelector {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct WireSelector {
+            predicate: KnowledgePredicate,
+            value: Option<EvidenceValue>,
+            #[serde(default)]
+            text_contains_ascii_case_insensitive: Option<String>,
+        }
+
+        let wire = WireSelector::deserialize(deserializer)?;
+        if wire.value.is_some() && wire.text_contains_ascii_case_insensitive.is_some() {
+            return Err(serde::de::Error::custom(
+                "evidence selector cannot combine exact and text matching",
+            ));
+        }
+        if wire
+            .text_contains_ascii_case_insensitive
+            .as_ref()
+            .is_some_and(|needle| needle.trim().is_empty())
+        {
+            return Err(serde::de::Error::custom(RuleEngineError::EmptyValue {
+                field: "evidence-selector text needle",
+            }));
+        }
+        Ok(Self {
+            predicate: wire.predicate,
+            value: wire.value,
+            text_contains_ascii_case_insensitive: wire.text_contains_ascii_case_insensitive,
+        })
     }
 }
 
@@ -1038,6 +1245,66 @@ mod tests {
             "expressions": []
         }))
         .is_err());
+    }
+
+    #[test]
+    fn text_expression_matches_ascii_case_insensitively_with_provenance() {
+        let knowledge = KnowledgeBase::new();
+        let server = KnowledgePredicate::new("http.header", "server").unwrap();
+        let observation = evidence(server.clone(), EvidenceValue::Text("NGINX/1.26".into()));
+        let evidence_id = observation.id().clone();
+        knowledge.insert_evidence(observation).unwrap();
+        let expression = Expression::text_contains_ascii_case_insensitive(
+            KnowledgeLayer::Evidence,
+            server,
+            "nginx",
+        )
+        .unwrap();
+
+        let evaluation = expression
+            .evaluate(&knowledge.snapshot_for_subject(&subject()))
+            .unwrap();
+
+        assert!(evaluation.matched());
+        assert_eq!(evaluation.evidence_ids(), &BTreeSet::from([evidence_id]));
+        assert!(evaluation.trace().label().contains("contains-ascii-ci"));
+        let encoded = serde_json::to_value(&expression).unwrap();
+        assert_eq!(
+            serde_json::from_value::<Expression>(encoded).unwrap(),
+            expression
+        );
+        assert!(
+            Expression::text_contains(KnowledgeLayer::Evidence, framework_predicate(), " ")
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn text_evidence_selector_validates_and_round_trips() {
+        let selector = EvidenceSelector::text_contains_ascii_case_insensitive(
+            KnowledgePredicate::new("http.header", "x-powered-by").unwrap(),
+            "php",
+        )
+        .unwrap();
+        let encoded = serde_json::to_value(&selector).unwrap();
+
+        assert_eq!(
+            serde_json::from_value::<EvidenceSelector>(encoded).unwrap(),
+            selector
+        );
+        assert_eq!(selector.text_needle(), Some("php"));
+        assert!(
+            EvidenceSelector::text_contains_ascii_case_insensitive(framework_predicate(), " ")
+                .is_err()
+        );
+        assert!(
+            serde_json::from_value::<EvidenceSelector>(serde_json::json!({
+                "predicate": framework_predicate(),
+                "value": { "type": "text", "value": "Laravel" },
+                "text_contains_ascii_case_insensitive": "laravel"
+            }))
+            .is_err()
+        );
     }
 
     #[test]

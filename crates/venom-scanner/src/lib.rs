@@ -44,6 +44,7 @@ pub mod metrics;
 pub mod planner;
 pub mod rules;
 pub mod verification;
+pub mod web_reasoning;
 
 // Scanning engine (feature: scanning)
 #[cfg(feature = "scanning")]
@@ -170,6 +171,10 @@ pub use verification::{
     apply_outcome, ActiveVerifier, PassiveVerifier, VerificationCase, VerificationError,
     VerificationPipeline, VerificationPipelineReport, VerificationReport, VerificationRule,
     VerificationRuleEvaluation, VerifierWrite,
+};
+pub use web_reasoning::{
+    StandardWebInstallReport, StandardWebReasoning, StandardWebReasoningError,
+    STANDARD_WEB_AXIOM_COUNT, STANDARD_WEB_CONCEPT_COUNT, STANDARD_WEB_RULE_COUNT,
 };
 
 // Scanning engine exports (feature: scanning)

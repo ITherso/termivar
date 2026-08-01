@@ -21,6 +21,9 @@ DecisionLoop ---> DecisionRunnerAdapter ---> DecisionActionExecutor
                    KnowledgeBase
 
 HTTP target ---> HttpEvidenceExecutor ---> typed Evidence
+                                            |
+                                            v
+                              StandardWebReasoning ---> Hypotheses
 
 Task producer --> TaskQueue --> WorkerPool --> WorkerNode
 ```
@@ -30,6 +33,7 @@ Task producer --> TaskQueue --> WorkerPool --> WorkerNode
 - [Runner](runner.md): ordered phase execution, timeouts, cancellation, and partial results.
 - [Decision runner](decision-runner.md): command execution, executor routing, evidence provenance, and verifier handoff.
 - [HTTP evidence executor](http-evidence.md): scope policy, bounded collection, typed observations, and rate-limit normalization.
+- [Web reasoning](web-reasoning.md): standard ontology, explainable fingerprint rules, and Bayesian weak/strong hypotheses.
 - [Plugin registry](plugin-registry.md): validation, compatibility, lookup, execution, and accounting.
 
 Cross-boundary changes should start in [Architecture Decisions](../adr/README.md). Public contract changes must also follow the [Plugin API policy](../plugin-api-policy.md).

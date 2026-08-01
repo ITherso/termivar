@@ -38,6 +38,7 @@ One completed request may produce:
 - request method and URL;
 - response status, protocol version, and final URL;
 - allowlisted response headers;
+- response cookie names without cookie values or attributes;
 - time to first byte and total response time;
 - observed body bytes, truncation state, and SHA-256;
 - an optional bounded text sample for textual media types;
@@ -50,6 +51,8 @@ The `http.response.status` predicate intentionally matches the standard adaptive
 The complete request plus body read has one timeout. Body buffering has a configurable positive limit and a hard 16 MiB ceiling. Metadata-only capture is the default. Text sampling must be enabled explicitly and remains bounded by the body buffer.
 
 Response headers use a conservative allowlist. `Set-Cookie` is omitted by default because it may contain session secrets; a host may opt in only when its evidence retention policy permits that data. The executor hashes exactly the bytes it observed, so a truncated-body hash is not presented as a hash of the complete representation.
+
+Cookie names are extracted separately as `http.cookie.name`. Duplicate names are collapsed and malformed names are ignored. Values and attributes never enter evidence, so framework and authentication reasoning can use stable cookie-name signals without retaining session secrets.
 
 ## Rate-limit normalization
 

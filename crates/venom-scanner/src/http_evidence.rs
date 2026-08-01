@@ -614,6 +614,17 @@ impl HttpEvidenceExecutor {
             }
         }
 
+        for cookie_name in response_cookie_names(&response.headers) {
+            evidence.push(self.observation(
+                decision,
+                EvidenceKind::Authentication,
+                "http.cookie",
+                "name",
+                EvidenceValue::Text(cookie_name),
+                "response-set-cookie-name",
+            )?);
+        }
+
         evidence.push(self.observation(
             decision,
             EvidenceKind::Content,
@@ -805,6 +816,47 @@ fn joined_header(headers: &HeaderMap, name: &str) -> Option<String> {
     (!values.is_empty()).then(|| values.join(", "))
 }
 
+fn response_cookie_names(headers: &HeaderMap) -> BTreeSet<String> {
+    headers
+        .get_all("set-cookie")
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .filter_map(|value| value.split(';').next())
+        .filter_map(|pair| pair.split_once('=').map(|(name, _)| name.trim()))
+        .filter(|name| valid_cookie_name(name))
+        .map(str::to_owned)
+        .collect()
+}
+
+fn valid_cookie_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.bytes().all(|byte| {
+            byte.is_ascii()
+                && !byte.is_ascii_control()
+                && !matches!(
+                    byte,
+                    b' ' | b'\t'
+                        | b'('
+                        | b')'
+                        | b'<'
+                        | b'>'
+                        | b'@'
+                        | b','
+                        | b';'
+                        | b':'
+                        | b'\\'
+                        | b'"'
+                        | b'/'
+                        | b'['
+                        | b']'
+                        | b'?'
+                        | b'='
+                        | b'{'
+                        | b'}'
+                )
+        })
+}
+
 fn textual_response(headers: &HeaderMap) -> bool {
     joined_header(headers, "content-type")
         .map(|content_type| {
@@ -892,12 +944,12 @@ mod tests {
 
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
-    use venom_core::{EntityId, EvidenceValue};
+    use venom_core::{EntityId, EvidenceValue, HypothesisStrength};
 
     use super::*;
     use crate::{
         DecisionActionOrigin, DecisionExecutorRegistry, DecisionLoopCommand, DecisionRunnerAdapter,
-        KnowledgeBase, VerificationCase,
+        KnowledgeBase, RuleEngine, StandardWebReasoning, VerificationCase,
     };
 
     async fn serve_once(response: &'static [u8]) -> Url {
@@ -989,10 +1041,81 @@ mod tests {
         assert!(value(evidence, "http.timing.ttfb-ms").is_some());
         assert!(value(evidence, "http.timing.total-ms").is_some());
         assert!(value(evidence, "http.header.set-cookie").is_none());
+        assert_eq!(
+            value(evidence, "http.cookie.name"),
+            Some(&EvidenceValue::Text("secret".to_owned()))
+        );
         assert!(evidence.iter().all(|item| {
             item.source().component() == HTTP_EVIDENCE_EXECUTOR_ID
                 && item.source().correlation_id() == Some("case:http:1")
         }));
+    }
+
+    #[tokio::test]
+    async fn typed_http_evidence_drives_standard_web_reasoning_without_cookie_secrets() {
+        let url = serve_once(
+            b"HTTP/1.1 200 OK\r\nX-Powered-By: PHP/8.3\r\nSet-Cookie: laravel_session=secret-one; Path=/; HttpOnly\r\nSet-Cookie: XSRF-TOKEN=secret-two; Path=/\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+        )
+        .await;
+        let adapter = adapter(&url, HttpBodyCapture::MetadataOnly, 1024);
+        let knowledge = KnowledgeBase::new();
+
+        adapter
+            .execute_command(&command(&url), &knowledge)
+            .await
+            .unwrap();
+        let mut rules = RuleEngine::new();
+        StandardWebReasoning::new()
+            .unwrap()
+            .install(&knowledge, &mut rules)
+            .unwrap();
+        rules
+            .apply(
+                &knowledge,
+                &EntityId::new(format!("endpoint:{url}")).unwrap(),
+            )
+            .unwrap();
+
+        let hypotheses =
+            knowledge.hypotheses_for_subject(&EntityId::new(format!("endpoint:{url}")).unwrap());
+        let laravel = hypotheses
+            .iter()
+            .find(|item| item.value() == &EvidenceValue::Text("laravel".to_owned()))
+            .unwrap();
+        assert_eq!(laravel.strength(), HypothesisStrength::Strong);
+        assert!(hypotheses
+            .iter()
+            .any(|item| item.value() == &EvidenceValue::Text("sanctum".to_owned())));
+        assert!(knowledge
+            .evidence_for_subject(laravel.subject())
+            .iter()
+            .all(|item| match item.value() {
+                EvidenceValue::Text(value) => !value.contains("secret-"),
+                _ => true,
+            }));
+    }
+
+    #[test]
+    fn cookie_name_extraction_deduplicates_names_without_retaining_values() {
+        let mut headers = HeaderMap::new();
+        headers.append(
+            "set-cookie",
+            HeaderValue::from_static("laravel_session=secret-one; Path=/; HttpOnly"),
+        );
+        headers.append(
+            "set-cookie",
+            HeaderValue::from_static("XSRF-TOKEN=secret-two; Path=/"),
+        );
+        headers.append(
+            "set-cookie",
+            HeaderValue::from_static("laravel_session=rotated; Path=/"),
+        );
+        headers.append("set-cookie", HeaderValue::from_static("bad name=value"));
+
+        assert_eq!(
+            response_cookie_names(&headers),
+            BTreeSet::from(["XSRF-TOKEN".to_owned(), "laravel_session".to_owned()])
+        );
     }
 
     #[tokio::test]
