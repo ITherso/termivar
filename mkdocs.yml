@@ -38,6 +38,7 @@ nav:
       - Decision runner: internals/decision-runner.md
       - HTTP evidence executor: internals/http-evidence.md
       - Web reasoning: internals/web-reasoning.md
+      - Web planning: internals/web-planning.md
       - Plugin registry: internals/plugin-registry.md
   - Reference:
       - API: API.md

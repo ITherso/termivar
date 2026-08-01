@@ -65,3 +65,5 @@ StandardWebReasoning::new()?
 ```
 
 Evidence can then be inserted in atomic batches. The next decision-loop reasoning turn evaluates the standard rules before planning.
+
+The resulting hypotheses can be connected to the opt-in [standard web attack profile](web-planning.md).
