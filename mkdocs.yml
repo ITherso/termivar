@@ -40,6 +40,7 @@ nav:
       - Web reasoning: internals/web-reasoning.md
       - Web planning: internals/web-planning.md
       - Web execution: internals/web-execution.md
+      - Web verification: internals/web-verification.md
       - Plugin registry: internals/plugin-registry.md
   - Reference:
       - API: API.md

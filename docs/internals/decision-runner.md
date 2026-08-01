@@ -46,6 +46,8 @@ An executor returns native `Evidence`, not findings or decisions. Before any wri
 
 `KnowledgeBase::insert_evidence_batch` preflights identities under one write lock. A conflict rejects the whole batch, while exact repeats remain idempotent. Active execution captures a subject snapshot immediately before the probe and another after the batch commit.
 
+Verifier rules may additionally opt into an action identity and current-case evidence correlation. This is required when a long-lived subject snapshot can contain responses from multiple semantic actions or retries; unrelated and historical observations remain visible to the knowledge base but cannot win that scoped verification rule.
+
 ## Legacy plugin bridge
 
 `PluginDecisionExecutor` adapts the Preview `PluginRegistry` contract to native evidence. A host-owned `PluginInputProvider` maps a decision request to the legacy `target` and `payload` strings; the adapter does not assume an action ID is a payload. Successful `ScanFinding` values become correlated `plugin.finding` evidence. Plugin failures remain executor failures and do not enter the knowledge base.

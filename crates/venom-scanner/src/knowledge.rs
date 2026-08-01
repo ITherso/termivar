@@ -144,6 +144,21 @@ impl KnowledgeSnapshot {
     pub fn ontology(&self) -> &Ontology {
         &self.ontology
     }
+
+    pub(crate) fn with_evidence_correlation(&self, correlation_id: &str) -> Self {
+        Self {
+            subject: self.subject.clone(),
+            ontology: self.ontology.clone(),
+            evidence: self
+                .evidence
+                .iter()
+                .filter(|evidence| evidence.source().correlation_id() == Some(correlation_id))
+                .cloned()
+                .collect(),
+            facts: self.facts.clone(),
+            hypotheses: self.hypotheses.clone(),
+        }
+    }
 }
 
 #[derive(Debug, Default)]

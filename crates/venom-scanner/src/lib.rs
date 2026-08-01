@@ -47,6 +47,9 @@ pub mod verification;
 pub mod web_planning;
 pub mod web_reasoning;
 
+#[cfg(feature = "scanning")]
+pub mod web_verification;
+
 // Scanning engine (feature: scanning)
 #[cfg(feature = "scanning")]
 pub mod phases;
@@ -183,6 +186,11 @@ pub use web_planning::{
 pub use web_reasoning::{
     StandardWebInstallReport, StandardWebReasoning, StandardWebReasoningError,
     STANDARD_WEB_AXIOM_COUNT, STANDARD_WEB_CONCEPT_COUNT, STANDARD_WEB_RULE_COUNT,
+};
+#[cfg(feature = "scanning")]
+pub use web_verification::{
+    StandardWebVerificationError, StandardWebVerificationInstallReport,
+    StandardWebVerificationProfile, STANDARD_WEB_VERIFICATION_RULE_COUNT,
 };
 
 // Scanning engine exports (feature: scanning)

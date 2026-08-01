@@ -34,6 +34,12 @@ pub enum VerificationError {
     #[error("verification rule {rule_id} must have non-zero confidence")]
     ZeroConfidence { rule_id: String },
 
+    /// Case-correlated evaluation was requested for a non-evidence expression.
+    #[error(
+        "verification rule {rule_id} must use only raw evidence when case correlation is required"
+    )]
+    CaseCorrelationRequiresEvidenceOnly { rule_id: String },
+
     /// A verifier was given a rule for the other evidence collection stage.
     #[error("verification rule {rule_id} belongs to {actual:?}, expected {expected:?}")]
     WrongStage {
@@ -102,6 +108,10 @@ fn non_empty(value: impl Into<String>, field: &'static str) -> Result<String, Ve
         return Err(VerificationError::EmptyValue { field });
     }
     Ok(value)
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 /// Stable identity linking a planned action to the hypothesis it verifies.
@@ -179,6 +189,10 @@ pub struct VerificationRule {
     outcome: OutcomeStatus,
     confidence: Probability,
     rationale: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    action_id: Option<String>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    case_correlated_evidence: bool,
 }
 
 impl VerificationRule {
@@ -208,7 +222,32 @@ impl VerificationRule {
             outcome,
             confidence,
             rationale: non_empty(rationale, "verification rule rationale")?,
+            action_id: None,
+            case_correlated_evidence: false,
         })
+    }
+
+    /// Restricts this rule to verification cases opened by one action.
+    pub fn scoped_to_action(
+        mut self,
+        action_id: impl Into<String>,
+    ) -> Result<Self, VerificationError> {
+        self.action_id = Some(non_empty(action_id, "verification rule action id")?);
+        Ok(self)
+    }
+
+    /// Restricts raw evidence evaluation to the current case correlation ID.
+    ///
+    /// Case correlation is valid only for evidence-layer expressions. Facts,
+    /// hypotheses, and ontology claims are not produced by one executor case.
+    pub fn with_case_correlated_evidence(mut self) -> Result<Self, VerificationError> {
+        if !self.condition.uses_only_evidence() {
+            return Err(VerificationError::CaseCorrelationRequiresEvidenceOnly {
+                rule_id: self.id.clone(),
+            });
+        }
+        self.case_correlated_evidence = true;
+        Ok(self)
     }
 
     /// Returns the stable rule identity.
@@ -245,6 +284,16 @@ impl VerificationRule {
     pub fn rationale(&self) -> &str {
         &self.rationale
     }
+
+    /// Returns the action identity required by this rule, if scoped.
+    pub fn action_id(&self) -> Option<&str> {
+        self.action_id.as_deref()
+    }
+
+    /// Returns whether raw evidence is limited to the current case correlation.
+    pub fn requires_case_correlated_evidence(&self) -> bool {
+        self.case_correlated_evidence
+    }
 }
 
 impl<'de> Deserialize<'de> for VerificationRule {
@@ -261,10 +310,14 @@ impl<'de> Deserialize<'de> for VerificationRule {
             outcome: OutcomeStatus,
             confidence: Probability,
             rationale: String,
+            #[serde(default)]
+            action_id: Option<String>,
+            #[serde(default)]
+            case_correlated_evidence: bool,
         }
 
         let wire = WireRule::deserialize(deserializer)?;
-        Self::new(
+        let mut rule = Self::new(
             wire.id,
             wire.stage,
             wire.priority,
@@ -273,7 +326,18 @@ impl<'de> Deserialize<'de> for VerificationRule {
             wire.confidence,
             wire.rationale,
         )
-        .map_err(serde::de::Error::custom)
+        .map_err(serde::de::Error::custom)?;
+        if let Some(action_id) = wire.action_id {
+            rule = rule
+                .scoped_to_action(action_id)
+                .map_err(serde::de::Error::custom)?;
+        }
+        if wire.case_correlated_evidence {
+            rule = rule
+                .with_case_correlated_evidence()
+                .map_err(serde::de::Error::custom)?;
+        }
+        Ok(rule)
     }
 }
 
@@ -296,6 +360,7 @@ pub struct VerificationRuleEvaluation {
     priority: u16,
     condition: ExpressionEvaluation,
     fresh_evidence_ids: BTreeSet<EvidenceId>,
+    action_matched: bool,
     eligible: bool,
     selected: bool,
 }
@@ -324,6 +389,11 @@ impl VerificationRuleEvaluation {
     /// Returns contributing evidence absent from the passive baseline.
     pub fn fresh_evidence_ids(&self) -> &BTreeSet<EvidenceId> {
         &self.fresh_evidence_ids
+    }
+
+    /// Returns whether the case action satisfied this rule's action scope.
+    pub fn action_matched(&self) -> bool {
+        self.action_matched
     }
 
     /// Returns whether this rule could participate in winner selection.
@@ -698,7 +768,12 @@ fn evaluate_registry(
 
     let mut evaluations = Vec::with_capacity(registry.rules.len());
     for rule in registry.rules.values() {
-        let condition = rule.condition.evaluate(snapshot)?;
+        let scoped_snapshot = rule
+            .case_correlated_evidence
+            .then(|| snapshot.with_evidence_correlation(case.id()));
+        let condition = rule
+            .condition
+            .evaluate(scoped_snapshot.as_ref().unwrap_or(snapshot))?;
         if condition.matched() && condition.evidence_ids().is_empty() {
             return Err(VerificationError::MissingContributingEvidence {
                 rule_id: rule.id.clone(),
@@ -709,7 +784,12 @@ fn evaluate_registry(
             .difference(&baseline_ids)
             .cloned()
             .collect::<BTreeSet<_>>();
-        let eligible = condition.matched()
+        let action_matched = rule
+            .action_id
+            .as_deref()
+            .is_none_or(|action_id| action_id == case.action_id());
+        let eligible = action_matched
+            && condition.matched()
             && (registry.stage == VerificationStage::Passive || !fresh_evidence_ids.is_empty());
         evaluations.push(VerificationRuleEvaluation {
             rule_id: rule.id.clone(),
@@ -717,6 +797,7 @@ fn evaluate_registry(
             priority: rule.priority,
             condition,
             fresh_evidence_ids,
+            action_matched,
             eligible,
             selected: false,
         });
@@ -914,6 +995,45 @@ mod tests {
             format!("{id} matched"),
         )
         .unwrap()
+    }
+
+    #[test]
+    fn scoped_rule_round_trips_and_rejects_non_evidence_case_scope() {
+        let scoped = rule(
+            "scoped",
+            VerificationStage::Passive,
+            10,
+            boolean_predicate(),
+            OutcomeStatus::Success,
+        )
+        .scoped_to_action("sqli.verify")
+        .unwrap()
+        .with_case_correlated_evidence()
+        .unwrap();
+        let serialized = serde_json::to_string(&scoped).unwrap();
+        let restored: VerificationRule = serde_json::from_str(&serialized).unwrap();
+
+        assert_eq!(restored, scoped);
+        assert_eq!(restored.action_id(), Some("sqli.verify"));
+        assert!(restored.requires_case_correlated_evidence());
+
+        let hypothesis_rule = VerificationRule::new(
+            "hypothesis-scoped",
+            VerificationStage::Passive,
+            10,
+            Expression::exists(
+                KnowledgeLayer::Hypothesis,
+                KnowledgePredicate::new("vulnerability", "sqli").unwrap(),
+            ),
+            OutcomeStatus::Success,
+            Probability::from_percent(90).unwrap(),
+            "hypothesis exists",
+        )
+        .unwrap();
+        assert!(matches!(
+            hypothesis_rule.with_case_correlated_evidence(),
+            Err(VerificationError::CaseCorrelationRequiresEvidenceOnly { .. })
+        ));
     }
 
     #[test]

@@ -248,6 +248,19 @@ impl Expression {
             trace: evaluate_node(&self.0, snapshot)?,
         })
     }
+
+    pub(crate) fn uses_only_evidence(&self) -> bool {
+        match &self.0 {
+            ExpressionNode::All { expressions } | ExpressionNode::Any { expressions } => {
+                expressions.iter().all(Self::uses_only_evidence)
+            },
+            ExpressionNode::Not { expression } => expression.uses_only_evidence(),
+            ExpressionNode::Claim { layer, .. } | ExpressionNode::TextContains { layer, .. } => {
+                matches!(layer, KnowledgeLayer::Evidence)
+            },
+            ExpressionNode::OntologyRelation { .. } => false,
+        }
+    }
 }
 
 impl<'de> Deserialize<'de> for Expression {

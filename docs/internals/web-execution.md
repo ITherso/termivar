@@ -64,6 +64,8 @@ Each semantic executor has its own source component ID. The decision runner reje
 
 The profile emits observations only. Classification, passive verification, active verification, outcomes, experience, and replanning remain owned by their existing layers.
 
+The opt-in [standard web verification profile](web-verification.md) consumes these observations using action- and case-scoped rules. Keeping it separate ensures the executor never interprets its own response as success or failure.
+
 ## Intentionally unsupported actions
 
 Nginx/Apache configuration analysis, PHP input discovery, and Laravel input analysis do not yet have built-in executors. Their planner identities remain stable, so hosts may register audited implementations without changing reasoning or planning policy.

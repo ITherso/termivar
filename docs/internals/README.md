@@ -36,6 +36,12 @@ HTTP target ---> HttpEvidenceExecutor ---> typed Evidence
                                                            |
                                                            v
                                            HttpEvidenceExecutor
+                                                           |
+                                                           v
+                                       StandardWebVerificationProfile
+                                                           |
+                                                           v
+                                                        Outcome
 
 Task producer --> TaskQueue --> WorkerPool --> WorkerNode
 ```
@@ -48,6 +54,7 @@ Task producer --> TaskQueue --> WorkerPool --> WorkerNode
 - [Web reasoning](web-reasoning.md): standard ontology, explainable fingerprint rules, and Bayesian weak/strong hypotheses.
 - [Web planning](web-planning.md): hypothesis-gated actions, utility ranking, policy exclusions, and executor contracts.
 - [Web execution](web-execution.md): semantic executor installation, discovery-only HTTP methods, and scope controls.
+- [Web verification](web-verification.md): action/case isolation, passive/active rules, and conservative outcomes.
 - [Plugin registry](plugin-registry.md): validation, compatibility, lookup, execution, and accounting.
 
 Cross-boundary changes should start in [Architecture Decisions](../adr/README.md). Public contract changes must also follow the [Plugin API policy](../plugin-api-policy.md).
