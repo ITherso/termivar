@@ -7,7 +7,7 @@
 #![allow(unexpected_cfgs)]
 #![cfg(not(tarpaulin))]
 
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use venom_scanner::{LogLevel, Logger, ScanFinding};
 
 /// Tests concurrent finding collection performance
@@ -291,17 +291,25 @@ fn test_url_pattern_matching_perf() {
     ];
 
     let start = Instant::now();
+    let mut matches = 0;
 
     for _ in 0..1000 {
         for url in &urls {
-            let _ = url.contains("/api/") || url.contains("/admin/");
+            matches += usize::from(url.contains("/api/") || url.contains("/admin/"));
         }
     }
 
     let elapsed = start.elapsed();
 
-    // 5000 pattern matches in < 5ms
-    assert!(elapsed.as_millis() < 5);
+    assert_eq!(matches, 3_000);
+
+    // This is a debug-build smoke budget, not a benchmark. Shared CI runners can
+    // pause a process for several milliseconds; Criterion owns regression data.
+    let smoke_budget = Duration::from_millis(250);
+    assert!(
+        elapsed < smoke_budget,
+        "5,000 URL pattern checks exceeded the {smoke_budget:?} smoke budget: {elapsed:?}"
+    );
 }
 
 /// Tests payload list generation performance
