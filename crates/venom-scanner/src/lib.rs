@@ -81,6 +81,9 @@ pub mod web_execution;
 #[cfg(feature = "scanning")]
 pub mod web_decision;
 
+#[cfg(feature = "scanning")]
+pub mod web_runtime;
+
 // Detection capabilities (feature: detection)
 #[cfg(feature = "detection")]
 pub mod advanced_detection;
@@ -247,6 +250,12 @@ pub use web_execution::{
 #[cfg(feature = "scanning")]
 pub use web_decision::{
     StandardWebDecisionError, StandardWebDecisionInstallReport, StandardWebDecisionProfile,
+};
+
+#[cfg(feature = "scanning")]
+pub use web_runtime::{
+    StandardWebDecisionRunReport, StandardWebDecisionRuntime, StandardWebDecisionRuntimeBuilder,
+    StandardWebDecisionRuntimeError, StandardWebDecisionRuntimeTurn,
 };
 
 #[cfg(all(feature = "scanning", feature = "plugins"))]

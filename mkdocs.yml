@@ -38,6 +38,7 @@ nav:
       - Decision runner: internals/decision-runner.md
       - HTTP evidence executor: internals/http-evidence.md
       - Standard web decision profile: internals/web-decision.md
+      - Standard web decision runtime: internals/web-runtime.md
       - Web reasoning: internals/web-reasoning.md
       - Web planning: internals/web-planning.md
       - Web execution: internals/web-execution.md

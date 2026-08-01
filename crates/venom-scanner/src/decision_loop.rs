@@ -152,6 +152,8 @@ impl<'de> Deserialize<'de> for DecisionLoopConfig {
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum DecisionActionOrigin {
+    /// Requested by a host runtime to establish initial observations.
+    Bootstrap,
     /// Selected by utility planning.
     Planned,
     /// Scheduled by adaptive policy.
@@ -524,6 +526,21 @@ impl DecisionLoop {
         experience: &ExperienceStore,
         session: &mut DecisionSession,
     ) -> Result<DecisionPlanningReport, DecisionLoopError> {
+        self.plan_next_with_suppressed_actions(knowledge, experience, session, &BTreeSet::new())
+    }
+
+    /// Applies reasoning and planning while honoring host policy suppressions.
+    ///
+    /// Explicit suppressions are combined with experience and adaptive-session
+    /// suppressions. They remain visible as policy exclusions in the returned
+    /// planner audit record.
+    pub fn plan_next_with_suppressed_actions(
+        &self,
+        knowledge: &KnowledgeBase,
+        experience: &ExperienceStore,
+        session: &mut DecisionSession,
+        host_suppressed_actions: &BTreeSet<String>,
+    ) -> Result<DecisionPlanningReport, DecisionLoopError> {
         require_state(session, "plan", |state| {
             matches!(state, DecisionLoopState::Ready)
         })?;
@@ -531,7 +548,12 @@ impl DecisionLoop {
             let reason = DecisionStopReason::ActionCycleLimit;
             session.state = DecisionLoopState::Halted { reason };
             let snapshot = knowledge.snapshot_for_subject(session.subject());
-            let suppressions = combined_suppressions(experience, session, self.config.experience);
+            let suppressions = combined_suppressions(
+                experience,
+                session,
+                self.config.experience,
+                host_suppressed_actions,
+            );
             return Ok(DecisionPlanningReport {
                 rule_applications: Vec::new(),
                 plan: self.planner.plan_snapshot_with_suppressed(
@@ -546,7 +568,12 @@ impl DecisionLoop {
 
         let applications = self.rules.apply(knowledge, session.subject())?;
         let snapshot = knowledge.snapshot_for_subject(session.subject());
-        let suppressions = combined_suppressions(experience, session, self.config.experience);
+        let suppressions = combined_suppressions(
+            experience,
+            session,
+            self.config.experience,
+            host_suppressed_actions,
+        );
         let plan = self.planner.plan_snapshot_with_suppressed(
             &snapshot,
             self.config.planning,
@@ -641,8 +668,12 @@ impl DecisionLoop {
         let outcome = verification.outcome();
         let mut candidate_experience = experience.clone();
         let experience_write = candidate_experience.observe(outcome.clone())?;
-        let suppressions =
-            combined_suppressions(&candidate_experience, session, self.config.experience);
+        let suppressions = combined_suppressions(
+            &candidate_experience,
+            session,
+            self.config.experience,
+            &BTreeSet::new(),
+        );
         let mut candidate_session = session.clone();
         let adaptive = self.adaptive.decide_and_record_with_suppressed_actions(
             outcome,
@@ -690,9 +721,11 @@ fn combined_suppressions(
     experience: &ExperienceStore,
     session: &DecisionSession,
     policy: ExperiencePolicy,
+    host_suppressed_actions: &BTreeSet<String>,
 ) -> BTreeSet<String> {
     let mut suppressions = experience.suppressed_actions(session.subject(), policy);
     suppressions.extend(session.adaptation.suppressed_actions().iter().cloned());
+    suppressions.extend(host_suppressed_actions.iter().cloned());
     suppressions
 }
 

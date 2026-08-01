@@ -9,6 +9,7 @@ publish = false
 [dependencies]
 async-trait.workspace = true
 tokio.workspace = true
+url = "2.5"
 venom-scanner = { version = "0.9.0-alpha", path = "../crates/venom-scanner", features = ["distributed", "plugins"] }
 
 [[bin]]
@@ -22,3 +23,7 @@ path = "custom_plugin.rs"
 [[bin]]
 name = "distributed_scan"
 path = "distributed_scan.rs"
+
+[[bin]]
+name = "decision_scan"
+path = "decision_scan.rs"

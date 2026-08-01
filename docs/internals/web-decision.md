@@ -61,3 +61,5 @@ This is a setup transaction, not a runtime transaction. It does not roll back ev
 - the host retains authorization, policy, persistence, and session lifecycle ownership.
 
 The individual profiles remain public for specialized hosts. Use the composite profile when the standard stack should be installed as one reviewed unit; use the individual profiles when a host deliberately replaces a layer.
+
+Applications that want Venom to own target-scoped bootstrap, session state, command driving, and experience can use the higher-level [standard web decision runtime](web-runtime.md).

@@ -20,7 +20,10 @@ DecisionLoop ---> DecisionRunnerAdapter ---> DecisionActionExecutor
                          v
                    KnowledgeBase
 
-HTTP target ---> HttpEvidenceExecutor ---> typed Evidence
+HTTP target ---> StandardWebDecisionRuntime
+                         |
+                         v
+                HttpEvidenceExecutor ---> typed Evidence
                                             |
                                             v
                               StandardWebDecisionProfile
@@ -55,6 +58,7 @@ Task producer --> TaskQueue --> WorkerPool --> WorkerNode
 - [Decision runner](decision-runner.md): command execution, executor routing, evidence provenance, and verifier handoff.
 - [HTTP evidence executor](http-evidence.md): scope policy, bounded collection, typed observations, and rate-limit normalization.
 - [Standard web decision profile](web-decision.md): one-shot composition, installation transaction, and layer boundaries.
+- [Standard web decision runtime](web-runtime.md): target builder, bootstrap evidence, executable-plan filtering, and complete session driving.
 - [Web reasoning](web-reasoning.md): standard ontology, explainable fingerprint rules, and Bayesian weak/strong hypotheses.
 - [Web planning](web-planning.md): hypothesis-gated actions, utility ranking, policy exclusions, and executor contracts.
 - [Web execution](web-execution.md): semantic executor installation, discovery-only HTTP methods, and scope controls.
