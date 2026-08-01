@@ -15,12 +15,18 @@ ScanPhase
 
 Plugin host ----> PluginRegistry ----> Plugin::execute
 
+DecisionLoop ---> DecisionRunnerAdapter ---> DecisionActionExecutor
+                         |
+                         v
+                   KnowledgeBase
+
 Task producer --> TaskQueue --> WorkerPool --> WorkerNode
 ```
 
 - [Scheduler](scheduler.md): queue, worker scoring, assignment, retry, and heartbeat boundaries.
 - [Event bus](event-bus.md): synchronous publication, subscriptions, history, and correlation.
 - [Runner](runner.md): ordered phase execution, timeouts, cancellation, and partial results.
+- [Decision runner](decision-runner.md): command execution, executor routing, evidence provenance, and verifier handoff.
 - [Plugin registry](plugin-registry.md): validation, compatibility, lookup, execution, and accounting.
 
 Cross-boundary changes should start in [Architecture Decisions](../adr/README.md). Public contract changes must also follow the [Plugin API policy](../plugin-api-policy.md).

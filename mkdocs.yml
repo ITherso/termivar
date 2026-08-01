@@ -35,6 +35,7 @@ nav:
       - Scheduler: internals/scheduler.md
       - Event bus: internals/event-bus.md
       - Runner: internals/runner.md
+      - Decision runner: internals/decision-runner.md
       - Plugin registry: internals/plugin-registry.md
   - Reference:
       - API: API.md

@@ -64,6 +64,9 @@ pub mod adaptive;
 #[cfg(feature = "scanning")]
 pub mod decision_loop;
 
+#[cfg(feature = "scanning")]
+pub mod decision_runner;
+
 // Detection capabilities (feature: detection)
 #[cfg(feature = "detection")]
 pub mod advanced_detection;
@@ -192,6 +195,16 @@ pub use decision_loop::{
     DecisionLoopState, DecisionOutcomeReport, DecisionPlanningReport, DecisionSession,
     DecisionStopReason,
 };
+
+#[cfg(feature = "scanning")]
+pub use decision_runner::{
+    DecisionActionExecutor, DecisionEvidenceReceipt, DecisionExecutionRequest,
+    DecisionExecutionStage, DecisionExecutorError, DecisionExecutorRegistry, DecisionRunnerAdapter,
+    DecisionRunnerError, DecisionRunnerTurn,
+};
+
+#[cfg(all(feature = "scanning", feature = "plugins"))]
+pub use decision_runner::{PluginDecisionExecutor, PluginExecutionInput, PluginInputProvider};
 
 #[cfg(feature = "scanning")]
 pub use persistence::{

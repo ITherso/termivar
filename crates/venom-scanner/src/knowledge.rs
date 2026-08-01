@@ -288,6 +288,55 @@ impl KnowledgeBase {
         Ok(KnowledgeWrite::Inserted)
     }
 
+    /// Inserts an evidence batch in one write transaction.
+    ///
+    /// Every identity is validated before the first record is written. If an
+    /// existing record or another item in the batch reuses an evidence ID for
+    /// different meaning, the complete batch is rejected without changing the
+    /// knowledge base. Results preserve input order; exact duplicates are
+    /// idempotent.
+    pub fn insert_evidence_batch(
+        &self,
+        evidence: Vec<Evidence>,
+    ) -> Result<Vec<KnowledgeWrite>, KnowledgeBaseError> {
+        let mut state = self.write_state();
+        let mut pending = HashMap::<EvidenceId, Evidence>::new();
+
+        for observation in &evidence {
+            let id = observation.id();
+            if state
+                .evidence
+                .get(id)
+                .is_some_and(|existing| existing != observation)
+                || pending
+                    .get(id)
+                    .is_some_and(|existing| existing != observation)
+            {
+                return Err(identity_conflict(KnowledgeRecordKind::Evidence, id));
+            }
+            pending
+                .entry(id.clone())
+                .or_insert_with(|| observation.clone());
+        }
+
+        let mut writes = Vec::with_capacity(evidence.len());
+        for observation in evidence {
+            let id = observation.id().clone();
+            if state.evidence.contains_key(&id) {
+                writes.push(KnowledgeWrite::Unchanged);
+                continue;
+            }
+
+            let subject = observation.subject().clone();
+            let predicate = observation.predicate().clone();
+            state.evidence.insert(id.clone(), observation);
+            index(&mut state.evidence_by_subject, subject, id.clone());
+            index(&mut state.evidence_by_predicate, predicate, id);
+            writes.push(KnowledgeWrite::Inserted);
+        }
+        Ok(writes)
+    }
+
     /// Inserts a materialized fact or updates its confidence and provenance.
     ///
     /// The subject, predicate, and value form the immutable claim identity for
@@ -614,6 +663,42 @@ mod tests {
             })
         );
         assert_eq!(store.stats().evidence, 1);
+    }
+
+    #[test]
+    fn evidence_batches_are_atomic_and_preserve_input_order() {
+        let store = KnowledgeBase::new();
+        let first = evidence_for(subject(1), "Laravel");
+        let second = evidence_for(subject(1), "Livewire");
+
+        assert_eq!(
+            store
+                .insert_evidence_batch(vec![first.clone(), first.clone(), second.clone()])
+                .unwrap(),
+            vec![
+                KnowledgeWrite::Inserted,
+                KnowledgeWrite::Unchanged,
+                KnowledgeWrite::Inserted,
+            ]
+        );
+
+        let third = evidence_for(subject(1), "Sanctum");
+        let mut conflicting_wire = serde_json::to_value(&first).unwrap();
+        conflicting_wire["value"] = serde_json::json!({
+            "type": "text",
+            "value": "Symfony"
+        });
+        let conflicting: Evidence = serde_json::from_value(conflicting_wire).unwrap();
+
+        assert!(matches!(
+            store.insert_evidence_batch(vec![third.clone(), conflicting]),
+            Err(KnowledgeBaseError::IdentityConflict { .. })
+        ));
+        assert!(store
+            .evidence_for_subject(third.subject())
+            .iter()
+            .all(|item| item.id() != third.id()));
+        assert_eq!(store.stats().evidence, 2);
     }
 
     #[test]
