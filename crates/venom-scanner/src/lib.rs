@@ -72,6 +72,9 @@ pub mod decision_runner;
 #[cfg(feature = "scanning")]
 pub mod http_evidence;
 
+#[cfg(feature = "scanning")]
+pub mod web_execution;
+
 // Detection capabilities (feature: detection)
 #[cfg(feature = "detection")]
 pub mod advanced_detection;
@@ -221,6 +224,13 @@ pub use http_evidence::{
     HttpBodyCapture, HttpEvidenceError, HttpEvidenceExecutor, HttpEvidencePolicy, HttpProbe,
     HttpProbeMethod, HttpProbeProvider, SubjectHttpProbeProvider, DEFAULT_HTTP_BODY_LIMIT,
     HTTP_EVIDENCE_EXECUTOR_ID, MAX_HTTP_BODY_LIMIT,
+};
+
+#[cfg(feature = "scanning")]
+pub use web_execution::{
+    StandardWebDiscoveryExecutorProfile, StandardWebDiscoveryInstallReport,
+    StandardWebExecutionError, STANDARD_WEB_DISCOVERY_ACTIONS,
+    STANDARD_WEB_DISCOVERY_EXECUTOR_COUNT,
 };
 
 #[cfg(all(feature = "scanning", feature = "plugins"))]

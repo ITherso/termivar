@@ -129,7 +129,7 @@ pub trait DecisionActionExecutor: Send + Sync {
 }
 
 /// Deterministic executor lookup used by the decision runner.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct DecisionExecutorRegistry {
     executors: BTreeMap<String, Arc<dyn DecisionActionExecutor>>,
     routes: BTreeMap<(DecisionExecutionStage, String), String>,

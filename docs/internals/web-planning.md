@@ -55,6 +55,8 @@ for kind in StandardWebActionKind::all() {
 
 This profile does not silently map semantic actions to generic exploit plugins. Route discovery, component discovery, and authentication analysis remain isolated executor contracts that a host can implement with its own scope, rate, and authorization policy.
 
+The opt-in [standard web discovery executor profile](web-execution.md) now supplies bounded built-in implementations for Laravel route boundaries, Livewire component discovery, and Sanctum/HTTP authentication boundaries. Configuration and input-analysis executors remain host-owned.
+
 ## Installation
 
 Reasoning and planning are installed independently into the decision loop.

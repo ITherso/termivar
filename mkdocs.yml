@@ -39,6 +39,7 @@ nav:
       - HTTP evidence executor: internals/http-evidence.md
       - Web reasoning: internals/web-reasoning.md
       - Web planning: internals/web-planning.md
+      - Web execution: internals/web-execution.md
       - Plugin registry: internals/plugin-registry.md
   - Reference:
       - API: API.md
