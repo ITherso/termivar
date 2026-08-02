@@ -27,12 +27,13 @@ breaking change fail even while the workspace remains on the same alpha
 version.
 
 This is deliberately a core-contract gate, not a workspace-wide stability
-claim. `venom-scanner` is excluded because its current API has a known break
-from that baseline: the publicly constructible `ScanContext` gained the public
-`knowledge` field, reported by `cargo-semver-checks` as
-`constructible_struct_adds_field`. The scanner contract needs an explicit alpha
-versioning and construction-policy decision before it can receive the same
-gate. The CLI, API, and proxy crates are not covered by this check.
+claim. [ADR 0007](adr/0007-scan-context-construction-boundary.md) makes
+`ScanContext` constructor-owned, non-exhaustive, and responsible for a private
+knowledge base. That transition is intentionally source-incompatible with the
+tagged `v0.9.0-alpha` struct-literal contract. `venom-scanner` therefore remains
+Preview and outside the blocking job until the next Preview release provides
+an immutable post-transition baseline. The CLI, API, and proxy crates are not
+covered by this check.
 
 The SemVer command remains separate from `cargo xtask release`; CI installs the
 pinned analysis tool and runs the compatibility job independently.
@@ -41,6 +42,6 @@ pinned analysis tool and runs the compatibility job independently.
 
 - CodeQL does not replace Rust-specific dependency, Clippy, fuzz, or review controls.
 - Fuzzing is time-bounded and does not prove parser safety.
-- Scanner SDK and plugin contracts do not yet have an accepted compatibility baseline; the known `ScanContext` construction break must be resolved or versioned explicitly.
+- Scanner construction policy is documented, but Scanner SDK and plugin contracts still lack an accepted post-transition compatibility baseline.
 - Automated API linting does not prove complete Rust source compatibility; public-API review and downstream compile fixtures remain required.
 - No independent security audit or controlled end-to-end performance report has been completed.

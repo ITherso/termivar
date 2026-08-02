@@ -31,6 +31,7 @@ All notable changes to Venom are recorded here. Releases use the categories from
 - Subject/ontology revisions, bounded stale-snapshot retries, and atomic verifier state transitions for reasoning turns.
 - Typed post-reasoning planning receipts with snapshot revisions and before/after session transitions.
 - A pinned `venom-core` public API compatibility command and dedicated CI gate against the `v0.9.0-alpha` source baseline.
+- A `ScanContext` construction ADR and migration guide for the next Scanner Preview release.
 
 ### Changed
 
@@ -51,7 +52,7 @@ All notable changes to Venom are recorded here. Releases use the categories from
 - Rejected zero-reliability HTTP evidence policies so fixed rule likelihoods cannot promote a no-confidence observation.
 - Made rule-produced hypothesis writes batch-atomic and preserved verifier-owned terminal states under the same knowledge-base lock.
 - Made planning-session changes error-atomic and snapshot-CAS guarded; planner, command-construction, and stale-knowledge failures no longer partially halt or advance a session.
-- Added evidence-driven `KnowledgeBase` state to `ScanContext`. Because the released struct was exhaustively constructible, the new public `knowledge` field is a pre-v1 source-incompatible change; struct-literal users should migrate to the provided constructors. `venom-scanner` remains outside the core-only compatibility gate pending its next preview baseline.
+- `ScanContext` now owns an evidence-driven `KnowledgeBase`, is non-exhaustive, and exposes reasoning state through `knowledge()`. This is an intentional Preview source transition from the v0.9 struct-literal contract; consumers must use constructors and the accessor. `venom-scanner` remains outside the blocking compatibility gate until the next Preview baseline.
 
 ### Fixed
 
@@ -64,7 +65,7 @@ All notable changes to Venom are recorded here. Releases use the categories from
 - Bounded relation identifiers, endpoints, custom kinds, provenance sets, review cursors, and page cloning; redacted deterministic visibility fingerprints and cursors from `Debug` output.
 - Bounded API observation producer names and review explanations, validating borrowed records before projection clones them.
 
-## [0.9.0-alpha] - Unreleased
+## [0.9.0-alpha] - 2026-07-31
 
 ### Added
 

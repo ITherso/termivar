@@ -7,30 +7,78 @@ use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 use url::Url;
 
-/// Zero-copy shared state across all scan phases
+/// Zero-copy shared state across all scan phases.
+///
+/// Construct contexts through [`ScanContext::new`] or one of the policy-aware
+/// constructors. Additional runtime state may be introduced without requiring
+/// extension authors to initialize internal fields.
+///
+/// # Examples
+///
+/// ```rust
+/// use reqwest::Client;
+/// use url::Url;
+/// use venom_scanner::ScanContext;
+///
+/// let (telemetry_tx, _telemetry_rx) = tokio::sync::mpsc::unbounded_channel();
+/// let context = ScanContext::new(
+///     Url::parse("https://example.test")?,
+///     Client::new(),
+///     telemetry_tx,
+/// );
+///
+/// assert_eq!(context.knowledge().stats().evidence, 0);
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
+///
+/// Direct construction is intentionally unsupported so new runtime state does
+/// not break extension code:
+///
+/// ```compile_fail
+/// use reqwest::Client;
+/// use url::Url;
+/// use venom_scanner::ScanContext;
+///
+/// let (telemetry_tx, _telemetry_rx) = tokio::sync::mpsc::unbounded_channel();
+/// let context = ScanContext::new(
+///     Url::parse("https://example.test").unwrap(),
+///     Client::new(),
+///     telemetry_tx,
+/// );
+/// let _modified = ScanContext {
+///     phase_timeout_secs: 30,
+///     ..context
+/// };
+/// ```
 #[derive(Clone)]
+#[non_exhaustive]
 pub struct ScanContext {
+    /// Root URL whose scope is being scanned.
     pub target: Url,
+    /// Shared HTTP client used by scan phases.
     pub client: Arc<Client>,
-    // Discovered endpoints with their parameters: "https://target.com/api/users" -> ["id", "email"]
+    /// Discovered endpoints mapped to their observed parameter names.
     pub discovered_endpoints: Arc<DashMap<String, Vec<String>>>,
-    // Set of visited URLs to prevent duplicate scanning
+    /// URLs already visited by discovery phases.
     pub visited_urls: Arc<DashSet<String>>,
-    // Async telemetry channel for logging and analysis
+    /// Asynchronous telemetry channel for logging and analysis.
     pub telemetry_tx: tokio::sync::mpsc::UnboundedSender<String>,
-    // Structured logger with filtering and formatting
+    /// Structured logger shared by scan phases.
     pub logger: Arc<Logger>,
-    // Phase timeout in seconds (prevents single phase from hanging entire scan)
+    /// Maximum runtime of an individual phase, in seconds.
     pub phase_timeout_secs: u64,
-    // Cancellation token for graceful scan cancellation (CTRL+C, Dashboard cancel, cloud kill)
+    /// Token used to propagate graceful scan cancellation.
     pub cancel_token: CancellationToken,
-    // Event bus for publishing progress events (PhaseStarted, PhaseCompleted, PhaseFailed)
+    /// Event bus used to publish scan lifecycle and progress events.
     pub event_bus: Arc<EventBus>,
-    // Evidence-driven memory shared by discovery, reasoning, and execution phases
-    pub knowledge: KnowledgeBase,
+    // Evidence-driven memory shared by discovery, reasoning, and execution phases.
+    // Kept private so its construction and replacement remain runtime policy.
+    knowledge: KnowledgeBase,
 }
 
 impl ScanContext {
+    /// Creates a context with a five-minute phase timeout, a fresh cancellation
+    /// token, and a fresh event bus.
     pub fn new(
         target: Url,
         client: Client,
@@ -39,6 +87,9 @@ impl ScanContext {
         Self::with_timeout(target, client, telemetry_tx, 300) // 5 min default
     }
 
+    /// Creates a context with an explicit per-phase timeout in seconds.
+    ///
+    /// A fresh cancellation token and event bus are installed for the scan.
     pub fn with_timeout(
         target: Url,
         client: Client,
@@ -54,6 +105,9 @@ impl ScanContext {
         )
     }
 
+    /// Creates a context with explicit timeout and cancellation policy.
+    ///
+    /// A fresh event bus is installed for the scan.
     pub fn with_cancellation(
         target: Url,
         client: Client,
@@ -71,6 +125,10 @@ impl ScanContext {
         )
     }
 
+    /// Creates a context with all externally configurable runtime services.
+    ///
+    /// Discovery collections, the logger, and the knowledge base always start
+    /// empty. The supplied HTTP client is promoted into shared ownership.
     pub fn with_event_bus(
         target: Url,
         client: Client,
@@ -93,24 +151,41 @@ impl ScanContext {
         }
     }
 
+    /// Sends a plain-text message to the telemetry channel.
+    ///
+    /// Messages are dropped when the receiving side has closed.
     pub fn log(&self, msg: String) {
         let _ = self.telemetry_tx.send(msg);
     }
 
+    /// Records a discovered endpoint and its observed parameter names.
+    ///
+    /// Recording the same URL again replaces its prior parameter list.
     pub fn add_endpoint(&self, url: String, params: Vec<String>) {
         self.discovered_endpoints.insert(url, params);
     }
 
+    /// Marks a URL as visited for duplicate-scan prevention.
     pub fn mark_visited(&self, url: String) {
         self.visited_urls.insert(url);
     }
 
+    /// Returns whether a URL has already been marked as visited.
     pub fn is_visited(&self, url: &str) -> bool {
         self.visited_urls.contains(url)
     }
 
+    /// Returns the number of distinct discovered endpoint URLs.
     pub fn endpoint_count(&self) -> usize {
         self.discovered_endpoints.len()
+    }
+
+    /// Returns the evidence-driven knowledge base shared by this scan.
+    ///
+    /// The context retains ownership so the runtime can preserve one knowledge
+    /// identity across phases and cloned contexts.
+    pub fn knowledge(&self) -> &KnowledgeBase {
+        &self.knowledge
     }
 }
 
@@ -126,7 +201,7 @@ mod tests {
 
         let ctx = ScanContext::new(url, client, tx);
         assert_eq!(ctx.endpoint_count(), 0);
-        assert_eq!(ctx.knowledge.stats().evidence, 0);
+        assert_eq!(ctx.knowledge().stats().evidence, 0);
     }
 
     #[tokio::test]

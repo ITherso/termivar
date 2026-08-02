@@ -14,6 +14,7 @@ nav:
       - Runner: runner.md
       - Scanner: scanner.md
       - Scanner SDK: sdk.md
+      - ScanContext migration: migrations/scan-context-construction.md
       - Plugins: plugin.md
       - Plugin API policy: plugin-api-policy.md
       - Lua: lua.md
@@ -63,6 +64,7 @@ nav:
       - ADR 0004 - Reasoning/runtime boundary: adr/0004-reasoning-runtime-boundary.md
       - ADR 0005 - Shared predicate vocabulary: adr/0005-shared-predicate-vocabulary.md
       - ADR 0006 - API visibility ingestion: adr/0006-api-visibility-ingestion.md
+      - ADR 0007 - ScanContext construction: adr/0007-scan-context-construction-boundary.md
       - Release process: RELEASE.md
 markdown_extensions:
   - admonition

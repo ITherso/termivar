@@ -38,9 +38,17 @@ The command requires exactly `cargo-semver-checks 0.50.0` and checks only
 [Repository health](repository-health.md#public-api-compatibility-scope) for
 the current scope and the documented scanner exception.
 
-Before publishing the current scanner shape, the release must treat
-`ScanContext::knowledge` as an incompatible pre-v1 transition, include an
-upgrade note for struct-literal users, and establish the next scanner baseline.
+Before publishing the current scanner shape:
+
+1. select a new pre-1.0 minor Preview version;
+2. list the `ScanContext` construction transition under Upgrade notes and link
+   the [migration guide](migrations/scan-context-construction.md);
+3. create the release and annotated tag only after every release check passes;
+4. resolve that tag to its immutable peeled commit; and
+5. add the blocking `venom-scanner` baseline in a later change.
+
+Do not baseline the scanner against mutable `main` or describe the current
+transition as patch-compatible with `v0.9.0-alpha`.
 
 ## Release notes template
 

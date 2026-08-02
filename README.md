@@ -172,7 +172,7 @@ The template implements `Plugin`, registers it in a test, and tracks Venom `main
 - Move dashboard, distributed orchestration, and compliance into an optional product layer.
 - Publish browsable Criterion history and controlled performance baselines.
 - Expand fuzz corpora and publish triage guidance for reproducible crashes.
-- Establish an automated SemVer baseline after the first published release.
+- Establish a blocking `venom-scanner` baseline from the next post-migration Preview release.
 - Validate the 10-minute SDK and plugin path with external adopters and contributors.
 - Continue hardening contribution rules, mutation testing, and independent security review.
 
