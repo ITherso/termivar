@@ -17,11 +17,9 @@ fn test_sqli_basic_patterns() {
     ];
 
     for (text, should_match) in patterns {
-        let is_sqli = text.contains("'")
-            && (text.contains("OR")
-                || text.contains("UNION")
-                || text.contains("DROP")
-                || text.contains("--"));
+        let is_sqli = (text.contains('\'')
+            && (text.contains("OR") || text.contains("DROP") || text.contains("--")))
+            || text.contains("UNION SELECT");
         assert_eq!(
             is_sqli, should_match,
             "unexpected classification for {text}"
