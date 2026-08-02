@@ -74,6 +74,97 @@ comparator/toolchain contract, but are not promised as permanent cross-version
 wire hashes. Hosts that persist signatures for replay must pin dependencies and
 record the Venom comparator version.
 
+## Profiled comparator v2
+
+The additive profiled API leaves `ApiVisibilityLimits`, `ApiVisibilityView`,
+`ApiVisibilityComparison`, `capture_view`, and `compare` unchanged. This is
+deliberate: the legacy comparison keeps its exact nine-field wire shape and its
+existing evidence identity.
+
+`capture_profiled_view` and `compare_profiled` add an explicit
+`ApiComparisonProfile` and return `ProfiledApiVisibilityComparison`. The
+profiled envelope persists:
+
+- the comparator and canonicalization versions;
+- a content-derived projection-policy ID;
+- the validated resource limits;
+- the nested legacy comparison;
+- a globally bounded, raw-value-free `RedactedVisibilityDiff`.
+
+Profiles support selected subtrees, ignored subtrees, and explicitly unordered
+arrays. Paths use RFC 6901 escaping. A segment equal to `*` is Venom's bounded
+wildcard extension, primarily for structural array paths such as
+`/data/edges/*/node/id`. Empty selection means the complete document. Ignore
+rules take precedence, and construction rejects a selected path already hidden
+by an ignored ancestor. Input order and duplicates do not change the policy ID.
+
+```rust
+use serde_json::json;
+use venom_core::{
+    ApiSurfaceKind, ApiVisibilityDimension, ApiVisibilityPairKind,
+};
+use venom_scanner::{
+    ApiComparisonProfile, ApiVisibilityComparator, JsonPathPattern,
+};
+
+let profile = ApiComparisonProfile::new(
+    vec![JsonPathPattern::new("/data")?],
+    vec![JsonPathPattern::new("/data/request_id")?],
+    vec![JsonPathPattern::new("/data/items")?],
+    64,
+)?;
+let comparator = ApiVisibilityComparator::default();
+let baseline = comparator.capture_profiled_view(
+    &profile,
+    "anonymous-view",
+    "resource:account-42",
+    ApiSurfaceKind::JsonHttp,
+    200,
+    &json!({"data":{"request_id":"a","items":[{"id":1}]}}),
+)?;
+let candidate = comparator.capture_profiled_view(
+    &profile,
+    "member-view",
+    "resource:account-42",
+    ApiSurfaceKind::JsonHttp,
+    200,
+    &json!({"data":{"request_id":"b","items":[{"id":1},{"id":2}]}}),
+)?;
+let report = comparator.compare_profiled(
+    &profile,
+    "comparison-18",
+    ApiVisibilityPairKind::AuthorizationContext,
+    ApiVisibilityDimension::Fields,
+    &baseline,
+    &candidate,
+    1_800_000_000_000,
+)?;
+
+assert_eq!(report.projection_policy_id(), profile.projection_policy_id());
+assert!(!report.diff().added_path_hashes().is_empty());
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+Every captured snapshot is first checked against the complete legacy resource
+envelope. Selected or ignored paths therefore cannot conceal excessive input.
+The profiled pass builds domain-separated tree hashes and a compact index of
+path digests, type masks, and scalar-value digests. It retains neither clear
+observed paths nor scalar values. Added, removed, changed-type, and
+changed-value paths share one deterministic `max_diff_paths` quota;
+`omitted_diff_count` records the exact remainder.
+
+Path digests are pseudonymous, not confidential. Common field names can be
+guessed by dictionary attack. A host may hash a reviewed allowlist with
+`PathDigest::for_pattern` to resolve selected explanations, but must not treat
+the digest as encryption or log serialized profiles containing sensitive
+selector names.
+
+Comparison checks version, canonicalization, projection policy, limits,
+contexts, resource scope, and surface before emitting a result. Its nested
+comparison ID is also bound to the version and policy metadata. Deserialization
+rejects an envelope whose nested identity does not match that metadata, so a
+persisted report cannot silently downgrade to a differently projected replay.
+
 ```rust
 use serde_json::json;
 use venom_core::{

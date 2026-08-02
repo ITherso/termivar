@@ -5,6 +5,8 @@
 //! authorized host establishes that two views describe the same logical
 //! resource before it constructs an [`ApiVisibilityObservation`].
 
+use std::fmt;
+
 use serde::{Deserialize, Deserializer, Serialize};
 use thiserror::Error;
 use venom_core::{
@@ -17,7 +19,7 @@ use crate::{
     knowledge::{
         KnowledgeBase, KnowledgeBaseError, KnowledgeWrite, MAX_KNOWLEDGE_RELATION_ID_BYTES,
     },
-    rules::{RuleApplication, RuleEngine, RuleEngineError},
+    rules::{hypothesis_id_for_rule, RuleApplication, RuleEngine, RuleEngineError},
 };
 
 const API_VISIBILITY_RELATION: &str = "api.visibility.resource-scope";
@@ -44,7 +46,7 @@ pub const MAX_API_VISIBILITY_REVIEW_RATIONALE_BYTES: usize = 1_024;
 /// application happens afterwards and is deliberately not part of that write
 /// transaction. This receipt does not imply that the in-memory knowledge base
 /// has been persisted by its host.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Clone, PartialEq, Eq, Serialize)]
 pub struct ApiObservationCommitReceipt {
     comparison_subject: EntityId,
     resource_scope: EntityId,
@@ -52,6 +54,20 @@ pub struct ApiObservationCommitReceipt {
     relation_id: RelationId,
     evidence_write: KnowledgeWrite,
     relation_write: KnowledgeWrite,
+}
+
+impl fmt::Debug for ApiObservationCommitReceipt {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ApiObservationCommitReceipt")
+            .field("comparison_subject", &"<redacted>")
+            .field("resource_scope", &"<redacted>")
+            .field("evidence_id", &"<redacted>")
+            .field("relation_id", &"<redacted>")
+            .field("evidence_write", &self.evidence_write)
+            .field("relation_write", &self.relation_write)
+            .finish()
+    }
 }
 
 impl ApiObservationCommitReceipt {
@@ -87,10 +103,20 @@ impl ApiObservationCommitReceipt {
 }
 
 /// Complete successful observation and reasoning receipt.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Clone, PartialEq, Eq, Serialize)]
 pub struct ApiObservationReceipt {
     commit: ApiObservationCommitReceipt,
     applications: Vec<RuleApplication>,
+}
+
+impl fmt::Debug for ApiObservationReceipt {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ApiObservationReceipt")
+            .field("commit", &self.commit)
+            .field("application_count", &self.applications.len())
+            .finish()
+    }
 }
 
 impl ApiObservationReceipt {
@@ -117,13 +143,11 @@ impl ApiObservationReceipt {
 }
 
 /// Failure while accepting or reasoning over an API visibility observation.
-#[derive(Debug, Error)]
+#[derive(Error)]
 #[non_exhaustive]
 pub enum ApiObservationError {
     /// The observation described a resource outside the host-selected scope.
-    #[error(
-        "API visibility observation resource {actual} does not match expected resource {expected}"
-    )]
+    #[error("API visibility observation resource does not match expected resource")]
     ResourceMismatch {
         /// Resource authorized by the caller.
         expected: EntityId,
@@ -177,6 +201,45 @@ pub enum ApiObservationError {
         #[source]
         source: RuleEngineError,
     },
+}
+
+impl fmt::Debug for ApiObservationError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::ResourceMismatch { .. } => formatter
+                .debug_struct("ResourceMismatch")
+                .field("expected", &"<redacted>")
+                .field("actual", &"<redacted>")
+                .finish(),
+            Self::ZeroReviewScanLimit => formatter.write_str("ZeroReviewScanLimit"),
+            Self::ReviewScanLimitExceeded { actual, maximum } => formatter
+                .debug_struct("ReviewScanLimitExceeded")
+                .field("actual", actual)
+                .field("maximum", maximum)
+                .finish(),
+            Self::ReviewCursorTooLong { actual, maximum } => formatter
+                .debug_struct("ReviewCursorTooLong")
+                .field("actual", actual)
+                .field("maximum", maximum)
+                .finish(),
+            Self::ObservationLimitExceeded {
+                field,
+                actual,
+                maximum,
+            } => formatter
+                .debug_struct("ObservationLimitExceeded")
+                .field("field", field)
+                .field("actual", actual)
+                .field("maximum", maximum)
+                .finish(),
+            Self::Knowledge(source) => formatter.debug_tuple("Knowledge").field(source).finish(),
+            Self::ReasoningAfterCommit { commit, source } => formatter
+                .debug_struct("ReasoningAfterCommit")
+                .field("commit", commit)
+                .field("source", source)
+                .finish(),
+        }
+    }
 }
 
 impl ApiObservationError {
@@ -331,8 +394,8 @@ pub struct ApiVisibilityReviewQuery {
     scan_limit: u16,
 }
 
-impl std::fmt::Debug for ApiVisibilityReviewQuery {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Debug for ApiVisibilityReviewQuery {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("ApiVisibilityReviewQuery")
             .field(
@@ -432,13 +495,26 @@ impl<'de> Deserialize<'de> for ApiVisibilityReviewQuery {
 /// and semantic fields, but does not attest which rule installation produced
 /// the record. Surface and response-format hypotheses are intentionally
 /// excluded from this resource-scoped read model.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Clone, PartialEq, Eq, Serialize)]
 pub struct ApiVisibilityReview {
     resource_scope: EntityId,
     comparison_subject: EntityId,
     relation_id: RelationId,
     evidence: Evidence,
     boundary_hypotheses: Vec<Hypothesis>,
+}
+
+impl fmt::Debug for ApiVisibilityReview {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ApiVisibilityReview")
+            .field("resource_scope", &"<redacted>")
+            .field("comparison_subject", &"<redacted>")
+            .field("relation_id", &"<redacted>")
+            .field("evidence", &"<redacted>")
+            .field("boundary_hypothesis_count", &self.boundary_hypotheses.len())
+            .finish()
+    }
 }
 
 impl ApiVisibilityReview {
@@ -477,11 +553,11 @@ pub struct ApiVisibilityReviewPage {
     next_after_relation_id: Option<RelationId>,
 }
 
-impl std::fmt::Debug for ApiVisibilityReviewPage {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Debug for ApiVisibilityReviewPage {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("ApiVisibilityReviewPage")
-            .field("resource_scope", &self.resource_scope)
+            .field("resource_scope", &"<redacted>")
             .field("reviews", &self.reviews)
             .field("scanned_relations", &self.scanned_relations)
             .field(
@@ -689,7 +765,7 @@ fn canonical_boundary_hypothesis(
     evidence: &Evidence,
 ) -> Option<Hypothesis> {
     let (_, rule_id) = expected_boundary_rule(evidence)?;
-    let hypothesis_id = format!("rule:{}:{}:{}", rule_id.len(), rule_id, evidence.subject());
+    let hypothesis_id = hypothesis_id_for_rule(rule_id, evidence.subject());
     knowledge
         .inspect_hypothesis(&hypothesis_id, |hypothesis| {
             (is_canonical_boundary_hypothesis(hypothesis, evidence)
@@ -722,7 +798,7 @@ fn is_canonical_boundary_hypothesis(hypothesis: &Hypothesis, evidence: &Evidence
     }
 
     hypothesis.value() == &EvidenceValue::from(boundary)
-        && hypothesis.id() == format!("rule:{}:{}:{}", rule_id.len(), rule_id, evidence.subject())
+        && hypothesis.id() == hypothesis_id_for_rule(rule_id, evidence.subject())
 }
 
 #[cfg(test)]
@@ -792,7 +868,7 @@ mod tests {
         boundary: ApiVisibilityBoundaryKind,
     ) {
         let mut hypothesis = Hypothesis::with_id(
-            format!("rule:{}:{}:{}", rule_id.len(), rule_id, evidence.subject()),
+            hypothesis_id_for_rule(rule_id, evidence.subject()),
             evidence.subject().clone(),
             ApiKnowledgePredicate::VISIBILITY_BOUNDARY.into_knowledge(),
             EvidenceValue::from(boundary),
@@ -983,6 +1059,53 @@ mod tests {
     }
 
     #[test]
+    fn observation_and_review_debug_output_redacts_opaque_identifiers() {
+        let (knowledge, rules) = installed();
+        let receipt = ingest_api_visibility_observation(
+            comparison(
+                "debug-redaction",
+                ApiVisibilityResult::Different,
+                ApiVisibilityPairKind::UiApi,
+            ),
+            &resource(),
+            &knowledge,
+            &rules,
+        )
+        .unwrap();
+        let receipt_debug = format!("{receipt:?}");
+        for opaque in [
+            receipt.commit().comparison_subject().as_str(),
+            receipt.commit().resource_scope().as_str(),
+            receipt.commit().evidence_id().as_str(),
+            receipt.commit().relation_id().as_str(),
+        ] {
+            assert!(!receipt_debug.contains(opaque));
+        }
+        assert!(receipt_debug.contains("application_count"));
+        assert!(receipt_debug.contains("<redacted>"));
+
+        let page = api_visibility_reviews_for_resource(
+            &knowledge,
+            &resource(),
+            &ApiVisibilityReviewQuery::default(),
+        );
+        let review = &page.reviews()[0];
+        let review_debug = format!("{review:?}");
+        let page_debug = format!("{page:?}");
+        for debug in [&review_debug, &page_debug] {
+            for opaque in [
+                review.resource_scope().as_str(),
+                review.comparison_subject().as_str(),
+                review.relation_id().as_str(),
+                review.evidence().id().as_str(),
+            ] {
+                assert!(!debug.contains(opaque));
+            }
+            assert!(debug.contains("<redacted>"));
+        }
+    }
+
+    #[test]
     fn resource_mismatch_fails_before_any_write() {
         let (knowledge, rules) = installed();
         let expected = EntityId::new("resource:another-account").unwrap();
@@ -1002,6 +1125,17 @@ mod tests {
             &error,
             ApiObservationError::ResourceMismatch { .. }
         ));
+        let display = error.to_string();
+        let debug = format!("{error:?}");
+        for opaque in [expected.as_str(), "resource:account-42"] {
+            assert!(!display.contains(opaque));
+            assert!(!debug.contains(opaque));
+        }
+        assert_eq!(
+            display,
+            "API visibility observation resource does not match expected resource"
+        );
+        assert!(debug.contains("<redacted>"));
         assert!(error.committed_observation().is_none());
         let stats = knowledge.stats();
         assert_eq!(stats.evidence, 0);
@@ -1179,12 +1313,7 @@ mod tests {
         .unwrap();
         let evidence = knowledge.evidence(receipt.commit().evidence_id()).unwrap();
         let mut hypothesis = Hypothesis::with_id(
-            format!(
-                "rule:{}:{}:{}",
-                UI_API_BOUNDARY_RULE.len(),
-                UI_API_BOUNDARY_RULE,
-                evidence.subject()
-            ),
+            hypothesis_id_for_rule(UI_API_BOUNDARY_RULE, evidence.subject()),
             evidence.subject().clone(),
             ApiKnowledgePredicate::VISIBILITY_BOUNDARY.into_knowledge(),
             EvidenceValue::from(ApiVisibilityBoundaryKind::UiApi),

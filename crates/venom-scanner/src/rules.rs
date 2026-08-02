@@ -10,7 +10,7 @@ use std::num::NonZeroU32;
 use serde::{Deserialize, Deserializer, Serialize};
 use thiserror::Error;
 use venom_core::{
-    BayesianEvidence, ConceptId, EvidenceId, EvidenceValue, Hypothesis, HypothesisState,
+    BayesianEvidence, ConceptId, EntityId, EvidenceId, EvidenceValue, Hypothesis, HypothesisState,
     HypothesisStrength, KnowledgePredicate, OntologyError, Probability, ReasoningModelError,
     RelationTypeId,
 };
@@ -19,6 +19,14 @@ use crate::knowledge::{KnowledgeBase, KnowledgeBaseError, KnowledgeSnapshot, Kno
 
 const MAX_STALE_SNAPSHOT_RETRIES: u8 = 3;
 const MAX_REASONING_APPLY_ATTEMPTS: u8 = MAX_STALE_SNAPSHOT_RETRIES + 1;
+
+/// Returns the stable identity materialized by a rule for one knowledge subject.
+///
+/// Keeping this legacy format in one place ensures projections can locate the
+/// canonical hypothesis without depending on a private `RuleEngine` detail.
+pub(crate) fn hypothesis_id_for_rule(rule_id: &str, subject: &EntityId) -> String {
+    format!("rule:{}:{rule_id}:{subject}", rule_id.len())
+}
 
 /// Errors raised while validating or evaluating deterministic rules.
 #[derive(Debug, Error)]
@@ -1259,7 +1267,7 @@ fn materialize_hypothesis(
         });
     }
 
-    let stable_id = format!("rule:{}:{}:{}", rule.id.len(), rule.id, snapshot.subject());
+    let stable_id = hypothesis_id_for_rule(&rule.id, snapshot.subject());
     let mut hypothesis = Hypothesis::with_id(
         stable_id,
         snapshot.subject().clone(),
@@ -1540,6 +1548,20 @@ mod tests {
     }
 
     #[test]
+    fn hypothesis_id_helper_preserves_legacy_format() {
+        let subject = subject();
+
+        assert_eq!(
+            hypothesis_id_for_rule("framework.laravel", &subject),
+            "rule:17:framework.laravel:endpoint:https://example.test"
+        );
+        assert_eq!(
+            hypothesis_id_for_rule("rüle", &subject),
+            "rule:5:rüle:endpoint:https://example.test"
+        );
+    }
+
+    #[test]
     fn rule_engine_materializes_stable_bayesian_hypothesis() {
         let knowledge = KnowledgeBase::new();
         knowledge
@@ -1569,6 +1591,10 @@ mod tests {
         assert!(hypothesis.posterior() > Probability::from_percent(50).unwrap());
         assert!(serde_json::to_value(&first[0]).is_ok());
         let stable_id = hypothesis.id().to_owned();
+        assert_eq!(
+            stable_id,
+            hypothesis_id_for_rule("framework.laravel", &subject())
+        );
 
         let second = engine.apply(&knowledge, &subject()).unwrap();
         assert_eq!(second[0].write(), Some(KnowledgeWrite::Unchanged));

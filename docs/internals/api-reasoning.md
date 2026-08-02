@@ -62,18 +62,24 @@ authorization-context-visibility-boundary
 | `api.visibility.ui-api.paired-difference` | Atomic JSON or GraphQL UI/API difference | `api.visibility.boundary = ui-api-visibility-boundary` | Weak |
 | `api.visibility.authorization-context.paired-difference` | Atomic JSON or GraphQL authorization-context difference | `api.visibility.boundary = authorization-context-visibility-boundary` | Weak |
 
-Rule conditions and Bayesian calibrations use the shared typed descriptors.
+Rule conditions and Bayesian policy likelihoods use the shared typed
+descriptors. The fixed values are deterministic reasoning weights, not
+empirically calibrated real-world probabilities. Treat the resulting posterior
+as a reproducible ranking signal until a labelled fixture corpus publishes
+calibration metrics such as Brier score, reliability buckets, precision, and
+recall.
+
 The expression trace retains every candidate evidence ID that matched the
-condition. Each API calibration explicitly selects at most one deterministic
-Bayesian contribution (`MaxContributions(1)`), preferring reliability, then
-observation time, then stable evidence ID. The selected ID appears in the
-resulting belief trail, so both the candidate set and posterior input remain
-explainable and replayable. Other profiles keep the default `Independent`
-aggregation semantics unless they opt into a bound themselves.
+condition. Each API rule explicitly selects at most one deterministic Bayesian
+contribution (`MaxContributions(1)`), preferring reliability, then observation
+time, then stable evidence ID. The selected ID appears in the resulting belief
+trail, so both the candidate set and posterior input remain explainable and
+replayable. Other profiles keep the default `Independent` aggregation semantics
+unless they opt into a bound themselves.
 
 Persisted rule definitions that contain bounded aggregation must be loaded only
 by an engine version that understands that field. The current reader rejects
-unknown or misspelled calibration fields, while a pre-aggregation binary cannot
+unknown or misspelled likelihood fields, while a pre-aggregation binary cannot
 retroactively enforce that guarantee. Deployments therefore version rule
 payloads and reasoning-engine binaries together rather than downgrading a
 bounded profile into an older reader.

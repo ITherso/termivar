@@ -6,7 +6,10 @@
 
 use serde::{Deserialize, Deserializer, Serialize};
 use sha2::{Digest, Sha256};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::{
+    fmt,
+    time::{SystemTime, UNIX_EPOCH},
+};
 use thiserror::Error;
 
 use crate::{
@@ -540,6 +543,164 @@ pub enum ApiVocabularyError {
     ZeroReliability,
 }
 
+/// Validated, bounded identifier for one host-owned API comparison.
+///
+/// The value remains serializable for compatibility with the established API
+/// visibility wire contract, but its [`std::fmt::Debug`] representation is always
+/// redacted. It must be an opaque, non-secret handle.
+#[repr(transparent)]
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
+#[serde(transparent)]
+pub struct ComparisonId(String);
+
+impl ComparisonId {
+    /// Validates and constructs an opaque comparison identifier.
+    pub fn new(value: impl Into<String>) -> Result<Self, ApiVocabularyError> {
+        opaque_context(value, "comparison id").map(Self)
+    }
+
+    /// Returns the validated string value.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    /// Consumes the identifier and returns its string value.
+    pub fn into_string(self) -> String {
+        self.0
+    }
+}
+
+impl fmt::Debug for ComparisonId {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_tuple("ComparisonId")
+            .field(&"<redacted>")
+            .finish()
+    }
+}
+
+impl AsRef<str> for ComparisonId {
+    fn as_ref(&self) -> &str {
+        self.as_str()
+    }
+}
+
+impl<'de> Deserialize<'de> for ComparisonId {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Self::new(String::deserialize(deserializer)?).map_err(serde::de::Error::custom)
+    }
+}
+
+/// Validated, bounded identifier for one API observation context.
+///
+/// Context identifiers are deliberately opaque. Serialization preserves the
+/// established string wire shape, while [`std::fmt::Debug`] never exposes the value.
+#[repr(transparent)]
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
+#[serde(transparent)]
+pub struct OpaqueContextId(String);
+
+impl OpaqueContextId {
+    /// Validates and constructs an opaque context identifier.
+    pub fn new(value: impl Into<String>) -> Result<Self, ApiVocabularyError> {
+        Self::new_for_field(value, "context id")
+    }
+
+    fn new_for_field(
+        value: impl Into<String>,
+        field: &'static str,
+    ) -> Result<Self, ApiVocabularyError> {
+        opaque_context(value, field).map(Self)
+    }
+
+    /// Returns the validated string value.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    /// Consumes the identifier and returns its string value.
+    pub fn into_string(self) -> String {
+        self.0
+    }
+}
+
+impl fmt::Debug for OpaqueContextId {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_tuple("OpaqueContextId")
+            .field(&"<redacted>")
+            .finish()
+    }
+}
+
+impl AsRef<str> for OpaqueContextId {
+    fn as_ref(&self) -> &str {
+        self.as_str()
+    }
+}
+
+impl<'de> Deserialize<'de> for OpaqueContextId {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Self::new(String::deserialize(deserializer)?).map_err(serde::de::Error::custom)
+    }
+}
+
+/// Validated, bounded identifier for a host-declared logical resource.
+///
+/// The identifier is serialized as its original string for wire compatibility
+/// and redacted from [`std::fmt::Debug`] output to reduce accidental resource disclosure.
+#[repr(transparent)]
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
+#[serde(transparent)]
+pub struct ResourceScopeId(String);
+
+impl ResourceScopeId {
+    /// Validates and constructs an opaque resource-scope identifier.
+    pub fn new(value: impl Into<String>) -> Result<Self, ApiVocabularyError> {
+        opaque_context(value, "resource scope id").map(Self)
+    }
+
+    /// Returns the validated string value.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    /// Consumes the identifier and returns its string value.
+    pub fn into_string(self) -> String {
+        self.0
+    }
+}
+
+impl fmt::Debug for ResourceScopeId {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_tuple("ResourceScopeId")
+            .field(&"<redacted>")
+            .finish()
+    }
+}
+
+impl AsRef<str> for ResourceScopeId {
+    fn as_ref(&self) -> &str {
+        self.as_str()
+    }
+}
+
+impl<'de> Deserialize<'de> for ResourceScopeId {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Self::new(String::deserialize(deserializer)?).map_err(serde::de::Error::custom)
+    }
+}
+
 /// One atomic API comparison observation plus its resource-scope graph edge.
 ///
 /// The evidence remains scoped to a pseudonymous comparison subject so rule
@@ -610,17 +771,34 @@ impl ApiVisibilityObservation {
 /// assert_eq!(observation.scope_relation().to(), observation.resource_scope());
 /// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Clone, PartialEq, Eq, Serialize)]
 pub struct ApiVisibilityComparison {
-    comparison_id: String,
+    comparison_id: ComparisonId,
     surface: ApiSurfaceKind,
     pair: ApiVisibilityPairKind,
     result: ApiVisibilityResult,
     dimension: ApiVisibilityDimension,
-    baseline_context_id: String,
-    candidate_context_id: String,
-    resource_scope_id: String,
+    baseline_context_id: OpaqueContextId,
+    candidate_context_id: OpaqueContextId,
+    resource_scope_id: ResourceScopeId,
     observed_at_ms: u64,
+}
+
+impl fmt::Debug for ApiVisibilityComparison {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ApiVisibilityComparison")
+            .field("comparison_id", &"<redacted>")
+            .field("surface", &self.surface)
+            .field("pair", &self.pair)
+            .field("result", &self.result)
+            .field("dimension", &self.dimension)
+            .field("baseline_context_id", &"<redacted>")
+            .field("candidate_context_id", &"<redacted>")
+            .field("resource_scope_id", &"<redacted>")
+            .field("observed_at_ms", &self.observed_at_ms)
+            .finish()
+    }
 }
 
 impl ApiVisibilityComparison {
@@ -636,27 +814,78 @@ impl ApiVisibilityComparison {
         candidate_context_id: impl Into<String>,
         resource_scope_id: impl Into<String>,
     ) -> Result<Self, ApiVocabularyError> {
-        let baseline_context_id = opaque_context(baseline_context_id, "baseline context id")?;
-        let candidate_context_id = opaque_context(candidate_context_id, "candidate context id")?;
-        if baseline_context_id == candidate_context_id {
-            return Err(ApiVocabularyError::IdenticalContexts);
-        }
-        Ok(Self {
-            comparison_id: opaque_context(comparison_id, "comparison id")?,
+        let comparison_id = ComparisonId::new(comparison_id)?;
+        let baseline_context_id =
+            OpaqueContextId::new_for_field(baseline_context_id, "baseline context id")?;
+        let candidate_context_id =
+            OpaqueContextId::new_for_field(candidate_context_id, "candidate context id")?;
+        let resource_scope_id = ResourceScopeId::new(resource_scope_id)?;
+        Self::new_typed(
+            comparison_id,
             surface,
             pair,
             result,
             dimension,
             baseline_context_id,
             candidate_context_id,
-            resource_scope_id: opaque_context(resource_scope_id, "resource scope id")?,
+            resource_scope_id,
+        )
+    }
+
+    /// Creates one already-validated paired observation from typed identifiers.
+    ///
+    /// The baseline and candidate remain checked here because individually
+    /// valid context identifiers must still represent distinct views.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_typed(
+        comparison_id: ComparisonId,
+        surface: ApiSurfaceKind,
+        pair: ApiVisibilityPairKind,
+        result: ApiVisibilityResult,
+        dimension: ApiVisibilityDimension,
+        baseline_context_id: OpaqueContextId,
+        candidate_context_id: OpaqueContextId,
+        resource_scope_id: ResourceScopeId,
+    ) -> Result<Self, ApiVocabularyError> {
+        if baseline_context_id == candidate_context_id {
+            return Err(ApiVocabularyError::IdenticalContexts);
+        }
+        Ok(Self {
+            comparison_id,
+            surface,
+            pair,
+            result,
+            dimension,
+            baseline_context_id,
+            candidate_context_id,
+            resource_scope_id,
             observed_at_ms: unix_time_ms(),
         })
     }
 
     /// Returns the opaque host comparison identifier.
     pub fn comparison_id(&self) -> &str {
+        self.comparison_id.as_str()
+    }
+
+    /// Returns the typed opaque host comparison identifier.
+    pub const fn typed_comparison_id(&self) -> &ComparisonId {
         &self.comparison_id
+    }
+
+    /// Returns the typed opaque baseline context identifier.
+    pub const fn baseline_context_id(&self) -> &OpaqueContextId {
+        &self.baseline_context_id
+    }
+
+    /// Returns the typed opaque candidate context identifier.
+    pub const fn candidate_context_id(&self) -> &OpaqueContextId {
+        &self.candidate_context_id
+    }
+
+    /// Returns the typed opaque resource-scope identifier.
+    pub const fn resource_scope_id(&self) -> &ResourceScopeId {
+        &self.resource_scope_id
     }
 
     /// Returns the API surface that was compared.
@@ -700,7 +929,7 @@ impl ApiVisibilityComparison {
 
     /// Returns the opaque resource entity that the host compared.
     pub fn resource_scope(&self) -> EntityId {
-        EntityId::new(self.resource_scope_id.clone())
+        EntityId::new(self.resource_scope_id.as_str().to_owned())
             .expect("validated opaque resource scope is a valid entity id")
     }
 
@@ -976,6 +1205,115 @@ mod tests {
             comparison("member").subject(),
             comparison("admin").subject()
         );
+    }
+
+    #[test]
+    fn typed_comparison_identifiers_preserve_legacy_wire_and_identity() {
+        let typed = ApiVisibilityComparison::new_typed(
+            ComparisonId::new("comparison-7").unwrap(),
+            ApiSurfaceKind::GraphQl,
+            ApiVisibilityPairKind::AuthorizationContext,
+            ApiVisibilityResult::Different,
+            ApiVisibilityDimension::Fields,
+            OpaqueContextId::new("anonymous").unwrap(),
+            OpaqueContextId::new("member").unwrap(),
+            ResourceScopeId::new("resource-42").unwrap(),
+        )
+        .unwrap()
+        .with_observed_at_ms(1_234);
+        let legacy = comparison("member").with_observed_at_ms(1_234);
+
+        assert_eq!(typed, legacy);
+        assert_eq!(typed.comparison_id(), "comparison-7");
+        assert_eq!(typed.typed_comparison_id().as_str(), "comparison-7");
+        assert_eq!(typed.baseline_context_id().as_str(), "anonymous");
+        assert_eq!(typed.candidate_context_id().as_str(), "member");
+        assert_eq!(typed.resource_scope_id().as_str(), "resource-42");
+        assert_eq!(
+            typed.subject().as_str(),
+            "api-comparison:2c9736b8ec3f7a945eba1822c36e9bd033ff45b24421ec387859e977b6d434b2"
+        );
+        assert_eq!(
+            serde_json::to_value(&typed).unwrap(),
+            serde_json::json!({
+                "comparison_id": "comparison-7",
+                "surface": "graphql",
+                "pair": "authorization-context",
+                "result": "different",
+                "dimension": "fields",
+                "baseline_context_id": "anonymous",
+                "candidate_context_id": "member",
+                "resource_scope_id": "resource-42",
+                "observed_at_ms": 1_234,
+            })
+        );
+    }
+
+    #[test]
+    fn opaque_identifier_round_trips_validate_and_redact_debug_output() {
+        let comparison_id = ComparisonId::new("sensitive-comparison-handle").unwrap();
+        let context_id = OpaqueContextId::new("sensitive-context-handle").unwrap();
+        let resource_id = ResourceScopeId::new("sensitive-resource-handle").unwrap();
+
+        assert_eq!(
+            serde_json::from_value::<ComparisonId>(serde_json::to_value(&comparison_id).unwrap())
+                .unwrap(),
+            comparison_id
+        );
+        assert_eq!(
+            serde_json::from_value::<OpaqueContextId>(serde_json::to_value(&context_id).unwrap())
+                .unwrap(),
+            context_id
+        );
+        assert_eq!(
+            serde_json::from_value::<ResourceScopeId>(serde_json::to_value(&resource_id).unwrap())
+                .unwrap(),
+            resource_id
+        );
+        assert!(serde_json::from_str::<OpaqueContextId>("\" \"").is_err());
+
+        let debug = format!("{comparison_id:?} {context_id:?} {resource_id:?}");
+        for secret in [
+            "sensitive-comparison-handle",
+            "sensitive-context-handle",
+            "sensitive-resource-handle",
+        ] {
+            assert!(!debug.contains(secret));
+        }
+        assert_eq!(debug.matches("<redacted>").count(), 3);
+        assert_eq!(
+            ComparisonId::new("consumed-comparison")
+                .unwrap()
+                .into_string(),
+            "consumed-comparison"
+        );
+    }
+
+    #[test]
+    fn comparison_debug_redacts_every_opaque_identifier() {
+        let comparison = ApiVisibilityComparison::new(
+            "sensitive-comparison",
+            ApiSurfaceKind::JsonHttp,
+            ApiVisibilityPairKind::AuthorizationContext,
+            ApiVisibilityResult::Different,
+            ApiVisibilityDimension::Fields,
+            "sensitive-baseline",
+            "sensitive-candidate",
+            "sensitive-resource",
+        )
+        .unwrap();
+
+        let debug = format!("{comparison:?}");
+        for secret in [
+            "sensitive-comparison",
+            "sensitive-baseline",
+            "sensitive-candidate",
+            "sensitive-resource",
+        ] {
+            assert!(!debug.contains(secret));
+        }
+        assert_eq!(debug.matches("<redacted>").count(), 4);
+        assert!(debug.contains("JsonHttp"));
     }
 
     #[test]

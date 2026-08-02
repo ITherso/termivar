@@ -9,7 +9,7 @@ HttpEvidenceExecutor
 typed Evidence -------> Standard web ontology
         |                         |
         v                         v
-Expression trace -----> Bayesian rule calibration
+Expression trace -----> Bayesian policy likelihood
                                   |
                                   v
                     Weak / Strong Hypothesis
@@ -50,7 +50,7 @@ The Sanctum conclusion deliberately remains weak because the cookie pair is comp
 
 ## Bayesian behavior
 
-Each rule declares a prior and `P(E|H)` / `P(E|not H)` calibration. The fixed-point probability implementation produces the same posterior on every platform. A hypothesis records the contributing evidence and rationale, making every planner input explainable.
+Each rule declares a prior and deterministic `P(E|H)` / `P(E|not H)` policy likelihood. These fixed weights have not yet been calibrated against a labelled field corpus, so the posterior is a reproducible ranking signal rather than a measured real-world frequency. The fixed-point implementation produces the same result on every platform. A hypothesis records the contributing evidence and rationale, making every planner input explainable.
 
 Only passive or active verifiers may move a hypothesis to `Confirmed` or `Rejected`. Re-running reasoning cannot reverse a verifier-owned state.
 

@@ -59,6 +59,16 @@ field-shape, or resource-content dimension. The comparator never owns a network
 client and retains signatures rather than response bodies. Its output remains
 the core `ApiVisibilityComparison` contract.
 
+For replayable projection and explanations, the additive profiled path accepts
+an `ApiComparisonProfile` through `capture_profiled_view` and
+`compare_profiled`. `ProfiledApiVisibilityComparison` keeps the legacy core
+comparison nested inside an envelope containing comparator/canonicalization
+versions, a content-derived projection-policy ID, the validated limits, and a
+globally bounded `RedactedVisibilityDiff`. Selected and ignored path rules can
+remove volatile fields; explicitly configured arrays can be canonicalized as
+unordered. Explanations contain only domain-separated path, type, and scalar
+value digests—never clear observed paths or raw response values.
+
 [`ingest_api_visibility_observation`](https://itherso.github.io/venom/rust/venom_scanner/api_observation/fn.ingest_api_visibility_observation.html)
 validates the caller's expected resource, atomically commits evidence plus its
 scope relation, applies installed rules to the isolated comparison subject, and
@@ -74,14 +84,21 @@ projection also checks that limit and the 1,024-byte boundary-rationale ceiling
 while records are still borrowed from the knowledge store.
 See [`ApiVisibilityReviewQuery`](https://itherso.github.io/venom/rust/venom_scanner/api_observation/struct.ApiVisibilityReviewQuery.html)
 and [`ApiVisibilityReviewPage`](https://itherso.github.io/venom/rust/venom_scanner/api_observation/struct.ApiVisibilityReviewPage.html)
-for cursor and page metadata. This cursor is resource-scoped and not a
-point-in-time snapshot under concurrent inserts.
+for cursor and page metadata. The legacy continuation is an opaque relation ID;
+the host must keep it associated with the same resource. It is neither an
+authenticated transport token nor a point-in-time snapshot under concurrent
+inserts.
 
-Every calibration in this API profile explicitly uses `MaxContributions(1)`
+Every policy likelihood in this API profile explicitly uses `MaxContributions(1)`
 (constructed with `EvidenceAggregation::max_contributions(1)`), so repeated
 matching observations do not keep increasing the posterior for the same
 selector. This is local to the API profile. The rule engine and existing
 profiles retain their default `Independent` contribution semantics.
+
+The standard profile's fixed likelihoods are deterministic policy weights,
+not empirically calibrated field probabilities. Until a labelled fixture
+corpus publishes calibration metrics, consumers should present the posterior
+as a ranking signal rather than a measured vulnerability probability.
 
 The profile does not pair independent responses, perform network I/O, attest
 producer truth, or verify a vulnerability; its visibility result is a review

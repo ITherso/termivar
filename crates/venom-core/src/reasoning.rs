@@ -247,12 +247,14 @@ impl<'de> Deserialize<'de> for ConfidenceScore {
     }
 }
 
-/// A calibrated probability represented as fixed-point parts per million.
+/// A bounded probability value represented as fixed-point parts per million.
 ///
-/// Unlike [`ConfidenceScore`], this value has a statistical meaning. Decision
-/// code uses integer arithmetic so the same prior and observations produce the
-/// same posterior on every supported platform. Floating-point conversion is
-/// provided only for display and analytics.
+/// Unlike [`ConfidenceScore`], this type can represent priors and conditional
+/// likelihoods in Bayesian updates. The type enforces range and deterministic
+/// arithmetic; it does not prove that a caller's values were empirically
+/// calibrated. Profiles using policy-selected weights must document that fact
+/// rather than presenting their posteriors as measured real-world frequencies.
+/// Floating-point conversion is provided only for display and analytics.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 #[serde(transparent)]
 pub struct Probability(u32);
@@ -898,7 +900,7 @@ pub struct BayesianBelief {
 }
 
 impl BayesianBelief {
-    /// Starts a belief at a calibrated prior.
+    /// Starts a belief at the caller-supplied prior.
     pub fn new(prior: Probability) -> Self {
         Self {
             prior,
@@ -1068,7 +1070,7 @@ pub struct Hypothesis {
 }
 
 impl Hypothesis {
-    /// Creates a weak, proposed claim at the supplied calibrated prior.
+    /// Creates a weak, proposed claim at the supplied prior.
     pub fn new(
         subject: EntityId,
         predicate: KnowledgePredicate,
@@ -1157,7 +1159,7 @@ impl Hypothesis {
         &self.belief
     }
 
-    /// Returns the calibrated prior probability.
+    /// Returns the caller- or policy-supplied prior probability.
     pub fn prior(&self) -> Probability {
         self.belief.prior()
     }

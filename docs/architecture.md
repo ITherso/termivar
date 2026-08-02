@@ -154,7 +154,7 @@ checks look-ahead on the borrowed index without cloning the next record.
 
 Bayesian contribution aggregation remains an explicit rule-level choice.
 `EvidenceCalibration::new` defaults to `Independent`, preserving the behavior
-of existing profiles. Each standard API calibration alone selects
+of existing profiles. Each standard API policy likelihood alone selects
 `MaxContributions(1)`, limiting retry-driven posterior inflation for one
 selector without changing other reasoning profiles.
 

@@ -14,6 +14,18 @@ use venom_core::{
     ApiVisibilityResult, ApiVocabularyError,
 };
 
+mod profiled;
+
+pub use profiled::{
+    ApiComparisonProfile, CanonicalizationVersion, ComparisonAlgorithmVersion, JsonPathPattern,
+    PathDigest, ProfiledApiVisibilityComparison, ProfiledApiVisibilityError,
+    ProfiledApiVisibilityView, ProjectionPolicyId, RedactedVisibilityDiff,
+    CURRENT_API_COMPARISON_ALGORITHM_VERSION, CURRENT_API_VISIBILITY_CANONICALIZATION_VERSION,
+    DEFAULT_API_VISIBILITY_DIFF_PATHS, HARD_MAX_API_COMPARISON_PATH_BYTES,
+    HARD_MAX_API_COMPARISON_PATH_DEPTH, HARD_MAX_API_COMPARISON_PROFILE_PATHS,
+    HARD_MAX_API_VISIBILITY_DIFF_PATHS,
+};
+
 const MAX_OPAQUE_HANDLE_BYTES: usize = 256;
 const RESOURCE_SIGNATURE_DOMAIN: &[u8] = b"venom.api-visibility.resource.v1\0";
 const FIELD_SIGNATURE_DOMAIN: &[u8] = b"venom.api-visibility.fields.v1\0";
@@ -174,8 +186,8 @@ impl std::fmt::Debug for ApiVisibilityView {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("ApiVisibilityView")
-            .field("context_id", &self.context_id)
-            .field("resource_scope_id", &self.resource_scope_id)
+            .field("context_id", &"<redacted>")
+            .field("resource_scope_id", &"<redacted>")
             .field("surface", &self.surface)
             .field("status", &self.status)
             .field("resource_signature", &"<redacted>")

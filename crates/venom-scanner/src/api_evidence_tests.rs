@@ -450,7 +450,7 @@ fn replay_is_stable_and_raw_json_never_enters_output_or_debug() {
     assert!(!debug.contains(secret));
     assert!(!debug.contains(&resource_signature));
     assert!(!debug.contains(&field_signature));
-    assert_eq!(debug.matches("<redacted>").count(), 2);
+    assert_eq!(debug.matches("<redacted>").count(), 4);
 
     let first = comparator
         .compare(

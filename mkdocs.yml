@@ -65,6 +65,7 @@ nav:
       - ADR 0005 - Shared predicate vocabulary: adr/0005-shared-predicate-vocabulary.md
       - ADR 0006 - API visibility ingestion: adr/0006-api-visibility-ingestion.md
       - ADR 0007 - ScanContext construction: adr/0007-scan-context-construction-boundary.md
+      - ADR 0008 - Versioned API projections: adr/0008-version-api-comparison-projections.md
       - Release process: RELEASE.md
 markdown_extensions:
   - admonition

@@ -152,10 +152,16 @@ pub use api::{
     StartScanRequest,
 };
 pub use api_evidence::{
-    ApiVisibilityComparator, ApiVisibilityEvidenceError, ApiVisibilityLimits, ApiVisibilityView,
+    ApiComparisonProfile, ApiVisibilityComparator, ApiVisibilityEvidenceError, ApiVisibilityLimits,
+    ApiVisibilityView, CanonicalizationVersion, ComparisonAlgorithmVersion, JsonPathPattern,
+    PathDigest, ProfiledApiVisibilityComparison, ProfiledApiVisibilityError,
+    ProfiledApiVisibilityView, ProjectionPolicyId, RedactedVisibilityDiff,
+    CURRENT_API_COMPARISON_ALGORITHM_VERSION, CURRENT_API_VISIBILITY_CANONICALIZATION_VERSION,
     DEFAULT_API_VISIBILITY_CANONICAL_BYTES, DEFAULT_API_VISIBILITY_DEPTH,
-    DEFAULT_API_VISIBILITY_FIELDS, DEFAULT_API_VISIBILITY_NODES,
-    HARD_MAX_API_VISIBILITY_CANONICAL_BYTES, HARD_MAX_API_VISIBILITY_DEPTH,
+    DEFAULT_API_VISIBILITY_DIFF_PATHS, DEFAULT_API_VISIBILITY_FIELDS, DEFAULT_API_VISIBILITY_NODES,
+    HARD_MAX_API_COMPARISON_PATH_BYTES, HARD_MAX_API_COMPARISON_PATH_DEPTH,
+    HARD_MAX_API_COMPARISON_PROFILE_PATHS, HARD_MAX_API_VISIBILITY_CANONICAL_BYTES,
+    HARD_MAX_API_VISIBILITY_DEPTH, HARD_MAX_API_VISIBILITY_DIFF_PATHS,
     HARD_MAX_API_VISIBILITY_FIELDS, HARD_MAX_API_VISIBILITY_NODES,
 };
 pub use api_gateway::{

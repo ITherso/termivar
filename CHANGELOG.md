@@ -36,6 +36,8 @@ All notable changes to Venom are recorded here. Releases use the categories from
 - A pinned `venom-core` public API compatibility command and dedicated CI gate against the `v0.9.0-alpha` source baseline.
 - A `ScanContext` construction ADR and migration guide for the next Scanner Preview release.
 - A virtual-workspace layout gate that rejects uncompiled Rust source at the repository root.
+- An additive API visibility comparator-v2 envelope with versioned projection profiles, volatile-path filtering, explicit unordered-array semantics, and bounded redacted path explanations.
+- Explicit documentation that standard-profile Bayesian inputs are deterministic policy likelihoods until empirical calibration metrics are published.
 
 ### Changed
 
@@ -62,6 +64,7 @@ All notable changes to Venom are recorded here. Releases use the categories from
 - Removed the uncompiled pre-workspace monolith and its obsolete completion/deployment reports; Git history remains the migration archive.
 - Made repository-size metrics count only tracked Rust files owned by workspace packages and moved warning denial from global environment overrides into explicit Clippy/release gates.
 - Replaced stale testing, observability, and code-quality claims with documentation of the currently compiled contracts and CI evidence.
+- Centralized canonical rule-hypothesis identity generation while preserving existing IDs byte-for-byte.
 
 ### Fixed
 
@@ -74,6 +77,7 @@ All notable changes to Venom are recorded here. Releases use the categories from
 - Bounded relation identifiers, endpoints, custom kinds, provenance sets, review cursors, and page cloning; redacted deterministic visibility fingerprints and cursors from `Debug` output.
 - Bounded API observation producer names and review explanations, validating borrowed records before projection clones them.
 - Made request and retained-body charges non-refundable at the transport boundary, including partial reads and executor cancellation, and preserved structured audit receipts for broker limit denials.
+- Bound profiled comparison identities to comparator, canonicalization, and projection-policy metadata; redacted legacy view handles from `Debug` output and kept raw JSON values and clear observed paths out of comparator-v2 reports.
 
 ## [0.9.0-alpha] - 2026-07-31
 
