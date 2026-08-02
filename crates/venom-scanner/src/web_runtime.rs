@@ -99,6 +99,10 @@ pub enum StandardWebDecisionRuntimeError {
         /// Durable evidence commit that exposed the telemetry violation.
         receipt: Box<DecisionEvidenceReceipt>,
     },
+
+    /// A non-execution command reached the transport-accounting boundary.
+    #[error("runtime resource accounting requires an execution command")]
+    ExecutionMetadataUnavailable,
 }
 
 impl StandardWebDecisionRuntimeError {
@@ -608,15 +612,17 @@ impl StandardWebDecisionRuntime {
             origin: DecisionActionOrigin::Bootstrap,
             delay_ms: None,
         };
-        let bootstrap_limits = match self.reserve_execution(&bootstrap_command, started_at) {
-            Ok(limits) => limits,
-            Err(limit) => {
-                if self.cancellation.is_cancelled() {
-                    return Ok(self.cancellation_report(None, turns, None, started_at));
-                }
-                return Ok(self.limit_report(None, turns, limit, started_at));
-            },
-        };
+        let (bootstrap_action_id, bootstrap_stage) = execution_metadata(&bootstrap_command)?;
+        let bootstrap_limits =
+            match self.reserve_execution(bootstrap_action_id, bootstrap_stage, started_at) {
+                Ok(limits) => limits,
+                Err(limit) => {
+                    if self.cancellation.is_cancelled() {
+                        return Ok(self.cancellation_report(None, turns, None, started_at));
+                    }
+                    return Ok(self.limit_report(None, turns, limit, started_at));
+                },
+            };
         if self.cancellation.is_cancelled() {
             return Ok(self.cancellation_report(None, turns, None, started_at));
         }
@@ -693,22 +699,19 @@ impl StandardWebDecisionRuntime {
                     if self.cancellation.is_cancelled() {
                         return Ok(self.cancellation_report(bootstrap, turns, None, started_at));
                     }
-                    let previous_stage = execution_stage(&command)
-                        .expect("execution commands always have a verification stage");
-                    let completed_action_id = execution_action_id(&command)
-                        .expect("execution commands always have an action identity")
-                        .to_owned();
-                    let limits = match self.reserve_execution(&command, started_at) {
-                        Ok(limits) => limits,
-                        Err(limit) => {
-                            if self.cancellation.is_cancelled() {
-                                return Ok(
-                                    self.cancellation_report(bootstrap, turns, None, started_at)
-                                );
-                            }
-                            return Ok(self.limit_report(bootstrap, turns, limit, started_at));
-                        },
-                    };
+                    let (action_id, previous_stage) = execution_metadata(&command)?;
+                    let completed_action_id = action_id.to_owned();
+                    let limits =
+                        match self.reserve_execution(action_id, previous_stage, started_at) {
+                            Ok(limits) => limits,
+                            Err(limit) => {
+                                if self.cancellation.is_cancelled() {
+                                    return Ok(self
+                                        .cancellation_report(bootstrap, turns, None, started_at));
+                                }
+                                return Ok(self.limit_report(bootstrap, turns, limit, started_at));
+                            },
+                        };
                     if self.cancellation.is_cancelled() {
                         return Ok(self.cancellation_report(bootstrap, turns, None, started_at));
                     }
@@ -835,14 +838,13 @@ impl StandardWebDecisionRuntime {
 
     fn reserve_execution(
         &mut self,
-        command: &DecisionLoopCommand,
+        action_id: &str,
+        stage: DecisionExecutionStage,
         started_at: tokio::time::Instant,
     ) -> Result<DecisionExecutionLimits, RuntimeLimitExceeded> {
         if let Some(limit) = self.wall_limit_if_reached(started_at) {
             return Err(limit);
         }
-        let (action_id, stage, _origin) = execution_metadata(command)
-            .expect("runtime reserves resources only for execution commands");
         self.sync_request_accounting();
         let preflight = self.request_accounting.preflight(action_id, stage)?;
         let attempts = self.usage.same_action_attempts(action_id);
@@ -1013,29 +1015,21 @@ where
 
 fn execution_metadata(
     command: &DecisionLoopCommand,
-) -> Option<(&str, DecisionExecutionStage, Option<DecisionActionOrigin>)> {
+) -> Result<(&str, DecisionExecutionStage), StandardWebDecisionRuntimeError> {
     match command {
-        DecisionLoopCommand::ExecuteAction { case, origin, .. } => Some((
-            case.action_id(),
-            DecisionExecutionStage::Passive,
-            Some(*origin),
-        )),
+        DecisionLoopCommand::ExecuteAction { case, .. } => {
+            Ok((case.action_id(), DecisionExecutionStage::Passive))
+        },
         DecisionLoopCommand::CollectActiveEvidence { case } => {
-            Some((case.action_id(), DecisionExecutionStage::Active, None))
+            Ok((case.action_id(), DecisionExecutionStage::Active))
         },
         DecisionLoopCommand::Replan
         | DecisionLoopCommand::Complete { .. }
         | DecisionLoopCommand::AwaitHumanReview { .. }
-        | DecisionLoopCommand::Halt { .. } => None,
+        | DecisionLoopCommand::Halt { .. } => {
+            Err(StandardWebDecisionRuntimeError::ExecutionMetadataUnavailable)
+        },
     }
-}
-
-fn execution_stage(command: &DecisionLoopCommand) -> Option<DecisionExecutionStage> {
-    execution_metadata(command).map(|(_, stage, _)| stage)
-}
-
-fn execution_action_id(command: &DecisionLoopCommand) -> Option<&str> {
-    execution_metadata(command).map(|(action_id, _, _)| action_id)
 }
 
 fn is_terminal(command: &DecisionLoopCommand) -> bool {

@@ -1255,3 +1255,44 @@ async fn wall_deadline_cancels_retry_delay_but_keeps_the_reserved_attempt() {
     assert_eq!(report.usage().total_action_attempts(), 3);
     assert_eq!(server.methods().await, ["GET", "HEAD"]);
 }
+
+#[test]
+fn execution_metadata_fails_closed_for_non_execution_commands() {
+    let case = VerificationCase::new(
+        "case:test:metadata",
+        EntityId::new("endpoint:https://example.test/").unwrap(),
+        "web.action.test",
+        "hypothesis:test:metadata",
+    )
+    .unwrap();
+    let execute = DecisionLoopCommand::ExecuteAction {
+        case: case.clone(),
+        executor: Some("test.executor".to_owned()),
+        origin: DecisionActionOrigin::Planned,
+        delay_ms: None,
+    };
+    let active = DecisionLoopCommand::CollectActiveEvidence { case: case.clone() };
+
+    assert_eq!(
+        execution_metadata(&execute).unwrap(),
+        (case.action_id(), DecisionExecutionStage::Passive)
+    );
+    assert_eq!(
+        execution_metadata(&active).unwrap(),
+        (case.action_id(), DecisionExecutionStage::Active)
+    );
+
+    for command in [
+        DecisionLoopCommand::Replan,
+        DecisionLoopCommand::Complete { case: case.clone() },
+        DecisionLoopCommand::AwaitHumanReview { case: case.clone() },
+        DecisionLoopCommand::Halt {
+            reason: DecisionStopReason::NoEligibleAction,
+        },
+    ] {
+        assert!(matches!(
+            execution_metadata(&command),
+            Err(StandardWebDecisionRuntimeError::ExecutionMetadataUnavailable)
+        ));
+    }
+}
