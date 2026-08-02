@@ -250,8 +250,9 @@ pub use adaptive::{
 #[cfg(feature = "scanning")]
 pub use decision_loop::{
     DecisionActionOrigin, DecisionLoop, DecisionLoopCommand, DecisionLoopConfig, DecisionLoopError,
-    DecisionLoopState, DecisionOutcomeReport, DecisionPlanningReport, DecisionSession,
-    DecisionSessionSummary, DecisionSessionTransition, DecisionStopReason,
+    DecisionLoopState, DecisionOutcomeReport, DecisionPlanningReport,
+    DecisionReasoningCommitReceipt, DecisionSession, DecisionSessionSummary,
+    DecisionSessionTransition, DecisionStopReason,
 };
 
 #[cfg(feature = "scanning")]

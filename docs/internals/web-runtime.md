@@ -107,6 +107,8 @@ Runtime request reservations are monotonic and are never rolled back. Executor e
 
 A successful outcome report exposes a runtime-only, lightweight before/after session transition summary alongside its verification, hypothesis write, and experience write. The summary is not a full session replay snapshot and is omitted from the report's existing serialized shape. Candidate experience and session state are assigned only after every fallible outcome step succeeds. This is an explicit error-atomic partial-turn boundary, not a rollback or crash-atomic transaction guarantee.
 
+Planning turns use the same candidate-session rule. Planner validation and case construction must finish before the runtime advances or halts the real session, and a final read-locked revision check rejects a plan made stale by concurrent knowledge writes. A successful planning report exposes its runtime-only before/after transition. Reasoning still commits before planning. When those rule writes changed knowledge and planning then fails, `StandardWebDecisionRuntimeError::committed_reasoning()` exposes the exact application/write statuses plus the subject/ontology revisions of the planner snapshot; the session remains unchanged. This is an explicit post-commit receipt, not rollback of immutable reasoning history or a durability claim.
+
 The hypothesis transition uses the `VerificationReport` revision token. A
 concurrent evidence, hypothesis, or ontology write makes the report stale and
 aborts the candidate experience/session commit. Same-terminal replay remains

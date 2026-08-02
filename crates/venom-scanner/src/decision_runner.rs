@@ -15,8 +15,9 @@ use venom_core::{EntityId, Evidence};
 
 use crate::{
     DecisionActionOrigin, DecisionLoop, DecisionLoopCommand, DecisionLoopError, DecisionLoopState,
-    DecisionOutcomeReport, DecisionPlanningReport, DecisionSession, ExperienceStore, KnowledgeBase,
-    KnowledgeBaseError, KnowledgeSnapshot, KnowledgeWrite, VerificationCase,
+    DecisionOutcomeReport, DecisionPlanningReport, DecisionReasoningCommitReceipt, DecisionSession,
+    ExperienceStore, KnowledgeBase, KnowledgeBaseError, KnowledgeSnapshot, KnowledgeWrite,
+    VerificationCase,
 };
 
 /// Verification stage whose evidence an executor must collect.
@@ -471,6 +472,24 @@ impl DecisionRunnerError {
     pub fn into_committed_evidence(self) -> Option<DecisionEvidenceReceipt> {
         match self {
             Self::OutcomeAfterEvidenceCommit { receipt, .. } => Some(*receipt),
+            _ => None,
+        }
+    }
+
+    /// Returns reasoning committed before a later planning failure, when applicable.
+    pub fn committed_reasoning(&self) -> Option<&DecisionReasoningCommitReceipt> {
+        match self {
+            Self::Decision(source) => source.committed_reasoning(),
+            Self::OutcomeAfterEvidenceCommit { source, .. } => source.committed_reasoning(),
+            _ => None,
+        }
+    }
+
+    /// Takes a post-reasoning planning receipt without cloning it.
+    pub fn into_committed_reasoning(self) -> Option<DecisionReasoningCommitReceipt> {
+        match self {
+            Self::Decision(source) => source.into_committed_reasoning(),
+            Self::OutcomeAfterEvidenceCommit { source, .. } => source.into_committed_reasoning(),
             _ => None,
         }
     }

@@ -1,4 +1,4 @@
-use std::{future::pending, sync::Arc, time::Duration};
+use std::{collections::BTreeSet, future::pending, sync::Arc, time::Duration};
 
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -6,18 +6,23 @@ use tokio::{
     sync::Mutex,
     task::JoinHandle,
 };
-use venom_core::{EvidenceValue, HypothesisState, OutcomeStatus};
+use venom_core::{
+    EvidenceValue, HypothesisState, OutcomeStatus, Probability, WebKnowledgePredicate,
+};
 
 use super::*;
 use crate::{
-    AdaptivePipeline, DecisionLoopState, DecisionStopReason, ExclusionReason, HttpBodyCapture,
-    StandardWebActionKind,
+    ActionCost, AdaptivePipeline, AttackAction, DecisionLoopState, DecisionStopReason,
+    ExclusionReason, Expression, HttpBodyCapture, HypothesisSelector, KnowledgeLayer,
+    RequiredStrength, StandardWebActionKind,
 };
 
 const BASIC: &[u8] = b"HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: Basic realm=\"admin\"\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
 const OK: &[u8] = b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
 const RATE_LIMITED: &[u8] = b"HTTP/1.1 429 Too Many Requests\r\nRetry-After: 1\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
 const LIVEWIRE: &[u8] = b"HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: 9\r\nConnection: close\r\n\r\nwire:id=x";
+const NGINX: &[u8] =
+    b"HTTP/1.1 200 OK\r\nServer: nginx\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
 
 enum Reply {
     Response(&'static [u8]),
@@ -208,6 +213,59 @@ async fn runtime_drives_basic_evidence_to_a_confirmed_outcome_at_exact_request_l
         runtime.analyze().await,
         Err(StandardWebDecisionRuntimeError::AlreadyStarted)
     ));
+}
+
+#[tokio::test]
+async fn runtime_exposes_reasoning_committed_before_a_planning_failure() {
+    let server = serve(vec![Reply::Response(NGINX)]).await;
+    let mut runtime = StandardWebDecisionRuntime::builder(server.target())
+        .build()
+        .unwrap();
+    runtime
+        .decision_loop
+        .planner_mut()
+        .register(
+            AttackAction::new(
+                "invalid.runtime.action",
+                "plugin.invalid",
+                Expression::exists(
+                    KnowledgeLayer::Evidence,
+                    HttpEvidencePredicate::RESPONSE_STATUS.into_knowledge(),
+                ),
+                HypothesisSelector::new(
+                    WebKnowledgePredicate::TECHNOLOGY_WEB_SERVER.into_knowledge(),
+                    EvidenceValue::Text("nginx".to_owned()),
+                    Probability::from_percent(50).unwrap(),
+                    RequiredStrength::Any,
+                ),
+                BenefitScore::from_percent(50).unwrap(),
+                ActionCost::new(1).unwrap(),
+                RiskScore::from_percent(10).unwrap(),
+                BTreeSet::from(["missing.runtime.action".to_owned()]),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    let initial_session = runtime.session().clone();
+
+    let error = runtime.analyze().await.unwrap_err();
+
+    assert_eq!(runtime.session(), &initial_session);
+    assert_eq!(runtime.usage().total_requests(), 1);
+    let receipt = error.committed_reasoning().unwrap();
+    assert_eq!(receipt.subject(), runtime.subject());
+    assert!(receipt
+        .rule_applications()
+        .iter()
+        .any(|application| matches!(
+            application.write(),
+            Some(KnowledgeWrite::Inserted | KnowledgeWrite::Updated)
+        )));
+    assert!(runtime.knowledge().stats().hypotheses > 0);
+    assert_eq!(
+        error.into_committed_reasoning().unwrap().subject(),
+        runtime.subject()
+    );
 }
 
 #[tokio::test]

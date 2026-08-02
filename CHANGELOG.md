@@ -28,6 +28,7 @@ All notable changes to Venom are recorded here. Releases use the categories from
 - Typed API observation commit/reasoning receipts and relation-ID-ordered resource-scoped visibility review projections.
 - Cursor-bounded API visibility review pages with a compiled scan ceiling and rejected-edge accounting.
 - Subject/ontology revisions, bounded stale-snapshot retries, and atomic verifier state transitions for reasoning turns.
+- Typed post-reasoning planning receipts with snapshot revisions and before/after session transitions.
 
 ### Changed
 
@@ -47,6 +48,7 @@ All notable changes to Venom are recorded here. Releases use the categories from
 - Limited each standard API calibration to one matching contribution to reduce retry-driven posterior inflation; existing profiles retain the default independent-contribution behavior.
 - Rejected zero-reliability HTTP evidence policies so fixed rule likelihoods cannot promote a no-confidence observation.
 - Made rule-produced hypothesis writes batch-atomic and preserved verifier-owned terminal states under the same knowledge-base lock.
+- Made planning-session changes error-atomic and snapshot-CAS guarded; planner, command-construction, and stale-knowledge failures no longer partially halt or advance a session.
 
 ### Fixed
 

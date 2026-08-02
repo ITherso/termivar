@@ -1072,19 +1072,34 @@ impl KnowledgeBase {
         expected_ontology_revision: u64,
     ) -> Result<(), KnowledgeBaseError> {
         let state = self.read_state();
-        let actual_subject_revision = subject_revision(&state, subject);
-        if actual_subject_revision != expected_subject_revision
-            || state.ontology_revision != expected_ontology_revision
-        {
-            return Err(KnowledgeBaseError::StaleSnapshot {
-                subject: subject.clone(),
-                expected_subject_revision,
-                actual_subject_revision,
-                expected_ontology_revision,
-                actual_ontology_revision: state.ontology_revision,
-            });
-        }
-        Ok(())
+        validate_revisions(
+            &state,
+            subject,
+            expected_subject_revision,
+            expected_ontology_revision,
+        )
+    }
+
+    /// Runs a short external commit only while a snapshot remains current.
+    ///
+    /// The read lock stays held for the callback, preventing knowledge writers
+    /// from invalidating the snapshot between the revision check and the
+    /// external state transition. The callback must not call back into this
+    /// knowledge base.
+    #[cfg(feature = "scanning")]
+    pub(crate) fn commit_if_snapshot_current<T>(
+        &self,
+        snapshot: &KnowledgeSnapshot,
+        commit: impl FnOnce() -> T,
+    ) -> Result<T, KnowledgeBaseError> {
+        let state = self.read_state();
+        validate_revisions(
+            &state,
+            snapshot.subject(),
+            snapshot.subject_revision(),
+            snapshot.ontology_revision(),
+        )?;
+        Ok(commit())
     }
 
     /// Returns a consistent count snapshot under one read lock.
@@ -1183,6 +1198,27 @@ fn validate_relation_limit(
 
 fn subject_revision(state: &KnowledgeState, subject: &EntityId) -> u64 {
     state.subject_revisions.get(subject).copied().unwrap_or(0)
+}
+
+fn validate_revisions(
+    state: &KnowledgeState,
+    subject: &EntityId,
+    expected_subject_revision: u64,
+    expected_ontology_revision: u64,
+) -> Result<(), KnowledgeBaseError> {
+    let actual_subject_revision = subject_revision(state, subject);
+    if actual_subject_revision != expected_subject_revision
+        || state.ontology_revision != expected_ontology_revision
+    {
+        return Err(KnowledgeBaseError::StaleSnapshot {
+            subject: subject.clone(),
+            expected_subject_revision,
+            actual_subject_revision,
+            expected_ontology_revision,
+            actual_ontology_revision: state.ontology_revision,
+        });
+    }
+    Ok(())
 }
 
 fn bump_subject_revision(state: &mut KnowledgeState, subject: &EntityId) {

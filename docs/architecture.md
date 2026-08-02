@@ -166,6 +166,14 @@ verification reports carry the evaluated subject/ontology revisions; stale
 reports are rejected, same-terminal replay is idempotent, and opposite terminal
 transitions conflict instead of becoming last-writer-wins.
 
+Planning prepares its session transition on a clone and swaps it only after
+planner validation and command construction succeed. A final subject/ontology
+revision check holds the knowledge read lock through that short swap, so a stale
+plan cannot advance the session. Rule writes still precede planning and remain
+append-only. A later planning failure therefore returns a typed reasoning
+receipt with exact application write statuses and planner snapshot revisions
+while leaving the replayable session unchanged.
+
 Run the machine-enforced boundary locally:
 
 ```bash

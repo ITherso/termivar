@@ -14,10 +14,47 @@ use venom_core::{EntityId, Outcome};
 use crate::{
     AdaptationLedger, AdaptationLimits, AdaptiveDecision, AdaptivePipeline, AdaptivePipelineError,
     AttackPlan, AttackPlanner, ExperiencePolicy, ExperienceStore, ExperienceStoreError,
-    ExperienceWrite, KnowledgeBase, KnowledgeSnapshot, KnowledgeWrite, PipelineDirective,
-    PlannerError, PlanningContext, RuleApplication, RuleEngine, RuleEngineError, VerificationCase,
-    VerificationError, VerificationPipeline, VerificationReport,
+    ExperienceWrite, KnowledgeBase, KnowledgeBaseError, KnowledgeSnapshot, KnowledgeWrite,
+    PipelineDirective, PlannerError, PlanningContext, RuleApplication, RuleEngine, RuleEngineError,
+    VerificationCase, VerificationError, VerificationPipeline, VerificationReport,
 };
+
+/// Reasoning applications committed before a later planning-stage failure.
+///
+/// This receipt describes one successful in-memory [`RuleEngine::apply`]
+/// transaction and its exact [`KnowledgeWrite`] statuses. It does not imply
+/// durable persistence. A rule evaluation remains the pre-commit candidate;
+/// hosts must query the knowledge base when verifier-owned terminal-state
+/// preservation makes the stored hypothesis relevant.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct DecisionReasoningCommitReceipt {
+    subject: EntityId,
+    planner_subject_revision: u64,
+    planner_ontology_revision: u64,
+    rule_applications: Vec<RuleApplication>,
+}
+
+impl DecisionReasoningCommitReceipt {
+    /// Returns the subject whose hypotheses were evaluated and committed.
+    pub fn subject(&self) -> &EntityId {
+        &self.subject
+    }
+
+    /// Returns the subject revision captured by the attempted planner snapshot.
+    pub fn planner_subject_revision(&self) -> u64 {
+        self.planner_subject_revision
+    }
+
+    /// Returns the ontology revision captured by the attempted planner snapshot.
+    pub fn planner_ontology_revision(&self) -> u64 {
+        self.planner_ontology_revision
+    }
+
+    /// Returns deterministic applications and their exact write results.
+    pub fn rule_applications(&self) -> &[RuleApplication] {
+        &self.rule_applications
+    }
+}
 
 /// Validation and transition failures raised by the decision loop.
 #[derive(Debug, Error)]
@@ -72,6 +109,42 @@ pub enum DecisionLoopError {
     /// Experience recording or validation failed.
     #[error(transparent)]
     Experience(#[from] ExperienceStoreError),
+
+    /// Knowledge changed after the planner captured its decision snapshot.
+    #[error("planning snapshot became stale: {source}")]
+    StalePlanningSnapshot {
+        /// Exact revision mismatch detected before the session commit.
+        #[source]
+        source: KnowledgeBaseError,
+    },
+
+    /// Reasoning committed hypotheses before a later planning operation failed.
+    #[error("planning failed after reasoning was committed: {source}")]
+    PlanningAfterReasoningCommit {
+        /// Exact rule applications committed before the failure.
+        receipt: Box<DecisionReasoningCommitReceipt>,
+        /// Planner or command-construction failure raised after the commit.
+        #[source]
+        source: Box<DecisionLoopError>,
+    },
+}
+
+impl DecisionLoopError {
+    /// Returns committed reasoning when this failure happened after hypothesis writes.
+    pub fn committed_reasoning(&self) -> Option<&DecisionReasoningCommitReceipt> {
+        match self {
+            Self::PlanningAfterReasoningCommit { receipt, .. } => Some(receipt),
+            _ => None,
+        }
+    }
+
+    /// Takes the committed reasoning receipt without cloning it.
+    pub fn into_committed_reasoning(self) -> Option<DecisionReasoningCommitReceipt> {
+        match self {
+            Self::PlanningAfterReasoningCommit { receipt, .. } => Some(*receipt),
+            _ => None,
+        }
+    }
 }
 
 /// Stable configuration shared by all turns in one decision loop.
@@ -422,6 +495,8 @@ pub struct DecisionPlanningReport {
     rule_applications: Vec<RuleApplication>,
     plan: AttackPlan,
     suppressed_actions: BTreeSet<String>,
+    #[serde(skip_serializing)]
+    session_transition: DecisionSessionTransition,
     command: DecisionLoopCommand,
 }
 
@@ -439,6 +514,14 @@ impl DecisionPlanningReport {
     /// Returns suppressions applied to this planning cycle.
     pub fn suppressed_actions(&self) -> &BTreeSet<String> {
         &self.suppressed_actions
+    }
+
+    /// Returns the session transition committed by this successful planning turn.
+    ///
+    /// This audit summary is intentionally excluded from the existing serialized
+    /// planning-report shape.
+    pub fn session_transition(&self) -> &DecisionSessionTransition {
+        &self.session_transition
     }
 
     /// Returns the runner command selected for this turn.
@@ -624,20 +707,41 @@ impl DecisionLoop {
         session: &mut DecisionSession,
         host_suppressed_actions: &BTreeSet<String>,
     ) -> Result<DecisionPlanningReport, DecisionLoopError> {
+        self.plan_next_with_suppressed_actions_before_commit(
+            knowledge,
+            experience,
+            session,
+            host_suppressed_actions,
+            |_| {},
+        )
+    }
+
+    fn plan_next_with_suppressed_actions_before_commit<F>(
+        &self,
+        knowledge: &KnowledgeBase,
+        experience: &ExperienceStore,
+        session: &mut DecisionSession,
+        host_suppressed_actions: &BTreeSet<String>,
+        mut before_session_commit: F,
+    ) -> Result<DecisionPlanningReport, DecisionLoopError>
+    where
+        F: FnMut(&KnowledgeSnapshot),
+    {
         require_state(session, "plan", |state| {
             matches!(state, DecisionLoopState::Ready)
         })?;
         if session.action_cycles >= self.config.max_action_cycles {
+            let mut candidate_session = session.clone();
             let reason = DecisionStopReason::ActionCycleLimit;
-            session.state = DecisionLoopState::Halted { reason };
-            let snapshot = knowledge.snapshot_for_subject(session.subject());
+            candidate_session.state = DecisionLoopState::Halted { reason };
+            let snapshot = knowledge.snapshot_for_subject(candidate_session.subject());
             let suppressions = combined_suppressions(
                 experience,
-                session,
+                &candidate_session,
                 self.config.experience,
                 host_suppressed_actions,
             );
-            return Ok(DecisionPlanningReport {
+            let report = DecisionPlanningReport {
                 rule_applications: Vec::new(),
                 plan: self.planner.plan_snapshot_with_suppressed(
                     &snapshot,
@@ -645,50 +749,115 @@ impl DecisionLoop {
                     &suppressions,
                 )?,
                 suppressed_actions: suppressions,
+                session_transition: DecisionSessionTransition::new(
+                    session.transition_summary(),
+                    candidate_session.transition_summary(),
+                ),
                 command: DecisionLoopCommand::Halt { reason },
-            });
+            };
+            before_session_commit(&snapshot);
+            knowledge
+                .commit_if_snapshot_current(&snapshot, || *session = candidate_session)
+                .map_err(|source| DecisionLoopError::StalePlanningSnapshot { source })?;
+            return Ok(report);
         }
 
         let applications = self.rules.apply(knowledge, session.subject())?;
         let snapshot = knowledge.snapshot_for_subject(session.subject());
-        let suppressions = combined_suppressions(
-            experience,
-            session,
-            self.config.experience,
-            host_suppressed_actions,
-        );
-        let plan = self.planner.plan_snapshot_with_suppressed(
-            &snapshot,
-            self.config.planning,
-            &suppressions,
-        )?;
-        let command = if let Some(step) = plan.steps().first() {
-            let case = next_case(
-                session,
-                step.action_id(),
-                step.confidence_hypothesis_id(),
-                "planned",
+        let reasoning_changed = applications.iter().any(|application| {
+            application
+                .write()
+                .is_some_and(|write| write != KnowledgeWrite::Unchanged)
+        });
+        let mut candidate_session = session.clone();
+        let planning = (|| -> Result<
+            (
+                AttackPlan,
+                BTreeSet<String>,
+                DecisionSessionTransition,
+                DecisionLoopCommand,
+            ),
+            DecisionLoopError,
+        > {
+            let suppressions = combined_suppressions(
+                experience,
+                &candidate_session,
+                self.config.experience,
+                host_suppressed_actions,
+            );
+            let plan = self.planner.plan_snapshot_with_suppressed(
+                &snapshot,
+                self.config.planning,
+                &suppressions,
             )?;
-            issue_action(
-                session,
-                self.config.max_action_cycles,
-                case,
-                Some(step.executor().to_owned()),
-                DecisionActionOrigin::Planned,
-                None,
-            )
-        } else {
-            let reason = DecisionStopReason::NoEligibleAction;
-            session.state = DecisionLoopState::Halted { reason };
-            DecisionLoopCommand::Halt { reason }
-        };
+            let command = if let Some(step) = plan.steps().first() {
+                let case = next_case(
+                    &candidate_session,
+                    step.action_id(),
+                    step.confidence_hypothesis_id(),
+                    "planned",
+                )?;
+                issue_action(
+                    &mut candidate_session,
+                    self.config.max_action_cycles,
+                    case,
+                    Some(step.executor().to_owned()),
+                    DecisionActionOrigin::Planned,
+                    None,
+                )
+            } else {
+                let reason = DecisionStopReason::NoEligibleAction;
+                candidate_session.state = DecisionLoopState::Halted { reason };
+                DecisionLoopCommand::Halt { reason }
+            };
+            let session_transition = DecisionSessionTransition::new(
+                session.transition_summary(),
+                candidate_session.transition_summary(),
+            );
+            Ok((plan, suppressions, session_transition, command))
+        })();
 
-        Ok(DecisionPlanningReport {
-            rule_applications: applications,
-            plan,
-            suppressed_actions: suppressions,
-            command,
-        })
+        match planning {
+            Ok((plan, suppressed_actions, session_transition, command)) => {
+                before_session_commit(&snapshot);
+                let commit = knowledge.commit_if_snapshot_current(&snapshot, || {
+                    *session = candidate_session;
+                });
+                match commit {
+                    Ok(()) => Ok(DecisionPlanningReport {
+                        rule_applications: applications,
+                        plan,
+                        suppressed_actions,
+                        session_transition,
+                        command,
+                    }),
+                    Err(source) if reasoning_changed => {
+                        Err(DecisionLoopError::PlanningAfterReasoningCommit {
+                            receipt: Box::new(DecisionReasoningCommitReceipt {
+                                subject: session.subject().clone(),
+                                planner_subject_revision: snapshot.subject_revision(),
+                                planner_ontology_revision: snapshot.ontology_revision(),
+                                rule_applications: applications,
+                            }),
+                            source: Box::new(DecisionLoopError::StalePlanningSnapshot { source }),
+                        })
+                    },
+                    Err(source) => Err(DecisionLoopError::StalePlanningSnapshot { source }),
+                }
+            },
+            Err(source) if reasoning_changed => {
+                Err(DecisionLoopError::PlanningAfterReasoningCommit {
+                    receipt: Box::new(DecisionReasoningCommitReceipt {
+                        subject: session.subject().clone(),
+                        planner_subject_revision: snapshot.subject_revision(),
+                        planner_ontology_revision: snapshot.ontology_revision(),
+                        rule_applications: applications,
+                    }),
+                    source: Box::new(source),
+                })
+            },
+            Err(source) => Err(source),
+        }
     }
 
     /// Evaluates evidence produced by the outstanding action.
@@ -1106,6 +1275,148 @@ mod tests {
         }
     }
 
+    fn register_action_with_missing_prerequisite(decision_loop: &mut DecisionLoop) {
+        decision_loop
+            .planner_mut()
+            .register(
+                AttackAction::new(
+                    "invalid.action",
+                    "plugin.invalid",
+                    Expression::exists(KnowledgeLayer::Evidence, technology_predicate()),
+                    HypothesisSelector::new(
+                        hypothesis_predicate(),
+                        laravel(),
+                        Probability::from_percent(50).unwrap(),
+                        RequiredStrength::Strong,
+                    ),
+                    BenefitScore::from_percent(50).unwrap(),
+                    ActionCost::new(1).unwrap(),
+                    RiskScore::from_percent(10).unwrap(),
+                    BTreeSet::from(["missing.action".to_owned()]),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn planning_error_after_reasoning_preserves_session_and_returns_commit_receipt() {
+        let mut decision_loop = configured_loop(None, 1, 8);
+        register_action_with_missing_prerequisite(&mut decision_loop);
+        let knowledge = knowledge(false);
+        let experience = ExperienceStore::new();
+        let mut session = DecisionSession::new(subject());
+        let initial_session = session.clone();
+
+        let error = decision_loop
+            .plan_next(&knowledge, &experience, &mut session)
+            .unwrap_err();
+
+        assert_eq!(session, initial_session);
+        let receipt = error.committed_reasoning().unwrap();
+        assert_eq!(receipt.subject(), &subject());
+        let committed_snapshot = knowledge.snapshot_for_subject(&subject());
+        assert_eq!(
+            receipt.planner_subject_revision(),
+            committed_snapshot.subject_revision()
+        );
+        assert_eq!(
+            receipt.planner_ontology_revision(),
+            committed_snapshot.ontology_revision()
+        );
+        assert_eq!(receipt.rule_applications().len(), 1);
+        assert_eq!(
+            receipt.rule_applications()[0].write(),
+            Some(KnowledgeWrite::Inserted)
+        );
+        assert!(matches!(
+            &error,
+            DecisionLoopError::PlanningAfterReasoningCommit { source, .. }
+                if matches!(
+                    source.as_ref(),
+                    DecisionLoopError::Planner(PlannerError::UnknownPrerequisite { .. })
+                )
+        ));
+        assert_eq!(knowledge.stats().hypotheses, 1);
+        assert_eq!(
+            error
+                .into_committed_reasoning()
+                .unwrap()
+                .rule_applications()
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn stale_planner_snapshot_cannot_commit_a_session_transition() {
+        let decision_loop = configured_loop(None, 1, 8);
+        let knowledge = knowledge(false);
+        let experience = ExperienceStore::new();
+        let mut session = DecisionSession::new(subject());
+        let initial_session = session.clone();
+
+        let error = decision_loop
+            .plan_next_with_suppressed_actions_before_commit(
+                &knowledge,
+                &experience,
+                &mut session,
+                &BTreeSet::new(),
+                |_| {
+                    knowledge
+                        .insert_evidence(Evidence::new(
+                            subject(),
+                            EvidenceKind::Http,
+                            active_predicate(),
+                            EvidenceValue::Boolean(true),
+                            EvidenceSource::new("concurrent.discovery", "late-observation")
+                                .unwrap(),
+                            ConfidenceScore::MAX,
+                        ))
+                        .unwrap();
+                },
+            )
+            .unwrap_err();
+
+        assert_eq!(session, initial_session);
+        assert!(matches!(
+            &error,
+            DecisionLoopError::PlanningAfterReasoningCommit { source, .. }
+                if matches!(
+                    source.as_ref(),
+                    DecisionLoopError::StalePlanningSnapshot {
+                        source: KnowledgeBaseError::StaleSnapshot { .. }
+                    }
+                )
+        ));
+        let receipt = error.committed_reasoning().unwrap();
+        let current = knowledge.snapshot_for_subject(&subject());
+        assert!(current.subject_revision() > receipt.planner_subject_revision());
+        assert_eq!(knowledge.stats().hypotheses, 1);
+    }
+
+    #[test]
+    fn action_limit_planning_error_does_not_partially_halt_session() {
+        let mut decision_loop = configured_loop(None, 1, 1);
+        register_action_with_missing_prerequisite(&mut decision_loop);
+        let knowledge = knowledge(false);
+        let experience = ExperienceStore::new();
+        let mut session = DecisionSession::new(subject());
+        session.action_cycles = 1;
+        let initial_session = session.clone();
+
+        let error = decision_loop
+            .plan_next(&knowledge, &experience, &mut session)
+            .unwrap_err();
+
+        assert!(matches!(
+            error,
+            DecisionLoopError::Planner(PlannerError::UnknownPrerequisite { .. })
+        ));
+        assert_eq!(session, initial_session);
+        assert_eq!(knowledge.stats().hypotheses, 0);
+    }
+
     #[test]
     fn blocked_action_uses_bounded_adaptation_without_learning_a_negative() {
         let decision_loop = configured_loop(Some(OutcomeStatus::Blocked), 1, 8);
@@ -1119,6 +1430,18 @@ mod tests {
         assert_eq!(planning.rule_applications().len(), 1);
         assert_eq!(planning.plan().steps().len(), 1);
         assert!(planning.suppressed_actions().is_empty());
+        assert!(matches!(
+            planning.session_transition().before().state(),
+            DecisionLoopState::Ready
+        ));
+        assert!(matches!(
+            planning.session_transition().after().state(),
+            DecisionLoopState::AwaitingPassive { .. }
+        ));
+        assert!(serde_json::to_value(&planning)
+            .unwrap()
+            .get("session_transition")
+            .is_none());
         assert!(matches!(
             planning.command(),
             DecisionLoopCommand::ExecuteAction {

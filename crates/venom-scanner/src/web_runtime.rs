@@ -16,13 +16,14 @@ use crate::{
     AdaptationLimits, BenefitScore, DecisionActionOrigin, DecisionEvidenceReceipt,
     DecisionExecutionLimits, DecisionExecutionStage, DecisionExecutorRegistry, DecisionLoop,
     DecisionLoopCommand, DecisionLoopConfig, DecisionLoopError, DecisionOutcomeReport,
-    DecisionPlanningReport, DecisionRunnerAdapter, DecisionRunnerError, DecisionRunnerTurn,
-    DecisionSession, ExperiencePolicy, ExperienceStore, ExperienceStoreError, HttpEvidenceError,
-    HttpEvidenceExecutor, HttpEvidencePolicy, HttpProbe, HttpProbeMethod, KnowledgeBase,
-    KnowledgeWrite, PlannerError, PlanningContext, RiskScore, RuntimeBudget,
-    RuntimeBudgetDimension, RuntimeLimitExceeded, RuntimeUsage, StandardWebActionKind,
-    StandardWebDecisionError, StandardWebDecisionInstallReport, StandardWebDecisionProfile,
-    SubjectHttpProbeProvider, VerificationCase, VerificationError, HTTP_EVIDENCE_EXECUTOR_ID,
+    DecisionPlanningReport, DecisionReasoningCommitReceipt, DecisionRunnerAdapter,
+    DecisionRunnerError, DecisionRunnerTurn, DecisionSession, ExperiencePolicy, ExperienceStore,
+    ExperienceStoreError, HttpEvidenceError, HttpEvidenceExecutor, HttpEvidencePolicy, HttpProbe,
+    HttpProbeMethod, KnowledgeBase, KnowledgeWrite, PlannerError, PlanningContext, RiskScore,
+    RuntimeBudget, RuntimeBudgetDimension, RuntimeLimitExceeded, RuntimeUsage,
+    StandardWebActionKind, StandardWebDecisionError, StandardWebDecisionInstallReport,
+    StandardWebDecisionProfile, SubjectHttpProbeProvider, VerificationCase, VerificationError,
+    HTTP_EVIDENCE_EXECUTOR_ID,
 };
 
 const DEFAULT_BUSINESS_VALUE_PERCENT: u8 = 80;
@@ -104,6 +105,24 @@ impl StandardWebDecisionRuntimeError {
         match self {
             Self::Runner(source) => source.into_committed_evidence(),
             Self::ResponseUsageEvidence { receipt, .. } => Some(*receipt),
+            _ => None,
+        }
+    }
+
+    /// Returns reasoning committed before a later planning failure, when applicable.
+    pub fn committed_reasoning(&self) -> Option<&DecisionReasoningCommitReceipt> {
+        match self {
+            Self::Decision(source) => source.committed_reasoning(),
+            Self::Runner(source) => source.committed_reasoning(),
+            _ => None,
+        }
+    }
+
+    /// Takes a post-reasoning planning receipt without cloning it.
+    pub fn into_committed_reasoning(self) -> Option<DecisionReasoningCommitReceipt> {
+        match self {
+            Self::Decision(source) => source.into_committed_reasoning(),
+            Self::Runner(source) => source.into_committed_reasoning(),
             _ => None,
         }
     }
