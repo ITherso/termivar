@@ -80,6 +80,7 @@ All notable changes to Venom are recorded here. Releases use the categories from
 - Made every ordered CLI scan disclose that its legacy direct-I/O phases remain outside `StandardWebDecisionRuntime` and restricted crawler discoveries to the target's exact normalized origin.
 - Advanced profiled API comparison metadata to v3; persisted v2 profiles are rejected instead of being silently reinterpreted after explanation semantics changed.
 - Changed the alpha `RuntimeUsage.response_bytes` meaning from retained evidence bytes to complete response chunks delivered to the broker collector; a threshold-crossing chunk is charged, audited, and terminates the same turn.
+- Enforced the Preview plugin registry's host-side enable flag, payload-size ceiling, and execution deadline without automatically retrying potentially side-effecting plugin calls.
 
 ### Fixed
 
@@ -98,6 +99,7 @@ All notable changes to Venom are recorded here. Releases use the categories from
 - Made request dispatch, buffered request-body, and delivered response-body charges non-refundable at the transport boundary, including partial reads and executor cancellation, and preserved structured audit receipts for broker limit denials.
 - Bound profiled comparison identities to comparator, canonicalization, and projection-policy metadata; redacted legacy view handles from `Debug` output and kept raw JSON values and clear observed paths out of versioned reports.
 - Made host cancellation preserve monotonic transport accounting and any post-commit, pre-verification evidence receipt without misreporting a wall-time or request-timeout limit.
+- Rejected oversized plugin payloads before plugin code runs and cancelled in-process plugin futures when their configured deadline expires.
 - Added strict, bounded cursor parsing and redacted cursor diagnostics while preserving the legacy in-process pagination wire contract.
 - Added active multi-request and pre-socket retry budget regressions so nested dispatches cannot escape host accounting.
 - Kept raw strategy seeds and derived artifacts out of serialization and debug output while retaining length, role, revision, and SHA-256 provenance.

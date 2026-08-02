@@ -6,7 +6,7 @@ use crate::contracts::ScanFinding;
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 /// Source-level plugin API version supported by this host.
 ///
@@ -153,6 +153,8 @@ pub enum PluginError {
     Timeout,
     #[serde(rename = "disabled")]
     Disabled,
+    #[serde(rename = "payload_too_large")]
+    PayloadTooLarge { actual: usize, maximum: usize },
     #[serde(rename = "incompatible_api_version")]
     IncompatibleApiVersion { expected: String, actual: String },
 }
@@ -165,6 +167,11 @@ impl std::fmt::Display for PluginError {
             PluginError::InvalidConfig(e) => write!(f, "Invalid config: {}", e),
             PluginError::Timeout => write!(f, "Plugin execution timeout"),
             PluginError::Disabled => write!(f, "Plugin is disabled"),
+            PluginError::PayloadTooLarge { actual, maximum } => write!(
+                f,
+                "Plugin payload length {} exceeds configured maximum {}",
+                actual, maximum
+            ),
             PluginError::IncompatibleApiVersion { expected, actual } => write!(
                 f,
                 "Incompatible plugin API version: expected {}, received {}",
@@ -310,15 +317,32 @@ impl PluginRegistry {
         let plugin = self
             .get(plugin_id)
             .ok_or_else(|| PluginError::NotFound(plugin_id.to_string()))?;
+        let config = self
+            .get_config(plugin_id)
+            .ok_or_else(|| PluginError::NotFound(plugin_id.to_string()))?;
 
-        if !plugin.enabled() {
+        if !plugin.enabled() || !config.enabled {
             return Err(PluginError::Disabled);
         }
+        let payload_bytes = payload.len();
+        if payload_bytes > config.max_payload_size {
+            return Err(PluginError::PayloadTooLarge {
+                actual: payload_bytes,
+                maximum: config.max_payload_size,
+            });
+        }
+        let deadline = tokio::time::Instant::now()
+            .checked_add(Duration::from_millis(config.timeout_ms))
+            .ok_or_else(|| {
+                PluginError::InvalidConfig(
+                    "plugin timeout exceeds the runtime clock range".to_owned(),
+                )
+            })?;
 
         let start = Instant::now();
 
-        match plugin.execute(target, payload).await {
-            Ok(findings) => {
+        match tokio::time::timeout_at(deadline, plugin.execute(target, payload)).await {
+            Ok(Ok(findings)) => {
                 let elapsed = start.elapsed().as_millis() as u64;
                 self.update_metadata(plugin_id, true);
 
@@ -330,13 +354,23 @@ impl PluginRegistry {
                     execution_time_ms: elapsed,
                 })
             },
-            Err(e) => {
+            Ok(Err(error)) => {
                 self.update_metadata(plugin_id, false);
                 Ok(PluginExecutionResult {
                     plugin_id: plugin_id.to_string(),
                     success: false,
                     findings: vec![],
-                    error: Some(e.to_string()),
+                    error: Some(error.to_string()),
+                    execution_time_ms: start.elapsed().as_millis() as u64,
+                })
+            },
+            Err(_) => {
+                self.update_metadata(plugin_id, false);
+                Ok(PluginExecutionResult {
+                    plugin_id: plugin_id.to_string(),
+                    success: false,
+                    findings: vec![],
+                    error: Some(PluginError::Timeout.to_string()),
                     execution_time_ms: start.elapsed().as_millis() as u64,
                 })
             },
@@ -409,10 +443,83 @@ fn plugin_api_compatible(actual: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     struct TestPlugin {
         id: String,
         category: PluginCategory,
+    }
+
+    struct PolicyProbePlugin {
+        calls: Arc<AtomicUsize>,
+        completions: Arc<AtomicUsize>,
+        delay: Duration,
+        config: PluginConfig,
+        enabled: bool,
+    }
+
+    #[async_trait::async_trait]
+    impl Plugin for PolicyProbePlugin {
+        fn id(&self) -> &str {
+            "policy-probe"
+        }
+
+        fn name(&self) -> &str {
+            "Policy Probe"
+        }
+
+        fn version(&self) -> &str {
+            "0.1.0"
+        }
+
+        fn description(&self) -> &str {
+            "Exercises registry-owned execution policy"
+        }
+
+        fn author(&self) -> &str {
+            "Venom"
+        }
+
+        fn category(&self) -> PluginCategory {
+            PluginCategory::Custom
+        }
+
+        fn enabled(&self) -> bool {
+            self.enabled
+        }
+
+        fn get_config(&self) -> PluginConfig {
+            self.config.clone()
+        }
+
+        async fn execute(
+            &self,
+            _target: &str,
+            _payload: &str,
+        ) -> Result<Vec<ScanFinding>, PluginError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            tokio::time::sleep(self.delay).await;
+            self.completions.fetch_add(1, Ordering::SeqCst);
+            Ok(Vec::new())
+        }
+    }
+
+    fn policy_probe(
+        config: PluginConfig,
+    ) -> (Arc<PolicyProbePlugin>, Arc<AtomicUsize>, Arc<AtomicUsize>) {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let completions = Arc::new(AtomicUsize::new(0));
+        (
+            Arc::new(PolicyProbePlugin {
+                calls: calls.clone(),
+                completions: completions.clone(),
+                delay: Duration::ZERO,
+                config,
+                enabled: true,
+            }),
+            calls,
+            completions,
+        )
     }
 
     #[async_trait::async_trait]
@@ -598,5 +705,112 @@ mod tests {
         let meta = registry.get_metadata("test_5").unwrap();
         assert_eq!(meta.execution_count, 3);
         assert_eq!(meta.success_count, 3);
+    }
+
+    #[tokio::test]
+    async fn host_configuration_disables_plugin_before_execution() {
+        let config = PluginConfig {
+            enabled: false,
+            ..PluginConfig::default()
+        };
+        let (plugin, calls, _) = policy_probe(config);
+        let registry = PluginRegistry::new();
+        registry.register(plugin).unwrap();
+
+        assert!(matches!(
+            registry.execute("policy-probe", "target", "payload").await,
+            Err(PluginError::Disabled)
+        ));
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            registry
+                .get_metadata("policy-probe")
+                .unwrap()
+                .execution_count,
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn oversized_payload_is_rejected_before_plugin_code_runs() {
+        let config = PluginConfig {
+            max_payload_size: 3,
+            ..PluginConfig::default()
+        };
+        let (plugin, calls, _) = policy_probe(config);
+        let registry = PluginRegistry::new();
+        registry.register(plugin).unwrap();
+
+        assert!(matches!(
+            registry.execute("policy-probe", "target", "éé").await,
+            Err(PluginError::PayloadTooLarge {
+                actual: 4,
+                maximum: 3
+            })
+        ));
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            registry
+                .get_metadata("policy-probe")
+                .unwrap()
+                .execution_count,
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn registry_timeout_cancels_the_plugin_future_and_records_failure() {
+        let config = PluginConfig {
+            timeout_ms: 5,
+            ..PluginConfig::default()
+        };
+        let calls = Arc::new(AtomicUsize::new(0));
+        let completions = Arc::new(AtomicUsize::new(0));
+        let plugin = Arc::new(PolicyProbePlugin {
+            calls: calls.clone(),
+            completions: completions.clone(),
+            delay: Duration::from_secs(1),
+            config,
+            enabled: true,
+        });
+        let registry = PluginRegistry::new();
+        registry.register(plugin).unwrap();
+
+        let result = registry
+            .execute("policy-probe", "target", "payload")
+            .await
+            .unwrap();
+
+        assert!(!result.success);
+        assert_eq!(result.error.as_deref(), Some("Plugin execution timeout"));
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_eq!(completions.load(Ordering::SeqCst), 0);
+        let metadata = registry.get_metadata("policy-probe").unwrap();
+        assert_eq!(metadata.execution_count, 1);
+        assert_eq!(metadata.success_count, 0);
+        assert_eq!(metadata.error_count, 1);
+    }
+
+    #[tokio::test]
+    async fn updated_host_policy_applies_to_the_next_execution() {
+        let (plugin, calls, completions) = policy_probe(PluginConfig::default());
+        let registry = PluginRegistry::new();
+        registry.register(plugin).unwrap();
+        registry
+            .update_config(
+                "policy-probe",
+                PluginConfig {
+                    enabled: false,
+                    ..PluginConfig::default()
+                },
+            )
+            .unwrap();
+
+        assert!(matches!(
+            registry.execute("policy-probe", "target", "payload").await,
+            Err(PluginError::Disabled)
+        ));
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        assert_eq!(completions.load(Ordering::SeqCst), 0);
     }
 }

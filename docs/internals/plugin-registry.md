@@ -17,21 +17,26 @@ Preview compatibility currently requires matching major and minor components. Re
 ```text
 lookup by ID
     |
-check enabled
+load the registered host configuration
     |
-Plugin::execute(target, payload)
+check trait + host enabled flags
+    |
+reject payloads above max_payload_size
+    |
+run Plugin::execute(target, payload) under timeout_ms
     |
 normalize result + elapsed time
     |
 increment success/error counters
 ```
 
-A plugin-returned error is represented as a successful registry call containing `success: false` and an error string. Registry-level failures such as a missing, disabled, incompatible, or invalid plugin return `PluginError` directly.
+A plugin-returned error or elapsed deadline is represented as a successful registry call containing `success: false` and an error string. Registry-level failures such as a missing, disabled, incompatible, invalid, or oversized invocation return `PluginError` directly before plugin code runs. Timeout drops the in-process plugin future and increments the error counter; it is cancellation, not process isolation.
 
 ## Current constraints
 
-- Registry configuration records timeout, payload size, retries, and enabled state, but `execute` does not yet enforce those values.
+- Registry execution enforces `timeout_ms`, `max_payload_size`, and the host-side `enabled` flag. `retry_count` remains reserved metadata: the registry does not automatically replay a potentially side-effecting plugin call.
 - Plugin execution is in-process with no sandbox or crash isolation.
+- A plugin can still create its own network client. This legacy registry is not covered by the standard runtime's host-owned request broker or `RuntimeBudget` accounting.
 - There is no runtime discovery, signature verification, capability declaration, or dependency resolution.
 - Metrics are process-local counters and reset on restart.
 - Target and payload are raw strings rather than a versioned execution context.

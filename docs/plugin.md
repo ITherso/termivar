@@ -66,7 +66,8 @@ The stock CLI does not discover arbitrary shared libraries or crates at runtime.
 - Plugins must not render reports, start transports, mutate registry internals, or assume dashboard availability.
 - Plugin IDs are stable machine identifiers; display names are not identifiers.
 - Configuration must be explicit and serializable where practical.
-- Hosts must enforce timeout, payload-size, and authorization policies at the execution boundary.
+- `PluginRegistry` enforces its snapshotted `timeout_ms`, `max_payload_size`, and host-side `enabled` policy before or around every invocation. Hosts remain responsible for target authorization and for network/resource policy inside plugin implementations.
+- `retry_count` is reserved during Preview. The registry does not silently replay plugin code because the current trait cannot declare whether an invocation is idempotent.
 
 ## Lifecycle
 
