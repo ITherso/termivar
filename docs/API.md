@@ -87,6 +87,14 @@ The profile does not pair independent responses, perform network I/O, attest
 producer truth, or verify a vulnerability; its visibility result is a review
 signal.
 
+Hosts using `StandardWebDecisionRuntime` can opt into its passive API rules
+with `enable_api_reasoning()`. The runtime reuses its existing normalized HTTP
+evidence and exposes an optional installation receipt; it does not issue extra
+requests or add API attack actions. This convenience path recognizes JSON
+response formats and GraphQL surfaces only. Paired visibility reasoning
+remains an explicit host-owned ingestion workflow on isolated comparison
+subjects.
+
 See [API visibility evidence](internals/api-evidence.md) for canonicalization
 semantics, limits, receipts, replay behavior, and trust boundaries.
 

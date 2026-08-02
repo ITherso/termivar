@@ -21,6 +21,7 @@ use crate::{
     ExperienceStoreError, HttpEvidenceError, HttpEvidenceExecutor, HttpEvidencePolicy, HttpProbe,
     HttpProbeMethod, KnowledgeBase, KnowledgeWrite, PlannerError, PlanningContext, RiskScore,
     RuntimeBudget, RuntimeBudgetDimension, RuntimeLimitExceeded, RuntimeUsage,
+    StandardApiInstallReport, StandardApiReasoning, StandardApiReasoningError,
     StandardWebActionKind, StandardWebDecisionError, StandardWebDecisionInstallReport,
     StandardWebDecisionProfile, SubjectHttpProbeProvider, VerificationCase, VerificationError,
     HTTP_EVIDENCE_EXECUTOR_ID,
@@ -69,6 +70,10 @@ pub enum StandardWebDecisionRuntimeError {
     /// The standard reasoning, planning, execution, or verification profile failed.
     #[error(transparent)]
     Profile(#[from] StandardWebDecisionError),
+
+    /// The optional JSON response-format and GraphQL surface profile failed to install.
+    #[error(transparent)]
+    ApiReasoning(#[from] StandardApiReasoningError),
 
     /// An executor lookup, request, evidence commit, or runner transition failed.
     #[error(transparent)]
@@ -208,6 +213,7 @@ pub struct StandardWebDecisionRuntimeBuilder {
     max_action_cycles: u32,
     experience: ExperienceStore,
     runtime_budget: RuntimeBudget,
+    api_reasoning_enabled: bool,
 }
 
 impl StandardWebDecisionRuntimeBuilder {
@@ -224,7 +230,17 @@ impl StandardWebDecisionRuntimeBuilder {
             max_action_cycles: DEFAULT_MAX_ACTION_CYCLES,
             experience: ExperienceStore::new(),
             runtime_budget: RuntimeBudget::default(),
+            api_reasoning_enabled: false,
         }
+    }
+
+    /// Enables passive JSON response-format and GraphQL surface reasoning.
+    ///
+    /// This opt-in reuses evidence already collected by the runtime. It adds no
+    /// request, executor, payload, visibility comparison, or planner action.
+    pub fn enable_api_reasoning(mut self) -> Self {
+        self.api_reasoning_enabled = true;
+        self
     }
 
     /// Replaces the default single-origin HTTP evidence policy.
@@ -354,6 +370,12 @@ impl StandardWebDecisionRuntimeBuilder {
 
         let profile = StandardWebDecisionProfile::new(policy.clone())?;
         let installation = profile.install(&knowledge, &mut decision_loop, &mut executors)?;
+        let api_reasoning_installation = if self.api_reasoning_enabled {
+            let profile = StandardApiReasoning::new()?;
+            Some(profile.install(&knowledge, decision_loop.rules_mut())?)
+        } else {
+            None
+        };
         executors.register(Arc::new(HttpEvidenceExecutor::new(
             policy,
             Arc::new(SubjectHttpProbeProvider::new(HttpProbeMethod::Get)),
@@ -369,6 +391,7 @@ impl StandardWebDecisionRuntimeBuilder {
             target: self.target,
             subject: subject.clone(),
             installation,
+            api_reasoning_installation,
             unsupported_actions,
             knowledge,
             decision_loop,
@@ -396,6 +419,7 @@ impl StandardWebDecisionRuntimeBuilder {
 ///     .planning_budget(100)
 ///     .risk_limit(40)
 ///     .max_action_cycles(8)
+///     .enable_api_reasoning()
 ///     .build()?;
 ///
 /// let report = runtime.analyze().await?;
@@ -407,6 +431,7 @@ pub struct StandardWebDecisionRuntime {
     target: Url,
     subject: EntityId,
     installation: StandardWebDecisionInstallReport,
+    api_reasoning_installation: Option<StandardApiInstallReport>,
     unsupported_actions: BTreeSet<String>,
     knowledge: KnowledgeBase,
     decision_loop: DecisionLoop,
@@ -437,6 +462,11 @@ impl StandardWebDecisionRuntime {
     /// Returns the standard profile installation receipt.
     pub fn installation(&self) -> StandardWebDecisionInstallReport {
         self.installation
+    }
+
+    /// Returns the passive API reasoning installation receipt when enabled.
+    pub fn api_reasoning_installation(&self) -> Option<StandardApiInstallReport> {
+        self.api_reasoning_installation
     }
 
     /// Returns actions omitted because no executor was installed for them.

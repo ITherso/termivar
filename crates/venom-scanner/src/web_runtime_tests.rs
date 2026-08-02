@@ -7,14 +7,16 @@ use tokio::{
     task::JoinHandle,
 };
 use venom_core::{
-    EvidenceValue, HypothesisState, OutcomeStatus, Probability, WebKnowledgePredicate,
+    ApiKnowledgePredicate, ApiResponseFormat, ApiSurfaceKind, ApiVisibilityBoundaryKind,
+    EvidenceValue, Hypothesis, HypothesisState, HypothesisStrength, OutcomeStatus,
+    PredicateDescriptor, Probability, WebKnowledgePredicate,
 };
 
 use super::*;
 use crate::{
     ActionCost, AdaptivePipeline, AttackAction, DecisionLoopState, DecisionStopReason,
     ExclusionReason, Expression, HttpBodyCapture, HypothesisSelector, KnowledgeLayer,
-    RequiredStrength, StandardWebActionKind,
+    KnowledgeSnapshot, RequiredStrength, StandardWebActionKind,
 };
 
 const BASIC: &[u8] = b"HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: Basic realm=\"admin\"\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
@@ -23,6 +25,8 @@ const RATE_LIMITED: &[u8] = b"HTTP/1.1 429 Too Many Requests\r\nRetry-After: 1\r
 const LIVEWIRE: &[u8] = b"HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: 9\r\nConnection: close\r\n\r\nwire:id=x";
 const NGINX: &[u8] =
     b"HTTP/1.1 200 OK\r\nServer: nginx\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+const JSON: &[u8] = b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}";
+const GRAPHQL: &[u8] = b"HTTP/1.1 200 OK\r\nContent-Type: application/graphql-response+json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}";
 
 enum Reply {
     Response(&'static [u8]),
@@ -126,6 +130,18 @@ fn evidence_value<'a>(
         .map(|evidence| evidence.value())
 }
 
+fn api_hypothesis<'a>(
+    snapshot: &'a KnowledgeSnapshot,
+    predicate: PredicateDescriptor,
+    value: EvidenceValue,
+) -> Option<&'a Hypothesis> {
+    let predicate = predicate.into_knowledge();
+    snapshot
+        .hypotheses()
+        .iter()
+        .find(|hypothesis| hypothesis.predicate() == &predicate && hypothesis.value() == &value)
+}
+
 #[test]
 fn builder_validates_decision_limits_and_exposes_runtime_defaults() {
     let target = Url::parse("https://example.test/app").unwrap();
@@ -148,12 +164,190 @@ fn builder_validates_decision_limits_and_exposes_runtime_defaults() {
     assert_eq!(runtime.unsupported_actions().len(), 4);
     assert_eq!(runtime.budget(), RuntimeBudget::default());
     assert_eq!(runtime.usage(), &RuntimeUsage::default());
+    assert!(runtime.api_reasoning_installation().is_none());
+    assert_eq!(
+        runtime.decision_loop.rules().len(),
+        crate::STANDARD_WEB_RULE_COUNT
+    );
     assert!(runtime
         .unsupported_actions()
         .contains(StandardWebActionKind::NginxConfiguration.action_id()));
     assert!(!runtime
         .unsupported_actions()
         .contains(StandardWebActionKind::HttpBasicAuthBoundary.action_id()));
+}
+
+#[tokio::test]
+async fn passive_api_reasoning_is_opt_in_and_adds_no_request() {
+    let disabled_server = serve(vec![Reply::Response(GRAPHQL)]).await;
+    let mut disabled = StandardWebDecisionRuntime::builder(disabled_server.target())
+        .build()
+        .unwrap();
+    disabled.analyze().await.unwrap();
+
+    let disabled_snapshot = disabled
+        .knowledge()
+        .snapshot_for_subject(disabled.subject());
+    assert!(disabled.api_reasoning_installation().is_none());
+    assert!(api_hypothesis(
+        &disabled_snapshot,
+        ApiKnowledgePredicate::SURFACE_KIND,
+        ApiSurfaceKind::GraphQl.into(),
+    )
+    .is_none());
+    assert_eq!(disabled.usage().total_requests(), 1);
+
+    let enabled_server = serve(vec![Reply::Response(GRAPHQL)]).await;
+    let mut enabled = StandardWebDecisionRuntime::builder(enabled_server.target())
+        .enable_api_reasoning()
+        .build()
+        .unwrap();
+    let installation = enabled.api_reasoning_installation().unwrap();
+    assert_eq!(
+        installation.concepts_inserted(),
+        crate::STANDARD_API_CONCEPT_COUNT
+    );
+    assert_eq!(
+        installation.axioms_inserted(),
+        crate::STANDARD_API_AXIOM_COUNT
+    );
+    assert_eq!(
+        installation.rules_inserted(),
+        crate::STANDARD_API_RULE_COUNT
+    );
+    assert_eq!(
+        enabled.decision_loop.rules().len(),
+        crate::STANDARD_WEB_RULE_COUNT + crate::STANDARD_API_RULE_COUNT
+    );
+
+    enabled.analyze().await.unwrap();
+
+    let enabled_snapshot = enabled.knowledge().snapshot_for_subject(enabled.subject());
+    let graphql = api_hypothesis(
+        &enabled_snapshot,
+        ApiKnowledgePredicate::SURFACE_KIND,
+        ApiSurfaceKind::GraphQl.into(),
+    )
+    .unwrap();
+    assert_eq!(graphql.strength(), HypothesisStrength::Strong);
+    assert!(api_hypothesis(
+        &enabled_snapshot,
+        ApiKnowledgePredicate::VISIBILITY_BOUNDARY,
+        ApiVisibilityBoundaryKind::UiApi.into(),
+    )
+    .is_none());
+    assert!(api_hypothesis(
+        &enabled_snapshot,
+        ApiKnowledgePredicate::VISIBILITY_BOUNDARY,
+        ApiVisibilityBoundaryKind::AuthorizationContext.into(),
+    )
+    .is_none());
+    assert_eq!(enabled.usage().total_requests(), 1);
+    assert_eq!(enabled.usage().active_verifications(), 0);
+    assert_eq!(enabled.usage().response_bytes(), 2);
+}
+
+#[tokio::test]
+async fn api_reasoning_preserves_an_existing_web_action_sequence() {
+    let server = serve(vec![
+        Reply::Response(BASIC),
+        Reply::Response(BASIC),
+        Reply::Response(BASIC),
+        Reply::Response(BASIC),
+    ])
+    .await;
+    let target = server.target();
+    let mut disabled = StandardWebDecisionRuntime::builder(target.clone())
+        .build()
+        .unwrap();
+    let disabled_report = disabled.analyze().await.unwrap();
+    let disabled_usage = disabled.usage().clone();
+
+    let mut enabled = StandardWebDecisionRuntime::builder(target)
+        .enable_api_reasoning()
+        .build()
+        .unwrap();
+    let enabled_report = enabled.analyze().await.unwrap();
+    let enabled_usage = enabled.usage();
+
+    assert_eq!(disabled_report.terminal(), enabled_report.terminal());
+    assert_eq!(
+        disabled_usage.total_requests(),
+        enabled_usage.total_requests()
+    );
+    assert_eq!(
+        disabled_usage.passive_requests(),
+        enabled_usage.passive_requests()
+    );
+    assert_eq!(
+        disabled_usage.active_verifications(),
+        enabled_usage.active_verifications()
+    );
+    assert_eq!(
+        disabled_usage.bootstrap_requests(),
+        enabled_usage.bootstrap_requests()
+    );
+    assert_eq!(
+        disabled_usage.planned_requests(),
+        enabled_usage.planned_requests()
+    );
+    assert_eq!(
+        disabled_usage.response_bytes(),
+        enabled_usage.response_bytes()
+    );
+    assert_eq!(disabled_usage.total_requests(), 2);
+    assert_eq!(server.methods().await, ["GET", "HEAD", "GET", "HEAD"]);
+}
+
+#[tokio::test]
+async fn generic_json_runtime_evidence_never_implies_graphql() {
+    let server = serve(vec![Reply::Response(JSON)]).await;
+    let mut runtime = StandardWebDecisionRuntime::builder(server.target())
+        .enable_api_reasoning()
+        .build()
+        .unwrap();
+
+    runtime.analyze().await.unwrap();
+
+    let snapshot = runtime.knowledge().snapshot_for_subject(runtime.subject());
+    assert!(api_hypothesis(
+        &snapshot,
+        ApiKnowledgePredicate::RESPONSE_FORMAT,
+        ApiResponseFormat::Json.into(),
+    )
+    .is_some());
+    assert!(api_hypothesis(
+        &snapshot,
+        ApiKnowledgePredicate::SURFACE_KIND,
+        ApiSurfaceKind::GraphQl.into(),
+    )
+    .is_none());
+    assert_eq!(runtime.usage().total_requests(), 1);
+    assert_eq!(runtime.usage().active_verifications(), 0);
+}
+
+#[tokio::test]
+async fn graphql_path_signal_remains_a_weak_runtime_hypothesis() {
+    let server = serve(vec![Reply::Response(OK)]).await;
+    let mut target = server.target();
+    target.set_path("/graphql");
+    let mut runtime = StandardWebDecisionRuntime::builder(target)
+        .enable_api_reasoning()
+        .build()
+        .unwrap();
+
+    runtime.analyze().await.unwrap();
+
+    let snapshot = runtime.knowledge().snapshot_for_subject(runtime.subject());
+    let graphql = api_hypothesis(
+        &snapshot,
+        ApiKnowledgePredicate::SURFACE_KIND,
+        ApiSurfaceKind::GraphQl.into(),
+    )
+    .unwrap();
+    assert_eq!(graphql.strength(), HypothesisStrength::Weak);
+    assert_eq!(runtime.usage().total_requests(), 1);
+    assert_eq!(runtime.usage().response_bytes(), 0);
 }
 
 #[test]

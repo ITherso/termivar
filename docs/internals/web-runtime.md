@@ -31,6 +31,7 @@ let policy = HttpEvidencePolicy::for_origin(target.clone())?
 
 let mut runtime = StandardWebDecisionRuntime::builder(target)
     .http_policy(policy)
+    .enable_api_reasoning()
     .business_value(80)
     .planning_budget(100)
     .risk_limit(40)
@@ -56,6 +57,7 @@ Without overrides, the builder creates a policy restricted to the target's exact
 | Maximum action risk | 40% |
 | Passive action cycles | 8 |
 | Suppression-eligible verified negatives | 10 |
+| Passive API response/surface reasoning | Disabled |
 | Total HTTP requests | 32 |
 | Complete runtime wall time | 120 seconds |
 | Buffered response bytes across the session | 2 MiB |
@@ -68,6 +70,27 @@ The HTTP policy remains authoritative for origins, timeout, body buffering, text
 `planning_budget` is expressed in planner action-cost units; it is not a raw HTTP-request count. `max_action_cycles` remains the decision loop's passive-action guard. `RuntimeBudget` is the outer operational envelope and includes bootstrap, planned, adaptive, retry, and active-verification requests.
 
 All runtime dimensions accept zero as a deliberate fail-closed value. A zero request, wall-time, response-byte, or same-action budget prevents bootstrap I/O. A zero active-verification budget still permits passive work but refuses the first active probe.
+
+## Optional API response and surface reasoning
+
+`enable_api_reasoning()` installs `StandardApiReasoning` into the runtime's
+existing rule engine. It is disabled by default, and
+`api_reasoning_installation()` returns the installation receipt only when the
+builder enabled it.
+
+The option evaluates normalized evidence already emitted by the HTTP executor.
+Generic JSON produces only a JSON response-format hypothesis. An exact GraphQL
+response media type produces a strong GraphQL surface hypothesis, while a
+normalized `graphql` path segment remains weak. Enabling it creates no request,
+executor, payload, active verification, or planner action, so the runtime's
+configured limits and request reservations remain unchanged. The additional
+deterministic rule evaluation still runs under the same wall-time deadline.
+
+This integration covers passive response-format and surface fingerprinting
+only. It does not pair UI/API responses or authorization contexts.
+Visibility-boundary hypotheses still require a host-created atomic comparison
+on its isolated comparison subject through the API observation ingestion
+boundary.
 
 ## Runtime safety envelope
 
