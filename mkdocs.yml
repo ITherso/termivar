@@ -71,6 +71,7 @@ nav:
       - ADR 0010 - Planner-selected payload strategies: adr/0010-planner-selected-payload-strategies.md
       - ADR 0011 - API explanation semantics: adr/0011-version-api-explanation-semantics.md
       - ADR 0012 - Delivered transport bytes: adr/0012-account-delivered-transport-bytes.md
+      - ADR 0013 - Runtime API visibility pairs: adr/0013-runtime-owned-api-visibility-pairs.md
       - Release process: RELEASE.md
 markdown_extensions:
   - admonition

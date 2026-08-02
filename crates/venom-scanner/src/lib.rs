@@ -311,7 +311,11 @@ pub use web_decision::{
 
 #[cfg(feature = "scanning")]
 pub use web_runtime::{
-    RuntimeApiVisibilityError, StandardWebDecisionFailureReceipt, StandardWebDecisionRunReport,
+    ApiVisibilityContextProbe, ApiVisibilityDifferentialAudit,
+    ApiVisibilityDifferentialDisposition, ApiVisibilityDifferentialRequest,
+    ApiVisibilityDifferentialRequestError, ApiVisibilityInconclusiveReason, ApiVisibilityLeg,
+    ApiVisibilityLegReceipt, RuntimeApiVisibilityError, RuntimeApiVisibilityExecutionError,
+    RuntimeApiVisibilityRunReport, StandardWebDecisionFailureReceipt, StandardWebDecisionRunReport,
     StandardWebDecisionRuntime, StandardWebDecisionRuntimeBuilder, StandardWebDecisionRuntimeError,
     StandardWebDecisionRuntimeTurn,
 };

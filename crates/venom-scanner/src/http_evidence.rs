@@ -4,7 +4,7 @@
 //! typed observations. It does not classify vulnerabilities, follow redirects,
 //! choose follow-up actions, or mutate the knowledge base directly.
 
-use std::{collections::BTreeMap, collections::BTreeSet, sync::Arc, time::Duration};
+use std::{collections::BTreeMap, collections::BTreeSet, fmt, sync::Arc, time::Duration};
 
 use async_trait::async_trait;
 use reqwest::{
@@ -88,11 +88,23 @@ pub enum HttpBodyCapture {
 }
 
 /// One validated, bodyless discovery request.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct HttpProbe {
     url: Url,
     method: HttpProbeMethod,
     headers: BTreeMap<String, String>,
+}
+
+impl fmt::Debug for HttpProbe {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("HttpProbe")
+            .field("url", &"<redacted>")
+            .field("method", &self.method)
+            .field("header_names", &self.headers.keys().collect::<Vec<_>>())
+            .field("header_values", &"<redacted>")
+            .finish()
+    }
 }
 
 impl HttpProbe {
@@ -436,7 +448,7 @@ pub enum HttpEvidenceError {
     Reasoning(#[from] venom_core::ReasoningModelError),
 }
 
-fn execution_failure_kind(error: &HttpEvidenceError) -> DecisionExecutionFailureKind {
+pub(crate) fn execution_failure_kind(error: &HttpEvidenceError) -> DecisionExecutionFailureKind {
     match error {
         HttpEvidenceError::InvalidEndpointSubject { .. }
         | HttpEvidenceError::UnsupportedScheme { .. } => {
@@ -781,7 +793,7 @@ impl DecisionActionExecutor for HttpEvidenceExecutor {
     }
 }
 
-struct CollectedHttpResponse {
+pub(crate) struct CollectedHttpResponse {
     status: StatusCode,
     final_url: Url,
     version: String,
@@ -790,6 +802,26 @@ struct CollectedHttpResponse {
     body_truncated: bool,
     ttfb_ms: u64,
     total_ms: u64,
+}
+
+impl CollectedHttpResponse {
+    pub(crate) fn status(&self) -> u16 {
+        self.status.as_u16()
+    }
+
+    pub(crate) fn body(&self) -> &[u8] {
+        &self.body
+    }
+
+    pub(crate) fn body_truncated(&self) -> bool {
+        self.body_truncated
+    }
+
+    pub(crate) fn has_json_compatible_media_type(&self) -> bool {
+        normalized_media_type(&self.headers)
+            .as_deref()
+            .is_some_and(json_compatible_media_type)
+    }
 }
 
 fn validate_http_url(url: &Url) -> Result<(), HttpEvidenceError> {

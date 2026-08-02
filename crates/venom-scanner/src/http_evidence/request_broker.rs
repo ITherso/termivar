@@ -6,7 +6,8 @@ use reqwest::{
 
 use crate::{
     runtime_budget::{RequestAccountingBroker, RequestAccountingLease},
-    DecisionExecutionRequest, DecisionExecutorError, RuntimeLimitExceeded,
+    DecisionActionOrigin, DecisionExecutionFailureKind, DecisionExecutionLimits,
+    DecisionExecutionRequest, DecisionExecutionStage, DecisionExecutorError, RuntimeLimitExceeded,
 };
 
 use super::{elapsed_ms, CollectedHttpResponse, HttpEvidenceError, HttpEvidencePolicy, HttpProbe};
@@ -24,6 +25,20 @@ impl HttpRequestBrokerError {
         match self {
             Self::Http(error) => super::into_decision_executor_error(error),
             Self::RuntimeLimit(limit) => DecisionExecutorError::from_runtime_limit(limit),
+        }
+    }
+
+    pub(crate) fn failure_kind(&self) -> DecisionExecutionFailureKind {
+        match self {
+            Self::Http(error) => super::execution_failure_kind(error),
+            Self::RuntimeLimit(_) => DecisionExecutionFailureKind::BlockedByPolicy,
+        }
+    }
+
+    pub(crate) fn into_runtime_limit(self) -> Option<RuntimeLimitExceeded> {
+        match self {
+            Self::RuntimeLimit(limit) => Some(limit),
+            Self::Http(_) => None,
         }
     }
 }
@@ -90,9 +105,37 @@ impl HttpRequestBroker {
         &self.policy
     }
 
+    /// Creates a fresh connection pool under the same immutable policy and
+    /// shared accounting authority.
+    ///
+    /// Authorization-context comparisons use one isolated broker per leg so
+    /// connection-bound server state cannot bleed between principals while
+    /// every dispatch and body byte remains charged to the same runtime.
+    pub(crate) fn isolated(&self) -> Result<Self, HttpEvidenceError> {
+        Self::build(self.policy.clone(), self.accounting.clone())
+    }
+
     pub(super) async fn collect(
         &self,
         decision: &DecisionExecutionRequest,
+        probe: &HttpProbe,
+    ) -> Result<CollectedHttpResponse, HttpRequestBrokerError> {
+        self.collect_for_runtime(
+            decision.case().action_id(),
+            decision.stage(),
+            decision.origin(),
+            decision.limits(),
+            probe,
+        )
+        .await
+    }
+
+    pub(crate) async fn collect_for_runtime(
+        &self,
+        action_id: &str,
+        stage: DecisionExecutionStage,
+        origin: Option<DecisionActionOrigin>,
+        limits: DecisionExecutionLimits,
         probe: &HttpProbe,
     ) -> Result<CollectedHttpResponse, HttpRequestBrokerError> {
         self.validate_target(probe.url())?;
@@ -100,7 +143,8 @@ impl HttpRequestBroker {
         // Provider resolution, policy validation, and request construction are
         // deliberately complete before a transport dispatch is accounted.
         let request = self.build_request(probe)?;
-        self.collect_built_request(decision, request).await
+        self.collect_built_request(action_id, stage, origin, limits, request)
+            .await
     }
 
     #[cfg(test)]
@@ -110,7 +154,14 @@ impl HttpRequestBroker {
         request: reqwest::Request,
     ) -> Result<CollectedHttpResponse, HttpRequestBrokerError> {
         self.validate_target(request.url())?;
-        self.collect_built_request(decision, request).await
+        self.collect_built_request(
+            decision.case().action_id(),
+            decision.stage(),
+            decision.origin(),
+            decision.limits(),
+            request,
+        )
+        .await
     }
 
     fn validate_target(&self, target: &url::Url) -> Result<(), HttpEvidenceError> {
@@ -125,12 +176,14 @@ impl HttpRequestBroker {
 
     async fn collect_built_request(
         &self,
-        decision: &DecisionExecutionRequest,
+        action_id: &str,
+        stage: DecisionExecutionStage,
+        origin: Option<DecisionActionOrigin>,
+        limits: DecisionExecutionLimits,
         request: reqwest::Request,
     ) -> Result<CollectedHttpResponse, HttpRequestBrokerError> {
         let request_body_bytes = metered_request_body_bytes(&request)?;
-        let execution_body_limit = decision
-            .limits()
+        let execution_body_limit = limits
             .max_response_body_bytes()
             .map(|limit| usize::try_from(limit).unwrap_or(usize::MAX))
             .unwrap_or(usize::MAX);
@@ -140,7 +193,8 @@ impl HttpRequestBroker {
         tokio::time::timeout(self.policy.request_timeout(), async {
             // This is the accounting boundary: a successful lease is acquired
             // immediately before the logical request enters reqwest.
-            let mut accounting_lease = self.begin_accounting(decision, request_body_bytes)?;
+            let mut accounting_lease =
+                self.begin_accounting(action_id, stage, origin, request_body_bytes)?;
             let mut response = self
                 .client
                 .execute(request)
@@ -221,16 +275,18 @@ impl HttpRequestBroker {
 
     fn begin_accounting(
         &self,
-        decision: &DecisionExecutionRequest,
+        action_id: &str,
+        stage: DecisionExecutionStage,
+        origin: Option<DecisionActionOrigin>,
         request_body_bytes: u64,
     ) -> Result<Option<RequestAccountingLease>, RuntimeLimitExceeded> {
         self.accounting
             .as_ref()
             .map(|accounting| {
                 accounting.try_begin_with_request_body_bytes(
-                    decision.case().action_id(),
-                    decision.stage(),
-                    decision.origin(),
+                    action_id,
+                    stage,
+                    origin,
                     request_body_bytes,
                 )
             })

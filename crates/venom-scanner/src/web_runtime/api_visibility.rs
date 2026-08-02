@@ -10,6 +10,15 @@ use crate::{
     ApiVisibilityReviewPage, ApiVisibilityReviewQuery,
 };
 
+mod differential;
+
+pub use differential::{
+    ApiVisibilityContextProbe, ApiVisibilityDifferentialAudit,
+    ApiVisibilityDifferentialDisposition, ApiVisibilityDifferentialRequest,
+    ApiVisibilityDifferentialRequestError, ApiVisibilityInconclusiveReason, ApiVisibilityLeg,
+    ApiVisibilityLegReceipt, RuntimeApiVisibilityExecutionError, RuntimeApiVisibilityRunReport,
+};
+
 /// Failure while using paired API visibility reasoning through a web runtime.
 ///
 /// The wrapper preserves the standalone observation boundary's post-commit

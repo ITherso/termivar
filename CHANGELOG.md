@@ -46,6 +46,7 @@ All notable changes to Venom are recorded here. Releases use the categories from
 - Cumulative request-body accounting at the host-owned broker boundary, including atomic concurrent-limit enforcement and rejection of unmetered bodies.
 - Full transport-delivered response-chunk accounting while preserving a separately bounded retained evidence prefix.
 - A comparator-v3 visibility-explanation disposition that distinguishes equivalence, bounded path summaries, and differences without representable path summaries while preserving explicit replay metadata.
+- A host-triggered, single-use JSON authorization-context differential workflow that moves two broker-backed views through Comparator V3, atomic observation ingestion, and exact human-review projection without becoming a planner action or vulnerability verdict.
 
 ### Changed
 
@@ -100,6 +101,7 @@ All notable changes to Venom are recorded here. Releases use the categories from
 - Added strict, bounded cursor parsing and redacted cursor diagnostics while preserving the legacy in-process pagination wire contract.
 - Added active multi-request and pre-socket retry budget regressions so nested dispatches cannot escape host accounting.
 - Kept raw strategy seeds and derived artifacts out of serialization and debug output while retaining length, role, revision, and SHA-256 provenance.
+- Isolated control and candidate connection pools while sharing one host-owned accounting authority; exact-target and context-header preflight, two active-verification leases, and monotonic partial/post-commit receipts prevent credential bleed and unaccounted paired transport.
 
 ## [0.9.0-alpha] - 2026-07-31
 

@@ -25,8 +25,10 @@ authorized candidate JSON ---+              |
                          resource-scoped review projection
 ```
 
-This path performs no network I/O, chooses no attack, carries no credential,
-and does not classify a vulnerability.
+The comparator and ingestion path shown above performs no network I/O, chooses
+no attack, carries no credential, and does not classify a vulnerability. The
+standard runtime also exposes a narrower broker-backed collector described
+below; it feeds this same comparison and ingestion boundary.
 
 ## Bounded comparator
 
@@ -244,7 +246,7 @@ The example value is consumed transiently. Neither it nor the email string is
 stored in the view, comparison evidence, resource relation, receipt, or review
 projection.
 
-## Authorized runtime workflow
+## Transport-free authorized runtime workflow
 
 `StandardWebDecisionRuntime` can host the same ingestion and review boundary
 when it is built with `.enable_api_reasoning()`:
@@ -269,6 +271,57 @@ ingestion does not change runtime requests, response-byte accounting, planning,
 experience, or decision-session state. A runtime without API reasoning enabled
 returns `RuntimeApiVisibilityError::ApiReasoningDisabled` before any write.
 Post-commit reasoning failures retain their observation receipt.
+
+## Native broker-backed authorization-context workflow
+
+`StandardWebDecisionRuntime::run_api_visibility_pair` collects one explicit
+control/candidate pair before entering the same Comparator V3 and observation
+path. This is a host-triggered, single-use side path, not a planner-selected
+capability or `DecisionActionExecutor`. It preserves the runner's rule that
+normal executor evidence belongs to the outstanding endpoint subject; paired
+evidence continues to use its isolated `api-comparison:*` subject.
+
+The request is deliberately narrow:
+
+- both probes are bodyless `GET` requests for the exact runtime target;
+- the target must use HTTPS, except for an exact HTTP loopback fixture;
+- the pair is `AuthorizationContext` over the `JsonHttp` surface;
+- the host declares a bounded set of allowed credential and supporting
+  anti-CSRF header names;
+- at least one primary credential header differs, while every non-context
+  header is identical;
+- the comparison dimension is explicitly `Fields`, `Resources`, or `Status`.
+
+Control and candidate receive separate redirect-disabled and
+implicit-retry-disabled connection pools. Both pools share the runtime's
+immutable HTTP policy and broker accounting authority. Each leg is charged as
+an active verification and consumes its own request lease. Delivered response
+chunks remain charged on timeout, cancellation, truncation, or later failure.
+No cookie or connection pool is reused from control to candidate.
+
+Only two complete, non-truncated, JSON-compatible responses proceed. A `429`,
+server error, malformed JSON document, policy denial, transport failure,
+cancellation, or budget stop cannot produce a paired observation. The response
+bodies exist only while each bounded document is parsed and reduced to a
+profiled view. A successful report retains the raw-value-free V3 comparison,
+an observation/reasoning receipt for the atomic evidence/relation commit and
+subsequent rule application, and the exact resource review projection.
+
+`ApiVisibilityDifferentialAudit` is available on every post-start report and
+on post-transport execution errors. It captures monotonic runtime usage and a
+receipt for each completed leg; request-template and retained-body digests are
+pseudonymous replay metadata, not secret-safe commitments. An incomplete pair
+has no comparison. If cancellation or a wall limit arrives after comparison,
+the report can retain the comparison; if it arrives after ingestion, the
+committed observation and review can also remain. A later reasoning or review
+projection error exposes the comparison and available commit receipt rather
+than claiming rollback.
+
+The only positive review state is the canonical weak, supported boundary
+hypothesis with `AwaitHumanReview`. That state is never a broken-access-control
+finding, verifier success, planner outcome, Experience update, or endpoint
+decision-loop command. See
+[ADR 0013](../adr/0013-runtime-owned-api-visibility-pairs.md).
 
 ## Commit and reasoning receipts
 

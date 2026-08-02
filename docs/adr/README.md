@@ -18,6 +18,7 @@ Architecture decision records (ADRs) preserve why a durable technical choice was
 | [0010](0010-planner-selected-payload-strategies.md) | Accepted | Select payload strategies without moving payloads into planning |
 | [0011](0011-version-api-explanation-semantics.md) | Accepted | Version API explanation semantics |
 | [0012](0012-account-delivered-transport-bytes.md) | Accepted | Account delivered transport bytes at the broker boundary |
+| [0013](0013-runtime-owned-api-visibility-pairs.md) | Accepted | Run authorized API visibility pairs as a runtime-owned workflow |
 
 ## Format
 

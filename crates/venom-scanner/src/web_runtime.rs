@@ -31,7 +31,13 @@ use crate::{
 
 mod api_visibility;
 
-pub use api_visibility::RuntimeApiVisibilityError;
+pub use api_visibility::{
+    ApiVisibilityContextProbe, ApiVisibilityDifferentialAudit,
+    ApiVisibilityDifferentialDisposition, ApiVisibilityDifferentialRequest,
+    ApiVisibilityDifferentialRequestError, ApiVisibilityInconclusiveReason, ApiVisibilityLeg,
+    ApiVisibilityLegReceipt, RuntimeApiVisibilityError, RuntimeApiVisibilityExecutionError,
+    RuntimeApiVisibilityRunReport,
+};
 
 const DEFAULT_BUSINESS_VALUE_PERCENT: u8 = 80;
 const DEFAULT_PLANNING_BUDGET: u64 = 100;
@@ -500,7 +506,7 @@ impl StandardWebDecisionRuntimeBuilder {
             None
         };
         executors.register(Arc::new(HttpEvidenceExecutor::new_with_request_broker(
-            requests,
+            requests.clone(),
             Arc::new(SubjectHttpProbeProvider::new(HttpProbeMethod::Get)),
         )?))?;
 
@@ -522,6 +528,7 @@ impl StandardWebDecisionRuntimeBuilder {
             experience: self.experience,
             session: DecisionSession::new(subject),
             budget: self.runtime_budget,
+            requests,
             request_accounting,
             usage: RuntimeUsage::default(),
             cancellation: self.cancellation,
@@ -564,6 +571,7 @@ pub struct StandardWebDecisionRuntime {
     experience: ExperienceStore,
     session: DecisionSession,
     budget: RuntimeBudget,
+    requests: HttpRequestBroker,
     request_accounting: RequestAccountingBroker,
     usage: RuntimeUsage,
     cancellation: CancellationToken,

@@ -69,7 +69,7 @@ Task producer --> TaskQueue --> WorkerPool --> WorkerNode
 - [Decision runner](decision-runner.md): command execution, executor routing, evidence provenance, and verifier handoff.
 - [HTTP evidence executor](http-evidence.md): scope policy, bounded collection, typed observations, and rate-limit normalization.
 - [API predicate vocabulary](api-predicates.md): canonical and normalized HTTP/API predicates plus atomic evidence/resource-scope observation bundles.
-- [API visibility evidence](api-evidence.md): bounded JSON comparison, atomic ingestion receipts, and resource-scoped review projections.
+- [API visibility evidence](api-evidence.md): bounded JSON comparison, broker-backed authorization-context pairs, atomic ingestion receipts, and resource-scoped review projections.
 - [API reasoning](api-reasoning.md): deterministic JSON/GraphQL fingerprinting, capped API evidence contributions, and review-only visibility-boundary hypotheses.
 - [Standard web decision profile](web-decision.md): one-shot composition, installation transaction, and layer boundaries.
 - [Standard web decision runtime](web-runtime.md): target builder, bootstrap evidence, executable-plan filtering, resource budgets, and complete session driving.

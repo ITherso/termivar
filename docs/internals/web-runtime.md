@@ -94,7 +94,9 @@ executor, payload, active verification, or planner action, so the runtime's
 configured limits and request reservations remain unchanged. The additional
 deterministic rule evaluation still runs under the same wall-time deadline.
 
-### Authorized paired-visibility ingress
+### Authorized paired-visibility workflows
+
+#### Transport-free ingestion
 
 The runtime can also own the storage, reasoning, and review side of an
 authorized paired-visibility workflow. The host still pairs the two contexts
@@ -122,6 +124,57 @@ the observation commits, `RuntimeApiVisibilityError::committed_observation()`
 exposes the commit receipt rather than implying rollback. Producer
 authentication, authorization of both compared contexts, same-resource
 pairing, and persistence remain host responsibilities.
+
+#### Native authorization-context pair
+
+`run_api_visibility_pair` is the first runtime-native collection path for this
+model. It is an explicit host call, not a planner-selected capability. The host
+provides two context-bound `GET` probes for the exact runtime target, identifies
+their shared logical resource, and declares which bounded credential or
+supporting anti-CSRF header names belong to the authorization context. The
+request constructor rejects a method, URL, non-context header, or primary
+credential equivalence before I/O. Credentials require HTTPS except on an exact
+loopback fixture target.
+
+```rust
+let report = runtime.run_api_visibility_pair(request).await?;
+
+match report.disposition() {
+    ApiVisibilityDifferentialDisposition::AwaitHumanReview => {
+        // Present the weak, evidence-backed boundary to an authorized reviewer.
+    }
+    ApiVisibilityDifferentialDisposition::NoDifferenceObserved
+    | ApiVisibilityDifferentialDisposition::UnresolvedDifference
+    | ApiVisibilityDifferentialDisposition::Inconclusive
+    | ApiVisibilityDifferentialDisposition::CancelledByHost
+    | ApiVisibilityDifferentialDisposition::RuntimeBudgetLimit => {}
+    _ => {}
+}
+```
+
+Control and candidate use separate connection pools so connection-bound state
+cannot cross principal contexts. They still share the runtime's HTTP policy and
+host-owned accounting authority. Both dispatches are `Active`, require separate
+total-request and active-verification leases, and charge request bodies and all
+transport-delivered response chunks at the broker boundary. Redirect following
+and implicit retries remain disabled.
+
+Only two complete, non-truncated JSON-compatible responses continue to
+Comparator V3. The runtime then creates the isolated comparison observation,
+atomically commits its evidence and resource relation, applies standard API
+reasoning, and reads the exact committed review. A difference can produce only
+a weak, supported boundary hypothesis with `AwaitHumanReview`; it never becomes
+a vulnerability verdict, endpoint decision-loop command, planner success, or
+Experience update.
+
+The operation is single-use. Once its pre-I/O configuration and target checks
+pass, the same runtime cannot later run `analyze()` or another pair. Incomplete
+legs produce no comparison, but their charged usage and any completed-leg
+receipt remain in `ApiVisibilityDifferentialAudit`. A late cancellation or
+limit may retain a completed V3 comparison and, if ingestion already happened,
+the observation and review. Post-commit errors expose the same audit plus the
+available comparison and commit receipt; they do not imply rollback or disk
+durability. See [ADR 0013](../adr/0013-runtime-owned-api-visibility-pairs.md).
 
 ## Runtime safety envelope
 

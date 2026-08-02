@@ -13,8 +13,8 @@ use thiserror::Error;
 use venom_core::{
     ApiEvidencePredicate, ApiKnowledgePredicate, ApiVisibilityBoundaryKind, ApiVisibilityDimension,
     ApiVisibilityObservation, ConfidenceScore, EntityId, Evidence, EvidenceId, EvidenceKind,
-    EvidenceValue, Hypothesis, HypothesisState, HypothesisStrength, KnowledgePredicate, RelationId,
-    RelationKind,
+    EvidenceValue, Hypothesis, HypothesisState, HypothesisStrength, KnowledgePredicate,
+    KnowledgeRelation, RelationId, RelationKind,
 };
 
 use crate::{
@@ -939,36 +939,9 @@ pub fn api_visibility_reviews_for_resource(
 
     let mut reviews = Vec::new();
     for relation in relations {
-        if !matches!(relation.kind(), RelationKind::Custom(kind) if kind == API_VISIBILITY_RELATION)
-            || relation.to() != resource_scope
-            || relation.evidence_ids().len() != 1
-        {
-            continue;
+        if let Some(review) = project_api_visibility_review(knowledge, resource_scope, &relation) {
+            reviews.push(review);
         }
-        let Some(evidence_id) = relation.evidence_ids().iter().next() else {
-            continue;
-        };
-        let Some(evidence) = knowledge
-            .inspect_evidence(evidence_id, |evidence| {
-                (is_canonical_comparison(evidence, &relation)
-                    && is_bounded_review_evidence(evidence))
-                .then(|| evidence.clone())
-            })
-            .flatten()
-        else {
-            continue;
-        };
-
-        let boundary_hypotheses = canonical_boundary_hypothesis(knowledge, &evidence)
-            .into_iter()
-            .collect();
-        reviews.push(ApiVisibilityReview {
-            resource_scope: resource_scope.clone(),
-            comparison_subject: evidence.subject().clone(),
-            relation_id: relation.id().clone(),
-            evidence,
-            boundary_hypotheses,
-        });
     }
     ApiVisibilityReviewPage {
         resource_scope: resource_scope.clone(),
@@ -976,6 +949,48 @@ pub fn api_visibility_reviews_for_resource(
         scanned_relations,
         next_after_relation_id,
     }
+}
+
+#[cfg(feature = "scanning")]
+pub(crate) fn api_visibility_review_for_commit(
+    knowledge: &KnowledgeBase,
+    commit: &ApiObservationCommitReceipt,
+) -> Option<ApiVisibilityReview> {
+    let relation = knowledge.relation(commit.relation_id())?;
+    project_api_visibility_review(knowledge, commit.resource_scope(), &relation).filter(|review| {
+        review.comparison_subject() == commit.comparison_subject()
+            && review.evidence().id() == commit.evidence_id()
+    })
+}
+
+fn project_api_visibility_review(
+    knowledge: &KnowledgeBase,
+    resource_scope: &EntityId,
+    relation: &KnowledgeRelation,
+) -> Option<ApiVisibilityReview> {
+    if !matches!(relation.kind(), RelationKind::Custom(kind) if kind == API_VISIBILITY_RELATION)
+        || relation.to() != resource_scope
+        || relation.evidence_ids().len() != 1
+    {
+        return None;
+    }
+    let evidence_id = relation.evidence_ids().iter().next()?;
+    let evidence = knowledge
+        .inspect_evidence(evidence_id, |evidence| {
+            (is_canonical_comparison(evidence, relation) && is_bounded_review_evidence(evidence))
+                .then(|| evidence.clone())
+        })
+        .flatten()?;
+    let boundary_hypotheses = canonical_boundary_hypothesis(knowledge, &evidence)
+        .into_iter()
+        .collect();
+    Some(ApiVisibilityReview {
+        resource_scope: resource_scope.clone(),
+        comparison_subject: evidence.subject().clone(),
+        relation_id: relation.id().clone(),
+        evidence,
+        boundary_hypotheses,
+    })
 }
 
 fn review_cursor_resource_digest(resource_scope: &EntityId) -> [u8; 32] {

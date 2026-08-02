@@ -169,13 +169,38 @@ when API reasoning is disabled. `RuntimeApiVisibilityError` preserves a commit
 receipt if reasoning fails after storage. Pairing, producer authentication,
 authorization, and raw response handling remain host responsibilities.
 
+The separate `run_api_visibility_pair` method is the first native collection
+path. The host supplies an `ApiVisibilityDifferentialRequest` containing two
+`ApiVisibilityContextProbe` values, one logical resource, a Comparator V3
+profile, and the explicit authorization-context header-name set. Construction
+requires bodyless `GET` probes for the exact runtime target, HTTPS outside an
+exact loopback fixture, distinct context handles, at least one differing primary
+credential header value, and identical non-context headers.
+
+This call is host-triggered and consumes the runtime's single-use execution
+right; it is not selected by the planner and cannot be combined with
+`analyze()` on the same instance. Control and candidate use isolated connection
+pools but share one host-owned broker accounting authority. Both are charged as
+active verifications. Redirect following and implicit retries are disabled.
+
+`RuntimeApiVisibilityRunReport` distinguishes `NoDifferenceObserved`,
+`UnresolvedDifference`, `AwaitHumanReview`, `Inconclusive`, host cancellation,
+and a runtime-budget stop. It carries monotonic, raw-value-free leg receipts and
+usage; a complete pair also carries its profiled comparison, and successful
+ingestion carries the observation and exact review. Post-transport
+`RuntimeApiVisibilityExecutionError` variants preserve the available audit,
+comparison, and commit receipt. Even `AwaitHumanReview` represents only an
+exact weak, supported visibility-boundary hypothesis—never a vulnerability
+verdict or decision-loop success.
+
 The runnable
 [`api_visibility_review`](https://github.com/ITherso/venom/blob/main/examples/api_visibility_review.rs)
 example demonstrates the typed runtime workflow without performing network
 I/O.
 
-See [API visibility evidence](internals/api-evidence.md) for canonicalization
-semantics, limits, receipts, replay behavior, and trust boundaries.
+See [API visibility evidence](internals/api-evidence.md) for canonicalization,
+native collection limits, receipts, partial-commit semantics, replay behavior,
+and trust boundaries.
 
 This reasoning surface is separate from the `venom-api` application transport.
 Recognizing a GraphQL-shaped target does not expose or implement a GraphQL

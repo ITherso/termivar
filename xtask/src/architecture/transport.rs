@@ -34,12 +34,24 @@ const BOUNDED_RUNTIME_SOURCES: &[&str] = &[
     "crates/venom-scanner/src/web_reasoning.rs",
     "crates/venom-scanner/src/web_runtime.rs",
     "crates/venom-scanner/src/web_runtime/api_visibility.rs",
+    "crates/venom-scanner/src/web_runtime/api_visibility/differential.rs",
+    "crates/venom-scanner/src/web_runtime/api_visibility/differential/execution.rs",
     "crates/venom-scanner/src/web_verification.rs",
 ];
 
 /// The sole raw HTTP-client owner in the bounded runtime.
 const TRANSPORT_OWNER_SOURCE: &str = "crates/venom-scanner/src/http_evidence/request_broker.rs";
 const STANDARD_RUNTIME_COMPOSITION_SOURCE: &str = "crates/venom-scanner/src/web_runtime.rs";
+
+/// Existing standalone facades that intentionally construct an unmetered
+/// broker because they execute outside `StandardWebDecisionRuntime`.
+///
+/// Keep this inventory exact: bounded runtime modules, including paired API
+/// visibility collection, must never be added here.
+const UNMETERED_STANDALONE_FACADE_SOURCES: &[&str] = &[
+    "crates/venom-scanner/src/http_evidence.rs",
+    "crates/venom-scanner/src/web_execution.rs",
+];
 
 /// Exact raw-client source inventory. Entries other than the broker owner are
 /// legacy and are not covered by `RuntimeBudget`.
@@ -149,6 +161,22 @@ fn validate_policy_inventory() -> Vec<String> {
     {
         violations.push("direct-client source allowlist contains duplicates".to_owned());
     }
+    if UNMETERED_STANDALONE_FACADE_SOURCES
+        .iter()
+        .copied()
+        .collect::<BTreeSet<_>>()
+        .len()
+        != UNMETERED_STANDALONE_FACADE_SOURCES.len()
+    {
+        violations.push("unmetered standalone facade allowlist contains duplicates".to_owned());
+    }
+    for source in UNMETERED_STANDALONE_FACADE_SOURCES {
+        if !bounded.contains(source) {
+            violations.push(format!(
+                "unmetered standalone facade {source} must remain in the bounded-source inventory"
+            ));
+        }
+    }
     if LEGACY_PHASE_SEND_ALLOWLIST
         .iter()
         .map(|(source, _)| *source)
@@ -193,6 +221,16 @@ impl OwnershipVisitor<'_> {
                 "{} imports nondeterministic or stateful path {}; payload strategies must remain pure contracts",
                 self.source,
                 display_path(segments)
+            ));
+        }
+        if !UNMETERED_STANDALONE_FACADE_SOURCES.contains(&self.source)
+            && segments
+                .last()
+                .is_some_and(|item| normalize_identifier(item) == "new_unmetered")
+        {
+            self.violations.insert(format!(
+                "{} constructs an unmetered request broker outside the legacy standalone HTTP facade",
+                self.source
             ));
         }
         let reqwest = segments
@@ -309,6 +347,14 @@ impl<'ast> Visit<'ast> for OwnershipVisitor<'_> {
                     "crates/venom-scanner/src/http_evidence.rs",
                     "request_broker"
                 ) | ("crates/venom-scanner/src/web_runtime.rs", "api_visibility")
+                    | (
+                        "crates/venom-scanner/src/web_runtime/api_visibility.rs",
+                        "differential"
+                    )
+                    | (
+                        "crates/venom-scanner/src/web_runtime/api_visibility/differential.rs",
+                        "execution"
+                    )
             );
         if !canonical {
             self.violations.insert(format!(
@@ -350,9 +396,17 @@ impl<'ast> Visit<'ast> for OwnershipVisitor<'_> {
     }
 
     fn visit_expr_method_call(&mut self, expression: &'ast syn::ExprMethodCall) {
-        if ident_name(&expression.method) == "send" {
+        let method = ident_name(&expression.method);
+        if method == "send" {
             self.violations.insert(format!(
                 "{} calls .send() outside the transport owner",
+                self.source
+            ));
+        }
+        if method == "new_unmetered" && !UNMETERED_STANDALONE_FACADE_SOURCES.contains(&self.source)
+        {
+            self.violations.insert(format!(
+                "{} constructs an unmetered request broker outside the legacy standalone HTTP facade",
                 self.source
             ));
         }
@@ -744,6 +798,28 @@ mod tests {
         .join("\n");
         assert!(violations.contains("must construct its broker"));
         assert!(violations.contains("must not construct an unmetered"));
+    }
+
+    #[test]
+    fn paired_visibility_source_cannot_construct_an_unmetered_broker() {
+        for source in [
+            "fn escape(policy: Policy) { HttpRequestBroker :: new_unmetered (policy); }",
+            "use crate::http_evidence::HttpRequestBroker as Broker; fn escape(policy: Policy) { Broker::new_unmetered(policy); }",
+            "fn escape(broker: Broker, policy: Policy) { broker.new_unmetered(policy); }",
+            "fn escape(policy: Policy) { policy!(Broker::new_unmetered(policy)); }",
+        ] {
+            let violations = inspect_bounded_source(
+                "crates/venom-scanner/src/web_runtime/api_visibility/differential/execution.rs",
+                source,
+            )
+            .unwrap()
+            .join("\n");
+
+            assert!(
+                violations.contains("constructs an unmetered request broker"),
+                "unmetered alias unexpectedly passed: {source}: {violations}"
+            );
+        }
     }
 
     #[test]

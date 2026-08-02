@@ -89,6 +89,34 @@ redirects, retries, cancellation, and partial failures observable at the
 host-owned transport boundary. A response-threshold crossing must halt the same
 turn while preserving any committed evidence receipt.
 
+Native authorization-context differential regression coverage must use
+loopback only and assert the whole paired boundary:
+
+- preflight rejects method, exact-target, non-context-header, credential, and
+  insecure non-loopback transport mismatches before opening a socket;
+- control and candidate credentials remain isolated, including connection-pool
+  and response-cookie state, while both requests charge the same broker budget;
+- both legs consume active-verification and total-request leases, so a limit of
+  one prevents the candidate dispatch;
+- redirects are charged but never followed, and implicit retries never create
+  an unaccounted request;
+- partial bodies, timeouts, cancellation, malformed/non-JSON responses, `429`,
+  server errors, and response-byte crossings never emit a comparison;
+- a completed control receipt and all delivered bytes remain auditable when the
+  candidate or a later stage fails;
+- the same complete fixture and V3 profile produce the same comparison and
+  redacted explanation;
+- a difference ends only in a weak, supported `AwaitHumanReview` boundary and
+  never a vulnerability finding, Experience write, or decision-loop success;
+- serialized and debug reports contain no credential values, raw JSON values,
+  or clear diff paths; debug output also redacts deterministic digests, while
+  serialized digests remain explicitly pseudonymous audit metadata.
+
+Tests for post-comparison cancellation and post-commit reasoning/projection
+failure must assert which of the comparison, observation receipt, and exact
+review remains available. These receipts describe in-process append-only state;
+they are not rollback or crash-durability claims.
+
 ## Security and compatibility
 
 Security checks are separate from functional tests:

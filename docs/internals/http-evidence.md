@@ -53,6 +53,14 @@ The `http.response.status` predicate intentionally matches the standard adaptive
 
 The complete request plus body read has one timeout. Body retention has a configurable positive per-response limit and a hard 16 MiB ceiling. `StandardWebDecisionRuntime` gives every built-in executor a clone of one broker backed by one atomic accounting authority. The broker acquires a non-refundable request lease immediately before dispatch and charges every response chunk delivered by transport before retaining its bounded prefix. A host runtime may also attach a smaller per-execution retention allowance. Partial bytes remain accounted even when a later read times out or fails. Metadata-only capture is the default. Text sampling must be enabled explicitly and remains bounded by the body buffer.
 
+The native authorization-context visibility workflow is the deliberate
+exception to connection-pool sharing, not to broker accounting. It creates one
+fresh redirect-disabled client pool per principal so connection-bound state
+cannot cross from control to candidate, while both brokers retain the same
+policy and atomic accounting authority. Each leg therefore acquires its own
+total-request and active-verification lease and contributes response bytes to
+the same runtime usage counters.
+
 `RuntimeUsage.response_bytes` counts complete chunks delivered to the broker collector. `http.response.body-bytes-observed` records only the prefix retained for evidence. A shared response-read gate prevents another collector from starting a read after the session threshold is full; the one chunk that reveals a crossing is charged in full and becomes a typed runtime limit.
 
 Response headers use a conservative allowlist. `Set-Cookie` is omitted by default because it may contain session secrets; a host may opt in only when its evidence retention policy permits that data. The executor hashes exactly the bytes it observed, so a truncated-body hash is not presented as a hash of the complete representation.
