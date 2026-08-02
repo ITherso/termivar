@@ -11,6 +11,7 @@ Architecture decision records (ADRs) preserve why a durable technical choice was
 | [0003](0003-event-bus.md) | Accepted | Separate core event contracts from scanner event delivery |
 | [0004](0004-reasoning-runtime-boundary.md) | Accepted | Keep deterministic reasoning inward of execution and runtime |
 | [0005](0005-shared-predicate-vocabulary.md) | Accepted | Share predicate vocabulary through venom-core |
+| [0006](0006-api-visibility-ingestion.md) | Accepted | Keep API visibility ingestion outside the decision runner |
 
 ## Format
 

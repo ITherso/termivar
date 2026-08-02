@@ -107,4 +107,9 @@ Runtime request reservations are monotonic and are never rolled back. Executor e
 
 A successful outcome report exposes a runtime-only, lightweight before/after session transition summary alongside its verification, hypothesis write, and experience write. The summary is not a full session replay snapshot and is omitted from the report's existing serialized shape. Candidate experience and session state are assigned only after every fallible outcome step succeeds. This is an explicit error-atomic partial-turn boundary, not a rollback or crash-atomic transaction guarantee.
 
+The hypothesis transition uses the `VerificationReport` revision token. A
+concurrent evidence, hypothesis, or ontology write makes the report stale and
+aborts the candidate experience/session commit. Same-terminal replay remains
+idempotent, while opposite terminal transitions fail explicitly.
+
 A budget stop is different: it occurs before the refused side effect and moves any outstanding decision session to `Halted { reason: RuntimeBudgetLimit }`. Evidence and outcome receipts from earlier completed turns remain available in the report.

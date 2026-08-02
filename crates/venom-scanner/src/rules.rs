@@ -17,6 +17,9 @@ use venom_core::{
 
 use crate::knowledge::{KnowledgeBase, KnowledgeBaseError, KnowledgeSnapshot, KnowledgeWrite};
 
+const MAX_STALE_SNAPSHOT_RETRIES: u8 = 3;
+const MAX_REASONING_APPLY_ATTEMPTS: u8 = MAX_STALE_SNAPSHOT_RETRIES + 1;
+
 /// Errors raised while validating or evaluating deterministic rules.
 #[derive(Debug, Error)]
 #[non_exhaustive]
@@ -69,6 +72,10 @@ pub enum RuleEngineError {
     /// A materialized hypothesis conflicted with stored knowledge.
     #[error(transparent)]
     Knowledge(#[from] KnowledgeBaseError),
+
+    /// Concurrent rule-visible writes prevented a stable reasoning commit.
+    #[error("reasoning snapshot stayed stale after {attempts} commit attempts")]
+    StaleSnapshotRetriesExhausted { attempts: u8 },
 }
 
 fn non_empty(value: impl Into<String>, field: &'static str) -> Result<String, RuleEngineError> {
@@ -1029,7 +1036,7 @@ impl RuleEvaluation {
     }
 }
 
-/// Result of evaluating and atomically writing one rule conclusion.
+/// Result of evaluating one rule and committing its conclusion in a reasoning batch.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct RuleApplication {
     evaluation: RuleEvaluation,
@@ -1037,7 +1044,12 @@ pub struct RuleApplication {
 }
 
 impl RuleApplication {
-    /// Returns the pure evaluation that preceded the write.
+    /// Returns the pure evaluation that preceded the committed batch.
+    ///
+    /// This is the snapshot candidate, not a fresh read of committed state.
+    /// Terminal-state preservation can therefore make the stored lifecycle
+    /// state differ from this hypothesis; query the knowledge base when the
+    /// post-commit record is required.
     pub fn evaluation(&self) -> &RuleEvaluation {
         &self.evaluation
     }
@@ -1110,37 +1122,72 @@ impl RuleEngine {
             .collect()
     }
 
-    /// Evaluates one decision cycle and writes matched hypotheses.
+    /// Evaluates one decision cycle and atomically writes matched hypotheses.
     ///
-    /// Existing verifier-owned `Confirmed` and `Rejected` states survive
-    /// recalibration, so a reasoning pass cannot reverse a verification result.
+    /// All rules first evaluate in stable rule-ID order against one immutable
+    /// snapshot. Every matched hypothesis is then preflighted and committed in
+    /// one knowledge-base write transaction, so one late identity conflict
+    /// cannot leave earlier conclusions stored. Existing verifier-owned
+    /// `Confirmed` and `Rejected` states are preserved under that same write
+    /// lock, so a concurrent reasoning pass cannot reverse a verification result.
     pub fn apply(
         &self,
         knowledge: &KnowledgeBase,
         subject: &venom_core::EntityId,
     ) -> Result<Vec<RuleApplication>, RuleEngineError> {
-        let evaluations = self.evaluate(knowledge, subject)?;
-        evaluations
-            .into_iter()
-            .map(|evaluation| {
-                let write = evaluation
-                    .hypothesis()
-                    .cloned()
-                    .map(|mut hypothesis| {
-                        if let Some(existing) = knowledge.hypothesis(hypothesis.id()) {
-                            if matches!(
-                                existing.state(),
-                                HypothesisState::Confirmed | HypothesisState::Rejected
-                            ) {
-                                hypothesis.set_state(existing.state());
-                            }
-                        }
-                        knowledge.upsert_hypothesis(hypothesis)
-                    })
-                    .transpose()?;
-                Ok(RuleApplication { evaluation, write })
-            })
-            .collect()
+        self.apply_with_before_commit(knowledge, subject, |_, _| {})
+    }
+
+    fn apply_with_before_commit<F>(
+        &self,
+        knowledge: &KnowledgeBase,
+        subject: &venom_core::EntityId,
+        mut before_commit: F,
+    ) -> Result<Vec<RuleApplication>, RuleEngineError>
+    where
+        F: FnMut(u8, &KnowledgeSnapshot),
+    {
+        for attempt in 1..=MAX_REASONING_APPLY_ATTEMPTS {
+            let snapshot = knowledge.snapshot_for_subject(subject);
+            let evaluations = self.evaluate_snapshot(&snapshot)?;
+            let hypotheses = evaluations
+                .iter()
+                .filter_map(|evaluation| evaluation.hypothesis().cloned())
+                .collect();
+            before_commit(attempt, &snapshot);
+
+            let writes = match knowledge.upsert_reasoning_hypothesis_batch(&snapshot, hypotheses) {
+                Ok(writes) => writes,
+                Err(KnowledgeBaseError::StaleSnapshot { .. })
+                    if attempt < MAX_REASONING_APPLY_ATTEMPTS =>
+                {
+                    continue;
+                },
+                Err(KnowledgeBaseError::StaleSnapshot { .. }) => {
+                    return Err(RuleEngineError::StaleSnapshotRetriesExhausted {
+                        attempts: attempt,
+                    });
+                },
+                Err(error) => return Err(error.into()),
+            };
+
+            let mut writes = writes.into_iter().peekable();
+            let applications = evaluations
+                .into_iter()
+                .map(|evaluation| {
+                    let write = evaluation.hypothesis().map(|_| {
+                        writes
+                            .next()
+                            .expect("matched hypotheses and writes stay aligned")
+                    });
+                    RuleApplication { evaluation, write }
+                })
+                .collect();
+            debug_assert!(writes.peek().is_none());
+            return Ok(applications);
+        }
+
+        unreachable!("bounded reasoning attempts always return or retry")
     }
 }
 
@@ -1530,6 +1577,210 @@ mod tests {
     }
 
     #[test]
+    fn rule_engine_retries_a_controllably_stale_snapshot() {
+        let knowledge = KnowledgeBase::new();
+        knowledge
+            .insert_evidence(evidence(
+                framework_predicate(),
+                EvidenceValue::Text("Laravel".into()),
+            ))
+            .unwrap();
+        knowledge
+            .insert_evidence(evidence(
+                auth_predicate(),
+                EvidenceValue::Text("Sanctum".into()),
+            ))
+            .unwrap();
+        let mut engine = RuleEngine::new();
+        engine.register(laravel_rule("framework.laravel")).unwrap();
+
+        let applications = engine
+            .apply_with_before_commit(&knowledge, &subject(), |attempt, _| {
+                if attempt == 1 {
+                    knowledge
+                        .insert_evidence(evidence(
+                            framework_predicate(),
+                            EvidenceValue::Text("Laravel".into()),
+                        ))
+                        .unwrap();
+                }
+            })
+            .unwrap();
+
+        let committed_id = applications[0].evaluation().hypothesis().unwrap().id();
+        let stored = knowledge.hypothesis(committed_id).unwrap();
+        assert_eq!(stored.belief().evidence().len(), 3);
+        assert_eq!(applications[0].write(), Some(KnowledgeWrite::Inserted));
+    }
+
+    #[test]
+    fn empty_apply_validates_revisions_and_reports_retry_exhaustion() {
+        let knowledge = KnowledgeBase::new();
+        let engine = RuleEngine::new();
+
+        let error = engine
+            .apply_with_before_commit(&knowledge, &subject(), |attempt, _| {
+                knowledge
+                    .insert_evidence(evidence(
+                        framework_predicate(),
+                        EvidenceValue::Text(format!("stale-attempt-{attempt}")),
+                    ))
+                    .unwrap();
+            })
+            .unwrap_err();
+
+        assert!(matches!(
+            error,
+            RuleEngineError::StaleSnapshotRetriesExhausted {
+                attempts: MAX_REASONING_APPLY_ATTEMPTS
+            }
+        ));
+        assert_eq!(knowledge.stats().hypotheses, 0);
+    }
+
+    #[test]
+    fn delayed_reasoning_batch_cannot_overwrite_a_newer_belief() {
+        let knowledge = KnowledgeBase::new();
+        knowledge
+            .insert_evidence(evidence(
+                framework_predicate(),
+                EvidenceValue::Text("Laravel".into()),
+            ))
+            .unwrap();
+        knowledge
+            .insert_evidence(evidence(
+                auth_predicate(),
+                EvidenceValue::Text("Sanctum".into()),
+            ))
+            .unwrap();
+        let mut engine = RuleEngine::new();
+        engine.register(laravel_rule("framework.laravel")).unwrap();
+        let stale_snapshot = knowledge.snapshot_for_subject(&subject());
+        let stale_hypotheses = engine
+            .evaluate_snapshot(&stale_snapshot)
+            .unwrap()
+            .into_iter()
+            .filter_map(|evaluation| evaluation.hypothesis().cloned())
+            .collect();
+
+        knowledge
+            .insert_evidence(evidence(
+                framework_predicate(),
+                EvidenceValue::Text("Laravel".into()),
+            ))
+            .unwrap();
+        let current = engine.apply(&knowledge, &subject()).unwrap();
+        let hypothesis_id = current[0].evaluation().hypothesis().unwrap().id();
+        assert_eq!(
+            knowledge
+                .hypothesis(hypothesis_id)
+                .unwrap()
+                .belief()
+                .evidence()
+                .len(),
+            3
+        );
+
+        assert!(matches!(
+            knowledge.upsert_reasoning_hypothesis_batch(&stale_snapshot, stale_hypotheses),
+            Err(KnowledgeBaseError::StaleSnapshot { .. })
+        ));
+        assert_eq!(
+            knowledge
+                .hypothesis(hypothesis_id)
+                .unwrap()
+                .belief()
+                .evidence()
+                .len(),
+            3
+        );
+    }
+
+    #[test]
+    fn rule_engine_rolls_back_every_hypothesis_on_a_late_identity_conflict() {
+        let knowledge = KnowledgeBase::new();
+        knowledge
+            .insert_evidence(evidence(
+                framework_predicate(),
+                EvidenceValue::Text("Laravel".into()),
+            ))
+            .unwrap();
+        knowledge
+            .insert_evidence(evidence(
+                auth_predicate(),
+                EvidenceValue::Text("Sanctum".into()),
+            ))
+            .unwrap();
+        let mut engine = RuleEngine::new();
+        engine.register(laravel_rule("rule.a")).unwrap();
+        engine.register(laravel_rule("rule.b")).unwrap();
+
+        let evaluations = engine.evaluate(&knowledge, &subject()).unwrap();
+        let first_id = evaluations[0].hypothesis().unwrap().id().to_owned();
+        let second_id = evaluations[1].hypothesis().unwrap().id().to_owned();
+        let conflicting = Hypothesis::with_id(
+            second_id.clone(),
+            subject(),
+            auth_predicate(),
+            EvidenceValue::Text("conflicting-claim".into()),
+            Probability::from_percent(50).unwrap(),
+        )
+        .unwrap();
+        knowledge.upsert_hypothesis(conflicting).unwrap();
+
+        assert!(matches!(
+            engine.apply(&knowledge, &subject()),
+            Err(RuleEngineError::Knowledge(
+                KnowledgeBaseError::IdentityConflict {
+                    kind: crate::KnowledgeRecordKind::Hypothesis,
+                    id,
+                }
+            )) if id == second_id
+        ));
+        assert!(knowledge.hypothesis(&first_id).is_none());
+        assert_eq!(knowledge.stats().hypotheses, 1);
+    }
+
+    #[test]
+    fn rule_engine_recalibration_preserves_verifier_terminal_states() {
+        for terminal_state in [HypothesisState::Confirmed, HypothesisState::Rejected] {
+            let knowledge = KnowledgeBase::new();
+            knowledge
+                .insert_evidence(evidence(
+                    framework_predicate(),
+                    EvidenceValue::Text("Laravel".into()),
+                ))
+                .unwrap();
+            knowledge
+                .insert_evidence(evidence(
+                    auth_predicate(),
+                    EvidenceValue::Text("Sanctum".into()),
+                ))
+                .unwrap();
+            let mut engine = RuleEngine::new();
+            engine.register(laravel_rule("framework.laravel")).unwrap();
+            let initial = engine.apply(&knowledge, &subject()).unwrap();
+            let hypothesis_id = initial[0].evaluation().hypothesis().unwrap().id();
+            let mut verified = knowledge.hypothesis(hypothesis_id).unwrap();
+            verified.set_state(terminal_state);
+            knowledge.upsert_hypothesis(verified).unwrap();
+
+            knowledge
+                .insert_evidence(evidence(
+                    framework_predicate(),
+                    EvidenceValue::Text("Laravel".into()),
+                ))
+                .unwrap();
+            let recalibrated = engine.apply(&knowledge, &subject()).unwrap();
+
+            assert_eq!(recalibrated[0].write(), Some(KnowledgeWrite::Updated));
+            let stored = knowledge.hypothesis(hypothesis_id).unwrap();
+            assert_eq!(stored.state(), terminal_state);
+            assert_eq!(stored.belief().evidence().len(), 3);
+        }
+    }
+
+    #[test]
     fn rules_evaluate_in_id_order_not_registration_order() {
         let knowledge = KnowledgeBase::new();
         knowledge
@@ -1551,6 +1802,59 @@ mod tests {
         let evaluations = engine.evaluate(&knowledge, &subject()).unwrap();
         assert_eq!(evaluations[0].rule_id(), "rule.a");
         assert_eq!(evaluations[1].rule_id(), "rule.z");
+    }
+
+    #[test]
+    fn rule_applications_keep_evaluation_order_and_unmatched_write_slots() {
+        let knowledge = KnowledgeBase::new();
+        knowledge
+            .insert_evidence(evidence(
+                framework_predicate(),
+                EvidenceValue::Text("Laravel".into()),
+            ))
+            .unwrap();
+        knowledge
+            .insert_evidence(evidence(
+                auth_predicate(),
+                EvidenceValue::Text("Sanctum".into()),
+            ))
+            .unwrap();
+        let template = laravel_rule("template");
+        let unmatched = ReasoningRule::new(
+            "rule.b",
+            Expression::exists(
+                KnowledgeLayer::Evidence,
+                KnowledgePredicate::new("security", "waf").unwrap(),
+            ),
+            template.conclusion.clone(),
+        )
+        .unwrap();
+        let mut engine = RuleEngine::new();
+        engine.register(laravel_rule("rule.c")).unwrap();
+        engine.register(unmatched).unwrap();
+        engine.register(laravel_rule("rule.a")).unwrap();
+
+        let applications = engine.apply(&knowledge, &subject()).unwrap();
+
+        assert_eq!(
+            applications
+                .iter()
+                .map(|application| application.evaluation().rule_id())
+                .collect::<Vec<_>>(),
+            vec!["rule.a", "rule.b", "rule.c"]
+        );
+        assert_eq!(
+            applications
+                .iter()
+                .map(RuleApplication::write)
+                .collect::<Vec<_>>(),
+            vec![
+                Some(KnowledgeWrite::Inserted),
+                None,
+                Some(KnowledgeWrite::Inserted),
+            ]
+        );
+        assert_eq!(knowledge.stats().hypotheses, 2);
     }
 
     #[test]

@@ -37,7 +37,7 @@ const CODE_STRING_ATTRIBUTE_KEYS: &[&str] = &[
     "with",
 ];
 const PRIMITIVE_ROOTS: &[&str] = &[
-    "i8", "i16", "i32", "i64", "i128", "isize", "u8", "u16", "u32", "u64", "u128", "usize",
+    "char", "i8", "i16", "i32", "i64", "i128", "isize", "u8", "u16", "u32", "u64", "u128", "usize",
 ];
 const PRELUDE_ROOTS: &[&str] = &[
     "AsMut",
@@ -62,48 +62,69 @@ const PRELUDE_ROOTS: &[&str] = &[
 struct ModulePolicy {
     source: &'static str,
     allowed_internal: &'static [&'static str],
+    allowed_external: &'static [&'static str],
 }
 
 const MODULE_POLICIES: &[ModulePolicy] = &[
     ModulePolicy {
         source: "knowledge.rs",
         allowed_internal: &[],
+        allowed_external: &[],
     },
     ModulePolicy {
         source: "experience.rs",
         allowed_internal: &[],
+        allowed_external: &[],
     },
     ModulePolicy {
         source: "rules.rs",
         allowed_internal: &["knowledge"],
+        allowed_external: &[],
     },
     ModulePolicy {
         source: "planner.rs",
         allowed_internal: &["knowledge", "rules"],
+        allowed_external: &[],
     },
     ModulePolicy {
         source: "verification.rs",
         allowed_internal: &["knowledge", "rules"],
+        allowed_external: &[],
     },
     ModulePolicy {
         source: "web_actions.rs",
         allowed_internal: &[],
+        allowed_external: &[],
     },
     ModulePolicy {
         source: "web_reasoning.rs",
         allowed_internal: &["knowledge", "rules"],
+        allowed_external: &[],
     },
     ModulePolicy {
         source: "api_reasoning.rs",
         allowed_internal: &["knowledge", "rules"],
+        allowed_external: &[],
+    },
+    ModulePolicy {
+        source: "api_evidence.rs",
+        allowed_internal: &[],
+        allowed_external: &["serde_json", "sha2"],
+    },
+    ModulePolicy {
+        source: "api_observation.rs",
+        allowed_internal: &["knowledge", "rules"],
+        allowed_external: &[],
     },
     ModulePolicy {
         source: "web_planning.rs",
         allowed_internal: &["planner", "rules", "web_actions"],
+        allowed_external: &[],
     },
     ModulePolicy {
         source: "web_verification.rs",
         allowed_internal: &["rules", "verification", "web_actions"],
+        allowed_external: &[],
     },
 ];
 
@@ -524,7 +545,7 @@ impl BoundaryVisitor {
             ));
             return false;
         }
-        if !ALLOWED_EXTERNAL_ROOTS.contains(&root) {
+        if !self.allows_external(root) {
             self.violation(format!(
                 "{} depends on unapproved external root {root}",
                 self.policy.source
@@ -564,7 +585,7 @@ impl BoundaryVisitor {
         }
         if segments.len() < 2
             || root == "Self"
-            || ALLOWED_EXTERNAL_ROOTS.contains(&root)
+            || self.allows_external(root)
             || PRIMITIVE_ROOTS.contains(&root)
             || PRELUDE_ROOTS.contains(&root)
             || self.is_known_root(root)
@@ -656,7 +677,7 @@ impl BoundaryVisitor {
                     .collect();
                 if segments.len() == 1 {
                     let root = normalize_identifier(&segments[0]);
-                    if !ALLOWED_EXTERNAL_ROOTS.contains(&root)
+                    if !self.allows_external(root)
                         && !PRELUDE_ROOTS.contains(&root)
                         && !PRIMITIVE_ROOTS.contains(&root)
                         && !self.is_known_root(root)
@@ -675,6 +696,10 @@ impl BoundaryVisitor {
 
     fn violation(&mut self, message: String) {
         self.violations.insert(message);
+    }
+
+    fn allows_external(&self, root: &str) -> bool {
+        ALLOWED_EXTERNAL_ROOTS.contains(&root) || self.policy.allowed_external.contains(&root)
     }
 }
 
@@ -1035,6 +1060,19 @@ mod tests {
         ModulePolicy {
             source,
             allowed_internal,
+            allowed_external: &[],
+        }
+    }
+
+    fn policy_with_external(
+        source: &'static str,
+        allowed_internal: &'static [&'static str],
+        allowed_external: &'static [&'static str],
+    ) -> ModulePolicy {
+        ModulePolicy {
+            source,
+            allowed_internal,
+            allowed_external,
         }
     }
 
@@ -1133,6 +1171,27 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn module_specific_external_roots_do_not_weaken_other_policies() {
+        let source = r#"
+            use serde_json::Value;
+            use sha2::{Digest, Sha256};
+            fn fingerprint(value: &Value) { let _ = Sha256::digest(value.to_string()); }
+        "#;
+        assert!(inspect_module_source(
+            &policy_with_external("api_evidence.rs", &[], &["serde_json", "sha2"]),
+            source,
+        )
+        .unwrap()
+        .is_empty());
+
+        let violations = inspect_module_source(&policy("rules.rs", &["knowledge"]), source)
+            .unwrap()
+            .join("\n");
+        assert!(violations.contains("unapproved external root serde_json"));
+        assert!(violations.contains("unapproved external root sha2"));
     }
 
     #[test]

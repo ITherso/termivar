@@ -107,9 +107,10 @@ flowchart TD
 
 | Protected layer | Modules | May import |
 | --- | --- | --- |
+| Evidence preparation | `api_evidence` | `venom-core` plus bounded JSON/hash libraries; never network, runtime, planner, or knowledge state |
 | Reasoning state | `experience`, `rules` | `venom-core`; `rules` may also use `knowledge` |
 | Planning and verification | `planner`, `verification` | `knowledge`, `rules`, `venom-core` |
-| Semantic action and domain profiles | `web_actions`, `web_reasoning`, `api_reasoning`, `web_planning`, `web_verification` | The lower rows above; never execution or HTTP modules |
+| Semantic action, ingestion, and domain profiles | `web_actions`, `web_reasoning`, `api_reasoning`, `api_observation`, `web_planning`, `web_verification` | The lower rows above; never execution or HTTP modules |
 | Execution and composition | `decision_runner`, `http_evidence`, `web_execution`, `web_runtime` | All inward contracts needed to perform and account for work |
 
 `web_actions` owns stable semantic action and route identities. Planning,
@@ -133,11 +134,37 @@ pair under one write lock, so an identity or linkage conflict cannot leave an
 orphaned half of the bundle. This is storage consistency, not proof that a
 producer's comparison is true.
 
+`api_evidence` is the pure Evidence Engine boundary for paired JSON views. It
+canonicalizes under explicit hard ceilings, retains only raw-value-free
+signatures, and produces the transport-neutral comparison contract. The
+`api_observation` ingress then validates the expected resource, commits the
+evidence/relation pair, applies rules to the isolated comparison subject, and
+returns an auditable receipt. It does not weaken the decision runner's rule that
+executor evidence must match the outstanding case subject. Resource-scoped
+review is a cursor-bounded relation projection, not an implicit cross-subject
+planner input. Rejected relation shapes consume the page budget and a compiled
+ceiling prevents unbounded projection work. Stored relation IDs, endpoints,
+custom kinds, and provenance sets also have hard size ceilings; pagination
+checks look-ahead on the borrowed index without cloning the next record.
+
 Bayesian contribution aggregation remains an explicit rule-level choice.
 `EvidenceCalibration::new` defaults to `Independent`, preserving the behavior
 of existing profiles. Each standard API calibration alone selects
 `MaxContributions(1)`, limiting retry-driven posterior inflation for one
 selector without changing other reasoning profiles.
+
+A rule cycle evaluates every rule against one immutable subject snapshot and
+preflights every matched hypothesis before committing the batch. Verifier-owned
+`Confirmed` and `Rejected` states are preserved under that same write lock. A
+late identity conflict therefore cannot commit only the earlier rule
+conclusions or race a terminal verifier transition back to `Supported`.
+Subject-local and ontology revisions provide a compare-and-swap boundary; a
+stale cycle is re-evaluated under a fixed retry limit and then fails explicitly.
+Verifier lifecycle transitions mutate only the latest stored state under the
+knowledge lock, preserving concurrent belief and strength updates. Complete
+verification reports carry the evaluated subject/ontology revisions; stale
+reports are rejected, same-terminal replay is idempotent, and opposite terminal
+transitions conflict instead of becoming last-writer-wins.
 
 Run the machine-enforced boundary locally:
 

@@ -13,10 +13,21 @@ use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use serde::{Deserialize, Serialize};
 use venom_core::{
-    ConceptId, EntityId, Evidence, EvidenceId, Fact, Hypothesis, KnowledgeEntity,
+    ConceptId, EntityId, Evidence, EvidenceId, Fact, Hypothesis, HypothesisState, KnowledgeEntity,
     KnowledgePredicate, KnowledgeRelation, Ontology, OntologyAxiom, OntologyConcept, OntologyError,
-    OntologyRelationType, OntologyStats, OntologyWrite, RelationId, RelationTypeId,
+    OntologyRelationType, OntologyStats, OntologyWrite, RelationId, RelationKind, RelationTypeId,
 };
+
+/// Hard byte ceiling for one stored knowledge-relation identifier.
+pub const MAX_KNOWLEDGE_RELATION_ID_BYTES: usize = 512;
+/// Hard byte ceiling for either entity identifier on a stored relation.
+pub const MAX_KNOWLEDGE_RELATION_ENTITY_ID_BYTES: usize = 2_048;
+/// Hard byte ceiling for a stored custom relation-kind identifier.
+pub const MAX_KNOWLEDGE_RELATION_KIND_BYTES: usize = 256;
+/// Hard ceiling for distinct evidence records backing one stored relation.
+pub const MAX_KNOWLEDGE_RELATION_EVIDENCE_IDS: usize = 32;
+/// Hard byte ceiling for each evidence identifier backing a stored relation.
+pub const MAX_KNOWLEDGE_RELATION_EVIDENCE_ID_BYTES: usize = 512;
 
 /// Result of an idempotent write to the knowledge base.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -29,6 +40,20 @@ pub enum KnowledgeWrite {
     Updated,
     /// The store already contained the exact same record.
     Unchanged,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum HypothesisStateTransition {
+    Missing,
+    SubjectMismatch {
+        actual: EntityId,
+    },
+    StaleSnapshot(KnowledgeBaseError),
+    TerminalConflict {
+        current: HypothesisState,
+        attempted: HypothesisState,
+    },
+    Written(KnowledgeWrite),
 }
 
 /// Record categories used in identity-conflict diagnostics.
@@ -60,7 +85,7 @@ impl fmt::Display for KnowledgeRecordKind {
     }
 }
 
-/// Errors raised when a record attempts to reuse an identity for new meaning.
+/// Errors raised when a knowledge record violates storage or identity invariants.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum KnowledgeBaseError {
@@ -89,6 +114,41 @@ pub enum KnowledgeBaseError {
         /// Source entity declared by the relation.
         relation_from: String,
     },
+
+    /// A relation field or provenance collection exceeded its storage ceiling.
+    RelationLimitExceeded {
+        /// Stable field name (`id`, `from`, `to`, `kind`, `evidence_ids`, or
+        /// `evidence_id`).
+        field: &'static str,
+        /// Rejected byte or item count.
+        actual: usize,
+        /// Inclusive compiled ceiling.
+        maximum: usize,
+    },
+
+    /// A reasoning batch was evaluated against knowledge that has since changed.
+    StaleSnapshot {
+        /// Subject captured by the stale snapshot.
+        subject: EntityId,
+        /// Subject revision captured by the snapshot.
+        expected_subject_revision: u64,
+        /// Current subject revision.
+        actual_subject_revision: u64,
+        /// Ontology revision captured by the snapshot.
+        expected_ontology_revision: u64,
+        /// Current ontology revision.
+        actual_ontology_revision: u64,
+    },
+
+    /// A reasoning batch contained a conclusion for another subject.
+    ReasoningSubjectMismatch {
+        /// Hypothesis whose subject violated the batch boundary.
+        hypothesis_id: String,
+        /// Subject captured by the reasoning snapshot.
+        expected: EntityId,
+        /// Subject declared by the hypothesis.
+        actual: EntityId,
+    },
 }
 
 impl fmt::Display for KnowledgeBaseError {
@@ -114,6 +174,32 @@ impl fmt::Display for KnowledgeBaseError {
             } => write!(
                 formatter,
                 "relation {relation_id} starts at {relation_from}, not evidence subject {evidence_subject}"
+            ),
+            Self::RelationLimitExceeded {
+                field,
+                actual,
+                maximum,
+            } => write!(
+                formatter,
+                "knowledge relation {field} size {actual} exceeds hard ceiling {maximum}"
+            ),
+            Self::StaleSnapshot {
+                subject,
+                expected_subject_revision,
+                actual_subject_revision,
+                expected_ontology_revision,
+                actual_ontology_revision,
+            } => write!(
+                formatter,
+                "knowledge snapshot for {subject} is stale (subject revision {expected_subject_revision}->{actual_subject_revision}, ontology revision {expected_ontology_revision}->{actual_ontology_revision})"
+            ),
+            Self::ReasoningSubjectMismatch {
+                hypothesis_id,
+                expected,
+                actual,
+            } => write!(
+                formatter,
+                "reasoning hypothesis {hypothesis_id} belongs to {actual}, expected snapshot subject {expected}"
             ),
         }
     }
@@ -146,6 +232,8 @@ pub struct KnowledgeBaseStats {
 #[derive(Debug, Clone)]
 pub struct KnowledgeSnapshot {
     subject: EntityId,
+    subject_revision: u64,
+    ontology_revision: u64,
     ontology: Ontology,
     evidence: Vec<Evidence>,
     facts: Vec<Fact>,
@@ -156,6 +244,16 @@ impl KnowledgeSnapshot {
     /// Returns the subject captured by this snapshot.
     pub fn subject(&self) -> &EntityId {
         &self.subject
+    }
+
+    /// Returns the subject-local knowledge revision captured by this snapshot.
+    pub fn subject_revision(&self) -> u64 {
+        self.subject_revision
+    }
+
+    /// Returns the global ontology revision captured by this snapshot.
+    pub fn ontology_revision(&self) -> u64 {
+        self.ontology_revision
     }
 
     /// Returns evidence ordered by stable evidence ID.
@@ -181,6 +279,8 @@ impl KnowledgeSnapshot {
     pub(crate) fn with_evidence_correlation(&self, correlation_id: &str) -> Self {
         Self {
             subject: self.subject.clone(),
+            subject_revision: self.subject_revision,
+            ontology_revision: self.ontology_revision,
             ontology: self.ontology.clone(),
             evidence: self
                 .evidence
@@ -197,6 +297,8 @@ impl KnowledgeSnapshot {
 #[derive(Debug, Default)]
 struct KnowledgeState {
     ontology: Ontology,
+    ontology_revision: u64,
+    subject_revisions: HashMap<EntityId, u64>,
     evidence: HashMap<EvidenceId, Evidence>,
     facts: HashMap<String, Fact>,
     hypotheses: HashMap<String, Hypothesis>,
@@ -267,7 +369,12 @@ impl KnowledgeBase {
         &self,
         concept: OntologyConcept,
     ) -> Result<OntologyWrite, OntologyError> {
-        self.write_state().ontology.add_concept(concept)
+        let mut state = self.write_state();
+        let write = state.ontology.add_concept(concept)?;
+        if write == OntologyWrite::Inserted {
+            bump_ontology_revision(&mut state);
+        }
+        Ok(write)
     }
 
     /// Registers a custom semantic relation type in the ontology.
@@ -275,12 +382,22 @@ impl KnowledgeBase {
         &self,
         relation_type: OntologyRelationType,
     ) -> Result<OntologyWrite, OntologyError> {
-        self.write_state().ontology.add_relation_type(relation_type)
+        let mut state = self.write_state();
+        let write = state.ontology.add_relation_type(relation_type)?;
+        if write == OntologyWrite::Inserted {
+            bump_ontology_revision(&mut state);
+        }
+        Ok(write)
     }
 
     /// Registers a validated semantic axiom in the ontology.
     pub fn register_axiom(&self, axiom: OntologyAxiom) -> Result<OntologyWrite, OntologyError> {
-        self.write_state().ontology.add_axiom(axiom)
+        let mut state = self.write_state();
+        let write = state.ontology.add_axiom(axiom)?;
+        if write == OntologyWrite::Inserted {
+            bump_ontology_revision(&mut state);
+        }
+        Ok(write)
     }
 
     pub(crate) fn install_ontology_definitions(
@@ -307,6 +424,9 @@ impl KnowledgeBase {
         }
 
         state.ontology = prospective;
+        if concepts_inserted != 0 || axioms_inserted != 0 {
+            bump_ontology_revision(&mut state);
+        }
         Ok((concepts_inserted, axioms_inserted))
     }
 
@@ -358,6 +478,7 @@ impl KnowledgeBase {
         }
 
         state.evidence.insert(id.clone(), evidence);
+        bump_subject_revision(&mut state, &subject);
         index(&mut state.evidence_by_subject, subject, id.clone());
         index(&mut state.evidence_by_predicate, predicate, id);
         Ok(KnowledgeWrite::Inserted)
@@ -405,6 +526,7 @@ impl KnowledgeBase {
             let subject = observation.subject().clone();
             let predicate = observation.predicate().clone();
             state.evidence.insert(id.clone(), observation);
+            bump_subject_revision(&mut state, &subject);
             index(&mut state.evidence_by_subject, subject, id.clone());
             index(&mut state.evidence_by_predicate, predicate, id);
             writes.push(KnowledgeWrite::Inserted);
@@ -416,12 +538,15 @@ impl KnowledgeBase {
     ///
     /// The relation must cite exactly the supplied evidence ID. Both identity
     /// conflicts are checked before either record or secondary index changes,
-    /// so callers never persist an orphaned half of the bundle.
+    /// so callers never persist an orphaned half of the bundle. Relation IDs,
+    /// endpoints, custom kinds, and provenance are checked against the compiled
+    /// storage ceilings before either record is written.
     pub fn insert_evidence_with_relation(
         &self,
         evidence: Evidence,
         relation: KnowledgeRelation,
     ) -> Result<(KnowledgeWrite, KnowledgeWrite), KnowledgeBaseError> {
+        validate_relation_bounds(&relation)?;
         let evidence_id = evidence.id().clone();
         let relation_id = relation.id().clone();
         if relation.evidence_ids().len() != 1 || !relation.evidence_ids().contains(&evidence_id) {
@@ -474,6 +599,7 @@ impl KnowledgeBase {
 
         if evidence_write == KnowledgeWrite::Inserted {
             state.evidence.insert(evidence_id.clone(), evidence);
+            bump_subject_revision(&mut state, &evidence_subject);
             index(
                 &mut state.evidence_by_subject,
                 evidence_subject,
@@ -521,10 +647,12 @@ impl KnowledgeBase {
                 return Err(identity_conflict(KnowledgeRecordKind::Fact, &id));
             }
             state.facts.insert(id, fact);
+            bump_subject_revision(&mut state, &subject);
             return Ok(KnowledgeWrite::Updated);
         }
 
         state.facts.insert(id.clone(), fact);
+        bump_subject_revision(&mut state, &subject);
         index(&mut state.facts_by_subject, subject, id.clone());
         index(&mut state.facts_by_predicate, predicate, id);
         Ok(KnowledgeWrite::Inserted)
@@ -538,29 +666,182 @@ impl KnowledgeBase {
         &self,
         hypothesis: Hypothesis,
     ) -> Result<KnowledgeWrite, KnowledgeBaseError> {
-        let id = hypothesis.id().to_owned();
-        let subject = hypothesis.subject().clone();
-        let predicate = hypothesis.predicate().clone();
-        let mut state = self.write_state();
+        self.upsert_hypothesis_batch(vec![hypothesis])
+            .map(|writes| writes[0])
+    }
 
-        if let Some(existing) = state.hypotheses.get(&id) {
-            if existing.same_evaluation_as(&hypothesis) {
-                return Ok(KnowledgeWrite::Unchanged);
+    /// Inserts or updates a hypothesis batch in one write transaction.
+    ///
+    /// Every stored and intra-batch identity is validated before the first
+    /// hypothesis or secondary index changes. Reusing an ID for a different
+    /// claim, or supplying different evaluations for one ID in the same batch,
+    /// rejects the complete batch. Results preserve input order; semantically
+    /// exact duplicates are idempotent even when their update timestamps differ.
+    pub fn upsert_hypothesis_batch(
+        &self,
+        hypotheses: Vec<Hypothesis>,
+    ) -> Result<Vec<KnowledgeWrite>, KnowledgeBaseError> {
+        self.upsert_hypothesis_batch_with_policy(hypotheses, false, None)
+    }
+
+    /// Atomically writes rule-produced hypotheses from a current snapshot.
+    ///
+    /// Snapshot validation, terminal state lookup, and every resulting write
+    /// happen under the same knowledge-base write lock. A concurrent rule-visible
+    /// write rejects the complete batch, including an empty unmatched batch.
+    pub(crate) fn upsert_reasoning_hypothesis_batch(
+        &self,
+        snapshot: &KnowledgeSnapshot,
+        hypotheses: Vec<Hypothesis>,
+    ) -> Result<Vec<KnowledgeWrite>, KnowledgeBaseError> {
+        if let Some(hypothesis) = hypotheses
+            .iter()
+            .find(|hypothesis| hypothesis.subject() != snapshot.subject())
+        {
+            return Err(KnowledgeBaseError::ReasoningSubjectMismatch {
+                hypothesis_id: hypothesis.id().to_owned(),
+                expected: snapshot.subject().clone(),
+                actual: hypothesis.subject().clone(),
+            });
+        }
+        self.upsert_hypothesis_batch_with_policy(hypotheses, true, Some(snapshot))
+    }
+
+    fn upsert_hypothesis_batch_with_policy(
+        &self,
+        hypotheses: Vec<Hypothesis>,
+        preserve_terminal_state: bool,
+        expected_snapshot: Option<&KnowledgeSnapshot>,
+    ) -> Result<Vec<KnowledgeWrite>, KnowledgeBaseError> {
+        let mut state = self.write_state();
+        if let Some(snapshot) = expected_snapshot {
+            let actual_subject_revision = subject_revision(&state, snapshot.subject());
+            if actual_subject_revision != snapshot.subject_revision()
+                || state.ontology_revision != snapshot.ontology_revision()
+            {
+                return Err(KnowledgeBaseError::StaleSnapshot {
+                    subject: snapshot.subject().clone(),
+                    expected_subject_revision: snapshot.subject_revision(),
+                    actual_subject_revision,
+                    expected_ontology_revision: snapshot.ontology_revision(),
+                    actual_ontology_revision: state.ontology_revision,
+                });
             }
-            if existing.subject() != hypothesis.subject()
-                || existing.predicate() != hypothesis.predicate()
-                || existing.value() != hypothesis.value()
+        }
+        let mut pending = HashMap::<String, Hypothesis>::new();
+
+        for hypothesis in &hypotheses {
+            let id = hypothesis.id();
+            if state
+                .hypotheses
+                .get(id)
+                .is_some_and(|existing| !same_hypothesis_claim(existing, hypothesis))
+                || pending
+                    .get(id)
+                    .is_some_and(|existing| !existing.same_evaluation_as(hypothesis))
             {
                 return Err(identity_conflict(KnowledgeRecordKind::Hypothesis, &id));
             }
-            state.hypotheses.insert(id, hypothesis);
-            return Ok(KnowledgeWrite::Updated);
+            pending
+                .entry(id.to_owned())
+                .or_insert_with(|| hypothesis.clone());
         }
 
-        state.hypotheses.insert(id.clone(), hypothesis);
-        index(&mut state.hypotheses_by_subject, subject, id.clone());
-        index(&mut state.hypotheses_by_predicate, predicate, id);
-        Ok(KnowledgeWrite::Inserted)
+        let mut writes = Vec::with_capacity(hypotheses.len());
+        for mut hypothesis in hypotheses {
+            let id = hypothesis.id().to_owned();
+            if preserve_terminal_state {
+                let terminal_state = state.hypotheses.get(&id).and_then(|existing| {
+                    matches!(
+                        existing.state(),
+                        HypothesisState::Confirmed | HypothesisState::Rejected
+                    )
+                    .then_some(existing.state())
+                });
+                if let Some(terminal_state) = terminal_state {
+                    hypothesis.set_state(terminal_state);
+                }
+            }
+
+            if let Some(existing) = state.hypotheses.get(&id) {
+                if existing.same_evaluation_as(&hypothesis) {
+                    writes.push(KnowledgeWrite::Unchanged);
+                } else {
+                    let subject = hypothesis.subject().clone();
+                    state.hypotheses.insert(id, hypothesis);
+                    bump_subject_revision(&mut state, &subject);
+                    writes.push(KnowledgeWrite::Updated);
+                }
+                continue;
+            }
+
+            let subject = hypothesis.subject().clone();
+            let predicate = hypothesis.predicate().clone();
+            state.hypotheses.insert(id.clone(), hypothesis);
+            bump_subject_revision(&mut state, &subject);
+            index(&mut state.hypotheses_by_subject, subject, id.clone());
+            index(&mut state.hypotheses_by_predicate, predicate, id);
+            writes.push(KnowledgeWrite::Inserted);
+        }
+        Ok(writes)
+    }
+
+    /// Changes only the lifecycle state of the latest stored hypothesis.
+    ///
+    /// The update is performed in place under the knowledge-base write lock, so
+    /// verifier state transitions cannot overwrite a concurrent recalibration's
+    /// belief trail or strength with a stale cloned record.
+    pub(crate) fn transition_hypothesis_state(
+        &self,
+        hypothesis_id: &str,
+        expected_subject: &EntityId,
+        new_state: HypothesisState,
+        expected_revisions: Option<(u64, u64)>,
+    ) -> HypothesisStateTransition {
+        let mut state = self.write_state();
+        let Some(hypothesis) = state.hypotheses.get(hypothesis_id) else {
+            return HypothesisStateTransition::Missing;
+        };
+        if hypothesis.subject() != expected_subject {
+            return HypothesisStateTransition::SubjectMismatch {
+                actual: hypothesis.subject().clone(),
+            };
+        }
+        if hypothesis.state() == new_state {
+            return HypothesisStateTransition::Written(KnowledgeWrite::Unchanged);
+        }
+        if is_terminal_hypothesis_state(hypothesis.state())
+            && is_terminal_hypothesis_state(new_state)
+        {
+            return HypothesisStateTransition::TerminalConflict {
+                current: hypothesis.state(),
+                attempted: new_state,
+            };
+        }
+        if let Some((expected_subject_revision, expected_ontology_revision)) = expected_revisions {
+            let actual_subject_revision = subject_revision(&state, expected_subject);
+            if actual_subject_revision != expected_subject_revision
+                || state.ontology_revision != expected_ontology_revision
+            {
+                return HypothesisStateTransition::StaleSnapshot(
+                    KnowledgeBaseError::StaleSnapshot {
+                        subject: expected_subject.clone(),
+                        expected_subject_revision,
+                        actual_subject_revision,
+                        expected_ontology_revision,
+                        actual_ontology_revision: state.ontology_revision,
+                    },
+                );
+            }
+        }
+
+        let hypothesis = state
+            .hypotheses
+            .get_mut(hypothesis_id)
+            .expect("validated hypothesis remains present under the write lock");
+        hypothesis.set_state(new_state);
+        bump_subject_revision(&mut state, expected_subject);
+        HypothesisStateTransition::Written(KnowledgeWrite::Updated)
     }
 
     /// Inserts one immutable knowledge-graph entity.
@@ -586,11 +867,13 @@ impl KnowledgeBase {
     /// Inserts a relation or updates its confidence and provenance.
     ///
     /// The source, destination, and relation kind form the immutable graph
-    /// identity for an existing relation ID.
+    /// identity for an existing relation ID. Every field and provenance ID is
+    /// validated against the compiled relation storage ceilings first.
     pub fn upsert_relation(
         &self,
         relation: KnowledgeRelation,
     ) -> Result<KnowledgeWrite, KnowledgeBaseError> {
+        validate_relation_bounds(&relation)?;
         let id = relation.id().clone();
         let from = relation.from().clone();
         let to = relation.to().clone();
@@ -621,6 +904,19 @@ impl KnowledgeBase {
         self.read_state().evidence.get(id).cloned()
     }
 
+    /// Inspects one evidence record while it remains borrowed from the store.
+    ///
+    /// The callback runs under the knowledge-base read lock and therefore must
+    /// remain short and must not attempt a write through this knowledge base.
+    pub(crate) fn inspect_evidence<R>(
+        &self,
+        id: &EvidenceId,
+        inspect: impl FnOnce(&Evidence) -> R,
+    ) -> Option<R> {
+        let state = self.read_state();
+        state.evidence.get(id).map(inspect)
+    }
+
     /// Returns a fact snapshot by ID.
     pub fn fact(&self, id: &str) -> Option<Fact> {
         self.read_state().facts.get(id).cloned()
@@ -629,6 +925,19 @@ impl KnowledgeBase {
     /// Returns a hypothesis snapshot by ID.
     pub fn hypothesis(&self, id: &str) -> Option<Hypothesis> {
         self.read_state().hypotheses.get(id).cloned()
+    }
+
+    /// Inspects one hypothesis while it remains borrowed from the store.
+    ///
+    /// The callback runs under the knowledge-base read lock and therefore must
+    /// remain short and must not attempt a write through this knowledge base.
+    pub(crate) fn inspect_hypothesis<R>(
+        &self,
+        id: &str,
+        inspect: impl FnOnce(&Hypothesis) -> R,
+    ) -> Option<R> {
+        let state = self.read_state();
+        state.hypotheses.get(id).map(inspect)
     }
 
     /// Returns an entity snapshot by ID.
@@ -692,11 +1001,59 @@ impl KnowledgeBase {
         collect_indexed(state.relations_to.get(entity_id), &state.relations)
     }
 
+    /// Returns one bounded page of incoming relations in stable ID order.
+    ///
+    /// `after_exclusive` is an exclusive cursor and does not need to identify a
+    /// stored relation. At most `limit` indexed records are cloned. A zero limit
+    /// returns immediately without reading the store.
+    pub fn relations_to_page(
+        &self,
+        entity_id: &EntityId,
+        after_exclusive: Option<&RelationId>,
+        limit: usize,
+    ) -> Vec<KnowledgeRelation> {
+        self.relations_to_page_with_more(entity_id, after_exclusive, limit)
+            .0
+    }
+
+    /// Returns a bounded relation page and whether another indexed ID exists.
+    ///
+    /// The look-ahead checks only the borrowed relation index; it never clones
+    /// the record beyond this page's explicit `limit`.
+    pub(crate) fn relations_to_page_with_more(
+        &self,
+        entity_id: &EntityId,
+        after_exclusive: Option<&RelationId>,
+        limit: usize,
+    ) -> (Vec<KnowledgeRelation>, bool) {
+        if limit == 0 {
+            return (Vec::new(), false);
+        }
+
+        let state = self.read_state();
+        let Some(ids) = state.relations_to.get(entity_id) else {
+            return (Vec::new(), false);
+        };
+        let lower_bound = after_exclusive
+            .cloned()
+            .map_or(std::ops::Bound::Unbounded, std::ops::Bound::Excluded);
+        let mut ids = ids.range((lower_bound, std::ops::Bound::Unbounded));
+        let relations = ids
+            .by_ref()
+            .take(limit)
+            .filter_map(|id| state.relations.get(id).cloned())
+            .collect();
+        let has_more = ids.next().is_some();
+        (relations, has_more)
+    }
+
     /// Captures all rule-visible knowledge for a subject under one read lock.
     pub fn snapshot_for_subject(&self, subject: &EntityId) -> KnowledgeSnapshot {
         let state = self.read_state();
         KnowledgeSnapshot {
             subject: subject.clone(),
+            subject_revision: subject_revision(&state, subject),
+            ontology_revision: state.ontology_revision,
             ontology: state.ontology.clone(),
             evidence: collect_indexed(state.evidence_by_subject.get(subject), &state.evidence),
             facts: collect_indexed(state.facts_by_subject.get(subject), &state.facts),
@@ -705,6 +1062,29 @@ impl KnowledgeBase {
                 &state.hypotheses,
             ),
         }
+    }
+
+    /// Validates snapshot revisions without cloning rule-visible records.
+    pub(crate) fn validate_snapshot_revisions(
+        &self,
+        subject: &EntityId,
+        expected_subject_revision: u64,
+        expected_ontology_revision: u64,
+    ) -> Result<(), KnowledgeBaseError> {
+        let state = self.read_state();
+        let actual_subject_revision = subject_revision(&state, subject);
+        if actual_subject_revision != expected_subject_revision
+            || state.ontology_revision != expected_ontology_revision
+        {
+            return Err(KnowledgeBaseError::StaleSnapshot {
+                subject: subject.clone(),
+                expected_subject_revision,
+                actual_subject_revision,
+                expected_ontology_revision,
+                actual_ontology_revision: state.ontology_revision,
+            });
+        }
+        Ok(())
     }
 
     /// Returns a consistent count snapshot under one read lock.
@@ -752,6 +1132,86 @@ fn identity_conflict(kind: KnowledgeRecordKind, id: &impl fmt::Display) -> Knowl
     }
 }
 
+fn validate_relation_bounds(relation: &KnowledgeRelation) -> Result<(), KnowledgeBaseError> {
+    validate_relation_limit(
+        "id",
+        relation.id().as_str().len(),
+        MAX_KNOWLEDGE_RELATION_ID_BYTES,
+    )?;
+    validate_relation_limit(
+        "from",
+        relation.from().as_str().len(),
+        MAX_KNOWLEDGE_RELATION_ENTITY_ID_BYTES,
+    )?;
+    validate_relation_limit(
+        "to",
+        relation.to().as_str().len(),
+        MAX_KNOWLEDGE_RELATION_ENTITY_ID_BYTES,
+    )?;
+    if let RelationKind::Custom(kind) = relation.kind() {
+        validate_relation_limit("kind", kind.len(), MAX_KNOWLEDGE_RELATION_KIND_BYTES)?;
+    }
+    validate_relation_limit(
+        "evidence_ids",
+        relation.evidence_ids().len(),
+        MAX_KNOWLEDGE_RELATION_EVIDENCE_IDS,
+    )?;
+    for evidence_id in relation.evidence_ids() {
+        validate_relation_limit(
+            "evidence_id",
+            evidence_id.as_str().len(),
+            MAX_KNOWLEDGE_RELATION_EVIDENCE_ID_BYTES,
+        )?;
+    }
+    Ok(())
+}
+
+fn validate_relation_limit(
+    field: &'static str,
+    actual: usize,
+    maximum: usize,
+) -> Result<(), KnowledgeBaseError> {
+    if actual > maximum {
+        return Err(KnowledgeBaseError::RelationLimitExceeded {
+            field,
+            actual,
+            maximum,
+        });
+    }
+    Ok(())
+}
+
+fn subject_revision(state: &KnowledgeState, subject: &EntityId) -> u64 {
+    state.subject_revisions.get(subject).copied().unwrap_or(0)
+}
+
+fn bump_subject_revision(state: &mut KnowledgeState, subject: &EntityId) {
+    let revision = state.subject_revisions.entry(subject.clone()).or_default();
+    *revision = revision
+        .checked_add(1)
+        .expect("subject knowledge revision must not overflow");
+}
+
+fn bump_ontology_revision(state: &mut KnowledgeState) {
+    state.ontology_revision = state
+        .ontology_revision
+        .checked_add(1)
+        .expect("ontology knowledge revision must not overflow");
+}
+
+fn same_hypothesis_claim(left: &Hypothesis, right: &Hypothesis) -> bool {
+    left.subject() == right.subject()
+        && left.predicate() == right.predicate()
+        && left.value() == right.value()
+}
+
+fn is_terminal_hypothesis_state(state: HypothesisState) -> bool {
+    matches!(
+        state,
+        HypothesisState::Confirmed | HypothesisState::Rejected
+    )
+}
+
 fn index<K, I>(index: &mut HashMap<K, BTreeSet<I>>, key: K, id: I)
 where
     K: Eq + Hash,
@@ -796,6 +1256,17 @@ mod tests {
             EvidenceSource::new("fingerprint.headers", "x-powered-by").unwrap(),
             ConfidenceScore::from_percent(85).unwrap(),
         )
+    }
+
+    fn hypothesis_for(id: &str, subject: EntityId, value: &str) -> Hypothesis {
+        Hypothesis::with_id(
+            id,
+            subject,
+            predicate(),
+            EvidenceValue::Text(value.into()),
+            Probability::from_percent(20).unwrap(),
+        )
+        .unwrap()
     }
 
     #[test]
@@ -1037,6 +1508,131 @@ mod tests {
     }
 
     #[test]
+    fn revisions_track_rule_visible_writes_and_guard_empty_reasoning_batches() {
+        let store = KnowledgeBase::new();
+        let shared_subject = subject(1);
+        let stable = store.snapshot_for_subject(&shared_subject);
+        assert_eq!(stable.subject_revision(), 0);
+        assert_eq!(stable.ontology_revision(), 0);
+
+        let entity = KnowledgeEntity::new(
+            EntityId::new("resource:revision-test").unwrap(),
+            EntityKind::Custom("resource".into()),
+            "revision test",
+        )
+        .unwrap();
+        store.insert_entity(entity.clone()).unwrap();
+        let relation_evidence = evidence_for(shared_subject.clone(), "relation-only");
+        store
+            .upsert_relation(KnowledgeRelation::new(
+                shared_subject.clone(),
+                entity.id().clone(),
+                RelationKind::RelatedTo,
+                ConfidenceScore::MAX,
+                relation_evidence.id().clone(),
+            ))
+            .unwrap();
+        assert!(store
+            .upsert_reasoning_hypothesis_batch(&stable, Vec::new())
+            .unwrap()
+            .is_empty());
+
+        store
+            .insert_evidence(evidence_for(subject(2), "other-subject"))
+            .unwrap();
+        assert_eq!(
+            store
+                .snapshot_for_subject(&shared_subject)
+                .subject_revision(),
+            0
+        );
+
+        let observation = evidence_for(shared_subject.clone(), "Laravel");
+        store.insert_evidence(observation.clone()).unwrap();
+        let after_evidence = store.snapshot_for_subject(&shared_subject);
+        assert_eq!(after_evidence.subject_revision(), 1);
+        store.insert_evidence(observation.clone()).unwrap();
+        assert_eq!(
+            store
+                .snapshot_for_subject(&shared_subject)
+                .subject_revision(),
+            1
+        );
+        assert!(matches!(
+            store.upsert_reasoning_hypothesis_batch(&stable, Vec::new()),
+            Err(KnowledgeBaseError::StaleSnapshot { .. })
+        ));
+
+        let fact = Fact::new(
+            shared_subject.clone(),
+            predicate(),
+            EvidenceValue::Text("Laravel".into()),
+            ConfidenceScore::from_percent(80).unwrap(),
+            observation.id().clone(),
+        );
+        store.upsert_fact(fact).unwrap();
+        assert_eq!(
+            store
+                .snapshot_for_subject(&shared_subject)
+                .subject_revision(),
+            2
+        );
+        store
+            .upsert_hypothesis(hypothesis_for(
+                "hypothesis:revision-test",
+                shared_subject.clone(),
+                "Laravel",
+            ))
+            .unwrap();
+        assert_eq!(
+            store
+                .snapshot_for_subject(&shared_subject)
+                .subject_revision(),
+            3
+        );
+
+        let before_ontology = store.snapshot_for_subject(&shared_subject);
+        let concept = OntologyConcept::new(
+            ConceptId::new("revision-test-concept").unwrap(),
+            "Revision test concept",
+        )
+        .unwrap();
+        store.register_concept(concept.clone()).unwrap();
+        let after_ontology = store.snapshot_for_subject(&shared_subject);
+        assert_eq!(after_ontology.ontology_revision(), 1);
+        store.register_concept(concept).unwrap();
+        assert_eq!(
+            store
+                .snapshot_for_subject(&shared_subject)
+                .ontology_revision(),
+            1
+        );
+        assert!(matches!(
+            store.upsert_reasoning_hypothesis_batch(&before_ontology, Vec::new()),
+            Err(KnowledgeBaseError::StaleSnapshot { .. })
+        ));
+    }
+
+    #[test]
+    fn reasoning_batch_rejects_another_subject_in_release_semantics() {
+        let store = KnowledgeBase::new();
+        let snapshot = store.snapshot_for_subject(&subject(1));
+        let foreign = hypothesis_for("hypothesis:foreign", subject(2), "Laravel");
+
+        assert!(matches!(
+            store.upsert_reasoning_hypothesis_batch(&snapshot, vec![foreign]),
+            Err(KnowledgeBaseError::ReasoningSubjectMismatch {
+                hypothesis_id,
+                expected,
+                actual,
+            }) if hypothesis_id == "hypothesis:foreign"
+                && expected == subject(1)
+                && actual == subject(2)
+        ));
+        assert_eq!(store.stats().hypotheses, 0);
+    }
+
+    #[test]
     fn fact_updates_preserve_claim_identity_and_index_cardinality() {
         let store = KnowledgeBase::new();
         let evidence = evidence_for(subject(1), "Laravel");
@@ -1110,6 +1706,152 @@ mod tests {
     }
 
     #[test]
+    fn hypothesis_batches_are_atomic_idempotent_and_input_ordered() {
+        let store = KnowledgeBase::new();
+        let first = hypothesis_for("hypothesis:first", subject(1), "Laravel");
+        let second = hypothesis_for("hypothesis:second", subject(1), "Livewire");
+
+        assert_eq!(
+            store
+                .upsert_hypothesis_batch(vec![first.clone(), first.clone(), second.clone()])
+                .unwrap(),
+            vec![
+                KnowledgeWrite::Inserted,
+                KnowledgeWrite::Unchanged,
+                KnowledgeWrite::Inserted,
+            ]
+        );
+        let mut updated_second = second.clone();
+        updated_second.set_strength(HypothesisStrength::Strong);
+        assert_eq!(
+            store
+                .upsert_hypothesis_batch(vec![
+                    first.clone(),
+                    updated_second.clone(),
+                    updated_second,
+                ])
+                .unwrap(),
+            vec![
+                KnowledgeWrite::Unchanged,
+                KnowledgeWrite::Updated,
+                KnowledgeWrite::Unchanged,
+            ]
+        );
+
+        let third = hypothesis_for("hypothesis:third", subject(1), "Sanctum");
+        let conflicting = hypothesis_for(first.id(), subject(2), "Laravel");
+        assert!(matches!(
+            store.upsert_hypothesis_batch(vec![third.clone(), conflicting]),
+            Err(KnowledgeBaseError::IdentityConflict {
+                kind: KnowledgeRecordKind::Hypothesis,
+                ..
+            })
+        ));
+        assert!(store.hypothesis(third.id()).is_none());
+        assert_eq!(store.stats().hypotheses, 2);
+
+        let duplicate_store = KnowledgeBase::new();
+        let duplicate = hypothesis_for("hypothesis:duplicate", subject(3), "Laravel");
+        let mut conflicting_evaluation = duplicate.clone();
+        conflicting_evaluation.set_strength(HypothesisStrength::Strong);
+        assert!(matches!(
+            duplicate_store
+                .upsert_hypothesis_batch(vec![duplicate.clone(), conflicting_evaluation]),
+            Err(KnowledgeBaseError::IdentityConflict {
+                kind: KnowledgeRecordKind::Hypothesis,
+                ..
+            })
+        ));
+        assert!(duplicate_store.hypothesis(duplicate.id()).is_none());
+    }
+
+    #[test]
+    fn reasoning_batch_preserves_verifier_terminal_states() {
+        for terminal_state in [HypothesisState::Confirmed, HypothesisState::Rejected] {
+            let store = KnowledgeBase::new();
+            let mut terminal = hypothesis_for("hypothesis:terminal", subject(1), "Laravel");
+            terminal.set_state(terminal_state);
+            store.upsert_hypothesis(terminal.clone()).unwrap();
+            let snapshot = store.snapshot_for_subject(terminal.subject());
+
+            let mut recalibrated = terminal.clone();
+            recalibrated.set_strength(HypothesisStrength::Strong);
+            recalibrated.set_state(HypothesisState::Supported);
+            assert_eq!(
+                store
+                    .upsert_reasoning_hypothesis_batch(&snapshot, vec![recalibrated])
+                    .unwrap(),
+                vec![KnowledgeWrite::Updated]
+            );
+            let stored = store.hypothesis(terminal.id()).unwrap();
+            assert_eq!(stored.state(), terminal_state);
+            assert_eq!(stored.strength(), HypothesisStrength::Strong);
+        }
+    }
+
+    #[test]
+    fn atomic_state_transition_preserves_latest_recalibration() {
+        let store = KnowledgeBase::new();
+        let mut initial = hypothesis_for("hypothesis:atomic-transition", subject(1), "Laravel");
+        initial.set_state(HypothesisState::Supported);
+        store.upsert_hypothesis(initial.clone()).unwrap();
+        let stale_clone = store.hypothesis(initial.id()).unwrap();
+
+        let mut recalibrated = stale_clone.clone();
+        recalibrated.set_strength(HypothesisStrength::Strong);
+        recalibrated
+            .observe(
+                BayesianEvidence::new(
+                    EvidenceId::parse("evidence:latest-recalibration").unwrap(),
+                    Probability::from_percent(90).unwrap(),
+                    Probability::from_percent(10).unwrap(),
+                    "latest reasoning evidence",
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        store.upsert_hypothesis(recalibrated.clone()).unwrap();
+        let before_transition = store.snapshot_for_subject(initial.subject());
+
+        assert_eq!(
+            store.transition_hypothesis_state(
+                initial.id(),
+                initial.subject(),
+                HypothesisState::Confirmed,
+                None,
+            ),
+            HypothesisStateTransition::Written(KnowledgeWrite::Updated)
+        );
+        let stored = store.hypothesis(initial.id()).unwrap();
+        assert_eq!(stored.state(), HypothesisState::Confirmed);
+        assert_eq!(stored.strength(), HypothesisStrength::Strong);
+        assert_eq!(stored.belief(), recalibrated.belief());
+        assert_ne!(stored.belief(), stale_clone.belief());
+        assert_eq!(
+            store
+                .snapshot_for_subject(initial.subject())
+                .subject_revision(),
+            before_transition.subject_revision() + 1
+        );
+
+        assert_eq!(
+            store.transition_hypothesis_state(
+                initial.id(),
+                initial.subject(),
+                HypothesisState::Confirmed,
+                None,
+            ),
+            HypothesisStateTransition::Written(KnowledgeWrite::Unchanged)
+        );
+        assert_eq!(
+            store
+                .snapshot_for_subject(initial.subject())
+                .subject_revision(),
+            before_transition.subject_revision() + 1
+        );
+    }
+
+    #[test]
     fn entities_and_relations_are_queryable_in_both_directions() {
         let store = KnowledgeBase::new();
         let host_id = EntityId::new("host:example.test").unwrap();
@@ -1137,6 +1879,192 @@ mod tests {
         assert_eq!(store.relations_from(&host_id), vec![relation.clone()]);
         assert_eq!(store.relations_to(&service_id), vec![relation]);
         assert!(store.relations_to(&host_id).is_empty());
+    }
+
+    #[test]
+    fn incoming_relation_pages_are_bounded_ordered_and_cursor_exclusive() {
+        let store = KnowledgeBase::new();
+        let destination = EntityId::new("resource:paged").unwrap();
+        for suffix in ["c", "a", "b"] {
+            store
+                .upsert_relation(KnowledgeRelation::with_id(
+                    RelationId::parse(format!("relation:{suffix}")).unwrap(),
+                    subject(1),
+                    destination.clone(),
+                    RelationKind::RelatedTo,
+                    ConfidenceScore::MAX,
+                    EvidenceId::parse(format!("evidence:{suffix}")).unwrap(),
+                ))
+                .unwrap();
+        }
+
+        let ids = |relations: Vec<KnowledgeRelation>| {
+            relations
+                .into_iter()
+                .map(|relation| relation.id().to_string())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            ids(store.relations_to_page(&destination, None, 2)),
+            vec!["relation:a", "relation:b"]
+        );
+        let (first_page, has_more) = store.relations_to_page_with_more(&destination, None, 2);
+        assert_eq!(ids(first_page), vec!["relation:a", "relation:b"]);
+        assert!(has_more);
+        let (last_page, has_more) = store.relations_to_page_with_more(
+            &destination,
+            Some(&RelationId::parse("relation:b").unwrap()),
+            2,
+        );
+        assert_eq!(ids(last_page), vec!["relation:c"]);
+        assert!(!has_more);
+        assert_eq!(
+            ids(store.relations_to_page(
+                &destination,
+                Some(&RelationId::parse("relation:b").unwrap()),
+                10,
+            )),
+            vec!["relation:c"]
+        );
+        assert_eq!(
+            ids(store.relations_to_page(
+                &destination,
+                Some(&RelationId::parse("relation:ab").unwrap()),
+                10,
+            )),
+            vec!["relation:b", "relation:c"]
+        );
+        assert!(store.relations_to_page(&destination, None, 0).is_empty());
+        assert!(store
+            .relations_to_page(
+                &destination,
+                Some(&RelationId::parse("relation:c").unwrap()),
+                1,
+            )
+            .is_empty());
+    }
+
+    #[test]
+    fn relation_storage_rejects_oversized_fields_and_provenance_before_writing() {
+        let store = KnowledgeBase::new();
+        let from = subject(1);
+        let to = EntityId::new("resource:bounded-relation").unwrap();
+        let evidence_id = EvidenceId::parse("evidence:bounded-relation").unwrap();
+        let relation = |id: RelationId,
+                        from: EntityId,
+                        to: EntityId,
+                        kind: RelationKind,
+                        evidence_id: EvidenceId| {
+            KnowledgeRelation::with_id(id, from, to, kind, ConfidenceScore::MAX, evidence_id)
+        };
+        let assert_limit = |result: Result<KnowledgeWrite, KnowledgeBaseError>,
+                            field: &'static str,
+                            actual: usize,
+                            maximum: usize| {
+            assert_eq!(
+                result,
+                Err(KnowledgeBaseError::RelationLimitExceeded {
+                    field,
+                    actual,
+                    maximum,
+                })
+            );
+        };
+
+        assert_limit(
+            store.upsert_relation(relation(
+                RelationId::parse("r".repeat(MAX_KNOWLEDGE_RELATION_ID_BYTES + 1)).unwrap(),
+                from.clone(),
+                to.clone(),
+                RelationKind::RelatedTo,
+                evidence_id.clone(),
+            )),
+            "id",
+            MAX_KNOWLEDGE_RELATION_ID_BYTES + 1,
+            MAX_KNOWLEDGE_RELATION_ID_BYTES,
+        );
+        assert_limit(
+            store.upsert_relation(relation(
+                RelationId::parse("relation:oversized-from").unwrap(),
+                EntityId::new("f".repeat(MAX_KNOWLEDGE_RELATION_ENTITY_ID_BYTES + 1)).unwrap(),
+                to.clone(),
+                RelationKind::RelatedTo,
+                evidence_id.clone(),
+            )),
+            "from",
+            MAX_KNOWLEDGE_RELATION_ENTITY_ID_BYTES + 1,
+            MAX_KNOWLEDGE_RELATION_ENTITY_ID_BYTES,
+        );
+        assert_limit(
+            store.upsert_relation(relation(
+                RelationId::parse("relation:oversized-to").unwrap(),
+                from.clone(),
+                EntityId::new("t".repeat(MAX_KNOWLEDGE_RELATION_ENTITY_ID_BYTES + 1)).unwrap(),
+                RelationKind::RelatedTo,
+                evidence_id.clone(),
+            )),
+            "to",
+            MAX_KNOWLEDGE_RELATION_ENTITY_ID_BYTES + 1,
+            MAX_KNOWLEDGE_RELATION_ENTITY_ID_BYTES,
+        );
+        assert_limit(
+            store.upsert_relation(relation(
+                RelationId::parse("relation:oversized-kind").unwrap(),
+                from.clone(),
+                to.clone(),
+                RelationKind::Custom("k".repeat(MAX_KNOWLEDGE_RELATION_KIND_BYTES + 1)),
+                evidence_id.clone(),
+            )),
+            "kind",
+            MAX_KNOWLEDGE_RELATION_KIND_BYTES + 1,
+            MAX_KNOWLEDGE_RELATION_KIND_BYTES,
+        );
+        assert_limit(
+            store.upsert_relation(relation(
+                RelationId::parse("relation:oversized-evidence-id").unwrap(),
+                from.clone(),
+                to.clone(),
+                RelationKind::RelatedTo,
+                EvidenceId::parse("e".repeat(MAX_KNOWLEDGE_RELATION_EVIDENCE_ID_BYTES + 1))
+                    .unwrap(),
+            )),
+            "evidence_id",
+            MAX_KNOWLEDGE_RELATION_EVIDENCE_ID_BYTES + 1,
+            MAX_KNOWLEDGE_RELATION_EVIDENCE_ID_BYTES,
+        );
+
+        let mut excessive_provenance = relation(
+            RelationId::parse("relation:oversized-provenance").unwrap(),
+            from.clone(),
+            to.clone(),
+            RelationKind::RelatedTo,
+            evidence_id,
+        );
+        for index in 1..=MAX_KNOWLEDGE_RELATION_EVIDENCE_IDS {
+            excessive_provenance
+                .add_evidence(EvidenceId::parse(format!("evidence:extra:{index}")).unwrap());
+        }
+        assert_limit(
+            store.upsert_relation(excessive_provenance),
+            "evidence_ids",
+            MAX_KNOWLEDGE_RELATION_EVIDENCE_IDS + 1,
+            MAX_KNOWLEDGE_RELATION_EVIDENCE_IDS,
+        );
+
+        let evidence = evidence_for(from, "bounded atomic relation");
+        let oversized_atomic_relation = relation(
+            RelationId::parse("r".repeat(MAX_KNOWLEDGE_RELATION_ID_BYTES + 1)).unwrap(),
+            evidence.subject().clone(),
+            to,
+            RelationKind::RelatedTo,
+            evidence.id().clone(),
+        );
+        assert!(matches!(
+            store.insert_evidence_with_relation(evidence, oversized_atomic_relation),
+            Err(KnowledgeBaseError::RelationLimitExceeded { field: "id", .. })
+        ));
+        assert_eq!(store.stats().evidence, 0);
+        assert_eq!(store.stats().relations, 0);
     }
 
     #[test]

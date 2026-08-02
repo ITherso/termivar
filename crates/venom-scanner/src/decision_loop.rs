@@ -12,11 +12,11 @@ use thiserror::Error;
 use venom_core::{EntityId, Outcome};
 
 use crate::{
-    apply_outcome, AdaptationLedger, AdaptationLimits, AdaptiveDecision, AdaptivePipeline,
-    AdaptivePipelineError, AttackPlan, AttackPlanner, ExperiencePolicy, ExperienceStore,
-    ExperienceStoreError, ExperienceWrite, KnowledgeBase, KnowledgeSnapshot, KnowledgeWrite,
-    PipelineDirective, PlannerError, PlanningContext, RuleApplication, RuleEngine, RuleEngineError,
-    VerificationCase, VerificationError, VerificationPipeline, VerificationReport,
+    AdaptationLedger, AdaptationLimits, AdaptiveDecision, AdaptivePipeline, AdaptivePipelineError,
+    AttackPlan, AttackPlanner, ExperiencePolicy, ExperienceStore, ExperienceStoreError,
+    ExperienceWrite, KnowledgeBase, KnowledgeSnapshot, KnowledgeWrite, PipelineDirective,
+    PlannerError, PlanningContext, RuleApplication, RuleEngine, RuleEngineError, VerificationCase,
+    VerificationError, VerificationPipeline, VerificationReport,
 };
 
 /// Validation and transition failures raised by the decision loop.
@@ -772,7 +772,7 @@ impl DecisionLoop {
             outcome,
             adaptive.directive(),
         )?;
-        let hypothesis_write = apply_outcome(knowledge, outcome)?;
+        let hypothesis_write = verification.apply(knowledge)?;
         let session_transition =
             DecisionSessionTransition::new(before, candidate_session.transition_summary());
 

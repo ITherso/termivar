@@ -53,6 +53,20 @@ Action matching is retained in every `VerificationRuleEvaluation`, so an audit t
 
 Active verification keeps the existing monotonic snapshot rule. A matching expression is eligible only when it cites at least one evidence ID absent from the passive baseline. Reusing a stale marker with the same case correlation therefore remains `Unknown`; a fresh active observation can become conclusive.
 
+## Commit concurrency
+
+Each `VerificationReport` carries a runtime-only commit token for the subject
+and ontology revisions it evaluated. `VerificationReport::apply` compares that
+token under the knowledge-base write lock before changing hypothesis state. If
+new rule-visible knowledge arrived in between, the transition fails stale
+instead of confirming or rejecting a newer evaluation. Replaying the same
+terminal state is idempotent; attempting to reverse `Confirmed` and `Rejected`
+is an explicit conflict rather than last-writer-wins.
+
+The lower-level `apply_outcome` compatibility function has no snapshot token.
+It preserves monotonic terminal behavior, but cannot detect intervening
+recalibration; production decision turns apply the complete report.
+
 ## Installation
 
 ```rust

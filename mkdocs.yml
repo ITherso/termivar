@@ -39,6 +39,7 @@ nav:
       - Experience classification: internals/experience.md
       - HTTP evidence executor: internals/http-evidence.md
       - API predicate vocabulary: internals/api-predicates.md
+      - API visibility evidence: internals/api-evidence.md
       - API reasoning: internals/api-reasoning.md
       - Standard web decision profile: internals/web-decision.md
       - Standard web decision runtime: internals/web-runtime.md
@@ -61,6 +62,7 @@ nav:
       - ADR 0003 - Event bus: adr/0003-event-bus.md
       - ADR 0004 - Reasoning/runtime boundary: adr/0004-reasoning-runtime-boundary.md
       - ADR 0005 - Shared predicate vocabulary: adr/0005-shared-predicate-vocabulary.md
+      - ADR 0006 - API visibility ingestion: adr/0006-api-visibility-ingestion.md
       - Release process: RELEASE.md
 markdown_extensions:
   - admonition

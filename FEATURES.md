@@ -33,6 +33,7 @@ This document is the capability map for Venom `0.9.0-alpha`. It records what exi
 | Detection phases | Beta | Recon, crawl, directory, SQLi, XSS, SSTI, LFI, XXE, and SSRF-oriented modules |
 | API predicate vocabulary | Preview | Canonical descriptors, normalized media/path observations, and `ApiVisibilityObservation` resource-scope bundles live in `venom-core` |
 | JSON/GraphQL reasoning | Preview | Opt-in deterministic fingerprinting with one-contribution API calibrations; paired differences remain review hypotheses, not vulnerability verification |
+| API visibility evidence | Preview | Bounded raw-value-free JSON comparison, atomic evidence/relation commit receipts, and hard-limited cursor review projections; host authorization remains mandatory |
 
 ## Scale and product surfaces
 

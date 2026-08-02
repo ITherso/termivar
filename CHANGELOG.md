@@ -24,6 +24,10 @@ All notable changes to Venom are recorded here. Releases use the categories from
 - An opt-in deterministic JSON/GraphQL fingerprint profile that turns host-paired visibility differences into review hypotheses without declaring vulnerabilities.
 - `ApiVisibilityObservation`, a stable evidence-backed resource-scope relation, and atomic `KnowledgeBase::insert_evidence_with_relation` storage.
 - Per-calibration evidence aggregation with an explicit one-contribution policy for standard API rules.
+- A bounded, deterministic API visibility comparator that retains signatures instead of raw JSON response values.
+- Typed API observation commit/reasoning receipts and relation-ID-ordered resource-scoped visibility review projections.
+- Cursor-bounded API visibility review pages with a compiled scan ceiling and rejected-edge accounting.
+- Subject/ontology revisions, bounded stale-snapshot retries, and atomic verifier state transitions for reasoning turns.
 
 ### Changed
 
@@ -42,6 +46,7 @@ All notable changes to Venom are recorded here. Releases use the categories from
 - Made API fingerprinting consume normalized media-type and path-segment evidence; the JSON rule identity is `api.response.json.media-type`.
 - Limited each standard API calibration to one matching contribution to reduce retry-driven posterior inflation; existing profiles retain the default independent-contribution behavior.
 - Rejected zero-reliability HTTP evidence policies so fixed rule likelihoods cannot promote a no-confidence observation.
+- Made rule-produced hypothesis writes batch-atomic and preserved verifier-owned terminal states under the same knowledge-base lock.
 
 ### Fixed
 
@@ -50,6 +55,9 @@ All notable changes to Venom are recorded here. Releases use the categories from
 ### Security
 
 - Expanded the responsible disclosure policy, supported-version table, response targets, CVE process, and researcher credit policy.
+- Added hard depth, node, field, and canonical-byte ceilings for API visibility evidence preparation without weakening decision-runner subject isolation.
+- Bounded relation identifiers, endpoints, custom kinds, provenance sets, review cursors, and page cloning; redacted deterministic visibility fingerprints and cursors from `Debug` output.
+- Bounded API observation producer names and review explanations, validating borrowed records before projection clones them.
 
 ## [0.9.0-alpha] - Unreleased
 

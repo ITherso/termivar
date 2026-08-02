@@ -10,11 +10,15 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Deserializer, Serialize};
 use thiserror::Error;
 use venom_core::{
-    EntityId, EvidenceId, Outcome, OutcomeError, OutcomeStatus, Probability, VerificationStage,
+    EntityId, EvidenceId, HypothesisState, Outcome, OutcomeError, OutcomeStatus, Probability,
+    VerificationStage,
 };
 
 use crate::{
-    knowledge::{KnowledgeBase, KnowledgeBaseError, KnowledgeSnapshot, KnowledgeWrite},
+    knowledge::{
+        HypothesisStateTransition, KnowledgeBase, KnowledgeBaseError, KnowledgeSnapshot,
+        KnowledgeWrite,
+    },
     rules::{Expression, ExpressionEvaluation, RuleEngineError},
 };
 
@@ -91,6 +95,19 @@ pub enum VerificationError {
         evidence_id: EvidenceId,
         /// Subject declared by the outcome.
         subject: EntityId,
+    },
+
+    /// A verifier attempted to reverse an existing terminal conclusion.
+    #[error(
+        "verification cannot change terminal hypothesis {hypothesis_id} from {current:?} to {attempted:?}"
+    )]
+    ConflictingTerminalState {
+        /// Hypothesis protected by the terminal transition.
+        hypothesis_id: String,
+        /// Terminal state already stored.
+        current: HypothesisState,
+        /// Opposite terminal state requested by the outcome.
+        attempted: HypothesisState,
     },
 
     /// Expression evaluation failed.
@@ -421,6 +438,14 @@ pub struct VerificationReport {
     stage: VerificationStage,
     outcome: Outcome,
     evaluations: Vec<VerificationRuleEvaluation>,
+    #[serde(skip)]
+    commit_token: VerificationCommitToken,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct VerificationCommitToken {
+    subject_revision: u64,
+    ontology_revision: u64,
 }
 
 impl VerificationReport {
@@ -442,6 +467,21 @@ impl VerificationReport {
     /// Returns rule evaluations in stable rule-ID order.
     pub fn evaluations(&self) -> &[VerificationRuleEvaluation] {
         &self.evaluations
+    }
+
+    /// Applies this report's conclusive state transition with snapshot CAS.
+    ///
+    /// The report is bound to the subject and ontology revisions used for its
+    /// evaluation. If rule-visible knowledge changed before the transition, the
+    /// complete state update is rejected as stale. Audit-only nonterminal reports
+    /// are validated too, because their callers may still commit adaptive or
+    /// session decisions. Replaying an already-applied terminal report is
+    /// idempotent; an opposite terminal result is rejected.
+    pub fn apply(
+        &self,
+        knowledge: &KnowledgeBase,
+    ) -> Result<Option<KnowledgeWrite>, VerificationError> {
+        apply_outcome_with_token(knowledge, &self.outcome, Some(self.commit_token))
     }
 }
 
@@ -721,14 +761,31 @@ impl VerificationPipelineReport {
 /// `Success` confirms a hypothesis. `FalsePositive` and `ConfirmedNegative`
 /// reject it. Other outcomes are audit records only and leave hypothesis state
 /// unchanged.
+///
+/// This compatibility entry point has no snapshot token and therefore cannot
+/// detect recalibration between verification and application. It still makes
+/// terminal transitions monotonic: same-state replay is idempotent and an
+/// opposite terminal transition is rejected. Prefer [`VerificationReport::apply`]
+/// whenever the report is available.
 pub fn apply_outcome(
     knowledge: &KnowledgeBase,
     outcome: &Outcome,
 ) -> Result<Option<KnowledgeWrite>, VerificationError> {
+    apply_outcome_with_token(knowledge, outcome, None)
+}
+
+fn apply_outcome_with_token(
+    knowledge: &KnowledgeBase,
+    outcome: &Outcome,
+    commit_token: Option<VerificationCommitToken>,
+) -> Result<Option<KnowledgeWrite>, VerificationError> {
     let Some(state) = outcome.status().hypothesis_state() else {
+        if let Some(commit_token) = commit_token {
+            validate_commit_token(knowledge, outcome.subject(), commit_token)?;
+        }
         return Ok(None);
     };
-    let mut hypothesis = knowledge
+    let hypothesis = knowledge
         .hypothesis(outcome.hypothesis_id())
         .ok_or_else(|| VerificationError::UnknownHypothesis {
             hypothesis_id: outcome.hypothesis_id().to_owned(),
@@ -753,8 +810,47 @@ pub fn apply_outcome(
             });
         }
     }
-    hypothesis.set_state(state);
-    Ok(Some(knowledge.upsert_hypothesis(hypothesis)?))
+    let expected_revisions =
+        commit_token.map(|token| (token.subject_revision, token.ontology_revision));
+    match knowledge.transition_hypothesis_state(
+        outcome.hypothesis_id(),
+        outcome.subject(),
+        state,
+        expected_revisions,
+    ) {
+        HypothesisStateTransition::Missing => Err(VerificationError::UnknownHypothesis {
+            hypothesis_id: outcome.hypothesis_id().to_owned(),
+        }),
+        HypothesisStateTransition::SubjectMismatch { actual } => {
+            Err(VerificationError::SnapshotSubjectMismatch {
+                expected: outcome.subject().clone(),
+                actual,
+            })
+        },
+        HypothesisStateTransition::StaleSnapshot(error) => Err(error.into()),
+        HypothesisStateTransition::TerminalConflict { current, attempted } => {
+            Err(VerificationError::ConflictingTerminalState {
+                hypothesis_id: outcome.hypothesis_id().to_owned(),
+                current,
+                attempted,
+            })
+        },
+        HypothesisStateTransition::Written(write) => Ok(Some(write)),
+    }
+}
+
+fn validate_commit_token(
+    knowledge: &KnowledgeBase,
+    subject: &EntityId,
+    commit_token: VerificationCommitToken,
+) -> Result<(), VerificationError> {
+    knowledge
+        .validate_snapshot_revisions(
+            subject,
+            commit_token.subject_revision,
+            commit_token.ontology_revision,
+        )
+        .map_err(Into::into)
 }
 
 fn evaluate_registry(
@@ -873,6 +969,10 @@ fn evaluate_registry(
         stage: registry.stage,
         outcome,
         evaluations,
+        commit_token: VerificationCommitToken {
+            subject_revision: snapshot.subject_revision(),
+            ontology_revision: snapshot.ontology_revision(),
+        },
     })
 }
 
@@ -1258,6 +1358,105 @@ mod tests {
         assert_eq!(
             apply_outcome(&knowledge, report.outcome()).unwrap(),
             Some(KnowledgeWrite::Unchanged)
+        );
+    }
+
+    #[test]
+    fn report_application_rejects_a_stale_hypothesis_evaluation() {
+        let knowledge = knowledge();
+        let mut verifier = PassiveVerifier::new();
+        verifier
+            .register(rule(
+                "passive.success",
+                VerificationStage::Passive,
+                10,
+                boolean_predicate(),
+                OutcomeStatus::Success,
+            ))
+            .unwrap();
+        let report = verifier.verify(&knowledge, &case()).unwrap();
+        let serialized = serde_json::to_value(&report).unwrap();
+        assert!(serialized.get("commit_token").is_none());
+
+        let mut recalibrated = knowledge.hypothesis("hypothesis:sqli").unwrap();
+        recalibrated.set_strength(HypothesisStrength::Weak);
+        knowledge.upsert_hypothesis(recalibrated).unwrap();
+
+        assert!(matches!(
+            report.apply(&knowledge),
+            Err(VerificationError::Knowledge(
+                KnowledgeBaseError::StaleSnapshot { .. }
+            ))
+        ));
+        let stored = knowledge.hypothesis("hypothesis:sqli").unwrap();
+        assert_eq!(stored.state(), HypothesisState::Supported);
+        assert_eq!(stored.strength(), HypothesisStrength::Weak);
+    }
+
+    #[test]
+    fn nonterminal_report_application_still_rejects_stale_knowledge() {
+        let knowledge = knowledge();
+        let report = PassiveVerifier::new().verify(&knowledge, &case()).unwrap();
+        assert_eq!(report.outcome().status(), OutcomeStatus::Unknown);
+        assert_eq!(report.apply(&knowledge).unwrap(), None);
+
+        knowledge
+            .insert_evidence(evidence(timing_predicate(), "late-observation", true))
+            .unwrap();
+
+        assert!(matches!(
+            report.apply(&knowledge),
+            Err(VerificationError::Knowledge(
+                KnowledgeBaseError::StaleSnapshot { .. }
+            ))
+        ));
+    }
+
+    #[test]
+    fn report_application_is_idempotent_and_rejects_opposite_terminal_state() {
+        let knowledge = knowledge();
+        let mut confirming = PassiveVerifier::new();
+        confirming
+            .register(rule(
+                "passive.success",
+                VerificationStage::Passive,
+                10,
+                boolean_predicate(),
+                OutcomeStatus::Success,
+            ))
+            .unwrap();
+        let mut rejecting = PassiveVerifier::new();
+        rejecting
+            .register(rule(
+                "passive.false-positive",
+                VerificationStage::Passive,
+                10,
+                boolean_predicate(),
+                OutcomeStatus::FalsePositive,
+            ))
+            .unwrap();
+        let confirmed = confirming.verify(&knowledge, &case()).unwrap();
+        let rejected = rejecting.verify(&knowledge, &case()).unwrap();
+
+        assert_eq!(
+            confirmed.apply(&knowledge).unwrap(),
+            Some(KnowledgeWrite::Updated)
+        );
+        assert_eq!(
+            confirmed.apply(&knowledge).unwrap(),
+            Some(KnowledgeWrite::Unchanged)
+        );
+        assert!(matches!(
+            rejected.apply(&knowledge),
+            Err(VerificationError::ConflictingTerminalState {
+                hypothesis_id,
+                current: HypothesisState::Confirmed,
+                attempted: HypothesisState::Rejected,
+            }) if hypothesis_id == "hypothesis:sqli"
+        ));
+        assert_eq!(
+            knowledge.hypothesis("hypothesis:sqli").unwrap().state(),
+            HypothesisState::Confirmed
         );
     }
 

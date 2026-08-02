@@ -52,6 +52,31 @@ containing the evidence and its stable, evidence-backed
 `KnowledgeBase::insert_evidence_with_relation`; identity and linkage conflicts
 are checked before either record is written.
 
+Hosts that start from authorized JSON values can use
+[`ApiVisibilityComparator`](https://itherso.github.io/venom/rust/venom_scanner/api_evidence/struct.ApiVisibilityComparator.html)
+to capture bounded, raw-value-free views and classify one explicit status,
+field-shape, or resource-content dimension. The comparator never owns a network
+client and retains signatures rather than response bodies. Its output remains
+the core `ApiVisibilityComparison` contract.
+
+[`ingest_api_visibility_observation`](https://itherso.github.io/venom/rust/venom_scanner/api_observation/fn.ingest_api_visibility_observation.html)
+validates the caller's expected resource, atomically commits evidence plus its
+scope relation, applies installed rules to the isolated comparison subject, and
+returns typed commit/reasoning receipts. A post-commit reasoning failure carries
+the observation commit receipt. Rule conclusions are themselves preflighted
+and written as one hypothesis batch. Resource-oriented consumers can use
+[`api_visibility_reviews_for_resource`](https://itherso.github.io/venom/rust/venom_scanner/api_observation/fn.api_visibility_reviews_for_resource.html)
+without merging comparison subjects. Projection uses an explicit cursor query,
+counts rejected relations against its scan budget, and enforces a compiled
+per-page ceiling so a resource cannot trigger an unbounded clone or scan.
+Producer components are capped at 256 bytes before ingestion commits; the
+projection also checks that limit and the 1,024-byte boundary-rationale ceiling
+while records are still borrowed from the knowledge store.
+See [`ApiVisibilityReviewQuery`](https://itherso.github.io/venom/rust/venom_scanner/api_observation/struct.ApiVisibilityReviewQuery.html)
+and [`ApiVisibilityReviewPage`](https://itherso.github.io/venom/rust/venom_scanner/api_observation/struct.ApiVisibilityReviewPage.html)
+for cursor and page metadata. This cursor is resource-scoped and not a
+point-in-time snapshot under concurrent inserts.
+
 Every calibration in this API profile explicitly uses `MaxContributions(1)`
 (constructed with `EvidenceAggregation::max_contributions(1)`), so repeated
 matching observations do not keep increasing the posterior for the same
@@ -61,6 +86,9 @@ profiles retain their default `Independent` contribution semantics.
 The profile does not pair independent responses, perform network I/O, attest
 producer truth, or verify a vulnerability; its visibility result is a review
 signal.
+
+See [API visibility evidence](internals/api-evidence.md) for canonicalization
+semantics, limits, receipts, replay behavior, and trust boundaries.
 
 This reasoning surface is separate from the `venom-api` application transport.
 Recognizing a GraphQL-shaped target does not expose or implement a GraphQL

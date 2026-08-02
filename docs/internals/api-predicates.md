@@ -122,7 +122,7 @@ The constructor rejects empty handles and bounds every opaque value to 256
 bytes. These fields are handles, not storage for credentials, tokens, URLs,
 principal names, response values, or resource names.
 
-`to_observation()` is the normal durable-storage path. It returns an
+`to_observation()` is the normal bundled-storage path. It returns an
 `ApiVisibilityObservation` containing exactly one immutable evidence record
 and one stable evidence-backed graph relation. The result is encoded in the
 evidence predicate, the measured dimension is its value, and its kind is
@@ -159,15 +159,16 @@ failed bundle write.
 
 The destination `KnowledgeEntity` may be registered before or after this
 bundle. Entity referential integrity is intentionally eventual because
-independent discovery producers may write in either order. The durable graph
-edge is present immediately, so the comparison claim still has a stable
-resource-scope association even while the destination entity record has not
-yet arrived.
+independent discovery producers may write in either order. The graph edge is
+present immediately in the supplied `KnowledgeBase`, so the comparison claim
+still has a stable resource-scope association even while the destination entity
+record has not yet arrived. Crash persistence remains a host responsibility.
 
 `to_evidence()` remains an advanced detached path. It emits only the immutable
 evidence; callers choosing it must persist an equivalent comparison-to-resource
-mapping themselves. Durable integrations should prefer `to_observation()` and
-the atomic knowledge-base bundle insertion.
+mapping themselves. Integrations that need the built-in association should
+prefer `to_observation()` and atomic knowledge-base bundle insertion, then
+persist the result through their host-owned storage boundary.
 
 Both conversion paths reject `ConfidenceScore::NONE`. A nonzero reliability is
 preserved as source metadata on the emitted evidence and relation. The current
@@ -180,6 +181,12 @@ join independent UI observations, API observations, or principal responses:
 it has no authority to prove that they describe the same resource or
 authorization context. The host must establish that equivalence before it
 constructs `ApiVisibilityComparison`.
+
+`venom-scanner::ApiVisibilityComparator` is an optional pure producer for hosts
+that already hold two authorized `serde_json::Value` views. It canonicalizes
+them under explicit hard ceilings and emits this same comparison contract. It
+does not authorize, fetch, retain, or independently pair responses. See
+[API visibility evidence](api-evidence.md).
 
 ## Trust boundary
 

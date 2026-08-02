@@ -29,7 +29,9 @@
 
 // Core modules (always compiled)
 pub mod api;
+pub mod api_evidence;
 pub mod api_gateway;
+pub mod api_observation;
 pub mod api_reasoning;
 pub mod auth;
 pub mod cache;
@@ -149,9 +151,23 @@ pub use api::{
     ApiEndpoints, ApiError, ApiResponse, ScanResultResponse, ScanStatus, ScanStatusType,
     StartScanRequest,
 };
+pub use api_evidence::{
+    ApiVisibilityComparator, ApiVisibilityEvidenceError, ApiVisibilityLimits, ApiVisibilityView,
+    DEFAULT_API_VISIBILITY_CANONICAL_BYTES, DEFAULT_API_VISIBILITY_DEPTH,
+    DEFAULT_API_VISIBILITY_FIELDS, DEFAULT_API_VISIBILITY_NODES,
+    HARD_MAX_API_VISIBILITY_CANONICAL_BYTES, HARD_MAX_API_VISIBILITY_DEPTH,
+    HARD_MAX_API_VISIBILITY_FIELDS, HARD_MAX_API_VISIBILITY_NODES,
+};
 pub use api_gateway::{
     ApiGateway, ApiQuota, QuotaManager, RateLimitPolicy, RateLimitStatus, RateLimitStrategy,
     RateLimiter, RequestValidationResult, RouteConfig, TokenBucket,
+};
+pub use api_observation::{
+    api_visibility_reviews_for_resource, ingest_api_visibility_observation,
+    ApiObservationCommitReceipt, ApiObservationError, ApiObservationReceipt, ApiVisibilityReview,
+    ApiVisibilityReviewPage, ApiVisibilityReviewQuery, DEFAULT_API_VISIBILITY_REVIEW_SCAN_LIMIT,
+    HARD_MAX_API_VISIBILITY_REVIEW_SCAN_LIMIT, MAX_API_VISIBILITY_REVIEW_RATIONALE_BYTES,
+    MAX_API_VISIBILITY_SOURCE_COMPONENT_BYTES,
 };
 pub use api_reasoning::{
     StandardApiInstallReport, StandardApiReasoning, StandardApiReasoningError,
@@ -173,6 +189,9 @@ pub use experience::{
 pub use knowledge::{
     KnowledgeBase, KnowledgeBaseError, KnowledgeBaseStats, KnowledgeRecordKind, KnowledgeSnapshot,
     KnowledgeStore, KnowledgeStoreError, KnowledgeStoreStats, KnowledgeWrite,
+    MAX_KNOWLEDGE_RELATION_ENTITY_ID_BYTES, MAX_KNOWLEDGE_RELATION_EVIDENCE_IDS,
+    MAX_KNOWLEDGE_RELATION_EVIDENCE_ID_BYTES, MAX_KNOWLEDGE_RELATION_ID_BYTES,
+    MAX_KNOWLEDGE_RELATION_KIND_BYTES,
 };
 pub use logging::{LogEntry, LogLevel, Logger};
 pub use metrics::{MetricsCollector, MetricsSummary, PhaseMetrics};

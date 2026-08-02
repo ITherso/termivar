@@ -125,8 +125,9 @@ without its observation.
 
 The resource entity itself may be registered later. Knowledge-base entity
 referential integrity is eventual by design so independent producers can write
-in either order; the comparison-to-resource edge is nevertheless durable and
-queryable as soon as the bundle is accepted.
+in either order; the comparison-to-resource edge is queryable in the supplied
+`KnowledgeBase` as soon as the bundle is accepted. Persisting it across process
+failure remains a host responsibility.
 
 `to_evidence()` is the detached, advanced alternative. A host using it must
 retain and persist an equivalent resource mapping outside this bundle; the
@@ -180,6 +181,16 @@ the rule engine to a subject may write supported hypotheses, but it cannot
 execute a request, choose an action, verify a result, or change a hypothesis to
 `Confirmed` or `Rejected`.
 
+## Evidence intake
+
+Hosts may construct a comparison directly or use the bounded
+`ApiVisibilityComparator` described in [API visibility evidence](api-evidence.md).
+`ingest_api_visibility_observation` is the preferred host-facing write path: it
+checks the expected resource, atomically stores the observation and relation,
+then applies installed rules to the isolated comparison subject. Its typed
+receipt distinguishes pre-commit rejection from post-commit reasoning failure.
+The decision runner remains single-subject and is not used for paired ingress.
+
 ## Usage
 
 ```rust
@@ -192,6 +203,8 @@ StandardApiReasoning::new()?.install(&knowledge, &mut rules)?;
 ```
 
 An authorized producer may then construct an `ApiVisibilityComparison`, call
-`to_observation()`, atomically insert its evidence and resource-scope relation,
-and apply the rule engine to the evidence subject. Supplying comparison inputs
-and deciding what subsequent review is permitted remain host responsibilities.
+`to_observation()`, and pass the bundle to
+`ingest_api_visibility_observation`. That boundary atomically stores its
+evidence and resource-scope relation before applying the rule engine to the
+comparison subject. Supplying comparison inputs and deciding what subsequent
+review is permitted remain host responsibilities.
