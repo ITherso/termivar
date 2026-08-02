@@ -36,6 +36,7 @@ nav:
       - Event bus: internals/event-bus.md
       - Runner: internals/runner.md
       - Decision runner: internals/decision-runner.md
+      - Experience classification: internals/experience.md
       - HTTP evidence executor: internals/http-evidence.md
       - Standard web decision profile: internals/web-decision.md
       - Standard web decision runtime: internals/web-runtime.md

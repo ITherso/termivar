@@ -162,8 +162,8 @@ pub use contracts::{ScanFinding, ScanPhase};
 pub use error::{Result, ScannerError};
 pub use event_bus::{Event, EventBuilder, EventBus, EventHandler, EventSeverity, EventType};
 pub use experience::{
-    ExperienceAssessment, ExperiencePolicy, ExperienceRecommendation, ExperienceRecord,
-    ExperienceStore, ExperienceStoreError, ExperienceWrite,
+    ExperienceAssessment, ExperienceDisposition, ExperiencePolicy, ExperienceRecommendation,
+    ExperienceRecord, ExperienceStore, ExperienceStoreError, ExperienceWrite,
 };
 #[allow(deprecated)]
 pub use knowledge::{

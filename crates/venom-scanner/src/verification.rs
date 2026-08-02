@@ -34,6 +34,10 @@ pub enum VerificationError {
     #[error("verification rule {rule_id} must have non-zero confidence")]
     ZeroConfidence { rule_id: String },
 
+    /// A confirmed-negative rule was configured for passive evaluation.
+    #[error("verification rule {rule_id} must use the active stage for confirmed negatives")]
+    ConfirmedNegativeRequiresActive { rule_id: String },
+
     /// Case-correlated evaluation was requested for a non-evidence expression.
     #[error(
         "verification rule {rule_id} must use only raw evidence when case correlation is required"
@@ -210,6 +214,9 @@ impl VerificationRule {
         let id = non_empty(id, "verification rule id")?;
         if outcome == OutcomeStatus::Unknown {
             return Err(VerificationError::ReservedUnknownStatus { rule_id: id });
+        }
+        if outcome == OutcomeStatus::ConfirmedNegative && stage != VerificationStage::Active {
+            return Err(VerificationError::ConfirmedNegativeRequiresActive { rule_id: id });
         }
         if confidence == Probability::ZERO {
             return Err(VerificationError::ZeroConfidence { rule_id: id });
@@ -711,8 +718,9 @@ impl VerificationPipelineReport {
 
 /// Applies verifier-owned hypothesis state transitions to the knowledge base.
 ///
-/// `Success` confirms a hypothesis and `FalsePositive` rejects it. Other
-/// outcomes are audit records only and leave hypothesis state unchanged.
+/// `Success` confirms a hypothesis. `FalsePositive` and `ConfirmedNegative`
+/// reject it. Other outcomes are audit records only and leave hypothesis state
+/// unchanged.
 pub fn apply_outcome(
     knowledge: &KnowledgeBase,
     outcome: &Outcome,
@@ -1143,7 +1151,7 @@ mod tests {
     }
 
     #[test]
-    fn pipeline_escalates_review_to_active_false_positive() {
+    fn pipeline_escalates_review_to_active_confirmed_negative() {
         let knowledge = knowledge();
         let baseline = knowledge.snapshot_for_subject(&subject());
         let mut pipeline = VerificationPipeline::default();
@@ -1164,7 +1172,7 @@ mod tests {
                 VerificationStage::Active,
                 10,
                 timing_predicate(),
-                OutcomeStatus::FalsePositive,
+                OutcomeStatus::ConfirmedNegative,
             ))
             .unwrap();
 
@@ -1183,7 +1191,7 @@ mod tests {
         assert!(!completed.requires_active());
         assert_eq!(
             completed.final_outcome().status(),
-            OutcomeStatus::FalsePositive
+            OutcomeStatus::ConfirmedNegative
         );
         assert_eq!(
             completed.active().unwrap().stage(),
@@ -1255,6 +1263,22 @@ mod tests {
 
     #[test]
     fn rule_wire_and_stage_invariants_are_enforced() {
+        assert!(matches!(
+            VerificationRule::new(
+                "passive.negative",
+                VerificationStage::Passive,
+                10,
+                Expression::equals(
+                    KnowledgeLayer::Evidence,
+                    boolean_predicate(),
+                    EvidenceValue::Boolean(true),
+                ),
+                OutcomeStatus::ConfirmedNegative,
+                Probability::from_percent(95).unwrap(),
+                "Passive evidence cannot establish a confirmed negative",
+            ),
+            Err(VerificationError::ConfirmedNegativeRequiresActive { .. })
+        ));
         let rule = rule(
             "passive.success",
             VerificationStage::Passive,

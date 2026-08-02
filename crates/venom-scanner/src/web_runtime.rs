@@ -809,7 +809,7 @@ fn outcome_made_progress(
         );
     let conclusive = matches!(
         outcome.verification().outcome().status(),
-        OutcomeStatus::Success | OutcomeStatus::FalsePositive
+        OutcomeStatus::Success | OutcomeStatus::FalsePositive | OutcomeStatus::ConfirmedNegative
     );
     hypothesis_changed || escalated_to_active || conclusive
 }

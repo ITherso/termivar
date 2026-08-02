@@ -17,6 +17,7 @@ All notable changes to Venom are recorded here. Releases use the categories from
 - A `ScannerSdk` composition API, generated scanner starter, and `cargo xtask` maintenance commands.
 - CodeQL web analysis, cargo-deny policy, scheduled parser fuzzing, and Rust 1.88 MSRV enforcement.
 - A standard deterministic web runtime with request, wall-time, response-byte, active-verification, same-action, and no-progress budgets.
+- Typed experience dispositions and an explicit confirmed-negative verifier outcome.
 
 ### Changed
 
@@ -29,6 +30,7 @@ All notable changes to Venom are recorded here. Releases use the categories from
 - Made plugin API compatibility explicit with version negotiation and non-exhaustive public types.
 - Added publishable version requirements to internal crate dependencies and removed the unused, unmaintained `rustls-pemfile` dependency.
 - Made the runtime bootstrap receipt optional so a fail-closed budget can stop before initial network evidence is committed.
+- Limited learned suppression to verified negative conclusions; target blocks, policy blocks, transport failures, executor failures, and inconclusive checks remain neutral.
 
 ### Fixed
 

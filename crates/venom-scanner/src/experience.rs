@@ -1,9 +1,11 @@
 //! Deterministic experience derived from verification outcomes.
 //!
-//! The store records immutable outcomes and turns repeated, subject-scoped
-//! failures into explainable action recommendations. It does not execute an
-//! action, mutate knowledge, or make planner and adaptive policy depend on its
-//! internal representation.
+//! The store records immutable outcomes and turns repeated, subject-scoped,
+//! suppression-eligible negatives into explainable action recommendations.
+//! Target blocks, policy blocks, operational failures, and inconclusive
+//! verification remain visible without being treated as proof that an action
+//! has no utility. The store does not execute an action, mutate knowledge, or
+//! make planner and adaptive policy depend on its internal representation.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -16,10 +18,11 @@ use venom_core::{EntityId, Outcome, OutcomeStatus, VerificationStage};
 #[non_exhaustive]
 pub enum ExperienceStoreError {
     /// A suppression threshold of zero would suppress an action before it ran.
-    #[error("consecutive failure limit must be greater than zero")]
+    #[error("consecutive suppression-eligible failure limit must be greater than zero")]
     ZeroFailureLimit,
 
-    /// The same subject, action, case, and stage identified a different outcome.
+    /// The same subject, action, case, and stage identified a different
+    /// outcome or disposition.
     #[error(
         "experience identity conflict for subject {subject}, action {action_id}, case {case_id}, stage {stage:?}"
     )]
@@ -59,6 +62,15 @@ pub enum ExperienceStoreError {
     /// Persisted state contained the same immutable observation more than once.
     #[error("persisted experience contains a duplicate observation")]
     DuplicateObservation,
+
+    /// A caller attached a disposition that contradicts the verifier outcome.
+    #[error("experience disposition {disposition:?} is incompatible with outcome {status:?}")]
+    IncompatibleDisposition {
+        /// Verifier status carried by the outcome.
+        status: OutcomeStatus,
+        /// Experience classification rejected by the store.
+        disposition: ExperienceDisposition,
+    },
 }
 
 /// Result of recording an outcome identity.
@@ -72,6 +84,90 @@ pub enum ExperienceWrite {
     Unchanged,
 }
 
+/// Reason an observed attempt should or should not influence future planning.
+///
+/// This classification deliberately lives outside [`OutcomeStatus`]. Target,
+/// host-policy, transport, and executor failures are operational facts rather
+/// than verifier conclusions. Only [`Self::VerificationRejected`] and
+/// [`Self::ConfirmedNegative`] contribute to the suppression streak; transient
+/// or inconclusive dispositions remain neutral.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum ExperienceDisposition {
+    /// Verification confirmed the tested hypothesis.
+    ConfirmedPositive,
+    /// The action does not apply to the observed subject.
+    NotApplicable,
+    /// The target denied, rate-limited, or otherwise blocked the attempt.
+    BlockedByTarget,
+    /// Host authorization or safety policy refused the attempt.
+    BlockedByPolicy,
+    /// Network transport failed before verification could conclude.
+    TransportFailure,
+    /// The selected executor failed independently of the target response.
+    ExecutorFailure,
+    /// A verifier rejected the tested hypothesis.
+    VerificationRejected,
+    /// Available evidence could not support a deterministic conclusion.
+    VerificationInconclusive,
+    /// A trusted active check explicitly confirmed a negative result.
+    ConfirmedNegative,
+}
+
+impl ExperienceDisposition {
+    /// Infers the conservative disposition used by [`ExperienceStore::observe`].
+    ///
+    /// `FalsePositive` remains `VerificationRejected`: an outcome alone does
+    /// not prove that an audited active negative check was performed.
+    pub fn from_outcome(outcome: &Outcome) -> Self {
+        match outcome.status() {
+            OutcomeStatus::Success => Self::ConfirmedPositive,
+            OutcomeStatus::Blocked => Self::BlockedByTarget,
+            OutcomeStatus::Unknown | OutcomeStatus::NeedsReview => Self::VerificationInconclusive,
+            OutcomeStatus::FalsePositive => Self::VerificationRejected,
+            OutcomeStatus::ConfirmedNegative => Self::ConfirmedNegative,
+            _ => Self::VerificationInconclusive,
+        }
+    }
+
+    const fn accepts(self, status: OutcomeStatus) -> bool {
+        match self {
+            Self::ConfirmedPositive => matches!(status, OutcomeStatus::Success),
+            Self::VerificationRejected => matches!(status, OutcomeStatus::FalsePositive),
+            Self::ConfirmedNegative => matches!(status, OutcomeStatus::ConfirmedNegative),
+            Self::BlockedByTarget => matches!(status, OutcomeStatus::Blocked),
+            Self::NotApplicable
+            | Self::BlockedByPolicy
+            | Self::TransportFailure
+            | Self::ExecutorFailure
+            | Self::VerificationInconclusive => {
+                matches!(status, OutcomeStatus::Unknown | OutcomeStatus::NeedsReview)
+            },
+        }
+    }
+
+    const fn suppression_effect(self) -> SuppressionEffect {
+        match self {
+            Self::ConfirmedPositive => SuppressionEffect::Reset,
+            Self::VerificationRejected | Self::ConfirmedNegative => SuppressionEffect::Increment,
+            Self::NotApplicable
+            | Self::BlockedByTarget
+            | Self::BlockedByPolicy
+            | Self::TransportFailure
+            | Self::ExecutorFailure
+            | Self::VerificationInconclusive => SuppressionEffect::Neutral,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SuppressionEffect {
+    Increment,
+    Reset,
+    Neutral,
+}
+
 /// Stable learning policy applied when assessing one action.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct ExperiencePolicy {
@@ -79,7 +175,8 @@ pub struct ExperiencePolicy {
 }
 
 impl ExperiencePolicy {
-    /// Creates a policy that suppresses an action after this many consecutive failures.
+    /// Creates a policy that suppresses an action after this many consecutive
+    /// suppression-eligible verified negatives.
     pub fn new(consecutive_failure_limit: u16) -> Result<Self, ExperienceStoreError> {
         if consecutive_failure_limit == 0 {
             return Err(ExperienceStoreError::ZeroFailureLimit);
@@ -89,8 +186,17 @@ impl ExperiencePolicy {
         })
     }
 
-    /// Returns the consecutive completed-failure threshold.
+    /// Returns the consecutive suppression-eligible negative threshold.
+    ///
+    /// This compatibility name is retained for the existing source and wire
+    /// contract. Prefer [`Self::consecutive_suppressible_failure_limit`] in new
+    /// integrations.
     pub fn consecutive_failure_limit(self) -> u16 {
+        self.consecutive_failure_limit
+    }
+
+    /// Returns the consecutive suppression-eligible negative threshold.
+    pub fn consecutive_suppressible_failure_limit(self) -> u16 {
         self.consecutive_failure_limit
     }
 }
@@ -132,10 +238,11 @@ pub enum ExperienceRecommendation {
 }
 
 /// Immutable record stored in global observation order.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ExperienceRecord {
     sequence: u64,
     outcome: Outcome,
+    disposition: ExperienceDisposition,
 }
 
 impl ExperienceRecord {
@@ -148,6 +255,37 @@ impl ExperienceRecord {
     pub fn outcome(&self) -> &Outcome {
         &self.outcome
     }
+
+    /// Returns why this result may or may not influence future planning.
+    pub fn disposition(&self) -> ExperienceDisposition {
+        self.disposition
+    }
+}
+
+impl<'de> Deserialize<'de> for ExperienceRecord {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct WireRecord {
+            sequence: u64,
+            outcome: Outcome,
+            #[serde(default)]
+            disposition: Option<ExperienceDisposition>,
+        }
+
+        let wire = WireRecord::deserialize(deserializer)?;
+        let disposition = wire
+            .disposition
+            .unwrap_or_else(|| ExperienceDisposition::from_outcome(&wire.outcome));
+        validate_disposition(&wire.outcome, disposition).map_err(serde::de::Error::custom)?;
+        Ok(Self {
+            sequence: wire.sequence,
+            outcome: wire.outcome,
+            disposition,
+        })
+    }
 }
 
 /// Explainable assessment of action history for one subject.
@@ -159,6 +297,7 @@ pub struct ExperienceAssessment {
     consecutive_failures: u16,
     last_status: Option<OutcomeStatus>,
     last_stage: Option<VerificationStage>,
+    last_disposition: Option<ExperienceDisposition>,
     recommendation: ExperienceRecommendation,
     rationale: String,
 }
@@ -179,8 +318,16 @@ impl ExperienceAssessment {
         self.completed_attempts
     }
 
-    /// Returns failures since the most recent success.
+    /// Returns suppression-eligible negatives since the most recent success.
+    ///
+    /// This compatibility name no longer counts target blocks, policy blocks,
+    /// operational failures, or inconclusive verification.
     pub fn consecutive_failures(&self) -> u16 {
+        self.consecutive_failures
+    }
+
+    /// Returns suppression-eligible verified negatives since the most recent success.
+    pub fn consecutive_suppressible_failures(&self) -> u16 {
         self.consecutive_failures
     }
 
@@ -192,6 +339,11 @@ impl ExperienceAssessment {
     /// Returns the latest completed verification stage, if one exists.
     pub fn last_stage(&self) -> Option<VerificationStage> {
         self.last_stage
+    }
+
+    /// Returns the latest completed attempt classification, if one exists.
+    pub fn last_disposition(&self) -> Option<ExperienceDisposition> {
+        self.last_disposition
     }
 
     /// Returns the deterministic learning recommendation.
@@ -240,12 +392,28 @@ impl ExperienceStore {
 
     /// Records one immutable outcome in deterministic call order.
     pub fn observe(&mut self, outcome: Outcome) -> Result<ExperienceWrite, ExperienceStoreError> {
+        let disposition = ExperienceDisposition::from_outcome(&outcome);
+        self.observe_with_disposition(outcome, disposition)
+    }
+
+    /// Records an outcome with an explicit, status-compatible disposition.
+    ///
+    /// Callers should use this only when structured policy or an audited
+    /// verifier can distinguish the conservative classification produced by
+    /// [`Self::observe`]. Operational failures should not be converted into a
+    /// synthetic successful or negative verifier result.
+    pub fn observe_with_disposition(
+        &mut self,
+        outcome: Outcome,
+        disposition: ExperienceDisposition,
+    ) -> Result<ExperienceWrite, ExperienceStoreError> {
+        validate_disposition(&outcome, disposition)?;
         if let Some(existing) = self
             .records
             .iter()
             .find(|record| same_identity(record.outcome(), &outcome))
         {
-            return if existing.outcome == outcome {
+            return if existing.outcome == outcome && existing.disposition == disposition {
                 Ok(ExperienceWrite::Unchanged)
             } else {
                 Err(ExperienceStoreError::IdentityConflict {
@@ -264,6 +432,7 @@ impl ExperienceStore {
         self.records.push(ExperienceRecord {
             sequence: self.next_sequence,
             outcome,
+            disposition,
         });
         self.next_sequence = following;
         Ok(ExperienceWrite::Inserted)
@@ -324,16 +493,18 @@ impl ExperienceStore {
 
         let mut consecutive_failures = 0_u16;
         for record in completed.iter().rev() {
-            if record.outcome.status() == OutcomeStatus::Success {
-                break;
+            match record.disposition.suppression_effect() {
+                SuppressionEffect::Increment => {
+                    consecutive_failures = consecutive_failures.saturating_add(1);
+                },
+                SuppressionEffect::Reset => break,
+                SuppressionEffect::Neutral => {},
             }
-            consecutive_failures = consecutive_failures.saturating_add(1);
         }
 
         let last = completed.last().map(|record| record.outcome());
-        let rejected = last.is_some_and(|outcome| outcome.status() == OutcomeStatus::FalsePositive);
-        let recommendation = if rejected || consecutive_failures >= policy.consecutive_failure_limit
-        {
+        let last_disposition = completed.last().map(|record| record.disposition());
+        let recommendation = if consecutive_failures >= policy.consecutive_failure_limit {
             ExperienceRecommendation::Suppress
         } else if completed.is_empty() {
             ExperienceRecommendation::Explore
@@ -345,14 +516,11 @@ impl ExperienceStore {
                 "no completed experience exists for this subject and action".to_owned()
             },
             ExperienceRecommendation::Continue => format!(
-                "{consecutive_failures} consecutive failures remain below the policy limit of {}",
+                "{consecutive_failures} suppression-eligible verified negatives remain below the policy limit of {}",
                 policy.consecutive_failure_limit
             ),
-            ExperienceRecommendation::Suppress if rejected => {
-                "the latest completed outcome rejected the action hypothesis".to_owned()
-            },
             ExperienceRecommendation::Suppress => format!(
-                "{consecutive_failures} consecutive failures reached the policy limit of {}",
+                "{consecutive_failures} suppression-eligible verified negatives reached the policy limit of {}",
                 policy.consecutive_failure_limit
             ),
         };
@@ -364,6 +532,7 @@ impl ExperienceStore {
             consecutive_failures,
             last_status: last.map(Outcome::status),
             last_stage: last.map(Outcome::stage),
+            last_disposition,
             recommendation,
             rationale,
         }
@@ -424,7 +593,7 @@ impl<'de> Deserialize<'de> for ExperienceStore {
         let mut store = Self::new();
         for record in wire.records {
             let write = store
-                .observe(record.outcome)
+                .observe_with_disposition(record.outcome, record.disposition)
                 .map_err(serde::de::Error::custom)?;
             if write == ExperienceWrite::Unchanged {
                 return Err(serde::de::Error::custom(
@@ -443,9 +612,26 @@ fn same_identity(left: &Outcome, right: &Outcome) -> bool {
         && left.stage() == right.stage()
 }
 
+fn validate_disposition(
+    outcome: &Outcome,
+    disposition: ExperienceDisposition,
+) -> Result<(), ExperienceStoreError> {
+    if disposition.accepts(outcome.status()) {
+        Ok(())
+    } else {
+        Err(ExperienceStoreError::IncompatibleDisposition {
+            status: outcome.status(),
+            disposition,
+        })
+    }
+}
+
 fn is_completed_attempt(outcome: &Outcome) -> bool {
     match outcome.status() {
-        OutcomeStatus::Success | OutcomeStatus::Blocked | OutcomeStatus::FalsePositive => true,
+        OutcomeStatus::Success
+        | OutcomeStatus::Blocked
+        | OutcomeStatus::FalsePositive
+        | OutcomeStatus::ConfirmedNegative => true,
         OutcomeStatus::Unknown | OutcomeStatus::NeedsReview => {
             outcome.stage() == VerificationStage::Active
         },
@@ -497,7 +683,7 @@ mod tests {
     }
 
     #[test]
-    fn ten_repeated_failures_suppress_only_the_scoped_action() {
+    fn repeated_confirmed_negatives_suppress_only_the_scoped_action() {
         let target = subject("endpoint:https://example.test");
         let other = subject("endpoint:https://other.test");
         let mut store = ExperienceStore::new();
@@ -508,7 +694,7 @@ mod tests {
                     target.clone(),
                     "http.x-forwarded-host",
                     VerificationStage::Active,
-                    OutcomeStatus::Blocked,
+                    OutcomeStatus::ConfirmedNegative,
                 ))
                 .unwrap();
         }
@@ -534,23 +720,124 @@ mod tests {
     }
 
     #[test]
-    fn success_resets_the_failure_streak() {
+    fn operational_and_applicability_dispositions_are_neutral() {
         let target = subject("endpoint:https://example.test");
         let mut store = ExperienceStore::new();
-        for case in 0..10 {
+
+        let observations = [
+            (
+                OutcomeStatus::Blocked,
+                ExperienceDisposition::BlockedByTarget,
+            ),
+            (
+                OutcomeStatus::Unknown,
+                ExperienceDisposition::BlockedByPolicy,
+            ),
+            (
+                OutcomeStatus::Unknown,
+                ExperienceDisposition::TransportFailure,
+            ),
+            (
+                OutcomeStatus::Unknown,
+                ExperienceDisposition::ExecutorFailure,
+            ),
+            (
+                OutcomeStatus::Unknown,
+                ExperienceDisposition::VerificationInconclusive,
+            ),
+            (OutcomeStatus::Unknown, ExperienceDisposition::NotApplicable),
+        ];
+        for (case, (status, disposition)) in observations.into_iter().enumerate() {
+            store
+                .observe_with_disposition(
+                    verified(
+                        case,
+                        target.clone(),
+                        "http.enumeration",
+                        VerificationStage::Active,
+                        status,
+                    ),
+                    disposition,
+                )
+                .unwrap();
+        }
+
+        let assessment = store.assess(
+            &target,
+            "http.enumeration",
+            ExperiencePolicy::new(1).unwrap(),
+        );
+        assert_eq!(assessment.completed_attempts(), observations.len());
+        assert_eq!(assessment.consecutive_suppressible_failures(), 0);
+        assert_eq!(
+            assessment.last_disposition(),
+            Some(ExperienceDisposition::NotApplicable)
+        );
+        assert_eq!(
+            assessment.recommendation(),
+            ExperienceRecommendation::Continue
+        );
+    }
+
+    #[test]
+    fn neutral_observations_do_not_add_to_or_erase_negative_history() {
+        let target = subject("endpoint:https://example.test");
+        let mut store = ExperienceStore::new();
+        store
+            .observe(verified(
+                0,
+                target.clone(),
+                "http.enumeration",
+                VerificationStage::Passive,
+                OutcomeStatus::FalsePositive,
+            ))
+            .unwrap();
+        store
+            .observe(verified(
+                1,
+                target.clone(),
+                "http.enumeration",
+                VerificationStage::Active,
+                OutcomeStatus::Blocked,
+            ))
+            .unwrap();
+        store
+            .observe(verified(
+                2,
+                target.clone(),
+                "http.enumeration",
+                VerificationStage::Active,
+                OutcomeStatus::ConfirmedNegative,
+            ))
+            .unwrap();
+
+        let assessment = store.assess(
+            &target,
+            "http.enumeration",
+            ExperiencePolicy::new(2).unwrap(),
+        );
+        assert_eq!(assessment.consecutive_suppressible_failures(), 2);
+        assert!(assessment.is_suppressed());
+    }
+
+    #[test]
+    fn success_resets_the_suppressible_failure_streak() {
+        let target = subject("endpoint:https://example.test");
+        let mut store = ExperienceStore::new();
+        for case in 0..3 {
             store
                 .observe(verified(
                     case,
                     target.clone(),
                     "http.enumeration",
                     VerificationStage::Active,
-                    OutcomeStatus::Unknown,
+                    OutcomeStatus::ConfirmedNegative,
                 ))
                 .unwrap();
         }
         store
             .observe(verified(
-                10,
+                3,
                 target.clone(),
                 "http.enumeration",
                 VerificationStage::Active,
@@ -572,15 +859,6 @@ mod tests {
         let target = subject("endpoint:https://example.test");
         let mut store = ExperienceStore::new();
         store
-            .observe(verified(
-                0,
-                target.clone(),
-                "sqli.boolean",
-                VerificationStage::Active,
-                OutcomeStatus::FalsePositive,
-            ))
-            .unwrap();
-        store
             .observe(
                 Outcome::unknown(
                     "case:0",
@@ -593,10 +871,23 @@ mod tests {
                 .unwrap(),
             )
             .unwrap();
+        store
+            .observe(verified(
+                0,
+                target.clone(),
+                "sqli.boolean",
+                VerificationStage::Active,
+                OutcomeStatus::ConfirmedNegative,
+            ))
+            .unwrap();
 
-        let assessment = store.assess(&target, "sqli.boolean", ExperiencePolicy::default());
+        let assessment = store.assess(&target, "sqli.boolean", ExperiencePolicy::new(1).unwrap());
         assert_eq!(assessment.completed_attempts(), 1);
         assert_eq!(assessment.last_stage(), Some(VerificationStage::Active));
+        assert_eq!(
+            assessment.last_disposition(),
+            Some(ExperienceDisposition::ConfirmedNegative)
+        );
         assert!(assessment.is_suppressed());
     }
 
@@ -624,11 +915,28 @@ mod tests {
             ExperienceWrite::Inserted
         );
         assert_eq!(store.observe(original).unwrap(), ExperienceWrite::Unchanged);
+        let reclassified = verified(
+            1,
+            subject("endpoint:https://example.test"),
+            "http.403-bypass",
+            VerificationStage::Active,
+            OutcomeStatus::Unknown,
+        );
+        store
+            .observe_with_disposition(
+                reclassified.clone(),
+                ExperienceDisposition::TransportFailure,
+            )
+            .unwrap();
+        assert!(matches!(
+            store.observe_with_disposition(reclassified, ExperienceDisposition::ExecutorFailure,),
+            Err(ExperienceStoreError::IdentityConflict { .. })
+        ));
         assert!(matches!(
             store.observe(conflicting),
             Err(ExperienceStoreError::IdentityConflict { .. })
         ));
-        assert_eq!(store.len(), 1);
+        assert_eq!(store.len(), 2);
     }
 
     #[test]
@@ -636,19 +944,41 @@ mod tests {
         let target = subject("endpoint:https://example.test");
         let mut store = ExperienceStore::new();
         store
-            .observe(verified(
-                0,
-                target,
-                "http.enumeration",
-                VerificationStage::Passive,
-                OutcomeStatus::Blocked,
-            ))
+            .observe_with_disposition(
+                verified(
+                    0,
+                    target,
+                    "http.enumeration",
+                    VerificationStage::Passive,
+                    OutcomeStatus::Unknown,
+                ),
+                ExperienceDisposition::BlockedByPolicy,
+            )
             .unwrap();
         let encoded = serde_json::to_value(&store).unwrap();
         assert_eq!(
             serde_json::from_value::<ExperienceStore>(encoded.clone()).unwrap(),
             store
         );
+        assert_eq!(
+            encoded["records"][0]["disposition"],
+            serde_json::json!("blocked_by_policy")
+        );
+
+        let mut legacy = encoded.clone();
+        legacy["records"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("disposition");
+        let migrated = serde_json::from_value::<ExperienceStore>(legacy).unwrap();
+        assert_eq!(
+            migrated.records()[0].disposition(),
+            ExperienceDisposition::VerificationInconclusive
+        );
+
+        let mut incompatible = encoded.clone();
+        incompatible["records"][0]["disposition"] = serde_json::json!("confirmed_positive");
+        assert!(serde_json::from_value::<ExperienceStore>(incompatible).is_err());
 
         let mut invalid_record = encoded.clone();
         invalid_record["records"][0]["sequence"] = serde_json::json!(1);

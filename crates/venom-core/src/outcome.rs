@@ -22,6 +22,10 @@ pub enum OutcomeError {
     #[error("unknown outcomes must be created without a verifier rule or evidence")]
     InvalidUnknown,
 
+    /// A trusted negative conclusion was emitted without an active control.
+    #[error("confirmed negative outcomes require active verification evidence")]
+    ConfirmedNegativeRequiresActive,
+
     /// A conclusive outcome did not reference any evidence.
     #[error("outcome {status:?} must reference at least one evidence record")]
     MissingEvidence { status: OutcomeStatus },
@@ -75,19 +79,28 @@ pub enum OutcomeStatus {
     FalsePositive,
     /// Conflicting or incomplete evidence requires a human decision.
     NeedsReview,
+    /// An audited negative control explicitly disproved the hypothesis.
+    ///
+    /// Unlike `FalsePositive`, this records a trusted negative result rather
+    /// than a verifier rejecting the provenance or interpretation of a prior
+    /// finding.
+    ConfirmedNegative,
 }
 
 impl OutcomeStatus {
     /// Returns whether the verification pipeline should stop at this status.
     pub const fn is_terminal(self) -> bool {
-        matches!(self, Self::Success | Self::Blocked | Self::FalsePositive)
+        matches!(
+            self,
+            Self::Success | Self::Blocked | Self::FalsePositive | Self::ConfirmedNegative
+        )
     }
 
     /// Maps conclusive verification results to verifier-owned hypothesis states.
     pub const fn hypothesis_state(self) -> Option<HypothesisState> {
         match self {
             Self::Success => Some(HypothesisState::Confirmed),
-            Self::FalsePositive => Some(HypothesisState::Rejected),
+            Self::FalsePositive | Self::ConfirmedNegative => Some(HypothesisState::Rejected),
             Self::Blocked | Self::Unknown | Self::NeedsReview => None,
         }
     }
@@ -154,6 +167,9 @@ impl Outcome {
     ) -> Result<Self, OutcomeError> {
         if status == OutcomeStatus::Unknown {
             return Err(OutcomeError::InvalidUnknown);
+        }
+        if status == OutcomeStatus::ConfirmedNegative && stage != VerificationStage::Active {
+            return Err(OutcomeError::ConfirmedNegativeRequiresActive);
         }
         if evidence_ids.is_empty() {
             return Err(OutcomeError::MissingEvidence { status });
@@ -356,7 +372,49 @@ mod tests {
     }
 
     #[test]
+    fn confirmed_negative_is_terminal_and_rejects_the_hypothesis() {
+        let outcome = Outcome::verified(
+            "case:negative-control",
+            subject(),
+            "sqli.verify",
+            "hypothesis:sqli",
+            "verify.negative-control",
+            VerificationStage::Active,
+            OutcomeStatus::ConfirmedNegative,
+            Probability::from_percent(97).unwrap(),
+            "The audited negative control disproved the hypothesis",
+            BTreeSet::from([EvidenceId::parse("evidence:negative-control").unwrap()]),
+        )
+        .unwrap();
+
+        assert!(outcome.status().is_terminal());
+        assert_eq!(
+            outcome.status().hypothesis_state(),
+            Some(HypothesisState::Rejected)
+        );
+        assert_eq!(
+            serde_json::to_value(&outcome).unwrap()["status"],
+            serde_json::json!("confirmed_negative")
+        );
+    }
+
+    #[test]
     fn conclusive_outcomes_require_evidence_and_confidence() {
+        assert!(matches!(
+            Outcome::verified(
+                "case:passive-negative",
+                subject(),
+                "sqli.verify",
+                "hypothesis:sqli",
+                "verify.negative-control",
+                VerificationStage::Passive,
+                OutcomeStatus::ConfirmedNegative,
+                Probability::from_percent(95).unwrap(),
+                "A passive observation cannot establish a trusted negative",
+                BTreeSet::from([EvidenceId::parse("evidence:passive").unwrap()]),
+            ),
+            Err(OutcomeError::ConfirmedNegativeRequiresActive)
+        ));
         assert!(matches!(
             Outcome::verified(
                 "case:1",

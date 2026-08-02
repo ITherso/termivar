@@ -55,7 +55,7 @@ Without overrides, the builder creates a policy restricted to the target's exact
 | Planner action-cost budget | 100 |
 | Maximum action risk | 40% |
 | Passive action cycles | 8 |
-| Consecutive failures before suppression | 10 |
+| Suppression-eligible verified negatives | 10 |
 | Total HTTP requests | 32 |
 | Complete runtime wall time | 120 seconds |
 | Buffered response bytes across the session | 2 MiB |
@@ -77,7 +77,7 @@ The wall deadline starts at the beginning of `analyze()` and covers bootstrap, r
 
 `HttpEvidencePolicy::max_body_bytes` remains a per-response ceiling. `RuntimeBudget::max_response_bytes` is the session-wide total of response-body bytes buffered into evidence. Before each request, the runtime passes the remaining session allowance to the HTTP executor; the collector uses the smaller of that allowance and its per-response policy. Content-Length and wire overhead are not charged as body bytes.
 
-No-progress accounting ignores raw evidence IDs, timing changes, retry case IDs, and experience inserts. A completed execution turn resets the counter only when it inserts or updates a hypothesis, escalates passive verification to an active probe, or reaches a conclusive Success/FalsePositive result. When the configured count is reached, the next command is not dispatched.
+No-progress accounting ignores raw evidence IDs, timing changes, retry case IDs, and experience inserts. A completed execution turn resets the counter only when it inserts or updates a hypothesis, escalates passive verification to an active probe, or reaches a conclusive Success/FalsePositive/ConfirmedNegative result. When the configured count is reached, the next command is not dispatched.
 
 Expected exhaustion is an auditable result rather than an execution error. The report ends with `Halt { reason: RuntimeBudgetLimit }`, exposes the structured dimension through `limit_exceeded()`, and carries final counters through `usage()`. If a natural `Complete`, `AwaitHumanReview`, or policy `Halt` is reached on the same completed turn, that domain terminal takes precedence.
 

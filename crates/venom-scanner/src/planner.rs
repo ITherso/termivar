@@ -1208,9 +1208,9 @@ mod tests {
                         "hypothesis:laravel",
                         "verify.alpha",
                         VerificationStage::Active,
-                        OutcomeStatus::Blocked,
+                        OutcomeStatus::ConfirmedNegative,
                         Probability::from_percent(80).unwrap(),
-                        "alpha remained blocked",
+                        "active negative control rejected alpha",
                         BTreeSet::from([evidence_id.clone()]),
                     )
                     .unwrap(),

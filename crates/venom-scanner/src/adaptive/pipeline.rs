@@ -1004,11 +1004,11 @@ fn fallback(outcome: &Outcome) -> (PipelineDirective, String) {
             PipelineDirective::Complete,
             "verified objective completed".into(),
         ),
-        OutcomeStatus::FalsePositive => (
+        OutcomeStatus::FalsePositive | OutcomeStatus::ConfirmedNegative => (
             PipelineDirective::Replan {
                 suppress_current_action: true,
             },
-            "rejected hypothesis suppresses the source action before replanning".into(),
+            "negative conclusion suppresses the source action before replanning".into(),
         ),
         OutcomeStatus::Unknown | OutcomeStatus::NeedsReview
             if outcome.stage() == VerificationStage::Passive =>
@@ -1316,9 +1316,9 @@ mod tests {
                         "hypothesis:http",
                         "verify.403-bypass",
                         VerificationStage::Active,
-                        OutcomeStatus::Blocked,
+                        OutcomeStatus::ConfirmedNegative,
                         Probability::from_percent(90).unwrap(),
-                        "bypass attempt remained blocked",
+                        "active negative control rejected the bypass",
                         BTreeSet::from([fixture.evidence_id.clone()]),
                     )
                     .unwrap(),
@@ -1491,7 +1491,7 @@ mod tests {
         let false_positive = verified_outcome(
             OutcomeStatus::FalsePositive,
             VerificationStage::Active,
-            fixture.evidence_id,
+            fixture.evidence_id.clone(),
         );
         let mut replanning_ledger = AdaptationLedger::new();
         let replan = pipeline
@@ -1506,6 +1506,20 @@ mod tests {
         assert!(replanning_ledger
             .suppressed_actions()
             .contains("http.probe"));
+        let confirmed_negative = verified_outcome(
+            OutcomeStatus::ConfirmedNegative,
+            VerificationStage::Active,
+            fixture.evidence_id,
+        );
+        assert_eq!(
+            pipeline
+                .decide(&confirmed_negative, &snapshot, &ledger, limits)
+                .unwrap()
+                .directive(),
+            &PipelineDirective::Replan {
+                suppress_current_action: true
+            }
+        );
         assert_eq!(
             pipeline
                 .decide(

@@ -1029,7 +1029,7 @@ mod tests {
     }
 
     #[test]
-    fn blocked_action_adapts_once_then_experience_stops_repetition() {
+    fn blocked_action_uses_bounded_adaptation_without_learning_a_negative() {
         let decision_loop = configured_loop(Some(OutcomeStatus::Blocked), 1, 8);
         let knowledge = knowledge(true);
         let mut experience = ExperienceStore::new();
@@ -1068,9 +1068,25 @@ mod tests {
         let second = decision_loop
             .submit_passive(&knowledge, &mut experience, &mut session)
             .unwrap();
-        assert!(second.adaptive().selected_rule_id().is_none());
+        assert_eq!(
+            second.adaptive().selected_rule_id(),
+            Some("http.403.bypass")
+        );
         assert!(matches!(
             second.command(),
+            DecisionLoopCommand::ExecuteAction {
+                case,
+                origin: DecisionActionOrigin::Adaptive,
+                ..
+            } if case.action_id() == "http.403-bypass"
+        ));
+
+        let third = decision_loop
+            .submit_passive(&knowledge, &mut experience, &mut session)
+            .unwrap();
+        assert!(third.adaptive().selected_rule_id().is_none());
+        assert!(matches!(
+            third.command(),
             DecisionLoopCommand::AwaitHumanReview { case }
                 if case.action_id() == "http.403-bypass"
         ));
@@ -1080,10 +1096,20 @@ mod tests {
                 reason: DecisionStopReason::HumanReview
             }
         ));
-        assert_eq!(experience.len(), 2);
+        assert_eq!(experience.len(), 3);
         assert!(experience
             .suppressed_actions(&subject(), ExperiencePolicy::new(1).unwrap())
-            .contains("http.403-bypass"));
+            .is_empty());
+        assert_eq!(
+            experience
+                .assess(
+                    &subject(),
+                    "http.403-bypass",
+                    ExperiencePolicy::new(1).unwrap(),
+                )
+                .consecutive_suppressible_failures(),
+            0
+        );
     }
 
     #[test]
