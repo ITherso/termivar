@@ -18,6 +18,12 @@ authors = ["ITherso <e268792@metu.edu.tr>"]
 license = "MIT"
 repository = "https://github.com/ITherso/venom"
 
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.rustdoc]
+missing_crate_level_docs = "warn"
+
 [workspace.dependencies]
 tokio = { version = "1", features = ["full"] }
 tokio-util = "0.7"

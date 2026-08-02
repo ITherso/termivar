@@ -12,6 +12,9 @@ documentation = "https://itherso.github.io/venom/rust/venom_scanner/"
 keywords = ["security", "scanner", "pentesting", "sdk", "async"]
 categories = ["development-tools", "network-programming"]
 
+[lints]
+workspace = true
+
 [dependencies]
 venom-core = { version = "0.9.0-alpha", path = "../venom-core" }
 tokio = { workspace = true }

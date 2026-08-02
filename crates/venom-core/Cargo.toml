@@ -12,6 +12,9 @@ documentation = "https://itherso.github.io/venom/rust/venom_core/"
 keywords = ["security", "events", "framework"]
 categories = ["development-tools"]
 
+[lints]
+workspace = true
+
 [dependencies]
 serde = { workspace = true }
 serde_json = { workspace = true }

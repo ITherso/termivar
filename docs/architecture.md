@@ -118,6 +118,14 @@ flowchart TD
 | Semantic action, ingestion, and domain profiles | `web_actions`, `web_reasoning`, `api_reasoning`, `api_observation`, `web_planning`, `web_verification` | The lower rows above; never execution or HTTP modules |
 | Execution and composition | `decision_runner`, `http_evidence`, `web_execution`, `web_runtime` | All inward contracts needed to perform and account for work |
 
+Within the bounded standard runtime, `http_evidence/request_broker.rs` is the
+sole owner of a raw HTTP client. Built-in bootstrap, planned, adaptive, retry,
+and active-verification traffic must pass through its shared atomic accounting
+authority. The architecture check rejects direct client or socket acquisition
+from the surrounding decision/runtime modules. The ordered legacy phase runner
+is a separate, currently unbudgeted surface; its existing direct-client and
+`.send()` inventory is frozen so that debt cannot silently spread.
+
 `web_actions` owns stable semantic action and route identities. Planning,
 verification, and execution are sibling consumers; an executor's HTTP method or
 client policy never defines what the verifier is allowed to reason about.
@@ -185,10 +193,14 @@ Run the machine-enforced boundary locally:
 cargo xtask architecture
 ```
 
-The command rejects uncompiled source at the virtual workspace root, validates workspace dependencies through locked Cargo metadata,
-inspects protected production imports through the Rust AST, verifies canonical
-`lib.rs` module and external-root wiring, and compiles `venom-scanner` with no
-default features. See [ADR 0004](adr/0004-reasoning-runtime-boundary.md).
+The command rejects uncompiled source at the virtual workspace root, validates
+workspace dependencies and centrally inherited lint policy through locked Cargo
+metadata, inspects protected production imports through the Rust AST, enforces
+standard-runtime transport ownership, freezes the legacy direct-I/O inventory,
+verifies canonical `lib.rs` module and external-root wiring, and compiles
+`venom-scanner` with no default features. See
+[ADR 0004](adr/0004-reasoning-runtime-boundary.md) and
+[ADR 0009](adr/0009-host-owned-transport-accounting.md).
 
 ## Dependency review
 
@@ -203,6 +215,8 @@ Before adding an edge, ask:
 
 - Plugin inputs are still target and payload strings rather than a versioned request context.
 - Native plugin execution and the ordered phase runner are separate orchestration paths.
+- The ordered phase runner still exposes a raw HTTP client and is not covered by
+  `StandardWebDecisionRuntime` resource accounting.
 - Dashboard, distributed, and compliance modules still live in `venom-scanner`.
 - Several optional modules expose broad APIs that require stability review.
 - `DecisionExecutionLimits` still names an HTTP response-body allowance in a

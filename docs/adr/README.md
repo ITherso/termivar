@@ -14,6 +14,7 @@ Architecture decision records (ADRs) preserve why a durable technical choice was
 | [0006](0006-api-visibility-ingestion.md) | Accepted | Keep API visibility ingestion outside the decision runner |
 | [0007](0007-scan-context-construction-boundary.md) | Accepted | Make ScanContext constructor-owned and non-exhaustive |
 | [0008](0008-version-api-comparison-projections.md) | Accepted | Version API comparison projections outside the core wire contract |
+| [0009](0009-host-owned-transport-accounting.md) | Accepted | Make the standard runtime own transport accounting |
 
 ## Format
 

@@ -12,6 +12,9 @@ documentation = "https://itherso.github.io/venom/rust/venom_proxy/"
 keywords = ["security", "proxy", "http", "tls"]
 categories = ["network-programming"]
 
+[lints]
+workspace = true
+
 [dependencies]
 venom-core = { version = "0.9.0-alpha", path = "../venom-core" }
 tokio = { workspace = true }

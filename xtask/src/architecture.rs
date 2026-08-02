@@ -16,6 +16,8 @@ use syn::{
     Meta, Path as SynPath, Stmt, UseTree,
 };
 
+mod transport;
+
 const ALLOWED_EXTERNAL_ROOTS: &[&str] = &["core", "serde", "std", "thiserror", "venom_core"];
 const ALLOWED_LIBRARY_ATTRIBUTES: &[&str] = &["allow", "cfg", "deny", "deprecated", "doc"];
 const ATTRIBUTE_NON_DEPENDENCY_ROOTS: &[&str] = &["clippy", "rustdoc"];
@@ -152,6 +154,7 @@ const MODULE_POLICIES: &[ModulePolicy] = &[
 pub(crate) fn check(workspace_root: &Path) -> Result<(), Box<dyn Error>> {
     let mut violations = workspace_graph_violations(workspace_root)?;
     violations.extend(module_boundary_violations(workspace_root)?);
+    violations.extend(transport::check(workspace_root)?);
     violations.sort();
     violations.dedup();
 
@@ -191,6 +194,13 @@ fn workspace_graph_violations(workspace_root: &Path) -> Result<Vec<String>, Box<
         })
         .collect();
 
+    for package in workspace_packages {
+        let manifest = fs::read_to_string(package.manifest_path.as_std_path())?;
+        violations.extend(validate_workspace_lint_inheritance(
+            &package.name,
+            &manifest,
+        ));
+    }
     violations.extend(validate_workspace_graph(&graph));
     Ok(violations)
 }
@@ -204,6 +214,46 @@ fn validate_workspace_root_layout(is_virtual: bool, has_source_root: bool) -> Ve
     }
 
     Vec::new()
+}
+
+fn validate_workspace_lint_inheritance(package: &str, manifest: &str) -> Vec<String> {
+    if manifest_inherits_workspace_lints(manifest) {
+        Vec::new()
+    } else {
+        vec![format!(
+            "workspace package {package} must declare `[lints] workspace = true`"
+        )]
+    }
+}
+
+fn manifest_inherits_workspace_lints(manifest: &str) -> bool {
+    let mut in_lints_table = false;
+
+    for raw_line in manifest.lines() {
+        let line = raw_line
+            .split_once('#')
+            .map_or(raw_line, |(before_comment, _)| before_comment)
+            .trim();
+        if line.is_empty() {
+            continue;
+        }
+        if line.starts_with('[') {
+            in_lints_table = line == "[lints]";
+            continue;
+        }
+        if !in_lints_table {
+            continue;
+        }
+
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        if key.trim() == "workspace" {
+            return value.trim() == "true";
+        }
+    }
+
+    false
 }
 
 fn allowed_workspace_graph() -> BTreeMap<String, BTreeSet<String>> {
@@ -1288,6 +1338,34 @@ mod tests {
         let violations = validate_workspace_root_layout(true, true);
         assert_eq!(violations.len(), 1);
         assert!(violations[0].contains("virtual workspace root must not contain src/"));
+    }
+
+    #[test]
+    fn every_workspace_member_must_inherit_workspace_lints() {
+        let inherited = r#"
+            [package]
+            name = "example"
+
+            [lints]
+            workspace = true # centrally owned
+        "#;
+        assert!(validate_workspace_lint_inheritance("example", inherited).is_empty());
+
+        for manifest in [
+            "[package]\nname = \"missing\"\n",
+            "[lints]\nworkspace = false\n",
+            "[dependencies]\nworkspace = true\n",
+            "[lints]\n# workspace = true\n",
+            "[lints]\nworkspace = \"true\"\n",
+        ] {
+            let violations = validate_workspace_lint_inheritance("example", manifest);
+            assert_eq!(
+                violations.len(),
+                1,
+                "manifest unexpectedly passed: {manifest}"
+            );
+            assert!(violations[0].contains("must declare `[lints] workspace = true`"));
+        }
     }
 
     #[test]

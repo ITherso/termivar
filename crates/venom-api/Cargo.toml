@@ -12,6 +12,9 @@ documentation = "https://itherso.github.io/venom/rust/venom_api/"
 keywords = ["security", "http", "axum", "api"]
 categories = ["web-programming::http-server"]
 
+[lints]
+workspace = true
+
 [dependencies]
 venom-core = { version = "0.9.0-alpha", path = "../venom-core" }
 venom-scanner = { version = "0.9.0-alpha", path = "../venom-scanner" }

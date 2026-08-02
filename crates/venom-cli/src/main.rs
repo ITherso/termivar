@@ -1,3 +1,5 @@
+//! Process-level command-line composition for Venom's scanner, API, and proxy adapters.
+
 use clap::{Parser, Subcommand};
 use url::Url;
 use venom_proxy::ProxyServer;

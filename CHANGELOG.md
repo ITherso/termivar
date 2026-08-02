@@ -40,6 +40,8 @@ All notable changes to Venom are recorded here. Releases use the categories from
 - Explicit documentation that standard-profile Bayesian inputs are deterministic policy likelihoods until empirical calibration metrics are published.
 - Host-owned standard-runtime cancellation with a distinct terminal reason and an auditable receipt for evidence committed before verification was skipped.
 - A versioned API review cursor that binds continuation state to a pseudonymous resource digest and rejects cross-resource reuse before scanning.
+- A process-local runtime failure receipt that preserves committed bootstrap work, completed turns, and monotonic usage across later execution, accounting, reasoning, or verification errors.
+- A transport-ownership ADR and architecture invariant that keeps raw network capabilities out of bounded standard-runtime consumers and freezes the legacy phase I/O inventory.
 
 ### Changed
 
@@ -67,6 +69,8 @@ All notable changes to Venom are recorded here. Releases use the categories from
 - Made repository-size metrics count only tracked Rust files owned by workspace packages and moved warning denial from global environment overrides into explicit Clippy/release gates.
 - Replaced stale testing, observability, and code-quality claims with documentation of the currently compiled contracts and CI evidence.
 - Centralized canonical rule-hypothesis identity generation while preserving existing IDs byte-for-byte.
+- Moved unsafe-code and crate-documentation policy from global compiler flags into centrally inherited workspace lints.
+- Classified per-request deadlines as `RequestTimeout` instead of conflating them with other transport failures.
 
 ### Fixed
 
@@ -84,6 +88,7 @@ All notable changes to Venom are recorded here. Releases use the categories from
 - Bound profiled comparison identities to comparator, canonicalization, and projection-policy metadata; redacted legacy view handles from `Debug` output and kept raw JSON values and clear observed paths out of comparator-v2 reports.
 - Made host cancellation preserve monotonic transport accounting and any post-commit, pre-verification evidence receipt without misreporting a wall-time or request-timeout limit.
 - Added strict, bounded cursor parsing and redacted cursor diagnostics while preserving the legacy in-process pagination wire contract.
+- Added active multi-request and pre-socket retry budget regressions so nested dispatches cannot escape host accounting.
 
 ## [0.9.0-alpha] - 2026-07-31
 

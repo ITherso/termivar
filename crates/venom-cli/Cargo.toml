@@ -11,6 +11,9 @@ homepage = "https://github.com/ITherso/venom"
 keywords = ["security", "scanner", "pentesting", "cli"]
 categories = ["command-line-utilities"]
 
+[lints]
+workspace = true
+
 [[bin]]
 name = "venom"
 path = "src/main.rs"
