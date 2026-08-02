@@ -5,14 +5,16 @@ use std::collections::BTreeMap;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
-use super::super::{ApiVisibilityEvidenceError, ApiVisibilityLimits};
-use super::{
-    diff::{digest_path, fingerprint, PathDigest, PathFingerprint},
-    policy::{
-        ApiComparisonProfile, CURRENT_API_COMPARISON_ALGORITHM_VERSION,
-        CURRENT_API_VISIBILITY_CANONICALIZATION_VERSION,
+use crate::api_evidence::{
+    profiled::{
+        diff::{digest_path, fingerprint, PathDigest, PathFingerprint},
+        policy::{
+            ApiComparisonProfile, CURRENT_API_COMPARISON_ALGORITHM_VERSION,
+            CURRENT_API_VISIBILITY_CANONICALIZATION_VERSION,
+        },
+        ProfiledApiVisibilityError,
     },
-    ProfiledApiVisibilityError,
+    ApiVisibilityEvidenceError, ApiVisibilityLimits,
 };
 
 const RESOURCE_NODE_DOMAIN: &[u8] = b"venom.api-visibility.resource-node.v2\0";

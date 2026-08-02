@@ -8,7 +8,7 @@ use serde::{
 };
 use sha2::{Digest, Sha256};
 
-use super::ProfiledApiVisibilityError;
+use crate::api_evidence::profiled::ProfiledApiVisibilityError;
 
 const PROFILE_ID_DOMAIN: &[u8] = b"venom.api-visibility.projection-policy.v2\0";
 

@@ -72,6 +72,7 @@ All notable changes to Venom are recorded here. Releases use the categories from
 
 - CLI version output now derives from the Cargo package version.
 - Standard web action execution and verification mappings now fail during profile construction instead of panicking at runtime.
+- The architecture gate now owns and independently inspects explicitly registered nested production modules while continuing to reject undeclared helpers and includes.
 
 ### Security
 

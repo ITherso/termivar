@@ -16,7 +16,7 @@ use venom_core::{
     ApiVisibilityPairKind, ApiVisibilityResult, ApiVocabularyError, ConfidenceScore, Evidence,
 };
 
-use super::{
+use crate::api_evidence::{
     canonical_signatures, opaque_handle, ApiVisibilityComparator, ApiVisibilityEvidenceError,
     ApiVisibilityLimits,
 };

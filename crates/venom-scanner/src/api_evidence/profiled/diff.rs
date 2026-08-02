@@ -13,7 +13,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use venom_core::ApiVisibilityDimension;
 
-use super::{
+use crate::api_evidence::profiled::{
     policy::{
         deserialize_digest, encode_digest, update_framed, JsonPathPattern,
         HARD_MAX_API_VISIBILITY_DIFF_PATHS,

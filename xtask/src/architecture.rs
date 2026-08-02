@@ -4,7 +4,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     error::Error,
     fmt, fs,
-    path::Path,
+    path::{Component, Path},
     str::FromStr,
 };
 
@@ -112,9 +112,29 @@ const MODULE_POLICIES: &[ModulePolicy] = &[
         allowed_external: &["serde_json", "sha2"],
     },
     ModulePolicy {
+        source: "api_evidence/profiled.rs",
+        allowed_internal: &["api_evidence"],
+        allowed_external: &["serde_json", "sha2"],
+    },
+    ModulePolicy {
+        source: "api_evidence/profiled/canonical.rs",
+        allowed_internal: &["api_evidence"],
+        allowed_external: &["serde_json", "sha2"],
+    },
+    ModulePolicy {
+        source: "api_evidence/profiled/diff.rs",
+        allowed_internal: &["api_evidence"],
+        allowed_external: &["serde_json", "sha2"],
+    },
+    ModulePolicy {
+        source: "api_evidence/profiled/policy.rs",
+        allowed_internal: &["api_evidence"],
+        allowed_external: &["sha2"],
+    },
+    ModulePolicy {
         source: "api_observation.rs",
         allowed_internal: &["knowledge", "rules"],
-        allowed_external: &[],
+        allowed_external: &["sha2"],
     },
     ModulePolicy {
         source: "web_planning.rs",
@@ -243,14 +263,19 @@ fn validate_workspace_graph(graph: &BTreeMap<String, BTreeSet<String>>) -> Vec<S
 
 fn module_boundary_violations(workspace_root: &Path) -> Result<Vec<String>, Box<dyn Error>> {
     let source_root = workspace_root.join("crates/venom-scanner/src");
-    let mut violations = Vec::new();
+    let mut violations = validate_module_policy_registry(MODULE_POLICIES);
     let library_source = fs::read_to_string(source_root.join("lib.rs"))?;
     violations.extend(validate_module_wiring(&library_source, MODULE_POLICIES)?);
 
     for policy in MODULE_POLICIES {
         let source_path = source_root.join(policy.source);
         let source = fs::read_to_string(&source_path)?;
-        violations.extend(inspect_module_source(policy, &source)?);
+        let nested_modules = policy_owned_nested_modules(policy.source, MODULE_POLICIES);
+        violations.extend(inspect_module_source_with_nested(
+            policy,
+            &source,
+            &nested_modules,
+        )?);
     }
 
     Ok(violations)
@@ -270,11 +295,12 @@ fn validate_module_wiring(
             _ => None,
         })
         .collect();
-    for policy in policies {
-        let module = policy
-            .source
-            .strip_suffix(".rs")
-            .expect("protected module source must end in .rs");
+    for policy in policies
+        .iter()
+        .filter(|policy| policy_parent_source(policy.source).is_none())
+    {
+        let module = policy_module_name(policy.source)
+            .expect("validated top-level protected source must name an .rs module");
         let declarations: Vec<_> = modules
             .iter()
             .filter(|item| normalize_identifier(&item.ident.to_string()) == module)
@@ -306,6 +332,74 @@ fn validate_module_wiring(
     }
 
     Ok(violations)
+}
+
+fn validate_module_policy_registry(policies: &[ModulePolicy]) -> Vec<String> {
+    let mut violations = Vec::new();
+    let mut sources = BTreeSet::new();
+
+    for policy in policies {
+        let path = Path::new(policy.source);
+        let has_only_normal_components = path
+            .components()
+            .all(|component| matches!(component, Component::Normal(_)));
+        if path.is_absolute()
+            || !has_only_normal_components
+            || path.extension().and_then(|extension| extension.to_str()) != Some("rs")
+            || path.file_stem().and_then(|stem| stem.to_str()).is_none()
+            || path.file_name().and_then(|name| name.to_str()) == Some("mod.rs")
+        {
+            violations.push(format!(
+                "architecture policy source {} must be a normalized relative .rs module path",
+                policy.source
+            ));
+            continue;
+        }
+        if !sources.insert(policy.source) {
+            violations.push(format!(
+                "architecture policy declares source {} more than once",
+                policy.source
+            ));
+        }
+    }
+
+    for policy in policies {
+        if let Some(parent) = policy_parent_source(policy.source) {
+            if !sources.contains(parent.as_str()) {
+                violations.push(format!(
+                    "architecture policy source {} has undeclared policy parent {parent}",
+                    policy.source
+                ));
+            }
+        }
+    }
+
+    violations
+}
+
+fn policy_module_name(source: &str) -> Option<&str> {
+    Path::new(source).file_stem()?.to_str()
+}
+
+fn policy_parent_source(source: &str) -> Option<String> {
+    let parent = Path::new(source).parent()?;
+    if parent.as_os_str().is_empty() {
+        return None;
+    }
+    Some(
+        parent
+            .with_extension("rs")
+            .to_string_lossy()
+            .replace('\\', "/"),
+    )
+}
+
+fn policy_owned_nested_modules(source: &str, policies: &[ModulePolicy]) -> BTreeSet<String> {
+    policies
+        .iter()
+        .filter(|candidate| policy_parent_source(candidate.source).as_deref() == Some(source))
+        .filter_map(|candidate| policy_module_name(candidate.source).map(str::to_owned))
+        .collect()
 }
 
 fn validate_library_root_bindings(syntax: &syn::File) -> Vec<String> {
@@ -402,9 +496,20 @@ fn reject_reserved_library_binding(binding: &str, violations: &mut Vec<String>) 
     }
 }
 
+#[cfg(test)]
 fn inspect_module_source(policy: &ModulePolicy, source: &str) -> Result<Vec<String>, syn::Error> {
+    inspect_module_source_with_nested(policy, source, &BTreeSet::new())
+}
+
+fn inspect_module_source_with_nested(
+    policy: &ModulePolicy,
+    source: &str,
+    policy_owned_nested_modules: &BTreeSet<String>,
+) -> Result<Vec<String>, syn::Error> {
     let syntax = syn::parse_file(source)?;
-    let mut visitor = BoundaryVisitor::new(*policy, &syntax.items);
+    let mut violations =
+        validate_nested_module_declarations(policy, &syntax.items, policy_owned_nested_modules);
+    let mut visitor = BoundaryVisitor::new(*policy, &syntax.items, policy_owned_nested_modules);
     for item in &syntax.items {
         if let Item::Use(item) = item {
             if !has_conditional_cfg(&item.attrs) {
@@ -413,24 +518,73 @@ fn inspect_module_source(policy: &ModulePolicy, source: &str) -> Result<Vec<Stri
         }
     }
     visitor.visit_file(&syntax);
-    Ok(visitor.violations.into_iter().collect())
+    violations.extend(visitor.violations);
+    Ok(violations.into_iter().collect())
+}
+
+fn validate_nested_module_declarations(
+    policy: &ModulePolicy,
+    items: &[Item],
+    policy_owned_nested_modules: &BTreeSet<String>,
+) -> BTreeSet<String> {
+    let mut violations = BTreeSet::new();
+    for module in policy_owned_nested_modules {
+        let declarations: Vec<_> = items
+            .iter()
+            .filter_map(|item| match item {
+                Item::Mod(item)
+                    if !has_cfg_test(&item.attrs)
+                        && normalize_identifier(&item.ident.to_string()) == module =>
+                {
+                    Some(item)
+                },
+                _ => None,
+            })
+            .collect();
+        if declarations.len() != 1 {
+            violations.insert(format!(
+                "{} must declare exactly one private external policy-owned module {module}; found {}",
+                policy.source,
+                declarations.len()
+            ));
+            continue;
+        }
+        let declaration = declarations[0];
+        if declaration.content.is_some()
+            || !matches!(declaration.vis, syn::Visibility::Inherited)
+            || !declaration.attrs.is_empty()
+        {
+            violations.insert(format!(
+                "{} policy-owned module {module} must use exactly `mod {module};`",
+                policy.source
+            ));
+        }
+    }
+    violations
 }
 
 struct BoundaryVisitor {
     policy: ModulePolicy,
+    policy_owned_nested_modules: BTreeSet<String>,
     scopes: Vec<BTreeSet<String>>,
     violations: BTreeSet<String>,
 }
 
 impl BoundaryVisitor {
-    fn new(policy: ModulePolicy, items: &[Item]) -> Self {
-        let module_roots = items
+    fn new(
+        policy: ModulePolicy,
+        items: &[Item],
+        policy_owned_nested_modules: &BTreeSet<String>,
+    ) -> Self {
+        let mut module_roots: BTreeSet<_> = items
             .iter()
             .filter(|item| item_is_unconditional(item))
             .filter_map(item_identifier)
             .collect();
+        module_roots.extend(policy_owned_nested_modules.iter().cloned());
         Self {
             policy,
+            policy_owned_nested_modules: policy_owned_nested_modules.clone(),
             scopes: vec![module_roots],
             violations: BTreeSet::new(),
         }
@@ -560,6 +714,9 @@ impl BoundaryVisitor {
                 display_path(segments)
             ));
             return false;
+        }
+        if self.policy_owned_nested_modules.contains(root) {
+            return true;
         }
         if !self.allows_external(root) {
             self.violation(format!(
@@ -859,6 +1016,12 @@ impl<'ast> Visit<'ast> for BoundaryVisitor {
 
     fn visit_item_mod(&mut self, item: &'ast ItemMod) {
         if has_cfg_test(&item.attrs) {
+            return;
+        }
+        if self
+            .policy_owned_nested_modules
+            .contains(&ident_name(&item.ident))
+        {
             return;
         }
         self.violation(format!(
@@ -1289,6 +1452,89 @@ mod tests {
         assert!(violations.contains("declares production submodule helper"));
         assert!(violations.contains("uses include"));
         assert!(violations.contains("defines a local macro"));
+    }
+
+    #[test]
+    fn declared_nested_modules_are_policy_owned_and_independently_inspected() {
+        let policies = [
+            policy("root.rs", &[]),
+            policy("root/child.rs", &["root"]),
+            policy("root/child/leaf.rs", &["root"]),
+        ];
+        assert!(validate_module_policy_registry(&policies).is_empty());
+
+        let root_children = policy_owned_nested_modules("root.rs", &policies);
+        assert_eq!(root_children, BTreeSet::from(["child".to_owned()]));
+        assert!(inspect_module_source_with_nested(
+            &policies[0],
+            "mod child; use child::Child;",
+            &root_children,
+        )
+        .unwrap()
+        .is_empty());
+
+        let child_children = policy_owned_nested_modules("root/child.rs", &policies);
+        assert_eq!(child_children, BTreeSet::from(["leaf".to_owned()]));
+        assert!(inspect_module_source_with_nested(
+            &policies[1],
+            "mod leaf; use crate::root::Root; use leaf::Leaf;",
+            &child_children,
+        )
+        .unwrap()
+        .is_empty());
+        let child_violations = inspect_module_source_with_nested(
+            &policies[1],
+            "mod leaf; use crate::decision_runner::DecisionRunnerAdapter;",
+            &child_children,
+        )
+        .unwrap()
+        .join("\n");
+        assert!(child_violations
+            .contains("root/child.rs depends on forbidden internal path crate::decision_runner"));
+
+        let leaf_children = policy_owned_nested_modules("root/child/leaf.rs", &policies);
+        assert!(leaf_children.is_empty());
+        assert!(inspect_module_source_with_nested(
+            &policies[2],
+            "use crate::root::child::Child;",
+            &leaf_children,
+        )
+        .unwrap()
+        .is_empty());
+    }
+
+    #[test]
+    fn undeclared_or_noncanonical_nested_modules_remain_rejected() {
+        let policy = policy("root.rs", &[]);
+        let declared = BTreeSet::from(["declared".to_owned()]);
+        let source = r#"
+            pub mod declared {}
+            mod helper;
+            include!("generated.rs");
+        "#;
+        let violations = inspect_module_source_with_nested(&policy, source, &declared)
+            .unwrap()
+            .join("\n");
+
+        assert!(violations.contains("policy-owned module declared must use exactly"));
+        assert!(violations.contains("declares production submodule helper"));
+        assert!(violations.contains("uses include"));
+    }
+
+    #[test]
+    fn nested_policy_requires_a_registered_parent_and_declaration() {
+        let orphan = [policy("root/missing/leaf.rs", &["root"])];
+        let violations = validate_module_policy_registry(&orphan).join("\n");
+        assert!(violations.contains("undeclared policy parent root/missing.rs"));
+
+        let policies = [policy("root.rs", &[]), policy("root/child.rs", &["root"])];
+        let children = policy_owned_nested_modules("root.rs", &policies);
+        let violations = inspect_module_source_with_nested(&policies[0], "struct Root;", &children)
+            .unwrap()
+            .join("\n");
+        assert!(violations.contains(
+            "must declare exactly one private external policy-owned module child; found 0"
+        ));
     }
 
     #[test]
