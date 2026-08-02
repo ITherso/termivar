@@ -44,6 +44,7 @@ pub mod experience;
 pub mod knowledge;
 pub mod logging;
 pub mod metrics;
+pub mod payload_strategy;
 pub mod planner;
 pub mod rules;
 pub mod verification;
@@ -156,13 +157,14 @@ pub use api_evidence::{
     ApiVisibilityView, CanonicalizationVersion, ComparisonAlgorithmVersion, JsonPathPattern,
     PathDigest, ProfiledApiVisibilityComparison, ProfiledApiVisibilityError,
     ProfiledApiVisibilityView, ProjectionPolicyId, RedactedVisibilityDiff,
-    CURRENT_API_COMPARISON_ALGORITHM_VERSION, CURRENT_API_VISIBILITY_CANONICALIZATION_VERSION,
-    DEFAULT_API_VISIBILITY_CANONICAL_BYTES, DEFAULT_API_VISIBILITY_DEPTH,
-    DEFAULT_API_VISIBILITY_DIFF_PATHS, DEFAULT_API_VISIBILITY_FIELDS, DEFAULT_API_VISIBILITY_NODES,
-    HARD_MAX_API_COMPARISON_PATH_BYTES, HARD_MAX_API_COMPARISON_PATH_DEPTH,
-    HARD_MAX_API_COMPARISON_PROFILE_PATHS, HARD_MAX_API_VISIBILITY_CANONICAL_BYTES,
-    HARD_MAX_API_VISIBILITY_DEPTH, HARD_MAX_API_VISIBILITY_DIFF_PATHS,
-    HARD_MAX_API_VISIBILITY_FIELDS, HARD_MAX_API_VISIBILITY_NODES,
+    VisibilityExplanationDisposition, CURRENT_API_COMPARISON_ALGORITHM_VERSION,
+    CURRENT_API_VISIBILITY_CANONICALIZATION_VERSION, DEFAULT_API_VISIBILITY_CANONICAL_BYTES,
+    DEFAULT_API_VISIBILITY_DEPTH, DEFAULT_API_VISIBILITY_DIFF_PATHS, DEFAULT_API_VISIBILITY_FIELDS,
+    DEFAULT_API_VISIBILITY_NODES, HARD_MAX_API_COMPARISON_PATH_BYTES,
+    HARD_MAX_API_COMPARISON_PATH_DEPTH, HARD_MAX_API_COMPARISON_PROFILE_PATHS,
+    HARD_MAX_API_VISIBILITY_CANONICAL_BYTES, HARD_MAX_API_VISIBILITY_DEPTH,
+    HARD_MAX_API_VISIBILITY_DIFF_PATHS, HARD_MAX_API_VISIBILITY_FIELDS,
+    HARD_MAX_API_VISIBILITY_NODES,
 };
 pub use api_gateway::{
     ApiGateway, ApiQuota, QuotaManager, RateLimitPolicy, RateLimitStatus, RateLimitStrategy,
@@ -203,6 +205,12 @@ pub use knowledge::{
 };
 pub use logging::{LogEntry, LogLevel, Logger};
 pub use metrics::{MetricsCollector, MetricsSummary, PhaseMetrics};
+pub use payload_strategy::{
+    PayloadArtifact, PayloadArtifactReceipt, PayloadSeed, PayloadStrategy, PayloadStrategyError,
+    PayloadStrategyLimits, PayloadStrategyRef, PayloadStrategyRegistry, PayloadVariantRole,
+    DEFAULT_MAX_PAYLOAD_ARTIFACT_BYTES, HARD_MAX_PAYLOAD_ARTIFACT_BYTES,
+    HARD_MAX_PAYLOAD_STRATEGY_ID_BYTES,
+};
 pub use planner::{
     ActionCost, AttackAction, AttackPlan, AttackPlanner, BenefitScore, ExcludedAction,
     ExclusionReason, HypothesisSelector, PlanStep, PlannerError, PlannerWrite, PlanningContext,
@@ -279,8 +287,8 @@ pub use decision_runner::{
 pub use runtime_budget::{
     RuntimeBudget, RuntimeBudgetDimension, RuntimeLimitExceeded, RuntimeUsage,
     DEFAULT_MAX_ACTIVE_VERIFICATIONS, DEFAULT_MAX_CONSECUTIVE_NO_PROGRESS_TURNS,
-    DEFAULT_MAX_RESPONSE_BYTES, DEFAULT_MAX_SAME_ACTION_ATTEMPTS, DEFAULT_MAX_TOTAL_REQUESTS,
-    DEFAULT_MAX_WALL_TIME_MS,
+    DEFAULT_MAX_REQUEST_BODY_BYTES, DEFAULT_MAX_RESPONSE_BYTES, DEFAULT_MAX_SAME_ACTION_ATTEMPTS,
+    DEFAULT_MAX_TOTAL_REQUESTS, DEFAULT_MAX_WALL_TIME_MS,
 };
 
 #[cfg(feature = "scanning")]

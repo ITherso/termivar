@@ -75,6 +75,7 @@ Task producer --> TaskQueue --> WorkerPool --> WorkerNode
 - [Standard web decision runtime](web-runtime.md): target builder, bootstrap evidence, executable-plan filtering, resource budgets, and complete session driving.
 - [Web reasoning](web-reasoning.md): standard ontology, explainable fingerprint rules, and Bayesian weak/strong hypotheses.
 - [Web planning](web-planning.md): hypothesis-gated actions, utility ranking, policy exclusions, and executor contracts.
+- [Payload strategies](payload-strategies.md): planner-selected revisions, deterministic derivation contract, redaction, and transport requirements.
 - [Web execution](web-execution.md): semantic executor installation, discovery-only HTTP methods, and scope controls.
 - [Web verification](web-verification.md): action/case isolation, passive/active rules, and conservative outcomes.
 - [Plugin registry](plugin-registry.md): validation, compatibility, lookup, execution, and accounting.

@@ -262,12 +262,11 @@ impl StandardWebDecisionRunReport {
         &self.turns
     }
 
-    /// Returns evidence durably committed before host cancellation prevented
-    /// verification and the corresponding session transition.
+    /// Returns evidence durably committed before verification was skipped.
     ///
-    /// This is populated only when execution finished and committed its
-    /// evidence batch before the cancellation boundary won. The receipt is
-    /// intentionally kept outside [`Self::outcome_reports`] because no
+    /// This is populated when execution committed its evidence batch before
+    /// host cancellation or a response-byte threshold crossing halted the
+    /// turn. The receipt stays outside [`Self::outcome_reports`] because no
     /// verifier outcome exists for this batch.
     pub fn unverified_evidence(&self) -> Option<&DecisionEvidenceReceipt> {
         self.unverified_evidence.as_ref()
@@ -431,7 +430,7 @@ impl StandardWebDecisionRuntimeBuilder {
         self
     }
 
-    /// Sets the cumulative buffered response-body byte limit.
+    /// Sets the cumulative transport-delivered response-body threshold.
     pub fn max_response_bytes(mut self, limit: u64) -> Self {
         self.runtime_budget = self.runtime_budget.with_max_response_bytes(limit);
         self
@@ -491,7 +490,7 @@ impl StandardWebDecisionRuntimeBuilder {
         let mut executors = DecisionExecutorRegistry::new();
 
         let request_accounting = RequestAccountingBroker::new(self.runtime_budget);
-        let requests = HttpRequestBroker::new(policy, Some(request_accounting.clone()))?;
+        let requests = HttpRequestBroker::new_metered(policy, request_accounting.clone())?;
         let profile = StandardWebDecisionProfile::new_with_request_broker(requests.clone())?;
         let installation = profile.install(&knowledge, &mut decision_loop, &mut executors)?;
         let api_reasoning_installation = if self.api_reasoning_enabled {
@@ -734,13 +733,16 @@ impl StandardWebDecisionRuntime {
                 return Ok(self.limit_report(None, turns, limit, started_at));
             },
         };
-        let bootstrap = match self.record_response_usage(bootstrap) {
+        let bootstrap = match self.validate_response_usage_evidence(bootstrap) {
             Ok(receipt) => receipt,
             Err(source) => {
                 let committed_bootstrap = source.committed_evidence().cloned();
                 return Err(self.run_failed(committed_bootstrap, turns, source, started_at));
             },
         };
+        if let Some(limit) = self.response_limit_if_exceeded(BOOTSTRAP_ACTION_ID) {
+            return Ok(self.limit_report(Some(bootstrap), turns, limit, started_at));
+        }
         let bootstrap = Some(bootstrap);
 
         if self.cancellation.is_cancelled() {
@@ -850,12 +852,17 @@ impl StandardWebDecisionRuntime {
                             return Ok(self.limit_report(bootstrap, turns, limit, started_at));
                         },
                     };
-                    let evidence = match self.record_response_usage(evidence) {
+                    let evidence = match self.validate_response_usage_evidence(evidence) {
                         Ok(receipt) => receipt,
                         Err(source) => {
                             return Err(self.run_failed(bootstrap, turns, source, started_at));
                         },
                     };
+                    if let Some(limit) = self.response_limit_if_exceeded(&completed_action_id) {
+                        return Ok(self.limit_report_with_unverified_evidence(
+                            bootstrap, turns, evidence, limit, started_at,
+                        ));
+                    }
                     if self.cancellation.is_cancelled() {
                         return Ok(self.cancellation_report(
                             bootstrap,
@@ -996,7 +1003,7 @@ impl StandardWebDecisionRuntime {
             .with_max_response_body_bytes(preflight.remaining_response_bytes()))
     }
 
-    fn record_response_usage(
+    fn validate_response_usage_evidence(
         &mut self,
         receipt: DecisionEvidenceReceipt,
     ) -> Result<DecisionEvidenceReceipt, StandardWebDecisionRuntimeError> {
@@ -1023,6 +1030,19 @@ impl StandardWebDecisionRuntime {
             });
         }
         Ok(receipt)
+    }
+
+    fn response_limit_if_exceeded(&mut self, action_id: &str) -> Option<RuntimeLimitExceeded> {
+        self.sync_request_accounting();
+        let observed = self.usage.response_bytes();
+        (observed > self.budget.max_response_bytes()).then(|| {
+            RuntimeLimitExceeded::new(
+                RuntimeBudgetDimension::ResponseBytes,
+                self.budget.max_response_bytes(),
+                observed,
+                Some(action_id.to_owned()),
+            )
+        })
     }
 
     fn sync_request_accounting(&mut self) {
@@ -1083,6 +1103,29 @@ impl StandardWebDecisionRuntime {
             usage: self.usage.clone(),
             limit_exceeded: Some(limit),
             execution_failure,
+        }
+    }
+
+    fn limit_report_with_unverified_evidence(
+        &mut self,
+        bootstrap: Option<DecisionEvidenceReceipt>,
+        turns: Vec<StandardWebDecisionRuntimeTurn>,
+        evidence: DecisionEvidenceReceipt,
+        limit: RuntimeLimitExceeded,
+        started_at: tokio::time::Instant,
+    ) -> StandardWebDecisionRunReport {
+        self.refresh_elapsed(started_at);
+        self.session.halt_for_runtime_budget();
+        StandardWebDecisionRunReport {
+            bootstrap,
+            turns,
+            unverified_evidence: Some(evidence),
+            terminal: DecisionLoopCommand::Halt {
+                reason: crate::DecisionStopReason::RuntimeBudgetLimit,
+            },
+            usage: self.usage.clone(),
+            limit_exceeded: Some(limit),
+            execution_failure: None,
         }
     }
 

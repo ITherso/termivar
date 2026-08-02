@@ -120,6 +120,20 @@ impl RedactedVisibilityDiff {
         self.omitted_diff_count
     }
 
+    /// Returns the number of path differences retained in this explanation.
+    ///
+    /// This count excludes [`Self::omitted_diff_count`]. The compiled global
+    /// path ceiling guarantees that the result fits in `u16`.
+    pub fn retained_diff_count(&self) -> u16 {
+        let retained = self
+            .added_path_hashes
+            .len()
+            .saturating_add(self.removed_path_hashes.len())
+            .saturating_add(self.changed_type_path_hashes.len())
+            .saturating_add(self.changed_value_path_hashes.len());
+        u16::try_from(retained).expect("bounded API visibility path count fits in u16")
+    }
+
     /// Returns whether no path-level difference was observed or retained.
     pub fn is_empty(&self) -> bool {
         self.added_path_hashes.is_empty()
@@ -293,6 +307,16 @@ pub(super) fn visibility_diff(
     candidate: &BTreeMap<PathDigest, PathFingerprint>,
     max_diff_paths: u16,
 ) -> Result<RedactedVisibilityDiff, ProfiledApiVisibilityError> {
+    if dimension == ApiVisibilityDimension::Status {
+        return RedactedVisibilityDiff::from_parts(
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            0,
+        );
+    }
+
     let mut differences = Vec::new();
     for (path, baseline_fingerprint) in baseline {
         match candidate.get(path) {

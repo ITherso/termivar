@@ -43,8 +43,8 @@ impl From<RuntimeLimitExceeded> for HttpRequestBrokerError {
 /// Redirect-disabled HTTP transport shared by one or more evidence executors.
 ///
 /// The optional accounting authority records logical reqwest dispatches and
-/// retained response-body bytes. Clones share both the reqwest connection pool
-/// and the host-owned accounting state.
+/// every response-body byte delivered to the collector. Retention remains
+/// separately bounded. Clones share both the connection pool and accounting.
 #[derive(Clone)]
 pub(crate) struct HttpRequestBroker {
     client: Client,
@@ -53,7 +53,22 @@ pub(crate) struct HttpRequestBroker {
 }
 
 impl HttpRequestBroker {
-    pub(crate) fn new(
+    /// Creates the broker used by bounded runtimes.
+    pub(crate) fn new_metered(
+        policy: HttpEvidencePolicy,
+        accounting: RequestAccountingBroker,
+    ) -> Result<Self, HttpEvidenceError> {
+        Self::build(policy, Some(accounting))
+    }
+
+    /// Creates an explicitly unmetered broker for legacy standalone APIs.
+    ///
+    /// Bounded runtimes must never call this constructor.
+    pub(crate) fn new_unmetered(policy: HttpEvidencePolicy) -> Result<Self, HttpEvidenceError> {
+        Self::build(policy, None)
+    }
+
+    fn build(
         policy: HttpEvidencePolicy,
         accounting: Option<RequestAccountingBroker>,
     ) -> Result<Self, HttpEvidenceError> {
@@ -80,17 +95,40 @@ impl HttpRequestBroker {
         decision: &DecisionExecutionRequest,
         probe: &HttpProbe,
     ) -> Result<CollectedHttpResponse, HttpRequestBrokerError> {
-        super::validate_http_url(probe.url())?;
-        if !self.policy.permits(probe.url())? {
-            return Err(HttpEvidenceError::TargetOutsidePolicy {
-                url: probe.url().to_string(),
-            }
-            .into());
-        }
+        self.validate_target(probe.url())?;
 
         // Provider resolution, policy validation, and request construction are
         // deliberately complete before a transport dispatch is accounted.
         let request = self.build_request(probe)?;
+        self.collect_built_request(decision, request).await
+    }
+
+    #[cfg(test)]
+    pub(super) async fn collect_buffered_request_for_test(
+        &self,
+        decision: &DecisionExecutionRequest,
+        request: reqwest::Request,
+    ) -> Result<CollectedHttpResponse, HttpRequestBrokerError> {
+        self.validate_target(request.url())?;
+        self.collect_built_request(decision, request).await
+    }
+
+    fn validate_target(&self, target: &url::Url) -> Result<(), HttpEvidenceError> {
+        super::validate_http_url(target)?;
+        if !self.policy.permits(target)? {
+            return Err(HttpEvidenceError::TargetOutsidePolicy {
+                url: target.to_string(),
+            });
+        }
+        Ok(())
+    }
+
+    async fn collect_built_request(
+        &self,
+        decision: &DecisionExecutionRequest,
+        request: reqwest::Request,
+    ) -> Result<CollectedHttpResponse, HttpRequestBrokerError> {
+        let request_body_bytes = metered_request_body_bytes(&request)?;
         let execution_body_limit = decision
             .limits()
             .max_response_body_bytes()
@@ -102,7 +140,7 @@ impl HttpRequestBroker {
         tokio::time::timeout(self.policy.request_timeout(), async {
             // This is the accounting boundary: a successful lease is acquired
             // immediately before the logical request enters reqwest.
-            let mut accounting_lease = self.begin_accounting(decision)?;
+            let mut accounting_lease = self.begin_accounting(decision, request_body_bytes)?;
             let mut response = self
                 .client
                 .execute(request)
@@ -113,6 +151,7 @@ impl HttpRequestBroker {
             let final_url = response.url().clone();
             let version = format!("{:?}", response.version());
             let headers = response.headers().clone();
+            let expected_body_bytes = response.content_length();
             let accounting_capacity = accounting_lease
                 .as_ref()
                 .map(|lease| {
@@ -120,8 +159,7 @@ impl HttpRequestBroker {
                 })
                 .unwrap_or(usize::MAX);
             let mut body = Vec::with_capacity(
-                response
-                    .content_length()
+                expected_body_bytes
                     .and_then(|length| usize::try_from(length).ok())
                     .unwrap_or(0)
                     .min(body_limit)
@@ -129,10 +167,34 @@ impl HttpRequestBroker {
             );
             let mut truncated = false;
 
-            while let Some(chunk) = response.chunk().await.map_err(HttpEvidenceError::Request)? {
+            loop {
+                // Metered collectors serialize body reads. This makes the
+                // unavoidable transport overrun at most one delivered chunk
+                // across every in-flight response sharing this authority.
+                let _read_guard = match accounting_lease.as_ref() {
+                    Some(lease) => Some(lease.acquire_response_read().await),
+                    None => None,
+                };
                 let per_request_remaining = body_limit.saturating_sub(body.len());
-                let requested = chunk.len().min(per_request_remaining);
-                let retained = claim_response_bytes(accounting_lease.as_mut(), requested);
+                let session_remaining = accounting_lease
+                    .as_ref()
+                    .map(|lease| {
+                        usize::try_from(lease.remaining_response_bytes()).unwrap_or(usize::MAX)
+                    })
+                    .unwrap_or(usize::MAX);
+                if per_request_remaining == 0 || session_remaining == 0 {
+                    let retained = u64::try_from(body.len()).unwrap_or(u64::MAX);
+                    truncated = expected_body_bytes.is_none_or(|expected| retained < expected);
+                    break;
+                }
+
+                let Some(chunk) = response.chunk().await.map_err(HttpEvidenceError::Request)?
+                else {
+                    break;
+                };
+                let session_retention =
+                    observe_response_bytes(accounting_lease.as_mut(), chunk.len());
+                let retained = session_retention.min(per_request_remaining);
                 body.extend_from_slice(&chunk[..retained]);
                 if retained < chunk.len() {
                     truncated = true;
@@ -160,14 +222,16 @@ impl HttpRequestBroker {
     fn begin_accounting(
         &self,
         decision: &DecisionExecutionRequest,
+        request_body_bytes: u64,
     ) -> Result<Option<RequestAccountingLease>, RuntimeLimitExceeded> {
         self.accounting
             .as_ref()
             .map(|accounting| {
-                accounting.try_begin(
+                accounting.try_begin_with_request_body_bytes(
                     decision.case().action_id(),
                     decision.stage(),
                     decision.origin(),
+                    request_body_bytes,
                 )
             })
             .transpose()
@@ -191,10 +255,39 @@ impl HttpRequestBroker {
     }
 }
 
-fn claim_response_bytes(lease: Option<&mut RequestAccountingLease>, requested: usize) -> usize {
+fn metered_request_body_bytes(request: &reqwest::Request) -> Result<u64, HttpEvidenceError> {
+    match request.body() {
+        None => Ok(0),
+        Some(body) => body
+            .as_bytes()
+            .map(|bytes| u64::try_from(bytes.len()).unwrap_or(u64::MAX))
+            .ok_or(HttpEvidenceError::UnmeteredRequestBody),
+    }
+}
+
+fn observe_response_bytes(lease: Option<&mut RequestAccountingLease>, observed: usize) -> usize {
     let Some(lease) = lease else {
-        return requested;
+        return observed;
     };
-    let retained = lease.claim_response_bytes(u64::try_from(requested).unwrap_or(u64::MAX));
-    usize::try_from(retained).unwrap_or(requested)
+    let retained = lease.observe_response_bytes(u64::try_from(observed).unwrap_or(u64::MAX));
+    usize::try_from(retained).unwrap_or(observed)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn request_body_meter_counts_buffered_bytes_and_bodyless_requests() {
+        let client = Client::new();
+        let bodyless = client.get("https://example.test").build().unwrap();
+        let buffered = client
+            .post("https://example.test")
+            .body("candidate")
+            .build()
+            .unwrap();
+
+        assert_eq!(metered_request_body_bytes(&bodyless).unwrap(), 0);
+        assert_eq!(metered_request_body_bytes(&buffered).unwrap(), 9);
+    }
 }

@@ -67,7 +67,8 @@ Without overrides, the builder creates a policy restricted to the target's exact
 | Passive API response/surface reasoning | Disabled |
 | Total HTTP requests | 32 |
 | Complete runtime wall time | 120 seconds |
-| Buffered response bytes across the session | 2 MiB |
+| Transport-delivered response-body bytes across the session | 2 MiB |
+| Buffered request-body bytes across the session | 256 KiB |
 | Active verification requests | 4 |
 | Attempts for one semantic action | 3 |
 | Consecutive no-progress execution turns | 4 |
@@ -76,7 +77,7 @@ The HTTP policy remains authoritative for origins, timeout, body buffering, text
 
 `planning_budget` is expressed in planner action-cost units; it is not a raw HTTP-request count. `max_action_cycles` remains the decision loop's passive-action guard. `RuntimeBudget` is the outer operational envelope and includes bootstrap, planned, adaptive, retry, and active-verification requests.
 
-All runtime dimensions accept zero as a deliberate fail-closed value. A zero request, wall-time, response-byte, or same-action budget prevents bootstrap I/O. A zero active-verification budget still permits passive work but refuses the first active probe.
+All runtime dimensions accept zero as a deliberate fail-closed value. A zero request, wall-time, response-byte, or same-action budget prevents bootstrap I/O. A zero request-body budget permits bodyless discovery but refuses the first non-empty body before dispatch. A zero active-verification budget still permits passive work but refuses the first active probe.
 
 ## Optional API response and surface reasoning
 
@@ -124,7 +125,7 @@ pairing, and persistence remain host responsibilities.
 
 ## Runtime safety envelope
 
-The runtime checks limits in a stable order before execution: wall time; advisory broker preflight for total requests, remaining response bytes, and active verifications; then attempts for the semantic action. Only the semantic attempt is reserved before an optional scheduler delay. A delay cancellation therefore consumes an action attempt but not a request. The shared host-owned request broker repeats the resource checks atomically and records the request immediately before `reqwest::Client::execute`, so a transport error or timeout after dispatch remains charged.
+The runtime checks limits in a stable order before execution: wall time; advisory broker preflight for total requests, remaining response bytes, and active verifications; then attempts for the semantic action. Only the semantic attempt is reserved before an optional scheduler delay. A delay cancellation therefore consumes an action attempt but not a request. The shared host-owned request broker repeats the resource checks atomically, charges the exact buffered request-body length, and records the request immediately before `reqwest::Client::execute`, so a transport error or timeout after dispatch remains charged. An opaque request body whose length cannot be measured is rejected before dispatch.
 
 The wall deadline starts at the beginning of `analyze()` and covers bootstrap, reasoning, scheduler delay, network I/O, verification, and state transitions. Awaited delays and requests are cancelled at the monotonic deadline. Synchronous reasoning cannot be interrupted mid-function, so the runtime checks the deadline again immediately after it returns.
 
@@ -136,7 +137,9 @@ wins over a simultaneously ready wall deadline because it is the more specific
 stop reason. Cancellation after evidence commit but before verification keeps
 that receipt in `unverified_evidence()` and does not synthesize an outcome.
 
-`HttpEvidencePolicy::max_body_bytes` remains a per-response ceiling. `RuntimeBudget::max_response_bytes` is the session-wide total of response-body bytes retained by broker leases. Every retained chunk is charged before it is exposed to the executor. Bytes remain charged when a later chunk fails, the request times out, or the outer wall deadline cancels collection; accounting is no longer inferred from successful evidence. The collector uses the smallest of the remaining session allowance, its per-execution allowance, and its per-response policy. Content-Length, discarded bytes beyond those bounds, and wire overhead are not charged as retained body bytes.
+`RuntimeBudget::max_request_body_bytes` is the session-wide total of buffered request bodies accepted by broker leases. The charge and request reservation happen under the same accounting lock before network dispatch, so concurrent capability executors cannot oversubscribe the allowance. Headers, URLs, and wire framing are excluded.
+
+`HttpEvidencePolicy::max_body_bytes` remains a per-response retention ceiling. `RuntimeBudget::max_response_bytes` is the session-wide threshold for response-body bytes delivered to broker collection. Metered collectors share one response-read gate and recheck the remaining allowance before every read. Every complete received chunk is charged before its bounded prefix is exposed to the executor. The one serialized chunk that reveals a crossing can make usage exceed the threshold; retention stays capped, no collector starts another body read, and the same turn terminates with a typed `ResponseBytes` limit. Evidence already committed by that turn remains in bootstrap or `unverified_evidence`, before verification or Experience updates. Bytes also remain charged when a later read fails, times out, or is cancelled. Content-Length, headers, framing, and unread bytes after collection stops are excluded.
 
 All built-in HTTP executors installed by `StandardWebDecisionRuntime` share one broker, one redirect-disabled and implicit-retry-disabled client, and one accounting authority. Bootstrap, planned, adaptive, retry, and active-verification dispatches therefore compete for the same atomic envelope. Redirect responses consume the request that produced them but are not followed. Semantic retries re-enter the broker and acquire a fresh lease. Low-level callers that construct and run an arbitrary `DecisionActionExecutor` outside this standard runtime remain responsible for their own transport policy and accounting.
 
@@ -154,7 +157,7 @@ This prevents a discovered nginx, Apache, PHP, or Laravel input hypothesis from 
 
 A runtime instance is single-use. The started flag is retained even if a network or verification error occurs, because evidence may already have been committed under deterministic case identities. Create a new runtime for a new session.
 
-When an executor reports a failure before evidence commit, `StandardWebDecisionRuntimeError::execution_failure()` forwards the runner's typed receipt. Built-in HTTP failures are classified from error variants rather than diagnostic text: unsupported subjects are not applicable, authorization/scope refusals are policy blocks, an expired host request/body deadline is a request timeout, other network failures are transport failures, and internal construction/model failures remain executor failures. Transport dispatch and retained-byte accounting remain monotonic, but provider or policy failures before dispatch consume only the semantic attempt. None of these operational classifications creates a synthetic verifier outcome or changes Experience suppression state.
+When an executor reports a failure before evidence commit, `StandardWebDecisionRuntimeError::execution_failure()` forwards the runner's typed receipt. Built-in HTTP failures are classified from error variants rather than diagnostic text: unsupported subjects are not applicable, authorization/scope refusals and unmetered request bodies are policy blocks, an expired host request/body deadline is a request timeout, other network failures are transport failures, and internal construction/model failures remain executor failures. Transport dispatch, request-body accounting, and received-byte accounting remain monotonic, but provider or policy failures before dispatch consume only the semantic attempt. None of these operational classifications creates a synthetic verifier outcome or changes Experience suppression state.
 
 After `analyze()` marks the runtime started, unexpected failures are wrapped in
 `RunFailed`. `failure_receipt()` exposes the committed bootstrap receipt,
@@ -179,7 +182,7 @@ The knowledge base, experience store, and replayable session remain inspectable 
 
 ## Turn commit semantics
 
-Runtime request dispatches and retained response bytes are monotonic and are never rolled back. Executor evidence is provenance-validated as a complete batch and then committed atomically to the knowledge base. Verification, hypothesis transition, experience, and session transition happen after that evidence commit. If one of those later synchronous stages fails, the evidence remains append-only while the runtime returns an error and stays single-use. `StandardWebDecisionRuntimeError::committed_evidence()` exposes the failed turn's committed in-process receipt, including response-telemetry validation failures, and the consuming getter transfers it without another evidence clone.
+Runtime request dispatches, request-body bytes, and transport-delivered response bytes are monotonic and are never rolled back. Executor evidence is provenance-validated as a complete batch and then committed atomically to the knowledge base. Verification, hypothesis transition, experience, and session transition happen after that evidence commit. If one of those later synchronous stages fails, the evidence remains append-only while the runtime returns an error and stays single-use. `StandardWebDecisionRuntimeError::committed_evidence()` exposes the failed turn's committed in-process receipt, including response-telemetry validation failures, and the consuming getter transfers it without another evidence clone.
 
 A successful outcome report exposes a runtime-only, lightweight before/after session transition summary alongside its verification, hypothesis write, and experience write. The summary is not a full session replay snapshot and is omitted from the report's existing serialized shape. Candidate experience and session state are assigned only after every fallible outcome step succeeds. This is an explicit error-atomic partial-turn boundary, not a rollback or crash-atomic transaction guarantee.
 

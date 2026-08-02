@@ -10,7 +10,7 @@ use sha2::{Digest, Sha256};
 
 use crate::api_evidence::profiled::ProfiledApiVisibilityError;
 
-const PROFILE_ID_DOMAIN: &[u8] = b"venom.api-visibility.projection-policy.v2\0";
+const PROFILE_ID_DOMAIN: &[u8] = b"venom.api-visibility.projection-policy.v3\0";
 
 /// Hard ceiling for the number of path patterns in one projection profile.
 pub const HARD_MAX_API_COMPARISON_PROFILE_PATHS: usize = 256;
@@ -25,7 +25,7 @@ pub const DEFAULT_API_VISIBILITY_DIFF_PATHS: u16 = 64;
 
 /// Current deterministic comparator algorithm.
 pub const CURRENT_API_COMPARISON_ALGORITHM_VERSION: ComparisonAlgorithmVersion =
-    ComparisonAlgorithmVersion::V2;
+    ComparisonAlgorithmVersion::V3;
 /// Current deterministic canonicalization format.
 pub const CURRENT_API_VISIBILITY_CANONICALIZATION_VERSION: CanonicalizationVersion =
     CanonicalizationVersion::V2;
@@ -35,14 +35,17 @@ pub const CURRENT_API_VISIBILITY_CANONICALIZATION_VERSION: CanonicalizationVersi
 #[serde(rename_all = "kebab-case")]
 #[non_exhaustive]
 pub enum ComparisonAlgorithmVersion {
-    /// Profiled comparator with deterministic path projection and explanation.
+    /// Original profiled comparator with deterministic path projection.
     V2,
+    /// Dimension-aware explanations that never attach body paths to status differences.
+    V3,
 }
 
 impl ComparisonAlgorithmVersion {
     pub(super) fn as_str(self) -> &'static str {
         match self {
             Self::V2 => "v2",
+            Self::V3 => "v3",
         }
     }
 }
@@ -208,7 +211,7 @@ impl<'de> Deserialize<'de> for ProjectionPolicyId {
     }
 }
 
-/// Deterministic projection and explanation policy for comparator v2.
+/// Deterministic projection and explanation policy for the current comparator.
 #[derive(Clone, PartialEq, Eq, Serialize)]
 pub struct ApiComparisonProfile {
     algorithm_version: ComparisonAlgorithmVersion,

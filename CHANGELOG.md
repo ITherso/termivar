@@ -32,16 +32,20 @@ All notable changes to Venom are recorded here. Releases use the categories from
 - Subject/ontology revisions, bounded stale-snapshot retries, and atomic verifier state transitions for reasoning turns.
 - Typed post-reasoning planning receipts with snapshot revisions and before/after session transitions.
 - Transport-neutral executor failure kinds and immutable pre-commit receipts carrying the exact case, action, stage, origin, delay, resource limits, executor, and diagnostic.
-- A host-owned HTTP request broker with atomic dispatch, active-verification, and retained-response-byte accounting shared by every built-in standard-runtime executor.
+- A host-owned HTTP request broker with atomic dispatch and active-verification accounting shared by every built-in standard-runtime executor.
 - A pinned `venom-core` public API compatibility command and dedicated CI gate against the `v0.9.0-alpha` source baseline.
 - A `ScanContext` construction ADR and migration guide for the next Scanner Preview release.
 - A virtual-workspace layout gate that rejects uncompiled Rust source at the repository root.
-- An additive API visibility comparator-v2 envelope with versioned projection profiles, volatile-path filtering, explicit unordered-array semantics, and bounded redacted path explanations.
+- An additive, versioned API visibility comparator envelope with projection profiles, volatile-path filtering, explicit unordered-array semantics, and bounded redacted path explanations.
 - Explicit documentation that standard-profile Bayesian inputs are deterministic policy likelihoods until empirical calibration metrics are published.
 - Host-owned standard-runtime cancellation with a distinct terminal reason and an auditable receipt for evidence committed before verification was skipped.
 - A versioned API review cursor that binds continuation state to a pseudonymous resource digest and rejects cross-resource reuse before scanning.
 - A process-local runtime failure receipt that preserves committed bootstrap work, completed turns, and monotonic usage across later execution, accounting, reasoning, or verification errors.
 - A transport-ownership ADR and architecture invariant that keeps raw network capabilities out of bounded standard-runtime consumers and freezes the legacy phase I/O inventory.
+- Planner-selected, versioned payload-strategy reference and derivation contracts with hard byte limits, redacted audit receipts, and fail-closed executor support negotiation; no production payload capability is enabled by this plumbing.
+- Cumulative request-body accounting at the host-owned broker boundary, including atomic concurrent-limit enforcement and rejection of unmetered bodies.
+- Full transport-delivered response-chunk accounting while preserving a separately bounded retained evidence prefix.
+- A comparator-v3 visibility-explanation disposition that distinguishes equivalence, bounded path summaries, and differences without representable path summaries while preserving explicit replay metadata.
 
 ### Changed
 
@@ -71,12 +75,18 @@ All notable changes to Venom are recorded here. Releases use the categories from
 - Centralized canonical rule-hypothesis identity generation while preserving existing IDs byte-for-byte.
 - Moved unsafe-code and crate-documentation policy from global compiler flags into centrally inherited workspace lints.
 - Classified per-request deadlines as `RequestTimeout` instead of conflating them with other transport failures.
+- Made classic directory fuzzing an explicit `--legacy-directory-fuzz` CLI option instead of part of every default scan.
+- Made every ordered CLI scan disclose that its legacy direct-I/O phases remain outside `StandardWebDecisionRuntime` and restricted crawler discoveries to the target's exact normalized origin.
+- Advanced profiled API comparison metadata to v3; persisted v2 profiles are rejected instead of being silently reinterpreted after explanation semantics changed.
+- Changed the alpha `RuntimeUsage.response_bytes` meaning from retained evidence bytes to complete response chunks delivered to the broker collector; a threshold-crossing chunk is charged, audited, and terminates the same turn.
 
 ### Fixed
 
 - CLI version output now derives from the Cargo package version.
 - Standard web action execution and verification mappings now fail during profile construction instead of panicking at runtime.
 - The architecture gate now owns and independently inspects explicitly registered nested production modules while continuing to reject undeclared helpers and includes.
+- Made legacy payload pollution deterministic, UTF-8 reduction panic-free, and composite transformation hooks compositional.
+- Prevented status-only API comparisons from emitting unrelated body-path explanations.
 
 ### Security
 
@@ -84,11 +94,12 @@ All notable changes to Venom are recorded here. Releases use the categories from
 - Added hard depth, node, field, and canonical-byte ceilings for API visibility evidence preparation without weakening decision-runner subject isolation.
 - Bounded relation identifiers, endpoints, custom kinds, provenance sets, review cursors, and page cloning; redacted deterministic visibility fingerprints and cursors from `Debug` output.
 - Bounded API observation producer names and review explanations, validating borrowed records before projection clones them.
-- Made request and retained-body charges non-refundable at the transport boundary, including partial reads and executor cancellation, and preserved structured audit receipts for broker limit denials.
-- Bound profiled comparison identities to comparator, canonicalization, and projection-policy metadata; redacted legacy view handles from `Debug` output and kept raw JSON values and clear observed paths out of comparator-v2 reports.
+- Made request dispatch, buffered request-body, and delivered response-body charges non-refundable at the transport boundary, including partial reads and executor cancellation, and preserved structured audit receipts for broker limit denials.
+- Bound profiled comparison identities to comparator, canonicalization, and projection-policy metadata; redacted legacy view handles from `Debug` output and kept raw JSON values and clear observed paths out of versioned reports.
 - Made host cancellation preserve monotonic transport accounting and any post-commit, pre-verification evidence receipt without misreporting a wall-time or request-timeout limit.
 - Added strict, bounded cursor parsing and redacted cursor diagnostics while preserving the legacy in-process pagination wire contract.
 - Added active multi-request and pre-socket retry budget regressions so nested dispatches cannot escape host accounting.
+- Kept raw strategy seeds and derived artifacts out of serialization and debug output while retaining length, role, revision, and SHA-256 provenance.
 
 ## [0.9.0-alpha] - 2026-07-31
 

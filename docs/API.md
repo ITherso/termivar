@@ -68,6 +68,9 @@ globally bounded `RedactedVisibilityDiff`. Selected and ignored path rules can
 remove volatile fields; explicitly configured arrays can be canonicalized as
 unordered. Explanations contain only domain-separated path, type, and scalar
 value digests—never clear observed paths or raw response values.
+Comparator v3 distinguishes equivalence, bounded path summaries, and
+differences without a representable path summary. The current reader rejects
+persisted v2 profiles and envelopes instead of reinterpreting them.
 
 [`ingest_api_visibility_observation`](https://itherso.github.io/venom/rust/venom_scanner/api_observation/fn.ingest_api_visibility_observation.html)
 validates the caller's expected resource, atomically commits evidence plus its
@@ -145,8 +148,11 @@ boundary, not a persistence or crash-recovery guarantee.
 
 The standard runtime's built-in HTTP executors share a host-owned request
 broker. Request and active-verification counters advance only at the actual
-dispatch boundary, while retained response chunks are charged immediately and
-are not refunded by timeout, cancellation, or a later failure. Semantic action
+dispatch boundary, while buffered request bodies and complete
+transport-delivered response chunks are charged immediately and are not
+refunded by timeout, cancellation, or a later failure. A shared read gate stops
+all later body reads after the response threshold is full; the crossing chunk
+produces a typed limit without discarding already committed evidence. Semantic action
 attempts remain separate, so a cancelled scheduler delay does not masquerade
 as network traffic. Broker limit denials are exposed through the run report's
 structured limit and execution-failure receipts.

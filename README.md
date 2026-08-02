@@ -10,6 +10,8 @@ Venom is a modular Rust-based penetration testing framework focused on research 
 
 > Current release: **v0.9.0-alpha**. Venom is not production-ready. Use it only on systems you own or have explicit permission to test.
 
+> Design direction: **Venom does not fuzz everything. Venom decides what is worth fuzzing.** Planner-selected payload strategies are the deterministic foundation for that model; the ordered phase runner remains a documented legacy migration path.
+
 Capability maturity and known gaps are maintained in [FEATURES.md](FEATURES.md). Labels such as Beta, Preview, and Experimental describe lifecycle maturity, not completeness.
 
 Release gates, alpha rationale, and active blockers are maintained in [PROJECT_STATUS.md](PROJECT_STATUS.md).
@@ -27,16 +29,18 @@ Release gates, alpha rationale, and active blockers are maintained in [PROJECT_S
 
 ```mermaid
 flowchart TD
-    Host["CLI / API / library host"] --> Runner
-    Runner --> Pipeline["Ordered Scan Pipeline"]
-    Runner --> Decision["Deterministic Decision Runtime · Preview"]
+    Host["CLI / API / library host"] --> ScanRunner["Scan Runner"]
+    ScanRunner --> Pipeline["Ordered Scan Pipeline"]
+    ScanRunner --> Decision["Deterministic Decision Loop · Preview"]
     Pipeline --> Findings
     Plugins["Plugin Engine (Preview)"] --> Findings
     Decision --> Rules["Rule Engine"]
     Knowledge["Knowledge Base"] --> Rules
     Rules --> Planner
     Experience["Experience Store"] --> Planner
-    Planner --> Broker["Budgeted Request Broker"]
+    Planner -->|"Action + optional strategy ref"| Decision
+    Decision --> Executor["Capability Executor"]
+    Executor --> Broker["Host-owned Request Broker"]
     Broker --> Evidence["Evidence Engine"]
     Evidence --> Knowledge
     Evidence --> Verifier
@@ -44,7 +48,7 @@ flowchart TD
     Outcomes --> Knowledge
     Outcomes --> Experience
     Outcomes --> Findings
-    Runner --> Events["Event Bus"]
+    ScanRunner --> Events["Event Bus"]
     Findings --> Reporter
     Events --> Observers["Dashboard / telemetry"]
 ```

@@ -21,6 +21,8 @@ StandardWebAttackProfile
      |
      v
 AttackPlan ---> DecisionLoopCommand::ExecuteAction ---> registered executor
+     |
+     +--> optional versioned strategy reference (never raw payload bytes)
 ```
 
 ## Action catalog
@@ -85,6 +87,12 @@ Each selected `PlanStep` retains:
 - gain, posterior, business value, cost, and risk;
 - the calculated fixed-point utility;
 - prerequisite action identities;
-- the executor identity.
+- the executor identity;
+- the optional exact payload strategy ID and revision selected with the action.
+
+The planner treats the strategy reference as declarative action identity. It
+does not resolve a transformer, derive bytes, read runtime state, or know HTTP.
+Changing only the strategy revision changes action semantics and therefore
+conflicts with an existing registration under the same action ID.
 
 Rejected actions preserve an explicit reason such as unmet requirements, insufficient hypothesis strength, risk limit, dependency failure, budget exhaustion, or policy suppression.

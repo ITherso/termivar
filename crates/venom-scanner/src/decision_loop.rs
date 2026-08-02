@@ -13,10 +13,11 @@ use venom_core::{EntityId, Outcome};
 
 use crate::{
     AdaptationLedger, AdaptationLimits, AdaptiveDecision, AdaptivePipeline, AdaptivePipelineError,
-    AttackPlan, AttackPlanner, ExperiencePolicy, ExperienceStore, ExperienceStoreError,
-    ExperienceWrite, KnowledgeBase, KnowledgeBaseError, KnowledgeSnapshot, KnowledgeWrite,
-    PipelineDirective, PlannerError, PlanningContext, RuleApplication, RuleEngine, RuleEngineError,
-    VerificationCase, VerificationError, VerificationPipeline, VerificationReport,
+    AttackAction, AttackPlan, AttackPlanner, ExperiencePolicy, ExperienceStore,
+    ExperienceStoreError, ExperienceWrite, KnowledgeBase, KnowledgeBaseError, KnowledgeSnapshot,
+    KnowledgeWrite, PayloadStrategyRef, PipelineDirective, PlannerError, PlanningContext,
+    RuleApplication, RuleEngine, RuleEngineError, VerificationCase, VerificationError,
+    VerificationPipeline, VerificationReport,
 };
 
 /// Reasoning applications committed before a later planning-stage failure.
@@ -804,6 +805,7 @@ impl DecisionLoop {
                     &candidate_session,
                     step.action_id(),
                     step.confidence_hypothesis_id(),
+                    step.payload_strategy().cloned(),
                     "planned",
                 )?;
                 issue_action(
@@ -890,7 +892,14 @@ impl DecisionLoop {
             .verification
             .passive()
             .verify_snapshot(&case, &snapshot)?;
-        self.finalize_outcome(knowledge, experience, session, verification, &snapshot)
+        self.finalize_outcome(
+            knowledge,
+            experience,
+            session,
+            verification,
+            &snapshot,
+            case.payload_strategy().cloned(),
+        )
     }
 
     /// Evaluates evidence produced by an explicit active verification probe.
@@ -915,7 +924,14 @@ impl DecisionLoop {
             self.verification
                 .active()
                 .verify_snapshots(&case, baseline, after_probe)?;
-        self.finalize_outcome(knowledge, experience, session, verification, after_probe)
+        self.finalize_outcome(
+            knowledge,
+            experience,
+            session,
+            verification,
+            after_probe,
+            case.payload_strategy().cloned(),
+        )
     }
 
     fn finalize_outcome(
@@ -925,6 +941,7 @@ impl DecisionLoop {
         session: &mut DecisionSession,
         verification: VerificationReport,
         snapshot: &KnowledgeSnapshot,
+        current_payload_strategy: Option<PayloadStrategyRef>,
     ) -> Result<DecisionOutcomeReport, DecisionLoopError> {
         let before = session.transition_summary();
         let outcome = verification.outcome();
@@ -947,6 +964,8 @@ impl DecisionLoop {
         let command = transition_from_adaptive(
             &mut candidate_session,
             self.config.max_action_cycles,
+            &self.planner,
+            current_payload_strategy,
             outcome,
             adaptive.directive(),
         )?;
@@ -998,6 +1017,7 @@ fn next_case(
     session: &DecisionSession,
     action_id: &str,
     hypothesis_id: &str,
+    payload_strategy: Option<PayloadStrategyRef>,
     origin: &str,
 ) -> Result<VerificationCase, DecisionLoopError> {
     let next_cycle = session
@@ -1009,7 +1029,8 @@ fn next_case(
         session.subject.clone(),
         action_id,
         hypothesis_id,
-    )?)
+    )?
+    .with_payload_strategy(payload_strategy))
 }
 
 fn issue_action(
@@ -1038,17 +1059,29 @@ fn issue_action(
 fn transition_from_adaptive(
     session: &mut DecisionSession,
     max_action_cycles: u32,
+    planner: &AttackPlanner,
+    current_payload_strategy: Option<PayloadStrategyRef>,
     outcome: &Outcome,
     directive: &PipelineDirective,
 ) -> Result<DecisionLoopCommand, DecisionLoopError> {
     match directive {
         PipelineDirective::Complete => {
-            let case = case_from_outcome(outcome)?;
+            let case = case_from_outcome(outcome, current_payload_strategy)?;
             session.state = DecisionLoopState::Completed;
             Ok(DecisionLoopCommand::Complete { case })
         },
         PipelineDirective::ScheduleAction { action_id } => {
-            let case = next_case(session, action_id, outcome.hypothesis_id(), "adaptive")?;
+            let payload_strategy = planner
+                .action(action_id)
+                .and_then(AttackAction::payload_strategy)
+                .cloned();
+            let case = next_case(
+                session,
+                action_id,
+                outcome.hypothesis_id(),
+                payload_strategy,
+                "adaptive",
+            )?;
             Ok(issue_action(
                 session,
                 max_action_cycles,
@@ -1070,6 +1103,7 @@ fn transition_from_adaptive(
                 session,
                 outcome.action_id(),
                 outcome.hypothesis_id(),
+                current_payload_strategy,
                 "retry",
             )?;
             Ok(issue_action(
@@ -1089,12 +1123,12 @@ fn transition_from_adaptive(
             Ok(DecisionLoopCommand::Replan)
         },
         PipelineDirective::AwaitActiveVerification => {
-            let case = case_from_outcome(outcome)?;
+            let case = case_from_outcome(outcome, current_payload_strategy)?;
             session.state = DecisionLoopState::AwaitingActive { case: case.clone() };
             Ok(DecisionLoopCommand::CollectActiveEvidence { case })
         },
         PipelineDirective::AwaitHumanReview => {
-            let case = case_from_outcome(outcome)?;
+            let case = case_from_outcome(outcome, current_payload_strategy)?;
             let reason = DecisionStopReason::HumanReview;
             session.state = DecisionLoopState::Halted { reason };
             Ok(DecisionLoopCommand::AwaitHumanReview { case })
@@ -1107,13 +1141,17 @@ fn transition_from_adaptive(
     }
 }
 
-fn case_from_outcome(outcome: &Outcome) -> Result<VerificationCase, VerificationError> {
+fn case_from_outcome(
+    outcome: &Outcome,
+    payload_strategy: Option<PayloadStrategyRef>,
+) -> Result<VerificationCase, VerificationError> {
     VerificationCase::new(
         outcome.case_id(),
         outcome.subject().clone(),
         outcome.action_id(),
         outcome.hypothesis_id(),
     )
+    .map(|case| case.with_payload_strategy(payload_strategy))
 }
 
 #[cfg(test)]
@@ -1185,6 +1223,15 @@ mod tests {
         experience_limit: u16,
         max_action_cycles: u32,
     ) -> DecisionLoop {
+        configured_loop_with_strategy(passive_status, experience_limit, max_action_cycles, None)
+    }
+
+    fn configured_loop_with_strategy(
+        passive_status: Option<OutcomeStatus>,
+        experience_limit: u16,
+        max_action_cycles: u32,
+        payload_strategy: Option<PayloadStrategyRef>,
+    ) -> DecisionLoop {
         let planning = PlanningContext::new(
             BenefitScore::from_percent(90).unwrap(),
             100,
@@ -1226,31 +1273,31 @@ mod tests {
                 .unwrap(),
             )
             .unwrap();
-        decision_loop
-            .planner_mut()
-            .register(
-                AttackAction::new(
-                    "http.probe",
-                    "plugin.http-probe",
-                    Expression::equals(
-                        KnowledgeLayer::Hypothesis,
-                        hypothesis_predicate(),
-                        laravel(),
-                    ),
-                    HypothesisSelector::new(
-                        hypothesis_predicate(),
-                        laravel(),
-                        Probability::from_percent(50).unwrap(),
-                        RequiredStrength::Strong,
-                    ),
-                    BenefitScore::from_percent(80).unwrap(),
-                    ActionCost::new(10).unwrap(),
-                    RiskScore::from_percent(20).unwrap(),
-                    BTreeSet::new(),
-                )
-                .unwrap(),
-            )
-            .unwrap();
+        let action = AttackAction::new(
+            "http.probe",
+            "plugin.http-probe",
+            Expression::equals(
+                KnowledgeLayer::Hypothesis,
+                hypothesis_predicate(),
+                laravel(),
+            ),
+            HypothesisSelector::new(
+                hypothesis_predicate(),
+                laravel(),
+                Probability::from_percent(50).unwrap(),
+                RequiredStrength::Strong,
+            ),
+            BenefitScore::from_percent(80).unwrap(),
+            ActionCost::new(10).unwrap(),
+            RiskScore::from_percent(20).unwrap(),
+            BTreeSet::new(),
+        )
+        .unwrap();
+        let action = match payload_strategy {
+            Some(strategy) => action.with_payload_strategy(strategy),
+            None => action,
+        };
+        decision_loop.planner_mut().register(action).unwrap();
         if let Some(status) = passive_status {
             decision_loop
                 .verification_mut()
@@ -1275,6 +1322,91 @@ mod tests {
         }
         *decision_loop.adaptive_mut() = AdaptivePipeline::with_standard_policies().unwrap();
         decision_loop
+    }
+
+    #[test]
+    fn strategy_reference_survives_planned_active_and_retry_cases() {
+        let strategy = PayloadStrategyRef::new("visibility.control-pair", 1).unwrap();
+        let decision_loop = configured_loop_with_strategy(None, 1, 8, Some(strategy.clone()));
+        let knowledge = knowledge(false);
+        let experience = ExperienceStore::new();
+        let mut planned_session = DecisionSession::new(subject());
+
+        let planning = decision_loop
+            .plan_next(&knowledge, &experience, &mut planned_session)
+            .unwrap();
+        let planned_case = execution_case(planning.command());
+        assert_eq!(planned_case.payload_strategy(), Some(&strategy));
+
+        let outcome = Outcome::unknown(
+            planned_case.id(),
+            subject(),
+            planned_case.action_id(),
+            planned_case.hypothesis_id(),
+            VerificationStage::Passive,
+            "fixture remains unresolved",
+        )
+        .unwrap();
+        let mut active_session = DecisionSession::new(subject());
+        let active = transition_from_adaptive(
+            &mut active_session,
+            8,
+            decision_loop.planner(),
+            Some(strategy.clone()),
+            &outcome,
+            &PipelineDirective::AwaitActiveVerification,
+        )
+        .unwrap();
+        let active_case = match active {
+            DecisionLoopCommand::CollectActiveEvidence { case } => case,
+            other => panic!("expected active evidence command, got {other:?}"),
+        };
+        assert_eq!(active_case.payload_strategy(), Some(&strategy));
+
+        let mut retry_session = DecisionSession::new(subject());
+        let retry = transition_from_adaptive(
+            &mut retry_session,
+            8,
+            decision_loop.planner(),
+            Some(strategy.clone()),
+            &outcome,
+            &PipelineDirective::Throttle {
+                delay_ms: 5,
+                retry_current_action: true,
+            },
+        )
+        .unwrap();
+        assert_eq!(execution_case(&retry).payload_strategy(), Some(&strategy));
+    }
+
+    #[test]
+    fn outstanding_case_pins_strategy_across_planner_reconfiguration() {
+        let revision_one = PayloadStrategyRef::new("visibility.control-pair", 1).unwrap();
+        let revision_two = PayloadStrategyRef::new("visibility.control-pair", 2).unwrap();
+        let mut decision_loop =
+            configured_loop_with_strategy(None, 1, 8, Some(revision_one.clone()));
+        let replacement = configured_loop_with_strategy(None, 1, 8, Some(revision_two));
+        let knowledge = knowledge(false);
+        let mut experience = ExperienceStore::new();
+        let mut session = DecisionSession::new(subject());
+
+        let planning = decision_loop
+            .plan_next(&knowledge, &experience, &mut session)
+            .unwrap();
+        assert_eq!(
+            execution_case(planning.command()).payload_strategy(),
+            Some(&revision_one)
+        );
+
+        *decision_loop.planner_mut() = replacement.planner().clone();
+        let passive = decision_loop
+            .submit_passive(&knowledge, &mut experience, &mut session)
+            .unwrap();
+        let active_case = match passive.command() {
+            DecisionLoopCommand::CollectActiveEvidence { case } => case,
+            other => panic!("expected active evidence command, got {other:?}"),
+        };
+        assert_eq!(active_case.payload_strategy(), Some(&revision_one));
     }
 
     fn execution_case(command: &DecisionLoopCommand) -> VerificationCase {

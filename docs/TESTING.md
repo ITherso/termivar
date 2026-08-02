@@ -83,9 +83,11 @@ contract, not only a final score:
 
 Use fixed evidence, clocks, identifiers, and policies. The same fixture and
 configuration must produce the same comparison, explanation, plan, and
-outcome. Tests that exercise HTTP must keep request count, retained response
-bytes, redirects, retries, cancellation, and partial failures observable at the
-host-owned transport boundary.
+outcome. Tests that exercise HTTP must keep request count, buffered request-body
+bytes, complete transport-delivered response chunks, retained evidence bytes,
+redirects, retries, cancellation, and partial failures observable at the
+host-owned transport boundary. A response-threshold crossing must halt the same
+turn while preserving any committed evidence receipt.
 
 ## Security and compatibility
 

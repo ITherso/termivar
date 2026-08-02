@@ -4,7 +4,7 @@
 
 ## Default pipeline
 
-The CLI currently registers reconnaissance, crawling, directory fuzzing, parameter discovery, SQL injection, XSS, SSTI, LFI/XXE, and SSRF phases.
+The CLI currently registers reconnaissance, crawling, parameter discovery, SQL injection, XSS, SSTI, LFI/XXE, and SSRF phases. This complete ordered pipeline is a legacy direct-I/O surface outside `StandardWebDecisionRuntime` and `RuntimeBudget`, so the CLI emits an authorization and exact-origin warning for every scan. The `DirectoryFuzzer` runs only after explicit `--legacy-directory-fuzz` opt-in; redirects remain disabled for the shared client, and crawler discoveries are restricted to the target's normalized scheme, host, and port.
 
 Each phase implements:
 

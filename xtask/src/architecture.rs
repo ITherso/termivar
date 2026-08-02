@@ -84,13 +84,18 @@ const MODULE_POLICIES: &[ModulePolicy] = &[
         allowed_external: &[],
     },
     ModulePolicy {
+        source: "payload_strategy.rs",
+        allowed_internal: &[],
+        allowed_external: &["sha2"],
+    },
+    ModulePolicy {
         source: "planner.rs",
-        allowed_internal: &["knowledge", "rules"],
+        allowed_internal: &["knowledge", "payload_strategy", "rules"],
         allowed_external: &[],
     },
     ModulePolicy {
         source: "verification.rs",
-        allowed_internal: &["knowledge", "rules"],
+        allowed_internal: &["knowledge", "payload_strategy", "rules"],
         allowed_external: &[],
     },
     ModulePolicy {

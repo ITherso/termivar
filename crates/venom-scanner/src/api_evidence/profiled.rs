@@ -37,7 +37,30 @@ pub use policy::{
     HARD_MAX_API_COMPARISON_PROFILE_PATHS, HARD_MAX_API_VISIBILITY_DIFF_PATHS,
 };
 
-const PROFILED_COMPARISON_ID_DOMAIN: &[u8] = b"venom.api-visibility.comparison-id.v2\0";
+const PROFILED_COMPARISON_ID_DOMAIN: &[u8] = b"venom.api-visibility.comparison-id.v3\0";
+
+/// Availability of a bounded path explanation for one comparison result.
+///
+/// This derived disposition prevents consumers from treating an empty path
+/// list as proof that two views were equivalent. Status-only differences and
+/// structural changes that cannot be represented by the current path index
+/// deliberately remain [`Self::DifferenceWithoutPathSummary`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum VisibilityExplanationDisposition {
+    /// The selected comparison dimension was equivalent.
+    NoDifference,
+    /// At least one path difference was observed, retained, or quota-omitted.
+    PathSummary {
+        /// Number of redacted path digests retained by the comparison.
+        retained: u16,
+        /// Number of observed path differences omitted by the profile quota.
+        omitted: u32,
+    },
+    /// The dimension differed without a representable path-level summary.
+    DifferenceWithoutPathSummary,
+}
 
 /// Raw-value-free view captured under one explicit projection profile.
 #[derive(Clone, PartialEq, Eq)]
@@ -116,7 +139,7 @@ impl fmt::Debug for ProfiledApiVisibilityView {
     }
 }
 
-/// Replayable comparator-v2 envelope.
+/// Replayable profiled-comparator envelope.
 ///
 /// The nested `comparison` intentionally preserves the legacy nine-field core
 /// contract. Version and projection metadata live beside it so a legacy
@@ -161,6 +184,27 @@ impl ProfiledApiVisibilityComparison {
     /// Returns the bounded, raw-value-free explanation.
     pub const fn diff(&self) -> &RedactedVisibilityDiff {
         &self.diff
+    }
+
+    /// Classifies whether this result has a bounded path-level explanation.
+    ///
+    /// An empty [`RedactedVisibilityDiff`] is not equivalent to an equivalent
+    /// comparison. For example, status differences and ordered-array reorders
+    /// can be real differences without a path summary in the current model.
+    pub fn explanation_disposition(&self) -> VisibilityExplanationDisposition {
+        match self.comparison.result() {
+            ApiVisibilityResult::Equivalent => VisibilityExplanationDisposition::NoDifference,
+            ApiVisibilityResult::Different => {
+                let retained = self.diff.retained_diff_count();
+                let omitted = self.diff.omitted_diff_count();
+                if retained == 0 && omitted == 0 {
+                    VisibilityExplanationDisposition::DifferenceWithoutPathSummary
+                } else {
+                    VisibilityExplanationDisposition::PathSummary { retained, omitted }
+                }
+            },
+            _ => VisibilityExplanationDisposition::DifferenceWithoutPathSummary,
+        }
     }
 
     /// Consumes the envelope and returns its explicit components.
@@ -234,6 +278,16 @@ impl<'de> Deserialize<'de> for ProfiledApiVisibilityComparison {
         }
 
         let wire = WireComparison::deserialize(deserializer)?;
+        if wire.comparator_version != CURRENT_API_COMPARISON_ALGORITHM_VERSION {
+            return Err(serde::de::Error::custom(
+                "persisted API comparison uses an unsupported comparator version",
+            ));
+        }
+        if wire.canonicalization_version != CURRENT_API_VISIBILITY_CANONICALIZATION_VERSION {
+            return Err(serde::de::Error::custom(
+                "persisted API comparison uses an unsupported canonicalization version",
+            ));
+        }
         if !comparison_id_matches_metadata(
             wire.comparison.comparison_id(),
             wire.comparator_version,
@@ -242,6 +296,22 @@ impl<'de> Deserialize<'de> for ProfiledApiVisibilityComparison {
         ) {
             return Err(serde::de::Error::custom(
                 "profiled API comparison identity is not bound to its replay metadata",
+            ));
+        }
+        let diff_matches_semantics = match (wire.comparison.result(), wire.comparison.dimension()) {
+            (ApiVisibilityResult::Equivalent, _) => wire.diff.is_empty(),
+            (ApiVisibilityResult::Different, ApiVisibilityDimension::Status) => {
+                wire.diff.is_empty()
+            },
+            (ApiVisibilityResult::Different, ApiVisibilityDimension::Fields) => {
+                wire.diff.changed_value_path_hashes().is_empty()
+            },
+            (ApiVisibilityResult::Different, ApiVisibilityDimension::Resources) => true,
+            _ => false,
+        };
+        if !diff_matches_semantics {
+            return Err(serde::de::Error::custom(
+                "profiled API comparison diff is incompatible with v3 result semantics",
             ));
         }
         Ok(Self {

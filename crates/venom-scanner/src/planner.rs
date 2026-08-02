@@ -6,7 +6,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use serde::{Deserialize, Deserializer, Serialize};
+use serde::{de::IgnoredAny, Deserialize, Deserializer, Serialize};
 use thiserror::Error;
 use venom_core::{
     EntityId, EvidenceValue, Hypothesis, HypothesisState, HypothesisStrength, KnowledgePredicate,
@@ -15,6 +15,7 @@ use venom_core::{
 
 use crate::{
     knowledge::{KnowledgeBase, KnowledgeSnapshot},
+    payload_strategy::PayloadStrategyRef,
     rules::{Expression, ExpressionEvaluation, RuleEngineError},
 };
 
@@ -421,6 +422,8 @@ impl HypothesisSelector {
 pub struct AttackAction {
     id: String,
     executor: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    payload_strategy: Option<PayloadStrategyRef>,
     requirements: Expression,
     confidence_source: HypothesisSelector,
     gain: BenefitScore,
@@ -455,6 +458,7 @@ impl AttackAction {
         Ok(Self {
             id,
             executor,
+            payload_strategy: None,
             requirements,
             confidence_source,
             gain,
@@ -472,6 +476,17 @@ impl AttackAction {
     /// Returns the plugin or module executor identity.
     pub fn executor(&self) -> &str {
         &self.executor
+    }
+
+    /// Selects a versioned payload strategy without exposing its implementation.
+    pub fn with_payload_strategy(mut self, strategy: PayloadStrategyRef) -> Self {
+        self.payload_strategy = Some(strategy);
+        self
+    }
+
+    /// Returns the planner-selected payload strategy, when this action uses one.
+    pub const fn payload_strategy(&self) -> Option<&PayloadStrategyRef> {
+        self.payload_strategy.as_ref()
     }
 
     /// Returns the rule expression gating this action.
@@ -514,16 +529,29 @@ impl<'de> Deserialize<'de> for AttackAction {
         struct WireAction {
             id: String,
             executor: String,
+            #[serde(default)]
+            payload_strategy: Option<PayloadStrategyRef>,
             requirements: Expression,
             confidence_source: HypothesisSelector,
             gain: BenefitScore,
             cost: ActionCost,
             risk: RiskScore,
             prerequisites: BTreeSet<String>,
+            #[serde(flatten)]
+            extensions: BTreeMap<String, IgnoredAny>,
         }
 
         let wire = WireAction::deserialize(deserializer)?;
-        Self::new(
+        if wire
+            .extensions
+            .keys()
+            .any(|field| field.starts_with("payload_"))
+        {
+            return Err(serde::de::Error::custom(
+                "unknown reserved payload strategy field",
+            ));
+        }
+        let action = Self::new(
             wire.id,
             wire.executor,
             wire.requirements,
@@ -533,7 +561,11 @@ impl<'de> Deserialize<'de> for AttackAction {
             wire.risk,
             wire.prerequisites,
         )
-        .map_err(serde::de::Error::custom)
+        .map_err(serde::de::Error::custom)?;
+        Ok(match wire.payload_strategy {
+            Some(strategy) => action.with_payload_strategy(strategy),
+            None => action,
+        })
     }
 }
 
@@ -648,6 +680,8 @@ pub struct PlanStep {
     position: usize,
     action_id: String,
     executor: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    payload_strategy: Option<PayloadStrategyRef>,
     prerequisites: BTreeSet<String>,
     confidence_hypothesis_id: String,
     requirements: ExpressionEvaluation,
@@ -668,6 +702,11 @@ impl PlanStep {
     /// Returns the plugin or module executor identity.
     pub fn executor(&self) -> &str {
         &self.executor
+    }
+
+    /// Returns the exact payload strategy revision selected with this action.
+    pub const fn payload_strategy(&self) -> Option<&PayloadStrategyRef> {
+        self.payload_strategy.as_ref()
     }
 
     /// Returns prerequisite action identities.
@@ -772,6 +811,11 @@ impl AttackPlanner {
         }
         self.actions.insert(action.id().to_owned(), action);
         Ok(PlannerWrite::Inserted)
+    }
+
+    /// Returns a registered action definition by stable identity.
+    pub fn action(&self, action_id: &str) -> Option<&AttackAction> {
+        self.actions.get(action_id)
     }
 
     /// Returns the number of registered action identities.
@@ -943,6 +987,7 @@ impl AttackPlanner {
                     position,
                     action_id: candidate.action.id.clone(),
                     executor: candidate.action.executor.clone(),
+                    payload_strategy: candidate.action.payload_strategy.clone(),
                     prerequisites: candidate.action.prerequisites.clone(),
                     confidence_hypothesis_id: candidate.confidence_hypothesis_id.clone(),
                     requirements: candidate.requirements.clone(),
@@ -1446,6 +1491,56 @@ mod tests {
             BTreeSet::new(),
         )
         .unwrap();
+        assert!(matches!(
+            planner.register(conflicting),
+            Err(PlannerError::ActionIdentityConflict { .. })
+        ));
+    }
+
+    #[test]
+    fn planner_carries_exact_strategy_revision_without_exposing_payloads() {
+        let knowledge = knowledge_with_hypothesis((80, 20));
+        let strategy = PayloadStrategyRef::new("visibility.control-pair", 2).unwrap();
+        let selected =
+            action("visibility.compare", 80, 10, 20, &[]).with_payload_strategy(strategy.clone());
+        let legacy = action("legacy.observe", 70, 10, 20, &[]);
+
+        let legacy_wire = serde_json::to_value(&legacy).unwrap();
+        assert!(legacy_wire.get("payload_strategy").is_none());
+        assert!(serde_json::from_value::<AttackAction>(legacy_wire)
+            .unwrap()
+            .payload_strategy()
+            .is_none());
+        let mut misspelled = serde_json::to_value(&legacy).unwrap();
+        misspelled["payload_stratgey"] = serde_json::json!({
+            "id": "visibility.control-pair",
+            "revision": 1
+        });
+        assert!(serde_json::from_value::<AttackAction>(misspelled).is_err());
+        let mut extended = serde_json::to_value(&legacy).unwrap();
+        extended["future_extension"] = serde_json::json!({"accepted": true});
+        assert!(serde_json::from_value::<AttackAction>(extended).is_ok());
+
+        let selected_wire = serde_json::to_value(&selected).unwrap();
+        assert_eq!(selected_wire["payload_strategy"]["revision"], 2);
+        assert_eq!(
+            serde_json::from_value::<AttackAction>(selected_wire).unwrap(),
+            selected
+        );
+
+        let mut planner = AttackPlanner::new();
+        planner.register(selected.clone()).unwrap();
+        let plan = planner.plan(&knowledge, &subject(), context(100)).unwrap();
+        assert_eq!(plan.steps()[0].payload_strategy(), Some(&strategy));
+        assert_eq!(
+            planner
+                .action("visibility.compare")
+                .and_then(AttackAction::payload_strategy),
+            Some(&strategy)
+        );
+
+        let conflicting = action("visibility.compare", 80, 10, 20, &[])
+            .with_payload_strategy(PayloadStrategyRef::new("visibility.control-pair", 3).unwrap());
         assert!(matches!(
             planner.register(conflicting),
             Err(PlannerError::ActionIdentityConflict { .. })

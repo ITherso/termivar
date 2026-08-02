@@ -17,7 +17,7 @@ use crate::{
     DecisionActionOrigin, DecisionLoop, DecisionLoopCommand, DecisionLoopError, DecisionLoopState,
     DecisionOutcomeReport, DecisionPlanningReport, DecisionReasoningCommitReceipt, DecisionSession,
     ExperienceStore, KnowledgeBase, KnowledgeBaseError, KnowledgeSnapshot, KnowledgeWrite,
-    RuntimeLimitExceeded, VerificationCase,
+    PayloadStrategyRef, RuntimeLimitExceeded, VerificationCase,
 };
 
 /// Verification stage whose evidence an executor must collect.
@@ -124,6 +124,11 @@ impl DecisionExecutionRequest {
     /// Returns host-owned resource allowances for this execution.
     pub const fn limits(&self) -> DecisionExecutionLimits {
         self.limits
+    }
+
+    /// Returns the exact planner-selected strategy revision, when present.
+    pub const fn payload_strategy(&self) -> Option<&PayloadStrategyRef> {
+        self.case.payload_strategy()
     }
 }
 
@@ -315,6 +320,14 @@ impl DecisionExecutionFailureReceipt {
 pub trait DecisionActionExecutor: Send + Sync {
     /// Returns the stable identity used by planner executor fields and routes.
     fn id(&self) -> &str;
+
+    /// Returns whether this executor can materialize an exact strategy revision.
+    ///
+    /// The fail-closed default prevents a legacy executor from silently
+    /// ignoring planner-selected strategy semantics.
+    fn supports_payload_strategy(&self, _strategy: &PayloadStrategyRef) -> bool {
+        false
+    }
 
     /// Executes one semantic action request and returns immutable observations only.
     ///
@@ -531,6 +544,15 @@ pub enum DecisionRunnerError {
         stage: DecisionExecutionStage,
         /// Action lacking a route.
         action_id: String,
+    },
+
+    /// The resolved executor cannot materialize the planner-selected strategy.
+    #[error("decision executor {executor_id} does not support payload strategy {strategy}")]
+    UnsupportedPayloadStrategy {
+        /// Resolved executor identity.
+        executor_id: String,
+        /// Exact strategy revision selected by the planner.
+        strategy: PayloadStrategyRef,
     },
 
     /// A non-execution command was passed to the low-level execution API.
@@ -766,6 +788,14 @@ impl DecisionRunnerAdapter {
         let (executor_id, executor) =
             self.executors
                 .resolve(stage, case.action_id(), requested_executor)?;
+        if let Some(strategy) = case.payload_strategy() {
+            if !executor.supports_payload_strategy(strategy) {
+                return Err(DecisionRunnerError::UnsupportedPayloadStrategy {
+                    executor_id,
+                    strategy: strategy.clone(),
+                });
+            }
+        }
         if let Some(delay_ms) = delay_ms.filter(|delay| *delay > 0) {
             tokio::time::sleep(Duration::from_millis(delay_ms)).await;
         }
@@ -1201,6 +1231,12 @@ mod tests {
         diagnostic: &'static str,
     }
 
+    struct StrategyExecutor {
+        id: &'static str,
+        strategy: PayloadStrategyRef,
+        calls: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
     #[async_trait]
     impl DecisionActionExecutor for RecordingExecutor {
         fn id(&self) -> &str {
@@ -1239,6 +1275,37 @@ mod tests {
             _request: &DecisionExecutionRequest,
         ) -> Result<Vec<Evidence>, DecisionExecutorError> {
             Err(DecisionExecutorError::with_kind(self.kind, self.diagnostic))
+        }
+    }
+
+    #[async_trait]
+    impl DecisionActionExecutor for StrategyExecutor {
+        fn id(&self) -> &str {
+            self.id
+        }
+
+        fn supports_payload_strategy(&self, strategy: &PayloadStrategyRef) -> bool {
+            strategy == &self.strategy
+        }
+
+        async fn execute(
+            &self,
+            request: &DecisionExecutionRequest,
+        ) -> Result<Vec<Evidence>, DecisionExecutorError> {
+            assert_eq!(request.payload_strategy(), Some(&self.strategy));
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let source = EvidenceSource::new(self.id, "strategy-observation")
+                .unwrap()
+                .with_correlation_id(request.case().id())
+                .unwrap();
+            Ok(vec![Evidence::new(
+                request.case().subject().clone(),
+                EvidenceKind::Http,
+                KnowledgePredicate::new("http.response", "status").unwrap(),
+                EvidenceValue::Unsigned(200),
+                source,
+                ConfidenceScore::MAX,
+            )])
         }
     }
 
@@ -1314,6 +1381,64 @@ mod tests {
         assert_eq!(write_set[0].1, KnowledgeWrite::Inserted);
         assert!(receipt.baseline().is_none());
         assert_eq!(receipt.after_execution().evidence().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn executor_must_explicitly_support_the_planner_selected_strategy() {
+        let strategy = PayloadStrategyRef::new("visibility.control-pair", 1).unwrap();
+        let unsupported_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut unsupported_registry = DecisionExecutorRegistry::new();
+        unsupported_registry
+            .register(Arc::new(StrategyExecutor {
+                id: "capability.visibility",
+                strategy: PayloadStrategyRef::new("visibility.control-pair", 2).unwrap(),
+                calls: Arc::clone(&unsupported_calls),
+            }))
+            .unwrap();
+        let selected_case =
+            case("visibility.compare").with_payload_strategy(Some(strategy.clone()));
+        let command = DecisionLoopCommand::ExecuteAction {
+            case: selected_case.clone(),
+            executor: Some("capability.visibility".to_owned()),
+            origin: DecisionActionOrigin::Planned,
+            delay_ms: None,
+        };
+        let knowledge = KnowledgeBase::new();
+        let error = DecisionRunnerAdapter::new(unsupported_registry)
+            .execute_command(&command, &knowledge)
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            DecisionRunnerError::UnsupportedPayloadStrategy {
+                executor_id,
+                strategy: rejected,
+            } if executor_id == "capability.visibility" && rejected == strategy
+        ));
+        assert_eq!(
+            unsupported_calls.load(std::sync::atomic::Ordering::SeqCst),
+            0
+        );
+        assert_eq!(knowledge.stats().evidence, 0);
+
+        let supported_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut supported_registry = DecisionExecutorRegistry::new();
+        supported_registry
+            .register(Arc::new(StrategyExecutor {
+                id: "capability.visibility",
+                strategy,
+                calls: Arc::clone(&supported_calls),
+            }))
+            .unwrap();
+        let receipt = DecisionRunnerAdapter::new(supported_registry)
+            .execute_command(&command, &KnowledgeBase::new())
+            .await
+            .unwrap();
+        assert_eq!(
+            receipt.case().payload_strategy(),
+            selected_case.payload_strategy()
+        );
+        assert_eq!(supported_calls.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
 
     #[test]

@@ -23,7 +23,10 @@ const BOUNDED_RUNTIME_SOURCES: &[&str] = &[
     "crates/venom-scanner/src/decision_loop.rs",
     "crates/venom-scanner/src/decision_runner.rs",
     "crates/venom-scanner/src/http_evidence.rs",
+    "crates/venom-scanner/src/payload_strategy.rs",
+    "crates/venom-scanner/src/planner.rs",
     "crates/venom-scanner/src/runtime_budget.rs",
+    "crates/venom-scanner/src/verification.rs",
     "crates/venom-scanner/src/web_actions.rs",
     "crates/venom-scanner/src/web_decision.rs",
     "crates/venom-scanner/src/web_execution.rs",
@@ -36,6 +39,7 @@ const BOUNDED_RUNTIME_SOURCES: &[&str] = &[
 
 /// The sole raw HTTP-client owner in the bounded runtime.
 const TRANSPORT_OWNER_SOURCE: &str = "crates/venom-scanner/src/http_evidence/request_broker.rs";
+const STANDARD_RUNTIME_COMPOSITION_SOURCE: &str = "crates/venom-scanner/src/web_runtime.rs";
 
 /// Exact raw-client source inventory. Entries other than the broker owner are
 /// legacy and are not covered by `RuntimeBudget`.
@@ -66,6 +70,10 @@ pub(super) fn check(workspace_root: &Path) -> Result<Vec<String>, Box<dyn Error>
         let source = fs::read_to_string(workspace_root.join(source_name))?;
         violations.extend(inspect_bounded_source(source_name, &source)?);
     }
+
+    let standard_runtime =
+        fs::read_to_string(workspace_root.join(STANDARD_RUNTIME_COMPOSITION_SOURCE))?;
+    violations.extend(inspect_standard_runtime_accounting(&standard_runtime));
 
     let expected_clients: BTreeSet<_> = DIRECT_CLIENT_SOURCE_ALLOWLIST
         .iter()
@@ -104,6 +112,21 @@ pub(super) fn check(workspace_root: &Path) -> Result<Vec<String>, Box<dyn Error>
     }
 
     Ok(violations)
+}
+
+fn inspect_standard_runtime_accounting(source: &str) -> Vec<String> {
+    let mut violations = Vec::new();
+    if !source.contains("HttpRequestBroker::new_metered(") {
+        violations.push(format!(
+            "{STANDARD_RUNTIME_COMPOSITION_SOURCE} must construct its broker with HttpRequestBroker::new_metered"
+        ));
+    }
+    if source.contains("HttpRequestBroker::new_unmetered(") {
+        violations.push(format!(
+            "{STANDARD_RUNTIME_COMPOSITION_SOURCE} must not construct an unmetered request broker"
+        ));
+    }
+    violations
 }
 
 fn validate_policy_inventory() -> Vec<String> {
@@ -162,6 +185,15 @@ impl OwnershipVisitor<'_> {
                 && allowed_http_facade_path(segments))
         {
             return;
+        }
+        if self.source == "crates/venom-scanner/src/payload_strategy.rs"
+            && is_nondeterministic_strategy_path(segments)
+        {
+            self.violations.insert(format!(
+                "{} imports nondeterministic or stateful path {}; payload strategies must remain pure contracts",
+                self.source,
+                display_path(segments)
+            ));
         }
         let reqwest = segments
             .first()
@@ -376,6 +408,53 @@ fn is_direct_transport_path(segments: &[String]) -> bool {
                 })
         },
         other => is_network_crate_root(other),
+    }
+}
+
+fn is_nondeterministic_strategy_path(segments: &[String]) -> bool {
+    let Some(root) = segments
+        .first()
+        .map(String::as_str)
+        .map(normalize_identifier)
+    else {
+        return false;
+    };
+    match root {
+        "std" => !allowed_payload_strategy_std_path(segments),
+        "alloc" | "core" | "tokio" => true,
+        "crate" => segments.get(1).is_some_and(|module| {
+            matches!(
+                normalize_identifier(module),
+                "context"
+                    | "decision_runner"
+                    | "http_evidence"
+                    | "knowledge"
+                    | "runtime_budget"
+                    | "sdk"
+            )
+        }),
+        "chrono" | "dashmap" | "env" | "fastrand" | "getrandom" | "include" | "include_bytes"
+        | "include_str" | "once_cell" | "option_env" | "parking_lot" | "rand" | "time" | "uuid" => {
+            true
+        },
+        _ => false,
+    }
+}
+
+fn allowed_payload_strategy_std_path(segments: &[String]) -> bool {
+    match segments
+        .get(1)
+        .map(String::as_str)
+        .map(normalize_identifier)
+    {
+        Some("collections") => segments
+            .get(2)
+            .is_some_and(|item| normalize_identifier(item) == "BTreeMap"),
+        Some("fmt") => true,
+        Some("sync") => segments
+            .get(2)
+            .is_some_and(|item| normalize_identifier(item) == "Arc"),
+        _ => false,
     }
 }
 
@@ -611,6 +690,60 @@ mod tests {
                 .unwrap()
                 .join("\n");
         assert!(violations.contains("reqwest::Client"));
+    }
+
+    #[test]
+    fn payload_strategy_contract_rejects_clock_rng_state_and_transport_imports() {
+        for source in [
+            "use std::time::SystemTime;",
+            "use std::collections::HashMap;",
+            "use std::hash::RandomState;",
+            "use std::io::stdin;",
+            "use std::sync::Mutex;",
+            "use core::cell::Cell;",
+            "use core::sync::atomic::AtomicU64;",
+            "use tokio::sync::RwLock;",
+            "use rand::Rng;",
+            "use uuid::Uuid;",
+            "const SEED: &[u8] = include_bytes!(\"seed.bin\");",
+            "const BUILD: Option<&str> = option_env!(\"BUILD_ID\");",
+            "use crate::knowledge::KnowledgeBase;",
+            "use crate::http_evidence::HttpProbe;",
+        ] {
+            let violations =
+                inspect_bounded_source("crates/venom-scanner/src/payload_strategy.rs", source)
+                    .unwrap()
+                    .join("\n");
+            assert!(
+                violations.contains("pure contracts"),
+                "stateful strategy dependency unexpectedly passed: {source}"
+            );
+        }
+
+        let pure = r#"
+            use std::{collections::BTreeMap, fmt, sync::Arc};
+            use sha2::{Digest, Sha256};
+        "#;
+        assert!(
+            inspect_bounded_source("crates/venom-scanner/src/payload_strategy.rs", pure)
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn standard_runtime_must_select_the_metered_broker_constructor() {
+        assert!(inspect_standard_runtime_accounting(
+            "let broker = HttpRequestBroker::new_metered(policy, accounting)?;"
+        )
+        .is_empty());
+
+        let violations = inspect_standard_runtime_accounting(
+            "let broker = HttpRequestBroker::new_unmetered(policy)?;",
+        )
+        .join("\n");
+        assert!(violations.contains("must construct its broker"));
+        assert!(violations.contains("must not construct an unmetered"));
     }
 
     #[test]

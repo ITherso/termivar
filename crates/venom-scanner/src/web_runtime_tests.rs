@@ -54,6 +54,12 @@ struct MissingResponseUsageExecutor {
     id: &'static str,
 }
 
+struct ResponseOvershootExecutor {
+    id: &'static str,
+    accounting: RequestAccountingBroker,
+    delivered_bytes: u64,
+}
+
 #[async_trait]
 impl DecisionActionExecutor for BudgetDeniedRuntimeExecutor {
     fn id(&self) -> &str {
@@ -130,6 +136,41 @@ impl DecisionActionExecutor for MissingResponseUsageExecutor {
             EvidenceKind::Http,
             HttpEvidencePredicate::RESPONSE_STATUS.into_knowledge(),
             EvidenceValue::Unsigned(200),
+            source,
+            ConfidenceScore::MAX,
+        )])
+    }
+}
+
+#[async_trait]
+impl DecisionActionExecutor for ResponseOvershootExecutor {
+    fn id(&self) -> &str {
+        self.id
+    }
+
+    async fn execute(
+        &self,
+        request: &DecisionExecutionRequest,
+    ) -> Result<Vec<Evidence>, DecisionExecutorError> {
+        let mut lease = self
+            .accounting
+            .try_begin_with_request_body_bytes(
+                request.case().action_id(),
+                request.stage(),
+                request.origin(),
+                0,
+            )
+            .map_err(DecisionExecutorError::from_runtime_limit)?;
+        let retained = lease.observe_response_bytes(self.delivered_bytes);
+        let source = EvidenceSource::new(self.id, "response-budget-overshoot")
+            .unwrap()
+            .with_correlation_id(request.case().id())
+            .unwrap();
+        Ok(vec![Evidence::new(
+            request.case().subject().clone(),
+            EvidenceKind::Http,
+            HttpEvidencePredicate::RESPONSE_BODY_BYTES_OBSERVED.into_knowledge(),
+            EvidenceValue::Unsigned(retained),
             source,
             ConfidenceScore::MAX,
         )])
@@ -667,6 +708,62 @@ async fn response_usage_failure_preserves_prior_turns_and_current_evidence() {
 }
 
 #[tokio::test]
+async fn response_overshoot_halts_the_same_turn_and_keeps_evidence_auditable() {
+    let server = serve(vec![Reply::Response(BASIC)]).await;
+    let policy = HttpEvidencePolicy::for_origin(server.target()).unwrap();
+    let mut runtime = StandardWebDecisionRuntime::builder(server.target())
+        .http_policy(policy.clone())
+        .max_response_bytes(4)
+        .build()
+        .unwrap();
+    let action = StandardWebActionKind::HttpBasicAuthBoundary;
+    let mut registry = DecisionExecutorRegistry::new();
+    registry
+        .register(Arc::new(
+            HttpEvidenceExecutor::new_with_accounting(
+                policy,
+                Arc::new(SubjectHttpProbeProvider::new(HttpProbeMethod::Get)),
+                runtime.request_accounting.clone(),
+            )
+            .unwrap(),
+        ))
+        .unwrap();
+    registry
+        .register(Arc::new(ResponseOvershootExecutor {
+            id: action.executor_id(),
+            accounting: runtime.request_accounting.clone(),
+            delivered_bytes: 10,
+        }))
+        .unwrap();
+    runtime.runner = DecisionRunnerAdapter::new(registry);
+
+    let report = runtime.analyze().await.unwrap();
+
+    let limit = assert_runtime_limit(&report, RuntimeBudgetDimension::ResponseBytes);
+    assert_eq!(limit.limit(), 4);
+    assert_eq!(limit.observed(), 10);
+    assert_eq!(limit.action_id(), Some(action.action_id()));
+    assert_eq!(report.usage().response_bytes(), 10);
+    assert_eq!(report.usage().total_requests(), 2);
+    assert_eq!(report.outcome_reports().count(), 0);
+    let committed = report.unverified_evidence().unwrap();
+    assert_eq!(committed.case().action_id(), action.action_id());
+    assert_eq!(committed.writes(), [KnowledgeWrite::Inserted]);
+    assert!(runtime
+        .knowledge()
+        .evidence(committed.evidence()[0].id())
+        .is_some());
+    assert!(runtime.experience().is_empty());
+    assert!(matches!(
+        runtime.session().state(),
+        DecisionLoopState::Halted {
+            reason: DecisionStopReason::RuntimeBudgetLimit
+        }
+    ));
+    assert_eq!(server.methods().await, ["GET"]);
+}
+
+#[tokio::test]
 async fn in_executor_budget_denial_preserves_prior_evidence_and_failure_receipt() {
     let server = serve(vec![Reply::Response(BASIC)]).await;
     let policy = HttpEvidencePolicy::for_origin(server.target()).unwrap();
@@ -1153,7 +1250,7 @@ async fn partial_body_timeout_remains_charged_without_committing_evidence() {
 }
 
 #[tokio::test]
-async fn response_budget_clamps_the_bootstrap_body_and_stops_before_more_io() {
+async fn response_budget_clamps_retention_and_records_the_full_received_chunk() {
     let response = b"HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: Basic realm=\"admin\"\r\nContent-Type: text/plain\r\nContent-Length: 10\r\nConnection: close\r\n\r\n0123456789";
     let server = serve(vec![Reply::Response(response)]).await;
     let policy = HttpEvidencePolicy::for_origin(server.target())
@@ -1178,7 +1275,11 @@ async fn response_budget_clamps_the_bootstrap_body_and_stops_before_more_io() {
         evidence_value(bootstrap, "http.response.body-truncated"),
         Some(&EvidenceValue::Boolean(true))
     );
-    assert_eq!(report.usage().response_bytes(), 4);
+    let observed = report.usage().response_bytes();
+    assert!(
+        (5..=10).contains(&observed),
+        "broker must charge the complete chunk that crosses the four-byte retention limit; observed {observed}"
+    );
     assert_eq!(server.methods().await, ["GET"]);
 }
 
@@ -1198,14 +1299,7 @@ async fn response_budget_passes_only_the_cumulative_remainder_to_later_requests(
     let report = runtime.analyze().await.unwrap();
 
     assert_runtime_limit(&report, RuntimeBudgetDimension::ResponseBytes);
-    let later_receipt = report
-        .turns()
-        .iter()
-        .find_map(|turn| match turn {
-            StandardWebDecisionRuntimeTurn::Outcome { evidence, .. } => Some(evidence.as_ref()),
-            StandardWebDecisionRuntimeTurn::Planning(_) => None,
-        })
-        .unwrap();
+    let later_receipt = report.unverified_evidence().unwrap();
     assert_eq!(
         evidence_value(later_receipt, "http.response.body-bytes-observed"),
         Some(&EvidenceValue::Unsigned(3))
@@ -1214,7 +1308,11 @@ async fn response_budget_passes_only_the_cumulative_remainder_to_later_requests(
         evidence_value(later_receipt, "http.response.body-truncated"),
         Some(&EvidenceValue::Boolean(true))
     );
-    assert_eq!(report.usage().response_bytes(), 12);
+    let observed = report.usage().response_bytes();
+    assert!(
+        (13..=18).contains(&observed),
+        "broker must charge the complete chunk that crosses the cumulative twelve-byte retention limit; observed {observed}"
+    );
     assert_eq!(server.methods().await, ["GET", "GET"]);
 }
 

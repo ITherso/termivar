@@ -17,8 +17,10 @@ use serde::{Deserialize, Serialize};
 pub const DEFAULT_MAX_TOTAL_REQUESTS: u32 = 32;
 /// Default wall-clock deadline in milliseconds.
 pub const DEFAULT_MAX_WALL_TIME_MS: u64 = 120_000;
-/// Default cumulative number of buffered response-body bytes.
+/// Default cumulative transport-delivered response-body threshold.
 pub const DEFAULT_MAX_RESPONSE_BYTES: u64 = 2 * 1024 * 1024;
+/// Default cumulative number of request-body bytes dispatched by the broker.
+pub const DEFAULT_MAX_REQUEST_BODY_BYTES: u64 = 256 * 1024;
 /// Default maximum number of active verification requests.
 pub const DEFAULT_MAX_ACTIVE_VERIFICATIONS: u16 = 4;
 /// Default maximum attempts for one semantic action.
@@ -36,6 +38,7 @@ pub struct RuntimeBudget {
     max_total_requests: u32,
     max_wall_time_ms: u64,
     max_response_bytes: u64,
+    max_request_body_bytes: u64,
     max_active_verifications: u16,
     max_same_action_attempts: u16,
     max_consecutive_no_progress_turns: u16,
@@ -55,6 +58,7 @@ impl RuntimeBudget {
             max_total_requests,
             max_wall_time_ms,
             max_response_bytes,
+            max_request_body_bytes: DEFAULT_MAX_REQUEST_BODY_BYTES,
             max_active_verifications,
             max_same_action_attempts,
             max_consecutive_no_progress_turns,
@@ -76,9 +80,20 @@ impl RuntimeBudget {
         self.max_wall_time_ms
     }
 
-    /// Returns the cumulative buffered response-body byte limit.
+    /// Returns the cumulative transport-delivered response-body threshold.
+    ///
+    /// The chunk that crosses this threshold is charged in full and surfaced
+    /// as a typed limit; the broker starts no later body read.
     pub const fn max_response_bytes(self) -> u64 {
         self.max_response_bytes
+    }
+
+    /// Returns the cumulative request-body byte limit.
+    ///
+    /// Headers and transport framing are not included. A body is charged
+    /// atomically immediately before its request is dispatched.
+    pub const fn max_request_body_bytes(self) -> u64 {
+        self.max_request_body_bytes
     }
 
     /// Returns the maximum number of active verification requests.
@@ -110,9 +125,15 @@ impl RuntimeBudget {
         self
     }
 
-    /// Replaces the cumulative buffered response-body byte limit.
+    /// Replaces the cumulative transport-delivered response-body threshold.
     pub const fn with_max_response_bytes(mut self, limit: u64) -> Self {
         self.max_response_bytes = limit;
+        self
+    }
+
+    /// Replaces the cumulative request-body byte limit.
+    pub const fn with_max_request_body_bytes(mut self, limit: u64) -> Self {
+        self.max_request_body_bytes = limit;
         self
     }
 
@@ -157,8 +178,11 @@ pub enum RuntimeBudgetDimension {
     TotalRequests,
     /// Monotonic time spent by the complete runtime.
     WallTime,
-    /// Cumulative response-body bytes buffered into evidence.
+    /// Cumulative response-body bytes delivered by transport, including the
+    /// single serialized chunk that can cross the configured threshold.
     ResponseBytes,
+    /// Cumulative request-body bytes accepted for transport dispatch.
+    RequestBodyBytes,
     /// Total explicit active-verification requests.
     ActiveVerifications,
     /// Attempts made for one semantic action identity.
@@ -173,6 +197,7 @@ impl fmt::Display for RuntimeBudgetDimension {
             Self::TotalRequests => "total_requests",
             Self::WallTime => "wall_time_ms",
             Self::ResponseBytes => "response_bytes",
+            Self::RequestBodyBytes => "request_body_bytes",
             Self::ActiveVerifications => "active_verifications",
             Self::SameActionAttempts => "same_action_attempts",
             Self::ConsecutiveNoProgressTurns => "consecutive_no_progress_turns",
@@ -251,6 +276,7 @@ pub(crate) struct RequestAccountingSnapshot {
     planned_requests: u32,
     adaptive_requests: u32,
     retry_requests: u32,
+    request_body_bytes: u64,
     response_bytes: u64,
 }
 
@@ -283,6 +309,10 @@ impl RequestAccountingSnapshot {
         self.retry_requests
     }
 
+    pub(crate) const fn request_body_bytes(self) -> u64 {
+        self.request_body_bytes
+    }
+
     pub(crate) const fn response_bytes(self) -> u64 {
         self.response_bytes
     }
@@ -313,6 +343,7 @@ struct RequestAccountingState {
 pub(crate) struct RequestAccountingBroker {
     budget: RuntimeBudget,
     state: Arc<Mutex<RequestAccountingState>>,
+    response_read_gate: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl RequestAccountingBroker {
@@ -320,6 +351,7 @@ impl RequestAccountingBroker {
         Self {
             budget,
             state: Arc::new(Mutex::new(RequestAccountingState::default())),
+            response_read_gate: Arc::new(tokio::sync::Mutex::new(())),
         }
     }
 
@@ -337,18 +369,50 @@ impl RequestAccountingBroker {
         action_id: &str,
         stage: crate::DecisionExecutionStage,
     ) -> Result<RequestAccountingPreflight, RuntimeLimitExceeded> {
-        check_request_limits(&self.lock_state().snapshot, self.budget, action_id, stage)
+        self.preflight_with_request_body_bytes(action_id, stage, 0)
     }
 
+    pub(crate) fn preflight_with_request_body_bytes(
+        &self,
+        action_id: &str,
+        stage: crate::DecisionExecutionStage,
+        request_body_bytes: u64,
+    ) -> Result<RequestAccountingPreflight, RuntimeLimitExceeded> {
+        check_request_limits(
+            &self.lock_state().snapshot,
+            self.budget,
+            action_id,
+            stage,
+            request_body_bytes,
+        )
+    }
+
+    #[cfg(test)]
     pub(crate) fn try_begin(
         &self,
         action_id: &str,
         stage: crate::DecisionExecutionStage,
         origin: Option<crate::DecisionActionOrigin>,
     ) -> Result<RequestAccountingLease, RuntimeLimitExceeded> {
+        self.try_begin_with_request_body_bytes(action_id, stage, origin, 0)
+    }
+
+    pub(crate) fn try_begin_with_request_body_bytes(
+        &self,
+        action_id: &str,
+        stage: crate::DecisionExecutionStage,
+        origin: Option<crate::DecisionActionOrigin>,
+        request_body_bytes: u64,
+    ) -> Result<RequestAccountingLease, RuntimeLimitExceeded> {
         let mut state = self.lock_state();
-        check_request_limits(&state.snapshot, self.budget, action_id, stage)?;
-        record_dispatch(&mut state.snapshot, stage, origin);
+        check_request_limits(
+            &state.snapshot,
+            self.budget,
+            action_id,
+            stage,
+            request_body_bytes,
+        )?;
+        record_dispatch(&mut state.snapshot, stage, origin, request_body_bytes);
         drop(state);
 
         Ok(RequestAccountingLease {
@@ -365,24 +429,34 @@ impl RequestAccountingBroker {
 
 /// Non-clone proof that one logical transport dispatch was recorded.
 ///
-/// Claimed response bytes are retained globally immediately. Dropping the
-/// lease never rolls back either the request or byte counters, including when
-/// execution is cancelled or returns a partial failure.
+/// Observed response bytes are recorded globally immediately. The returned
+/// retention allowance can be smaller than the received chunk, but every byte
+/// already delivered by transport remains charged. Dropping the lease never
+/// rolls back either the request or byte counters.
 #[derive(Debug)]
 pub(crate) struct RequestAccountingLease {
     broker: RequestAccountingBroker,
 }
 
 impl RequestAccountingLease {
-    pub(crate) fn claim_response_bytes(&mut self, bytes: u64) -> u64 {
+    pub(crate) async fn acquire_response_read(&self) -> tokio::sync::OwnedMutexGuard<()> {
+        Arc::clone(&self.broker.response_read_gate)
+            .lock_owned()
+            .await
+    }
+
+    pub(crate) fn observe_response_bytes(&mut self, bytes: u64) -> u64 {
         let mut state = self.broker.lock_state();
         let remaining = self
             .broker
             .budget
             .max_response_bytes()
             .saturating_sub(state.snapshot.response_bytes);
+        if remaining == 0 {
+            return 0;
+        }
         let retained = bytes.min(remaining);
-        state.snapshot.response_bytes = state.snapshot.response_bytes.saturating_add(retained);
+        state.snapshot.response_bytes = state.snapshot.response_bytes.saturating_add(bytes);
         retained
     }
 
@@ -400,6 +474,7 @@ fn check_request_limits(
     budget: RuntimeBudget,
     action_id: &str,
     stage: crate::DecisionExecutionStage,
+    request_body_bytes: u64,
 ) -> Result<RequestAccountingPreflight, RuntimeLimitExceeded> {
     if snapshot.total_requests >= budget.max_total_requests() {
         return Err(RuntimeLimitExceeded::new(
@@ -414,6 +489,23 @@ fn check_request_limits(
             RuntimeBudgetDimension::ResponseBytes,
             budget.max_response_bytes(),
             snapshot.response_bytes,
+            Some(action_id.to_owned()),
+        ));
+    }
+    let Some(next_request_body_bytes) = snapshot.request_body_bytes.checked_add(request_body_bytes)
+    else {
+        return Err(RuntimeLimitExceeded::new(
+            RuntimeBudgetDimension::RequestBodyBytes,
+            budget.max_request_body_bytes(),
+            u64::MAX,
+            Some(action_id.to_owned()),
+        ));
+    };
+    if next_request_body_bytes > budget.max_request_body_bytes() {
+        return Err(RuntimeLimitExceeded::new(
+            RuntimeBudgetDimension::RequestBodyBytes,
+            budget.max_request_body_bytes(),
+            next_request_body_bytes,
             Some(action_id.to_owned()),
         ));
     }
@@ -439,8 +531,12 @@ fn record_dispatch(
     snapshot: &mut RequestAccountingSnapshot,
     stage: crate::DecisionExecutionStage,
     origin: Option<crate::DecisionActionOrigin>,
+    request_body_bytes: u64,
 ) {
     snapshot.total_requests = snapshot.total_requests.saturating_add(1);
+    snapshot.request_body_bytes = snapshot
+        .request_body_bytes
+        .saturating_add(request_body_bytes);
     match stage {
         crate::DecisionExecutionStage::Passive => {
             snapshot.passive_requests = snapshot.passive_requests.saturating_add(1);
@@ -476,6 +572,7 @@ pub struct RuntimeUsage {
     planned_requests: u32,
     adaptive_requests: u32,
     retry_requests: u32,
+    request_body_bytes: u64,
     response_bytes: u64,
     completed_execution_turns: u32,
     consecutive_no_progress_turns: u16,
@@ -520,9 +617,19 @@ impl RuntimeUsage {
         self.retry_requests
     }
 
-    /// Returns cumulative response-body bytes retained by transport leases.
+    /// Returns cumulative request-body bytes charged before dispatch.
     ///
-    /// Bytes remain charged when execution later fails or is cancelled.
+    /// Bytes remain charged when transport or verification later fails.
+    pub const fn request_body_bytes(&self) -> u64 {
+        self.request_body_bytes
+    }
+
+    /// Returns cumulative response-body bytes delivered to transport leases.
+    ///
+    /// This can exceed the configured threshold by the single serialized chunk
+    /// that revealed the crossing. The runtime reports that crossing as a
+    /// typed limit and starts no later body read. Bytes remain charged when
+    /// execution later fails or is cancelled.
     pub const fn response_bytes(&self) -> u64 {
         self.response_bytes
     }
@@ -589,6 +696,7 @@ impl RuntimeUsage {
         self.planned_requests = self.planned_requests.max(snapshot.planned_requests());
         self.adaptive_requests = self.adaptive_requests.max(snapshot.adaptive_requests());
         self.retry_requests = self.retry_requests.max(snapshot.retry_requests());
+        self.request_body_bytes = self.request_body_bytes.max(snapshot.request_body_bytes());
         self.response_bytes = self.response_bytes.max(snapshot.response_bytes());
     }
 
@@ -622,6 +730,7 @@ mod tests {
             .with_max_total_requests(0)
             .with_max_wall_time(Duration::ZERO)
             .with_max_response_bytes(0)
+            .with_max_request_body_bytes(0)
             .with_max_active_verifications(0)
             .with_max_same_action_attempts(0)
             .with_max_consecutive_no_progress_turns(0);
@@ -643,6 +752,10 @@ mod tests {
         .unwrap();
         assert_eq!(partial.max_total_requests(), 7);
         assert_eq!(partial.max_response_bytes(), DEFAULT_MAX_RESPONSE_BYTES);
+        assert_eq!(
+            partial.max_request_body_bytes(),
+            DEFAULT_MAX_REQUEST_BODY_BYTES
+        );
         assert!(serde_json::from_value::<RuntimeBudget>(serde_json::json!({
             "max_total_requets": 7
         }))
@@ -654,6 +767,7 @@ mod tests {
                 "max_total_requests": DEFAULT_MAX_TOTAL_REQUESTS,
                 "max_wall_time_ms": DEFAULT_MAX_WALL_TIME_MS,
                 "max_response_bytes": DEFAULT_MAX_RESPONSE_BYTES,
+                "max_request_body_bytes": DEFAULT_MAX_REQUEST_BODY_BYTES,
                 "max_active_verifications": DEFAULT_MAX_ACTIVE_VERIFICATIONS,
                 "max_same_action_attempts": DEFAULT_MAX_SAME_ACTION_ATTEMPTS,
                 "max_consecutive_no_progress_turns": DEFAULT_MAX_CONSECUTIVE_NO_PROGRESS_TURNS
@@ -684,6 +798,24 @@ mod tests {
             RuntimeBudgetDimension::ResponseBytes
         );
         assert_eq!(no_bytes.snapshot(), RequestAccountingSnapshot::default());
+
+        let no_request_body =
+            RequestAccountingBroker::new(RuntimeBudget::default().with_max_request_body_bytes(0));
+        let request_body_error = no_request_body
+            .preflight_with_request_body_bytes(
+                "http.bootstrap",
+                crate::DecisionExecutionStage::Passive,
+                1,
+            )
+            .unwrap_err();
+        assert_eq!(
+            request_body_error.dimension(),
+            RuntimeBudgetDimension::RequestBodyBytes
+        );
+        assert_eq!(
+            no_request_body.snapshot(),
+            RequestAccountingSnapshot::default()
+        );
 
         let no_active =
             RequestAccountingBroker::new(RuntimeBudget::default().with_max_active_verifications(0));
@@ -874,7 +1006,7 @@ mod tests {
     }
 
     #[test]
-    fn response_byte_claims_are_bounded_and_survive_lease_drop() {
+    fn response_byte_observations_bound_retention_and_survive_lease_drop() {
         let broker = RequestAccountingBroker::new(
             RuntimeBudget::default()
                 .with_max_total_requests(2)
@@ -888,13 +1020,13 @@ mod tests {
             )
             .unwrap();
 
-        assert_eq!(lease.claim_response_bytes(3), 3);
+        assert_eq!(lease.observe_response_bytes(3), 3);
         assert_eq!(lease.remaining_response_bytes(), 2);
-        assert_eq!(lease.claim_response_bytes(4), 2);
-        assert_eq!(lease.claim_response_bytes(1), 0);
+        assert_eq!(lease.observe_response_bytes(4), 2);
+        assert_eq!(lease.observe_response_bytes(1), 0);
         drop(lease);
 
-        assert_eq!(broker.snapshot().response_bytes(), 5);
+        assert_eq!(broker.snapshot().response_bytes(), 7);
         let error = broker
             .preflight("http.next", crate::DecisionExecutionStage::Passive)
             .unwrap_err();
@@ -902,13 +1034,124 @@ mod tests {
     }
 
     #[test]
-    fn concurrent_response_claims_cannot_exceed_the_session_limit() {
+    fn request_body_bytes_are_checked_and_charged_atomically_before_dispatch() {
         let broker = RequestAccountingBroker::new(
             RuntimeBudget::default()
                 .with_max_total_requests(2)
+                .with_max_request_body_bytes(5),
+        );
+        drop(
+            broker
+                .try_begin_with_request_body_bytes(
+                    "http.control",
+                    crate::DecisionExecutionStage::Passive,
+                    Some(crate::DecisionActionOrigin::Planned),
+                    3,
+                )
+                .unwrap(),
+        );
+
+        let denied = broker
+            .try_begin_with_request_body_bytes(
+                "http.candidate",
+                crate::DecisionExecutionStage::Active,
+                None,
+                3,
+            )
+            .unwrap_err();
+        assert_eq!(denied.dimension(), RuntimeBudgetDimension::RequestBodyBytes);
+        assert_eq!(denied.limit(), 5);
+        assert_eq!(denied.observed(), 6);
+
+        let snapshot = broker.snapshot();
+        assert_eq!(snapshot.total_requests(), 1);
+        assert_eq!(snapshot.request_body_bytes(), 3);
+        assert_eq!(snapshot.active_verifications(), 0);
+    }
+
+    #[test]
+    fn request_body_accounting_overflow_fails_closed() {
+        let broker = RequestAccountingBroker::new(
+            RuntimeBudget::default()
+                .with_max_total_requests(2)
+                .with_max_request_body_bytes(u64::MAX),
+        );
+        drop(
+            broker
+                .try_begin_with_request_body_bytes(
+                    "http.max-body",
+                    crate::DecisionExecutionStage::Passive,
+                    None,
+                    u64::MAX,
+                )
+                .unwrap(),
+        );
+
+        let error = broker
+            .try_begin_with_request_body_bytes(
+                "http.overflow",
+                crate::DecisionExecutionStage::Passive,
+                None,
+                1,
+            )
+            .unwrap_err();
+        assert_eq!(error.dimension(), RuntimeBudgetDimension::RequestBodyBytes);
+        assert_eq!(error.limit(), u64::MAX);
+        assert_eq!(error.observed(), u64::MAX);
+        assert_eq!(broker.snapshot().total_requests(), 1);
+        assert_eq!(broker.snapshot().request_body_bytes(), u64::MAX);
+    }
+
+    #[test]
+    fn concurrent_request_bodies_cannot_exceed_the_session_limit() {
+        let broker = RequestAccountingBroker::new(
+            RuntimeBudget::default()
+                .with_max_total_requests(2)
+                .with_max_request_body_bytes(5),
+        );
+        let barrier = Arc::new(Barrier::new(3));
+        let workers: Vec<_> = ["http.a", "http.b"]
+            .into_iter()
+            .map(|action_id| {
+                let broker = broker.clone();
+                let barrier = Arc::clone(&barrier);
+                thread::spawn(move || {
+                    barrier.wait();
+                    broker
+                        .try_begin_with_request_body_bytes(
+                            action_id,
+                            crate::DecisionExecutionStage::Passive,
+                            Some(crate::DecisionActionOrigin::Planned),
+                            4,
+                        )
+                        .map(drop)
+                })
+            })
+            .collect();
+        barrier.wait();
+
+        let results: Vec<_> = workers
+            .into_iter()
+            .map(|worker| worker.join().unwrap())
+            .collect();
+        assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
+        let denied = results
+            .iter()
+            .find_map(|result| result.as_ref().err())
+            .unwrap();
+        assert_eq!(denied.dimension(), RuntimeBudgetDimension::RequestBodyBytes);
+        assert_eq!(broker.snapshot().total_requests(), 1);
+        assert_eq!(broker.snapshot().request_body_bytes(), 4);
+    }
+
+    #[tokio::test]
+    async fn response_read_gate_limits_concurrent_collectors_to_one_crossing_chunk() {
+        let broker = RequestAccountingBroker::new(
+            RuntimeBudget::default()
+                .with_max_total_requests(3)
                 .with_max_response_bytes(5),
         );
-        let leases = ["http.a", "http.b"].map(|action_id| {
+        let leases = ["http.a", "http.b", "http.c"].map(|action_id| {
             broker
                 .try_begin(
                     action_id,
@@ -917,25 +1160,20 @@ mod tests {
                 )
                 .unwrap()
         });
-        let barrier = Arc::new(Barrier::new(3));
-        let workers: Vec<_> = leases
-            .into_iter()
-            .map(|mut lease| {
-                let barrier = barrier.clone();
-                thread::spawn(move || {
-                    barrier.wait();
-                    lease.claim_response_bytes(4)
-                })
-            })
-            .collect();
-        barrier.wait();
+        async fn read_one(mut lease: RequestAccountingLease) -> u64 {
+            let _guard = lease.acquire_response_read().await;
+            if lease.remaining_response_bytes() == 0 {
+                return 0;
+            }
+            lease.observe_response_bytes(4)
+        }
+        let [first, second, third] = leases;
+        let (first, second, third) =
+            tokio::join!(read_one(first), read_one(second), read_one(third));
 
-        let retained: u64 = workers
-            .into_iter()
-            .map(|worker| worker.join().unwrap())
-            .sum();
+        let retained = first + second + third;
         assert_eq!(retained, 5);
-        assert_eq!(broker.snapshot().response_bytes(), 5);
+        assert_eq!(broker.snapshot().response_bytes(), 8);
     }
 
     #[test]
@@ -979,6 +1217,7 @@ mod tests {
         assert_eq!(usage.planned_requests(), 1);
         assert_eq!(usage.adaptive_requests(), 1);
         assert_eq!(usage.retry_requests(), 1);
+        assert_eq!(usage.request_body_bytes(), 0);
         assert_eq!(usage.same_action_attempts("http.probe"), 2);
         assert_eq!(usage.total_action_attempts(), 2);
         assert_eq!(
@@ -991,6 +1230,7 @@ mod tests {
                 "planned_requests": 1,
                 "adaptive_requests": 1,
                 "retry_requests": 1,
+                "request_body_bytes": 0,
                 "response_bytes": 0,
                 "completed_execution_turns": 0,
                 "consecutive_no_progress_turns": 0,
@@ -1013,6 +1253,7 @@ mod tests {
             passive_requests: 1,
             active_verifications: 1,
             bootstrap_requests: 1,
+            request_body_bytes: 4,
             response_bytes: 4,
             ..RequestAccountingSnapshot::default()
         };
@@ -1025,6 +1266,7 @@ mod tests {
         assert_eq!(usage.passive_requests(), 1);
         assert_eq!(usage.active_verifications(), 1);
         assert_eq!(usage.bootstrap_requests(), 1);
+        assert_eq!(usage.request_body_bytes(), 4);
         assert_eq!(usage.response_bytes(), 4);
     }
 }

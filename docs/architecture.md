@@ -114,7 +114,8 @@ flowchart TD
 | --- | --- | --- |
 | Evidence preparation | `api_evidence` | `venom-core` plus bounded JSON/hash libraries; never network, runtime, planner, or knowledge state |
 | Reasoning state | `experience`, `rules` | `venom-core`; `rules` may also use `knowledge` |
-| Planning and verification | `planner`, `verification` | `knowledge`, `rules`, `venom-core` |
+| Payload derivation contract | `payload_strategy` | Bounded collections, serialization, and hashing only; never knowledge, runtime state, clocks, randomness, or transport |
+| Planning and verification | `planner`, `verification` | `knowledge`, `rules`, `payload_strategy`, `venom-core` |
 | Semantic action, ingestion, and domain profiles | `web_actions`, `web_reasoning`, `api_reasoning`, `api_observation`, `web_planning`, `web_verification` | The lower rows above; never execution or HTTP modules |
 | Execution and composition | `decision_runner`, `http_evidence`, `web_execution`, `web_runtime` | All inward contracts needed to perform and account for work |
 
@@ -125,6 +126,8 @@ authority. The architecture check rejects direct client or socket acquisition
 from the surrounding decision/runtime modules. The ordered legacy phase runner
 is a separate, currently unbudgeted surface; its existing direct-client and
 `.send()` inventory is frozen so that debt cannot silently spread.
+The standard runtime must call the explicitly metered broker constructor; the
+architecture gate rejects a switch to the named legacy unmetered constructor.
 
 `web_actions` owns stable semantic action and route identities. Planning,
 verification, and execution are sibling consumers; an executor's HTTP method or
@@ -200,7 +203,10 @@ standard-runtime transport ownership, freezes the legacy direct-I/O inventory,
 verifies canonical `lib.rs` module and external-root wiring, and compiles
 `venom-scanner` with no default features. See
 [ADR 0004](adr/0004-reasoning-runtime-boundary.md) and
-[ADR 0009](adr/0009-host-owned-transport-accounting.md).
+[ADR 0012](adr/0012-account-delivered-transport-bytes.md), which supersedes
+[ADR 0009](adr/0009-host-owned-transport-accounting.md). Planner-selected,
+raw-value-free execution strategy references are specified by
+[ADR 0010](adr/0010-planner-selected-payload-strategies.md).
 
 ## Dependency review
 
@@ -216,7 +222,9 @@ Before adding an edge, ask:
 - Plugin inputs are still target and payload strings rather than a versioned request context.
 - Native plugin execution and the ordered phase runner are separate orchestration paths.
 - The ordered phase runner still exposes a raw HTTP client and is not covered by
-  `StandardWebDecisionRuntime` resource accounting.
+  `StandardWebDecisionRuntime` resource accounting. Its directory fuzzer is no
+  longer part of the default CLI pipeline and requires the explicit
+  `--legacy-directory-fuzz` option.
 - Dashboard, distributed, and compliance modules still live in `venom-scanner`.
 - Several optional modules expose broad APIs that require stability review.
 - `DecisionExecutionLimits` still names an HTTP response-body allowance in a

@@ -47,6 +47,7 @@ nav:
       - Web reasoning: internals/web-reasoning.md
       - Web planning: internals/web-planning.md
       - Web execution: internals/web-execution.md
+      - Payload strategies: internals/payload-strategies.md
       - Web verification: internals/web-verification.md
       - Plugin registry: internals/plugin-registry.md
   - Reference:
@@ -66,7 +67,10 @@ nav:
       - ADR 0006 - API visibility ingestion: adr/0006-api-visibility-ingestion.md
       - ADR 0007 - ScanContext construction: adr/0007-scan-context-construction-boundary.md
       - ADR 0008 - Versioned API projections: adr/0008-version-api-comparison-projections.md
-      - ADR 0009 - Host-owned transport accounting: adr/0009-host-owned-transport-accounting.md
+      - ADR 0009 - Host transport (superseded): adr/0009-host-owned-transport-accounting.md
+      - ADR 0010 - Planner-selected payload strategies: adr/0010-planner-selected-payload-strategies.md
+      - ADR 0011 - API explanation semantics: adr/0011-version-api-explanation-semantics.md
+      - ADR 0012 - Delivered transport bytes: adr/0012-account-delivered-transport-bytes.md
       - Release process: RELEASE.md
 markdown_extensions:
   - admonition

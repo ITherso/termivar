@@ -407,6 +407,10 @@ pub enum HttpEvidenceError {
     #[error("invalid value for HTTP request header {name}")]
     InvalidHeaderValue { name: String },
 
+    /// A streaming or otherwise opaque body could bypass byte accounting.
+    #[error("HTTP request body length is unavailable to the accounting broker")]
+    UnmeteredRequestBody,
+
     /// A request header could alter destination or message framing.
     #[error("HTTP request header {name} is forbidden by evidence policy")]
     ForbiddenRequestHeader { name: String },
@@ -440,6 +444,7 @@ fn execution_failure_kind(error: &HttpEvidenceError) -> DecisionExecutionFailure
         },
         HttpEvidenceError::EmbeddedCredentials
         | HttpEvidenceError::ForbiddenRequestHeader { .. }
+        | HttpEvidenceError::UnmeteredRequestBody
         | HttpEvidenceError::TargetOutsidePolicy { .. } => {
             DecisionExecutionFailureKind::BlockedByPolicy
         },
@@ -556,7 +561,10 @@ impl HttpEvidenceExecutor {
         accounting: Option<RequestAccountingBroker>,
     ) -> Result<Self, HttpEvidenceError> {
         let id = validate_executor_id(id)?;
-        let requests = HttpRequestBroker::new(policy, accounting)?;
+        let requests = match accounting {
+            Some(accounting) => HttpRequestBroker::new_metered(policy, accounting)?,
+            None => HttpRequestBroker::new_unmetered(policy)?,
+        };
         Ok(Self {
             id,
             requests,
@@ -1063,6 +1071,7 @@ mod tests {
 
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
+    use tokio::sync::oneshot;
     use venom_core::{EntityId, EvidenceValue, HypothesisStrength};
 
     use super::*;
@@ -1099,6 +1108,12 @@ mod tests {
         target: Url,
     }
 
+    struct BufferedRequestExecutor {
+        requests: HttpRequestBroker,
+        target: Url,
+        body: Vec<u8>,
+    }
+
     #[async_trait]
     impl DecisionActionExecutor for MultiRequestExecutor {
         fn id(&self) -> &str {
@@ -1117,6 +1132,26 @@ mod tests {
                 .map_err(HttpRequestBrokerError::into_decision_executor_error)?;
             self.requests
                 .collect(request, &probe)
+                .await
+                .map_err(HttpRequestBrokerError::into_decision_executor_error)?;
+            Ok(Vec::new())
+        }
+    }
+
+    #[async_trait]
+    impl DecisionActionExecutor for BufferedRequestExecutor {
+        fn id(&self) -> &str {
+            HTTP_EVIDENCE_EXECUTOR_ID
+        }
+
+        async fn execute(
+            &self,
+            request: &DecisionExecutionRequest,
+        ) -> Result<Vec<Evidence>, DecisionExecutorError> {
+            let mut buffered = reqwest::Request::new(reqwest::Method::POST, self.target.clone());
+            *buffered.body_mut() = Some(reqwest::Body::from(self.body.clone()));
+            self.requests
+                .collect_buffered_request_for_test(request, buffered)
                 .await
                 .map_err(HttpRequestBrokerError::into_decision_executor_error)?;
             Ok(Vec::new())
@@ -1198,6 +1233,34 @@ mod tests {
         Url::parse(&format!("http://{address}/probe")).unwrap()
     }
 
+    async fn serve_split_body_after_release() -> (Url, oneshot::Receiver<()>, oneshot::Sender<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (first_sent, first_received) = oneshot::channel();
+        let (release, released) = oneshot::channel();
+        tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = [0_u8; 2048];
+            let _ = stream.read(&mut request).await.unwrap();
+            stream
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 8\r\nConnection: close\r\n\r\n0123",
+                )
+                .await
+                .unwrap();
+            stream.flush().await.unwrap();
+            let _ = first_sent.send(());
+            let _ = released.await;
+            let _ = stream.write_all(b"4567").await;
+            let _ = stream.shutdown().await;
+        });
+        (
+            Url::parse(&format!("http://{address}/probe")).unwrap(),
+            first_received,
+            release,
+        )
+    }
+
     fn command(url: &Url) -> DecisionLoopCommand {
         DecisionLoopCommand::ExecuteAction {
             case: VerificationCase::new(
@@ -1249,6 +1312,25 @@ mod tests {
                 .unwrap();
         let mut registry = DecisionExecutorRegistry::new();
         registry.register(Arc::new(executor)).unwrap();
+        (DecisionRunnerAdapter::new(registry), accounting)
+    }
+
+    fn buffered_adapter(
+        url: &Url,
+        budget: RuntimeBudget,
+        body: impl Into<Vec<u8>>,
+    ) -> (DecisionRunnerAdapter, RequestAccountingBroker) {
+        let policy = HttpEvidencePolicy::for_origin(url.clone()).unwrap();
+        let accounting = RequestAccountingBroker::new(budget);
+        let requests = HttpRequestBroker::new_metered(policy, accounting.clone()).unwrap();
+        let mut registry = DecisionExecutorRegistry::new();
+        registry
+            .register(Arc::new(BufferedRequestExecutor {
+                requests,
+                target: url.clone(),
+                body: body.into(),
+            }))
+            .unwrap();
         (DecisionRunnerAdapter::new(registry), accounting)
     }
 
@@ -1732,7 +1814,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn metered_body_is_clamped_by_the_cumulative_host_budget() {
+    async fn metered_body_is_clamped_while_full_transport_chunk_is_accounted() {
         let url = serve_once(
             b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 10\r\nConnection: close\r\n\r\n0123456789",
         )
@@ -1767,7 +1849,52 @@ mod tests {
             Some(&EvidenceValue::Boolean(true))
         );
         assert_eq!(accounting.snapshot().total_requests(), 1);
+        let observed = accounting.snapshot().response_bytes();
+        assert!(
+            (5..=10).contains(&observed),
+            "broker must charge the complete chunk that crosses the four-byte retention limit; observed {observed}"
+        );
+    }
+
+    #[tokio::test]
+    async fn collector_does_not_read_another_chunk_after_budget_is_exactly_full() {
+        let (url, first_body_chunk, release_second_chunk) = serve_split_body_after_release().await;
+        let budget = RuntimeBudget::default().with_max_response_bytes(4);
+        let policy = HttpEvidencePolicy::for_origin(url.clone()).unwrap();
+        let (adapter, accounting) = metered_adapter(&url, policy, budget);
+        let target = url.clone();
+        let mut execution = tokio::spawn(async move {
+            adapter
+                .execute_command(&command(&target), &KnowledgeBase::new())
+                .await
+        });
+
+        tokio::time::timeout(Duration::from_secs(1), first_body_chunk)
+            .await
+            .expect("server did not deliver the first body chunk")
+            .unwrap();
+        let completed = tokio::time::timeout(Duration::from_secs(1), &mut execution).await;
+        let _ = release_second_chunk.send(());
+        let receipt = completed
+            .expect("collector waited for a chunk after the response budget was full")
+            .unwrap()
+            .unwrap();
+
         assert_eq!(accounting.snapshot().response_bytes(), 4);
+        assert_eq!(
+            value(
+                receipt.evidence(),
+                HttpEvidencePredicate::RESPONSE_BODY_BYTES_OBSERVED,
+            ),
+            Some(&EvidenceValue::Unsigned(4))
+        );
+        assert_eq!(
+            value(
+                receipt.evidence(),
+                HttpEvidencePredicate::RESPONSE_BODY_TRUNCATED,
+            ),
+            Some(&EvidenceValue::Boolean(true))
+        );
     }
 
     #[tokio::test]
@@ -1792,6 +1919,86 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn buffered_request_body_is_charged_and_denied_before_socket() {
+        let response = b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+        let allowed_server = serve_counted(response).await;
+        let allowed_target = allowed_server.target();
+        let (allowed_adapter, allowed_accounting) = buffered_adapter(
+            &allowed_target,
+            RuntimeBudget::default().with_max_request_body_bytes(9),
+            b"candidate".to_vec(),
+        );
+
+        allowed_adapter
+            .execute_command(&command(&allowed_target), &KnowledgeBase::new())
+            .await
+            .unwrap();
+        assert_eq!(allowed_server.requests(), 1);
+        assert_eq!(allowed_accounting.snapshot().total_requests(), 1);
+        assert_eq!(allowed_accounting.snapshot().request_body_bytes(), 9);
+
+        let denied_server = serve_counted(response).await;
+        let denied_target = denied_server.target();
+        let (denied_adapter, denied_accounting) = buffered_adapter(
+            &denied_target,
+            RuntimeBudget::default().with_max_request_body_bytes(8),
+            b"candidate".to_vec(),
+        );
+        let error = denied_adapter
+            .execute_command(&command(&denied_target), &KnowledgeBase::new())
+            .await
+            .unwrap_err();
+        tokio::time::sleep(Duration::from_millis(25)).await;
+
+        assert_eq!(
+            error.runtime_limit().unwrap().dimension(),
+            RuntimeBudgetDimension::RequestBodyBytes
+        );
+        assert_eq!(denied_server.requests(), 0);
+        assert_eq!(denied_accounting.snapshot().total_requests(), 0);
+        assert_eq!(denied_accounting.snapshot().request_body_bytes(), 0);
+    }
+
+    #[tokio::test]
+    async fn failed_buffered_request_stays_charged_and_retry_cannot_escape_budget() {
+        let server = serve_empty_response_then_watch_for_retry().await;
+        let target = server.target();
+        let (adapter, accounting) = buffered_adapter(
+            &target,
+            RuntimeBudget::default()
+                .with_max_total_requests(2)
+                .with_max_request_body_bytes(4),
+            b"body".to_vec(),
+        );
+        let knowledge = KnowledgeBase::new();
+
+        let first = adapter
+            .execute_command(&command(&target), &knowledge)
+            .await
+            .unwrap_err();
+        assert_eq!(
+            first.execution_failure().unwrap().kind(),
+            DecisionExecutionFailureKind::TransportFailure
+        );
+        assert_eq!(accounting.snapshot().total_requests(), 1);
+        assert_eq!(accounting.snapshot().request_body_bytes(), 4);
+
+        let retry = adapter
+            .execute_command(&command(&target), &knowledge)
+            .await
+            .unwrap_err();
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert_eq!(
+            retry.runtime_limit().unwrap().dimension(),
+            RuntimeBudgetDimension::RequestBodyBytes
+        );
+        assert_eq!(server.requests(), 1);
+        assert_eq!(accounting.snapshot().total_requests(), 1);
+        assert_eq!(accounting.snapshot().request_body_bytes(), 4);
+        assert_eq!(knowledge.stats().evidence, 0);
+    }
+
+    #[tokio::test]
     async fn multi_request_executor_cannot_exceed_budget() {
         let server =
             serve_counted(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
@@ -1800,7 +2007,7 @@ mod tests {
         let policy = HttpEvidencePolicy::for_origin(target.clone()).unwrap();
         let accounting =
             RequestAccountingBroker::new(RuntimeBudget::default().with_max_total_requests(1));
-        let requests = HttpRequestBroker::new(policy, Some(accounting.clone())).unwrap();
+        let requests = HttpRequestBroker::new_metered(policy, accounting.clone()).unwrap();
         let mut registry = DecisionExecutorRegistry::new();
         registry
             .register(Arc::new(MultiRequestExecutor {
@@ -1838,7 +2045,7 @@ mod tests {
         let policy = HttpEvidencePolicy::for_origin(target.clone()).unwrap();
         let accounting =
             RequestAccountingBroker::new(RuntimeBudget::default().with_max_active_verifications(1));
-        let requests = HttpRequestBroker::new(policy, Some(accounting.clone())).unwrap();
+        let requests = HttpRequestBroker::new_metered(policy, accounting.clone()).unwrap();
         let mut registry = DecisionExecutorRegistry::new();
         registry
             .register(Arc::new(MultiRequestExecutor {

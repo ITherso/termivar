@@ -74,7 +74,7 @@ comparator/toolchain contract, but are not promised as permanent cross-version
 wire hashes. Hosts that persist signatures for replay must pin dependencies and
 record the Venom comparator version.
 
-## Profiled comparator v2
+## Profiled comparator v3
 
 The additive profiled API leaves `ApiVisibilityLimits`, `ApiVisibilityView`,
 `ApiVisibilityComparison`, `capture_view`, and `compare` unchanged. This is
@@ -90,6 +90,14 @@ profiled envelope persists:
 - the validated resource limits;
 - the nested legacy comparison;
 - a globally bounded, raw-value-free `RedactedVisibilityDiff`.
+
+Comparator v3 makes explanations dimension-aware: a status comparison never
+attaches unrelated body paths, while a real difference without a representable
+path summary remains explicit rather than being mistaken for equivalence.
+Persisted v2 profiles and envelopes are deliberately rejected rather than
+silently reinterpreted under v3 semantics. Hosts that must replay historical v2
+records need the matching older Venom binary or an explicit offline migration.
+See [ADR 0011](../adr/0011-version-api-explanation-semantics.md).
 
 Profiles support selected subtrees, ignored subtrees, and explicitly unordered
 arrays. Paths use RFC 6901 escaping. A segment equal to `*` is Venom's bounded

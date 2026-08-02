@@ -7,7 +7,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use serde::{Deserialize, Deserializer, Serialize};
+use serde::{de::IgnoredAny, Deserialize, Deserializer, Serialize};
 use thiserror::Error;
 use venom_core::{
     EntityId, EvidenceId, HypothesisState, Outcome, OutcomeError, OutcomeStatus, Probability,
@@ -19,6 +19,7 @@ use crate::{
         HypothesisStateTransition, KnowledgeBase, KnowledgeBaseError, KnowledgeSnapshot,
         KnowledgeWrite,
     },
+    payload_strategy::PayloadStrategyRef,
     rules::{Expression, ExpressionEvaluation, RuleEngineError},
 };
 
@@ -142,6 +143,8 @@ pub struct VerificationCase {
     subject: EntityId,
     action_id: String,
     hypothesis_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    payload_strategy: Option<PayloadStrategyRef>,
 }
 
 impl VerificationCase {
@@ -157,7 +160,14 @@ impl VerificationCase {
             subject,
             action_id: non_empty(action_id, "verification action id")?,
             hypothesis_id: non_empty(hypothesis_id, "verification hypothesis id")?,
+            payload_strategy: None,
         })
+    }
+
+    /// Attaches the exact planner-selected strategy revision to this case.
+    pub fn with_payload_strategy(mut self, strategy: Option<PayloadStrategyRef>) -> Self {
+        self.payload_strategy = strategy;
+        self
     }
 
     /// Returns the stable case identity.
@@ -179,6 +189,11 @@ impl VerificationCase {
     pub fn hypothesis_id(&self) -> &str {
         &self.hypothesis_id
     }
+
+    /// Returns the payload strategy selected for this case, when present.
+    pub const fn payload_strategy(&self) -> Option<&PayloadStrategyRef> {
+        self.payload_strategy.as_ref()
+    }
 }
 
 impl<'de> Deserialize<'de> for VerificationCase {
@@ -192,10 +207,24 @@ impl<'de> Deserialize<'de> for VerificationCase {
             subject: EntityId,
             action_id: String,
             hypothesis_id: String,
+            #[serde(default)]
+            payload_strategy: Option<PayloadStrategyRef>,
+            #[serde(flatten)]
+            extensions: BTreeMap<String, IgnoredAny>,
         }
 
         let wire = WireCase::deserialize(deserializer)?;
+        if wire
+            .extensions
+            .keys()
+            .any(|field| field.starts_with("payload_"))
+        {
+            return Err(serde::de::Error::custom(
+                "unknown reserved payload strategy field",
+            ));
+        }
         Self::new(wire.id, wire.subject, wire.action_id, wire.hypothesis_id)
+            .map(|case| case.with_payload_strategy(wire.payload_strategy))
             .map_err(serde::de::Error::custom)
     }
 }
@@ -1076,6 +1105,39 @@ mod tests {
         hypothesis.set_state(HypothesisState::Supported);
         knowledge.upsert_hypothesis(hypothesis).unwrap();
         knowledge
+    }
+
+    #[test]
+    fn verification_case_preserves_optional_strategy_with_legacy_wire_compatibility() {
+        let legacy = VerificationCase::new(
+            "case:legacy",
+            subject(),
+            "legacy.observe",
+            "hypothesis:sqli",
+        )
+        .unwrap();
+        let legacy_wire = serde_json::to_value(&legacy).unwrap();
+        assert!(legacy_wire.get("payload_strategy").is_none());
+        assert!(serde_json::from_value::<VerificationCase>(legacy_wire)
+            .unwrap()
+            .payload_strategy()
+            .is_none());
+        let mut misspelled = serde_json::to_value(&legacy).unwrap();
+        misspelled["payload_stratgey"] = serde_json::json!({
+            "id": "visibility.control-pair",
+            "revision": 1
+        });
+        assert!(serde_json::from_value::<VerificationCase>(misspelled).is_err());
+        let mut extended = serde_json::to_value(&legacy).unwrap();
+        extended["future_extension"] = serde_json::json!({"accepted": true});
+        assert!(serde_json::from_value::<VerificationCase>(extended).is_ok());
+
+        let strategy = PayloadStrategyRef::new("visibility.control-pair", 1).unwrap();
+        let selected = legacy.clone().with_payload_strategy(Some(strategy.clone()));
+        let restored: VerificationCase =
+            serde_json::from_value(serde_json::to_value(&selected).unwrap()).unwrap();
+        assert_eq!(restored, selected);
+        assert_eq!(restored.payload_strategy(), Some(&strategy));
     }
 
     fn case() -> VerificationCase {

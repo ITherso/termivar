@@ -7,7 +7,7 @@
 //! - **Recursive Crawling**: Follows internal links while respecting scope
 //! - **Parameter Discovery**: Extracts form inputs and query parameters
 //! - **URL Normalization**: Eliminates duplicate endpoints
-//! - **Same-Origin Validation**: Prevents scope creep to external hosts
+//! - **Same-Origin Validation**: Prevents scope creep across hosts, schemes, or ports
 //!
 //! ## Performance
 //! - Timeout: 5 seconds per URL
@@ -72,7 +72,7 @@ impl CrawlPhase {
                     let link_regex = Regex::new(r#"href=["']([^"']+)["']"#).unwrap();
                     for cap in link_regex.captures_iter(&html) {
                         if let Ok(link_url) = Url::parse(&cap[1]) {
-                            if link_url.host() == ctx.target.host() {
+                            if same_origin(&ctx.target, &link_url) {
                                 let link_str = link_url.to_string();
                                 ctx.log(format!("Found endpoint: {}", link_str));
 
@@ -112,6 +112,10 @@ impl CrawlPhase {
     }
 }
 
+fn same_origin(target: &Url, candidate: &Url) -> bool {
+    target.origin() == candidate.origin()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -126,5 +130,31 @@ mod tests {
     fn test_phase_name() {
         let crawl = CrawlPhase;
         assert_eq!(crawl.name(), "Web Crawler & Parameter Discovery");
+    }
+
+    #[test]
+    fn crawler_scope_requires_the_exact_normalized_origin() {
+        let target = Url::parse("https://example.test/app").unwrap();
+
+        assert!(same_origin(
+            &target,
+            &Url::parse("https://example.test/next").unwrap()
+        ));
+        assert!(same_origin(
+            &target,
+            &Url::parse("https://example.test:443/explicit-default").unwrap()
+        ));
+        assert!(!same_origin(
+            &target,
+            &Url::parse("http://example.test/downgrade").unwrap()
+        ));
+        assert!(!same_origin(
+            &target,
+            &Url::parse("https://example.test:8443/other-service").unwrap()
+        ));
+        assert!(!same_origin(
+            &target,
+            &Url::parse("https://other.test/outside").unwrap()
+        ));
     }
 }

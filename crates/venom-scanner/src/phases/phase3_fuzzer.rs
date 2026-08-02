@@ -30,14 +30,15 @@ pub struct DirectoryFuzzer {
 }
 
 impl DirectoryFuzzer {
+    /// Creates a legacy directory fuzzer, clamping zero concurrency to one.
     pub fn new(wordlist: Vec<String>, concurrency_limit: usize) -> Self {
         Self {
             wordlist,
-            concurrency_limit,
+            concurrency_limit: concurrency_limit.max(1),
         }
     }
 
-    /// Default wordlist for common hidden directories and endpoints
+    /// Uses the default wordlist, clamping zero concurrency to one.
     pub fn with_default_wordlist(concurrency_limit: usize) -> Self {
         let wordlist = vec![
             // Admin panels
@@ -123,7 +124,7 @@ impl DirectoryFuzzer {
 
         Self {
             wordlist,
-            concurrency_limit,
+            concurrency_limit: concurrency_limit.max(1),
         }
     }
 }
@@ -251,5 +252,14 @@ mod tests {
         let fuzzer = DirectoryFuzzer::new(custom.clone(), 5);
         assert_eq!(fuzzer.wordlist.len(), 2);
         assert_eq!(fuzzer.concurrency_limit, 5);
+    }
+
+    #[test]
+    fn zero_concurrency_is_clamped_to_one() {
+        let custom = DirectoryFuzzer::new(vec!["/custom".to_string()], 0);
+        let defaults = DirectoryFuzzer::with_default_wordlist(0);
+
+        assert_eq!(custom.concurrency_limit, 1);
+        assert_eq!(defaults.concurrency_limit, 1);
     }
 }

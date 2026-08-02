@@ -292,6 +292,14 @@ fn field_diff_classifies_added_removed_and_type_changed_paths() {
         &[PathDigest::for_pattern(&path("/typed"))]
     );
     assert!(comparison.diff().changed_value_path_hashes().is_empty());
+    assert_eq!(comparison.diff().retained_diff_count(), 3);
+    assert_eq!(
+        comparison.explanation_disposition(),
+        VisibilityExplanationDisposition::PathSummary {
+            retained: 3,
+            omitted: 0,
+        }
+    );
 }
 
 #[test]
@@ -449,7 +457,7 @@ fn profiled_report_round_trip_preserves_replay_metadata() {
     let decoded: ProfiledApiVisibilityComparison = serde_json::from_value(encoded.clone()).unwrap();
 
     assert_eq!(decoded, comparison);
-    assert_eq!(encoded["comparator_version"], "v2");
+    assert_eq!(encoded["comparator_version"], "v3");
     assert_eq!(encoded["canonicalization_version"], "v2");
     assert_eq!(
         decoded.projection_policy_id(),
@@ -459,6 +467,13 @@ fn profiled_report_round_trip_preserves_replay_metadata() {
     let mut tampered = encoded.clone();
     tampered["projection_policy_id"] = json!("0".repeat(64));
     assert!(serde_json::from_value::<ProfiledApiVisibilityComparison>(tampered).is_err());
+    let mut legacy_v2 = encoded.clone();
+    let policy_id = encoded["projection_policy_id"].as_str().unwrap();
+    legacy_v2["comparator_version"] = json!("v2");
+    legacy_v2["comparison"]["comparison_id"] =
+        json!(format!("profiled:v2:v2:{policy_id}:{}", "0".repeat(64)));
+    let error = serde_json::from_value::<ProfiledApiVisibilityComparison>(legacy_v2).unwrap_err();
+    assert!(error.to_string().contains("unsupported comparator version"));
     assert!(
         serde_json::from_value::<ProfiledApiVisibilityComparison>(json!({
             "unknown": true
@@ -556,9 +571,47 @@ fn ordered_and_unordered_array_semantics_are_explicit() {
         ordered_result.comparison().result(),
         ApiVisibilityResult::Different
     );
+    assert!(ordered_result.diff().is_empty());
+    assert_eq!(
+        ordered_result.explanation_disposition(),
+        VisibilityExplanationDisposition::DifferenceWithoutPathSummary
+    );
     assert_eq!(
         unordered_result.comparison().result(),
         ApiVisibilityResult::Equivalent
+    );
+    assert_eq!(
+        unordered_result.explanation_disposition(),
+        VisibilityExplanationDisposition::NoDifference
+    );
+}
+
+#[test]
+fn zero_diff_quota_reports_omitted_path_summary() {
+    let comparator = ApiVisibilityComparator::default();
+    let profile = profile(&[], &[], &[], 0);
+    let baseline = view(&comparator, &profile, "anonymous", &json!({}));
+    let candidate = view(&comparator, &profile, "member", &json!({"added":true}));
+    let comparison = compare(
+        &comparator,
+        &profile,
+        ApiVisibilityDimension::Fields,
+        &baseline,
+        &candidate,
+    );
+
+    assert_eq!(
+        comparison.comparison().result(),
+        ApiVisibilityResult::Different
+    );
+    assert_eq!(comparison.diff().retained_diff_count(), 0);
+    assert_eq!(comparison.diff().omitted_diff_count(), 1);
+    assert_eq!(
+        comparison.explanation_disposition(),
+        VisibilityExplanationDisposition::PathSummary {
+            retained: 0,
+            omitted: 1,
+        }
     );
 }
 
@@ -632,9 +685,56 @@ fn profile_deserialization_is_bounded_and_rejects_unknown_fields() {
     unknown["extra"] = json!(true);
     assert!(serde_json::from_value::<ApiComparisonProfile>(unknown).is_err());
 
+    let mut legacy_v2 = encoded.clone();
+    legacy_v2["algorithm_version"] = json!("v2");
+    assert!(serde_json::from_value::<ApiComparisonProfile>(legacy_v2).is_err());
+
     let mut excessive = encoded;
     excessive["max_diff_paths"] = json!(u64::from(HARD_MAX_API_VISIBILITY_DIFF_PATHS) + 1);
     assert!(serde_json::from_value::<ApiComparisonProfile>(excessive).is_err());
+}
+
+#[test]
+fn same_status_with_different_bodies_is_equivalent_without_path_diff() {
+    let comparator = ApiVisibilityComparator::default();
+    let profile = ApiComparisonProfile::default();
+    let baseline = comparator
+        .capture_profiled_view(
+            &profile,
+            "anonymous",
+            "resource:account-42",
+            ApiSurfaceKind::JsonHttp,
+            200,
+            &json!({"id":1}),
+        )
+        .unwrap();
+    let candidate = comparator
+        .capture_profiled_view(
+            &profile,
+            "member",
+            "resource:account-42",
+            ApiSurfaceKind::JsonHttp,
+            200,
+            &json!({"different":{"shape":true}}),
+        )
+        .unwrap();
+    let comparison = compare(
+        &comparator,
+        &profile,
+        ApiVisibilityDimension::Status,
+        &baseline,
+        &candidate,
+    );
+
+    assert_eq!(
+        comparison.comparison().result(),
+        ApiVisibilityResult::Equivalent
+    );
+    assert!(comparison.diff().is_empty());
+    assert_eq!(
+        comparison.explanation_disposition(),
+        VisibilityExplanationDisposition::NoDifference
+    );
 }
 
 #[test]
@@ -658,7 +758,7 @@ fn status_comparison_retains_metadata_without_fabricating_path_diff() {
             "resource:account-42",
             ApiSurfaceKind::JsonHttp,
             403,
-            &json!({"id":1}),
+            &json!({"different":{"shape":true}}),
         )
         .unwrap();
     let comparison = compare(
@@ -674,10 +774,87 @@ fn status_comparison_retains_metadata_without_fabricating_path_diff() {
         ApiVisibilityResult::Different
     );
     assert!(comparison.diff().is_empty());
+    assert_eq!(comparison.diff().retained_diff_count(), 0);
+    assert_eq!(
+        comparison.explanation_disposition(),
+        VisibilityExplanationDisposition::DifferenceWithoutPathSummary
+    );
     assert_eq!(
         comparison.comparator_version(),
         CURRENT_API_COMPARISON_ALGORITHM_VERSION
     );
+}
+
+#[test]
+fn v3_envelope_rejects_result_and_dimension_incompatible_diffs() {
+    let comparator = ApiVisibilityComparator::default();
+    let profile = ApiComparisonProfile::default();
+    let baseline = comparator
+        .capture_profiled_view(
+            &profile,
+            "anonymous",
+            "resource:account-42",
+            ApiSurfaceKind::JsonHttp,
+            200,
+            &json!({"id":1}),
+        )
+        .unwrap();
+    let same_status = comparator
+        .capture_profiled_view(
+            &profile,
+            "member",
+            "resource:account-42",
+            ApiSurfaceKind::JsonHttp,
+            200,
+            &json!({"id":"one"}),
+        )
+        .unwrap();
+    let different_status = comparator
+        .capture_profiled_view(
+            &profile,
+            "reviewer",
+            "resource:account-42",
+            ApiSurfaceKind::JsonHttp,
+            403,
+            &json!({"id":"one"}),
+        )
+        .unwrap();
+
+    let mut equivalent = serde_json::to_value(compare(
+        &comparator,
+        &profile,
+        ApiVisibilityDimension::Status,
+        &baseline,
+        &same_status,
+    ))
+    .unwrap();
+    equivalent["diff"]["omitted_diff_count"] = json!(1);
+    assert!(serde_json::from_value::<ProfiledApiVisibilityComparison>(equivalent).is_err());
+
+    let mut status = serde_json::to_value(compare(
+        &comparator,
+        &profile,
+        ApiVisibilityDimension::Status,
+        &baseline,
+        &different_status,
+    ))
+    .unwrap();
+    status["diff"]["added_path_hashes"] = json!(["0".repeat(64)]);
+    assert!(serde_json::from_value::<ProfiledApiVisibilityComparison>(status).is_err());
+
+    let mut fields = serde_json::to_value(compare(
+        &comparator,
+        &profile,
+        ApiVisibilityDimension::Fields,
+        &baseline,
+        &same_status,
+    ))
+    .unwrap();
+    fields["diff"]["changed_value_path_hashes"] = json!(["0".repeat(64)]);
+    let error = serde_json::from_value::<ProfiledApiVisibilityComparison>(fields).unwrap_err();
+    assert!(error
+        .to_string()
+        .contains("incompatible with v3 result semantics"));
 }
 
 #[test]

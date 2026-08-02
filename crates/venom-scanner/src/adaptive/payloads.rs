@@ -1,7 +1,9 @@
 //! Payload mutation and encoding variations (P1 - Trait-based for plugins)
 
 use super::strategy::DetectionPattern;
-use std::time::{SystemTime, UNIX_EPOCH};
+
+const FNV_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
+const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
 
 /// PayloadTransformer trait (P1 - Plugin Interface)
 ///
@@ -102,7 +104,7 @@ impl PayloadTransformer for CaseTransformer {
     }
 }
 
-/// Parameter pollution (adds timestamp decoy)
+/// Parameter pollution with a deterministic input-derived decoy.
 #[derive(Debug, Clone)]
 pub struct PollutionTransformer;
 
@@ -112,11 +114,10 @@ impl PayloadTransformer for PollutionTransformer {
     }
 
     fn transform(&self, payload: &str) -> String {
-        let timestamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis();
-        format!("{}&_={}", payload, timestamp)
+        let fingerprint = payload.bytes().fold(FNV_OFFSET_BASIS, |hash, byte| {
+            (hash ^ u64::from(byte)).wrapping_mul(FNV_PRIME)
+        });
+        format!("{payload}&_={fingerprint:016x}")
     }
 }
 
@@ -161,7 +162,11 @@ impl PayloadTransformer for ReductionTransformer {
 
     fn transform(&self, payload: &str) -> String {
         if payload.len() > self.max_size {
-            payload[..self.max_size].to_string()
+            let mut boundary = self.max_size;
+            while !payload.is_char_boundary(boundary) {
+                boundary -= 1;
+            }
+            payload[..boundary].to_string()
         } else {
             payload.to_string()
         }
@@ -197,6 +202,16 @@ impl PayloadTransformer for CompositeTransformer {
         }
         result
     }
+
+    fn transform_safe(&self, payload: &str) -> Result<String, String> {
+        self.pre_transform(payload)?;
+        let mut result = payload.to_string();
+        for transformer in &self.transformers {
+            result = transformer.transform_safe(&result)?;
+        }
+        self.post_transform(&result)?;
+        Ok(result)
+    }
 }
 
 /// Legacy API - Payload mutation based on analysis
@@ -226,7 +241,7 @@ impl PayloadMutator {
         CaseTransformer.transform(payload)
     }
 
-    /// Applies parameter pollution (adds timestamp decoy)
+    /// Applies parameter pollution with a deterministic input-derived decoy.
     pub fn apply_parameter_pollution(payload: &str) -> String {
         PollutionTransformer.transform(payload)
     }
@@ -272,6 +287,17 @@ mod tests {
         let original = "test";
         let mutated = PayloadMutator::apply_parameter_pollution(original);
         assert!(mutated.contains("&_="));
+    }
+
+    #[test]
+    fn test_parameter_pollution_is_deterministic() {
+        let first = PollutionTransformer.transform("same-payload");
+        let second = PollutionTransformer.transform("same-payload");
+        let different = PollutionTransformer.transform("different-payload");
+
+        assert_eq!(first, second);
+        assert_eq!(first, "same-payload&_=105c6f89bedd8768");
+        assert_ne!(first, different);
     }
 
     #[test]
@@ -369,6 +395,19 @@ mod tests {
     }
 
     #[test]
+    fn test_reduction_respects_utf8_boundaries() {
+        let payload = "éclair";
+
+        assert_eq!(ReductionTransformer { max_size: 0 }.transform(payload), "");
+        assert_eq!(ReductionTransformer { max_size: 1 }.transform(payload), "");
+        assert_eq!(ReductionTransformer { max_size: 2 }.transform(payload), "é");
+        assert_eq!(
+            ReductionTransformer { max_size: 3 }.transform(payload),
+            "éc"
+        );
+    }
+
+    #[test]
     fn test_transformer_safe_with_hooks() {
         let transformer = EncodingTransformer;
         let original = "TEST";
@@ -463,5 +502,70 @@ mod tests {
         let original = "SELECT";
         let transformed = composite.transform(original);
         assert_eq!(transformed, "select/**/");
+    }
+
+    #[test]
+    fn test_composite_safe_transform_runs_each_child_hook_in_order() {
+        use std::sync::{Arc, Mutex};
+
+        struct HookTransformer {
+            id: &'static str,
+            events: Arc<Mutex<Vec<String>>>,
+        }
+
+        impl PayloadTransformer for HookTransformer {
+            fn name(&self) -> &str {
+                self.id
+            }
+
+            fn pre_transform(&self, payload: &str) -> Result<(), String> {
+                self.events
+                    .lock()
+                    .unwrap()
+                    .push(format!("pre:{}:{payload}", self.id));
+                Ok(())
+            }
+
+            fn transform(&self, payload: &str) -> String {
+                self.events
+                    .lock()
+                    .unwrap()
+                    .push(format!("transform:{}:{payload}", self.id));
+                format!("{payload}{}", self.id)
+            }
+
+            fn post_transform(&self, payload: &str) -> Result<(), String> {
+                self.events
+                    .lock()
+                    .unwrap()
+                    .push(format!("post:{}:{payload}", self.id));
+                Ok(())
+            }
+        }
+
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let composite = CompositeTransformer::new(vec![
+            Box::new(HookTransformer {
+                id: "a",
+                events: events.clone(),
+            }),
+            Box::new(HookTransformer {
+                id: "b",
+                events: events.clone(),
+            }),
+        ]);
+
+        assert_eq!(composite.transform_safe("seed").unwrap(), "seedab");
+        assert_eq!(
+            *events.lock().unwrap(),
+            vec![
+                "pre:a:seed",
+                "transform:a:seed",
+                "post:a:seeda",
+                "pre:b:seeda",
+                "transform:b:seeda",
+                "post:b:seedab",
+            ]
+        );
     }
 }

@@ -97,7 +97,7 @@ pub struct StandardWebDiscoveryExecutorProfile {
 impl StandardWebDiscoveryExecutorProfile {
     /// Constructs all discovery executors under one immutable HTTP policy.
     pub fn new(policy: HttpEvidencePolicy) -> Result<Self, StandardWebExecutionError> {
-        Self::new_with_request_broker(HttpRequestBroker::new(policy, None)?)
+        Self::new_with_request_broker(HttpRequestBroker::new_unmetered(policy)?)
     }
 
     pub(crate) fn new_with_request_broker(

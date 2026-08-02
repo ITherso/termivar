@@ -28,11 +28,20 @@ provenance-validated Evidence
 
 The built-in profile is discovery-only. It does not submit credentials, inject payloads, follow redirects, mutate server state intentionally, or navigate outside the policy's authorized origins.
 
+An action may carry a versioned `PayloadStrategyRef` for a future native
+capability. The resolved executor must explicitly support that exact revision;
+the runner rejects unsupported references before invoking it. Raw seed and
+artifact types do not implement serialization and have redacted debug output,
+so the framework does not copy their values into planner or audit records. A
+custom executor remains responsible for never copying `as_bytes()` into
+evidence or errors. A serializable receipt contains only role, length, digest,
+and strategy provenance.
+
 All five executors inherit the same host-owned controls:
 
 - exact origin allowlist;
 - total request and body-read timeout;
-- maximum buffered response size;
+- maximum retained response size plus transport-delivered byte accounting;
 - response-header allowlist;
 - optional bounded text sampling;
 - source reliability.
