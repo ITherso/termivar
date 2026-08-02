@@ -13,7 +13,8 @@ use thiserror::Error;
 use venom_core::{
     ApiEvidencePredicate, ApiKnowledgePredicate, ApiVisibilityBoundaryKind, ApiVisibilityDimension,
     ApiVisibilityObservation, ConfidenceScore, EntityId, Evidence, EvidenceId, EvidenceKind,
-    EvidenceValue, Hypothesis, KnowledgePredicate, RelationId, RelationKind,
+    EvidenceValue, Hypothesis, HypothesisState, HypothesisStrength, KnowledgePredicate, RelationId,
+    RelationKind,
 };
 
 use crate::{
@@ -740,6 +741,25 @@ pub struct ApiVisibilityReview {
     boundary_hypotheses: Vec<Hypothesis>,
 }
 
+/// Deterministic handling state for one canonical API visibility review.
+///
+/// This is a review disposition, not a vulnerability verdict and not a
+/// [`crate::DecisionLoopCommand`]. A difference reaches [`Self::AwaitHumanReview`]
+/// only when the standard reasoning profile produced the exact weak, supported,
+/// evidence-bound boundary hypothesis. Missing reasoning remains explicitly
+/// unresolved instead of being promoted to a security finding.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum ApiVisibilityReviewDisposition {
+    /// The canonical comparison evidence described equivalent views.
+    NoDifferenceObserved,
+    /// A difference exists but no canonical review hypothesis was materialized.
+    UnresolvedDifference,
+    /// A canonical weak boundary hypothesis requires an authorized human review.
+    AwaitHumanReview,
+}
+
 impl fmt::Debug for ApiVisibilityReview {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
@@ -777,6 +797,17 @@ impl ApiVisibilityReview {
     /// Returns only canonical-shaped API visibility-boundary hypotheses.
     pub fn boundary_hypotheses(&self) -> &[Hypothesis] {
         &self.boundary_hypotheses
+    }
+
+    /// Classifies this read model without turning a difference into a finding.
+    pub fn disposition(&self) -> ApiVisibilityReviewDisposition {
+        if expected_boundary_rule(&self.evidence).is_none() {
+            ApiVisibilityReviewDisposition::NoDifferenceObserved
+        } else if self.boundary_hypotheses.len() == 1 {
+            ApiVisibilityReviewDisposition::AwaitHumanReview
+        } else {
+            ApiVisibilityReviewDisposition::UnresolvedDifference
+        }
     }
 }
 
@@ -1113,6 +1144,8 @@ fn is_canonical_boundary_hypothesis(hypothesis: &Hypothesis, evidence: &Evidence
     };
     if hypothesis.subject() != evidence.subject()
         || hypothesis.predicate() != &ApiKnowledgePredicate::VISIBILITY_BOUNDARY.into_knowledge()
+        || hypothesis.strength() != HypothesisStrength::Weak
+        || hypothesis.state() != HypothesisState::Supported
         || hypothesis.belief().evidence().len() != 1
         || hypothesis.belief().evidence()[0].evidence_id() != evidence.id()
     {
@@ -1237,6 +1270,10 @@ mod tests {
         );
         let reviews = page.reviews();
         assert_eq!(reviews.len(), 1);
+        assert_eq!(
+            reviews[0].disposition(),
+            ApiVisibilityReviewDisposition::AwaitHumanReview
+        );
         assert_eq!(reviews[0].boundary_hypotheses().len(), 1);
         let boundary = &reviews[0].boundary_hypotheses()[0];
         assert_eq!(
@@ -1278,7 +1315,40 @@ mod tests {
         );
         let reviews = page.reviews();
         assert_eq!(reviews.len(), 1);
+        assert_eq!(
+            reviews[0].disposition(),
+            ApiVisibilityReviewDisposition::NoDifferenceObserved
+        );
         assert!(reviews[0].boundary_hypotheses().is_empty());
+    }
+
+    #[test]
+    fn difference_without_reasoning_remains_explicitly_unresolved() {
+        let knowledge = KnowledgeBase::new();
+        let rules = RuleEngine::new();
+        ingest_api_visibility_observation(
+            comparison(
+                "difference-without-rules",
+                ApiVisibilityResult::Different,
+                ApiVisibilityPairKind::AuthorizationContext,
+            ),
+            &resource(),
+            &knowledge,
+            &rules,
+        )
+        .unwrap();
+
+        let page = api_visibility_reviews_for_resource(
+            &knowledge,
+            &resource(),
+            &ApiVisibilityReviewQuery::default(),
+        );
+        assert_eq!(page.reviews().len(), 1);
+        assert!(page.reviews()[0].boundary_hypotheses().is_empty());
+        assert_eq!(
+            page.reviews()[0].disposition(),
+            ApiVisibilityReviewDisposition::UnresolvedDifference
+        );
     }
 
     #[test]
@@ -1344,6 +1414,48 @@ mod tests {
         assert_eq!(
             boundaries[0].value(),
             &EvidenceValue::from(ApiVisibilityBoundaryKind::AuthorizationContext)
+        );
+    }
+
+    #[test]
+    fn nonweak_boundary_is_not_promoted_to_human_review() {
+        let knowledge = KnowledgeBase::new();
+        let rules = RuleEngine::new();
+        let receipt = ingest_api_visibility_observation(
+            comparison(
+                "strong-boundary-forgery",
+                ApiVisibilityResult::Different,
+                ApiVisibilityPairKind::AuthorizationContext,
+            ),
+            &resource(),
+            &knowledge,
+            &rules,
+        )
+        .unwrap();
+        let evidence = knowledge.evidence(receipt.commit().evidence_id()).unwrap();
+        insert_forged_boundary(
+            &knowledge,
+            &evidence,
+            AUTHORIZATION_BOUNDARY_RULE,
+            ApiVisibilityBoundaryKind::AuthorizationContext,
+        );
+        let mut forged = knowledge
+            .hypotheses_for_subject(evidence.subject())
+            .into_iter()
+            .next()
+            .unwrap();
+        forged.set_strength(HypothesisStrength::Strong);
+        knowledge.upsert_hypothesis(forged).unwrap();
+
+        let page = api_visibility_reviews_for_resource(
+            &knowledge,
+            &resource(),
+            &ApiVisibilityReviewQuery::default(),
+        );
+        assert!(page.reviews()[0].boundary_hypotheses().is_empty());
+        assert_eq!(
+            page.reviews()[0].disposition(),
+            ApiVisibilityReviewDisposition::UnresolvedDifference
         );
     }
 

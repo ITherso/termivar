@@ -1,0 +1,32 @@
+{
+  "name": "read-write-capability",
+  "comparison_id": "golden:read-write-capability:account-42",
+  "pair": "authorization-context",
+  "dimension": "resources",
+  "baseline_context": "context:read-only",
+  "candidate_context": "context:write-capable",
+  "resource_scope": "resource:account-42",
+  "expected_category": "changed_value",
+  "expected_path": "/data/capability",
+  "expected_omitted_diff_count": 0,
+  "forbidden_values": [
+    "read-only-capability-sentinel",
+    "write-capable-sentinel",
+    "request-read-sentinel",
+    "request-write-sentinel"
+  ],
+  "baseline": {
+    "data": {
+      "account_id": "acct-42",
+      "capability": "read-only-capability-sentinel"
+    },
+    "meta": { "request_id": "request-read-sentinel", "timestamp": 1800000004 }
+  },
+  "candidate": {
+    "data": {
+      "account_id": "acct-42",
+      "capability": "write-capable-sentinel"
+    },
+    "meta": { "request_id": "request-write-sentinel", "timestamp": 1800000102 }
+  }
+}

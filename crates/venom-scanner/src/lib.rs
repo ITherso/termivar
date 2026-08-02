@@ -171,10 +171,11 @@ pub use api_gateway::{
 pub use api_observation::{
     api_visibility_reviews_for_resource, api_visibility_reviews_for_resource_v2,
     ingest_api_visibility_observation, ApiObservationCommitReceipt, ApiObservationError,
-    ApiObservationReceipt, ApiVisibilityReview, ApiVisibilityReviewCursor, ApiVisibilityReviewPage,
-    ApiVisibilityReviewQuery, DEFAULT_API_VISIBILITY_REVIEW_SCAN_LIMIT,
-    HARD_MAX_API_VISIBILITY_REVIEW_SCAN_LIMIT, MAX_API_VISIBILITY_REVIEW_CURSOR_BYTES,
-    MAX_API_VISIBILITY_REVIEW_RATIONALE_BYTES, MAX_API_VISIBILITY_SOURCE_COMPONENT_BYTES,
+    ApiObservationReceipt, ApiVisibilityReview, ApiVisibilityReviewCursor,
+    ApiVisibilityReviewDisposition, ApiVisibilityReviewPage, ApiVisibilityReviewQuery,
+    DEFAULT_API_VISIBILITY_REVIEW_SCAN_LIMIT, HARD_MAX_API_VISIBILITY_REVIEW_SCAN_LIMIT,
+    MAX_API_VISIBILITY_REVIEW_CURSOR_BYTES, MAX_API_VISIBILITY_REVIEW_RATIONALE_BYTES,
+    MAX_API_VISIBILITY_SOURCE_COMPONENT_BYTES,
 };
 pub use api_reasoning::{
     StandardApiInstallReport, StandardApiReasoning, StandardApiReasoningError,

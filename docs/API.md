@@ -82,6 +82,12 @@ per-page ceiling so a resource cannot trigger an unbounded clone or scan.
 Producer components are capped at 256 bytes before ingestion commits; the
 projection also checks that limit and the 1,024-byte boundary-rationale ceiling
 while records are still borrowed from the knowledge store.
+Each review exposes a computed `ApiVisibilityReviewDisposition`: equivalent
+evidence is `NoDifferenceObserved`, a difference without the canonical standard
+hypothesis is `UnresolvedDifference`, and only an exact weak/supported,
+evidence-bound hypothesis is `AwaitHumanReview`. This disposition is not a
+`DecisionLoopCommand`, is not serialized into the existing review wire shape,
+and never declares broken access control or another vulnerability.
 See [`ApiVisibilityReviewQuery`](https://itherso.github.io/venom/rust/venom_scanner/api_observation/struct.ApiVisibilityReviewQuery.html)
 and [`ApiVisibilityReviewPage`](https://itherso.github.io/venom/rust/venom_scanner/api_observation/struct.ApiVisibilityReviewPage.html)
 for cursor and page metadata. The legacy continuation is an opaque relation ID;
@@ -111,6 +117,11 @@ as a ranking signal rather than a measured vulnerability probability.
 The profile does not pair independent responses, perform network I/O, attest
 producer truth, or verify a vulnerability; its visibility result is a review
 signal.
+
+The scanner test corpus contains deterministic golden comparisons for UI/API,
+anonymous/authenticated, owner/unrelated-user, and read/write-capability
+contexts. They exercise comparison, redacted explanation, ingestion, reasoning,
+review disposition, and idempotent replay without issuing network requests.
 
 Decision executors can report a typed `DecisionExecutionFailureKind` without
 encoding policy or transport state in a string. Once the error crosses the

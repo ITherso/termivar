@@ -1,0 +1,28 @@
+{
+  "name": "ui-api",
+  "comparison_id": "golden:ui-api:account-42",
+  "pair": "ui-api",
+  "dimension": "fields",
+  "baseline_context": "context:rendered-ui",
+  "candidate_context": "context:backing-api",
+  "resource_scope": "resource:account-42",
+  "expected_category": "added",
+  "expected_path": "/data/support_notes",
+  "expected_omitted_diff_count": 0,
+  "forbidden_values": [
+    "ui-hidden-support-note-sentinel",
+    "request-ui-sentinel",
+    "request-api-sentinel"
+  ],
+  "baseline": {
+    "data": { "account_id": "acct-42" },
+    "meta": { "request_id": "request-ui-sentinel", "timestamp": 1800000001 }
+  },
+  "candidate": {
+    "data": {
+      "account_id": "acct-42",
+      "support_notes": "ui-hidden-support-note-sentinel"
+    },
+    "meta": { "request_id": "request-api-sentinel", "timestamp": 1800000099 }
+  }
+}

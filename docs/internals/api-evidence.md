@@ -346,10 +346,26 @@ writes.
 
 Each review contains the comparison evidence and only a canonical-shaped
 visibility-boundary hypothesis. The expected standard hypothesis ID,
-predicate, pair, result, value, and sole evidence binding must all agree;
+predicate, pair, result, value, weak strength, supported state, and sole evidence
+binding must all agree;
 equivalent comparisons remain visible with an empty boundary list. These
 checks do not attest which rule installation produced the hypothesis. Surface
 and response-format hypotheses are intentionally excluded.
+
+`ApiVisibilityReview::disposition()` keeps handling semantics explicit without
+changing the serialized review record:
+
+- `NoDifferenceObserved` means the canonical evidence was equivalent;
+- `UnresolvedDifference` means a difference was stored but no exact canonical
+  boundary hypothesis was available;
+- `AwaitHumanReview` means the exact weak/supported boundary hypothesis is
+  present and bound to that comparison evidence.
+
+This is a review-read-model state, not a target-scoped decision-loop command and
+not a vulnerability verdict. Golden fixtures under
+`crates/venom-scanner/tests/fixtures/api_authorization/` lock UI/API,
+anonymous/authenticated, owner/unrelated-user, and read/write-capability
+behavior through the full transport-neutral comparison and reasoning path.
 
 The projection validates canonical IDs, provenance linkage, evidence kind,
 method, reliability, predicate, dimension, and belief evidence before including
