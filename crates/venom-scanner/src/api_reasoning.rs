@@ -43,6 +43,22 @@ pub enum StandardApiReasoningError {
     /// A reasoning rule was invalid or conflicted.
     #[error(transparent)]
     Rules(#[from] RuleEngineError),
+
+    /// The shared vocabulary contains an API surface that this profile has not
+    /// explicitly mapped to a deterministic rule.
+    #[error("standard API reasoning profile does not support API surface `{surface}`")]
+    UnsupportedApiSurface {
+        /// Stable vocabulary value that was rejected.
+        surface: String,
+    },
+
+    /// The shared vocabulary contains a visibility pair that this profile has
+    /// not explicitly mapped to a deterministic boundary rule.
+    #[error("standard API reasoning profile does not support visibility pair `{pair}`")]
+    UnsupportedVisibilityPair {
+        /// Stable vocabulary value that was rejected.
+        pair: String,
+    },
 }
 
 /// Counts of definitions added by one idempotent profile installation.
@@ -212,7 +228,7 @@ fn standard_axioms() -> Result<Vec<OntologyAxiom>, OntologyError> {
     .collect()
 }
 
-fn standard_rules() -> Result<Vec<ReasoningRule>, RuleEngineError> {
+fn standard_rules() -> Result<Vec<ReasoningRule>, StandardApiReasoningError> {
     Ok(vec![
         json_response_rule()?,
         graphql_media_type_rule()?,
@@ -302,14 +318,12 @@ fn graphql_route_rule() -> Result<ReasoningRule, RuleEngineError> {
     )
 }
 
-fn comparison_surface_rule(surface: ApiSurfaceKind) -> Result<ReasoningRule, RuleEngineError> {
+fn comparison_surface_rule(
+    surface: ApiSurfaceKind,
+) -> Result<ReasoningRule, StandardApiReasoningError> {
     let predicates = comparison_predicates(surface);
     ReasoningRule::new(
-        match surface {
-            ApiSurfaceKind::JsonHttp => "api.surface.json.paired-comparison",
-            ApiSurfaceKind::GraphQl => "api.surface.graphql.paired-comparison",
-            _ => unreachable!("standard profile received an unknown API surface"),
-        },
+        comparison_surface_rule_id(surface.as_str())?,
         any_comparison_dimension(&predicates)?,
         HypothesisConclusion::new(
             ApiKnowledgePredicate::SURFACE_KIND.into(),
@@ -325,9 +339,22 @@ fn comparison_surface_rule(surface: ApiSurfaceKind) -> Result<ReasoningRule, Rul
             )?,
         )?,
     )
+    .map_err(Into::into)
 }
 
-fn visibility_boundary_rule(pair: ApiVisibilityPairKind) -> Result<ReasoningRule, RuleEngineError> {
+fn comparison_surface_rule_id(surface: &str) -> Result<&'static str, StandardApiReasoningError> {
+    match surface {
+        "json-http-api" => Ok("api.surface.json.paired-comparison"),
+        "graphql-api" => Ok("api.surface.graphql.paired-comparison"),
+        _ => Err(StandardApiReasoningError::UnsupportedApiSurface {
+            surface: surface.to_owned(),
+        }),
+    }
+}
+
+fn visibility_boundary_rule(
+    pair: ApiVisibilityPairKind,
+) -> Result<ReasoningRule, StandardApiReasoningError> {
     let predicates = [
         ApiEvidencePredicate::visibility(
             ApiSurfaceKind::JsonHttp,
@@ -340,21 +367,8 @@ fn visibility_boundary_rule(pair: ApiVisibilityPairKind) -> Result<ReasoningRule
             ApiVisibilityResult::Different,
         ),
     ];
-    let (id, boundary, likelihood_if_true, rationale) = match pair {
-        ApiVisibilityPairKind::UiApi => (
-            "api.visibility.ui-api.paired-difference",
-            ApiVisibilityBoundaryKind::UiApi,
-            98,
-            "One atomic same-resource UI/API comparison observed a visibility difference",
-        ),
-        ApiVisibilityPairKind::AuthorizationContext => (
-            "api.visibility.authorization-context.paired-difference",
-            ApiVisibilityBoundaryKind::AuthorizationContext,
-            99,
-            "One atomic same-resource authorization-context comparison observed a visibility difference",
-        ),
-        _ => unreachable!("standard profile received an unknown visibility pair"),
-    };
+    let (id, boundary, likelihood_if_true, rationale) =
+        visibility_boundary_rule_spec(pair.as_str())?;
     ReasoningRule::new(
         id,
         any_comparison_dimension(&predicates)?,
@@ -372,6 +386,30 @@ fn visibility_boundary_rule(pair: ApiVisibilityPairKind) -> Result<ReasoningRule
             )?,
         )?,
     )
+    .map_err(Into::into)
+}
+
+fn visibility_boundary_rule_spec(
+    pair: &str,
+) -> Result<(&'static str, ApiVisibilityBoundaryKind, u8, &'static str), StandardApiReasoningError>
+{
+    match pair {
+        "ui-api" => Ok((
+            "api.visibility.ui-api.paired-difference",
+            ApiVisibilityBoundaryKind::UiApi,
+            98,
+            "One atomic same-resource UI/API comparison observed a visibility difference",
+        )),
+        "authorization-context" => Ok((
+            "api.visibility.authorization-context.paired-difference",
+            ApiVisibilityBoundaryKind::AuthorizationContext,
+            99,
+            "One atomic same-resource authorization-context comparison observed a visibility difference",
+        )),
+        _ => Err(StandardApiReasoningError::UnsupportedVisibilityPair {
+            pair: pair.to_owned(),
+        }),
+    }
 }
 
 fn comparison_predicates(surface: ApiSurfaceKind) -> Vec<PredicateDescriptor> {
@@ -536,6 +574,84 @@ mod tests {
                 )
                 .unwrap());
         }
+    }
+
+    #[test]
+    fn standard_api_profile_rule_manifest_is_exact() {
+        let profile = StandardApiReasoning::new().unwrap();
+        let rule_ids: Vec<_> = profile.rules().iter().map(ReasoningRule::id).collect();
+
+        assert_eq!(
+            rule_ids,
+            [
+                "api.response.json.media-type",
+                "api.surface.graphql.response-media-type",
+                "api.surface.graphql.route",
+                "api.surface.json.paired-comparison",
+                "api.surface.graphql.paired-comparison",
+                "api.visibility.ui-api.paired-difference",
+                "api.visibility.authorization-context.paired-difference",
+            ]
+        );
+        assert_eq!(rule_ids.len(), STANDARD_API_RULE_COUNT);
+    }
+
+    #[test]
+    fn every_standard_api_surface_has_one_stable_rule() {
+        for (surface, expected_id) in [
+            (
+                ApiSurfaceKind::JsonHttp,
+                "api.surface.json.paired-comparison",
+            ),
+            (
+                ApiSurfaceKind::GraphQl,
+                "api.surface.graphql.paired-comparison",
+            ),
+        ] {
+            assert_eq!(comparison_surface_rule(surface).unwrap().id(), expected_id);
+            assert_eq!(
+                comparison_surface_rule_id(surface.as_str()).unwrap(),
+                expected_id
+            );
+        }
+    }
+
+    #[test]
+    fn every_standard_visibility_pair_has_one_stable_boundary_rule() {
+        for (pair, expected_id) in [
+            (
+                ApiVisibilityPairKind::UiApi,
+                "api.visibility.ui-api.paired-difference",
+            ),
+            (
+                ApiVisibilityPairKind::AuthorizationContext,
+                "api.visibility.authorization-context.paired-difference",
+            ),
+        ] {
+            assert_eq!(visibility_boundary_rule(pair).unwrap().id(), expected_id);
+            assert_eq!(
+                visibility_boundary_rule_spec(pair.as_str()).unwrap().0,
+                expected_id
+            );
+        }
+    }
+
+    #[test]
+    fn unknown_surface_key_fails_closed_with_typed_error() {
+        assert!(matches!(
+            comparison_surface_rule_id("future-api-surface"),
+            Err(StandardApiReasoningError::UnsupportedApiSurface { surface })
+                if surface == "future-api-surface"
+        ));
+    }
+
+    #[test]
+    fn unknown_visibility_pair_key_fails_closed_with_typed_error() {
+        assert!(matches!(
+            visibility_boundary_rule_spec("future-visibility-pair"),
+            Err(StandardApiReasoningError::UnsupportedVisibilityPair { pair })
+                if pair == "future-visibility-pair"
+        ));
     }
 
     #[test]
