@@ -61,7 +61,8 @@ The bridge is a migration boundary. New reasoning-aware extensions should implem
 ## Failure semantics
 
 - A stale command/session mismatch is rejected before executor work.
-- Executor and provenance failures leave knowledge unchanged.
+- Executor and provenance failures leave knowledge unchanged. An executor-reported failure is classified as `NotApplicable`, `BlockedByPolicy`, `TransportFailure`, or `ExecutorFailure`; these are operational audit facts, not verifier outcomes and not automatic Experience suppression inputs.
+- `DecisionRunnerError::execution_failure()` exposes an immutable pre-commit receipt containing the exact `DecisionExecutionRequest`, resolved executor identity, normalized diagnostic, and typed failure kind. The request preserves case/action, passive or active stage, origin, scheduler delay, and host-owned limits. Route lookup, provenance rejection, knowledge storage, and host wall-time failures remain distinct and do not manufacture this receipt.
 - Evidence identity conflicts reject the complete batch.
 - Once valid observations are committed, they remain immutable even if later verification or adaptive evaluation fails; observations are facts about execution, not a transaction over decision policy. `DecisionRunnerError::committed_evidence()` exposes that durable receipt, and `into_committed_evidence()` transfers it without cloning.
 - A successful `DecisionOutcomeReport` is the outcome phase's completion receipt. Its verification, hypothesis write, experience write, and runtime-only `DecisionSessionTransition` describe the state changes applied after evidence storage. The lightweight transition summary is intentionally omitted from the report's existing serialized shape; a future persisted audit format will be explicit and versioned.

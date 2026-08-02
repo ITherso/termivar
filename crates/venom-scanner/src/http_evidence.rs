@@ -20,7 +20,10 @@ use venom_core::{
     KnowledgePredicate,
 };
 
-use crate::{DecisionActionExecutor, DecisionExecutionRequest, DecisionExecutorError};
+use crate::{
+    DecisionActionExecutor, DecisionExecutionFailureKind, DecisionExecutionRequest,
+    DecisionExecutorError,
+};
 
 /// Default maximum number of response-body bytes read by one probe.
 pub const DEFAULT_HTTP_BODY_LIMIT: usize = 256 * 1024;
@@ -426,6 +429,40 @@ pub enum HttpEvidenceError {
     Reasoning(#[from] venom_core::ReasoningModelError),
 }
 
+fn execution_failure_kind(error: &HttpEvidenceError) -> DecisionExecutionFailureKind {
+    match error {
+        HttpEvidenceError::InvalidEndpointSubject { .. }
+        | HttpEvidenceError::UnsupportedScheme { .. } => {
+            DecisionExecutionFailureKind::NotApplicable
+        },
+        HttpEvidenceError::EmbeddedCredentials
+        | HttpEvidenceError::ForbiddenRequestHeader { .. }
+        | HttpEvidenceError::TargetOutsidePolicy { .. } => {
+            DecisionExecutionFailureKind::BlockedByPolicy
+        },
+        HttpEvidenceError::Timeout { .. } | HttpEvidenceError::Request(_) => {
+            DecisionExecutionFailureKind::TransportFailure
+        },
+        HttpEvidenceError::EmptyAllowedOrigins
+        | HttpEvidenceError::ZeroTimeout
+        | HttpEvidenceError::ZeroBodyLimit
+        | HttpEvidenceError::ZeroReliability
+        | HttpEvidenceError::BodyLimitTooLarge { .. }
+        | HttpEvidenceError::ZeroTextSampleLimit
+        | HttpEvidenceError::TextSampleLimitTooLarge { .. }
+        | HttpEvidenceError::EmptyExecutorId
+        | HttpEvidenceError::InvalidUrl { .. }
+        | HttpEvidenceError::InvalidHeaderName { .. }
+        | HttpEvidenceError::InvalidHeaderValue { .. }
+        | HttpEvidenceError::Client(_)
+        | HttpEvidenceError::Reasoning(_) => DecisionExecutionFailureKind::ExecutorFailure,
+    }
+}
+
+fn into_decision_executor_error(error: HttpEvidenceError) -> DecisionExecutorError {
+    DecisionExecutorError::with_kind(execution_failure_kind(&error), error.to_string())
+}
+
 /// Real HTTP executor that produces typed evidence for the decision runner.
 ///
 /// # Examples
@@ -749,7 +786,7 @@ impl DecisionActionExecutor for HttpEvidenceExecutor {
     ) -> Result<Vec<Evidence>, DecisionExecutorError> {
         self.collect(request)
             .await
-            .map_err(|error| DecisionExecutorError::new(error.to_string()))
+            .map_err(into_decision_executor_error)
     }
 }
 
@@ -1441,7 +1478,47 @@ mod tests {
             .await
             .unwrap_err();
 
-        assert!(error.to_string().contains("outside policy"));
+        let failure = error.execution_failure().unwrap();
+        assert_eq!(
+            failure.kind(),
+            DecisionExecutionFailureKind::BlockedByPolicy
+        );
+        assert_eq!(failure.executor_id(), HTTP_EVIDENCE_EXECUTOR_ID);
+        assert_eq!(failure.action_id(), "http.probe");
+        assert!(failure.diagnostic().contains("outside policy"));
+        assert_eq!(knowledge.stats().evidence, 0);
+    }
+
+    #[tokio::test]
+    async fn provider_timeout_is_classified_without_parsing_its_diagnostic() {
+        let allowed = Url::parse("http://127.0.0.1:1/").unwrap();
+        let provider: Arc<dyn HttpProbeProvider> =
+            Arc::new(|_request: &DecisionExecutionRequest| {
+                Err(HttpEvidenceError::Timeout { timeout_ms: 25 })
+            });
+        let policy = HttpEvidencePolicy::for_origin(allowed.clone()).unwrap();
+        let executor = HttpEvidenceExecutor::new(policy, provider).unwrap();
+        let mut registry = DecisionExecutorRegistry::new();
+        registry.register(Arc::new(executor)).unwrap();
+        let adapter = DecisionRunnerAdapter::new(registry);
+        let knowledge = KnowledgeBase::new();
+
+        let error = adapter
+            .execute_command(&command(&allowed), &knowledge)
+            .await
+            .unwrap_err();
+
+        let failure = error.execution_failure().unwrap();
+        assert_eq!(
+            failure.kind(),
+            DecisionExecutionFailureKind::TransportFailure
+        );
+        assert_eq!(failure.executor_id(), HTTP_EVIDENCE_EXECUTOR_ID);
+        assert_eq!(failure.action_id(), "http.probe");
+        assert_eq!(
+            failure.diagnostic(),
+            "HTTP evidence request timed out after 25 ms"
+        );
         assert_eq!(knowledge.stats().evidence, 0);
     }
 

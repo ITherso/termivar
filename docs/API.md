@@ -87,6 +87,14 @@ The profile does not pair independent responses, perform network I/O, attest
 producer truth, or verify a vulnerability; its visibility result is a review
 signal.
 
+Decision executors can report a typed `DecisionExecutionFailureKind` without
+encoding policy or transport state in a string. Once the error crosses the
+runner boundary, `DecisionExecutionFailureReceipt` preserves the exact request
+context and resolved executor identity. Runner and standard-runtime errors
+provide borrowed and consuming accessors for that receipt. These pre-commit
+operational failures do not write evidence, synthesize verifier outcomes, or
+penalize future planning through the Experience Store.
+
 Hosts using `StandardWebDecisionRuntime` can opt into its passive API rules
 with `enable_api_reasoning()`. The runtime reuses its existing normalized HTTP
 evidence and exposes an optional installation receipt; it does not issue extra

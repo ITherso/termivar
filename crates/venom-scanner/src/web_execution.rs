@@ -181,10 +181,10 @@ mod tests {
 
     use super::*;
     use crate::{
-        AdaptationLimits, BenefitScore, DecisionActionOrigin, DecisionLoop, DecisionLoopCommand,
-        DecisionLoopConfig, DecisionRunnerAdapter, DecisionSession, ExperiencePolicy,
-        ExperienceStore, KnowledgeBase, PlanningContext, RiskScore, StandardWebAttackProfile,
-        StandardWebReasoning, VerificationCase,
+        AdaptationLimits, BenefitScore, DecisionActionOrigin, DecisionExecutionFailureKind,
+        DecisionLoop, DecisionLoopCommand, DecisionLoopConfig, DecisionRunnerAdapter,
+        DecisionSession, ExperiencePolicy, ExperienceStore, KnowledgeBase, PlanningContext,
+        RiskScore, StandardWebAttackProfile, StandardWebReasoning, VerificationCase,
     };
 
     async fn serve_requests(count: usize) -> (Url, Arc<Mutex<Vec<String>>>) {
@@ -455,7 +455,14 @@ mod tests {
             .await
             .unwrap_err();
 
-        assert!(error.to_string().contains("outside policy"));
+        let failure = error.execution_failure().unwrap();
+        assert_eq!(
+            failure.kind(),
+            DecisionExecutionFailureKind::BlockedByPolicy
+        );
+        assert_eq!(failure.executor_id(), kind.executor_id());
+        assert_eq!(failure.action_id(), kind.action_id());
+        assert!(failure.diagnostic().contains("outside policy"));
         assert_eq!(knowledge.stats().evidence, 0);
     }
 }

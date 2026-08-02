@@ -1,5 +1,6 @@
 use std::{collections::BTreeSet, future::pending, sync::Arc, time::Duration};
 
+use async_trait::async_trait;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpListener,
@@ -9,16 +10,19 @@ use tokio::{
 use venom_core::{
     ApiKnowledgePredicate, ApiResponseFormat, ApiSurfaceKind, ApiVisibilityBoundaryKind,
     ApiVisibilityComparison, ApiVisibilityDimension, ApiVisibilityObservation,
-    ApiVisibilityPairKind, ApiVisibilityResult, ConfidenceScore, EntityId, EvidenceValue,
+    ApiVisibilityPairKind, ApiVisibilityResult, ConfidenceScore, EntityId, Evidence, EvidenceValue,
     Hypothesis, HypothesisState, HypothesisStrength, OutcomeStatus, PredicateDescriptor,
     Probability, WebKnowledgePredicate,
 };
 
 use super::*;
 use crate::{
-    ActionCost, AdaptivePipeline, ApiVisibilityReviewQuery, AttackAction, DecisionLoopState,
-    DecisionStopReason, ExclusionReason, Expression, HttpBodyCapture, HypothesisSelector,
+    ActionCost, AdaptivePipeline, ApiVisibilityReviewQuery, AttackAction, DecisionActionExecutor,
+    DecisionExecutionFailureKind, DecisionExecutionRequest, DecisionExecutorError,
+    DecisionExecutorRegistry, DecisionLoopState, DecisionRunnerAdapter, DecisionStopReason,
+    ExclusionReason, Expression, HttpBodyCapture, HttpEvidenceExecutor, HypothesisSelector,
     KnowledgeLayer, KnowledgeSnapshot, RequiredStrength, StandardWebActionKind,
+    SubjectHttpProbeProvider,
 };
 
 const BASIC: &[u8] = b"HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: Basic realm=\"admin\"\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
@@ -29,6 +33,26 @@ const NGINX: &[u8] =
     b"HTTP/1.1 200 OK\r\nServer: nginx\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
 const JSON: &[u8] = b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}";
 const GRAPHQL: &[u8] = b"HTTP/1.1 200 OK\r\nContent-Type: application/graphql-response+json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}";
+
+struct FailingRuntimeExecutor {
+    id: &'static str,
+    kind: DecisionExecutionFailureKind,
+    diagnostic: &'static str,
+}
+
+#[async_trait]
+impl DecisionActionExecutor for FailingRuntimeExecutor {
+    fn id(&self) -> &str {
+        self.id
+    }
+
+    async fn execute(
+        &self,
+        _request: &DecisionExecutionRequest,
+    ) -> Result<Vec<Evidence>, DecisionExecutorError> {
+        Err(DecisionExecutorError::with_kind(self.kind, self.diagnostic))
+    }
+}
 
 enum Reply {
     Response(&'static [u8]),
@@ -194,6 +218,100 @@ fn builder_validates_decision_limits_and_exposes_runtime_defaults() {
     assert!(!runtime
         .unsupported_actions()
         .contains(StandardWebActionKind::HttpBasicAuthBoundary.action_id()));
+}
+
+#[tokio::test]
+async fn runtime_forwards_bootstrap_failure_without_learning_from_it() {
+    let target = Url::parse("https://example.test/app").unwrap();
+    let mut runtime = StandardWebDecisionRuntime::builder(target).build().unwrap();
+    let mut registry = DecisionExecutorRegistry::new();
+    registry
+        .register(Arc::new(FailingRuntimeExecutor {
+            id: HTTP_EVIDENCE_EXECUTOR_ID,
+            kind: DecisionExecutionFailureKind::TransportFailure,
+            diagnostic: "transport unavailable before headers",
+        }))
+        .unwrap();
+    runtime.runner = DecisionRunnerAdapter::new(registry);
+
+    let error = runtime.analyze().await.unwrap_err();
+    let receipt = error.execution_failure().unwrap();
+
+    assert_eq!(receipt.case().id(), BOOTSTRAP_CASE_ID);
+    assert_eq!(receipt.action_id(), BOOTSTRAP_ACTION_ID);
+    assert_eq!(receipt.stage(), DecisionExecutionStage::Passive);
+    assert_eq!(receipt.origin(), Some(DecisionActionOrigin::Bootstrap));
+    assert_eq!(receipt.executor_id(), HTTP_EVIDENCE_EXECUTOR_ID);
+    assert_eq!(
+        receipt.kind(),
+        DecisionExecutionFailureKind::TransportFailure
+    );
+    assert_eq!(runtime.usage().total_requests(), 1);
+    assert_eq!(runtime.usage().bootstrap_requests(), 1);
+    assert_eq!(runtime.usage().completed_execution_turns(), 0);
+    assert_eq!(runtime.knowledge().stats().evidence, 0);
+    assert!(runtime.experience().is_empty());
+    assert!(matches!(
+        runtime.session().state(),
+        DecisionLoopState::Ready
+    ));
+    assert!(runtime.has_started());
+
+    let owned = error.into_execution_failure().unwrap();
+    assert_eq!(owned.case().id(), BOOTSTRAP_CASE_ID);
+}
+
+#[tokio::test]
+async fn planned_failure_preserves_bootstrap_and_outstanding_session_without_suppression() {
+    let server = serve(vec![Reply::Response(BASIC)]).await;
+    let policy = HttpEvidencePolicy::for_origin(server.target()).unwrap();
+    let mut runtime = StandardWebDecisionRuntime::builder(server.target())
+        .http_policy(policy.clone())
+        .build()
+        .unwrap();
+    let action = StandardWebActionKind::HttpBasicAuthBoundary;
+    let mut registry = DecisionExecutorRegistry::new();
+    registry
+        .register(Arc::new(
+            HttpEvidenceExecutor::new(
+                policy,
+                Arc::new(SubjectHttpProbeProvider::new(HttpProbeMethod::Get)),
+            )
+            .unwrap(),
+        ))
+        .unwrap();
+    registry
+        .register(Arc::new(FailingRuntimeExecutor {
+            id: action.executor_id(),
+            kind: DecisionExecutionFailureKind::BlockedByPolicy,
+            diagnostic: "host policy denied the planned probe",
+        }))
+        .unwrap();
+    runtime.runner = DecisionRunnerAdapter::new(registry);
+
+    let error = runtime.analyze().await.unwrap_err();
+    let receipt = error.execution_failure().unwrap();
+
+    assert_eq!(receipt.action_id(), action.action_id());
+    assert_eq!(receipt.stage(), DecisionExecutionStage::Passive);
+    assert_eq!(receipt.origin(), Some(DecisionActionOrigin::Planned));
+    assert_eq!(receipt.executor_id(), action.executor_id());
+    assert_eq!(
+        receipt.kind(),
+        DecisionExecutionFailureKind::BlockedByPolicy
+    );
+    assert_eq!(runtime.usage().total_requests(), 2);
+    assert_eq!(runtime.usage().bootstrap_requests(), 1);
+    assert_eq!(runtime.usage().planned_requests(), 1);
+    assert_eq!(runtime.usage().completed_execution_turns(), 0);
+    assert_eq!(runtime.usage().same_action_attempts(action.action_id()), 1);
+    assert!(runtime.knowledge().stats().evidence > 0);
+    assert!(runtime.experience().is_empty());
+    assert!(matches!(
+        runtime.session().state(),
+        DecisionLoopState::AwaitingPassive { case } if case.action_id() == action.action_id()
+    ));
+    assert_eq!(server.methods().await, ["GET"]);
 }
 
 #[tokio::test]

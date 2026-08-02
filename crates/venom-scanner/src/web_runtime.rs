@@ -14,17 +14,17 @@ use venom_core::{
 
 use crate::{
     AdaptationLimits, BenefitScore, DecisionActionOrigin, DecisionEvidenceReceipt,
-    DecisionExecutionLimits, DecisionExecutionStage, DecisionExecutorRegistry, DecisionLoop,
-    DecisionLoopCommand, DecisionLoopConfig, DecisionLoopError, DecisionOutcomeReport,
-    DecisionPlanningReport, DecisionReasoningCommitReceipt, DecisionRunnerAdapter,
-    DecisionRunnerError, DecisionRunnerTurn, DecisionSession, ExperiencePolicy, ExperienceStore,
-    ExperienceStoreError, HttpEvidenceError, HttpEvidenceExecutor, HttpEvidencePolicy, HttpProbe,
-    HttpProbeMethod, KnowledgeBase, KnowledgeWrite, PlannerError, PlanningContext, RiskScore,
-    RuntimeBudget, RuntimeBudgetDimension, RuntimeLimitExceeded, RuntimeUsage,
-    StandardApiInstallReport, StandardApiReasoning, StandardApiReasoningError,
-    StandardWebActionKind, StandardWebDecisionError, StandardWebDecisionInstallReport,
-    StandardWebDecisionProfile, SubjectHttpProbeProvider, VerificationCase, VerificationError,
-    HTTP_EVIDENCE_EXECUTOR_ID,
+    DecisionExecutionFailureReceipt, DecisionExecutionLimits, DecisionExecutionStage,
+    DecisionExecutorRegistry, DecisionLoop, DecisionLoopCommand, DecisionLoopConfig,
+    DecisionLoopError, DecisionOutcomeReport, DecisionPlanningReport,
+    DecisionReasoningCommitReceipt, DecisionRunnerAdapter, DecisionRunnerError, DecisionRunnerTurn,
+    DecisionSession, ExperiencePolicy, ExperienceStore, ExperienceStoreError, HttpEvidenceError,
+    HttpEvidenceExecutor, HttpEvidencePolicy, HttpProbe, HttpProbeMethod, KnowledgeBase,
+    KnowledgeWrite, PlannerError, PlanningContext, RiskScore, RuntimeBudget,
+    RuntimeBudgetDimension, RuntimeLimitExceeded, RuntimeUsage, StandardApiInstallReport,
+    StandardApiReasoning, StandardApiReasoningError, StandardWebActionKind,
+    StandardWebDecisionError, StandardWebDecisionInstallReport, StandardWebDecisionProfile,
+    SubjectHttpProbeProvider, VerificationCase, VerificationError, HTTP_EVIDENCE_EXECUTOR_ID,
 };
 
 mod api_visibility;
@@ -100,6 +100,22 @@ pub enum StandardWebDecisionRuntimeError {
 }
 
 impl StandardWebDecisionRuntimeError {
+    /// Returns an executor-reported pre-commit failure receipt, when applicable.
+    pub fn execution_failure(&self) -> Option<&DecisionExecutionFailureReceipt> {
+        match self {
+            Self::Runner(source) => source.execution_failure(),
+            _ => None,
+        }
+    }
+
+    /// Takes ownership of an executor-reported failure receipt without cloning it.
+    pub fn into_execution_failure(self) -> Option<DecisionExecutionFailureReceipt> {
+        match self {
+            Self::Runner(source) => source.into_execution_failure(),
+            _ => None,
+        }
+    }
+
     /// Returns evidence committed before this runtime error, when applicable.
     pub fn committed_evidence(&self) -> Option<&DecisionEvidenceReceipt> {
         match self {

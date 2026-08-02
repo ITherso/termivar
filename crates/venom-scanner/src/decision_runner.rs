@@ -132,11 +132,22 @@ impl DecisionExecutionRequest {
 #[error("{message}")]
 pub struct DecisionExecutorError {
     message: String,
+    kind: DecisionExecutionFailureKind,
+    receipt: Option<DecisionExecutionFailureReceipt>,
 }
 
 impl DecisionExecutorError {
-    /// Creates an executor failure with a stable diagnostic.
+    /// Creates a generic executor failure with a stable diagnostic.
+    ///
+    /// This compatibility constructor classifies the failure as
+    /// [`DecisionExecutionFailureKind::ExecutorFailure`]. Executors with
+    /// structured failure provenance should use [`Self::with_kind`].
     pub fn new(message: impl Into<String>) -> Self {
+        Self::with_kind(DecisionExecutionFailureKind::ExecutorFailure, message)
+    }
+
+    /// Creates an executor failure with an explicit, transport-neutral kind.
+    pub fn with_kind(kind: DecisionExecutionFailureKind, message: impl Into<String>) -> Self {
         let message = message.into();
         Self {
             message: if message.trim().is_empty() {
@@ -144,12 +155,128 @@ impl DecisionExecutorError {
             } else {
                 message
             },
+            kind,
+            receipt: None,
         }
     }
 
     /// Returns the executor-supplied diagnostic.
     pub fn message(&self) -> &str {
         &self.message
+    }
+
+    /// Returns the structured failure classification supplied by the executor.
+    pub fn kind(&self) -> DecisionExecutionFailureKind {
+        self.kind
+    }
+
+    /// Returns runner-owned execution context when this error crossed the
+    /// [`DecisionRunnerAdapter`] boundary.
+    pub fn execution_failure(&self) -> Option<&DecisionExecutionFailureReceipt> {
+        self.receipt.as_ref()
+    }
+
+    fn with_execution_context(
+        mut self,
+        request: DecisionExecutionRequest,
+        executor_id: String,
+    ) -> Self {
+        self.receipt = Some(DecisionExecutionFailureReceipt {
+            request,
+            executor_id,
+            diagnostic: self.message.clone(),
+            kind: self.kind,
+        });
+        self
+    }
+
+    fn into_execution_failure(self) -> Option<DecisionExecutionFailureReceipt> {
+        self.receipt
+    }
+}
+
+/// Transport-neutral reason an executor reported failure before evidence commit.
+///
+/// These classifications are audit facts only. They do not create verifier
+/// outcomes or directly influence Experience Store suppression policy. Route
+/// resolution, evidence provenance validation, knowledge writes, and host
+/// wall-time enforcement remain separate runner or runtime failures.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum DecisionExecutionFailureKind {
+    /// The selected action does not apply to the decision subject.
+    NotApplicable,
+    /// Host authorization or safety policy refused the execution.
+    BlockedByPolicy,
+    /// Network transport failed before evidence could be collected.
+    TransportFailure,
+    /// The executor failed independently of target transport.
+    ExecutorFailure,
+}
+
+/// Immutable audit receipt for an executor-reported pre-commit failure.
+///
+/// The receipt exists only after an executor was resolved and returned
+/// [`DecisionExecutorError`]. It does not represent route lookup, evidence
+/// validation, knowledge storage, or runtime wall-time failures.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct DecisionExecutionFailureReceipt {
+    request: DecisionExecutionRequest,
+    executor_id: String,
+    diagnostic: String,
+    kind: DecisionExecutionFailureKind,
+}
+
+impl DecisionExecutionFailureReceipt {
+    /// Returns the exact immutable request presented to the executor.
+    pub fn request(&self) -> &DecisionExecutionRequest {
+        &self.request
+    }
+
+    /// Returns the verification case whose action failed to execute.
+    pub fn case(&self) -> &VerificationCase {
+        self.request.case()
+    }
+
+    /// Returns the stable planned action identity.
+    pub fn action_id(&self) -> &str {
+        self.request.case().action_id()
+    }
+
+    /// Returns whether passive or active evidence was requested.
+    pub fn stage(&self) -> DecisionExecutionStage {
+        self.request.stage()
+    }
+
+    /// Returns the source of a passive action request.
+    pub fn origin(&self) -> Option<DecisionActionOrigin> {
+        self.request.origin()
+    }
+
+    /// Returns the scheduler delay honored before the failed execution.
+    pub fn delay_ms(&self) -> Option<u64> {
+        self.request.delay_ms()
+    }
+
+    /// Returns the host-owned resource allowances applied to the execution.
+    pub fn limits(&self) -> DecisionExecutionLimits {
+        self.request.limits()
+    }
+
+    /// Returns the resolved executor identity.
+    pub fn executor_id(&self) -> &str {
+        &self.executor_id
+    }
+
+    /// Returns the executor-supplied stable diagnostic.
+    pub fn diagnostic(&self) -> &str {
+        &self.diagnostic
+    }
+
+    /// Returns the structured reason execution produced no evidence.
+    pub fn kind(&self) -> DecisionExecutionFailureKind {
+        self.kind
     }
 }
 
@@ -460,6 +587,22 @@ pub enum DecisionRunnerError {
 }
 
 impl DecisionRunnerError {
+    /// Returns an executor-reported pre-commit failure receipt, when applicable.
+    pub fn execution_failure(&self) -> Option<&DecisionExecutionFailureReceipt> {
+        match self {
+            Self::Executor { source, .. } => source.execution_failure(),
+            _ => None,
+        }
+    }
+
+    /// Takes ownership of an executor-reported failure receipt without cloning it.
+    pub fn into_execution_failure(self) -> Option<DecisionExecutionFailureReceipt> {
+        match self {
+            Self::Executor { source, .. } => source.into_execution_failure(),
+            _ => None,
+        }
+    }
+
     /// Returns evidence that was committed before this error, when applicable.
     pub fn committed_evidence(&self) -> Option<&DecisionEvidenceReceipt> {
         match self {
@@ -584,14 +727,13 @@ impl DecisionRunnerAdapter {
         let baseline = (stage == DecisionExecutionStage::Active)
             .then(|| knowledge.snapshot_for_subject(case.subject()));
         let request = DecisionExecutionRequest::new(case.clone(), stage, origin, delay_ms, limits);
-        let evidence =
-            executor
-                .execute(&request)
-                .await
-                .map_err(|source| DecisionRunnerError::Executor {
-                    executor_id: executor_id.clone(),
-                    source,
-                })?;
+        let evidence = executor.execute(&request).await.map_err(|source| {
+            let source = source.with_execution_context(request.clone(), executor_id.clone());
+            DecisionRunnerError::Executor {
+                executor_id: executor_id.clone(),
+                source,
+            }
+        })?;
         validate_evidence(&evidence, case, &executor_id)?;
         let receipt_evidence = evidence.clone();
         let writes = knowledge.insert_evidence_batch(evidence)?;
@@ -1007,6 +1149,12 @@ mod tests {
         subject_override: Option<EntityId>,
     }
 
+    struct FailingExecutor {
+        id: &'static str,
+        kind: DecisionExecutionFailureKind,
+        diagnostic: &'static str,
+    }
+
     #[async_trait]
     impl DecisionActionExecutor for RecordingExecutor {
         fn id(&self) -> &str {
@@ -1034,6 +1182,20 @@ mod tests {
         }
     }
 
+    #[async_trait]
+    impl DecisionActionExecutor for FailingExecutor {
+        fn id(&self) -> &str {
+            self.id
+        }
+
+        async fn execute(
+            &self,
+            _request: &DecisionExecutionRequest,
+        ) -> Result<Vec<Evidence>, DecisionExecutorError> {
+            Err(DecisionExecutorError::with_kind(self.kind, self.diagnostic))
+        }
+    }
+
     fn subject() -> EntityId {
         EntityId::new("endpoint:https://example.test").unwrap()
     }
@@ -1049,6 +1211,18 @@ mod tests {
         Arc::new(RecordingExecutor {
             id,
             subject_override,
+        })
+    }
+
+    fn failing_executor(
+        id: &'static str,
+        kind: DecisionExecutionFailureKind,
+        diagnostic: &'static str,
+    ) -> Arc<dyn DecisionActionExecutor> {
+        Arc::new(FailingExecutor {
+            id,
+            kind,
+            diagnostic,
         })
     }
 
@@ -1094,6 +1268,120 @@ mod tests {
         assert_eq!(write_set[0].1, KnowledgeWrite::Inserted);
         assert!(receipt.baseline().is_none());
         assert_eq!(receipt.after_execution().evidence().len(), 1);
+    }
+
+    #[test]
+    fn executor_error_defaults_to_executor_failure_and_normalizes_diagnostics() {
+        let generic = DecisionExecutorError::new("plugin failed");
+        assert_eq!(
+            generic.kind(),
+            DecisionExecutionFailureKind::ExecutorFailure
+        );
+        assert_eq!(generic.message(), "plugin failed");
+        assert!(generic.execution_failure().is_none());
+
+        let transport =
+            DecisionExecutorError::with_kind(DecisionExecutionFailureKind::TransportFailure, "   ");
+        assert_eq!(
+            transport.kind(),
+            DecisionExecutionFailureKind::TransportFailure
+        );
+        assert_eq!(transport.message(), "executor failed without a diagnostic");
+    }
+
+    #[tokio::test]
+    async fn failed_execution_exposes_an_immutable_typed_receipt() {
+        let mut registry = DecisionExecutorRegistry::new();
+        registry
+            .register(failing_executor(
+                "plugin.http",
+                DecisionExecutionFailureKind::TransportFailure,
+                "connection reset before headers",
+            ))
+            .unwrap();
+        let adapter = DecisionRunnerAdapter::new(registry);
+        let knowledge = KnowledgeBase::new();
+        let command = DecisionLoopCommand::ExecuteAction {
+            case: case("http.probe"),
+            executor: Some("plugin.http".to_owned()),
+            origin: DecisionActionOrigin::Planned,
+            delay_ms: None,
+        };
+        let limits = DecisionExecutionLimits::new().with_max_response_body_bytes(4096);
+
+        let error = adapter
+            .execute_command_with_limits(&command, &knowledge, limits)
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            &error,
+            DecisionRunnerError::Executor {
+                executor_id,
+                source,
+            } if executor_id == "plugin.http"
+                && source.kind() == DecisionExecutionFailureKind::TransportFailure
+        ));
+
+        let receipt = error.execution_failure().unwrap();
+        assert_eq!(receipt.case().id(), "case:1");
+        assert_eq!(receipt.action_id(), "http.probe");
+        assert_eq!(receipt.stage(), DecisionExecutionStage::Passive);
+        assert_eq!(receipt.origin(), Some(DecisionActionOrigin::Planned));
+        assert_eq!(receipt.delay_ms(), None);
+        assert_eq!(receipt.limits(), limits);
+        assert_eq!(receipt.request().limits(), limits);
+        assert_eq!(receipt.executor_id(), "plugin.http");
+        assert_eq!(receipt.diagnostic(), "connection reset before headers");
+        assert_eq!(
+            receipt.kind(),
+            DecisionExecutionFailureKind::TransportFailure
+        );
+        assert_eq!(knowledge.stats().evidence, 0);
+
+        let expected = receipt.clone();
+        let owned = error.into_execution_failure().unwrap();
+        assert_eq!(owned, expected);
+    }
+
+    #[tokio::test]
+    async fn failed_active_execution_receipt_preserves_the_resolved_stage_and_route() {
+        let mut registry = DecisionExecutorRegistry::new();
+        registry
+            .register(failing_executor(
+                "plugin.active-http",
+                DecisionExecutionFailureKind::BlockedByPolicy,
+                "active requests are disabled by host policy",
+            ))
+            .unwrap();
+        registry
+            .route_action(
+                DecisionExecutionStage::Active,
+                "http.probe",
+                "plugin.active-http",
+            )
+            .unwrap();
+        let adapter = DecisionRunnerAdapter::new(registry);
+        let knowledge = KnowledgeBase::new();
+
+        let error = adapter
+            .execute_command(
+                &DecisionLoopCommand::CollectActiveEvidence {
+                    case: case("http.probe"),
+                },
+                &knowledge,
+            )
+            .await
+            .unwrap_err();
+        let receipt = error.execution_failure().unwrap();
+
+        assert_eq!(receipt.action_id(), "http.probe");
+        assert_eq!(receipt.stage(), DecisionExecutionStage::Active);
+        assert_eq!(receipt.executor_id(), "plugin.active-http");
+        assert_eq!(
+            receipt.kind(),
+            DecisionExecutionFailureKind::BlockedByPolicy
+        );
+        assert_eq!(knowledge.stats().evidence, 0);
     }
 
     #[test]

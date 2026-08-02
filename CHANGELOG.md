@@ -31,6 +31,7 @@ All notable changes to Venom are recorded here. Releases use the categories from
 - Cursor-bounded API visibility review pages with a compiled scan ceiling and rejected-edge accounting.
 - Subject/ontology revisions, bounded stale-snapshot retries, and atomic verifier state transitions for reasoning turns.
 - Typed post-reasoning planning receipts with snapshot revisions and before/after session transitions.
+- Transport-neutral executor failure kinds and immutable pre-commit receipts carrying the exact case, action, stage, origin, delay, resource limits, executor, and diagnostic.
 - A pinned `venom-core` public API compatibility command and dedicated CI gate against the `v0.9.0-alpha` source baseline.
 - A `ScanContext` construction ADR and migration guide for the next Scanner Preview release.
 
@@ -46,6 +47,7 @@ All notable changes to Venom are recorded here. Releases use the categories from
 - Added publishable version requirements to internal crate dependencies and removed the unused, unmaintained `rustls-pemfile` dependency.
 - Made the runtime bootstrap receipt optional so a fail-closed budget can stop before initial network evidence is committed.
 - Limited learned suppression to verified negative conclusions; target blocks, policy blocks, transport failures, executor failures, and inconclusive checks remain neutral.
+- Classified built-in HTTP applicability, policy, transport, and internal executor failures without parsing diagnostics or turning operational failures into verifier outcomes.
 - Moved standard web action identities into a transport-neutral catalog so verification no longer depends on HTTP execution or the `scanning` feature.
 - Replaced duplicated HTTP and web predicate literals with the canonical `venom-core` vocabulary.
 - Made API fingerprinting consume normalized media-type and path-segment evidence; the JSON rule identity is `api.response.json.media-type`.

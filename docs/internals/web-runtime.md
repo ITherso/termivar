@@ -137,6 +137,8 @@ This prevents a discovered nginx, Apache, PHP, or Laravel input hypothesis from 
 
 A runtime instance is single-use. The started flag is retained even if a network or verification error occurs, because evidence may already have been committed under deterministic case identities. Create a new runtime for a new session.
 
+When an executor reports a failure before evidence commit, `StandardWebDecisionRuntimeError::execution_failure()` forwards the runner's typed receipt. Built-in HTTP failures are classified from error variants rather than diagnostic text: unsupported subjects are not applicable, authorization/scope refusals are policy blocks, request and timeout failures are transport failures, and internal construction/model failures remain executor failures. Request reservations remain monotonic, but none of these operational classifications creates a synthetic verifier outcome or changes Experience suppression state.
+
 `StandardWebDecisionRunReport` retains:
 
 - the optional bootstrap evidence receipt (absent when a limit stops bootstrap);
