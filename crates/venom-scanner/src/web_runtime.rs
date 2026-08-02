@@ -4,9 +4,10 @@
 //! remain independently testable and the caller remains responsible for
 //! target authorization and HTTP evidence policy.
 
-use std::{collections::BTreeSet, sync::Arc, time::Duration};
+use std::{collections::BTreeSet, future::Future, sync::Arc, time::Duration};
 
 use thiserror::Error;
+use tokio_util::sync::CancellationToken;
 use url::Url;
 use venom_core::{
     EntityId, EvidenceValue, HttpEvidencePredicate, OutcomeStatus, ReasoningModelError,
@@ -174,6 +175,7 @@ pub enum StandardWebDecisionRuntimeTurn {
 pub struct StandardWebDecisionRunReport {
     bootstrap: Option<DecisionEvidenceReceipt>,
     turns: Vec<StandardWebDecisionRuntimeTurn>,
+    unverified_evidence: Option<DecisionEvidenceReceipt>,
     terminal: DecisionLoopCommand,
     usage: RuntimeUsage,
     limit_exceeded: Option<RuntimeLimitExceeded>,
@@ -189,6 +191,17 @@ impl StandardWebDecisionRunReport {
     /// Returns non-terminal planning and outcome turns in execution order.
     pub fn turns(&self) -> &[StandardWebDecisionRuntimeTurn] {
         &self.turns
+    }
+
+    /// Returns evidence durably committed before host cancellation prevented
+    /// verification and the corresponding session transition.
+    ///
+    /// This is populated only when execution finished and committed its
+    /// evidence batch before the cancellation boundary won. The receipt is
+    /// intentionally kept outside [`Self::outcome_reports`] because no
+    /// verifier outcome exists for this batch.
+    pub fn unverified_evidence(&self) -> Option<&DecisionEvidenceReceipt> {
+        self.unverified_evidence.as_ref()
     }
 
     /// Returns the command that ended the session.
@@ -242,6 +255,7 @@ pub struct StandardWebDecisionRuntimeBuilder {
     experience: ExperienceStore,
     runtime_budget: RuntimeBudget,
     api_reasoning_enabled: bool,
+    cancellation: CancellationToken,
 }
 
 impl StandardWebDecisionRuntimeBuilder {
@@ -259,6 +273,7 @@ impl StandardWebDecisionRuntimeBuilder {
             experience: ExperienceStore::new(),
             runtime_budget: RuntimeBudget::default(),
             api_reasoning_enabled: false,
+            cancellation: CancellationToken::new(),
         }
     }
 
@@ -322,6 +337,16 @@ impl StandardWebDecisionRuntimeBuilder {
     /// Replaces the complete runtime resource envelope.
     pub fn runtime_budget(mut self, budget: RuntimeBudget) -> Self {
         self.runtime_budget = budget;
+        self
+    }
+
+    /// Replaces the host-owned cancellation token for this runtime.
+    ///
+    /// Cancellation is reported independently from wall-time and transport
+    /// request timeouts. The host should retain a clone when it needs to stop
+    /// [`StandardWebDecisionRuntime::analyze`] from another task.
+    pub fn cancellation_token(mut self, cancellation: CancellationToken) -> Self {
+        self.cancellation = cancellation;
         self
     }
 
@@ -431,6 +456,7 @@ impl StandardWebDecisionRuntimeBuilder {
             budget: self.runtime_budget,
             request_accounting,
             usage: RuntimeUsage::default(),
+            cancellation: self.cancellation,
             started: false,
         })
     }
@@ -472,6 +498,7 @@ pub struct StandardWebDecisionRuntime {
     budget: RuntimeBudget,
     request_accounting: RequestAccountingBroker,
     usage: RuntimeUsage,
+    cancellation: CancellationToken,
     started: bool,
 }
 
@@ -531,6 +558,14 @@ impl StandardWebDecisionRuntime {
         &self.usage
     }
 
+    /// Returns a clone of the host-owned cancellation token.
+    ///
+    /// Cancelling the returned token stops this single-use runtime at its next
+    /// async or deterministic planning boundary.
+    pub fn cancellation_token(&self) -> CancellationToken {
+        self.cancellation.clone()
+    }
+
     /// Returns whether execution has been attempted.
     pub fn has_started(&self) -> bool {
         self.started
@@ -557,6 +592,10 @@ impl StandardWebDecisionRuntime {
         let deadline = started_at.checked_add(self.budget.max_wall_time());
         let mut turns = Vec::new();
 
+        if self.cancellation.is_cancelled() {
+            return Ok(self.cancellation_report(None, turns, None, started_at));
+        }
+
         let bootstrap_case = VerificationCase::new(
             BOOTSTRAP_CASE_ID,
             self.subject.clone(),
@@ -572,31 +611,31 @@ impl StandardWebDecisionRuntime {
         let bootstrap_limits = match self.reserve_execution(&bootstrap_command, started_at) {
             Ok(limits) => limits,
             Err(limit) => {
+                if self.cancellation.is_cancelled() {
+                    return Ok(self.cancellation_report(None, turns, None, started_at));
+                }
                 return Ok(self.limit_report(None, turns, limit, started_at));
             },
         };
-        let bootstrap_result = match deadline {
-            Some(deadline) => tokio::time::timeout_at(
-                deadline,
-                self.runner.execute_command_with_limits(
-                    &bootstrap_command,
-                    &self.knowledge,
-                    bootstrap_limits,
-                ),
-            )
-            .await
-            .map_err(|_| ()),
-            None => Ok(self
-                .runner
-                .execute_command_with_limits(&bootstrap_command, &self.knowledge, bootstrap_limits)
-                .await),
-        };
+        if self.cancellation.is_cancelled() {
+            return Ok(self.cancellation_report(None, turns, None, started_at));
+        }
+        let bootstrap_result = await_execution(
+            &self.cancellation,
+            deadline,
+            self.runner.execute_command_with_limits(
+                &bootstrap_command,
+                &self.knowledge,
+                bootstrap_limits,
+            ),
+        )
+        .await;
         let bootstrap = match bootstrap_result {
-            Ok(Ok(receipt)) => {
+            RuntimeExecution::Completed(Ok(receipt)) => {
                 self.refresh_elapsed(started_at);
                 receipt
             },
-            Ok(Err(error)) => {
+            RuntimeExecution::Completed(Err(error)) => {
                 self.refresh_elapsed(started_at);
                 if let Some(limit) = error.runtime_limit().cloned() {
                     let failure = error.into_execution_failure();
@@ -606,7 +645,10 @@ impl StandardWebDecisionRuntime {
                 }
                 return Err(error.into());
             },
-            Err(()) => {
+            RuntimeExecution::Cancelled => {
+                return Ok(self.cancellation_report(None, turns, None, started_at));
+            },
+            RuntimeExecution::WallTimeExceeded => {
                 let limit = self.wall_limit(started_at);
                 return Ok(self.limit_report(None, turns, limit, started_at));
             },
@@ -614,10 +656,17 @@ impl StandardWebDecisionRuntime {
         let bootstrap = self.record_response_usage(bootstrap)?;
         let bootstrap = Some(bootstrap);
 
+        if self.cancellation.is_cancelled() {
+            return Ok(self.cancellation_report(bootstrap, turns, None, started_at));
+        }
+
         let mut command = DecisionLoopCommand::Replan;
         let terminal = loop {
             match &command {
                 DecisionLoopCommand::Replan => {
+                    if self.cancellation.is_cancelled() {
+                        return Ok(self.cancellation_report(bootstrap, turns, None, started_at));
+                    }
                     if let Some(limit) = self.wall_limit_if_reached(started_at) {
                         return Ok(self.limit_report(bootstrap, turns, limit, started_at));
                     }
@@ -629,6 +678,9 @@ impl StandardWebDecisionRuntime {
                     )?;
                     command = planning.command().clone();
                     turns.push(StandardWebDecisionRuntimeTurn::Planning(Box::new(planning)));
+                    if self.cancellation.is_cancelled() {
+                        return Ok(self.cancellation_report(bootstrap, turns, None, started_at));
+                    }
                     if is_terminal(&command) {
                         break command.clone();
                     }
@@ -638,6 +690,9 @@ impl StandardWebDecisionRuntime {
                 },
                 DecisionLoopCommand::ExecuteAction { .. }
                 | DecisionLoopCommand::CollectActiveEvidence { .. } => {
+                    if self.cancellation.is_cancelled() {
+                        return Ok(self.cancellation_report(bootstrap, turns, None, started_at));
+                    }
                     let previous_stage = execution_stage(&command)
                         .expect("execution commands always have a verification stage");
                     let completed_action_id = execution_action_id(&command)
@@ -646,37 +701,34 @@ impl StandardWebDecisionRuntime {
                     let limits = match self.reserve_execution(&command, started_at) {
                         Ok(limits) => limits,
                         Err(limit) => {
+                            if self.cancellation.is_cancelled() {
+                                return Ok(
+                                    self.cancellation_report(bootstrap, turns, None, started_at)
+                                );
+                            }
                             return Ok(self.limit_report(bootstrap, turns, limit, started_at));
                         },
                     };
-                    let evidence_result = match deadline {
-                        Some(deadline) => tokio::time::timeout_at(
-                            deadline,
-                            self.runner.execute_session_command_with_limits(
-                                &command,
-                                &self.knowledge,
-                                &self.session,
-                                limits,
-                            ),
-                        )
-                        .await
-                        .map_err(|_| ()),
-                        None => Ok(self
-                            .runner
-                            .execute_session_command_with_limits(
-                                &command,
-                                &self.knowledge,
-                                &self.session,
-                                limits,
-                            )
-                            .await),
-                    };
+                    if self.cancellation.is_cancelled() {
+                        return Ok(self.cancellation_report(bootstrap, turns, None, started_at));
+                    }
+                    let evidence_result = await_execution(
+                        &self.cancellation,
+                        deadline,
+                        self.runner.execute_session_command_with_limits(
+                            &command,
+                            &self.knowledge,
+                            &self.session,
+                            limits,
+                        ),
+                    )
+                    .await;
                     let evidence = match evidence_result {
-                        Ok(Ok(receipt)) => {
+                        RuntimeExecution::Completed(Ok(receipt)) => {
                             self.refresh_elapsed(started_at);
                             receipt
                         },
-                        Ok(Err(error)) => {
+                        RuntimeExecution::Completed(Err(error)) => {
                             self.refresh_elapsed(started_at);
                             if let Some(limit) = error.runtime_limit().cloned() {
                                 let failure = error.into_execution_failure();
@@ -686,12 +738,23 @@ impl StandardWebDecisionRuntime {
                             }
                             return Err(error.into());
                         },
-                        Err(()) => {
+                        RuntimeExecution::Cancelled => {
+                            return Ok(self.cancellation_report(bootstrap, turns, None, started_at));
+                        },
+                        RuntimeExecution::WallTimeExceeded => {
                             let limit = self.wall_limit(started_at);
                             return Ok(self.limit_report(bootstrap, turns, limit, started_at));
                         },
                     };
                     let evidence = self.record_response_usage(evidence)?;
+                    if self.cancellation.is_cancelled() {
+                        return Ok(self.cancellation_report(
+                            bootstrap,
+                            turns,
+                            Some(evidence),
+                            started_at,
+                        ));
+                    }
                     let runner_turn = self.runner.resume_session_command(
                         &self.decision_loop,
                         &command,
@@ -706,6 +769,14 @@ impl StandardWebDecisionRuntime {
                         DecisionRunnerTurn::Planning(planning) => {
                             command = planning.command().clone();
                             turns.push(StandardWebDecisionRuntimeTurn::Planning(planning));
+                            if is_terminal(&command) {
+                                break command.clone();
+                            }
+                            if self.cancellation.is_cancelled() {
+                                return Ok(
+                                    self.cancellation_report(bootstrap, turns, None, started_at)
+                                );
+                            }
                         },
                         DecisionRunnerTurn::Outcome { evidence, decision } => {
                             command = decision.command().clone();
@@ -718,6 +789,11 @@ impl StandardWebDecisionRuntime {
                             });
                             if is_terminal(&command) {
                                 break command.clone();
+                            }
+                            if self.cancellation.is_cancelled() {
+                                return Ok(
+                                    self.cancellation_report(bootstrap, turns, None, started_at)
+                                );
                             }
                             if self.usage.consecutive_no_progress_turns()
                                 >= self.budget.max_consecutive_no_progress_turns()
@@ -749,6 +825,7 @@ impl StandardWebDecisionRuntime {
         Ok(StandardWebDecisionRunReport {
             bootstrap,
             turns,
+            unverified_evidence: None,
             terminal,
             usage: self.usage.clone(),
             limit_exceeded: None,
@@ -863,6 +940,7 @@ impl StandardWebDecisionRuntime {
         StandardWebDecisionRunReport {
             bootstrap,
             turns,
+            unverified_evidence: None,
             terminal: DecisionLoopCommand::Halt {
                 reason: crate::DecisionStopReason::RuntimeBudgetLimit,
             },
@@ -870,6 +948,66 @@ impl StandardWebDecisionRuntime {
             limit_exceeded: Some(limit),
             execution_failure,
         }
+    }
+
+    fn cancellation_report(
+        &mut self,
+        bootstrap: Option<DecisionEvidenceReceipt>,
+        turns: Vec<StandardWebDecisionRuntimeTurn>,
+        unverified_evidence: Option<DecisionEvidenceReceipt>,
+        started_at: tokio::time::Instant,
+    ) -> StandardWebDecisionRunReport {
+        self.refresh_elapsed(started_at);
+        self.session.halt_for_host_cancellation();
+        StandardWebDecisionRunReport {
+            bootstrap,
+            turns,
+            unverified_evidence,
+            terminal: DecisionLoopCommand::Halt {
+                reason: crate::DecisionStopReason::CancelledByHost,
+            },
+            usage: self.usage.clone(),
+            limit_exceeded: None,
+            execution_failure: None,
+        }
+    }
+}
+
+enum RuntimeExecution<T> {
+    Completed(T),
+    Cancelled,
+    WallTimeExceeded,
+}
+
+async fn await_execution<F, T>(
+    cancellation: &CancellationToken,
+    deadline: Option<tokio::time::Instant>,
+    execution: F,
+) -> RuntimeExecution<T>
+where
+    F: Future<Output = T>,
+{
+    tokio::pin!(execution);
+    match deadline {
+        Some(deadline) => {
+            tokio::select! {
+                // A ready execution result wins so a receipt produced by an
+                // already-completed evidence commit is never discarded. When
+                // both stop signals are ready, explicit host cancellation is
+                // more specific than the wall-time fallback.
+                biased;
+                result = &mut execution => RuntimeExecution::Completed(result),
+                () = cancellation.cancelled() => RuntimeExecution::Cancelled,
+                () = tokio::time::sleep_until(deadline) => RuntimeExecution::WallTimeExceeded,
+            }
+        },
+        None => {
+            tokio::select! {
+                biased;
+                result = &mut execution => RuntimeExecution::Completed(result),
+                () = cancellation.cancelled() => RuntimeExecution::Cancelled,
+            }
+        },
     }
 }
 

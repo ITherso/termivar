@@ -252,6 +252,8 @@ pub enum DecisionStopReason {
     ActionCycleLimit,
     /// A host runtime exhausted its side-effect resource envelope.
     RuntimeBudgetLimit,
+    /// The host explicitly cancelled the target-scoped runtime.
+    CancelledByHost,
 }
 
 /// Side-effect-free command consumed by a runner or scheduler.
@@ -378,6 +380,13 @@ impl DecisionSession {
     pub(crate) fn halt_for_runtime_budget(&mut self) {
         self.state = DecisionLoopState::Halted {
             reason: DecisionStopReason::RuntimeBudgetLimit,
+        };
+    }
+
+    /// Stops an outstanding session after an explicit host cancellation.
+    pub(crate) fn halt_for_host_cancellation(&mut self) {
+        self.state = DecisionLoopState::Halted {
+            reason: DecisionStopReason::CancelledByHost,
         };
     }
 

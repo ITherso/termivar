@@ -28,9 +28,11 @@ authorized target + HTTP policy
 ```rust
 let policy = HttpEvidencePolicy::for_origin(target.clone())?
     .with_body_capture(HttpBodyCapture::TextSample { max_chars: 8_192 })?;
+let cancellation = tokio_util::sync::CancellationToken::new();
 
 let mut runtime = StandardWebDecisionRuntime::builder(target)
     .http_policy(policy)
+    .cancellation_token(cancellation.clone())
     .enable_api_reasoning()
     .business_value(80)
     .planning_budget(100)
@@ -43,6 +45,11 @@ let mut runtime = StandardWebDecisionRuntime::builder(target)
 
 let report = runtime.analyze().await?;
 ```
+
+The host may retain the token clone and cancel it for a user stop, scope
+change, incident response, or shutdown. Host cancellation is reported as
+`Halt { reason: CancelledByHost }`; it is distinct from the complete-runtime
+wall deadline and from an individual request timeout.
 
 The runnable [`decision_scan`](https://github.com/ITherso/venom/blob/main/examples/decision_scan.rs) example accepts an explicitly supplied target URL and prints the selected actions, verified outcomes, terminal command, and learned experience count.
 
@@ -121,6 +128,14 @@ The runtime checks limits in a stable order before execution: wall time; advisor
 
 The wall deadline starts at the beginning of `analyze()` and covers bootstrap, reasoning, scheduler delay, network I/O, verification, and state transitions. Awaited delays and requests are cancelled at the monotonic deadline. Synchronous reasoning cannot be interrupted mid-function, so the runtime checks the deadline again immediately after it returns.
 
+Host cancellation is checked before bootstrap, at deterministic planning
+boundaries, and while bootstrap or action execution is awaited. The runtime
+uses a deliberately biased wait order: a ready execution result wins first so
+a just-produced commit receipt is not discarded; an explicit host cancellation
+wins over a simultaneously ready wall deadline because it is the more specific
+stop reason. Cancellation after evidence commit but before verification keeps
+that receipt in `unverified_evidence()` and does not synthesize an outcome.
+
 `HttpEvidencePolicy::max_body_bytes` remains a per-response ceiling. `RuntimeBudget::max_response_bytes` is the session-wide total of response-body bytes retained by broker leases. Every retained chunk is charged before it is exposed to the executor. Bytes remain charged when a later chunk fails, the request times out, or the outer wall deadline cancels collection; accounting is no longer inferred from successful evidence. The collector uses the smallest of the remaining session allowance, its per-execution allowance, and its per-response policy. Content-Length, discarded bytes beyond those bounds, and wire overhead are not charged as retained body bytes.
 
 All built-in HTTP executors installed by `StandardWebDecisionRuntime` share one broker, one redirect-disabled and implicit-retry-disabled client, and one accounting authority. Bootstrap, planned, adaptive, retry, and active-verification dispatches therefore compete for the same atomic envelope. Redirect responses consume the request that produced them but are not followed. Semantic retries re-enter the broker and acquire a fresh lease. Low-level callers that construct and run an arbitrary `DecisionActionExecutor` outside this standard runtime remain responsible for their own transport policy and accounting.
@@ -146,6 +161,8 @@ When an executor reports a failure before evidence commit, `StandardWebDecisionR
 - the optional bootstrap evidence receipt (absent when a limit stops bootstrap);
 - each reasoning/planning report;
 - every executor evidence receipt and outcome report;
+- evidence committed immediately before cancellation, exposed separately as
+  `unverified_evidence()` because no verifier outcome exists;
 - the final `Complete`, `AwaitHumanReview`, or `Halt` command;
 - final resource usage and an optional structured limit record;
 - an optional execution-failure receipt when the broker refused an in-executor dispatch.

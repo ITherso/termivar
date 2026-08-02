@@ -10,9 +10,9 @@ use tokio::{
 use venom_core::{
     ApiKnowledgePredicate, ApiResponseFormat, ApiSurfaceKind, ApiVisibilityBoundaryKind,
     ApiVisibilityComparison, ApiVisibilityDimension, ApiVisibilityObservation,
-    ApiVisibilityPairKind, ApiVisibilityResult, ConfidenceScore, EntityId, Evidence, EvidenceValue,
-    Hypothesis, HypothesisState, HypothesisStrength, OutcomeStatus, PredicateDescriptor,
-    Probability, WebKnowledgePredicate,
+    ApiVisibilityPairKind, ApiVisibilityResult, ConfidenceScore, EntityId, Evidence, EvidenceKind,
+    EvidenceSource, EvidenceValue, Hypothesis, HypothesisState, HypothesisStrength, OutcomeStatus,
+    PredicateDescriptor, Probability, WebKnowledgePredicate,
 };
 
 use super::*;
@@ -45,6 +45,11 @@ struct BudgetDeniedRuntimeExecutor {
     limit: RuntimeLimitExceeded,
 }
 
+struct CancelAfterEvidenceExecutor {
+    id: &'static str,
+    cancellation: CancellationToken,
+}
+
 #[async_trait]
 impl DecisionActionExecutor for BudgetDeniedRuntimeExecutor {
     fn id(&self) -> &str {
@@ -72,6 +77,33 @@ impl DecisionActionExecutor for FailingRuntimeExecutor {
         _request: &DecisionExecutionRequest,
     ) -> Result<Vec<Evidence>, DecisionExecutorError> {
         Err(DecisionExecutorError::with_kind(self.kind, self.diagnostic))
+    }
+}
+
+#[async_trait]
+impl DecisionActionExecutor for CancelAfterEvidenceExecutor {
+    fn id(&self) -> &str {
+        self.id
+    }
+
+    async fn execute(
+        &self,
+        request: &DecisionExecutionRequest,
+    ) -> Result<Vec<Evidence>, DecisionExecutorError> {
+        let source = EvidenceSource::new(self.id, "cancel-after-evidence")
+            .unwrap()
+            .with_correlation_id(request.case().id())
+            .unwrap();
+        let evidence = Evidence::new(
+            request.case().subject().clone(),
+            EvidenceKind::Http,
+            HttpEvidencePredicate::RESPONSE_BODY_BYTES_OBSERVED.into_knowledge(),
+            EvidenceValue::Unsigned(0),
+            source,
+            ConfidenceScore::MAX,
+        );
+        self.cancellation.cancel();
+        Ok(vec![evidence])
     }
 }
 
@@ -169,6 +201,17 @@ fn assert_runtime_limit(
     limit
 }
 
+fn assert_host_cancelled(report: &StandardWebDecisionRunReport) {
+    assert!(matches!(
+        report.terminal(),
+        DecisionLoopCommand::Halt {
+            reason: DecisionStopReason::CancelledByHost
+        }
+    ));
+    assert!(report.limit_exceeded().is_none());
+    assert!(report.execution_failure().is_none());
+}
+
 fn evidence_value<'a>(
     receipt: &'a DecisionEvidenceReceipt,
     predicate: &str,
@@ -245,6 +288,173 @@ fn builder_validates_decision_limits_and_exposes_runtime_defaults() {
     assert!(!runtime
         .unsupported_actions()
         .contains(StandardWebActionKind::HttpBasicAuthBoundary.action_id()));
+}
+
+#[tokio::test]
+async fn pre_cancelled_runtime_stops_before_bootstrap_io() {
+    let server = serve(vec![Reply::Response(OK)]).await;
+    let cancellation = CancellationToken::new();
+    cancellation.cancel();
+    let mut runtime = StandardWebDecisionRuntime::builder(server.target())
+        .cancellation_token(cancellation)
+        .build()
+        .unwrap();
+
+    let report = runtime.analyze().await.unwrap();
+
+    assert_host_cancelled(&report);
+    assert!(report.bootstrap().is_none());
+    assert!(report.unverified_evidence().is_none());
+    assert_eq!(report.usage().total_requests(), 0);
+    assert_eq!(runtime.knowledge().stats().evidence, 0);
+    assert!(matches!(
+        runtime.session().state(),
+        DecisionLoopState::Halted {
+            reason: DecisionStopReason::CancelledByHost
+        }
+    ));
+    assert!(server.methods().await.is_empty());
+}
+
+#[tokio::test]
+async fn host_cancellation_interrupts_in_flight_bootstrap_without_becoming_a_wall_limit() {
+    let server = serve(vec![Reply::Stall]).await;
+    let cancellation = CancellationToken::new();
+    let observed_methods = server.methods.clone();
+    let cancel_from_host = cancellation.clone();
+    let canceller = tokio::spawn(async move {
+        loop {
+            if !observed_methods.lock().await.is_empty() {
+                cancel_from_host.cancel();
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    });
+    let mut runtime = StandardWebDecisionRuntime::builder(server.target())
+        .cancellation_token(cancellation)
+        .max_wall_time(Duration::from_secs(5))
+        .build()
+        .unwrap();
+
+    let report = runtime.analyze().await.unwrap();
+    canceller.await.unwrap();
+
+    assert_host_cancelled(&report);
+    assert!(report.bootstrap().is_none());
+    assert!(report.unverified_evidence().is_none());
+    assert_eq!(report.usage().total_requests(), 1);
+    assert!(report.usage().elapsed() < Duration::from_secs(5));
+    assert_eq!(server.methods().await, ["GET"]);
+}
+
+#[tokio::test]
+async fn host_cancellation_interrupts_an_in_flight_planned_action() {
+    let server = serve(vec![Reply::Response(BASIC), Reply::Stall]).await;
+    let cancellation = CancellationToken::new();
+    let observed_methods = server.methods.clone();
+    let cancel_from_host = cancellation.clone();
+    let canceller = tokio::spawn(async move {
+        loop {
+            if observed_methods.lock().await.len() == 2 {
+                cancel_from_host.cancel();
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    });
+    let mut runtime = StandardWebDecisionRuntime::builder(server.target())
+        .cancellation_token(cancellation)
+        .max_wall_time(Duration::from_secs(5))
+        .build()
+        .unwrap();
+
+    let report = runtime.analyze().await.unwrap();
+    canceller.await.unwrap();
+
+    assert_host_cancelled(&report);
+    assert!(report.bootstrap().is_some());
+    assert_eq!(report.planning_reports().count(), 1);
+    assert_eq!(report.outcome_reports().count(), 0);
+    assert!(report.unverified_evidence().is_none());
+    assert_eq!(report.usage().total_requests(), 2);
+    assert_eq!(report.usage().total_action_attempts(), 2);
+    assert_eq!(server.methods().await, ["GET", "HEAD"]);
+}
+
+#[tokio::test]
+async fn explicit_cancellation_wins_over_an_already_expired_wall_budget() {
+    let server = serve(vec![Reply::Response(OK)]).await;
+    let cancellation = CancellationToken::new();
+    cancellation.cancel();
+    let mut runtime = StandardWebDecisionRuntime::builder(server.target())
+        .cancellation_token(cancellation)
+        .max_wall_time(Duration::ZERO)
+        .build()
+        .unwrap();
+
+    let report = runtime.analyze().await.unwrap();
+
+    assert_host_cancelled(&report);
+    assert!(report.limit_exceeded().is_none());
+    assert_eq!(report.usage().total_requests(), 0);
+    assert!(server.methods().await.is_empty());
+}
+
+#[tokio::test]
+async fn cancellation_after_evidence_commit_keeps_an_unverified_receipt() {
+    let server = serve(vec![Reply::Response(BASIC)]).await;
+    let policy = HttpEvidencePolicy::for_origin(server.target()).unwrap();
+    let cancellation = CancellationToken::new();
+    let mut runtime = StandardWebDecisionRuntime::builder(server.target())
+        .http_policy(policy.clone())
+        .cancellation_token(cancellation.clone())
+        .build()
+        .unwrap();
+    let action = StandardWebActionKind::HttpBasicAuthBoundary;
+    let mut registry = DecisionExecutorRegistry::new();
+    registry
+        .register(Arc::new(
+            HttpEvidenceExecutor::new_with_accounting(
+                policy,
+                Arc::new(SubjectHttpProbeProvider::new(HttpProbeMethod::Get)),
+                runtime.request_accounting.clone(),
+            )
+            .unwrap(),
+        ))
+        .unwrap();
+    registry
+        .register(Arc::new(CancelAfterEvidenceExecutor {
+            id: action.executor_id(),
+            cancellation,
+        }))
+        .unwrap();
+    runtime.runner = DecisionRunnerAdapter::new(registry);
+
+    let report = runtime.analyze().await.unwrap();
+
+    assert_host_cancelled(&report);
+    assert!(report.bootstrap().is_some());
+    assert_eq!(report.planning_reports().count(), 1);
+    assert_eq!(report.outcome_reports().count(), 0);
+    let receipt = report.unverified_evidence().unwrap();
+    assert_eq!(receipt.case().action_id(), action.action_id());
+    assert_eq!(receipt.stage(), DecisionExecutionStage::Passive);
+    assert_eq!(receipt.evidence().len(), 1);
+    assert_eq!(receipt.writes(), [KnowledgeWrite::Inserted]);
+    assert!(runtime
+        .knowledge()
+        .evidence(receipt.evidence()[0].id())
+        .is_some());
+    assert_eq!(report.usage().total_action_attempts(), 2);
+    assert_eq!(report.usage().total_requests(), 1);
+    assert!(matches!(
+        runtime.session().state(),
+        DecisionLoopState::Halted {
+            reason: DecisionStopReason::CancelledByHost
+        }
+    ));
+    assert_eq!(server.methods().await, ["GET"]);
 }
 
 #[tokio::test]
