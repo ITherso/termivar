@@ -5,6 +5,7 @@ Venom is currently **v0.9.0-alpha**. It is a modular Rust-based penetration test
 ## Why alpha
 
 - The Scanner SDK and plugin API are public and usable, but their contracts may still change before v1.
+- `venom-scanner` is not source-compatible with the released `ScanContext` struct literal because the public `knowledge` field was added; the next preview release needs an explicit upgrade note and scanner baseline decision.
 - The distributed worker pool is an in-process scheduling preview, not a durable multi-node control plane.
 - Criterion and fuzz baselines exist, but endpoint-scale CPU, memory, latency, and throughput evidence is incomplete.
 - No independent security audit has been completed.
@@ -15,7 +16,7 @@ Venom is currently **v0.9.0-alpha**. It is a modular Rust-based penetration test
 
 | Gate | Current evidence | Exit criterion | Tracking | Target milestone |
 | --- | --- | --- | --- | --- |
-| Stable SDK and plugin contracts | Preview API, compatibility line, SemVer checks | Public contracts documented, baselined, and protected by compatibility tests | [#4](https://github.com/ITherso/venom/issues/4) | v1.0 |
+| Stable SDK and plugin contracts | Pinned `venom-core` patch gate; scanner remains unbaselined with one documented `ScanContext::knowledge` source break | Public contracts documented, baselined, and protected by compatibility tests | [#4](https://github.com/ITherso/venom/issues/4) | v1.0 |
 | Reproducible performance report | Criterion microbaseline | Publish controlled 100/1,000 endpoint and 10,000-request CPU, RAM, latency, and throughput results | [#5](https://github.com/ITherso/venom/issues/5) | v1.0 |
 | Fuzzing maturity | Scheduled bounded campaigns and committed baseline | Expand corpus/coverage, retain crash artifacts, and document a repeatable triage path | Backlog | v1.0 |
 | Security readiness | CodeQL, `cargo audit`, `cargo deny`, private reporting policy | Close audit-readiness gaps and publish the scope/outcome of an independent review | [#6](https://github.com/ITherso/venom/issues/6) | v1.0 |
@@ -27,7 +28,7 @@ Venom is currently **v0.9.0-alpha**. It is a modular Rust-based penetration test
 
 The following conditions block a stable v1.0 claim:
 
-1. No stable public API baseline and compatibility window ([#4](https://github.com/ITherso/venom/issues/4)).
+1. Scanner SDK and plugin contracts still lack an accepted stable baseline and compatibility window; the core-only gate does not close this blocker ([#4](https://github.com/ITherso/venom/issues/4)).
 2. No controlled endpoint-scale performance report ([#5](https://github.com/ITherso/venom/issues/5)).
 3. No independent security assessment ([#6](https://github.com/ITherso/venom/issues/6)).
 4. Insufficient external adoption evidence for the SDK and plugin workflow ([#3](https://github.com/ITherso/venom/issues/3)).

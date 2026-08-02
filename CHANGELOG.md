@@ -30,6 +30,7 @@ All notable changes to Venom are recorded here. Releases use the categories from
 - Cursor-bounded API visibility review pages with a compiled scan ceiling and rejected-edge accounting.
 - Subject/ontology revisions, bounded stale-snapshot retries, and atomic verifier state transitions for reasoning turns.
 - Typed post-reasoning planning receipts with snapshot revisions and before/after session transitions.
+- A pinned `venom-core` public API compatibility command and dedicated CI gate against the `v0.9.0-alpha` source baseline.
 
 ### Changed
 
@@ -50,6 +51,7 @@ All notable changes to Venom are recorded here. Releases use the categories from
 - Rejected zero-reliability HTTP evidence policies so fixed rule likelihoods cannot promote a no-confidence observation.
 - Made rule-produced hypothesis writes batch-atomic and preserved verifier-owned terminal states under the same knowledge-base lock.
 - Made planning-session changes error-atomic and snapshot-CAS guarded; planner, command-construction, and stale-knowledge failures no longer partially halt or advance a session.
+- Added evidence-driven `KnowledgeBase` state to `ScanContext`. Because the released struct was exhaustively constructible, the new public `knowledge` field is a pre-v1 source-incompatible change; struct-literal users should migrate to the provided constructors. `venom-scanner` remains outside the core-only compatibility gate pending its next preview baseline.
 
 ### Fixed
 

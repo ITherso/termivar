@@ -1,6 +1,7 @@
 //! Repository maintenance commands exposed through `cargo xtask`.
 
 mod architecture;
+mod semver;
 
 use clap::{Parser, Subcommand, ValueEnum};
 use std::{
@@ -29,6 +30,8 @@ enum Task {
     Docs,
     /// Run the local release preflight without tagging or publishing.
     Release,
+    /// Check venom-core's public API against the pinned compatibility baseline.
+    Semver,
     /// Generate an SDK starter project.
     Generate {
         #[arg(value_enum)]
@@ -73,6 +76,7 @@ fn main() -> TaskResult {
             run_mkdocs(&root)
         },
         Task::Release => release_preflight(&root),
+        Task::Semver => semver::check(&root),
         Task::Generate { template, name } => generate(&root, template, &name),
     }
 }
