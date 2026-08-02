@@ -48,7 +48,7 @@ The `http.response.status` predicate intentionally matches the standard adaptive
 
 ## Resource and data safety
 
-The complete request plus body read has one timeout. Body buffering has a configurable positive limit and a hard 16 MiB ceiling. Metadata-only capture is the default. Text sampling must be enabled explicitly and remains bounded by the body buffer.
+The complete request plus body read has one timeout. Body buffering has a configurable positive per-response limit and a hard 16 MiB ceiling. A host runtime may attach a smaller per-execution allowance; the collector always uses the smaller value and never expands policy. This is how the standard runtime enforces its cumulative response-byte budget before buffering. Metadata-only capture is the default. Text sampling must be enabled explicitly and remains bounded by the body buffer.
 
 Response headers use a conservative allowlist. `Set-Cookie` is omitted by default because it may contain session secrets; a host may opt in only when its evidence retention policy permits that data. The executor hashes exactly the bytes it observed, so a truncated-body hash is not presented as a hash of the complete representation.
 

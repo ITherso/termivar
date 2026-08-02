@@ -177,6 +177,8 @@ pub enum DecisionStopReason {
     AdaptationLimit,
     /// The outer action-cycle guard was exhausted.
     ActionCycleLimit,
+    /// A host runtime exhausted its side-effect resource envelope.
+    RuntimeBudgetLimit,
 }
 
 /// Side-effect-free command consumed by a runner or scheduler.
@@ -297,6 +299,13 @@ impl DecisionSession {
     /// Returns the current state.
     pub fn state(&self) -> &DecisionLoopState {
         &self.state
+    }
+
+    /// Stops an outstanding session when the host runtime refuses more work.
+    pub(crate) fn halt_for_runtime_budget(&mut self) {
+        self.state = DecisionLoopState::Halted {
+            reason: DecisionStopReason::RuntimeBudgetLimit,
+        };
     }
 
     /// Returns the adaptive transition ledger.

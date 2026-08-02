@@ -16,6 +16,7 @@ All notable changes to Venom are recorded here. Releases use the categories from
 - Root contribution and conduct policies, architecture decision records, and a repository-health reference.
 - A `ScannerSdk` composition API, generated scanner starter, and `cargo xtask` maintenance commands.
 - CodeQL web analysis, cargo-deny policy, scheduled parser fuzzing, and Rust 1.88 MSRV enforcement.
+- A standard deterministic web runtime with request, wall-time, response-byte, active-verification, same-action, and no-progress budgets.
 
 ### Changed
 
@@ -27,6 +28,7 @@ All notable changes to Venom are recorded here. Releases use the categories from
 - Moved the editable Draw.io architecture source directly under `docs/` for discoverability.
 - Made plugin API compatibility explicit with version negotiation and non-exhaustive public types.
 - Added publishable version requirements to internal crate dependencies and removed the unused, unmaintained `rustls-pemfile` dependency.
+- Made the runtime bootstrap receipt optional so a fail-closed budget can stop before initial network evidence is committed.
 
 ### Fixed
 

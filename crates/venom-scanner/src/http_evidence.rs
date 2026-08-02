@@ -486,6 +486,12 @@ impl HttpEvidenceExecutor {
         }
 
         let request = build_request(&self.client, &probe)?;
+        let execution_body_limit = decision
+            .limits()
+            .max_response_body_bytes()
+            .map(|limit| usize::try_from(limit).unwrap_or(usize::MAX))
+            .unwrap_or(usize::MAX);
+        let body_limit = self.policy.max_body_bytes().min(execution_body_limit);
         let started = tokio::time::Instant::now();
         let collected = tokio::time::timeout(self.policy.request_timeout(), async {
             let mut response = self
@@ -503,12 +509,12 @@ impl HttpEvidenceExecutor {
                     .content_length()
                     .and_then(|length| usize::try_from(length).ok())
                     .unwrap_or(0)
-                    .min(self.policy.max_body_bytes()),
+                    .min(body_limit),
             );
             let mut truncated = false;
 
             while let Some(chunk) = response.chunk().await.map_err(HttpEvidenceError::Request)? {
-                let remaining = self.policy.max_body_bytes().saturating_sub(body.len());
+                let remaining = body_limit.saturating_sub(body.len());
                 if chunk.len() > remaining {
                     body.extend_from_slice(&chunk[..remaining]);
                     truncated = true;

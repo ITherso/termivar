@@ -4,22 +4,23 @@
 //! remain independently testable and the caller remains responsible for
 //! target authorization and HTTP evidence policy.
 
-use std::{collections::BTreeSet, sync::Arc};
+use std::{collections::BTreeSet, sync::Arc, time::Duration};
 
 use thiserror::Error;
 use url::Url;
-use venom_core::{EntityId, ReasoningModelError};
+use venom_core::{EntityId, EvidenceValue, OutcomeStatus, ReasoningModelError};
 
 use crate::{
     AdaptationLimits, BenefitScore, DecisionActionOrigin, DecisionEvidenceReceipt,
-    DecisionExecutorRegistry, DecisionLoop, DecisionLoopCommand, DecisionLoopConfig,
-    DecisionLoopError, DecisionOutcomeReport, DecisionPlanningReport, DecisionRunnerAdapter,
-    DecisionRunnerError, DecisionRunnerTurn, DecisionSession, ExperiencePolicy, ExperienceStore,
-    ExperienceStoreError, HttpEvidenceError, HttpEvidenceExecutor, HttpEvidencePolicy, HttpProbe,
-    HttpProbeMethod, KnowledgeBase, PlannerError, PlanningContext, RiskScore,
-    StandardWebActionKind, StandardWebDecisionError, StandardWebDecisionInstallReport,
-    StandardWebDecisionProfile, SubjectHttpProbeProvider, VerificationCase, VerificationError,
-    HTTP_EVIDENCE_EXECUTOR_ID,
+    DecisionExecutionLimits, DecisionExecutionStage, DecisionExecutorRegistry, DecisionLoop,
+    DecisionLoopCommand, DecisionLoopConfig, DecisionLoopError, DecisionOutcomeReport,
+    DecisionPlanningReport, DecisionRunnerAdapter, DecisionRunnerError, DecisionRunnerTurn,
+    DecisionSession, ExperiencePolicy, ExperienceStore, ExperienceStoreError, HttpEvidenceError,
+    HttpEvidenceExecutor, HttpEvidencePolicy, HttpProbe, HttpProbeMethod, KnowledgeBase,
+    KnowledgeWrite, PlannerError, PlanningContext, RiskScore, RuntimeBudget,
+    RuntimeBudgetDimension, RuntimeLimitExceeded, RuntimeUsage, StandardWebActionKind,
+    StandardWebDecisionError, StandardWebDecisionInstallReport, StandardWebDecisionProfile,
+    SubjectHttpProbeProvider, VerificationCase, VerificationError, HTTP_EVIDENCE_EXECUTOR_ID,
 };
 
 const DEFAULT_BUSINESS_VALUE_PERCENT: u8 = 80;
@@ -30,6 +31,7 @@ const DEFAULT_FAILURE_LIMIT: u16 = 10;
 const BOOTSTRAP_ACTION_ID: &str = "web.action.bootstrap.http-evidence";
 const BOOTSTRAP_CASE_ID: &str = "case:web-runtime:bootstrap:http";
 const BOOTSTRAP_HYPOTHESIS_ID: &str = "hypothesis:web-runtime:bootstrap";
+const RESPONSE_BODY_BYTES_PREDICATE: &str = "http.response.body-bytes-observed";
 
 /// Construction and execution failures for [`StandardWebDecisionRuntime`].
 #[derive(Debug, Error)]
@@ -70,6 +72,19 @@ pub enum StandardWebDecisionRuntimeError {
     /// An executor lookup, request, evidence commit, or runner transition failed.
     #[error(transparent)]
     Runner(#[from] DecisionRunnerError),
+
+    /// Standard HTTP execution omitted or duplicated its resource telemetry.
+    #[error(
+        "execution case {case_id} emitted {observations} unsigned {predicate} observations; expected exactly one"
+    )]
+    ResponseUsageEvidence {
+        /// Execution case whose correlated evidence was invalid.
+        case_id: String,
+        /// Stable response-body usage predicate.
+        predicate: &'static str,
+        /// Matching unsigned observations found in the committed snapshot.
+        observations: usize,
+    },
 }
 
 /// One non-terminal audit record produced while driving a runtime session.
@@ -90,15 +105,17 @@ pub enum StandardWebDecisionRuntimeTurn {
 /// Complete audit trail from bootstrap evidence to a terminal command.
 #[derive(Debug)]
 pub struct StandardWebDecisionRunReport {
-    bootstrap: DecisionEvidenceReceipt,
+    bootstrap: Option<DecisionEvidenceReceipt>,
     turns: Vec<StandardWebDecisionRuntimeTurn>,
     terminal: DecisionLoopCommand,
+    usage: RuntimeUsage,
+    limit_exceeded: Option<RuntimeLimitExceeded>,
 }
 
 impl StandardWebDecisionRunReport {
     /// Returns the initial GET evidence committed before reasoning starts.
-    pub fn bootstrap(&self) -> &DecisionEvidenceReceipt {
-        &self.bootstrap
+    pub fn bootstrap(&self) -> Option<&DecisionEvidenceReceipt> {
+        self.bootstrap.as_ref()
     }
 
     /// Returns non-terminal planning and outcome turns in execution order.
@@ -109,6 +126,16 @@ impl StandardWebDecisionRunReport {
     /// Returns the command that ended the session.
     pub fn terminal(&self) -> &DecisionLoopCommand {
         &self.terminal
+    }
+
+    /// Returns the final resource accounting snapshot.
+    pub fn usage(&self) -> &RuntimeUsage {
+        &self.usage
+    }
+
+    /// Returns the structured runtime limit when the resource envelope stopped execution.
+    pub fn limit_exceeded(&self) -> Option<&RuntimeLimitExceeded> {
+        self.limit_exceeded.as_ref()
     }
 
     /// Iterates over planning audit reports in turn order.
@@ -139,6 +166,7 @@ pub struct StandardWebDecisionRuntimeBuilder {
     experience_failure_limit: u16,
     max_action_cycles: u32,
     experience: ExperienceStore,
+    runtime_budget: RuntimeBudget,
 }
 
 impl StandardWebDecisionRuntimeBuilder {
@@ -154,6 +182,7 @@ impl StandardWebDecisionRuntimeBuilder {
             experience_failure_limit: DEFAULT_FAILURE_LIMIT,
             max_action_cycles: DEFAULT_MAX_ACTION_CYCLES,
             experience: ExperienceStore::new(),
+            runtime_budget: RuntimeBudget::default(),
         }
     }
 
@@ -202,6 +231,50 @@ impl StandardWebDecisionRuntimeBuilder {
     /// Seeds the runtime with experience retained by the host.
     pub fn experience_store(mut self, experience: ExperienceStore) -> Self {
         self.experience = experience;
+        self
+    }
+
+    /// Replaces the complete runtime resource envelope.
+    pub fn runtime_budget(mut self, budget: RuntimeBudget) -> Self {
+        self.runtime_budget = budget;
+        self
+    }
+
+    /// Sets the total bootstrap, passive, active, adaptive, and retry request limit.
+    pub fn max_total_requests(mut self, limit: u32) -> Self {
+        self.runtime_budget = self.runtime_budget.with_max_total_requests(limit);
+        self
+    }
+
+    /// Sets the monotonic deadline for the complete runtime.
+    pub fn max_wall_time(mut self, limit: Duration) -> Self {
+        self.runtime_budget = self.runtime_budget.with_max_wall_time(limit);
+        self
+    }
+
+    /// Sets the cumulative buffered response-body byte limit.
+    pub fn max_response_bytes(mut self, limit: u64) -> Self {
+        self.runtime_budget = self.runtime_budget.with_max_response_bytes(limit);
+        self
+    }
+
+    /// Sets the maximum number of explicit active verification requests.
+    pub fn max_active_verifications(mut self, limit: u16) -> Self {
+        self.runtime_budget = self.runtime_budget.with_max_active_verifications(limit);
+        self
+    }
+
+    /// Sets the maximum number of attempts for one semantic action.
+    pub fn max_same_action_attempts(mut self, limit: u16) -> Self {
+        self.runtime_budget = self.runtime_budget.with_max_same_action_attempts(limit);
+        self
+    }
+
+    /// Sets the maximum consecutive completed execution turns without progress.
+    pub fn max_consecutive_no_progress_turns(mut self, limit: u16) -> Self {
+        self.runtime_budget = self
+            .runtime_budget
+            .with_max_consecutive_no_progress_turns(limit);
         self
     }
 
@@ -261,6 +334,8 @@ impl StandardWebDecisionRuntimeBuilder {
             runner: DecisionRunnerAdapter::new(executors),
             experience: self.experience,
             session: DecisionSession::new(subject),
+            budget: self.runtime_budget,
+            usage: RuntimeUsage::default(),
             started: false,
         })
     }
@@ -297,6 +372,8 @@ pub struct StandardWebDecisionRuntime {
     runner: DecisionRunnerAdapter,
     experience: ExperienceStore,
     session: DecisionSession,
+    budget: RuntimeBudget,
+    usage: RuntimeUsage,
     started: bool,
 }
 
@@ -341,6 +418,16 @@ impl StandardWebDecisionRuntime {
         &self.session
     }
 
+    /// Returns the immutable resource envelope for this session.
+    pub const fn budget(&self) -> RuntimeBudget {
+        self.budget
+    }
+
+    /// Returns current resource accounting, including failed request attempts.
+    pub fn usage(&self) -> &RuntimeUsage {
+        &self.usage
+    }
+
     /// Returns whether execution has been attempted.
     pub fn has_started(&self) -> bool {
         self.started
@@ -363,6 +450,9 @@ impl StandardWebDecisionRuntime {
             return Err(StandardWebDecisionRuntimeError::AlreadyStarted);
         }
         self.started = true;
+        let started_at = tokio::time::Instant::now();
+        let deadline = started_at.checked_add(self.budget.max_wall_time());
+        let mut turns = Vec::new();
 
         let bootstrap_case = VerificationCase::new(
             BOOTSTRAP_CASE_ID,
@@ -376,16 +466,48 @@ impl StandardWebDecisionRuntime {
             origin: DecisionActionOrigin::Bootstrap,
             delay_ms: None,
         };
-        let bootstrap = self
-            .runner
-            .execute_command(&bootstrap_command, &self.knowledge)
-            .await?;
+        let bootstrap_limits = match self.reserve_execution(&bootstrap_command, started_at) {
+            Ok(limits) => limits,
+            Err(limit) => {
+                return Ok(self.limit_report(None, turns, limit, started_at));
+            },
+        };
+        let bootstrap_result = match deadline {
+            Some(deadline) => tokio::time::timeout_at(
+                deadline,
+                self.runner.execute_command_with_limits(
+                    &bootstrap_command,
+                    &self.knowledge,
+                    bootstrap_limits,
+                ),
+            )
+            .await
+            .map_err(|_| ()),
+            None => Ok(self
+                .runner
+                .execute_command_with_limits(&bootstrap_command, &self.knowledge, bootstrap_limits)
+                .await),
+        };
+        let bootstrap = match bootstrap_result {
+            Ok(result) => {
+                self.refresh_elapsed(started_at);
+                result?
+            },
+            Err(()) => {
+                let limit = self.wall_limit(started_at);
+                return Ok(self.limit_report(None, turns, limit, started_at));
+            },
+        };
+        self.record_response_usage(&bootstrap)?;
+        let bootstrap = Some(bootstrap);
 
-        let mut turns = Vec::new();
         let mut command = DecisionLoopCommand::Replan;
         let terminal = loop {
             match &command {
                 DecisionLoopCommand::Replan => {
+                    if let Some(limit) = self.wall_limit_if_reached(started_at) {
+                        return Ok(self.limit_report(bootstrap, turns, limit, started_at));
+                    }
                     let planning = self.decision_loop.plan_next_with_suppressed_actions(
                         &self.knowledge,
                         &self.experience,
@@ -394,30 +516,101 @@ impl StandardWebDecisionRuntime {
                     )?;
                     command = planning.command().clone();
                     turns.push(StandardWebDecisionRuntimeTurn::Planning(Box::new(planning)));
+                    if is_terminal(&command) {
+                        break command.clone();
+                    }
+                    if let Some(limit) = self.wall_limit_if_reached(started_at) {
+                        return Ok(self.limit_report(bootstrap, turns, limit, started_at));
+                    }
                 },
                 DecisionLoopCommand::ExecuteAction { .. }
                 | DecisionLoopCommand::CollectActiveEvidence { .. } => {
-                    match self
-                        .runner
-                        .drive_command(
-                            &self.decision_loop,
-                            &command,
-                            &self.knowledge,
-                            &mut self.experience,
-                            &mut self.session,
+                    let previous_stage = execution_stage(&command)
+                        .expect("execution commands always have a verification stage");
+                    let completed_action_id = execution_action_id(&command)
+                        .expect("execution commands always have an action identity")
+                        .to_owned();
+                    let limits = match self.reserve_execution(&command, started_at) {
+                        Ok(limits) => limits,
+                        Err(limit) => {
+                            return Ok(self.limit_report(bootstrap, turns, limit, started_at));
+                        },
+                    };
+                    let evidence_result = match deadline {
+                        Some(deadline) => tokio::time::timeout_at(
+                            deadline,
+                            self.runner.execute_session_command_with_limits(
+                                &command,
+                                &self.knowledge,
+                                &self.session,
+                                limits,
+                            ),
                         )
-                        .await?
-                    {
+                        .await
+                        .map_err(|_| ()),
+                        None => Ok(self
+                            .runner
+                            .execute_session_command_with_limits(
+                                &command,
+                                &self.knowledge,
+                                &self.session,
+                                limits,
+                            )
+                            .await),
+                    };
+                    let evidence = match evidence_result {
+                        Ok(result) => {
+                            self.refresh_elapsed(started_at);
+                            result?
+                        },
+                        Err(()) => {
+                            let limit = self.wall_limit(started_at);
+                            return Ok(self.limit_report(bootstrap, turns, limit, started_at));
+                        },
+                    };
+                    self.record_response_usage(&evidence)?;
+                    let runner_turn = self.runner.resume_session_command(
+                        &self.decision_loop,
+                        &command,
+                        &self.knowledge,
+                        &mut self.experience,
+                        &mut self.session,
+                        evidence,
+                    );
+                    self.refresh_elapsed(started_at);
+                    let runner_turn = runner_turn?;
+                    match runner_turn {
                         DecisionRunnerTurn::Planning(planning) => {
                             command = planning.command().clone();
                             turns.push(StandardWebDecisionRuntimeTurn::Planning(planning));
                         },
                         DecisionRunnerTurn::Outcome { evidence, decision } => {
                             command = decision.command().clone();
+                            let progressed =
+                                outcome_made_progress(previous_stage, &command, decision.as_ref());
+                            self.usage.record_execution_progress(progressed);
                             turns.push(StandardWebDecisionRuntimeTurn::Outcome {
                                 evidence,
                                 decision,
                             });
+                            if is_terminal(&command) {
+                                break command.clone();
+                            }
+                            if self.usage.consecutive_no_progress_turns()
+                                >= self.budget.max_consecutive_no_progress_turns()
+                                && !progressed
+                            {
+                                let limit = RuntimeLimitExceeded::new(
+                                    RuntimeBudgetDimension::ConsecutiveNoProgressTurns,
+                                    u64::from(self.budget.max_consecutive_no_progress_turns()),
+                                    u64::from(self.usage.consecutive_no_progress_turns()),
+                                    Some(completed_action_id),
+                                );
+                                return Ok(self.limit_report(bootstrap, turns, limit, started_at));
+                            }
+                            if let Some(limit) = self.wall_limit_if_reached(started_at) {
+                                return Ok(self.limit_report(bootstrap, turns, limit, started_at));
+                            }
                         },
                         DecisionRunnerTurn::Terminal(terminal) => break terminal,
                     }
@@ -428,160 +621,199 @@ impl StandardWebDecisionRuntime {
             }
         };
 
+        self.refresh_elapsed(started_at);
+
         Ok(StandardWebDecisionRunReport {
             bootstrap,
             turns,
             terminal,
+            usage: self.usage.clone(),
+            limit_exceeded: None,
         })
     }
-}
 
-#[cfg(test)]
-mod tests {
-    use std::sync::Arc;
+    fn reserve_execution(
+        &mut self,
+        command: &DecisionLoopCommand,
+        started_at: tokio::time::Instant,
+    ) -> Result<DecisionExecutionLimits, RuntimeLimitExceeded> {
+        if let Some(limit) = self.wall_limit_if_reached(started_at) {
+            return Err(limit);
+        }
+        let (action_id, stage, origin) = execution_metadata(command)
+            .expect("runtime reserves resources only for execution commands");
 
-    use tokio::{
-        io::{AsyncReadExt, AsyncWriteExt},
-        net::TcpListener,
-        sync::Mutex,
-    };
-    use venom_core::{HypothesisState, OutcomeStatus};
+        if self.usage.total_requests() >= self.budget.max_total_requests() {
+            return Err(RuntimeLimitExceeded::new(
+                RuntimeBudgetDimension::TotalRequests,
+                u64::from(self.budget.max_total_requests()),
+                u64::from(self.usage.total_requests()).saturating_add(1),
+                Some(action_id.to_owned()),
+            ));
+        }
+        if self.usage.response_bytes() >= self.budget.max_response_bytes() {
+            return Err(RuntimeLimitExceeded::new(
+                RuntimeBudgetDimension::ResponseBytes,
+                self.budget.max_response_bytes(),
+                self.usage.response_bytes(),
+                Some(action_id.to_owned()),
+            ));
+        }
+        if stage == DecisionExecutionStage::Active
+            && self.usage.active_verifications() >= self.budget.max_active_verifications()
+        {
+            return Err(RuntimeLimitExceeded::new(
+                RuntimeBudgetDimension::ActiveVerifications,
+                u64::from(self.budget.max_active_verifications()),
+                u64::from(self.usage.active_verifications()).saturating_add(1),
+                Some(action_id.to_owned()),
+            ));
+        }
+        let attempts = self.usage.same_action_attempts(action_id);
+        if attempts >= self.budget.max_same_action_attempts() {
+            return Err(RuntimeLimitExceeded::new(
+                RuntimeBudgetDimension::SameActionAttempts,
+                u64::from(self.budget.max_same_action_attempts()),
+                u64::from(attempts).saturating_add(1),
+                Some(action_id.to_owned()),
+            ));
+        }
 
-    use super::*;
-    use crate::{ExclusionReason, StandardWebActionKind};
+        self.usage.reserve_request(action_id, stage, origin);
+        let remaining = self
+            .budget
+            .max_response_bytes()
+            .saturating_sub(self.usage.response_bytes());
+        Ok(DecisionExecutionLimits::new().with_max_response_body_bytes(remaining))
+    }
 
-    async fn serve(
-        response: &'static [u8],
-        request_count: usize,
-    ) -> (Url, Arc<Mutex<Vec<String>>>) {
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let address = listener.local_addr().unwrap();
-        let methods = Arc::new(Mutex::new(Vec::new()));
-        let recorded = methods.clone();
-        tokio::spawn(async move {
-            for _ in 0..request_count {
-                let (mut stream, _) = listener.accept().await.unwrap();
-                let mut request = [0_u8; 2048];
-                let bytes = stream.read(&mut request).await.unwrap();
-                let method = String::from_utf8_lossy(&request[..bytes])
-                    .split_whitespace()
-                    .next()
-                    .unwrap()
-                    .to_owned();
-                recorded.lock().await.push(method);
-                stream.write_all(response).await.unwrap();
-                stream.shutdown().await.unwrap();
-            }
-        });
-        (
-            Url::parse(&format!("http://{address}/admin")).unwrap(),
-            methods,
+    fn record_response_usage(
+        &mut self,
+        receipt: &DecisionEvidenceReceipt,
+    ) -> Result<(), StandardWebDecisionRuntimeError> {
+        let correlated: Vec<_> = receipt
+            .evidence()
+            .iter()
+            .filter(|evidence| {
+                evidence.source().correlation_id() == Some(receipt.case().id())
+                    && evidence.predicate().dotted() == RESPONSE_BODY_BYTES_PREDICATE
+            })
+            .filter_map(|evidence| match evidence.value() {
+                EvidenceValue::Unsigned(bytes) => Some(*bytes),
+                _ => None,
+            })
+            .collect();
+        if correlated.len() != 1 {
+            return Err(StandardWebDecisionRuntimeError::ResponseUsageEvidence {
+                case_id: receipt.case().id().to_owned(),
+                predicate: RESPONSE_BODY_BYTES_PREDICATE,
+                observations: correlated.len(),
+            });
+        }
+        self.usage.record_response_bytes(correlated[0]);
+        Ok(())
+    }
+
+    fn refresh_elapsed(&mut self, started_at: tokio::time::Instant) {
+        self.usage.set_elapsed(started_at.elapsed());
+    }
+
+    fn wall_limit_if_reached(
+        &mut self,
+        started_at: tokio::time::Instant,
+    ) -> Option<RuntimeLimitExceeded> {
+        self.refresh_elapsed(started_at);
+        (started_at.elapsed() >= self.budget.max_wall_time()).then(|| self.wall_limit(started_at))
+    }
+
+    fn wall_limit(&mut self, started_at: tokio::time::Instant) -> RuntimeLimitExceeded {
+        self.refresh_elapsed(started_at);
+        RuntimeLimitExceeded::new(
+            RuntimeBudgetDimension::WallTime,
+            self.budget.max_wall_time_ms(),
+            self.usage.elapsed_ms().max(self.budget.max_wall_time_ms()),
+            None,
         )
     }
 
-    #[test]
-    fn builder_validates_limits_and_exposes_executor_gaps() {
-        let target = Url::parse("https://example.test/app").unwrap();
-        assert!(matches!(
-            StandardWebDecisionRuntime::builder(target.clone())
-                .risk_limit(0)
-                .build(),
-            Err(StandardWebDecisionRuntimeError::Planner(_))
-        ));
-        assert!(matches!(
-            StandardWebDecisionRuntime::builder(target.clone())
-                .max_action_cycles(0)
-                .build(),
-            Err(StandardWebDecisionRuntimeError::Decision(_))
-        ));
-
-        let runtime = StandardWebDecisionRuntime::builder(target).build().unwrap();
-        assert_eq!(runtime.decision_loop.planner().len(), 9);
-        assert_eq!(runtime.runner.executors().len(), 6);
-        assert_eq!(runtime.unsupported_actions().len(), 4);
-        assert!(runtime
-            .unsupported_actions()
-            .contains(StandardWebActionKind::NginxConfiguration.action_id()));
-        assert!(!runtime
-            .unsupported_actions()
-            .contains(StandardWebActionKind::HttpBasicAuthBoundary.action_id()));
-    }
-
-    #[test]
-    fn builder_rejects_a_target_outside_custom_policy() {
-        let target = Url::parse("https://example.test/app").unwrap();
-        let policy =
-            HttpEvidencePolicy::for_origin(Url::parse("https://different.test/").unwrap()).unwrap();
-
-        assert!(matches!(
-            StandardWebDecisionRuntime::builder(target)
-                .http_policy(policy)
-                .build(),
-            Err(StandardWebDecisionRuntimeError::Http(
-                HttpEvidenceError::TargetOutsidePolicy { .. }
-            ))
-        ));
-    }
-
-    #[tokio::test]
-    async fn runtime_drives_basic_evidence_to_a_confirmed_outcome_once() {
-        let response = b"HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: Basic realm=\"admin\"\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
-        let (target, methods) = serve(response, 2).await;
-        let mut runtime = StandardWebDecisionRuntime::builder(target).build().unwrap();
-
-        let report = runtime.analyze().await.unwrap();
-
-        assert!(matches!(
-            report.terminal(),
-            DecisionLoopCommand::Complete { .. }
-        ));
-        let outcomes: Vec<_> = report.outcome_reports().collect();
-        assert_eq!(outcomes.len(), 1);
-        assert_eq!(
-            outcomes[0].verification().outcome().status(),
-            OutcomeStatus::Success
-        );
-        let hypothesis_id = outcomes[0].verification().case().hypothesis_id();
-        assert_eq!(
-            runtime
-                .knowledge()
-                .hypothesis(hypothesis_id)
-                .unwrap()
-                .state(),
-            HypothesisState::Confirmed
-        );
-        assert_eq!(&*methods.lock().await, &["GET", "HEAD"]);
-        assert!(matches!(
-            runtime.analyze().await,
-            Err(StandardWebDecisionRuntimeError::AlreadyStarted)
-        ));
-    }
-
-    #[tokio::test]
-    async fn unavailable_executor_is_reported_as_a_policy_suppression() {
-        let response =
-            b"HTTP/1.1 200 OK\r\nServer: nginx\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
-        let (target, methods) = serve(response, 1).await;
-        let mut runtime = StandardWebDecisionRuntime::builder(target).build().unwrap();
-
-        let report = runtime.analyze().await.unwrap();
-
-        assert!(matches!(
-            report.terminal(),
-            DecisionLoopCommand::Halt {
-                reason: crate::DecisionStopReason::NoEligibleAction
-            }
-        ));
-        let planning = report.planning_reports().next().unwrap();
-        let nginx = planning
-            .plan()
-            .excluded()
-            .iter()
-            .find(|excluded| {
-                excluded.action_id() == StandardWebActionKind::NginxConfiguration.action_id()
-            })
-            .unwrap();
-        assert!(matches!(nginx.reason(), ExclusionReason::PolicySuppressed));
-        assert_eq!(&*methods.lock().await, &["GET"]);
+    fn limit_report(
+        &mut self,
+        bootstrap: Option<DecisionEvidenceReceipt>,
+        turns: Vec<StandardWebDecisionRuntimeTurn>,
+        limit: RuntimeLimitExceeded,
+        started_at: tokio::time::Instant,
+    ) -> StandardWebDecisionRunReport {
+        self.refresh_elapsed(started_at);
+        self.session.halt_for_runtime_budget();
+        StandardWebDecisionRunReport {
+            bootstrap,
+            turns,
+            terminal: DecisionLoopCommand::Halt {
+                reason: crate::DecisionStopReason::RuntimeBudgetLimit,
+            },
+            usage: self.usage.clone(),
+            limit_exceeded: Some(limit),
+        }
     }
 }
+
+fn execution_metadata(
+    command: &DecisionLoopCommand,
+) -> Option<(&str, DecisionExecutionStage, Option<DecisionActionOrigin>)> {
+    match command {
+        DecisionLoopCommand::ExecuteAction { case, origin, .. } => Some((
+            case.action_id(),
+            DecisionExecutionStage::Passive,
+            Some(*origin),
+        )),
+        DecisionLoopCommand::CollectActiveEvidence { case } => {
+            Some((case.action_id(), DecisionExecutionStage::Active, None))
+        },
+        DecisionLoopCommand::Replan
+        | DecisionLoopCommand::Complete { .. }
+        | DecisionLoopCommand::AwaitHumanReview { .. }
+        | DecisionLoopCommand::Halt { .. } => None,
+    }
+}
+
+fn execution_stage(command: &DecisionLoopCommand) -> Option<DecisionExecutionStage> {
+    execution_metadata(command).map(|(_, stage, _)| stage)
+}
+
+fn execution_action_id(command: &DecisionLoopCommand) -> Option<&str> {
+    execution_metadata(command).map(|(action_id, _, _)| action_id)
+}
+
+fn is_terminal(command: &DecisionLoopCommand) -> bool {
+    matches!(
+        command,
+        DecisionLoopCommand::Complete { .. }
+            | DecisionLoopCommand::AwaitHumanReview { .. }
+            | DecisionLoopCommand::Halt { .. }
+    )
+}
+
+fn outcome_made_progress(
+    previous_stage: DecisionExecutionStage,
+    next_command: &DecisionLoopCommand,
+    outcome: &DecisionOutcomeReport,
+) -> bool {
+    let hypothesis_changed = matches!(
+        outcome.hypothesis_write(),
+        Some(KnowledgeWrite::Inserted | KnowledgeWrite::Updated)
+    );
+    let escalated_to_active = previous_stage == DecisionExecutionStage::Passive
+        && matches!(
+            next_command,
+            DecisionLoopCommand::CollectActiveEvidence { .. }
+        );
+    let conclusive = matches!(
+        outcome.verification().outcome().status(),
+        OutcomeStatus::Success | OutcomeStatus::FalsePositive
+    );
+    hypothesis_changed || escalated_to_active || conclusive
+}
+
+#[cfg(test)]
+#[path = "web_runtime_tests.rs"]
+mod tests;

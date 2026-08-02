@@ -39,6 +39,39 @@ impl std::fmt::Display for DecisionExecutionStage {
     }
 }
 
+/// Host-owned resource allowance attached to one isolated execution.
+///
+/// Executors may impose stricter policy limits. The allowance can only reduce
+/// resource use; it never expands an executor's own security policy.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DecisionExecutionLimits {
+    max_response_body_bytes: Option<u64>,
+}
+
+impl DecisionExecutionLimits {
+    /// Creates an unrestricted per-execution allowance.
+    pub const fn new() -> Self {
+        Self {
+            max_response_body_bytes: None,
+        }
+    }
+
+    /// Restricts the response body buffered by this execution.
+    pub const fn with_max_response_body_bytes(mut self, limit: u64) -> Self {
+        self.max_response_body_bytes = Some(limit);
+        self
+    }
+
+    /// Returns the optional host-owned response buffer allowance.
+    pub const fn max_response_body_bytes(self) -> Option<u64> {
+        self.max_response_body_bytes
+    }
+
+    fn is_unrestricted(&self) -> bool {
+        self.max_response_body_bytes.is_none()
+    }
+}
+
 /// Immutable, transport-neutral request passed to one action executor.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct DecisionExecutionRequest {
@@ -46,6 +79,8 @@ pub struct DecisionExecutionRequest {
     stage: DecisionExecutionStage,
     origin: Option<DecisionActionOrigin>,
     delay_ms: Option<u64>,
+    #[serde(skip_serializing_if = "DecisionExecutionLimits::is_unrestricted")]
+    limits: DecisionExecutionLimits,
 }
 
 impl DecisionExecutionRequest {
@@ -54,12 +89,14 @@ impl DecisionExecutionRequest {
         stage: DecisionExecutionStage,
         origin: Option<DecisionActionOrigin>,
         delay_ms: Option<u64>,
+        limits: DecisionExecutionLimits,
     ) -> Self {
         Self {
             case,
             stage,
             origin,
             delay_ms,
+            limits,
         }
     }
 
@@ -81,6 +118,11 @@ impl DecisionExecutionRequest {
     /// Returns the scheduler delay already honored by the adapter.
     pub fn delay_ms(&self) -> Option<u64> {
         self.delay_ms
+    }
+
+    /// Returns host-owned resource allowances for this execution.
+    pub const fn limits(&self) -> DecisionExecutionLimits {
+        self.limits
     }
 }
 
@@ -230,6 +272,7 @@ pub struct DecisionEvidenceReceipt {
     case: VerificationCase,
     stage: DecisionExecutionStage,
     executor_id: String,
+    evidence: Vec<Evidence>,
     writes: Vec<KnowledgeWrite>,
     baseline: Option<KnowledgeSnapshot>,
     after_execution: KnowledgeSnapshot,
@@ -249,6 +292,11 @@ impl DecisionEvidenceReceipt {
     /// Returns the resolved executor identity.
     pub fn executor_id(&self) -> &str {
         &self.executor_id
+    }
+
+    /// Returns the exact evidence batch emitted by this execution.
+    pub fn evidence(&self) -> &[Evidence] {
+        &self.evidence
     }
 
     /// Returns one idempotent knowledge write result per emitted observation.
@@ -425,6 +473,17 @@ impl DecisionRunnerAdapter {
         command: &DecisionLoopCommand,
         knowledge: &KnowledgeBase,
     ) -> Result<DecisionEvidenceReceipt, DecisionRunnerError> {
+        self.execute_command_with_limits(command, knowledge, DecisionExecutionLimits::default())
+            .await
+    }
+
+    /// Resolves and executes one command under a host-owned resource allowance.
+    pub async fn execute_command_with_limits(
+        &self,
+        command: &DecisionLoopCommand,
+        knowledge: &KnowledgeBase,
+        limits: DecisionExecutionLimits,
+    ) -> Result<DecisionEvidenceReceipt, DecisionRunnerError> {
         let (case, stage, origin, delay_ms, requested_executor) = match command {
             DecisionLoopCommand::ExecuteAction {
                 case,
@@ -468,7 +527,7 @@ impl DecisionRunnerAdapter {
 
         let baseline = (stage == DecisionExecutionStage::Active)
             .then(|| knowledge.snapshot_for_subject(case.subject()));
-        let request = DecisionExecutionRequest::new(case.clone(), stage, origin, delay_ms);
+        let request = DecisionExecutionRequest::new(case.clone(), stage, origin, delay_ms, limits);
         let evidence =
             executor
                 .execute(&request)
@@ -478,6 +537,7 @@ impl DecisionRunnerAdapter {
                     source,
                 })?;
         validate_evidence(&evidence, case, &executor_id)?;
+        let receipt_evidence = evidence.clone();
         let writes = knowledge.insert_evidence_batch(evidence)?;
         let after_execution = knowledge.snapshot_for_subject(case.subject());
 
@@ -485,6 +545,7 @@ impl DecisionRunnerAdapter {
             case: case.clone(),
             stage,
             executor_id,
+            evidence: receipt_evidence,
             writes,
             baseline,
             after_execution,
@@ -504,10 +565,98 @@ impl DecisionRunnerAdapter {
         experience: &mut ExperienceStore,
         session: &mut DecisionSession,
     ) -> Result<DecisionRunnerTurn, DecisionRunnerError> {
+        self.drive_command_with_limits(
+            decision_loop,
+            command,
+            knowledge,
+            experience,
+            session,
+            DecisionExecutionLimits::default(),
+        )
+        .await
+    }
+
+    /// Drives one command under a host-owned execution allowance.
+    pub async fn drive_command_with_limits(
+        &self,
+        decision_loop: &DecisionLoop,
+        command: &DecisionLoopCommand,
+        knowledge: &KnowledgeBase,
+        experience: &mut ExperienceStore,
+        session: &mut DecisionSession,
+        limits: DecisionExecutionLimits,
+    ) -> Result<DecisionRunnerTurn, DecisionRunnerError> {
+        match command {
+            DecisionLoopCommand::ExecuteAction { .. }
+            | DecisionLoopCommand::CollectActiveEvidence { .. } => {
+                let evidence = self
+                    .execute_session_command_with_limits(command, knowledge, session, limits)
+                    .await?;
+                self.resume_session_command(
+                    decision_loop,
+                    command,
+                    knowledge,
+                    experience,
+                    session,
+                    evidence,
+                )
+            },
+            DecisionLoopCommand::Replan => Ok(DecisionRunnerTurn::Planning(Box::new(
+                decision_loop.plan_next(knowledge, experience, session)?,
+            ))),
+            DecisionLoopCommand::Complete { .. }
+            | DecisionLoopCommand::AwaitHumanReview { .. }
+            | DecisionLoopCommand::Halt { .. } => Ok(DecisionRunnerTurn::Terminal(command.clone())),
+        }
+    }
+
+    pub(crate) async fn execute_session_command_with_limits(
+        &self,
+        command: &DecisionLoopCommand,
+        knowledge: &KnowledgeBase,
+        session: &DecisionSession,
+        limits: DecisionExecutionLimits,
+    ) -> Result<DecisionEvidenceReceipt, DecisionRunnerError> {
         match command {
             DecisionLoopCommand::ExecuteAction { case, .. } => {
                 validate_session_case(session, DecisionExecutionStage::Passive, case)?;
-                let evidence = self.execute_command(command, knowledge).await?;
+            },
+            DecisionLoopCommand::CollectActiveEvidence { case } => {
+                validate_session_case(session, DecisionExecutionStage::Active, case)?;
+            },
+            DecisionLoopCommand::Replan => {
+                return Err(DecisionRunnerError::NonExecutionCommand { command: "replan" });
+            },
+            DecisionLoopCommand::Complete { .. } => {
+                return Err(DecisionRunnerError::NonExecutionCommand {
+                    command: "complete",
+                });
+            },
+            DecisionLoopCommand::AwaitHumanReview { .. } => {
+                return Err(DecisionRunnerError::NonExecutionCommand {
+                    command: "await_human_review",
+                });
+            },
+            DecisionLoopCommand::Halt { .. } => {
+                return Err(DecisionRunnerError::NonExecutionCommand { command: "halt" });
+            },
+        }
+        self.execute_command_with_limits(command, knowledge, limits)
+            .await
+    }
+
+    pub(crate) fn resume_session_command(
+        &self,
+        decision_loop: &DecisionLoop,
+        command: &DecisionLoopCommand,
+        knowledge: &KnowledgeBase,
+        experience: &mut ExperienceStore,
+        session: &mut DecisionSession,
+        evidence: DecisionEvidenceReceipt,
+    ) -> Result<DecisionRunnerTurn, DecisionRunnerError> {
+        match command {
+            DecisionLoopCommand::ExecuteAction { case, .. } => {
+                validate_session_case(session, DecisionExecutionStage::Passive, case)?;
                 let decision = decision_loop.submit_passive(knowledge, experience, session)?;
                 Ok(DecisionRunnerTurn::Outcome {
                     evidence: Box::new(evidence),
@@ -516,7 +665,6 @@ impl DecisionRunnerAdapter {
             },
             DecisionLoopCommand::CollectActiveEvidence { case } => {
                 validate_session_case(session, DecisionExecutionStage::Active, case)?;
-                let evidence = self.execute_command(command, knowledge).await?;
                 let baseline = evidence
                     .baseline()
                     .ok_or(DecisionRunnerError::MissingActiveBaseline)?;
@@ -532,12 +680,20 @@ impl DecisionRunnerAdapter {
                     decision: Box::new(decision),
                 })
             },
-            DecisionLoopCommand::Replan => Ok(DecisionRunnerTurn::Planning(Box::new(
-                decision_loop.plan_next(knowledge, experience, session)?,
-            ))),
-            DecisionLoopCommand::Complete { .. }
-            | DecisionLoopCommand::AwaitHumanReview { .. }
-            | DecisionLoopCommand::Halt { .. } => Ok(DecisionRunnerTurn::Terminal(command.clone())),
+            DecisionLoopCommand::Replan => {
+                Err(DecisionRunnerError::NonExecutionCommand { command: "replan" })
+            },
+            DecisionLoopCommand::Complete { .. } => Err(DecisionRunnerError::NonExecutionCommand {
+                command: "complete",
+            }),
+            DecisionLoopCommand::AwaitHumanReview { .. } => {
+                Err(DecisionRunnerError::NonExecutionCommand {
+                    command: "await_human_review",
+                })
+            },
+            DecisionLoopCommand::Halt { .. } => {
+                Err(DecisionRunnerError::NonExecutionCommand { command: "halt" })
+            },
         }
     }
 }
@@ -861,9 +1017,35 @@ mod tests {
 
         assert_eq!(receipt.stage(), DecisionExecutionStage::Passive);
         assert_eq!(receipt.executor_id(), "plugin.http");
+        assert_eq!(receipt.evidence().len(), 1);
         assert_eq!(receipt.writes(), &[KnowledgeWrite::Inserted]);
         assert!(receipt.baseline().is_none());
         assert_eq!(receipt.after_execution().evidence().len(), 1);
+    }
+
+    #[test]
+    fn unrestricted_execution_limits_preserve_the_existing_wire_shape() {
+        let unrestricted = DecisionExecutionRequest::new(
+            case("http.probe"),
+            DecisionExecutionStage::Passive,
+            Some(DecisionActionOrigin::Planned),
+            None,
+            DecisionExecutionLimits::default(),
+        );
+        let unrestricted = serde_json::to_value(unrestricted).unwrap();
+        assert!(unrestricted.get("limits").is_none());
+
+        let bounded = DecisionExecutionRequest::new(
+            case("http.probe"),
+            DecisionExecutionStage::Passive,
+            Some(DecisionActionOrigin::Planned),
+            None,
+            DecisionExecutionLimits::new().with_max_response_body_bytes(64),
+        );
+        assert_eq!(
+            serde_json::to_value(bounded).unwrap()["limits"]["max_response_body_bytes"],
+            serde_json::json!(64)
+        );
     }
 
     #[tokio::test]

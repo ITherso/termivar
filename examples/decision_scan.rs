@@ -3,11 +3,12 @@
 //! Use only against a target you own or are explicitly authorized to test:
 //! `cargo run -p venom-examples --bin decision_scan -- https://target.example/`
 
-use std::{env, error::Error};
+use std::{env, error::Error, time::Duration};
 
 use url::Url;
 use venom_scanner::{
-    HttpBodyCapture, HttpEvidencePolicy, StandardWebDecisionRuntime, StandardWebDecisionRuntimeTurn,
+    HttpBodyCapture, HttpEvidencePolicy, RuntimeBudget, StandardWebDecisionRuntime,
+    StandardWebDecisionRuntimeTurn,
 };
 
 #[tokio::main]
@@ -21,8 +22,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let target = Url::parse(&raw_target)?;
     let policy = HttpEvidencePolicy::for_origin(target.clone())?
         .with_body_capture(HttpBodyCapture::TextSample { max_chars: 8_192 })?;
+    let runtime_budget = RuntimeBudget::default()
+        .with_max_total_requests(16)
+        .with_max_wall_time(Duration::from_secs(60))
+        .with_max_response_bytes(1024 * 1024);
     let mut runtime = StandardWebDecisionRuntime::builder(target)
         .http_policy(policy)
+        .runtime_budget(runtime_budget)
         .business_value(80)
         .planning_budget(100)
         .risk_limit(40)
@@ -30,10 +36,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .build()?;
 
     let report = runtime.analyze().await?;
-    println!(
-        "bootstrap: {} evidence writes",
-        report.bootstrap().writes().len()
-    );
+    match report.bootstrap() {
+        Some(bootstrap) => println!("bootstrap: {} evidence writes", bootstrap.writes().len()),
+        None => println!("bootstrap: stopped before evidence was committed"),
+    }
 
     for turn in report.turns() {
         match turn {
@@ -63,6 +69,16 @@ async fn main() -> Result<(), Box<dyn Error>> {
     }
 
     println!("terminal: {:?}", report.terminal());
+    println!(
+        "usage: requests={} active={} response_bytes={} elapsed_ms={}",
+        report.usage().total_requests(),
+        report.usage().active_verifications(),
+        report.usage().response_bytes(),
+        report.usage().elapsed_ms(),
+    );
+    if let Some(limit) = report.limit_exceeded() {
+        println!("runtime limit: {limit}");
+    }
     println!("experience records: {}", runtime.experience().len());
     Ok(())
 }

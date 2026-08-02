@@ -46,6 +46,10 @@ An executor returns native `Evidence`, not findings or decisions. Before any wri
 
 `KnowledgeBase::insert_evidence_batch` preflights identities under one write lock. A conflict rejects the whole batch, while exact repeats remain idempotent. Active execution captures a subject snapshot immediately before the probe and another after the batch commit.
 
+`DecisionEvidenceReceipt` retains the exact evidence emitted by that execution in addition to the write results and verification snapshots. This matters for active verification, where passive and active requests intentionally reuse one case correlation ID: resource accounting reads the exact batch rather than double-counting the cumulative subject snapshot.
+
+The host may attach `DecisionExecutionLimits` to reduce executor resource use. Unrestricted requests preserve the existing serialized request shape. The runner exposes execution/commit and decision resumption as separate internal stages so a runtime can account for a committed receipt before verification or experience transition begins.
+
 Verifier rules may additionally opt into an action identity and current-case evidence correlation. This is required when a long-lived subject snapshot can contain responses from multiple semantic actions or retries; unrelated and historical observations remain visible to the knowledge base but cannot win that scoped verification rule.
 
 ## Legacy plugin bridge

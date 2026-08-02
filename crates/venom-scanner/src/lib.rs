@@ -76,6 +76,9 @@ pub mod decision_runner;
 pub mod http_evidence;
 
 #[cfg(feature = "scanning")]
+pub mod runtime_budget;
+
+#[cfg(feature = "scanning")]
 pub mod web_execution;
 
 #[cfg(feature = "scanning")]
@@ -228,9 +231,17 @@ pub use decision_loop::{
 
 #[cfg(feature = "scanning")]
 pub use decision_runner::{
-    DecisionActionExecutor, DecisionEvidenceReceipt, DecisionExecutionRequest,
-    DecisionExecutionStage, DecisionExecutorError, DecisionExecutorRegistry, DecisionRunnerAdapter,
-    DecisionRunnerError, DecisionRunnerTurn,
+    DecisionActionExecutor, DecisionEvidenceReceipt, DecisionExecutionLimits,
+    DecisionExecutionRequest, DecisionExecutionStage, DecisionExecutorError,
+    DecisionExecutorRegistry, DecisionRunnerAdapter, DecisionRunnerError, DecisionRunnerTurn,
+};
+
+#[cfg(feature = "scanning")]
+pub use runtime_budget::{
+    RuntimeBudget, RuntimeBudgetDimension, RuntimeLimitExceeded, RuntimeUsage,
+    DEFAULT_MAX_ACTIVE_VERIFICATIONS, DEFAULT_MAX_CONSECUTIVE_NO_PROGRESS_TURNS,
+    DEFAULT_MAX_RESPONSE_BYTES, DEFAULT_MAX_SAME_ACTION_ATTEMPTS, DEFAULT_MAX_TOTAL_REQUESTS,
+    DEFAULT_MAX_WALL_TIME_MS,
 };
 
 #[cfg(feature = "scanning")]
