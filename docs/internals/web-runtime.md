@@ -8,7 +8,7 @@ authorized target + HTTP policy
               v
  StandardWebDecisionRuntime
               |
-              +--> bootstrap GET ---> immutable Evidence
+              +--> RequestBroker ---> bootstrap GET ---> immutable Evidence
               |                           |
               |                           v
               +--------------------> reasoning + planning
@@ -117,15 +117,17 @@ pairing, and persistence remain host responsibilities.
 
 ## Runtime safety envelope
 
-The runtime checks limits in a stable order before every side effect: wall time, total requests, remaining response bytes, active verifications, then attempts for the semantic action. Request and action counters are reserved before any optional scheduler delay and executor work, so a delay cancellation, transport error, or timeout still consumes an attempt even when no socket request reaches the target.
+The runtime checks limits in a stable order before execution: wall time; advisory broker preflight for total requests, remaining response bytes, and active verifications; then attempts for the semantic action. Only the semantic attempt is reserved before an optional scheduler delay. A delay cancellation therefore consumes an action attempt but not a request. The shared host-owned request broker repeats the resource checks atomically and records the request immediately before `reqwest::Client::execute`, so a transport error or timeout after dispatch remains charged.
 
 The wall deadline starts at the beginning of `analyze()` and covers bootstrap, reasoning, scheduler delay, network I/O, verification, and state transitions. Awaited delays and requests are cancelled at the monotonic deadline. Synchronous reasoning cannot be interrupted mid-function, so the runtime checks the deadline again immediately after it returns.
 
-`HttpEvidencePolicy::max_body_bytes` remains a per-response ceiling. `RuntimeBudget::max_response_bytes` is the session-wide total of response-body bytes buffered into evidence. Before each request, the runtime passes the remaining session allowance to the HTTP executor; the collector uses the smaller of that allowance and its per-response policy. Content-Length and wire overhead are not charged as body bytes.
+`HttpEvidencePolicy::max_body_bytes` remains a per-response ceiling. `RuntimeBudget::max_response_bytes` is the session-wide total of response-body bytes retained by broker leases. Every retained chunk is charged before it is exposed to the executor. Bytes remain charged when a later chunk fails, the request times out, or the outer wall deadline cancels collection; accounting is no longer inferred from successful evidence. The collector uses the smallest of the remaining session allowance, its per-execution allowance, and its per-response policy. Content-Length, discarded bytes beyond those bounds, and wire overhead are not charged as retained body bytes.
+
+All built-in HTTP executors installed by `StandardWebDecisionRuntime` share one broker, one redirect-disabled and implicit-retry-disabled client, and one accounting authority. Bootstrap, planned, adaptive, retry, and active-verification dispatches therefore compete for the same atomic envelope. Redirect responses consume the request that produced them but are not followed. Semantic retries re-enter the broker and acquire a fresh lease. Low-level callers that construct and run an arbitrary `DecisionActionExecutor` outside this standard runtime remain responsible for their own transport policy and accounting.
 
 No-progress accounting ignores raw evidence IDs, timing changes, retry case IDs, and experience inserts. A completed execution turn resets the counter only when it inserts or updates a hypothesis, escalates passive verification to an active probe, or reaches a conclusive Success/FalsePositive/ConfirmedNegative result. When the configured count is reached, the next command is not dispatched.
 
-Expected exhaustion is an auditable result rather than an execution error. The report ends with `Halt { reason: RuntimeBudgetLimit }`, exposes the structured dimension through `limit_exceeded()`, and carries final counters through `usage()`. If a natural `Complete`, `AwaitHumanReview`, or policy `Halt` is reached on the same completed turn, that domain terminal takes precedence.
+Expected exhaustion is an auditable result rather than an execution error. The report ends with `Halt { reason: RuntimeBudgetLimit }`, exposes the structured dimension through `limit_exceeded()`, and carries final broker counters through `usage()`. If the broker refuses a later dispatch inside an already-started executor, `execution_failure()` also preserves the exact request, executor, stage, origin, limits, and structured runtime limit. If a natural `Complete`, `AwaitHumanReview`, or policy `Halt` is reached on the same completed turn, that domain terminal takes precedence.
 
 ## Executable-plan boundary
 
@@ -137,21 +139,22 @@ This prevents a discovered nginx, Apache, PHP, or Laravel input hypothesis from 
 
 A runtime instance is single-use. The started flag is retained even if a network or verification error occurs, because evidence may already have been committed under deterministic case identities. Create a new runtime for a new session.
 
-When an executor reports a failure before evidence commit, `StandardWebDecisionRuntimeError::execution_failure()` forwards the runner's typed receipt. Built-in HTTP failures are classified from error variants rather than diagnostic text: unsupported subjects are not applicable, authorization/scope refusals are policy blocks, request and timeout failures are transport failures, and internal construction/model failures remain executor failures. Request reservations remain monotonic, but none of these operational classifications creates a synthetic verifier outcome or changes Experience suppression state.
+When an executor reports a failure before evidence commit, `StandardWebDecisionRuntimeError::execution_failure()` forwards the runner's typed receipt. Built-in HTTP failures are classified from error variants rather than diagnostic text: unsupported subjects are not applicable, authorization/scope refusals are policy blocks, request and timeout failures are transport failures, and internal construction/model failures remain executor failures. Transport dispatch and retained-byte accounting remain monotonic, but provider or policy failures before dispatch consume only the semantic attempt. None of these operational classifications creates a synthetic verifier outcome or changes Experience suppression state.
 
 `StandardWebDecisionRunReport` retains:
 
 - the optional bootstrap evidence receipt (absent when a limit stops bootstrap);
 - each reasoning/planning report;
 - every executor evidence receipt and outcome report;
-- the final `Complete`, `AwaitHumanReview`, or `Halt` command.
-- final resource usage and an optional structured limit record.
+- the final `Complete`, `AwaitHumanReview`, or `Halt` command;
+- final resource usage and an optional structured limit record;
+- an optional execution-failure receipt when the broker refused an in-executor dispatch.
 
 The knowledge base, experience store, and replayable session remain inspectable after execution. A host can also consume the runtime with `into_experience()` and pass that store into a later builder through `experience_store()`.
 
 ## Turn commit semantics
 
-Runtime request reservations are monotonic and are never rolled back. Executor evidence is provenance-validated as a complete batch and then committed atomically to the knowledge base. Verification, hypothesis transition, experience, and session transition happen after that evidence commit. If one of those later synchronous stages fails, the evidence remains append-only while the runtime returns an error and stays single-use. `StandardWebDecisionRuntimeError::committed_evidence()` exposes the failed turn's durable receipt, including response-telemetry validation failures, and the consuming getter transfers it without another evidence clone.
+Runtime request dispatches and retained response bytes are monotonic and are never rolled back. Executor evidence is provenance-validated as a complete batch and then committed atomically to the knowledge base. Verification, hypothesis transition, experience, and session transition happen after that evidence commit. If one of those later synchronous stages fails, the evidence remains append-only while the runtime returns an error and stays single-use. `StandardWebDecisionRuntimeError::committed_evidence()` exposes the failed turn's durable receipt, including response-telemetry validation failures, and the consuming getter transfers it without another evidence clone.
 
 A successful outcome report exposes a runtime-only, lightweight before/after session transition summary alongside its verification, hypothesis write, and experience write. The summary is not a full session replay snapshot and is omitted from the report's existing serialized shape. Candidate experience and session state are assigned only after every fallible outcome step succeeds. This is an explicit error-atomic partial-turn boundary, not a rollback or crash-atomic transaction guarantee.
 
@@ -162,4 +165,4 @@ concurrent evidence, hypothesis, or ontology write makes the report stale and
 aborts the candidate experience/session commit. Same-terminal replay remains
 idempotent, while opposite terminal transitions fail explicitly.
 
-A budget stop is different: it occurs before the refused side effect and moves any outstanding decision session to `Halted { reason: RuntimeBudgetLimit }`. Evidence and outcome receipts from earlier completed turns remain available in the report.
+A budget stop is different: it occurs before the refused transport dispatch and moves any outstanding decision session to `Halted { reason: RuntimeBudgetLimit }`. A dispatch or partial body already charged before a later failure remains visible in `usage()`. Evidence and outcome receipts from earlier completed turns remain available in the report, while an in-executor broker refusal has its own failure receipt.

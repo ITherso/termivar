@@ -9,8 +9,7 @@ use std::{collections::BTreeMap, collections::BTreeSet, sync::Arc, time::Duratio
 use async_trait::async_trait;
 use reqwest::{
     header::{HeaderMap, HeaderName, HeaderValue},
-    redirect::Policy as RedirectPolicy,
-    Client, Method, StatusCode, Url,
+    Method, StatusCode, Url,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -21,9 +20,13 @@ use venom_core::{
 };
 
 use crate::{
-    DecisionActionExecutor, DecisionExecutionFailureKind, DecisionExecutionRequest,
-    DecisionExecutorError,
+    runtime_budget::RequestAccountingBroker, DecisionActionExecutor, DecisionExecutionFailureKind,
+    DecisionExecutionRequest, DecisionExecutorError,
 };
+
+mod request_broker;
+
+pub(crate) use request_broker::{HttpRequestBroker, HttpRequestBrokerError};
 
 /// Default maximum number of response-body bytes read by one probe.
 pub const DEFAULT_HTTP_BODY_LIMIT: usize = 256 * 1024;
@@ -486,8 +489,7 @@ fn into_decision_executor_error(error: HttpEvidenceError) -> DecisionExecutorErr
 /// ```
 pub struct HttpEvidenceExecutor {
     id: String,
-    client: Client,
-    policy: HttpEvidencePolicy,
+    requests: HttpRequestBroker,
     probes: Arc<dyn HttpProbeProvider>,
 }
 
@@ -506,94 +508,76 @@ impl HttpEvidenceExecutor {
         policy: HttpEvidencePolicy,
         probes: Arc<dyn HttpProbeProvider>,
     ) -> Result<Self, HttpEvidenceError> {
-        let id = id.into();
-        if id.trim().is_empty() {
-            return Err(HttpEvidenceError::EmptyExecutorId);
-        }
-        let client = Client::builder()
-            .redirect(RedirectPolicy::none())
-            .build()
-            .map_err(HttpEvidenceError::Client)?;
+        Self::build(id, policy, probes, None)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn new_with_accounting(
+        policy: HttpEvidencePolicy,
+        probes: Arc<dyn HttpProbeProvider>,
+        accounting: RequestAccountingBroker,
+    ) -> Result<Self, HttpEvidenceError> {
+        Self::with_id_and_accounting(HTTP_EVIDENCE_EXECUTOR_ID, policy, probes, accounting)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_id_and_accounting(
+        id: impl Into<String>,
+        policy: HttpEvidencePolicy,
+        probes: Arc<dyn HttpProbeProvider>,
+        accounting: RequestAccountingBroker,
+    ) -> Result<Self, HttpEvidenceError> {
+        Self::build(id, policy, probes, Some(accounting))
+    }
+
+    pub(crate) fn new_with_request_broker(
+        requests: HttpRequestBroker,
+        probes: Arc<dyn HttpProbeProvider>,
+    ) -> Result<Self, HttpEvidenceError> {
+        Self::with_id_and_request_broker(HTTP_EVIDENCE_EXECUTOR_ID, requests, probes)
+    }
+
+    pub(crate) fn with_id_and_request_broker(
+        id: impl Into<String>,
+        requests: HttpRequestBroker,
+        probes: Arc<dyn HttpProbeProvider>,
+    ) -> Result<Self, HttpEvidenceError> {
+        let id = validate_executor_id(id)?;
         Ok(Self {
             id,
-            client,
-            policy,
+            requests,
+            probes,
+        })
+    }
+
+    fn build(
+        id: impl Into<String>,
+        policy: HttpEvidencePolicy,
+        probes: Arc<dyn HttpProbeProvider>,
+        accounting: Option<RequestAccountingBroker>,
+    ) -> Result<Self, HttpEvidenceError> {
+        let id = validate_executor_id(id)?;
+        let requests = HttpRequestBroker::new(policy, accounting)?;
+        Ok(Self {
+            id,
+            requests,
             probes,
         })
     }
 
     /// Returns the immutable execution policy.
     pub fn policy(&self) -> &HttpEvidencePolicy {
-        &self.policy
+        self.requests.policy()
     }
 
     async fn collect(
         &self,
         decision: &DecisionExecutionRequest,
-    ) -> Result<Vec<Evidence>, HttpEvidenceError> {
+    ) -> Result<Vec<Evidence>, HttpRequestBrokerError> {
         let probe = self.probes.probe_for(decision)?;
-        validate_http_url(probe.url())?;
-        if !self.policy.permits(probe.url())? {
-            return Err(HttpEvidenceError::TargetOutsidePolicy {
-                url: probe.url().to_string(),
-            });
-        }
-
-        let request = build_request(&self.client, &probe)?;
-        let execution_body_limit = decision
-            .limits()
-            .max_response_body_bytes()
-            .map(|limit| usize::try_from(limit).unwrap_or(usize::MAX))
-            .unwrap_or(usize::MAX);
-        let body_limit = self.policy.max_body_bytes().min(execution_body_limit);
-        let started = tokio::time::Instant::now();
-        let collected = tokio::time::timeout(self.policy.request_timeout(), async {
-            let mut response = self
-                .client
-                .execute(request)
-                .await
-                .map_err(HttpEvidenceError::Request)?;
-            let ttfb_ms = elapsed_ms(started.elapsed());
-            let status = response.status();
-            let final_url = response.url().clone();
-            let version = format!("{:?}", response.version());
-            let headers = response.headers().clone();
-            let mut body = Vec::with_capacity(
-                response
-                    .content_length()
-                    .and_then(|length| usize::try_from(length).ok())
-                    .unwrap_or(0)
-                    .min(body_limit),
-            );
-            let mut truncated = false;
-
-            while let Some(chunk) = response.chunk().await.map_err(HttpEvidenceError::Request)? {
-                let remaining = body_limit.saturating_sub(body.len());
-                if chunk.len() > remaining {
-                    body.extend_from_slice(&chunk[..remaining]);
-                    truncated = true;
-                    break;
-                }
-                body.extend_from_slice(&chunk);
-            }
-
-            Ok::<_, HttpEvidenceError>(CollectedHttpResponse {
-                status,
-                final_url,
-                version,
-                headers,
-                body,
-                body_truncated: truncated,
-                ttfb_ms,
-                total_ms: elapsed_ms(started.elapsed()),
-            })
-        })
-        .await
-        .map_err(|_| HttpEvidenceError::Timeout {
-            timeout_ms: self.policy.request_timeout_ms,
-        })??;
-
+        let collected = self.requests.collect(decision, &probe).await?;
         self.to_evidence(decision, &probe, collected)
+            .map_err(Into::into)
     }
 
     fn to_evidence(
@@ -673,7 +657,7 @@ impl HttpEvidenceExecutor {
             )?);
         }
 
-        for name in self.policy.captured_headers() {
+        for name in self.policy().captured_headers() {
             if let Some(value) = joined_header(&response.headers, name) {
                 evidence.push(self.observation(
                     decision,
@@ -735,7 +719,7 @@ impl HttpEvidenceExecutor {
             "response-body-sha256",
         )?);
 
-        if let HttpBodyCapture::TextSample { max_chars } = self.policy.body_capture() {
+        if let HttpBodyCapture::TextSample { max_chars } = self.policy().body_capture() {
             if textual_response(&response.headers) {
                 let decoded = String::from_utf8_lossy(&response.body);
                 let sample: String = decoded.chars().take(max_chars).collect();
@@ -769,7 +753,7 @@ impl HttpEvidenceExecutor {
             predicate,
             value,
             source,
-            self.policy.reliability(),
+            self.policy().reliability(),
         ))
     }
 }
@@ -786,7 +770,7 @@ impl DecisionActionExecutor for HttpEvidenceExecutor {
     ) -> Result<Vec<Evidence>, DecisionExecutorError> {
         self.collect(request)
             .await
-            .map_err(into_decision_executor_error)
+            .map_err(HttpRequestBrokerError::into_decision_executor_error)
     }
 }
 
@@ -801,23 +785,6 @@ struct CollectedHttpResponse {
     total_ms: u64,
 }
 
-fn build_request(
-    client: &Client,
-    probe: &HttpProbe,
-) -> Result<reqwest::Request, HttpEvidenceError> {
-    let mut request = client.request(probe.method().as_reqwest(), probe.url().clone());
-    for (name, value) in probe.headers() {
-        let name = HeaderName::from_bytes(name.as_bytes())
-            .map_err(|_| HttpEvidenceError::InvalidHeaderName { name: name.clone() })?;
-        let value =
-            HeaderValue::from_str(value).map_err(|_| HttpEvidenceError::InvalidHeaderValue {
-                name: name.as_str().to_owned(),
-            })?;
-        request = request.header(name, value);
-    }
-    request.build().map_err(HttpEvidenceError::Request)
-}
-
 fn validate_http_url(url: &Url) -> Result<(), HttpEvidenceError> {
     if !matches!(url.scheme(), "http" | "https") {
         return Err(HttpEvidenceError::UnsupportedScheme {
@@ -828,6 +795,14 @@ fn validate_http_url(url: &Url) -> Result<(), HttpEvidenceError> {
         return Err(HttpEvidenceError::EmbeddedCredentials);
     }
     Ok(())
+}
+
+fn validate_executor_id(id: impl Into<String>) -> Result<String, HttpEvidenceError> {
+    let id = id.into();
+    if id.trim().is_empty() {
+        return Err(HttpEvidenceError::EmptyExecutorId);
+    }
+    Ok(id)
 }
 
 fn origin(url: &Url) -> Result<String, HttpEvidenceError> {
@@ -1082,7 +1057,10 @@ fn elapsed_ms(duration: Duration) -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    };
 
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
@@ -1090,9 +1068,109 @@ mod tests {
 
     use super::*;
     use crate::{
-        DecisionActionOrigin, DecisionExecutorRegistry, DecisionLoopCommand, DecisionRunnerAdapter,
-        KnowledgeBase, RuleEngine, StandardWebReasoning, VerificationCase,
+        DecisionActionOrigin, DecisionExecutionStage, DecisionExecutorRegistry,
+        DecisionLoopCommand, DecisionRunnerAdapter, KnowledgeBase, RuleEngine, RuntimeBudget,
+        RuntimeBudgetDimension, StandardWebReasoning, VerificationCase,
     };
+
+    struct CountedServer {
+        target: Url,
+        requests: Arc<AtomicUsize>,
+        task: tokio::task::JoinHandle<()>,
+    }
+
+    impl CountedServer {
+        fn target(&self) -> Url {
+            self.target.clone()
+        }
+
+        fn requests(&self) -> usize {
+            self.requests.load(Ordering::SeqCst)
+        }
+    }
+
+    impl Drop for CountedServer {
+        fn drop(&mut self) {
+            self.task.abort();
+        }
+    }
+
+    struct MultiRequestExecutor {
+        requests: HttpRequestBroker,
+        target: Url,
+    }
+
+    #[async_trait]
+    impl DecisionActionExecutor for MultiRequestExecutor {
+        fn id(&self) -> &str {
+            HTTP_EVIDENCE_EXECUTOR_ID
+        }
+
+        async fn execute(
+            &self,
+            request: &DecisionExecutionRequest,
+        ) -> Result<Vec<Evidence>, DecisionExecutorError> {
+            let probe = HttpProbe::new(self.target.clone(), HttpProbeMethod::Get)
+                .map_err(into_decision_executor_error)?;
+            self.requests
+                .collect(request, &probe)
+                .await
+                .map_err(HttpRequestBrokerError::into_decision_executor_error)?;
+            self.requests
+                .collect(request, &probe)
+                .await
+                .map_err(HttpRequestBrokerError::into_decision_executor_error)?;
+            Ok(Vec::new())
+        }
+    }
+
+    async fn serve_counted(response: &'static [u8]) -> CountedServer {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let requests = Arc::new(AtomicUsize::new(0));
+        let counted = requests.clone();
+        let task = tokio::spawn(async move {
+            loop {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut request = [0_u8; 2048];
+                let _ = stream.read(&mut request).await.unwrap();
+                counted.fetch_add(1, Ordering::SeqCst);
+                stream.write_all(response).await.unwrap();
+                stream.shutdown().await.unwrap();
+            }
+        });
+        CountedServer {
+            target: Url::parse(&format!("http://{address}/probe")).unwrap(),
+            requests,
+            task,
+        }
+    }
+
+    async fn serve_empty_response_then_watch_for_retry() -> CountedServer {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let requests = Arc::new(AtomicUsize::new(0));
+        let counted = requests.clone();
+        let task = tokio::spawn(async move {
+            let (mut first, _) = listener.accept().await.unwrap();
+            let mut request = [0_u8; 2048];
+            let _ = first.read(&mut request).await.unwrap();
+            counted.fetch_add(1, Ordering::SeqCst);
+            drop(first);
+
+            if let Ok(Ok((mut retry, _))) =
+                tokio::time::timeout(Duration::from_millis(250), listener.accept()).await
+            {
+                let _ = retry.read(&mut request).await.unwrap();
+                counted.fetch_add(1, Ordering::SeqCst);
+            }
+        });
+        CountedServer {
+            target: Url::parse(&format!("http://{address}/probe")).unwrap(),
+            requests,
+            task,
+        }
+    }
 
     async fn serve_once(response: &'static [u8]) -> Url {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1103,6 +1181,20 @@ mod tests {
             let _ = stream.read(&mut request).await.unwrap();
             stream.write_all(response).await.unwrap();
             stream.shutdown().await.unwrap();
+        });
+        Url::parse(&format!("http://{address}/probe")).unwrap()
+    }
+
+    async fn serve_partial_then_stall(response_prefix: &'static [u8]) -> Url {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = [0_u8; 2048];
+            let _ = stream.read(&mut request).await.unwrap();
+            stream.write_all(response_prefix).await.unwrap();
+            stream.flush().await.unwrap();
+            std::future::pending::<()>().await;
         });
         Url::parse(&format!("http://{address}/probe")).unwrap()
     }
@@ -1140,6 +1232,25 @@ mod tests {
         let mut registry = DecisionExecutorRegistry::new();
         registry.register(Arc::new(executor)).unwrap();
         DecisionRunnerAdapter::new(registry)
+    }
+
+    fn metered_adapter(
+        url: &Url,
+        policy: HttpEvidencePolicy,
+        budget: RuntimeBudget,
+    ) -> (DecisionRunnerAdapter, RequestAccountingBroker) {
+        let probe_url = url.clone();
+        let provider: Arc<dyn HttpProbeProvider> =
+            Arc::new(move |_request: &DecisionExecutionRequest| {
+                HttpProbe::new(probe_url.clone(), HttpProbeMethod::Get)
+            });
+        let accounting = RequestAccountingBroker::new(budget);
+        let executor =
+            HttpEvidenceExecutor::new_with_accounting(policy, provider, accounting.clone())
+                .unwrap();
+        let mut registry = DecisionExecutorRegistry::new();
+        registry.register(Arc::new(executor)).unwrap();
+        (DecisionRunnerAdapter::new(registry), accounting)
     }
 
     fn value<P>(evidence: &[Evidence], predicate: P) -> Option<&EvidenceValue>
@@ -1430,7 +1541,15 @@ mod tests {
             b"HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:9/outside\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
         )
         .await;
-        let adapter = adapter(&url, HttpBodyCapture::MetadataOnly, 1024);
+        let policy = HttpEvidencePolicy::new([url.clone()], Duration::from_secs(2), 1024)
+            .unwrap()
+            .with_body_capture(HttpBodyCapture::MetadataOnly)
+            .unwrap();
+        let (adapter, accounting) = metered_adapter(
+            &url,
+            policy,
+            RuntimeBudget::default().with_max_total_requests(1),
+        );
         let knowledge = KnowledgeBase::new();
 
         let receipt = adapter
@@ -1456,6 +1575,8 @@ mod tests {
             value(evidence, HttpEvidencePredicate::RESPONSE_FINAL_URL),
             Some(&EvidenceValue::Text(url.to_string()))
         );
+        assert_eq!(accounting.snapshot().total_requests(), 1);
+        assert_eq!(accounting.snapshot().response_bytes(), 0);
     }
 
     #[tokio::test]
@@ -1467,7 +1588,10 @@ mod tests {
                 HttpProbe::new(outside.clone(), HttpProbeMethod::Get)
             });
         let policy = HttpEvidencePolicy::for_origin(allowed.clone()).unwrap();
-        let executor = HttpEvidenceExecutor::new(policy, provider).unwrap();
+        let accounting = RequestAccountingBroker::new(RuntimeBudget::default());
+        let executor =
+            HttpEvidenceExecutor::new_with_accounting(policy, provider, accounting.clone())
+                .unwrap();
         let mut registry = DecisionExecutorRegistry::new();
         registry.register(Arc::new(executor)).unwrap();
         let adapter = DecisionRunnerAdapter::new(registry);
@@ -1487,6 +1611,8 @@ mod tests {
         assert_eq!(failure.action_id(), "http.probe");
         assert!(failure.diagnostic().contains("outside policy"));
         assert_eq!(knowledge.stats().evidence, 0);
+        assert_eq!(accounting.snapshot().total_requests(), 0);
+        assert_eq!(accounting.snapshot().response_bytes(), 0);
     }
 
     #[tokio::test]
@@ -1519,6 +1645,193 @@ mod tests {
             failure.diagnostic(),
             "HTTP evidence request timed out after 25 ms"
         );
+        assert_eq!(knowledge.stats().evidence, 0);
+    }
+
+    #[tokio::test]
+    async fn metered_dispatch_failure_charges_one_request_without_response_bytes() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        drop(listener);
+        let url = Url::parse(&format!("http://{address}/probe")).unwrap();
+        let policy = HttpEvidencePolicy::new(
+            [url.clone()],
+            Duration::from_millis(500),
+            DEFAULT_HTTP_BODY_LIMIT,
+        )
+        .unwrap();
+        let (adapter, accounting) = metered_adapter(&url, policy, RuntimeBudget::default());
+        let knowledge = KnowledgeBase::new();
+
+        let error = adapter
+            .execute_command(&command(&url), &knowledge)
+            .await
+            .unwrap_err();
+
+        let failure = error.execution_failure().unwrap();
+        assert_eq!(
+            failure.kind(),
+            DecisionExecutionFailureKind::TransportFailure
+        );
+        assert_eq!(accounting.snapshot().total_requests(), 1);
+        assert_eq!(accounting.snapshot().response_bytes(), 0);
+        assert_eq!(knowledge.stats().evidence, 0);
+    }
+
+    #[tokio::test]
+    async fn protocol_failure_is_not_implicitly_retried() {
+        let server = serve_empty_response_then_watch_for_retry().await;
+        let url = server.target();
+        let policy = HttpEvidencePolicy::new(
+            [url.clone()],
+            Duration::from_secs(1),
+            DEFAULT_HTTP_BODY_LIMIT,
+        )
+        .unwrap();
+        let (adapter, accounting) = metered_adapter(&url, policy, RuntimeBudget::default());
+        let knowledge = KnowledgeBase::new();
+
+        let error = adapter
+            .execute_command(&command(&url), &knowledge)
+            .await
+            .unwrap_err();
+        tokio::time::sleep(Duration::from_millis(300)).await;
+
+        assert_eq!(
+            error.execution_failure().unwrap().kind(),
+            DecisionExecutionFailureKind::TransportFailure
+        );
+        assert_eq!(accounting.snapshot().total_requests(), 1);
+        assert_eq!(server.requests(), 1);
+        assert_eq!(knowledge.stats().evidence, 0);
+    }
+
+    #[tokio::test]
+    async fn metered_partial_body_timeout_keeps_already_retained_bytes() {
+        let url = serve_partial_then_stall(
+            b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 10\r\nConnection: close\r\n\r\n0123",
+        )
+        .await;
+        let policy = HttpEvidencePolicy::new(
+            [url.clone()],
+            Duration::from_millis(100),
+            DEFAULT_HTTP_BODY_LIMIT,
+        )
+        .unwrap();
+        let (adapter, accounting) = metered_adapter(&url, policy, RuntimeBudget::default());
+        let knowledge = KnowledgeBase::new();
+
+        let error = adapter
+            .execute_command(&command(&url), &knowledge)
+            .await
+            .unwrap_err();
+
+        let failure = error.execution_failure().unwrap();
+        assert_eq!(
+            failure.kind(),
+            DecisionExecutionFailureKind::TransportFailure
+        );
+        assert!(failure.diagnostic().contains("timed out"));
+        assert_eq!(accounting.snapshot().total_requests(), 1);
+        assert_eq!(accounting.snapshot().response_bytes(), 4);
+        assert_eq!(knowledge.stats().evidence, 0);
+    }
+
+    #[tokio::test]
+    async fn metered_body_is_clamped_by_the_cumulative_host_budget() {
+        let url = serve_once(
+            b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 10\r\nConnection: close\r\n\r\n0123456789",
+        )
+        .await;
+        let policy = HttpEvidencePolicy::new(
+            [url.clone()],
+            Duration::from_secs(2),
+            DEFAULT_HTTP_BODY_LIMIT,
+        )
+        .unwrap();
+        let budget = RuntimeBudget::default().with_max_response_bytes(4);
+        let (adapter, accounting) = metered_adapter(&url, policy, budget);
+        let knowledge = KnowledgeBase::new();
+
+        let receipt = adapter
+            .execute_command(&command(&url), &knowledge)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            value(
+                receipt.evidence(),
+                HttpEvidencePredicate::RESPONSE_BODY_BYTES_OBSERVED,
+            ),
+            Some(&EvidenceValue::Unsigned(4))
+        );
+        assert_eq!(
+            value(
+                receipt.evidence(),
+                HttpEvidencePredicate::RESPONSE_BODY_TRUNCATED,
+            ),
+            Some(&EvidenceValue::Boolean(true))
+        );
+        assert_eq!(accounting.snapshot().total_requests(), 1);
+        assert_eq!(accounting.snapshot().response_bytes(), 4);
+    }
+
+    #[tokio::test]
+    async fn metered_runtime_limit_is_preserved_without_dispatch() {
+        let url =
+            serve_once(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").await;
+        let policy = HttpEvidencePolicy::for_origin(url.clone()).unwrap();
+        let budget = RuntimeBudget::default().with_max_total_requests(0);
+        let (adapter, accounting) = metered_adapter(&url, policy, budget);
+        let knowledge = KnowledgeBase::new();
+
+        let error = adapter
+            .execute_command(&command(&url), &knowledge)
+            .await
+            .unwrap_err();
+
+        let limit = error.runtime_limit().unwrap();
+        assert_eq!(limit.dimension(), RuntimeBudgetDimension::TotalRequests);
+        assert_eq!(accounting.snapshot().total_requests(), 0);
+        assert_eq!(accounting.snapshot().response_bytes(), 0);
+        assert_eq!(knowledge.stats().evidence, 0);
+    }
+
+    #[tokio::test]
+    async fn multi_request_executor_cannot_exceed_budget() {
+        let server =
+            serve_counted(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                .await;
+        let target = server.target();
+        let policy = HttpEvidencePolicy::for_origin(target.clone()).unwrap();
+        let accounting =
+            RequestAccountingBroker::new(RuntimeBudget::default().with_max_total_requests(1));
+        let requests = HttpRequestBroker::new(policy, Some(accounting.clone())).unwrap();
+        let mut registry = DecisionExecutorRegistry::new();
+        registry
+            .register(Arc::new(MultiRequestExecutor {
+                requests,
+                target: target.clone(),
+            }))
+            .unwrap();
+        let adapter = DecisionRunnerAdapter::new(registry);
+        let knowledge = KnowledgeBase::new();
+
+        let error = adapter
+            .execute_command(&command(&target), &knowledge)
+            .await
+            .unwrap_err();
+
+        let failure = error.execution_failure().unwrap();
+        assert_eq!(failure.action_id(), "http.probe");
+        assert_eq!(failure.stage(), DecisionExecutionStage::Passive);
+        assert_eq!(failure.origin(), Some(DecisionActionOrigin::Planned));
+        let limit = failure.runtime_limit().unwrap();
+        assert_eq!(limit.dimension(), RuntimeBudgetDimension::TotalRequests);
+        assert_eq!(limit.limit(), 1);
+        assert_eq!(limit.observed(), 2);
+        assert_eq!(accounting.snapshot().total_requests(), 1);
+        assert_eq!(server.requests(), 1);
         assert_eq!(knowledge.stats().evidence, 0);
     }
 

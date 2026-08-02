@@ -32,6 +32,7 @@ All notable changes to Venom are recorded here. Releases use the categories from
 - Subject/ontology revisions, bounded stale-snapshot retries, and atomic verifier state transitions for reasoning turns.
 - Typed post-reasoning planning receipts with snapshot revisions and before/after session transitions.
 - Transport-neutral executor failure kinds and immutable pre-commit receipts carrying the exact case, action, stage, origin, delay, resource limits, executor, and diagnostic.
+- A host-owned HTTP request broker with atomic dispatch, active-verification, and retained-response-byte accounting shared by every built-in standard-runtime executor.
 - A pinned `venom-core` public API compatibility command and dedicated CI gate against the `v0.9.0-alpha` source baseline.
 - A `ScanContext` construction ADR and migration guide for the next Scanner Preview release.
 
@@ -48,6 +49,7 @@ All notable changes to Venom are recorded here. Releases use the categories from
 - Made the runtime bootstrap receipt optional so a fail-closed budget can stop before initial network evidence is committed.
 - Limited learned suppression to verified negative conclusions; target blocks, policy blocks, transport failures, executor failures, and inconclusive checks remain neutral.
 - Classified built-in HTTP applicability, policy, transport, and internal executor failures without parsing diagnostics or turning operational failures into verifier outcomes.
+- Separated semantic action attempts from actual transport dispatches; retries, timeouts, redirects, partial bodies, and pre-dispatch failures now report their real resource use.
 - Moved standard web action identities into a transport-neutral catalog so verification no longer depends on HTTP execution or the `scanning` feature.
 - Replaced duplicated HTTP and web predicate literals with the canonical `venom-core` vocabulary.
 - Made API fingerprinting consume normalized media-type and path-segment evidence; the JSON rule identity is `api.response.json.media-type`.
@@ -67,6 +69,7 @@ All notable changes to Venom are recorded here. Releases use the categories from
 - Added hard depth, node, field, and canonical-byte ceilings for API visibility evidence preparation without weakening decision-runner subject isolation.
 - Bounded relation identifiers, endpoints, custom kinds, provenance sets, review cursors, and page cloning; redacted deterministic visibility fingerprints and cursors from `Debug` output.
 - Bounded API observation producer names and review explanations, validating borrowed records before projection clones them.
+- Made request and retained-body charges non-refundable at the transport boundary, including partial reads and executor cancellation, and preserved structured audit receipts for broker limit denials.
 
 ## [0.9.0-alpha] - 2026-07-31
 

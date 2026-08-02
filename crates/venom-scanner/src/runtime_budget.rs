@@ -4,7 +4,12 @@
 //! and experience. Domain layers describe what should happen; the runtime owns
 //! whether another side effect is still permitted.
 
-use std::{collections::BTreeMap, fmt, time::Duration};
+use std::{
+    collections::BTreeMap,
+    fmt,
+    sync::{Arc, Mutex, MutexGuard},
+    time::Duration,
+};
 
 use serde::{Deserialize, Serialize};
 
@@ -237,6 +242,230 @@ impl fmt::Display for RuntimeLimitExceeded {
 
 impl std::error::Error for RuntimeLimitExceeded {}
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct RequestAccountingSnapshot {
+    total_requests: u32,
+    passive_requests: u32,
+    active_verifications: u16,
+    bootstrap_requests: u32,
+    planned_requests: u32,
+    adaptive_requests: u32,
+    retry_requests: u32,
+    response_bytes: u64,
+}
+
+impl RequestAccountingSnapshot {
+    pub(crate) const fn total_requests(self) -> u32 {
+        self.total_requests
+    }
+
+    pub(crate) const fn passive_requests(self) -> u32 {
+        self.passive_requests
+    }
+
+    pub(crate) const fn active_verifications(self) -> u16 {
+        self.active_verifications
+    }
+
+    pub(crate) const fn bootstrap_requests(self) -> u32 {
+        self.bootstrap_requests
+    }
+
+    pub(crate) const fn planned_requests(self) -> u32 {
+        self.planned_requests
+    }
+
+    pub(crate) const fn adaptive_requests(self) -> u32 {
+        self.adaptive_requests
+    }
+
+    pub(crate) const fn retry_requests(self) -> u32 {
+        self.retry_requests
+    }
+
+    pub(crate) const fn response_bytes(self) -> u64 {
+        self.response_bytes
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct RequestAccountingPreflight {
+    remaining_response_bytes: u64,
+}
+
+impl RequestAccountingPreflight {
+    pub(crate) const fn remaining_response_bytes(self) -> u64 {
+        self.remaining_response_bytes
+    }
+}
+
+#[derive(Debug, Default)]
+struct RequestAccountingState {
+    snapshot: RequestAccountingSnapshot,
+}
+
+/// Shared host-owned authority for logical transport dispatch accounting.
+///
+/// Clones share one monotonic state. Preflight is advisory and side-effect
+/// free; [`Self::try_begin`] repeats every guard under the same state lock that
+/// records the dispatch.
+#[derive(Debug, Clone)]
+pub(crate) struct RequestAccountingBroker {
+    budget: RuntimeBudget,
+    state: Arc<Mutex<RequestAccountingState>>,
+}
+
+impl RequestAccountingBroker {
+    pub(crate) fn new(budget: RuntimeBudget) -> Self {
+        Self {
+            budget,
+            state: Arc::new(Mutex::new(RequestAccountingState::default())),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn budget(&self) -> RuntimeBudget {
+        self.budget
+    }
+
+    pub(crate) fn snapshot(&self) -> RequestAccountingSnapshot {
+        self.lock_state().snapshot
+    }
+
+    pub(crate) fn preflight(
+        &self,
+        action_id: &str,
+        stage: crate::DecisionExecutionStage,
+    ) -> Result<RequestAccountingPreflight, RuntimeLimitExceeded> {
+        check_request_limits(&self.lock_state().snapshot, self.budget, action_id, stage)
+    }
+
+    pub(crate) fn try_begin(
+        &self,
+        action_id: &str,
+        stage: crate::DecisionExecutionStage,
+        origin: Option<crate::DecisionActionOrigin>,
+    ) -> Result<RequestAccountingLease, RuntimeLimitExceeded> {
+        let mut state = self.lock_state();
+        check_request_limits(&state.snapshot, self.budget, action_id, stage)?;
+        record_dispatch(&mut state.snapshot, stage, origin);
+        drop(state);
+
+        Ok(RequestAccountingLease {
+            broker: self.clone(),
+        })
+    }
+
+    fn lock_state(&self) -> MutexGuard<'_, RequestAccountingState> {
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+}
+
+/// Non-clone proof that one logical transport dispatch was recorded.
+///
+/// Claimed response bytes are retained globally immediately. Dropping the
+/// lease never rolls back either the request or byte counters, including when
+/// execution is cancelled or returns a partial failure.
+#[derive(Debug)]
+pub(crate) struct RequestAccountingLease {
+    broker: RequestAccountingBroker,
+}
+
+impl RequestAccountingLease {
+    pub(crate) fn claim_response_bytes(&mut self, bytes: u64) -> u64 {
+        let mut state = self.broker.lock_state();
+        let remaining = self
+            .broker
+            .budget
+            .max_response_bytes()
+            .saturating_sub(state.snapshot.response_bytes);
+        let retained = bytes.min(remaining);
+        state.snapshot.response_bytes = state.snapshot.response_bytes.saturating_add(retained);
+        retained
+    }
+
+    pub(crate) fn remaining_response_bytes(&self) -> u64 {
+        let response_bytes = self.broker.snapshot().response_bytes;
+        self.broker
+            .budget
+            .max_response_bytes()
+            .saturating_sub(response_bytes)
+    }
+}
+
+fn check_request_limits(
+    snapshot: &RequestAccountingSnapshot,
+    budget: RuntimeBudget,
+    action_id: &str,
+    stage: crate::DecisionExecutionStage,
+) -> Result<RequestAccountingPreflight, RuntimeLimitExceeded> {
+    if snapshot.total_requests >= budget.max_total_requests() {
+        return Err(RuntimeLimitExceeded::new(
+            RuntimeBudgetDimension::TotalRequests,
+            u64::from(budget.max_total_requests()),
+            u64::from(snapshot.total_requests).saturating_add(1),
+            Some(action_id.to_owned()),
+        ));
+    }
+    if snapshot.response_bytes >= budget.max_response_bytes() {
+        return Err(RuntimeLimitExceeded::new(
+            RuntimeBudgetDimension::ResponseBytes,
+            budget.max_response_bytes(),
+            snapshot.response_bytes,
+            Some(action_id.to_owned()),
+        ));
+    }
+    if stage == crate::DecisionExecutionStage::Active
+        && snapshot.active_verifications >= budget.max_active_verifications()
+    {
+        return Err(RuntimeLimitExceeded::new(
+            RuntimeBudgetDimension::ActiveVerifications,
+            u64::from(budget.max_active_verifications()),
+            u64::from(snapshot.active_verifications).saturating_add(1),
+            Some(action_id.to_owned()),
+        ));
+    }
+
+    Ok(RequestAccountingPreflight {
+        remaining_response_bytes: budget
+            .max_response_bytes()
+            .saturating_sub(snapshot.response_bytes),
+    })
+}
+
+fn record_dispatch(
+    snapshot: &mut RequestAccountingSnapshot,
+    stage: crate::DecisionExecutionStage,
+    origin: Option<crate::DecisionActionOrigin>,
+) {
+    snapshot.total_requests = snapshot.total_requests.saturating_add(1);
+    match stage {
+        crate::DecisionExecutionStage::Passive => {
+            snapshot.passive_requests = snapshot.passive_requests.saturating_add(1);
+            match origin {
+                Some(crate::DecisionActionOrigin::Bootstrap) => {
+                    snapshot.bootstrap_requests = snapshot.bootstrap_requests.saturating_add(1);
+                },
+                Some(crate::DecisionActionOrigin::Planned) => {
+                    snapshot.planned_requests = snapshot.planned_requests.saturating_add(1);
+                },
+                Some(crate::DecisionActionOrigin::Adaptive) => {
+                    snapshot.adaptive_requests = snapshot.adaptive_requests.saturating_add(1);
+                },
+                Some(crate::DecisionActionOrigin::Retry) => {
+                    snapshot.retry_requests = snapshot.retry_requests.saturating_add(1);
+                },
+                None => {},
+            }
+        },
+        crate::DecisionExecutionStage::Active => {
+            snapshot.active_verifications = snapshot.active_verifications.saturating_add(1);
+        },
+    }
+}
+
 /// Monotonic, output-only resource accounting for a runtime session.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct RuntimeUsage {
@@ -255,45 +484,45 @@ pub struct RuntimeUsage {
 }
 
 impl RuntimeUsage {
-    /// Returns all reserved HTTP request attempts.
-    ///
-    /// Reservation happens before an optional scheduler delay, so a wall-time
-    /// cancellation during that delay still consumes the attempt.
+    /// Returns logical transport dispatches that acquired an accounting lease.
     pub const fn total_requests(&self) -> u32 {
         self.total_requests
     }
 
-    /// Returns passive requests, including bootstrap, planned, adaptive, and retries.
+    /// Returns passive transport dispatches, including bootstrap, planned,
+    /// adaptive, and retry origins.
     pub const fn passive_requests(&self) -> u32 {
         self.passive_requests
     }
 
-    /// Returns explicit active-verification requests.
+    /// Returns explicit active-verification transport dispatches.
     pub const fn active_verifications(&self) -> u16 {
         self.active_verifications
     }
 
-    /// Returns bootstrap request attempts.
+    /// Returns bootstrap-originated transport dispatches.
     pub const fn bootstrap_requests(&self) -> u32 {
         self.bootstrap_requests
     }
 
-    /// Returns planner-originated request attempts.
+    /// Returns planner-originated transport dispatches.
     pub const fn planned_requests(&self) -> u32 {
         self.planned_requests
     }
 
-    /// Returns adaptation-originated request attempts.
+    /// Returns adaptation-originated transport dispatches.
     pub const fn adaptive_requests(&self) -> u32 {
         self.adaptive_requests
     }
 
-    /// Returns retry request attempts.
+    /// Returns retry-originated transport dispatches.
     pub const fn retry_requests(&self) -> u32 {
         self.retry_requests
     }
 
-    /// Returns cumulative response-body bytes committed as evidence.
+    /// Returns cumulative response-body bytes retained by transport leases.
+    ///
+    /// Bytes remain charged when execution later fails or is cancelled.
     pub const fn response_bytes(&self) -> u64 {
         self.response_bytes
     }
@@ -321,6 +550,14 @@ impl RuntimeUsage {
         &self.same_action_attempts
     }
 
+    /// Returns all semantic action attempts without adding another wire field.
+    pub fn total_action_attempts(&self) -> u64 {
+        self.same_action_attempts
+            .values()
+            .map(|attempts| u64::from(*attempts))
+            .sum()
+    }
+
     /// Returns elapsed runtime wall time.
     pub const fn elapsed(&self) -> Duration {
         Duration::from_millis(self.elapsed_ms)
@@ -331,36 +568,7 @@ impl RuntimeUsage {
         self.elapsed_ms
     }
 
-    pub(crate) fn reserve_request(
-        &mut self,
-        action_id: &str,
-        stage: crate::DecisionExecutionStage,
-        origin: Option<crate::DecisionActionOrigin>,
-    ) {
-        self.total_requests = self.total_requests.saturating_add(1);
-        match stage {
-            crate::DecisionExecutionStage::Passive => {
-                self.passive_requests = self.passive_requests.saturating_add(1);
-                match origin {
-                    Some(crate::DecisionActionOrigin::Bootstrap) => {
-                        self.bootstrap_requests = self.bootstrap_requests.saturating_add(1);
-                    },
-                    Some(crate::DecisionActionOrigin::Planned) => {
-                        self.planned_requests = self.planned_requests.saturating_add(1);
-                    },
-                    Some(crate::DecisionActionOrigin::Adaptive) => {
-                        self.adaptive_requests = self.adaptive_requests.saturating_add(1);
-                    },
-                    Some(crate::DecisionActionOrigin::Retry) => {
-                        self.retry_requests = self.retry_requests.saturating_add(1);
-                    },
-                    None => {},
-                }
-            },
-            crate::DecisionExecutionStage::Active => {
-                self.active_verifications = self.active_verifications.saturating_add(1);
-            },
-        }
+    pub(crate) fn reserve_action_attempt(&mut self, action_id: &str) {
         let attempts = self
             .same_action_attempts
             .entry(action_id.to_owned())
@@ -368,8 +576,20 @@ impl RuntimeUsage {
         *attempts = attempts.saturating_add(1);
     }
 
-    pub(crate) fn record_response_bytes(&mut self, bytes: u64) {
-        self.response_bytes = self.response_bytes.saturating_add(bytes);
+    pub(crate) fn sync_request_accounting(&mut self, snapshot: RequestAccountingSnapshot) {
+        // Broker state is monotonic. Merge rather than replace so a stale
+        // snapshot observed by a concurrent reporter cannot make usage appear
+        // to move backwards.
+        self.total_requests = self.total_requests.max(snapshot.total_requests());
+        self.passive_requests = self.passive_requests.max(snapshot.passive_requests());
+        self.active_verifications = self
+            .active_verifications
+            .max(snapshot.active_verifications());
+        self.bootstrap_requests = self.bootstrap_requests.max(snapshot.bootstrap_requests());
+        self.planned_requests = self.planned_requests.max(snapshot.planned_requests());
+        self.adaptive_requests = self.adaptive_requests.max(snapshot.adaptive_requests());
+        self.retry_requests = self.retry_requests.max(snapshot.retry_requests());
+        self.response_bytes = self.response_bytes.max(snapshot.response_bytes());
     }
 
     pub(crate) fn record_execution_progress(&mut self, progressed: bool) {
@@ -389,6 +609,11 @@ impl RuntimeUsage {
 
 #[cfg(test)]
 mod tests {
+    use std::{
+        sync::{Arc, Barrier},
+        thread,
+    };
+
     use super::*;
 
     #[test]
@@ -422,5 +647,384 @@ mod tests {
             "max_total_requets": 7
         }))
         .is_err());
+
+        assert_eq!(
+            serde_json::to_value(RuntimeBudget::default()).unwrap(),
+            serde_json::json!({
+                "max_total_requests": DEFAULT_MAX_TOTAL_REQUESTS,
+                "max_wall_time_ms": DEFAULT_MAX_WALL_TIME_MS,
+                "max_response_bytes": DEFAULT_MAX_RESPONSE_BYTES,
+                "max_active_verifications": DEFAULT_MAX_ACTIVE_VERIFICATIONS,
+                "max_same_action_attempts": DEFAULT_MAX_SAME_ACTION_ATTEMPTS,
+                "max_consecutive_no_progress_turns": DEFAULT_MAX_CONSECUTIVE_NO_PROGRESS_TURNS
+            })
+        );
+    }
+
+    #[test]
+    fn zero_limits_fail_preflight_without_mutating_accounting() {
+        let no_requests =
+            RequestAccountingBroker::new(RuntimeBudget::default().with_max_total_requests(0));
+        let request_error = no_requests
+            .preflight("http.bootstrap", crate::DecisionExecutionStage::Passive)
+            .unwrap_err();
+        assert_eq!(
+            request_error.dimension(),
+            RuntimeBudgetDimension::TotalRequests
+        );
+        assert_eq!(no_requests.snapshot(), RequestAccountingSnapshot::default());
+
+        let no_bytes =
+            RequestAccountingBroker::new(RuntimeBudget::default().with_max_response_bytes(0));
+        let bytes_error = no_bytes
+            .preflight("http.bootstrap", crate::DecisionExecutionStage::Passive)
+            .unwrap_err();
+        assert_eq!(
+            bytes_error.dimension(),
+            RuntimeBudgetDimension::ResponseBytes
+        );
+        assert_eq!(no_bytes.snapshot(), RequestAccountingSnapshot::default());
+
+        let no_active =
+            RequestAccountingBroker::new(RuntimeBudget::default().with_max_active_verifications(0));
+        let active_error = no_active
+            .preflight("http.verify", crate::DecisionExecutionStage::Active)
+            .unwrap_err();
+        assert_eq!(
+            active_error.dimension(),
+            RuntimeBudgetDimension::ActiveVerifications
+        );
+        assert_eq!(no_active.snapshot(), RequestAccountingSnapshot::default());
+    }
+
+    #[test]
+    fn preflight_reports_remaining_bytes_without_reserving_a_dispatch() {
+        let broker = RequestAccountingBroker::new(
+            RuntimeBudget::default()
+                .with_max_total_requests(1)
+                .with_max_response_bytes(7),
+        );
+
+        let first = broker
+            .preflight("http.bootstrap", crate::DecisionExecutionStage::Passive)
+            .unwrap();
+        let second = broker
+            .preflight("http.bootstrap", crate::DecisionExecutionStage::Passive)
+            .unwrap();
+
+        assert_eq!(first.remaining_response_bytes(), 7);
+        assert_eq!(second, first);
+        assert_eq!(broker.snapshot(), RequestAccountingSnapshot::default());
+        assert_eq!(broker.budget().max_total_requests(), 1);
+    }
+
+    #[test]
+    fn dropped_lease_never_refunds_a_dispatch() {
+        let broker =
+            RequestAccountingBroker::new(RuntimeBudget::default().with_max_total_requests(1));
+        let lease = broker
+            .try_begin(
+                "http.bootstrap",
+                crate::DecisionExecutionStage::Passive,
+                Some(crate::DecisionActionOrigin::Bootstrap),
+            )
+            .unwrap();
+
+        drop(lease);
+
+        let error = broker
+            .try_begin(
+                "http.bootstrap",
+                crate::DecisionExecutionStage::Passive,
+                Some(crate::DecisionActionOrigin::Bootstrap),
+            )
+            .unwrap_err();
+        assert_eq!(error.dimension(), RuntimeBudgetDimension::TotalRequests);
+        let snapshot = broker.snapshot();
+        assert_eq!(snapshot.total_requests(), 1);
+        assert_eq!(snapshot.passive_requests(), 1);
+        assert_eq!(snapshot.bootstrap_requests(), 1);
+    }
+
+    #[test]
+    fn remaining_one_dispatch_is_acquired_atomically() {
+        let broker =
+            RequestAccountingBroker::new(RuntimeBudget::default().with_max_total_requests(1));
+        let barrier = Arc::new(Barrier::new(3));
+        let mut workers = Vec::new();
+        for action_id in ["http.a", "http.b"] {
+            let broker = broker.clone();
+            let barrier = barrier.clone();
+            workers.push(thread::spawn(move || {
+                barrier.wait();
+                broker
+                    .try_begin(
+                        action_id,
+                        crate::DecisionExecutionStage::Passive,
+                        Some(crate::DecisionActionOrigin::Planned),
+                    )
+                    .map(drop)
+                    .map_err(|error| error.dimension())
+            }));
+        }
+        barrier.wait();
+
+        let results: Vec<_> = workers
+            .into_iter()
+            .map(|worker| worker.join().unwrap())
+            .collect();
+        assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
+        assert_eq!(
+            results
+                .iter()
+                .filter(|result| { matches!(result, Err(RuntimeBudgetDimension::TotalRequests)) })
+                .count(),
+            1
+        );
+        assert_eq!(broker.snapshot().total_requests(), 1);
+    }
+
+    #[test]
+    fn preflight_is_advisory_but_try_begin_is_atomic() {
+        let broker =
+            RequestAccountingBroker::new(RuntimeBudget::default().with_max_total_requests(1));
+        let barrier = Arc::new(Barrier::new(3));
+        let mut workers = Vec::new();
+        for action_id in ["http.a", "http.b"] {
+            let broker = broker.clone();
+            let barrier = barrier.clone();
+            workers.push(thread::spawn(move || {
+                broker
+                    .preflight(action_id, crate::DecisionExecutionStage::Passive)
+                    .unwrap();
+                barrier.wait();
+                broker
+                    .try_begin(
+                        action_id,
+                        crate::DecisionExecutionStage::Passive,
+                        Some(crate::DecisionActionOrigin::Planned),
+                    )
+                    .map(drop)
+            }));
+        }
+        barrier.wait();
+
+        let results: Vec<_> = workers
+            .into_iter()
+            .map(|worker| worker.join().unwrap())
+            .collect();
+        assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
+        let denied = results
+            .iter()
+            .find_map(|result| result.as_ref().err())
+            .unwrap();
+        assert_eq!(denied.dimension(), RuntimeBudgetDimension::TotalRequests);
+        assert_eq!(broker.snapshot().total_requests(), 1);
+    }
+
+    #[test]
+    fn active_limit_is_atomic_without_blocking_passive_dispatch() {
+        let broker = RequestAccountingBroker::new(
+            RuntimeBudget::default()
+                .with_max_total_requests(3)
+                .with_max_active_verifications(1),
+        );
+        let barrier = Arc::new(Barrier::new(3));
+        let workers: Vec<_> = ["verify.a", "verify.b"]
+            .into_iter()
+            .map(|action_id| {
+                let broker = broker.clone();
+                let barrier = barrier.clone();
+                thread::spawn(move || {
+                    barrier.wait();
+                    broker
+                        .try_begin(action_id, crate::DecisionExecutionStage::Active, None)
+                        .map(drop)
+                })
+            })
+            .collect();
+        barrier.wait();
+
+        let results: Vec<_> = workers
+            .into_iter()
+            .map(|worker| worker.join().unwrap())
+            .collect();
+        assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
+        let denied = results
+            .iter()
+            .find_map(|result| result.as_ref().err())
+            .unwrap();
+        assert_eq!(
+            denied.dimension(),
+            RuntimeBudgetDimension::ActiveVerifications
+        );
+        drop(
+            broker
+                .try_begin(
+                    "http.passive",
+                    crate::DecisionExecutionStage::Passive,
+                    Some(crate::DecisionActionOrigin::Planned),
+                )
+                .unwrap(),
+        );
+        let snapshot = broker.snapshot();
+        assert_eq!(snapshot.total_requests(), 2);
+        assert_eq!(snapshot.active_verifications(), 1);
+        assert_eq!(snapshot.passive_requests(), 1);
+    }
+
+    #[test]
+    fn response_byte_claims_are_bounded_and_survive_lease_drop() {
+        let broker = RequestAccountingBroker::new(
+            RuntimeBudget::default()
+                .with_max_total_requests(2)
+                .with_max_response_bytes(5),
+        );
+        let mut lease = broker
+            .try_begin(
+                "http.bootstrap",
+                crate::DecisionExecutionStage::Passive,
+                Some(crate::DecisionActionOrigin::Bootstrap),
+            )
+            .unwrap();
+
+        assert_eq!(lease.claim_response_bytes(3), 3);
+        assert_eq!(lease.remaining_response_bytes(), 2);
+        assert_eq!(lease.claim_response_bytes(4), 2);
+        assert_eq!(lease.claim_response_bytes(1), 0);
+        drop(lease);
+
+        assert_eq!(broker.snapshot().response_bytes(), 5);
+        let error = broker
+            .preflight("http.next", crate::DecisionExecutionStage::Passive)
+            .unwrap_err();
+        assert_eq!(error.dimension(), RuntimeBudgetDimension::ResponseBytes);
+    }
+
+    #[test]
+    fn concurrent_response_claims_cannot_exceed_the_session_limit() {
+        let broker = RequestAccountingBroker::new(
+            RuntimeBudget::default()
+                .with_max_total_requests(2)
+                .with_max_response_bytes(5),
+        );
+        let leases = ["http.a", "http.b"].map(|action_id| {
+            broker
+                .try_begin(
+                    action_id,
+                    crate::DecisionExecutionStage::Passive,
+                    Some(crate::DecisionActionOrigin::Planned),
+                )
+                .unwrap()
+        });
+        let barrier = Arc::new(Barrier::new(3));
+        let workers: Vec<_> = leases
+            .into_iter()
+            .map(|mut lease| {
+                let barrier = barrier.clone();
+                thread::spawn(move || {
+                    barrier.wait();
+                    lease.claim_response_bytes(4)
+                })
+            })
+            .collect();
+        barrier.wait();
+
+        let retained: u64 = workers
+            .into_iter()
+            .map(|worker| worker.join().unwrap())
+            .sum();
+        assert_eq!(retained, 5);
+        assert_eq!(broker.snapshot().response_bytes(), 5);
+    }
+
+    #[test]
+    fn usage_sync_preserves_wire_shape_and_separates_action_attempts() {
+        let broker = RequestAccountingBroker::new(
+            RuntimeBudget::default()
+                .with_max_total_requests(5)
+                .with_max_active_verifications(1),
+        );
+        for origin in [
+            crate::DecisionActionOrigin::Bootstrap,
+            crate::DecisionActionOrigin::Planned,
+            crate::DecisionActionOrigin::Adaptive,
+            crate::DecisionActionOrigin::Retry,
+        ] {
+            drop(
+                broker
+                    .try_begin(
+                        "http.probe",
+                        crate::DecisionExecutionStage::Passive,
+                        Some(origin),
+                    )
+                    .unwrap(),
+            );
+        }
+        drop(
+            broker
+                .try_begin("http.probe", crate::DecisionExecutionStage::Active, None)
+                .unwrap(),
+        );
+
+        let mut usage = RuntimeUsage::default();
+        usage.reserve_action_attempt("http.probe");
+        usage.reserve_action_attempt("http.probe");
+        usage.sync_request_accounting(broker.snapshot());
+
+        assert_eq!(usage.total_requests(), 5);
+        assert_eq!(usage.passive_requests(), 4);
+        assert_eq!(usage.active_verifications(), 1);
+        assert_eq!(usage.bootstrap_requests(), 1);
+        assert_eq!(usage.planned_requests(), 1);
+        assert_eq!(usage.adaptive_requests(), 1);
+        assert_eq!(usage.retry_requests(), 1);
+        assert_eq!(usage.same_action_attempts("http.probe"), 2);
+        assert_eq!(usage.total_action_attempts(), 2);
+        assert_eq!(
+            serde_json::to_value(&usage).unwrap(),
+            serde_json::json!({
+                "total_requests": 5,
+                "passive_requests": 4,
+                "active_verifications": 1,
+                "bootstrap_requests": 1,
+                "planned_requests": 1,
+                "adaptive_requests": 1,
+                "retry_requests": 1,
+                "response_bytes": 0,
+                "completed_execution_turns": 0,
+                "consecutive_no_progress_turns": 0,
+                "same_action_attempts": {"http.probe": 2},
+                "elapsed_ms": 0
+            })
+        );
+    }
+
+    #[test]
+    fn stale_snapshot_cannot_regress_runtime_usage() {
+        let old = RequestAccountingSnapshot {
+            total_requests: 1,
+            passive_requests: 1,
+            bootstrap_requests: 1,
+            ..RequestAccountingSnapshot::default()
+        };
+        let new = RequestAccountingSnapshot {
+            total_requests: 2,
+            passive_requests: 1,
+            active_verifications: 1,
+            bootstrap_requests: 1,
+            response_bytes: 4,
+            ..RequestAccountingSnapshot::default()
+        };
+        let mut usage = RuntimeUsage::default();
+
+        usage.sync_request_accounting(new);
+        usage.sync_request_accounting(old);
+
+        assert_eq!(usage.total_requests(), 2);
+        assert_eq!(usage.passive_requests(), 1);
+        assert_eq!(usage.active_verifications(), 1);
+        assert_eq!(usage.bootstrap_requests(), 1);
+        assert_eq!(usage.response_bytes(), 4);
     }
 }

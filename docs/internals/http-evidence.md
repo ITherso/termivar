@@ -14,7 +14,10 @@ HttpProbeProvider
 HttpProbe + HttpEvidencePolicy
           |
           v
-redirect-disabled reqwest client
+host-owned HttpRequestBroker
+          |
+          v
+accounting lease + redirect-disabled reqwest client
           |
           v
 bounded response collection
@@ -29,7 +32,7 @@ The runner performs the later provenance validation, atomic knowledge write, and
 
 Every policy contains at least one normalized authorized origin. A provider may select paths and query strings inside those origins, but the executor rejects a different scheme, host, or effective port before network I/O. Only `GET`, `HEAD`, and `OPTIONS` are supported by this collector.
 
-The executor uses a client configured with redirect following disabled. A redirect becomes ordinary status, `Location`, and final-URL evidence; it never expands scan scope automatically. Embedded URL credentials and destination/framing request headers such as `Host`, `Content-Length`, and `Transfer-Encoding` are rejected.
+The executor has no direct HTTP client. It delegates request construction, timeout, dispatch, and bounded body collection to `HttpRequestBroker`. The broker's client has redirect following and implicit reqwest retries disabled. A redirect becomes ordinary status, `Location`, and final-URL evidence; it consumes exactly the dispatch that received it and never expands scan scope automatically. A semantic retry must re-enter the broker and acquire another lease. Embedded URL credentials and destination/framing request headers such as `Host`, `Content-Length`, and `Transfer-Encoding` are rejected before a dispatch lease is acquired.
 
 ## Evidence emitted
 
@@ -48,7 +51,7 @@ The `http.response.status` predicate intentionally matches the standard adaptive
 
 ## Resource and data safety
 
-The complete request plus body read has one timeout. Body buffering has a configurable positive per-response limit and a hard 16 MiB ceiling. A host runtime may attach a smaller per-execution allowance; the collector always uses the smaller value and never expands policy. This is how the standard runtime enforces its cumulative response-byte budget before buffering. Metadata-only capture is the default. Text sampling must be enabled explicitly and remains bounded by the body buffer.
+The complete request plus body read has one timeout. Body buffering has a configurable positive per-response limit and a hard 16 MiB ceiling. `StandardWebDecisionRuntime` gives every built-in executor a clone of one broker backed by one atomic accounting authority. The broker acquires a non-refundable request lease immediately before dispatch and claims retained response chunks against the session byte budget. A host runtime may also attach a smaller per-execution allowance; the collector always uses the smallest bound and never expands policy. Partial bytes remain accounted even when a later read times out or fails. Metadata-only capture is the default. Text sampling must be enabled explicitly and remains bounded by the body buffer.
 
 Response headers use a conservative allowlist. `Set-Cookie` is omitted by default because it may contain session secrets; a host may opt in only when its evidence retention policy permits that data. The executor hashes exactly the bytes it observed, so a truncated-body hash is not presented as a hash of the complete representation.
 

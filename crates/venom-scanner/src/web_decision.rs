@@ -8,12 +8,12 @@ use serde::Serialize;
 use thiserror::Error;
 
 use crate::{
-    DecisionExecutorRegistry, DecisionLoop, HttpEvidencePolicy, KnowledgeBase,
-    StandardWebAttackInstallReport, StandardWebAttackProfile, StandardWebDiscoveryExecutorProfile,
-    StandardWebDiscoveryInstallReport, StandardWebExecutionError, StandardWebInstallReport,
-    StandardWebPlanningError, StandardWebReasoning, StandardWebReasoningError,
-    StandardWebVerificationError, StandardWebVerificationInstallReport,
-    StandardWebVerificationProfile,
+    http_evidence::HttpRequestBroker, DecisionExecutorRegistry, DecisionLoop, HttpEvidencePolicy,
+    KnowledgeBase, StandardWebAttackInstallReport, StandardWebAttackProfile,
+    StandardWebDiscoveryExecutorProfile, StandardWebDiscoveryInstallReport,
+    StandardWebExecutionError, StandardWebInstallReport, StandardWebPlanningError,
+    StandardWebReasoning, StandardWebReasoningError, StandardWebVerificationError,
+    StandardWebVerificationInstallReport, StandardWebVerificationProfile,
 };
 
 /// Failures while constructing or installing the composite web decision stack.
@@ -114,10 +114,22 @@ pub struct StandardWebDecisionProfile {
 impl StandardWebDecisionProfile {
     /// Builds and validates all four layers before any host state is changed.
     pub fn new(policy: HttpEvidencePolicy) -> Result<Self, StandardWebDecisionError> {
+        Self::build(StandardWebDiscoveryExecutorProfile::new(policy)?)
+    }
+
+    pub(crate) fn new_with_request_broker(
+        requests: HttpRequestBroker,
+    ) -> Result<Self, StandardWebDecisionError> {
+        Self::build(StandardWebDiscoveryExecutorProfile::new_with_request_broker(requests)?)
+    }
+
+    fn build(
+        execution: StandardWebDiscoveryExecutorProfile,
+    ) -> Result<Self, StandardWebDecisionError> {
         Ok(Self {
             reasoning: StandardWebReasoning::new()?,
             planning: StandardWebAttackProfile::new()?,
-            execution: StandardWebDiscoveryExecutorProfile::new(policy)?,
+            execution,
             verification: StandardWebVerificationProfile::new()?,
         })
     }

@@ -40,6 +40,27 @@ struct FailingRuntimeExecutor {
     diagnostic: &'static str,
 }
 
+struct BudgetDeniedRuntimeExecutor {
+    id: &'static str,
+    limit: RuntimeLimitExceeded,
+}
+
+#[async_trait]
+impl DecisionActionExecutor for BudgetDeniedRuntimeExecutor {
+    fn id(&self) -> &str {
+        self.id
+    }
+
+    async fn execute(
+        &self,
+        _request: &DecisionExecutionRequest,
+    ) -> Result<Vec<Evidence>, DecisionExecutorError> {
+        Err(DecisionExecutorError::from_runtime_limit(
+            self.limit.clone(),
+        ))
+    }
+}
+
 #[async_trait]
 impl DecisionActionExecutor for FailingRuntimeExecutor {
     fn id(&self) -> &str {
@@ -56,6 +77,7 @@ impl DecisionActionExecutor for FailingRuntimeExecutor {
 
 enum Reply {
     Response(&'static [u8]),
+    PartialThenStall(&'static [u8]),
     Stall,
 }
 
@@ -111,6 +133,11 @@ async fn serve(replies: Vec<Reply>) -> TestServer {
                 Reply::Response(response) => {
                     stream.write_all(response).await.unwrap();
                     stream.shutdown().await.unwrap();
+                },
+                Reply::PartialThenStall(response_prefix) => {
+                    stream.write_all(response_prefix).await.unwrap();
+                    stream.flush().await.unwrap();
+                    pending::<()>().await;
                 },
                 Reply::Stall => pending::<()>().await,
             }
@@ -246,8 +273,10 @@ async fn runtime_forwards_bootstrap_failure_without_learning_from_it() {
         receipt.kind(),
         DecisionExecutionFailureKind::TransportFailure
     );
-    assert_eq!(runtime.usage().total_requests(), 1);
-    assert_eq!(runtime.usage().bootstrap_requests(), 1);
+    assert_eq!(runtime.usage().total_requests(), 0);
+    assert_eq!(runtime.usage().bootstrap_requests(), 0);
+    assert_eq!(runtime.usage().total_action_attempts(), 1);
+    assert_eq!(runtime.usage().same_action_attempts(BOOTSTRAP_ACTION_ID), 1);
     assert_eq!(runtime.usage().completed_execution_turns(), 0);
     assert_eq!(runtime.knowledge().stats().evidence, 0);
     assert!(runtime.experience().is_empty());
@@ -273,9 +302,10 @@ async fn planned_failure_preserves_bootstrap_and_outstanding_session_without_sup
     let mut registry = DecisionExecutorRegistry::new();
     registry
         .register(Arc::new(
-            HttpEvidenceExecutor::new(
+            HttpEvidenceExecutor::new_with_accounting(
                 policy,
                 Arc::new(SubjectHttpProbeProvider::new(HttpProbeMethod::Get)),
+                runtime.request_accounting.clone(),
             )
             .unwrap(),
         ))
@@ -300,9 +330,10 @@ async fn planned_failure_preserves_bootstrap_and_outstanding_session_without_sup
         receipt.kind(),
         DecisionExecutionFailureKind::BlockedByPolicy
     );
-    assert_eq!(runtime.usage().total_requests(), 2);
+    assert_eq!(runtime.usage().total_requests(), 1);
     assert_eq!(runtime.usage().bootstrap_requests(), 1);
-    assert_eq!(runtime.usage().planned_requests(), 1);
+    assert_eq!(runtime.usage().planned_requests(), 0);
+    assert_eq!(runtime.usage().total_action_attempts(), 2);
     assert_eq!(runtime.usage().completed_execution_turns(), 0);
     assert_eq!(runtime.usage().same_action_attempts(action.action_id()), 1);
     assert!(runtime.knowledge().stats().evidence > 0);
@@ -311,6 +342,57 @@ async fn planned_failure_preserves_bootstrap_and_outstanding_session_without_sup
         runtime.session().state(),
         DecisionLoopState::AwaitingPassive { case } if case.action_id() == action.action_id()
     ));
+    assert_eq!(server.methods().await, ["GET"]);
+}
+
+#[tokio::test]
+async fn in_executor_budget_denial_preserves_prior_evidence_and_failure_receipt() {
+    let server = serve(vec![Reply::Response(BASIC)]).await;
+    let policy = HttpEvidencePolicy::for_origin(server.target()).unwrap();
+    let mut runtime = StandardWebDecisionRuntime::builder(server.target())
+        .http_policy(policy.clone())
+        .build()
+        .unwrap();
+    let action = StandardWebActionKind::HttpBasicAuthBoundary;
+    let mut registry = DecisionExecutorRegistry::new();
+    registry
+        .register(Arc::new(
+            HttpEvidenceExecutor::new_with_accounting(
+                policy,
+                Arc::new(SubjectHttpProbeProvider::new(HttpProbeMethod::Get)),
+                runtime.request_accounting.clone(),
+            )
+            .unwrap(),
+        ))
+        .unwrap();
+    registry
+        .register(Arc::new(BudgetDeniedRuntimeExecutor {
+            id: action.executor_id(),
+            limit: RuntimeLimitExceeded::new(
+                RuntimeBudgetDimension::TotalRequests,
+                1,
+                2,
+                Some(action.action_id().to_owned()),
+            ),
+        }))
+        .unwrap();
+    runtime.runner = DecisionRunnerAdapter::new(registry);
+
+    let report = runtime.analyze().await.unwrap();
+
+    let limit = assert_runtime_limit(&report, RuntimeBudgetDimension::TotalRequests);
+    assert_eq!(limit.limit(), 1);
+    assert_eq!(limit.observed(), 2);
+    assert!(report.bootstrap().is_some());
+    let failure = report.execution_failure().unwrap();
+    assert_eq!(failure.action_id(), action.action_id());
+    assert_eq!(failure.origin(), Some(DecisionActionOrigin::Planned));
+    assert_eq!(failure.runtime_limit(), Some(limit));
+    assert_eq!(report.usage().total_requests(), 1);
+    assert_eq!(report.usage().planned_requests(), 0);
+    assert_eq!(report.usage().total_action_attempts(), 2);
+    assert!(runtime.knowledge().stats().evidence > 0);
+    assert!(runtime.experience().is_empty());
     assert_eq!(server.methods().await, ["GET"]);
 }
 
@@ -698,6 +780,8 @@ async fn total_request_limit_stops_before_the_next_socket_dispatch() {
     assert_eq!(limit.limit(), 1);
     assert_eq!(limit.observed(), 2);
     assert_eq!(report.usage().total_requests(), 1);
+    assert!(report.bootstrap().is_some());
+    assert!(report.execution_failure().is_none());
     assert_eq!(server.methods().await, ["GET"]);
     assert!(matches!(
         runtime.session().state(),
@@ -705,6 +789,45 @@ async fn total_request_limit_stops_before_the_next_socket_dispatch() {
             reason: DecisionStopReason::RuntimeBudgetLimit
         }
     ));
+}
+
+#[tokio::test]
+async fn partial_body_timeout_remains_charged_without_committing_evidence() {
+    let server = serve(vec![Reply::PartialThenStall(
+        b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 10\r\nConnection: close\r\n\r\n0123",
+    )])
+    .await;
+    let policy = HttpEvidencePolicy::new(
+        [server.target()],
+        Duration::from_millis(100),
+        crate::DEFAULT_HTTP_BODY_LIMIT,
+    )
+    .unwrap();
+    let mut runtime = StandardWebDecisionRuntime::builder(server.target())
+        .http_policy(policy)
+        .max_wall_time(Duration::from_secs(2))
+        .build()
+        .unwrap();
+
+    let error = runtime.analyze().await.unwrap_err();
+
+    let failure = error.execution_failure().unwrap();
+    assert_eq!(
+        failure.kind(),
+        DecisionExecutionFailureKind::TransportFailure
+    );
+    assert_eq!(failure.action_id(), BOOTSTRAP_ACTION_ID);
+    assert!(failure.diagnostic().contains("timed out"));
+    assert_eq!(runtime.usage().total_requests(), 1);
+    assert_eq!(runtime.usage().response_bytes(), 4);
+    assert_eq!(runtime.usage().total_action_attempts(), 1);
+    assert_eq!(runtime.knowledge().stats().evidence, 0);
+    assert!(runtime.experience().is_empty());
+    assert!(matches!(
+        runtime.session().state(),
+        DecisionLoopState::Ready
+    ));
+    assert_eq!(server.methods().await, ["GET"]);
 }
 
 #[tokio::test]
@@ -862,6 +985,31 @@ async fn no_progress_limit_stops_an_adaptive_retry() {
 }
 
 #[tokio::test]
+async fn dispatched_retry_is_charged_at_the_transport_boundary() {
+    let server = serve(vec![
+        Reply::Response(BASIC),
+        Reply::Response(RATE_LIMITED),
+        Reply::Response(OK),
+    ])
+    .await;
+    let mut runtime = StandardWebDecisionRuntime::builder(server.target())
+        .max_total_requests(3)
+        .max_wall_time(Duration::from_secs(3))
+        .max_same_action_attempts(8)
+        .max_consecutive_no_progress_turns(8)
+        .build()
+        .unwrap();
+    *runtime.decision_loop.adaptive_mut() = AdaptivePipeline::with_standard_policies().unwrap();
+
+    let report = runtime.analyze().await.unwrap();
+
+    assert_eq!(report.usage().total_requests(), 3);
+    assert_eq!(report.usage().retry_requests(), 1);
+    assert_eq!(report.usage().total_action_attempts(), 3);
+    assert_eq!(server.methods().await, ["GET", "HEAD", "HEAD"]);
+}
+
+#[tokio::test]
 async fn wall_deadline_cancels_a_stalled_bootstrap_without_committing_evidence() {
     let server = serve(vec![Reply::Stall]).await;
     let mut runtime = StandardWebDecisionRuntime::builder(server.target())
@@ -892,7 +1040,8 @@ async fn wall_deadline_cancels_retry_delay_but_keeps_the_reserved_attempt() {
     let report = runtime.analyze().await.unwrap();
 
     assert_runtime_limit(&report, RuntimeBudgetDimension::WallTime);
-    assert_eq!(report.usage().total_requests(), 3);
-    assert_eq!(report.usage().retry_requests(), 1);
+    assert_eq!(report.usage().total_requests(), 2);
+    assert_eq!(report.usage().retry_requests(), 0);
+    assert_eq!(report.usage().total_action_attempts(), 3);
     assert_eq!(server.methods().await, ["GET", "HEAD"]);
 }

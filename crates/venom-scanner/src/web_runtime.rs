@@ -13,18 +13,19 @@ use venom_core::{
 };
 
 use crate::{
-    AdaptationLimits, BenefitScore, DecisionActionOrigin, DecisionEvidenceReceipt,
-    DecisionExecutionFailureReceipt, DecisionExecutionLimits, DecisionExecutionStage,
-    DecisionExecutorRegistry, DecisionLoop, DecisionLoopCommand, DecisionLoopConfig,
-    DecisionLoopError, DecisionOutcomeReport, DecisionPlanningReport,
-    DecisionReasoningCommitReceipt, DecisionRunnerAdapter, DecisionRunnerError, DecisionRunnerTurn,
-    DecisionSession, ExperiencePolicy, ExperienceStore, ExperienceStoreError, HttpEvidenceError,
-    HttpEvidenceExecutor, HttpEvidencePolicy, HttpProbe, HttpProbeMethod, KnowledgeBase,
-    KnowledgeWrite, PlannerError, PlanningContext, RiskScore, RuntimeBudget,
-    RuntimeBudgetDimension, RuntimeLimitExceeded, RuntimeUsage, StandardApiInstallReport,
-    StandardApiReasoning, StandardApiReasoningError, StandardWebActionKind,
-    StandardWebDecisionError, StandardWebDecisionInstallReport, StandardWebDecisionProfile,
-    SubjectHttpProbeProvider, VerificationCase, VerificationError, HTTP_EVIDENCE_EXECUTOR_ID,
+    http_evidence::HttpRequestBroker, runtime_budget::RequestAccountingBroker, AdaptationLimits,
+    BenefitScore, DecisionActionOrigin, DecisionEvidenceReceipt, DecisionExecutionFailureReceipt,
+    DecisionExecutionLimits, DecisionExecutionStage, DecisionExecutorRegistry, DecisionLoop,
+    DecisionLoopCommand, DecisionLoopConfig, DecisionLoopError, DecisionOutcomeReport,
+    DecisionPlanningReport, DecisionReasoningCommitReceipt, DecisionRunnerAdapter,
+    DecisionRunnerError, DecisionRunnerTurn, DecisionSession, ExperiencePolicy, ExperienceStore,
+    ExperienceStoreError, HttpEvidenceError, HttpEvidenceExecutor, HttpEvidencePolicy, HttpProbe,
+    HttpProbeMethod, KnowledgeBase, KnowledgeWrite, PlannerError, PlanningContext, RiskScore,
+    RuntimeBudget, RuntimeBudgetDimension, RuntimeLimitExceeded, RuntimeUsage,
+    StandardApiInstallReport, StandardApiReasoning, StandardApiReasoningError,
+    StandardWebActionKind, StandardWebDecisionError, StandardWebDecisionInstallReport,
+    StandardWebDecisionProfile, SubjectHttpProbeProvider, VerificationCase, VerificationError,
+    HTTP_EVIDENCE_EXECUTOR_ID,
 };
 
 mod api_visibility;
@@ -176,6 +177,7 @@ pub struct StandardWebDecisionRunReport {
     terminal: DecisionLoopCommand,
     usage: RuntimeUsage,
     limit_exceeded: Option<RuntimeLimitExceeded>,
+    execution_failure: Option<DecisionExecutionFailureReceipt>,
 }
 
 impl StandardWebDecisionRunReport {
@@ -202,6 +204,12 @@ impl StandardWebDecisionRunReport {
     /// Returns the structured runtime limit when the resource envelope stopped execution.
     pub fn limit_exceeded(&self) -> Option<&RuntimeLimitExceeded> {
         self.limit_exceeded.as_ref()
+    }
+
+    /// Returns the transport execution receipt when a broker-owned resource
+    /// limit refused a dispatch after the semantic action had started.
+    pub fn execution_failure(&self) -> Option<&DecisionExecutionFailureReceipt> {
+        self.execution_failure.as_ref()
     }
 
     /// Iterates over planning audit reports in turn order.
@@ -388,7 +396,9 @@ impl StandardWebDecisionRuntimeBuilder {
         let mut decision_loop = DecisionLoop::new(config);
         let mut executors = DecisionExecutorRegistry::new();
 
-        let profile = StandardWebDecisionProfile::new(policy.clone())?;
+        let request_accounting = RequestAccountingBroker::new(self.runtime_budget);
+        let requests = HttpRequestBroker::new(policy, Some(request_accounting.clone()))?;
+        let profile = StandardWebDecisionProfile::new_with_request_broker(requests.clone())?;
         let installation = profile.install(&knowledge, &mut decision_loop, &mut executors)?;
         let api_reasoning_installation = if self.api_reasoning_enabled {
             let profile = StandardApiReasoning::new()?;
@@ -396,8 +406,8 @@ impl StandardWebDecisionRuntimeBuilder {
         } else {
             None
         };
-        executors.register(Arc::new(HttpEvidenceExecutor::new(
-            policy,
+        executors.register(Arc::new(HttpEvidenceExecutor::new_with_request_broker(
+            requests,
             Arc::new(SubjectHttpProbeProvider::new(HttpProbeMethod::Get)),
         )?))?;
 
@@ -419,6 +429,7 @@ impl StandardWebDecisionRuntimeBuilder {
             experience: self.experience,
             session: DecisionSession::new(subject),
             budget: self.runtime_budget,
+            request_accounting,
             usage: RuntimeUsage::default(),
             started: false,
         })
@@ -459,6 +470,7 @@ pub struct StandardWebDecisionRuntime {
     experience: ExperienceStore,
     session: DecisionSession,
     budget: RuntimeBudget,
+    request_accounting: RequestAccountingBroker,
     usage: RuntimeUsage,
     started: bool,
 }
@@ -580,9 +592,19 @@ impl StandardWebDecisionRuntime {
                 .await),
         };
         let bootstrap = match bootstrap_result {
-            Ok(result) => {
+            Ok(Ok(receipt)) => {
                 self.refresh_elapsed(started_at);
-                result?
+                receipt
+            },
+            Ok(Err(error)) => {
+                self.refresh_elapsed(started_at);
+                if let Some(limit) = error.runtime_limit().cloned() {
+                    let failure = error.into_execution_failure();
+                    return Ok(
+                        self.limit_report_with_failure(None, turns, limit, failure, started_at)
+                    );
+                }
+                return Err(error.into());
             },
             Err(()) => {
                 let limit = self.wall_limit(started_at);
@@ -650,9 +672,19 @@ impl StandardWebDecisionRuntime {
                             .await),
                     };
                     let evidence = match evidence_result {
-                        Ok(result) => {
+                        Ok(Ok(receipt)) => {
                             self.refresh_elapsed(started_at);
-                            result?
+                            receipt
+                        },
+                        Ok(Err(error)) => {
+                            self.refresh_elapsed(started_at);
+                            if let Some(limit) = error.runtime_limit().cloned() {
+                                let failure = error.into_execution_failure();
+                                return Ok(self.limit_report_with_failure(
+                                    bootstrap, turns, limit, failure, started_at,
+                                ));
+                            }
+                            return Err(error.into());
                         },
                         Err(()) => {
                             let limit = self.wall_limit(started_at);
@@ -720,6 +752,7 @@ impl StandardWebDecisionRuntime {
             terminal,
             usage: self.usage.clone(),
             limit_exceeded: None,
+            execution_failure: None,
         })
     }
 
@@ -731,35 +764,10 @@ impl StandardWebDecisionRuntime {
         if let Some(limit) = self.wall_limit_if_reached(started_at) {
             return Err(limit);
         }
-        let (action_id, stage, origin) = execution_metadata(command)
+        let (action_id, stage, _origin) = execution_metadata(command)
             .expect("runtime reserves resources only for execution commands");
-
-        if self.usage.total_requests() >= self.budget.max_total_requests() {
-            return Err(RuntimeLimitExceeded::new(
-                RuntimeBudgetDimension::TotalRequests,
-                u64::from(self.budget.max_total_requests()),
-                u64::from(self.usage.total_requests()).saturating_add(1),
-                Some(action_id.to_owned()),
-            ));
-        }
-        if self.usage.response_bytes() >= self.budget.max_response_bytes() {
-            return Err(RuntimeLimitExceeded::new(
-                RuntimeBudgetDimension::ResponseBytes,
-                self.budget.max_response_bytes(),
-                self.usage.response_bytes(),
-                Some(action_id.to_owned()),
-            ));
-        }
-        if stage == DecisionExecutionStage::Active
-            && self.usage.active_verifications() >= self.budget.max_active_verifications()
-        {
-            return Err(RuntimeLimitExceeded::new(
-                RuntimeBudgetDimension::ActiveVerifications,
-                u64::from(self.budget.max_active_verifications()),
-                u64::from(self.usage.active_verifications()).saturating_add(1),
-                Some(action_id.to_owned()),
-            ));
-        }
+        self.sync_request_accounting();
+        let preflight = self.request_accounting.preflight(action_id, stage)?;
         let attempts = self.usage.same_action_attempts(action_id);
         if attempts >= self.budget.max_same_action_attempts() {
             return Err(RuntimeLimitExceeded::new(
@@ -770,12 +778,9 @@ impl StandardWebDecisionRuntime {
             ));
         }
 
-        self.usage.reserve_request(action_id, stage, origin);
-        let remaining = self
-            .budget
-            .max_response_bytes()
-            .saturating_sub(self.usage.response_bytes());
-        Ok(DecisionExecutionLimits::new().with_max_response_body_bytes(remaining))
+        self.usage.reserve_action_attempt(action_id);
+        Ok(DecisionExecutionLimits::new()
+            .with_max_response_body_bytes(preflight.remaining_response_bytes()))
     }
 
     fn record_response_usage(
@@ -804,11 +809,16 @@ impl StandardWebDecisionRuntime {
                 receipt: Box::new(receipt),
             });
         }
-        self.usage.record_response_bytes(correlated[0]);
         Ok(receipt)
     }
 
+    fn sync_request_accounting(&mut self) {
+        self.usage
+            .sync_request_accounting(self.request_accounting.snapshot());
+    }
+
     fn refresh_elapsed(&mut self, started_at: tokio::time::Instant) {
+        self.sync_request_accounting();
         self.usage.set_elapsed(started_at.elapsed());
     }
 
@@ -837,6 +847,17 @@ impl StandardWebDecisionRuntime {
         limit: RuntimeLimitExceeded,
         started_at: tokio::time::Instant,
     ) -> StandardWebDecisionRunReport {
+        self.limit_report_with_failure(bootstrap, turns, limit, None, started_at)
+    }
+
+    fn limit_report_with_failure(
+        &mut self,
+        bootstrap: Option<DecisionEvidenceReceipt>,
+        turns: Vec<StandardWebDecisionRuntimeTurn>,
+        limit: RuntimeLimitExceeded,
+        execution_failure: Option<DecisionExecutionFailureReceipt>,
+        started_at: tokio::time::Instant,
+    ) -> StandardWebDecisionRunReport {
         self.refresh_elapsed(started_at);
         self.session.halt_for_runtime_budget();
         StandardWebDecisionRunReport {
@@ -847,6 +868,7 @@ impl StandardWebDecisionRuntime {
             },
             usage: self.usage.clone(),
             limit_exceeded: Some(limit),
+            execution_failure,
         }
     }
 }

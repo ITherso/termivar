@@ -17,7 +17,7 @@ use crate::{
     DecisionActionOrigin, DecisionLoop, DecisionLoopCommand, DecisionLoopError, DecisionLoopState,
     DecisionOutcomeReport, DecisionPlanningReport, DecisionReasoningCommitReceipt, DecisionSession,
     ExperienceStore, KnowledgeBase, KnowledgeBaseError, KnowledgeSnapshot, KnowledgeWrite,
-    VerificationCase,
+    RuntimeLimitExceeded, VerificationCase,
 };
 
 /// Verification stage whose evidence an executor must collect.
@@ -133,7 +133,8 @@ impl DecisionExecutionRequest {
 pub struct DecisionExecutorError {
     message: String,
     kind: DecisionExecutionFailureKind,
-    receipt: Option<DecisionExecutionFailureReceipt>,
+    receipt: Option<Box<DecisionExecutionFailureReceipt>>,
+    runtime_limit: Option<Box<RuntimeLimitExceeded>>,
 }
 
 impl DecisionExecutorError {
@@ -157,6 +158,16 @@ impl DecisionExecutorError {
             },
             kind,
             receipt: None,
+            runtime_limit: None,
+        }
+    }
+
+    pub(crate) fn from_runtime_limit(limit: RuntimeLimitExceeded) -> Self {
+        Self {
+            message: limit.to_string(),
+            kind: DecisionExecutionFailureKind::BlockedByPolicy,
+            receipt: None,
+            runtime_limit: Some(Box::new(limit)),
         }
     }
 
@@ -173,7 +184,12 @@ impl DecisionExecutorError {
     /// Returns runner-owned execution context when this error crossed the
     /// [`DecisionRunnerAdapter`] boundary.
     pub fn execution_failure(&self) -> Option<&DecisionExecutionFailureReceipt> {
-        self.receipt.as_ref()
+        self.receipt.as_deref()
+    }
+
+    /// Returns the host resource limit that refused a transport dispatch.
+    pub fn runtime_limit(&self) -> Option<&RuntimeLimitExceeded> {
+        self.runtime_limit.as_deref()
     }
 
     fn with_execution_context(
@@ -181,17 +197,22 @@ impl DecisionExecutorError {
         request: DecisionExecutionRequest,
         executor_id: String,
     ) -> Self {
-        self.receipt = Some(DecisionExecutionFailureReceipt {
+        self.receipt = Some(Box::new(DecisionExecutionFailureReceipt {
             request,
             executor_id,
             diagnostic: self.message.clone(),
             kind: self.kind,
-        });
+            runtime_limit: self.runtime_limit.as_deref().cloned(),
+        }));
         self
     }
 
     fn into_execution_failure(self) -> Option<DecisionExecutionFailureReceipt> {
-        self.receipt
+        self.receipt.map(|receipt| *receipt)
+    }
+
+    fn into_runtime_limit(self) -> Option<RuntimeLimitExceeded> {
+        self.runtime_limit.map(|limit| *limit)
     }
 }
 
@@ -226,6 +247,8 @@ pub struct DecisionExecutionFailureReceipt {
     executor_id: String,
     diagnostic: String,
     kind: DecisionExecutionFailureKind,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    runtime_limit: Option<RuntimeLimitExceeded>,
 }
 
 impl DecisionExecutionFailureReceipt {
@@ -278,6 +301,11 @@ impl DecisionExecutionFailureReceipt {
     pub fn kind(&self) -> DecisionExecutionFailureKind {
         self.kind
     }
+
+    /// Returns the host resource limit that refused the dispatch, if any.
+    pub fn runtime_limit(&self) -> Option<&RuntimeLimitExceeded> {
+        self.runtime_limit.as_ref()
+    }
 }
 
 /// Narrow execution API implemented by native collectors and plugin bridges.
@@ -286,7 +314,7 @@ pub trait DecisionActionExecutor: Send + Sync {
     /// Returns the stable identity used by planner executor fields and routes.
     fn id(&self) -> &str;
 
-    /// Executes one request and returns immutable observations only.
+    /// Executes one semantic action request and returns immutable observations only.
     ///
     /// Every returned observation must describe `request.case().subject()`,
     /// identify this executor as its source component, and carry the case ID as
@@ -587,6 +615,22 @@ pub enum DecisionRunnerError {
 }
 
 impl DecisionRunnerError {
+    /// Returns the host resource limit reported by an executor, when applicable.
+    pub fn runtime_limit(&self) -> Option<&RuntimeLimitExceeded> {
+        match self {
+            Self::Executor { source, .. } => source.runtime_limit(),
+            _ => None,
+        }
+    }
+
+    /// Takes an executor-reported host resource limit without cloning it.
+    pub fn into_runtime_limit(self) -> Option<RuntimeLimitExceeded> {
+        match self {
+            Self::Executor { source, .. } => source.into_runtime_limit(),
+            _ => None,
+        }
+    }
+
     /// Returns an executor-reported pre-commit failure receipt, when applicable.
     pub fn execution_failure(&self) -> Option<&DecisionExecutionFailureReceipt> {
         match self {
@@ -1287,6 +1331,20 @@ mod tests {
             DecisionExecutionFailureKind::TransportFailure
         );
         assert_eq!(transport.message(), "executor failed without a diagnostic");
+
+        let limit = RuntimeLimitExceeded::new(
+            crate::RuntimeBudgetDimension::TotalRequests,
+            1,
+            2,
+            Some("http.probe".to_owned()),
+        );
+        let limited = DecisionExecutorError::from_runtime_limit(limit.clone());
+        assert_eq!(
+            limited.kind(),
+            DecisionExecutionFailureKind::BlockedByPolicy
+        );
+        assert_eq!(limited.runtime_limit(), Some(&limit));
+        assert_eq!(limited.message(), limit.to_string());
     }
 
     #[tokio::test]
@@ -1530,6 +1588,72 @@ mod tests {
 
         let committed = error.into_committed_evidence().unwrap();
         assert_eq!(committed.evidence()[0].id(), &evidence_id);
+    }
+
+    #[tokio::test]
+    async fn verification_failure_after_commit_keeps_evidence_auditable() {
+        let mut registry = DecisionExecutorRegistry::new();
+        registry.register(executor("plugin.http", None)).unwrap();
+        let adapter = DecisionRunnerAdapter::new(registry);
+        let decision_loop = empty_decision_loop();
+        let knowledge = KnowledgeBase::new();
+        let mut experience = ExperienceStore::new();
+        let command_case = case("http.probe");
+        let command = DecisionLoopCommand::ExecuteAction {
+            case: command_case.clone(),
+            executor: Some("plugin.http".to_owned()),
+            origin: DecisionActionOrigin::Planned,
+            delay_ms: None,
+        };
+        let mut session: DecisionSession = serde_json::from_value(serde_json::json!({
+            "subject": subject().as_str(),
+            "action_cycles": 1,
+            "state": {
+                "state": "awaiting_passive",
+                "case": command_case
+            },
+            "adaptation": {
+                "transitions": 0,
+                "rule_applications": {},
+                "action_schedules": {},
+                "suppressed_actions": []
+            }
+        }))
+        .unwrap();
+        let initial_session = session.clone();
+
+        let receipt = adapter.execute_command(&command, &knowledge).await.unwrap();
+        let evidence_id = receipt.evidence()[0].id().clone();
+        let error = adapter
+            .resume_session_command(
+                &decision_loop,
+                &command,
+                &knowledge,
+                &mut experience,
+                &mut session,
+                receipt,
+            )
+            .unwrap_err();
+
+        assert!(matches!(
+            &error,
+            DecisionRunnerError::OutcomeAfterEvidenceCommit { source, .. }
+                if matches!(
+                    source.as_ref(),
+                    DecisionRunnerError::Decision(DecisionLoopError::Verification(
+                        crate::VerificationError::UnknownHypothesis { .. }
+                    ))
+                )
+        ));
+        let committed = error.committed_evidence().unwrap();
+        assert_eq!(committed.evidence()[0].id(), &evidence_id);
+        assert!(knowledge
+            .snapshot_for_subject(&subject())
+            .evidence()
+            .iter()
+            .any(|evidence| evidence.id() == &evidence_id));
+        assert_eq!(session, initial_session);
+        assert!(experience.is_empty());
     }
 
     #[tokio::test]

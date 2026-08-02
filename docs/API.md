@@ -95,6 +95,14 @@ provide borrowed and consuming accessors for that receipt. These pre-commit
 operational failures do not write evidence, synthesize verifier outcomes, or
 penalize future planning through the Experience Store.
 
+The standard runtime's built-in HTTP executors share a host-owned request
+broker. Request and active-verification counters advance only at the actual
+dispatch boundary, while retained response chunks are charged immediately and
+are not refunded by timeout, cancellation, or a later failure. Semantic action
+attempts remain separate, so a cancelled scheduler delay does not masquerade
+as network traffic. Broker limit denials are exposed through the run report's
+structured limit and execution-failure receipts.
+
 Hosts using `StandardWebDecisionRuntime` can opt into its passive API rules
 with `enable_api_reasoning()`. The runtime reuses its existing normalized HTTP
 evidence and exposes an optional installation receipt; it does not issue extra

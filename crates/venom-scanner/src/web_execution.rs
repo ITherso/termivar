@@ -16,7 +16,7 @@ use crate::{
     },
     http_evidence::{
         HttpEvidenceError, HttpEvidenceExecutor, HttpEvidencePolicy, HttpProbeMethod,
-        SubjectHttpProbeProvider,
+        HttpRequestBroker, SubjectHttpProbeProvider,
     },
     web_actions::{StandardWebActionKind, STANDARD_WEB_DISCOVERY_ACTION_COUNT},
 };
@@ -90,12 +90,21 @@ pub struct StandardWebDiscoveryExecutorProfile {
 impl StandardWebDiscoveryExecutorProfile {
     /// Constructs all discovery executors under one immutable HTTP policy.
     pub fn new(policy: HttpEvidencePolicy) -> Result<Self, StandardWebExecutionError> {
+        Self::new_with_request_broker(HttpRequestBroker::new(policy, None)?)
+    }
+
+    pub(crate) fn new_with_request_broker(
+        requests: HttpRequestBroker,
+    ) -> Result<Self, StandardWebExecutionError> {
         let bindings = STANDARD_WEB_DISCOVERY_ACTIONS
             .into_iter()
             .map(|kind| {
                 let provider = Arc::new(SubjectHttpProbeProvider::new(probe_method(kind)));
-                let executor =
-                    HttpEvidenceExecutor::with_id(kind.executor_id(), policy.clone(), provider)?;
+                let executor = HttpEvidenceExecutor::with_id_and_request_broker(
+                    kind.executor_id(),
+                    requests.clone(),
+                    provider,
+                )?;
                 Ok(ExecutorBinding {
                     kind,
                     executor: Arc::new(executor),
