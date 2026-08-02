@@ -5,89 +5,22 @@
 
 use std::collections::BTreeSet;
 
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use thiserror::Error;
 use venom_core::{EvidenceValue, KnowledgePredicate, Probability, ReasoningModelError};
 
 use crate::{
-    ActionCost, AttackAction, AttackPlanner, BenefitScore, Expression, HypothesisSelector,
-    KnowledgeLayer, PlannerError, PlannerWrite, RequiredStrength, RiskScore,
+    planner::{
+        ActionCost, AttackAction, AttackPlanner, BenefitScore, HypothesisSelector, PlannerError,
+        PlannerWrite, RequiredStrength, RiskScore,
+    },
+    rules::{Expression, KnowledgeLayer},
 };
 
-/// Number of actions declared by [`StandardWebAttackProfile`].
-pub const STANDARD_WEB_ACTION_COUNT: usize = 9;
-
-/// Stable semantic action kinds supplied by the standard web planner profile.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-#[non_exhaustive]
-pub enum StandardWebActionKind {
-    /// Inspect nginx-specific configuration and routing behavior.
-    NginxConfiguration,
-    /// Inspect Apache HTTP Server configuration and routing behavior.
-    ApacheConfiguration,
-    /// Discover PHP request inputs before deeper testing.
-    PhpInputDiscovery,
-    /// Enumerate Laravel routes with a low-risk discovery executor.
-    LaravelRouteDiscovery,
-    /// Analyze inputs discovered on Laravel routes.
-    LaravelInputAnalysis,
-    /// Enumerate Livewire component boundaries.
-    LivewireComponentDiscovery,
-    /// Analyze stateful Sanctum authentication boundaries.
-    SanctumAuthBoundary,
-    /// Analyze an advertised HTTP Basic authentication boundary.
-    HttpBasicAuthBoundary,
-    /// Analyze an advertised HTTP Bearer authentication boundary.
-    HttpBearerAuthBoundary,
-}
-
-impl StandardWebActionKind {
-    /// Returns every standard kind in stable declaration order.
-    pub const fn all() -> [Self; STANDARD_WEB_ACTION_COUNT] {
-        [
-            Self::NginxConfiguration,
-            Self::ApacheConfiguration,
-            Self::PhpInputDiscovery,
-            Self::LaravelRouteDiscovery,
-            Self::LaravelInputAnalysis,
-            Self::LivewireComponentDiscovery,
-            Self::SanctumAuthBoundary,
-            Self::HttpBasicAuthBoundary,
-            Self::HttpBearerAuthBoundary,
-        ]
-    }
-
-    /// Returns the stable planner action identity.
-    pub const fn action_id(self) -> &'static str {
-        match self {
-            Self::NginxConfiguration => "web.action.nginx.configuration",
-            Self::ApacheConfiguration => "web.action.apache.configuration",
-            Self::PhpInputDiscovery => "web.action.php.input-discovery",
-            Self::LaravelRouteDiscovery => "web.action.laravel.route-discovery",
-            Self::LaravelInputAnalysis => "web.action.laravel.input-analysis",
-            Self::LivewireComponentDiscovery => "web.action.livewire.component-discovery",
-            Self::SanctumAuthBoundary => "web.action.sanctum.auth-boundary",
-            Self::HttpBasicAuthBoundary => "web.action.http-basic.auth-boundary",
-            Self::HttpBearerAuthBoundary => "web.action.http-bearer.auth-boundary",
-        }
-    }
-
-    /// Returns the executor identity a decision runner must register.
-    pub const fn executor_id(self) -> &'static str {
-        match self {
-            Self::NginxConfiguration => "web.probe.nginx-configuration",
-            Self::ApacheConfiguration => "web.probe.apache-configuration",
-            Self::PhpInputDiscovery => "web.probe.php-inputs",
-            Self::LaravelRouteDiscovery => "web.probe.laravel-routes",
-            Self::LaravelInputAnalysis => "web.probe.laravel-inputs",
-            Self::LivewireComponentDiscovery => "web.probe.livewire-components",
-            Self::SanctumAuthBoundary => "web.probe.sanctum-auth",
-            Self::HttpBasicAuthBoundary => "web.probe.http-basic-auth",
-            Self::HttpBearerAuthBoundary => "web.probe.http-bearer-auth",
-        }
-    }
-}
+pub use crate::web_actions::{
+    StandardWebActionKind, STANDARD_WEB_ACTION_COUNT, STANDARD_WEB_DISCOVERY_ACTIONS,
+    STANDARD_WEB_DISCOVERY_ACTION_COUNT,
+};
 
 /// Failures while constructing or installing the standard action profile.
 #[derive(Debug, Error)]
@@ -329,11 +262,12 @@ mod tests {
     };
 
     use super::*;
+    #[cfg(feature = "scanning")]
     use crate::{
         AdaptationLimits, DecisionLoop, DecisionLoopCommand, DecisionLoopConfig, DecisionSession,
-        ExclusionReason, ExperiencePolicy, ExperienceStore, KnowledgeBase, PlanningContext,
-        StandardWebReasoning,
+        ExperiencePolicy, ExperienceStore,
     };
+    use crate::{ExclusionReason, KnowledgeBase, PlanningContext, StandardWebReasoning};
 
     fn subject() -> EntityId {
         EntityId::new("endpoint:https://example.test").unwrap()
@@ -533,6 +467,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "scanning")]
     fn decision_loop_emits_executor_selected_from_reasoning() {
         let knowledge = KnowledgeBase::new();
         knowledge

@@ -13,7 +13,10 @@ use venom_core::{
     Probability,
 };
 
-use crate::{Expression, ExpressionEvaluation, KnowledgeBase, KnowledgeSnapshot, RuleEngineError};
+use crate::{
+    knowledge::{KnowledgeBase, KnowledgeSnapshot},
+    rules::{Expression, ExpressionEvaluation, RuleEngineError},
+};
 
 const MAX_BASIS_POINTS: u16 = 10_000;
 

@@ -12,8 +12,9 @@ use venom_core::{
 };
 
 use crate::{
-    Expression, KnowledgeLayer, RuleEngineError, StandardWebActionKind, VerificationError,
-    VerificationPipeline, VerificationRule, VerifierWrite, STANDARD_WEB_DISCOVERY_ACTIONS,
+    rules::{Expression, KnowledgeLayer, RuleEngineError},
+    verification::{VerificationError, VerificationPipeline, VerificationRule, VerifierWrite},
+    web_actions::{StandardWebActionKind, STANDARD_WEB_DISCOVERY_ACTIONS},
 };
 
 /// Number of passive and active rules installed by the standard profile.

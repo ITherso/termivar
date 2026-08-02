@@ -7,4 +7,7 @@ license.workspace = true
 publish = false
 
 [dependencies]
+cargo_metadata = "0.18"
 clap = { workspace = true, features = ["derive"] }
+proc-macro2 = "1"
+syn = { version = "2", features = ["full", "visit"] }

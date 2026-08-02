@@ -9,7 +9,11 @@ on:
     paths:
       - "Cargo.toml"
       - "Cargo.lock"
+      - ".cargo/**"
       - "crates/**"
+      - "xtask/**"
+      - "deny.toml"
+      - "rustfmt.toml"
       - ".github/workflows/release.yml"
       - ".github/release-notes/**"
 
@@ -39,6 +43,8 @@ jobs:
           test "$tag_version" = "$workspace_version"
       - name: Check formatting
         run: cargo fmt --all -- --check
+      - name: Verify architecture boundaries
+        run: cargo run --locked -p xtask -- architecture
       - name: Run Clippy
         run: cargo clippy --workspace --all-targets --all-features
       - name: Run workspace tests

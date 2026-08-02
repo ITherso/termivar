@@ -11,6 +11,16 @@ env:
   RUST_BACKTRACE: 1
 
 jobs:
+  architecture:
+    name: Architecture Boundaries
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Verify workspace and reasoning boundaries
+        run: cargo run --locked -p xtask -- architecture
+
   unit-tests:
     name: Unit Tests
     runs-on: ubuntu-latest

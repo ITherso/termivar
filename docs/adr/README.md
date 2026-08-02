@@ -9,6 +9,7 @@ Architecture decision records (ADRs) preserve why a durable technical choice was
 | [0001](0001-use-workspace.md) | Accepted | Use a Cargo workspace with inward dependencies |
 | [0002](0002-plugin-boundary.md) | Accepted | Keep plugins behind a source-level Rust trait boundary |
 | [0003](0003-event-bus.md) | Accepted | Separate core event contracts from scanner event delivery |
+| [0004](0004-reasoning-runtime-boundary.md) | Accepted | Keep deterministic reasoning inward of execution and runtime |
 
 ## Format
 

@@ -14,8 +14,8 @@ use venom_core::{
 };
 
 use crate::{
-    Expression, ExpressionEvaluation, KnowledgeBase, KnowledgeBaseError, KnowledgeSnapshot,
-    KnowledgeWrite, RuleEngineError,
+    knowledge::{KnowledgeBase, KnowledgeBaseError, KnowledgeSnapshot, KnowledgeWrite},
+    rules::{Expression, ExpressionEvaluation, RuleEngineError},
 };
 
 /// Validation and evaluation errors raised by verification components.

@@ -92,6 +92,41 @@ This target supports separate open-source and commercial distributions without m
 6. Lua receives a deliberately small context and cannot access internal Rust state directly.
 7. Reports consume findings after execution and do not mutate scanner state.
 
+## Reasoning and runtime boundary
+
+The decision engine remains inside `venom-scanner` during alpha, but its module
+direction is treated as an extraction boundary rather than an informal style
+preference.
+
+```mermaid
+flowchart TD
+    Runtime["Scanner runtime / HTTP / plugins"] --> PlanVerify["Planning / verification / domain profiles"]
+    PlanVerify --> Contracts["Knowledge / rules / experience / semantic actions"]
+    Contracts --> Core["venom-core"]
+```
+
+| Protected layer | Modules | May import |
+| --- | --- | --- |
+| Reasoning state | `experience`, `rules` | `venom-core`; `rules` may also use `knowledge` |
+| Planning and verification | `planner`, `verification` | `knowledge`, `rules`, `venom-core` |
+| Semantic web contracts | `web_actions`, `web_reasoning`, `web_planning`, `web_verification` | The lower rows above; never execution or HTTP modules |
+| Execution and composition | `decision_runner`, `http_evidence`, `web_execution`, `web_runtime` | All inward contracts needed to perform and account for work |
+
+`web_actions` owns stable semantic action and route identities. Planning,
+verification, and execution are sibling consumers; an executor's HTTP method or
+client policy never defines what the verifier is allowed to reason about.
+
+Run the machine-enforced boundary locally:
+
+```bash
+cargo xtask architecture
+```
+
+The command validates workspace dependencies through locked Cargo metadata,
+inspects protected production imports through the Rust AST, verifies canonical
+`lib.rs` module and external-root wiring, and compiles `venom-scanner` with no
+default features. See [ADR 0004](adr/0004-reasoning-runtime-boundary.md).
+
 ## Dependency review
 
 Before adding an edge, ask:
@@ -107,3 +142,8 @@ Before adding an edge, ask:
 - Native plugin execution and the ordered phase runner are separate orchestration paths.
 - Dashboard, distributed, and compliance modules still live in `venom-scanner`.
 - Several optional modules expose broad APIs that require stability review.
+- `DecisionExecutionLimits` still names an HTTP response-body allowance in a
+  generic executor request; it should become a transport-neutral resource
+  allowance before extracting runner contracts.
+- HTTP evidence predicate names are not yet a shared public vocabulary; new
+  JSON or GraphQL profiles must not duplicate private string literals.

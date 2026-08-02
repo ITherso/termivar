@@ -19,6 +19,7 @@ All notable changes to Venom are recorded here. Releases use the categories from
 - A standard deterministic web runtime with request, wall-time, response-byte, active-verification, same-action, and no-progress budgets.
 - Typed experience dispositions and an explicit confirmed-negative verifier outcome.
 - Evidence write-set receipts, post-commit error recovery, and before/after decision-session transition summaries.
+- A Cargo-metadata and Rust-AST architecture gate for workspace and reasoning-module boundaries.
 
 ### Changed
 
@@ -32,6 +33,7 @@ All notable changes to Venom are recorded here. Releases use the categories from
 - Added publishable version requirements to internal crate dependencies and removed the unused, unmaintained `rustls-pemfile` dependency.
 - Made the runtime bootstrap receipt optional so a fail-closed budget can stop before initial network evidence is committed.
 - Limited learned suppression to verified negative conclusions; target blocks, policy blocks, transport failures, executor failures, and inconclusive checks remain neutral.
+- Moved standard web action identities into a transport-neutral catalog so verification no longer depends on HTTP execution or the `scanning` feature.
 
 ### Fixed
 

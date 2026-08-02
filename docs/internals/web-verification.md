@@ -2,6 +2,11 @@
 
 `StandardWebVerificationProfile` maps evidence from the built-in semantic web executors to deterministic outcomes. It installs ten passive and ten active rules into `VerificationPipeline`.
 
+The verifier consumes discovery capability identities from the transport-neutral
+`web_actions` catalog. It does not import `web_execution`, an HTTP client, or a
+runner, and the profile remains available when `venom-scanner` is built without
+the `scanning` feature.
+
 ```text
 semantic HTTP evidence
           |

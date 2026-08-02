@@ -10,23 +10,21 @@ use serde::Serialize;
 use thiserror::Error;
 
 use crate::{
-    DecisionActionExecutor, DecisionExecutionStage, DecisionExecutorRegistry, DecisionRunnerError,
-    HttpEvidenceError, HttpEvidenceExecutor, HttpEvidencePolicy, HttpProbeMethod,
-    StandardWebActionKind, SubjectHttpProbeProvider,
+    decision_runner::{
+        DecisionActionExecutor, DecisionExecutionStage, DecisionExecutorRegistry,
+        DecisionRunnerError,
+    },
+    http_evidence::{
+        HttpEvidenceError, HttpEvidenceExecutor, HttpEvidencePolicy, HttpProbeMethod,
+        SubjectHttpProbeProvider,
+    },
+    web_actions::{StandardWebActionKind, STANDARD_WEB_DISCOVERY_ACTION_COUNT},
 };
 
-/// Number of standard semantic actions backed by discovery-only HTTP probes.
-pub const STANDARD_WEB_DISCOVERY_EXECUTOR_COUNT: usize = 5;
+pub use crate::web_actions::STANDARD_WEB_DISCOVERY_ACTIONS;
 
-/// Standard actions with built-in, discovery-only executor bindings.
-pub const STANDARD_WEB_DISCOVERY_ACTIONS: [StandardWebActionKind;
-    STANDARD_WEB_DISCOVERY_EXECUTOR_COUNT] = [
-    StandardWebActionKind::LaravelRouteDiscovery,
-    StandardWebActionKind::LivewireComponentDiscovery,
-    StandardWebActionKind::SanctumAuthBoundary,
-    StandardWebActionKind::HttpBasicAuthBoundary,
-    StandardWebActionKind::HttpBearerAuthBoundary,
-];
+/// Number of standard semantic actions backed by discovery-only HTTP probes.
+pub const STANDARD_WEB_DISCOVERY_EXECUTOR_COUNT: usize = STANDARD_WEB_DISCOVERY_ACTION_COUNT;
 
 /// Failures while constructing or atomically installing discovery executors.
 #[derive(Debug, Error)]

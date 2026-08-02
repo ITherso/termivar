@@ -17,6 +17,7 @@ The repository exposes common maintenance commands through `cargo xtask`:
 ```bash
 cargo xtask docs
 cargo xtask benchmark
+cargo xtask architecture
 cargo xtask release
 cargo xtask generate scanner my-scanner
 cargo xtask generate plugin my-plugin
@@ -45,6 +46,7 @@ Before opening a pull request, run:
 
 ```bash
 cargo fmt --all -- --check
+cargo xtask architecture
 cargo clippy --workspace --all-targets --all-features
 cargo test --workspace --all-features
 ```

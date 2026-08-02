@@ -26,6 +26,9 @@ AttackPlan ---> DecisionLoopCommand::ExecuteAction ---> registered executor
 ## Action catalog
 
 The standard profile currently declares nine semantic actions.
+Their stable identities live in the transport-neutral `web_actions` catalog;
+planning assigns utility while execution separately binds supported identities
+to concrete probes.
 
 | Hypothesis | Action | Required strength | Minimum posterior |
 | --- | --- | --- | --- |

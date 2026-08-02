@@ -1,5 +1,7 @@
 //! Repository maintenance commands exposed through `cargo xtask`.
 
+mod architecture;
+
 use clap::{Parser, Subcommand, ValueEnum};
 use std::{
     env,
@@ -19,6 +21,8 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Task {
+    /// Verify workspace and reasoning-module dependency direction.
+    Architecture,
     /// Run the maintained Criterion scanner benchmark suite.
     Benchmark,
     /// Build MkDocs and Rust API documentation.
@@ -42,6 +46,7 @@ enum Template {
 fn main() -> TaskResult {
     let root = workspace_root();
     match Cli::parse().command {
+        Task::Architecture => architecture_preflight(&root),
         Task::Benchmark => run(
             &root,
             "cargo",
@@ -80,6 +85,7 @@ fn workspace_root() -> PathBuf {
 }
 
 fn release_preflight(root: &Path) -> TaskResult {
+    architecture_preflight(root)?;
     run(root, "cargo", &["fmt", "--all", "--", "--check"])?;
     run(
         root,
@@ -98,6 +104,21 @@ fn release_preflight(root: &Path) -> TaskResult {
     )?;
     println!("release preflight passed; no tag or artifact was published");
     Ok(())
+}
+
+fn architecture_preflight(root: &Path) -> TaskResult {
+    architecture::check(root)?;
+    run(
+        root,
+        "cargo",
+        &[
+            "check",
+            "--locked",
+            "-p",
+            "venom-scanner",
+            "--no-default-features",
+        ],
+    )
 }
 
 fn generate(root: &Path, template: Template, name: &str) -> TaskResult {

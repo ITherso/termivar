@@ -10,10 +10,11 @@ This page records enforced repository controls and known gaps. A configured tool
 | `cargo-fuzz` | Scheduled + evidenced | Five parser targets run in bounded weekly campaigns; the [first committed baseline](reports/fuzzing/7515b79.md) records 32,500,714 executions and no observed crash |
 | MSRV | Required | Workspace packages declare Rust `1.88`; CI builds that toolchain plus stable, beta, and nightly |
 | SemVer | Documented | Plugin preview policy is enforced at registration; automated public-API baselines start after the first release |
+| Architecture boundaries | Required | `cargo xtask architecture` validates workspace edges, protected module imports, and the no-default-features reasoning build |
 
 ## Release evidence
 
-A release candidate must pass formatting, Clippy, workspace tests, dependency policy, security scans, documentation, and release compilation. `cargo xtask release` runs the local preflight; GitHub Actions remains the authoritative cross-platform result.
+A release candidate must pass formatting, architecture boundaries, Clippy, workspace tests, dependency policy, security scans, documentation, and release compilation. `cargo xtask release` runs the local preflight; GitHub Actions remains the authoritative cross-platform result.
 
 ## Open gaps
 

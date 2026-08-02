@@ -11,8 +11,11 @@ use venom_core::{
 };
 
 use crate::{
-    EvidenceCalibration, EvidenceSelector, Expression, HypothesisConclusion, KnowledgeBase,
-    KnowledgeLayer, ReasoningRule, RuleEngine, RuleEngineError, RuleWrite,
+    knowledge::KnowledgeBase,
+    rules::{
+        EvidenceCalibration, EvidenceSelector, Expression, HypothesisConclusion, KnowledgeLayer,
+        ReasoningRule, RuleEngine, RuleEngineError, RuleWrite,
+    },
 };
 
 /// Number of concepts defined by [`StandardWebReasoning`].

@@ -44,10 +44,9 @@ pub mod metrics;
 pub mod planner;
 pub mod rules;
 pub mod verification;
+pub mod web_actions;
 pub mod web_planning;
 pub mod web_reasoning;
-
-#[cfg(feature = "scanning")]
 pub mod web_verification;
 
 // Scanning engine (feature: scanning)
@@ -188,15 +187,17 @@ pub use verification::{
     VerificationPipeline, VerificationPipelineReport, VerificationReport, VerificationRule,
     VerificationRuleEvaluation, VerifierWrite,
 };
+pub use web_actions::{
+    StandardWebActionKind, STANDARD_WEB_ACTION_COUNT, STANDARD_WEB_DISCOVERY_ACTIONS,
+    STANDARD_WEB_DISCOVERY_ACTION_COUNT,
+};
 pub use web_planning::{
-    StandardWebActionKind, StandardWebAttackInstallReport, StandardWebAttackProfile,
-    StandardWebPlanningError, STANDARD_WEB_ACTION_COUNT,
+    StandardWebAttackInstallReport, StandardWebAttackProfile, StandardWebPlanningError,
 };
 pub use web_reasoning::{
     StandardWebInstallReport, StandardWebReasoning, StandardWebReasoningError,
     STANDARD_WEB_AXIOM_COUNT, STANDARD_WEB_CONCEPT_COUNT, STANDARD_WEB_RULE_COUNT,
 };
-#[cfg(feature = "scanning")]
 pub use web_verification::{
     StandardWebVerificationError, StandardWebVerificationInstallReport,
     StandardWebVerificationProfile, STANDARD_WEB_VERIFICATION_RULE_COUNT,
@@ -254,8 +255,7 @@ pub use http_evidence::{
 #[cfg(feature = "scanning")]
 pub use web_execution::{
     StandardWebDiscoveryExecutorProfile, StandardWebDiscoveryInstallReport,
-    StandardWebExecutionError, STANDARD_WEB_DISCOVERY_ACTIONS,
-    STANDARD_WEB_DISCOVERY_EXECUTOR_COUNT,
+    StandardWebExecutionError, STANDARD_WEB_DISCOVERY_EXECUTOR_COUNT,
 };
 
 #[cfg(feature = "scanning")]

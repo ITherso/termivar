@@ -57,6 +57,7 @@ nav:
       - ADR 0001 - Cargo workspace: adr/0001-use-workspace.md
       - ADR 0002 - Plugin boundary: adr/0002-plugin-boundary.md
       - ADR 0003 - Event bus: adr/0003-event-bus.md
+      - ADR 0004 - Reasoning/runtime boundary: adr/0004-reasoning-runtime-boundary.md
       - Release process: RELEASE.md
 markdown_extensions:
   - admonition

@@ -8,15 +8,16 @@ string.
 
 - workspace version and CLI output agree;
 - changelog entry is complete;
-- formatting, lint, unit, integration, security, and compatibility checks pass;
+- architecture, formatting, lint, unit, integration, security, and compatibility checks pass;
 - benchmark results are reproducible and do not contain unsupported claims;
 - security advisories and dependency findings are triaged;
 - supported-version table is current;
 - tag, release title, and artifacts use the same version.
 
-`cargo xtask release` runs the local formatting, lint, test, dependency-policy,
-and documentation preflight. A change to the release workflow or release inputs
-also runs the four-platform build matrix on `main` without publishing a release.
+`cargo xtask release` runs the local architecture, formatting, lint, workspace
+test, and release-build preflight. CI adds dependency policy, security,
+documentation, compatibility, and the four-platform build matrix on `main`
+without publishing a release.
 
 ## Release notes template
 
