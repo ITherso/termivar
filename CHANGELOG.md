@@ -39,6 +39,7 @@ All notable changes to Venom are recorded here. Releases use the categories from
 - An additive API visibility comparator-v2 envelope with versioned projection profiles, volatile-path filtering, explicit unordered-array semantics, and bounded redacted path explanations.
 - Explicit documentation that standard-profile Bayesian inputs are deterministic policy likelihoods until empirical calibration metrics are published.
 - Host-owned standard-runtime cancellation with a distinct terminal reason and an auditable receipt for evidence committed before verification was skipped.
+- A versioned API review cursor that binds continuation state to a pseudonymous resource digest and rejects cross-resource reuse before scanning.
 
 ### Changed
 
@@ -81,6 +82,7 @@ All notable changes to Venom are recorded here. Releases use the categories from
 - Made request and retained-body charges non-refundable at the transport boundary, including partial reads and executor cancellation, and preserved structured audit receipts for broker limit denials.
 - Bound profiled comparison identities to comparator, canonicalization, and projection-policy metadata; redacted legacy view handles from `Debug` output and kept raw JSON values and clear observed paths out of comparator-v2 reports.
 - Made host cancellation preserve monotonic transport accounting and any post-commit, pre-verification evidence receipt without misreporting a wall-time or request-timeout limit.
+- Added strict, bounded cursor parsing and redacted cursor diagnostics while preserving the legacy in-process pagination wire contract.
 
 ## [0.9.0-alpha] - 2026-07-31
 

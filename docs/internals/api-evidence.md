@@ -299,14 +299,18 @@ newer one.
 
 ## Resource review projection
 
-`api_visibility_reviews_for_resource` follows incoming canonical scope
-relations and returns a deterministic relation-ID-ordered page. Callers supply
-an `ApiVisibilityReviewQuery`; the default scans 128 incoming relations and the
-compiled hard ceiling is 1,024. Malformed, unrelated, or forged-looking
-relations are omitted but still consume the scan budget. When more relations
-exist, `next_after_relation_id` identifies the last relation actually scanned
-and becomes the exclusive cursor for the next query. This keeps both cloning
-and inspection bounded even when a resource has many rejected edges.
+`api_visibility_reviews_for_resource` preserves the original trusted-process
+continuation API and returns a deterministic relation-ID-ordered page. Its
+`ApiVisibilityReviewQuery` carries only a relation ID and therefore cannot
+enforce resource binding. New integrations should use
+`api_visibility_reviews_for_resource_v2`, pass its optional typed
+`ApiVisibilityReviewCursor`, and derive the next token with
+`ApiVisibilityReviewPage::next_cursor`. The v2 entry point validates the
+cursor's resource digest before scanning. Both APIs use the same validated
+scan limits: the default is 128 incoming relations and the compiled hard
+ceiling is 1,024. Malformed, unrelated, or forged-looking relations are omitted
+but still consume the scan budget. This keeps both cloning and inspection
+bounded even when a resource has many rejected edges.
 
 The knowledge store also rejects oversized relation records before insertion:
 
@@ -325,14 +329,20 @@ them while borrowed and rejects a producer component above 256 bytes or a
 boundary rationale above 1,024 bytes. The ingestion boundary applies the
 producer-component limit before its atomic write; the read-side check also
 covers trusted code that writes directly to `KnowledgeBase`. Cursor IDs and
-content fingerprints are redacted from the new API types' `Debug` output;
-hosts should still avoid logging serialized cursors or other low-entropy
-deterministic identifiers.
+content fingerprints are redacted from the new API types' `Debug` output. The
+v2 cursor contains a domain-separated SHA-256 resource digest plus the last
+relation ID as lowercase hexadecimal bytes. The resource digest is
+pseudonymous rather than confidential: dictionary attacks remain possible for
+low-entropy identifiers. The cursor is deterministic and neither signed nor
+authenticated. Hosts should avoid logging its serialized form, and an external
+transport may wrap it in a signature or MAC before returning it to an
+untrusted client.
 
-The cursor is scoped to that resource and is not a frozen database snapshot.
-Concurrent inserts sort by their stable relation IDs; a relation inserted at or
-before an already consumed cursor may not appear in later pages. Hosts needing
-a point-in-time export must provide an external snapshot or quiesce writes.
+The v2 cursor is bound to its resource but is not a frozen database snapshot.
+Concurrent inserts sort by their stable relation IDs; a relation inserted at
+or before an already consumed cursor may not appear in later pages. Hosts
+needing a point-in-time export must provide an external snapshot or quiesce
+writes.
 
 Each review contains the comparison evidence and only a canonical-shaped
 visibility-boundary hypothesis. The expected standard hypothesis ID,

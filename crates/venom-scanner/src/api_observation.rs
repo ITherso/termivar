@@ -7,7 +7,8 @@
 
 use std::fmt;
 
-use serde::{Deserialize, Deserializer, Serialize};
+use serde::{de::Visitor, Deserialize, Deserializer, Serialize, Serializer};
+use sha2::{Digest, Sha256};
 use thiserror::Error;
 use venom_core::{
     ApiEvidencePredicate, ApiKnowledgePredicate, ApiVisibilityBoundaryKind, ApiVisibilityDimension,
@@ -30,6 +31,9 @@ const COMPARISON_EVIDENCE_PREFIX: &str = "api-comparison-evidence:";
 const COMPARISON_RELATION_PREFIX: &str = "api-comparison-scope:";
 const UI_API_BOUNDARY_RULE: &str = "api.visibility.ui-api.paired-difference";
 const AUTHORIZATION_BOUNDARY_RULE: &str = "api.visibility.authorization-context.paired-difference";
+const API_VISIBILITY_REVIEW_CURSOR_PREFIX: &str = "venom-api-review-v2:";
+const API_VISIBILITY_REVIEW_CURSOR_DOMAIN: &[u8] = b"venom.api-visibility.review-cursor.v2\0";
+const API_VISIBILITY_REVIEW_RESOURCE_DIGEST_HEX_BYTES: usize = 64;
 
 /// Default number of incoming resource relations scanned by one review page.
 pub const DEFAULT_API_VISIBILITY_REVIEW_SCAN_LIMIT: u16 = 128;
@@ -39,6 +43,11 @@ pub const HARD_MAX_API_VISIBILITY_REVIEW_SCAN_LIMIT: u16 = 1_024;
 pub const MAX_API_VISIBILITY_SOURCE_COMPONENT_BYTES: usize = 256;
 /// Hard byte ceiling for one boundary-hypothesis explanation in a review page.
 pub const MAX_API_VISIBILITY_REVIEW_RATIONALE_BYTES: usize = 1_024;
+/// Hard byte ceiling for one serialized resource-bound review cursor.
+pub const MAX_API_VISIBILITY_REVIEW_CURSOR_BYTES: usize = API_VISIBILITY_REVIEW_CURSOR_PREFIX.len()
+    + API_VISIBILITY_REVIEW_RESOURCE_DIGEST_HEX_BYTES
+    + 1
+    + (MAX_KNOWLEDGE_RELATION_ID_BYTES * 2);
 
 /// Receipt for an observation pair committed to one [`KnowledgeBase`] instance.
 ///
@@ -177,6 +186,30 @@ pub enum ApiObservationError {
         maximum: usize,
     },
 
+    /// A serialized resource-bound review cursor exceeded its compiled ceiling.
+    #[error("API visibility resource-bound review cursor is {actual} bytes, above hard ceiling {maximum}")]
+    ResourceBoundReviewCursorTooLong {
+        /// Rejected serialized cursor byte length.
+        actual: usize,
+        /// Inclusive compiled cursor ceiling.
+        maximum: usize,
+    },
+
+    /// A serialized resource-bound review cursor was not canonical v2 syntax.
+    #[error("invalid API visibility resource-bound review cursor: {reason}")]
+    InvalidResourceBoundReviewCursor {
+        /// Stable parse reason that never contains cursor input.
+        reason: &'static str,
+    },
+
+    /// A resource-bound review cursor used an unsupported wire version.
+    #[error("unsupported API visibility resource-bound review cursor version")]
+    UnsupportedResourceBoundReviewCursorVersion,
+
+    /// A resource-bound review cursor was replayed against another resource.
+    #[error("API visibility resource-bound review cursor does not match requested resource")]
+    ResourceBoundReviewCursorMismatch,
+
     /// An observation field exceeded the review model's storage ceiling.
     #[error("API visibility observation {field} size {actual} exceeds hard ceiling {maximum}")]
     ObservationLimitExceeded {
@@ -222,6 +255,21 @@ impl fmt::Debug for ApiObservationError {
                 .field("actual", actual)
                 .field("maximum", maximum)
                 .finish(),
+            Self::ResourceBoundReviewCursorTooLong { actual, maximum } => formatter
+                .debug_struct("ResourceBoundReviewCursorTooLong")
+                .field("actual", actual)
+                .field("maximum", maximum)
+                .finish(),
+            Self::InvalidResourceBoundReviewCursor { reason } => formatter
+                .debug_struct("InvalidResourceBoundReviewCursor")
+                .field("reason", reason)
+                .finish(),
+            Self::UnsupportedResourceBoundReviewCursorVersion => {
+                formatter.write_str("UnsupportedResourceBoundReviewCursorVersion")
+            },
+            Self::ResourceBoundReviewCursorMismatch => {
+                formatter.write_str("ResourceBoundReviewCursorMismatch")
+            },
             Self::ObservationLimitExceeded {
                 field,
                 actual,
@@ -251,6 +299,10 @@ impl ApiObservationError {
             | Self::ZeroReviewScanLimit
             | Self::ReviewScanLimitExceeded { .. }
             | Self::ReviewCursorTooLong { .. }
+            | Self::ResourceBoundReviewCursorTooLong { .. }
+            | Self::InvalidResourceBoundReviewCursor { .. }
+            | Self::UnsupportedResourceBoundReviewCursorVersion
+            | Self::ResourceBoundReviewCursorMismatch
             | Self::ObservationLimitExceeded { .. }
             | Self::Knowledge(_) => None,
         }
@@ -264,6 +316,10 @@ impl ApiObservationError {
             | Self::ZeroReviewScanLimit
             | Self::ReviewScanLimitExceeded { .. }
             | Self::ReviewCursorTooLong { .. }
+            | Self::ResourceBoundReviewCursorTooLong { .. }
+            | Self::InvalidResourceBoundReviewCursor { .. }
+            | Self::UnsupportedResourceBoundReviewCursorVersion
+            | Self::ResourceBoundReviewCursorMismatch
             | Self::ObservationLimitExceeded { .. }
             | Self::Knowledge(_) => None,
         }
@@ -277,6 +333,10 @@ impl ApiObservationError {
             | Self::ZeroReviewScanLimit
             | Self::ReviewScanLimitExceeded { .. }
             | Self::ReviewCursorTooLong { .. }
+            | Self::ResourceBoundReviewCursorTooLong { .. }
+            | Self::InvalidResourceBoundReviewCursor { .. }
+            | Self::UnsupportedResourceBoundReviewCursorVersion
+            | Self::ResourceBoundReviewCursorMismatch
             | Self::ObservationLimitExceeded { .. }
             | Self::Knowledge(_) => None,
         }
@@ -487,6 +547,182 @@ impl<'de> Deserialize<'de> for ApiVisibilityReviewQuery {
     }
 }
 
+/// Opaque v2 continuation token bound to one resource and relation position.
+///
+/// The token contains a versioned, domain-separated resource digest and the
+/// last scanned relation ID encoded as lowercase hexadecimal bytes. It never
+/// embeds the clear-text resource identifier. The digest is pseudonymous, not
+/// confidential: low-entropy resource IDs remain susceptible to dictionary
+/// attacks. The token is deterministic but is not authenticated or encrypted;
+/// a transport may sign or MAC its serialized form before exposing it outside
+/// a trusted boundary.
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ApiVisibilityReviewCursor {
+    encoded: String,
+    resource_digest: [u8; 32],
+    after_relation_id: RelationId,
+}
+
+impl ApiVisibilityReviewCursor {
+    /// Creates a canonical v2 cursor for one resource and relation position.
+    pub fn new(
+        resource_scope: &EntityId,
+        after_relation_id: RelationId,
+    ) -> Result<Self, ApiObservationError> {
+        let actual = after_relation_id.as_str().len();
+        if actual > MAX_KNOWLEDGE_RELATION_ID_BYTES {
+            return Err(ApiObservationError::ReviewCursorTooLong {
+                actual,
+                maximum: MAX_KNOWLEDGE_RELATION_ID_BYTES,
+            });
+        }
+        let resource_digest = review_cursor_resource_digest(resource_scope);
+        let encoded = format!(
+            "{API_VISIBILITY_REVIEW_CURSOR_PREFIX}{}:{}",
+            encode_cursor_hex(&resource_digest),
+            encode_cursor_hex(after_relation_id.as_str().as_bytes())
+        );
+        debug_assert!(encoded.len() <= MAX_API_VISIBILITY_REVIEW_CURSOR_BYTES);
+        Ok(Self {
+            encoded,
+            resource_digest,
+            after_relation_id,
+        })
+    }
+
+    /// Parses and validates one canonical serialized v2 cursor.
+    pub fn parse(encoded: impl Into<String>) -> Result<Self, ApiObservationError> {
+        let encoded = encoded.into();
+        if encoded.len() > MAX_API_VISIBILITY_REVIEW_CURSOR_BYTES {
+            return Err(ApiObservationError::ResourceBoundReviewCursorTooLong {
+                actual: encoded.len(),
+                maximum: MAX_API_VISIBILITY_REVIEW_CURSOR_BYTES,
+            });
+        }
+        let Some(payload) = encoded.strip_prefix(API_VISIBILITY_REVIEW_CURSOR_PREFIX) else {
+            if encoded.starts_with("venom-api-review-v") {
+                return Err(ApiObservationError::UnsupportedResourceBoundReviewCursorVersion);
+            }
+            return Err(ApiObservationError::InvalidResourceBoundReviewCursor {
+                reason: "cursor prefix is malformed",
+            });
+        };
+        let Some((resource_digest, relation_id)) = payload.split_once(':') else {
+            return Err(ApiObservationError::InvalidResourceBoundReviewCursor {
+                reason: "cursor payload is incomplete",
+            });
+        };
+        if resource_digest.len() != API_VISIBILITY_REVIEW_RESOURCE_DIGEST_HEX_BYTES {
+            return Err(ApiObservationError::InvalidResourceBoundReviewCursor {
+                reason: "resource digest must contain 64 lowercase hexadecimal characters",
+            });
+        }
+        let resource_digest: [u8; 32] =
+            decode_cursor_hex(resource_digest)?
+                .try_into()
+                .map_err(|_| ApiObservationError::InvalidResourceBoundReviewCursor {
+                    reason: "resource digest must contain exactly 32 bytes",
+                })?;
+        let relation_id = decode_cursor_hex(relation_id)?;
+        if relation_id.len() > MAX_KNOWLEDGE_RELATION_ID_BYTES {
+            return Err(ApiObservationError::ReviewCursorTooLong {
+                actual: relation_id.len(),
+                maximum: MAX_KNOWLEDGE_RELATION_ID_BYTES,
+            });
+        }
+        let relation_id = String::from_utf8(relation_id).map_err(|_| {
+            ApiObservationError::InvalidResourceBoundReviewCursor {
+                reason: "relation identifier is not valid UTF-8",
+            }
+        })?;
+        let after_relation_id = RelationId::parse(relation_id).map_err(|_| {
+            ApiObservationError::InvalidResourceBoundReviewCursor {
+                reason: "relation identifier is empty",
+            }
+        })?;
+        Ok(Self {
+            encoded,
+            resource_digest,
+            after_relation_id,
+        })
+    }
+
+    /// Returns the canonical transport representation.
+    ///
+    /// Callers should avoid logging this value and may wrap it in an
+    /// authenticated transport token before returning it to an untrusted peer.
+    pub fn as_str(&self) -> &str {
+        &self.encoded
+    }
+
+    /// Returns this token's stable wire version.
+    pub const fn version(&self) -> u8 {
+        2
+    }
+
+    fn matches_resource(&self, resource_scope: &EntityId) -> bool {
+        self.resource_digest == review_cursor_resource_digest(resource_scope)
+    }
+
+    fn after_relation_id(&self) -> &RelationId {
+        &self.after_relation_id
+    }
+}
+
+impl fmt::Debug for ApiVisibilityReviewCursor {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("ApiVisibilityReviewCursor(<redacted>)")
+    }
+}
+
+impl fmt::Display for ApiVisibilityReviewCursor {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("<redacted>")
+    }
+}
+
+impl Serialize for ApiVisibilityReviewCursor {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&self.encoded)
+    }
+}
+
+impl<'de> Deserialize<'de> for ApiVisibilityReviewCursor {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct CursorVisitor;
+
+        impl Visitor<'_> for CursorVisitor {
+            type Value = ApiVisibilityReviewCursor;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("a bounded resource-bound API visibility review cursor")
+            }
+
+            fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                ApiVisibilityReviewCursor::parse(value).map_err(E::custom)
+            }
+
+            fn visit_string<E>(self, value: String) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                ApiVisibilityReviewCursor::parse(value).map_err(E::custom)
+            }
+        }
+
+        deserializer.deserialize_str(CursorVisitor)
+    }
+}
+
 /// Canonical paired observation and its reviewable boundary hypotheses.
 ///
 /// An equivalent comparison remains visible with an empty hypothesis list. A
@@ -593,10 +829,52 @@ impl ApiVisibilityReviewPage {
         self.next_after_relation_id.as_ref()
     }
 
+    /// Derives the resource-bound v2 continuation token for the next page.
+    ///
+    /// The returned token is deterministic and redacted from `Debug` and
+    /// `Display`, but is not signed. A transport may authenticate its serialized
+    /// form before exposing it outside a trusted host boundary.
+    pub fn next_cursor(&self) -> Result<Option<ApiVisibilityReviewCursor>, ApiObservationError> {
+        self.next_after_relation_id
+            .as_ref()
+            .map(|relation_id| {
+                ApiVisibilityReviewCursor::new(&self.resource_scope, relation_id.clone())
+            })
+            .transpose()
+    }
+
     /// Takes the canonical reviews without cloning them.
     pub fn into_reviews(self) -> Vec<ApiVisibilityReview> {
         self.reviews
     }
+}
+
+/// Projects one bounded review page using a resource-bound v2 cursor.
+///
+/// A cursor is checked against the caller-authorized resource before the
+/// knowledge store is scanned. The legacy [`ApiVisibilityReviewQuery`] and
+/// [`api_visibility_reviews_for_resource`] contracts remain available for
+/// trusted in-process continuation, while this entry point prevents accidental
+/// cross-resource cursor reuse. This cursor is deterministic, not authenticated;
+/// transports may sign or MAC its serialized representation.
+pub fn api_visibility_reviews_for_resource_v2(
+    knowledge: &KnowledgeBase,
+    resource_scope: &EntityId,
+    cursor: Option<&ApiVisibilityReviewCursor>,
+    scan_limit: u16,
+) -> Result<ApiVisibilityReviewPage, ApiObservationError> {
+    let mut query = ApiVisibilityReviewQuery::new(scan_limit)?;
+    if let Some(cursor) = cursor {
+        if !cursor.matches_resource(resource_scope) {
+            return Err(ApiObservationError::ResourceBoundReviewCursorMismatch);
+        }
+        query = query.after_relation_id(cursor.after_relation_id().clone())?;
+    }
+    Ok(api_visibility_reviews_for_resource(
+        knowledge,
+        resource_scope,
+        &query,
+    ))
 }
 
 /// Projects canonical API visibility comparisons associated with one resource.
@@ -666,6 +944,50 @@ pub fn api_visibility_reviews_for_resource(
         reviews,
         scanned_relations,
         next_after_relation_id,
+    }
+}
+
+fn review_cursor_resource_digest(resource_scope: &EntityId) -> [u8; 32] {
+    let bytes = resource_scope.as_str().as_bytes();
+    let mut hasher = Sha256::new();
+    hasher.update(API_VISIBILITY_REVIEW_CURSOR_DOMAIN);
+    hasher.update(u64::try_from(bytes.len()).unwrap_or(u64::MAX).to_be_bytes());
+    hasher.update(bytes);
+    hasher.finalize().into()
+}
+
+fn encode_cursor_hex(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut encoded = String::with_capacity(bytes.len().saturating_mul(2));
+    for byte in bytes {
+        encoded.push(char::from(HEX[usize::from(byte >> 4)]));
+        encoded.push(char::from(HEX[usize::from(byte & 0x0f)]));
+    }
+    encoded
+}
+
+fn decode_cursor_hex(value: &str) -> Result<Vec<u8>, ApiObservationError> {
+    if value.is_empty() || !value.len().is_multiple_of(2) {
+        return Err(ApiObservationError::InvalidResourceBoundReviewCursor {
+            reason: "hexadecimal payload must be non-empty and byte-aligned",
+        });
+    }
+    let mut decoded = Vec::with_capacity(value.len() / 2);
+    for pair in value.as_bytes().chunks_exact(2) {
+        let high = decode_cursor_hex_nibble(pair[0])?;
+        let low = decode_cursor_hex_nibble(pair[1])?;
+        decoded.push((high << 4) | low);
+    }
+    Ok(decoded)
+}
+
+fn decode_cursor_hex_nibble(value: u8) -> Result<u8, ApiObservationError> {
+    match value {
+        b'0'..=b'9' => Ok(value - b'0'),
+        b'a'..=b'f' => Ok(value - b'a' + 10),
+        _ => Err(ApiObservationError::InvalidResourceBoundReviewCursor {
+            reason: "cursor payload must use lowercase hexadecimal",
+        }),
     }
 }
 
@@ -1396,6 +1718,143 @@ mod tests {
         let debug = format!("{decoded:?}");
         assert!(!debug.contains(cursor.as_str()));
         assert!(debug.contains("<redacted>"));
+    }
+
+    #[test]
+    fn resource_bound_cursor_round_trips_and_paginates_same_resource() {
+        let (knowledge, rules) = installed();
+        for id in ["cursor-page-a", "cursor-page-b", "cursor-page-c"] {
+            ingest_api_visibility_observation(
+                comparison(
+                    id,
+                    ApiVisibilityResult::Different,
+                    ApiVisibilityPairKind::UiApi,
+                ),
+                &resource(),
+                &knowledge,
+                &rules,
+            )
+            .unwrap();
+        }
+
+        let first =
+            api_visibility_reviews_for_resource_v2(&knowledge, &resource(), None, 1).unwrap();
+        assert_eq!(first.scanned_relations(), 1);
+        assert_eq!(first.reviews().len(), 1);
+        let cursor = first.next_cursor().unwrap().unwrap();
+        let decoded: ApiVisibilityReviewCursor =
+            serde_json::from_value(serde_json::to_value(&cursor).unwrap()).unwrap();
+        assert_eq!(decoded, cursor);
+        assert_eq!(decoded.version(), 2);
+
+        let second =
+            api_visibility_reviews_for_resource_v2(&knowledge, &resource(), Some(&decoded), 1)
+                .unwrap();
+        assert_eq!(second.scanned_relations(), 1);
+        assert_eq!(second.reviews().len(), 1);
+        assert_ne!(
+            first.reviews()[0].relation_id(),
+            second.reviews()[0].relation_id()
+        );
+    }
+
+    #[test]
+    fn resource_bound_cursor_rejects_cross_resource_replay_without_leaking_ids() {
+        let source = resource();
+        let target = EntityId::new("resource:another-sensitive-account").unwrap();
+        let relation = RelationId::parse("relation:sensitive-position").unwrap();
+        let cursor = ApiVisibilityReviewCursor::new(&source, relation.clone()).unwrap();
+        let error = api_visibility_reviews_for_resource_v2(
+            &KnowledgeBase::new(),
+            &target,
+            Some(&cursor),
+            1,
+        )
+        .unwrap_err();
+
+        assert!(matches!(
+            error,
+            ApiObservationError::ResourceBoundReviewCursorMismatch
+        ));
+        for output in [error.to_string(), format!("{error:?}")] {
+            assert!(!output.contains(source.as_str()));
+            assert!(!output.contains(target.as_str()));
+            assert!(!output.contains(relation.as_str()));
+            assert!(!output.contains(cursor.as_str()));
+        }
+    }
+
+    #[test]
+    fn resource_bound_cursor_rejects_malformed_versioned_and_oversized_tokens() {
+        assert!(matches!(
+            ApiVisibilityReviewCursor::parse("not-a-review-cursor"),
+            Err(ApiObservationError::InvalidResourceBoundReviewCursor { .. })
+        ));
+        assert!(matches!(
+            ApiVisibilityReviewCursor::parse("venom-api-review-v3:payload"),
+            Err(ApiObservationError::UnsupportedResourceBoundReviewCursorVersion)
+        ));
+        assert!(matches!(
+            ApiVisibilityReviewCursor::parse(
+                "x".repeat(MAX_API_VISIBILITY_REVIEW_CURSOR_BYTES + 1)
+            ),
+            Err(ApiObservationError::ResourceBoundReviewCursorTooLong { .. })
+        ));
+
+        let cursor = ApiVisibilityReviewCursor::new(
+            &resource(),
+            RelationId::parse("relation:cursor").unwrap(),
+        )
+        .unwrap();
+        let mut uppercase = cursor.as_str().to_owned();
+        uppercase.pop();
+        uppercase.push('A');
+        assert!(matches!(
+            ApiVisibilityReviewCursor::parse(uppercase),
+            Err(ApiObservationError::InvalidResourceBoundReviewCursor { .. })
+        ));
+        let mut odd = cursor.as_str().to_owned();
+        odd.pop();
+        assert!(
+            serde_json::from_value::<ApiVisibilityReviewCursor>(serde_json::json!(odd)).is_err()
+        );
+    }
+
+    #[test]
+    fn resource_bound_cursor_serialization_is_transparent_and_debug_is_redacted() {
+        let resource = resource();
+        let relation = RelationId::parse("relation:sensitive-cursor").unwrap();
+        let cursor = ApiVisibilityReviewCursor::new(&resource, relation.clone()).unwrap();
+
+        assert_eq!(
+            serde_json::to_value(&cursor).unwrap(),
+            serde_json::Value::String(cursor.as_str().to_owned())
+        );
+        assert!(!cursor.as_str().contains(resource.as_str()));
+        assert!(!cursor.as_str().contains(relation.as_str()));
+        for output in [format!("{cursor:?}"), cursor.to_string()] {
+            assert!(output.contains("<redacted>"));
+            assert!(!output.contains(cursor.as_str()));
+            assert!(!output.contains(resource.as_str()));
+            assert!(!output.contains(relation.as_str()));
+        }
+    }
+
+    #[test]
+    fn legacy_review_query_wire_shape_remains_unchanged() {
+        let cursor = RelationId::parse("relation:legacy-cursor").unwrap();
+        let query = ApiVisibilityReviewQuery::new(7)
+            .unwrap()
+            .after_relation_id(cursor)
+            .unwrap();
+
+        assert_eq!(
+            serde_json::to_value(query).unwrap(),
+            serde_json::json!({
+                "after_relation_id": "relation:legacy-cursor",
+                "scan_limit": 7
+            })
+        );
     }
 
     #[test]

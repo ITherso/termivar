@@ -89,6 +89,14 @@ the host must keep it associated with the same resource. It is neither an
 authenticated transport token nor a point-in-time snapshot under concurrent
 inserts.
 
+For host or transport boundaries, prefer
+`api_visibility_reviews_for_resource_v2` with `ApiVisibilityReviewCursor`.
+The v2 token binds its last relation to a domain-separated resource digest and
+rejects accidental cross-resource reuse before the knowledge store is scanned.
+It remains deterministic rather than authenticated: resource digests are
+pseudonymous, may be dictionary-tested for low-entropy identifiers, and should
+be wrapped in a host signature or MAC when exposed to an untrusted client.
+
 Every policy likelihood in this API profile explicitly uses `MaxContributions(1)`
 (constructed with `EvidenceAggregation::max_contributions(1)`), so repeated
 matching observations do not keep increasing the posterior for the same
