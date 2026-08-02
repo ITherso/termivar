@@ -205,7 +205,11 @@ pub use rules::{
     ExpressionTrace, HypothesisConclusion, KnowledgeLayer, ReasoningRule, RuleApplication,
     RuleEngine, RuleEngineError, RuleEvaluation, RuleWrite,
 };
-pub use venom_core::{Outcome, OutcomeError, OutcomeStatus, VerificationStage};
+pub use venom_core::{
+    ApiSurfaceKind, ApiVisibilityComparison, ApiVisibilityDimension, ApiVisibilityObservation,
+    ApiVisibilityPairKind, ApiVisibilityResult, ConfidenceScore, EntityId, Outcome, OutcomeError,
+    OutcomeStatus, VerificationStage,
+};
 pub use verification::{
     apply_outcome, ActiveVerifier, PassiveVerifier, VerificationCase, VerificationError,
     VerificationPipeline, VerificationPipelineReport, VerificationReport, VerificationRule,
@@ -290,8 +294,9 @@ pub use web_decision::{
 
 #[cfg(feature = "scanning")]
 pub use web_runtime::{
-    StandardWebDecisionRunReport, StandardWebDecisionRuntime, StandardWebDecisionRuntimeBuilder,
-    StandardWebDecisionRuntimeError, StandardWebDecisionRuntimeTurn,
+    RuntimeApiVisibilityError, StandardWebDecisionRunReport, StandardWebDecisionRuntime,
+    StandardWebDecisionRuntimeBuilder, StandardWebDecisionRuntimeError,
+    StandardWebDecisionRuntimeTurn,
 };
 
 #[cfg(all(feature = "scanning", feature = "plugins"))]

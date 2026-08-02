@@ -27,3 +27,7 @@ path = "distributed_scan.rs"
 [[bin]]
 name = "decision_scan"
 path = "decision_scan.rs"
+
+[[bin]]
+name = "api_visibility_review"
+path = "api_visibility_review.rs"

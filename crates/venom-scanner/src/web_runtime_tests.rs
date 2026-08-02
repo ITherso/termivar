@@ -8,15 +8,17 @@ use tokio::{
 };
 use venom_core::{
     ApiKnowledgePredicate, ApiResponseFormat, ApiSurfaceKind, ApiVisibilityBoundaryKind,
-    EvidenceValue, Hypothesis, HypothesisState, HypothesisStrength, OutcomeStatus,
-    PredicateDescriptor, Probability, WebKnowledgePredicate,
+    ApiVisibilityComparison, ApiVisibilityDimension, ApiVisibilityObservation,
+    ApiVisibilityPairKind, ApiVisibilityResult, ConfidenceScore, EntityId, EvidenceValue,
+    Hypothesis, HypothesisState, HypothesisStrength, OutcomeStatus, PredicateDescriptor,
+    Probability, WebKnowledgePredicate,
 };
 
 use super::*;
 use crate::{
-    ActionCost, AdaptivePipeline, AttackAction, DecisionLoopState, DecisionStopReason,
-    ExclusionReason, Expression, HttpBodyCapture, HypothesisSelector, KnowledgeLayer,
-    KnowledgeSnapshot, RequiredStrength, StandardWebActionKind,
+    ActionCost, AdaptivePipeline, ApiVisibilityReviewQuery, AttackAction, DecisionLoopState,
+    DecisionStopReason, ExclusionReason, Expression, HttpBodyCapture, HypothesisSelector,
+    KnowledgeLayer, KnowledgeSnapshot, RequiredStrength, StandardWebActionKind,
 };
 
 const BASIC: &[u8] = b"HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: Basic realm=\"admin\"\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
@@ -142,6 +144,23 @@ fn api_hypothesis<'a>(
         .find(|hypothesis| hypothesis.predicate() == &predicate && hypothesis.value() == &value)
 }
 
+fn runtime_visibility_observation(id: &str, resource: &EntityId) -> ApiVisibilityObservation {
+    ApiVisibilityComparison::new(
+        id,
+        ApiSurfaceKind::JsonHttp,
+        ApiVisibilityPairKind::AuthorizationContext,
+        ApiVisibilityResult::Different,
+        ApiVisibilityDimension::Fields,
+        "anonymous-view",
+        "member-view",
+        resource.as_str(),
+    )
+    .unwrap()
+    .with_observed_at_ms(1_800_000_000_000)
+    .to_observation("host.api-comparator", ConfidenceScore::MAX)
+    .unwrap()
+}
+
 #[test]
 fn builder_validates_decision_limits_and_exposes_runtime_defaults() {
     let target = Url::parse("https://example.test/app").unwrap();
@@ -245,6 +264,61 @@ async fn passive_api_reasoning_is_opt_in_and_adds_no_request() {
     assert_eq!(enabled.usage().total_requests(), 1);
     assert_eq!(enabled.usage().active_verifications(), 0);
     assert_eq!(enabled.usage().response_bytes(), 2);
+}
+
+#[tokio::test]
+async fn paired_visibility_ingress_is_runtime_neutral_before_and_after_analysis() {
+    let server = serve(vec![Reply::Response(OK)]).await;
+    let mut runtime = StandardWebDecisionRuntime::builder(server.target())
+        .enable_api_reasoning()
+        .build()
+        .unwrap();
+    let first_resource = EntityId::new("resource:account-42").unwrap();
+    let initial_session = runtime.session().clone();
+
+    runtime
+        .ingest_api_visibility(
+            runtime_visibility_observation("comparison-before-run", &first_resource),
+            &first_resource,
+        )
+        .unwrap();
+    assert_eq!(runtime.session(), &initial_session);
+    assert_eq!(runtime.usage(), &RuntimeUsage::default());
+    assert!(runtime.experience().is_empty());
+
+    let report = runtime.analyze().await.unwrap();
+    assert!(matches!(
+        report.terminal(),
+        DecisionLoopCommand::Halt {
+            reason: DecisionStopReason::NoEligibleAction
+        }
+    ));
+    assert_eq!(server.methods().await, ["GET"]);
+    assert_eq!(runtime.usage().total_requests(), 1);
+
+    let usage_after_run = runtime.usage().clone();
+    let session_after_run = runtime.session().clone();
+    let experience_after_run = runtime.experience().len();
+    let second_resource = EntityId::new("resource:account-7").unwrap();
+    runtime
+        .ingest_api_visibility(
+            runtime_visibility_observation("comparison-after-run", &second_resource),
+            &second_resource,
+        )
+        .unwrap();
+
+    assert_eq!(runtime.usage(), &usage_after_run);
+    assert_eq!(runtime.session(), &session_after_run);
+    assert_eq!(runtime.experience().len(), experience_after_run);
+    assert_eq!(server.methods().await, ["GET"]);
+    assert_eq!(
+        runtime
+            .api_visibility_reviews(&second_resource, &ApiVisibilityReviewQuery::default(),)
+            .unwrap()
+            .reviews()
+            .len(),
+        1
+    );
 }
 
 #[tokio::test]

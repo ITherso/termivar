@@ -145,6 +145,32 @@ The example value is consumed transiently. Neither it nor the email string is
 stored in the view, comparison evidence, resource relation, receipt, or review
 projection.
 
+## Authorized runtime workflow
+
+`StandardWebDecisionRuntime` can host the same ingestion and review boundary
+when it is built with `.enable_api_reasoning()`:
+
+```rust
+let mut runtime = StandardWebDecisionRuntime::builder(target)
+    .enable_api_reasoning()
+    .build()?;
+
+let receipt = runtime.ingest_api_visibility(observation, &resource)?;
+let page = runtime.api_visibility_reviews(
+    &resource,
+    &ApiVisibilityReviewQuery::new(32)?,
+)?;
+```
+
+The facade accepts only the typed, host-created observation. It does not fetch
+or pair responses and never receives raw JSON, credentials, or principal
+identities. The host must authenticate the producer, authorize both views, and
+assert their shared logical resource. Comparison subjects remain isolated, and
+ingestion does not change runtime requests, response-byte accounting, planning,
+experience, or decision-session state. A runtime without API reasoning enabled
+returns `RuntimeApiVisibilityError::ApiReasoningDisabled` before any write.
+Post-commit reasoning failures retain their observation receipt.
+
 ## Commit and reasoning receipts
 
 `ingest_api_visibility_observation` verifies the caller's expected resource

@@ -90,10 +90,19 @@ signal.
 Hosts using `StandardWebDecisionRuntime` can opt into its passive API rules
 with `enable_api_reasoning()`. The runtime reuses its existing normalized HTTP
 evidence and exposes an optional installation receipt; it does not issue extra
-requests or add API attack actions. This convenience path recognizes JSON
-response formats and GraphQL surfaces only. Paired visibility reasoning
-remains an explicit host-owned ingestion workflow on isolated comparison
-subjects.
+requests or add API attack actions. An authorized host can also pass a typed
+`ApiVisibilityObservation` to `runtime.ingest_api_visibility(...)`, then read a
+bounded resource page with `runtime.api_visibility_reviews(...)`. These methods
+preserve isolated comparison subjects and are neutral to request usage,
+planning, experience, and decision-session state. They fail before any write
+when API reasoning is disabled. `RuntimeApiVisibilityError` preserves a commit
+receipt if reasoning fails after storage. Pairing, producer authentication,
+authorization, and raw response handling remain host responsibilities.
+
+The runnable
+[`api_visibility_review`](https://github.com/ITherso/venom/blob/main/examples/api_visibility_review.rs)
+example demonstrates the typed runtime workflow without performing network
+I/O.
 
 See [API visibility evidence](internals/api-evidence.md) for canonicalization
 semantics, limits, receipts, replay behavior, and trust boundaries.

@@ -23,6 +23,7 @@ All notable changes to Venom are recorded here. Releases use the categories from
 - A shared transport-neutral HTTP/API predicate vocabulary with normalized media/path observations and atomic paired-visibility contracts.
 - An opt-in deterministic JSON/GraphQL fingerprint profile that turns host-paired visibility differences into review hypotheses without declaring vulnerabilities.
 - Opt-in passive JSON response-format and GraphQL surface reasoning in `StandardWebDecisionRuntime`, with an installation receipt and no additional requests, executors, payloads, or planner actions.
+- A runtime-owned, fail-closed facade for authorized paired API visibility ingestion and bounded resource review without changing HTTP, planner, experience, or decision-session state.
 - `ApiVisibilityObservation`, a stable evidence-backed resource-scope relation, and atomic `KnowledgeBase::insert_evidence_with_relation` storage.
 - Per-calibration evidence aggregation with an explicit one-contribution policy for standard API rules.
 - A bounded, deterministic API visibility comparator that retains signatures instead of raw JSON response values.

@@ -27,6 +27,10 @@ use crate::{
     HTTP_EVIDENCE_EXECUTOR_ID,
 };
 
+mod api_visibility;
+
+pub use api_visibility::RuntimeApiVisibilityError;
+
 const DEFAULT_BUSINESS_VALUE_PERCENT: u8 = 80;
 const DEFAULT_PLANNING_BUDGET: u64 = 100;
 const DEFAULT_RISK_LIMIT_PERCENT: u8 = 40;

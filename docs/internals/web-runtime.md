@@ -86,11 +86,34 @@ executor, payload, active verification, or planner action, so the runtime's
 configured limits and request reservations remain unchanged. The additional
 deterministic rule evaluation still runs under the same wall-time deadline.
 
-This integration covers passive response-format and surface fingerprinting
-only. It does not pair UI/API responses or authorization contexts.
-Visibility-boundary hypotheses still require a host-created atomic comparison
-on its isolated comparison subject through the API observation ingestion
+### Authorized paired-visibility ingress
+
+The runtime can also own the storage, reasoning, and review side of an
+authorized paired-visibility workflow. The host still pairs the two contexts
+and creates a typed `ApiVisibilityObservation`; the runtime never accepts raw
+response bodies, credentials, headers, URLs, or principal names through this
 boundary.
+
+```rust
+let receipt = runtime.ingest_api_visibility(observation, &resource)?;
+let query = ApiVisibilityReviewQuery::new(32)?;
+let page = runtime.api_visibility_reviews(&resource, &query)?;
+```
+
+Both methods require `.enable_api_reasoning()`. A disabled runtime returns
+`RuntimeApiVisibilityError::ApiReasoningDisabled` before writing anything.
+Successful ingestion preserves the observation's isolated comparison subject
+and its evidence-backed resource relation; it never rewrites comparison
+evidence onto the runtime endpoint subject.
+
+Ingress is neutral to HTTP request accounting, the decision session,
+experience, planning, and executor selection. It may be performed before or
+after `analyze()` and does not make the paired hypothesis eligible for the
+endpoint planner. Exact replay remains idempotent. If reasoning fails after
+the observation commits, `RuntimeApiVisibilityError::committed_observation()`
+exposes the commit receipt rather than implying rollback. Producer
+authentication, authorization of both compared contexts, same-resource
+pairing, and persistence remain host responsibilities.
 
 ## Runtime safety envelope
 
