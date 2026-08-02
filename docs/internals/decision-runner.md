@@ -46,7 +46,7 @@ An executor returns native `Evidence`, not findings or decisions. Before any wri
 
 `KnowledgeBase::insert_evidence_batch` preflights identities under one write lock. A conflict rejects the whole batch, while exact repeats remain idempotent. Active execution captures a subject snapshot immediately before the probe and another after the batch commit.
 
-`DecisionEvidenceReceipt` retains the exact evidence emitted by that execution in addition to the write results and verification snapshots. This matters for active verification, where passive and active requests intentionally reuse one case correlation ID: resource accounting reads the exact batch rather than double-counting the cumulative subject snapshot.
+`DecisionEvidenceReceipt` retains the exact evidence emitted by that execution in addition to the write results and verification snapshots. Its `write_set()` iterator pairs each observation with its input-order `KnowledgeWrite`, making the atomic commit set explicit. This matters for active verification, where passive and active requests intentionally reuse one case correlation ID: resource accounting reads the exact batch rather than double-counting the cumulative subject snapshot.
 
 The host may attach `DecisionExecutionLimits` to reduce executor resource use. Unrestricted requests preserve the existing serialized request shape. The runner exposes execution/commit and decision resumption as separate internal stages so a runtime can account for a committed receipt before verification or experience transition begins.
 
@@ -63,5 +63,7 @@ The bridge is a migration boundary. New reasoning-aware extensions should implem
 - A stale command/session mismatch is rejected before executor work.
 - Executor and provenance failures leave knowledge unchanged.
 - Evidence identity conflicts reject the complete batch.
-- Once valid observations are committed, they remain immutable even if later verification or adaptive evaluation fails; observations are facts about execution, not a transaction over decision policy.
+- Once valid observations are committed, they remain immutable even if later verification or adaptive evaluation fails; observations are facts about execution, not a transaction over decision policy. `DecisionRunnerError::committed_evidence()` exposes that durable receipt, and `into_committed_evidence()` transfers it without cloning.
+- A successful `DecisionOutcomeReport` is the outcome phase's completion receipt. Its verification, hypothesis write, experience write, and runtime-only `DecisionSessionTransition` describe the state changes applied after evidence storage. The lightweight transition summary is intentionally omitted from the report's existing serialized shape; a future persisted audit format will be explicit and versioned.
+- The outcome phase uses candidate experience and session state. On a normal returned error, hypothesis, experience, and session changes are not committed. This is error-atomic, not a claim of crash-atomic persistence.
 - Terminal commands perform no executor work and are returned to the host unchanged.

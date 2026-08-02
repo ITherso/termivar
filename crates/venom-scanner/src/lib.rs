@@ -226,7 +226,7 @@ pub use adaptive::{
 pub use decision_loop::{
     DecisionActionOrigin, DecisionLoop, DecisionLoopCommand, DecisionLoopConfig, DecisionLoopError,
     DecisionLoopState, DecisionOutcomeReport, DecisionPlanningReport, DecisionSession,
-    DecisionStopReason,
+    DecisionSessionSummary, DecisionSessionTransition, DecisionStopReason,
 };
 
 #[cfg(feature = "scanning")]

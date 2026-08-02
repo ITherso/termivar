@@ -312,6 +312,19 @@ impl DecisionSession {
     pub fn adaptation(&self) -> &AdaptationLedger {
         &self.adaptation
     }
+
+    /// Captures a lightweight state summary at one outcome boundary.
+    ///
+    /// This intentionally omits the subject and full adaptation ledger. It is
+    /// an audit summary for comparing one transition, not a persistence or
+    /// replay snapshot.
+    pub fn transition_summary(&self) -> DecisionSessionSummary {
+        DecisionSessionSummary {
+            state: self.state.clone(),
+            action_cycles: self.action_cycles,
+            adaptation_transitions: self.adaptation.transitions(),
+        }
+    }
 }
 
 impl<'de> Deserialize<'de> for DecisionSession {
@@ -349,6 +362,57 @@ impl<'de> Deserialize<'de> for DecisionSession {
             state: wire.state,
             adaptation: wire.adaptation,
         })
+    }
+}
+
+/// Lightweight audit summary captured around one outcome commit.
+///
+/// This is not a complete persistence or replay snapshot of a decision
+/// session. The owning [`DecisionSession`] remains the source of that state.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct DecisionSessionSummary {
+    state: DecisionLoopState,
+    action_cycles: u32,
+    adaptation_transitions: u32,
+}
+
+impl DecisionSessionSummary {
+    /// Returns the state at this commit boundary.
+    pub fn state(&self) -> &DecisionLoopState {
+        &self.state
+    }
+
+    /// Returns the number of issued action executions at this boundary.
+    pub fn action_cycles(&self) -> u32 {
+        self.action_cycles
+    }
+
+    /// Returns the number of recorded adaptive directives at this boundary.
+    pub fn adaptation_transitions(&self) -> u32 {
+        self.adaptation_transitions
+    }
+}
+
+/// Before/after session summary produced by successful outcome processing.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct DecisionSessionTransition {
+    before: DecisionSessionSummary,
+    after: DecisionSessionSummary,
+}
+
+impl DecisionSessionTransition {
+    fn new(before: DecisionSessionSummary, after: DecisionSessionSummary) -> Self {
+        Self { before, after }
+    }
+
+    /// Returns the session summary before verification and adaptation.
+    pub fn before(&self) -> &DecisionSessionSummary {
+        &self.before
+    }
+
+    /// Returns the session summary after successful outcome processing.
+    pub fn after(&self) -> &DecisionSessionSummary {
+        &self.after
     }
 }
 
@@ -390,6 +454,8 @@ pub struct DecisionOutcomeReport {
     adaptive: AdaptiveDecision,
     experience_write: ExperienceWrite,
     hypothesis_write: Option<KnowledgeWrite>,
+    #[serde(skip_serializing)]
+    session_transition: DecisionSessionTransition,
     command: DecisionLoopCommand,
 }
 
@@ -412,6 +478,14 @@ impl DecisionOutcomeReport {
     /// Returns the verifier-owned hypothesis state write, when conclusive.
     pub fn hypothesis_write(&self) -> Option<KnowledgeWrite> {
         self.hypothesis_write
+    }
+
+    /// Returns the session transition applied during successful outcome processing.
+    ///
+    /// Candidate state makes normal returned-error paths error-atomic. This is
+    /// not a cross-store or crash-atomic persistence guarantee.
+    pub fn session_transition(&self) -> &DecisionSessionTransition {
+        &self.session_transition
     }
 
     /// Returns the next runner command.
@@ -674,6 +748,7 @@ impl DecisionLoop {
         verification: VerificationReport,
         snapshot: &KnowledgeSnapshot,
     ) -> Result<DecisionOutcomeReport, DecisionLoopError> {
+        let before = session.transition_summary();
         let outcome = verification.outcome();
         let mut candidate_experience = experience.clone();
         let experience_write = candidate_experience.observe(outcome.clone())?;
@@ -698,6 +773,8 @@ impl DecisionLoop {
             adaptive.directive(),
         )?;
         let hypothesis_write = apply_outcome(knowledge, outcome)?;
+        let session_transition =
+            DecisionSessionTransition::new(before, candidate_session.transition_summary());
 
         *experience = candidate_experience;
         *session = candidate_session;
@@ -706,6 +783,7 @@ impl DecisionLoop {
             adaptive,
             experience_write,
             hypothesis_write,
+            session_transition,
             command,
         })
     }
@@ -864,9 +942,9 @@ fn case_from_outcome(outcome: &Outcome) -> Result<VerificationCase, Verification
 mod tests {
     use super::*;
     use crate::{
-        ActionCost, AttackAction, BenefitScore, EvidenceCalibration, EvidenceSelector, Expression,
-        HypothesisConclusion, HypothesisSelector, KnowledgeLayer, ReasoningRule, RequiredStrength,
-        RiskScore, VerificationRule,
+        ActionCost, AttackAction, BenefitScore, EvidenceCalibration, EvidenceSelector,
+        ExperienceDisposition, Expression, HypothesisConclusion, HypothesisSelector,
+        KnowledgeLayer, ReasoningRule, RequiredStrength, RiskScore, VerificationRule,
     };
     use venom_core::{
         ConfidenceScore, Evidence, EvidenceKind, EvidenceSource, EvidenceValue, HypothesisState,
@@ -1198,6 +1276,87 @@ mod tests {
     }
 
     #[test]
+    fn active_confirmed_negative_rejects_and_records_the_hypothesis() {
+        let mut decision_loop = configured_loop(None, 1, 8);
+        decision_loop
+            .verification_mut()
+            .active_mut()
+            .register(
+                VerificationRule::new(
+                    "verify.active-negative-control",
+                    VerificationStage::Active,
+                    100,
+                    Expression::equals(
+                        KnowledgeLayer::Evidence,
+                        active_predicate(),
+                        EvidenceValue::Boolean(true),
+                    ),
+                    OutcomeStatus::ConfirmedNegative,
+                    Probability::from_percent(99).unwrap(),
+                    "fresh active control evidence disproved the hypothesis",
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let knowledge = knowledge(false);
+        let mut experience = ExperienceStore::new();
+        let mut session = DecisionSession::new(subject());
+        let planning = decision_loop
+            .plan_next(&knowledge, &experience, &mut session)
+            .unwrap();
+        let case = execution_case(planning.command());
+        let baseline = knowledge.snapshot_for_subject(&subject());
+
+        let passive = decision_loop
+            .submit_passive(&knowledge, &mut experience, &mut session)
+            .unwrap();
+        assert!(matches!(
+            passive.command(),
+            DecisionLoopCommand::CollectActiveEvidence { .. }
+        ));
+
+        knowledge
+            .insert_evidence(Evidence::new(
+                subject(),
+                EvidenceKind::Custom("verification.active".into()),
+                active_predicate(),
+                EvidenceValue::Boolean(true),
+                EvidenceSource::new("active.probe", "negative-control").unwrap(),
+                ConfidenceScore::MAX,
+            ))
+            .unwrap();
+        let after_probe = knowledge.snapshot_for_subject(&subject());
+        let active = decision_loop
+            .submit_active(
+                &knowledge,
+                &mut experience,
+                &mut session,
+                &baseline,
+                &after_probe,
+            )
+            .unwrap();
+
+        assert_eq!(
+            active.verification().outcome().status(),
+            OutcomeStatus::ConfirmedNegative
+        );
+        assert_eq!(active.hypothesis_write(), Some(KnowledgeWrite::Updated));
+        assert!(matches!(active.command(), DecisionLoopCommand::Replan));
+        assert_eq!(
+            knowledge.hypothesis(case.hypothesis_id()).unwrap().state(),
+            HypothesisState::Rejected
+        );
+        let assessment =
+            experience.assess(&subject(), "http.probe", ExperiencePolicy::new(1).unwrap());
+        assert_eq!(
+            assessment.last_disposition(),
+            Some(ExperienceDisposition::ConfirmedNegative)
+        );
+        assert_eq!(assessment.consecutive_suppressible_failures(), 1);
+        assert!(assessment.is_suppressed());
+    }
+
+    #[test]
     fn false_positive_replans_with_the_source_action_suppressed() {
         let decision_loop = configured_loop(Some(OutcomeStatus::FalsePositive), 10, 8);
         let knowledge = knowledge(true);
@@ -1217,6 +1376,35 @@ mod tests {
             .suppressed_actions()
             .contains("http.probe"));
         assert_eq!(rejected.hypothesis_write(), Some(KnowledgeWrite::Updated));
+        assert!(matches!(
+            rejected.session_transition().before().state(),
+            DecisionLoopState::AwaitingPassive { .. }
+        ));
+        assert!(matches!(
+            rejected.session_transition().after().state(),
+            DecisionLoopState::Ready
+        ));
+        assert_eq!(
+            rejected
+                .session_transition()
+                .before()
+                .adaptation_transitions(),
+            0
+        );
+        assert_eq!(
+            rejected
+                .session_transition()
+                .after()
+                .adaptation_transitions(),
+            1
+        );
+        let assessment = experience.assess(&subject(), "http.probe", ExperiencePolicy::default());
+        assert_eq!(assessment.consecutive_suppressible_failures(), 1);
+        assert!(!assessment.is_suppressed());
+        assert!(serde_json::to_value(&rejected)
+            .unwrap()
+            .get("session_transition")
+            .is_none());
 
         let replanned = decision_loop
             .plan_next(&knowledge, &experience, &mut session)

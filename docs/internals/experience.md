@@ -45,4 +45,4 @@ Executor and transport failures do not currently create synthetic verifier outco
 
 ## Persistence compatibility
 
-New records serialize their disposition explicitly. Archives created before the field existed remain readable: deserialization infers the conservative mapping above, then validates sequence, identity, and status compatibility. Replaying the same outcome with a different disposition is an identity conflict rather than a silent reclassification.
+New records serialize their disposition explicitly. JSON and other self-describing archives created before the field existed remain readable by the new model: deserialization infers the conservative mapping above, then validates sequence, identity, and status compatibility. This is an old-to-new migration guarantee, not a promise that ordinal-based binary formats or older binaries can understand every new enum variant. Replaying the same outcome with a different disposition is an identity conflict rather than a silent reclassification.

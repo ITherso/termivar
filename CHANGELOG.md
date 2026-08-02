@@ -18,6 +18,7 @@ All notable changes to Venom are recorded here. Releases use the categories from
 - CodeQL web analysis, cargo-deny policy, scheduled parser fuzzing, and Rust 1.88 MSRV enforcement.
 - A standard deterministic web runtime with request, wall-time, response-byte, active-verification, same-action, and no-progress budgets.
 - Typed experience dispositions and an explicit confirmed-negative verifier outcome.
+- Evidence write-set receipts, post-commit error recovery, and before/after decision-session transition summaries.
 
 ### Changed
 

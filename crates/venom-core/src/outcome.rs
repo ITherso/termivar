@@ -392,10 +392,16 @@ mod tests {
             outcome.status().hypothesis_state(),
             Some(HypothesisState::Rejected)
         );
+        let encoded = serde_json::to_value(&outcome).unwrap();
+        assert_eq!(encoded["status"], serde_json::json!("confirmed_negative"));
         assert_eq!(
-            serde_json::to_value(&outcome).unwrap()["status"],
-            serde_json::json!("confirmed_negative")
+            serde_json::from_value::<Outcome>(encoded.clone()).unwrap(),
+            outcome
         );
+
+        let mut passive = encoded;
+        passive["stage"] = serde_json::json!("passive");
+        assert!(serde_json::from_value::<Outcome>(passive).is_err());
     }
 
     #[test]

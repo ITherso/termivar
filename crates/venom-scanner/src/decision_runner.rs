@@ -304,6 +304,15 @@ impl DecisionEvidenceReceipt {
         &self.writes
     }
 
+    /// Iterates over the exact evidence/write set committed by this execution.
+    ///
+    /// The two values share one input-order position, so hosts do not need to
+    /// reconstruct the atomic batch by indexing separate slices.
+    pub fn write_set(&self) -> impl ExactSizeIterator<Item = (&Evidence, KnowledgeWrite)> + '_ {
+        debug_assert_eq!(self.evidence.len(), self.writes.len());
+        self.evidence.iter().zip(self.writes.iter().copied())
+    }
+
     /// Returns the pre-probe snapshot for active verification.
     pub fn baseline(&self) -> Option<&KnowledgeSnapshot> {
         self.baseline.as_ref()
@@ -430,6 +439,16 @@ pub enum DecisionRunnerError {
         source: DecisionExecutorError,
     },
 
+    /// Evidence committed successfully but the subsequent decision transition failed.
+    #[error("decision transition failed after evidence was committed: {source}")]
+    OutcomeAfterEvidenceCommit {
+        /// Durable append-only evidence commit token.
+        receipt: Box<DecisionEvidenceReceipt>,
+        /// Failure raised while resuming the state machine.
+        #[source]
+        source: Box<DecisionRunnerError>,
+    },
+
     /// Atomic evidence storage failed.
     #[error(transparent)]
     Knowledge(#[from] KnowledgeBaseError),
@@ -437,6 +456,24 @@ pub enum DecisionRunnerError {
     /// Resuming the deterministic state machine failed.
     #[error(transparent)]
     Decision(#[from] DecisionLoopError),
+}
+
+impl DecisionRunnerError {
+    /// Returns evidence that was committed before this error, when applicable.
+    pub fn committed_evidence(&self) -> Option<&DecisionEvidenceReceipt> {
+        match self {
+            Self::OutcomeAfterEvidenceCommit { receipt, .. } => Some(receipt),
+            _ => None,
+        }
+    }
+
+    /// Takes ownership of evidence committed before this error without cloning it.
+    pub fn into_committed_evidence(self) -> Option<DecisionEvidenceReceipt> {
+        match self {
+            Self::OutcomeAfterEvidenceCommit { receipt, .. } => Some(*receipt),
+            _ => None,
+        }
+    }
 }
 
 fn non_empty(value: impl Into<String>, field: &'static str) -> Result<String, DecisionRunnerError> {
@@ -654,46 +691,59 @@ impl DecisionRunnerAdapter {
         session: &mut DecisionSession,
         evidence: DecisionEvidenceReceipt,
     ) -> Result<DecisionRunnerTurn, DecisionRunnerError> {
-        match command {
-            DecisionLoopCommand::ExecuteAction { case, .. } => {
-                validate_session_case(session, DecisionExecutionStage::Passive, case)?;
-                let decision = decision_loop.submit_passive(knowledge, experience, session)?;
-                Ok(DecisionRunnerTurn::Outcome {
-                    evidence: Box::new(evidence),
-                    decision: Box::new(decision),
-                })
-            },
-            DecisionLoopCommand::CollectActiveEvidence { case } => {
-                validate_session_case(session, DecisionExecutionStage::Active, case)?;
-                let baseline = evidence
-                    .baseline()
-                    .ok_or(DecisionRunnerError::MissingActiveBaseline)?;
-                let decision = decision_loop.submit_active(
-                    knowledge,
-                    experience,
-                    session,
-                    baseline,
-                    evidence.after_execution(),
-                )?;
-                Ok(DecisionRunnerTurn::Outcome {
-                    evidence: Box::new(evidence),
-                    decision: Box::new(decision),
-                })
-            },
-            DecisionLoopCommand::Replan => {
-                Err(DecisionRunnerError::NonExecutionCommand { command: "replan" })
-            },
-            DecisionLoopCommand::Complete { .. } => Err(DecisionRunnerError::NonExecutionCommand {
-                command: "complete",
+        let decision = (|| -> Result<Box<DecisionOutcomeReport>, DecisionRunnerError> {
+            match command {
+                DecisionLoopCommand::ExecuteAction { case, .. } => {
+                    validate_session_case(session, DecisionExecutionStage::Passive, case)?;
+                    decision_loop
+                        .submit_passive(knowledge, experience, session)
+                        .map(Box::new)
+                        .map_err(DecisionRunnerError::from)
+                },
+                DecisionLoopCommand::CollectActiveEvidence { case } => {
+                    validate_session_case(session, DecisionExecutionStage::Active, case)?;
+                    let baseline = evidence
+                        .baseline()
+                        .ok_or(DecisionRunnerError::MissingActiveBaseline)?;
+                    decision_loop
+                        .submit_active(
+                            knowledge,
+                            experience,
+                            session,
+                            baseline,
+                            evidence.after_execution(),
+                        )
+                        .map(Box::new)
+                        .map_err(DecisionRunnerError::from)
+                },
+                DecisionLoopCommand::Replan => {
+                    Err(DecisionRunnerError::NonExecutionCommand { command: "replan" })
+                },
+                DecisionLoopCommand::Complete { .. } => {
+                    Err(DecisionRunnerError::NonExecutionCommand {
+                        command: "complete",
+                    })
+                },
+                DecisionLoopCommand::AwaitHumanReview { .. } => {
+                    Err(DecisionRunnerError::NonExecutionCommand {
+                        command: "await_human_review",
+                    })
+                },
+                DecisionLoopCommand::Halt { .. } => {
+                    Err(DecisionRunnerError::NonExecutionCommand { command: "halt" })
+                },
+            }
+        })();
+
+        match decision {
+            Ok(decision) => Ok(DecisionRunnerTurn::Outcome {
+                evidence: Box::new(evidence),
+                decision,
             }),
-            DecisionLoopCommand::AwaitHumanReview { .. } => {
-                Err(DecisionRunnerError::NonExecutionCommand {
-                    command: "await_human_review",
-                })
-            },
-            DecisionLoopCommand::Halt { .. } => {
-                Err(DecisionRunnerError::NonExecutionCommand { command: "halt" })
-            },
+            Err(source) => Err(DecisionRunnerError::OutcomeAfterEvidenceCommit {
+                receipt: Box::new(evidence),
+                source: Box::new(source),
+            }),
         }
     }
 }
@@ -1019,6 +1069,10 @@ mod tests {
         assert_eq!(receipt.executor_id(), "plugin.http");
         assert_eq!(receipt.evidence().len(), 1);
         assert_eq!(receipt.writes(), &[KnowledgeWrite::Inserted]);
+        let write_set: Vec<_> = receipt.write_set().collect();
+        assert_eq!(write_set.len(), 1);
+        assert_eq!(write_set[0].0.id(), receipt.evidence()[0].id());
+        assert_eq!(write_set[0].1, KnowledgeWrite::Inserted);
         assert!(receipt.baseline().is_none());
         assert_eq!(receipt.after_execution().evidence().len(), 1);
     }
@@ -1110,11 +1164,65 @@ mod tests {
             delay_ms: None,
         };
 
+        let error = adapter
+            .execute_command(&command, &knowledge)
+            .await
+            .unwrap_err();
         assert!(matches!(
-            adapter.execute_command(&command, &knowledge).await,
-            Err(DecisionRunnerError::EvidenceSubjectMismatch { .. })
+            &error,
+            DecisionRunnerError::EvidenceSubjectMismatch { .. }
         ));
+        assert!(error.committed_evidence().is_none());
         assert_eq!(knowledge.stats().evidence, 0);
+    }
+
+    #[tokio::test]
+    async fn post_commit_transition_error_returns_the_durable_receipt() {
+        let mut registry = DecisionExecutorRegistry::new();
+        registry.register(executor("plugin.http", None)).unwrap();
+        let adapter = DecisionRunnerAdapter::new(registry);
+        let decision_loop = empty_decision_loop();
+        let knowledge = KnowledgeBase::new();
+        let mut experience = ExperienceStore::new();
+        let mut session = DecisionSession::new(subject());
+        let initial_session = session.clone();
+        let command = DecisionLoopCommand::ExecuteAction {
+            case: case("http.probe"),
+            executor: Some("plugin.http".to_owned()),
+            origin: DecisionActionOrigin::Planned,
+            delay_ms: None,
+        };
+
+        let receipt = adapter.execute_command(&command, &knowledge).await.unwrap();
+        let evidence_id = receipt.evidence()[0].id().clone();
+        let error = adapter
+            .resume_session_command(
+                &decision_loop,
+                &command,
+                &knowledge,
+                &mut experience,
+                &mut session,
+                receipt,
+            )
+            .unwrap_err();
+
+        assert!(matches!(
+            &error,
+            DecisionRunnerError::OutcomeAfterEvidenceCommit { .. }
+        ));
+        let committed = error.committed_evidence().unwrap();
+        assert_eq!(committed.case().id(), "case:1");
+        assert_eq!(committed.evidence()[0].id(), &evidence_id);
+        assert!(knowledge
+            .snapshot_for_subject(&subject())
+            .evidence()
+            .iter()
+            .any(|evidence| evidence.id() == &evidence_id));
+        assert_eq!(session, initial_session);
+        assert!(experience.is_empty());
+
+        let committed = error.into_committed_evidence().unwrap();
+        assert_eq!(committed.evidence()[0].id(), &evidence_id);
     }
 
     #[tokio::test]

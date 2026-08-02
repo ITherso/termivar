@@ -84,7 +84,29 @@ pub enum StandardWebDecisionRuntimeError {
         predicate: &'static str,
         /// Matching unsigned observations found in the committed snapshot.
         observations: usize,
+        /// Durable evidence commit that exposed the telemetry violation.
+        receipt: Box<DecisionEvidenceReceipt>,
     },
+}
+
+impl StandardWebDecisionRuntimeError {
+    /// Returns evidence committed before this runtime error, when applicable.
+    pub fn committed_evidence(&self) -> Option<&DecisionEvidenceReceipt> {
+        match self {
+            Self::Runner(source) => source.committed_evidence(),
+            Self::ResponseUsageEvidence { receipt, .. } => Some(receipt),
+            _ => None,
+        }
+    }
+
+    /// Takes ownership of evidence committed before this error without cloning it.
+    pub fn into_committed_evidence(self) -> Option<DecisionEvidenceReceipt> {
+        match self {
+            Self::Runner(source) => source.into_committed_evidence(),
+            Self::ResponseUsageEvidence { receipt, .. } => Some(*receipt),
+            _ => None,
+        }
+    }
 }
 
 /// One non-terminal audit record produced while driving a runtime session.
@@ -498,7 +520,7 @@ impl StandardWebDecisionRuntime {
                 return Ok(self.limit_report(None, turns, limit, started_at));
             },
         };
-        self.record_response_usage(&bootstrap)?;
+        let bootstrap = self.record_response_usage(bootstrap)?;
         let bootstrap = Some(bootstrap);
 
         let mut command = DecisionLoopCommand::Replan;
@@ -568,7 +590,7 @@ impl StandardWebDecisionRuntime {
                             return Ok(self.limit_report(bootstrap, turns, limit, started_at));
                         },
                     };
-                    self.record_response_usage(&evidence)?;
+                    let evidence = self.record_response_usage(evidence)?;
                     let runner_turn = self.runner.resume_session_command(
                         &self.decision_loop,
                         &command,
@@ -689,8 +711,8 @@ impl StandardWebDecisionRuntime {
 
     fn record_response_usage(
         &mut self,
-        receipt: &DecisionEvidenceReceipt,
-    ) -> Result<(), StandardWebDecisionRuntimeError> {
+        receipt: DecisionEvidenceReceipt,
+    ) -> Result<DecisionEvidenceReceipt, StandardWebDecisionRuntimeError> {
         let correlated: Vec<_> = receipt
             .evidence()
             .iter()
@@ -708,10 +730,11 @@ impl StandardWebDecisionRuntime {
                 case_id: receipt.case().id().to_owned(),
                 predicate: RESPONSE_BODY_BYTES_PREDICATE,
                 observations: correlated.len(),
+                receipt: Box::new(receipt),
             });
         }
         self.usage.record_response_bytes(correlated[0]);
-        Ok(())
+        Ok(receipt)
     }
 
     fn refresh_elapsed(&mut self, started_at: tokio::time::Instant) {
