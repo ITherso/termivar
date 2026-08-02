@@ -94,6 +94,10 @@ const MODULE_POLICIES: &[ModulePolicy] = &[
         allowed_internal: &["knowledge", "rules"],
     },
     ModulePolicy {
+        source: "api_reasoning.rs",
+        allowed_internal: &["knowledge", "rules"],
+    },
+    ModulePolicy {
         source: "web_planning.rs",
         allowed_internal: &["planner", "rules", "web_actions"],
     },

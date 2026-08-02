@@ -30,6 +30,7 @@
 // Core modules (always compiled)
 pub mod api;
 pub mod api_gateway;
+pub mod api_reasoning;
 pub mod auth;
 pub mod cache;
 pub mod config;
@@ -152,6 +153,10 @@ pub use api_gateway::{
     ApiGateway, ApiQuota, QuotaManager, RateLimitPolicy, RateLimitStatus, RateLimitStrategy,
     RateLimiter, RequestValidationResult, RouteConfig, TokenBucket,
 };
+pub use api_reasoning::{
+    StandardApiInstallReport, StandardApiReasoning, StandardApiReasoningError,
+    STANDARD_API_AXIOM_COUNT, STANDARD_API_CONCEPT_COUNT, STANDARD_API_RULE_COUNT,
+};
 pub use auth::{AuthToken, LoginRequest, LoginResponse, User, UserInfo, UserManager, UserRole};
 pub use cache::{CacheEntry, CacheStats, LruCache, ResponseCache};
 pub use config::{ScanConfig, ScanIntensity};
@@ -177,9 +182,9 @@ pub use planner::{
     RequiredStrength, RiskScore, UtilityBreakdown, UtilityScore,
 };
 pub use rules::{
-    EvidenceCalibration, EvidenceSelector, Expression, ExpressionEvaluation, ExpressionTrace,
-    HypothesisConclusion, KnowledgeLayer, ReasoningRule, RuleApplication, RuleEngine,
-    RuleEngineError, RuleEvaluation, RuleWrite,
+    EvidenceAggregation, EvidenceCalibration, EvidenceSelector, Expression, ExpressionEvaluation,
+    ExpressionTrace, HypothesisConclusion, KnowledgeLayer, ReasoningRule, RuleApplication,
+    RuleEngine, RuleEngineError, RuleEvaluation, RuleWrite,
 };
 pub use venom_core::{Outcome, OutcomeError, OutcomeStatus, VerificationStage};
 pub use verification::{

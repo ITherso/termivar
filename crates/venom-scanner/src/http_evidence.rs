@@ -16,7 +16,8 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 use venom_core::{
-    ConfidenceScore, Evidence, EvidenceKind, EvidenceSource, EvidenceValue, KnowledgePredicate,
+    ConfidenceScore, Evidence, EvidenceKind, EvidenceSource, EvidenceValue, HttpEvidencePredicate,
+    KnowledgePredicate,
 };
 
 use crate::{DecisionActionExecutor, DecisionExecutionRequest, DecisionExecutorError};
@@ -26,6 +27,9 @@ pub const DEFAULT_HTTP_BODY_LIMIT: usize = 256 * 1024;
 
 /// Hard guard preventing an individual evidence probe from buffering too much.
 pub const MAX_HTTP_BODY_LIMIT: usize = 16 * 1024 * 1024;
+
+const MAX_HTTP_PATH_SEGMENTS: usize = 128;
+const MAX_HTTP_PATH_SEGMENT_BYTES: usize = 256;
 
 /// Stable executor identity used by the standard HTTP evidence collector.
 pub const HTTP_EVIDENCE_EXECUTOR_ID: &str = "http.evidence";
@@ -276,10 +280,19 @@ impl HttpEvidencePolicy {
         Ok(self)
     }
 
-    /// Sets the ordinal source reliability attached to emitted evidence.
-    pub fn with_reliability(mut self, reliability: ConfidenceScore) -> Self {
+    /// Sets a non-zero ordinal source reliability for emitted evidence.
+    ///
+    /// Zero-confidence observations are rejected because deterministic rules
+    /// currently use declared likelihoods rather than scaling by this metadata.
+    pub fn with_reliability(
+        mut self,
+        reliability: ConfidenceScore,
+    ) -> Result<Self, HttpEvidenceError> {
+        if reliability == ConfidenceScore::NONE {
+            return Err(HttpEvidenceError::ZeroReliability);
+        }
         self.reliability = reliability;
-        self
+        Ok(self)
     }
 
     /// Returns normalized authorized origins.
@@ -332,6 +345,10 @@ pub enum HttpEvidenceError {
     /// The response-body limit must be positive.
     #[error("HTTP evidence body limit must be greater than zero")]
     ZeroBodyLimit,
+
+    /// Evidence consumed by deterministic rules needs non-zero reliability.
+    #[error("HTTP evidence reliability must be greater than zero")]
+    ZeroReliability,
 
     /// The response-body limit exceeded the hard per-request bound.
     #[error("HTTP evidence body limit {actual} exceeds maximum {maximum}")]
@@ -552,80 +569,108 @@ impl HttpEvidenceExecutor {
             self.observation(
                 decision,
                 EvidenceKind::Http,
-                "http.request",
-                "method",
+                HttpEvidencePredicate::REQUEST_METHOD.into(),
                 EvidenceValue::Text(probe.method().as_str().to_owned()),
                 "request-method",
             )?,
             self.observation(
                 decision,
                 EvidenceKind::Http,
-                "http.request",
-                "url",
+                HttpEvidencePredicate::REQUEST_URL.into(),
                 EvidenceValue::Text(probe.url().to_string()),
                 "request-url",
             )?,
             self.observation(
                 decision,
                 EvidenceKind::Http,
-                "http.response",
-                "status",
+                HttpEvidencePredicate::RESPONSE_STATUS.into(),
                 EvidenceValue::Unsigned(u64::from(response.status.as_u16())),
                 "response-status",
             )?,
             self.observation(
                 decision,
                 EvidenceKind::Http,
-                "http.response",
-                "final-url",
+                HttpEvidencePredicate::RESPONSE_FINAL_URL.into(),
                 EvidenceValue::Text(response.final_url.to_string()),
                 "response-final-url",
             )?,
             self.observation(
                 decision,
                 EvidenceKind::Http,
-                "http.response",
-                "version",
+                HttpEvidencePredicate::RESPONSE_VERSION.into(),
                 EvidenceValue::Text(response.version.clone()),
                 "response-version",
             )?,
             self.observation(
                 decision,
                 EvidenceKind::Timing,
-                "http.timing",
-                "ttfb-ms",
+                HttpEvidencePredicate::TIMING_TTFB_MS.into(),
                 EvidenceValue::Unsigned(response.ttfb_ms),
                 "time-to-first-byte",
             )?,
             self.observation(
                 decision,
                 EvidenceKind::Timing,
-                "http.timing",
-                "total-ms",
+                HttpEvidencePredicate::TIMING_TOTAL_MS.into(),
                 EvidenceValue::Unsigned(response.total_ms),
                 "total-response-time",
             )?,
         ];
+
+        let path_segments: BTreeSet<_> = probe
+            .url()
+            .path_segments()
+            .into_iter()
+            .flatten()
+            .filter(|segment| !segment.is_empty() && segment.len() <= MAX_HTTP_PATH_SEGMENT_BYTES)
+            .take(MAX_HTTP_PATH_SEGMENTS)
+            .map(str::to_owned)
+            .collect();
+        for segment in path_segments {
+            evidence.push(self.observation(
+                decision,
+                EvidenceKind::Http,
+                HttpEvidencePredicate::REQUEST_PATH_SEGMENT.into(),
+                EvidenceValue::Text(segment),
+                "request-path-segment",
+            )?);
+        }
 
         for name in self.policy.captured_headers() {
             if let Some(value) = joined_header(&response.headers, name) {
                 evidence.push(self.observation(
                     decision,
                     EvidenceKind::Http,
-                    "http.header",
-                    name,
+                    HttpEvidencePredicate::response_header(name.clone())?,
                     EvidenceValue::Text(value),
                     &format!("response-header:{name}"),
                 )?);
             }
         }
 
+        if let Some(media_type) = normalized_media_type(&response.headers) {
+            let json_compatible = json_compatible_media_type(&media_type);
+            evidence.push(self.observation(
+                decision,
+                EvidenceKind::Http,
+                HttpEvidencePredicate::RESPONSE_MEDIA_TYPE.into(),
+                EvidenceValue::Text(media_type),
+                "response-media-type",
+            )?);
+            evidence.push(self.observation(
+                decision,
+                EvidenceKind::Http,
+                HttpEvidencePredicate::RESPONSE_MEDIA_TYPE_JSON_COMPATIBLE.into(),
+                EvidenceValue::Boolean(json_compatible),
+                "response-media-type-json-compatibility",
+            )?);
+        }
+
         for cookie_name in response_cookie_names(&response.headers) {
             evidence.push(self.observation(
                 decision,
                 EvidenceKind::Authentication,
-                "http.cookie",
-                "name",
+                HttpEvidencePredicate::COOKIE_NAME.into(),
                 EvidenceValue::Text(cookie_name),
                 "response-set-cookie-name",
             )?);
@@ -634,24 +679,21 @@ impl HttpEvidenceExecutor {
         evidence.push(self.observation(
             decision,
             EvidenceKind::Content,
-            "http.response",
-            "body-bytes-observed",
+            HttpEvidencePredicate::RESPONSE_BODY_BYTES_OBSERVED.into(),
             EvidenceValue::Unsigned(u64::try_from(response.body.len()).unwrap_or(u64::MAX)),
             "response-body-size",
         )?);
         evidence.push(self.observation(
             decision,
             EvidenceKind::Content,
-            "http.response",
-            "body-truncated",
+            HttpEvidencePredicate::RESPONSE_BODY_TRUNCATED.into(),
             EvidenceValue::Boolean(response.body_truncated),
             "response-body-truncation",
         )?);
         evidence.push(self.observation(
             decision,
             EvidenceKind::Content,
-            "http.response",
-            "body-sha256",
+            HttpEvidencePredicate::RESPONSE_BODY_SHA256.into(),
             EvidenceValue::Text(format!("{:x}", Sha256::digest(&response.body))),
             "response-body-sha256",
         )?);
@@ -663,8 +705,7 @@ impl HttpEvidenceExecutor {
                 evidence.push(self.observation(
                     decision,
                     EvidenceKind::Content,
-                    "http.response",
-                    "body-sample",
+                    HttpEvidencePredicate::RESPONSE_BODY_SAMPLE.into(),
                     EvidenceValue::Text(sample),
                     "response-body-sample",
                 )?);
@@ -679,8 +720,7 @@ impl HttpEvidenceExecutor {
         &self,
         decision: &DecisionExecutionRequest,
         kind: EvidenceKind,
-        namespace: &str,
-        name: &str,
+        predicate: KnowledgePredicate,
         value: EvidenceValue,
         method: &str,
     ) -> Result<Evidence, HttpEvidenceError> {
@@ -689,7 +729,7 @@ impl HttpEvidenceExecutor {
         Ok(Evidence::new(
             decision.case().subject().clone(),
             kind,
-            KnowledgePredicate::new(namespace, name)?,
+            predicate,
             value,
             source,
             self.policy.reliability(),
@@ -876,6 +916,56 @@ fn textual_response(headers: &HeaderMap) -> bool {
         .unwrap_or(false)
 }
 
+fn normalized_media_type(headers: &HeaderMap) -> Option<String> {
+    let mut values = headers.get_all("content-type").iter();
+    let raw = values.next()?.to_str().ok()?;
+    if values.next().is_some() {
+        return None;
+    }
+    let essence = raw.split(';').next()?.trim();
+    let (top_level, subtype) = essence.split_once('/')?;
+    if top_level.is_empty()
+        || subtype.is_empty()
+        || subtype.contains('/')
+        || !top_level.bytes().all(http_token_byte)
+        || !subtype.bytes().all(http_token_byte)
+    {
+        return None;
+    }
+    Some(format!(
+        "{}/{}",
+        top_level.to_ascii_lowercase(),
+        subtype.to_ascii_lowercase()
+    ))
+}
+
+fn json_compatible_media_type(media_type: &str) -> bool {
+    media_type
+        .split_once('/')
+        .is_some_and(|(_, subtype)| subtype == "json" || subtype.ends_with("+json"))
+}
+
+fn http_token_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric()
+        || matches!(
+            byte,
+            b'!' | b'#'
+                | b'$'
+                | b'%'
+                | b'&'
+                | b'\''
+                | b'*'
+                | b'+'
+                | b'-'
+                | b'.'
+                | b'^'
+                | b'_'
+                | b'`'
+                | b'|'
+                | b'~'
+        )
+}
+
 fn append_rate_limit_evidence(
     executor: &HttpEvidenceExecutor,
     decision: &DecisionExecutionRequest,
@@ -883,14 +973,26 @@ fn append_rate_limit_evidence(
     evidence: &mut Vec<Evidence>,
 ) -> Result<(), HttpEvidenceError> {
     let rate_headers = [
-        ("retry-after", None, "retry-after"),
-        ("ratelimit-limit", Some("x-ratelimit-limit"), "limit"),
+        (
+            "retry-after",
+            None,
+            HttpEvidencePredicate::RATE_LIMIT_RETRY_AFTER,
+        ),
+        (
+            "ratelimit-limit",
+            Some("x-ratelimit-limit"),
+            HttpEvidencePredicate::RATE_LIMIT_LIMIT,
+        ),
         (
             "ratelimit-remaining",
             Some("x-ratelimit-remaining"),
-            "remaining",
+            HttpEvidencePredicate::RATE_LIMIT_REMAINING,
         ),
-        ("ratelimit-reset", Some("x-ratelimit-reset"), "reset"),
+        (
+            "ratelimit-reset",
+            Some("x-ratelimit-reset"),
+            HttpEvidencePredicate::RATE_LIMIT_RESET,
+        ),
     ];
     let advertised = rate_headers.iter().any(|(standard, fallback, _)| {
         response.headers.contains_key(*standard)
@@ -900,16 +1002,14 @@ fn append_rate_limit_evidence(
     evidence.push(executor.observation(
         decision,
         EvidenceKind::RateLimit,
-        "http.rate-limit",
-        "detected",
+        HttpEvidencePredicate::RATE_LIMIT_DETECTED.into(),
         EvidenceValue::Boolean(response.status == StatusCode::TOO_MANY_REQUESTS),
         "rate-limit-status",
     )?);
     evidence.push(executor.observation(
         decision,
         EvidenceKind::RateLimit,
-        "http.rate-limit",
-        "advertised",
+        HttpEvidencePredicate::RATE_LIMIT_ADVERTISED.into(),
         EvidenceValue::Boolean(advertised),
         "rate-limit-headers",
     )?);
@@ -931,8 +1031,7 @@ fn append_rate_limit_evidence(
         evidence.push(executor.observation(
             decision,
             EvidenceKind::RateLimit,
-            "http.rate-limit",
-            predicate,
+            predicate.into(),
             value,
             &format!("rate-limit-header:{header}"),
         )?);
@@ -1006,10 +1105,14 @@ mod tests {
         DecisionRunnerAdapter::new(registry)
     }
 
-    fn value<'a>(evidence: &'a [Evidence], predicate: &str) -> Option<&'a EvidenceValue> {
+    fn value<P>(evidence: &[Evidence], predicate: P) -> Option<&EvidenceValue>
+    where
+        P: Into<KnowledgePredicate>,
+    {
+        let predicate = predicate.into();
         evidence
             .iter()
-            .find(|item| item.predicate().dotted() == predicate)
+            .find(|item| item.predicate() == &predicate)
             .map(Evidence::value)
     }
 
@@ -1029,26 +1132,48 @@ mod tests {
         let evidence = receipt.after_execution().evidence();
 
         assert_eq!(
-            value(evidence, "http.response.status"),
+            value(evidence, HttpEvidencePredicate::RESPONSE_STATUS),
             Some(&EvidenceValue::Unsigned(200))
         );
         assert_eq!(
-            value(evidence, "http.header.content-type"),
+            value(evidence, HttpEvidencePredicate::HEADER_CONTENT_TYPE),
             Some(&EvidenceValue::Text("application/json".to_owned()))
         );
         assert_eq!(
-            value(evidence, "http.response.body-sample"),
+            value(evidence, HttpEvidencePredicate::REQUEST_PATH_SEGMENT),
+            Some(&EvidenceValue::Text("probe".to_owned()))
+        );
+        assert_eq!(
+            value(evidence, HttpEvidencePredicate::RESPONSE_MEDIA_TYPE),
+            Some(&EvidenceValue::Text("application/json".to_owned()))
+        );
+        assert_eq!(
+            value(
+                evidence,
+                HttpEvidencePredicate::RESPONSE_MEDIA_TYPE_JSON_COMPATIBLE,
+            ),
+            Some(&EvidenceValue::Boolean(true))
+        );
+        assert_eq!(
+            value(evidence, HttpEvidencePredicate::RESPONSE_BODY_SAMPLE),
             Some(&EvidenceValue::Text("{\"ok\":true}".to_owned()))
         );
         assert_eq!(
-            value(evidence, "http.response.body-bytes-observed"),
+            value(
+                evidence,
+                HttpEvidencePredicate::RESPONSE_BODY_BYTES_OBSERVED,
+            ),
             Some(&EvidenceValue::Unsigned(11))
         );
-        assert!(value(evidence, "http.timing.ttfb-ms").is_some());
-        assert!(value(evidence, "http.timing.total-ms").is_some());
-        assert!(value(evidence, "http.header.set-cookie").is_none());
+        assert!(value(evidence, HttpEvidencePredicate::TIMING_TTFB_MS).is_some());
+        assert!(value(evidence, HttpEvidencePredicate::TIMING_TOTAL_MS).is_some());
+        assert!(value(
+            evidence,
+            HttpEvidencePredicate::response_header("set-cookie").unwrap()
+        )
+        .is_none());
         assert_eq!(
-            value(evidence, "http.cookie.name"),
+            value(evidence, HttpEvidencePredicate::COOKIE_NAME),
             Some(&EvidenceValue::Text("secret".to_owned()))
         );
         assert!(evidence.iter().all(|item| {
@@ -1124,6 +1249,67 @@ mod tests {
         );
     }
 
+    #[test]
+    fn media_type_normalization_is_exact_and_fail_closed() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "content-type",
+            HeaderValue::from_static("Application/Problem+JSON; charset=UTF-8"),
+        );
+        let normalized = normalized_media_type(&headers).unwrap();
+        assert_eq!(normalized, "application/problem+json");
+        assert!(json_compatible_media_type(&normalized));
+
+        headers.insert(
+            "content-type",
+            HeaderValue::from_static("application/jsonp"),
+        );
+        let normalized = normalized_media_type(&headers).unwrap();
+        assert!(!json_compatible_media_type(&normalized));
+
+        headers.insert(
+            "content-type",
+            HeaderValue::from_static("application/graphql-response+json"),
+        );
+        let normalized = normalized_media_type(&headers).unwrap();
+        assert!(json_compatible_media_type(&normalized));
+
+        headers.insert(
+            "content-type",
+            HeaderValue::from_static("application/json/extra"),
+        );
+        assert!(normalized_media_type(&headers).is_none());
+
+        let mut ambiguous = HeaderMap::new();
+        ambiguous.append("content-type", HeaderValue::from_static("application/json"));
+        ambiguous.append("content-type", HeaderValue::from_static("text/plain"));
+        assert!(normalized_media_type(&ambiguous).is_none());
+    }
+
+    #[tokio::test]
+    async fn query_text_does_not_become_a_path_segment_signal() {
+        let mut url =
+            serve_once(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").await;
+        url.set_query(Some("next=/graphql"));
+        let adapter = adapter(&url, HttpBodyCapture::MetadataOnly, 1024);
+        let knowledge = KnowledgeBase::new();
+
+        let receipt = adapter
+            .execute_command(&command(&url), &knowledge)
+            .await
+            .unwrap();
+        let path_predicate = HttpEvidencePredicate::REQUEST_PATH_SEGMENT.into_knowledge();
+        let segments = receipt
+            .after_execution()
+            .evidence()
+            .iter()
+            .filter(|item| item.predicate() == &path_predicate)
+            .map(Evidence::value)
+            .collect::<Vec<_>>();
+
+        assert_eq!(segments, vec![&EvidenceValue::Text("probe".to_owned())]);
+    }
+
     #[tokio::test]
     async fn response_body_is_bounded_and_hashed_as_observed() {
         let url = serve_once(
@@ -1140,21 +1326,24 @@ mod tests {
         let evidence = receipt.after_execution().evidence();
 
         assert_eq!(
-            value(evidence, "http.response.body-bytes-observed"),
+            value(
+                evidence,
+                HttpEvidencePredicate::RESPONSE_BODY_BYTES_OBSERVED,
+            ),
             Some(&EvidenceValue::Unsigned(4))
         );
         assert_eq!(
-            value(evidence, "http.response.body-truncated"),
+            value(evidence, HttpEvidencePredicate::RESPONSE_BODY_TRUNCATED),
             Some(&EvidenceValue::Boolean(true))
         );
         assert_eq!(
-            value(evidence, "http.response.body-sha256"),
+            value(evidence, HttpEvidencePredicate::RESPONSE_BODY_SHA256),
             Some(&EvidenceValue::Text(format!(
                 "{:x}",
                 Sha256::digest(b"0123")
             )))
         );
-        assert!(value(evidence, "http.response.body-sample").is_none());
+        assert!(value(evidence, HttpEvidencePredicate::RESPONSE_BODY_SAMPLE).is_none());
     }
 
     #[tokio::test]
@@ -1173,27 +1362,27 @@ mod tests {
         let evidence = receipt.after_execution().evidence();
 
         assert_eq!(
-            value(evidence, "http.response.status"),
+            value(evidence, HttpEvidencePredicate::RESPONSE_STATUS),
             Some(&EvidenceValue::Unsigned(429))
         );
         assert_eq!(
-            value(evidence, "http.rate-limit.detected"),
+            value(evidence, HttpEvidencePredicate::RATE_LIMIT_DETECTED),
             Some(&EvidenceValue::Boolean(true))
         );
         assert_eq!(
-            value(evidence, "http.rate-limit.advertised"),
+            value(evidence, HttpEvidencePredicate::RATE_LIMIT_ADVERTISED),
             Some(&EvidenceValue::Boolean(true))
         );
         assert_eq!(
-            value(evidence, "http.rate-limit.retry-after"),
+            value(evidence, HttpEvidencePredicate::RATE_LIMIT_RETRY_AFTER),
             Some(&EvidenceValue::Unsigned(7))
         );
         assert_eq!(
-            value(evidence, "http.rate-limit.remaining"),
+            value(evidence, HttpEvidencePredicate::RATE_LIMIT_REMAINING),
             Some(&EvidenceValue::Unsigned(3))
         );
         assert_eq!(
-            value(evidence, "http.rate-limit.limit"),
+            value(evidence, HttpEvidencePredicate::RATE_LIMIT_LIMIT),
             Some(&EvidenceValue::Unsigned(100))
         );
     }
@@ -1214,17 +1403,20 @@ mod tests {
         let evidence = receipt.after_execution().evidence();
 
         assert_eq!(
-            value(evidence, "http.response.status"),
+            value(evidence, HttpEvidencePredicate::RESPONSE_STATUS),
             Some(&EvidenceValue::Unsigned(302))
         );
         assert_eq!(
-            value(evidence, "http.header.location"),
+            value(
+                evidence,
+                HttpEvidencePredicate::response_header("location").unwrap(),
+            ),
             Some(&EvidenceValue::Text(
                 "http://127.0.0.1:9/outside".to_owned()
             ))
         );
         assert_eq!(
-            value(evidence, "http.response.final-url"),
+            value(evidence, HttpEvidencePredicate::RESPONSE_FINAL_URL),
             Some(&EvidenceValue::Text(url.to_string()))
         );
     }
@@ -1265,6 +1457,12 @@ mod tests {
         assert!(matches!(
             HttpEvidencePolicy::new([url.clone()], Duration::ZERO, 1024),
             Err(HttpEvidenceError::ZeroTimeout)
+        ));
+        assert!(matches!(
+            HttpEvidencePolicy::for_origin(url.clone())
+                .unwrap()
+                .with_reliability(ConfidenceScore::NONE),
+            Err(HttpEvidenceError::ZeroReliability)
         ));
         assert!(matches!(
             HttpEvidencePolicy::new([url], Duration::from_secs(1), MAX_HTTP_BODY_LIMIT + 1),

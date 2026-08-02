@@ -10,8 +10,8 @@ The editable diagrams.net source is [architecture.drawio](architecture.drawio). 
 
 | Crate | Responsibility | May depend on |
 | --- | --- | --- |
-| `venom-core` | Transport-neutral events, findings, configuration, models, and errors | External libraries only |
-| `venom-scanner` | Phase/plugin traits, runner, event bus behavior, detection, and reports | `venom-core` |
+| `venom-core` | Transport-neutral events, findings, configuration, models, errors, and predicate vocabulary | External libraries only |
+| `venom-scanner` | Phase/plugin traits, deterministic reasoning, runner, detection, and reports | `venom-core` |
 | `venom-proxy` | HTTP/TLS proxy boundary | `venom-core` |
 | `venom-api` | HTTP application transport | `venom-core`, `venom-scanner` |
 | `venom-cli` | Composition root and command routing | All application crates |
@@ -24,7 +24,7 @@ flowchart TD
     CLI --> API[venom-api]
     CLI --> Proxy[venom-proxy]
     API --> Scanner
-    Scanner --> Core["venom-core<br/>Events / Findings / Errors / Models"]
+    Scanner --> Core["venom-core<br/>Events / Findings / Errors / Models / Predicates"]
     API --> Core
     Proxy --> Core
 ```
@@ -109,12 +109,35 @@ flowchart TD
 | --- | --- | --- |
 | Reasoning state | `experience`, `rules` | `venom-core`; `rules` may also use `knowledge` |
 | Planning and verification | `planner`, `verification` | `knowledge`, `rules`, `venom-core` |
-| Semantic web contracts | `web_actions`, `web_reasoning`, `web_planning`, `web_verification` | The lower rows above; never execution or HTTP modules |
+| Semantic action and domain profiles | `web_actions`, `web_reasoning`, `api_reasoning`, `web_planning`, `web_verification` | The lower rows above; never execution or HTTP modules |
 | Execution and composition | `decision_runner`, `http_evidence`, `web_execution`, `web_runtime` | All inward contracts needed to perform and account for work |
 
 `web_actions` owns stable semantic action and route identities. Planning,
 verification, and execution are sibling consumers; an executor's HTTP method or
 client policy never defines what the verifier is allowed to reason about.
+
+`venom-core::predicates` owns the canonical HTTP observations, web conclusions,
+API conclusions, and atomic paired-visibility contract shared by producers and
+reasoners. `api_reasoning` consumes those transport-neutral contracts to infer
+JSON/GraphQL fingerprints and reviewable visibility boundaries. It performs no
+requests, does not combine independent observations into a pair, and never
+declares a vulnerability.
+
+HTTP execution emits normalized protocol observations for API reasoning:
+validated lowercase media-type essences, an explicit JSON-compatibility flag,
+and bounded path segments. A host-paired comparison becomes an
+`ApiVisibilityObservation` containing one pseudonymous evidence record and one
+stable, evidence-backed `api.visibility.resource-scope` edge. The knowledge
+base's `insert_evidence_with_relation` operation preflights and commits that
+pair under one write lock, so an identity or linkage conflict cannot leave an
+orphaned half of the bundle. This is storage consistency, not proof that a
+producer's comparison is true.
+
+Bayesian contribution aggregation remains an explicit rule-level choice.
+`EvidenceCalibration::new` defaults to `Independent`, preserving the behavior
+of existing profiles. Each standard API calibration alone selects
+`MaxContributions(1)`, limiting retry-driven posterior inflation for one
+selector without changing other reasoning profiles.
 
 Run the machine-enforced boundary locally:
 
@@ -145,5 +168,3 @@ Before adding an edge, ask:
 - `DecisionExecutionLimits` still names an HTTP response-body allowance in a
   generic executor request; it should become a transport-neutral resource
   allowance before extracting runner contracts.
-- HTTP evidence predicate names are not yet a shared public vocabulary; new
-  JSON or GraphQL profiles must not duplicate private string literals.

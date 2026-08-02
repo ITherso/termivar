@@ -7,7 +7,9 @@ use std::collections::BTreeSet;
 
 use serde::Serialize;
 use thiserror::Error;
-use venom_core::{EvidenceValue, KnowledgePredicate, Probability, ReasoningModelError};
+use venom_core::{
+    EvidenceValue, PredicateDescriptor, Probability, ReasoningModelError, WebKnowledgePredicate,
+};
 
 use crate::{
     planner::{
@@ -112,8 +114,7 @@ impl StandardWebAttackProfile {
 }
 
 struct ActionDefinition {
-    predicate_namespace: &'static str,
-    predicate_name: &'static str,
+    predicate: PredicateDescriptor,
     value: &'static str,
     minimum_posterior: u8,
     required_strength: RequiredStrength,
@@ -125,8 +126,7 @@ struct ActionDefinition {
 
 fn build_action(kind: StandardWebActionKind) -> Result<AttackAction, StandardWebPlanningError> {
     let definition = action_definition(kind);
-    let predicate =
-        KnowledgePredicate::new(definition.predicate_namespace, definition.predicate_name)?;
+    let predicate = definition.predicate.into_knowledge();
     let value = EvidenceValue::Text(definition.value.to_owned());
     let prerequisites = definition
         .prerequisites
@@ -153,8 +153,7 @@ fn build_action(kind: StandardWebActionKind) -> Result<AttackAction, StandardWeb
 fn action_definition(kind: StandardWebActionKind) -> ActionDefinition {
     match kind {
         StandardWebActionKind::NginxConfiguration => ActionDefinition {
-            predicate_namespace: "technology",
-            predicate_name: "web-server",
+            predicate: WebKnowledgePredicate::TECHNOLOGY_WEB_SERVER,
             value: "nginx",
             minimum_posterior: 70,
             required_strength: RequiredStrength::Any,
@@ -164,8 +163,7 @@ fn action_definition(kind: StandardWebActionKind) -> ActionDefinition {
             prerequisites: &[],
         },
         StandardWebActionKind::ApacheConfiguration => ActionDefinition {
-            predicate_namespace: "technology",
-            predicate_name: "web-server",
+            predicate: WebKnowledgePredicate::TECHNOLOGY_WEB_SERVER,
             value: "apache-http-server",
             minimum_posterior: 70,
             required_strength: RequiredStrength::Any,
@@ -175,8 +173,7 @@ fn action_definition(kind: StandardWebActionKind) -> ActionDefinition {
             prerequisites: &[],
         },
         StandardWebActionKind::PhpInputDiscovery => ActionDefinition {
-            predicate_namespace: "technology",
-            predicate_name: "language",
+            predicate: WebKnowledgePredicate::TECHNOLOGY_LANGUAGE,
             value: "php",
             minimum_posterior: 70,
             required_strength: RequiredStrength::Any,
@@ -186,8 +183,7 @@ fn action_definition(kind: StandardWebActionKind) -> ActionDefinition {
             prerequisites: &[],
         },
         StandardWebActionKind::LaravelRouteDiscovery => ActionDefinition {
-            predicate_namespace: "technology",
-            predicate_name: "framework",
+            predicate: WebKnowledgePredicate::TECHNOLOGY_FRAMEWORK,
             value: "laravel",
             minimum_posterior: 80,
             required_strength: RequiredStrength::Strong,
@@ -197,8 +193,7 @@ fn action_definition(kind: StandardWebActionKind) -> ActionDefinition {
             prerequisites: &[],
         },
         StandardWebActionKind::LaravelInputAnalysis => ActionDefinition {
-            predicate_namespace: "technology",
-            predicate_name: "framework",
+            predicate: WebKnowledgePredicate::TECHNOLOGY_FRAMEWORK,
             value: "laravel",
             minimum_posterior: 80,
             required_strength: RequiredStrength::Strong,
@@ -208,8 +203,7 @@ fn action_definition(kind: StandardWebActionKind) -> ActionDefinition {
             prerequisites: &[StandardWebActionKind::LaravelRouteDiscovery],
         },
         StandardWebActionKind::LivewireComponentDiscovery => ActionDefinition {
-            predicate_namespace: "technology",
-            predicate_name: "ui-framework",
+            predicate: WebKnowledgePredicate::TECHNOLOGY_UI_FRAMEWORK,
             value: "livewire",
             minimum_posterior: 60,
             required_strength: RequiredStrength::Any,
@@ -219,8 +213,7 @@ fn action_definition(kind: StandardWebActionKind) -> ActionDefinition {
             prerequisites: &[],
         },
         StandardWebActionKind::SanctumAuthBoundary => ActionDefinition {
-            predicate_namespace: "authentication",
-            predicate_name: "mechanism",
+            predicate: WebKnowledgePredicate::AUTHENTICATION_MECHANISM,
             value: "sanctum",
             minimum_posterior: 50,
             required_strength: RequiredStrength::Any,
@@ -230,8 +223,7 @@ fn action_definition(kind: StandardWebActionKind) -> ActionDefinition {
             prerequisites: &[],
         },
         StandardWebActionKind::HttpBasicAuthBoundary => ActionDefinition {
-            predicate_namespace: "authentication",
-            predicate_name: "mechanism",
+            predicate: WebKnowledgePredicate::AUTHENTICATION_MECHANISM,
             value: "http-basic",
             minimum_posterior: 90,
             required_strength: RequiredStrength::Strong,
@@ -241,8 +233,7 @@ fn action_definition(kind: StandardWebActionKind) -> ActionDefinition {
             prerequisites: &[],
         },
         StandardWebActionKind::HttpBearerAuthBoundary => ActionDefinition {
-            predicate_namespace: "authentication",
-            predicate_name: "mechanism",
+            predicate: WebKnowledgePredicate::AUTHENTICATION_MECHANISM,
             value: "http-bearer",
             minimum_posterior: 90,
             required_strength: RequiredStrength::Strong,
@@ -258,7 +249,7 @@ fn action_definition(kind: StandardWebActionKind) -> ActionDefinition {
 mod tests {
     use venom_core::{
         ConfidenceScore, EntityId, Evidence, EvidenceKind, EvidenceSource, Hypothesis,
-        HypothesisState, HypothesisStrength,
+        HypothesisState, HypothesisStrength, KnowledgePredicate,
     };
 
     use super::*;

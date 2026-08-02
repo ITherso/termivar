@@ -30,6 +30,7 @@ pub mod events;
 pub mod models;
 pub mod ontology;
 pub mod outcome;
+pub mod predicates;
 pub mod reasoning;
 
 pub use config::{Config, ConfigBuilder, ConfigError, ScanIntensity};
@@ -41,6 +42,12 @@ pub use ontology::{
     OntologyRelationType, OntologyStats, OntologyWrite, RelationSemantics, RelationTypeId,
 };
 pub use outcome::{Outcome, OutcomeError, OutcomeStatus, VerificationStage};
+pub use predicates::{
+    ApiEvidencePredicate, ApiKnowledgePredicate, ApiResponseFormat, ApiSurfaceKind,
+    ApiVisibilityBoundaryKind, ApiVisibilityComparison, ApiVisibilityDimension,
+    ApiVisibilityObservation, ApiVisibilityPairKind, ApiVisibilityResult, ApiVocabularyError,
+    HttpEvidencePredicate, PredicateDescriptor, WebKnowledgePredicate,
+};
 pub use reasoning::{
     BayesianBelief, BayesianEvidence, BayesianUpdate, BeliefWrite, ConfidenceScore,
     ContributionDirection, EntityId, EntityKind, Evidence, EvidenceContribution, EvidenceId,

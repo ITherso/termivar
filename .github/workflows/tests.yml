@@ -20,6 +20,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Verify workspace and reasoning boundaries
         run: cargo run --locked -p xtask -- architecture
+      - name: Test transport-free scanner contracts
+        run: cargo test --locked -p venom-scanner --no-default-features --lib
 
   unit-tests:
     name: Unit Tests

@@ -6,8 +6,9 @@
 use serde::Serialize;
 use thiserror::Error;
 use venom_core::{
-    ConceptId, EvidenceValue, HypothesisState, HypothesisStrength, KnowledgePredicate, Ontology,
-    OntologyAxiom, OntologyConcept, OntologyError, Probability,
+    ConceptId, EvidenceValue, HttpEvidencePredicate, HypothesisState, HypothesisStrength,
+    KnowledgePredicate, Ontology, OntologyAxiom, OntologyConcept, OntologyError, Probability,
+    WebKnowledgePredicate,
 };
 
 use crate::{
@@ -220,9 +221,9 @@ fn standard_rules() -> Result<Vec<ReasoningRule>, RuleEngineError> {
     Ok(vec![
         disclosed_product_rule(
             "web.server.apache.header",
-            predicate("http.header", "server")?,
+            HttpEvidencePredicate::HEADER_SERVER.into(),
             "apache",
-            predicate("technology", "web-server")?,
+            WebKnowledgePredicate::TECHNOLOGY_WEB_SERVER.into(),
             "apache-http-server",
             20,
             94,
@@ -236,9 +237,9 @@ fn standard_rules() -> Result<Vec<ReasoningRule>, RuleEngineError> {
         framework_livewire_rule()?,
         disclosed_product_rule(
             "web.server.nginx.header",
-            predicate("http.header", "server")?,
+            HttpEvidencePredicate::HEADER_SERVER.into(),
             "nginx",
-            predicate("technology", "web-server")?,
+            WebKnowledgePredicate::TECHNOLOGY_WEB_SERVER.into(),
             "nginx",
             20,
             97,
@@ -248,9 +249,9 @@ fn standard_rules() -> Result<Vec<ReasoningRule>, RuleEngineError> {
         )?,
         disclosed_product_rule(
             "web.language.php.header",
-            predicate("http.header", "x-powered-by")?,
+            HttpEvidencePredicate::HEADER_X_POWERED_BY.into(),
             "php",
-            predicate("technology", "language")?,
+            WebKnowledgePredicate::TECHNOLOGY_LANGUAGE.into(),
             "php",
             20,
             96,
@@ -302,9 +303,9 @@ fn disclosed_product_rule(
 fn auth_header_rule(token: &str, value: &str) -> Result<ReasoningRule, RuleEngineError> {
     disclosed_product_rule(
         &format!("web.authentication.{token}.header"),
-        predicate("http.header", "www-authenticate")?,
+        HttpEvidencePredicate::HEADER_WWW_AUTHENTICATE.into(),
         token,
-        predicate("authentication", "mechanism")?,
+        WebKnowledgePredicate::AUTHENTICATION_MECHANISM.into(),
         value,
         15,
         99,
@@ -315,8 +316,8 @@ fn auth_header_rule(token: &str, value: &str) -> Result<ReasoningRule, RuleEngin
 }
 
 fn framework_laravel_rule() -> Result<ReasoningRule, RuleEngineError> {
-    let powered_by = predicate("http.header", "x-powered-by")?;
-    let cookie_name = predicate("http.cookie", "name")?;
+    let powered_by = HttpEvidencePredicate::HEADER_X_POWERED_BY.into_knowledge();
+    let cookie_name = HttpEvidencePredicate::COOKIE_NAME.into_knowledge();
     let laravel_session = EvidenceValue::Text("laravel_session".to_owned());
     let xsrf_token = EvidenceValue::Text("XSRF-TOKEN".to_owned());
     let condition = Expression::any(vec![
@@ -342,7 +343,7 @@ fn framework_laravel_rule() -> Result<ReasoningRule, RuleEngineError> {
         "web.framework.laravel",
         condition,
         HypothesisConclusion::new(
-            predicate("technology", "framework")?,
+            WebKnowledgePredicate::TECHNOLOGY_FRAMEWORK.into(),
             EvidenceValue::Text("laravel".to_owned()),
             probability(5)?,
             HypothesisStrength::Strong,
@@ -375,7 +376,7 @@ fn framework_laravel_rule() -> Result<ReasoningRule, RuleEngineError> {
 }
 
 fn framework_livewire_rule() -> Result<ReasoningRule, RuleEngineError> {
-    let body_sample = predicate("http.response", "body-sample")?;
+    let body_sample = HttpEvidencePredicate::RESPONSE_BODY_SAMPLE.into_knowledge();
     let markers = ["wire:id=", "wire:snapshot="];
     let conditions = markers
         .iter()
@@ -403,7 +404,7 @@ fn framework_livewire_rule() -> Result<ReasoningRule, RuleEngineError> {
         "web.framework.livewire.body",
         Expression::any(conditions)?,
         HypothesisConclusion::new(
-            predicate("technology", "ui-framework")?,
+            WebKnowledgePredicate::TECHNOLOGY_UI_FRAMEWORK.into(),
             EvidenceValue::Text("livewire".to_owned()),
             probability(5)?,
             HypothesisStrength::Weak,
@@ -414,7 +415,7 @@ fn framework_livewire_rule() -> Result<ReasoningRule, RuleEngineError> {
 }
 
 fn sanctum_cookie_rule() -> Result<ReasoningRule, RuleEngineError> {
-    let cookie_name = predicate("http.cookie", "name")?;
+    let cookie_name = HttpEvidencePredicate::COOKIE_NAME.into_knowledge();
     let laravel_session = EvidenceValue::Text("laravel_session".to_owned());
     let xsrf_token = EvidenceValue::Text("XSRF-TOKEN".to_owned());
     ReasoningRule::new(
@@ -432,7 +433,7 @@ fn sanctum_cookie_rule() -> Result<ReasoningRule, RuleEngineError> {
             ),
         ])?,
         HypothesisConclusion::new(
-            predicate("authentication", "mechanism")?,
+            WebKnowledgePredicate::AUTHENTICATION_MECHANISM.into(),
             EvidenceValue::Text("sanctum".to_owned()),
             probability(3)?,
             HypothesisStrength::Weak,
@@ -485,10 +486,6 @@ fn exact_calibration(
         probability(likelihood_if_false)?,
         rationale,
     )
-}
-
-fn predicate(namespace: &str, name: &str) -> Result<KnowledgePredicate, RuleEngineError> {
-    Ok(KnowledgePredicate::new(namespace, name)?)
 }
 
 fn probability(percent: u8) -> Result<Probability, RuleEngineError> {

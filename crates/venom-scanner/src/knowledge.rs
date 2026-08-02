@@ -71,6 +71,24 @@ pub enum KnowledgeBaseError {
         /// Reused stable identifier.
         id: String,
     },
+
+    /// An atomic relation bundle did not reference exactly its supplied evidence.
+    RelationEvidenceMismatch {
+        /// Relation whose provenance was inconsistent.
+        relation_id: String,
+        /// Evidence expected to be the relation's sole provenance record.
+        evidence_id: String,
+    },
+
+    /// An atomic relation did not originate at its evidence subject.
+    RelationSubjectMismatch {
+        /// Relation whose source entity was inconsistent.
+        relation_id: String,
+        /// Subject described by the evidence.
+        evidence_subject: String,
+        /// Source entity declared by the relation.
+        relation_from: String,
+    },
 }
 
 impl fmt::Display for KnowledgeBaseError {
@@ -82,6 +100,21 @@ impl fmt::Display for KnowledgeBaseError {
                     "{kind} identity {id} already has different meaning"
                 )
             },
+            Self::RelationEvidenceMismatch {
+                relation_id,
+                evidence_id,
+            } => write!(
+                formatter,
+                "relation {relation_id} must be backed only by evidence {evidence_id}"
+            ),
+            Self::RelationSubjectMismatch {
+                relation_id,
+                evidence_subject,
+                relation_from,
+            } => write!(
+                formatter,
+                "relation {relation_id} starts at {relation_from}, not evidence subject {evidence_subject}"
+            ),
         }
     }
 }
@@ -377,6 +410,94 @@ impl KnowledgeBase {
             writes.push(KnowledgeWrite::Inserted);
         }
         Ok(writes)
+    }
+
+    /// Atomically inserts one immutable observation and its sole graph edge.
+    ///
+    /// The relation must cite exactly the supplied evidence ID. Both identity
+    /// conflicts are checked before either record or secondary index changes,
+    /// so callers never persist an orphaned half of the bundle.
+    pub fn insert_evidence_with_relation(
+        &self,
+        evidence: Evidence,
+        relation: KnowledgeRelation,
+    ) -> Result<(KnowledgeWrite, KnowledgeWrite), KnowledgeBaseError> {
+        let evidence_id = evidence.id().clone();
+        let relation_id = relation.id().clone();
+        if relation.evidence_ids().len() != 1 || !relation.evidence_ids().contains(&evidence_id) {
+            return Err(KnowledgeBaseError::RelationEvidenceMismatch {
+                relation_id: relation_id.to_string(),
+                evidence_id: evidence_id.to_string(),
+            });
+        }
+        if relation.from() != evidence.subject() {
+            return Err(KnowledgeBaseError::RelationSubjectMismatch {
+                relation_id: relation_id.to_string(),
+                evidence_subject: evidence.subject().to_string(),
+                relation_from: relation.from().to_string(),
+            });
+        }
+
+        let evidence_subject = evidence.subject().clone();
+        let evidence_predicate = evidence.predicate().clone();
+        let relation_from = relation.from().clone();
+        let relation_to = relation.to().clone();
+        let mut state = self.write_state();
+
+        let evidence_write = match state.evidence.get(&evidence_id) {
+            Some(existing) if existing == &evidence => KnowledgeWrite::Unchanged,
+            Some(_) => {
+                return Err(identity_conflict(
+                    KnowledgeRecordKind::Evidence,
+                    &evidence_id,
+                ));
+            },
+            None => KnowledgeWrite::Inserted,
+        };
+        let relation_write = match state.relations.get(&relation_id) {
+            Some(existing) if existing == &relation => KnowledgeWrite::Unchanged,
+            Some(existing)
+                if existing.from() == relation.from()
+                    && existing.to() == relation.to()
+                    && existing.kind() == relation.kind() =>
+            {
+                KnowledgeWrite::Updated
+            },
+            Some(_) => {
+                return Err(identity_conflict(
+                    KnowledgeRecordKind::Relation,
+                    &relation_id,
+                ));
+            },
+            None => KnowledgeWrite::Inserted,
+        };
+
+        if evidence_write == KnowledgeWrite::Inserted {
+            state.evidence.insert(evidence_id.clone(), evidence);
+            index(
+                &mut state.evidence_by_subject,
+                evidence_subject,
+                evidence_id.clone(),
+            );
+            index(
+                &mut state.evidence_by_predicate,
+                evidence_predicate,
+                evidence_id,
+            );
+        }
+        if relation_write != KnowledgeWrite::Unchanged {
+            state.relations.insert(relation_id.clone(), relation);
+            if relation_write == KnowledgeWrite::Inserted {
+                index(
+                    &mut state.relations_from,
+                    relation_from,
+                    relation_id.clone(),
+                );
+                index(&mut state.relations_to, relation_to, relation_id);
+            }
+        }
+
+        Ok((evidence_write, relation_write))
     }
 
     /// Inserts a materialized fact or updates its confidence and provenance.
@@ -741,6 +862,139 @@ mod tests {
             .iter()
             .all(|item| item.id() != third.id()));
         assert_eq!(store.stats().evidence, 2);
+    }
+
+    #[test]
+    fn evidence_relation_bundles_are_atomic_and_idempotent() {
+        let store = KnowledgeBase::new();
+        let observation = evidence_for(subject(1), "visibility-difference");
+        let resource = EntityId::new("resource:account-42").unwrap();
+        let relation = KnowledgeRelation::with_id(
+            RelationId::parse("relation:comparison-scope-1").unwrap(),
+            observation.subject().clone(),
+            resource.clone(),
+            RelationKind::RelatedTo,
+            ConfidenceScore::from_percent(95).unwrap(),
+            observation.id().clone(),
+        );
+
+        assert_eq!(
+            store
+                .insert_evidence_with_relation(observation.clone(), relation.clone())
+                .unwrap(),
+            (KnowledgeWrite::Inserted, KnowledgeWrite::Inserted)
+        );
+        assert_eq!(
+            store
+                .insert_evidence_with_relation(observation.clone(), relation.clone())
+                .unwrap(),
+            (KnowledgeWrite::Unchanged, KnowledgeWrite::Unchanged)
+        );
+        assert_eq!(store.relations_from(observation.subject()), vec![relation]);
+        assert_eq!(store.relations_to(&resource).len(), 1);
+
+        let unrelated = evidence_for(subject(2), "other");
+        let mismatched = KnowledgeRelation::new(
+            observation.subject().clone(),
+            resource,
+            RelationKind::RelatedTo,
+            ConfidenceScore::MAX,
+            observation.id().clone(),
+        );
+        assert!(matches!(
+            store.insert_evidence_with_relation(unrelated.clone(), mismatched),
+            Err(KnowledgeBaseError::RelationEvidenceMismatch { .. })
+        ));
+        assert!(store.evidence(unrelated.id()).is_none());
+        assert_eq!(store.stats().relations, 1);
+
+        let wrong_subject = KnowledgeRelation::new(
+            subject(999),
+            EntityId::new("resource:other").unwrap(),
+            RelationKind::RelatedTo,
+            ConfidenceScore::MAX,
+            unrelated.id().clone(),
+        );
+        assert!(matches!(
+            store.insert_evidence_with_relation(unrelated.clone(), wrong_subject),
+            Err(KnowledgeBaseError::RelationSubjectMismatch { .. })
+        ));
+        assert!(store.evidence(unrelated.id()).is_none());
+        assert_eq!(store.stats().relations, 1);
+    }
+
+    #[test]
+    fn evidence_relation_identity_conflicts_roll_back_the_complete_bundle() {
+        let evidence_conflict_store = KnowledgeBase::new();
+        let existing = evidence_for(subject(1), "existing");
+        evidence_conflict_store
+            .insert_evidence(existing.clone())
+            .unwrap();
+        let mut conflicting_wire = serde_json::to_value(&existing).unwrap();
+        conflicting_wire["value"] = serde_json::json!({
+            "type": "text",
+            "value": "conflicting"
+        });
+        let conflicting: Evidence = serde_json::from_value(conflicting_wire).unwrap();
+        let absent_relation = KnowledgeRelation::with_id(
+            RelationId::parse("relation:must-stay-absent").unwrap(),
+            conflicting.subject().clone(),
+            EntityId::new("resource:one").unwrap(),
+            RelationKind::RelatedTo,
+            ConfidenceScore::MAX,
+            conflicting.id().clone(),
+        );
+        let absent_relation_id = absent_relation.id().clone();
+
+        assert!(matches!(
+            evidence_conflict_store.insert_evidence_with_relation(conflicting, absent_relation),
+            Err(KnowledgeBaseError::IdentityConflict {
+                kind: KnowledgeRecordKind::Evidence,
+                ..
+            })
+        ));
+        assert!(evidence_conflict_store
+            .relation(&absent_relation_id)
+            .is_none());
+        assert_eq!(evidence_conflict_store.stats().evidence, 1);
+        assert_eq!(evidence_conflict_store.stats().relations, 0);
+
+        let relation_conflict_store = KnowledgeBase::new();
+        let reserved_evidence = evidence_for(subject(10), "reserved");
+        let reserved_relation = KnowledgeRelation::with_id(
+            RelationId::parse("relation:reserved").unwrap(),
+            reserved_evidence.subject().clone(),
+            EntityId::new("resource:reserved").unwrap(),
+            RelationKind::RelatedTo,
+            ConfidenceScore::MAX,
+            reserved_evidence.id().clone(),
+        );
+        relation_conflict_store
+            .upsert_relation(reserved_relation.clone())
+            .unwrap();
+        let new_evidence = evidence_for(subject(20), "new");
+        let conflicting_relation = KnowledgeRelation::with_id(
+            reserved_relation.id().clone(),
+            new_evidence.subject().clone(),
+            EntityId::new("resource:new").unwrap(),
+            RelationKind::RelatedTo,
+            ConfidenceScore::MAX,
+            new_evidence.id().clone(),
+        );
+
+        assert!(matches!(
+            relation_conflict_store
+                .insert_evidence_with_relation(new_evidence.clone(), conflicting_relation),
+            Err(KnowledgeBaseError::IdentityConflict {
+                kind: KnowledgeRecordKind::Relation,
+                ..
+            })
+        ));
+        assert!(relation_conflict_store
+            .evidence(new_evidence.id())
+            .is_none());
+        assert_eq!(relation_conflict_store.stats().evidence, 0);
+        assert_eq!(relation_conflict_store.stats().relations, 1);
     }
 
     #[test]

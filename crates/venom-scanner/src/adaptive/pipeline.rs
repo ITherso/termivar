@@ -9,7 +9,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Deserializer, Serialize};
 use thiserror::Error;
 use venom_core::{
-    EntityId, EvidenceId, EvidenceValue, KnowledgePredicate, Outcome, OutcomeStatus,
+    EntityId, EvidenceId, EvidenceValue, HttpEvidencePredicate, Outcome, OutcomeStatus,
     ReasoningModelError, VerificationStage,
 };
 
@@ -739,7 +739,7 @@ impl AdaptivePipeline {
             OutcomeStatus::Unknown,
             OutcomeStatus::NeedsReview,
         ]))?;
-        let status = KnowledgePredicate::new("http.response", "status")?;
+        let status = HttpEvidencePredicate::RESPONSE_STATUS.into_knowledge();
         pipeline.register(AdaptationRule::new(
             "http.429.throttle",
             unresolved.clone(),
@@ -1063,7 +1063,7 @@ mod tests {
     };
     use venom_core::{
         BayesianEvidence, ConfidenceScore, Evidence, EvidenceKind, EvidenceSource, Hypothesis,
-        HypothesisState, HypothesisStrength, Probability,
+        HypothesisState, HypothesisStrength, KnowledgePredicate, Probability,
     };
 
     struct Fixture {
@@ -1076,7 +1076,7 @@ mod tests {
     }
 
     fn status_predicate() -> KnowledgePredicate {
-        KnowledgePredicate::new("http.response", "status").unwrap()
+        HttpEvidencePredicate::RESPONSE_STATUS.into_knowledge()
     }
 
     fn fixture(status: u64) -> Fixture {

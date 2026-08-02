@@ -20,6 +20,10 @@ All notable changes to Venom are recorded here. Releases use the categories from
 - Typed experience dispositions and an explicit confirmed-negative verifier outcome.
 - Evidence write-set receipts, post-commit error recovery, and before/after decision-session transition summaries.
 - A Cargo-metadata and Rust-AST architecture gate for workspace and reasoning-module boundaries.
+- A shared transport-neutral HTTP/API predicate vocabulary with normalized media/path observations and atomic paired-visibility contracts.
+- An opt-in deterministic JSON/GraphQL fingerprint profile that turns host-paired visibility differences into review hypotheses without declaring vulnerabilities.
+- `ApiVisibilityObservation`, a stable evidence-backed resource-scope relation, and atomic `KnowledgeBase::insert_evidence_with_relation` storage.
+- Per-calibration evidence aggregation with an explicit one-contribution policy for standard API rules.
 
 ### Changed
 
@@ -34,6 +38,10 @@ All notable changes to Venom are recorded here. Releases use the categories from
 - Made the runtime bootstrap receipt optional so a fail-closed budget can stop before initial network evidence is committed.
 - Limited learned suppression to verified negative conclusions; target blocks, policy blocks, transport failures, executor failures, and inconclusive checks remain neutral.
 - Moved standard web action identities into a transport-neutral catalog so verification no longer depends on HTTP execution or the `scanning` feature.
+- Replaced duplicated HTTP and web predicate literals with the canonical `venom-core` vocabulary.
+- Made API fingerprinting consume normalized media-type and path-segment evidence; the JSON rule identity is `api.response.json.media-type`.
+- Limited each standard API calibration to one matching contribution to reduce retry-driven posterior inflation; existing profiles retain the default independent-contribution behavior.
+- Rejected zero-reliability HTTP evidence policies so fixed rule likelihoods cannot promote a no-confidence observation.
 
 ### Fixed
 

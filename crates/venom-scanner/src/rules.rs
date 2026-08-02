@@ -5,6 +5,7 @@
 //! one stable, evidence-backed [`Hypothesis`].
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::num::NonZeroU32;
 
 use serde::{Deserialize, Deserializer, Serialize};
 use thiserror::Error;
@@ -31,6 +32,10 @@ pub enum RuleEngineError {
     /// A hypothesis conclusion did not define any evidence calibration.
     #[error("hypothesis conclusion must contain at least one evidence calibration")]
     EmptyCalibrations,
+
+    /// A bounded evidence aggregation requested zero contributions.
+    #[error("evidence aggregation limit must be greater than zero")]
+    InvalidAggregationLimit,
 
     /// A rule attempted to assign a state reserved for a verifier.
     #[error("hypothesis state {state:?} can only be assigned by a verifier")]
@@ -697,6 +702,50 @@ impl<'de> Deserialize<'de> for EvidenceSelector {
     }
 }
 
+/// How matching observations contribute to one Bayesian calibration.
+///
+/// The default preserves independent contribution semantics. A bounded policy
+/// is explicit and local to one calibration; it never infers independence from
+/// producer names or other forgeable provenance strings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(tag = "mode", rename_all = "snake_case", deny_unknown_fields)]
+#[non_exhaustive]
+pub enum EvidenceAggregation {
+    /// Every distinct matching evidence ID contributes once.
+    #[default]
+    Independent,
+    /// Only the strongest `limit` matches contribute.
+    ///
+    /// Selection is deterministic: reliability, then observation time, then
+    /// evidence ID. The expression trace still retains every candidate match.
+    MaxContributions {
+        /// Non-zero maximum number of observations.
+        limit: NonZeroU32,
+    },
+}
+
+impl EvidenceAggregation {
+    /// Creates an explicit non-zero contribution cap.
+    pub fn max_contributions(limit: u32) -> Result<Self, RuleEngineError> {
+        Ok(Self::MaxContributions {
+            limit: NonZeroU32::new(limit).ok_or(RuleEngineError::InvalidAggregationLimit)?,
+        })
+    }
+
+    fn limit(self) -> Option<usize> {
+        match self {
+            Self::Independent => None,
+            Self::MaxContributions { limit } => {
+                Some(usize::try_from(limit.get()).unwrap_or(usize::MAX))
+            },
+        }
+    }
+
+    fn is_independent(&self) -> bool {
+        matches!(self, Self::Independent)
+    }
+}
+
 /// Bayesian likelihoods assigned to evidence selected by a rule.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct EvidenceCalibration {
@@ -704,6 +753,8 @@ pub struct EvidenceCalibration {
     likelihood_if_true: Probability,
     likelihood_if_false: Probability,
     rationale: String,
+    #[serde(default, skip_serializing_if = "EvidenceAggregation::is_independent")]
+    aggregation: EvidenceAggregation,
 }
 
 impl EvidenceCalibration {
@@ -719,7 +770,14 @@ impl EvidenceCalibration {
             likelihood_if_true,
             likelihood_if_false,
             rationale: non_empty(rationale, "evidence calibration rationale")?,
+            aggregation: EvidenceAggregation::Independent,
         })
+    }
+
+    /// Applies an explicit contribution policy to this calibration.
+    pub fn with_aggregation(mut self, aggregation: EvidenceAggregation) -> Self {
+        self.aggregation = aggregation;
+        self
     }
 
     /// Returns the raw-evidence selector.
@@ -741,6 +799,11 @@ impl EvidenceCalibration {
     pub fn rationale(&self) -> &str {
         &self.rationale
     }
+
+    /// Returns how repeated selector matches contribute to the posterior.
+    pub const fn aggregation(&self) -> EvidenceAggregation {
+        self.aggregation
+    }
 }
 
 impl<'de> Deserialize<'de> for EvidenceCalibration {
@@ -749,11 +812,14 @@ impl<'de> Deserialize<'de> for EvidenceCalibration {
         D: Deserializer<'de>,
     {
         #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
         struct WireCalibration {
             selector: EvidenceSelector,
             likelihood_if_true: Probability,
             likelihood_if_false: Probability,
             rationale: String,
+            #[serde(default)]
+            aggregation: EvidenceAggregation,
         }
 
         let wire = WireCalibration::deserialize(deserializer)?;
@@ -763,6 +829,7 @@ impl<'de> Deserialize<'de> for EvidenceCalibration {
             wire.likelihood_if_false,
             wire.rationale,
         )
+        .map(|calibration| calibration.with_aggregation(wire.aggregation))
         .map_err(serde::de::Error::custom)
     }
 }
@@ -1101,10 +1168,25 @@ fn materialize_hypothesis(
 ) -> Result<Hypothesis, RuleEngineError> {
     let mut observations = BTreeMap::<EvidenceId, BayesianEvidence>::new();
     for calibration in &rule.conclusion.calibrations {
-        for evidence in snapshot.evidence().iter().filter(|evidence| {
-            condition.evidence_ids().contains(evidence.id())
-                && calibration.selector.matches(evidence)
-        }) {
+        let mut matches = snapshot
+            .evidence()
+            .iter()
+            .filter(|evidence| {
+                condition.evidence_ids().contains(evidence.id())
+                    && calibration.selector.matches(evidence)
+            })
+            .collect::<Vec<_>>();
+        if let Some(limit) = calibration.aggregation.limit() {
+            matches.sort_by(|left, right| {
+                right
+                    .reliability()
+                    .cmp(&left.reliability())
+                    .then_with(|| right.observed_at_ms().cmp(&left.observed_at_ms()))
+                    .then_with(|| left.id().cmp(right.id()))
+            });
+            matches.truncate(limit);
+        }
+        for evidence in matches {
             let observation = BayesianEvidence::new(
                 evidence.id().clone(),
                 calibration.likelihood_if_true,
@@ -1150,8 +1232,8 @@ fn materialize_hypothesis(
 mod tests {
     use super::*;
     use venom_core::{
-        ConfidenceScore, EntityId, Evidence, EvidenceKind, EvidenceSource, Fact, Ontology,
-        OntologyAxiom, OntologyConcept,
+        ConfidenceScore, EntityId, Evidence, EvidenceId, EvidenceKind, EvidenceSource, Fact,
+        Ontology, OntologyAxiom, OntologyConcept,
     };
 
     fn subject() -> EntityId {
@@ -1469,6 +1551,107 @@ mod tests {
         let evaluations = engine.evaluate(&knowledge, &subject()).unwrap();
         assert_eq!(evaluations[0].rule_id(), "rule.a");
         assert_eq!(evaluations[1].rule_id(), "rule.z");
+    }
+
+    #[test]
+    fn calibration_contribution_caps_are_explicit_and_round_trip() {
+        let knowledge = KnowledgeBase::new();
+        let predicate = framework_predicate();
+        let value = EvidenceValue::Text("Laravel".into());
+        let weak_id = EvidenceId::parse("signal:weak").unwrap();
+        let strong_id = EvidenceId::parse("signal:strong").unwrap();
+        knowledge
+            .insert_evidence_batch(vec![
+                Evidence::with_id_at(
+                    weak_id.clone(),
+                    subject(),
+                    EvidenceKind::Technology,
+                    predicate.clone(),
+                    value.clone(),
+                    EvidenceSource::new("discovery", "test").unwrap(),
+                    ConfidenceScore::from_percent(50).unwrap(),
+                    2_000,
+                ),
+                Evidence::with_id_at(
+                    strong_id.clone(),
+                    subject(),
+                    EvidenceKind::Technology,
+                    predicate.clone(),
+                    value.clone(),
+                    EvidenceSource::new("discovery", "test").unwrap(),
+                    ConfidenceScore::from_percent(90).unwrap(),
+                    1_000,
+                ),
+            ])
+            .unwrap();
+
+        let independent = EvidenceCalibration::new(
+            EvidenceSelector::equals(predicate.clone(), value.clone()),
+            Probability::from_percent(90).unwrap(),
+            Probability::from_percent(10).unwrap(),
+            "one semantic fingerprint contribution",
+        )
+        .unwrap();
+        let legacy_wire = serde_json::to_value(&independent).unwrap();
+        assert!(legacy_wire.get("aggregation").is_none());
+        assert_eq!(
+            serde_json::from_value::<EvidenceCalibration>(legacy_wire)
+                .unwrap()
+                .aggregation(),
+            EvidenceAggregation::Independent
+        );
+        let mut misspelled_wire = serde_json::to_value(&independent).unwrap();
+        misspelled_wire["aggregaton"] = serde_json::json!({
+            "mode": "max_contributions",
+            "limit": 1
+        });
+        assert!(serde_json::from_value::<EvidenceCalibration>(misspelled_wire).is_err());
+        let bounded =
+            independent.with_aggregation(EvidenceAggregation::max_contributions(1).unwrap());
+        let mut malformed_aggregation = serde_json::to_value(&bounded).unwrap();
+        malformed_aggregation["aggregation"]["unexpected"] = serde_json::json!(true);
+        assert!(serde_json::from_value::<EvidenceCalibration>(malformed_aggregation).is_err());
+        let bounded_rule = ReasoningRule::new(
+            "framework.bounded-signal",
+            Expression::equals(KnowledgeLayer::Evidence, predicate.clone(), value.clone()),
+            HypothesisConclusion::new(
+                KnowledgePredicate::new("stack", "bounded-framework").unwrap(),
+                value.clone(),
+                Probability::from_percent(10).unwrap(),
+                HypothesisStrength::Weak,
+                HypothesisState::Supported,
+                vec![bounded],
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let encoded = serde_json::to_value(&bounded_rule).unwrap();
+        assert_eq!(
+            serde_json::from_value::<ReasoningRule>(encoded).unwrap(),
+            bounded_rule
+        );
+
+        let mut engine = RuleEngine::new();
+        engine.register(bounded_rule).unwrap();
+        let bounded_result = engine.evaluate(&knowledge, &subject()).unwrap();
+        assert_eq!(bounded_result[0].condition().evidence_ids().len(), 2);
+        assert_eq!(
+            bounded_result[0]
+                .hypothesis()
+                .unwrap()
+                .belief()
+                .evidence()
+                .len(),
+            1
+        );
+        assert_eq!(
+            bounded_result[0].hypothesis().unwrap().belief().evidence()[0].evidence_id(),
+            &strong_id
+        );
+        assert!(matches!(
+            EvidenceAggregation::max_contributions(0),
+            Err(RuleEngineError::InvalidAggregationLimit)
+        ));
     }
 
     #[test]

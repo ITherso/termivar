@@ -7,7 +7,7 @@
 use serde::Serialize;
 use thiserror::Error;
 use venom_core::{
-    EvidenceValue, KnowledgePredicate, OutcomeStatus, Probability, ReasoningModelError,
+    EvidenceValue, HttpEvidencePredicate, OutcomeStatus, Probability, ReasoningModelError,
     VerificationStage,
 };
 
@@ -141,7 +141,7 @@ fn blocked_rule(
     kind: StandardWebActionKind,
     stage: VerificationStage,
 ) -> Result<VerificationRule, StandardWebVerificationError> {
-    let status = predicate("http.response", "status")?;
+    let status = HttpEvidencePredicate::RESPONSE_STATUS.into_knowledge();
     let condition = Expression::any(
         [401_u64, 403, 429]
             .into_iter()
@@ -176,7 +176,10 @@ fn signal_rule(
 ) -> Result<VerificationRule, StandardWebVerificationError> {
     let (condition, outcome, priority, confidence, rationale) = match kind {
         StandardWebActionKind::LaravelRouteDiscovery => (
-            Expression::exists(KnowledgeLayer::Evidence, predicate("http.header", "allow")?),
+            Expression::exists(
+                KnowledgeLayer::Evidence,
+                HttpEvidencePredicate::HEADER_ALLOW.into(),
+            ),
             OutcomeStatus::NeedsReview,
             600,
             70,
@@ -189,7 +192,7 @@ fn signal_rule(
                     .map(|marker| {
                         Expression::text_contains_ascii_case_insensitive(
                             KnowledgeLayer::Evidence,
-                            predicate("http.response", "body-sample")?,
+                            HttpEvidencePredicate::RESPONSE_BODY_SAMPLE.into(),
                             marker,
                         )
                     })
@@ -204,12 +207,12 @@ fn signal_rule(
             Expression::all(vec![
                 Expression::equals(
                     KnowledgeLayer::Evidence,
-                    predicate("http.cookie", "name")?,
+                    HttpEvidencePredicate::COOKIE_NAME.into(),
                     EvidenceValue::Text("laravel_session".to_owned()),
                 ),
                 Expression::equals(
                     KnowledgeLayer::Evidence,
-                    predicate("http.cookie", "name")?,
+                    HttpEvidencePredicate::COOKIE_NAME.into(),
                     EvidenceValue::Text("XSRF-TOKEN".to_owned()),
                 ),
             ])?,
@@ -249,8 +252,7 @@ fn signal_rule(
 fn auth_header_condition(token: &str) -> Result<Expression, RuleEngineError> {
     Expression::text_contains_ascii_case_insensitive(
         KnowledgeLayer::Evidence,
-        KnowledgePredicate::new("http.header", "www-authenticate")
-            .map_err(RuleEngineError::from)?,
+        HttpEvidencePredicate::HEADER_WWW_AUTHENTICATE.into(),
         token,
     )
 }
@@ -279,10 +281,6 @@ fn scoped_rule(
     .with_case_correlated_evidence()?)
 }
 
-fn predicate(namespace: &str, name: &str) -> Result<KnowledgePredicate, ReasoningModelError> {
-    KnowledgePredicate::new(namespace, name)
-}
-
 const fn action_slug(kind: StandardWebActionKind) -> &'static str {
     match kind {
         StandardWebActionKind::LaravelRouteDiscovery => "laravel-route",
@@ -302,7 +300,7 @@ const fn unreachable_standard_action() -> ! {
 mod tests {
     use venom_core::{
         ConfidenceScore, EntityId, Evidence, EvidenceKind, EvidenceSource, Hypothesis,
-        HypothesisState, HypothesisStrength,
+        HypothesisState, HypothesisStrength, KnowledgePredicate,
     };
 
     use super::*;

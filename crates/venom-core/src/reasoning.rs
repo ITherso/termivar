@@ -520,15 +520,67 @@ impl Evidence {
         source: EvidenceSource,
         reliability: ConfidenceScore,
     ) -> Self {
-        Self {
-            id: EvidenceId::new(),
+        Self::with_id(
+            EvidenceId::new(),
             subject,
             kind,
             predicate,
             value,
             source,
             reliability,
-            observed_at_ms: now_ms(),
+        )
+    }
+
+    /// Records evidence with a host-assigned stable identity.
+    ///
+    /// Reusing the ID for different evidence remains an identity conflict in
+    /// the knowledge store. Producers that also need a stable observation
+    /// timestamp should use [`Self::with_id_at`].
+    pub fn with_id(
+        id: EvidenceId,
+        subject: EntityId,
+        kind: EvidenceKind,
+        predicate: KnowledgePredicate,
+        value: EvidenceValue,
+        source: EvidenceSource,
+        reliability: ConfidenceScore,
+    ) -> Self {
+        Self::with_id_at(
+            id,
+            subject,
+            kind,
+            predicate,
+            value,
+            source,
+            reliability,
+            now_ms(),
+        )
+    }
+
+    /// Records evidence with host-assigned identity and observation time.
+    ///
+    /// Supplying both fields allows a deterministic producer to recreate an
+    /// exactly equal evidence record for idempotent insertion.
+    #[allow(clippy::too_many_arguments)]
+    pub fn with_id_at(
+        id: EvidenceId,
+        subject: EntityId,
+        kind: EvidenceKind,
+        predicate: KnowledgePredicate,
+        value: EvidenceValue,
+        source: EvidenceSource,
+        reliability: ConfidenceScore,
+        observed_at_ms: u64,
+    ) -> Self {
+        Self {
+            id,
+            subject,
+            kind,
+            predicate,
+            value,
+            source,
+            reliability,
+            observed_at_ms,
         }
     }
 
@@ -1255,8 +1307,20 @@ impl KnowledgeRelation {
         confidence: ConfidenceScore,
         evidence_id: EvidenceId,
     ) -> Self {
+        Self::with_id(RelationId::new(), from, to, kind, confidence, evidence_id)
+    }
+
+    /// Creates a directed relation with a caller-supplied stable identifier.
+    pub fn with_id(
+        id: RelationId,
+        from: EntityId,
+        to: EntityId,
+        kind: RelationKind,
+        confidence: ConfidenceScore,
+        evidence_id: EvidenceId,
+    ) -> Self {
         Self {
-            id: RelationId::new(),
+            id,
             from,
             to,
             kind,

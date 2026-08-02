@@ -31,6 +31,8 @@ This document is the capability map for Venom `0.9.0-alpha`. It records what exi
 | Lua execution | Preview | Script lifecycle and limits remain pre-stable |
 | Anomaly detection | Experimental | Heuristic scoring requires manual validation |
 | Detection phases | Beta | Recon, crawl, directory, SQLi, XSS, SSTI, LFI, XXE, and SSRF-oriented modules |
+| API predicate vocabulary | Preview | Canonical descriptors, normalized media/path observations, and `ApiVisibilityObservation` resource-scope bundles live in `venom-core` |
+| JSON/GraphQL reasoning | Preview | Opt-in deterministic fingerprinting with one-contribution API calibrations; paired differences remain review hypotheses, not vulnerability verification |
 
 ## Scale and product surfaces
 

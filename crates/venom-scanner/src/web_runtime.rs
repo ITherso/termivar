@@ -8,7 +8,9 @@ use std::{collections::BTreeSet, sync::Arc, time::Duration};
 
 use thiserror::Error;
 use url::Url;
-use venom_core::{EntityId, EvidenceValue, OutcomeStatus, ReasoningModelError};
+use venom_core::{
+    EntityId, EvidenceValue, HttpEvidencePredicate, OutcomeStatus, ReasoningModelError,
+};
 
 use crate::{
     AdaptationLimits, BenefitScore, DecisionActionOrigin, DecisionEvidenceReceipt,
@@ -31,8 +33,6 @@ const DEFAULT_FAILURE_LIMIT: u16 = 10;
 const BOOTSTRAP_ACTION_ID: &str = "web.action.bootstrap.http-evidence";
 const BOOTSTRAP_CASE_ID: &str = "case:web-runtime:bootstrap:http";
 const BOOTSTRAP_HYPOTHESIS_ID: &str = "hypothesis:web-runtime:bootstrap";
-const RESPONSE_BODY_BYTES_PREDICATE: &str = "http.response.body-bytes-observed";
-
 /// Construction and execution failures for [`StandardWebDecisionRuntime`].
 #[derive(Debug, Error)]
 #[non_exhaustive]
@@ -713,12 +713,14 @@ impl StandardWebDecisionRuntime {
         &mut self,
         receipt: DecisionEvidenceReceipt,
     ) -> Result<DecisionEvidenceReceipt, StandardWebDecisionRuntimeError> {
+        let response_body_bytes =
+            HttpEvidencePredicate::RESPONSE_BODY_BYTES_OBSERVED.into_knowledge();
         let correlated: Vec<_> = receipt
             .evidence()
             .iter()
             .filter(|evidence| {
                 evidence.source().correlation_id() == Some(receipt.case().id())
-                    && evidence.predicate().dotted() == RESPONSE_BODY_BYTES_PREDICATE
+                    && evidence.predicate() == &response_body_bytes
             })
             .filter_map(|evidence| match evidence.value() {
                 EvidenceValue::Unsigned(bytes) => Some(*bytes),
@@ -728,7 +730,7 @@ impl StandardWebDecisionRuntime {
         if correlated.len() != 1 {
             return Err(StandardWebDecisionRuntimeError::ResponseUsageEvidence {
                 case_id: receipt.case().id().to_owned(),
-                predicate: RESPONSE_BODY_BYTES_PREDICATE,
+                predicate: HttpEvidencePredicate::RESPONSE_BODY_BYTES_OBSERVED.dotted(),
                 observations: correlated.len(),
                 receipt: Box::new(receipt),
             });

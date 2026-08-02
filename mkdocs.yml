@@ -38,6 +38,8 @@ nav:
       - Decision runner: internals/decision-runner.md
       - Experience classification: internals/experience.md
       - HTTP evidence executor: internals/http-evidence.md
+      - API predicate vocabulary: internals/api-predicates.md
+      - API reasoning: internals/api-reasoning.md
       - Standard web decision profile: internals/web-decision.md
       - Standard web decision runtime: internals/web-runtime.md
       - Web reasoning: internals/web-reasoning.md
@@ -58,6 +60,7 @@ nav:
       - ADR 0002 - Plugin boundary: adr/0002-plugin-boundary.md
       - ADR 0003 - Event bus: adr/0003-event-bus.md
       - ADR 0004 - Reasoning/runtime boundary: adr/0004-reasoning-runtime-boundary.md
+      - ADR 0005 - Shared predicate vocabulary: adr/0005-shared-predicate-vocabulary.md
       - Release process: RELEASE.md
 markdown_extensions:
   - admonition
