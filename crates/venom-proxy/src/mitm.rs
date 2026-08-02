@@ -49,6 +49,12 @@ impl CertCache {
     }
 }
 
+impl Default for CertCache {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 pub struct AsyncMitmProxy {
     listener: TcpListener,
     cert_cache: Arc<CertCache>,

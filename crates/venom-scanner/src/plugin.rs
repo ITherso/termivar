@@ -253,9 +253,7 @@ impl PluginRegistry {
             });
         }
 
-        plugin
-            .validate()
-            .map_err(|e| PluginError::InvalidConfig(e))?;
+        plugin.validate().map_err(PluginError::InvalidConfig)?;
 
         let config = plugin.get_config();
         let metadata = PluginMetadata {
@@ -529,7 +527,7 @@ mod tests {
             category: PluginCategory::SQLi,
         });
 
-        registry.register(plugin).is_ok();
+        registry.register(plugin).unwrap();
         let retrieved = registry.get("test_2");
         assert!(retrieved.is_some());
     }
@@ -543,7 +541,7 @@ mod tests {
                 id: format!("xss_{}", i),
                 category: PluginCategory::XSS,
             });
-            registry.register(plugin).is_ok();
+            registry.register(plugin).unwrap();
         }
 
         let xss_plugins = registry.list_by_category(PluginCategory::XSS);
@@ -591,10 +589,10 @@ mod tests {
         registry.register(plugin).unwrap();
 
         for _ in 0..3 {
-            registry
+            let _ = registry
                 .execute("test_5", "target", "payload")
                 .await
-                .is_ok();
+                .unwrap();
         }
 
         let meta = registry.get_metadata("test_5").unwrap();

@@ -2,8 +2,6 @@
 //!
 //! Tests attack patterns, payload structure validation, and security heuristics
 
-use venom_scanner::ScanFinding;
-
 // ============================================================================
 // SQL INJECTION PATTERNS
 // ============================================================================
@@ -20,8 +18,14 @@ fn test_sqli_basic_patterns() {
 
     for (text, should_match) in patterns {
         let is_sqli = text.contains("'")
-            && (text.contains("OR") || text.contains("UNION") || text.contains("DROP"));
-        // Note: Simple pattern, real detection is more complex
+            && (text.contains("OR")
+                || text.contains("UNION")
+                || text.contains("DROP")
+                || text.contains("--"));
+        assert_eq!(
+            is_sqli, should_match,
+            "unexpected classification for {text}"
+        );
     }
 }
 
@@ -42,13 +46,17 @@ fn test_sqli_encoding_bypass() {
 
 #[test]
 fn test_sqli_dbms_specific() {
-    let mysql_patterns = vec!["MySQL", "mysql_fetch", "mysql_error"];
-    let postgres_patterns = vec!["PostgreSQL", "pg_", "psql"];
-    let oracle_patterns = vec!["Oracle", "ORA-", "SQL*Plus"];
+    let mysql_patterns = ["MySQL", "mysql_fetch", "mysql_error"];
+    let postgres_patterns = ["PostgreSQL", "pg_", "psql"];
+    let oracle_patterns = ["Oracle", "ORA-", "SQL*Plus"];
 
-    assert!(mysql_patterns.len() > 0);
-    assert!(postgres_patterns.len() > 0);
-    assert!(oracle_patterns.len() > 0);
+    for pattern in mysql_patterns
+        .into_iter()
+        .chain(postgres_patterns)
+        .chain(oracle_patterns)
+    {
+        assert!(!pattern.is_empty());
+    }
 }
 
 // ============================================================================
@@ -57,17 +65,19 @@ fn test_sqli_dbms_specific() {
 
 #[test]
 fn test_xss_reflection_detection() {
-    let user_inputs = vec!["search_term", "user_id", "comment", "name"];
+    let user_inputs = ["search_term", "user_id", "comment", "name"];
 
-    let sensitive_contexts = vec![
+    let sensitive_contexts = [
         "<div>{}</div>",
         "<input value=\"{}\">",
         "<script>var x = '{}';</script>",
         "<img title=\"{}\">",
     ];
 
-    assert!(user_inputs.len() > 0);
-    assert!(sensitive_contexts.len() > 0);
+    assert!(user_inputs.iter().all(|input| !input.is_empty()));
+    assert!(sensitive_contexts
+        .iter()
+        .all(|context| context.contains("{}")));
 }
 
 #[test]
@@ -186,7 +196,7 @@ fn test_lfi_common_targets() {
 
 #[test]
 fn test_lfi_encoding_bypass_techniques() {
-    let techniques = vec![
+    let techniques = [
         "double_url_encoding",
         "null_byte_injection",
         "path_traversal_variants",
@@ -253,7 +263,7 @@ fn test_ssrf_loopback_addresses() {
 
 #[test]
 fn test_ssrf_private_ip_ranges() {
-    let ranges = vec![
+    let ranges = [
         "10.0.0.0/8",
         "172.16.0.0/12",
         "192.168.0.0/16",
@@ -275,7 +285,7 @@ fn test_ssrf_metadata_endpoints() {
 
     for (provider, addrs) in endpoints {
         assert!(!provider.is_empty());
-        assert!(addrs.len() > 0);
+        assert!(!addrs.is_empty());
     }
 }
 
@@ -285,7 +295,7 @@ fn test_ssrf_metadata_endpoints() {
 
 #[test]
 fn test_auth_bypass_techniques() {
-    let techniques = vec![
+    let techniques = [
         "SQL injection in login",
         "Default credentials",
         "JWT manipulation",
@@ -363,7 +373,7 @@ fn test_payload_length_validation() {
     ];
 
     for payload in payloads {
-        assert!(payload.len() > 0);
+        assert!(!payload.is_empty());
         assert!(payload.len() < 1000);
     }
 }
@@ -412,8 +422,8 @@ fn test_timing_based_detection_thresholds() {
 
 #[test]
 fn test_boolean_based_logic() {
-    let true_responses = vec!["Valid user", "Success"];
-    let false_responses = vec!["Invalid user", "Failed"];
+    let true_responses = ["Valid user", "Success"];
+    let false_responses = ["Invalid user", "Failed"];
 
     assert_eq!(true_responses.len(), false_responses.len());
 }

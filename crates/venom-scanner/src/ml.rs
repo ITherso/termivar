@@ -208,8 +208,7 @@ impl ExploitBuilder {
                 return 0.0;
             }
             // Simple estimation: 0.8 per stage
-            let base_rate = 0.8_f32.powi(chain.stages.len() as i32);
-            base_rate
+            0.8_f32.powi(chain.stages.len() as i32)
         } else {
             0.0
         }
@@ -443,7 +442,8 @@ mod tests {
         classifier.add_pattern(pattern);
         let (is_anomalous, score) = classifier.classify(&[0.1, 0.2, 0.3]);
 
-        assert!(score >= 0.0 && score <= 1.0);
+        assert!(!is_anomalous);
+        assert!((0.0..=1.0).contains(&score));
     }
 
     #[test]

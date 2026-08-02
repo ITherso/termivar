@@ -237,7 +237,7 @@ impl ConfigLoader {
     pub fn get_active_profile(&self) -> ScanProfile {
         let name = self.active_profile.lock().unwrap().clone();
         self.get_profile(&name)
-            .unwrap_or_else(|| ScanProfile::enterprise())
+            .unwrap_or_else(ScanProfile::enterprise)
     }
 
     /// Sets active profile

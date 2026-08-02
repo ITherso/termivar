@@ -46,6 +46,7 @@ fn test_phase2_link_extraction() {
     // Simulate link extraction
     let links: Vec<&str> = vec!["/api/users", "/api/posts"];
     assert_eq!(links.len(), 2);
+    assert!(links.iter().all(|link| html.contains(link)));
 }
 
 #[test]
@@ -56,8 +57,9 @@ fn test_phase2_parameter_extraction() {
         <select name="type">
     "#;
 
-    let params = vec!["id", "email", "type"];
+    let params = ["id", "email", "type"];
     assert_eq!(params.len(), 3);
+    assert!(params.iter().all(|param| html.contains(param)));
 }
 
 // ============================================================================
@@ -211,6 +213,7 @@ fn test_phase6_xss_payload_escape() {
     for (payload, context) in payloads {
         assert!(!payload.is_empty());
         assert!(payload.contains("alert") || payload.contains("svg"));
+        assert!(!context.is_empty());
     }
 }
 
@@ -241,8 +244,8 @@ fn test_phase7_template_engine_detection() {
     ];
 
     for (response, engine) in responses {
-        assert!(response.len() > 0);
-        assert!(engine.len() > 0);
+        assert!(!response.is_empty());
+        assert!(!engine.is_empty());
     }
 }
 

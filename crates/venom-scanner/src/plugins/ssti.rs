@@ -68,11 +68,12 @@ impl Plugin for SSTIPlugin {
     }
 
     fn get_config(&self) -> PluginConfig {
-        let mut config = PluginConfig::default();
-        config.timeout_ms = 3500;
-        config.max_payload_size = 8192;
-        config.retry_count = 2;
-        config
+        PluginConfig {
+            timeout_ms: 3500,
+            max_payload_size: 8192,
+            retry_count: 2,
+            ..PluginConfig::default()
+        }
     }
 
     fn validate(&self) -> Result<(), String> {

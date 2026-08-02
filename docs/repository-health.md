@@ -10,7 +10,7 @@ This page records enforced repository controls and known gaps. A configured tool
 | `cargo-fuzz` | Scheduled + evidenced | Five parser targets run in bounded weekly campaigns; the [first committed baseline](reports/fuzzing/7515b79.md) records 32,500,714 executions and no observed crash |
 | MSRV | Required | Workspace packages declare Rust `1.88`; CI builds that toolchain plus stable, beta, and nightly |
 | SemVer | Required for `venom-core` | `cargo xtask semver` checks the all-features public API against the immutable `v0.9.0-alpha` commit with a patch-compatibility threshold |
-| Architecture boundaries | Required | `cargo xtask architecture` validates workspace edges, protected module imports, and the no-default-features reasoning build |
+| Architecture boundaries | Required | `cargo xtask architecture` rejects virtual-root source, validates workspace edges and protected imports, and checks the no-default-features reasoning build |
 
 ## Release evidence
 

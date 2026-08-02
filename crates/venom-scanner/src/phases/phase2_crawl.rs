@@ -44,7 +44,7 @@ impl ScanPhase for CrawlPhase {
         ctx.log("Phase 2: Web crawler initiated...".to_string());
 
         // Crawl root URL and discover endpoints
-        self.crawl_url(&ctx.target.to_string(), ctx).await?;
+        self.crawl_url(ctx.target.as_ref(), ctx).await?;
 
         ctx.log(format!(
             "Phase 2: Crawling completed. Discovered {} endpoints.",
@@ -87,10 +87,9 @@ impl CrawlPhase {
 
                     // Extract forms and their parameters
                     let form_regex = Regex::new(r#"<form[^>]*>(.*?)</form>"#).unwrap();
+                    let input_regex = Regex::new(r#"<input[^>]*name=["']([^"']+)["']"#).unwrap();
                     for form_match in form_regex.captures_iter(&html) {
                         let form_html = &form_match[1];
-                        let input_regex =
-                            Regex::new(r#"<input[^>]*name=["']([^"']+)["']"#).unwrap();
 
                         let mut form_params = Vec::new();
                         for input_cap in input_regex.captures_iter(form_html) {

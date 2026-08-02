@@ -641,6 +641,11 @@ impl BoundedExecutionHistory {
     pub fn len(&self) -> usize {
         self.entries.len()
     }
+
+    /// Returns whether the history contains no executions.
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
 }
 
 /// Lua Script Registry

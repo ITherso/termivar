@@ -1,6 +1,5 @@
 use clap::{Parser, Subcommand};
 use url::Url;
-use venom_api;
 use venom_proxy::ProxyServer;
 use venom_scanner::{phases, ScanContext, ScanRunner};
 
@@ -79,7 +78,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 );
             }
 
-            let _ = log_task.abort();
+            log_task.abort();
         },
         Some(Commands::Api { addr }) => {
             venom_api::start_api(&addr).await?;

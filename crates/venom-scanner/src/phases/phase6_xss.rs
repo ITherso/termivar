@@ -63,9 +63,9 @@ impl XssScanner {
                 let double_quotes = tag_content.matches('"').count();
                 let single_quotes = tag_content.matches('\'').count();
 
-                if double_quotes % 2 != 0 {
+                if !double_quotes.is_multiple_of(2) {
                     return HtmlContext::DoubleQuoteAttr;
-                } else if single_quotes % 2 != 0 {
+                } else if !single_quotes.is_multiple_of(2) {
                     return HtmlContext::SingleQuoteAttr;
                 }
             }
@@ -110,66 +110,57 @@ impl ScanPhase for XssScanner {
                 if let Ok(mut test_url) = Url::parse(&url_str) {
                     test_url.query_pairs_mut().append_pair(&param, marker);
 
-                    match tokio::time::timeout(
+                    if let Ok(Ok(response)) = tokio::time::timeout(
                         std::time::Duration::from_secs(5),
                         ctx.client.get(test_url.as_str()).send(),
                     )
                     .await
                     {
-                        Ok(Ok(response)) => {
-                            if response.status() == StatusCode::OK {
-                                if let Ok(body) = response.text().await {
-                                    if body.contains(marker) {
-                                        // Reflection detected - analyze context
-                                        let html_context = Self::analyze_context(&body, marker);
-                                        ctx.log(format!(
-                                            "Reflected XSS found on {} param={} context={:?}",
-                                            url_str, param, html_context
-                                        ));
+                        if response.status() == StatusCode::OK {
+                            if let Ok(body) = response.text().await {
+                                if body.contains(marker) {
+                                    // Reflection detected - analyze context
+                                    let html_context = Self::analyze_context(&body, marker);
+                                    ctx.log(format!(
+                                        "Reflected XSS found on {} param={} context={:?}",
+                                        url_str, param, html_context
+                                    ));
 
-                                        // Generate context-specific payload
-                                        let payload = Self::generate_payload(html_context.clone());
+                                    // Generate context-specific payload
+                                    let payload = Self::generate_payload(html_context.clone());
 
-                                        // Verify payload execution
-                                        if let Ok(mut exploit_url) = Url::parse(&url_str) {
-                                            exploit_url
-                                                .query_pairs_mut()
-                                                .append_pair(&param, payload);
+                                    // Verify payload execution
+                                    if let Ok(mut exploit_url) = Url::parse(&url_str) {
+                                        exploit_url.query_pairs_mut().append_pair(&param, payload);
 
-                                            match tokio::time::timeout(
-                                                std::time::Duration::from_secs(5),
-                                                ctx.client.get(exploit_url.as_str()).send(),
-                                            )
-                                            .await
-                                            {
-                                                Ok(Ok(verify_res)) => {
-                                                    if let Ok(verify_body) = verify_res.text().await
-                                                    {
-                                                        if verify_body.contains(payload) {
-                                                            findings.push(ScanFinding {
-                                                                phase: self.phase_number(),
-                                                                module_name: self.name().to_string(),
-                                                                severity: "HIGH".to_string(),
-                                                                description: format!(
-                                                                    "Confirmed Reflected XSS on parameter '{}' (Context: {:?})",
-                                                                    param, html_context
-                                                                ),
-                                                                evidence: format!(
-                                                                    "Payload: {} | Exploit URL: {}",
-                                                                    payload, exploit_url
-                                                                ),
-                                                            });
-                                                        }
-                                                    }
-                                                },
-                                                _ => {},
+                                        if let Ok(Ok(verify_res)) = tokio::time::timeout(
+                                            std::time::Duration::from_secs(5),
+                                            ctx.client.get(exploit_url.as_str()).send(),
+                                        )
+                                        .await
+                                        {
+                                            if let Ok(verify_body) = verify_res.text().await {
+                                                if verify_body.contains(payload) {
+                                                    findings.push(ScanFinding {
+                                                        phase: self.phase_number(),
+                                                        module_name: self.name().to_string(),
+                                                        severity: "HIGH".to_string(),
+                                                        description: format!(
+                                                            "Confirmed Reflected XSS on parameter '{}' (Context: {:?})",
+                                                            param, html_context
+                                                        ),
+                                                        evidence: format!(
+                                                            "Payload: {} | Exploit URL: {}",
+                                                            payload, exploit_url
+                                                        ),
+                                                    });
+                                                }
                                             }
                                         }
                                     }
                                 }
                             }
-                        },
-                        _ => {},
+                        }
                     }
                 }
             }

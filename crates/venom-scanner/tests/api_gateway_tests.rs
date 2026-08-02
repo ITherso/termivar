@@ -102,7 +102,7 @@ fn test_quota_request_recording() {
         manager.record_request(&quota.quota_id, 10);
         let current = manager.get_quota(&quota.quota_id).unwrap();
         assert_eq!(current.requests_used_today, i + 1);
-        assert_eq!(current.scan_credits_used, 10 * (i + 1) as u64);
+        assert_eq!(current.scan_credits_used, 10 * (i + 1));
     }
 }
 

@@ -126,46 +126,43 @@ impl ScanPhase for SstiScanner {
                         test_url.query_pairs_mut().clear();
                         test_url.query_pairs_mut().append_pair(param, payload);
 
-                        match tokio::time::timeout(
+                        if let Ok(Ok(response)) = tokio::time::timeout(
                             std::time::Duration::from_secs(5),
                             ctx.client.get(test_url.as_str()).send(),
                         )
                         .await
                         {
-                            Ok(Ok(response)) => {
-                                if response.status() == StatusCode::OK {
-                                    if let Ok(body) = response.text().await {
-                                        // Detect template engine
-                                        let engine = Self::detect_engine(&body);
+                            if response.status() == StatusCode::OK {
+                                if let Ok(body) = response.text().await {
+                                    // Detect template engine
+                                    let engine = Self::detect_engine(&body);
 
-                                        if engine != TemplateEngine::Unknown {
-                                            let exploit_payload =
-                                                Self::generate_exploit_payload(engine.clone());
+                                    if engine != TemplateEngine::Unknown {
+                                        let exploit_payload =
+                                            Self::generate_exploit_payload(engine.clone());
 
-                                            findings.push(ScanFinding {
-                                                phase: self.phase_number(),
-                                                module_name: self.name().to_string(),
-                                                severity: "CRITICAL".to_string(),
-                                                description: format!(
-                                                    "Server-Side Template Injection detected ({:?}) on {}?{}. Exploit: {}",
-                                                    engine, endpoint, param, exploit_payload
-                                                ),
-                                                evidence: format!(
-                                                    "Diagnostic payload: {} | Response indicates {:?} template engine",
-                                                    payload, engine
-                                                ),
-                                            });
+                                        findings.push(ScanFinding {
+                                            phase: self.phase_number(),
+                                            module_name: self.name().to_string(),
+                                            severity: "CRITICAL".to_string(),
+                                            description: format!(
+                                                "Server-Side Template Injection detected ({:?}) on {}?{}. Exploit: {}",
+                                                engine, endpoint, param, exploit_payload
+                                            ),
+                                            evidence: format!(
+                                                "Diagnostic payload: {} | Response indicates {:?} template engine",
+                                                payload, engine
+                                            ),
+                                        });
 
-                                            ctx.log(format!(
-                                                "SSTI found: {:?} on {}?{}",
-                                                engine, endpoint, param
-                                            ));
-                                            return Ok(findings);
-                                        }
+                                        ctx.log(format!(
+                                            "SSTI found: {:?} on {}?{}",
+                                            engine, endpoint, param
+                                        ));
+                                        return Ok(findings);
                                     }
                                 }
-                            },
-                            _ => {},
+                            }
                         }
                     }
                 }

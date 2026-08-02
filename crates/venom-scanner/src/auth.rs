@@ -210,7 +210,7 @@ impl UserManager {
         self.tokens
             .get(token)
             .cloned()
-            .and_then(|t| if t.is_expired() { None } else { Some(t) })
+            .filter(|token| !token.is_expired())
     }
 
     /// Revokes token

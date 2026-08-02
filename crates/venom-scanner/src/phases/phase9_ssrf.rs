@@ -119,87 +119,84 @@ impl ScanPhase for SsrfScanner {
                     if let Ok(mut test_url) = Url::parse(&url_str) {
                         test_url.query_pairs_mut().append_pair(&param, payload);
 
-                        match tokio::time::timeout(
+                        if let Ok(Ok(response)) = tokio::time::timeout(
                             std::time::Duration::from_secs(5),
                             ctx.client.get(test_url.as_str()).send(),
                         )
                         .await
                         {
-                            Ok(Ok(response)) => {
-                                let status = response.status();
+                            let status = response.status();
 
-                                // Check for successful local SSRF
-                                if status == StatusCode::OK {
-                                    if let Ok(body) = response.text().await {
-                                        // Check for AWS metadata markers
-                                        for marker in Self::aws_metadata_markers() {
-                                            if body.contains(marker) {
-                                                findings.push(ScanFinding {
-                                                    phase: self.phase_number(),
-                                                    module_name: self.name().to_string(),
-                                                    severity: "CRITICAL".to_string(),
-                                                    description: format!(
-                                                        "AWS IMDSv1 SSRF vulnerability on parameter '{}' (Payload: {})",
-                                                        param, payload
-                                                    ),
-                                                    evidence: format!(
-                                                        "AWS metadata exposed | URL: {} | Marker found: {}",
-                                                        test_url, marker
-                                                    ),
-                                                });
-                                                ctx.log(format!(
-                                                    "CRITICAL: AWS metadata leak via parameter {} detected!",
-                                                    param
-                                                ));
-                                                break;
-                                            }
+                            // Check for successful local SSRF
+                            if status == StatusCode::OK {
+                                if let Ok(body) = response.text().await {
+                                    // Check for AWS metadata markers
+                                    for marker in Self::aws_metadata_markers() {
+                                        if body.contains(marker) {
+                                            findings.push(ScanFinding {
+                                                phase: self.phase_number(),
+                                                module_name: self.name().to_string(),
+                                                severity: "CRITICAL".to_string(),
+                                                description: format!(
+                                                    "AWS IMDSv1 SSRF vulnerability on parameter '{}' (Payload: {})",
+                                                    param, payload
+                                                ),
+                                                evidence: format!(
+                                                    "AWS metadata exposed | URL: {} | Marker found: {}",
+                                                    test_url, marker
+                                                ),
+                                            });
+                                            ctx.log(format!(
+                                                "CRITICAL: AWS metadata leak via parameter {} detected!",
+                                                param
+                                            ));
+                                            break;
                                         }
+                                    }
 
-                                        // Check for GCP metadata markers
-                                        for marker in Self::gcp_metadata_markers() {
-                                            if body.contains(marker) {
-                                                findings.push(ScanFinding {
-                                                    phase: self.phase_number(),
-                                                    module_name: self.name().to_string(),
-                                                    severity: "CRITICAL".to_string(),
-                                                    description: format!(
-                                                        "GCP metadata SSRF vulnerability on parameter '{}' (Payload: {})",
-                                                        param, payload
-                                                    ),
-                                                    evidence: format!(
-                                                        "GCP metadata exposed | URL: {} | Marker found: {}",
-                                                        test_url, marker
-                                                    ),
-                                                });
-                                                ctx.log(format!(
-                                                    "CRITICAL: GCP metadata leak via parameter {} detected!",
-                                                    param
-                                                ));
-                                                break;
-                                            }
+                                    // Check for GCP metadata markers
+                                    for marker in Self::gcp_metadata_markers() {
+                                        if body.contains(marker) {
+                                            findings.push(ScanFinding {
+                                                phase: self.phase_number(),
+                                                module_name: self.name().to_string(),
+                                                severity: "CRITICAL".to_string(),
+                                                description: format!(
+                                                    "GCP metadata SSRF vulnerability on parameter '{}' (Payload: {})",
+                                                    param, payload
+                                                ),
+                                                evidence: format!(
+                                                    "GCP metadata exposed | URL: {} | Marker found: {}",
+                                                    test_url, marker
+                                                ),
+                                            });
+                                            ctx.log(format!(
+                                                "CRITICAL: GCP metadata leak via parameter {} detected!",
+                                                param
+                                            ));
+                                            break;
                                         }
                                     }
                                 }
-                                // Forbidden/Protected endpoints (likely exist)
-                                else if status == StatusCode::FORBIDDEN
-                                    || status == StatusCode::UNAUTHORIZED
-                                {
-                                    findings.push(ScanFinding {
-                                        phase: self.phase_number(),
-                                        module_name: self.name().to_string(),
-                                        severity: "MEDIUM".to_string(),
-                                        description: format!(
-                                            "Internal SSRF endpoint accessible on parameter '{}'",
-                                            param
-                                        ),
-                                        evidence: format!(
-                                            "Payload: {} returned HTTP {} | URL: {}",
-                                            payload, status, test_url
-                                        ),
-                                    });
-                                }
-                            },
-                            _ => {},
+                            }
+                            // Forbidden/Protected endpoints (likely exist)
+                            else if status == StatusCode::FORBIDDEN
+                                || status == StatusCode::UNAUTHORIZED
+                            {
+                                findings.push(ScanFinding {
+                                    phase: self.phase_number(),
+                                    module_name: self.name().to_string(),
+                                    severity: "MEDIUM".to_string(),
+                                    description: format!(
+                                        "Internal SSRF endpoint accessible on parameter '{}'",
+                                        param
+                                    ),
+                                    evidence: format!(
+                                        "Payload: {} returned HTTP {} | URL: {}",
+                                        payload, status, test_url
+                                    ),
+                                });
+                            }
                         }
                     }
                 }

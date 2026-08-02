@@ -38,12 +38,9 @@ pub struct ScoringWeights {
 
 impl ScoringWeights {
     /// Default balanced weights
+    #[allow(clippy::should_implement_trait)]
     pub fn default() -> Self {
-        Self {
-            status_weight: 0.4, // Status code matters most
-            timing_weight: 0.3,
-            content_weight: 0.3,
-        }
+        <Self as Default>::default()
     }
 
     /// Status-heavy detection (good for strict WAF)
@@ -104,7 +101,11 @@ impl ScoringWeights {
 
 impl Default for ScoringWeights {
     fn default() -> Self {
-        Self::default()
+        Self {
+            status_weight: 0.4, // Status code matters most
+            timing_weight: 0.3,
+            content_weight: 0.3,
+        }
     }
 }
 
@@ -513,14 +514,14 @@ mod tests {
         let engine_timing_heavy =
             ScoringEngine::with_weights(ScoringWeights::timing_heavy()).unwrap();
 
-        let score_a_default = engine_default.detection_probability(&history_a);
+        let _score_a_default = engine_default.detection_probability(&history_a);
         let score_a_status = engine_status_heavy.detection_probability(&history_a);
         let score_a_timing = engine_timing_heavy.detection_probability(&history_a);
 
         // Status-heavy should score A higher than timing-heavy
         assert!(score_a_status > score_a_timing);
 
-        let score_b_default = engine_default.detection_probability(&history_b);
+        let _score_b_default = engine_default.detection_probability(&history_b);
         let score_b_timing = engine_timing_heavy.detection_probability(&history_b);
         let score_b_status = engine_status_heavy.detection_probability(&history_b);
 

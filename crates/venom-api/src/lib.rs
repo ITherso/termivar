@@ -24,7 +24,6 @@ pub async fn health() -> &'static str {
 /// Builds the currently implemented Axum router.
 ///
 /// The alpha router contains only `GET /health`.
-#[must_use]
 pub fn router() -> Router {
     Router::new().route("/health", get(health))
 }

@@ -182,6 +182,44 @@ impl Error {
 /// Standard Result type using VENOM Error
 pub type Result<T> = std::result::Result<T, Error>;
 
+// Additional helper methods for common patterns
+impl Error {
+    /// Creates a proxy error
+    pub fn proxy(msg: impl Into<String>) -> Self {
+        Error::Proxy(msg.into())
+    }
+
+    /// Creates a detection error
+    pub fn detection(msg: impl Into<String>) -> Self {
+        Error::Detection(msg.into())
+    }
+
+    /// Creates a TLS error
+    pub fn tls(msg: impl Into<String>) -> Self {
+        Error::Tls(msg.into())
+    }
+
+    /// Creates a payload error
+    pub fn payload(msg: impl Into<String>) -> Self {
+        Error::Payload(msg.into())
+    }
+
+    /// Creates a rate limit error
+    pub fn rate_limit(msg: impl Into<String>) -> Self {
+        Error::RateLimit(msg.into())
+    }
+
+    /// Creates a threading error
+    pub fn threading(msg: impl Into<String>) -> Self {
+        Error::Threading(msg.into())
+    }
+
+    /// Creates a database error
+    pub fn database(msg: impl Into<String>) -> Self {
+        Error::Database(msg.into())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -243,43 +281,5 @@ mod tests {
         let err: Error = io_err.into();
         // IO error preserves the original error
         assert_eq!(err.kind(), "IO");
-    }
-}
-
-// Additional helper methods for common patterns
-impl Error {
-    /// Creates a proxy error
-    pub fn proxy(msg: impl Into<String>) -> Self {
-        Error::Proxy(msg.into())
-    }
-
-    /// Creates a detection error
-    pub fn detection(msg: impl Into<String>) -> Self {
-        Error::Detection(msg.into())
-    }
-
-    /// Creates a TLS error
-    pub fn tls(msg: impl Into<String>) -> Self {
-        Error::Tls(msg.into())
-    }
-
-    /// Creates a payload error
-    pub fn payload(msg: impl Into<String>) -> Self {
-        Error::Payload(msg.into())
-    }
-
-    /// Creates a rate limit error
-    pub fn rate_limit(msg: impl Into<String>) -> Self {
-        Error::RateLimit(msg.into())
-    }
-
-    /// Creates a threading error
-    pub fn threading(msg: impl Into<String>) -> Self {
-        Error::Threading(msg.into())
-    }
-
-    /// Creates a database error
-    pub fn database(msg: impl Into<String>) -> Self {
-        Error::Database(msg.into())
     }
 }

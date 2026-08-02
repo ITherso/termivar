@@ -184,14 +184,14 @@ fn test_anomaly_detection_score() {
 
     // Test point close to normal
     let (_is_anomalous, score) = classifier.classify(&[0.5, 0.5, 0.5]);
-    assert!(score >= 0.0 && score <= 1.0);
+    assert!((0.0..=1.0).contains(&score));
 }
 
 #[test]
 fn test_multiple_vulnerability_types() {
     let mut learner = PatternLearner::new();
 
-    let vuln_types = vec!["SQLi", "XSS", "SSTI", "XXE", "SSRF"];
+    let vuln_types = ["SQLi", "XSS", "SSTI", "XXE", "SSRF"];
 
     for (i, vuln_type) in vuln_types.iter().enumerate() {
         let pattern = VulnerabilityPattern {

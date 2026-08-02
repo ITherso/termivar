@@ -183,11 +183,11 @@ fn evidence_value<'a>(
         .map(|evidence| evidence.value())
 }
 
-fn api_hypothesis<'a>(
-    snapshot: &'a KnowledgeSnapshot,
+fn api_hypothesis(
+    snapshot: &KnowledgeSnapshot,
     predicate: PredicateDescriptor,
     value: EvidenceValue,
-) -> Option<&'a Hypothesis> {
+) -> Option<&Hypothesis> {
     let predicate = predicate.into_knowledge();
     snapshot
         .hypotheses()

@@ -149,6 +149,10 @@ fn workspace_graph_violations(workspace_root: &Path) -> Result<Vec<String>, Box<
         .no_deps()
         .other_options(vec!["--locked".to_owned()])
         .exec()?;
+    let mut violations = validate_workspace_root_layout(
+        metadata.root_package().is_none(),
+        workspace_root.join("src").try_exists()?,
+    );
     let workspace_packages = metadata.workspace_packages();
     let workspace_names: BTreeSet<_> = workspace_packages
         .iter()
@@ -167,7 +171,19 @@ fn workspace_graph_violations(workspace_root: &Path) -> Result<Vec<String>, Box<
         })
         .collect();
 
-    Ok(validate_workspace_graph(&graph))
+    violations.extend(validate_workspace_graph(&graph));
+    Ok(violations)
+}
+
+fn validate_workspace_root_layout(is_virtual: bool, has_source_root: bool) -> Vec<String> {
+    if is_virtual && has_source_root {
+        return vec![
+            "virtual workspace root must not contain src/; put compiled Rust code in a workspace package"
+                .to_owned(),
+        ];
+    }
+
+    Vec::new()
 }
 
 fn allowed_workspace_graph() -> BTreeMap<String, BTreeSet<String>> {
@@ -1099,6 +1115,16 @@ mod tests {
         let violations = validate_workspace_graph(&graph).join("\n");
         assert!(violations.contains("venom-core -> venom-scanner"));
         assert!(violations.contains("venom-product has no architecture policy"));
+    }
+
+    #[test]
+    fn virtual_workspace_root_rejects_uncompiled_source_tree() {
+        assert!(validate_workspace_root_layout(true, false).is_empty());
+        assert!(validate_workspace_root_layout(false, true).is_empty());
+
+        let violations = validate_workspace_root_layout(true, true);
+        assert_eq!(violations.len(), 1);
+        assert!(violations[0].contains("virtual workspace root must not contain src/"));
     }
 
     #[test]

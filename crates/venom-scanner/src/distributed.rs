@@ -93,8 +93,7 @@ impl WorkerNode {
             .cpu_utilization
             .max(self.memory_utilization)
             .max(self.network_utilization)
-            .min(100.0) // Cap at 100%
-            .max(0.0); // Floor at 0%
+            .clamp(0.0, 100.0);
 
         let availability_factor = (100.0 - max_utilization) / 100.0;
         ((self.capacity as f32) * availability_factor).ceil() as u32
@@ -266,10 +265,7 @@ impl TaskQueue {
         let priority = task.priority as u8;
 
         self.tasks.insert(task_id.clone(), task);
-        self.queue
-            .entry(priority)
-            .or_insert_with(VecDeque::new)
-            .push_back(task_id); // FIFO: push to back
+        self.queue.entry(priority).or_default().push_back(task_id); // FIFO: push to back
     }
 
     pub fn dequeue(&self) -> Option<ScanTask> {

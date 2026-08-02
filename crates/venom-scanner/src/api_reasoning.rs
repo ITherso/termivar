@@ -487,11 +487,11 @@ mod tests {
             .to_vec()
     }
 
-    fn hypothesis<'a>(
-        hypotheses: &'a [Hypothesis],
+    fn hypothesis(
+        hypotheses: &[Hypothesis],
         predicate: PredicateDescriptor,
         value: EvidenceValue,
-    ) -> Option<&'a Hypothesis> {
+    ) -> Option<&Hypothesis> {
         hypotheses.iter().find(|hypothesis| {
             hypothesis.predicate() == &predicate.into_knowledge() && hypothesis.value() == &value
         })

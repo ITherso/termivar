@@ -1,44 +1,12 @@
-# VENOM Code Style Guide - Rustfmt Configuration
-# Consistent formatting across the codebase
-
-# Formatting basics
+# Stable rustfmt settings shared by local development and CI.
 edition = "2021"
 hard_tabs = false
 tab_spaces = 4
 newline_style = "Auto"
-use_small_heuristics = "Default"
-
-# Line length (soft limit, hard limit for comments)
 max_width = 100
-comment_width = 80
-
-# Indentation
-fn_single_line = false
-impl_block_indent = 4
+use_small_heuristics = "Default"
+fn_params_layout = "Tall"
+match_arm_leading_pipes = "Never"
 match_block_trailing_comma = true
-format_code_in_doc_comments = true
-
-# Imports
 reorder_imports = true
 reorder_modules = true
-group_imports = "StdExternalCrate"
-force_single_line = false
-
-# Functions & Structs
-fn_args_layout = "Tall"
-
-# Spaces
-space_after_colon = true
-space_before_colon = false
-spaces_around_ranges = false
-space_in_derive_attr = false
-
-# Closing braces
-match_arm_leading_pipes = "Never"
-overflow_delimited_expressions = true
-
-# Normalization
-normalize_attributes = true
-normalize_comments = true
-normalize_doc_attributes = true
-reorder_impl_items = true

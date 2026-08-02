@@ -69,10 +69,11 @@ impl Plugin for SSRFPlugin {
     }
 
     fn get_config(&self) -> PluginConfig {
-        let mut config = PluginConfig::default();
-        config.timeout_ms = 5000;
-        config.max_payload_size = 2048;
-        config
+        PluginConfig {
+            timeout_ms: 5000,
+            max_payload_size: 2048,
+            ..PluginConfig::default()
+        }
     }
 
     fn validate(&self) -> Result<(), String> {

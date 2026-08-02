@@ -1,462 +1,150 @@
-# VENOM Code Quality Standards
+# Code quality
 
-Code quality practices for Venom v0.9.0-alpha.
+Venom treats quality claims as release evidence, not marketing language. Passing
+CI means that the declared checks passed for one commit; it does not make the
+alpha production-ready or prove that a scanner result is correct.
 
-## Overview
+## Source ownership
 
-VENOM maintains enterprise-grade code quality through:
-
-- ✅ Rust idioms & best practices
-- ✅ Strict linting (Clippy)
-- ✅ Automatic formatting (rustfmt)
-- ✅ Security scanning (cargo-audit)
-- ✅ Dependency management (Dependabot)
-- ✅ Software Bill of Materials (SBOM)
-- ✅ Continuous integration (GitHub Actions)
-- ✅ Code review process
-
-## Rust Style Guide
-
-### Naming Conventions
-
-**Functions:**
-```rust
-// snake_case for function names
-pub fn calculate_hash() {}
-pub async fn fetch_data_async() {}
+```text
+crates/
+├─ venom-core/src/          transport-neutral contracts and types
+├─ venom-scanner/src/       runtime, reasoning, phases, and plugins
+├─ venom-proxy/src/         HTTP/TLS proxy boundary
+├─ venom-api/src/           application transport
+└─ venom-cli/src/           composition root
+examples/src/               compiled SDK examples
+xtask/src/                  repository maintenance commands
 ```
 
-**Types & Traits:**
-```rust
-// PascalCase for types and traits
-pub struct UserConfiguration;
-pub trait SecurityValidator;
-pub enum ErrorType;
+The root `Cargo.toml` is a virtual workspace manifest and must not have `src/`.
+Rust code belongs to a declared package so it cannot be silently excluded from
+build, test, documentation, release, or quality gates. `cargo xtask
+architecture` enforces this rule and the allowed crate dependency graph.
+
+## Rust conventions
+
+- Follow standard Rust naming: `snake_case` functions/modules,
+  `PascalCase` types/traits, and `SCREAMING_SNAKE_CASE` constants.
+- Prefer small, explicit modules with narrow public surfaces.
+- Keep transport, planning, verification, rules, and persistence concerns on
+  their documented side of the architecture boundary.
+- Return structured errors. Logs are diagnostic and must not be the only record
+  of a failed state transition.
+- Use checked arithmetic and explicit ceilings at attacker-controlled or
+  untrusted input boundaries.
+- Avoid secret-bearing `Debug` output. Opaque IDs and redacted summaries are
+  preferable to raw headers, response values, tokens, or customer identifiers.
+
+The workspace compiler configuration denies unsafe code and enables selected
+rustdoc warnings. Platform configuration is compiler-owned; the repository does
+not inject values such as `CARGO_CFG_UNIX`. Warning-free Clippy is enforced by
+release and CI commands rather than a global `RUSTFLAGS` environment override.
+
+## Required local checks
+
+Before submitting a change, run:
+
+```bash
+cargo fmt --all -- --check
+cargo xtask architecture
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo test --workspace --all-features --locked
 ```
 
-**Constants:**
-```rust
-// SCREAMING_SNAKE_CASE for constants
-const MAX_CONNECTIONS: u32 = 1000;
-const ENCRYPTION_ALGORITHM: &str = "AES-256-GCM";
+`cargo xtask release` runs the maintained local preflight and builds the release
+CLI. GitHub Actions remains authoritative for the cross-platform result.
+
+Use a narrower command while iterating, but do not substitute it for the
+relevant workspace gate:
+
+```bash
+cargo test -p venom-core
+cargo test -p venom-scanner --no-default-features --lib --locked
+cargo test -p venom-scanner --all-features runtime_budget
 ```
 
-**Modules:**
-```rust
-// snake_case for module names
-mod security;
-mod compliance;
-```
+See [Testing](TESTING.md) for service-backed tests, deterministic reasoning
+fixtures, fuzzing, coverage, and runtime-accounting expectations.
 
-### Code Organization
+## Public API documentation
 
-**Module Structure:**
-```
-src/
-├─ lib.rs                    # Main library export
-├─ main.rs                   # CLI entry point
-├─ proxy/
-│  ├─ mod.rs                # Module root
-│  ├─ interceptor.rs        # Internal module
-│  └─ certificate.rs        # Internal module
-└─ security/
-   ├─ mod.rs                # Module root
-   ├─ encryption.rs         # Internal module
-   └─ audit.rs              # Internal module
-```
+Public contracts should explain invariants, failure behavior, resource limits,
+and compatibility status. Add a compiling example when it clarifies normal
+usage:
 
-**File Organization:**
-```rust
-// 1. Module documentation
-/// This module handles...
-
-// 2. Imports
-use std::collections::HashMap;
-use serde::{Deserialize, Serialize};
-
-// 3. Constants
-const MAX_SIZE: usize = 1024;
-
-// 4. Type definitions
-pub struct MyStruct {
-    field: String,
-}
-
-// 5. Trait implementations
-impl MyStruct {
-    pub fn new() -> Self { }
-}
-
-// 6. Tests
-#[cfg(test)]
-mod tests {
-    use super::*;
-}
-```
-
-### Documentation
-
-**Module Documentation:**
-```rust
-/// Handles proxy operations including request interception,
-/// response modification, and certificate generation.
-///
-/// # Examples
-///
-/// ```
-/// use venom::proxy::ProxyServer;
-/// let server = ProxyServer::new(8080);
-/// ```
-pub mod proxy;
-```
-
-**Function Documentation:**
-```rust
-/// Encrypts data using AES-256-GCM algorithm.
-///
-/// # Arguments
-///
-/// * `data` - The plaintext data to encrypt
-/// * `key` - The encryption key (256 bits)
-///
-/// # Returns
-///
-/// Returns encrypted data or error if encryption fails.
-///
-/// # Examples
-///
-/// ```
-/// let ciphertext = encrypt_data(b"secret", &key)?;
-/// ```
+````rust
+/// Creates a bounded value after validating its public invariant.
 ///
 /// # Errors
 ///
-/// Returns `EncryptionError` if:
-/// - Key is invalid
-/// - Data encoding fails
-pub fn encrypt_data(data: &[u8], key: &[u8; 32]) -> Result<Vec<u8>> {
-```
-
-**Type Documentation:**
-```rust
-/// Configuration for security settings.
+/// Returns [`ValueError`] when `input` exceeds the documented ceiling.
 ///
-/// This struct controls encryption algorithms, secret rotation,
-/// audit logging, and threat detection capabilities.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SecurityConfig {
-    /// Enable/disable encryption
-    pub encryption_enabled: bool,
-    /// Encryption algorithm
-    pub algorithm: EncryptionAlgorithm,
-}
-```
-
-## Clippy Linting
-
-### Enabled Lint Rules
-
-```
--D warnings              # Treat all warnings as errors
--D unsafe_code          # Disallow unsafe code (explicit opt-in)
--W missing_docs         # Warn on missing documentation
--W rustdoc::all         # Warn on all rustdoc issues
--W clippy::all          # Enable all clippy lints
-```
-
-### Common Clippy Violations to Avoid
-
-**❌ Don't:**
-```rust
-// Unnecessary clone
-let x = value.clone();
-
-// Unnecessary collect
-let sum: i32 = vec.iter().collect::<Vec<_>>().iter().sum();
-
-// Long function chains
-data
-    .iter()
-    .filter(|x| x > &5)
-    .map(|x| x * 2)
-    .filter(|x| x < &20)
-    .collect()
-```
-
-**✅ Do:**
-```rust
-// Use references
-let x = &value;
-
-// Simpler chains
-let sum: i32 = vec.iter().filter(|x| x > &&5).map(|x| x * 2).sum();
-
-// Break into readable steps
-let filtered: Vec<_> = data.iter()
-    .filter(|x| *x > 5)
-    .map(|x| x * 2)
-    .collect();
-```
-
-## Formatting with rustfmt
-
-### Automatic Formatting
-
-```bash
-# Format all files
-cargo fmt
-
-# Check without modifying
-cargo fmt -- --check
-
-# Format specific file
-cargo fmt --bin venom
-
-# Format all workspace packages
-cargo fmt --all
-```
-
-### Format Configuration
-
-See `rustfmt.toml` for detailed settings:
-- Line length: 100 characters
-- Tab width: 4 spaces
-- Edition: 2021
-
-### Code Formatting Examples
-
-**✅ Correct:**
-```rust
-pub struct Configuration {
-    pub proxy_port: u16,
-    pub api_port: u16,
-    pub database_url: String,
-}
-
-impl Configuration {
-    pub fn new(
-        proxy_port: u16,
-        api_port: u16,
-        database_url: String,
-    ) -> Self {
-        Self {
-            proxy_port,
-            api_port,
-            database_url,
-        }
-    }
-}
-```
-
-**❌ Incorrect:**
-```rust
-pub struct Configuration { proxy_port: u16, api_port: u16, database_url: String }
-impl Configuration {pub fn new(proxy_port: u16,api_port: u16,database_url: String)->Self{Self{proxy_port,api_port,database_url}}}
-```
-
-## Security Scanning
-
-### cargo-audit
-
-Scans for known security vulnerabilities in dependencies:
-
-```bash
-# Scan for vulnerabilities
-cargo audit
-
-# Audit with detailed output
-cargo audit -D
-
-# Check specific advisory
-cargo audit --advisories RUSTSEC-2024-0001
-```
-
-**Policy:**
-- Critical: Patch within 24 hours
-- High: Patch within 1 week
-- Medium: Patch within 2 weeks
-- Low: Patch in next release
-
-### Dependency Updates
-
-**Dependabot Configuration:**
-```yaml
-version: 2
-updates:
-  - package-ecosystem: "cargo"
-    directory: "/"
-    schedule:
-      interval: "weekly"
-      day: "monday"
-    reviewers:
-      - "security-team"
-    labels:
-      - "dependencies"
-```
-
-**Manual Update Process:**
-```bash
-# Check for outdated dependencies
-cargo outdated
-
-# Update single dependency
-cargo update -p regex
-
-# Update all dependencies
-cargo update
-```
-
-## Code Review Checklist
-
-Before submitting a PR, verify:
-
-### Correctness
-- ✅ Tests pass (`cargo test`)
-- ✅ Code compiles (`cargo check`)
-- ✅ No clippy warnings (`cargo clippy`)
-- ✅ Formatting correct (`cargo fmt --check`)
-- ✅ No security issues (`cargo audit`)
-
-### Quality
-- ✅ Functions have documentation
-- ✅ Types are well-documented
-- ✅ Examples included for public APIs
-- ✅ Error handling is explicit
-- ✅ No code duplication
-- ✅ Complexity is reasonable
-
-### Security
-- ✅ No `unsafe` blocks (unless unavoidable)
-- ✅ Input validation present
-- ✅ Error messages don't leak info
-- ✅ Secrets not logged
-- ✅ Dependencies are secure
-
-### Performance
-- ✅ No unnecessary allocations
-- ✅ No infinite loops
-- ✅ Reasonable time complexity
-- ✅ Caching used where appropriate
-
-### Documentation
-- ✅ README updated if needed
-- ✅ CHANGELOG.md updated
-- ✅ Public API documented
-- ✅ Examples provided
-
-## SBOM Generation
-
-### Generate Software Bill of Materials
-
-```bash
-# Install syft
-cargo install syft
-
-# Generate SBOM in JSON format
-syft packages . -o json > sbom.json
-
-# Generate SBOM in SPDX format
-syft packages . -o spdx-json > sbom-spdx.json
-
-# Generate SBOM in CycloneDX format
-syft packages . -o cyclonedx-json > sbom-cyclonedx.json
-```
-
-### SBOM Contents
-
-The SBOM includes:
-- All dependencies (direct and transitive)
-- Version numbers
-- License information
-- Known vulnerabilities
-- Checksums
-
-### SBOM Distribution
-
-Published with each release:
-- `venom-0.9.0-alpha-sbom.json` (GitHub Releases)
-- `venom-0.9.0-alpha-sbom-spdx.json` (SPDX format)
-- `sbom.json` (Latest version)
-
-## Continuous Integration
-
-### GitHub Actions Pipeline
-
-**Quality Checks (runs on every commit):**
-
-```yaml
-- cargo fmt --check        # Format check
-- cargo clippy             # Linting
-- cargo test               # Tests
-- cargo audit              # Security audit
-- cargo tarpaulin          # Code coverage
-```
-
-**Performance Checks (nightly):**
-
-```yaml
-- cargo bench              # Benchmark suite
-- cargo bloat              # Binary size analysis
-- cargo tree               # Dependency tree
-```
-
-### Build Matrix
-
-Tested on:
-- Rust: stable, beta, nightly
-- OS: Ubuntu, macOS, Windows
-- Architecture: x86_64, aarch64
-
-## Performance Standards
-
-### Benchmarks
-
-Run with: `cargo bench`
-
-Target metrics:
-- Proxy latency: <50ms (avg)
-- Scanner throughput: >100 req/sec
-- Memory usage: <100MB
-- Cache hit rate: >80%
-
-### Code Complexity
-
-Maximum allowed:
-- Function length: 100 lines
-- Cyclomatic complexity: 20
-- Nested levels: 5
-
-### Test Coverage
-
-Minimum required:
-- Overall: 80%
-- Critical paths: 95%
-- Security code: enforced review
-
-## Pre-commit Hooks
-
-Enable automatic checks before commit:
-
-```bash
-# Install pre-commit hook
-cp .githooks/pre-commit .git/hooks/
-chmod +x .git/hooks/pre-commit
-
-# Configure git to use hooks directory
-git config core.hooksPath .githooks
-```
-
-**Hook checks:**
-```bash
-cargo fmt --check        # Format
-cargo clippy             # Linting
-cargo test               # Tests
-cargo audit              # Security
-```
-
-## References
-
-- [Rust API Guidelines](https://rust-lang.github.io/api-guidelines/)
-- [Clippy Lint List](https://rust-lang.github.io/rust-clippy/)
-- [rustfmt Documentation](https://rust-lang.github.io/rustfmt/)
-- [OWASP Secure Coding](https://owasp.org/www-project-secure-coding-practices/)
+/// # Examples
+///
+/// ```
+/// # use example_crate::BoundedValue;
+/// let value = BoundedValue::new("example")?;
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
+# pub struct BoundedValue;
+# pub struct ValueError;
+````
+
+Run `cargo test --workspace --doc --locked` for examples and `cargo xtask docs`
+for Rust API documentation plus the strict MkDocs build. Do not publish an API
+snippet for a type that is not exported by a compiled workspace crate.
+
+## Architecture-sensitive changes
+
+Changes to the following areas need focused boundary tests and an architecture
+review:
+
+- workspace dependency direction;
+- reasoning or planner imports;
+- network ownership and runtime resource accounting;
+- evidence identity, canonicalization, or replay semantics;
+- plugin and scanner SDK public contracts;
+- cancellation, partial commit, and audit receipts.
+
+Record a durable design decision in an [ADR](adr/README.md) when the reason for
+the boundary would otherwise be lost.
+
+## Dependency and security checks
+
+CI runs Cargo Audit, cargo-deny, CodeQL, Semgrep, and filesystem/container
+scanning in separate workflows. A new dependency needs a concrete purpose,
+compatible license, maintained release line, and review of its default
+features. Security-sensitive changes also need negative tests for denied,
+malformed, oversized, and partially failed inputs.
+
+Do not report vulnerabilities in a public issue. Follow the private process in
+the repository [Security Policy](https://github.com/ITherso/venom/blob/main/SECURITY.md).
+
+## Metrics
+
+The Quality Metrics workflow records compile time, release binary size, peak
+runner memory, and Criterion artifacts. The repository metrics script counts
+only tracked Rust files owned by workspace packages. Neither source-line count
+nor test count is a quality score.
+
+Coverage, benchmark, and fuzz results must include the commit, toolchain,
+configuration, bounded workload, and artifact provenance. See [Quality
+metrics](quality-metrics.md), [Benchmarks](benchmarks.md), and
+[Fuzzing](fuzzing.md).
+
+## Review checklist
+
+- The change has one observable purpose and no unrelated refactor.
+- New behavior has a regression test, including the relevant failure path.
+- Public API and serialized-shape changes state their SemVer impact.
+- Resource usage is bounded at the owning layer, not inferred from logs or
+  semantic actions.
+- Documentation describes compiled behavior and does not use completion
+  percentages or unsupported production claims.
+- No secrets, credentials, private targets, generated build output, or customer
+  data are included.
+- The architecture, formatting, Clippy, and relevant test gates pass.
+
+Current release blockers and missing evidence are tracked in
+[`PROJECT_STATUS.md`](https://github.com/ITherso/venom/blob/main/PROJECT_STATUS.md).

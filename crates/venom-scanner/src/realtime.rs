@@ -117,10 +117,7 @@ impl EventStream {
     /// Publishes an event
     pub fn publish(&self, event: RealtimeEvent) {
         let scan_id = event.scan_id();
-        self.events
-            .entry(scan_id)
-            .or_insert_with(Vec::new)
-            .push(event);
+        self.events.entry(scan_id).or_default().push(event);
     }
 
     /// Gets events for a scan
@@ -234,7 +231,7 @@ impl ConnectionManager {
         let sub = Subscription::new(subscriber_id.clone(), scan_id.clone());
         self.subscriptions
             .entry(scan_id)
-            .or_insert_with(Vec::new)
+            .or_default()
             .push(sub.clone());
         sub
     }

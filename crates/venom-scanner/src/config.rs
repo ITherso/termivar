@@ -18,12 +18,9 @@ pub struct LuaEngineConfig {
 
 impl LuaEngineConfig {
     /// Default config: reasonable limits for production
+    #[allow(clippy::should_implement_trait)]
     pub fn default() -> Self {
-        Self {
-            history_size: 100,            // Keep last 100 executions
-            max_memory_bytes: 50_000_000, // 50MB per script
-            default_timeout_ms: 5000,     // 5 second default
-        }
+        <Self as Default>::default()
     }
 
     /// Minimal config: for CI/tests
@@ -60,7 +57,11 @@ impl LuaEngineConfig {
 
 impl Default for LuaEngineConfig {
     fn default() -> Self {
-        Self::default()
+        Self {
+            history_size: 100,            // Keep last 100 executions
+            max_memory_bytes: 50_000_000, // 50MB per script
+            default_timeout_ms: 5000,     // 5 second default
+        }
     }
 }
 

@@ -19,6 +19,10 @@ Results are runner-local regression signals. They are not comparable across arbi
 
 Coverage is produced by the Tests workflow and uploaded to Codecov. Unit, integration, compatibility, and security results remain separate required checks.
 
+`scripts/generate-metrics.sh` reports tracked Rust lines and files only for
+declared workspace-package roots (`crates/`, `examples/`, and `xtask/`). These
+repository-size counts are not a coverage or quality score.
+
 ## Not measured yet
 
 | Metric | State | Exit criterion |

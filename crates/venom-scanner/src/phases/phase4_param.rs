@@ -197,7 +197,7 @@ impl ScanPhase for ParameterDiscoverer {
 
             for param in &self.param_wordlist {
                 let sem = Arc::clone(&semaphore);
-                let cl = Arc::clone(&client);
+                let cl = Arc::clone(client);
                 let url_to_test = url_str.clone();
                 let param_name = param.clone();
                 let ctx_clone = ctx.clone();

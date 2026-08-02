@@ -46,7 +46,7 @@ jobs:
       - name: Verify architecture boundaries
         run: cargo run --locked -p xtask -- architecture
       - name: Run Clippy
-        run: cargo clippy --workspace --all-targets --all-features
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
       - name: Run workspace tests
         run: cargo test --workspace --all-features --locked
       - name: Enforce dependency policy

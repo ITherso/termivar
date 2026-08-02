@@ -35,6 +35,7 @@ All notable changes to Venom are recorded here. Releases use the categories from
 - A host-owned HTTP request broker with atomic dispatch, active-verification, and retained-response-byte accounting shared by every built-in standard-runtime executor.
 - A pinned `venom-core` public API compatibility command and dedicated CI gate against the `v0.9.0-alpha` source baseline.
 - A `ScanContext` construction ADR and migration guide for the next Scanner Preview release.
+- A virtual-workspace layout gate that rejects uncompiled Rust source at the repository root.
 
 ### Changed
 
@@ -58,6 +59,9 @@ All notable changes to Venom are recorded here. Releases use the categories from
 - Made rule-produced hypothesis writes batch-atomic and preserved verifier-owned terminal states under the same knowledge-base lock.
 - Made planning-session changes error-atomic and snapshot-CAS guarded; planner, command-construction, and stale-knowledge failures no longer partially halt or advance a session.
 - `ScanContext` now owns an evidence-driven `KnowledgeBase`, is non-exhaustive, and exposes reasoning state through `knowledge()`. This is an intentional Preview source transition from the v0.9 struct-literal contract; consumers must use constructors and the accessor. `venom-scanner` remains outside the blocking compatibility gate until the next Preview baseline.
+- Removed the uncompiled pre-workspace monolith and its obsolete completion/deployment reports; Git history remains the migration archive.
+- Made repository-size metrics count only tracked Rust files owned by workspace packages and moved warning denial from global environment overrides into explicit Clippy/release gates.
+- Replaced stale testing, observability, and code-quality claims with documentation of the currently compiled contracts and CI evidence.
 
 ### Fixed
 

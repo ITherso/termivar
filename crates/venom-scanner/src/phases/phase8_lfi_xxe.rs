@@ -116,41 +116,38 @@ impl ScanPhase for LfiXxeScanner {
                         test_url.query_pairs_mut().clear();
                         test_url.query_pairs_mut().append_pair(param, payload);
 
-                        match tokio::time::timeout(
+                        if let Ok(Ok(response)) = tokio::time::timeout(
                             std::time::Duration::from_secs(5),
                             ctx.client.get(test_url.as_str()).send(),
                         )
                         .await
                         {
-                            Ok(Ok(response)) => {
-                                if response.status() == StatusCode::OK {
-                                    if let Ok(body) = response.text().await {
-                                        for (sig, sig_type) in Self::file_signatures() {
-                                            if body.contains(sig) {
-                                                findings.push(ScanFinding {
-                                                    phase: self.phase_number(),
-                                                    module_name: self.name().to_string(),
-                                                    severity: "HIGH".to_string(),
-                                                    description: format!(
-                                                        "Local File Inclusion (Linux) on {}?{}. Payload: {}",
-                                                        endpoint, param, payload
-                                                    ),
-                                                    evidence: format!(
-                                                        "File signature '{}' detected in response. Signature type: {}",
-                                                        sig, sig_type
-                                                    ),
-                                                });
-                                                ctx.log(format!(
-                                                    "LFI found (Linux) on {}?{}",
-                                                    endpoint, param
-                                                ));
-                                                return Ok(findings);
-                                            }
+                            if response.status() == StatusCode::OK {
+                                if let Ok(body) = response.text().await {
+                                    for (sig, sig_type) in Self::file_signatures() {
+                                        if body.contains(sig) {
+                                            findings.push(ScanFinding {
+                                                phase: self.phase_number(),
+                                                module_name: self.name().to_string(),
+                                                severity: "HIGH".to_string(),
+                                                description: format!(
+                                                    "Local File Inclusion (Linux) on {}?{}. Payload: {}",
+                                                    endpoint, param, payload
+                                                ),
+                                                evidence: format!(
+                                                    "File signature '{}' detected in response. Signature type: {}",
+                                                    sig, sig_type
+                                                ),
+                                            });
+                                            ctx.log(format!(
+                                                "LFI found (Linux) on {}?{}",
+                                                endpoint, param
+                                            ));
+                                            return Ok(findings);
                                         }
                                     }
                                 }
-                            },
-                            _ => {},
+                            }
                         }
                     }
                 }
@@ -161,41 +158,38 @@ impl ScanPhase for LfiXxeScanner {
                         test_url.query_pairs_mut().clear();
                         test_url.query_pairs_mut().append_pair(param, payload);
 
-                        match tokio::time::timeout(
+                        if let Ok(Ok(response)) = tokio::time::timeout(
                             std::time::Duration::from_secs(5),
                             ctx.client.get(test_url.as_str()).send(),
                         )
                         .await
                         {
-                            Ok(Ok(response)) => {
-                                if response.status() == StatusCode::OK {
-                                    if let Ok(body) = response.text().await {
-                                        for (sig, sig_type) in Self::file_signatures() {
-                                            if body.contains(sig) {
-                                                findings.push(ScanFinding {
-                                                    phase: self.phase_number(),
-                                                    module_name: self.name().to_string(),
-                                                    severity: "HIGH".to_string(),
-                                                    description: format!(
-                                                        "Local File Inclusion (Windows) on {}?{}. Payload: {}",
-                                                        endpoint, param, payload
-                                                    ),
-                                                    evidence: format!(
-                                                        "File signature '{}' detected in response. Signature type: {}",
-                                                        sig, sig_type
-                                                    ),
-                                                });
-                                                ctx.log(format!(
-                                                    "LFI found (Windows) on {}?{}",
-                                                    endpoint, param
-                                                ));
-                                                return Ok(findings);
-                                            }
+                            if response.status() == StatusCode::OK {
+                                if let Ok(body) = response.text().await {
+                                    for (sig, sig_type) in Self::file_signatures() {
+                                        if body.contains(sig) {
+                                            findings.push(ScanFinding {
+                                                phase: self.phase_number(),
+                                                module_name: self.name().to_string(),
+                                                severity: "HIGH".to_string(),
+                                                description: format!(
+                                                    "Local File Inclusion (Windows) on {}?{}. Payload: {}",
+                                                    endpoint, param, payload
+                                                ),
+                                                evidence: format!(
+                                                    "File signature '{}' detected in response. Signature type: {}",
+                                                    sig, sig_type
+                                                ),
+                                            });
+                                            ctx.log(format!(
+                                                "LFI found (Windows) on {}?{}",
+                                                endpoint, param
+                                            ));
+                                            return Ok(findings);
                                         }
                                     }
                                 }
-                            },
-                            _ => {},
+                            }
                         }
                     }
                 }
@@ -208,7 +202,7 @@ impl ScanPhase for LfiXxeScanner {
                     }
 
                     // In-band XXE detection
-                    match tokio::time::timeout(
+                    if let Ok(Ok(response)) = tokio::time::timeout(
                         std::time::Duration::from_secs(5),
                         ctx.client
                             .post(test_url.as_str())
@@ -218,27 +212,25 @@ impl ScanPhase for LfiXxeScanner {
                     )
                     .await
                     {
-                        Ok(Ok(response)) => {
-                            if let Ok(body) = response.text().await {
-                                if body.contains("root:x:0:0:") || body.contains("/bin/") {
-                                    findings.push(ScanFinding {
-                                        phase: self.phase_number(),
-                                        module_name: self.name().to_string(),
-                                        severity: "HIGH".to_string(),
-                                        description: format!(
-                                            "XML External Entity (XXE) - In-Band on {}. Payload: {}",
-                                            endpoint, Self::xxe_payload()
-                                        ),
-                                        evidence:
-                                            "XXE payload resulted in file content leakage in response body"
-                                                .to_string(),
-                                    });
-                                    ctx.log(format!("XXE (In-Band) found on {}", endpoint));
-                                    return Ok(findings);
-                                }
+                        if let Ok(body) = response.text().await {
+                            if body.contains("root:x:0:0:") || body.contains("/bin/") {
+                                findings.push(ScanFinding {
+                                    phase: self.phase_number(),
+                                    module_name: self.name().to_string(),
+                                    severity: "HIGH".to_string(),
+                                    description: format!(
+                                        "XML External Entity (XXE) - In-Band on {}. Payload: {}",
+                                        endpoint,
+                                        Self::xxe_payload()
+                                    ),
+                                    evidence:
+                                        "XXE payload resulted in file content leakage in response body"
+                                            .to_string(),
+                                });
+                                ctx.log(format!("XXE (In-Band) found on {}", endpoint));
+                                return Ok(findings);
                             }
-                        },
-                        _ => {},
+                        }
                     }
 
                     // Blind OOB-XXE detection (if OOB domain configured)
@@ -262,7 +254,7 @@ impl ScanPhase for LfiXxeScanner {
                             oob_host
                         );
 
-                        match tokio::time::timeout(
+                        if let Ok(Ok(_)) = tokio::time::timeout(
                             std::time::Duration::from_secs(5),
                             ctx.client
                                 .post(test_url.as_str())
@@ -272,23 +264,20 @@ impl ScanPhase for LfiXxeScanner {
                         )
                         .await
                         {
-                            Ok(Ok(_)) => {
-                                ctx.log(format!("Blind XXE OOB payload sent: {}", oob_host));
-                                findings.push(ScanFinding {
-                                    phase: self.phase_number(),
-                                    module_name: self.name().to_string(),
-                                    severity: "MEDIUM".to_string(),
-                                    description: format!(
-                                        "XML External Entity (XXE) - Blind OOB on {}. OOB Host: {}",
-                                        endpoint, oob_host
-                                    ),
-                                    evidence: format!(
-                                        "Blind XXE OOB payload sent to {}. Awaiting callback verification.",
-                                        oob_host
-                                    ),
-                                });
-                            },
-                            _ => {},
+                            ctx.log(format!("Blind XXE OOB payload sent: {}", oob_host));
+                            findings.push(ScanFinding {
+                                phase: self.phase_number(),
+                                module_name: self.name().to_string(),
+                                severity: "MEDIUM".to_string(),
+                                description: format!(
+                                    "XML External Entity (XXE) - Blind OOB on {}. OOB Host: {}",
+                                    endpoint, oob_host
+                                ),
+                                evidence: format!(
+                                    "Blind XXE OOB payload sent to {}. Awaiting callback verification.",
+                                    oob_host
+                                ),
+                            });
                         }
                     }
                 }

@@ -2,9 +2,8 @@
 //!
 //! Tests phase execution, finding generation, and inter-phase data flow
 
-use std::sync::Arc;
 use url::Url;
-use venom_scanner::{LogLevel, Logger, ScanContext, ScanFinding, ScanPhase};
+use venom_scanner::{LogLevel, Logger, ScanFinding};
 
 /// Verifies that all phases have correct metadata
 #[test]
@@ -153,18 +152,18 @@ fn test_test_url_construction() {
 /// Tests payload categorization
 #[test]
 fn test_payload_categories() {
-    let sql_payloads = vec!["' OR '1'='1", "1; DROP TABLE users--"];
-    let xss_payloads = vec!["<svg onload=alert(1)>", "javascript:alert(1)"];
+    let sql_payloads = ["' OR '1'='1", "1; DROP TABLE users--"];
+    let xss_payloads = ["<svg onload=alert(1)>", "javascript:alert(1)"];
 
     // Verify payload vectors are non-empty
-    assert!(!sql_payloads.is_empty());
-    assert!(!xss_payloads.is_empty());
+    assert!(sql_payloads.iter().all(|payload| !payload.is_empty()));
+    assert!(xss_payloads.iter().all(|payload| !payload.is_empty()));
 }
 
 /// Tests finding severity comparison
 #[test]
 fn test_severity_comparison() {
-    let severities = vec![("CRITICAL", 4), ("HIGH", 3), ("MEDIUM", 2), ("LOW", 1)];
+    let severities = [("CRITICAL", 4), ("HIGH", 3), ("MEDIUM", 2), ("LOW", 1)];
 
     // Verify ordering makes sense
     for i in 0..severities.len() - 1 {

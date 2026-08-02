@@ -64,10 +64,7 @@ impl MetricsCollector {
 
     /// Records phase execution time
     pub fn record_phase_time(&mut self, phase: u8, duration_ms: u64) {
-        self.phase_times
-            .entry(phase)
-            .or_insert_with(Vec::new)
-            .push(duration_ms);
+        self.phase_times.entry(phase).or_default().push(duration_ms);
     }
 
     /// Calculates average response time (ms)

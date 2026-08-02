@@ -186,7 +186,7 @@ mod tests {
     fn test_cache_entry_expiration() {
         let mut entry = CacheEntry::new("value".to_string(), 3600);
         // Manually set to past
-        entry.created_at = entry.created_at - 7200;
+        entry.created_at -= 7200;
         assert!(entry.is_expired());
     }
 

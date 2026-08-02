@@ -67,10 +67,11 @@ impl Plugin for LFIPlugin {
     }
 
     fn get_config(&self) -> PluginConfig {
-        let mut config = PluginConfig::default();
-        config.timeout_ms = 3500;
-        config.max_payload_size = 4096;
-        config
+        PluginConfig {
+            timeout_ms: 3500,
+            max_payload_size: 4096,
+            ..PluginConfig::default()
+        }
     }
 
     fn validate(&self) -> Result<(), String> {
@@ -115,6 +116,6 @@ mod tests {
             .execute("http://target.com?file=../etc/passwd", "test")
             .await
             .unwrap();
-        assert!(result.len() > 0);
+        assert!(!result.is_empty());
     }
 }

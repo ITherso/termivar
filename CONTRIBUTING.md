@@ -25,6 +25,10 @@ cargo xtask generate plugin my-plugin
 
 The generate commands require `cargo-generate` (`cargo install cargo-generate`).
 
+The root `Cargo.toml` is a virtual manifest. Do not create a root `src/`
+directory; put Rust code in an existing workspace package or propose a package
+boundary through an ADR. The architecture command enforces this rule.
+
 ## First contribution
 
 Start with a scoped [`good first issue`](https://github.com/ITherso/venom/labels/good%20first%20issue). Comment before implementation, keep the first pull request to one observable outcome, and ask for scope clarification on the issue if an acceptance criterion is ambiguous.
@@ -47,7 +51,7 @@ Before opening a pull request, run:
 ```bash
 cargo fmt --all -- --check
 cargo xtask architecture
-cargo clippy --workspace --all-targets --all-features
+cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo test --workspace --all-features
 ```
 

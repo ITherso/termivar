@@ -381,7 +381,7 @@ fn test_compliance_reporter_latest() {
 fn test_compliance_reporter_trend() {
     let mut reporter = ComplianceReporter::new();
 
-    let scores = vec![85.0, 88.0, 91.0, 94.0, 97.0];
+    let scores = [85.0, 88.0, 91.0, 94.0, 97.0];
 
     for (i, &score) in scores.iter().enumerate() {
         let report = ComplianceReport {
@@ -406,7 +406,7 @@ fn test_compliance_reporter_trend() {
 fn test_multi_framework_compliance() {
     let mut assessor = ComplianceAssessor::new();
 
-    let frameworks = vec![
+    let frameworks = [
         ComplianceFramework::GDPR,
         ComplianceFramework::HIPAA,
         ComplianceFramework::SOC2,

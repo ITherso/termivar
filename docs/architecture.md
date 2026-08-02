@@ -18,6 +18,11 @@ The editable diagrams.net source is [architecture.drawio](architecture.drawio). 
 
 `xtask` is repository tooling rather than a runtime layer. It may orchestrate workspace commands but application crates must not depend on it.
 
+The repository root is a virtual Cargo workspace and has no `src/` tree. Rust
+source must live under a declared workspace package; otherwise it would be
+excluded from build, test, documentation, release, and quality gates. The
+architecture preflight rejects a virtual root containing `src/`.
+
 ```mermaid
 flowchart TD
     CLI[venom-cli] --> Scanner[venom-scanner]
@@ -180,7 +185,7 @@ Run the machine-enforced boundary locally:
 cargo xtask architecture
 ```
 
-The command validates workspace dependencies through locked Cargo metadata,
+The command rejects uncompiled source at the virtual workspace root, validates workspace dependencies through locked Cargo metadata,
 inspects protected production imports through the Rust AST, verifies canonical
 `lib.rs` module and external-root wiring, and compiles `venom-scanner` with no
 default features. See [ADR 0004](adr/0004-reasoning-runtime-boundary.md).

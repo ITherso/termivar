@@ -64,11 +64,12 @@ impl Plugin for SQLiPlugin {
     }
 
     fn get_config(&self) -> PluginConfig {
-        let mut config = PluginConfig::default();
-        config.timeout_ms = 4000;
-        config.max_payload_size = 8192;
-        config.retry_count = 2;
-        config
+        PluginConfig {
+            timeout_ms: 4000,
+            max_payload_size: 8192,
+            retry_count: 2,
+            ..PluginConfig::default()
+        }
     }
 
     fn validate(&self) -> Result<(), String> {

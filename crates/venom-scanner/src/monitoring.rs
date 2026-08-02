@@ -264,7 +264,7 @@ impl PerformanceAnalyzer {
             scan_id1: scan_id1.to_string(),
             scan_id2: scan_id2.to_string(),
             duration_diff_ms: duration_diff,
-            success_rate_diff: success_rate_diff,
+            success_rate_diff,
             finding_diff,
             faster: if duration_diff > 0 {
                 "scan_1"

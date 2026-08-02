@@ -42,7 +42,7 @@ impl EventBus {
         let handler_id = handler_id.into();
         self.subscribers
             .entry(event_type.clone())
-            .or_insert_with(Vec::new)
+            .or_default()
             .push((handler_id, handler));
     }
 
@@ -61,7 +61,7 @@ impl EventBus {
         // Store in history
         self.event_history
             .entry(event.event_type.as_str().to_string())
-            .or_insert_with(Vec::new)
+            .or_default()
             .push(event.clone());
 
         // Call subscribers
@@ -134,7 +134,7 @@ impl EventBus {
     /// Gets all events sorted by timestamp
     pub fn get_events_sorted(&self) -> Vec<Event> {
         let mut events = self.get_all_events();
-        events.sort_by(|a, b| a.timestamp_ms.cmp(&b.timestamp_ms));
+        events.sort_by_key(|event| event.timestamp_ms);
         events
     }
 }
@@ -149,7 +149,6 @@ impl Default for EventBus {
 mod tests {
     use super::*;
     use std::sync::atomic::AtomicBool;
-    use std::sync::Mutex;
 
     #[test]
     fn test_event_creation() {
@@ -441,7 +440,7 @@ mod tests {
             let bus_clone = bus.clone();
             let handle = std::thread::spawn(move || {
                 let event = Event::builder(EventType::FindingFound, format!("thread_{}", i))
-                    .correlation_id(format!("scan_concurrent"))
+                    .correlation_id("scan_concurrent")
                     .build();
                 bus_clone.publish(event);
             });
@@ -722,7 +721,7 @@ mod tests {
 
         // Publish to multiple correlation IDs
         for scan_id in 0..10 {
-            for event_num in 0..100 {
+            for _ in 0..100 {
                 let event = Event::builder(EventType::FindingFound, "test")
                     .correlation_id(format!("scan_{}", scan_id))
                     .build();

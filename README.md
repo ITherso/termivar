@@ -28,22 +28,28 @@ Release gates, alpha rationale, and active blockers are maintained in [PROJECT_S
 ```mermaid
 flowchart TD
     Host["CLI / API / library host"] --> Runner
-    Runner --> Pipeline["Scan Pipeline"]
-    Pipeline --> Recon
-    Pipeline --> Crawl
-    Pipeline --> Directory
-    Pipeline --> SQLi
-    Pipeline --> XSS
-    Pipeline --> SSRF
-    Pipeline --> More["SSTI / LFI / XXE"]
+    Runner --> Pipeline["Ordered Scan Pipeline"]
+    Runner --> Decision["Deterministic Decision Runtime · Preview"]
     Pipeline --> Findings
     Plugins["Plugin Engine (Preview)"] --> Findings
+    Decision --> Rules["Rule Engine"]
+    Knowledge["Knowledge Base"] --> Rules
+    Rules --> Planner
+    Experience["Experience Store"] --> Planner
+    Planner --> Broker["Budgeted Request Broker"]
+    Broker --> Evidence["Evidence Engine"]
+    Evidence --> Knowledge
+    Evidence --> Verifier
+    Verifier --> Outcomes
+    Outcomes --> Knowledge
+    Outcomes --> Experience
+    Outcomes --> Findings
     Runner --> Events["Event Bus"]
     Findings --> Reporter
     Events --> Observers["Dashboard / telemetry"]
 ```
 
-The plugin engine is currently a parallel library extension path; merging it with the ordered phase pipeline is pre-stable work.
+The deterministic path turns bounded observations into facts, hypotheses, plans, and reviewable outcomes. It does not use AI to make execution decisions or declare vulnerabilities. The plugin engine remains a parallel library extension path; merging it with the ordered phase pipeline is pre-stable work.
 
 ### Dependency direction
 
@@ -74,6 +80,7 @@ venom/
 ```
 
 The workspace map and dependency rules are expanded in [Architecture](docs/architecture.md).
+The root `Cargo.toml` is a virtual manifest and intentionally has no `src/` directory. Only source files owned by workspace packages are built, tested, documented, released, and counted in project metrics.
 
 ## Release readiness
 

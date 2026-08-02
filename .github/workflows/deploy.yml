@@ -54,7 +54,7 @@ jobs:
           DATABASE_URL: postgres://postgres:postgres@localhost:5432/test_db
           REDIS_URL: redis://localhost:6379
       - name: Run Clippy
-        run: cargo clippy --workspace --all-targets --all-features
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
       - name: Check formatting
         run: cargo fmt --all -- --check
       - name: Build release binary

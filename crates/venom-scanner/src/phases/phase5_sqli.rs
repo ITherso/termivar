@@ -121,27 +121,24 @@ impl ScanPhase for SqliScanner {
                         .query_pairs_mut()
                         .append_pair(&param, "1' UNION SELECT NULL,NULL,NULL--");
 
-                    match ctx.client.get(test_url.as_str()).send().await {
-                        Ok(response) => {
-                            if let Ok(body) = response.text().await {
-                                if body.contains("Column count") || body.contains("Syntax error") {
-                                    findings.push(ScanFinding {
-                                        phase: self.phase_number(),
-                                        module_name: self.name().to_string(),
-                                        severity: "CRITICAL".to_string(),
-                                        description: format!(
-                                            "Error-based SQL Injection confirmed in parameter '{}'",
-                                            param
-                                        ),
-                                        evidence: format!(
-                                            "SQL error message leaked in response: {}",
-                                            body.chars().take(200).collect::<String>()
-                                        ),
-                                    });
-                                }
+                    if let Ok(response) = ctx.client.get(test_url.as_str()).send().await {
+                        if let Ok(body) = response.text().await {
+                            if body.contains("Column count") || body.contains("Syntax error") {
+                                findings.push(ScanFinding {
+                                    phase: self.phase_number(),
+                                    module_name: self.name().to_string(),
+                                    severity: "CRITICAL".to_string(),
+                                    description: format!(
+                                        "Error-based SQL Injection confirmed in parameter '{}'",
+                                        param
+                                    ),
+                                    evidence: format!(
+                                        "SQL error message leaked in response: {}",
+                                        body.chars().take(200).collect::<String>()
+                                    ),
+                                });
                             }
-                        },
-                        Err(_) => {},
+                        }
                     }
                 }
             }

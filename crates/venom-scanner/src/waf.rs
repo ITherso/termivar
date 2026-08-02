@@ -118,7 +118,7 @@ pub enum EvisionTechnique {
     CaseVariation,
     /// Comment injection: `sel/**/ect`
     CommentInjection,
-    /// Whitespace variation: `sel	ect`
+    /// Whitespace variation: `sel    ect`
     WhespaceVariation,
     /// Encoding: URL, Unicode, Hex encoding
     Encoding,

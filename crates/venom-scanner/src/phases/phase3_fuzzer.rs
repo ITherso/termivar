@@ -158,7 +158,7 @@ impl ScanPhase for DirectoryFuzzer {
             };
 
             let sem = Arc::clone(&semaphore);
-            let cl = Arc::clone(&client);
+            let cl = Arc::clone(client);
             let ctx_clone = ctx.clone();
             let url_clone = target_url.clone();
 
@@ -207,7 +207,7 @@ impl ScanPhase for DirectoryFuzzer {
                     phase: self.phase_number(),
                     module_name: self.name().to_string(),
                     severity: if status.is_success() { "MEDIUM" } else { "LOW" }.to_string(),
-                    description: format!("Discovered hidden directory/endpoint via brute-force"),
+                    description: "Discovered hidden directory/endpoint via brute-force".to_string(),
                     evidence: format!("URL: {} -> HTTP {}", url, status),
                 });
             }

@@ -94,7 +94,15 @@ fn release_preflight(root: &Path) -> TaskResult {
     run(
         root,
         "cargo",
-        &["clippy", "--workspace", "--all-targets", "--all-features"],
+        &[
+            "clippy",
+            "--workspace",
+            "--all-targets",
+            "--all-features",
+            "--",
+            "-D",
+            "warnings",
+        ],
     )?;
     run(
         root,

@@ -133,7 +133,7 @@ jobs:
       - name: Run security audit
         run: cargo audit
       - name: Run clippy (security lints)
-        run: cargo clippy
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
   code-coverage:
     name: Code Coverage

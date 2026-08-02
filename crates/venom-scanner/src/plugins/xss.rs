@@ -66,10 +66,11 @@ impl Plugin for XSSPlugin {
     }
 
     fn get_config(&self) -> PluginConfig {
-        let mut config = PluginConfig::default();
-        config.timeout_ms = 3000;
-        config.max_payload_size = 5120;
-        config
+        PluginConfig {
+            timeout_ms: 3000,
+            max_payload_size: 5120,
+            ..PluginConfig::default()
+        }
     }
 
     fn validate(&self) -> Result<(), String> {

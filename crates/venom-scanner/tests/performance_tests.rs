@@ -99,7 +99,6 @@ fn test_finding_aggregation_performance() {
 #[test]
 fn test_logger_filtering_performance() {
     let logger_warn = Logger::new(LogLevel::Warn);
-    let logger_debug = Logger::new(LogLevel::Debug);
 
     let start = Instant::now();
 
@@ -318,13 +317,13 @@ fn test_payload_list_perf() {
     let start = Instant::now();
 
     for _ in 0..100 {
-        let sql_payloads = vec![
+        let sql_payloads = [
             "' OR '1'='1",
             "1; DROP TABLE users--",
             "admin' --",
             "' UNION SELECT NULL --",
         ];
-        let xss_payloads = vec![
+        let xss_payloads = [
             "<svg onload=alert(1)>",
             "<img src=x onerror=alert(1)>",
             "javascript:alert(1)",
