@@ -8,11 +8,7 @@ use url::Url;
 use venom_core::{EntityId, EntityKind, KnowledgeEntity};
 use venom_scanner::{EventBus, ScanContext};
 
-fn inputs() -> (
-    Url,
-    Client,
-    tokio::sync::mpsc::UnboundedSender<String>,
-) {
+fn inputs() -> (Url, Client, tokio::sync::mpsc::UnboundedSender<String>) {
     let target = Url::parse("https://example.test").expect("fixture URL must be valid");
     let (telemetry_tx, _telemetry_rx) = tokio::sync::mpsc::unbounded_channel();
     (target, Client::new(), telemetry_tx)
@@ -30,13 +26,8 @@ fn named_constructors_preserve_runtime_policy() {
 
     let cancellation = CancellationToken::new();
     let (target, client, telemetry_tx) = inputs();
-    let cancellable_context = ScanContext::with_cancellation(
-        target,
-        client,
-        telemetry_tx,
-        23,
-        cancellation.clone(),
-    );
+    let cancellable_context =
+        ScanContext::with_cancellation(target, client, telemetry_tx, 23, cancellation.clone());
     cancellation.cancel();
     assert!(cancellable_context.cancel_token.is_cancelled());
 
