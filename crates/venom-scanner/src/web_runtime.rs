@@ -103,13 +103,44 @@ pub enum StandardWebDecisionRuntimeError {
     /// A non-execution command reached the transport-accounting boundary.
     #[error("runtime resource accounting requires an execution command")]
     ExecutionMetadataUnavailable,
+
+    /// Execution failed after the single-use runtime had started.
+    ///
+    /// The receipt preserves every earlier completed turn and the resource
+    /// accounting snapshot observed at the failure boundary. The nested source
+    /// retains any current execution, evidence, or reasoning receipt.
+    #[error("standard web decision runtime failed after it started: {source}")]
+    RunFailed {
+        /// Completed audit history and final resource usage before the error.
+        receipt: Box<StandardWebDecisionFailureReceipt>,
+        /// Typed failure raised at the current runtime boundary.
+        #[source]
+        source: Box<StandardWebDecisionRuntimeError>,
+    },
 }
 
 impl StandardWebDecisionRuntimeError {
+    /// Returns completed audit history captured when a started run failed.
+    pub fn failure_receipt(&self) -> Option<&StandardWebDecisionFailureReceipt> {
+        match self {
+            Self::RunFailed { receipt, .. } => Some(receipt),
+            _ => None,
+        }
+    }
+
+    /// Takes completed audit history captured when a started run failed.
+    pub fn into_failure_receipt(self) -> Option<StandardWebDecisionFailureReceipt> {
+        match self {
+            Self::RunFailed { receipt, .. } => Some(*receipt),
+            _ => None,
+        }
+    }
+
     /// Returns an executor-reported pre-commit failure receipt, when applicable.
     pub fn execution_failure(&self) -> Option<&DecisionExecutionFailureReceipt> {
         match self {
             Self::Runner(source) => source.execution_failure(),
+            Self::RunFailed { source, .. } => source.execution_failure(),
             _ => None,
         }
     }
@@ -118,6 +149,7 @@ impl StandardWebDecisionRuntimeError {
     pub fn into_execution_failure(self) -> Option<DecisionExecutionFailureReceipt> {
         match self {
             Self::Runner(source) => source.into_execution_failure(),
+            Self::RunFailed { source, .. } => source.into_execution_failure(),
             _ => None,
         }
     }
@@ -127,6 +159,7 @@ impl StandardWebDecisionRuntimeError {
         match self {
             Self::Runner(source) => source.committed_evidence(),
             Self::ResponseUsageEvidence { receipt, .. } => Some(receipt),
+            Self::RunFailed { source, .. } => source.committed_evidence(),
             _ => None,
         }
     }
@@ -136,6 +169,7 @@ impl StandardWebDecisionRuntimeError {
         match self {
             Self::Runner(source) => source.into_committed_evidence(),
             Self::ResponseUsageEvidence { receipt, .. } => Some(*receipt),
+            Self::RunFailed { source, .. } => source.into_committed_evidence(),
             _ => None,
         }
     }
@@ -145,6 +179,7 @@ impl StandardWebDecisionRuntimeError {
         match self {
             Self::Decision(source) => source.committed_reasoning(),
             Self::Runner(source) => source.committed_reasoning(),
+            Self::RunFailed { source, .. } => source.committed_reasoning(),
             _ => None,
         }
     }
@@ -154,6 +189,7 @@ impl StandardWebDecisionRuntimeError {
         match self {
             Self::Decision(source) => source.into_committed_reasoning(),
             Self::Runner(source) => source.into_committed_reasoning(),
+            Self::RunFailed { source, .. } => source.into_committed_reasoning(),
             _ => None,
         }
     }
@@ -172,6 +208,35 @@ pub enum StandardWebDecisionRuntimeTurn {
         /// Verification, adaptation, experience, and next-command report.
         decision: Box<DecisionOutcomeReport>,
     },
+}
+
+/// Completed audit history retained when a started runtime returns an error.
+///
+/// This process-local receipt covers work completed before the failing
+/// boundary. Cause-specific receipts for the current boundary remain available
+/// through [`StandardWebDecisionRuntimeError`] accessors.
+#[derive(Debug)]
+pub struct StandardWebDecisionFailureReceipt {
+    bootstrap: Option<DecisionEvidenceReceipt>,
+    completed_turns: Vec<StandardWebDecisionRuntimeTurn>,
+    usage: RuntimeUsage,
+}
+
+impl StandardWebDecisionFailureReceipt {
+    /// Returns bootstrap evidence committed before the later failure.
+    pub fn bootstrap(&self) -> Option<&DecisionEvidenceReceipt> {
+        self.bootstrap.as_ref()
+    }
+
+    /// Returns planning and outcome turns completed before the later failure.
+    pub fn completed_turns(&self) -> &[StandardWebDecisionRuntimeTurn] {
+        &self.completed_turns
+    }
+
+    /// Returns resource accounting observed at the failure boundary.
+    pub fn usage(&self) -> &RuntimeUsage {
+        &self.usage
+    }
 }
 
 /// Complete audit trail from bootstrap evidence to a terminal command.
@@ -600,19 +665,29 @@ impl StandardWebDecisionRuntime {
             return Ok(self.cancellation_report(None, turns, None, started_at));
         }
 
-        let bootstrap_case = VerificationCase::new(
+        let bootstrap_case = match VerificationCase::new(
             BOOTSTRAP_CASE_ID,
             self.subject.clone(),
             BOOTSTRAP_ACTION_ID,
             BOOTSTRAP_HYPOTHESIS_ID,
-        )?;
+        ) {
+            Ok(case) => case,
+            Err(source) => {
+                return Err(self.run_failed(None, turns, source.into(), started_at));
+            },
+        };
         let bootstrap_command = DecisionLoopCommand::ExecuteAction {
             case: bootstrap_case,
             executor: Some(HTTP_EVIDENCE_EXECUTOR_ID.to_owned()),
             origin: DecisionActionOrigin::Bootstrap,
             delay_ms: None,
         };
-        let (bootstrap_action_id, bootstrap_stage) = execution_metadata(&bootstrap_command)?;
+        let (bootstrap_action_id, bootstrap_stage) = match execution_metadata(&bootstrap_command) {
+            Ok(metadata) => metadata,
+            Err(source) => {
+                return Err(self.run_failed(None, turns, source, started_at));
+            },
+        };
         let bootstrap_limits =
             match self.reserve_execution(bootstrap_action_id, bootstrap_stage, started_at) {
                 Ok(limits) => limits,
@@ -649,7 +724,7 @@ impl StandardWebDecisionRuntime {
                         self.limit_report_with_failure(None, turns, limit, failure, started_at)
                     );
                 }
-                return Err(error.into());
+                return Err(self.run_failed(None, turns, error.into(), started_at));
             },
             RuntimeExecution::Cancelled => {
                 return Ok(self.cancellation_report(None, turns, None, started_at));
@@ -659,7 +734,13 @@ impl StandardWebDecisionRuntime {
                 return Ok(self.limit_report(None, turns, limit, started_at));
             },
         };
-        let bootstrap = self.record_response_usage(bootstrap)?;
+        let bootstrap = match self.record_response_usage(bootstrap) {
+            Ok(receipt) => receipt,
+            Err(source) => {
+                let committed_bootstrap = source.committed_evidence().cloned();
+                return Err(self.run_failed(committed_bootstrap, turns, source, started_at));
+            },
+        };
         let bootstrap = Some(bootstrap);
 
         if self.cancellation.is_cancelled() {
@@ -676,12 +757,22 @@ impl StandardWebDecisionRuntime {
                     if let Some(limit) = self.wall_limit_if_reached(started_at) {
                         return Ok(self.limit_report(bootstrap, turns, limit, started_at));
                     }
-                    let planning = self.decision_loop.plan_next_with_suppressed_actions(
+                    let planning = match self.decision_loop.plan_next_with_suppressed_actions(
                         &self.knowledge,
                         &self.experience,
                         &mut self.session,
                         &self.unsupported_actions,
-                    )?;
+                    ) {
+                        Ok(planning) => planning,
+                        Err(source) => {
+                            return Err(self.run_failed(
+                                bootstrap,
+                                turns,
+                                source.into(),
+                                started_at,
+                            ));
+                        },
+                    };
                     command = planning.command().clone();
                     turns.push(StandardWebDecisionRuntimeTurn::Planning(Box::new(planning)));
                     if self.cancellation.is_cancelled() {
@@ -699,7 +790,12 @@ impl StandardWebDecisionRuntime {
                     if self.cancellation.is_cancelled() {
                         return Ok(self.cancellation_report(bootstrap, turns, None, started_at));
                     }
-                    let (action_id, previous_stage) = execution_metadata(&command)?;
+                    let (action_id, previous_stage) = match execution_metadata(&command) {
+                        Ok(metadata) => metadata,
+                        Err(source) => {
+                            return Err(self.run_failed(bootstrap, turns, source, started_at));
+                        },
+                    };
                     let completed_action_id = action_id.to_owned();
                     let limits =
                         match self.reserve_execution(action_id, previous_stage, started_at) {
@@ -739,7 +835,12 @@ impl StandardWebDecisionRuntime {
                                     bootstrap, turns, limit, failure, started_at,
                                 ));
                             }
-                            return Err(error.into());
+                            return Err(self.run_failed(
+                                bootstrap,
+                                turns,
+                                error.into(),
+                                started_at,
+                            ));
                         },
                         RuntimeExecution::Cancelled => {
                             return Ok(self.cancellation_report(bootstrap, turns, None, started_at));
@@ -749,7 +850,12 @@ impl StandardWebDecisionRuntime {
                             return Ok(self.limit_report(bootstrap, turns, limit, started_at));
                         },
                     };
-                    let evidence = self.record_response_usage(evidence)?;
+                    let evidence = match self.record_response_usage(evidence) {
+                        Ok(receipt) => receipt,
+                        Err(source) => {
+                            return Err(self.run_failed(bootstrap, turns, source, started_at));
+                        },
+                    };
                     if self.cancellation.is_cancelled() {
                         return Ok(self.cancellation_report(
                             bootstrap,
@@ -767,7 +873,17 @@ impl StandardWebDecisionRuntime {
                         evidence,
                     );
                     self.refresh_elapsed(started_at);
-                    let runner_turn = runner_turn?;
+                    let runner_turn = match runner_turn {
+                        Ok(turn) => turn,
+                        Err(source) => {
+                            return Err(self.run_failed(
+                                bootstrap,
+                                turns,
+                                source.into(),
+                                started_at,
+                            ));
+                        },
+                    };
                     match runner_turn {
                         DecisionRunnerTurn::Planning(planning) => {
                             command = planning.command().clone();
@@ -834,6 +950,24 @@ impl StandardWebDecisionRuntime {
             limit_exceeded: None,
             execution_failure: None,
         })
+    }
+
+    fn run_failed(
+        &mut self,
+        bootstrap: Option<DecisionEvidenceReceipt>,
+        completed_turns: Vec<StandardWebDecisionRuntimeTurn>,
+        source: StandardWebDecisionRuntimeError,
+        started_at: tokio::time::Instant,
+    ) -> StandardWebDecisionRuntimeError {
+        self.refresh_elapsed(started_at);
+        StandardWebDecisionRuntimeError::RunFailed {
+            receipt: Box::new(StandardWebDecisionFailureReceipt {
+                bootstrap,
+                completed_turns,
+                usage: self.usage.clone(),
+            }),
+            source: Box::new(source),
+        }
     }
 
     fn reserve_execution(

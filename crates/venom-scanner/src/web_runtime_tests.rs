@@ -50,6 +50,10 @@ struct CancelAfterEvidenceExecutor {
     cancellation: CancellationToken,
 }
 
+struct MissingResponseUsageExecutor {
+    id: &'static str,
+}
+
 #[async_trait]
 impl DecisionActionExecutor for BudgetDeniedRuntimeExecutor {
     fn id(&self) -> &str {
@@ -104,6 +108,31 @@ impl DecisionActionExecutor for CancelAfterEvidenceExecutor {
         );
         self.cancellation.cancel();
         Ok(vec![evidence])
+    }
+}
+
+#[async_trait]
+impl DecisionActionExecutor for MissingResponseUsageExecutor {
+    fn id(&self) -> &str {
+        self.id
+    }
+
+    async fn execute(
+        &self,
+        request: &DecisionExecutionRequest,
+    ) -> Result<Vec<Evidence>, DecisionExecutorError> {
+        let source = EvidenceSource::new(self.id, "missing-response-usage")
+            .unwrap()
+            .with_correlation_id(request.case().id())
+            .unwrap();
+        Ok(vec![Evidence::new(
+            request.case().subject().clone(),
+            EvidenceKind::Http,
+            HttpEvidencePredicate::RESPONSE_STATUS.into_knowledge(),
+            EvidenceValue::Unsigned(200),
+            source,
+            ConfidenceScore::MAX,
+        )])
     }
 }
 
@@ -472,8 +501,13 @@ async fn runtime_forwards_bootstrap_failure_without_learning_from_it() {
     runtime.runner = DecisionRunnerAdapter::new(registry);
 
     let error = runtime.analyze().await.unwrap_err();
+    let audit = error.failure_receipt().unwrap();
     let receipt = error.execution_failure().unwrap();
 
+    assert!(audit.bootstrap().is_none());
+    assert!(audit.completed_turns().is_empty());
+    assert_eq!(audit.usage().total_requests(), 0);
+    assert_eq!(audit.usage().total_action_attempts(), 1);
     assert_eq!(receipt.case().id(), BOOTSTRAP_CASE_ID);
     assert_eq!(receipt.action_id(), BOOTSTRAP_ACTION_ID);
     assert_eq!(receipt.stage(), DecisionExecutionStage::Passive);
@@ -530,8 +564,17 @@ async fn planned_failure_preserves_bootstrap_and_outstanding_session_without_sup
     runtime.runner = DecisionRunnerAdapter::new(registry);
 
     let error = runtime.analyze().await.unwrap_err();
+    let audit = error.failure_receipt().unwrap();
     let receipt = error.execution_failure().unwrap();
 
+    assert_eq!(audit.bootstrap().unwrap().case().id(), BOOTSTRAP_CASE_ID);
+    assert_eq!(audit.completed_turns().len(), 1);
+    assert!(matches!(
+        audit.completed_turns()[0],
+        StandardWebDecisionRuntimeTurn::Planning(_)
+    ));
+    assert_eq!(audit.usage().total_requests(), 1);
+    assert_eq!(audit.usage().total_action_attempts(), 2);
     assert_eq!(receipt.action_id(), action.action_id());
     assert_eq!(receipt.stage(), DecisionExecutionStage::Passive);
     assert_eq!(receipt.origin(), Some(DecisionActionOrigin::Planned));
@@ -547,6 +590,74 @@ async fn planned_failure_preserves_bootstrap_and_outstanding_session_without_sup
     assert_eq!(runtime.usage().completed_execution_turns(), 0);
     assert_eq!(runtime.usage().same_action_attempts(action.action_id()), 1);
     assert!(runtime.knowledge().stats().evidence > 0);
+    assert!(runtime.experience().is_empty());
+    assert!(matches!(
+        runtime.session().state(),
+        DecisionLoopState::AwaitingPassive { case } if case.action_id() == action.action_id()
+    ));
+    assert_eq!(server.methods().await, ["GET"]);
+
+    let owned_audit = error.into_failure_receipt().unwrap();
+    assert_eq!(
+        owned_audit.bootstrap().unwrap().case().id(),
+        BOOTSTRAP_CASE_ID
+    );
+}
+
+#[tokio::test]
+async fn response_usage_failure_preserves_prior_turns_and_current_evidence() {
+    let server = serve(vec![Reply::Response(BASIC)]).await;
+    let policy = HttpEvidencePolicy::for_origin(server.target()).unwrap();
+    let mut runtime = StandardWebDecisionRuntime::builder(server.target())
+        .http_policy(policy.clone())
+        .build()
+        .unwrap();
+    let action = StandardWebActionKind::HttpBasicAuthBoundary;
+    let mut registry = DecisionExecutorRegistry::new();
+    registry
+        .register(Arc::new(
+            HttpEvidenceExecutor::new_with_accounting(
+                policy,
+                Arc::new(SubjectHttpProbeProvider::new(HttpProbeMethod::Get)),
+                runtime.request_accounting.clone(),
+            )
+            .unwrap(),
+        ))
+        .unwrap();
+    registry
+        .register(Arc::new(MissingResponseUsageExecutor {
+            id: action.executor_id(),
+        }))
+        .unwrap();
+    runtime.runner = DecisionRunnerAdapter::new(registry);
+
+    let error = runtime.analyze().await.unwrap_err();
+
+    assert!(matches!(
+        &error,
+        StandardWebDecisionRuntimeError::RunFailed { source, .. }
+            if matches!(
+                source.as_ref(),
+                StandardWebDecisionRuntimeError::ResponseUsageEvidence { observations: 0, .. }
+            )
+    ));
+    let audit = error.failure_receipt().unwrap();
+    assert_eq!(audit.bootstrap().unwrap().case().id(), BOOTSTRAP_CASE_ID);
+    assert_eq!(audit.completed_turns().len(), 1);
+    assert!(matches!(
+        audit.completed_turns()[0],
+        StandardWebDecisionRuntimeTurn::Planning(_)
+    ));
+    assert_eq!(audit.usage().total_requests(), 1);
+    assert_eq!(audit.usage().total_action_attempts(), 2);
+
+    let committed = error.committed_evidence().unwrap();
+    assert_eq!(committed.case().action_id(), action.action_id());
+    assert_eq!(committed.writes(), [KnowledgeWrite::Inserted]);
+    assert!(runtime
+        .knowledge()
+        .evidence(committed.evidence()[0].id())
+        .is_some());
     assert!(runtime.experience().is_empty());
     assert!(matches!(
         runtime.session().state(),
@@ -930,6 +1041,10 @@ async fn runtime_exposes_reasoning_committed_before_a_planning_failure() {
 
     assert_eq!(runtime.session(), &initial_session);
     assert_eq!(runtime.usage().total_requests(), 1);
+    let audit = error.failure_receipt().unwrap();
+    assert_eq!(audit.bootstrap().unwrap().case().id(), BOOTSTRAP_CASE_ID);
+    assert!(audit.completed_turns().is_empty());
+    assert_eq!(audit.usage().total_requests(), 1);
     let receipt = error.committed_reasoning().unwrap();
     assert_eq!(receipt.subject(), runtime.subject());
     assert!(receipt
@@ -1022,10 +1137,7 @@ async fn partial_body_timeout_remains_charged_without_committing_evidence() {
     let error = runtime.analyze().await.unwrap_err();
 
     let failure = error.execution_failure().unwrap();
-    assert_eq!(
-        failure.kind(),
-        DecisionExecutionFailureKind::TransportFailure
-    );
+    assert_eq!(failure.kind(), DecisionExecutionFailureKind::RequestTimeout);
     assert_eq!(failure.action_id(), BOOTSTRAP_ACTION_ID);
     assert!(failure.diagnostic().contains("timed out"));
     assert_eq!(runtime.usage().total_requests(), 1);
@@ -1191,6 +1303,28 @@ async fn no_progress_limit_stops_an_adaptive_retry() {
     assert_eq!(report.usage().consecutive_no_progress_turns(), 1);
     assert_eq!(report.usage().completed_execution_turns(), 1);
     assert_eq!(report.usage().retry_requests(), 0);
+    assert_eq!(server.methods().await, ["GET", "HEAD"]);
+}
+
+#[tokio::test]
+async fn semantic_retry_is_denied_before_socket_when_total_budget_is_exhausted() {
+    let server = serve(vec![Reply::Response(BASIC), Reply::Response(RATE_LIMITED)]).await;
+    let mut runtime = StandardWebDecisionRuntime::builder(server.target())
+        .max_total_requests(2)
+        .max_same_action_attempts(8)
+        .max_consecutive_no_progress_turns(8)
+        .build()
+        .unwrap();
+    *runtime.decision_loop.adaptive_mut() = AdaptivePipeline::with_standard_policies().unwrap();
+
+    let report = runtime.analyze().await.unwrap();
+
+    let limit = assert_runtime_limit(&report, RuntimeBudgetDimension::TotalRequests);
+    assert_eq!(limit.limit(), 2);
+    assert_eq!(limit.observed(), 3);
+    assert_eq!(report.usage().total_requests(), 2);
+    assert_eq!(report.usage().retry_requests(), 0);
+    assert_eq!(report.usage().total_action_attempts(), 2);
     assert_eq!(server.methods().await, ["GET", "HEAD"]);
 }
 

@@ -154,7 +154,15 @@ This prevents a discovered nginx, Apache, PHP, or Laravel input hypothesis from 
 
 A runtime instance is single-use. The started flag is retained even if a network or verification error occurs, because evidence may already have been committed under deterministic case identities. Create a new runtime for a new session.
 
-When an executor reports a failure before evidence commit, `StandardWebDecisionRuntimeError::execution_failure()` forwards the runner's typed receipt. Built-in HTTP failures are classified from error variants rather than diagnostic text: unsupported subjects are not applicable, authorization/scope refusals are policy blocks, request and timeout failures are transport failures, and internal construction/model failures remain executor failures. Transport dispatch and retained-byte accounting remain monotonic, but provider or policy failures before dispatch consume only the semantic attempt. None of these operational classifications creates a synthetic verifier outcome or changes Experience suppression state.
+When an executor reports a failure before evidence commit, `StandardWebDecisionRuntimeError::execution_failure()` forwards the runner's typed receipt. Built-in HTTP failures are classified from error variants rather than diagnostic text: unsupported subjects are not applicable, authorization/scope refusals are policy blocks, an expired host request/body deadline is a request timeout, other network failures are transport failures, and internal construction/model failures remain executor failures. Transport dispatch and retained-byte accounting remain monotonic, but provider or policy failures before dispatch consume only the semantic attempt. None of these operational classifications creates a synthetic verifier outcome or changes Experience suppression state.
+
+After `analyze()` marks the runtime started, unexpected failures are wrapped in
+`RunFailed`. `failure_receipt()` exposes the committed bootstrap receipt,
+completed planning/outcome turns, and the latest monotonic usage snapshot from
+before the failing boundary. The nested source remains typed, so
+`execution_failure()`, `committed_evidence()`, and `committed_reasoning()` keep
+forwarding the current boundary's receipt. This envelope is process-local; it
+does not claim disk durability or crash recovery.
 
 `StandardWebDecisionRunReport` retains:
 
@@ -171,7 +179,7 @@ The knowledge base, experience store, and replayable session remain inspectable 
 
 ## Turn commit semantics
 
-Runtime request dispatches and retained response bytes are monotonic and are never rolled back. Executor evidence is provenance-validated as a complete batch and then committed atomically to the knowledge base. Verification, hypothesis transition, experience, and session transition happen after that evidence commit. If one of those later synchronous stages fails, the evidence remains append-only while the runtime returns an error and stays single-use. `StandardWebDecisionRuntimeError::committed_evidence()` exposes the failed turn's durable receipt, including response-telemetry validation failures, and the consuming getter transfers it without another evidence clone.
+Runtime request dispatches and retained response bytes are monotonic and are never rolled back. Executor evidence is provenance-validated as a complete batch and then committed atomically to the knowledge base. Verification, hypothesis transition, experience, and session transition happen after that evidence commit. If one of those later synchronous stages fails, the evidence remains append-only while the runtime returns an error and stays single-use. `StandardWebDecisionRuntimeError::committed_evidence()` exposes the failed turn's committed in-process receipt, including response-telemetry validation failures, and the consuming getter transfers it without another evidence clone.
 
 A successful outcome report exposes a runtime-only, lightweight before/after session transition summary alongside its verification, hypothesis write, and experience write. The summary is not a full session replay snapshot and is omitted from the report's existing serialized shape. Candidate experience and session state are assigned only after every fallible outcome step succeeds. This is an explicit error-atomic partial-turn boundary, not a rollback or crash-atomic transaction guarantee.
 

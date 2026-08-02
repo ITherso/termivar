@@ -232,6 +232,8 @@ pub enum DecisionExecutionFailureKind {
     BlockedByPolicy,
     /// Network transport failed before evidence could be collected.
     TransportFailure,
+    /// A host-bounded request or response-body read exceeded its deadline.
+    RequestTimeout,
     /// The executor failed independently of target transport.
     ExecutorFailure,
 }
@@ -1345,6 +1347,14 @@ mod tests {
         );
         assert_eq!(limited.runtime_limit(), Some(&limit));
         assert_eq!(limited.message(), limit.to_string());
+    }
+
+    #[test]
+    fn request_timeout_has_a_stable_transport_neutral_wire_name() {
+        assert_eq!(
+            serde_json::to_string(&DecisionExecutionFailureKind::RequestTimeout).unwrap(),
+            "\"request_timeout\""
+        );
     }
 
     #[tokio::test]

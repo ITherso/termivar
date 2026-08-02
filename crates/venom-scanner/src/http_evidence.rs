@@ -443,9 +443,8 @@ fn execution_failure_kind(error: &HttpEvidenceError) -> DecisionExecutionFailure
         | HttpEvidenceError::TargetOutsidePolicy { .. } => {
             DecisionExecutionFailureKind::BlockedByPolicy
         },
-        HttpEvidenceError::Timeout { .. } | HttpEvidenceError::Request(_) => {
-            DecisionExecutionFailureKind::TransportFailure
-        },
+        HttpEvidenceError::Timeout { .. } => DecisionExecutionFailureKind::RequestTimeout,
+        HttpEvidenceError::Request(_) => DecisionExecutionFailureKind::TransportFailure,
         HttpEvidenceError::EmptyAllowedOrigins
         | HttpEvidenceError::ZeroTimeout
         | HttpEvidenceError::ZeroBodyLimit
@@ -1635,10 +1634,7 @@ mod tests {
             .unwrap_err();
 
         let failure = error.execution_failure().unwrap();
-        assert_eq!(
-            failure.kind(),
-            DecisionExecutionFailureKind::TransportFailure
-        );
+        assert_eq!(failure.kind(), DecisionExecutionFailureKind::RequestTimeout);
         assert_eq!(failure.executor_id(), HTTP_EVIDENCE_EXECUTOR_ID);
         assert_eq!(failure.action_id(), "http.probe");
         assert_eq!(
@@ -1669,10 +1665,11 @@ mod tests {
             .unwrap_err();
 
         let failure = error.execution_failure().unwrap();
-        assert_eq!(
+        assert!(matches!(
             failure.kind(),
             DecisionExecutionFailureKind::TransportFailure
-        );
+                | DecisionExecutionFailureKind::RequestTimeout
+        ));
         assert_eq!(accounting.snapshot().total_requests(), 1);
         assert_eq!(accounting.snapshot().response_bytes(), 0);
         assert_eq!(knowledge.stats().evidence, 0);
@@ -1727,10 +1724,7 @@ mod tests {
             .unwrap_err();
 
         let failure = error.execution_failure().unwrap();
-        assert_eq!(
-            failure.kind(),
-            DecisionExecutionFailureKind::TransportFailure
-        );
+        assert_eq!(failure.kind(), DecisionExecutionFailureKind::RequestTimeout);
         assert!(failure.diagnostic().contains("timed out"));
         assert_eq!(accounting.snapshot().total_requests(), 1);
         assert_eq!(accounting.snapshot().response_bytes(), 4);
@@ -1831,6 +1825,63 @@ mod tests {
         assert_eq!(limit.limit(), 1);
         assert_eq!(limit.observed(), 2);
         assert_eq!(accounting.snapshot().total_requests(), 1);
+        assert_eq!(server.requests(), 1);
+        assert_eq!(knowledge.stats().evidence, 0);
+    }
+
+    #[tokio::test]
+    async fn multi_request_active_executor_cannot_exceed_active_budget() {
+        let server =
+            serve_counted(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                .await;
+        let target = server.target();
+        let policy = HttpEvidencePolicy::for_origin(target.clone()).unwrap();
+        let accounting =
+            RequestAccountingBroker::new(RuntimeBudget::default().with_max_active_verifications(1));
+        let requests = HttpRequestBroker::new(policy, Some(accounting.clone())).unwrap();
+        let mut registry = DecisionExecutorRegistry::new();
+        registry
+            .register(Arc::new(MultiRequestExecutor {
+                requests,
+                target: target.clone(),
+            }))
+            .unwrap();
+        registry
+            .route_action(
+                DecisionExecutionStage::Active,
+                "http.probe",
+                HTTP_EVIDENCE_EXECUTOR_ID,
+            )
+            .unwrap();
+        let adapter = DecisionRunnerAdapter::new(registry);
+        let knowledge = KnowledgeBase::new();
+        let case = VerificationCase::new(
+            "case:http:active",
+            EntityId::new(format!("endpoint:{target}")).unwrap(),
+            "http.probe",
+            "hypothesis:http",
+        )
+        .unwrap();
+
+        let error = adapter
+            .execute_command(
+                &DecisionLoopCommand::CollectActiveEvidence { case },
+                &knowledge,
+            )
+            .await
+            .unwrap_err();
+
+        let failure = error.execution_failure().unwrap();
+        assert_eq!(failure.stage(), DecisionExecutionStage::Active);
+        let limit = failure.runtime_limit().unwrap();
+        assert_eq!(
+            limit.dimension(),
+            RuntimeBudgetDimension::ActiveVerifications
+        );
+        assert_eq!(limit.limit(), 1);
+        assert_eq!(limit.observed(), 2);
+        assert_eq!(accounting.snapshot().total_requests(), 1);
+        assert_eq!(accounting.snapshot().active_verifications(), 1);
         assert_eq!(server.requests(), 1);
         assert_eq!(knowledge.stats().evidence, 0);
     }

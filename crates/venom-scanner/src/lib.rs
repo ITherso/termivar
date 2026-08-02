@@ -303,8 +303,8 @@ pub use web_decision::{
 
 #[cfg(feature = "scanning")]
 pub use web_runtime::{
-    RuntimeApiVisibilityError, StandardWebDecisionRunReport, StandardWebDecisionRuntime,
-    StandardWebDecisionRuntimeBuilder, StandardWebDecisionRuntimeError,
+    RuntimeApiVisibilityError, StandardWebDecisionFailureReceipt, StandardWebDecisionRunReport,
+    StandardWebDecisionRuntime, StandardWebDecisionRuntimeBuilder, StandardWebDecisionRuntimeError,
     StandardWebDecisionRuntimeTurn,
 };
 

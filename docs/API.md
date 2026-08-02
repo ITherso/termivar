@@ -131,6 +131,18 @@ provide borrowed and consuming accessors for that receipt. These pre-commit
 operational failures do not write evidence, synthesize verifier outcomes, or
 penalize future planning through the Experience Store.
 
+`RequestTimeout` is distinct from `TransportFailure`: the former means the
+host-owned request/body deadline expired, while the latter covers other
+network failures. Both remain neutral audit facts rather than verified target
+outcomes.
+
+After `analyze()` starts, an unexpected runtime error is wrapped in
+`RunFailed`. Its `StandardWebDecisionFailureReceipt` retains the committed
+bootstrap receipt, every earlier completed planning/outcome turn, and the
+latest monotonic resource usage. Cause-specific accessors still expose the
+current execution, evidence, or reasoning receipt. This is an in-process audit
+boundary, not a persistence or crash-recovery guarantee.
+
 The standard runtime's built-in HTTP executors share a host-owned request
 broker. Request and active-verification counters advance only at the actual
 dispatch boundary, while retained response chunks are charged immediately and
