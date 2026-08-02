@@ -30,6 +30,13 @@ pub const STANDARD_WEB_DISCOVERY_EXECUTOR_COUNT: usize = STANDARD_WEB_DISCOVERY_
 #[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum StandardWebExecutionError {
+    /// A semantic action has no built-in discovery transport mapping.
+    #[error("standard web action {action:?} has no built-in discovery executor")]
+    UnsupportedAction {
+        /// Action rejected while the profile was being constructed.
+        action: StandardWebActionKind,
+    },
+
     /// A bounded HTTP executor could not be constructed.
     #[error(transparent)]
     Http(#[from] HttpEvidenceError),
@@ -99,7 +106,7 @@ impl StandardWebDiscoveryExecutorProfile {
         let bindings = STANDARD_WEB_DISCOVERY_ACTIONS
             .into_iter()
             .map(|kind| {
-                let provider = Arc::new(SubjectHttpProbeProvider::new(probe_method(kind)));
+                let provider = Arc::new(SubjectHttpProbeProvider::new(probe_method(kind)?));
                 let executor = HttpEvidenceExecutor::with_id_and_request_broker(
                     kind.executor_id(),
                     requests.clone(),
@@ -110,7 +117,7 @@ impl StandardWebDiscoveryExecutorProfile {
                     executor: Arc::new(executor),
                 })
             })
-            .collect::<Result<Vec<_>, HttpEvidenceError>>()?;
+            .collect::<Result<Vec<_>, StandardWebExecutionError>>()?;
         Ok(Self { bindings })
     }
 
@@ -158,19 +165,22 @@ impl StandardWebDiscoveryExecutorProfile {
     }
 }
 
-const fn probe_method(kind: StandardWebActionKind) -> HttpProbeMethod {
+const fn probe_method(
+    kind: StandardWebActionKind,
+) -> Result<HttpProbeMethod, StandardWebExecutionError> {
     match kind {
-        StandardWebActionKind::LaravelRouteDiscovery => HttpProbeMethod::Options,
-        StandardWebActionKind::LivewireComponentDiscovery => HttpProbeMethod::Get,
+        StandardWebActionKind::LaravelRouteDiscovery => Ok(HttpProbeMethod::Options),
+        StandardWebActionKind::LivewireComponentDiscovery => Ok(HttpProbeMethod::Get),
         StandardWebActionKind::SanctumAuthBoundary
         | StandardWebActionKind::HttpBasicAuthBoundary
-        | StandardWebActionKind::HttpBearerAuthBoundary => HttpProbeMethod::Head,
-        _ => unreachable_standard_action(),
+        | StandardWebActionKind::HttpBearerAuthBoundary => Ok(HttpProbeMethod::Head),
+        StandardWebActionKind::NginxConfiguration
+        | StandardWebActionKind::ApacheConfiguration
+        | StandardWebActionKind::PhpInputDiscovery
+        | StandardWebActionKind::LaravelInputAnalysis => {
+            Err(StandardWebExecutionError::UnsupportedAction { action: kind })
+        },
     }
-}
-
-const fn unreachable_standard_action() -> ! {
-    panic!("standard web action has no built-in discovery executor")
 }
 
 #[cfg(test)]
@@ -282,6 +292,26 @@ mod tests {
             profile.executor_ids().len(),
             STANDARD_WEB_DISCOVERY_EXECUTOR_COUNT
         );
+    }
+
+    #[test]
+    fn every_discovery_action_has_an_executor_mapping() {
+        for kind in STANDARD_WEB_DISCOVERY_ACTIONS {
+            assert!(probe_method(kind).is_ok(), "missing mapping for {kind:?}");
+        }
+    }
+
+    #[test]
+    fn actions_without_a_discovery_executor_fail_during_mapping() {
+        for kind in StandardWebActionKind::all()
+            .into_iter()
+            .filter(|kind| !STANDARD_WEB_DISCOVERY_ACTIONS.contains(kind))
+        {
+            assert!(matches!(
+                probe_method(kind),
+                Err(StandardWebExecutionError::UnsupportedAction { action }) if action == kind
+            ));
+        }
     }
 
     #[test]

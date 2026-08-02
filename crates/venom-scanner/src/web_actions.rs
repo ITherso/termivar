@@ -100,6 +100,26 @@ impl StandardWebActionKind {
             Self::HttpBearerAuthBoundary => "web.probe.http-bearer-auth",
         }
     }
+
+    /// Returns the stable compact name used in derived profile identities.
+    ///
+    /// This catalog owns the slug so execution and verification layers cannot
+    /// drift when new semantic actions are introduced. Existing verification
+    /// rule identifiers depend on the discovery-action values and must remain
+    /// stable.
+    pub const fn slug(self) -> &'static str {
+        match self {
+            Self::NginxConfiguration => "nginx-configuration",
+            Self::ApacheConfiguration => "apache-configuration",
+            Self::PhpInputDiscovery => "php-input-discovery",
+            Self::LaravelRouteDiscovery => "laravel-route",
+            Self::LaravelInputAnalysis => "laravel-input-analysis",
+            Self::LivewireComponentDiscovery => "livewire-component",
+            Self::SanctumAuthBoundary => "sanctum-auth",
+            Self::HttpBasicAuthBoundary => "http-basic-auth",
+            Self::HttpBearerAuthBoundary => "http-bearer-auth",
+        }
+    }
 }
 
 /// Stable semantic action subset with built-in discovery support.
@@ -108,6 +128,8 @@ pub const STANDARD_WEB_DISCOVERY_ACTIONS: [StandardWebActionKind;
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
     use super::*;
 
     #[test]
@@ -119,5 +141,24 @@ mod tests {
         for discovery in STANDARD_WEB_DISCOVERY_ACTIONS {
             assert!(StandardWebActionKind::all().contains(&discovery));
         }
+    }
+
+    #[test]
+    fn every_standard_action_has_a_unique_stable_slug() {
+        let slugs = StandardWebActionKind::all()
+            .into_iter()
+            .map(StandardWebActionKind::slug)
+            .collect::<BTreeSet<_>>();
+
+        assert_eq!(slugs.len(), STANDARD_WEB_ACTION_COUNT);
+        assert!(slugs.iter().all(|slug| !slug.is_empty()));
+        assert_eq!(
+            StandardWebActionKind::LaravelRouteDiscovery.slug(),
+            "laravel-route"
+        );
+        assert_eq!(
+            StandardWebActionKind::HttpBearerAuthBoundary.slug(),
+            "http-bearer-auth"
+        );
     }
 }

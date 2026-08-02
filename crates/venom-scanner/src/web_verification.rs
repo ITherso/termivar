@@ -24,6 +24,20 @@ pub const STANDARD_WEB_VERIFICATION_RULE_COUNT: usize = 20;
 #[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum StandardWebVerificationError {
+    /// A semantic action has no built-in verification rule mapping.
+    #[error("standard web action {action:?} has no built-in verification rules")]
+    UnsupportedAction {
+        /// Action rejected while the profile was being constructed.
+        action: StandardWebActionKind,
+    },
+
+    /// A rule used a stage unsupported by this two-stage profile.
+    #[error("verification stage {stage:?} is unsupported by the standard web profile")]
+    UnsupportedStage {
+        /// Stage rejected before the prospective pipeline was committed.
+        stage: VerificationStage,
+    },
+
     /// A predicate or probability was invalid.
     #[error(transparent)]
     Reasoning(#[from] ReasoningModelError),
@@ -114,14 +128,14 @@ impl StandardWebVerificationProfile {
             let write = match rule.stage() {
                 VerificationStage::Passive => prospective.passive_mut().register(rule.clone())?,
                 VerificationStage::Active => prospective.active_mut().register(rule.clone())?,
-                _ => unreachable!("standard profile constructs only passive and active rules"),
+                stage => return Err(StandardWebVerificationError::UnsupportedStage { stage }),
             };
             if matches!(write, VerifierWrite::Inserted) {
                 match rule.stage() {
                     VerificationStage::Passive => report.passive_rules_inserted += 1,
                     VerificationStage::Active => report.active_rules_inserted += 1,
-                    _ => {
-                        unreachable!("standard profile constructs only passive and active rules")
+                    stage => {
+                        return Err(StandardWebVerificationError::UnsupportedStage { stage });
                     },
                 }
             }
@@ -155,11 +169,7 @@ fn blocked_rule(
             .collect(),
     )?;
     scoped_rule(
-        format!(
-            "web.verify.{}.{}.blocked",
-            stage.as_str(),
-            action_slug(kind)
-        ),
+        format!("web.verify.{}.{}.blocked", stage.as_str(), kind.slug()),
         kind,
         stage,
         800,
@@ -235,10 +245,15 @@ fn signal_rule(
             99,
             "WWW-Authenticate explicitly advertises HTTP Bearer for this request",
         ),
-        _ => unreachable_standard_action(),
+        StandardWebActionKind::NginxConfiguration
+        | StandardWebActionKind::ApacheConfiguration
+        | StandardWebActionKind::PhpInputDiscovery
+        | StandardWebActionKind::LaravelInputAnalysis => {
+            return Err(StandardWebVerificationError::UnsupportedAction { action: kind });
+        },
     };
     scoped_rule(
-        format!("web.verify.{}.{}.signal", stage.as_str(), action_slug(kind)),
+        format!("web.verify.{}.{}.signal", stage.as_str(), kind.slug()),
         kind,
         stage,
         priority,
@@ -279,21 +294,6 @@ fn scoped_rule(
     )?
     .scoped_to_action(kind.action_id())?
     .with_case_correlated_evidence()?)
-}
-
-const fn action_slug(kind: StandardWebActionKind) -> &'static str {
-    match kind {
-        StandardWebActionKind::LaravelRouteDiscovery => "laravel-route",
-        StandardWebActionKind::LivewireComponentDiscovery => "livewire-component",
-        StandardWebActionKind::SanctumAuthBoundary => "sanctum-auth",
-        StandardWebActionKind::HttpBasicAuthBoundary => "http-basic-auth",
-        StandardWebActionKind::HttpBearerAuthBoundary => "http-bearer-auth",
-        _ => unreachable_standard_action(),
-    }
-}
-
-const fn unreachable_standard_action() -> ! {
-    panic!("standard web action has no built-in verification rule")
 }
 
 #[cfg(test)]
@@ -378,6 +378,35 @@ mod tests {
         assert_eq!(second, StandardWebVerificationInstallReport::default());
         assert_eq!(pipeline.passive().len(), 10);
         assert_eq!(pipeline.active().len(), 10);
+    }
+
+    #[test]
+    fn every_discovery_action_has_passive_and_active_verifier_mappings() {
+        for kind in STANDARD_WEB_DISCOVERY_ACTIONS {
+            for stage in [VerificationStage::Passive, VerificationStage::Active] {
+                assert!(
+                    blocked_rule(kind, stage).is_ok(),
+                    "missing blocked rule for {kind:?}"
+                );
+                assert!(
+                    signal_rule(kind, stage).is_ok(),
+                    "missing signal rule for {kind:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn actions_without_verifier_mappings_fail_during_construction() {
+        for kind in StandardWebActionKind::all()
+            .into_iter()
+            .filter(|kind| !STANDARD_WEB_DISCOVERY_ACTIONS.contains(kind))
+        {
+            assert!(matches!(
+                signal_rule(kind, VerificationStage::Passive),
+                Err(StandardWebVerificationError::UnsupportedAction { action }) if action == kind
+            ));
+        }
     }
 
     #[test]

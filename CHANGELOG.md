@@ -69,6 +69,7 @@ All notable changes to Venom are recorded here. Releases use the categories from
 ### Fixed
 
 - CLI version output now derives from the Cargo package version.
+- Standard web action execution and verification mappings now fail during profile construction instead of panicking at runtime.
 
 ### Security
 
