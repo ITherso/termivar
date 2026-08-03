@@ -1,24 +1,34 @@
 # Repository health
 
-This page records enforced repository controls and known gaps. A configured tool is not evidence of production readiness or an independent security audit.
+This page records configured repository controls and known gaps. A workflow
+definition is tooling evidence, not proof that an arbitrary commit passed, and
+no repository control establishes production readiness, legal compliance, or
+independent security assurance.
 
 | Control | State | Enforcement or gap |
 | --- | --- | --- |
-| CodeQL | Automated for JavaScript/TypeScript | Advanced setup scans `web/`; Rust remains covered by Rust-native and language-agnostic controls |
-| `cargo-deny` | Required | CI checks advisories, licenses, duplicate-policy warnings, and dependency sources |
-| `cargo-audit` | Required | Test and security workflows fail on RustSec advisories |
-| `cargo-fuzz` | Scheduled + evidenced | Five parser targets run in bounded weekly campaigns; the [first committed baseline](reports/fuzzing/7515b79.md) records 32,500,714 executions and no observed crash |
-| MSRV | Required | Workspace packages declare Rust `1.88`; CI builds that toolchain plus stable, beta, and nightly |
-| SemVer | Required for `venom-core` | `cargo xtask semver` checks the all-features public API against the immutable `v0.9.0-alpha` commit with a patch-compatibility threshold |
-| Architecture boundaries | Required | `cargo xtask architecture` rejects virtual-root source, validates workspace edges and protected imports, and checks the no-default-features reasoning build |
+| CodeQL | Configured for JavaScript/TypeScript | Advanced setup analyzes `web/` on relevant changes, a weekly schedule, and manual dispatch; it does not analyze Rust |
+| `cargo-audit` | Configured in security CI | The RustSec action audits the committed Cargo dependency resolution without rewriting the lockfile |
+| `cargo-deny` | Configured in security CI | The pinned action checks advisories, licenses, bans, and dependency sources against repository policy |
+| Trivy | Configured in security CI | SHA-pinned `trivy-action` v0.36.0 runs Trivy v0.70.0 against the repository filesystem for vulnerability, secret, and misconfiguration findings at the declared severity policy |
+| Semgrep CE | Configured in security CI | A digest-pinned non-root Semgrep CE image runs declared community rules with metrics disabled |
+| Dependabot | Configured | Weekly Cargo, npm, and GitHub Actions update proposals are defined; configuration does not guarantee that an update exists, is safe, or has been merged |
+| `cargo-fuzz` | Scheduled and bounded | Five parser targets have weekly time limits; the [committed baseline](reports/fuzzing/7515b79.md) is historical evidence for its recorded commit, not a safety proof |
+| MSRV | Configured in CI | Workspace packages declare Rust `1.88`; the compatibility matrix also exercises stable, beta, and nightly |
+| SemVer | Configured for `venom-core` | `cargo xtask semver` compares the all-features core API with the recorded `v0.9.0-alpha` baseline using a patch-compatibility threshold |
+| Architecture boundaries | Configured in CI | `cargo xtask architecture` checks virtual-root source, workspace edges, protected imports, and the transport-free reasoning build |
 
 ## Release evidence
 
-A release candidate must pass formatting, architecture boundaries, Clippy, workspace tests, dependency policy, security scans, documentation, and release compilation. `cargo xtask release` runs the local preflight; GitHub Actions remains the authoritative cross-platform result.
+The release workflow defines formatting, architecture, Clippy, workspace-test,
+dependency-policy, and cross-platform build gates. `cargo xtask release` runs a
+local preflight without tagging or publishing. A release claim must identify
+the exact commit and retain the corresponding GitHub Actions result; the
+existence of either command is not evidence that it passed.
 
 ## Public API compatibility scope
 
-The required `Public API Compatibility` CI job runs
+The configured `Public API Compatibility` CI job runs
 `cargo-semver-checks 0.50.0` through `cargo xtask semver`. It compares only
 `venom-core`, with all features enabled, against commit
 `9f65c661028af2d7129caeee640f9b6185c357ca`, the commit referenced by the
@@ -36,12 +46,28 @@ an immutable post-transition baseline. The CLI, API, and proxy crates are not
 covered by this check.
 
 The SemVer command remains separate from `cargo xtask release`; CI installs the
-pinned analysis tool and runs the compatibility job independently.
+declared analysis-tool version and runs the compatibility job independently.
+
+## Workflow supply-chain posture
+
+The security workflow uses top-level read-only repository permissions and
+grants narrower job-level write permissions only where check, issue, or SARIF
+publication requires them. Its Rust dependency actions and Trivy action are
+commit-SHA pinned; the Semgrep CE container is image-digest pinned. Trivy's
+action version and scanner version are separate and both are declared.
+
+This hardening reduces mutable-reference risk but does not eliminate workflow
+supply-chain risk. Other workflows still contain major-version action tags,
+hosted runners and downloaded toolchains remain external dependencies, and
+Dependabot proposals still require review.
 
 ## Open gaps
 
-- CodeQL does not replace Rust-specific dependency, Clippy, fuzz, or review controls.
+- CodeQL covers JavaScript/TypeScript only and does not replace Rust-specific dependency, Clippy, fuzz, or review controls.
+- The security workflow configuration does not establish that its latest run passed; consult the result for the exact commit under review.
+- Trivy, Semgrep, Cargo Audit, and cargo-deny are scoped automated tools and can produce false positives and false negatives.
 - Fuzzing is time-bounded and does not prove parser safety.
+- Coverage is generated in CI, but no minimum coverage threshold or current percentage is claimed here.
 - Scanner construction policy is documented, but Scanner SDK and plugin contracts still lack an accepted post-transition compatibility baseline.
 - Automated API linting does not prove complete Rust source compatibility; public-API review and downstream compile fixtures remain required.
-- No independent security audit or controlled end-to-end performance report has been completed.
+- No independent security audit, penetration-test report, compliance certification, or controlled end-to-end performance report has been completed.

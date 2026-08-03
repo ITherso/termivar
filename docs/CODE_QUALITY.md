@@ -112,11 +112,12 @@ the boundary would otherwise be lost.
 
 ## Dependency and security checks
 
-CI runs Cargo Audit, cargo-deny, CodeQL, Semgrep, and filesystem/container
-scanning in separate workflows. A new dependency needs a concrete purpose,
-compatible license, maintained release line, and review of its default
-features. Security-sensitive changes also need negative tests for denied,
-malformed, oversized, and partially failed inputs.
+CI defines Cargo Audit, cargo-deny, CodeQL, Semgrep, and filesystem scanning in
+separate workflows. CodeQL is limited to JavaScript/TypeScript; the other tools
+also have bounded scopes and do not constitute an independent audit. A new
+dependency needs a concrete purpose, compatible license, maintained release
+line, and review of its default features. Security-sensitive changes also need
+negative tests for denied, malformed, oversized, and partially failed inputs.
 
 Do not report vulnerabilities in a public issue. Follow the private process in
 the repository [Security Policy](https://github.com/ITherso/venom/blob/main/SECURITY.md).
@@ -129,8 +130,9 @@ only tracked Rust files owned by workspace packages. Neither source-line count
 nor test count is a quality score.
 
 Coverage, benchmark, and fuzz results must include the commit, toolchain,
-configuration, bounded workload, and artifact provenance. See [Quality
-metrics](quality-metrics.md), [Benchmarks](benchmarks.md), and
+configuration, bounded workload, and artifact provenance. The repository does
+not claim a current minimum coverage percentage or production performance SLA.
+See [Quality metrics](quality-metrics.md), [Benchmarks](benchmarks.md), and
 [Fuzzing](fuzzing.md).
 
 ## Review checklist
