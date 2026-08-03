@@ -14,6 +14,7 @@
 pub mod fingerprint;
 pub mod policy;
 pub mod projection;
+pub mod shadow_planning;
 pub mod state;
 pub mod transition;
 
@@ -25,6 +26,11 @@ pub use policy::{recommend, DefenseResponse};
 pub use projection::{
     project_defense_state, project_defense_transition, project_outcome, DefenseObservationContext,
     ObservedOutcome,
+};
+pub use shadow_planning::{
+    decide, defense_aware_shadow_plan, explanation_code, render_explanation,
+    DefenseAwareShadowPlan, DefenseInteractionClass, InteractionDecision, PlanAdjustment,
+    ResourceDefenseObservation, ResourceDefenseSignal, ShadowPlanDelta, SuppressedAction,
 };
 pub use state::{DefensePosture, DefenseState, DefenseStatusSignal};
 pub use transition::{DefenseTransition, DefenseTransitionKind, PostureShift};
