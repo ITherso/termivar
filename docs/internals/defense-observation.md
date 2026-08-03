@@ -49,6 +49,24 @@ limiting or a product fingerprint alone is only `Suspected`; a `5xx` on its own 
 not treated as a block. The observation makes no payload or escalation decision;
 it is the evidence a planner would weigh before choosing a strategy.
 
+## Defense transitions
+
+`DefenseTransition::between(control, candidate)` is the deterministic difference
+between two observations of the same target — typically a baseline (control)
+response and a response to a strategy-derived candidate request. It reports:
+
+- a `PostureShift` of `Escalated`, `Deescalated`, or `Unchanged`, derived from
+  the ordered postures;
+- whether the candidate became newly blocking or newly rate limited;
+- whether the coarse status class or the fingerprinted product changed;
+- a `DefenseTransitionKind` summary of `NoChange`, `DefenseEngaged`,
+  `DefenseRelaxed`, or `DefenseReconfigured` (same posture level, different
+  signals).
+
+A transition is evidence, not a decision. It is the signal a planner would weigh
+to decide whether to escalate to a different payload strategy, back off, or
+re-fingerprint — the escalation policy itself is a separate, later step.
+
 ## Boundaries
 
 `DefenseState::observe` is a pure function of its inputs: identical
