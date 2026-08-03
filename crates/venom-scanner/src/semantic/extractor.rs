@@ -191,11 +191,8 @@ impl EntityExtractor {
                 ))
             },
             (EvidenceKind::Http, "http.request", "url") => {
-                let (canonical_id, url_str) = parse_canonical_endpoint(
-                    evidence.subject().as_str(),
-                    val_str,
-                    &self.limits,
-                )?;
+                let (canonical_id, url_str) =
+                    parse_canonical_endpoint(evidence.subject().as_str(), val_str, &self.limits)?;
                 let mut attrs = BTreeMap::new();
                 attrs.insert("url".to_string(), BTreeSet::from([url_str]));
 
@@ -207,11 +204,8 @@ impl EntityExtractor {
                 ))
             },
             (EvidenceKind::Http, "http.request", "method") => {
-                let (canonical_id, url_str) = parse_canonical_endpoint(
-                    evidence.subject().as_str(),
-                    "",
-                    &self.limits,
-                )?;
+                let (canonical_id, url_str) =
+                    parse_canonical_endpoint(evidence.subject().as_str(), "", &self.limits)?;
                 let normalized_method = normalize_http_method(val_str)?;
 
                 let mut attrs = BTreeMap::new();
@@ -260,11 +254,7 @@ impl EntityExtractor {
                     vec![evidence.id().clone()],
                 ))
             },
-            (
-                EvidenceKind::Authentication,
-                "authentication",
-                "api_key" | "bearer" | "jwt",
-            ) => {
+            (EvidenceKind::Authentication, "authentication", "api_key" | "bearer" | "jwt") => {
                 // REDACTION GUARANTEE: Never store raw token in attributes
                 let raw_token = val_str.trim();
                 if raw_token.is_empty() {
@@ -557,11 +547,7 @@ fn normalize_http_method(raw_method: &str) -> Option<String> {
         return None;
     }
 
-    if !trimmed
-        .as_bytes()
-        .iter()
-        .all(|b| is_token_char(*b as char))
-    {
+    if !trimmed.as_bytes().iter().all(|b| is_token_char(*b as char)) {
         return None;
     }
     Some(trimmed.to_ascii_uppercase())
@@ -666,7 +652,10 @@ mod tests {
         let res2 = extractor.extract_from_evidence(&[e2]);
         let res3 = extractor.extract_from_evidence(&[e3]);
         assert_eq!(res1.entities.len(), 1);
-        assert_eq!(res1.entities[0].id().as_str(), "v1:endpoint:https://example.test/api/user");
+        assert_eq!(
+            res1.entities[0].id().as_str(),
+            "v1:endpoint:https://example.test/api/user"
+        );
         assert!(res2.entities.is_empty());
         assert!(res3.entities.is_empty());
     }
@@ -988,9 +977,7 @@ mod tests {
         assert!(!json.contains("Authorization"));
         assert_eq!(res.entities[0].id().as_str(), "v1:header:authorization");
         assert_eq!(res.entities[0].attributes().len(), 1);
-        assert!(
-            res.entities[0].attributes().contains_key("name")
-        );
+        assert!(res.entities[0].attributes().contains_key("name"));
     }
 
     #[test]

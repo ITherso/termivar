@@ -5,7 +5,9 @@ use venom_core::{
     ConfidenceScore, EntityId, Evidence, EvidenceId, EvidenceKind, EvidenceSource, EvidenceValue,
     HttpEvidencePredicate, KnowledgePredicate,
 };
-use venom_scanner::{EntityExtractor, SemanticEntity, SemanticEntityType, SemanticExtractionLimits};
+use venom_scanner::{
+    EntityExtractor, SemanticEntity, SemanticEntityType, SemanticExtractionLimits,
+};
 
 const SECRET_AUTH_TOKEN: &str = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ1c2VyIn0.s3ltdGVzdA";
 
@@ -228,9 +230,24 @@ fn ensure_sorted_and_deduped_ids(entity: &SemanticEntity) {
     let ids = entity.source_evidence_ids();
     let mut sorted = ids.to_vec();
     sorted.sort();
-    assert_eq!(sorted, ids, "{} source evidence ids must be sorted", entity.id());
-    let deduped: Vec<_> = sorted.iter().collect::<BTreeSet<_>>().into_iter().cloned().collect();
-    assert_eq!(deduped, ids, "{} source evidence ids must be deduplicated", entity.id());
+    assert_eq!(
+        sorted,
+        ids,
+        "{} source evidence ids must be sorted",
+        entity.id()
+    );
+    let deduped: Vec<_> = sorted
+        .iter()
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .cloned()
+        .collect();
+    assert_eq!(
+        deduped,
+        ids,
+        "{} source evidence ids must be deduplicated",
+        entity.id()
+    );
 }
 
 fn fixture_evidence_by_name<'a>(
@@ -275,50 +292,50 @@ fn assert_fixture_contract_shape(fixture: &FixtureCollection) {
         );
 
         match fixture.name.as_str() {
-        "rest_request_url_and_method" => {
-            let url = fixture_evidence_by_name(
-                fixture,
-                HttpEvidencePredicate::REQUEST_URL.namespace(),
-                HttpEvidencePredicate::REQUEST_URL.name(),
-            );
-            assert_eq!(url.source_component, "http.evidence");
-            assert_eq!(url.source_method, "request-url");
+            "rest_request_url_and_method" => {
+                let url = fixture_evidence_by_name(
+                    fixture,
+                    HttpEvidencePredicate::REQUEST_URL.namespace(),
+                    HttpEvidencePredicate::REQUEST_URL.name(),
+                );
+                assert_eq!(url.source_component, "http.evidence");
+                assert_eq!(url.source_method, "request-url");
 
-            let method = fixture_evidence_by_name(
-                fixture,
-                HttpEvidencePredicate::REQUEST_METHOD.namespace(),
-                HttpEvidencePredicate::REQUEST_METHOD.name(),
-            );
-            assert_eq!(method.source_component, "http.evidence");
-            assert_eq!(method.source_method, "request-method");
-        }
-        "response_header_concepts" => {
-            let content_type = fixture_evidence_by_name(
-                fixture,
-                HttpEvidencePredicate::HEADER_CONTENT_TYPE.namespace(),
-                HttpEvidencePredicate::HEADER_CONTENT_TYPE.name(),
-            );
-            let server = fixture_evidence_by_name(
-                fixture,
-                HttpEvidencePredicate::HEADER_SERVER.namespace(),
-                HttpEvidencePredicate::HEADER_SERVER.name(),
-            );
+                let method = fixture_evidence_by_name(
+                    fixture,
+                    HttpEvidencePredicate::REQUEST_METHOD.namespace(),
+                    HttpEvidencePredicate::REQUEST_METHOD.name(),
+                );
+                assert_eq!(method.source_component, "http.evidence");
+                assert_eq!(method.source_method, "request-method");
+            },
+            "response_header_concepts" => {
+                let content_type = fixture_evidence_by_name(
+                    fixture,
+                    HttpEvidencePredicate::HEADER_CONTENT_TYPE.namespace(),
+                    HttpEvidencePredicate::HEADER_CONTENT_TYPE.name(),
+                );
+                let server = fixture_evidence_by_name(
+                    fixture,
+                    HttpEvidencePredicate::HEADER_SERVER.namespace(),
+                    HttpEvidencePredicate::HEADER_SERVER.name(),
+                );
 
-            assert_eq!(content_type.source_component, "http.evidence");
-            assert_eq!(content_type.source_method, "response-header:content-type");
-            assert_eq!(server.source_component, "http.evidence");
-            assert_eq!(server.source_method, "response-header:server");
-        }
-        "session_cookie_name_is_not_a_credential" => {
-            let cookie_name = fixture_evidence_by_name(
-                fixture,
-                HttpEvidencePredicate::COOKIE_NAME.namespace(),
-                HttpEvidencePredicate::COOKIE_NAME.name(),
-            );
-            assert_eq!(cookie_name.source_component, "http.evidence");
-            assert_eq!(cookie_name.source_method, "response-set-cookie-name");
-        }
-        _ => {}
+                assert_eq!(content_type.source_component, "http.evidence");
+                assert_eq!(content_type.source_method, "response-header:content-type");
+                assert_eq!(server.source_component, "http.evidence");
+                assert_eq!(server.source_method, "response-header:server");
+            },
+            "session_cookie_name_is_not_a_credential" => {
+                let cookie_name = fixture_evidence_by_name(
+                    fixture,
+                    HttpEvidencePredicate::COOKIE_NAME.namespace(),
+                    HttpEvidencePredicate::COOKIE_NAME.name(),
+                );
+                assert_eq!(cookie_name.source_component, "http.evidence");
+                assert_eq!(cookie_name.source_method, "response-set-cookie-name");
+            },
+            _ => {},
         }
     }
 }
@@ -337,8 +354,7 @@ fn semantic_fixtures_are_deterministic_and_match_expected() {
         assert_fixture_contract_shape(&fixture);
 
         assert_eq!(
-            forward,
-            reversed,
+            forward, reversed,
             "fixture {} should be order independent on extraction",
             fixture.name
         );
@@ -349,30 +365,34 @@ fn semantic_fixtures_are_deterministic_and_match_expected() {
             fixture.name
         );
 
-        let expected_entities: Vec<SemanticEntity> =
-            fixture
-                .expected
-                .entities
-                .iter()
-                .map(to_expected_entity)
-                .collect();
-        assert_eq!(forward.entities, expected_entities, "fixture {} entities", fixture.name);
-        assert_eq!(forward.truncated, fixture.expected.truncated, "fixture {} truncation", fixture.name);
+        let expected_entities: Vec<SemanticEntity> = fixture
+            .expected
+            .entities
+            .iter()
+            .map(to_expected_entity)
+            .collect();
         assert_eq!(
-            forward.dropped_entities,
-            fixture.expected.dropped_entities,
+            forward.entities, expected_entities,
+            "fixture {} entities",
+            fixture.name
+        );
+        assert_eq!(
+            forward.truncated, fixture.expected.truncated,
+            "fixture {} truncation",
+            fixture.name
+        );
+        assert_eq!(
+            forward.dropped_entities, fixture.expected.dropped_entities,
             "fixture {} dropped_entities",
             fixture.name
         );
         assert_eq!(
-            forward.dropped_attributes,
-            fixture.expected.dropped_attributes,
+            forward.dropped_attributes, fixture.expected.dropped_attributes,
             "fixture {} dropped_attributes",
             fixture.name
         );
         assert_eq!(
-            forward.dropped_sources,
-            fixture.expected.dropped_sources,
+            forward.dropped_sources, fixture.expected.dropped_sources,
             "fixture {} dropped_sources",
             fixture.name
         );
@@ -381,14 +401,26 @@ fn semantic_fixtures_are_deterministic_and_match_expected() {
             ensure_sorted_and_deduped_ids(entity);
             let encoded_entity = serde_json::to_string(entity).unwrap();
             let debug = format!("{entity:?}");
-            assert!(!encoded_entity.contains(SECRET_AUTH_TOKEN), "fixture {} secret in entity json", fixture.name);
-            assert!(!debug.contains(SECRET_AUTH_TOKEN), "fixture {} secret in entity debug", fixture.name);
+            assert!(
+                !encoded_entity.contains(SECRET_AUTH_TOKEN),
+                "fixture {} secret in entity json",
+                fixture.name
+            );
+            assert!(
+                !debug.contains(SECRET_AUTH_TOKEN),
+                "fixture {} secret in entity debug",
+                fixture.name
+            );
         }
 
         match fixture.name.as_str() {
             "response_header_concepts" => {
                 for entity in forward.entities {
-                    assert_eq!(entity.attributes().len(), 1, "header entity has only name attribute");
+                    assert_eq!(
+                        entity.attributes().len(),
+                        1,
+                        "header entity has only name attribute"
+                    );
                     assert!(entity.attributes().contains_key("name"));
                 }
             },
@@ -400,8 +432,10 @@ fn semantic_fixtures_are_deterministic_and_match_expected() {
             },
             "session_cookie_name_is_not_a_credential" => {
                 assert!(
-                    !forward.entities.iter().any(|entity| entity.entity_type()
-                        == SemanticEntityType::AuthArtifact),
+                    !forward
+                        .entities
+                        .iter()
+                        .any(|entity| entity.entity_type() == SemanticEntityType::AuthArtifact),
                     "cookie names must not become auth artifacts"
                 );
             },
@@ -410,9 +444,7 @@ fn semantic_fixtures_are_deterministic_and_match_expected() {
                 assert_eq!(auth.entity_type(), SemanticEntityType::AuthArtifact);
                 let auth_attrs = auth.attributes();
                 assert_eq!(
-                    auth_attrs
-                        .get("auth_kind")
-                        .expect("auth_kind must exist"),
+                    auth_attrs.get("auth_kind").expect("auth_kind must exist"),
                     &BTreeSet::from(["jwt".to_string()])
                 );
                 let hash = auth_attrs
@@ -428,8 +460,8 @@ fn semantic_fixtures_are_deterministic_and_match_expected() {
                 assert!(forward.truncated);
                 assert_eq!(forward.dropped_entities, 1);
                 assert_eq!(forward.entities.len(), 1);
-            }
-            _ => {}
+            },
+            _ => {},
         }
     }
 }
