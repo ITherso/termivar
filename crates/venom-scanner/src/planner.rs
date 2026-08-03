@@ -335,6 +335,16 @@ impl UtilityBreakdown {
     pub fn score(&self) -> UtilityScore {
         self.score
     }
+
+    /// Returns a new `UtilityBreakdown` with the utility score reduced by the given basis points penalty.
+    pub fn penalized(mut self, basis_points: u16) -> Self {
+        let basis_points = basis_points.min(MAX_BASIS_POINTS);
+        let remaining_bp = u64::from(MAX_BASIS_POINTS - basis_points);
+        let raw = self.score.units();
+        let penalized = (u128::from(raw) * u128::from(remaining_bp) + 5000) / 10000;
+        self.score = UtilityScore(u64::try_from(penalized).unwrap_or(0));
+        self
+    }
 }
 
 /// Required qualitative strength for an action's confidence source.
@@ -789,6 +799,13 @@ struct EligibleCandidate {
     utility: UtilityBreakdown,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DefenseTreatment {
+    None,
+    PolicySuppressed,
+    Penalty(u16),
+}
+
 /// Deterministic utility planner for declarative attack actions.
 #[derive(Debug, Clone, Default)]
 pub struct AttackPlanner {
@@ -891,17 +908,61 @@ impl AttackPlanner {
         policy_suppressed_actions: &BTreeSet<String>,
         defense_suppressed_actions: &BTreeSet<String>,
     ) -> Result<AttackPlan, PlannerError> {
+        self.plan_core(snapshot, context, |action_id| {
+            if defense_suppressed_actions.contains(action_id) {
+                DefenseTreatment::Penalty(MAX_BASIS_POINTS)
+            } else if policy_suppressed_actions.contains(action_id) {
+                DefenseTreatment::PolicySuppressed
+            } else {
+                DefenseTreatment::None
+            }
+        })
+    }
+
+    /// Produces a plan reducing each action's utility by a graded defense penalty.
+    ///
+    /// Each penalty is in basis points of the action's own utility; a full
+    /// [`MAX_BASIS_POINTS`] penalty drives the utility to zero and excludes the
+    /// action with [`ExclusionReason::DefenseSuppressed`], so suppression is
+    /// simply the maximal penalty. A partial penalty lowers the action's rank and
+    /// may drop it below the minimum-utility threshold; any defense-caused
+    /// exclusion is reported as `DefenseSuppressed`, never conflated with an
+    /// inherent `BelowMinimumUtility`.
+    pub fn plan_snapshot_with_defense_penalties(
+        &self,
+        snapshot: &KnowledgeSnapshot,
+        context: PlanningContext,
+        defense_penalties: &BTreeMap<String, u16>,
+    ) -> Result<AttackPlan, PlannerError> {
+        self.plan_core(snapshot, context, |action_id| {
+            match defense_penalties.get(action_id).copied() {
+                Some(basis_points) if basis_points > 0 => DefenseTreatment::Penalty(basis_points),
+                _ => DefenseTreatment::None,
+            }
+        })
+    }
+
+    fn plan_core(
+        &self,
+        snapshot: &KnowledgeSnapshot,
+        context: PlanningContext,
+        treat: impl Fn(&str) -> DefenseTreatment,
+    ) -> Result<AttackPlan, PlannerError> {
         self.validate_dependencies()?;
 
         let mut eligible = BTreeMap::<String, EligibleCandidate>::new();
         let mut exclusions = BTreeMap::<String, ExclusionReason>::new();
         for action in self.actions.values() {
-            if defense_suppressed_actions.contains(action.id()) {
-                exclusions.insert(action.id.clone(), ExclusionReason::DefenseSuppressed);
+            let treatment = treat(action.id());
+            if matches!(treatment, DefenseTreatment::PolicySuppressed) {
+                exclusions.insert(action.id.clone(), ExclusionReason::PolicySuppressed);
                 continue;
             }
-            if policy_suppressed_actions.contains(action.id()) {
-                exclusions.insert(action.id.clone(), ExclusionReason::PolicySuppressed);
+            if matches!(
+                treatment,
+                DefenseTreatment::Penalty(basis_points) if basis_points >= MAX_BASIS_POINTS
+            ) {
+                exclusions.insert(action.id.clone(), ExclusionReason::DefenseSuppressed);
                 continue;
             }
             let requirements = action.requirements.evaluate(snapshot)?;
@@ -923,13 +984,18 @@ impl AttackPlanner {
                 exclusions.insert(action.id.clone(), ExclusionReason::NoEligibleHypothesis);
                 continue;
             };
-            let utility = UtilityBreakdown::calculate(
+            let mut utility = UtilityBreakdown::calculate(
                 action.gain,
                 hypothesis.posterior(),
                 context.business_value,
                 action.cost,
                 action.risk,
             );
+            if let DefenseTreatment::Penalty(basis_points) = treatment {
+                if basis_points > 0 {
+                    utility = utility.penalized(basis_points);
+                }
+            }
             if utility.score < context.minimum_utility {
                 exclusions.insert(
                     action.id.clone(),
@@ -1627,5 +1693,43 @@ mod tests {
             plan.steps()[0].confidence_hypothesis_id(),
             "rule:14:detect.laravel:endpoint:https://example.test"
         );
+    }
+
+    #[test]
+    fn plan_snapshot_with_defense_penalties_scales_score_and_excludes_on_full_penalty() {
+        let knowledge = knowledge_with_hypothesis((80, 20));
+        let snapshot = knowledge.snapshot_for_subject(&subject());
+
+        let mut planner = AttackPlanner::new();
+        planner
+            .register(action("action.a", 80, 10, 20, &[]))
+            .unwrap();
+        planner
+            .register(action("action.b", 60, 10, 20, &[]))
+            .unwrap();
+
+        let base_plan = planner.plan_snapshot(&snapshot, context(100)).unwrap();
+        assert_eq!(base_plan.steps()[0].action_id(), "action.a");
+        assert_eq!(base_plan.steps()[1].action_id(), "action.b");
+
+        let mut penalties = BTreeMap::new();
+        penalties.insert("action.a".to_string(), 5000);
+        let penalized_plan = planner
+            .plan_snapshot_with_defense_penalties(&snapshot, context(100), &penalties)
+            .unwrap();
+        assert_eq!(penalized_plan.steps()[0].action_id(), "action.b");
+        assert_eq!(penalized_plan.steps()[1].action_id(), "action.a");
+
+        penalties.insert("action.a".to_string(), MAX_BASIS_POINTS);
+        let suppressed_plan = planner
+            .plan_snapshot_with_defense_penalties(&snapshot, context(100), &penalties)
+            .unwrap();
+        assert_eq!(suppressed_plan.steps().len(), 1);
+        assert_eq!(suppressed_plan.steps()[0].action_id(), "action.b");
+        assert!(suppressed_plan
+            .excluded()
+            .iter()
+            .any(|ex| ex.action_id() == "action.a"
+                && ex.reason() == &ExclusionReason::DefenseSuppressed));
     }
 }

@@ -11,7 +11,7 @@
 //! disabled, this returns the exact plan the planner would produce with no
 //! defense influence, byte for byte.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use venom_core::EntityId;
 
@@ -89,6 +89,26 @@ pub fn defense_aware_plan(
         &BTreeSet::new(),
         &defense_suppressed,
     )
+}
+
+/// Produces the real plan, applying graded defense penalties only when enabled.
+///
+/// While the policy is disabled, the result is byte-for-byte the plan
+/// [`AttackPlanner::plan_snapshot`] produces, with no defense influence. When
+/// enabled, each action's utility is scaled down by its defense penalty in basis
+/// points.
+pub fn defense_aware_plan_with_penalties(
+    policy: DefensePlanningPolicy,
+    planner: &AttackPlanner,
+    snapshot: &KnowledgeSnapshot,
+    context: PlanningContext,
+    defense_penalties: &BTreeMap<String, u16>,
+) -> Result<AttackPlan, PlannerError> {
+    if !policy.is_enabled() {
+        return planner.plan_snapshot(snapshot, context);
+    }
+
+    planner.plan_snapshot_with_defense_penalties(snapshot, context, defense_penalties)
 }
 
 #[cfg(test)]
@@ -419,5 +439,35 @@ mod tests {
             .excluded()
             .iter()
             .all(|excluded| excluded.reason() != &ExclusionReason::PolicySuppressed));
+    }
+
+    #[test]
+    fn defense_aware_plan_with_penalties_honors_disabled_policy_and_applies_penalties_when_enabled()
+    {
+        let snapshot = snapshot();
+        let planner = planner();
+
+        let mut penalties = BTreeMap::new();
+        penalties.insert("active.verify".to_string(), 8000);
+
+        let disabled_plan = defense_aware_plan_with_penalties(
+            DefensePlanningPolicy::disabled(),
+            &planner,
+            &snapshot,
+            context(),
+            &penalties,
+        )
+        .unwrap();
+        assert_eq!(disabled_plan, baseline_plan(&snapshot));
+
+        let enabled_plan = defense_aware_plan_with_penalties(
+            DefensePlanningPolicy::enabled(),
+            &planner,
+            &snapshot,
+            context(),
+            &penalties,
+        )
+        .unwrap();
+        assert_ne!(enabled_plan, baseline_plan(&snapshot));
     }
 }
