@@ -14,12 +14,15 @@ use std::sync::Arc;
 use crate::payload_strategy::{PayloadStrategyError, PayloadStrategyRegistry};
 
 pub mod api_authorization_context_pair;
+pub mod encoding;
 pub mod http_header_control_pair;
+pub mod normalization;
 
 pub use api_authorization_context_pair::{
     ApiAuthorizationContextPairStrategy, API_AUTHORIZATION_CONTEXT_PAIR_HEADER_NAME,
     API_AUTHORIZATION_CONTEXT_PAIR_ID, API_AUTHORIZATION_CONTEXT_PAIR_REVISION,
 };
+pub use encoding::{apply_evasion, encode_into_artifact, EvasionTechnique};
 pub use http_header_control_pair::{
     HttpHeaderControlPairStrategy, HTTP_HEADER_CONTROL_PAIR_HEADER_NAME,
     HTTP_HEADER_CONTROL_PAIR_ID, HTTP_HEADER_CONTROL_PAIR_REVISION,

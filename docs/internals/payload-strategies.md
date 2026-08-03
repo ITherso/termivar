@@ -150,6 +150,25 @@ Do not attach strategy-aware actions to them. The classic directory fuzzer is
 available only through the explicit `--legacy-directory-fuzz` CLI option while
 its broker migration remains pending.
 
+## Encoding and normalization primitives
+
+`payload_strategies::encoding` and `payload_strategies::normalization` are the
+corrected, relocated home for the payload encoders and the evasion enum that
+previously lived on the legacy `waf` utility. They are pure building blocks — no
+primitive is registered as a runtime strategy, wired to an executor, or allowed
+to issue a request, so they change no scan behavior.
+
+- `normalization` holds `case_variation`, `sql_comment_injection`, and
+  `whitespace_to_tab`; `encoding` holds `url_encode`, `double_url_encode`, and
+  `hex_encode`. Each is behavior-equivalent to its legacy counterpart.
+- `EvasionTechnique` corrects the legacy `EvisionTechnique`/`WhespaceVariation`
+  spelling. It stays compatible: a `From<waf::EvisionTechnique>` conversion keeps
+  legacy source working, and a serde `alias` accepts the old `whespace_variation`
+  spelling on deserialization.
+- `encode_into_artifact` routes a technique's output through
+  `PayloadArtifact`, so encoded bytes inherit the same per-turn byte bound and
+  raw-payload redaction as any other artifact.
+
 ## Differential analysis
 
 Payload derivation and response comparison are separate responsibilities. JSON

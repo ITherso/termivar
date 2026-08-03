@@ -213,7 +213,7 @@ pub use knowledge::{
 pub use logging::{LogEntry, LogLevel, Logger};
 pub use metrics::{MetricsCollector, MetricsSummary, PhaseMetrics};
 pub use payload_strategies::{
-    standard_payload_strategies, ApiAuthorizationContextPairStrategy,
+    standard_payload_strategies, ApiAuthorizationContextPairStrategy, EvasionTechnique,
     HttpHeaderControlPairStrategy, API_AUTHORIZATION_CONTEXT_PAIR_HEADER_NAME,
     API_AUTHORIZATION_CONTEXT_PAIR_ID, API_AUTHORIZATION_CONTEXT_PAIR_REVISION,
     HTTP_HEADER_CONTROL_PAIR_HEADER_NAME, HTTP_HEADER_CONTROL_PAIR_ID,
