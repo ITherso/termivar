@@ -2529,6 +2529,7 @@ name = "venom-scanner"
 version = "0.9.0-alpha"
 dependencies = [
  "async-trait",
+ "base64",
  "criterion",
  "dashmap",
  "memmap2",
