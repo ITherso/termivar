@@ -12,6 +12,7 @@
 //! [`crate::payload_strategies`].
 
 pub mod fingerprint;
+pub mod policy;
 pub mod state;
 pub mod transition;
 
@@ -19,6 +20,7 @@ pub use fingerprint::{
     fingerprint, DefenseFingerprint, DefenseProduct, FingerprintConfidence,
     MAX_FINGERPRINT_BODY_SCAN_BYTES,
 };
+pub use policy::{recommend, DefenseResponse};
 pub use state::{DefensePosture, DefenseState, DefenseStatusSignal};
 pub use transition::{DefenseTransition, DefenseTransitionKind, PostureShift};
 

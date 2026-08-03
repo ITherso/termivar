@@ -67,6 +67,24 @@ A transition is evidence, not a decision. It is the signal a planner would weigh
 to decide whether to escalate to a different payload strategy, back off, or
 re-fingerprint — the escalation policy itself is a separate, later step.
 
+## Escalation policy
+
+`defense::policy::recommend(state, transition)` is the single place that turns
+observation into a recommendation. It maps a `DefenseState` and an optional
+`DefenseTransition` into a `DefenseResponse`:
+
+- `Proceed` — no defensive reaction;
+- `Observe` — defensive infrastructure present but not blocking;
+- `Backoff` — rate limiting is in effect;
+- `Reconsider` — the candidate provoked a block the control did not, so the block
+  is attributed to the candidate request and the planner should change strategy;
+- `Halt` — a standing hard block or challenge.
+
+`DefenseResponse` is ordered by restrictiveness, so a caller weighing several
+observations can take the maximum. The policy recommends but never acts: it
+selects no payload and issues no request. Wiring the recommendation into planner
+strategy selection is the next, separate step.
+
 ## Boundaries
 
 `DefenseState::observe` is a pure function of its inputs: identical
