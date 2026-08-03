@@ -20,8 +20,13 @@ use venom_core::{
 };
 
 use crate::{
-    runtime_budget::RequestAccountingBroker, DecisionActionExecutor, DecisionExecutionFailureKind,
-    DecisionExecutionRequest, DecisionExecutorError,
+    payload_strategy::{
+        PayloadSeed, PayloadStrategyLimits, PayloadStrategyRef, PayloadStrategyRegistry,
+        PayloadVariantRole,
+    },
+    runtime_budget::RequestAccountingBroker,
+    DecisionActionExecutor, DecisionExecutionFailureKind, DecisionExecutionRequest,
+    DecisionExecutionStage, DecisionExecutorError,
 };
 
 mod request_broker;
@@ -431,6 +436,22 @@ pub enum HttpEvidenceError {
     #[error("HTTP evidence target origin is outside policy: {url}")]
     TargetOutsidePolicy { url: String },
 
+    /// A bound payload strategy is not present in its registry.
+    #[error("payload strategy {strategy} is not registered for this executor")]
+    PayloadStrategyUnavailable {
+        /// Stable strategy identity and revision.
+        strategy: String,
+    },
+
+    /// A bound payload strategy could not derive its artifact for this turn.
+    #[error("payload strategy {strategy} failed to derive a {role} artifact")]
+    PayloadDerivationFailed {
+        /// Stable strategy identity and revision.
+        strategy: String,
+        /// Control or candidate role requested for the turn.
+        role: &'static str,
+    },
+
     /// The redirect-disabled HTTP client could not be constructed.
     #[error("failed to construct HTTP evidence client: {0}")]
     Client(#[source] reqwest::Error),
@@ -473,6 +494,8 @@ pub(crate) fn execution_failure_kind(error: &HttpEvidenceError) -> DecisionExecu
         | HttpEvidenceError::InvalidUrl { .. }
         | HttpEvidenceError::InvalidHeaderName { .. }
         | HttpEvidenceError::InvalidHeaderValue { .. }
+        | HttpEvidenceError::PayloadStrategyUnavailable { .. }
+        | HttpEvidenceError::PayloadDerivationFailed { .. }
         | HttpEvidenceError::Client(_)
         | HttpEvidenceError::Reasoning(_) => DecisionExecutionFailureKind::ExecutorFailure,
     }
@@ -480,6 +503,120 @@ pub(crate) fn execution_failure_kind(error: &HttpEvidenceError) -> DecisionExecu
 
 fn into_decision_executor_error(error: HttpEvidenceError) -> DecisionExecutorError {
     DecisionExecutorError::with_kind(execution_failure_kind(&error), error.to_string())
+}
+
+/// Role label used in payload-derivation diagnostics.
+fn payload_role_name(role: PayloadVariantRole) -> &'static str {
+    match role {
+        PayloadVariantRole::Control => "control",
+        PayloadVariantRole::Candidate => "candidate",
+    }
+}
+
+/// Binds a header-valued payload strategy to the HTTP evidence executor.
+///
+/// When a decision case selects this binding's strategy reference, the executor
+/// derives exactly one artifact per turn from the registry and applies it as the
+/// value of `header` before dispatch. Passive turns derive the `Control`
+/// artifact; explicit active verification turns derive the `Candidate` artifact,
+/// aligning differential work with the existing evidence transaction boundary.
+///
+/// The derived bytes never bypass [`HttpProbe`] header validation, so the same
+/// forbidden-header and value rules that guard hand-built probes also guard
+/// strategy-materialized ones.
+#[derive(Clone)]
+pub struct HttpHeaderPayloadBinding {
+    registry: PayloadStrategyRegistry,
+    reference: PayloadStrategyRef,
+    seed: PayloadSeed,
+    limits: PayloadStrategyLimits,
+    header: String,
+}
+
+impl HttpHeaderPayloadBinding {
+    /// Binds `reference` to a request header, validating both up front.
+    ///
+    /// Fails when the header name is empty, malformed, or forbidden by evidence
+    /// policy, or when `reference` is not registered in `registry`. Binding the
+    /// registry at construction keeps derivation a pure, in-process step.
+    pub fn new(
+        registry: PayloadStrategyRegistry,
+        reference: PayloadStrategyRef,
+        seed: PayloadSeed,
+        limits: PayloadStrategyLimits,
+        header: impl Into<String>,
+    ) -> Result<Self, HttpEvidenceError> {
+        let header = header.into();
+        let parsed = HeaderName::from_bytes(header.as_bytes()).map_err(|_| {
+            HttpEvidenceError::InvalidHeaderName {
+                name: header.clone(),
+            }
+        })?;
+        if forbidden_request_header(&parsed) {
+            return Err(HttpEvidenceError::ForbiddenRequestHeader {
+                name: parsed.as_str().to_owned(),
+            });
+        }
+        if !registry.contains(&reference) {
+            return Err(HttpEvidenceError::PayloadStrategyUnavailable {
+                strategy: reference.to_string(),
+            });
+        }
+        Ok(Self {
+            registry,
+            reference,
+            seed,
+            limits,
+            header: parsed.as_str().to_owned(),
+        })
+    }
+
+    /// Returns the strategy reference this binding materializes.
+    pub fn reference(&self) -> &PayloadStrategyRef {
+        &self.reference
+    }
+
+    /// Returns the request header the derived artifact is applied to.
+    pub fn header(&self) -> &str {
+        &self.header
+    }
+
+    /// Derives the stage-appropriate artifact and applies it to `probe`.
+    ///
+    /// Passive turns map to a `Control` artifact and active turns to a
+    /// `Candidate` artifact. Derivation, provenance revalidation, and byte
+    /// bounds are all enforced by the registry; header validation is enforced by
+    /// [`HttpProbe::with_header`]. An empty derived artifact omits the header
+    /// entirely, letting a control leg represent an anonymous context.
+    fn apply_to_probe(
+        &self,
+        stage: DecisionExecutionStage,
+        probe: HttpProbe,
+    ) -> Result<HttpProbe, HttpEvidenceError> {
+        let role = match stage {
+            DecisionExecutionStage::Passive => PayloadVariantRole::Control,
+            DecisionExecutionStage::Active => PayloadVariantRole::Candidate,
+        };
+        let artifact = self
+            .registry
+            .derive_one(&self.reference, role, &self.seed, self.limits)
+            .map_err(|_| HttpEvidenceError::PayloadDerivationFailed {
+                strategy: self.reference.to_string(),
+                role: payload_role_name(role),
+            })?;
+        let value = std::str::from_utf8(artifact.as_bytes()).map_err(|_| {
+            HttpEvidenceError::PayloadDerivationFailed {
+                strategy: self.reference.to_string(),
+                role: payload_role_name(role),
+            }
+        })?;
+        // An empty derived artifact intentionally omits the header, so a control
+        // leg can represent an anonymous context rather than an empty value.
+        if value.is_empty() {
+            return Ok(probe);
+        }
+        probe.with_header(self.header.clone(), value)
+    }
 }
 
 /// Real HTTP executor that produces typed evidence for the decision runner.
@@ -507,6 +644,7 @@ pub struct HttpEvidenceExecutor {
     id: String,
     requests: HttpRequestBroker,
     probes: Arc<dyn HttpProbeProvider>,
+    payload: Option<HttpHeaderPayloadBinding>,
 }
 
 impl HttpEvidenceExecutor {
@@ -563,6 +701,7 @@ impl HttpEvidenceExecutor {
             id,
             requests,
             probes,
+            payload: None,
         })
     }
 
@@ -581,7 +720,27 @@ impl HttpEvidenceExecutor {
             id,
             requests,
             probes,
+            payload: None,
         })
+    }
+
+    /// Binds a header-valued payload strategy this executor will materialize.
+    ///
+    /// The executor then advertises exact support for the binding's strategy
+    /// reference and, when a decision case selects it, derives one control or
+    /// candidate artifact per turn and applies it before dispatch. Actions that
+    /// do not select the reference are unaffected, so an executor may serve both
+    /// plain discovery and strategy-driven differential turns.
+    pub fn with_payload_binding(mut self, binding: HttpHeaderPayloadBinding) -> Self {
+        self.payload = Some(binding);
+        self
+    }
+
+    /// Returns the bound payload strategy reference, if any.
+    pub fn payload_strategy_reference(&self) -> Option<&PayloadStrategyRef> {
+        self.payload
+            .as_ref()
+            .map(HttpHeaderPayloadBinding::reference)
     }
 
     /// Returns the immutable execution policy.
@@ -589,11 +748,26 @@ impl HttpEvidenceExecutor {
         self.requests.policy()
     }
 
+    /// Resolves the base probe and applies the bound payload artifact when the
+    /// decision case selects this executor's strategy reference.
+    fn resolve_probe(
+        &self,
+        decision: &DecisionExecutionRequest,
+    ) -> Result<HttpProbe, HttpEvidenceError> {
+        let probe = self.probes.probe_for(decision)?;
+        match (self.payload.as_ref(), decision.payload_strategy()) {
+            (Some(binding), Some(strategy)) if binding.reference() == strategy => {
+                binding.apply_to_probe(decision.stage(), probe)
+            },
+            _ => Ok(probe),
+        }
+    }
+
     async fn collect(
         &self,
         decision: &DecisionExecutionRequest,
     ) -> Result<Vec<Evidence>, HttpRequestBrokerError> {
-        let probe = self.probes.probe_for(decision)?;
+        let probe = self.resolve_probe(decision)?;
         let collected = self.requests.collect(decision, &probe).await?;
         self.to_evidence(decision, &probe, collected)
             .map_err(Into::into)
@@ -781,6 +955,12 @@ impl HttpEvidenceExecutor {
 impl DecisionActionExecutor for HttpEvidenceExecutor {
     fn id(&self) -> &str {
         &self.id
+    }
+
+    fn supports_payload_strategy(&self, strategy: &PayloadStrategyRef) -> bool {
+        self.payload
+            .as_ref()
+            .is_some_and(|binding| binding.reference() == strategy)
     }
 
     async fn execute(
@@ -1306,6 +1486,303 @@ mod tests {
             origin: DecisionActionOrigin::Planned,
             delay_ms: None,
         }
+    }
+
+    /// Serves a canned response for `connections` requests and captures each
+    /// raw request head so a test can assert the exact bytes that were sent.
+    async fn serve_capturing(
+        response: &'static [u8],
+        connections: usize,
+    ) -> (Url, Arc<std::sync::Mutex<Vec<String>>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let captured = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = captured.clone();
+        tokio::spawn(async move {
+            for _ in 0..connections {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut buffer = [0_u8; 2048];
+                let read = stream.read(&mut buffer).await.unwrap();
+                sink.lock()
+                    .unwrap()
+                    .push(String::from_utf8_lossy(&buffer[..read]).into_owned());
+                stream.write_all(response).await.unwrap();
+                stream.shutdown().await.unwrap();
+            }
+        });
+        (
+            Url::parse(&format!("http://{address}/probe")).unwrap(),
+            captured,
+        )
+    }
+
+    #[tokio::test]
+    async fn strategy_binding_derives_and_dispatches_control_then_candidate_headers() {
+        let (url, captured) = serve_capturing(
+            b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+            2,
+        )
+        .await;
+
+        let reference = PayloadStrategyRef::new(
+            crate::HTTP_HEADER_CONTROL_PAIR_ID,
+            crate::HTTP_HEADER_CONTROL_PAIR_REVISION,
+        )
+        .unwrap();
+        let strategies = crate::standard_payload_strategies().unwrap();
+        let limits = PayloadStrategyLimits::default();
+        let seed = PayloadSeed::new(b"application/json".to_vec(), limits).unwrap();
+        let binding = HttpHeaderPayloadBinding::new(
+            strategies,
+            reference.clone(),
+            seed,
+            limits,
+            crate::HTTP_HEADER_CONTROL_PAIR_HEADER_NAME,
+        )
+        .unwrap();
+
+        let probe_url = url.clone();
+        let provider: Arc<dyn HttpProbeProvider> =
+            Arc::new(move |_request: &DecisionExecutionRequest| {
+                HttpProbe::new(probe_url.clone(), HttpProbeMethod::Get)
+            });
+        let policy = HttpEvidencePolicy::new([url.clone()], Duration::from_secs(2), 1024).unwrap();
+        let executor = HttpEvidenceExecutor::new(policy, provider)
+            .unwrap()
+            .with_payload_binding(binding);
+        assert!(executor.supports_payload_strategy(&reference));
+        assert!(!executor
+            .supports_payload_strategy(&PayloadStrategyRef::new("other.strategy", 1).unwrap()));
+        assert_eq!(executor.payload_strategy_reference(), Some(&reference));
+
+        let mut registry = DecisionExecutorRegistry::new();
+        registry.register(Arc::new(executor)).unwrap();
+        registry
+            .route_action(
+                DecisionExecutionStage::Active,
+                "http.probe",
+                HTTP_EVIDENCE_EXECUTOR_ID,
+            )
+            .unwrap();
+        let adapter = DecisionRunnerAdapter::new(registry);
+        let knowledge = KnowledgeBase::new();
+
+        let case = VerificationCase::new(
+            "case:strategy:1",
+            EntityId::new(format!("endpoint:{url}")).unwrap(),
+            "http.probe",
+            "hypothesis:http",
+        )
+        .unwrap()
+        .with_payload_strategy(Some(reference.clone()));
+
+        // Passive turn derives the seed-independent Control artifact.
+        let passive = DecisionLoopCommand::ExecuteAction {
+            case: case.clone(),
+            executor: Some(HTTP_EVIDENCE_EXECUTOR_ID.to_owned()),
+            origin: DecisionActionOrigin::Planned,
+            delay_ms: None,
+        };
+        adapter.execute_command(&passive, &knowledge).await.unwrap();
+
+        // Active verification turn derives the Candidate artifact for the pair.
+        let active = DecisionLoopCommand::CollectActiveEvidence { case };
+        adapter.execute_command(&active, &knowledge).await.unwrap();
+
+        let requests = captured.lock().unwrap().clone();
+        assert_eq!(
+            requests.len(),
+            2,
+            "expected one control and one candidate dispatch"
+        );
+        let control = requests[0].to_ascii_lowercase();
+        let candidate = requests[1].to_ascii_lowercase();
+        assert!(
+            control.contains("accept: */*\r\n"),
+            "control leg must send the baseline header, got: {}",
+            requests[0]
+        );
+        assert!(
+            candidate.contains("accept: */*, application/json\r\n"),
+            "candidate leg must send the seed-derived variation, got: {}",
+            requests[1]
+        );
+    }
+
+    #[tokio::test]
+    async fn metered_strategy_dispatch_charges_control_and_candidate_requests() {
+        let (url, captured) = serve_capturing(
+            b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+            2,
+        )
+        .await;
+
+        let reference = PayloadStrategyRef::new(
+            crate::HTTP_HEADER_CONTROL_PAIR_ID,
+            crate::HTTP_HEADER_CONTROL_PAIR_REVISION,
+        )
+        .unwrap();
+        let limits = PayloadStrategyLimits::default();
+        let binding = HttpHeaderPayloadBinding::new(
+            crate::standard_payload_strategies().unwrap(),
+            reference.clone(),
+            PayloadSeed::new(b"application/json".to_vec(), limits).unwrap(),
+            limits,
+            crate::HTTP_HEADER_CONTROL_PAIR_HEADER_NAME,
+        )
+        .unwrap();
+
+        let probe_url = url.clone();
+        let provider: Arc<dyn HttpProbeProvider> =
+            Arc::new(move |_request: &DecisionExecutionRequest| {
+                HttpProbe::new(probe_url.clone(), HttpProbeMethod::Get)
+            });
+        let policy = HttpEvidencePolicy::new([url.clone()], Duration::from_secs(2), 1024).unwrap();
+        let accounting = RequestAccountingBroker::new(RuntimeBudget::default());
+        let executor =
+            HttpEvidenceExecutor::new_with_accounting(policy, provider, accounting.clone())
+                .unwrap()
+                .with_payload_binding(binding);
+
+        let mut registry = DecisionExecutorRegistry::new();
+        registry.register(Arc::new(executor)).unwrap();
+        registry
+            .route_action(
+                DecisionExecutionStage::Active,
+                "http.probe",
+                HTTP_EVIDENCE_EXECUTOR_ID,
+            )
+            .unwrap();
+        let adapter = DecisionRunnerAdapter::new(registry);
+        let knowledge = KnowledgeBase::new();
+
+        let case = VerificationCase::new(
+            "case:metered:1",
+            EntityId::new(format!("endpoint:{url}")).unwrap(),
+            "http.probe",
+            "hypothesis:http",
+        )
+        .unwrap()
+        .with_payload_strategy(Some(reference));
+
+        adapter
+            .execute_command(
+                &DecisionLoopCommand::ExecuteAction {
+                    case: case.clone(),
+                    executor: Some(HTTP_EVIDENCE_EXECUTOR_ID.to_owned()),
+                    origin: DecisionActionOrigin::Planned,
+                    delay_ms: None,
+                },
+                &knowledge,
+            )
+            .await
+            .unwrap();
+        adapter
+            .execute_command(
+                &DecisionLoopCommand::CollectActiveEvidence { case },
+                &knowledge,
+            )
+            .await
+            .unwrap();
+
+        // Both the derived control and candidate dispatches are charged through
+        // the host-owned accounting broker.
+        assert_eq!(accounting.snapshot().total_requests(), 2);
+        assert_eq!(captured.lock().unwrap().len(), 2);
+        assert!(!accounting.dispatch_audit().is_empty());
+    }
+
+    #[tokio::test]
+    async fn authorization_context_pair_omits_control_header_and_sends_candidate_credential() {
+        let (url, captured) = serve_capturing(
+            b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+            2,
+        )
+        .await;
+
+        let reference = PayloadStrategyRef::new(
+            crate::API_AUTHORIZATION_CONTEXT_PAIR_ID,
+            crate::API_AUTHORIZATION_CONTEXT_PAIR_REVISION,
+        )
+        .unwrap();
+        let limits = PayloadStrategyLimits::default();
+        let binding = HttpHeaderPayloadBinding::new(
+            crate::standard_payload_strategies().unwrap(),
+            reference.clone(),
+            PayloadSeed::new(b"Bearer test-token".to_vec(), limits).unwrap(),
+            limits,
+            crate::API_AUTHORIZATION_CONTEXT_PAIR_HEADER_NAME,
+        )
+        .unwrap();
+
+        let probe_url = url.clone();
+        let provider: Arc<dyn HttpProbeProvider> =
+            Arc::new(move |_request: &DecisionExecutionRequest| {
+                HttpProbe::new(probe_url.clone(), HttpProbeMethod::Get)
+            });
+        let policy = HttpEvidencePolicy::new([url.clone()], Duration::from_secs(2), 1024).unwrap();
+        let executor = HttpEvidenceExecutor::new(policy, provider)
+            .unwrap()
+            .with_payload_binding(binding);
+
+        let mut registry = DecisionExecutorRegistry::new();
+        registry.register(Arc::new(executor)).unwrap();
+        registry
+            .route_action(
+                DecisionExecutionStage::Active,
+                "http.probe",
+                HTTP_EVIDENCE_EXECUTOR_ID,
+            )
+            .unwrap();
+        let adapter = DecisionRunnerAdapter::new(registry);
+        let knowledge = KnowledgeBase::new();
+
+        let case = VerificationCase::new(
+            "case:authz:1",
+            EntityId::new(format!("endpoint:{url}")).unwrap(),
+            "http.probe",
+            "hypothesis:http",
+        )
+        .unwrap()
+        .with_payload_strategy(Some(reference));
+
+        // Passive turn derives the empty Control artifact: anonymous context.
+        adapter
+            .execute_command(
+                &DecisionLoopCommand::ExecuteAction {
+                    case: case.clone(),
+                    executor: Some(HTTP_EVIDENCE_EXECUTOR_ID.to_owned()),
+                    origin: DecisionActionOrigin::Planned,
+                    delay_ms: None,
+                },
+                &knowledge,
+            )
+            .await
+            .unwrap();
+
+        // Active turn derives the Candidate credential: authorized context.
+        adapter
+            .execute_command(
+                &DecisionLoopCommand::CollectActiveEvidence { case },
+                &knowledge,
+            )
+            .await
+            .unwrap();
+
+        let requests = captured.lock().unwrap().clone();
+        assert_eq!(requests.len(), 2);
+        let control = requests[0].to_ascii_lowercase();
+        let candidate = requests[1].to_ascii_lowercase();
+        assert!(
+            !control.contains("authorization:"),
+            "control leg must be anonymous (no authorization header), got: {}",
+            requests[0]
+        );
+        assert!(
+            candidate.contains("authorization: bearer test-token\r\n"),
+            "candidate leg must send the authorized credential, got: {}",
+            requests[1]
+        );
     }
 
     fn adapter(
