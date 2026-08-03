@@ -1,0 +1,53 @@
+{
+  "name": "rest_request_url_and_method",
+  "evidence": [
+    {
+      "id": "evidence:semantic:rest-url",
+      "subject": "endpoint:https://api.example.test/rest/users?page=1#fragment",
+      "kind": "Http",
+      "predicate_namespace": "http.request",
+      "predicate_name": "url",
+      "value": "https://api.example.test/rest/users?page=2#frag",
+      "source_component": "http.evidence",
+      "source_method": "request-url",
+      "observed_at_ms": 1700000000000,
+      "reliability_percent": 99
+    },
+    {
+      "id": "evidence:semantic:rest-method",
+      "subject": "endpoint:https://api.example.test/rest/users?page=1#fragment",
+      "kind": "Http",
+      "predicate_namespace": "http.request",
+      "predicate_name": "method",
+      "value": "get",
+      "source_component": "http.evidence",
+      "source_method": "request-method",
+      "observed_at_ms": 1700000000000,
+      "reliability_percent": 99
+    }
+  ],
+  "expected": {
+    "entities": [
+      {
+        "id": "v1:endpoint:https://api.example.test/rest/users",
+        "entity_type": "endpoint",
+        "attributes": {
+          "url": [
+            "https://api.example.test/rest/users"
+          ],
+          "method": [
+            "GET"
+          ]
+        },
+        "source_evidence_ids": [
+          "evidence:semantic:rest-method",
+          "evidence:semantic:rest-url"
+        ]
+      }
+    ],
+    "truncated": false,
+    "dropped_entities": 0,
+    "dropped_attributes": 0,
+    "dropped_sources": 0
+  }
+}

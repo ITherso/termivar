@@ -1,0 +1,61 @@
+{
+  "name": "response_header_concepts",
+  "evidence": [
+    {
+      "id": "evidence:semantic:header-content-type",
+      "subject": "endpoint:https://web.example.test/",
+      "kind": "Http",
+      "predicate_namespace": "http.header",
+      "predicate_name": "content-type",
+      "value": "application/json; charset=utf-8",
+      "source_component": "http.evidence",
+      "source_method": "response-header",
+      "observed_at_ms": 1700000000100,
+      "reliability_percent": 98
+    },
+    {
+      "id": "evidence:semantic:header-server",
+      "subject": "endpoint:https://web.example.test/",
+      "kind": "Http",
+      "predicate_namespace": "http.header",
+      "predicate_name": "server",
+      "value": "Nginx/1.27.3",
+      "source_component": "http.evidence",
+      "source_method": "response-header",
+      "observed_at_ms": 1700000000100,
+      "reliability_percent": 98
+    }
+  ],
+  "expected": {
+    "entities": [
+      {
+        "id": "v1:header:content-type",
+        "entity_type": "header",
+        "attributes": {
+          "name": [
+            "content-type"
+          ]
+        },
+        "source_evidence_ids": [
+          "evidence:semantic:header-content-type"
+        ]
+      },
+      {
+        "id": "v1:header:server",
+        "entity_type": "header",
+        "attributes": {
+          "name": [
+            "server"
+          ]
+        },
+        "source_evidence_ids": [
+          "evidence:semantic:header-server"
+        ]
+      }
+    ],
+    "truncated": false,
+    "dropped_entities": 0,
+    "dropped_attributes": 0,
+    "dropped_sources": 0
+  }
+}

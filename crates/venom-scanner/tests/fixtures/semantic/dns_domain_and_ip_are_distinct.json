@@ -1,0 +1,61 @@
+{
+  "name": "dns_domain_and_ip_are_distinct",
+  "evidence": [
+    {
+      "id": "evidence:semantic:dns-domain",
+      "subject": "endpoint:https://target.example.test/",
+      "kind": "Dns",
+      "predicate_namespace": "dns",
+      "predicate_name": "domain",
+      "value": "Example.TEST.",
+      "source_component": "dns.resolver",
+      "source_method": "a-record",
+      "observed_at_ms": 1700000000500,
+      "reliability_percent": 96
+    },
+    {
+      "id": "evidence:semantic:dns-ip",
+      "subject": "endpoint:https://target.example.test/",
+      "kind": "Dns",
+      "predicate_namespace": "dns",
+      "predicate_name": "ip",
+      "value": "192.0.2.1",
+      "source_component": "dns.resolver",
+      "source_method": "a-record",
+      "observed_at_ms": 1700000000500,
+      "reliability_percent": 96
+    }
+  ],
+  "expected": {
+    "entities": [
+      {
+        "id": "v1:domain:example.test",
+        "entity_type": "domain",
+        "attributes": {
+          "domain": [
+            "example.test"
+          ]
+        },
+        "source_evidence_ids": [
+          "evidence:semantic:dns-domain"
+        ]
+      },
+      {
+        "id": "v1:ip:192.0.2.1",
+        "entity_type": "ip_address",
+        "attributes": {
+          "ip": [
+            "192.0.2.1"
+          ]
+        },
+        "source_evidence_ids": [
+          "evidence:semantic:dns-ip"
+        ]
+      }
+    ],
+    "truncated": false,
+    "dropped_entities": 0,
+    "dropped_attributes": 0,
+    "dropped_sources": 0
+  }
+}

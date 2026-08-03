@@ -1,0 +1,69 @@
+{
+  "name": "bounded_truncation_receipt",
+  "limits": {
+    "max_entities": 1,
+    "max_attribute_keys": 2,
+    "max_values_per_attribute": 2,
+    "max_value_bytes": 2048,
+    "max_source_evidence_ids": 1,
+    "max_url_bytes": 1024
+  },
+  "evidence": [
+    {
+      "id": "evidence:semantic:bounded-alpha",
+      "subject": "endpoint:https://api.example.test/a",
+      "kind": "Dns",
+      "predicate_namespace": "dns",
+      "predicate_name": "domain",
+      "value": "alpha.example.test",
+      "source_component": "scanner",
+      "source_method": "bounded",
+      "observed_at_ms": 1700000000800,
+      "reliability_percent": 90
+    },
+    {
+      "id": "evidence:semantic:bounded-beta",
+      "subject": "endpoint:https://api.example.test/b",
+      "kind": "Dns",
+      "predicate_namespace": "dns",
+      "predicate_name": "domain",
+      "value": "beta.example.test",
+      "source_component": "scanner",
+      "source_method": "bounded",
+      "observed_at_ms": 1700000000800,
+      "reliability_percent": 90
+    },
+    {
+      "id": "evidence:semantic:bounded-alpha",
+      "subject": "endpoint:https://api.example.test/a",
+      "kind": "Dns",
+      "predicate_namespace": "dns",
+      "predicate_name": "domain",
+      "value": "alpha.example.test",
+      "source_component": "scanner",
+      "source_method": "bounded",
+      "observed_at_ms": 1700000000800,
+      "reliability_percent": 90
+    }
+  ],
+  "expected": {
+    "entities": [
+      {
+        "id": "v1:domain:alpha.example.test",
+        "entity_type": "domain",
+        "attributes": {
+          "domain": [
+            "alpha.example.test"
+          ]
+        },
+        "source_evidence_ids": [
+          "evidence:semantic:bounded-alpha"
+        ]
+      }
+    ],
+    "truncated": true,
+    "dropped_entities": 1,
+    "dropped_attributes": 0,
+    "dropped_sources": 0
+  }
+}

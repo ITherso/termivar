@@ -149,7 +149,9 @@ impl EntityExtractor {
     }
 
     fn project_evidence(&self, evidence: &Evidence) -> Option<SemanticEntity> {
-        let predicate_name = evidence.predicate().name();
+        let predicate = evidence.predicate();
+        let predicate_namespace = predicate.namespace();
+        let predicate_name = predicate.name();
 
         let val_str = match evidence.value() {
             EvidenceValue::Text(s) => s.as_str(),
@@ -160,10 +162,17 @@ impl EntityExtractor {
             return None;
         }
 
-        match (evidence.kind(), predicate_name) {
-            (EvidenceKind::Technology, _) => {
+        match (evidence.kind(), predicate_namespace, predicate_name) {
+            (
+                EvidenceKind::Technology,
+                "technology",
+                "web-server" | "language" | "framework" | "ui-framework",
+            ) => {
                 let name = val_str.trim();
                 if name.is_empty() {
+                    return None;
+                }
+                if !name.chars().any(|ch| ch.is_ascii_alphabetic()) {
                     return None;
                 }
                 let canonical_id = EntityId::new(format!(
@@ -183,25 +192,16 @@ impl EntityExtractor {
             },
             (
                 EvidenceKind::Http | EvidenceKind::Network,
-                "endpoint" | "path" | "route" | "url" | "method",
+                "http.request",
+                "url",
             ) => {
-                let (target_val, method_opt) = if predicate_name == "method" {
-                    (evidence.subject().as_str(), Some(val_str))
-                } else {
-                    (val_str, None)
-                };
-
-                let (canonical_id, url_str, method) = parse_canonical_endpoint(
+                let (canonical_id, url_str) = parse_canonical_endpoint(
                     evidence.subject().as_str(),
-                    target_val,
+                    val_str,
                     &self.limits,
-                    method_opt,
                 )?;
                 let mut attrs = BTreeMap::new();
                 attrs.insert("url".to_string(), BTreeSet::from([url_str]));
-                if let Some(method) = method {
-                    attrs.insert("method".to_string(), BTreeSet::from([method]));
-                }
 
                 Some(SemanticEntity::new(
                     canonical_id,
@@ -210,7 +210,33 @@ impl EntityExtractor {
                     vec![evidence.id().clone()],
                 ))
             },
-            (EvidenceKind::Dns | EvidenceKind::Network, "ip") => {
+            (EvidenceKind::Http, "http.request", "method") => {
+                let (canonical_id, url_str) = parse_canonical_endpoint(
+                    evidence.subject().as_str(),
+                    "",
+                    &self.limits,
+                )?;
+                let raw_method = val_str.trim();
+                if raw_method.is_empty() {
+                    return None;
+                }
+                let normalized_method = raw_method.to_uppercase();
+                if normalized_method.is_empty() {
+                    return None;
+                }
+
+                let mut attrs = BTreeMap::new();
+                attrs.insert("url".to_string(), BTreeSet::from([url_str]));
+                attrs.insert("method".to_string(), BTreeSet::from([normalized_method]));
+
+                Some(SemanticEntity::new(
+                    canonical_id,
+                    SemanticEntityType::Endpoint,
+                    attrs,
+                    vec![evidence.id().clone()],
+                ))
+            },
+            (EvidenceKind::Dns | EvidenceKind::Network, "dns", "ip") => {
                 let raw_val = val_str.trim();
                 if raw_val.is_empty() {
                     return None;
@@ -227,7 +253,7 @@ impl EntityExtractor {
                     vec![evidence.id().clone()],
                 ))
             },
-            (EvidenceKind::Dns | EvidenceKind::Network, "domain" | "hostname") => {
+            (EvidenceKind::Dns | EvidenceKind::Network, "dns", "domain" | "hostname") => {
                 let raw_val = val_str.trim();
                 if raw_val.is_empty() {
                     return None;
@@ -245,39 +271,11 @@ impl EntityExtractor {
                     vec![evidence.id().clone()],
                 ))
             },
-            (EvidenceKind::Dns | EvidenceKind::Network, "host") => {
-                let raw_val = val_str.trim();
-                if raw_val.is_empty() {
-                    return None;
-                }
-                if let Some(canonical_ip) = parse_canonical_ip(raw_val) {
-                    let canonical_id =
-                        EntityId::new(format!("{CANONICAL_ID_VERSION}:ip:{canonical_ip}")).ok()?;
-                    let mut attrs = BTreeMap::new();
-                    attrs.insert("ip".to_string(), BTreeSet::from([canonical_ip]));
-                    Some(SemanticEntity::new(
-                        canonical_id,
-                        SemanticEntityType::IpAddress,
-                        attrs,
-                        vec![evidence.id().clone()],
-                    ))
-                } else if let Some(canonical_domain) = parse_canonical_domain(raw_val) {
-                    let canonical_id =
-                        EntityId::new(format!("{CANONICAL_ID_VERSION}:domain:{canonical_domain}"))
-                            .ok()?;
-                    let mut attrs = BTreeMap::new();
-                    attrs.insert("domain".to_string(), BTreeSet::from([canonical_domain]));
-                    Some(SemanticEntity::new(
-                        canonical_id,
-                        SemanticEntityType::Domain,
-                        attrs,
-                        vec![evidence.id().clone()],
-                    ))
-                } else {
-                    None
-                }
-            },
-            (EvidenceKind::Authentication, "token" | "jwt" | "bearer" | "cookie" | "api_key") => {
+            (
+                EvidenceKind::Authentication,
+                "authentication",
+                "api_key" | "bearer" | "jwt",
+            ) => {
                 // REDACTION GUARANTEE: Never store raw token in attributes
                 let raw_token = val_str.trim();
                 if raw_token.is_empty() {
@@ -314,8 +312,11 @@ impl EntityExtractor {
                     vec![evidence.id().clone()],
                 ))
             },
-            (EvidenceKind::Http, "header") => {
-                let (header_name, _header_value) = parse_header_pair(val_str)?;
+            (EvidenceKind::Http, "http.header", header_name) => {
+                let name_lower = header_name.to_lowercase();
+                if !is_valid_header_name(&name_lower) {
+                    return None;
+                }
                 let name_lower = header_name.to_lowercase();
                 if name_lower.is_empty() {
                     return None;
@@ -508,36 +509,19 @@ fn is_valid_header_name(name: &str) -> bool {
     })
 }
 
-fn parse_header_pair(raw: &str) -> Option<(String, String)> {
-    let raw = raw.trim();
-    if raw.is_empty() {
-        return None;
-    }
-    let (k, v) = if let Some((k, v)) = raw.split_once(':') {
-        (k.trim(), v.trim())
-    } else {
-        (raw, "")
-    };
-
-    if !is_valid_header_name(k) {
-        return None;
-    }
-
-    Some((k.to_string(), v.to_string()))
-}
-
 fn parse_canonical_endpoint(
     subject_str: &str,
     val_str: &str,
     limits: &SemanticExtractionLimits,
-    method_opt: Option<&str>,
-) -> Option<(EntityId, String, Option<String>)> {
+) -> Option<(EntityId, String)> {
     let clean_val = val_str.trim();
-    if clean_val.is_empty() {
-        return None;
-    }
+    let source_url = if clean_val.is_empty() {
+        subject_str
+    } else {
+        clean_val
+    };
 
-    let unstripped_target = clean_val.strip_prefix("endpoint:").unwrap_or(clean_val);
+    let unstripped_target = source_url.strip_prefix("endpoint:").unwrap_or(source_url);
 
     let target_url_str = if unstripped_target.starts_with('/') {
         let subj_clean = subject_str.strip_prefix("endpoint:").unwrap_or(subject_str);
@@ -570,22 +554,9 @@ fn parse_canonical_endpoint(
 
     let normalized_url = url.to_string();
 
-    let (canonical_str, method_attr) = match method_opt {
-        Some(m) if !m.trim().is_empty() => {
-            let m_clean = m.trim().to_uppercase();
-            (
-                format!("{CANONICAL_ID_VERSION}:endpoint:{normalized_url}#{m_clean}"),
-                Some(m_clean),
-            )
-        },
-        _ => (
-            format!("{CANONICAL_ID_VERSION}:endpoint:{normalized_url}"),
-            None,
-        ),
-    };
-
+    let canonical_str = format!("{CANONICAL_ID_VERSION}:endpoint:{normalized_url}");
     let canonical_id = EntityId::new(canonical_str).ok()?;
-    Some((canonical_id, normalized_url, method_attr))
+    Some((canonical_id, normalized_url))
 }
 
 #[cfg(test)]
@@ -641,24 +612,40 @@ mod tests {
     }
 
     #[test]
+    fn namespace_collision_is_ignored() {
+        let extractor = EntityExtractor::new();
+        let e = ev(
+            EvidenceKind::Http,
+            KnowledgePredicate::new("http.request", "method").unwrap(),
+            EvidenceValue::Text("GET".into()),
+        );
+        let e2 = ev(
+            EvidenceKind::Http,
+            KnowledgePredicate::new("api.request", "url").unwrap(),
+            EvidenceValue::Text("https://example.test/admin".to_string()),
+        );
+        let e3 = ev(
+            EvidenceKind::Http,
+            KnowledgePredicate::new("api.request", "method").unwrap(),
+            EvidenceValue::Text("GET".into()),
+        );
+
+        let res1 = extractor.extract_from_evidence(&[e]);
+        let res2 = extractor.extract_from_evidence(&[e2]);
+        let res3 = extractor.extract_from_evidence(&[e3]);
+        assert_eq!(res1.entities.len(), 1);
+        assert_eq!(res1.entities[0].id().as_str(), "v1:endpoint:https://example.test/api/user");
+        assert!(res2.entities.is_empty());
+        assert!(res3.entities.is_empty());
+    }
+
+    #[test]
     fn unknown_authentication_predicate_never_leaks_raw_value() {
         let extractor = EntityExtractor::new();
         let e = ev(
             EvidenceKind::Authentication,
-            KnowledgePredicate::new("auth", "client_secret").unwrap(),
+            KnowledgePredicate::new("authentication", "client_secret").unwrap(),
             EvidenceValue::Text("super_secret_token_value_12345".into()),
-        );
-        let res = extractor.extract_from_evidence(&[e]);
-        assert!(res.entities.is_empty());
-    }
-
-    #[test]
-    fn unknown_http_predicate_never_becomes_endpoint() {
-        let extractor = EntityExtractor::new();
-        let e = ev(
-            EvidenceKind::Http,
-            KnowledgePredicate::new("http", "custom_metadata").unwrap(),
-            EvidenceValue::Text("https://example.test/admin".into()),
         );
         let res = extractor.extract_from_evidence(&[e]);
         assert!(res.entities.is_empty());
@@ -670,7 +657,7 @@ mod tests {
         let secret = "super_secret_jwt_payload_value";
         let e = ev(
             EvidenceKind::Authentication,
-            KnowledgePredicate::new("auth", "bearer").unwrap(),
+            KnowledgePredicate::new("authentication", "bearer").unwrap(),
             EvidenceValue::Text(secret.into()),
         );
         let res = extractor.extract_from_evidence(&[e]);
@@ -745,7 +732,7 @@ mod tests {
         let extractor = EntityExtractor::new();
         let e = ev(
             EvidenceKind::Http,
-            KnowledgePredicate::new("http", "endpoint").unwrap(),
+            KnowledgePredicate::new("http.request", "url").unwrap(),
             EvidenceValue::Text("https://admin:secret123@example.test/api/v1/users".into()),
         );
         let res = extractor.extract_from_evidence(&[e]);
@@ -764,7 +751,7 @@ mod tests {
         let extractor = EntityExtractor::new();
         let e = ev(
             EvidenceKind::Http,
-            KnowledgePredicate::new("http", "endpoint").unwrap(),
+            KnowledgePredicate::new("http.request", "url").unwrap(),
             EvidenceValue::Text("https://example.test/api/v1/users#DELETE".into()),
         );
         let res = extractor.extract_from_evidence(&[e]);
@@ -781,7 +768,7 @@ mod tests {
         let extractor = EntityExtractor::new();
         let e = ev(
             EvidenceKind::Http,
-            KnowledgePredicate::new("http", "endpoint").unwrap(),
+            KnowledgePredicate::new("http.request", "url").unwrap(),
             EvidenceValue::Text(
                 "http://[2001:0db8:0000:0000:0000:0000:0000:0001]:80/api/v1".into(),
             ),
@@ -799,7 +786,7 @@ mod tests {
         let extractor = EntityExtractor::new();
         let e = ev(
             EvidenceKind::Http,
-            KnowledgePredicate::new("http", "endpoint").unwrap(),
+            KnowledgePredicate::new("http.request", "url").unwrap(),
             EvidenceValue::Text("not_a_valid_url".into()),
         );
         let res = extractor.extract_from_evidence(&[e]);
@@ -809,27 +796,30 @@ mod tests {
     #[test]
     fn get_and_post_are_distinct_when_method_is_observed() {
         let extractor = EntityExtractor::new();
-        let ev_get = ev(
+        let res_get = extractor.extract_from_evidence(&[ev_subj(
+            subject(),
             EvidenceKind::Http,
-            KnowledgePredicate::new("http", "method").unwrap(),
+            KnowledgePredicate::new("http.request", "method").unwrap(),
             EvidenceValue::Text("GET".into()),
-        );
-        let ev_post = ev(
+        )]);
+        let res_post = extractor.extract_from_evidence(&[ev_subj(
+            subject(),
             EvidenceKind::Http,
-            KnowledgePredicate::new("http", "method").unwrap(),
+            KnowledgePredicate::new("http.request", "method").unwrap(),
             EvidenceValue::Text("POST".into()),
-        );
-        let res_get = extractor.extract_from_evidence(&[ev_get]);
-        let res_post = extractor.extract_from_evidence(&[ev_post]);
+        )]);
         assert_eq!(
             res_get.entities[0].id().as_str(),
-            "v1:endpoint:https://example.test/api/user#GET"
+            "v1:endpoint:https://example.test/api/user"
         );
         assert_eq!(
             res_post.entities[0].id().as_str(),
-            "v1:endpoint:https://example.test/api/user#POST"
+            "v1:endpoint:https://example.test/api/user"
         );
-        assert_ne!(res_get.entities[0].id(), res_post.entities[0].id());
+        assert_ne!(
+            res_get.entities[0].attributes().get("method"),
+            res_post.entities[0].attributes().get("method")
+        );
     }
 
     #[test]
@@ -837,7 +827,7 @@ mod tests {
         let extractor = EntityExtractor::new();
         let e = ev(
             EvidenceKind::Http,
-            KnowledgePredicate::new("http", "endpoint").unwrap(),
+            KnowledgePredicate::new("http.request", "url").unwrap(),
             EvidenceValue::Text("https://example.test/api/user".into()),
         );
         let res = extractor.extract_from_evidence(&[e]);
@@ -875,12 +865,12 @@ mod tests {
         let token = "same_secret_value_12345";
         let ev1 = ev(
             EvidenceKind::Authentication,
-            KnowledgePredicate::new("auth", "bearer").unwrap(),
+            KnowledgePredicate::new("authentication", "bearer").unwrap(),
             EvidenceValue::Text(token.into()),
         );
         let ev2 = ev(
             EvidenceKind::Authentication,
-            KnowledgePredicate::new("auth", "api_key").unwrap(),
+            KnowledgePredicate::new("authentication", "api_key").unwrap(),
             EvidenceValue::Text(token.into()),
         );
         let res1 = extractor.extract_from_evidence(&[ev1]);
@@ -908,15 +898,19 @@ mod tests {
         let extractor = EntityExtractor::new();
         let e = ev(
             EvidenceKind::Http,
-            KnowledgePredicate::new("http", "header").unwrap(),
+            KnowledgePredicate::new("http.header", "authorization").unwrap(),
             EvidenceValue::Text("Authorization: Bearer my_secret_token".into()),
         );
         let res = extractor.extract_from_evidence(&[e]);
         assert_eq!(res.entities.len(), 1);
         let json = serde_json::to_string(&res.entities[0]).unwrap();
         assert!(!json.contains("my_secret_token"));
-        assert!(!json.contains("Authorization:"));
+        assert!(!json.contains("Authorization"));
         assert_eq!(res.entities[0].id().as_str(), "v1:header:authorization");
+        assert_eq!(res.entities[0].attributes().len(), 1);
+        assert!(
+            res.entities[0].attributes().contains_key("name")
+        );
     }
 
     #[test]
@@ -1058,7 +1052,7 @@ mod tests {
         let extractor = EntityExtractor::with_limits(limits);
         let e = ev(
             EvidenceKind::Http,
-            KnowledgePredicate::new("http", "endpoint").unwrap(),
+            KnowledgePredicate::new("http.request", "url").unwrap(),
             EvidenceValue::Text("/very_long_relative_path_that_exceeds_max_url_bytes".into()),
         );
         let res = extractor.extract_from_evidence(&[e]);
@@ -1072,7 +1066,7 @@ mod tests {
         let e = ev_subj(
             non_http_subj,
             EvidenceKind::Http,
-            KnowledgePredicate::new("http", "endpoint").unwrap(),
+            KnowledgePredicate::new("http.request", "url").unwrap(),
             EvidenceValue::Text("/file.txt".into()),
         );
         let res = extractor.extract_from_evidence(&[e]);
@@ -1084,12 +1078,12 @@ mod tests {
         let extractor = EntityExtractor::new();
         let ev_rel = ev(
             EvidenceKind::Http,
-            KnowledgePredicate::new("http", "endpoint").unwrap(),
+            KnowledgePredicate::new("http.request", "url").unwrap(),
             EvidenceValue::Text("/api/user".into()),
         );
         let ev_abs = ev(
             EvidenceKind::Http,
-            KnowledgePredicate::new("http", "endpoint").unwrap(),
+            KnowledgePredicate::new("http.request", "url").unwrap(),
             EvidenceValue::Text("https://example.test/api/user".into()),
         );
         let res_rel = extractor.extract_from_evidence(&[ev_rel]);
@@ -1104,7 +1098,7 @@ mod tests {
         let e = ev_subj(
             v6_subj,
             EvidenceKind::Http,
-            KnowledgePredicate::new("http", "endpoint").unwrap(),
+            KnowledgePredicate::new("http.request", "url").unwrap(),
             EvidenceValue::Text("/v2/users".into()),
         );
         let res = extractor.extract_from_evidence(&[e]);
@@ -1119,7 +1113,7 @@ mod tests {
         let extractor = EntityExtractor::new();
         let e = ev(
             EvidenceKind::Http,
-            KnowledgePredicate::new("http", "header").unwrap(),
+            KnowledgePredicate::new("http.header", "bad-header name").unwrap(),
             EvidenceValue::Text("Bad Header Name: Value".into()),
         );
         let res = extractor.extract_from_evidence(&[e]);

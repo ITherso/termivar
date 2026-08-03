@@ -1,0 +1,53 @@
+{
+  "name": "graphql_request_surface",
+  "evidence": [
+    {
+      "id": "evidence:semantic:graphql-url",
+      "subject": "endpoint:https://api.example.test/graphql",
+      "kind": "Http",
+      "predicate_namespace": "http.request",
+      "predicate_name": "url",
+      "value": "https://api.example.test/graphql?query=query%20me{viewer{login}}&operation=Read",
+      "source_component": "http.evidence",
+      "source_method": "request-url",
+      "observed_at_ms": 1700000000400,
+      "reliability_percent": 99
+    },
+    {
+      "id": "evidence:semantic:graphql-method",
+      "subject": "endpoint:https://api.example.test/graphql",
+      "kind": "Http",
+      "predicate_namespace": "http.request",
+      "predicate_name": "method",
+      "value": "post",
+      "source_component": "http.evidence",
+      "source_method": "request-method",
+      "observed_at_ms": 1700000000400,
+      "reliability_percent": 99
+    }
+  ],
+  "expected": {
+    "entities": [
+      {
+        "id": "v1:endpoint:https://api.example.test/graphql",
+        "entity_type": "endpoint",
+        "attributes": {
+          "url": [
+            "https://api.example.test/graphql"
+          ],
+          "method": [
+            "POST"
+          ]
+        },
+        "source_evidence_ids": [
+          "evidence:semantic:graphql-method",
+          "evidence:semantic:graphql-url"
+        ]
+      }
+    ],
+    "truncated": false,
+    "dropped_entities": 0,
+    "dropped_attributes": 0,
+    "dropped_sources": 0
+  }
+}
