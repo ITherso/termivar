@@ -17,6 +17,9 @@ conclusions, those conclusions are not transformed by `EntityExtractor` unless t
 The contract distinguishes where data can be produced today versus what is currently
 represented only via synthetic fixtures.
 
+Production-backed fixtures in tests additionally require a shared `correlation_id`
+inside `EvidenceSource` for all evidence records belonging to the same scenario.
+
 ## A. Current production-backed mappings
 
 These are the predicates that are actually emitted by runtime producers in this repository.
