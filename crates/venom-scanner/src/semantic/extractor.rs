@@ -190,11 +190,7 @@ impl EntityExtractor {
                     vec![evidence.id().clone()],
                 ))
             },
-            (
-                EvidenceKind::Http | EvidenceKind::Network,
-                "http.request",
-                "url",
-            ) => {
+            (EvidenceKind::Http, "http.request", "url") => {
                 let (canonical_id, url_str) = parse_canonical_endpoint(
                     evidence.subject().as_str(),
                     val_str,
@@ -216,14 +212,7 @@ impl EntityExtractor {
                     "",
                     &self.limits,
                 )?;
-                let raw_method = val_str.trim();
-                if raw_method.is_empty() {
-                    return None;
-                }
-                let normalized_method = raw_method.to_uppercase();
-                if normalized_method.is_empty() {
-                    return None;
-                }
+                let normalized_method = normalize_http_method(val_str)?;
 
                 let mut attrs = BTreeMap::new();
                 attrs.insert("url".to_string(), BTreeSet::from([url_str]));
@@ -236,7 +225,7 @@ impl EntityExtractor {
                     vec![evidence.id().clone()],
                 ))
             },
-            (EvidenceKind::Dns | EvidenceKind::Network, "dns", "ip") => {
+            (EvidenceKind::Dns, "dns", "ip") => {
                 let raw_val = val_str.trim();
                 if raw_val.is_empty() {
                     return None;
@@ -253,7 +242,7 @@ impl EntityExtractor {
                     vec![evidence.id().clone()],
                 ))
             },
-            (EvidenceKind::Dns | EvidenceKind::Network, "dns", "domain" | "hostname") => {
+            (EvidenceKind::Dns, "dns", "domain" | "hostname") => {
                 let raw_val = val_str.trim();
                 if raw_val.is_empty() {
                     return None;
@@ -559,6 +548,49 @@ fn parse_canonical_endpoint(
     Some((canonical_id, normalized_url))
 }
 
+fn normalize_http_method(raw_method: &str) -> Option<String> {
+    let trimmed = raw_method.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if trimmed.len() > 20 {
+        return None;
+    }
+
+    if !trimmed
+        .as_bytes()
+        .iter()
+        .all(|b| is_token_char(*b as char))
+    {
+        return None;
+    }
+    Some(trimmed.to_ascii_uppercase())
+}
+
+fn is_token_char(byte: char) -> bool {
+    matches!(
+        byte,
+        '0'..='9'
+            | 'A'..='Z'
+            | 'a'..='z'
+            | '!'
+            | '#'
+            | '$'
+            | '%'
+            | '&'
+            | '\''
+            | '*'
+            | '+'
+            | '-'
+            | '.'
+            | '^'
+            | '_'
+            | '`'
+            | '|'
+            | '~'
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -820,6 +852,42 @@ mod tests {
             res_get.entities[0].attributes().get("method"),
             res_post.entities[0].attributes().get("method")
         );
+    }
+
+    #[test]
+    fn method_with_whitespace_is_rejected() {
+        let extractor = EntityExtractor::new();
+        let res = extractor.extract_from_evidence(&[ev_subj(
+            subject(),
+            EvidenceKind::Http,
+            KnowledgePredicate::new("http.request", "method").unwrap(),
+            EvidenceValue::Text(" G\nET ".into()),
+        )]);
+        assert_eq!(res.entities.len(), 0);
+    }
+
+    #[test]
+    fn method_with_separator_is_rejected() {
+        let extractor = EntityExtractor::new();
+        let res = extractor.extract_from_evidence(&[ev_subj(
+            subject(),
+            EvidenceKind::Http,
+            KnowledgePredicate::new("http.request", "method").unwrap(),
+            EvidenceValue::Text("GET/POST".into()),
+        )]);
+        assert_eq!(res.entities.len(), 0);
+    }
+
+    #[test]
+    fn method_with_unreasonably_long_token_is_rejected() {
+        let extractor = EntityExtractor::new();
+        let res = extractor.extract_from_evidence(&[ev_subj(
+            subject(),
+            EvidenceKind::Http,
+            KnowledgePredicate::new("http.request", "method").unwrap(),
+            EvidenceValue::Text("VERYLONGCUSTOMHTTPMETHODNAME".into()),
+        )]);
+        assert_eq!(res.entities.len(), 0);
     }
 
     #[test]
