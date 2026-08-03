@@ -1,0 +1,43 @@
+{
+  "name": "jwt_or_bearer_auth_artifact",
+  "evidence": [
+    {
+      "id": "evidence:semantic:jwt-auth",
+      "subject": "endpoint:https://api.example.test/login",
+      "kind": "Authentication",
+      "predicate_namespace": "authentication",
+      "predicate_name": "jwt",
+      "value": "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ1c2VyIn0.s3ltdGVzdA",
+      "source_component": "semantic-suite",
+      "source_method": "synthetic-auth-token",
+      "observed_at_ms": 1700000000200,
+      "reliability_percent": 95
+    }
+  ],
+  "expected": {
+    "entities": [
+      {
+        "id": "v1:auth_artifact:c812095adb8d78323f25fb2aa1c825cc58fa2cc5bb4fd311c885d5907b22e3a5",
+        "entity_type": "auth_artifact",
+        "attributes": {
+          "auth_kind": [
+            "jwt"
+          ],
+          "fingerprint": [
+            "c812095adb8d78323f25fb2aa1c825cc58fa2cc5bb4fd311c885d5907b22e3a5"
+          ],
+          "length": [
+            "51"
+          ]
+        },
+        "source_evidence_ids": [
+          "evidence:semantic:jwt-auth"
+        ]
+      }
+    ],
+    "truncated": false,
+    "dropped_entities": 0,
+    "dropped_attributes": 0,
+    "dropped_sources": 0
+  }
+}

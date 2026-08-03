@@ -1,0 +1,49 @@
+{
+  "name": "technology_product_and_version_gap",
+  "evidence": [
+    {
+      "id": "evidence:semantic:tech-product",
+      "subject": "endpoint:https://stack.example.test/",
+      "kind": "Technology",
+      "predicate_namespace": "technology",
+      "predicate_name": "web-server",
+      "value": "nginx",
+      "source_component": "web.reasoning",
+      "source_method": "tech-discovery",
+      "observed_at_ms": 1700000000700,
+      "reliability_percent": 94
+    },
+    {
+      "id": "evidence:semantic:tech-version",
+      "subject": "endpoint:https://stack.example.test/",
+      "kind": "Technology",
+      "predicate_namespace": "technology",
+      "predicate_name": "web-server",
+      "value": "1.27.3",
+      "source_component": "web.reasoning",
+      "source_method": "tech-version",
+      "observed_at_ms": 1700000000700,
+      "reliability_percent": 94
+    }
+  ],
+  "expected": {
+    "entities": [
+      {
+        "id": "v1:tech:nginx",
+        "entity_type": "technology",
+        "attributes": {
+          "name": [
+            "nginx"
+          ]
+        },
+        "source_evidence_ids": [
+          "evidence:semantic:tech-product"
+        ]
+      }
+    ],
+    "truncated": false,
+    "dropped_entities": 0,
+    "dropped_attributes": 0,
+    "dropped_sources": 0
+  }
+}
