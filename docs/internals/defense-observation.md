@@ -85,6 +85,36 @@ observations can take the maximum. The policy recommends but never acts: it
 selects no payload and issues no request. Wiring the recommendation into planner
 strategy selection is the next, separate step.
 
+## Evidence projection
+
+`defense::projection` adapts the observation contracts above into immutable
+`venom_core::Evidence` a knowledge store can retain with full provenance. It is
+strictly projection-only:
+
+- `project_defense_state` / `project_defense_transition` return `Vec<Evidence>`;
+  `project_outcome` handles an `ObservedOutcome`, returning an empty vector for
+  `NoResponse` so a timeout or connection failure is **never** learned as a
+  defensive signal.
+- It emits **observations only** — never a `Fact` or hypothesis — so a single
+  block never becomes a "confirmed WAF" claim, and a bare block with no matching
+  fingerprint yields no product predicate.
+- Predicates are namespaced under `defense.*` — for example
+  `defense.posture.blocking`, `defense.status.blocked`,
+  `defense.challenge.present`, `defense.rate_limit.observed`,
+  `defense.fingerprint.cloudflare`, and `defense.transition.engaged`.
+- Each record carries its producer (`EvidenceSource` component), the resource
+  (`subject`), the case/action correlation, the observation sequence and
+  supporting response receipt (folded into a deterministic evidence id), and —
+  for a fingerprint — the fingerprint confidence as the record reliability.
+- Identity and timestamp come from a caller-supplied
+  `DefenseObservationContext`, so the projection is a pure, deterministic,
+  idempotent function. It reads no clock or randomness, selects no payload,
+  issues no request, and touches neither the planner nor the executor.
+
+Callers ingest the result through the existing
+`KnowledgeBase::insert_evidence_batch`. Reading these predicates during planning
+is a separate, later step behind a default-off flag.
+
 ## Boundaries
 
 `DefenseState::observe` is a pure function of its inputs: identical

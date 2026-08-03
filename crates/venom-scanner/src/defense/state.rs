@@ -41,7 +41,7 @@ impl DefenseStatusSignal {
     ///
     /// Rate limiting and server errors are handled separately because they are
     /// not, on their own, evidence of a request-blocking rule.
-    const fn is_block(self) -> bool {
+    pub const fn is_block(self) -> bool {
         matches!(self, Self::Forbidden | Self::NotAcceptable | Self::Teapot)
     }
 }
