@@ -56,7 +56,9 @@ pub mod web_planning;
 pub mod web_reasoning;
 pub mod web_verification;
 
-pub use semantic::{AuthArtifactKind, EntityExtractor, SemanticEntity, SemanticEntityType};
+pub use semantic::{
+    AuthArtifactKind, EntityExtractor, SemanticEntity, SemanticEntityType, SemanticExtractionLimits,
+};
 
 // Scanning engine (feature: scanning)
 #[cfg(feature = "scanning")]

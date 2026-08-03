@@ -3,5 +3,5 @@
 mod entity;
 mod extractor;
 
-pub use entity::{AuthArtifactKind, SemanticEntity, SemanticEntityType};
+pub use entity::{AuthArtifactKind, SemanticEntity, SemanticEntityType, SemanticExtractionLimits};
 pub use extractor::EntityExtractor;

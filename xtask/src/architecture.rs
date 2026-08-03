@@ -166,7 +166,7 @@ const MODULE_POLICIES: &[ModulePolicy] = &[
     ModulePolicy {
         source: "semantic/extractor.rs",
         allowed_internal: &["knowledge", "semantic"],
-        allowed_external: &["sha2"],
+        allowed_external: &["base64", "serde_json", "sha2", "url"],
     },
 ];
 

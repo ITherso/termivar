@@ -9,15 +9,15 @@ use venom_core::{EntityId, EvidenceId};
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum SemanticEntityType {
-    /// Network endpoint or API route (e.g. `endpoint:https://example.test:443/api/v1/user#GET`).
+    /// Network endpoint or API route (e.g. `v1:endpoint:https://example.test/api/v1/user#GET`).
     Endpoint,
-    /// Fully qualified domain name or hostname (e.g. `domain:example.test`).
+    /// Fully qualified domain name or hostname (e.g. `v1:domain:example.test`).
     Domain,
     /// IP address (v4 or v6).
     IpAddress,
     /// Authentication token or credential artifact (JWT, Session Cookie, Bearer token).
     AuthArtifact,
-    /// Protocol or application header.
+    /// Protocol or application header concept.
     Header,
     /// Identified technology, framework, or runtime component.
     Technology,
@@ -32,9 +32,9 @@ pub enum SemanticEntityType {
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum AuthArtifactKind {
-    /// Generic Bearer token.
+    /// Generic Bearer token credential.
     BearerToken,
-    /// Validated JSON Web Token structure (header.payload.signature).
+    /// Validated JSON Web Token structure (decoded base64url JSON header and payload).
     Jwt,
     /// API Key credential.
     ApiKey,
@@ -42,6 +42,49 @@ pub enum AuthArtifactKind {
     SessionCookie,
     /// Unclassified authentication artifact.
     Unknown,
+}
+
+impl AuthArtifactKind {
+    /// Returns a stable canonical slug string for artifact kind serialization and fingerprinting.
+    pub const fn slug(self) -> &'static str {
+        match self {
+            Self::BearerToken => "bearer_token",
+            Self::Jwt => "jwt",
+            Self::ApiKey => "api_key",
+            Self::SessionCookie => "session_cookie",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+/// Safety limits for bounded semantic entity extraction.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SemanticExtractionLimits {
+    /// Maximum number of entities extracted from a single evidence batch.
+    pub max_entities: usize,
+    /// Maximum number of attribute keys per entity.
+    pub max_attribute_keys: usize,
+    /// Maximum number of values per attribute.
+    pub max_values_per_attribute: usize,
+    /// Maximum length in bytes for any single attribute value.
+    pub max_value_bytes: usize,
+    /// Maximum supporting evidence IDs recorded per entity.
+    pub max_source_evidence_ids: usize,
+    /// Maximum URL length in bytes.
+    pub max_url_bytes: usize,
+}
+
+impl Default for SemanticExtractionLimits {
+    fn default() -> Self {
+        Self {
+            max_entities: 1000,
+            max_attribute_keys: 50,
+            max_values_per_attribute: 50,
+            max_value_bytes: 4096,
+            max_source_evidence_ids: 100,
+            max_url_bytes: 2048,
+        }
+    }
 }
 
 /// A strongly-typed semantic entity derived deterministically from evidence.

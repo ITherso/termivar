@@ -23,6 +23,7 @@ reqwest = { workspace = true, features = ["json", "cookies"] }
 async-trait = "0.1"
 dashmap = "5.5"
 url = "2.5"
+base64 = { workspace = true }
 regex = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
