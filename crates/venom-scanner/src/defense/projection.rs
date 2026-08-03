@@ -17,6 +17,7 @@
 //! `KnowledgeBase::insert_evidence_batch`; this module does not touch the store,
 //! the planner, the executor, or any runtime configuration.
 
+use sha2::{Digest, Sha256};
 use venom_core::{
     ConfidenceScore, EntityId, Evidence, EvidenceId, EvidenceKind, EvidenceSource, EvidenceValue,
     KnowledgePredicate, ReasoningModelError,
@@ -28,6 +29,16 @@ use super::transition::{DefenseTransition, DefenseTransitionKind};
 
 /// Broad category recorded for every projected defense observation.
 const DEFENSE_EVIDENCE_CATEGORY: &str = "defense";
+
+/// Canonical projection-identity version folded into every evidence id.
+///
+/// Bumping this deliberately changes every derived id, so a replay never
+/// confuses two projection schemes.
+const PROJECTION_VERSION: u32 = 1;
+
+/// Domain separator for the evidence-id digest, so a defense id can never
+/// collide with a digest computed for another purpose.
+const EVIDENCE_ID_DOMAIN: &[u8] = b"venom.defense.projection-id.v1\0";
 
 /// Reliability of a direct, unambiguous response observation (status, challenge,
 /// rate limit, posture, transition). This is the reliability of the observation
@@ -50,9 +61,11 @@ pub enum ObservedOutcome<'state> {
 /// Immutable provenance a projected defense observation is stamped with.
 ///
 /// Every emitted evidence record carries the producer, the resource it concerns,
-/// the action/case correlation, and — folded into a deterministic evidence id —
-/// the observation sequence and the supporting response receipt. Supplying the
-/// timestamp keeps the projection deterministic and idempotent.
+/// and the action/case correlation in their dedicated fields. The observation
+/// sequence and supporting response receipt bind the record through the evidence
+/// id, which is a versioned SHA-256 digest of the canonical identity — the raw
+/// values never appear in the id itself. Supplying the timestamp keeps the
+/// projection deterministic and idempotent.
 #[derive(Debug, Clone)]
 pub struct DefenseObservationContext {
     producer_id: String,
@@ -250,16 +263,7 @@ fn observation(
         .expect("defense producer id and method are non-empty")
         .with_correlation_id(ctx.correlation_id.clone())
         .expect("defense correlation id is non-empty");
-    let id = EvidenceId::parse(format!(
-        "{DEFENSE_EVIDENCE_CATEGORY}/{}/{}/{}.{}/{}/{}",
-        ctx.producer_id,
-        ctx.resource.as_str(),
-        namespace,
-        name,
-        ctx.sequence,
-        ctx.response_receipt,
-    ))
-    .expect("defense evidence id is non-empty");
+    let id = evidence_id(ctx, namespace, name);
 
     Evidence::with_id_at(
         id,
@@ -271,6 +275,52 @@ fn observation(
         reliability,
         ctx.observed_at_ms,
     )
+}
+
+/// Derives the deterministic, provenance-free evidence id.
+///
+/// The id is `defense/<sha256>` over a domain-separated, length-framed canonical
+/// identity. Raw provenance (resource, correlation, producer, receipt) is kept
+/// only in the evidence's dedicated fields and never leaks into the id, which is
+/// printed in reports, JSON, and logs.
+fn evidence_id(ctx: &DefenseObservationContext, namespace: &str, name: &str) -> EvidenceId {
+    let mut hasher = Sha256::new();
+    hasher.update(EVIDENCE_ID_DOMAIN);
+    hasher.update(PROJECTION_VERSION.to_le_bytes());
+    for field in [
+        ctx.producer_id.as_str(),
+        ctx.resource.as_str(),
+        ctx.correlation_id.as_str(),
+        ctx.response_receipt.as_str(),
+        namespace,
+        name,
+    ] {
+        update_framed(&mut hasher, field.as_bytes());
+    }
+    hasher.update(ctx.sequence.to_le_bytes());
+    hasher.update(ctx.observed_at_ms.to_le_bytes());
+
+    EvidenceId::parse(format!(
+        "{DEFENSE_EVIDENCE_CATEGORY}/{}",
+        encode_hex(hasher.finalize().as_slice())
+    ))
+    .expect("defense evidence id is non-empty")
+}
+
+/// Length-prefixes `bytes` before hashing so distinct field boundaries can never
+/// alias (e.g. `("ab", "c")` and `("a", "bc")` hash differently).
+fn update_framed(hasher: &mut Sha256, bytes: &[u8]) {
+    hasher.update((bytes.len() as u64).to_le_bytes());
+    hasher.update(bytes);
+}
+
+fn encode_hex(bytes: &[u8]) -> String {
+    use std::fmt::Write as _;
+    let mut output = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        let _ = write!(output, "{byte:02x}");
+    }
+    output
 }
 
 fn direct_reliability() -> ConfidenceScore {
@@ -367,10 +417,77 @@ mod tests {
             assert_eq!(item.source().correlation_id(), Some("case:web:1"));
             assert_eq!(item.observed_at_ms(), 1_700_000_000_000);
             assert_eq!(item.kind(), &EvidenceKind::Custom("defense".to_owned()));
-            // The observation sequence and response receipt are folded into the
-            // deterministic evidence id for traceability.
-            assert!(item.id().as_str().contains("/7/receipt:sha256:abc"));
+            // Raw provenance stays in the dedicated fields; the id is a digest of
+            // the form `defense/<64-hex>` with no raw components.
+            let digest = item
+                .id()
+                .as_str()
+                .strip_prefix("defense/")
+                .expect("defense-prefixed id");
+            assert_eq!(digest.len(), 64);
+            assert!(digest
+                .chars()
+                .all(|character| character.is_ascii_hexdigit()));
         }
+    }
+
+    #[test]
+    fn evidence_id_does_not_contain_raw_resource_or_receipt() {
+        let ctx = DefenseObservationContext::new(
+            "runtime.defense-projection",
+            EntityId::new("endpoint:https://secret.example.test/private/path?token=abc").unwrap(),
+            "case:web:secret-correlation",
+            9,
+            "receipt:opaque:secret-receipt-handle",
+            1_700_000_000_000,
+        )
+        .unwrap();
+        let state = DefenseState::observe(403, &[("CF-RAY", "x")], "access denied");
+
+        for item in project_defense_state(&state, &ctx) {
+            let id = item.id().as_str();
+            for leaked in [
+                "secret.example.test",
+                "private/path",
+                "token=abc",
+                "secret-receipt-handle",
+                "secret-correlation",
+                "runtime.defense-projection",
+            ] {
+                assert!(
+                    !id.contains(leaked),
+                    "raw provenance {leaked} leaked into id {id}"
+                );
+            }
+            // The raw values remain available in their provenance fields.
+            assert_eq!(
+                item.source().correlation_id(),
+                Some("case:web:secret-correlation")
+            );
+            assert_eq!(
+                item.subject().as_str(),
+                "endpoint:https://secret.example.test/private/path?token=abc"
+            );
+        }
+    }
+
+    #[test]
+    fn same_canonical_context_produces_same_evidence_id() {
+        let state = DefenseState::observe(403, &[("CF-RAY", "x")], "access denied");
+        let ids = |seq| {
+            project_defense_state(&state, &context(seq))
+                .iter()
+                .map(|item| item.id().as_str().to_owned())
+                .collect::<Vec<_>>()
+        };
+
+        // Identical canonical inputs yield identical ids.
+        assert_eq!(ids(4), ids(4));
+        // A different observation sequence changes every derived id.
+        let base = ids(4);
+        let bumped = ids(5);
+        assert_eq!(base.len(), bumped.len());
+        assert!(base.iter().zip(bumped.iter()).all(|(a, b)| a != b));
     }
 
     #[test]
