@@ -44,6 +44,7 @@ pub mod experience;
 pub mod knowledge;
 pub mod logging;
 pub mod metrics;
+pub mod payload_strategies;
 pub mod payload_strategy;
 pub mod planner;
 pub mod rules;
@@ -205,6 +206,13 @@ pub use knowledge::{
 };
 pub use logging::{LogEntry, LogLevel, Logger};
 pub use metrics::{MetricsCollector, MetricsSummary, PhaseMetrics};
+pub use payload_strategies::{
+    standard_payload_strategies, ApiAuthorizationContextPairStrategy,
+    HttpHeaderControlPairStrategy, API_AUTHORIZATION_CONTEXT_PAIR_HEADER_NAME,
+    API_AUTHORIZATION_CONTEXT_PAIR_ID, API_AUTHORIZATION_CONTEXT_PAIR_REVISION,
+    HTTP_HEADER_CONTROL_PAIR_HEADER_NAME, HTTP_HEADER_CONTROL_PAIR_ID,
+    HTTP_HEADER_CONTROL_PAIR_REVISION,
+};
 pub use payload_strategy::{
     PayloadArtifact, PayloadArtifactReceipt, PayloadSeed, PayloadStrategy, PayloadStrategyError,
     PayloadStrategyLimits, PayloadStrategyRef, PayloadStrategyRegistry, PayloadVariantRole,
@@ -294,9 +302,10 @@ pub use runtime_budget::{
 
 #[cfg(feature = "scanning")]
 pub use http_evidence::{
-    HttpBodyCapture, HttpEvidenceError, HttpEvidenceExecutor, HttpEvidencePolicy, HttpProbe,
-    HttpProbeMethod, HttpProbeProvider, SubjectHttpProbeProvider, DEFAULT_HTTP_BODY_LIMIT,
-    HTTP_EVIDENCE_EXECUTOR_ID, MAX_HTTP_BODY_LIMIT,
+    HttpBodyCapture, HttpEvidenceError, HttpEvidenceExecutor, HttpEvidencePolicy,
+    HttpHeaderPayloadBinding, HttpProbe, HttpProbeMethod, HttpProbeProvider,
+    SubjectHttpProbeProvider, DEFAULT_HTTP_BODY_LIMIT, HTTP_EVIDENCE_EXECUTOR_ID,
+    MAX_HTTP_BODY_LIMIT,
 };
 
 #[cfg(feature = "scanning")]

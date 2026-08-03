@@ -20,13 +20,13 @@ use crate::{
     DecisionLoopCommand, DecisionLoopConfig, DecisionLoopError, DecisionOutcomeReport,
     DecisionPlanningReport, DecisionReasoningCommitReceipt, DecisionRunnerAdapter,
     DecisionRunnerError, DecisionRunnerTurn, DecisionSession, ExperiencePolicy, ExperienceStore,
-    ExperienceStoreError, HttpEvidenceError, HttpEvidenceExecutor, HttpEvidencePolicy, HttpProbe,
-    HttpProbeMethod, KnowledgeBase, KnowledgeWrite, PlannerError, PlanningContext, RiskScore,
-    RuntimeBudget, RuntimeBudgetDimension, RuntimeLimitExceeded, RuntimeUsage,
-    StandardApiInstallReport, StandardApiReasoning, StandardApiReasoningError,
-    StandardWebActionKind, StandardWebDecisionError, StandardWebDecisionInstallReport,
-    StandardWebDecisionProfile, SubjectHttpProbeProvider, TransportDispatchAudit, VerificationCase,
-    VerificationError, HTTP_EVIDENCE_EXECUTOR_ID,
+    ExperienceStoreError, HttpEvidenceError, HttpEvidenceExecutor, HttpEvidencePolicy,
+    HttpHeaderPayloadBinding, HttpProbe, HttpProbeMethod, KnowledgeBase, KnowledgeWrite,
+    PlannerError, PlanningContext, RiskScore, RuntimeBudget, RuntimeBudgetDimension,
+    RuntimeLimitExceeded, RuntimeUsage, StandardApiInstallReport, StandardApiReasoning,
+    StandardApiReasoningError, StandardWebActionKind, StandardWebDecisionError,
+    StandardWebDecisionInstallReport, StandardWebDecisionProfile, SubjectHttpProbeProvider,
+    TransportDispatchAudit, VerificationCase, VerificationError, HTTP_EVIDENCE_EXECUTOR_ID,
 };
 
 mod api_visibility;
@@ -341,6 +341,7 @@ pub struct StandardWebDecisionRuntimeBuilder {
     experience: ExperienceStore,
     runtime_budget: RuntimeBudget,
     api_reasoning_enabled: bool,
+    payload_binding: Option<HttpHeaderPayloadBinding>,
     cancellation: CancellationToken,
 }
 
@@ -359,6 +360,7 @@ impl StandardWebDecisionRuntimeBuilder {
             experience: ExperienceStore::new(),
             runtime_budget: RuntimeBudget::default(),
             api_reasoning_enabled: false,
+            payload_binding: None,
             cancellation: CancellationToken::new(),
         }
     }
@@ -375,6 +377,18 @@ impl StandardWebDecisionRuntimeBuilder {
     /// Replaces the default single-origin HTTP evidence policy.
     pub fn http_policy(mut self, policy: HttpEvidencePolicy) -> Self {
         self.http_policy = Some(policy);
+        self
+    }
+
+    /// Binds a header-valued payload strategy to the runtime's HTTP evidence
+    /// executor.
+    ///
+    /// The bound executor shares the runtime's metered request broker, so any
+    /// control or candidate artifact it derives and dispatches is accounted like
+    /// every other request. This is strictly opt-in: without a binding the
+    /// runtime materializes and dispatches no payload artifacts.
+    pub fn with_payload_binding(mut self, binding: HttpHeaderPayloadBinding) -> Self {
+        self.payload_binding = Some(binding);
         self
     }
 
@@ -517,10 +531,15 @@ impl StandardWebDecisionRuntimeBuilder {
         } else {
             None
         };
-        executors.register(Arc::new(HttpEvidenceExecutor::new_with_request_broker(
+        let http_evidence = HttpEvidenceExecutor::new_with_request_broker(
             requests.clone(),
             Arc::new(SubjectHttpProbeProvider::new(HttpProbeMethod::Get)),
-        )?))?;
+        )?;
+        let http_evidence = match self.payload_binding {
+            Some(binding) => http_evidence.with_payload_binding(binding),
+            None => http_evidence,
+        };
+        executors.register(Arc::new(http_evidence))?;
 
         let unsupported_actions = StandardWebActionKind::all()
             .into_iter()
