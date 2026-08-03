@@ -253,11 +253,28 @@ fn assert_fixture_contract_shape(fixture: &FixtureCollection) {
         fixture.name
     );
 
-    if fixture.contract_class != ContractClass::ProductionBacked {
-        return;
-    }
+    if fixture.contract_class == ContractClass::ProductionBacked {
+        let mut correlation_ids = BTreeSet::new();
+        for evidence in &fixture.evidence {
+            let correlation_id = evidence
+                .correlation_id
+                .as_ref()
+                .expect("production-backed fixtures must carry correlation_id");
+            assert!(
+                !correlation_id.trim().is_empty(),
+                "fixture {} correlation_id must not be empty",
+                fixture.name
+            );
+            correlation_ids.insert(correlation_id.clone());
+        }
+        assert_eq!(
+            correlation_ids.len(),
+            1,
+            "production-backed fixture {} must keep a stable correlation_id across evidence",
+            fixture.name
+        );
 
-    match fixture.name.as_str() {
+        match fixture.name.as_str() {
         "rest_request_url_and_method" => {
             let url = fixture_evidence_by_name(
                 fixture,
@@ -302,6 +319,7 @@ fn assert_fixture_contract_shape(fixture: &FixtureCollection) {
             assert_eq!(cookie_name.source_method, "response-set-cookie-name");
         }
         _ => {}
+        }
     }
 }
 
