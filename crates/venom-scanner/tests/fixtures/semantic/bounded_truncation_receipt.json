@@ -1,5 +1,6 @@
 {
   "name": "bounded_truncation_receipt",
+  "contract_class": "bounded_mechanics",
   "limits": {
     "max_entities": 1,
     "max_attribute_keys": 2,

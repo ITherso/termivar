@@ -1,9 +1,11 @@
 {
   "name": "rest_request_url_and_method",
+  "contract_class": "production_backed",
   "evidence": [
     {
       "id": "evidence:semantic:rest-url",
       "subject": "endpoint:https://api.example.test/rest/users?page=1#fragment",
+      "correlation_id": "scan-http-rest-001",
       "kind": "Http",
       "predicate_namespace": "http.request",
       "predicate_name": "url",
@@ -16,6 +18,7 @@
     {
       "id": "evidence:semantic:rest-method",
       "subject": "endpoint:https://api.example.test/rest/users?page=1#fragment",
+      "correlation_id": "scan-http-rest-001",
       "kind": "Http",
       "predicate_namespace": "http.request",
       "predicate_name": "method",

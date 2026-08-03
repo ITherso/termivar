@@ -1,5 +1,6 @@
 {
   "name": "unsupported_query_parameter_contract",
+  "contract_class": "negative_deferred",
   "evidence": [
     {
       "id": "evidence:semantic:unsupported-query",
@@ -8,8 +9,8 @@
       "predicate_namespace": "http.request",
       "predicate_name": "query",
       "value": "id=1&debug=true",
-      "source_component": "http.evidence",
-      "source_method": "request-query",
+      "source_component": "semantic.fixture",
+      "source_method": "synthetic-unsupported-query",
       "observed_at_ms": 1700000000600,
       "reliability_percent": 95
     }
