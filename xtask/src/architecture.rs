@@ -153,6 +153,21 @@ const MODULE_POLICIES: &[ModulePolicy] = &[
         allowed_internal: &["rules", "verification", "web_actions"],
         allowed_external: &[],
     },
+    ModulePolicy {
+        source: "semantic.rs",
+        allowed_internal: &["semantic/entity", "semantic/extractor"],
+        allowed_external: &[],
+    },
+    ModulePolicy {
+        source: "semantic/entity.rs",
+        allowed_internal: &[],
+        allowed_external: &[],
+    },
+    ModulePolicy {
+        source: "semantic/extractor.rs",
+        allowed_internal: &["knowledge", "semantic"],
+        allowed_external: &["sha2"],
+    },
 ];
 
 /// Verifies the resolved workspace graph and protected production modules.

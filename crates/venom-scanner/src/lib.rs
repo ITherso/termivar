@@ -49,11 +49,14 @@ pub mod payload_strategies;
 pub mod payload_strategy;
 pub mod planner;
 pub mod rules;
+pub mod semantic;
 pub mod verification;
 pub mod web_actions;
 pub mod web_planning;
 pub mod web_reasoning;
 pub mod web_verification;
+
+pub use semantic::{AuthArtifactKind, EntityExtractor, SemanticEntity, SemanticEntityType};
 
 // Scanning engine (feature: scanning)
 #[cfg(feature = "scanning")]
