@@ -672,6 +672,18 @@ mod tests {
     }
 
     #[test]
+    fn custom_predicate_namespace_does_not_route_as_http_method() {
+        let extractor = EntityExtractor::new();
+        let e = ev(
+            EvidenceKind::Http,
+            KnowledgePredicate::new("custom", "method").unwrap(),
+            EvidenceValue::Text("GET".into()),
+        );
+        let res = extractor.extract_from_evidence(&[e]);
+        assert!(res.entities.is_empty());
+    }
+
+    #[test]
     fn unknown_authentication_predicate_never_leaks_raw_value() {
         let extractor = EntityExtractor::new();
         let e = ev(
