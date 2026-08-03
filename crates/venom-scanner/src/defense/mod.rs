@@ -11,6 +11,7 @@
 //! should build on this observation layer; payload derivation lives in
 //! [`crate::payload_strategies`].
 
+pub mod enforcement;
 pub mod fingerprint;
 pub mod policy;
 pub mod projection;
@@ -18,6 +19,7 @@ pub mod shadow_planning;
 pub mod state;
 pub mod transition;
 
+pub use enforcement::{defense_aware_plan, DefensePlanningPolicy};
 pub use fingerprint::{
     fingerprint, DefenseFingerprint, DefenseProduct, FingerprintConfidence,
     MAX_FINGERPRINT_BODY_SCAN_BYTES,

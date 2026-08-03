@@ -156,6 +156,28 @@ state, and never reorders the real plan.
 This layer has no configuration flag: reading the delta is advisory only.
 Enforcement behind a default-off flag is a separate, later step.
 
+## Enforcement (default off)
+
+`defense::enforcement` is the only place defense evidence changes the *real*
+plan, and only when explicitly enabled. `DefensePlanningPolicy` is off by
+default — enabling it is a per-release decision.
+
+- `defense_aware_plan` reuses the shadow layer to decide what to suppress, then
+  applies those suppressions to the planner through the distinct
+  `ExclusionReason::DefenseSuppressed` path, so a defense suppression never
+  conflates with an adaptive or operator `PolicySuppressed`.
+- While disabled, the result is byte-for-byte the plan the planner produces with
+  no defense influence — proven by `disabled_flag_preserves_existing_plan_byte_for_byte`.
+- A defense-suppressed action is excluded, so it never becomes a plan step and
+  never reaches an executor (`policy_denied_strategy_never_reaches_a_plan_step`).
+- Defense still never adds an action or raises utility; it can only remove
+  suppressed candidates. Numeric utility penalties (a graded, non-binary
+  suppression) are deliberately deferred to a later release.
+
+`ExclusionReason::DefenseSuppressed` keeps defense suppression distinct from
+policy suppression, transport failures, and other outcomes, so downstream
+learning never gives them the same weight.
+
 ## Boundaries
 
 `DefenseState::observe` is a pure function of its inputs: identical

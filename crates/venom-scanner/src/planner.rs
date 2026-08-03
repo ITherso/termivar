@@ -623,6 +623,9 @@ impl PlanningContext {
 pub enum ExclusionReason {
     /// An adaptive or operator policy suppressed this action.
     PolicySuppressed,
+    /// Observed defensive posture suppressed this action, distinct from an
+    /// adaptive or operator policy suppression so the two never conflate.
+    DefenseSuppressed,
     /// The action's expression did not match the snapshot.
     RequirementsNotMet,
     /// No supported hypothesis met the selector threshold.
@@ -867,12 +870,37 @@ impl AttackPlanner {
         context: PlanningContext,
         suppressed_actions: &BTreeSet<String>,
     ) -> Result<AttackPlan, PlannerError> {
+        self.plan_snapshot_with_defense_suppressed(
+            snapshot,
+            context,
+            suppressed_actions,
+            &BTreeSet::new(),
+        )
+    }
+
+    /// Produces a plan distinguishing policy suppression from defense suppression.
+    ///
+    /// A defense-suppressed action is excluded with
+    /// [`ExclusionReason::DefenseSuppressed`], never conflated with an adaptive
+    /// or operator [`ExclusionReason::PolicySuppressed`]. A defense-suppressed
+    /// action never becomes a plan step, so it never reaches an executor.
+    pub fn plan_snapshot_with_defense_suppressed(
+        &self,
+        snapshot: &KnowledgeSnapshot,
+        context: PlanningContext,
+        policy_suppressed_actions: &BTreeSet<String>,
+        defense_suppressed_actions: &BTreeSet<String>,
+    ) -> Result<AttackPlan, PlannerError> {
         self.validate_dependencies()?;
 
         let mut eligible = BTreeMap::<String, EligibleCandidate>::new();
         let mut exclusions = BTreeMap::<String, ExclusionReason>::new();
         for action in self.actions.values() {
-            if suppressed_actions.contains(action.id()) {
+            if defense_suppressed_actions.contains(action.id()) {
+                exclusions.insert(action.id.clone(), ExclusionReason::DefenseSuppressed);
+                continue;
+            }
+            if policy_suppressed_actions.contains(action.id()) {
                 exclusions.insert(action.id.clone(), ExclusionReason::PolicySuppressed);
                 continue;
             }

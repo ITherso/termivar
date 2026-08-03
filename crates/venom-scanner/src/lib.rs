@@ -192,11 +192,12 @@ pub use config_loader::{ConfigLoader, ScanProfile as ScanningProfile};
 pub use context::ScanContext;
 pub use contracts::{ScanFinding, ScanPhase};
 pub use defense::{
-    defense_aware_shadow_plan, DefenseAwareShadowPlan, DefenseFingerprint, DefenseInteractionClass,
-    DefenseObservationContext, DefensePosture, DefenseProduct, DefenseResponse, DefenseState,
-    DefenseStatusSignal, DefenseTransition, DefenseTransitionKind, FingerprintConfidence,
-    InteractionDecision, ObservedOutcome, PlanAdjustment, PostureShift, ResourceDefenseObservation,
-    ResourceDefenseSignal, ShadowPlanDelta, SuppressedAction, MAX_FINGERPRINT_BODY_SCAN_BYTES,
+    defense_aware_plan, defense_aware_shadow_plan, DefenseAwareShadowPlan, DefenseFingerprint,
+    DefenseInteractionClass, DefenseObservationContext, DefensePlanningPolicy, DefensePosture,
+    DefenseProduct, DefenseResponse, DefenseState, DefenseStatusSignal, DefenseTransition,
+    DefenseTransitionKind, FingerprintConfidence, InteractionDecision, ObservedOutcome,
+    PlanAdjustment, PostureShift, ResourceDefenseObservation, ResourceDefenseSignal,
+    ShadowPlanDelta, SuppressedAction, MAX_FINGERPRINT_BODY_SCAN_BYTES,
 };
 pub use error::{Result, ScannerError};
 pub use event_bus::{Event, EventBuilder, EventBus, EventHandler, EventSeverity, EventType};
