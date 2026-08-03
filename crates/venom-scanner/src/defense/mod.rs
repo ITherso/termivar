@@ -13,12 +13,14 @@
 
 pub mod fingerprint;
 pub mod state;
+pub mod transition;
 
 pub use fingerprint::{
     fingerprint, DefenseFingerprint, DefenseProduct, FingerprintConfidence,
     MAX_FINGERPRINT_BODY_SCAN_BYTES,
 };
 pub use state::{DefensePosture, DefenseState, DefenseStatusSignal};
+pub use transition::{DefenseTransition, DefenseTransitionKind, PostureShift};
 
 #[cfg(test)]
 mod tests {
