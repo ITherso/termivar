@@ -1,5 +1,6 @@
 {
   "name": "jwt_or_bearer_auth_artifact",
+  "contract_class": "synthetic_extractor_contract",
   "evidence": [
     {
       "id": "evidence:semantic:jwt-auth",
@@ -8,7 +9,7 @@
       "predicate_namespace": "authentication",
       "predicate_name": "jwt",
       "value": "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ1c2VyIn0.s3ltdGVzdA",
-      "source_component": "semantic-suite",
+      "source_component": "semantic.fixture",
       "source_method": "synthetic-auth-token",
       "observed_at_ms": 1700000000200,
       "reliability_percent": 95
