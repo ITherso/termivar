@@ -19,9 +19,12 @@ Results are runner-local regression signals. They are not comparable across arbi
 
 Coverage is produced by the Tests workflow and uploaded to Codecov. Unit, integration, compatibility, and security results remain separate required checks.
 
-`scripts/generate-metrics.sh` reports tracked Rust lines and files only for
-declared workspace-package roots (`crates/`, `examples/`, and `xtask/`). These
-repository-size counts are not a coverage or quality score.
+`scripts/generate-metrics.sh` derives package roots from locked Cargo metadata,
+then reports only Rust files that Git identifies as tracked below those roots.
+The architecture gate separately rejects loose top-level Rust files in the
+examples package that are not declared Cargo targets. These repository-size
+counts are not a coverage or quality score. Running the script requires Bash,
+Git, Cargo, and Python 3 for decoding Cargo's JSON output.
 
 ## Not measured yet
 

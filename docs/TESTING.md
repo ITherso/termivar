@@ -11,7 +11,7 @@ source of truth.
 | --- | --- | --- |
 | Unit and contract tests | `crates/*/src/` | Local invariants, public contracts, and deterministic reasoning |
 | Scanner integration tests | `crates/venom-scanner/tests/` | Feature combinations and cross-module behavior |
-| Architecture policy | `cargo xtask architecture` | Workspace edges, virtual-root layout, protected imports, and transport-free compilation |
+| Architecture policy | `cargo xtask architecture` | Workspace edges, virtual-root and example-target ownership, protected imports, and transport-free compilation |
 | SDK examples | `examples/` | Compiling consumer-facing usage |
 | Template smoke tests | `templates/` in CI | Generated scanner and plugin projects compile independently |
 | Benchmarks | `crates/venom-scanner/benches/` | Criterion regression signals |
@@ -104,6 +104,9 @@ loopback only and assert the whole paired boundary:
   server errors, and response-byte crossings never emit a comparison;
 - a completed control receipt and all delivered bytes remain auditable when the
   candidate or a later stage fails;
+- dispatch receipts remain ordered and raw-target-free, distinguish completed,
+  timeout, response-limit, transport-failure, and cancelled exits, and report
+  retention omissions explicitly;
 - the same complete fixture and V3 profile produce the same comparison and
   redacted explanation; fixture-pinned policy, subject, path, and serialized
   envelope digests make an accidental algorithm/version drift fail even when

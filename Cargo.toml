@@ -65,5 +65,10 @@ sqlx = { version = "0.8", features = ["sqlite", "runtime-tokio"] }
 
 [profile.release]
 opt-level = 3
+debug = false
+debug-assertions = false
+overflow-checks = false
 lto = true
+panic = "abort"
 codegen-units = 1
+strip = true

@@ -39,7 +39,7 @@ Use [GitHub Discussions](https://github.com/ITherso/venom/discussions) for usage
 
 ## Coding style
 
-- Prefer safe Rust. Any `unsafe` block requires a `SAFETY:` rationale, isolation, and focused tests.
+- Workspace crates forbid unsafe Rust. Do not add an `unsafe` block; any proposed exception requires an explicit lint-policy and architecture change before implementation.
 - Keep dependencies directed toward `venom-core`; entry-point and product crates must not leak into lower layers.
 - Keep runner, phase, plugin, event, report, and transport responsibilities separate.
 - Use async I/O on runtime paths and never block a Tokio worker thread.

@@ -18,7 +18,7 @@ Release gates, alpha rationale, and active blockers are maintained in [PROJECT_S
 
 ## Design principles
 
-- **Safe Rust by default.** Unsafe code must be isolated, justified, and reviewed.
+- **Safe Rust in workspace crates.** Centrally inherited lints forbid unsafe code; any proposed exception requires an explicit policy and architecture change.
 - **Dependency inversion.** Contracts point inward; entry points compose lower-level crates.
 - **Async first.** Network and scan execution avoid blocking the runtime.
 - **Modular boundaries.** Runners, phases, plugins, events, and reports communicate through narrow APIs.

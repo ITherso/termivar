@@ -48,6 +48,7 @@ All notable changes to Venom are recorded here. Releases use the categories from
 - A comparator-v3 visibility-explanation disposition that distinguishes equivalence, bounded path summaries, and differences without representable path summaries while preserving explicit replay metadata.
 - A host-triggered, single-use JSON authorization-context differential workflow that moves two broker-backed views through Comparator V3, atomic observation ingestion, and exact human-review projection without becoming a planner action or vulnerability verdict.
 - Pinned golden API-authorization replay metadata and broker-backed runtime coverage for anonymous/member, owner/unrelated-user, and read/write-capability context pairs.
+- Bounded, raw-target-free transport dispatch receipts with ordered per-attempt byte accounting and typed completion, failure, timeout, response-limit, and cancellation outcomes.
 
 ### Changed
 
@@ -83,6 +84,7 @@ All notable changes to Venom are recorded here. Releases use the categories from
 - Changed the alpha `RuntimeUsage.response_bytes` meaning from retained evidence bytes to complete response chunks delivered to the broker collector; a threshold-crossing chunk is charged, audited, and terminates the same turn.
 - Enforced the Preview plugin registry's host-side enable flag, payload-size ceiling, and execution deadline without automatically retrying potentially side-effecting plugin calls.
 - Canonicalized unordered-array path fingerprints once after capture instead of re-sorting a growing digest set for every element, preserving duplicate multiplicity and deterministic comparison semantics.
+- Derived repository-size metric roots from locked Cargo metadata, consolidated release profile policy in the root manifest, and removed redundant development overrides; local parallelism now follows Cargo's host default.
 
 ### Fixed
 
@@ -91,6 +93,7 @@ All notable changes to Venom are recorded here. Releases use the categories from
 - The architecture gate now owns and independently inspects explicitly registered nested production modules while continuing to reject undeclared helpers and includes.
 - Made legacy payload pollution deterministic, UTF-8 reduction panic-free, and composite transformation hooks compositional.
 - Prevented status-only API comparisons from emitting unrelated body-path explanations.
+- Removed obsolete unregistered example sources and made the architecture gate reject top-level example `.rs` files that are not declared as Cargo targets.
 
 ### Security
 

@@ -21,7 +21,9 @@ The editable diagrams.net source is [architecture.drawio](architecture.drawio). 
 The repository root is a virtual Cargo workspace and has no `src/` tree. Rust
 source must live under a declared workspace package; otherwise it would be
 excluded from build, test, documentation, release, and quality gates. The
-architecture preflight rejects a virtual root containing `src/`.
+architecture preflight rejects a virtual root containing `src/`. It also
+rejects any top-level `.rs` file in the examples package that is not declared as
+a Cargo target, so example source cannot silently fall outside compilation.
 
 ```mermaid
 flowchart TD
@@ -196,9 +198,10 @@ Run the machine-enforced boundary locally:
 cargo xtask architecture
 ```
 
-The command rejects uncompiled source at the virtual workspace root, validates
-workspace dependencies and centrally inherited lint policy through locked Cargo
-metadata, inspects protected production imports through the Rust AST, enforces
+The command rejects uncompiled source at the virtual workspace root and
+undeclared top-level Rust sources in the examples package, validates workspace
+dependencies and centrally inherited lint policy through locked Cargo metadata,
+inspects protected production imports through the Rust AST, enforces
 standard-runtime transport ownership, freezes the legacy direct-I/O inventory,
 verifies canonical `lib.rs` module and external-root wiring, and compiles
 `venom-scanner` with no default features. See

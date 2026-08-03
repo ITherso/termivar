@@ -1,25 +1,2 @@
 [alias]
 xtask = "run --locked -p xtask --"
-
-[build]
-# Number of parallel jobs, defaults to # of CPUs
-jobs = 4
-
-[profile.dev]
-opt-level = 0
-debug = true
-debug-assertions = true
-overflow-checks = true
-lto = false
-panic = "unwind"
-incremental = true
-
-[profile.release]
-opt-level = 3
-debug = false
-debug-assertions = false
-overflow-checks = false
-lto = true
-panic = "abort"
-codegen-units = 1
-strip = true

@@ -3,8 +3,8 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     error::Error,
-    fmt, fs,
-    path::{Component, Path},
+    fmt, fs, io,
+    path::{Component, Path, PathBuf},
     str::FromStr,
 };
 
@@ -205,9 +205,65 @@ fn workspace_graph_violations(workspace_root: &Path) -> Result<Vec<String>, Box<
             &package.name,
             &manifest,
         ));
+
+        if package.name == "venom-examples" {
+            let package_root = package
+                .manifest_path
+                .parent()
+                .ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "venom-examples manifest has no package root",
+                    )
+                })?
+                .as_std_path();
+            let declared_target_sources = package
+                .targets
+                .iter()
+                .map(|target| fs::canonicalize(target.src_path.as_std_path()))
+                .collect::<Result<BTreeSet<_>, _>>()?;
+            let top_level_sources = top_level_rust_sources(package_root)?;
+            violations.extend(validate_top_level_rust_target_ownership(
+                &package.name,
+                &top_level_sources,
+                &declared_target_sources,
+            ));
+        }
     }
     violations.extend(validate_workspace_graph(&graph));
     Ok(violations)
+}
+
+fn top_level_rust_sources(package_root: &Path) -> Result<Vec<PathBuf>, io::Error> {
+    let mut sources = Vec::new();
+    for entry in fs::read_dir(package_root)? {
+        let path = entry?.path();
+        if path.is_file() && path.extension().and_then(|extension| extension.to_str()) == Some("rs")
+        {
+            sources.push(fs::canonicalize(path)?);
+        }
+    }
+    sources.sort();
+    Ok(sources)
+}
+
+fn validate_top_level_rust_target_ownership(
+    package: &str,
+    top_level_sources: &[PathBuf],
+    declared_target_sources: &BTreeSet<PathBuf>,
+) -> Vec<String> {
+    top_level_sources
+        .iter()
+        .filter(|source| !declared_target_sources.contains(*source))
+        .map(|source| {
+            let display = source
+                .file_name()
+                .map_or_else(|| source.display().to_string(), |name| name.to_string_lossy().into());
+            format!(
+                "workspace package {package} has undeclared top-level Rust source {display}; declare it as a Cargo target or remove it"
+            )
+        })
+        .collect()
 }
 
 fn validate_workspace_root_layout(is_virtual: bool, has_source_root: bool) -> Vec<String> {
@@ -1343,6 +1399,29 @@ mod tests {
         let violations = validate_workspace_root_layout(true, true);
         assert_eq!(violations.len(), 1);
         assert!(violations[0].contains("virtual workspace root must not contain src/"));
+    }
+
+    #[test]
+    fn examples_package_rejects_undeclared_top_level_rust_sources() {
+        let declared = PathBuf::from("/workspace/examples/basic_scan.rs");
+        let loose = PathBuf::from("/workspace/examples/config_usage.rs");
+        let target_sources = BTreeSet::from([declared.clone()]);
+
+        assert!(validate_top_level_rust_target_ownership(
+            "venom-examples",
+            std::slice::from_ref(&declared),
+            &target_sources,
+        )
+        .is_empty());
+
+        let violations = validate_top_level_rust_target_ownership(
+            "venom-examples",
+            &[declared, loose],
+            &target_sources,
+        );
+        assert_eq!(violations.len(), 1);
+        assert!(violations[0].contains("config_usage.rs"));
+        assert!(violations[0].contains("declare it as a Cargo target or remove it"));
     }
 
     #[test]
