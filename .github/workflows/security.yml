@@ -1,66 +1,96 @@
-name: Security Scanning
+name: Security
 
 on:
   push:
-    branches: [ main, develop ]
+    branches: [main, develop]
   pull_request:
-    branches: [ main, develop ]
+    branches: [main, develop]
   schedule:
-    - cron: '0 2 * * *'
+    - cron: '13 2 * * *'
+  workflow_dispatch:
 
 permissions:
   contents: read
-  security-events: write
+
+concurrency:
+  group: security-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  dependency-check:
-    name: Dependency Checking
+  rust-dependencies:
+    name: Rust dependency policy
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      checks: write
+      issues: write
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - name: Update dependencies
-        run: cargo update
-      - name: Run cargo-audit
-        run: |
-          cargo install cargo-audit
-          cargo audit
-      - name: Run cargo-deny
-        uses: EmbarkStudios/cargo-deny-action@v2
-        with:
-          rust-version: "1.88.0"
-      - name: Run cargo-outdated
-        run: |
-          cargo install cargo-outdated
-          cargo outdated -R
+      - name: Check out repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
-  trivy-scan:
-    name: Trivy Container Scanning
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Run Trivy vulnerability scanner
-        uses: aquasecurity/trivy-action@master
+      - name: Audit locked Rust dependencies
+        uses: rustsec/audit-check@69366f33c96575abad1ee0dba8212993eecbe998 # v2.0.0
         with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Enforce licenses, sources, bans, and advisories
+        uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
+        with:
+          rust-version: '1.88.0'
+          command: check
+          arguments: --all-features
+
+  trivy:
+    name: Filesystem vulnerability, secret, and configuration scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Scan repository
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          version: v0.70.0
           scan-type: fs
           scan-ref: .
+          scanners: vuln,secret,misconfig
           format: sarif
           output: trivy-results.sarif
-      - name: Upload Trivy results to GitHub Security
-        uses: github/codeql-action/upload-sarif@v4
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          limit-severities-for-sarif: true
+          exit-code: '1'
+
+      - name: Upload Trivy results
+        if: always() && hashFiles('trivy-results.sarif') != ''
+        uses: github/codeql-action/upload-sarif@f205ea1c3313d32999d8d6a48b4f6530d4437b38 # v4
         with:
           sarif_file: trivy-results.sarif
+          category: trivy-filesystem
 
-  semgrep-scan:
-    name: Semgrep Security Analysis
+  semgrep:
+    name: Semgrep CE
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    container:
+      image: semgrep/semgrep:1.171.0-nonroot@sha256:e7c194995bc2ff50687b20fc43cd3a38ec429bb6d1b812222669d4f0de0084b0
     steps:
-      - uses: actions/checkout@v4
-      - name: Run Semgrep
-        uses: returntocorp/semgrep-action@v1
-        with:
-          config: >-
-            p/security-audit
-            p/owasp-top-ten
-            p/rust
+      - name: Check out repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Scan source
+        run: >-
+          semgrep scan
+          --config p/security-audit
+          --config p/owasp-top-ten
+          --config p/rust
+          --error
+          --metrics=off
+          .

@@ -85,6 +85,8 @@ All notable changes to Venom are recorded here. Releases use the categories from
 - Enforced the Preview plugin registry's host-side enable flag, payload-size ceiling, and execution deadline without automatically retrying potentially side-effecting plugin calls.
 - Canonicalized unordered-array path fingerprints once after capture instead of re-sorting a growing digest set for every element, preserving duplicate multiplicity and deterministic comparison semantics.
 - Derived repository-size metric roots from locked Cargo metadata, consolidated release profile policy in the root manifest, and removed redundant development overrides; local parallelism now follows Cargo's host default.
+- Replaced the stale CRA dashboard and unsupported enterprise/API claims with an explicitly disconnected `0.9.0-alpha` Vite preview, a locked zero-advisory dependency tree, and a real server-render smoke test.
+- Made GitHub releases derive generated notes and prerelease/latest state from each tag instead of reusing the `v0.9.0-alpha` body and classification forever.
 
 ### Fixed
 
@@ -109,6 +111,8 @@ All notable changes to Venom are recorded here. Releases use the categories from
 - Added active multi-request and pre-socket retry budget regressions so nested dispatches cannot escape host accounting.
 - Kept raw strategy seeds and derived artifacts out of serialization and debug output while retaining length, role, revision, and SHA-256 provenance.
 - Isolated control and candidate connection pools while sharing one host-owned accounting authority; exact-target and context-header preflight, two active-verification leases, and monotonic partial/post-commit receipts prevent credential bleed and unaccounted paired transport.
+- Replaced mutable or deprecated security-scanner actions with SHA/digest-pinned RustSec, cargo-deny, Trivy, CodeQL upload, Semgrep, and Codecov integrations; scans use least-privilege job tokens and audit the locked dependency graph without mutating it. Privileged release actions are SHA-pinned as well.
+- Added bounded weekly Dependabot update queues for Cargo, the web preview, and GitHub Actions.
 
 ## [0.9.0-alpha] - 2026-07-31
 
