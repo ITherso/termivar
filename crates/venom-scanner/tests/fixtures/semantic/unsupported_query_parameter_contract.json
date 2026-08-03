@@ -1,0 +1,24 @@
+{
+  "name": "unsupported_query_parameter_contract",
+  "evidence": [
+    {
+      "id": "evidence:semantic:unsupported-query",
+      "subject": "endpoint:https://api.example.test/search",
+      "kind": "Http",
+      "predicate_namespace": "http.request",
+      "predicate_name": "query",
+      "value": "id=1&debug=true",
+      "source_component": "http.evidence",
+      "source_method": "request-query",
+      "observed_at_ms": 1700000000600,
+      "reliability_percent": 95
+    }
+  ],
+  "expected": {
+    "entities": [],
+    "truncated": false,
+    "dropped_entities": 0,
+    "dropped_attributes": 0,
+    "dropped_sources": 0
+  }
+}
