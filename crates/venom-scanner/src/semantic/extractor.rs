@@ -3,12 +3,15 @@
 use base64::Engine;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
+use std::net::IpAddr;
+use std::str::FromStr;
 use url::Url;
-use venom_core::{EntityId, Evidence, EvidenceKind, EvidenceValue};
+use venom_core::{EntityId, Evidence, EvidenceId, EvidenceKind, EvidenceValue};
 
 use crate::knowledge::KnowledgeSnapshot;
 use crate::semantic::entity::{
     AuthArtifactKind, SemanticEntity, SemanticEntityType, SemanticExtractionLimits,
+    SemanticExtractionResult,
 };
 
 /// Version prefix for canonical entity identifiers.
@@ -39,53 +42,110 @@ impl EntityExtractor {
         Self { limits }
     }
 
+    /// Returns a reference to the extractor limits.
+    pub fn limits(&self) -> &SemanticExtractionLimits {
+        &self.limits
+    }
+
     /// Extracts entities from a knowledge snapshot.
-    pub fn extract_from_snapshot(&self, snapshot: &KnowledgeSnapshot) -> Vec<SemanticEntity> {
+    pub fn extract_from_snapshot(&self, snapshot: &KnowledgeSnapshot) -> SemanticExtractionResult {
         self.extract_from_evidence(snapshot.evidence())
     }
 
     /// Extracts entities deterministically from a slice of evidence records.
-    pub fn extract_from_evidence(&self, evidence_list: &[Evidence]) -> Vec<SemanticEntity> {
-        let mut entity_map = BTreeMap::<EntityId, SemanticEntity>::new();
+    pub fn extract_from_evidence(&self, evidence_list: &[Evidence]) -> SemanticExtractionResult {
+        let mut sorted_evidence: Vec<&Evidence> = evidence_list.iter().collect();
+        sorted_evidence.sort_by_key(|e| e.id());
 
-        for evidence in evidence_list {
-            if entity_map.len() >= self.limits.max_entities {
-                break;
-            }
+        let mut entity_map = BTreeMap::<
+            EntityId,
+            (
+                SemanticEntityType,
+                BTreeMap<String, BTreeSet<String>>,
+                BTreeSet<EvidenceId>,
+            ),
+        >::new();
 
+        for evidence in sorted_evidence {
             if let Some(extracted) = self.project_evidence(evidence) {
-                entity_map
-                    .entry(extracted.id().clone())
-                    .and_modify(|existing| {
-                        let mut merged_attrs = existing.attributes().clone();
-                        for (key, values) in extracted.attributes() {
-                            if merged_attrs.len() < self.limits.max_attribute_keys {
-                                let set = merged_attrs.entry(key.clone()).or_default();
-                                for val in values {
-                                    if set.len() < self.limits.max_values_per_attribute {
-                                        set.insert(val.clone());
-                                    }
-                                }
-                            }
-                        }
-                        let mut merged_sources = existing.source_evidence_ids().to_vec();
-                        for src_id in extracted.source_evidence_ids() {
-                            if merged_sources.len() < self.limits.max_source_evidence_ids {
-                                merged_sources.push(src_id.clone());
-                            }
-                        }
-                        *existing = SemanticEntity::new(
-                            existing.id().clone(),
-                            existing.entity_type(),
-                            merged_attrs,
-                            merged_sources,
-                        );
-                    })
-                    .or_insert(extracted);
+                let (id, etype, attrs, sources) = extracted.into_parts();
+                let entry = entity_map
+                    .entry(id)
+                    .or_insert_with(|| (etype, BTreeMap::new(), BTreeSet::new()));
+
+                for (k, vals) in attrs {
+                    entry.1.entry(k).or_default().extend(vals);
+                }
+                entry.2.extend(sources);
             }
         }
 
-        entity_map.into_values().collect()
+        let mut dropped_entities = 0;
+        let mut dropped_attributes = 0;
+        let mut dropped_sources = 0;
+        let mut truncated = false;
+
+        // Truncate entity count canonically (BTreeMap keys are canonically sorted EntityIds)
+        if entity_map.len() > self.limits.max_entities {
+            dropped_entities = entity_map.len() - self.limits.max_entities;
+            truncated = true;
+            let keys_to_keep: Vec<EntityId> = entity_map
+                .keys()
+                .take(self.limits.max_entities)
+                .cloned()
+                .collect();
+            entity_map.retain(|k, _| keys_to_keep.contains(k));
+        }
+
+        let mut final_entities = Vec::with_capacity(entity_map.len());
+
+        for (id, (etype, mut attrs, sources)) in entity_map {
+            let source_vec: Vec<EvidenceId> = if sources.len() > self.limits.max_source_evidence_ids
+            {
+                dropped_sources += sources.len() - self.limits.max_source_evidence_ids;
+                truncated = true;
+                sources
+                    .into_iter()
+                    .take(self.limits.max_source_evidence_ids)
+                    .collect()
+            } else {
+                sources.into_iter().collect()
+            };
+
+            if attrs.len() > self.limits.max_attribute_keys {
+                dropped_attributes += attrs.len() - self.limits.max_attribute_keys;
+                truncated = true;
+                let attr_keys_to_keep: Vec<String> = attrs
+                    .keys()
+                    .take(self.limits.max_attribute_keys)
+                    .cloned()
+                    .collect();
+                attrs.retain(|k, _| attr_keys_to_keep.contains(k));
+            }
+
+            for values in attrs.values_mut() {
+                if values.len() > self.limits.max_values_per_attribute {
+                    dropped_attributes += values.len() - self.limits.max_values_per_attribute;
+                    truncated = true;
+                    let val_set_to_keep: BTreeSet<String> = values
+                        .iter()
+                        .take(self.limits.max_values_per_attribute)
+                        .cloned()
+                        .collect();
+                    *values = val_set_to_keep;
+                }
+            }
+
+            final_entities.push(SemanticEntity::new(id, etype, attrs, source_vec));
+        }
+
+        SemanticExtractionResult {
+            entities: final_entities,
+            truncated,
+            dropped_entities,
+            dropped_attributes,
+            dropped_sources,
+        }
     }
 
     fn project_evidence(&self, evidence: &Evidence) -> Option<SemanticEntity> {
@@ -121,9 +181,22 @@ impl EntityExtractor {
                     vec![evidence.id().clone()],
                 ))
             },
-            (EvidenceKind::Http | EvidenceKind::Network, "endpoint" | "path" | "route" | "url") => {
-                let (canonical_id, url_str, method) =
-                    parse_canonical_endpoint(evidence.subject().as_str(), val_str, &self.limits)?;
+            (
+                EvidenceKind::Http | EvidenceKind::Network,
+                "endpoint" | "path" | "route" | "url" | "method",
+            ) => {
+                let (target_val, method_opt) = if predicate_name == "method" {
+                    (evidence.subject().as_str(), Some(val_str))
+                } else {
+                    (val_str, None)
+                };
+
+                let (canonical_id, url_str, method) = parse_canonical_endpoint(
+                    evidence.subject().as_str(),
+                    target_val,
+                    &self.limits,
+                    method_opt,
+                )?;
                 let mut attrs = BTreeMap::new();
                 attrs.insert("url".to_string(), BTreeSet::from([url_str]));
                 if let Some(method) = method {
@@ -137,12 +210,46 @@ impl EntityExtractor {
                     vec![evidence.id().clone()],
                 ))
             },
-            (EvidenceKind::Dns | EvidenceKind::Network, "domain" | "hostname" | "host" | "ip") => {
+            (EvidenceKind::Dns | EvidenceKind::Network, "ip") => {
                 let raw_val = val_str.trim();
                 if raw_val.is_empty() {
                     return None;
                 }
-
+                let canonical_ip = parse_canonical_ip(raw_val)?;
+                let canonical_id =
+                    EntityId::new(format!("{CANONICAL_ID_VERSION}:ip:{canonical_ip}")).ok()?;
+                let mut attrs = BTreeMap::new();
+                attrs.insert("ip".to_string(), BTreeSet::from([canonical_ip]));
+                Some(SemanticEntity::new(
+                    canonical_id,
+                    SemanticEntityType::IpAddress,
+                    attrs,
+                    vec![evidence.id().clone()],
+                ))
+            },
+            (EvidenceKind::Dns | EvidenceKind::Network, "domain" | "hostname") => {
+                let raw_val = val_str.trim();
+                if raw_val.is_empty() {
+                    return None;
+                }
+                let canonical_domain = parse_canonical_domain(raw_val)?;
+                let canonical_id =
+                    EntityId::new(format!("{CANONICAL_ID_VERSION}:domain:{canonical_domain}"))
+                        .ok()?;
+                let mut attrs = BTreeMap::new();
+                attrs.insert("domain".to_string(), BTreeSet::from([canonical_domain]));
+                Some(SemanticEntity::new(
+                    canonical_id,
+                    SemanticEntityType::Domain,
+                    attrs,
+                    vec![evidence.id().clone()],
+                ))
+            },
+            (EvidenceKind::Dns | EvidenceKind::Network, "host") => {
+                let raw_val = val_str.trim();
+                if raw_val.is_empty() {
+                    return None;
+                }
                 if let Some(canonical_ip) = parse_canonical_ip(raw_val) {
                     let canonical_id =
                         EntityId::new(format!("{CANONICAL_ID_VERSION}:ip:{canonical_ip}")).ok()?;
@@ -240,149 +347,17 @@ fn parse_canonical_ip(raw: &str) -> Option<String> {
     if clean.is_empty() {
         return None;
     }
-
-    if let Some(v4) = parse_ipv4(clean) {
-        return Some(v4);
-    }
-
-    if let Some(v6) = parse_ipv6(clean) {
-        return Some(v6);
-    }
-
-    None
-}
-
-fn parse_ipv4(clean: &str) -> Option<String> {
-    let parts: Vec<&str> = clean.split('.').collect();
-    if parts.len() != 4 {
-        return None;
-    }
-    let mut octets = [0u8; 4];
-    for (i, p) in parts.iter().enumerate() {
-        if p.is_empty() || (p.len() > 1 && p.starts_with('0')) {
-            return None;
-        }
-        let val: u8 = p.parse().ok()?;
-        octets[i] = val;
-    }
-    Some(format!(
-        "{}.{}.{}.{}",
-        octets[0], octets[1], octets[2], octets[3]
-    ))
-}
-
-fn parse_ipv6(clean: &str) -> Option<String> {
-    if !clean.contains(':') {
-        return None;
-    }
-
-    let lower = clean.to_lowercase();
-    let (left, right) = if let Some((l, r)) = lower.split_once("::") {
-        if r.contains("::") {
-            return None;
-        }
-        (l, Some(r))
-    } else {
-        (lower.as_str(), None)
-    };
-
-    let parse_hextets = |s: &str| -> Option<Vec<u16>> {
-        if s.is_empty() {
-            return Some(Vec::new());
-        }
-        let parts: Vec<&str> = s.split(':').collect();
-        let mut res = Vec::with_capacity(parts.len());
-        for p in parts {
-            if p.is_empty() || p.len() > 4 {
-                return None;
-            }
-            let val = u16::from_str_radix(p, 16).ok()?;
-            res.push(val);
-        }
-        Some(res)
-    };
-
-    let left_hextets = parse_hextets(left)?;
-    let right_hextets = match right {
-        Some(r) => parse_hextets(r)?,
-        None => Vec::new(),
-    };
-
-    let total = left_hextets.len() + right_hextets.len();
-    if right.is_some() {
-        if total >= 8 {
-            return None;
-        }
-    } else if total != 8 {
-        return None;
-    }
-
-    let mut full = [0u16; 8];
-    for (i, &val) in left_hextets.iter().enumerate() {
-        full[i] = val;
-    }
-    let zeros_count = 8 - total;
-    for (i, &val) in right_hextets.iter().enumerate() {
-        full[left_hextets.len() + zeros_count + i] = val;
-    }
-
-    let mut zero_runs = Vec::new();
-    let mut in_zero = false;
-    let mut start = 0;
-    for (i, &val) in full.iter().enumerate() {
-        if val == 0 {
-            if !in_zero {
-                in_zero = true;
-                start = i;
-            }
-        } else if in_zero {
-            in_zero = false;
-            let len = i - start;
-            if len > 1 {
-                zero_runs.push((len, start));
-            }
-        }
-    }
-    if in_zero {
-        let len = 8 - start;
-        if len > 1 {
-            zero_runs.push((len, start));
-        }
-    }
-
-    let best_run = zero_runs.into_iter().max_by_key(|&(len, _)| len);
-
-    let mut result = String::new();
-    if let Some((len, start)) = best_run {
-        let end = start + len;
-        for (i, &val) in full[..start].iter().enumerate() {
-            if i > 0 {
-                result.push(':');
-            }
-            result.push_str(&format!("{val:x}"));
-        }
-        result.push_str("::");
-        for (i, &val) in full[end..].iter().enumerate() {
-            if i > 0 {
-                result.push(':');
-            }
-            result.push_str(&format!("{val:x}"));
-        }
-    } else {
-        for (i, &val) in full.iter().enumerate() {
-            if i > 0 {
-                result.push(':');
-            }
-            result.push_str(&format!("{val:x}"));
-        }
-    }
-
-    Some(result)
+    let ip = IpAddr::from_str(clean).ok()?;
+    Some(ip.to_string())
 }
 
 fn parse_canonical_domain(raw: &str) -> Option<String> {
     let s = raw.trim();
     if s.is_empty() || s.len() > 253 {
+        return None;
+    }
+
+    if parse_canonical_ip(s).is_some() {
         return None;
     }
 
@@ -406,6 +381,12 @@ fn parse_canonical_domain(raw: &str) -> Option<String> {
     let labels: Vec<&str> = lower.split('.').collect();
     if labels.is_empty() {
         return None;
+    }
+
+    if let Some(tld) = labels.last() {
+        if tld.chars().all(|c| c.is_ascii_digit()) {
+            return None;
+        }
     }
 
     for label in &labels {
@@ -470,7 +451,6 @@ fn is_valid_jwt_structure(raw: &str) -> bool {
         return false;
     }
 
-    // Both header and payload segments must be valid base64url and parse into JSON objects
     is_valid_base64url_json_object(parts[0]) && is_valid_base64url_json_object(parts[1])
 }
 
@@ -499,443 +479,656 @@ fn is_valid_base64url_json_object(segment: &str) -> bool {
     false
 }
 
+fn is_valid_header_name(name: &str) -> bool {
+    if name.is_empty() {
+        return false;
+    }
+    name.bytes().all(|b| {
+        matches!(
+            b,
+            b'a'..=b'z'
+                | b'A'..=b'Z'
+                | b'0'..=b'9'
+                | b'!'
+                | b'#'
+                | b'$'
+                | b'%'
+                | b'&'
+                | b'\''
+                | b'*'
+                | b'+'
+                | b'-'
+                | b'.'
+                | b'^'
+                | b'_'
+                | b'`'
+                | b'|'
+                | b'~'
+        )
+    })
+}
+
 fn parse_header_pair(raw: &str) -> Option<(String, String)> {
     let raw = raw.trim();
     if raw.is_empty() {
         return None;
     }
-    if let Some((k, v)) = raw.split_once(':') {
-        Some((k.trim().to_string(), v.trim().to_string()))
+    let (k, v) = if let Some((k, v)) = raw.split_once(':') {
+        (k.trim(), v.trim())
     } else {
-        Some((raw.trim().to_string(), String::new()))
+        (raw, "")
+    };
+
+    if !is_valid_header_name(k) {
+        return None;
     }
+
+    Some((k.to_string(), v.to_string()))
 }
 
 fn parse_canonical_endpoint(
     subject_str: &str,
     val_str: &str,
     limits: &SemanticExtractionLimits,
+    method_opt: Option<&str>,
 ) -> Option<(EntityId, String, Option<String>)> {
     let clean_val = val_str.trim();
     if clean_val.is_empty() {
         return None;
     }
 
-    let val_lower = clean_val.to_lowercase();
-    let target = if val_lower.starts_with("http://") || val_lower.starts_with("https://") {
-        clean_val
-    } else if clean_val.starts_with('/') {
+    let unstripped_target = clean_val.strip_prefix("endpoint:").unwrap_or(clean_val);
+
+    let target_url_str = if unstripped_target.starts_with('/') {
         let subj_clean = subject_str.strip_prefix("endpoint:").unwrap_or(subject_str);
-        if let Ok(base_url) = Url::parse(subj_clean) {
-            let scheme = base_url.scheme();
-            let host = base_url.host_str()?;
-            let port_str = base_url.port().map_or(String::new(), |p| format!(":{p}"));
-            let combined = format!("{scheme}://{host}{port_str}{clean_val}");
-            let mut url = Url::parse(&combined).ok()?;
-            url.set_query(None);
-            url.set_fragment(None);
-            let normalized_url = url.to_string();
-            let canonical_str = format!("{CANONICAL_ID_VERSION}:endpoint:{normalized_url}#GET");
-            let canonical_id = EntityId::new(canonical_str).ok()?;
-            return Some((canonical_id, normalized_url, None));
-        } else {
-            return None;
-        }
+        let base_url = Url::parse(subj_clean).ok()?;
+        base_url.join(unstripped_target).ok()?.to_string()
     } else {
-        return None;
+        unstripped_target.to_string()
     };
-    if target.len() > limits.max_url_bytes {
+
+    if target_url_str.len() > limits.max_url_bytes {
         return None;
     }
 
-    let mut url = Url::parse(target).ok()?;
+    let mut url = Url::parse(&target_url_str).ok()?;
     let scheme = url.scheme().to_lowercase();
     if scheme != "http" && scheme != "https" {
         return None;
     }
 
-    // USERINFO REDACTION: Remove username/password completely from canonical identity and attributes
-    if !url.username().is_empty() || url.password().is_some() {
-        let _ = url.set_username("");
-        let _ = url.set_password(None);
-    }
-
-    // Strip query and fragment from canonical endpoint identity
+    let _ = url.set_username("");
+    let _ = url.set_password(None);
     url.set_query(None);
     url.set_fragment(None);
 
-    let host = url.host_str()?.to_lowercase();
+    if (scheme == "http" && url.port() == Some(80))
+        || (scheme == "https" && url.port() == Some(443))
+    {
+        let _ = url.set_port(None);
+    }
 
-    // Default port normalization
-    let port_suffix = match (scheme.as_str(), url.port()) {
-        ("http", Some(80)) | ("http", None) => String::new(),
-        ("https", Some(443)) | ("https", None) => String::new(),
-        (_, Some(p)) => format!(":{p}"),
-        (_, None) => String::new(),
+    let normalized_url = url.to_string();
+
+    let (canonical_str, method_attr) = match method_opt {
+        Some(m) if !m.trim().is_empty() => {
+            let m_clean = m.trim().to_uppercase();
+            (
+                format!("{CANONICAL_ID_VERSION}:endpoint:{normalized_url}#{m_clean}"),
+                Some(m_clean),
+            )
+        },
+        _ => (
+            format!("{CANONICAL_ID_VERSION}:endpoint:{normalized_url}"),
+            None,
+        ),
     };
 
-    let path = url.path();
-    let normalized_url = format!("{scheme}://{host}{port_suffix}{path}");
-
-    // Method comes from typed evidence or defaults strictly to GET (never from URL fragment!)
-    let method_suffix = "GET";
-    let canonical_str = format!("{CANONICAL_ID_VERSION}:endpoint:{normalized_url}#{method_suffix}");
     let canonical_id = EntityId::new(canonical_str).ok()?;
-
-    Some((canonical_id, normalized_url, None))
+    Some((canonical_id, normalized_url, method_attr))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use venom_core::{
-        ConfidenceScore, EvidenceKind, EvidenceSource, EvidenceValue, KnowledgePredicate,
-    };
+    use venom_core::{ConfidenceScore, EvidenceSource, KnowledgePredicate};
 
     fn subject() -> EntityId {
         EntityId::new("endpoint:https://example.test/api/user").unwrap()
     }
 
+    fn source() -> EvidenceSource {
+        EvidenceSource::new("scanner", "test").unwrap()
+    }
+
+    fn ev(kind: EvidenceKind, predicate: KnowledgePredicate, value: EvidenceValue) -> Evidence {
+        Evidence::new(
+            subject(),
+            kind,
+            predicate,
+            value,
+            source(),
+            ConfidenceScore::from_percent(50).unwrap(),
+        )
+    }
+
+    fn ev_subj(
+        subj: EntityId,
+        kind: EvidenceKind,
+        predicate: KnowledgePredicate,
+        value: EvidenceValue,
+    ) -> Evidence {
+        Evidence::new(
+            subj,
+            kind,
+            predicate,
+            value,
+            source(),
+            ConfidenceScore::from_percent(50).unwrap(),
+        )
+    }
+
     #[test]
     fn unsupported_evidence_produces_no_entity() {
-        let ev = Evidence::new(
-            subject(),
+        let extractor = EntityExtractor::new();
+        let e = ev(
             EvidenceKind::Custom("unsupported_kind".to_string()),
             KnowledgePredicate::new("custom", "unsupported_pred").unwrap(),
             EvidenceValue::Text("raw-unsupported-value".into()),
-            EvidenceSource::new("scanner", "test").unwrap(),
-            ConfidenceScore::from_percent(90).unwrap(),
         );
-
-        let extractor = EntityExtractor::new();
-        let entities = extractor.extract_from_evidence(&[ev]);
-        assert!(entities.is_empty());
+        let res = extractor.extract_from_evidence(&[e]);
+        assert!(res.entities.is_empty());
     }
 
     #[test]
     fn unknown_authentication_predicate_never_leaks_raw_value() {
-        let secret = "super-secret-client-credential-12345";
-        let ev = Evidence::new(
-            subject(),
-            EvidenceKind::Authentication,
-            KnowledgePredicate::new("authentication", "client_secret").unwrap(),
-            EvidenceValue::Text(secret.into()),
-            EvidenceSource::new("scanner", "test").unwrap(),
-            ConfidenceScore::from_percent(90).unwrap(),
-        );
-
         let extractor = EntityExtractor::new();
-        let entities = extractor.extract_from_evidence(&[ev]);
-        assert!(
-            entities.is_empty(),
-            "Unknown authentication predicate produced an unapproved entity!"
+        let e = ev(
+            EvidenceKind::Authentication,
+            KnowledgePredicate::new("auth", "client_secret").unwrap(),
+            EvidenceValue::Text("super_secret_token_value_12345".into()),
         );
+        let res = extractor.extract_from_evidence(&[e]);
+        assert!(res.entities.is_empty());
     }
 
     #[test]
     fn unknown_http_predicate_never_becomes_endpoint() {
-        let ev = Evidence::new(
-            subject(),
-            EvidenceKind::Http,
-            KnowledgePredicate::new("http", "unknown_http_meta").unwrap(),
-            EvidenceValue::Text("random_http_value".into()),
-            EvidenceSource::new("scanner", "test").unwrap(),
-            ConfidenceScore::from_percent(90).unwrap(),
-        );
-
         let extractor = EntityExtractor::new();
-        let entities = extractor.extract_from_evidence(&[ev]);
-        assert!(entities.is_empty());
+        let e = ev(
+            EvidenceKind::Http,
+            KnowledgePredicate::new("http", "custom_metadata").unwrap(),
+            EvidenceValue::Text("https://example.test/admin".into()),
+        );
+        let res = extractor.extract_from_evidence(&[e]);
+        assert!(res.entities.is_empty());
     }
 
     #[test]
     fn raw_secret_never_appears_in_any_serialized_entity() {
-        let secret_jwt = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiaWF0IjoxNTE2MjM5MDIyfQ.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c";
-        let ev = Evidence::new(
-            subject(),
-            EvidenceKind::Authentication,
-            KnowledgePredicate::new("authentication", "jwt").unwrap(),
-            EvidenceValue::Text(secret_jwt.into()),
-            EvidenceSource::new("scanner", "header").unwrap(),
-            ConfidenceScore::from_percent(90).unwrap(),
-        );
-
         let extractor = EntityExtractor::new();
-        let entities = extractor.extract_from_evidence(&[ev]);
-        let serialized = serde_json::to_string(&entities).unwrap();
-
-        assert!(
-            !serialized.contains(secret_jwt),
-            "Raw secret token leaked into serialized entity JSON output!"
+        let secret = "super_secret_jwt_payload_value";
+        let e = ev(
+            EvidenceKind::Authentication,
+            KnowledgePredicate::new("auth", "bearer").unwrap(),
+            EvidenceValue::Text(secret.into()),
         );
+        let res = extractor.extract_from_evidence(&[e]);
+        assert_eq!(res.entities.len(), 1);
+        let json = serde_json::to_string(&res.entities[0]).unwrap();
+        assert!(!json.contains(secret));
     }
 
     #[test]
     fn equivalent_ipv6_forms_produce_same_id() {
-        let ev1 = Evidence::new(
-            subject(),
+        let extractor = EntityExtractor::new();
+        let ev1 = ev(
             EvidenceKind::Dns,
             KnowledgePredicate::new("dns", "ip").unwrap(),
             EvidenceValue::Text("2001:0db8:0000:0000:0000:0000:0000:0001".into()),
-            EvidenceSource::new("scanner", "dns").unwrap(),
-            ConfidenceScore::from_percent(90).unwrap(),
         );
-
-        let ev2 = Evidence::new(
-            subject(),
+        let ev2 = ev(
             EvidenceKind::Dns,
             KnowledgePredicate::new("dns", "ip").unwrap(),
             EvidenceValue::Text("2001:db8::1".into()),
-            EvidenceSource::new("scanner", "dns").unwrap(),
-            ConfidenceScore::from_percent(90).unwrap(),
         );
-
-        let extractor = EntityExtractor::new();
-        let e1 = &extractor.extract_from_evidence(&[ev1])[0];
-        let e2 = &extractor.extract_from_evidence(&[ev2])[0];
-
-        assert_eq!(e1.id(), e2.id());
-        assert_eq!(e1.id().as_str(), "v1:ip:2001:db8::1");
+        let res1 = extractor.extract_from_evidence(&[ev1]);
+        let res2 = extractor.extract_from_evidence(&[ev2]);
+        assert_eq!(res1.entities[0].id(), res2.entities[0].id());
+        assert_eq!(res1.entities[0].id().as_str(), "v1:ip:2001:db8::1");
     }
 
     #[test]
     fn invalid_ip_does_not_become_domain() {
-        let ev = Evidence::new(
-            subject(),
+        let extractor = EntityExtractor::new();
+        let e = ev(
             EvidenceKind::Dns,
             KnowledgePredicate::new("dns", "ip").unwrap(),
-            EvidenceValue::Text("not a domain or ip".into()),
-            EvidenceSource::new("scanner", "dns").unwrap(),
-            ConfidenceScore::from_percent(90).unwrap(),
+            EvidenceValue::Text("999.999.999.999".into()),
         );
-
-        let extractor = EntityExtractor::new();
-        let entities = extractor.extract_from_evidence(&[ev]);
-        assert!(entities.is_empty());
+        let res = extractor.extract_from_evidence(&[e]);
+        assert!(res.entities.is_empty());
     }
 
     #[test]
     fn trailing_dot_domain_matches_non_trailing_form() {
-        let ev1 = Evidence::new(
-            subject(),
+        let extractor = EntityExtractor::new();
+        let ev1 = ev(
             EvidenceKind::Dns,
             KnowledgePredicate::new("dns", "domain").unwrap(),
-            EvidenceValue::Text("example.test.".into()),
-            EvidenceSource::new("scanner", "dns").unwrap(),
-            ConfidenceScore::from_percent(90).unwrap(),
+            EvidenceValue::Text("EXAMPLE.TEST.".into()),
         );
-
-        let ev2 = Evidence::new(
-            subject(),
+        let ev2 = ev(
             EvidenceKind::Dns,
             KnowledgePredicate::new("dns", "domain").unwrap(),
             EvidenceValue::Text("example.test".into()),
-            EvidenceSource::new("scanner", "dns").unwrap(),
-            ConfidenceScore::from_percent(90).unwrap(),
         );
-
-        let extractor = EntityExtractor::new();
-        let e1 = &extractor.extract_from_evidence(&[ev1])[0];
-        let e2 = &extractor.extract_from_evidence(&[ev2])[0];
-
-        assert_eq!(e1.id(), e2.id());
-        assert_eq!(e1.id().as_str(), "v1:domain:example.test");
+        let res1 = extractor.extract_from_evidence(&[ev1]);
+        let res2 = extractor.extract_from_evidence(&[ev2]);
+        assert_eq!(res1.entities[0].id(), res2.entities[0].id());
     }
 
     #[test]
     fn malformed_hostname_produces_no_entity() {
-        let ev = Evidence::new(
-            subject(),
-            EvidenceKind::Dns,
-            KnowledgePredicate::new("dns", "domain").unwrap(),
-            EvidenceValue::Text("https://example.com/path".into()),
-            EvidenceSource::new("scanner", "dns").unwrap(),
-            ConfidenceScore::from_percent(90).unwrap(),
-        );
-
         let extractor = EntityExtractor::new();
-        let entities = extractor.extract_from_evidence(&[ev]);
-        assert!(entities.is_empty());
+        let e = ev(
+            EvidenceKind::Dns,
+            KnowledgePredicate::new("dns", "hostname").unwrap(),
+            EvidenceValue::Text("invalid_host_name#label".into()),
+        );
+        let res = extractor.extract_from_evidence(&[e]);
+        assert!(res.entities.is_empty());
     }
 
     #[test]
     fn url_userinfo_never_appears_in_id_or_attributes() {
-        let secret_url = "https://admin:secret_pass123@example.test/api/v1/user";
-        let ev = Evidence::new(
-            EntityId::new("endpoint:https://example.test/api/v1/user").unwrap(),
+        let extractor = EntityExtractor::new();
+        let e = ev(
             EvidenceKind::Http,
             KnowledgePredicate::new("http", "endpoint").unwrap(),
-            EvidenceValue::Text(secret_url.into()),
-            EvidenceSource::new("scanner", "test").unwrap(),
-            ConfidenceScore::from_percent(90).unwrap(),
+            EvidenceValue::Text("https://admin:secret123@example.test/api/v1/users".into()),
         );
-
-        let extractor = EntityExtractor::new();
-        let entities = extractor.extract_from_evidence(&[ev]);
-        assert_eq!(entities.len(), 1);
-        let entity = &entities[0];
-
-        let serialized = serde_json::to_string(entity).unwrap();
-        assert!(!serialized.contains("secret_pass123"));
-        assert!(!serialized.contains("admin"));
+        let res = extractor.extract_from_evidence(&[e]);
+        assert_eq!(res.entities.len(), 1);
+        let json = serde_json::to_string(&res.entities[0]).unwrap();
+        assert!(!json.contains("admin"));
+        assert!(!json.contains("secret123"));
         assert_eq!(
-            entity.id().as_str(),
-            "v1:endpoint:https://example.test/api/v1/user#GET"
+            res.entities[0].id().as_str(),
+            "v1:endpoint:https://example.test/api/v1/users"
         );
     }
 
     #[test]
     fn url_fragment_is_not_interpreted_as_http_method() {
-        let ev = Evidence::new(
-            subject(),
+        let extractor = EntityExtractor::new();
+        let e = ev(
             EvidenceKind::Http,
             KnowledgePredicate::new("http", "endpoint").unwrap(),
-            EvidenceValue::Text("https://example.test/docs#section".into()),
-            EvidenceSource::new("scanner", "test").unwrap(),
-            ConfidenceScore::from_percent(90).unwrap(),
+            EvidenceValue::Text("https://example.test/api/v1/users#DELETE".into()),
         );
-
-        let extractor = EntityExtractor::new();
-        let entities = extractor.extract_from_evidence(&[ev]);
-        assert_eq!(entities.len(), 1);
+        let res = extractor.extract_from_evidence(&[e]);
+        assert_eq!(res.entities.len(), 1);
         assert_eq!(
-            entities[0].id().as_str(),
-            "v1:endpoint:https://example.test/docs#GET"
+            res.entities[0].id().as_str(),
+            "v1:endpoint:https://example.test/api/v1/users"
         );
+        assert!(res.entities[0].attributes().get("method").is_none());
     }
 
     #[test]
     fn ipv6_endpoint_is_canonicalized() {
-        let ev = Evidence::new(
-            subject(),
+        let extractor = EntityExtractor::new();
+        let e = ev(
             EvidenceKind::Http,
             KnowledgePredicate::new("http", "endpoint").unwrap(),
-            EvidenceValue::Text("https://[2001:0db8:0000:0000:0000:0000:0000:0001]:443/api".into()),
-            EvidenceSource::new("scanner", "test").unwrap(),
-            ConfidenceScore::from_percent(90).unwrap(),
+            EvidenceValue::Text(
+                "http://[2001:0db8:0000:0000:0000:0000:0000:0001]:80/api/v1".into(),
+            ),
         );
-
-        let extractor = EntityExtractor::new();
-        let entities = extractor.extract_from_evidence(&[ev]);
-        assert_eq!(entities.len(), 1);
+        let res = extractor.extract_from_evidence(&[e]);
+        assert_eq!(res.entities.len(), 1);
         assert_eq!(
-            entities[0].id().as_str(),
-            "v1:endpoint:https://[2001:db8::1]/api#GET"
+            res.entities[0].id().as_str(),
+            "v1:endpoint:http://[2001:db8::1]/api/v1"
         );
     }
 
     #[test]
     fn malformed_url_produces_no_entity() {
-        let ev = Evidence::new(
-            subject(),
+        let extractor = EntityExtractor::new();
+        let e = ev(
             EvidenceKind::Http,
             KnowledgePredicate::new("http", "endpoint").unwrap(),
             EvidenceValue::Text("not_a_valid_url".into()),
-            EvidenceSource::new("scanner", "test").unwrap(),
-            ConfidenceScore::from_percent(90).unwrap(),
         );
-
-        let extractor = EntityExtractor::new();
-        let entities = extractor.extract_from_evidence(&[ev]);
-        assert!(entities.is_empty());
+        let res = extractor.extract_from_evidence(&[e]);
+        assert!(res.entities.is_empty());
     }
 
     #[test]
-    fn explicit_get_and_default_get_produce_identical_entity() {
-        let ev1 = Evidence::new(
-            subject(),
+    fn get_and_post_are_distinct_when_method_is_observed() {
+        let extractor = EntityExtractor::new();
+        let ev_get = ev(
+            EvidenceKind::Http,
+            KnowledgePredicate::new("http", "method").unwrap(),
+            EvidenceValue::Text("GET".into()),
+        );
+        let ev_post = ev(
+            EvidenceKind::Http,
+            KnowledgePredicate::new("http", "method").unwrap(),
+            EvidenceValue::Text("POST".into()),
+        );
+        let res_get = extractor.extract_from_evidence(&[ev_get]);
+        let res_post = extractor.extract_from_evidence(&[ev_post]);
+        assert_eq!(
+            res_get.entities[0].id().as_str(),
+            "v1:endpoint:https://example.test/api/user#GET"
+        );
+        assert_eq!(
+            res_post.entities[0].id().as_str(),
+            "v1:endpoint:https://example.test/api/user#POST"
+        );
+        assert_ne!(res_get.entities[0].id(), res_post.entities[0].id());
+    }
+
+    #[test]
+    fn missing_method_does_not_claim_observed_get() {
+        let extractor = EntityExtractor::new();
+        let e = ev(
             EvidenceKind::Http,
             KnowledgePredicate::new("http", "endpoint").unwrap(),
             EvidenceValue::Text("https://example.test/api/user".into()),
-            EvidenceSource::new("scanner", "test").unwrap(),
-            ConfidenceScore::from_percent(90).unwrap(),
         );
-
-        let ev2 = Evidence::new(
-            subject(),
-            EvidenceKind::Http,
-            KnowledgePredicate::new("http", "endpoint").unwrap(),
-            EvidenceValue::Text("https://example.test/api/user#GET".into()),
-            EvidenceSource::new("scanner", "test").unwrap(),
-            ConfidenceScore::from_percent(90).unwrap(),
+        let res = extractor.extract_from_evidence(&[e]);
+        assert_eq!(
+            res.entities[0].id().as_str(),
+            "v1:endpoint:https://example.test/api/user"
         );
-
-        let extractor = EntityExtractor::new();
-        let e1 = &extractor.extract_from_evidence(&[ev1])[0];
-        let e2 = &extractor.extract_from_evidence(&[ev2])[0];
-
-        assert_eq!(e1.id(), e2.id());
+        assert!(res.entities[0].attributes().get("method").is_none());
     }
 
     #[test]
     fn same_input_serializes_byte_for_byte_identically() {
-        let ev1 = Evidence::new(
-            subject(),
-            EvidenceKind::Technology,
-            KnowledgePredicate::new("technology", "framework").unwrap(),
-            EvidenceValue::Text("Laravel".into()),
-            EvidenceSource::new("scanner", "h1").unwrap(),
-            ConfidenceScore::from_percent(90).unwrap(),
-        );
-
-        let ev2 = Evidence::new(
-            subject(),
-            EvidenceKind::Technology,
-            KnowledgePredicate::new("technology", "framework").unwrap(),
-            EvidenceValue::Text("Symfony".into()),
-            EvidenceSource::new("scanner", "h2").unwrap(),
-            ConfidenceScore::from_percent(90).unwrap(),
-        );
-
         let extractor = EntityExtractor::new();
-        let entities1 = extractor.extract_from_evidence(&[ev1.clone(), ev2.clone()]);
-        let entities2 = extractor.extract_from_evidence(&[ev2, ev1]);
+        let ev1 = ev(
+            EvidenceKind::Dns,
+            KnowledgePredicate::new("dns", "domain").unwrap(),
+            EvidenceValue::Text("example.test".into()),
+        );
+        let ev2 = ev(
+            EvidenceKind::Technology,
+            KnowledgePredicate::new("tech", "framework").unwrap(),
+            EvidenceValue::Text("actix-web".into()),
+        );
+        let res1 = extractor.extract_from_evidence(&[ev1.clone(), ev2.clone()]);
+        let res2 = extractor.extract_from_evidence(&[ev2, ev1]);
 
-        let bytes1 = serde_json::to_vec(&entities1).unwrap();
-        let bytes2 = serde_json::to_vec(&entities2).unwrap();
-
+        let bytes1 = serde_json::to_vec(&res1.entities).unwrap();
+        let bytes2 = serde_json::to_vec(&res2.entities).unwrap();
         assert_eq!(bytes1, bytes2);
     }
 
     #[test]
     fn fingerprint_is_domain_separated_by_artifact_kind() {
-        let raw_token = "secret123";
-        let fp_bearer = hash_token(AuthArtifactKind::BearerToken, raw_token);
-        let fp_cookie = hash_token(AuthArtifactKind::SessionCookie, raw_token);
+        let extractor = EntityExtractor::new();
+        let token = "same_secret_value_12345";
+        let ev1 = ev(
+            EvidenceKind::Authentication,
+            KnowledgePredicate::new("auth", "bearer").unwrap(),
+            EvidenceValue::Text(token.into()),
+        );
+        let ev2 = ev(
+            EvidenceKind::Authentication,
+            KnowledgePredicate::new("auth", "api_key").unwrap(),
+            EvidenceValue::Text(token.into()),
+        );
+        let res1 = extractor.extract_from_evidence(&[ev1]);
+        let res2 = extractor.extract_from_evidence(&[ev2]);
 
-        assert_ne!(fp_bearer, fp_cookie);
-        assert!(fp_bearer.len() == 64);
+        let fp1 = res1.entities[0]
+            .attributes()
+            .get("fingerprint")
+            .unwrap()
+            .iter()
+            .next()
+            .unwrap();
+        let fp2 = res2.entities[0]
+            .attributes()
+            .get("fingerprint")
+            .unwrap()
+            .iter()
+            .next()
+            .unwrap();
+        assert_ne!(fp1, fp2);
     }
 
     #[test]
-    fn sensitive_header_values_are_redacted() {
-        let ev1 = Evidence::new(
-            subject(),
+    fn header_values_are_not_persisted() {
+        let extractor = EntityExtractor::new();
+        let e = ev(
             EvidenceKind::Http,
             KnowledgePredicate::new("http", "header").unwrap(),
-            EvidenceValue::Text("Authorization: Bearer secret123".into()),
-            EvidenceSource::new("scanner", "header").unwrap(),
-            ConfidenceScore::from_percent(90).unwrap(),
+            EvidenceValue::Text("Authorization: Bearer my_secret_token".into()),
+        );
+        let res = extractor.extract_from_evidence(&[e]);
+        assert_eq!(res.entities.len(), 1);
+        let json = serde_json::to_string(&res.entities[0]).unwrap();
+        assert!(!json.contains("my_secret_token"));
+        assert!(!json.contains("Authorization:"));
+        assert_eq!(res.entities[0].id().as_str(), "v1:header:authorization");
+    }
+
+    #[test]
+    fn bounded_output_is_independent_of_input_order() {
+        let limits = SemanticExtractionLimits::new(1, 50, 50, 4096, 100, 2048).unwrap();
+        let extractor = EntityExtractor::with_limits(limits);
+
+        let ev1 = ev(
+            EvidenceKind::Dns,
+            KnowledgePredicate::new("dns", "domain").unwrap(),
+            EvidenceValue::Text("aaa.example.test".into()),
+        );
+        let ev2 = ev(
+            EvidenceKind::Dns,
+            KnowledgePredicate::new("dns", "domain").unwrap(),
+            EvidenceValue::Text("zzz.example.test".into()),
         );
 
+        let res1 = extractor.extract_from_evidence(&[ev1.clone(), ev2.clone()]);
+        let res2 = extractor.extract_from_evidence(&[ev2, ev1]);
+
+        assert_eq!(res1.entities, res2.entities);
+        assert_eq!(res1.dropped_entities, 1);
+        assert_eq!(res2.dropped_entities, 1);
+        assert!(res1.truncated);
+        assert!(res2.truncated);
+    }
+
+    #[test]
+    fn reaching_entity_limit_still_merges_retained_entities() {
+        let limits = SemanticExtractionLimits::new(1, 50, 50, 4096, 100, 2048).unwrap();
+        let extractor = EntityExtractor::with_limits(limits);
+
+        let ev1 = ev(
+            EvidenceKind::Dns,
+            KnowledgePredicate::new("dns", "domain").unwrap(),
+            EvidenceValue::Text("aaa.example.test".into()),
+        );
+        let ev2 = ev(
+            EvidenceKind::Dns,
+            KnowledgePredicate::new("dns", "domain").unwrap(),
+            EvidenceValue::Text("zzz.example.test".into()),
+        );
+        let ev3 = ev(
+            EvidenceKind::Dns,
+            KnowledgePredicate::new("dns", "domain").unwrap(),
+            EvidenceValue::Text("aaa.example.test".into()),
+        );
+
+        let res = extractor.extract_from_evidence(&[ev1, ev2, ev3]);
+        assert_eq!(res.entities.len(), 1);
+        assert_eq!(res.entities[0].id().as_str(), "v1:domain:aaa.example.test");
+        assert_eq!(res.entities[0].source_evidence_ids().len(), 2);
+    }
+
+    #[test]
+    fn duplicate_source_ids_do_not_consume_source_budget() {
+        let limits = SemanticExtractionLimits::new(10, 50, 50, 4096, 2, 2048).unwrap();
+        let extractor = EntityExtractor::with_limits(limits);
+
+        let ev1 = ev(
+            EvidenceKind::Dns,
+            KnowledgePredicate::new("dns", "domain").unwrap(),
+            EvidenceValue::Text("example.test".into()),
+        );
+
+        let res = extractor.extract_from_evidence(&[ev1.clone(), ev1.clone(), ev1]);
+        assert_eq!(res.entities[0].source_evidence_ids().len(), 1);
+        assert_eq!(res.dropped_sources, 0);
+        assert!(!res.truncated);
+    }
+
+    #[test]
+    fn invalid_ip_predicate_never_falls_back_to_domain() {
         let extractor = EntityExtractor::new();
-        let entities = extractor.extract_from_evidence(&[ev1]);
+        let e = ev(
+            EvidenceKind::Dns,
+            KnowledgePredicate::new("dns", "ip").unwrap(),
+            EvidenceValue::Text("example.test".into()),
+        );
+        let res = extractor.extract_from_evidence(&[e]);
+        assert!(res.entities.is_empty());
+    }
 
-        assert_eq!(entities.len(), 1);
-        assert_eq!(entities[0].id().as_str(), "v1:header:authorization");
+    #[test]
+    fn domain_predicate_never_silently_changes_type_to_ip() {
+        let extractor = EntityExtractor::new();
+        let e = ev(
+            EvidenceKind::Dns,
+            KnowledgePredicate::new("dns", "domain").unwrap(),
+            EvidenceValue::Text("192.0.2.1".into()),
+        );
+        let res = extractor.extract_from_evidence(&[e]);
+        assert!(res.entities.is_empty());
+    }
+
+    #[test]
+    fn numeric_invalid_ipv4_is_rejected() {
+        let extractor = EntityExtractor::new();
+        let e = ev(
+            EvidenceKind::Dns,
+            KnowledgePredicate::new("dns", "ip").unwrap(),
+            EvidenceValue::Text("999.999.999.999".into()),
+        );
+        let res = extractor.extract_from_evidence(&[e]);
+        assert!(res.entities.is_empty());
+    }
+
+    #[test]
+    fn equal_zero_runs_use_leftmost_compression() {
+        let extractor = EntityExtractor::new();
+        let e = ev(
+            EvidenceKind::Dns,
+            KnowledgePredicate::new("dns", "ip").unwrap(),
+            EvidenceValue::Text("2001:db8:0:0:1:0:0:1".into()),
+        );
+        let res = extractor.extract_from_evidence(&[e]);
+        assert_eq!(res.entities[0].id().as_str(), "v1:ip:2001:db8::1:0:0:1");
+    }
+
+    #[test]
+    fn all_accepted_ipv6_forms_round_trip_canonically() {
+        let extractor = EntityExtractor::new();
+        let e = ev(
+            EvidenceKind::Dns,
+            KnowledgePredicate::new("dns", "ip").unwrap(),
+            EvidenceValue::Text("FE80:0000:0000:0000:0202:B3FF:FE1E:8329".into()),
+        );
+        let res = extractor.extract_from_evidence(&[e]);
         assert_eq!(
-            entities[0]
-                .attributes()
-                .get("name")
-                .unwrap()
-                .iter()
-                .next()
-                .unwrap(),
-            "authorization"
+            res.entities[0].id().as_str(),
+            "v1:ip:fe80::202:b3ff:fe1e:8329"
         );
-        assert!(
-            !entities[0].attributes().contains_key("value"),
-            "Header entity (Model A name-only concept) must not store header values globally!"
+    }
+
+    #[test]
+    fn relative_url_respects_max_url_bytes() {
+        let limits = SemanticExtractionLimits::new(10, 50, 50, 4096, 100, 20).unwrap();
+        let extractor = EntityExtractor::with_limits(limits);
+        let e = ev(
+            EvidenceKind::Http,
+            KnowledgePredicate::new("http", "endpoint").unwrap(),
+            EvidenceValue::Text("/very_long_relative_path_that_exceeds_max_url_bytes".into()),
         );
+        let res = extractor.extract_from_evidence(&[e]);
+        assert!(res.entities.is_empty());
+    }
+
+    #[test]
+    fn relative_url_rejects_non_http_base() {
+        let extractor = EntityExtractor::new();
+        let non_http_subj = EntityId::new("endpoint:ftp://example.test/pub").unwrap();
+        let e = ev_subj(
+            non_http_subj,
+            EvidenceKind::Http,
+            KnowledgePredicate::new("http", "endpoint").unwrap(),
+            EvidenceValue::Text("/file.txt".into()),
+        );
+        let res = extractor.extract_from_evidence(&[e]);
+        assert!(res.entities.is_empty());
+    }
+
+    #[test]
+    fn absolute_and_relative_forms_produce_same_entity() {
+        let extractor = EntityExtractor::new();
+        let ev_rel = ev(
+            EvidenceKind::Http,
+            KnowledgePredicate::new("http", "endpoint").unwrap(),
+            EvidenceValue::Text("/api/user".into()),
+        );
+        let ev_abs = ev(
+            EvidenceKind::Http,
+            KnowledgePredicate::new("http", "endpoint").unwrap(),
+            EvidenceValue::Text("https://example.test/api/user".into()),
+        );
+        let res_rel = extractor.extract_from_evidence(&[ev_rel]);
+        let res_abs = extractor.extract_from_evidence(&[ev_abs]);
+        assert_eq!(res_rel.entities[0].id(), res_abs.entities[0].id());
+    }
+
+    #[test]
+    fn relative_ipv6_endpoint_is_canonical() {
+        let extractor = EntityExtractor::new();
+        let v6_subj = EntityId::new("endpoint:http://[2001:db8::1]/api/v1").unwrap();
+        let e = ev_subj(
+            v6_subj,
+            EvidenceKind::Http,
+            KnowledgePredicate::new("http", "endpoint").unwrap(),
+            EvidenceValue::Text("/v2/users".into()),
+        );
+        let res = extractor.extract_from_evidence(&[e]);
+        assert_eq!(
+            res.entities[0].id().as_str(),
+            "v1:endpoint:http://[2001:db8::1]/v2/users"
+        );
+    }
+
+    #[test]
+    fn malformed_header_name_produces_no_entity() {
+        let extractor = EntityExtractor::new();
+        let e = ev(
+            EvidenceKind::Http,
+            KnowledgePredicate::new("http", "header").unwrap(),
+            EvidenceValue::Text("Bad Header Name: Value".into()),
+        );
+        let res = extractor.extract_from_evidence(&[e]);
+        assert!(res.entities.is_empty());
+    }
+
+    #[test]
+    fn limits_hard_ceiling_rejects_invalid_config() {
+        assert!(SemanticExtractionLimits::new(0, 50, 50, 4096, 100, 2048).is_err());
+        assert!(SemanticExtractionLimits::new(20_000, 50, 50, 4096, 100, 2048).is_err());
     }
 }

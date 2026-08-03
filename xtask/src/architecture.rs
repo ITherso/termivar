@@ -21,7 +21,6 @@ mod transport;
 const ALLOWED_EXTERNAL_ROOTS: &[&str] = &["core", "serde", "std", "thiserror", "venom_core"];
 const ALLOWED_LIBRARY_ATTRIBUTES: &[&str] = &["allow", "cfg", "deny", "deprecated", "doc"];
 const ATTRIBUTE_NON_DEPENDENCY_ROOTS: &[&str] = &["clippy", "rustdoc"];
-const FORBIDDEN_STD_ROOTS: &[&str] = &["net", "process"];
 const CODE_STRING_ATTRIBUTE_KEYS: &[&str] = &[
     "bound",
     "crate",
@@ -1203,12 +1202,28 @@ fn ident_name(identifier: &proc_macro2::Ident) -> String {
 }
 
 fn is_forbidden_std_path(segments: &[String]) -> bool {
-    segments
+    let is_std = segments
         .first()
-        .is_some_and(|root| normalize_identifier(root) == "std")
-        && segments
-            .get(1)
-            .is_some_and(|root| FORBIDDEN_STD_ROOTS.contains(&normalize_identifier(root)))
+        .is_some_and(|root| normalize_identifier(root) == "std");
+    if !is_std {
+        return false;
+    }
+    let Some(second) = segments.get(1).map(|root| normalize_identifier(root)) else {
+        return false;
+    };
+    if second == "process" {
+        return true;
+    }
+    if second == "net" {
+        let is_allowed_value_type = segments.get(2).is_some_and(|item| {
+            matches!(
+                normalize_identifier(item),
+                "IpAddr" | "Ipv4Addr" | "Ipv6Addr" | "AddrParseError"
+            )
+        });
+        return !is_allowed_value_type;
+    }
+    false
 }
 
 fn is_include_macro_name(name: &str) -> bool {

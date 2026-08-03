@@ -1,7 +1,10 @@
-//! Semantic Model Builder components: entity extraction, relation discovery, and plane classification.
+//! Semantic Model Builder components: deterministic entity extraction from scanner evidence (Phase 1).
 
 mod entity;
 mod extractor;
 
-pub use entity::{AuthArtifactKind, SemanticEntity, SemanticEntityType, SemanticExtractionLimits};
+pub use entity::{
+    AuthArtifactKind, LimitsError, SemanticEntity, SemanticEntityType, SemanticExtractionLimits,
+    SemanticExtractionResult,
+};
 pub use extractor::EntityExtractor;

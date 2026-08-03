@@ -57,6 +57,21 @@ impl AuthArtifactKind {
     }
 }
 
+/// Errors occurring from invalid or excessive extraction limits.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error, Serialize, Deserialize)]
+pub enum LimitsError {
+    /// Limit value is zero.
+    #[error("limit {name} is zero, which is invalid")]
+    ZeroLimit { name: &'static str },
+    /// Limit value exceeds the hard safety ceiling.
+    #[error("limit {name} ({requested}) exceeds maximum hard ceiling ({ceiling})")]
+    ExceedsCeiling {
+        name: &'static str,
+        requested: usize,
+        ceiling: usize,
+    },
+}
+
 /// Safety limits for bounded semantic entity extraction.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SemanticExtractionLimits {
@@ -74,6 +89,77 @@ pub struct SemanticExtractionLimits {
     pub max_url_bytes: usize,
 }
 
+impl SemanticExtractionLimits {
+    /// Hard ceiling on entity count.
+    pub const HARD_MAX_ENTITIES: usize = 10_000;
+    /// Hard ceiling on attribute keys per entity.
+    pub const HARD_MAX_ATTRIBUTE_KEYS: usize = 200;
+    /// Hard ceiling on values per attribute key.
+    pub const HARD_MAX_VALUES_PER_ATTRIBUTE: usize = 500;
+    /// Hard ceiling on value bytes.
+    pub const HARD_MAX_VALUE_BYTES: usize = 65_536;
+    /// Hard ceiling on source evidence IDs recorded per entity.
+    pub const HARD_MAX_SOURCE_EVIDENCE_IDS: usize = 10_000;
+    /// Hard ceiling on URL length in bytes.
+    pub const HARD_MAX_URL_BYTES: usize = 8_192;
+
+    /// Validates and constructs new extraction limits bounded by hard ceilings.
+    pub fn new(
+        max_entities: usize,
+        max_attribute_keys: usize,
+        max_values_per_attribute: usize,
+        max_value_bytes: usize,
+        max_source_evidence_ids: usize,
+        max_url_bytes: usize,
+    ) -> Result<Self, LimitsError> {
+        let check = |name: &'static str, val: usize, ceiling: usize| -> Result<(), LimitsError> {
+            if val == 0 {
+                return Err(LimitsError::ZeroLimit { name });
+            }
+            if val > ceiling {
+                return Err(LimitsError::ExceedsCeiling {
+                    name,
+                    requested: val,
+                    ceiling,
+                });
+            }
+            Ok(())
+        };
+
+        check("max_entities", max_entities, Self::HARD_MAX_ENTITIES)?;
+        check(
+            "max_attribute_keys",
+            max_attribute_keys,
+            Self::HARD_MAX_ATTRIBUTE_KEYS,
+        )?;
+        check(
+            "max_values_per_attribute",
+            max_values_per_attribute,
+            Self::HARD_MAX_VALUES_PER_ATTRIBUTE,
+        )?;
+        check(
+            "max_value_bytes",
+            max_value_bytes,
+            Self::HARD_MAX_VALUE_BYTES,
+        )?;
+        check(
+            "max_source_evidence_ids",
+            max_source_evidence_ids,
+            Self::HARD_MAX_SOURCE_EVIDENCE_IDS,
+        )?;
+        check("max_url_bytes", max_url_bytes, Self::HARD_MAX_URL_BYTES)?;
+
+        Ok(Self {
+            max_entities,
+            max_attribute_keys,
+            max_values_per_attribute,
+            max_value_bytes,
+            max_source_evidence_ids,
+            max_url_bytes,
+        })
+    }
+}
+
 impl Default for SemanticExtractionLimits {
     fn default() -> Self {
         Self {
@@ -85,6 +171,21 @@ impl Default for SemanticExtractionLimits {
             max_url_bytes: 2048,
         }
     }
+}
+
+/// Explicit extraction receipt detailing extracted entities and truncation counts.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SemanticExtractionResult {
+    /// Extracted semantic entities.
+    pub entities: Vec<SemanticEntity>,
+    /// Whether any entity, attribute, value, or source ID limit was triggered.
+    pub truncated: bool,
+    /// Number of dropped entities due to `max_entities` limit.
+    pub dropped_entities: usize,
+    /// Number of dropped attributes due to attribute limits.
+    pub dropped_attributes: usize,
+    /// Number of dropped source evidence IDs due to source limits.
+    pub dropped_sources: usize,
 }
 
 /// A strongly-typed semantic entity derived deterministically from evidence.
@@ -135,8 +236,25 @@ impl SemanticEntity {
         &self.attributes
     }
 
-    /// Returns supporting evidence identifiers in sorted, deduplicated order.
+    /// Returns reference to source evidence IDs.
     pub fn source_evidence_ids(&self) -> &[EvidenceId] {
         &self.source_evidence_ids
+    }
+
+    /// Destructures entity into ID, type, attributes, and source evidence IDs.
+    pub fn into_parts(
+        self,
+    ) -> (
+        EntityId,
+        SemanticEntityType,
+        BTreeMap<String, BTreeSet<String>>,
+        Vec<EvidenceId>,
+    ) {
+        (
+            self.id,
+            self.entity_type,
+            self.attributes,
+            self.source_evidence_ids,
+        )
     }
 }

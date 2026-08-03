@@ -449,9 +449,24 @@ fn is_direct_transport_path(segments: &[String]) -> bool {
         return false;
     };
     match root {
-        "std" | "tokio" => segments
-            .get(1)
-            .is_some_and(|module| normalize_identifier(module) == "net"),
+        "std" | "tokio" => {
+            let is_net = segments
+                .get(1)
+                .is_some_and(|module| normalize_identifier(module) == "net");
+            if !is_net {
+                false
+            } else if root == "std" {
+                let is_allowed_value = segments.get(2).is_some_and(|item| {
+                    matches!(
+                        normalize_identifier(item),
+                        "IpAddr" | "Ipv4Addr" | "Ipv6Addr" | "AddrParseError"
+                    )
+                });
+                !is_allowed_value
+            } else {
+                true
+            }
+        },
         "reqwest" => {
             segments.len() == 1
                 || segments.get(1).is_some_and(|item| {

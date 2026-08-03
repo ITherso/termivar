@@ -57,7 +57,8 @@ pub mod web_reasoning;
 pub mod web_verification;
 
 pub use semantic::{
-    AuthArtifactKind, EntityExtractor, SemanticEntity, SemanticEntityType, SemanticExtractionLimits,
+    AuthArtifactKind, EntityExtractor, LimitsError, SemanticEntity, SemanticEntityType,
+    SemanticExtractionLimits, SemanticExtractionResult,
 };
 
 // Scanning engine (feature: scanning)
