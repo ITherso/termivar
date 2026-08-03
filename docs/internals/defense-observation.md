@@ -103,9 +103,13 @@ strictly projection-only:
   `defense.challenge.present`, `defense.rate_limit.observed`,
   `defense.fingerprint.cloudflare`, and `defense.transition.engaged`.
 - Each record carries its producer (`EvidenceSource` component), the resource
-  (`subject`), the case/action correlation, the observation sequence and
-  supporting response receipt (folded into a deterministic evidence id), and —
-  for a fingerprint — the fingerprint confidence as the record reliability.
+  (`subject`), and the case/action correlation in their dedicated fields, and —
+  for a fingerprint — the fingerprint confidence as the record reliability. The
+  evidence id is `defense/<sha256>` over a versioned, length-framed canonical
+  identity (producer, resource, correlation, sequence, response receipt,
+  predicate, timestamp), so the observation sequence and receipt bind the record
+  without the raw resource, receipt, correlation, or producer ever appearing in
+  an id that reaches reports, JSON, or logs.
 - Identity and timestamp come from a caller-supplied
   `DefenseObservationContext`, so the projection is a pure, deterministic,
   idempotent function. It reads no clock or randomness, selects no payload,

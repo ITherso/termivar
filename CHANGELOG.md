@@ -6,7 +6,7 @@ All notable changes to Venom are recorded here. Releases use the categories from
 
 ### Added
 
-- A projection-only `defense::projection` adapter that turns observed defense state and control/candidate transitions into provenance-carrying `venom_core::Evidence` under the `defense.*` predicate namespace, deterministically and idempotently. It emits observations only — never a `Fact` or hypothesis, so a single block or a bare status never becomes a confirmed-WAF claim — and returns nothing for a non-response, so timeouts and connection failures are never learned as defense. It selects no payload, issues no request, and does not touch the planner, executor, or runtime configuration.
+- A projection-only `defense::projection` adapter that turns observed defense state and control/candidate transitions into provenance-carrying `venom_core::Evidence` under the `defense.*` predicate namespace, deterministically and idempotently. It emits observations only — never a `Fact` or hypothesis, so a single block or a bare status never becomes a confirmed-WAF claim — and returns nothing for a non-response, so timeouts and connection failures are never learned as defense. Evidence ids are a versioned SHA-256 digest of the canonical projection identity (`defense/<sha256>`), so raw resource, receipt, correlation, and producer values stay in their provenance fields and never leak into an id. It selects no payload, issues no request, and does not touch the planner, executor, or runtime configuration.
 - Focused architecture, runner, scanner, plugin, Lua, distributed, anomaly, benchmark, profiling, and fuzzing documentation.
 - Editable Draw.io architecture and crate dependency diagrams.
 - Criterion microbenchmark target and cargo-fuzz harnesses.
