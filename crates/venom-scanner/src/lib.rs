@@ -39,6 +39,7 @@ pub mod config;
 pub mod config_loader;
 pub mod context;
 pub mod contracts;
+pub mod defense;
 pub mod error;
 pub mod experience;
 pub mod knowledge;
@@ -190,6 +191,10 @@ pub use config::{ScanConfig, ScanIntensity};
 pub use config_loader::{ConfigLoader, ScanProfile as ScanningProfile};
 pub use context::ScanContext;
 pub use contracts::{ScanFinding, ScanPhase};
+pub use defense::{
+    DefenseFingerprint, DefensePosture, DefenseProduct, DefenseState, DefenseStatusSignal,
+    FingerprintConfidence, MAX_FINGERPRINT_BODY_SCAN_BYTES,
+};
 pub use error::{Result, ScannerError};
 pub use event_bus::{Event, EventBuilder, EventBus, EventHandler, EventSeverity, EventType};
 pub use experience::{
