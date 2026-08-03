@@ -1,4 +1,5 @@
-//! Native, production [`PayloadStrategy`] implementations and their registry.
+//! Native, production [`crate::payload_strategy::PayloadStrategy`]
+//! implementations and their registry.
 //!
 //! The contract module [`crate::payload_strategy`] defines the deterministic,
 //! bounded, redacted boundary a planner-selected strategy must honor. This
