@@ -8,6 +8,10 @@
   "resource_scope": "resource:account-42",
   "expected_category": "removed",
   "expected_path": "/data/owner_email",
+  "expected_path_digest": "99f8cf5b5828bc7be3345bdd1881aac7803eae8d69c637d900288c700ff32a7e",
+  "expected_projection_policy_id": "21f3f4072daac3f8cb7fa8eaaa64eee9b9c4252ba5960b5fdf91c96fc16f5b33",
+  "expected_comparison_subject": "api-comparison:b3144df41b1b664c12f873ff25abaacda7b88d5a0a82730f6feda9f9597b5ff6",
+  "expected_envelope_sha256": "9cefbb15b8f91b67e0f0eb4c0ccd4b673e4bd4e9c6385a032503f60570908a98",
   "expected_omitted_diff_count": 0,
   "forbidden_values": [
     "owner-email-private-sentinel",

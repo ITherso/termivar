@@ -28,6 +28,11 @@ const OBSERVED_AT_MS: u64 = 1_800_000_000_000;
 const CONTROL_SECRET: &str = "control-credential-sentinel";
 const CANDIDATE_SECRET: &str = "candidate-credential-sentinel";
 const COOKIE_SECRET: &str = "server-cookie-sentinel";
+const AUTHORIZATION_FIXTURES: &[&str] = &[
+    include_str!("../../../tests/fixtures/api_authorization/anonymous_authenticated.json"),
+    include_str!("../../../tests/fixtures/api_authorization/owner_unrelated.json"),
+    include_str!("../../../tests/fixtures/api_authorization/read_write_capability.json"),
+];
 
 #[derive(Deserialize)]
 struct GoldenFixture {
@@ -46,10 +51,7 @@ struct GoldenFixture {
 }
 
 fn golden_fixture() -> GoldenFixture {
-    serde_json::from_str(include_str!(
-        "../../../tests/fixtures/api_authorization/anonymous_authenticated.json"
-    ))
-    .unwrap()
+    serde_json::from_str(AUTHORIZATION_FIXTURES[0]).unwrap()
 }
 
 enum Reply {
@@ -247,7 +249,11 @@ fn profile() -> ApiComparisonProfile {
 
 fn pair_request(target: &url::Url, fixture: &GoldenFixture) -> ApiVisibilityDifferentialRequest {
     assert_eq!(fixture.pair, "authorization-context");
-    assert_eq!(fixture.dimension, "fields");
+    let dimension = match fixture.dimension.as_str() {
+        "fields" => ApiVisibilityDimension::Fields,
+        "resources" => ApiVisibilityDimension::Resources,
+        other => panic!("unsupported authorization fixture dimension {other}"),
+    };
     let control = HttpProbe::new(target.clone(), HttpProbeMethod::Get)
         .unwrap()
         .with_header("authorization", format!("Bearer {CONTROL_SECRET}"))
@@ -267,10 +273,25 @@ fn pair_request(target: &url::Url, fixture: &GoldenFixture) -> ApiVisibilityDiff
         ApiVisibilityContextProbe::new(&fixture.candidate_context, candidate).unwrap(),
         ["authorization"],
         profile(),
-        ApiVisibilityDimension::Fields,
+        dimension,
         OBSERVED_AT_MS,
     )
     .unwrap()
+}
+
+fn assert_fixture_diff(fixture: &GoldenFixture, comparison: &ProfiledApiVisibilityComparison) {
+    let expected = PathDigest::for_pattern(&JsonPathPattern::new(&fixture.expected_path).unwrap());
+    let observed = match fixture.expected_category.as_str() {
+        "added" => comparison.diff().added_path_hashes(),
+        "removed" => comparison.diff().removed_path_hashes(),
+        "changed_value" => comparison.diff().changed_value_path_hashes(),
+        other => panic!("unsupported authorization fixture category {other}"),
+    };
+    assert_eq!(observed, [expected]);
+    assert_eq!(
+        comparison.diff().omitted_diff_count(),
+        fixture.expected_omitted_diff_count
+    );
 }
 
 fn runtime(
@@ -417,6 +438,68 @@ async fn different_complete_pair_yields_review_without_a_vulnerability_verdict()
     ] {
         assert!(serialized.contains(opaque));
         assert!(!debug.contains(opaque));
+    }
+}
+
+#[tokio::test]
+async fn every_authorization_golden_pair_uses_the_broker_and_stays_review_only() {
+    for encoded in AUTHORIZATION_FIXTURES {
+        let fixture: GoldenFixture = serde_json::from_str(encoded).unwrap();
+        let server = serve(vec![
+            Reply::Response {
+                bytes: json_response(200, &fixture.baseline, &[]),
+                cancel_after_write: None,
+            },
+            Reply::Response {
+                bytes: json_response(200, &fixture.candidate, &[]),
+                cancel_after_write: None,
+            },
+        ])
+        .await;
+        let target = server.target();
+        let mut runtime = runtime(
+            target.clone(),
+            RuntimeBudget::default()
+                .with_max_total_requests(2)
+                .with_max_active_verifications(2),
+            Duration::from_secs(1),
+        );
+
+        let report = runtime
+            .run_api_visibility_pair(pair_request(&target, &fixture))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            report.disposition(),
+            ApiVisibilityDifferentialDisposition::AwaitHumanReview
+        );
+        assert_fixture_diff(&fixture, report.comparison().unwrap());
+        assert_eq!(
+            report.review().unwrap().disposition(),
+            ApiVisibilityReviewDisposition::AwaitHumanReview
+        );
+        assert_eq!(report.audit().usage().total_requests(), 2);
+        assert_eq!(report.audit().usage().active_verifications(), 2);
+        assert!(runtime.experience().is_empty());
+        assert!(matches!(
+            runtime.session().state(),
+            DecisionLoopState::Ready
+        ));
+        assert!(runtime
+            .knowledge()
+            .hypotheses_for_subject(&report.comparison().unwrap().comparison().subject())
+            .iter()
+            .all(|hypothesis| !matches!(
+                hypothesis.state(),
+                HypothesisState::Confirmed | HypothesisState::Rejected
+            )));
+        assert_eq!(server.requests().await.len(), 2);
+
+        let serialized = serde_json::to_string(&report).unwrap();
+        for forbidden in &fixture.forbidden_values {
+            assert!(!serialized.contains(forbidden));
+        }
     }
 }
 

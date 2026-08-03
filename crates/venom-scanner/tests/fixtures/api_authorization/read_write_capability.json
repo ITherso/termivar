@@ -8,6 +8,10 @@
   "resource_scope": "resource:account-42",
   "expected_category": "changed_value",
   "expected_path": "/data/capability",
+  "expected_path_digest": "3eec336f6433a96d05bb1b4afd2a5b27cda45b1699a7f5488fd69af0923ea551",
+  "expected_projection_policy_id": "21f3f4072daac3f8cb7fa8eaaa64eee9b9c4252ba5960b5fdf91c96fc16f5b33",
+  "expected_comparison_subject": "api-comparison:d922cf9914f3835873fb1572397b27b8a96954de05863a754d581a42f399e28a",
+  "expected_envelope_sha256": "18fb5f176bb5bbf05425d29c73a67591b0f5c37b67c6999513ec48dbe45b678e",
   "expected_omitted_diff_count": 0,
   "forbidden_values": [
     "read-only-capability-sentinel",

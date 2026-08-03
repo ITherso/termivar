@@ -587,6 +587,91 @@ fn ordered_and_unordered_array_semantics_are_explicit() {
 }
 
 #[test]
+fn unordered_arrays_preserve_duplicate_scalar_multiplicity() {
+    let comparator = ApiVisibilityComparator::default();
+    let profile = profile(&[], &[], &["/items"], 16);
+    let baseline = view(
+        &comparator,
+        &profile,
+        "anonymous",
+        &json!({"items":[1,1,2]}),
+    );
+    let reordered = view(&comparator, &profile, "member", &json!({"items":[2,1,1]}));
+    let changed_multiplicity = view(&comparator, &profile, "reviewer", &json!({"items":[1,2,2]}));
+
+    let reordered = compare(
+        &comparator,
+        &profile,
+        ApiVisibilityDimension::Resources,
+        &baseline,
+        &reordered,
+    );
+    assert_eq!(
+        reordered.comparison().result(),
+        ApiVisibilityResult::Equivalent
+    );
+    assert!(reordered.diff().is_empty());
+
+    let changed = compare(
+        &comparator,
+        &profile,
+        ApiVisibilityDimension::Resources,
+        &baseline,
+        &changed_multiplicity,
+    );
+    assert_eq!(
+        changed.comparison().result(),
+        ApiVisibilityResult::Different
+    );
+    assert_eq!(
+        changed.diff().changed_value_path_hashes(),
+        &[PathDigest::for_pattern(&path("/items/*"))]
+    );
+}
+
+#[test]
+fn large_unordered_array_reversal_has_a_deterministic_empty_diff() {
+    let comparator = ApiVisibilityComparator::default();
+    let profile = profile(&[], &[], &["/items"], 16);
+    let values = (0_u64..10_000)
+        .map(|value| serde_json::Value::from(value % 257))
+        .collect::<Vec<_>>();
+    let mut reversed = values.clone();
+    reversed.reverse();
+    let baseline = view(
+        &comparator,
+        &profile,
+        "anonymous",
+        &json!({"items": values}),
+    );
+    let candidate = view(&comparator, &profile, "member", &json!({"items": reversed}));
+
+    let first = compare(
+        &comparator,
+        &profile,
+        ApiVisibilityDimension::Resources,
+        &baseline,
+        &candidate,
+    );
+    let replay = compare(
+        &comparator,
+        &profile,
+        ApiVisibilityDimension::Resources,
+        &baseline,
+        &candidate,
+    );
+
+    assert_eq!(first.comparison().result(), ApiVisibilityResult::Equivalent);
+    assert!(first.diff().is_empty());
+    assert_eq!(first, replay);
+    let encoded = serde_json::to_value(&first).unwrap();
+    assert_eq!(
+        serde_json::from_value::<ProfiledApiVisibilityComparison>(encoded).unwrap(),
+        first
+    );
+}
+
+#[test]
 fn zero_diff_quota_reports_omitted_path_summary() {
     let comparator = ApiVisibilityComparator::default();
     let profile = profile(&[], &[], &[], 0);

@@ -47,6 +47,7 @@ All notable changes to Venom are recorded here. Releases use the categories from
 - Full transport-delivered response-chunk accounting while preserving a separately bounded retained evidence prefix.
 - A comparator-v3 visibility-explanation disposition that distinguishes equivalence, bounded path summaries, and differences without representable path summaries while preserving explicit replay metadata.
 - A host-triggered, single-use JSON authorization-context differential workflow that moves two broker-backed views through Comparator V3, atomic observation ingestion, and exact human-review projection without becoming a planner action or vulnerability verdict.
+- Pinned golden API-authorization replay metadata and broker-backed runtime coverage for anonymous/member, owner/unrelated-user, and read/write-capability context pairs.
 
 ### Changed
 
@@ -81,6 +82,7 @@ All notable changes to Venom are recorded here. Releases use the categories from
 - Advanced profiled API comparison metadata to v3; persisted v2 profiles are rejected instead of being silently reinterpreted after explanation semantics changed.
 - Changed the alpha `RuntimeUsage.response_bytes` meaning from retained evidence bytes to complete response chunks delivered to the broker collector; a threshold-crossing chunk is charged, audited, and terminates the same turn.
 - Enforced the Preview plugin registry's host-side enable flag, payload-size ceiling, and execution deadline without automatically retrying potentially side-effecting plugin calls.
+- Canonicalized unordered-array path fingerprints once after capture instead of re-sorting a growing digest set for every element, preserving duplicate multiplicity and deterministic comparison semantics.
 
 ### Fixed
 

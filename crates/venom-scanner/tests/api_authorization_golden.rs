@@ -1,5 +1,6 @@
 use serde::Deserialize;
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use venom_core::{
     ApiKnowledgePredicate, ApiSurfaceKind, ApiVisibilityBoundaryKind, ApiVisibilityDimension,
     ApiVisibilityPairKind, ApiVisibilityResult, ConfidenceScore, EntityId, EvidenceValue,
@@ -40,6 +41,10 @@ struct GoldenFixture {
     resource_scope: String,
     expected_category: ExpectedDiffCategory,
     expected_path: String,
+    expected_path_digest: String,
+    expected_projection_policy_id: String,
+    expected_comparison_subject: String,
+    expected_envelope_sha256: String,
     expected_omitted_diff_count: u32,
     forbidden_values: Vec<String>,
     baseline: Value,
@@ -122,6 +127,22 @@ fn assert_expected_explanation(
     comparison: &ProfiledApiVisibilityComparison,
 ) {
     let expected = PathDigest::for_pattern(&JsonPathPattern::new(&fixture.expected_path).unwrap());
+    assert_eq!(expected.to_string(), fixture.expected_path_digest);
+    assert_eq!(
+        comparison.projection_policy_id().to_string(),
+        fixture.expected_projection_policy_id
+    );
+    assert_eq!(
+        comparison.comparison().subject().to_string(),
+        fixture.expected_comparison_subject
+    );
+    assert_eq!(
+        format!(
+            "{:x}",
+            Sha256::digest(serde_json::to_vec(comparison).unwrap())
+        ),
+        fixture.expected_envelope_sha256
+    );
     let diff = comparison.diff();
     let observed = match fixture.expected_category {
         ExpectedDiffCategory::Added => diff.added_path_hashes(),

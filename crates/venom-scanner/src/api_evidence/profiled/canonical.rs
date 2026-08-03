@@ -61,6 +61,9 @@ impl<'a> ProfiledCanonicalState<'a> {
         )?;
         let fields =
             self.bind_root_signature(FIELD_NODE_DOMAIN, root.fields, ProfiledStream::Fields)?;
+        for fingerprint in self.path_index.values_mut() {
+            fingerprint.canonicalize();
+        }
         Ok(ProfiledCanonicalResult {
             resource,
             fields,

@@ -289,6 +289,13 @@ impl PathFingerprint {
     pub(super) fn merge(&mut self, other: Self) {
         self.type_mask |= other.type_mask;
         self.scalar_value_digests.extend(other.scalar_value_digests);
+    }
+
+    pub(super) fn canonicalize(&mut self) {
+        // Preserve duplicate digests: array multiplicity is part of the
+        // comparison contract even when element order is ignored. Sorting once
+        // after capture avoids repeatedly re-sorting the growing aggregate for
+        // every element that shares one structural path.
         self.scalar_value_digests.sort_unstable();
     }
 }

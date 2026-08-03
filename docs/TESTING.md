@@ -105,7 +105,12 @@ loopback only and assert the whole paired boundary:
 - a completed control receipt and all delivered bytes remain auditable when the
   candidate or a later stage fails;
 - the same complete fixture and V3 profile produce the same comparison and
-  redacted explanation;
+  redacted explanation; fixture-pinned policy, subject, path, and serialized
+  envelope digests make an accidental algorithm/version drift fail even when
+  the current implementation remains internally self-consistent;
+- anonymous/authenticated, owner/unrelated-user, and read/write-capability
+  authorization fixtures all traverse the real two-request broker path, not
+  only the transport-neutral comparator;
 - a difference ends only in a weak, supported `AwaitHumanReview` boundary and
   never a vulnerability finding, Experience write, or decision-loop success;
 - serialized and debug reports contain no credential values, raw JSON values,
