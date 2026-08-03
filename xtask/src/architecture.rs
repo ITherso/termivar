@@ -16,6 +16,7 @@ use syn::{
     Meta, Path as SynPath, Stmt, UseTree,
 };
 
+mod reachability;
 mod transport;
 
 const ALLOWED_EXTERNAL_ROOTS: &[&str] = &["core", "serde", "std", "thiserror", "venom_core"];
@@ -174,6 +175,7 @@ pub(crate) fn check(workspace_root: &Path) -> Result<(), Box<dyn Error>> {
     let mut violations = workspace_graph_violations(workspace_root)?;
     violations.extend(module_boundary_violations(workspace_root)?);
     violations.extend(transport::check(workspace_root)?);
+    violations.extend(reachability::check(workspace_root)?);
     violations.sort();
     violations.dedup();
 

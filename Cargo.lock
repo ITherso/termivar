@@ -2865,6 +2865,7 @@ dependencies = [
  "clap",
  "proc-macro2",
  "syn",
+ "tempfile",
 ]
 
 [[package]]
