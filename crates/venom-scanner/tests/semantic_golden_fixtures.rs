@@ -1,7 +1,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use serde::Deserialize;
-use venom_core::{ConfidenceScore, EntityId, Evidence, EvidenceId, EvidenceKind, EvidenceSource, EvidenceValue, KnowledgePredicate};
+use venom_core::{
+    ConfidenceScore, EntityId, Evidence, EvidenceId, EvidenceKind, EvidenceSource, EvidenceValue,
+    HttpEvidencePredicate, KnowledgePredicate,
+};
 use venom_scanner::{EntityExtractor, SemanticEntity, SemanticEntityType, SemanticExtractionLimits};
 
 const SECRET_AUTH_TOKEN: &str = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ1c2VyIn0.s3ltdGVzdA";
@@ -9,10 +12,37 @@ const SECRET_AUTH_TOKEN: &str = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ1c2VyIn0.s3ltdG
 #[derive(Debug, Deserialize)]
 struct FixtureCollection {
     name: String,
+    contract_class: ContractClass,
     #[serde(default)]
     limits: FixtureLimits,
     evidence: Vec<FixtureEvidence>,
     expected: FixtureExpected,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum ContractClass {
+    ProductionBacked,
+    SyntheticExtractorContract,
+    NegativeDeferred,
+    BoundedMechanics,
+}
+
+impl ContractClass {
+    fn expected_for_fixture(name: &str) -> Self {
+        match name {
+            "rest_request_url_and_method" => Self::ProductionBacked,
+            "response_header_concepts" => Self::ProductionBacked,
+            "jwt_or_bearer_auth_artifact" => Self::SyntheticExtractorContract,
+            "session_cookie_name_is_not_a_credential" => Self::ProductionBacked,
+            "graphql_request_surface" => Self::SyntheticExtractorContract,
+            "dns_domain_and_ip_are_distinct" => Self::SyntheticExtractorContract,
+            "unsupported_query_parameter_contract" => Self::NegativeDeferred,
+            "technology_product_and_version_gap" => Self::SyntheticExtractorContract,
+            "bounded_truncation_receipt" => Self::BoundedMechanics,
+            _ => panic!("unknown fixture: {name}"),
+        }
+    }
 }
 
 #[derive(Debug, Deserialize, PartialEq, Eq)]
@@ -98,6 +128,7 @@ struct FixtureEvidence {
     value: String,
     source_component: String,
     source_method: String,
+    correlation_id: Option<String>,
     observed_at_ms: u64,
     reliability_percent: u8,
 }
@@ -137,6 +168,14 @@ fn fixture(encoded: &str) -> FixtureCollection {
 }
 
 fn build_evidence(raw: &FixtureEvidence) -> Evidence {
+    let mut source = EvidenceSource::new(&raw.source_component, &raw.source_method)
+        .expect("evidence source must be valid");
+    if let Some(correlation_id) = raw.correlation_id.as_ref() {
+        source = source
+            .with_correlation_id(correlation_id)
+            .expect("evidence correlation id must be valid");
+    }
+
     Evidence::with_id_at(
         EvidenceId::parse(&raw.id).expect("evidence id must parse"),
         EntityId::new(&raw.subject).expect("subject must parse"),
@@ -144,8 +183,7 @@ fn build_evidence(raw: &FixtureEvidence) -> Evidence {
         KnowledgePredicate::new(&raw.predicate_namespace, &raw.predicate_name)
             .expect("fixture predicate must be valid"),
         EvidenceValue::Text(raw.value.clone()),
-        EvidenceSource::new(&raw.source_component, &raw.source_method)
-            .expect("evidence source must be valid"),
+        source,
         ConfidenceScore::from_percent(raw.reliability_percent)
             .expect("confidence percent must be valid"),
         raw.observed_at_ms,
@@ -195,6 +233,78 @@ fn ensure_sorted_and_deduped_ids(entity: &SemanticEntity) {
     assert_eq!(deduped, ids, "{} source evidence ids must be deduplicated", entity.id());
 }
 
+fn fixture_evidence_by_name<'a>(
+    fixture: &'a FixtureCollection,
+    namespace: &str,
+    name: &str,
+) -> &'a FixtureEvidence {
+    fixture
+        .evidence
+        .iter()
+        .find(|e| e.predicate_namespace == namespace && e.predicate_name == name)
+        .expect("required evidence should exist in fixture")
+}
+
+fn assert_fixture_contract_shape(fixture: &FixtureCollection) {
+    assert_eq!(
+        fixture.contract_class,
+        ContractClass::expected_for_fixture(&fixture.name),
+        "fixture {} has expected contract class",
+        fixture.name
+    );
+
+    if fixture.contract_class != ContractClass::ProductionBacked {
+        return;
+    }
+
+    match fixture.name.as_str() {
+        "rest_request_url_and_method" => {
+            let url = fixture_evidence_by_name(
+                fixture,
+                HttpEvidencePredicate::REQUEST_URL.namespace(),
+                HttpEvidencePredicate::REQUEST_URL.name(),
+            );
+            assert_eq!(url.source_component, "http.evidence");
+            assert_eq!(url.source_method, "request-url");
+
+            let method = fixture_evidence_by_name(
+                fixture,
+                HttpEvidencePredicate::REQUEST_METHOD.namespace(),
+                HttpEvidencePredicate::REQUEST_METHOD.name(),
+            );
+            assert_eq!(method.source_component, "http.evidence");
+            assert_eq!(method.source_method, "request-method");
+        }
+        "response_header_concepts" => {
+            let content_type = fixture_evidence_by_name(
+                fixture,
+                HttpEvidencePredicate::HEADER_CONTENT_TYPE.namespace(),
+                HttpEvidencePredicate::HEADER_CONTENT_TYPE.name(),
+            );
+            let server = fixture_evidence_by_name(
+                fixture,
+                HttpEvidencePredicate::HEADER_SERVER.namespace(),
+                HttpEvidencePredicate::HEADER_SERVER.name(),
+            );
+
+            assert_eq!(content_type.source_component, "http.evidence");
+            assert_eq!(content_type.source_method, "response-header:content-type");
+            assert_eq!(server.source_component, "http.evidence");
+            assert_eq!(server.source_method, "response-header:server");
+        }
+        "session_cookie_name_is_not_a_credential" => {
+            let cookie_name = fixture_evidence_by_name(
+                fixture,
+                HttpEvidencePredicate::COOKIE_NAME.namespace(),
+                HttpEvidencePredicate::COOKIE_NAME.name(),
+            );
+            assert_eq!(cookie_name.source_component, "http.evidence");
+            assert_eq!(cookie_name.source_method, "response-set-cookie-name");
+        }
+        _ => {}
+    }
+}
+
 #[test]
 fn semantic_fixtures_are_deterministic_and_match_expected() {
     for encoded in FIXTURES {
@@ -206,6 +316,7 @@ fn semantic_fixtures_are_deterministic_and_match_expected() {
 
         let forward = extractor.extract_from_evidence(&evidence);
         let reversed = extractor.extract_from_evidence(&reversed);
+        assert_fixture_contract_shape(&fixture);
 
         assert_eq!(
             forward,
@@ -214,8 +325,8 @@ fn semantic_fixtures_are_deterministic_and_match_expected() {
             fixture.name
         );
         assert_eq!(
-            serde_json::to_vec(&forward.entities).unwrap(),
-            serde_json::to_vec(&reversed.entities).unwrap(),
+            serde_json::to_vec(&forward).unwrap(),
+            serde_json::to_vec(&reversed).unwrap(),
             "fixture {} should serialize byte-for-byte deterministically",
             fixture.name
         );

@@ -1,5 +1,6 @@
 {
   "name": "technology_product_and_version_gap",
+  "contract_class": "synthetic_extractor_contract",
   "evidence": [
     {
       "id": "evidence:semantic:tech-product",
@@ -8,8 +9,8 @@
       "predicate_namespace": "technology",
       "predicate_name": "web-server",
       "value": "nginx",
-      "source_component": "web.reasoning",
-      "source_method": "tech-discovery",
+      "source_component": "semantic.fixture",
+      "source_method": "synthetic-tech",
       "observed_at_ms": 1700000000700,
       "reliability_percent": 94
     },
@@ -20,8 +21,8 @@
       "predicate_namespace": "technology",
       "predicate_name": "web-server",
       "value": "1.27.3",
-      "source_component": "web.reasoning",
-      "source_method": "tech-version",
+      "source_component": "semantic.fixture",
+      "source_method": "synthetic-tech",
       "observed_at_ms": 1700000000700,
       "reliability_percent": 94
     }

@@ -1,5 +1,6 @@
 {
   "name": "dns_domain_and_ip_are_distinct",
+  "contract_class": "synthetic_extractor_contract",
   "evidence": [
     {
       "id": "evidence:semantic:dns-domain",
@@ -8,8 +9,8 @@
       "predicate_namespace": "dns",
       "predicate_name": "domain",
       "value": "Example.TEST.",
-      "source_component": "dns.resolver",
-      "source_method": "a-record",
+      "source_component": "semantic.fixture",
+      "source_method": "synthetic-dns-domain",
       "observed_at_ms": 1700000000500,
       "reliability_percent": 96
     },
@@ -20,8 +21,8 @@
       "predicate_namespace": "dns",
       "predicate_name": "ip",
       "value": "192.0.2.1",
-      "source_component": "dns.resolver",
-      "source_method": "a-record",
+      "source_component": "semantic.fixture",
+      "source_method": "synthetic-dns-ip",
       "observed_at_ms": 1700000000500,
       "reliability_percent": 96
     }

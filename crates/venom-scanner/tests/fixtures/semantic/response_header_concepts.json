@@ -1,27 +1,30 @@
 {
   "name": "response_header_concepts",
+  "contract_class": "production_backed",
   "evidence": [
     {
       "id": "evidence:semantic:header-content-type",
       "subject": "endpoint:https://web.example.test/",
+      "correlation_id": "scan-http-headers-001",
       "kind": "Http",
       "predicate_namespace": "http.header",
       "predicate_name": "content-type",
       "value": "application/json; charset=utf-8",
       "source_component": "http.evidence",
-      "source_method": "response-header",
+      "source_method": "response-header:content-type",
       "observed_at_ms": 1700000000100,
       "reliability_percent": 98
     },
     {
       "id": "evidence:semantic:header-server",
       "subject": "endpoint:https://web.example.test/",
+      "correlation_id": "scan-http-headers-001",
       "kind": "Http",
       "predicate_namespace": "http.header",
       "predicate_name": "server",
       "value": "Nginx/1.27.3",
       "source_component": "http.evidence",
-      "source_method": "response-header",
+      "source_method": "response-header:server",
       "observed_at_ms": 1700000000100,
       "reliability_percent": 98
     }
