@@ -11,7 +11,7 @@ independent security assurance.
 | `cargo-audit` | Configured in security CI | The RustSec action audits the committed Cargo dependency resolution without rewriting the lockfile |
 | `cargo-deny` | Configured in security CI | The pinned action checks advisories, licenses, bans, and dependency sources against repository policy |
 | Trivy | Configured in security CI | SHA-pinned `trivy-action` v0.36.0 runs Trivy v0.70.0 against the repository filesystem for vulnerability, secret, and misconfiguration findings at the declared severity policy |
-| Semgrep CE | Configured in security CI | A digest-pinned non-root Semgrep CE image runs declared community rules with metrics disabled |
+| Semgrep CE | Configured in security CI | A digest-pinned Semgrep CE image runs declared community rules with metrics disabled |
 | Dependabot | Configured | Weekly Cargo, npm, and GitHub Actions update proposals are defined; configuration does not guarantee that an update exists, is safe, or has been merged |
 | `cargo-fuzz` | Scheduled and bounded | Five parser targets have weekly time limits; the [committed baseline](reports/fuzzing/7515b79.md) is historical evidence for its recorded commit, not a safety proof |
 | MSRV | Configured in CI | Workspace packages declare Rust `1.88`; the compatibility matrix also exercises stable, beta, and nightly |
