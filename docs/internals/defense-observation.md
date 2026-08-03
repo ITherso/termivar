@@ -119,6 +119,43 @@ Callers ingest the result through the existing
 `KnowledgeBase::insert_evidence_batch`. Reading these predicates during planning
 is a separate, later step behind a default-off flag.
 
+## Defense-aware shadow planning
+
+`defense::shadow_planning` shows how the current plan *would* change under an
+observed defensive posture, without changing anything. `defense_aware_shadow_plan`
+computes the current plan and a second, read-only shadow plan through the
+planner's pure `plan_snapshot_with_suppressed` seam, plus an explainable delta.
+It issues no request and mutates no planner, runtime, knowledge, or experience
+state, and never reorders the real plan.
+
+- Defense evidence is not a second planner: it never adds an action and never
+  raises an action's utility. For each existing candidate it only `Allow`s,
+  `Deprioritize`s, or `Suppress`es, through a single monotonic mapping keyed on
+  the `DefenseResponse` and a typed `DefenseInteractionClass` (`LocalOnly`,
+  `Passive`, `Behavioral`, `DifferentialRead`, `ActiveVerification`, `Mutating`).
+  Classification is supplied by the host as typed metadata, never by string
+  matching on action ids.
+- The mapping is monotonic and preserves local work: `Proceed` changes nothing;
+  `Observe` only deprioritizes active/mutating work; `Backoff` suppresses active
+  verification and mutation while keeping passive and local analysis; `Reconsider`
+  suppresses active work and deprioritizes behavioral/differential work; `Halt`
+  suppresses every network-producing action while keeping local analysis, audit,
+  reporting, and human-review actions.
+- Recommendations come from the existing `defense::policy::recommend`, aggregated
+  per resource by `ResourceDefenseSignal::aggregate`. Aggregation is
+  order-independent and corroborated: a single standing block is downgraded (an
+  uncorroborated `Halt` becomes `Observe`), while rate-limit `Backoff` and
+  transition-driven `Reconsider` are self-corroborated.
+- A signal applies only to its own resource (exact-resource scope): a block seen
+  on one endpoint never changes another endpoint's plan.
+- The `ShadowPlanDelta` carries `unchanged`, `deprioritized`, and `suppressed`
+  actions, each with its interaction class, the driving recommendation, the
+  supporting evidence ids, and a stable explanation code (rendered by
+  `render_explanation`) rather than free text.
+
+This layer has no configuration flag: reading the delta is advisory only.
+Enforcement behind a default-off flag is a separate, later step.
+
 ## Boundaries
 
 `DefenseState::observe` is a pure function of its inputs: identical
