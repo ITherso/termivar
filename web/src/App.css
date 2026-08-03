@@ -75,8 +75,14 @@ body {
 
 .nav-link {
   display: block;
+  width: 100%;
   padding: 12px 20px;
+  background: transparent;
+  border: 0;
   color: #8b949e;
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
   text-decoration: none;
   transition: all 0.2s ease;
   border-left: 3px solid transparent;
@@ -136,6 +142,20 @@ body {
   flex: 1;
   overflow-y: auto;
   background: #0d1117;
+}
+
+.preview-notice {
+  margin: 20px 40px 0;
+  padding: 14px 16px;
+  border: 1px solid #d29922;
+  border-radius: 6px;
+  background: #2d240b;
+  color: #e6edf3;
+  line-height: 1.5;
+}
+
+.preview-notice code {
+  color: #f2cc60;
 }
 
 .view-container {

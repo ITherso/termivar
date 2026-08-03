@@ -37,9 +37,11 @@ const BackupsPanel: React.FC<BackupsPanelProps> = ({ backups, onCreateBackup, on
       {backups.length === 0 ? (
         <div className="empty-state">
           <p>No recent backups</p>
-          <button onClick={onCreateBackup} className="btn-primary">
-            Create Backup
-          </button>
+          {onCreateBackup && (
+            <button type="button" onClick={onCreateBackup} className="btn-primary">
+              Create Backup
+            </button>
+          )}
         </div>
       ) : (
         <div className="backups-list">
@@ -87,11 +89,12 @@ const BackupsPanel: React.FC<BackupsPanelProps> = ({ backups, onCreateBackup, on
                 )}
               </div>
 
-              {backup.status === 'Completed' && (
+              {backup.status === 'Completed' && onRestoreBackup && (
                 <div className="backup-actions">
                   <button
+                    type="button"
                     className="btn-secondary"
-                    onClick={() => onRestoreBackup?.(backup.id)}
+                    onClick={() => onRestoreBackup(backup.id)}
                   >
                     Restore
                   </button>

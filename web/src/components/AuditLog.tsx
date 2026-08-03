@@ -4,7 +4,6 @@ import './AuditLog.css';
 
 interface AuditLogProps {
   events: AuditEvent[];
-  onFilter?: (filters: any) => void;
 }
 
 const AuditLog: React.FC<AuditLogProps> = ({ events }) => {

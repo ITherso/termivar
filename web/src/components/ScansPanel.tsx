@@ -34,9 +34,11 @@ const ScansPanel: React.FC<ScansPanelProps> = ({ scans, onStartScan, onViewResul
       {scans.length === 0 ? (
         <div className="empty-state">
           <p>No active scans</p>
-          <button onClick={onStartScan} className="btn-primary">
-            Start New Scan
-          </button>
+          {onStartScan && (
+            <button type="button" onClick={onStartScan} className="btn-primary">
+              Start New Scan
+            </button>
+          )}
         </div>
       ) : (
         <div className="scans-list">
@@ -72,10 +74,11 @@ const ScansPanel: React.FC<ScansPanelProps> = ({ scans, onStartScan, onViewResul
                   <span className="scan-time">
                     {scan.startTime && `Started: ${new Date(scan.startTime).toLocaleString()}`}
                   </span>
-                  {scan.status === 'completed' && (
+                  {scan.status === 'completed' && onViewResults && (
                     <button
+                      type="button"
                       className="btn-secondary"
-                      onClick={() => onViewResults?.(scan.id)}
+                      onClick={() => onViewResults(scan.id)}
                     >
                       View Results
                     </button>
