@@ -30,6 +30,12 @@ spec:
       containers:
       - name: postgres
         image: postgres:16-alpine
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop:
+              - ALL
         ports:
         - containerPort: 5432
           name: postgres
@@ -127,6 +133,12 @@ spec:
       containers:
       - name: redis
         image: redis:7-alpine
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop:
+              - ALL
         ports:
         - containerPort: 6379
           name: redis

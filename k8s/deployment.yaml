@@ -61,6 +61,12 @@ spec:
       - name: venom
         image: itherso/venom:latest
         imagePullPolicy: Always
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop:
+            - ALL
 
         ports:
         - name: proxy

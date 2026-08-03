@@ -3,7 +3,7 @@
 //! Use only against a target you own or are explicitly authorized to test:
 //! `cargo run -p venom-examples --bin decision_scan -- https://target.example/`
 
-use std::{env, error::Error, time::Duration};
+use std::{error::Error, time::Duration};
 
 use url::Url;
 use venom_scanner::{
@@ -13,13 +13,13 @@ use venom_scanner::{
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
-    let Some(raw_target) = env::args().nth(1) else {
+    let Some(raw_target) = std::env::args_os().nth(1) else {
         eprintln!(
             "usage: cargo run -p venom-examples --bin decision_scan -- <authorized-http-url>"
         );
         return Ok(());
     };
-    let target = Url::parse(&raw_target)?;
+    let target = Url::parse(&raw_target.to_string_lossy())?;
     let policy = HttpEvidencePolicy::for_origin(target.clone())?
         .with_body_capture(HttpBodyCapture::TextSample { max_chars: 8_192 })?;
     let runtime_budget = RuntimeBudget::default()

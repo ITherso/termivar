@@ -26,8 +26,9 @@ impl ScanPhase for AuthorizedTargetPhase {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let target = std::env::args()
+    let target = std::env::args_os()
         .nth(1)
+        .and_then(|value| value.into_string().ok())
         .unwrap_or_else(|| "https://example.test".to_string());
 
     let scanner = ScannerSdk::builder().phase(AuthorizedTargetPhase).build();

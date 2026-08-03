@@ -23,9 +23,9 @@ jobs:
       matrix:
         target: [http_parser, json_parser, yaml_parser, xml_parser, text_parser]
     steps:
-      - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@nightly
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: dtolnay/rust-toolchain@4fd1da8b0805d2d2e936788875a7d65dbd677dc2 # nightly
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
           workspaces: fuzz
       - name: Install cargo-fuzz
@@ -71,7 +71,7 @@ jobs:
           exit "$fuzz_exit"
       - name: Upload campaign report
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: fuzz-report-${{ matrix.target }}-${{ github.sha }}
           path: fuzz/reports/${{ matrix.target }}/
@@ -79,7 +79,7 @@ jobs:
           retention-days: 90
       - name: Upload crash artifacts
         if: failure()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: fuzz-${{ matrix.target }}-${{ github.sha }}
           path: fuzz/artifacts/${{ matrix.target }}/
