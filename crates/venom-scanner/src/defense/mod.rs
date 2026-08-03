@@ -13,6 +13,7 @@
 
 pub mod fingerprint;
 pub mod policy;
+pub mod projection;
 pub mod state;
 pub mod transition;
 
@@ -21,6 +22,10 @@ pub use fingerprint::{
     MAX_FINGERPRINT_BODY_SCAN_BYTES,
 };
 pub use policy::{recommend, DefenseResponse};
+pub use projection::{
+    project_defense_state, project_defense_transition, project_outcome, DefenseObservationContext,
+    ObservedOutcome,
+};
 pub use state::{DefensePosture, DefenseState, DefenseStatusSignal};
 pub use transition::{DefenseTransition, DefenseTransitionKind, PostureShift};
 

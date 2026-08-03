@@ -192,9 +192,9 @@ pub use config_loader::{ConfigLoader, ScanProfile as ScanningProfile};
 pub use context::ScanContext;
 pub use contracts::{ScanFinding, ScanPhase};
 pub use defense::{
-    DefenseFingerprint, DefensePosture, DefenseProduct, DefenseResponse, DefenseState,
-    DefenseStatusSignal, DefenseTransition, DefenseTransitionKind, FingerprintConfidence,
-    PostureShift, MAX_FINGERPRINT_BODY_SCAN_BYTES,
+    DefenseFingerprint, DefenseObservationContext, DefensePosture, DefenseProduct, DefenseResponse,
+    DefenseState, DefenseStatusSignal, DefenseTransition, DefenseTransitionKind,
+    FingerprintConfidence, ObservedOutcome, PostureShift, MAX_FINGERPRINT_BODY_SCAN_BYTES,
 };
 pub use error::{Result, ScannerError};
 pub use event_bus::{Event, EventBuilder, EventBus, EventHandler, EventSeverity, EventType};
