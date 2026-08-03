@@ -286,9 +286,10 @@ pub use decision_runner::{
 #[cfg(feature = "scanning")]
 pub use runtime_budget::{
     RuntimeBudget, RuntimeBudgetDimension, RuntimeLimitExceeded, RuntimeUsage,
+    TransportDispatchAudit, TransportDispatchOutcome, TransportDispatchReceipt,
     DEFAULT_MAX_ACTIVE_VERIFICATIONS, DEFAULT_MAX_CONSECUTIVE_NO_PROGRESS_TURNS,
     DEFAULT_MAX_REQUEST_BODY_BYTES, DEFAULT_MAX_RESPONSE_BYTES, DEFAULT_MAX_SAME_ACTION_ATTEMPTS,
-    DEFAULT_MAX_TOTAL_REQUESTS, DEFAULT_MAX_WALL_TIME_MS,
+    DEFAULT_MAX_TOTAL_REQUESTS, DEFAULT_MAX_WALL_TIME_MS, HARD_MAX_TRANSPORT_DISPATCH_RECEIPTS,
 };
 
 #[cfg(feature = "scanning")]

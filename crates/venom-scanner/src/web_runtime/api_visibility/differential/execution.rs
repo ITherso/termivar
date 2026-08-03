@@ -486,6 +486,7 @@ impl StandardWebDecisionRuntime {
     ) -> ApiVisibilityDifferentialAudit {
         self.refresh_elapsed(started_at);
         audit.usage = self.usage.clone();
+        audit.transport = self.request_accounting.dispatch_audit();
         audit
     }
 

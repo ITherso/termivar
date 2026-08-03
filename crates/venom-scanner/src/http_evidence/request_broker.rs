@@ -5,7 +5,7 @@ use reqwest::{
 };
 
 use crate::{
-    runtime_budget::{RequestAccountingBroker, RequestAccountingLease},
+    runtime_budget::{RequestAccountingBroker, RequestAccountingLease, TransportDispatchOutcome},
     DecisionActionOrigin, DecisionExecutionFailureKind, DecisionExecutionLimits,
     DecisionExecutionRequest, DecisionExecutionStage, DecisionExecutorError, RuntimeLimitExceeded,
 };
@@ -189,12 +189,13 @@ impl HttpRequestBroker {
             .unwrap_or(usize::MAX);
         let body_limit = self.policy.max_body_bytes().min(execution_body_limit);
         let started = tokio::time::Instant::now();
+        // Acquiring the lease immediately before entering reqwest is the
+        // transport-accounting boundary. Keeping the lease outside the timeout
+        // future lets every exit classify the same dispatch receipt.
+        let mut accounting_lease =
+            self.begin_accounting(action_id, stage, origin, request_body_bytes)?;
 
-        tokio::time::timeout(self.policy.request_timeout(), async {
-            // This is the accounting boundary: a successful lease is acquired
-            // immediately before the logical request enters reqwest.
-            let mut accounting_lease =
-                self.begin_accounting(action_id, stage, origin, request_body_bytes)?;
+        let collected = tokio::time::timeout(self.policy.request_timeout(), async {
             let mut response = self
                 .client
                 .execute(request)
@@ -256,7 +257,7 @@ impl HttpRequestBroker {
                 }
             }
 
-            Ok(CollectedHttpResponse {
+            Ok::<CollectedHttpResponse, HttpEvidenceError>(CollectedHttpResponse {
                 status,
                 final_url,
                 version,
@@ -267,10 +268,39 @@ impl HttpRequestBroker {
                 total_ms: elapsed_ms(started.elapsed()),
             })
         })
-        .await
-        .map_err(|_| HttpEvidenceError::Timeout {
-            timeout_ms: self.policy.request_timeout_ms,
-        })?
+        .await;
+
+        match collected {
+            Ok(Ok(response)) => {
+                let outcome = if accounting_lease
+                    .as_ref()
+                    .is_some_and(RequestAccountingLease::response_budget_reached)
+                {
+                    TransportDispatchOutcome::ResponseBudgetReached
+                } else {
+                    TransportDispatchOutcome::Completed
+                };
+                finish_accounting(&mut accounting_lease, outcome);
+                Ok(response)
+            },
+            Ok(Err(error)) => {
+                finish_accounting(
+                    &mut accounting_lease,
+                    TransportDispatchOutcome::TransportFailure,
+                );
+                Err(error.into())
+            },
+            Err(_) => {
+                finish_accounting(
+                    &mut accounting_lease,
+                    TransportDispatchOutcome::RequestTimeout,
+                );
+                Err(HttpEvidenceError::Timeout {
+                    timeout_ms: self.policy.request_timeout_ms,
+                }
+                .into())
+            },
+        }
     }
 
     fn begin_accounting(
@@ -308,6 +338,15 @@ impl HttpRequestBroker {
             request = request.header(name, value);
         }
         request.build().map_err(HttpEvidenceError::Request)
+    }
+}
+
+fn finish_accounting(
+    lease: &mut Option<RequestAccountingLease>,
+    outcome: TransportDispatchOutcome,
+) {
+    if let Some(lease) = lease {
+        lease.finish(outcome);
     }
 }
 

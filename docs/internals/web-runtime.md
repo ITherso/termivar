@@ -170,7 +170,9 @@ Experience update.
 The operation is single-use. Once its pre-I/O configuration and target checks
 pass, the same runtime cannot later run `analyze()` or another pair. Incomplete
 legs produce no comparison, but their charged usage and any completed-leg
-receipt remain in `ApiVisibilityDifferentialAudit`. A late cancellation or
+receipt remain in `ApiVisibilityDifferentialAudit`. Its `transport()` audit
+also preserves every acquired control/candidate dispatch and typed terminal
+outcome, including a partially received timeout or cancelled in-flight leg. A late cancellation or
 limit may retain a completed V3 comparison and, if ingestion already happened,
 the observation and review. Post-commit errors expose the same audit plus the
 available comparison and commit receipt; they do not imply rollback or disk
@@ -199,6 +201,16 @@ All built-in HTTP executors installed by `StandardWebDecisionRuntime` share one 
 No-progress accounting ignores raw evidence IDs, timing changes, retry case IDs, and experience inserts. A completed execution turn resets the counter only when it inserts or updates a hypothesis, escalates passive verification to an active probe, or reaches a conclusive Success/FalsePositive/ConfirmedNegative result. When the configured count is reached, the next command is not dispatched.
 
 Expected exhaustion is an auditable result rather than an execution error. The report ends with `Halt { reason: RuntimeBudgetLimit }`, exposes the structured dimension through `limit_exceeded()`, and carries final broker counters through `usage()`. If the broker refuses a later dispatch inside an already-started executor, `execution_failure()` also preserves the exact request, executor, stage, origin, limits, and structured runtime limit. If a natural `Complete`, `AwaitHumanReview`, or policy `Halt` is reached on the same completed turn, that domain terminal takes precedence.
+
+Both successful reports and post-start failure receipts expose
+`transport()`. This bounded, raw-target-free audit orders broker leases by
+dispatch sequence and distinguishes completion, transport failure,
+per-request timeout, response-budget reach, and caller cancellation. A denied
+lease is absent because it opened no dispatch; earlier receipts remain present
+when a later request, accounting check, verification, or state transition
+fails. The hard retention ceiling is explicit through
+`omitted_receipt_count()` rather than silently presenting a partial audit as
+complete.
 
 ## Executable-plan boundary
 
@@ -229,6 +241,7 @@ does not claim disk durability or crash recovery.
   `unverified_evidence()` because no verifier outcome exists;
 - the final `Complete`, `AwaitHumanReview`, or `Halt` command;
 - final resource usage and an optional structured limit record;
+- bounded, ordered per-dispatch transport receipts and an explicit omitted count;
 - an optional execution-failure receipt when the broker refused an in-executor dispatch.
 
 The knowledge base, experience store, and replayable session remain inspectable after execution. A host can also consume the runtime with `into_experience()` and pass that store into a later builder through `experience_store()`.

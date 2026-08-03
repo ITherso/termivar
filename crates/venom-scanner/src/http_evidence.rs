@@ -1110,7 +1110,7 @@ mod tests {
     use crate::{
         DecisionActionOrigin, DecisionExecutionStage, DecisionExecutorRegistry,
         DecisionLoopCommand, DecisionRunnerAdapter, KnowledgeBase, RuleEngine, RuntimeBudget,
-        RuntimeBudgetDimension, StandardWebReasoning, VerificationCase,
+        RuntimeBudgetDimension, StandardWebReasoning, TransportDispatchOutcome, VerificationCase,
     };
 
     struct CountedServer {
@@ -1690,6 +1690,15 @@ mod tests {
         );
         assert_eq!(accounting.snapshot().total_requests(), 1);
         assert_eq!(accounting.snapshot().response_bytes(), 0);
+        let audit = accounting.dispatch_audit();
+        assert_eq!(audit.omitted_receipt_count(), 0);
+        let dispatch = audit.receipts().first().unwrap();
+        assert_eq!(dispatch.sequence(), 0);
+        assert_eq!(dispatch.action_id(), "http.probe");
+        assert_eq!(dispatch.stage(), DecisionExecutionStage::Passive);
+        assert_eq!(dispatch.origin(), Some(DecisionActionOrigin::Planned));
+        assert_eq!(dispatch.response_bytes(), 0);
+        assert_eq!(dispatch.outcome(), TransportDispatchOutcome::Completed);
     }
 
     #[tokio::test]
@@ -1787,6 +1796,13 @@ mod tests {
         assert_eq!(accounting.snapshot().total_requests(), 1);
         assert_eq!(accounting.snapshot().response_bytes(), 0);
         assert_eq!(knowledge.stats().evidence, 0);
+        let audit = accounting.dispatch_audit();
+        let dispatch = audit.receipts().first().unwrap();
+        assert_eq!(dispatch.response_bytes(), 0);
+        assert!(matches!(
+            dispatch.outcome(),
+            TransportDispatchOutcome::TransportFailure | TransportDispatchOutcome::RequestTimeout
+        ));
     }
 
     #[tokio::test]
@@ -1815,6 +1831,10 @@ mod tests {
         assert_eq!(accounting.snapshot().total_requests(), 1);
         assert_eq!(server.requests(), 1);
         assert_eq!(knowledge.stats().evidence, 0);
+        assert_eq!(
+            accounting.dispatch_audit().receipts()[0].outcome(),
+            TransportDispatchOutcome::TransportFailure
+        );
     }
 
     #[tokio::test]
@@ -1843,6 +1863,10 @@ mod tests {
         assert_eq!(accounting.snapshot().total_requests(), 1);
         assert_eq!(accounting.snapshot().response_bytes(), 4);
         assert_eq!(knowledge.stats().evidence, 0);
+        let audit = accounting.dispatch_audit();
+        let dispatch = audit.receipts().first().unwrap();
+        assert_eq!(dispatch.response_bytes(), 4);
+        assert_eq!(dispatch.outcome(), TransportDispatchOutcome::RequestTimeout);
     }
 
     #[tokio::test]
@@ -1885,6 +1909,13 @@ mod tests {
         assert!(
             (5..=10).contains(&observed),
             "broker must charge the complete chunk that crosses the four-byte retention limit; observed {observed}"
+        );
+        let audit = accounting.dispatch_audit();
+        let dispatch = &audit.receipts()[0];
+        assert_eq!(dispatch.response_bytes(), observed);
+        assert_eq!(
+            dispatch.outcome(),
+            TransportDispatchOutcome::ResponseBudgetReached
         );
     }
 
@@ -1948,6 +1979,7 @@ mod tests {
         assert_eq!(accounting.snapshot().total_requests(), 0);
         assert_eq!(accounting.snapshot().response_bytes(), 0);
         assert_eq!(knowledge.stats().evidence, 0);
+        assert!(accounting.dispatch_audit().is_empty());
     }
 
     #[tokio::test]
@@ -1989,6 +2021,7 @@ mod tests {
         assert_eq!(denied_server.requests(), 0);
         assert_eq!(denied_accounting.snapshot().total_requests(), 0);
         assert_eq!(denied_accounting.snapshot().request_body_bytes(), 0);
+        assert!(denied_accounting.dispatch_audit().is_empty());
     }
 
     #[tokio::test]
@@ -2028,6 +2061,13 @@ mod tests {
         assert_eq!(accounting.snapshot().total_requests(), 1);
         assert_eq!(accounting.snapshot().request_body_bytes(), 4);
         assert_eq!(knowledge.stats().evidence, 0);
+        let audit = accounting.dispatch_audit();
+        assert_eq!(audit.receipts().len(), 1);
+        assert_eq!(audit.receipts()[0].request_body_bytes(), 4);
+        assert_eq!(
+            audit.receipts()[0].outcome(),
+            TransportDispatchOutcome::TransportFailure
+        );
     }
 
     #[tokio::test]
@@ -2066,6 +2106,14 @@ mod tests {
         assert_eq!(accounting.snapshot().total_requests(), 1);
         assert_eq!(server.requests(), 1);
         assert_eq!(knowledge.stats().evidence, 0);
+        let audit = accounting.dispatch_audit();
+        assert_eq!(audit.receipts().len(), 1);
+        assert_eq!(audit.receipts()[0].sequence(), 0);
+        assert_eq!(audit.receipts()[0].action_id(), "http.probe");
+        assert_eq!(
+            audit.receipts()[0].outcome(),
+            TransportDispatchOutcome::Completed
+        );
     }
 
     #[tokio::test]
@@ -2123,6 +2171,14 @@ mod tests {
         assert_eq!(accounting.snapshot().active_verifications(), 1);
         assert_eq!(server.requests(), 1);
         assert_eq!(knowledge.stats().evidence, 0);
+        let audit = accounting.dispatch_audit();
+        assert_eq!(audit.receipts().len(), 1);
+        assert_eq!(audit.receipts()[0].stage(), DecisionExecutionStage::Active);
+        assert_eq!(audit.receipts()[0].origin(), None);
+        assert_eq!(
+            audit.receipts()[0].outcome(),
+            TransportDispatchOutcome::Completed
+        );
     }
 
     #[test]

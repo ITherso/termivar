@@ -61,6 +61,15 @@ policy and atomic accounting authority. Each leg therefore acquires its own
 total-request and active-verification lease and contributes response bytes to
 the same runtime usage counters.
 
+Every acquired lease also closes into a bounded `TransportDispatchReceipt`.
+Receipts retain dispatch order, semantic action, passive/active stage, optional
+origin, request/response byte counts, elapsed time, and one typed terminal
+outcome: completed, transport failure, request timeout, response-budget
+reached, or cancelled. They deliberately contain no URL, header, credential,
+or response value. An unclassified dropped future becomes `Cancelled`, while a
+pre-dispatch denial creates no receipt because no wire attempt occurred. Each
+audit retains at most 4,096 receipts and reports any omitted count explicitly.
+
 `RuntimeUsage.response_bytes` counts complete chunks delivered to the broker collector. `http.response.body-bytes-observed` records only the prefix retained for evidence. A shared response-read gate prevents another collector from starting a read after the session threshold is full; the one chunk that reveals a crossing is charged in full and becomes a typed runtime limit.
 
 Response headers use a conservative allowlist. `Set-Cookie` is omitted by default because it may contain session secrets; a host may opt in only when its evidence retention policy permits that data. The executor hashes exactly the bytes it observed, so a truncated-body hash is not presented as a hash of the complete representation.

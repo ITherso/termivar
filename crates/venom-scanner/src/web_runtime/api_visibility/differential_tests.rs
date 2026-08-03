@@ -17,11 +17,12 @@ use venom_core::{
 
 use super::*;
 use crate::{
-    ingest_api_visibility_observation, ApiVisibilityReviewDisposition, DecisionLoopState,
-    EvidenceCalibration, EvidenceSelector, Expression, HttpEvidencePolicy, HypothesisConclusion,
-    JsonPathPattern, KnowledgeLayer, KnowledgeWrite, PathDigest, ReasoningRule, RuleEngineError,
-    RuntimeBudget, RuntimeBudgetDimension, StandardWebDecisionRuntime,
-    StandardWebDecisionRuntimeError, VisibilityExplanationDisposition,
+    ingest_api_visibility_observation, ApiVisibilityReviewDisposition, DecisionExecutionStage,
+    DecisionLoopState, EvidenceCalibration, EvidenceSelector, Expression, HttpEvidencePolicy,
+    HypothesisConclusion, JsonPathPattern, KnowledgeLayer, KnowledgeWrite, PathDigest,
+    ReasoningRule, RuleEngineError, RuntimeBudget, RuntimeBudgetDimension,
+    StandardWebDecisionRuntime, StandardWebDecisionRuntimeError, TransportDispatchOutcome,
+    VisibilityExplanationDisposition,
 };
 
 const OBSERVED_AT_MS: u64 = 1_800_000_000_000;
@@ -329,6 +330,7 @@ async fn different_complete_pair_yields_review_without_a_vulnerability_verdict()
     ])
     .await;
     let target = server.target();
+    let target_string = target.to_string();
     let request = pair_request(&target, &fixture);
     let request_debug = format!("{request:?}");
     assert!(!request_debug.contains(CONTROL_SECRET));
@@ -378,6 +380,29 @@ async fn different_complete_pair_yields_review_without_a_vulnerability_verdict()
     assert_eq!(report.audit().observed_at_ms(), OBSERVED_AT_MS);
     assert_eq!(report.audit().operation_sha256().len(), 64);
     assert_eq!(report.audit().request_template_sha256().len(), 64);
+    let dispatches = report.audit().transport().receipts();
+    assert_eq!(dispatches.len(), 2);
+    assert_eq!(dispatches[0].sequence(), 0);
+    assert_eq!(
+        dispatches[0].action_id(),
+        "api.visibility.authorization-context.control"
+    );
+    assert_eq!(dispatches[1].sequence(), 1);
+    assert_eq!(
+        dispatches[1].action_id(),
+        "api.visibility.authorization-context.candidate"
+    );
+    assert!(dispatches
+        .iter()
+        .all(|receipt| receipt.stage() == DecisionExecutionStage::Active));
+    assert!(dispatches.iter().all(|receipt| receipt.origin().is_none()));
+    assert!(dispatches
+        .iter()
+        .all(|receipt| receipt.outcome() == TransportDispatchOutcome::Completed));
+    let transport_json = serde_json::to_string(report.audit().transport()).unwrap();
+    assert!(!transport_json.contains(&target_string));
+    assert!(!transport_json.contains(CONTROL_SECRET));
+    assert!(!transport_json.contains(CANDIDATE_SECRET));
 
     let comparison = report.comparison().unwrap();
     assert_eq!(
@@ -709,6 +734,13 @@ async fn candidate_request_budget_denial_preserves_control_audit() {
     assert_eq!(report.audit().usage().active_verifications(), 1);
     assert!(report.audit().control().is_some());
     assert!(report.audit().candidate().is_none());
+    let dispatches = report.audit().transport().receipts();
+    assert_eq!(dispatches.len(), 1);
+    assert_eq!(
+        dispatches[0].action_id(),
+        "api.visibility.authorization-context.control"
+    );
+    assert_eq!(dispatches[0].outcome(), TransportDispatchOutcome::Completed);
     assert!(report.comparison().is_none());
     assert!(report.review().is_none());
     assert!(matches!(
@@ -795,6 +827,17 @@ async fn candidate_crossing_response_budget_is_charged_and_cannot_commit() {
         u64::try_from(control_bytes + candidate_bytes).unwrap()
     );
     assert!(report.audit().candidate().unwrap().body_truncated());
+    let dispatches = report.audit().transport().receipts();
+    assert_eq!(dispatches.len(), 2);
+    assert_eq!(dispatches[0].outcome(), TransportDispatchOutcome::Completed);
+    assert_eq!(
+        dispatches[1].outcome(),
+        TransportDispatchOutcome::ResponseBudgetReached
+    );
+    assert_eq!(
+        dispatches[1].response_bytes(),
+        u64::try_from(candidate_bytes).unwrap()
+    );
     assert!(report.comparison().is_none());
     assert!(report.observation().is_none());
     assert!(report.review().is_none());
@@ -1033,6 +1076,14 @@ async fn partial_candidate_timeout_keeps_control_and_transport_usage() {
     );
     assert!(report.audit().control().is_some());
     assert!(report.audit().candidate().is_none());
+    let dispatches = report.audit().transport().receipts();
+    assert_eq!(dispatches.len(), 2);
+    assert_eq!(dispatches[0].outcome(), TransportDispatchOutcome::Completed);
+    assert_eq!(dispatches[1].response_bytes(), 4);
+    assert_eq!(
+        dispatches[1].outcome(),
+        TransportDispatchOutcome::RequestTimeout
+    );
     assert!(report.comparison().is_none());
     assert!(report.observation().is_none());
     assert!(report.review().is_none());
@@ -1070,6 +1121,7 @@ async fn pre_cancelled_pair_keeps_intent_audit_and_opens_no_socket() {
         fixture.comparison_id
     );
     assert_eq!(report.audit().operation_sha256().len(), 64);
+    assert!(report.audit().transport().is_empty());
     assert!(server.requests().await.is_empty());
     assert!(matches!(
         runtime.session().state(),
@@ -1147,6 +1199,10 @@ async fn cancellation_during_candidate_preserves_control_and_charged_dispatch() 
     assert_eq!(report.audit().usage().total_requests(), 2);
     assert!(report.audit().control().is_some());
     assert!(report.audit().candidate().is_none());
+    let dispatches = report.audit().transport().receipts();
+    assert_eq!(dispatches.len(), 2);
+    assert_eq!(dispatches[0].outcome(), TransportDispatchOutcome::Completed);
+    assert_eq!(dispatches[1].outcome(), TransportDispatchOutcome::Cancelled);
     assert_eq!(server.requests().await.len(), 2);
     assert!(matches!(
         runtime.session().state(),

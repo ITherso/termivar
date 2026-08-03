@@ -8,7 +8,7 @@ use std::{
     collections::BTreeMap,
     fmt,
     sync::{Arc, Mutex, MutexGuard},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use serde::{Deserialize, Serialize};
@@ -27,6 +27,8 @@ pub const DEFAULT_MAX_ACTIVE_VERIFICATIONS: u16 = 4;
 pub const DEFAULT_MAX_SAME_ACTION_ATTEMPTS: u16 = 3;
 /// Default maximum consecutive completed turns without semantic progress.
 pub const DEFAULT_MAX_CONSECUTIVE_NO_PROGRESS_TURNS: u16 = 4;
+/// Maximum dispatch receipts retained by one broker audit.
+pub const HARD_MAX_TRANSPORT_DISPATCH_RECEIPTS: usize = 4_096;
 
 /// Multi-dimensional resource envelope for one runtime session.
 ///
@@ -267,6 +269,103 @@ impl fmt::Display for RuntimeLimitExceeded {
 
 impl std::error::Error for RuntimeLimitExceeded {}
 
+/// Terminal transport state for one broker-owned wire dispatch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum TransportDispatchOutcome {
+    /// The response completed within transport and accounting policy.
+    Completed,
+    /// Request dispatch or response streaming failed at the transport layer.
+    TransportFailure,
+    /// The broker-owned per-request deadline elapsed.
+    RequestTimeout,
+    /// A delivered response chunk crossed the session byte boundary.
+    ResponseBudgetReached,
+    /// The caller dropped the in-flight broker future before classification.
+    Cancelled,
+}
+
+/// Raw-target-free audit receipt for one broker-owned wire dispatch.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct TransportDispatchReceipt {
+    sequence: u64,
+    action_id: String,
+    stage: crate::DecisionExecutionStage,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    origin: Option<crate::DecisionActionOrigin>,
+    request_body_bytes: u64,
+    response_bytes: u64,
+    elapsed_ms: u64,
+    outcome: TransportDispatchOutcome,
+}
+
+impl TransportDispatchReceipt {
+    /// Returns the zero-based dispatch order within this broker authority.
+    pub const fn sequence(&self) -> u64 {
+        self.sequence
+    }
+
+    /// Returns the semantic action charged for this dispatch.
+    pub fn action_id(&self) -> &str {
+        &self.action_id
+    }
+
+    /// Returns whether this was passive collection or active verification.
+    pub const fn stage(&self) -> crate::DecisionExecutionStage {
+        self.stage
+    }
+
+    /// Returns the passive action origin, when applicable.
+    pub const fn origin(&self) -> Option<crate::DecisionActionOrigin> {
+        self.origin
+    }
+
+    /// Returns buffered request-body bytes charged before dispatch.
+    pub const fn request_body_bytes(&self) -> u64 {
+        self.request_body_bytes
+    }
+
+    /// Returns complete response-body bytes delivered to the collector.
+    pub const fn response_bytes(&self) -> u64 {
+        self.response_bytes
+    }
+
+    /// Returns monotonic elapsed time from lease acquisition to classification.
+    pub const fn elapsed_ms(&self) -> u64 {
+        self.elapsed_ms
+    }
+
+    /// Returns the broker-owned terminal transport classification.
+    pub const fn outcome(&self) -> TransportDispatchOutcome {
+        self.outcome
+    }
+}
+
+/// Bounded, dispatch-ordered transport audit for one accounting authority.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct TransportDispatchAudit {
+    receipts: Vec<TransportDispatchReceipt>,
+    omitted_receipt_count: u64,
+}
+
+impl TransportDispatchAudit {
+    /// Returns retained receipts in original dispatch order.
+    pub fn receipts(&self) -> &[TransportDispatchReceipt] {
+        &self.receipts
+    }
+
+    /// Returns completed dispatch receipts excluded by the hard audit ceiling.
+    pub const fn omitted_receipt_count(&self) -> u64 {
+        self.omitted_receipt_count
+    }
+
+    /// Returns whether no dispatch was recorded or omitted.
+    pub fn is_empty(&self) -> bool {
+        self.receipts.is_empty() && self.omitted_receipt_count == 0
+    }
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct RequestAccountingSnapshot {
     total_requests: u32,
@@ -332,6 +431,9 @@ impl RequestAccountingPreflight {
 #[derive(Debug, Default)]
 struct RequestAccountingState {
     snapshot: RequestAccountingSnapshot,
+    next_dispatch_sequence: u64,
+    dispatch_receipts: Vec<TransportDispatchReceipt>,
+    omitted_dispatch_receipts: u64,
 }
 
 /// Shared host-owned authority for logical transport dispatch accounting.
@@ -362,6 +464,16 @@ impl RequestAccountingBroker {
 
     pub(crate) fn snapshot(&self) -> RequestAccountingSnapshot {
         self.lock_state().snapshot
+    }
+
+    pub(crate) fn dispatch_audit(&self) -> TransportDispatchAudit {
+        let state = self.lock_state();
+        let mut receipts = state.dispatch_receipts.clone();
+        receipts.sort_by_key(TransportDispatchReceipt::sequence);
+        TransportDispatchAudit {
+            receipts,
+            omitted_receipt_count: state.omitted_dispatch_receipts,
+        }
     }
 
     pub(crate) fn preflight(
@@ -413,11 +525,31 @@ impl RequestAccountingBroker {
             request_body_bytes,
         )?;
         record_dispatch(&mut state.snapshot, stage, origin, request_body_bytes);
+        let sequence = state.next_dispatch_sequence;
+        state.next_dispatch_sequence = state.next_dispatch_sequence.saturating_add(1);
         drop(state);
 
         Ok(RequestAccountingLease {
             broker: self.clone(),
+            sequence,
+            action_id: action_id.to_owned(),
+            stage,
+            origin,
+            request_body_bytes,
+            response_bytes: 0,
+            response_budget_reached: false,
+            started_at: Instant::now(),
+            outcome: None,
         })
+    }
+
+    fn record_dispatch_receipt(&self, receipt: TransportDispatchReceipt) {
+        let mut state = self.lock_state();
+        if state.dispatch_receipts.len() < HARD_MAX_TRANSPORT_DISPATCH_RECEIPTS {
+            state.dispatch_receipts.push(receipt);
+        } else {
+            state.omitted_dispatch_receipts = state.omitted_dispatch_receipts.saturating_add(1);
+        }
     }
 
     fn lock_state(&self) -> MutexGuard<'_, RequestAccountingState> {
@@ -436,6 +568,15 @@ impl RequestAccountingBroker {
 #[derive(Debug)]
 pub(crate) struct RequestAccountingLease {
     broker: RequestAccountingBroker,
+    sequence: u64,
+    action_id: String,
+    stage: crate::DecisionExecutionStage,
+    origin: Option<crate::DecisionActionOrigin>,
+    request_body_bytes: u64,
+    response_bytes: u64,
+    response_budget_reached: bool,
+    started_at: Instant,
+    outcome: Option<TransportDispatchOutcome>,
 }
 
 impl RequestAccountingLease {
@@ -446,14 +587,15 @@ impl RequestAccountingLease {
     }
 
     pub(crate) fn observe_response_bytes(&mut self, bytes: u64) -> u64 {
+        self.response_bytes = self.response_bytes.saturating_add(bytes);
         let mut state = self.broker.lock_state();
         let remaining = self
             .broker
             .budget
             .max_response_bytes()
             .saturating_sub(state.snapshot.response_bytes);
-        if remaining == 0 {
-            return 0;
+        if bytes > 0 && bytes >= remaining {
+            self.response_budget_reached = true;
         }
         let retained = bytes.min(remaining);
         state.snapshot.response_bytes = state.snapshot.response_bytes.saturating_add(bytes);
@@ -466,6 +608,31 @@ impl RequestAccountingLease {
             .budget
             .max_response_bytes()
             .saturating_sub(response_bytes)
+    }
+
+    pub(crate) const fn response_budget_reached(&self) -> bool {
+        self.response_budget_reached
+    }
+
+    pub(crate) fn finish(&mut self, outcome: TransportDispatchOutcome) {
+        debug_assert!(self.outcome.is_none(), "dispatch outcome classified twice");
+        self.outcome = Some(outcome);
+    }
+}
+
+impl Drop for RequestAccountingLease {
+    fn drop(&mut self) {
+        let receipt = TransportDispatchReceipt {
+            sequence: self.sequence,
+            action_id: self.action_id.clone(),
+            stage: self.stage,
+            origin: self.origin,
+            request_body_bytes: self.request_body_bytes,
+            response_bytes: self.response_bytes,
+            elapsed_ms: u64::try_from(self.started_at.elapsed().as_millis()).unwrap_or(u64::MAX),
+            outcome: self.outcome.unwrap_or(TransportDispatchOutcome::Cancelled),
+        };
+        self.broker.record_dispatch_receipt(receipt);
     }
 }
 
@@ -879,6 +1046,136 @@ mod tests {
     }
 
     #[test]
+    fn dispatch_audit_preserves_order_and_completed_lease_metadata() {
+        let broker = RequestAccountingBroker::new(
+            RuntimeBudget::default()
+                .with_max_total_requests(2)
+                .with_max_request_body_bytes(8)
+                .with_max_response_bytes(8),
+        );
+        let mut first = broker
+            .try_begin_with_request_body_bytes(
+                "http.control",
+                crate::DecisionExecutionStage::Passive,
+                Some(crate::DecisionActionOrigin::Bootstrap),
+                3,
+            )
+            .unwrap();
+        let mut second = broker
+            .try_begin_with_request_body_bytes(
+                "http.candidate",
+                crate::DecisionExecutionStage::Active,
+                None,
+                5,
+            )
+            .unwrap();
+
+        assert_eq!(first.observe_response_bytes(2), 2);
+        assert_eq!(second.observe_response_bytes(4), 4);
+        first.finish(TransportDispatchOutcome::Completed);
+        second.finish(TransportDispatchOutcome::Completed);
+
+        // Completion order must not change the original wire-dispatch order.
+        drop(second);
+        drop(first);
+
+        let audit = broker.dispatch_audit();
+        assert_eq!(audit.omitted_receipt_count(), 0);
+        assert!(!audit.is_empty());
+        let receipts = audit.receipts();
+        assert_eq!(receipts.len(), 2);
+
+        assert_eq!(receipts[0].sequence(), 0);
+        assert_eq!(receipts[0].action_id(), "http.control");
+        assert_eq!(receipts[0].stage(), crate::DecisionExecutionStage::Passive);
+        assert_eq!(
+            receipts[0].origin(),
+            Some(crate::DecisionActionOrigin::Bootstrap)
+        );
+        assert_eq!(receipts[0].request_body_bytes(), 3);
+        assert_eq!(receipts[0].response_bytes(), 2);
+        assert_eq!(receipts[0].outcome(), TransportDispatchOutcome::Completed);
+
+        assert_eq!(receipts[1].sequence(), 1);
+        assert_eq!(receipts[1].action_id(), "http.candidate");
+        assert_eq!(receipts[1].stage(), crate::DecisionExecutionStage::Active);
+        assert_eq!(receipts[1].origin(), None);
+        assert_eq!(receipts[1].request_body_bytes(), 5);
+        assert_eq!(receipts[1].response_bytes(), 4);
+        assert_eq!(receipts[1].outcome(), TransportDispatchOutcome::Completed);
+    }
+
+    #[test]
+    fn unclassified_dispatch_is_audited_as_cancelled() {
+        let broker =
+            RequestAccountingBroker::new(RuntimeBudget::default().with_max_total_requests(1));
+        let mut lease = broker
+            .try_begin(
+                "http.cancelled",
+                crate::DecisionExecutionStage::Passive,
+                Some(crate::DecisionActionOrigin::Adaptive),
+            )
+            .unwrap();
+        assert_eq!(lease.observe_response_bytes(7), 7);
+
+        drop(lease);
+
+        let audit = broker.dispatch_audit();
+        let receipt = audit.receipts().first().unwrap();
+        assert_eq!(audit.receipts().len(), 1);
+        assert_eq!(receipt.action_id(), "http.cancelled");
+        assert_eq!(receipt.response_bytes(), 7);
+        assert_eq!(receipt.outcome(), TransportDispatchOutcome::Cancelled);
+    }
+
+    #[test]
+    fn dispatch_audit_retention_is_bounded_and_counts_omissions() {
+        let dispatch_count = HARD_MAX_TRANSPORT_DISPATCH_RECEIPTS + 1;
+        let broker =
+            RequestAccountingBroker::new(RuntimeBudget::default().with_max_total_requests(
+                u32::try_from(dispatch_count).expect("test dispatch count fits in u32"),
+            ));
+
+        for index in 0..dispatch_count {
+            let mut lease = broker
+                .try_begin(
+                    &format!("http.dispatch.{index}"),
+                    crate::DecisionExecutionStage::Passive,
+                    Some(crate::DecisionActionOrigin::Planned),
+                )
+                .unwrap();
+            lease.finish(TransportDispatchOutcome::Completed);
+        }
+
+        let audit = broker.dispatch_audit();
+        assert_eq!(audit.receipts().len(), HARD_MAX_TRANSPORT_DISPATCH_RECEIPTS);
+        assert_eq!(audit.omitted_receipt_count(), 1);
+        assert_eq!(audit.receipts().first().unwrap().sequence(), 0);
+        assert_eq!(
+            audit.receipts().last().unwrap().sequence(),
+            u64::try_from(HARD_MAX_TRANSPORT_DISPATCH_RECEIPTS - 1).unwrap()
+        );
+    }
+
+    #[test]
+    fn denied_dispatch_does_not_create_an_audit_receipt() {
+        let broker =
+            RequestAccountingBroker::new(RuntimeBudget::default().with_max_total_requests(0));
+
+        let denied = broker
+            .try_begin(
+                "http.denied",
+                crate::DecisionExecutionStage::Passive,
+                Some(crate::DecisionActionOrigin::Planned),
+            )
+            .unwrap_err();
+
+        assert_eq!(denied.dimension(), RuntimeBudgetDimension::TotalRequests);
+        assert_eq!(broker.snapshot(), RequestAccountingSnapshot::default());
+        assert!(broker.dispatch_audit().is_empty());
+    }
+
+    #[test]
     fn remaining_one_dispatch_is_acquired_atomically() {
         let broker =
             RequestAccountingBroker::new(RuntimeBudget::default().with_max_total_requests(1));
@@ -1026,7 +1323,8 @@ mod tests {
         assert_eq!(lease.observe_response_bytes(1), 0);
         drop(lease);
 
-        assert_eq!(broker.snapshot().response_bytes(), 7);
+        assert_eq!(broker.snapshot().response_bytes(), 8);
+        assert_eq!(broker.dispatch_audit().receipts()[0].response_bytes(), 8);
         let error = broker
             .preflight("http.next", crate::DecisionExecutionStage::Passive)
             .unwrap_err();

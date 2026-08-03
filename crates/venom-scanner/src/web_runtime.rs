@@ -25,8 +25,8 @@ use crate::{
     RuntimeBudget, RuntimeBudgetDimension, RuntimeLimitExceeded, RuntimeUsage,
     StandardApiInstallReport, StandardApiReasoning, StandardApiReasoningError,
     StandardWebActionKind, StandardWebDecisionError, StandardWebDecisionInstallReport,
-    StandardWebDecisionProfile, SubjectHttpProbeProvider, VerificationCase, VerificationError,
-    HTTP_EVIDENCE_EXECUTOR_ID,
+    StandardWebDecisionProfile, SubjectHttpProbeProvider, TransportDispatchAudit, VerificationCase,
+    VerificationError, HTTP_EVIDENCE_EXECUTOR_ID,
 };
 
 mod api_visibility;
@@ -226,6 +226,7 @@ pub struct StandardWebDecisionFailureReceipt {
     bootstrap: Option<DecisionEvidenceReceipt>,
     completed_turns: Vec<StandardWebDecisionRuntimeTurn>,
     usage: RuntimeUsage,
+    transport: TransportDispatchAudit,
 }
 
 impl StandardWebDecisionFailureReceipt {
@@ -243,6 +244,11 @@ impl StandardWebDecisionFailureReceipt {
     pub fn usage(&self) -> &RuntimeUsage {
         &self.usage
     }
+
+    /// Returns bounded per-dispatch transport receipts at the failure boundary.
+    pub fn transport(&self) -> &TransportDispatchAudit {
+        &self.transport
+    }
 }
 
 /// Complete audit trail from bootstrap evidence to a terminal command.
@@ -253,6 +259,7 @@ pub struct StandardWebDecisionRunReport {
     unverified_evidence: Option<DecisionEvidenceReceipt>,
     terminal: DecisionLoopCommand,
     usage: RuntimeUsage,
+    transport: TransportDispatchAudit,
     limit_exceeded: Option<RuntimeLimitExceeded>,
     execution_failure: Option<DecisionExecutionFailureReceipt>,
 }
@@ -286,6 +293,11 @@ impl StandardWebDecisionRunReport {
     /// Returns the final resource accounting snapshot.
     pub fn usage(&self) -> &RuntimeUsage {
         &self.usage
+    }
+
+    /// Returns bounded, dispatch-ordered transport receipts for this run.
+    pub fn transport(&self) -> &TransportDispatchAudit {
+        &self.transport
     }
 
     /// Returns the structured runtime limit when the resource envelope stopped execution.
@@ -962,6 +974,7 @@ impl StandardWebDecisionRuntime {
             unverified_evidence: None,
             terminal,
             usage: self.usage.clone(),
+            transport: self.request_accounting.dispatch_audit(),
             limit_exceeded: None,
             execution_failure: None,
         })
@@ -980,6 +993,7 @@ impl StandardWebDecisionRuntime {
                 bootstrap,
                 completed_turns,
                 usage: self.usage.clone(),
+                transport: self.request_accounting.dispatch_audit(),
             }),
             source: Box::new(source),
         }
@@ -1109,6 +1123,7 @@ impl StandardWebDecisionRuntime {
                 reason: crate::DecisionStopReason::RuntimeBudgetLimit,
             },
             usage: self.usage.clone(),
+            transport: self.request_accounting.dispatch_audit(),
             limit_exceeded: Some(limit),
             execution_failure,
         }
@@ -1132,6 +1147,7 @@ impl StandardWebDecisionRuntime {
                 reason: crate::DecisionStopReason::RuntimeBudgetLimit,
             },
             usage: self.usage.clone(),
+            transport: self.request_accounting.dispatch_audit(),
             limit_exceeded: Some(limit),
             execution_failure: None,
         }
@@ -1154,6 +1170,7 @@ impl StandardWebDecisionRuntime {
                 reason: crate::DecisionStopReason::CancelledByHost,
             },
             usage: self.usage.clone(),
+            transport: self.request_accounting.dispatch_audit(),
             limit_exceeded: None,
             execution_failure: None,
         }

@@ -18,7 +18,7 @@ use crate::{
     ApiComparisonProfile, ApiObservationCommitReceipt, ApiObservationError, ApiObservationReceipt,
     ApiVisibilityReview, CanonicalizationVersion, ComparisonAlgorithmVersion, HttpEvidenceError,
     HttpProbe, HttpProbeMethod, ProfiledApiVisibilityComparison, ProfiledApiVisibilityError,
-    ProjectionPolicyId, RuntimeLimitExceeded, RuntimeUsage,
+    ProjectionPolicyId, RuntimeLimitExceeded, RuntimeUsage, TransportDispatchAudit,
     CURRENT_API_VISIBILITY_CANONICALIZATION_VERSION,
 };
 
@@ -440,6 +440,7 @@ pub struct ApiVisibilityDifferentialAudit {
     control: Option<ApiVisibilityLegReceipt>,
     candidate: Option<ApiVisibilityLegReceipt>,
     usage: RuntimeUsage,
+    transport: TransportDispatchAudit,
 }
 
 impl ApiVisibilityDifferentialAudit {
@@ -459,6 +460,7 @@ impl ApiVisibilityDifferentialAudit {
             control: None,
             candidate: None,
             usage: RuntimeUsage::default(),
+            transport: TransportDispatchAudit::default(),
         }
     }
 
@@ -531,6 +533,11 @@ impl ApiVisibilityDifferentialAudit {
     pub const fn usage(&self) -> &RuntimeUsage {
         &self.usage
     }
+
+    /// Returns bounded, dispatch-ordered transport receipts for both legs.
+    pub const fn transport(&self) -> &TransportDispatchAudit {
+        &self.transport
+    }
 }
 
 impl fmt::Debug for ApiVisibilityDifferentialAudit {
@@ -551,6 +558,7 @@ impl fmt::Debug for ApiVisibilityDifferentialAudit {
             .field("control", &self.control)
             .field("candidate", &self.candidate)
             .field("usage", &self.usage)
+            .field("transport", &self.transport)
             .finish()
     }
 }

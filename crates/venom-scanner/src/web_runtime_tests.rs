@@ -22,7 +22,7 @@ use crate::{
     DecisionExecutorRegistry, DecisionLoopState, DecisionRunnerAdapter, DecisionStopReason,
     ExclusionReason, Expression, HttpBodyCapture, HttpEvidenceExecutor, HypothesisSelector,
     KnowledgeLayer, KnowledgeSnapshot, RequiredStrength, StandardWebActionKind,
-    SubjectHttpProbeProvider,
+    SubjectHttpProbeProvider, TransportDispatchOutcome,
 };
 
 const BASIC: &[u8] = b"HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: Basic realm=\"admin\"\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
@@ -616,6 +616,10 @@ async fn planned_failure_preserves_bootstrap_and_outstanding_session_without_sup
     ));
     assert_eq!(audit.usage().total_requests(), 1);
     assert_eq!(audit.usage().total_action_attempts(), 2);
+    let dispatches = audit.transport().receipts();
+    assert_eq!(dispatches.len(), 1);
+    assert_eq!(dispatches[0].action_id(), BOOTSTRAP_ACTION_ID);
+    assert_eq!(dispatches[0].outcome(), TransportDispatchOutcome::Completed);
     assert_eq!(receipt.action_id(), action.action_id());
     assert_eq!(receipt.stage(), DecisionExecutionStage::Passive);
     assert_eq!(receipt.origin(), Some(DecisionActionOrigin::Planned));
@@ -691,6 +695,11 @@ async fn response_usage_failure_preserves_prior_turns_and_current_evidence() {
     ));
     assert_eq!(audit.usage().total_requests(), 1);
     assert_eq!(audit.usage().total_action_attempts(), 2);
+    assert_eq!(audit.transport().receipts().len(), 1);
+    assert_eq!(
+        audit.transport().receipts()[0].outcome(),
+        TransportDispatchOutcome::Completed
+    );
 
     let committed = error.committed_evidence().unwrap();
     assert_eq!(committed.case().action_id(), action.action_id());
@@ -746,6 +755,13 @@ async fn response_overshoot_halts_the_same_turn_and_keeps_evidence_auditable() {
     assert_eq!(report.usage().response_bytes(), 10);
     assert_eq!(report.usage().total_requests(), 2);
     assert_eq!(report.outcome_reports().count(), 0);
+    let dispatches = report.transport().receipts();
+    assert_eq!(dispatches.len(), 2);
+    assert_eq!(dispatches[0].action_id(), BOOTSTRAP_ACTION_ID);
+    assert_eq!(dispatches[0].outcome(), TransportDispatchOutcome::Completed);
+    assert_eq!(dispatches[1].action_id(), action.action_id());
+    assert_eq!(dispatches[1].response_bytes(), 10);
+    assert_eq!(dispatches[1].outcome(), TransportDispatchOutcome::Cancelled);
     let committed = report.unverified_evidence().unwrap();
     assert_eq!(committed.case().action_id(), action.action_id());
     assert_eq!(committed.writes(), [KnowledgeWrite::Inserted]);
@@ -809,6 +825,11 @@ async fn in_executor_budget_denial_preserves_prior_evidence_and_failure_receipt(
     assert_eq!(report.usage().total_requests(), 1);
     assert_eq!(report.usage().planned_requests(), 0);
     assert_eq!(report.usage().total_action_attempts(), 2);
+    assert_eq!(report.transport().receipts().len(), 1);
+    assert_eq!(
+        report.transport().receipts()[0].outcome(),
+        TransportDispatchOutcome::Completed
+    );
     assert!(runtime.knowledge().stats().evidence > 0);
     assert!(runtime.experience().is_empty());
     assert_eq!(server.methods().await, ["GET"]);
@@ -1423,6 +1444,12 @@ async fn semantic_retry_is_denied_before_socket_when_total_budget_is_exhausted()
     assert_eq!(report.usage().total_requests(), 2);
     assert_eq!(report.usage().retry_requests(), 0);
     assert_eq!(report.usage().total_action_attempts(), 2);
+    assert_eq!(report.transport().receipts().len(), 2);
+    assert!(report
+        .transport()
+        .receipts()
+        .iter()
+        .all(|receipt| receipt.outcome() == TransportDispatchOutcome::Completed));
     assert_eq!(server.methods().await, ["GET", "HEAD"]);
 }
 
@@ -1448,6 +1475,17 @@ async fn dispatched_retry_is_charged_at_the_transport_boundary() {
     assert_eq!(report.usage().total_requests(), 3);
     assert_eq!(report.usage().retry_requests(), 1);
     assert_eq!(report.usage().total_action_attempts(), 3);
+    let dispatches = report.transport().receipts();
+    assert_eq!(dispatches.len(), 3);
+    assert_eq!(
+        dispatches[0].origin(),
+        Some(DecisionActionOrigin::Bootstrap)
+    );
+    assert_eq!(dispatches[1].origin(), Some(DecisionActionOrigin::Planned));
+    assert_eq!(dispatches[2].origin(), Some(DecisionActionOrigin::Retry));
+    assert!(dispatches
+        .iter()
+        .all(|receipt| receipt.outcome() == TransportDispatchOutcome::Completed));
     assert_eq!(server.methods().await, ["GET", "HEAD", "HEAD"]);
 }
 

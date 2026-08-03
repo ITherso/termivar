@@ -38,8 +38,10 @@ assert_eq!(snapshot.total_findings, 1);
 
 The collector records what its caller reports. It must not be used to enforce
 request, response-byte, timeout, retry, redirect, or verification limits. The
-decision runtime's host-owned request broker and `RuntimeUsage` receipts are the
-authoritative resource-accounting boundary.
+decision runtime's host-owned request broker, `RuntimeUsage`, and bounded
+`TransportDispatchAudit` receipts are the authoritative resource-accounting
+boundary. Dispatch receipts intentionally omit raw targets, headers,
+credentials, and response values.
 
 ## Logging
 
