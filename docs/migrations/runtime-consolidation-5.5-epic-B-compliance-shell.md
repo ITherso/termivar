@@ -28,7 +28,11 @@ scan behavior yet.
 - No planner/rule/budget behavior changes.
 - Keep modules behind feature gating and explicit docs note.
 
-## 3) Required migration artifacts
+## 3) Runtime migration ticket
+
+Runtime ticket target: `RUNTIME-5.5.B-001`.
+
+## 4) Required migration artifacts
 
 1. Add or refresh docs/ADR text asserting these modules are
    `platform-shell` and not scan-default.
@@ -39,21 +43,21 @@ scan behavior yet.
 3. Link the corresponding migration ticket for future integration.
    - `RUNTIME-5.5.B-001`.
 
-## 4) Exit criteria
+## 5) Exit criteria
 
 - `docs/migrations/runtime-consolidation-5.5.md` references current status.
 - `docs/adr/0015-platform-shell-boundary.md` remains consistent.
 - `cargo run --locked -p xtask -- architecture` passes.
 - `cargo check -p venom-scanner --locked` does not regress.
 
-## 5) PR checklist
+## 6) PR checklist
 
 - [ ] docs-only, no runtime/path behavioral changes.
 - [ ] explicit compatibility matrix for feature-gated modules.
-- [ ] ticket + owner in PR description.
+- [ ] ticket (`RUNTIME-5.5.B-001`) + owner in PR description.
 - [ ] no new references from `venom scan` decision flow.
 
-## 6) Planned execution hook
+## 7) Planned execution hook
 
 - Add/update explicit boundary notes to:
   - `crates/venom-scanner/src/compliance.rs`
