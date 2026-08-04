@@ -1,6 +1,12 @@
 //! Advanced Monitoring & Performance Analytics
 //!
 //! Comprehensive scan profiling, resource tracking, and optimization recommendations.
+//!
+//! # Runtime scope
+//!
+//! This module is part of the **platform-shell** boundary in Runtime Consolidation 5.5.
+//! It is currently feature-gated (`monitoring`) and is **not** part of default
+//! `venom scan` execution unless a later runtime integration milestone promotes it.
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;

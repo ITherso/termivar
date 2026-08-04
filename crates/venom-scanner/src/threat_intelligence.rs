@@ -1,6 +1,12 @@
 //! Threat Intelligence & Security Alerts
 //!
 //! CVE correlation, threat feeds, automated responses.
+//!
+//! # Runtime scope
+//!
+//! This module is part of the **platform-shell** boundary in Runtime Consolidation 5.5.
+//! It is feature-gated (`threat-intel`) and is not executed in default `venom scan`
+//! unless an explicit migration milestone enables that path.
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;

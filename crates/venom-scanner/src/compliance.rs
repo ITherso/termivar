@@ -1,6 +1,12 @@
 //! Compliance & Automated Reporting
 //!
 //! GDPR, HIPAA, SOC2 compliance frameworks and audit trails.
+//!
+//! # Runtime scope
+//!
+//! This module is part of the **platform-shell** boundary in Runtime Consolidation 5.5.
+//! It is currently feature-gated (`compliance`) and is **not** executed by the default
+//! `venom scan` runtime without a dedicated migration milestone.
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
