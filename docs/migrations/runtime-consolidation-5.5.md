@@ -1,164 +1,136 @@
 # Runtime Consolidation 5.5 — Runtime Inventory and Migration Matrix
 
-Status: drafted (docs and migration planning only).
+Status: **implemented (docs + migration planning only)**.
 
-This milestone follows 5.4 and is intentionally limited to reality-mapping, wiring,
-and boundary classification.
-
-Scope:
+This milestone is the hardening pass before we touch behavior.
 
 - No new capabilities.
-- No planner or decision-engine feature changes.
-- No fuzzing, semantic, or runtime behavior changes.
-- No feature additions.
-- Focus: one concrete inventory and one explicit keep/migrate decision surface.
+- No planner changes.
+- No semantic model expansion.
+- No scanning feature additions.
+- No runtime behavior changes.
 
-## 1) Ground truth used for this inventory
+We keep one goal only:
+produce and lock a complete runtime ownership map and a migration sequence that can
+be executed one subsystem at a time.
 
-- `cargo xtask architecture` (workspace graph + module policy + reachability gate)
-- Direct tracing of `venom scan` runtime path in:
+## 1) Evidence used for this inventory
+
+- `cargo run --locked -p xtask -- architecture`
+- `cargo check -p venom-scanner --locked`
+- `cargo check -p venom-scanner --locked --no-default-features`
+- `cargo check -p venom-scanner --locked --features full`
+- direct execution tracing in:
   - `crates/venom-cli/src/main.rs`
   - `crates/venom-scanner/src/lib.rs`
   - `crates/venom-scanner/src/runner.rs`
   - `crates/venom-scanner/src/phases/*`
-- `src` ownership and allowlist declared in `xtask/src/architecture/reachability.rs`
+- `xtask` source reachability allowlist in
+  `xtask/src/architecture/reachability.rs`
 
-## 2) `venom-scanner` module inventory (as of 2026-08-04)
+## 2) `venom-scanner` module inventory
 
-- Total Rust source files (including feature-gated): **101**
+- Total Rust source files (`src`, including feature-gated): **101**
 - Reachable from crate module graph: **97**
 - Reachable with default feature set (`core + scanning + detection`): **83**
-- Unreferenced and explicitly quarantined for now: **4**
+- Explicitly quarantined/allowlisted and intentionally unreachable: **4**
 
-### Quarantined / scaffold test files (allowed by `xtask` policy)
+### 2.1) Keep / Migrate / Delete
 
-- `src/api_evidence_tests.rs`
-- `src/web_runtime_tests.rs`
-- `src/api_evidence/profiled_tests.rs`
-- `src/web_runtime/api_visibility/differential_tests.rs`
+**Keep**
+- Legacy default scan runtime (`context`, `contracts`, `event_bus`, `logging`,
+  `runner`, `phases/*`, `sdk`)
+- `legacy-support` modules (`auth`, `cache`, `config`, `config_loader`, `error`,
+  `metrics`)
+- `decision-runtime` modules (in-tree and compiled, but not active under default CLI scan path)
 
-These are allowed as deliberate test-only scaffolds; no new runtime behavior.
+**Migrate**
+- `advanced_detection`, `anomaly`
+- `compliance`, `monitoring`, `threat_intelligence`, `distributed`, `ml`
+- `persistence`, `reporting`, `realtime`, `dashboard`, `post_exploitation`
+- `plugins`, `plugin`, `lua_engine`
+- `threat-intel`, other optional feature modules
 
-## 3) Module-by-module execution ownership matrix
+**Delete**
+- No explicit delete in this milestone. Deletions stay off until ADR-backed replacement
+  is documented.
 
-| Module | Default compiled | Reachable | Exported | Executed by `venom scan` | Ownership class |
+### 2.2) Execution ownership matrix
+
+| Module group | Default feature compiled | Reachable | Exported | Executed by `venom scan` | Class |
 | --- | --- | --- | --- | --- | --- |
 | `context.rs` | ✅ | ✅ | ✅ | ✅ | `legacy-runner-core` |
 | `contracts.rs` | ✅ | ✅ | ✅ | ✅ | `legacy-runner-core` |
-| `event_bus.rs` | ✅ | ✅ | ✅ | ✅ (indirect) | `legacy-runner-core` |
-| `logging.rs` | ✅ | ✅ | ✅ | ✅ (indirect) | `legacy-runner-core` |
-| `phases/mod.rs` | ✅ | ✅ | ✅ (module) | ✅ | `legacy-runner` |
-| `phases/phase1_recon.rs` | ✅ | ✅ | ✅ (through `phases`) | ✅ | `legacy-runner` |
-| `phases/phase2_crawl.rs` | ✅ | ✅ | ✅ (through `phases`) | ✅ | `legacy-runner` |
-| `phases/phase3_fuzzer.rs` | ✅ | ✅ | ✅ (through `phases`) | ✅ | `legacy-runner` |
-| `phases/phase4_param.rs` | ✅ | ✅ | ✅ (through `phases`) | ✅ | `legacy-runner` |
-| `phases/phase5_sqli.rs` | ✅ | ✅ | ✅ (through `phases`) | ✅ | `legacy-runner` |
-| `phases/phase6_xss.rs` | ✅ | ✅ | ✅ (through `phases`) | ✅ | `legacy-runner` |
-| `phases/phase7_ssti.rs` | ✅ | ✅ | ✅ (through `phases`) | ✅ | `legacy-runner` |
-| `phases/phase8_lfi_xxe.rs` | ✅ | ✅ | ✅ (through `phases`) | ✅ | `legacy-runner` |
-| `phases/phase9_ssrf.rs` | ✅ | ✅ | ✅ (through `phases`) | ✅ | `legacy-runner` |
+| `event_bus.rs` | ✅ | ✅ | ✅ | ✅ | `legacy-runner-core` |
+| `logging.rs` | ✅ | ✅ | ✅ | ✅ | `legacy-runner-core` |
 | `runner.rs` | ✅ | ✅ | ✅ | ✅ | `legacy-runner` |
+| `phases/*` (`phase1_recon..phase9_ssrf`) | ✅ | ✅ | ✅ | ✅ | `legacy-runner` |
 | `sdk.rs` | ✅ | ✅ | ✅ | ❌ | `legacy-support` |
 | `waf.rs` | ✅ | ✅ | ✅ | ❌ | `legacy-support` |
-| `adaptive/*` | ✅ | ✅ | ✅ | ❌ | `decision-support` |
-| `knowledge.rs` | ✅ | ✅ | ✅ | ❌ | `decision-runtime` |
-| `experience.rs` | ✅ | ✅ | ✅ | ❌ | `decision-runtime` |
-| `rules.rs` | ✅ | ✅ | ✅ | ❌ | `decision-runtime` |
-| `planner.rs` | ✅ | ✅ | ✅ | ❌ | `decision-runtime` |
+| `api.rs` / `api_evidence.rs` / `api_gateway.rs` / `api_observation.rs` / `api_reasoning.rs` | ✅ | ✅ | ✅ | ❌ | `decision-runtime` |
+| `knowledge.rs` / `experience.rs` / `rules.rs` / `planner.rs` | ✅ | ✅ | ✅ | ❌ | `decision-runtime` |
 | `verification.rs` | ✅ | ✅ | ✅ | ❌ | `decision-runtime` |
-| `payload_strategy.rs` | ✅ | ✅ | ✅ | ❌ | `decision-runtime` |
-| `payload_strategies/*` | ✅ | ✅ | ✅ | ❌ | `decision-runtime` |
-| `web_actions.rs` | ✅ | ✅ | ✅ | ❌ | `decision-runtime` |
-| `web_planning.rs` | ✅ | ✅ | ✅ | ❌ | `decision-runtime` |
-| `web_reasoning.rs` | ✅ | ✅ | ✅ | ❌ | `decision-runtime` |
-| `web_verification.rs` | ✅ | ✅ | ✅ | ❌ | `decision-runtime` |
-| `web_decision.rs` | ✅ | ✅ | ✅ | ❌ | `decision-runtime` |
-| `web_execution.rs` | ✅ | ✅ | ✅ | ❌ | `decision-runtime` |
-| `web_runtime.rs` | ✅ | ✅ | ✅ | ❌ | `decision-runtime` |
-| `http_evidence.rs` | ✅ | ✅ | ✅ | ❌ | `decision-runtime` |
-| `runtime_budget.rs` | ✅ | ✅ | ✅ | ❌ | `decision-runtime` |
-| `decision_loop.rs` | ✅ | ✅ | ✅ | ❌ | `decision-runtime` |
-| `decision_runner.rs` | ✅ | ✅ | ✅ | ❌ | `decision-runtime` |
-| `api.rs` | ✅ | ✅ | ✅ | ❌ | `decision-runtime` |
-| `api_evidence.rs` | ✅ | ✅ | ✅ | ❌ | `decision-runtime` |
-| `api_gateway.rs` | ✅ | ✅ | ✅ | ❌ | `decision-runtime` |
-| `api_reasoning.rs` | ✅ | ✅ | ✅ | ❌ | `decision-runtime` |
-| `api_observation.rs` | ✅ | ✅ | ✅ | ❌ | `decision-runtime` |
-| `api_evidence/profiled.rs` | ✅ | ✅ | ✅ | ❌ | `decision-runtime` |
-| `api_evidence/profiled/*.rs` | ✅ | ✅ | ✅ | ❌ | `decision-runtime` |
+| `adaptive/*` | ✅ | ✅ | ✅ | ❌ | `decision-runtime` |
+| `payload_strategy.rs` / `payload_strategies/*` | ✅ | ✅ | ✅ | ❌ | `decision-runtime` |
+| `web_actions.rs` / `web_planning.rs` / `web_reasoning.rs` / `web_decision.rs` / `web_execution.rs` / `web_runtime.rs` | ✅ | ✅ | ✅ | ❌ | `decision-runtime` |
+| `web_verification.rs` / `runtime_budget.rs` / `http_evidence.rs` / `decision_loop.rs` / `decision_runner.rs` | ✅ | ✅ | ✅ | ❌ | `decision-runtime` |
 | `defense/*` | ✅ | ✅ | ✅ | ❌ | `decision-runtime` |
-| `semantic.rs` | ✅ | ✅ | ✅ | ❌ | `decision-runtime` |
-| `semantic/entity.rs` | ✅ | ✅ | ✅ | ❌ | `decision-runtime` |
-| `semantic/extractor.rs` | ✅ | ✅ | ✅ | ❌ | `decision-runtime` |
-| `advanced_detection.rs` | ✅ | ✅ | ✅ | ❌ | `platform-shell` |
-| `anomaly.rs` | ✅ | ✅ | ✅ | ❌ | `platform-shell` |
-| `compliance.rs` | ❌ (feature: compliance) | ✅ | ✅ | ❌ | `platform-shell` |
-| `monitoring.rs` | ❌ (feature: monitoring) | ✅ | ✅ | ❌ | `platform-shell` |
-| `distributed.rs` | ❌ (feature: distributed) | ✅ | ✅ | ❌ | `platform-shell` |
-| `threat_intelligence.rs` | ❌ (feature: threat-intel) | ✅ | ✅ | ❌ | `platform-shell` |
-| `ml.rs` | ❌ (feature: ml) | ✅ | ✅ | ❌ | `platform-shell` |
-| `plugin.rs` | ❌ (feature: plugins) | ✅ | ✅ | ❌ | `platform-shell` |
-| `plugins/*` | ❌ (feature: plugins) | ✅ | ✅ | ❌ | `platform-shell` |
-| `lua_engine.rs` | ❌ (feature: plugins) | ✅ | ✅ | ❌ | `platform-shell` |
-| `persistence.rs` | ✅ | ✅ | ✅ | ❌ | `platform-shell` |
-| `reporting.rs` | ✅ | ✅ | ✅ | ❌ | `platform-shell` |
-| `realtime.rs` | ✅ | ✅ | ✅ | ❌ | `platform-shell` |
-| `dashboard.rs` | ✅ | ✅ | ✅ | ❌ | `platform-shell` |
-| `post_exploitation.rs` | ✅ | ✅ | ✅ | ❌ | `platform-shell` |
-| `config.rs` | ✅ | ✅ | ✅ | ❌ | `legacy-support` |
-| `config_loader.rs` | ✅ | ✅ | ✅ | ❌ | `legacy-support` |
-| `cache.rs` | ✅ | ✅ | ✅ | ❌ | `legacy-support` |
-| `auth.rs` | ✅ | ✅ | ✅ | ❌ | `legacy-support` |
-| `error.rs` | ✅ | ✅ | ✅ | ❌ | `legacy-support` |
-| `metrics.rs` | ✅ | ✅ | ✅ | ❌ | `legacy-support` |
-| `api_evidence_tests.rs` | ✅ (allowlisted) | ✅ | ✅ | ❌ | `test-scaffold` |
-| `web_runtime_tests.rs` | ✅ (allowlisted) | ✅ | ✅ | ❌ | `test-scaffold` |
+| `semantic.rs` / `semantic/*` | ✅ | ✅ | ✅ | ❌ | `decision-runtime` |
+| `advanced_detection.rs` / `anomaly.rs` | ✅ | ✅ | ✅ | ❌ | `platform-shell` |
+| `compliance.rs` | ❌ (feature) | ✅ | ✅ | ❌ | `platform-shell` |
+| `monitoring.rs` | ❌ (feature) | ✅ | ✅ | ❌ | `platform-shell` |
+| `distributed.rs` | ❌ (feature) | ✅ | ✅ | ❌ | `platform-shell` |
+| `threat_intelligence.rs` | ❌ (feature) | ✅ | ✅ | ❌ | `platform-shell` |
+| `ml.rs` | ❌ (feature) | ✅ | ✅ | ❌ | `platform-shell` |
+| `plugin.rs` / `plugins/*` / `lua_engine.rs` | ❌ (feature) | ✅ | ✅ | ❌ | `platform-shell` |
+| `persistence.rs` / `reporting.rs` / `realtime.rs` / `dashboard.rs` / `post_exploitation.rs` | ✅ | ✅ | ✅ | ❌ | `platform-shell` |
+| `config.rs` / `config_loader.rs` / `cache.rs` / `error.rs` / `metrics.rs` | ✅ | ✅ | ✅ | ❌ | `legacy-support` |
+| `api_evidence_tests.rs` | ✅ (allowlist) | ✅ | ✅ | ❌ | `test-scaffold` |
+| `web_runtime_tests.rs` | ✅ (allowlist) | ✅ | ✅ | ❌ | `test-scaffold` |
+| `api_evidence/profiled_tests.rs` | ✅ (allowlist) | ✅ | ✅ | ❌ | `test-scaffold` |
+| `web_runtime/api_visibility/differential_tests.rs` | ✅ (allowlist) | ✅ | ✅ | ❌ | `test-scaffold` |
 
-### Platform runtime class definitions
+## 3) Class semantics
 
-- `legacy-runner-core` and `legacy-runner`: executed by `venom scan` today.
-- `decision-runtime`: in-tree reasoning/verification stack, compiled but not on CLI scan path.
-- `platform-shell`: feature-scoped product-layer modules, not on default scan path.
-- `legacy-support`: helper/shared utilities used by the current pipeline.
-- `test-scaffold`: allowlisted scaffolds.
+- `legacy-runner-core` / `legacy-runner`: active default execution path for `venom scan`.
+- `decision-runtime`: complete in-tree reasoning/verification stack, currently not default CLI.
+- `platform-shell`: optional product modules not part of default scan runtime.
+- `legacy-support`: shared core utilities used by scanner and runtime internals.
+- `test-scaffold`: explicit allowlisted test-only or fixture-only modules.
 
-## 4) Keep / Migrate / Delete matrix for 5.5
+No module can move class without ADR or migration ticket.
 
-| Module | Decision | Resulting state |
-| --- | --- | --- |
-| Legacy scan path (`context`, `contracts`, `event_bus`, `logging`, `runner`, `phases/*`, `sdk`) | `Keep` | Remains the active executable runtime until switched by a dedicated `venom scan` runtime command milestone. |
-| Decision runtime modules (`knowledge`, `rules`, `planner`, `verification`, `api_*`, `web_*`, `adaptive`, `decision_*`, `defense/*`, `payload_*`, `runtime_budget`, `http_evidence`) | `Keep` | Kept as shipped reasoning runtime, but explicitly not promoted to default CLI execution in this cycle. |
-| Platform shell features (`advanced_detection`, `anomaly`, `compliance`, `monitoring`, `distributed`, `threat_intelligence`, `ml`, `plugins`, `plugin`, `lua_engine`) | `Migrate` | Migrate out of scan truth in dedicated epic(s), or keep behind explicit migration PRs with explicit ADR and interface docs. |
-| Platform shell crates under `scanning` (`persistence`, `reporting`, `realtime`, `dashboard`, `post_exploitation`) | `Migrate` | Keep in-tree with explicit boundary and deprecation banner; do not treat as scan execution for release milestones. |
-| Scaffold tests (`api_evidence_tests.rs`, `web_runtime_tests.rs`, `api_evidence/profiled_tests.rs`, `web_runtime/api_visibility/differential_tests.rs`) | `Keep` only in allowlist |
-| Unclear/obsolete code found in future reviews | `Delete` (case-by-case) | Requires explicit ADR + migration log before removal. |
+## 4) Migration plan (docs + wiring only)
 
-## 5) 5.5 execution plan (no behavior changes)
+### Phase 5.5.1 — Publish and lock the map
 
-### Sprint 5.5.1 — Finalized classification (this milestone)
+1. Keep this document as the current authoritative inventory.
+2. Link ADR 0015 from `docs/index.md` and ADR index.
+3. Confirm each platform module has owner + target.
+4. Require one migration ticket per subsystem before nontrivial edits.
 
-1. Publish this inventory under PR with owner sign-off.
-2. Add/update ADR 0015 status to track explicit boundary intent.
-3. Lock milestone boundary in `docs/index.md` and `docs/migrations/runtime-consolidation-*.md`.
-4. Ensure all future PRs in this track include one of:
-   - `Keep` with execution-path link,
-   - `Migrate` with ADR / migration-ticket,
-   - `Delete` with clear replacement contract.
+### Phase 5.5.2 — Subsystem epics (one at a time)
 
-### Sprint 5.5.2 — Scoped migration prep (docs + wiring only)
+1. **Detection shell** (`advanced_detection`, `anomaly`)
+2. **Platform compliance** (`compliance`, `monitoring`, `threat_intelligence`)
+3. **Distributed/ML shell** (`distributed`, `ml`)
+4. **Plugins / Lua** (`plugin`, `plugins/*`, `lua_engine`)
+5. **Persistence/reporting shell** (`persistence`, `reporting`, `realtime`, `dashboard`, `post_exploitation`)
 
-1. For each platform-shell module, record one owner and a target integration milestone.
-2. Add `deprecated`-style docs and runtime boundary notes where a module is compiled but not executable by default.
-3. Split this migration into sub-epics by area (`threat-intel`, `platform reporting`, `detection`, `distributed`, etc.) so no milestone touches all at once.
+Each epic must only do:
 
-### Sprint 5.5.3 — Readiness (pre-acceptance)
+- explicit boundary docs/deprecation notes,
+- explicit ADR/ticket,
+- migration notes and ownership map updates.
 
-- `cargo xtask architecture` remains green.
-- `cargo check -p venom-scanner --locked` remains green.
-- `docs/index.md` and `docs/adr/README.md` show current milestone status.
-- Migration decisions are documented and no item can move from `platform-shell` to `Keep` without an ADR or migration ticket.
+### Phase 5.5.3 — Runtime truth preconditions
 
-## 6) Runtime truth map (updated)
+- `cargo check -p venom-scanner --locked` keeps passing.
+- `cargo run --locked -p xtask -- architecture` keeps passing.
+- `docs/index.md` and `docs/adr/README.md` point to current status.
+- No item moves from `platform-shell` to `legacy` without ADR or ticket.
+
+## 5) Runtime truth map
 
 ```mermaid
 flowchart TD
@@ -168,18 +140,25 @@ flowchart TD
   Runner --> Phases[phases/*]
   Phases --> Findings[Vec<ScanFinding>]
 
-  Runner --> LegacyCore[contracts + event_bus + logging]
+  ScanContext --> LegacyCore[contracts + event_bus + logging]
 
-  Cli[/Decision runtime command/]
-  Cli --> DecisionPath[Decision runtime modules]
+  Cli[venom-cli/src/main.rs] --> DecisionPath[Decision runtime modules]
   DecisionPath --> RuntimeBudget[runtime_budget]
   DecisionPath --> WebRuntime[web_runtime]
   WebRuntime --> Planner[planner + decision_loop]
   Planner --> Evidence[knowledge + rules + experience + api_evidence + verification]
   Evidence --> DecisionArtifacts[audit receipts / findings]
 
-  Cli --> PlatformShell[platform shell feature modules]
+  Cli[venom-cli/src/main.rs] --> PlatformShell[platform shell feature modules]
   PlatformShell --> Plugins[plugins + plugin + lua_engine]
   PlatformShell --> Infra[compliance + monitoring + distributed + ml + reporting + persistence + ...]
 ```
 
+## 6) Acceptance and local check notes
+
+- `cargo test --workspace --all-features --locked` is not a required green guarantee for
+  `RuntimeConsolidation-5.5` because local environment restrictions currently block
+  a subset of `venom-core` doctests (`os error 4551` from App Control policy). That is
+  tracked separately and already documented in test notes.
+- 5.5 is considered complete when architecture checks, class registry, and ADR
+  links are stable and reviewed.

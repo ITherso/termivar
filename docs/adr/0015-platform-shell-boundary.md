@@ -1,6 +1,6 @@
 # ADR 0015: Platform shell boundary for non-scan modules
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-08-04
 - Supersedes: ADR 0014
 - Scope: Repository migration sequencing and runtime truth
