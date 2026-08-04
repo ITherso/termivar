@@ -9,5 +9,7 @@ description = "{{ scanner_description }}"
 
 [dependencies]
 async-trait = "0.1"
+clap = { version = "4", features = ["derive"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+url = "2.5"
 venom-scanner = { git = "https://github.com/ITherso/venom", branch = "main", default-features = false, features = ["scanning"] }

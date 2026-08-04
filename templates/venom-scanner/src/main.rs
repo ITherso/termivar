@@ -1,5 +1,16 @@
 use async_trait::async_trait;
+use clap::Parser;
+use url::Url;
 use venom_scanner::{Result, ScanContext, ScanFinding, ScanPhase, ScannerSdk};
+
+/// Authorized-target scanner generated from the Venom Scanner SDK template.
+#[derive(Debug, Parser)]
+#[command(about = "Authorized-target scanner generated from the Venom Scanner SDK template")]
+struct Cli {
+    /// Authorized target URL. Defaults to the safe `.test` placeholder.
+    #[arg(default_value = "https://example.test")]
+    target: Url,
+}
 
 struct AuthorizedTargetPhase;
 
@@ -26,12 +37,10 @@ impl ScanPhase for AuthorizedTargetPhase {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let target = std::env::args()
-        .nth(1)
-        .unwrap_or_else(|| "https://example.test".to_string());
+    let target = Cli::parse().target;
 
     let scanner = ScannerSdk::builder().phase(AuthorizedTargetPhase).build();
-    let report = scanner.scan(&target).await?;
+    let report = scanner.scan(target.as_ref()).await?;
 
     println!("{} finding(s) for {}", report.findings.len(), report.target);
     for finding in report.findings {
@@ -50,5 +59,17 @@ mod tests {
         let scanner = ScannerSdk::builder().phase(AuthorizedTargetPhase).build();
         let report = scanner.scan("https://example.test").await.unwrap();
         assert_eq!(report.findings.len(), 1);
+    }
+
+    #[test]
+    fn parses_an_explicit_target() {
+        let cli = Cli::try_parse_from(["scanner", "https://target.test"]).unwrap();
+        assert_eq!(cli.target.as_str(), "https://target.test/");
+    }
+
+    #[test]
+    fn defaults_to_the_safe_test_target() {
+        let cli = Cli::try_parse_from(["scanner"]).unwrap();
+        assert_eq!(cli.target.as_str(), "https://example.test/");
     }
 }
