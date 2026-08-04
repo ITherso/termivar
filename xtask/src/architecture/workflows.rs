@@ -66,15 +66,21 @@ fn workflow_pin_violations(files: &[(String, String)]) -> Vec<String> {
             let Some(reference) = uses_reference(line) else {
                 continue;
             };
+            let line_number = index + 1;
             // Local composite/reusable actions are versioned by this repo.
             if reference.starts_with("./") {
                 continue;
             }
-            // Container actions are addressed separately and are absent here.
             if reference.starts_with("docker://") {
+                if is_immutable_docker_reference(reference) {
+                    continue;
+                }
+                violations.push(format!(
+                    "{path}:{line_number}: container action `{reference}` is not an immutable \
+                     digest; use `docker://image@sha256:<64-lowercase-hex>`"
+                ));
                 continue;
             }
-            let line_number = index + 1;
             match reference.rsplit_once('@') {
                 Some((action, git_ref)) if is_full_commit_sha(git_ref) => {
                     let _ = action;
@@ -98,9 +104,49 @@ fn workflow_pin_violations(files: &[(String, String)]) -> Vec<String> {
 fn uses_reference(line: &str) -> Option<&str> {
     let trimmed = line.trim_start();
     let trimmed = trimmed.strip_prefix("- ").unwrap_or(trimmed);
-    let rest = trimmed.strip_prefix("uses:")?;
-    // The token is everything up to the first whitespace (drops any `# comment`).
-    rest.split_whitespace().next()
+    let uses_key_index = match trimmed.find("uses") {
+        Some(0) => 0,
+        Some(index) if trimmed[..index].trim().is_empty() => 0,
+        _ => return None,
+    };
+    let after_key = &trimmed[uses_key_index + "uses".len()..];
+    let mut parts = after_key.splitn(2, ':');
+    match parts.next()? {
+        value if !value.trim().is_empty() => return None,
+        _ => {},
+    }
+    let value = parts.next()?;
+    let mut value = value.trim();
+    if value.is_empty() {
+        return None;
+    }
+
+    if value.starts_with('\"') {
+        let Some(end_quote_offset) = value.rfind('\"') else {
+            return None;
+        };
+        if end_quote_offset == 0 {
+            return None;
+        }
+        value = &value[1..end_quote_offset];
+        return Some(value);
+    }
+    if value.starts_with('\'') {
+        let Some(end_quote_offset) = value.rfind('\'') else {
+            return None;
+        };
+        if end_quote_offset == 0 {
+            return None;
+        }
+        value = &value[1..end_quote_offset];
+        return Some(value);
+    }
+
+    // The token is everything up to the first whitespace or comment marker (drops any
+    // `# comment` in unquoted values).
+    value
+        .split(|ch: char| ch.is_ascii_whitespace() || ch == '#')
+        .next()
 }
 
 fn is_full_commit_sha(git_ref: &str) -> bool {
@@ -110,11 +156,29 @@ fn is_full_commit_sha(git_ref: &str) -> bool {
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
+fn is_immutable_docker_reference(reference: &str) -> bool {
+    let reference = match reference.strip_prefix("docker://") {
+        Some(reference) => reference,
+        None => return false,
+    };
+    let (image, digest) = match reference.rsplit_once("@sha256:") {
+        Some(parts) => parts,
+        None => return false,
+    };
+    if image.is_empty() || digest.len() != 64 {
+        return false;
+    }
+    digest
+        .bytes()
+        .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     const SHA: &str = "d23441a48e516b6c34aea4fa41551a30e30af803";
+    const DOCKER_DIGEST: &str = "0f1bf58a2f0e55ad8f1f3d8f8f1a9c0e58f1f0e0f1f5e2f3c8a0bb1f1e0a2c4d";
 
     fn violations(contents: &str) -> Vec<String> {
         workflow_pin_violations(&[("wf.yml".to_owned(), contents.to_owned())])
@@ -173,9 +237,40 @@ mod tests {
     }
 
     #[test]
-    fn local_and_container_actions_are_exempt() {
+    fn local_actions_are_exempt() {
         assert!(violations("      - uses: ./.github/actions/setup\n").is_empty());
-        assert!(violations("      - uses: docker://alpine:3.20\n").is_empty());
+    }
+
+    #[test]
+    fn a_docker_digest_reference_is_accepted() {
+        let line = format!("      - uses: docker://alpine@sha256:{DOCKER_DIGEST}\n");
+        assert!(violations(&line).is_empty());
+    }
+
+    #[test]
+    fn a_docker_tag_reference_is_rejected() {
+        assert_eq!(violations("      - uses: docker://alpine:3.20\n").len(), 1);
+    }
+
+    #[test]
+    fn docker_latest_reference_is_rejected() {
+        assert_eq!(
+            violations("      - uses: docker://alpine:latest\n").len(),
+            1
+        );
+    }
+
+    #[test]
+    fn malformed_docker_digest_reference_is_rejected() {
+        assert_eq!(
+            violations("      - uses: docker://alpine@sha256:1234\n").len(),
+            1
+        );
+        assert_eq!(
+            violations("      - uses: docker://alpine@sha256:gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggg\n")
+                .len(),
+            1
+        );
     }
 
     #[test]
@@ -191,5 +286,29 @@ mod tests {
         let out = violations(&contents);
         assert_eq!(out.len(), 1, "{out:?}");
         assert!(out[0].contains("wf.yml:3:"), "{out:?}");
+    }
+
+    #[test]
+    fn uses_with_multiple_spaces_after_dash_is_recognized() {
+        let contents = format!("    -   uses: actions/checkout@{SHA}\n");
+        assert!(violations(&contents).is_empty());
+    }
+
+    #[test]
+    fn uses_with_space_around_colon_is_recognized() {
+        let contents = format!("      uses : actions/checkout@{SHA}\n");
+        assert!(violations(&contents).is_empty());
+    }
+
+    #[test]
+    fn uses_with_single_quoted_value_is_recognized() {
+        let contents = format!("      - uses: 'actions/checkout@{SHA}'\n");
+        assert!(violations(&contents).is_empty());
+    }
+
+    #[test]
+    fn uses_with_double_quoted_value_is_recognized() {
+        let contents = format!("      - uses: \"actions/checkout@{SHA}\"\n");
+        assert!(violations(&contents).is_empty());
     }
 }
