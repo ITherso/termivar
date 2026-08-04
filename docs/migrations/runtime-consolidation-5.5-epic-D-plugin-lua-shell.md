@@ -1,6 +1,6 @@
 # Runtime Consolidation 5.5 — Epic D: Plugin + Lua Shell Handoff
 
-Status: **in progress (boundary docs added)**
+Status: **completed (boundary docs added)**
 
 Scope: `plugin`, `plugins/*`, `lua_engine`
 
@@ -59,3 +59,4 @@ or refactor alternatives are not active in scan.
   - `crates/venom-scanner/src/lua_engine.rs`
 - Keep plugin execution behind explicit feature gating and non-default runtime
   contracts until a dedicated integration milestone.
+

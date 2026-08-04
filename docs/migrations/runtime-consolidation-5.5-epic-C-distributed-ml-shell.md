@@ -1,6 +1,6 @@
 # Runtime Consolidation 5.5 — Epic C: Distributed + ML Shell Handoff
 
-Status: **in progress (boundary docs added)**
+Status: **completed (boundary docs added)**
 
 Scope: `distributed`, `ml`
 
@@ -60,3 +60,4 @@ behavior.
 - Keep `distributed` and `ml` feature-gated and off by default for scan runtime.
 - Confirm integration points by ADR before any default-path hook is added in a later
   release milestone.
+

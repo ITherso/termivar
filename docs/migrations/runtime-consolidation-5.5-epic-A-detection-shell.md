@@ -1,6 +1,6 @@
 # Runtime Consolidation 5.5 — Epic A: Detection Shell Handoff
 
-Status: **in progress (boundary docs added)**
+Status: **completed (boundary docs added)**
 
 Scope: `advanced_detection`, `anomaly`
 
@@ -74,3 +74,4 @@ Every PR in Epic A must leave these artifacts in-tree and reviewed:
   - `crates/venom-scanner/src/anomaly.rs`
 - Keep these modules feature-scoped and non-default for scan execution until a dedicated
   integration milestone validates ownership transfer.
+

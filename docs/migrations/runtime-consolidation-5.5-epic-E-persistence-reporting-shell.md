@@ -1,6 +1,6 @@
 # Runtime Consolidation 5.5 — Epic E: Persistence + Reporting Shell Handoff
 
-Status: **in progress (boundary docs added)**
+Status: **completed (boundary docs added)**
 
 Scope: `persistence`, `reporting`, `realtime`, `dashboard`, `post_exploitation`
 
@@ -63,3 +63,4 @@ These files compile in the current default feature set but are not invoked by de
   - `crates/venom-scanner/src/post_exploitation.rs`
 - Keep these modules intentionally disconnected from default `venom scan` execution
   until future migration milestone approvals.
+

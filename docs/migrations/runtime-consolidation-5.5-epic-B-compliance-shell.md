@@ -1,6 +1,6 @@
 # Runtime Consolidation 5.5 — Epic B: Compliance Shell Handoff
 
-Status: **in progress (boundary docs added)**
+Status: **completed (boundary docs added)**
 
 Scope: `compliance`, `monitoring`, `threat_intelligence`
 
@@ -65,3 +65,4 @@ Runtime ticket target: `RUNTIME-5.5.B-001`.
   - `crates/venom-scanner/src/threat_intelligence.rs`
 - Keep modules off by default for scan execution while preserving feature surfaces for
   future migration milestones.
+
