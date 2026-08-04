@@ -253,10 +253,9 @@ main() {
     echo ""
     echo -e "${GREEN}════════════════════════════════════════════${NC}"
     echo -e "${BLUE}🚀 Next steps:${NC}"
-    echo "  1. Start the proxy:     venom"
-    echo "  2. Open dashboard:      http://localhost:3000"
-    echo "  3. View help:           venom --help"
-    echo "  4. Read docs:           https://github.com/ITherso/venom/docs"
+    echo "  1. Start the proxy:     venom proxy --addr 0.0.0.0:8080"
+    echo "  2. View help:           venom --help"
+    echo "  3. Read docs:           https://github.com/ITherso/venom/docs"
     echo ""
 }
 
