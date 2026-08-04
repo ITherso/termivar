@@ -3,23 +3,31 @@
 //! Use only against a target you own or are explicitly authorized to test:
 //! `cargo run -p venom-examples --bin decision_scan -- https://target.example/`
 
-use std::{env, error::Error, time::Duration};
+use std::{error::Error, time::Duration};
 
+use clap::Parser;
 use url::Url;
 use venom_scanner::{
     HttpBodyCapture, HttpEvidencePolicy, RuntimeBudget, StandardWebDecisionRuntime,
     StandardWebDecisionRuntimeTurn,
 };
 
+/// Run the standard deterministic web decision runtime against an authorized target.
+#[derive(Debug, Parser)]
+#[command(
+    name = "decision_scan",
+    about = "Run the standard deterministic web decision runtime against an authorized target"
+)]
+struct Cli {
+    /// Authorized HTTP(S) target URL. Only scan targets you own or are explicitly
+    /// authorized to test.
+    target: Url,
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
-    let Some(raw_target) = env::args().nth(1) else {
-        eprintln!(
-            "usage: cargo run -p venom-examples --bin decision_scan -- <authorized-http-url>"
-        );
-        return Ok(());
-    };
-    let target = Url::parse(&raw_target)?;
+    let cli = Cli::parse();
+    let target = cli.target;
     let policy = HttpEvidencePolicy::for_origin(target.clone())?
         .with_body_capture(HttpBodyCapture::TextSample { max_chars: 8_192 })?;
     let runtime_budget = RuntimeBudget::default()
@@ -81,4 +89,25 @@ async fn main() -> Result<(), Box<dyn Error>> {
     }
     println!("experience records: {}", runtime.experience().len());
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_an_authorized_target_url() {
+        let cli = Cli::try_parse_from(["decision_scan", "https://target.example/"]).unwrap();
+        assert_eq!(cli.target.as_str(), "https://target.example/");
+    }
+
+    #[test]
+    fn rejects_a_non_url_argument() {
+        assert!(Cli::try_parse_from(["decision_scan", "not a url"]).is_err());
+    }
+
+    #[test]
+    fn requires_a_target_argument() {
+        assert!(Cli::try_parse_from(["decision_scan"]).is_err());
+    }
 }
