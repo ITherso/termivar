@@ -11,6 +11,7 @@ Venom is a modular Rust-based penetration testing framework focused on research 
 - [Scanner SDK](sdk.md)
 - [Runtime Consolidation 5.3](migrations/runtime-consolidation-5.3.md)
 - [Runtime Consolidation 5.4](migrations/runtime-consolidation-5.4.md)
+- [Runtime Consolidation 5.5](migrations/runtime-consolidation-5.5.md)
 - [Feature lifecycle](https://github.com/ITherso/venom/blob/main/FEATURES.md)
 - [Project status and v1 gates](https://github.com/ITherso/venom/blob/main/PROJECT_STATUS.md)
 - [Architecture decisions](adr/README.md)
