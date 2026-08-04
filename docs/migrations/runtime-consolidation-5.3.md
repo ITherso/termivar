@@ -5,7 +5,6 @@ semantics were changed in this milestone.
 
 Inputs used for this inventory:
 
-- `outputs/runtime_inventory_scanner_graph.json`
 - `cargo xtask architecture` (structure + source reachability gate)
 - static code-path tracing from:
   - `crates/venom-cli/src/main.rs`
@@ -21,22 +20,21 @@ Inputs used for this inventory:
 | `venom-cli` | 1 | 1 | 1 | Entry-point only |
 | `venom-proxy` | 2 | 2 | 2 | `mitm` crate boundary |
 | `venom-api` | 1 | 1 | 1 | API server crate boundary |
-| `venom-scanner` | 109 | 97 | 83 | 12 files are unreachable/unmapped at root |
+| `venom-scanner` | 101 | 97 | 83 | 4 files are unreachable/unmapped at root |
 
 Ground-truth source inventory was generated from:
 
-- `cargo xtask architecture` + `xtask` JSON export path:
-  - `outputs/runtime_inventory_scanner_graph.json`
+- `cargo xtask architecture`
 - `venom-scanner` reachability extraction (non-test sources):
   - `ReachabilityRows` -> `Reachable` and `DefaultFeatureReachable`
 
 For `venom-scanner` the counts are:
 
-- total sources: 109
+- total sources: 101
 - reachable in at least one feature set: 97
 - reachable with default features: 83
 - reachable only under non-default features: 14
-- non-reachable (must remain explicit in allowlist): 12
+- non-reachable (must remain explicit in allowlist): 4
 
 Non-default reachable files are intentionally treated as `platform shell` under `scanning`-adjacent, feature-gated surfaces:
 
@@ -124,14 +122,6 @@ These are intentionally not on active module graph execution:
 - `src/api_evidence_tests.rs`
 - `src/web_runtime_tests.rs`
 - `src/api_evidence/profiled_tests.rs`
-- `src/lua/cache.rs`
-- `src/lua/executor.rs`
-- `src/lua/history.rs`
-- `src/lua/loader.rs`
-- `src/lua/mod.rs`
-- `src/lua/registry.rs`
-- `src/lua/sandbox.rs`
-- `src/lua/types.rs`
 - `src/web_runtime/api_visibility/differential_tests.rs`
 
 ## 3) Keep / Migrate / Delete decision for 5.3 milestone
@@ -189,4 +179,4 @@ flowchart TD
 3. Add explicit tests asserting scan path and module boundary behavior.
 4. After boundary freeze, introduce decision runtime command path in a dedicated follow-up milestone.
 
-Current milestone output: `work/venom/outputs/runtime_inventory_scanner_graph.json` + this document.
+Current milestone output: this document.

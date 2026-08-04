@@ -48,20 +48,18 @@ Current state: **completed**
 
 ### Epic C — `lua`
 
-Current state:
+Current state: **completed**
 
 - `src/lua_engine.rs` is linked and exported.
-- `src/lua/*.rs` modules are unreferenced dead files with partially duplicated intent
-  versus `lua_engine.rs`.
+- `src/lua/*.rs` modules were removed in this cleanup run.
+- Runtime now uses `src/lua_engine.rs` as the single Lua execution implementation.
 
-Decision options:
+Boundary outcome:
 
-1. **Consolidate**: convert `src/lua_engine.rs` to a compatibility shim over
-   `src/lua/` and remove duplicated legacy implementation.
-2. **Keep shim**: keep both only as explicit long-term migration surface with clear
-   deprecation notes, no behavior changes.
-3. **Split**: move/rename dead `src/lua/*.rs` to migration namespace and remove
-   references until ready.
+1. **Keep shim posture**: continue using `lua_engine.rs` as the canonical runtime
+   execution path.
+2. **Migrate status**: no legacy `src/lua/*.rs` modules remain in-tree.
+3. **Document**: migration summary moved to ADR and 5.3 inventory.
 
 Constraint:
 - PRs in this epic must include explicit compiler boundary notes for API parity.
@@ -69,7 +67,7 @@ Constraint:
 ## 3) Required PR ordering
 
 1. ADR update + runtime boundary freeze note.
-2. `lua` cleanup PR.
+2. `lua` cleanup PR (completed).
 3. Final consolidation PR:
    - update `runtime-consolidation-5.3.md` with final results,
    - verify `cargo xtask architecture` with allowlist exactly matching the chosen outcomes.

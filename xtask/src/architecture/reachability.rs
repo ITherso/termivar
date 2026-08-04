@@ -26,14 +26,6 @@ const SOURCE_REACHABILITY_ALLOWLIST: &[(&str, &[&str])] = &[
         &[
             "src/api_evidence_tests.rs",
             "src/web_runtime_tests.rs",
-            "src/lua/cache.rs",
-            "src/lua/executor.rs",
-            "src/lua/history.rs",
-            "src/lua/loader.rs",
-            "src/lua/mod.rs",
-            "src/lua/registry.rs",
-            "src/lua/sandbox.rs",
-            "src/lua/types.rs",
             "src/api_evidence/profiled_tests.rs",
             "src/web_runtime/api_visibility/differential_tests.rs",
         ],
@@ -323,8 +315,8 @@ mod tests {
     #[test]
     fn allowlist_has_scanner_scaffold_files() {
         let allowlist = allowed_sources_for("venom-scanner");
-        assert!(allowlist.contains("src/lua/cache.rs"));
-        assert!(allowlist.contains("src/lua/executor.rs"));
+        assert!(allowlist.contains("src/api_evidence_tests.rs"));
+        assert!(allowlist.contains("src/web_runtime/api_visibility/differential_tests.rs"));
     }
 
     #[test]
