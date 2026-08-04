@@ -9,6 +9,8 @@ updates:
       time: '04:23'
       timezone: Europe/Istanbul
     open-pull-requests-limit: 5
+    cooldown:
+      default-days: 7
     groups:
       rust-minor-patch:
         update-types: [minor, patch]
@@ -21,6 +23,8 @@ updates:
       time: '04:37'
       timezone: Europe/Istanbul
     open-pull-requests-limit: 5
+    cooldown:
+      default-days: 7
     groups:
       web-minor-patch:
         update-types: [minor, patch]
@@ -33,6 +37,8 @@ updates:
       time: '04:51'
       timezone: Europe/Istanbul
     open-pull-requests-limit: 5
+    cooldown:
+      default-days: 7
     groups:
       workflow-actions:
         patterns: ['*']
