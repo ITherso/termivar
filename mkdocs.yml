@@ -55,6 +55,7 @@ nav:
       - API: API.md
       - Compliance: COMPLIANCE.md
       - Distribution: DISTRIBUTION.md
+      - Deployment blueprint (experimental): experimental/deployment-blueprint.md
   - Project:
       - Project status: https://github.com/ITherso/venom/blob/main/PROJECT_STATUS.md
       - Contributing: CONTRIBUTING.md

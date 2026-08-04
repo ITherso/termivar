@@ -2,6 +2,14 @@
 
 Planned distribution channels for Venom v0.9.0-alpha.
 
+> **Orchestrated deployment is not currently available.** Venom `0.9.0-alpha`
+> ships no supported Helm chart, Terraform stack, or Kubernetes deployment, and
+> the container does not expose a working API server. The Kubernetes/Helm and
+> multi-service Docker Compose sections below describe *intended* future channels,
+> not working ones. See the non-deployable
+> [deployment blueprint](experimental/deployment-blueprint.md) for the current
+> status and the contracts required before executable manifests may return.
+
 ## Installation Overview
 
 ```
@@ -16,8 +24,8 @@ VENOM Installation Methods
 │  └─ Cargo (Rust developers)
 ├─ Container Images
 │  ├─ Docker Hub
-│  ├─ GitHub Container Registry
-│  └─ Kubernetes (Helm)
+│  └─ GitHub Container Registry
+│  (Kubernetes/Helm: planned, not currently available)
 ├─ Cloud Marketplace
 │  ├─ AWS AMI
 │  ├─ Azure VM Image
@@ -96,20 +104,10 @@ docker run -v $(pwd):/app -p 8080:8080 -p 3000:3000 ghcr.io/itherso/venom:latest
 
 ### Kubernetes
 
-```bash
-# Add Helm repository
-helm repo add venom https://charts.venom.dev
-helm repo update
-
-# Install with default values
-helm install venom venom/venom
-
-# Install with custom values
-helm install venom venom/venom -f custom-values.yaml
-
-# Upgrade
-helm upgrade venom venom/venom
-```
+Not currently available. There is no supported Helm chart or Kubernetes
+deployment for `0.9.0-alpha`; the previously tracked manifests were removed
+because they could not render or run. See the
+[deployment blueprint](experimental/deployment-blueprint.md).
 
 ## Package Managers
 
@@ -227,85 +225,18 @@ docker run -it ghcr.io/itherso/venom:latest /bin/bash
 
 ### Kubernetes / Helm
 
-**Chart Repository:**
-```bash
-helm repo add venom https://charts.venom.dev
-helm repo update
-helm search repo venom
-```
-
-**Installation Examples:**
-
-Single-node deployment:
-```bash
-helm install venom venom/venom \
-  --set replicaCount=1 \
-  --set autoscaling.enabled=false
-```
-
-High-availability cluster:
-```bash
-helm install venom venom/venom \
-  --set replicaCount=3 \
-  --set autoscaling.enabled=true \
-  --set autoscaling.minReplicas=3 \
-  --set autoscaling.maxReplicas=10
-```
-
-With custom domain:
-```bash
-helm install venom venom/venom \
-  --set ingress.enabled=true \
-  --set ingress.hosts[0].host=venom.example.com
-```
+Not currently available. No Helm chart, autoscaling, ingress, or high-availability
+deployment is supported for `0.9.0-alpha`. The contracts that must exist before a
+chart can return are listed in the
+[deployment blueprint](experimental/deployment-blueprint.md).
 
 ### Docker Compose
 
-**Complete stack with PostgreSQL and Redis:**
-
-```yaml
-version: '3.8'
-
-services:
-  venom:
-    image: ghcr.io/itherso/venom:latest
-    ports:
-      - "8080:8080"
-      - "3000:3000"
-    environment:
-      DATABASE_URL: postgresql://venom:venom@postgres:5432/venom_db
-      REDIS_URL: redis://redis:6379
-    depends_on:
-      - postgres
-      - redis
-    volumes:
-      - venom-data:/app/data
-    networks:
-      - venom-network
-
-  postgres:
-    image: postgres:15
-    environment:
-      POSTGRES_USER: venom
-      POSTGRES_PASSWORD: venom
-      POSTGRES_DB: venom_db
-    volumes:
-      - postgres-data:/var/lib/postgresql/data
-    networks:
-      - venom-network
-
-  redis:
-    image: redis:7
-    networks:
-      - venom-network
-
-volumes:
-  venom-data:
-  postgres-data:
-
-networks:
-  venom-network:
-```
+No supported multi-service stack ships today. The container runs the proxy on
+`8080`; it does not provide the previously documented API server on `3000`, and
+the scanner/proxy do not integrate a PostgreSQL or Redis runtime dependency. A
+supported PostgreSQL/Redis-backed stack is out of scope for `0.9.0-alpha`; see the
+[deployment blueprint](experimental/deployment-blueprint.md).
 
 ## GitHub Releases
 
@@ -571,12 +502,6 @@ cargo uninstall venom
 
 ```bash
 docker rmi ghcr.io/itherso/venom:latest
-```
-
-### Remove Helm Release
-
-```bash
-helm uninstall venom
 ```
 
 ## Support & Issues
