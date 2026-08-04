@@ -1,6 +1,6 @@
 # Runtime Consolidation 5.5 — Runtime Inventory and Migration Matrix
 
-Status: **implemented (docs + migration planning only)**.
+Status: **completed (runtime ownership map locked)**.
 
 This milestone is the hardening pass before we touch behavior.
 
@@ -13,6 +13,14 @@ This milestone is the hardening pass before we touch behavior.
 We keep one goal only:
 produce and lock a complete runtime ownership map and a migration sequence that can
 be executed one subsystem at a time.
+
+Closure evidence:
+- Date: 2026-08-04
+- `cargo run --locked -p xtask -- architecture` ✅
+- `cargo check -p venom-scanner --locked` ✅
+- `cargo check -p venom-scanner --locked --no-default-features` ✅
+- `cargo check -p venom-scanner --locked --features full` ✅
+- All Epic handoff docs (A–E) and 5.5 operations board marked boundary-complete.
 
 ## 1) Evidence used for this inventory
 
@@ -215,3 +223,17 @@ flowchart TD
   tracked separately and already documented in test notes.
 - 5.5 is considered complete when architecture checks, class registry, and ADR
   links are stable and reviewed.
+
+## 7) 5.6 Handoff
+
+5.6 begins only after:
+
+- The boundary map in this phase remains unchanged for at least one review cycle.
+- A dedicated integration owner approves each migration of `platform-shell` modules.
+- A runtime-consolidation plan for default execution path switch is written and reviewed
+  as an ADR.
+- No PR in 5.6 changes runtime behavior before explicit planning and approval.
+
+For the next phase, use:
+- `docs/migrations/runtime-consolidation-5.5-operations.md` as the baseline gatebook.
+- `docs/adr/0015-platform-shell-boundary.md` as the migration authority.
