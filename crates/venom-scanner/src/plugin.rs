@@ -1,6 +1,19 @@
 //! Plugin System for Extensibility
 //!
 //! Comprehensive modular plugin architecture for vulnerability scanning.
+//!
+//! # Runtime scope
+//!
+//! This module is part of the **platform-shell** boundary in Runtime Consolidation
+//! 5.5. It is feature-gated (`plugins`) and is **not** part of default
+//! `venom scan` execution.
+//!
+//! Current contract:
+//!
+//! - The module is available for custom extension work and integration experiments.
+//! - Default CLI scan flow remains in the legacy runner path unless a dedicated
+//!   integration milestone moves plugin execution into the scan runtime contract.
+//! - Any default-path usage must be documented via ADR and migration ticket.
 
 use crate::contracts::ScanFinding;
 use dashmap::DashMap;

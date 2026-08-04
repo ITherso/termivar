@@ -1,6 +1,6 @@
 # Runtime Consolidation 5.5 — Epic D: Plugin + Lua Shell Handoff
 
-Status: **ready**
+Status: **in progress (boundary docs added)**
 
 Scope: `plugin`, `plugins/*`, `lua_engine`
 
@@ -8,6 +8,9 @@ Owner: `team-plugins`
 
 Goal: keep plugin execution surfaces clear as platform shell until dedicated runtime
 integration milestone.
+Runtime ticket target: `RUNTIME-5.5.D-001`.
+
+This scope is intentionally retained as plugin/Lua capability surface only.
 
 ## 1) Current runtime facts (from 5.5 inventory)
 
@@ -43,8 +46,16 @@ or refactor alternatives are not active in scan.
 
 ## 5) PR checklist
 
-- [ ] docs-only scope.
+- [x] docs-only scope.
 - [ ] no code change in scanning/decision runtime behavior.
 - [ ] clear "not in scan default path" statement.
 - [ ] ticket + owner in PR description.
 
+## 6) Planned execution hook
+
+- Add explicit boundary notes to:
+  - `crates/venom-scanner/src/plugin.rs`
+  - `crates/venom-scanner/src/plugins/mod.rs`
+  - `crates/venom-scanner/src/lua_engine.rs`
+- Keep plugin execution behind explicit feature gating and non-default runtime
+  contracts until a dedicated integration milestone.
