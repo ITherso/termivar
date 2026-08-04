@@ -79,13 +79,13 @@ Execution sequence:
 
 ## 4) EPIC status board
 
-| EPIC | Scope | Owner | Handoff doc | Status |
-| --- | --- | --- | --- | --- |
-| A | `advanced_detection`, `anomaly` | `team-runtime-science` | [Epic A](runtime-consolidation-5.5-epic-A-detection-shell.md) | In Progress (boundary docs added) |
-| B | `compliance`, `monitoring`, `threat_intelligence` | `team-platform-observability` | [Epic B](runtime-consolidation-5.5-epic-B-compliance-shell.md) | In Progress (boundary docs added) |
-| C | `distributed`, `ml` | `team-platform-core` | [Epic C](runtime-consolidation-5.5-epic-C-distributed-ml-shell.md) | In Progress (boundary docs added) |
-| D | `plugin`, `plugins/*`, `lua_engine` | `team-plugins` | [Epic D](runtime-consolidation-5.5-epic-D-plugin-lua-shell.md) | In Progress (boundary docs added) |
-| E | `persistence`, `reporting`, `realtime`, `dashboard`, `post_exploitation` | `team-platform-runtime` | [Epic E](runtime-consolidation-5.5-epic-E-persistence-reporting-shell.md) | In Progress (boundary docs added) |
+| EPIC | Scope | Owner | Handoff doc | Ticket | Status |
+| --- | --- | --- | --- | --- | --- |
+| A | `advanced_detection`, `anomaly` | `team-runtime-science` | [Epic A](runtime-consolidation-5.5-epic-A-detection-shell.md) | `RUNTIME-5.5.A-001` | In Progress (boundary docs added) |
+| B | `compliance`, `monitoring`, `threat_intelligence` | `team-platform-observability` | [Epic B](runtime-consolidation-5.5-epic-B-compliance-shell.md) | `RUNTIME-5.5.B-001` | In Progress (boundary docs added) |
+| C | `distributed`, `ml` | `team-platform-core` | [Epic C](runtime-consolidation-5.5-epic-C-distributed-ml-shell.md) | `RUNTIME-5.5.C-001` | In Progress (boundary docs added) |
+| D | `plugin`, `plugins/*`, `lua_engine` | `team-plugins` | [Epic D](runtime-consolidation-5.5-epic-D-plugin-lua-shell.md) | `RUNTIME-5.5.D-001` | In Progress (boundary docs added) |
+| E | `persistence`, `reporting`, `realtime`, `dashboard`, `post_exploitation` | `team-platform-runtime` | [Epic E](runtime-consolidation-5.5-epic-E-persistence-reporting-shell.md) | `RUNTIME-5.5.E-001` | In Progress (boundary docs added) |
 
 ## 5) Exit criteria for this gatebook phase
 

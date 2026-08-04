@@ -130,7 +130,7 @@ Each epic must only do:
 
 The following epic records are the initial handoff points for the next three to six PRs:
 
-- **Epic A — detection-shell**
+- **Epic A — detection-shell** (`RUNTIME-5.5.A-001`)
   - Scope: `advanced_detection`, `anomaly`
   - Owner: `team-runtime-science`
   - Handoff doc: [5.5-epic-A-detection-shell.md](runtime-consolidation-5.5-epic-A-detection-shell.md)
@@ -139,7 +139,7 @@ The following epic records are the initial handoff points for the next three to 
     - explicit `platform-shell` execution note in API docs
     - deprecation or migration ticket reference
 
-- **Epic B — compliance-shell**
+- **Epic B — compliance-shell** (`RUNTIME-5.5.B-001`)
   - Scope: `compliance`, `monitoring`, `threat_intelligence`
   - Owner: `team-platform-observability`
   - Handoff doc: [5.5-epic-B-compliance-shell.md](runtime-consolidation-5.5-epic-B-compliance-shell.md)
@@ -148,7 +148,7 @@ The following epic records are the initial handoff points for the next three to 
     - runtime path note in docs
     - migration ticket reference
 
-- **Epic C — distributed-ml shell**
+- **Epic C — distributed-ml shell** (`RUNTIME-5.5.C-001`)
   - Scope: `distributed`, `ml`
   - Owner: `team-platform-core`
   - Handoff doc: [5.5-epic-C-distributed-ml-shell.md](runtime-consolidation-5.5-epic-C-distributed-ml-shell.md)
@@ -157,7 +157,7 @@ The following epic records are the initial handoff points for the next three to 
     - explicit "non-default CLI path" banner
     - migration ticket reference
 
-- **Epic D — plugin-lua shell**
+- **Epic D — plugin-lua shell** (`RUNTIME-5.5.D-001`)
   - Scope: `plugin`, `plugins/*`, `lua_engine`
   - Owner: `team-plugins`
   - Handoff doc: [5.5-epic-D-plugin-lua-shell.md](runtime-consolidation-5.5-epic-D-plugin-lua-shell.md)
@@ -166,7 +166,7 @@ The following epic records are the initial handoff points for the next three to 
     - source-of-truth mapping update in this milestone doc
     - migration ticket reference
 
-- **Epic E — persistence-reporting shell**
+- **Epic E — persistence-reporting shell** (`RUNTIME-5.5.E-001`)
   - Scope: `persistence`, `reporting`, `realtime`, `dashboard`, `post_exploitation`
   - Owner: `team-platform-runtime`
   - Handoff doc: [5.5-epic-E-persistence-reporting-shell.md](runtime-consolidation-5.5-epic-E-persistence-reporting-shell.md)
