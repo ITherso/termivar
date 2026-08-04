@@ -28,6 +28,9 @@ be executed one subsystem at a time.
 - `xtask` source reachability allowlist in
   `xtask/src/architecture/reachability.rs`
 
+Operational runbook:
+- [runtime-consolidation-5.5-operations.md](runtime-consolidation-5.5-operations.md)
+
 ## 2) `venom-scanner` module inventory
 
 - Total Rust source files (`src`, including feature-gated): **101**
