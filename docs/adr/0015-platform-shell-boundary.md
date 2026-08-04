@@ -51,6 +51,21 @@ The following modules are explicitly in Platform Shell scope under this decision
   - platform shell.
 - PR quality improves with explicit module decisions before implementation.
 
+## Handoff docs
+
+This ADR is operationalized through Runtime Consolidation 5.5 EPIC handoff documents:
+
+- [Epic A: detection-shell](../migrations/runtime-consolidation-5.5-epic-A-detection-shell.md)
+- [Epic B: compliance-shell](../migrations/runtime-consolidation-5.5-epic-B-compliance-shell.md)
+- [Epic C: distributed-ml shell](../migrations/runtime-consolidation-5.5-epic-C-distributed-ml-shell.md)
+- [Epic D: plugin-lua shell](../migrations/runtime-consolidation-5.5-epic-D-plugin-lua-shell.md)
+- [Epic E: persistence-reporting shell](../migrations/runtime-consolidation-5.5-epic-E-persistence-reporting-shell.md)
+
+## Operations
+
+- `docs/migrations/runtime-consolidation-5.5-operations.md` holds the phase-level
+  PR gating and execution sequence.
+
 ## Concrete 5.5 plan
 
 1. Add a complete runtime inventory and keep/migrate/delete matrix in
