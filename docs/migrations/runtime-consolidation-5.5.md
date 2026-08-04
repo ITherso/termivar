@@ -123,6 +123,50 @@ Each epic must only do:
 - explicit ADR/ticket,
 - migration notes and ownership map updates.
 
+#### Epic backlog and ownership (pre-created)
+
+The following epic records are the initial handoff points for the next three to six PRs:
+
+- **Epic A — detection-shell**
+  - Scope: `advanced_detection`, `anomaly`
+  - Owner: `team-runtime-science`
+  - Must include:
+    - module boundary note (`docs/adr` or migration doc update)
+    - explicit `platform-shell` execution note in API docs
+    - deprecation or migration ticket reference
+
+- **Epic B — compliance-shell**
+  - Scope: `compliance`, `monitoring`, `threat_intelligence`
+  - Owner: `team-platform-observability`
+  - Must include:
+    - compatibility matrix (feature-gated vs default scan)
+    - runtime path note in docs
+    - migration ticket reference
+
+- **Epic C — distributed-ml shell**
+  - Scope: `distributed`, `ml`
+  - Owner: `team-platform-core`
+  - Must include:
+    - API stability note
+    - explicit "non-default CLI path" banner
+    - migration ticket reference
+
+- **Epic D — plugin-lua shell**
+  - Scope: `plugin`, `plugins/*`, `lua_engine`
+  - Owner: `team-plugins`
+  - Must include:
+    - boundary and execution path note (`plugin` and `plugins` are not scan defaults)
+    - source-of-truth mapping update in this milestone doc
+    - migration ticket reference
+
+- **Epic E — persistence-reporting shell**
+  - Scope: `persistence`, `reporting`, `realtime`, `dashboard`, `post_exploitation`
+  - Owner: `team-platform-runtime`
+  - Must include:
+    - explicit feature-gated behavior statement in docs
+    - migration ticket reference
+    - no CLI runtime path change in this milestone
+
 ### Phase 5.5.3 — Runtime truth preconditions
 
 - `cargo check -p venom-scanner --locked` keeps passing.
