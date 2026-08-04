@@ -1,6 +1,21 @@
 //! Database Persistence Layer
 //!
 //! SQLite abstraction, schema management, and optimized queries.
+//!
+//! # Runtime scope
+//!
+//! This module is part of the **platform-shell** boundary in Runtime Consolidation
+//! 5.5. It is compiled with the `scanning` feature but is currently not executed
+//! by default `venom scan`.
+//!
+//! Current contract:
+//!
+//! - Persistence helpers are preserved for platform integrations and future
+//!   productization milestones.
+//! - The default scan runtime does not depend on this module for its execution
+//!   path.
+//! - Any production migration into scan runtime requires explicit ADR and runtime
+//!   ownership transfer.
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;

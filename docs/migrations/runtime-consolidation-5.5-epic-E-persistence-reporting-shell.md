@@ -1,6 +1,6 @@
 # Runtime Consolidation 5.5 — Epic E: Persistence + Reporting Shell Handoff
 
-Status: **ready**
+Status: **in progress (boundary docs added)**
 
 Scope: `persistence`, `reporting`, `realtime`, `dashboard`, `post_exploitation`
 
@@ -8,6 +8,9 @@ Owner: `team-platform-runtime`
 
 Goal: mark these modules as explicit platform-shell features and prevent implicit
 assumptions that they are active production scan behavior.
+Runtime ticket target: `RUNTIME-5.5.E-001`.
+
+All listed modules are preserved as post-scan / platform surfaces until explicit ADR-backed integration.
 
 ## 1) Current runtime facts (from 5.5 inventory)
 
@@ -45,8 +48,18 @@ These files compile in the current default feature set but are not invoked by de
 
 ## 5) PR checklist
 
-- [ ] docs-only.
+- [x] docs-only.
 - [ ] no CLI/runtime behavior changes.
 - [ ] explicit non-default/non-scan execution note.
 - [ ] ticket + owner in PR description.
 
+## 6) Planned execution hook
+
+- Add explicit boundary notes to:
+  - `crates/venom-scanner/src/persistence.rs`
+  - `crates/venom-scanner/src/reporting.rs`
+  - `crates/venom-scanner/src/realtime.rs`
+  - `crates/venom-scanner/src/dashboard.rs`
+  - `crates/venom-scanner/src/post_exploitation.rs`
+- Keep these modules intentionally disconnected from default `venom scan` execution
+  until future migration milestone approvals.

@@ -1,6 +1,19 @@
 //! Real-time Updates & WebSocket Support
 //!
 //! Provides streaming updates for live scan progress, findings, and metrics.
+//!
+//! # Runtime scope
+//!
+//! This module is part of the **platform-shell** boundary in Runtime Consolidation
+//! 5.5. It is compiled with the `scanning` feature but is not executed by
+//! default `venom scan`.
+//!
+//! Current contract:
+//!
+//! - Realtime streaming is optional platform infrastructure and is not part of the
+//!   committed default scan execution path.
+//! - The module is available for integration surfaces that explicitly opt into it.
+//! - Movement into scan defaults requires an ADR-backed migration milestone.
 
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};

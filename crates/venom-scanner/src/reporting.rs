@@ -2,6 +2,19 @@
 //!
 //! Generates comprehensive vulnerability reports in multiple formats:
 //! JSON, HTML, CSV, and executive summaries.
+//!
+//! # Runtime scope
+//!
+//! This module is part of the **platform-shell** boundary in Runtime Consolidation
+//! 5.5. It is compiled with the `scanning` feature but is not executed by
+//! default `venom scan`.
+//!
+//! Current contract:
+//!
+//! - Reporting is available as a platform surface and integration-ready module.
+//! - The default scan command path currently does not depend on this module for
+//!   runtime decisioning.
+//! - Any default-path promotion requires explicit ADR + migration ticket.
 
 use crate::contracts::ScanFinding;
 use std::collections::HashMap;

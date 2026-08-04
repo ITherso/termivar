@@ -2,6 +2,20 @@
 //!
 //! Backend for web dashboard with real-time scan visualization,
 //! findings explorer, and interactive reporting.
+//!
+//! # Runtime scope
+//!
+//! This module is part of the **platform-shell** boundary in Runtime Consolidation
+//! 5.5. It is compiled with the `scanning` feature but is not executed by
+//! default `venom scan`.
+//!
+//! Current contract:
+//!
+//! - Dashboard services are retained for optional product surfaces and platform
+//!   integrations.
+//! - Default CLI scan behavior does not include dashboard rendering or runtime
+//!   orchestration through this module.
+//! - Any change to scan default behavior must follow ADR + migration process.
 
 use serde::{Deserialize, Serialize};
 
