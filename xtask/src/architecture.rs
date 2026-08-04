@@ -16,6 +16,7 @@ use syn::{
     Meta, Path as SynPath, Stmt, UseTree,
 };
 
+mod deployment;
 mod reachability;
 mod transport;
 
@@ -176,6 +177,7 @@ pub(crate) fn check(workspace_root: &Path) -> Result<(), Box<dyn Error>> {
     violations.extend(module_boundary_violations(workspace_root)?);
     violations.extend(transport::check(workspace_root)?);
     violations.extend(reachability::check(workspace_root)?);
+    violations.extend(deployment::check(workspace_root)?);
     violations.sort();
     violations.dedup();
 
