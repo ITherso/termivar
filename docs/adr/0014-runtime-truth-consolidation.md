@@ -60,7 +60,6 @@ milestone, which requires:
 ADR 0014 applies to the Runtime Consolidation 5.4 milestone sequence:
 
 - `docs/migrations/runtime-consolidation-5.4.md`
-- `anomaly` cleanup PR
-- `distributed` cleanup PR
+- `anomaly` cleanup PR (completed)
+- `distributed` cleanup PR (completed)
 - `lua` cleanup PR
-

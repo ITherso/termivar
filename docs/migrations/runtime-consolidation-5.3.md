@@ -21,7 +21,7 @@ Inputs used for this inventory:
 | `venom-cli` | 1 | 1 | 1 | Entry-point only |
 | `venom-proxy` | 2 | 2 | 2 | `mitm` crate boundary |
 | `venom-api` | 1 | 1 | 1 | API server crate boundary |
-| `venom-scanner` | 123 | 97 | 83 | 26 files are unreachable/unmapped at root |
+| `venom-scanner` | 109 | 97 | 83 | 12 files are unreachable/unmapped at root |
 
 Ground-truth source inventory was generated from:
 
@@ -32,11 +32,11 @@ Ground-truth source inventory was generated from:
 
 For `venom-scanner` the counts are:
 
-- total sources: 123
+- total sources: 109
 - reachable in at least one feature set: 97
 - reachable with default features: 83
 - reachable only under non-default features: 14
-- non-reachable (must remain explicit in allowlist): 26
+- non-reachable (must remain explicit in allowlist): 12
 
 Non-default reachable files are intentionally treated as `platform shell` under `scanning`-adjacent, feature-gated surfaces:
 
@@ -123,21 +123,7 @@ These are intentionally not on active module graph execution:
 
 - `src/api_evidence_tests.rs`
 - `src/web_runtime_tests.rs`
-- `src/anomaly/baseline.rs`
-- `src/anomaly/confidence.rs`
-- `src/anomaly/detector.rs`
-- `src/anomaly/metrics.rs`
-- `src/anomaly/pipeline.rs`
-- `src/anomaly/rules.rs`
-- `src/anomaly/statistics.rs`
 - `src/api_evidence/profiled_tests.rs`
-- `src/distributed/heartbeat.rs`
-- `src/distributed/protocol.rs`
-- `src/distributed/queue.rs`
-- `src/distributed/result.rs`
-- `src/distributed/retry.rs`
-- `src/distributed/scheduler.rs`
-- `src/distributed/worker.rs`
 - `src/lua/cache.rs`
 - `src/lua/executor.rs`
 - `src/lua/history.rs`
@@ -153,7 +139,7 @@ These are intentionally not on active module graph execution:
 - **Keep (active):** legacy phase runner chain and its direct dependencies (`phases`, `runner`, `ScanFinding`, `ScanContext`, `contracts`, `event_bus`, `logging`).
 - **Keep (in-tree but not active):** decision runtime modules above; no new behavior is enabled from them yet.
 - **Migrate:** all platform shell crates/features (`distributed`, `plugins`, `dashboard`, `reporting`, `post_exploitation`, `ml`, `monitoring`, `compliance`, `threat_intel`).
-- **Quarantine cleanup:** the 26 files listed above must be moved into clear destinations in follow-up PRs:
+- **Quarantine cleanup:** the 12 files listed above must be moved into clear destinations in follow-up PRs:
   - remove if obsolete,
   - re-home to dedicated migration branches,
   - or convert into purpose-specific, test-only modules.
@@ -198,7 +184,7 @@ flowchart TD
 
 ## 6) 5.4 sequencing (recommended)
 
-1. Finish quarantine decisions for `anomaly`, `distributed`, and `lua` with separate PRs.
+1. Finish quarantine decisions for `lua` with separate PRs.
 2. Produce 1 ADR covering `legacy runtime` vs `decision runtime` vs `platform shell`.
 3. Add explicit tests asserting scan path and module boundary behavior.
 4. After boundary freeze, introduce decision runtime command path in a dedicated follow-up milestone.

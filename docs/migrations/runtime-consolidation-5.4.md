@@ -9,8 +9,6 @@ Scope for 5.4:
 - `venom-scanner` source topology cleanup by subsystem
 - Explicit migration decision for each quarantined branch
 - One active PR per subsystem:
-  - `anomaly`
-  - `distributed`
   - `lua`
 - Maintain the architecture gate in `cargo xtask architecture` as the enforcement
   point for source reachability debt.
@@ -33,37 +31,20 @@ Scope for 5.4:
 
 ### Epic A — `anomaly`
 
-Current state:
+Current state: **completed**
 
-- `src/anomaly.rs` is linked and exported.
-- `src/anomaly/*.rs` submodules are unreferenced dead files.
-
-Decision options (choose exactly one before implementation PR):
-
-1. **Migrate** all orphan anomaly modules into a coherent `anomaly/` module graph and
-   wire `src/anomaly.rs` to it.
-2. **Delete** orphan modules if they are obsolete.
-3. **Move** them to a dedicated migration namespace (e.g., `legacy/anomaly/`)
-   with a deprecation note in code comments.
-
-Constraint:
-- This epic must finish `allowlist` alignment (for this file group) before any
-  other subsystem PR is merged.
+- `src/anomaly.rs` is still the active anomaly implementation.
+- Orphan refactor files in `src/anomaly/*.rs` were removed in this cleanup PR.
+- `src/anomaly` allowlist entries were removed from `xtask` reachability gate.
 
 ### Epic B — `distributed`
 
-Current state:
+Current state: **completed**
 
-- `src/distributed.rs` is linked (only feature-gated by `features = ["distributed"]`).
-- `src/distributed/*.rs` worker/queue/scheduler modules are unreferenced dead files.
-
-Decision options:
-
-1. **Keep as façade**: retain `src/distributed.rs` and move internals to a clearly
-   named scaffold path with no runtime implication.
-2. **Migrate** module graph now: wire submodules, update `lib.rs`, add
-   regression tests, keep API compatible.
-3. **Remove** feature and scaffold if distribution is out-of-scope for this cycle.
+- `src/distributed.rs` remains the active distributed façade.
+- Unreferenced `src/distributed/*.rs` files were removed in this cleanup PR.
+- `src/distributed` allowlist entries were removed from the reachability gate.
+- `src/distributed/README.md` was removed as stale documentation.
 
 ### Epic C — `lua`
 
@@ -88,10 +69,8 @@ Constraint:
 ## 3) Required PR ordering
 
 1. ADR update + runtime boundary freeze note.
-2. `anomaly` cleanup PR.
-3. `distributed` cleanup PR.
-4. `lua` cleanup PR.
-5. Final consolidation PR:
+2. `lua` cleanup PR.
+3. Final consolidation PR:
    - update `runtime-consolidation-5.3.md` with final results,
    - verify `cargo xtask architecture` with allowlist exactly matching the chosen outcomes.
 
@@ -125,4 +104,3 @@ Platform shell (feature-scoped, not default runtime)
   ├─ distributed / ml / lua_engine
   └─ reporting / dashboard / realtime / persistence / post_exploitation
 ```
-

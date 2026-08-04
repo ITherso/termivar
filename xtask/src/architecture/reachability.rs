@@ -24,22 +24,8 @@ const SOURCE_REACHABILITY_ALLOWLIST: &[(&str, &[&str])] = &[
     (
         "venom-scanner",
         &[
-            "src/anomaly/baseline.rs",
-            "src/anomaly/confidence.rs",
-            "src/anomaly/detector.rs",
-            "src/anomaly/metrics.rs",
-            "src/anomaly/pipeline.rs",
-            "src/anomaly/rules.rs",
-            "src/anomaly/statistics.rs",
             "src/api_evidence_tests.rs",
             "src/web_runtime_tests.rs",
-            "src/distributed/heartbeat.rs",
-            "src/distributed/protocol.rs",
-            "src/distributed/queue.rs",
-            "src/distributed/result.rs",
-            "src/distributed/retry.rs",
-            "src/distributed/scheduler.rs",
-            "src/distributed/worker.rs",
             "src/lua/cache.rs",
             "src/lua/executor.rs",
             "src/lua/history.rs",
@@ -337,9 +323,8 @@ mod tests {
     #[test]
     fn allowlist_has_scanner_scaffold_files() {
         let allowlist = allowed_sources_for("venom-scanner");
-        assert!(allowlist.contains("src/anomaly/metrics.rs"));
         assert!(allowlist.contains("src/lua/cache.rs"));
-        assert!(allowlist.contains("src/distributed/worker.rs"));
+        assert!(allowlist.contains("src/lua/executor.rs"));
     }
 
     #[test]
