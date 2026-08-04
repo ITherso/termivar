@@ -1,6 +1,6 @@
 # Runtime Consolidation 5.5 — Epic A: Detection Shell Handoff
 
-Status: **ready**
+Status: **in progress (boundary docs added)**
 
 Scope: `advanced_detection`, `anomaly`
 
@@ -28,7 +28,9 @@ milestone decides their migration.
 - Keep all changes in docs, deprecation banners, ADR references, and migration ticket
   references.
 
-## 3) Hand-off outcomes
+## 3) Runtime migration ticket
+
+Runtime ticket target: `RUNTIME-5.5.A-001`.
 
 Every PR in Epic A must leave these artifacts in-tree and reviewed:
 
@@ -39,7 +41,7 @@ Every PR in Epic A must leave these artifacts in-tree and reviewed:
    - `docs/migrations/runtime-consolidation-5.5.md`
    - `docs/adr/0015-platform-shell-boundary.md`
 3. A dedicated ticket reference in the PR body (and module scope):
-   - `VENOM-<id>` or equivalent tracker link.
+   - `RUNTIME-5.5.A-001`.
 4. Explicit test/CI gate impact statement:
    - `cargo run --locked -p xtask -- architecture` remains green.
    - `cargo check -p venom-scanner --locked` remains green.
@@ -59,9 +61,16 @@ Every PR in Epic A must leave these artifacts in-tree and reviewed:
 
 ## 6) PR checklist (copy/paste)
 
-- [ ] PR includes only docs/metadata/migration updates for this boundary.
+- [x] PR includes only docs/metadata/migration updates for this boundary.
 - [ ] PR does not touch planner/rules/payload/verification behavior.
 - [ ] PR updates `runtime-consolidation-5.5.md` with current epic status.
 - [ ] PR includes `Scope`, `Owner`, and `Ticket` in description.
 - [ ] CI checks for architecture and compilation remain green.
 
+## 7) Planned execution hook
+
+- Add explicit boundary notes to:
+  - `crates/venom-scanner/src/advanced_detection.rs`
+  - `crates/venom-scanner/src/anomaly.rs`
+- Keep these modules feature-scoped and non-default for scan execution until a dedicated
+  integration milestone validates ownership transfer.

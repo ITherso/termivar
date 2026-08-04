@@ -1,6 +1,6 @@
 # Runtime Consolidation 5.5 — Epic B: Compliance Shell Handoff
 
-Status: **ready**
+Status: **in progress (boundary docs added)**
 
 Scope: `compliance`, `monitoring`, `threat_intelligence`
 
@@ -37,6 +37,7 @@ scan behavior yet.
    - feature-activated surfaces,
    - intended long-term ownership.
 3. Link the corresponding migration ticket for future integration.
+   - `RUNTIME-5.5.B-001`.
 
 ## 4) Exit criteria
 
@@ -52,3 +53,11 @@ scan behavior yet.
 - [ ] ticket + owner in PR description.
 - [ ] no new references from `venom scan` decision flow.
 
+## 6) Planned execution hook
+
+- Add/update explicit boundary notes to:
+  - `crates/venom-scanner/src/compliance.rs`
+  - `crates/venom-scanner/src/monitoring.rs`
+  - `crates/venom-scanner/src/threat_intelligence.rs`
+- Keep modules off by default for scan execution while preserving feature surfaces for
+  future migration milestones.
