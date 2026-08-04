@@ -1,6 +1,12 @@
 //! Advanced Detection & WAF Bypass Techniques
 //!
 //! Behavioral analysis, signature evasion, and WAF bypass strategies.
+//!
+//! # Runtime scope
+//!
+//! This module is part of the **platform-shell** boundary in Runtime Consolidation 5.5.
+//! It is feature-gated (`detection`) and is not part of the default `venom scan`
+//! execution path unless a dedicated integration milestone explicitly moves it.
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;

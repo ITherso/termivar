@@ -1,6 +1,12 @@
 //! Anomaly Detection Engine (P0 - Outlier-resistant + P1 - Regex error keywords)
 //!
 //! Detects unusual patterns in responses that may indicate vulnerabilities.
+//!
+//! # Runtime scope
+//!
+//! This module is part of the **platform-shell** boundary in Runtime Consolidation 5.5.
+//! It is feature-gated (`detection`) and is not part of the default `venom scan`
+//! execution path until a dedicated integration milestone moves it.
 //! Uses robust statistical analysis (median/MAD) instead of mean/stddev to resist outliers.
 //! Uses sliding window (last 100 responses) for performance and relevance.
 //! Supports regex patterns for flexible error keyword detection.
