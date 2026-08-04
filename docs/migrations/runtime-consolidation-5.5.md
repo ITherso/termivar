@@ -48,10 +48,11 @@ Operational runbook:
 - `decision-runtime` modules (in-tree and compiled, but not active under default CLI scan path)
 
 **Migrate**
-- `advanced_detection`, `anomaly`
-- `compliance`, `monitoring`, `threat_intelligence`, `distributed`, `ml`
-- `persistence`, `reporting`, `realtime`, `dashboard`, `post_exploitation`
-- `plugins`, `plugin`, `lua_engine`
+- `advanced_detection`, `anomaly` (`RUNTIME-5.5.A-001`)
+- `compliance`, `monitoring`, `threat_intelligence` (`RUNTIME-5.5.B-001`)
+- `distributed`, `ml` (`RUNTIME-5.5.C-001`)
+- `plugins`, `plugin`, `lua_engine` (`RUNTIME-5.5.D-001`)
+- `persistence`, `reporting`, `realtime`, `dashboard`, `post_exploitation` (`RUNTIME-5.5.E-001`)
 - `threat-intel`, other optional feature modules
 
 **Delete**

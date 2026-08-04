@@ -35,9 +35,11 @@ Create an explicit **Platform Shell** boundary with three states:
 
 The following modules are explicitly in Platform Shell scope under this decision:
 
-- `advanced_detection`, `compliance`, `monitoring`, `threat_intelligence`
-- `plugins`, `plugin`, `persistence`, `reporting`, `realtime`
-- `dashboard`, `post_exploitation`, `ml`, `distributed`, `lua_engine`
+- `advanced_detection`, `anomaly` (`RUNTIME-5.5.A-001`)
+- `compliance`, `monitoring`, `threat_intelligence` (`RUNTIME-5.5.B-001`)
+- `distributed`, `ml` (`RUNTIME-5.5.C-001`)
+- `plugin`, `plugins`, `lua_engine` (`RUNTIME-5.5.D-001`)
+- `persistence`, `reporting`, `realtime`, `dashboard`, `post_exploitation` (`RUNTIME-5.5.E-001`)
 
 ## Consequences
 
@@ -77,3 +79,9 @@ This ADR is operationalized through Runtime Consolidation 5.5 EPIC handoff docum
 3. Start the next capability milestone only when each platform module has either:
    - a dedicated ADR, or
    - a migration PR ticket with explicit target scope.
+   - current 5.5 migration tickets are:
+     - `RUNTIME-5.5.A-001` (detection shell)
+     - `RUNTIME-5.5.B-001` (compliance shell)
+     - `RUNTIME-5.5.C-001` (distributed + ML shell)
+     - `RUNTIME-5.5.D-001` (plugin + Lua shell)
+     - `RUNTIME-5.5.E-001` (persistence/reporting/realtime/dashboard/shell)
