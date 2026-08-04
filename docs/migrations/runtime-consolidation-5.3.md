@@ -129,7 +129,7 @@ These are intentionally not on active module graph execution:
 - **Keep (active):** legacy phase runner chain and its direct dependencies (`phases`, `runner`, `ScanFinding`, `ScanContext`, `contracts`, `event_bus`, `logging`).
 - **Keep (in-tree but not active):** decision runtime modules above; no new behavior is enabled from them yet.
 - **Migrate:** all platform shell crates/features (`distributed`, `plugins`, `dashboard`, `reporting`, `post_exploitation`, `ml`, `monitoring`, `compliance`, `threat_intel`).
-- **Quarantine cleanup:** the 12 files listed above must be moved into clear destinations in follow-up PRs:
+- **Quarantine cleanup:** the 4 files listed above must be moved into clear destinations in follow-up PRs:
   - remove if obsolete,
   - re-home to dedicated migration branches,
   - or convert into purpose-specific, test-only modules.
@@ -174,7 +174,7 @@ flowchart TD
 
 ## 6) 5.4 sequencing (recommended)
 
-1. Finish quarantine decisions for `lua` with separate PRs.
+1. Quarantine decisions for `lua` are completed (all orphan `src/lua/*.rs` removed).
 2. Produce 1 ADR covering `legacy runtime` vs `decision runtime` vs `platform shell`.
 3. Add explicit tests asserting scan path and module boundary behavior.
 4. After boundary freeze, introduce decision runtime command path in a dedicated follow-up milestone.

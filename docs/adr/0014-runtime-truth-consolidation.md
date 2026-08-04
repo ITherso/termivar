@@ -1,6 +1,6 @@
 # ADR 0014: Freeze runtime truth before capability expansion
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-08-04
 - Supersedes: ADR 0004, ADR 0006, ADR 0012, ADR 0013
 - Scope: Repository governance and migration sequencing
