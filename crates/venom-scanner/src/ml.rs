@@ -2,6 +2,21 @@
 //!
 //! ML-driven vulnerability detection using clustering, pattern learning,
 //! and automated exploitation discovery.
+//!
+//! # Runtime scope
+//!
+//! This module is part of the **platform-shell** boundary in Runtime Consolidation
+//! 5.5. It is feature-gated (`ml`) and is **not** part of default `venom scan`
+//! execution.
+//!
+//! Current contract:
+//!
+//! - The module remains available for exploratory ML feature work and offline
+//!   experimentation.
+//! - Default scan runtime does not depend on `PatternLearner`, `ExploitBuilder`,
+//!   or `AnomalyClassifier` outputs.
+//! - Any promotion to default runtime requires a dedicated migration milestone,
+//!   explicit ADR updates, and CLI contract review.
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;

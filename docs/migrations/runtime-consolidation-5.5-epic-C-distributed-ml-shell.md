@@ -1,6 +1,6 @@
 # Runtime Consolidation 5.5 — Epic C: Distributed + ML Shell Handoff
 
-Status: **ready**
+Status: **in progress (boundary docs added)**
 
 Scope: `distributed`, `ml`
 
@@ -8,6 +8,10 @@ Owner: `team-platform-core`
 
 Goal: convert distributed and ML scaffolding to explicit non-default shell status
 while preserving source modules for later migration.
+Runtime ticket target: `RUNTIME-5.5.C-001`.
+
+This module pair is retained as an explicit platform capability placeholder while
+legacy scan and default decision runtime continue unchanged.
 
 ## 1) Current runtime facts (from 5.5 inventory)
 
@@ -43,8 +47,16 @@ behavior.
 
 ## 5) PR checklist
 
-- [ ] docs-only changes.
+- [x] docs-only changes.
 - [ ] no new dependencies or behavior.
 - [ ] boundary text updated in migration docs and ADR-linked references.
 - [ ] ticket + owner in PR description.
 
+## 6) Planned execution hook
+
+- Add explicit boundary note to:
+  - `crates/venom-scanner/src/distributed.rs`
+  - `crates/venom-scanner/src/ml.rs`
+- Keep `distributed` and `ml` feature-gated and off by default for scan runtime.
+- Confirm integration points by ADR before any default-path hook is added in a later
+  release milestone.

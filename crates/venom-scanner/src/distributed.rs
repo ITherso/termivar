@@ -2,6 +2,22 @@
 //!
 //! Multi-worker coordination, task queuing, and result aggregation
 //! for horizontal scaling across multiple nodes.
+//!
+//! # Runtime scope
+//!
+//! This module is part of the **platform-shell** boundary in Runtime Consolidation
+//! 5.5. It is feature-gated (`distributed`) and is **not** executed by default
+//! `venom scan`.
+//!
+//! Current contract:
+//!
+//! - The module remains available for explicit platform or enterprise integrations.
+//! - Default CLI runtime continues to use the legacy phase runner path.
+//! - Any production distributed execution must be initiated through a dedicated
+//!   migration milestone with explicit orchestration wiring in ADR + docs.
+//!
+//! This keeps distributed scaling as an explicit opt-in capability rather than
+//! silently widening scanner behavior.
 
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};

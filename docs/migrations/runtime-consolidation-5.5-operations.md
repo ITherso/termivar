@@ -83,7 +83,7 @@ Execution sequence:
 | --- | --- | --- | --- | --- |
 | A | `advanced_detection`, `anomaly` | `team-runtime-science` | [Epic A](runtime-consolidation-5.5-epic-A-detection-shell.md) | In Progress (boundary docs added) |
 | B | `compliance`, `monitoring`, `threat_intelligence` | `team-platform-observability` | [Epic B](runtime-consolidation-5.5-epic-B-compliance-shell.md) | In Progress (boundary docs added) |
-| C | `distributed`, `ml` | `team-platform-core` | [Epic C](runtime-consolidation-5.5-epic-C-distributed-ml-shell.md) | Ready |
+| C | `distributed`, `ml` | `team-platform-core` | [Epic C](runtime-consolidation-5.5-epic-C-distributed-ml-shell.md) | In Progress (boundary docs added) |
 | D | `plugin`, `plugins/*`, `lua_engine` | `team-plugins` | [Epic D](runtime-consolidation-5.5-epic-D-plugin-lua-shell.md) | Ready |
 | E | `persistence`, `reporting`, `realtime`, `dashboard`, `post_exploitation` | `team-platform-runtime` | [Epic E](runtime-consolidation-5.5-epic-E-persistence-reporting-shell.md) | Ready |
 
