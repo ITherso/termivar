@@ -19,6 +19,7 @@ use syn::{
 mod deployment;
 mod reachability;
 mod transport;
+mod workflows;
 
 const ALLOWED_EXTERNAL_ROOTS: &[&str] = &["core", "serde", "std", "thiserror", "venom_core"];
 const ALLOWED_LIBRARY_ATTRIBUTES: &[&str] = &["allow", "cfg", "deny", "deprecated", "doc"];
@@ -178,6 +179,7 @@ pub(crate) fn check(workspace_root: &Path) -> Result<(), Box<dyn Error>> {
     violations.extend(transport::check(workspace_root)?);
     violations.extend(reachability::check(workspace_root)?);
     violations.extend(deployment::check(workspace_root)?);
+    violations.extend(workflows::check(workspace_root)?);
     violations.sort();
     violations.dedup();
 
