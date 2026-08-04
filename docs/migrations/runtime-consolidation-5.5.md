@@ -130,6 +130,7 @@ The following epic records are the initial handoff points for the next three to 
 - **Epic A — detection-shell**
   - Scope: `advanced_detection`, `anomaly`
   - Owner: `team-runtime-science`
+  - Handoff doc: [5.5-epic-A-detection-shell.md](runtime-consolidation-5.5-epic-A-detection-shell.md)
   - Must include:
     - module boundary note (`docs/adr` or migration doc update)
     - explicit `platform-shell` execution note in API docs
@@ -138,6 +139,7 @@ The following epic records are the initial handoff points for the next three to 
 - **Epic B — compliance-shell**
   - Scope: `compliance`, `monitoring`, `threat_intelligence`
   - Owner: `team-platform-observability`
+  - Handoff doc: [5.5-epic-B-compliance-shell.md](runtime-consolidation-5.5-epic-B-compliance-shell.md)
   - Must include:
     - compatibility matrix (feature-gated vs default scan)
     - runtime path note in docs
@@ -146,6 +148,7 @@ The following epic records are the initial handoff points for the next three to 
 - **Epic C — distributed-ml shell**
   - Scope: `distributed`, `ml`
   - Owner: `team-platform-core`
+  - Handoff doc: [5.5-epic-C-distributed-ml-shell.md](runtime-consolidation-5.5-epic-C-distributed-ml-shell.md)
   - Must include:
     - API stability note
     - explicit "non-default CLI path" banner
@@ -154,6 +157,7 @@ The following epic records are the initial handoff points for the next three to 
 - **Epic D — plugin-lua shell**
   - Scope: `plugin`, `plugins/*`, `lua_engine`
   - Owner: `team-plugins`
+  - Handoff doc: [5.5-epic-D-plugin-lua-shell.md](runtime-consolidation-5.5-epic-D-plugin-lua-shell.md)
   - Must include:
     - boundary and execution path note (`plugin` and `plugins` are not scan defaults)
     - source-of-truth mapping update in this milestone doc
@@ -162,6 +166,7 @@ The following epic records are the initial handoff points for the next three to 
 - **Epic E — persistence-reporting shell**
   - Scope: `persistence`, `reporting`, `realtime`, `dashboard`, `post_exploitation`
   - Owner: `team-platform-runtime`
+  - Handoff doc: [5.5-epic-E-persistence-reporting-shell.md](runtime-consolidation-5.5-epic-E-persistence-reporting-shell.md)
   - Must include:
     - explicit feature-gated behavior statement in docs
     - migration ticket reference
