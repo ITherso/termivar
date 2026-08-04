@@ -1,5 +1,7 @@
 # Runtime Consolidation 5.4 — Controlled Migration Sequence (No New Features)
 
+Status: completed.
+
 This milestone keeps the focus strictly on repository truth, wiring, and migration
 operations. We do **not** add scanner capabilities, planning behavior, semantic
 expansion, payload strategy changes, or runtime behavior in this milestone.
@@ -68,7 +70,7 @@ Constraint:
 
 1. ADR update + runtime boundary freeze note.
 2. `lua` cleanup PR (completed).
-3. Final consolidation PR:
+3. Final consolidation PR (completed):
    - update `runtime-consolidation-5.3.md` with final results,
    - verify `cargo xtask architecture` with allowlist exactly matching the chosen outcomes.
 
