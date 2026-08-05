@@ -15,31 +15,40 @@
 //! This adapter exposes existing behavior: the same conservative profile the
 //! `decision_scan` example demonstrates. It adds no planner actions, rules,
 //! verifiers, payload strategies, semantic extraction, defense composition, or API
-//! reasoning. It propagates errors instead of panicking.
+//! reasoning. It propagates errors instead of panicking, and it renders the
+//! runtime's own vocabulary through stable snake_case labels rather than `Debug`.
 
 use std::error::Error;
 use std::time::Duration;
 
 use url::Url;
 use venom_scanner::{
-    HttpBodyCapture, HttpEvidencePolicy, RuntimeBudget, StandardWebDecisionRuntime,
-    StandardWebDecisionRuntimeTurn,
+    DecisionLoopCommand, DecisionStopReason, HttpBodyCapture, HttpEvidencePolicy, OutcomeStatus,
+    RuntimeBudget, StandardWebDecisionRuntime, StandardWebDecisionRuntimeTurn,
 };
 
 /// Deterministic, transport-truthful summary of one decision-runtime preview run.
 ///
-/// Fields mirror the runtime's own report (evidence, planning, verified outcomes,
-/// bounded terminal state, and usage). Every field except `elapsed_ms` is
-/// deterministic for an equivalent server, which the end-to-end test relies on.
+/// Fields mirror the runtime's own report (evidence, planning, verification
+/// outcomes, bounded terminal state, and usage). Every field except `elapsed_ms`
+/// is deterministic for an equivalent server, which the end-to-end test relies on.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct DecisionScanSummary {
     pub target: String,
     pub bootstrap_writes: usize,
     pub planning_turns: usize,
-    pub verified_outcomes: usize,
-    /// `(action_id, verification_status)` for each outcome turn, in order.
-    pub outcomes: Vec<(String, String)>,
-    pub terminal: String,
+    /// Total `Outcome` turns. Not every outcome is a confirmed vulnerability.
+    pub verification_outcomes: usize,
+    /// Outcomes that map to a verifier-owned hypothesis state (Success / rejected).
+    pub conclusive_outcomes: usize,
+    /// Outcomes that do not (Blocked / Unknown / NeedsReview).
+    pub inconclusive_outcomes: usize,
+    /// `(action_id, stable status label)` for each outcome turn, in order.
+    pub outcomes: Vec<(String, &'static str)>,
+    /// Stable snake_case terminal command label.
+    pub terminal: &'static str,
+    /// Stable snake_case stop reason, when the runtime halted with one.
+    pub stop_reason: Option<&'static str>,
     pub total_requests: u64,
     pub active_verifications: u64,
     pub response_bytes: u64,
@@ -48,11 +57,13 @@ pub(crate) struct DecisionScanSummary {
     pub experience_records: usize,
 }
 
-/// The conservative preview budget: at most 16 requests, 60s wall time, 1 MiB per
-/// response. Identical to the profile demonstrated by `examples/decision_scan.rs`.
+/// Preview budget. `max_response_bytes` is a **cumulative session threshold**, not
+/// a per-response cap; the crossing chunk is charged in full. A separate per-probe
+/// buffered-body limit is inherited from `HttpEvidencePolicy` (256 KiB by default).
+/// Identical to the profile demonstrated by `examples/decision_scan.rs`.
 pub(crate) const PREVIEW_MAX_TOTAL_REQUESTS: u32 = 16;
 const PREVIEW_MAX_WALL_TIME_SECS: u64 = 60;
-const PREVIEW_MAX_RESPONSE_BYTES: u64 = 1024 * 1024;
+const PREVIEW_MAX_CUMULATIVE_RESPONSE_BYTES: u64 = 1024 * 1024;
 const PREVIEW_BODY_SAMPLE_CHARS: usize = 8_192;
 
 /// Compose and run the standard deterministic web decision runtime against one
@@ -67,7 +78,7 @@ pub(crate) async fn run_decision_scan(target: Url) -> Result<DecisionScanSummary
     let runtime_budget = RuntimeBudget::default()
         .with_max_total_requests(PREVIEW_MAX_TOTAL_REQUESTS)
         .with_max_wall_time(Duration::from_secs(PREVIEW_MAX_WALL_TIME_SECS))
-        .with_max_response_bytes(PREVIEW_MAX_RESPONSE_BYTES);
+        .with_max_response_bytes(PREVIEW_MAX_CUMULATIVE_RESPONSE_BYTES);
 
     // Conservative profile only; API reasoning, payload binding, semantic
     // extraction, and defense-aware planning are all left absent.
@@ -88,28 +99,39 @@ pub(crate) async fn run_decision_scan(target: Url) -> Result<DecisionScanSummary
 
     let mut planning_turns = 0;
     let mut outcomes = Vec::new();
+    let mut conclusive_outcomes = 0;
+    let mut inconclusive_outcomes = 0;
     for turn in report.turns() {
         match turn {
             StandardWebDecisionRuntimeTurn::Planning(_) => planning_turns += 1,
             StandardWebDecisionRuntimeTurn::Outcome { decision, .. } => {
-                let outcome = decision.verification().outcome();
+                let status = decision.verification().outcome().status();
+                if status.hypothesis_state().is_some() {
+                    conclusive_outcomes += 1;
+                } else {
+                    inconclusive_outcomes += 1;
+                }
                 outcomes.push((
-                    outcome.action_id().to_string(),
-                    format!("{:?}", outcome.status()),
+                    decision.verification().outcome().action_id().to_string(),
+                    outcome_status_code(status),
                 ));
             },
             _ => {},
         }
     }
 
+    let (terminal, stop_reason) = terminal_code(report.terminal());
     let usage = report.usage();
     Ok(DecisionScanSummary {
         target: target.origin().ascii_serialization(),
         bootstrap_writes,
         planning_turns,
-        verified_outcomes: outcomes.len(),
+        verification_outcomes: outcomes.len(),
+        conclusive_outcomes,
+        inconclusive_outcomes,
         outcomes,
-        terminal: format!("{:?}", report.terminal()),
+        terminal,
+        stop_reason,
         total_requests: u64::from(usage.total_requests()),
         active_verifications: u64::from(usage.active_verifications()),
         response_bytes: usage.response_bytes(),
@@ -119,9 +141,53 @@ pub(crate) async fn run_decision_scan(target: Url) -> Result<DecisionScanSummary
     })
 }
 
+/// Stable snake_case label for a verification outcome status. Never a `Debug`
+/// dump; `OutcomeStatus` is `#[non_exhaustive]`, so an unrecognized variant maps
+/// to `other`.
+fn outcome_status_code(status: OutcomeStatus) -> &'static str {
+    match status {
+        OutcomeStatus::Success => "success",
+        OutcomeStatus::Blocked => "blocked",
+        OutcomeStatus::Unknown => "unknown",
+        OutcomeStatus::FalsePositive => "false_positive",
+        OutcomeStatus::NeedsReview => "needs_review",
+        OutcomeStatus::ConfirmedNegative => "confirmed_negative",
+        _ => "other",
+    }
+}
+
+/// Stable snake_case label for a deterministic stop reason.
+fn stop_reason_code(reason: &DecisionStopReason) -> &'static str {
+    match reason {
+        DecisionStopReason::ObjectiveComplete => "objective_complete",
+        DecisionStopReason::NoEligibleAction => "no_eligible_action",
+        DecisionStopReason::HumanReview => "human_review",
+        DecisionStopReason::AdaptationLimit => "adaptation_limit",
+        DecisionStopReason::ActionCycleLimit => "action_cycle_limit",
+        DecisionStopReason::RuntimeBudgetLimit => "runtime_budget_limit",
+        DecisionStopReason::CancelledByHost => "cancelled_by_host",
+        _ => "other",
+    }
+}
+
+/// Stable snake_case label for the terminal command, plus its stop reason when it
+/// halted. Deliberately does not render the command's `VerificationCase` payload.
+fn terminal_code(command: &DecisionLoopCommand) -> (&'static str, Option<&'static str>) {
+    match command {
+        DecisionLoopCommand::ExecuteAction { .. } => ("execute_action", None),
+        DecisionLoopCommand::CollectActiveEvidence { .. } => ("collect_active_evidence", None),
+        DecisionLoopCommand::Replan => ("replan", None),
+        DecisionLoopCommand::Complete { .. } => ("complete", None),
+        DecisionLoopCommand::AwaitHumanReview { .. } => ("await_human_review", None),
+        DecisionLoopCommand::Halt { reason } => ("halt", Some(stop_reason_code(reason))),
+        _ => ("other", None),
+    }
+}
+
 /// Render a [`DecisionScanSummary`] as a concise, honest text report. It never
-/// prints "Found N vulnerabilities": the decision runtime produces evidence,
-/// planning records, verified outcomes, and a bounded terminal state.
+/// prints "Found N vulnerabilities" and never labels an outcome a vulnerability:
+/// the decision runtime produces evidence, planning records, verification
+/// outcomes, and a bounded terminal state.
 pub(crate) fn render_summary(summary: &DecisionScanSummary) -> String {
     let mut out = String::new();
     out.push_str("== decision-scan (preview) ==\n");
@@ -133,16 +199,19 @@ pub(crate) fn render_summary(summary: &DecisionScanSummary) -> String {
     ));
     out.push_str(&format!("planning: {} turn(s)\n", summary.planning_turns));
     out.push_str(&format!(
-        "verified outcomes: {}\n",
-        summary.verified_outcomes
+        "verification outcomes: {} (conclusive {}, inconclusive {})\n",
+        summary.verification_outcomes, summary.conclusive_outcomes, summary.inconclusive_outcomes,
     ));
     for (action_id, status) in &summary.outcomes {
         out.push_str(&format!("  outcome: action={action_id} status={status}\n"));
     }
     if summary.outcomes.is_empty() {
-        out.push_str("  (no verified outcome; the run reached a bounded terminal state)\n");
+        out.push_str("  no verification outcome was produced before the terminal state\n");
     }
     out.push_str(&format!("terminal: {}\n", summary.terminal));
+    if let Some(reason) = summary.stop_reason {
+        out.push_str(&format!("stop_reason: {reason}\n"));
+    }
     if let Some(limit) = &summary.limit_exceeded {
         out.push_str(&format!(
             "runtime limit reached (controlled stop): {limit}\n"
