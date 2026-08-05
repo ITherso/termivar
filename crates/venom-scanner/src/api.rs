@@ -1,5 +1,14 @@
 //! REST API Module
 //!
+//! ## Runtime scope
+//!
+//! - **Build:** always/default.
+//! - **Execution:** host/library only; no repository runtime caller.
+//! - **Default `venom scan`:** no.
+//! - **Support:** experimental/scaffold.
+//!
+//! See `docs/internals/runtime-map.md`.
+//!
 //! Comprehensive REST API for scan management, reporting, and control.
 //! Supports JSON requests/responses, error handling, and real-time updates.
 

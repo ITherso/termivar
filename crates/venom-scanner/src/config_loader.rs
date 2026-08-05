@@ -1,5 +1,14 @@
 //! Configuration Management - TOML-based Config Profiles
 //!
+//! ## Runtime scope
+//!
+//! - **Build:** always/default.
+//! - **Execution:** host/library only; no repository runtime caller.
+//! - **Default `venom scan`:** no.
+//! - **Support:** experimental/scaffold.
+//!
+//! See `docs/internals/runtime-map.md`.
+//!
 //! Load and manage scanning profiles (enterprise, cloud, aggressive, etc.)
 
 use crate::config::ScanIntensity;

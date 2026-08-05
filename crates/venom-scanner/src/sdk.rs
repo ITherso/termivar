@@ -1,4 +1,14 @@
 //! Public composition API for building scanners from Venom phases.
+//!
+//! ## Runtime scope
+//!
+//! - **Build:** default via `scanning`.
+//! - **Execution:** host/library only (public composition API for host-built
+//!   scanners; not invoked by `venom scan`).
+//! - **Default `venom scan`:** no.
+//! - **Support:** implemented and tested (Scanner SDK Template).
+//!
+//! See `docs/internals/runtime-map.md`.
 
 use crate::{EventBus, Result, ScanContext, ScanFinding, ScanPhase, ScanRunner};
 use reqwest::Client;

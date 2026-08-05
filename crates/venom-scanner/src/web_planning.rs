@@ -1,5 +1,14 @@
 //! Standard planner actions driven by web reasoning hypotheses.
 //!
+//! ## Runtime scope
+//!
+//! - **Build:** always/default.
+//! - **Execution:** Surface B (deterministic decision runtime).
+//! - **Default `venom scan`:** no.
+//! - **Support:** implemented and tested.
+//!
+//! See `docs/internals/runtime-map.md`.
+//!
 //! The profile declares executor-routable candidates and utility metadata. It
 //! never performs network I/O and remains opt-in for every host application.
 

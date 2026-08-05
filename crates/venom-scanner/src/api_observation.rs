@@ -1,5 +1,14 @@
 //! Host-facing ingestion and projection for paired API visibility observations.
 //!
+//! ## Runtime scope
+//!
+//! - **Build:** always/default.
+//! - **Execution:** Surface B support (paired API visibility workflow); host-facing.
+//! - **Default `venom scan`:** no.
+//! - **Support:** implemented and tested.
+//!
+//! See `docs/internals/runtime-map.md`.
+//!
 //! This module bridges the evidence and decision engines without moving
 //! network, credential, comparison, or planning policy into reasoning. The
 //! authorized host establishes that two views describe the same logical

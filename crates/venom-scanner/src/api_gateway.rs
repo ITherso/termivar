@@ -1,5 +1,14 @@
 //! API Gateway & Advanced Rate Limiting
 //!
+//! ## Runtime scope
+//!
+//! - **Build:** always/default.
+//! - **Execution:** host/library only; no repository runtime caller.
+//! - **Default `venom scan`:** no.
+//! - **Support:** experimental/scaffold.
+//!
+//! See `docs/internals/runtime-map.md`.
+//!
 //! Request throttling, quota management, and intelligent routing.
 
 use dashmap::DashMap;

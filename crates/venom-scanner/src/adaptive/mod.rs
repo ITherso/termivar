@@ -1,5 +1,14 @@
 //! Adaptive execution policy and payload mutation.
 //!
+//! ## Runtime scope
+//!
+//! - **Build:** default via `scanning`.
+//! - **Execution:** Surface B (deterministic decision runtime).
+//! - **Default `venom scan`:** no.
+//! - **Support:** implemented and tested.
+//!
+//! See `docs/internals/runtime-map.md`.
+//!
 //! The deterministic pipeline maps evidence-backed outcomes to runner
 //! directives. The legacy payload engine analyzes recent response metrics and
 //! recommends payload transformations based on:

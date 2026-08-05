@@ -1,5 +1,17 @@
 //! Thread-safe in-memory knowledge base for evidence-driven reasoning.
 //!
+//! ## Runtime scope
+//!
+//! - **Build:** always/default.
+//! - **Execution:** `ScanContext` constructs and privately owns a `KnowledgeBase`
+//!   on Surface A, but the current legacy phases do not consume it (construction
+//!   is not active use); Surface B actively uses it as deterministic reasoning
+//!   state.
+//! - **Default `venom scan`:** no (constructed but not consumed by the phases).
+//! - **Support:** implemented and tested.
+//!
+//! See `docs/internals/runtime-map.md`.
+//!
 //! The base owns ontology, instance relationships, evidence, facts, and
 //! hypotheses, but deliberately contains no detection, scoring, planning, or
 //! persistence behavior. Producers can write observations in any order;

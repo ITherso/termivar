@@ -1,5 +1,14 @@
 //! Pure, bounded evidence preparation for paired API visibility comparisons.
 //!
+//! ## Runtime scope
+//!
+//! - **Build:** always/default.
+//! - **Execution:** Surface B support (paired API visibility workflow).
+//! - **Default `venom scan`:** no.
+//! - **Support:** implemented and tested.
+//!
+//! See `docs/internals/runtime-map.md`.
+//!
 //! This module deliberately performs no network I/O, knowledge-base writes,
 //! rule evaluation, or planning. A host captures two already-authorized JSON
 //! views, then compares one explicit visibility dimension. Raw JSON is borrowed

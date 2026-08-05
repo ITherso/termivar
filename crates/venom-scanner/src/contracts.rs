@@ -1,4 +1,13 @@
 //! Stable data and execution contracts shared by scanner components.
+//!
+//! ## Runtime scope
+//!
+//! - **Build:** always/default.
+//! - **Execution:** shared support (library contracts used across surfaces).
+//! - **Default `venom scan`:** no (support types, not an execution stage).
+//! - **Support:** implemented.
+//!
+//! See `docs/internals/runtime-map.md`.
 
 use crate::{context::ScanContext, error::Result};
 use async_trait::async_trait;

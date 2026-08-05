@@ -1,5 +1,14 @@
 //! Deterministic experience derived from verification outcomes.
 //!
+//! ## Runtime scope
+//!
+//! - **Build:** always/default.
+//! - **Execution:** Surface B (deterministic decision runtime).
+//! - **Default `venom scan`:** no.
+//! - **Support:** implemented and tested.
+//!
+//! See `docs/internals/runtime-map.md`.
+//!
 //! The store records immutable outcomes and turns repeated, subject-scoped,
 //! suppression-eligible negatives into explainable action recommendations.
 //! Target blocks, policy blocks, operational failures, and inconclusive

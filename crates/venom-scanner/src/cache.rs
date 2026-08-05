@@ -1,5 +1,14 @@
 //! Caching Layer for Performance Optimization
 //!
+//! ## Runtime scope
+//!
+//! - **Build:** always/default.
+//! - **Execution:** host/library only; no repository runtime caller.
+//! - **Default `venom scan`:** no.
+//! - **Support:** experimental/scaffold.
+//!
+//! See `docs/internals/runtime-map.md`.
+//!
 //! LRU cache for responses, patterns, and scan results.
 
 use dashmap::DashMap;

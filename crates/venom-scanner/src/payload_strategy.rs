@@ -1,5 +1,14 @@
 //! Deterministic, bounded contracts for planner-selected payload strategies.
 //!
+//! ## Runtime scope
+//!
+//! - **Build:** always/default.
+//! - **Execution:** Surface B (planner-selected payload strategy contracts).
+//! - **Default `venom scan`:** no.
+//! - **Support:** implemented and tested.
+//!
+//! See `docs/internals/runtime-map.md`.
+//!
 //! A planner may select a stable [`PayloadStrategyRef`], but it never sees raw
 //! payload bytes or a transport client. A capability executor resolves that
 //! reference, derives exactly one control or candidate artifact for the

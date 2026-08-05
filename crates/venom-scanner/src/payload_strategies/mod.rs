@@ -1,4 +1,13 @@
 //! Native, production [`crate::payload_strategy::PayloadStrategy`]
+//!
+//! ## Runtime scope
+//!
+//! - **Build:** always/default.
+//! - **Execution:** Surface B (concrete planner-selected payload strategies).
+//! - **Default `venom scan`:** no.
+//! - **Support:** implemented and tested.
+//!
+//! See `docs/internals/runtime-map.md`.
 //! implementations and their registry.
 //!
 //! The contract module [`crate::payload_strategy`] defines the deterministic,

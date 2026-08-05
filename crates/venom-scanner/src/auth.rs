@@ -1,5 +1,14 @@
 //! Authentication & Authorization Module
 //!
+//! ## Runtime scope
+//!
+//! - **Build:** always/default.
+//! - **Execution:** host/library only; no repository runtime caller.
+//! - **Default `venom scan`:** no.
+//! - **Support:** experimental/scaffold.
+//!
+//! See `docs/internals/runtime-map.md`.
+//!
 //! User management, API key generation, role-based access control (RBAC).
 
 use serde::{Deserialize, Serialize};

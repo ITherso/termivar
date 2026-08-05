@@ -1,5 +1,14 @@
 //! Scope-bound HTTP collection for the decision runner.
 //!
+//! ## Runtime scope
+//!
+//! - **Build:** default via `scanning`.
+//! - **Execution:** Surface B (metered executor for the decision runtime).
+//! - **Default `venom scan`:** no.
+//! - **Support:** implemented and tested.
+//!
+//! See `docs/internals/runtime-map.md`.
+//!
 //! This executor performs one bounded discovery request and emits immutable,
 //! typed observations. It does not classify vulnerabilities, follow redirects,
 //! choose follow-up actions, or mutate the knowledge base directly.

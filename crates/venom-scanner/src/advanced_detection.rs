@@ -1,5 +1,14 @@
 //! Advanced Detection & WAF Bypass Techniques
 //!
+//! ## Runtime scope
+//!
+//! - **Build:** default via `detection`.
+//! - **Execution:** no repository runtime caller (not on the default scan path).
+//! - **Default `venom scan`:** no.
+//! - **Support:** experimental/scaffold (detection helpers; not automatic WAF bypass).
+//!
+//! See `docs/internals/runtime-map.md`.
+//!
 //! Behavioral analysis, signature evasion, and WAF bypass strategies.
 
 use serde::{Deserialize, Serialize};
