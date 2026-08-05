@@ -1,5 +1,14 @@
 //! Advanced Monitoring & Performance Analytics
 //!
+//! ## Runtime scope
+//!
+//! - **Build:** opt-in via `monitoring`.
+//! - **Execution:** no repository runtime caller (not on any default path).
+//! - **Default `venom scan`:** no.
+//! - **Support:** experimental/scaffold.
+//!
+//! See `docs/internals/runtime-map.md`.
+//!
 //! Comprehensive scan profiling, resource tracking, and optimization recommendations.
 
 use serde::{Deserialize, Serialize};

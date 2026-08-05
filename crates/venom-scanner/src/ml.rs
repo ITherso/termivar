@@ -1,5 +1,15 @@
 //! Machine Learning & Pattern Discovery
 //!
+//! ## Runtime scope
+//!
+//! - **Build:** opt-in via `ml`.
+//! - **Execution:** no repository runtime caller (not on any default path).
+//! - **Default `venom scan`:** no.
+//! - **Support:** experimental prototype — single-pass pattern grouping and
+//!   exploit helpers, not a production machine-learning scanner.
+//!
+//! See `docs/internals/runtime-map.md`.
+//!
 //! ML-driven vulnerability detection using clustering, pattern learning,
 //! and automated exploitation discovery.
 

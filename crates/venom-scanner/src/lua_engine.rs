@@ -1,5 +1,14 @@
 //! Lua Script Engine - NSE-style Scripting Support
 //!
+//! ## Runtime scope
+//!
+//! - **Build:** opt-in via `plugins`.
+//! - **Execution:** host/library only; no repository runtime caller.
+//! - **Default `venom scan`:** no.
+//! - **Support:** experimental.
+//!
+//! See `docs/internals/runtime-map.md`.
+//!
 //! Execute Lua scripts for custom scanning logic, similar to Nmap's NSE.
 
 use crate::config::LuaEngineConfig;

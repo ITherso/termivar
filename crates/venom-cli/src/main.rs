@@ -1,4 +1,17 @@
 //! Process-level command-line composition for Venom's scanner, API, and proxy adapters.
+//!
+//! ## Runtime scope
+//!
+//! - **Build:** `venom-cli` binary crate.
+//! - **Execution:** hosts three commands — `scan` runs Surface A (legacy phase
+//!   pipeline), while `api` and `proxy` are separate explicit adapter commands
+//!   (they do not run the scan pipeline).
+//! - **Default `venom scan`:** yes for the `scan` command; the `api`/`proxy`
+//!   commands are separate.
+//! - **Support:** `scan` is legacy alpha; the `api` listener is unsupported and the
+//!   `proxy` is an experimental TCP relay (see their crates).
+//!
+//! See `docs/internals/runtime-map.md`.
 
 use clap::{Parser, Subcommand};
 use url::Url;

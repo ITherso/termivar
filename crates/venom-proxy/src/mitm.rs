@@ -1,3 +1,17 @@
+//! Connection handler for the experimental proxy adapter.
+//!
+//! ## Runtime scope
+//!
+//! - **Build:** separate workspace crate (`venom-proxy`).
+//! - **Execution:** the `venom proxy` connection path — accepts a client, opens a
+//!   TCP connection to a fixed upstream, and relays bytes in both directions.
+//! - **Default `venom scan`:** no.
+//! - **Support:** experimental fixed-upstream bidirectional TCP relay. It does not
+//!   parse `CONNECT`, terminate TLS, present generated certificates, or
+//!   inspect/modify HTTP; `CertCache` is not used by the connection path.
+//!
+//! See `docs/internals/runtime-map.md`.
+
 use rcgen::generate_simple_self_signed;
 use std::collections::HashMap;
 use std::net::SocketAddr;

@@ -1,5 +1,14 @@
 //! Compliance & Automated Reporting
 //!
+//! ## Runtime scope
+//!
+//! - **Build:** opt-in via `compliance`.
+//! - **Execution:** no repository runtime caller (not on any default path).
+//! - **Default `venom scan`:** no.
+//! - **Support:** experimental/scaffold.
+//!
+//! See `docs/internals/runtime-map.md`.
+//!
 //! GDPR, HIPAA, SOC2 compliance frameworks and audit trails.
 
 use serde::{Deserialize, Serialize};
