@@ -306,7 +306,9 @@ mod tests {
             summary.total_requests <= u64::from(decision_scan::PREVIEW_MAX_TOTAL_REQUESTS),
             "the runtime must respect the 16-request budget"
         );
-        // The exact-origin policy is retained (the target origin is echoed back).
+        // The summary retains the authorized input origin. Exact-origin request
+        // enforcement (scheme, credentials, allowed origin) is covered by the
+        // existing HttpEvidencePolicy/broker tests, not re-proved here.
         assert_eq!(summary.target, target.origin().ascii_serialization());
         // A terminal (bounded stop) state is always reported.
         assert!(!summary.terminal.is_empty());
@@ -316,18 +318,61 @@ mod tests {
 
     #[tokio::test]
     async fn decision_scan_preview_is_deterministic_excluding_elapsed_time() {
-        let (target_a, server_a) = serve_static().await;
-        let first = decision_scan::run_decision_scan(target_a).await.unwrap();
-        server_a.abort();
+        // Two fresh runtimes against the *same* listener and target: only the
+        // wall-clock (elapsed) field may differ.
+        let (target, server) = serve_static().await;
+        let mut first = decision_scan::run_decision_scan(target.clone())
+            .await
+            .unwrap();
+        let mut second = decision_scan::run_decision_scan(target).await.unwrap();
+        server.abort();
 
-        let (target_b, server_b) = serve_static().await;
-        let mut second = decision_scan::run_decision_scan(target_b).await.unwrap();
-        server_b.abort();
-
-        // Equivalent server responses yield equivalent summaries, apart from the
-        // wall-clock fields (elapsed time and the ephemeral loopback port/origin).
-        second.elapsed_ms = first.elapsed_ms;
-        second.target = first.target.clone();
+        first.elapsed_ms = 0;
+        second.elapsed_ms = 0;
         assert_eq!(first, second);
+    }
+
+    #[tokio::test]
+    async fn decision_scan_rejects_non_http_scheme_before_dispatch() {
+        // The HttpEvidencePolicy contract rejects a non-HTTP(S) origin; no network
+        // dispatch occurs.
+        let target = Url::parse("ftp://example.test/").unwrap();
+        let result = decision_scan::run_decision_scan(target).await;
+        assert!(
+            result.is_err(),
+            "a non-http(s) scheme must be rejected before any dispatch"
+        );
+    }
+
+    #[test]
+    fn render_summary_is_stable_and_never_labels_vulnerabilities() {
+        let summary = decision_scan::DecisionScanSummary {
+            target: "https://example.test".to_string(),
+            bootstrap_writes: 1,
+            planning_turns: 2,
+            verification_outcomes: 1,
+            conclusive_outcomes: 0,
+            inconclusive_outcomes: 1,
+            outcomes: vec![("web.action.probe".to_string(), "unknown")],
+            terminal: "halt",
+            stop_reason: Some("no_eligible_action"),
+            total_requests: 3,
+            active_verifications: 1,
+            response_bytes: 42,
+            elapsed_ms: 5,
+            limit_exceeded: None,
+            experience_records: 1,
+        };
+        let rendered = decision_scan::render_summary(&summary);
+        assert!(rendered.contains("engine: decision-preview"));
+        assert!(rendered.contains("target origin: https://example.test"));
+        assert!(rendered.contains("verification outcomes: 1"));
+        assert!(rendered.contains("terminal: halt"));
+        assert!(rendered.contains("stop_reason: no_eligible_action"));
+        assert!(rendered.contains("usage: requests=3"));
+        // The user surface never labels an outcome a vulnerability, and never
+        // leaks a Debug dump of internal runtime types.
+        assert!(!rendered.to_lowercase().contains("vulnerabilit"));
+        assert!(!rendered.contains("VerificationCase {"));
     }
 }
