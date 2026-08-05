@@ -1,0 +1,104 @@
+{
+  "name": "authentication_artifact_kinds",
+  "contract_class": "synthetic_extractor_contract",
+  "evidence": [
+    {
+      "id": "evidence:semantic:jwt-auth",
+      "subject": "endpoint:https://api.example.test/login",
+      "kind": "Authentication",
+      "predicate_namespace": "authentication",
+      "predicate_name": "jwt",
+      "value": "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ1c2VyIn0.s3ltdGVzdA",
+      "source_component": "semantic.fixture",
+      "source_method": "synthetic-auth-token",
+      "observed_at_ms": 1700000000200,
+      "reliability_percent": 95
+    },
+    {
+      "id": "evidence:semantic:bearer-auth",
+      "subject": "endpoint:https://api.example.test/login",
+      "kind": "Authentication",
+      "predicate_namespace": "authentication",
+      "predicate_name": "bearer",
+      "value": "opaque-bearer-token-abc123def456",
+      "source_component": "semantic.fixture",
+      "source_method": "synthetic-auth-token",
+      "observed_at_ms": 1700000000201,
+      "reliability_percent": 95
+    },
+    {
+      "id": "evidence:semantic:apikey-auth",
+      "subject": "endpoint:https://api.example.test/login",
+      "kind": "Authentication",
+      "predicate_namespace": "authentication",
+      "predicate_name": "api_key",
+      "value": "synthetic-api-key-0123456789abcdef",
+      "source_component": "semantic.fixture",
+      "source_method": "synthetic-auth-token",
+      "observed_at_ms": 1700000000202,
+      "reliability_percent": 95
+    }
+  ],
+  "expected": {
+    "entities": [
+      {
+        "id": "v1:auth_artifact:438a5cacee28667cf9db271ab4ef509871cfd5da16a12be6f1ab54271d02cda0",
+        "entity_type": "auth_artifact",
+        "attributes": {
+          "auth_kind": [
+            "api_key"
+          ],
+          "fingerprint": [
+            "438a5cacee28667cf9db271ab4ef509871cfd5da16a12be6f1ab54271d02cda0"
+          ],
+          "length": [
+            "34"
+          ]
+        },
+        "source_evidence_ids": [
+          "evidence:semantic:apikey-auth"
+        ]
+      },
+      {
+        "id": "v1:auth_artifact:c812095adb8d78323f25fb2aa1c825cc58fa2cc5bb4fd311c885d5907b22e3a5",
+        "entity_type": "auth_artifact",
+        "attributes": {
+          "auth_kind": [
+            "jwt"
+          ],
+          "fingerprint": [
+            "c812095adb8d78323f25fb2aa1c825cc58fa2cc5bb4fd311c885d5907b22e3a5"
+          ],
+          "length": [
+            "51"
+          ]
+        },
+        "source_evidence_ids": [
+          "evidence:semantic:jwt-auth"
+        ]
+      },
+      {
+        "id": "v1:auth_artifact:f40a506896dfae14f2b66d0b42486df414107beebcad24db3144d628b606a57a",
+        "entity_type": "auth_artifact",
+        "attributes": {
+          "auth_kind": [
+            "bearer_token"
+          ],
+          "fingerprint": [
+            "f40a506896dfae14f2b66d0b42486df414107beebcad24db3144d628b606a57a"
+          ],
+          "length": [
+            "32"
+          ]
+        },
+        "source_evidence_ids": [
+          "evidence:semantic:bearer-auth"
+        ]
+      }
+    ],
+    "truncated": false,
+    "dropped_entities": 0,
+    "dropped_attributes": 0,
+    "dropped_sources": 0
+  }
+}

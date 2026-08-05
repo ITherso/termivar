@@ -1921,6 +1921,73 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn producer_output_feeds_a_method_agnostic_endpoint_entity() {
+        // End-to-end production contract: the real HttpEvidenceExecutor output is
+        // fed into the EntityExtractor. With the standard SubjectHttpProbeProvider
+        // the case subject and probe URL are the same absolute request URL, so the
+        // emitted url+method evidence merge into exactly one method-agnostic
+        // Endpoint entity. No external network: a loopback response seam is used.
+        let url =
+            serve_once(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").await;
+        let adapter = adapter(&url, HttpBodyCapture::MetadataOnly, 1024);
+        let knowledge = KnowledgeBase::new();
+
+        let receipt = adapter
+            .execute_command(&command(&url), &knowledge)
+            .await
+            .unwrap();
+        let evidence = receipt.after_execution().evidence();
+
+        // The real producer emits an uppercase GET and the probe URL, correlated
+        // by the case id.
+        assert_eq!(
+            value(evidence, HttpEvidencePredicate::REQUEST_METHOD),
+            Some(&EvidenceValue::Text("GET".to_owned()))
+        );
+        assert_eq!(
+            value(evidence, HttpEvidencePredicate::REQUEST_URL),
+            Some(&EvidenceValue::Text(url.to_string()))
+        );
+        let method_evidence = evidence
+            .iter()
+            .find(|item| item.predicate() == &HttpEvidencePredicate::REQUEST_METHOD.into())
+            .expect("producer must emit a request method");
+        assert_eq!(method_evidence.kind(), &EvidenceKind::Http);
+        assert_eq!(
+            method_evidence.source().component(),
+            HTTP_EVIDENCE_EXECUTOR_ID
+        );
+        assert_eq!(
+            method_evidence.source().correlation_id(),
+            Some("case:http:1")
+        );
+        // Standard subject convention: subject == the absolute request URL.
+        assert_eq!(
+            method_evidence.subject().as_str(),
+            format!("endpoint:{url}")
+        );
+
+        let extraction = crate::EntityExtractor::new().extract_from_evidence(evidence);
+        let endpoint = extraction
+            .entities
+            .iter()
+            .find(|entity| entity.entity_type() == crate::SemanticEntityType::Endpoint)
+            .expect("producer evidence must yield an endpoint entity");
+
+        // Identity is method-agnostic: the observed method is an attribute only.
+        assert_eq!(endpoint.id().as_str(), format!("v1:endpoint:{url}"));
+        assert!(!endpoint.id().as_str().contains('#'));
+        assert_eq!(
+            endpoint.attributes().get("method"),
+            Some(&std::collections::BTreeSet::from(["GET".to_owned()]))
+        );
+        assert_eq!(
+            endpoint.attributes().get("url"),
+            Some(&std::collections::BTreeSet::from([url.to_string()]))
+        );
+    }
+
+    #[tokio::test]
     async fn typed_http_evidence_drives_standard_web_reasoning_without_cookie_secrets() {
         let url = serve_once(
             b"HTTP/1.1 200 OK\r\nX-Powered-By: PHP/8.3\r\nSet-Cookie: laravel_session=secret-one; Path=/; HttpOnly\r\nSet-Cookie: XSRF-TOKEN=secret-two; Path=/\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
