@@ -1,5 +1,14 @@
 //! Plugin System for Extensibility
 //!
+//! ## Runtime scope
+//!
+//! - **Build:** opt-in via `plugins`.
+//! - **Execution:** host/library only (source-level plugin trait boundary; see ADR 0002).
+//! - **Default `venom scan`:** no.
+//! - **Support:** implemented (exercised by the Plugin Template).
+//!
+//! See `docs/internals/runtime-map.md`.
+//!
 //! Comprehensive modular plugin architecture for vulnerability scanning.
 
 use crate::contracts::ScanFinding;

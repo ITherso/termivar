@@ -1,5 +1,14 @@
 //! Run the standard deterministic web decision runtime.
 //!
+//! ## Runtime scope
+//!
+//! - **Build:** example binary (`venom-examples`).
+//! - **Execution:** Surface B host — composes `StandardWebDecisionRuntime` with a
+//!   `RuntimeBudget`.
+//! - **Default `venom scan`:** no.
+//! - **Support:** implemented and tested (reference host for the deterministic runtime).
+//!
+//!
 //! Use only against a target you own or are explicitly authorized to test:
 //! `cargo run -p venom-examples --bin decision_scan -- https://target.example/`
 

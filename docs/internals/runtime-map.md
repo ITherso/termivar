@@ -91,9 +91,10 @@ The table below classifies the **runtime-critical module groups** along
 independent axes — build availability, execution participation, whether the
 default `venom scan` path uses it, and support status — because these are not
 mutually exclusive (a module can be both opt-in and experimental, and some
-modules participate in more than one surface). This is intentionally **not** an
-exhaustive per-`pub mod` catalogue; exhaustive module-level annotations are PR-D2
-scope (source-level runtime-scope banners).
+modules participate in more than one surface). This table groups the
+runtime-critical modules; every top-level public module additionally carries a
+source-level `//! ## Runtime scope` banner in its module root, using the same four
+axes.
 
 | Module / group | Build availability | Execution participation | Default `venom scan` | Support status |
 | --- | --- | --- | --- | --- |
@@ -116,7 +117,7 @@ scope (source-level runtime-scope banners).
 Always-compiled support modules not listed above (for example `api_gateway`,
 `auth`, `cache`, `config`, `config_loader`, `contracts`, `event_bus`, `logging`,
 `metrics`, `error`, `payload_strategy`) are library plumbing for the surfaces
-above; per-module runtime-scope annotations are PR-D2 scope.
+above; each carries its own source-level runtime-scope banner in its module root.
 
 ### The proxy is a TCP relay, not a MITM proxy
 

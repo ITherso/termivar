@@ -1,5 +1,16 @@
 //! Experimental HTTP/TLS proxy boundary for Venom.
 //!
+//! ## Runtime scope
+//!
+//! - **Build:** separate workspace crate (`venom-proxy`).
+//! - **Execution:** explicit CLI adapter (`venom proxy`).
+//! - **Default `venom scan`:** no.
+//! - **Support:** experimental fixed-upstream bidirectional TCP relay — not a TLS
+//!   MITM implementation and not an HTTP interceptor (see [`mitm`]). The
+//!   `AsyncMitmProxy` type name is legacy/aspirational.
+//!
+//! See `docs/internals/runtime-map.md`.
+//!
 //! [`ProxyServer`] is the process-level adapter around [`AsyncMitmProxy`]. The
 //! interception API is unstable during the alpha release line and must only be
 //! used for explicitly authorized traffic.

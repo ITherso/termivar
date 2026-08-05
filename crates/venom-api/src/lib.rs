@@ -1,5 +1,15 @@
 //! Experimental HTTP adapter for Venom.
 //!
+//! ## Runtime scope
+//!
+//! - **Build:** separate workspace crate (`venom-api`).
+//! - **Execution:** explicit CLI startup hook (`venom api`). `start_api` does not
+//!   bind a listener; `router` exposes only `GET /health` as a library value.
+//! - **Default `venom scan`:** no.
+//! - **Support:** unsupported — no live network listener.
+//!
+//! See `docs/internals/runtime-map.md`.
+//!
 //! The implemented alpha surface is deliberately small: [`router`] exposes
 //! `GET /health`, while [`start_api`] is a startup hook and does not yet bind a
 //! network listener.

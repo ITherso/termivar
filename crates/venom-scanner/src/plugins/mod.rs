@@ -1,5 +1,14 @@
 //! Vulnerability Scanner Plugins
 //!
+//! ## Runtime scope
+//!
+//! - **Build:** opt-in via `plugins`.
+//! - **Execution:** host/library only (concrete plugins built on the plugin boundary).
+//! - **Default `venom scan`:** no.
+//! - **Support:** implemented.
+//!
+//! See `docs/internals/runtime-map.md`.
+//!
 //! Modular plugin implementations for various vulnerability types.
 
 pub mod lfi;

@@ -1,5 +1,14 @@
 //! Distributed Scanning Architecture
 //!
+//! ## Runtime scope
+//!
+//! - **Build:** opt-in via `distributed`.
+//! - **Execution:** no repository runtime caller (not on any default path).
+//! - **Default `venom scan`:** no.
+//! - **Support:** experimental/scaffold.
+//!
+//! See `docs/internals/runtime-map.md`.
+//!
 //! Multi-worker coordination, task queuing, and result aggregation
 //! for horizontal scaling across multiple nodes.
 
