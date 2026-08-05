@@ -6,9 +6,11 @@
 > is not production-ready.
 
 Venom has **three distinct runtime surfaces**. They are separate on purpose; a
-capability existing in one surface does not mean it runs in another.
+capability existing in one surface does not mean it runs in another. The single
+`venom` binary also exposes separate adapter subcommands (`api`, `proxy`) that are
+not part of the scan runtime.
 
-## A. Default CLI runtime (legacy direct I/O)
+## A. Default CLI scan runtime (legacy direct I/O)
 
 `venom scan <target>` runs an ordered phase pipeline built directly on a
 `reqwest` client. It is **legacy direct I/O** and does **not** go through
@@ -22,11 +24,13 @@ venom scan
           -> ordered phases/*
 ```
 
-The phases registered by default (`crates/venom-cli/src/main.rs`), in order:
+The phase sequence the CLI composes for the scan, in order (the directory phase is
+shown conditionally — it is registered only with the opt-in
+`--legacy-directory-fuzz` flag):
 
 1. `ReconPhase`
 2. `CrawlPhase`
-3. `DirectoryFuzzer` — **only** when `--legacy-directory-fuzz` is passed
+3. `DirectoryFuzzer` — **conditional**, only with `--legacy-directory-fuzz`
 4. `ParameterDiscoverer`
 5. `SqliScanner`
 6. `XssScanner`
@@ -34,8 +38,10 @@ The phases registered by default (`crates/venom-cli/src/main.rs`), in order:
 8. `LfiXxeScanner`
 9. `SsrfScanner`
 
-This is the only surface that runs when a user invokes the default binary. It
-does not consult the deterministic decision runtime below.
+This is the only **scan runtime** executed by `venom scan`. The same binary also
+exposes the separate `api` and `proxy` adapter commands described under surface C;
+they do not run the scan pipeline and `venom scan` does not consult the
+deterministic decision runtime below.
 
 ## B. Deterministic decision runtime
 
@@ -55,41 +61,67 @@ decision_scan example / library host
           -> Verification
 ```
 
-Modules implementing this surface are compiled under the default feature set
+Modules composed into this runtime are compiled under the default feature set
 (`core`, `scanning`) but are not invoked by the default CLI scan: `web_runtime`,
 `web_decision`, `web_reasoning`, `web_planning`, `web_execution`,
 `web_verification`, `decision_loop`, `decision_runner`, `runtime_budget`,
 `http_evidence`, `planner`, `rules`, `knowledge`, `experience`, `verification`,
-`defense`, `payload_strategies`, and the `api_*` reasoning/evidence modules.
+`adaptive`, and the `api_*` reasoning/evidence modules.
 
-**Semantic Phase 1.5** (`semantic` module: `EntityExtractor`, the producer
-contract, and the golden corpus) is implemented and tested, but it is **not yet
-wired into the default `venom scan` runtime**. It consumes `Evidence` only.
+Two implemented-and-tested surfaces are **host-owned** and are *not* automatically
+composed into `StandardWebDecisionRuntime` — a host must call them explicitly:
+
+- **Semantic Phase 1.5** (`semantic`: `EntityExtractor`, the producer contract,
+  the golden corpus). Consumes `Evidence` only; not wired into the default
+  `venom scan` runtime.
+- **Defense** (`defense`: projection / shadow / enforcement). Implemented and
+  tested, but the standard runtime composition does not call it; the only
+  non-test callers are the defense demo and explicit host integration. It is
+  **not currently composed into `StandardWebDecisionRuntime`**.
 
 ## C. Platform shell
 
-The remaining modules form a "platform shell" around the two runtimes. Each is
-classified by what actually happens today, using two axes: the default feature
-set is `["core", "scanning", "detection"]`, and the default execution path is the
-`venom scan` phase pipeline in surface A.
+The table below classifies the **runtime-critical module groups** along
+independent axes — build availability, execution participation, whether the
+default `venom scan` path uses it, and support status — because these are not
+mutually exclusive (a module can be both opt-in and experimental, and some
+modules participate in more than one surface). This is intentionally **not** an
+exhaustive per-`pub mod` catalogue; exhaustive module-level annotations are PR-D2
+scope (source-level runtime-scope banners).
 
-| Surface / module | Classification |
-| --- | --- |
-| `phases/*` (Recon, Crawl, ParameterDiscoverer, Sqli, Xss, Ssti, LfiXxe, Ssrf) | Compiled under default; **executed by the default CLI scan** |
-| `phases::DirectoryFuzzer` | Compiled under default; executed **only** with the opt-in `--legacy-directory-fuzz` flag |
-| Decision-runtime stack (`web_runtime`, `decision_runner`, `runtime_budget`, `http_evidence`, `planner`, `rules`, `knowledge`, `verification`, `defense`, …) | Compiled under default; **not executed by the default CLI scan** (drives surface B and library hosts) |
-| `semantic` (Phase 1.5) | Compiled under default; **implemented and tested, not wired into the default CLI runtime** |
-| `advanced_detection`, `anomaly` | Compiled under default (`detection`); not on the default CLI scan path |
-| `post_exploitation`, `persistence`, `reporting`, `realtime`, `dashboard`, `waf`, `adaptive`, `sdk` | Compiled under default (`scanning`); not on the default CLI scan path |
-| `ml` | **Opt-in feature** (`ml`); not in the default feature set |
-| `distributed` | **Opt-in feature** (`distributed`) |
-| `monitoring` | **Opt-in feature** (`monitoring`) |
-| `compliance` | **Opt-in feature** (`compliance`) |
-| `threat_intelligence` | **Opt-in feature** (`threat-intel`) |
-| `plugin`, `plugins`, `lua_engine` | **Opt-in feature** (`plugins`) |
-| `venom api` CLI / `venom-api` listener | **Unsupported**: `start_api` is a startup hook that does **not** bind a network listener; the `router` exposes only `GET /health` as a library value |
-| `venom proxy` CLI / `venom-proxy` | **Experimental**: binds an `AsyncMitmProxy`, but the interception API is unstable and the upstream (`127.0.0.1:80`) is hard-coded — not a supported, configurable MITM proxy |
-| Deployment (Helm / Terraform / Kubernetes) | **Unsupported** — removed as non-deployable; see the [deployment blueprint](../experimental/deployment-blueprint.md) |
+| Module / group | Build availability | Execution participation | Default `venom scan` | Support status |
+| --- | --- | --- | --- | --- |
+| `phases/*`, `runner`, `context` | default | Surface A | yes (directory phase conditional) | legacy alpha runtime |
+| Deterministic stack (`web_runtime`, `decision_runner`, `runtime_budget`, `http_evidence`, `planner`, `rules`, `knowledge`, `experience`, `verification`, `adaptive`, `web_*`, `api_*`) | default | Surface B (composed) | no | implemented and tested |
+| `semantic` (Phase 1.5) | default | library / test only (host-owned) | no | implemented and tested; not wired into the default CLI runtime |
+| `defense` (projection / shadow / enforcement) | default | host / test only (explicit API) | no | implemented and tested; **not composed into `StandardWebDecisionRuntime`** |
+| `advanced_detection`, `anomaly` | default (`detection`) | none on the default scan path | no | compiled, not executed by the default CLI |
+| `post_exploitation`, `persistence`, `reporting`, `realtime`, `dashboard`, `waf`, `sdk` | default (`scanning`) | none on the default scan path | no | compiled, not executed by the default CLI |
+| `ml` | opt-in (`ml`) | none on any default path | no | experimental |
+| `distributed` | opt-in (`distributed`) | none on any default path | no | experimental / scaffold |
+| `monitoring` | opt-in (`monitoring`) | none on any default path | no | experimental / scaffold |
+| `compliance` | opt-in (`compliance`) | none on any default path | no | experimental / scaffold |
+| `threat_intelligence` | opt-in (`threat-intel`) | none on any default path | no | experimental / scaffold |
+| `plugin`, `plugins`, `lua_engine` | opt-in (`plugins`) | host-owned | no | opt-in extension surface |
+| `venom-api` (`venom api`) | separate workspace crate | explicit CLI hook | no | **unsupported listener** — `start_api` does not bind; `router` exposes only `GET /health` as a library value |
+| `venom-proxy` (`venom proxy`) | separate workspace crate | explicit CLI adapter | no | **experimental fixed-upstream TCP relay** (see below) |
+| Deployment (Helm / Terraform / Kubernetes) | absent | none | no | unsupported — removed as non-deployable; see the [deployment blueprint](../experimental/deployment-blueprint.md) |
+
+Always-compiled support modules not listed above (for example `api_gateway`,
+`auth`, `cache`, `config`, `config_loader`, `contracts`, `event_bus`, `logging`,
+`metrics`, `error`, `payload_strategy`) are library plumbing for the surfaces
+above; per-module runtime-scope annotations are PR-D2 scope.
+
+### The proxy is a TCP relay, not a MITM proxy
+
+`venom proxy` starts `venom-proxy::AsyncMitmProxy`. Despite the type name, the
+current connection handler is an **experimental fixed-upstream bidirectional TCP
+relay**: it accepts a client connection, opens a TCP connection to a hard-coded
+upstream (`127.0.0.1:80`), and copies bytes in both directions. It does **not**
+parse `CONNECT`, terminate TLS, present generated certificates, or inspect/modify
+HTTP. The `CertCache` type exists but is **not used** by the connection path.
+`AsyncMitmProxy` is a legacy/aspirational type name; it is not a statement that
+TLS interception is implemented.
 
 ## Not implemented
 

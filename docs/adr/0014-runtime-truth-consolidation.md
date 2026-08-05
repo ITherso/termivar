@@ -33,9 +33,10 @@ documentation aligned to what actually executes:
 1. **Default CLI runtime (legacy direct I/O)** — surface A.
 2. **Deterministic decision runtime** (`StandardWebDecisionRuntime`) — surface B,
    which exists and is tested but is not the default CLI path.
-3. **Platform shell** — surface C, where every module is classified as executed
-   by the default CLI, compiled-but-not-executed, opt-in feature,
-   experimental/scaffold, or unsupported.
+3. **Platform shell** — surface C, where runtime-critical module groups are
+   classified along independent axes (build availability, execution
+   participation, default-scan participation, support status). ADR 0015 defines
+   that model; the runtime map classifies groups, not every `pub mod`.
 
 The authoritative, verifiable map lives in
 [`internals/runtime-map.md`](../internals/runtime-map.md). Documentation must not
