@@ -9,7 +9,10 @@ use venom_core::{EntityId, EvidenceId};
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum SemanticEntityType {
-    /// Network endpoint or API route (e.g. `v1:endpoint:https://example.test/api/v1/user#GET`).
+    /// Network endpoint or API route (e.g. `v1:endpoint:https://example.test/api/v1/user`).
+    ///
+    /// Endpoint identity is method-agnostic: any observed HTTP method is recorded
+    /// as a `method` attribute, never as part of the entity id.
     Endpoint,
     /// Fully qualified domain name or hostname (e.g. `v1:domain:example.test`).
     Domain,

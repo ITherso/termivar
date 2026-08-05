@@ -158,16 +158,19 @@ impl EntityExtractor {
             _ => return None,
         };
 
-        if val_str.len() > self.limits.max_value_bytes {
-            return None;
-        }
-
+        // `max_value_bytes` is applied per-branch below, only to branches that
+        // consume, store, or hash the evidence value (Technology, HTTP method,
+        // AuthArtifact). URLs use `max_url_bytes`; header concepts are name-only
+        // and must not be dropped because of an ignored oversized header value.
         match (evidence.kind(), predicate_namespace, predicate_name) {
             (
                 EvidenceKind::Technology,
                 "technology",
                 "web-server" | "language" | "framework" | "ui-framework",
             ) => {
+                if val_str.len() > self.limits.max_value_bytes {
+                    return None;
+                }
                 let name = val_str.trim();
                 if name.is_empty() {
                     return None;
@@ -204,6 +207,9 @@ impl EntityExtractor {
                 ))
             },
             (EvidenceKind::Http, "http.request", "method") => {
+                if val_str.len() > self.limits.max_value_bytes {
+                    return None;
+                }
                 let (canonical_id, url_str) =
                     parse_canonical_endpoint(evidence.subject().as_str(), "", &self.limits)?;
                 let normalized_method = normalize_http_method(val_str)?;
@@ -255,6 +261,9 @@ impl EntityExtractor {
                 ))
             },
             (EvidenceKind::Authentication, "authentication", "api_key" | "bearer" | "jwt") => {
+                if val_str.len() > self.limits.max_value_bytes {
+                    return None;
+                }
                 // REDACTION GUARANTEE: Never store raw token in attributes
                 let raw_token = val_str.trim();
                 if raw_token.is_empty() {
@@ -407,21 +416,20 @@ fn hash_token(kind: AuthArtifactKind, clean_token: &str) -> String {
 }
 
 fn classify_auth_kind(predicate: &str, clean_token: &str) -> AuthArtifactKind {
-    if predicate == "cookie" {
-        return AuthArtifactKind::SessionCookie;
-    }
+    // Routing only reaches this branch for the `authentication` allowlist
+    // {`api_key`, `bearer`, `jwt`}. There is no `cookie` or `token` predicate in
+    // that allowlist — cookie names are handled by the `http.cookie` mapping and
+    // are intentionally ignored — so those classifications are unreachable here
+    // and are deliberately omitted.
     if predicate == "api_key" {
         return AuthArtifactKind::ApiKey;
     }
-
     if is_valid_jwt_structure(clean_token) {
         return AuthArtifactKind::Jwt;
     }
-
-    if predicate == "bearer" || predicate == "token" {
+    if predicate == "bearer" {
         return AuthArtifactKind::BearerToken;
     }
-
     AuthArtifactKind::Unknown
 }
 
@@ -539,18 +547,28 @@ fn parse_canonical_endpoint(
 }
 
 fn normalize_http_method(raw_method: &str) -> Option<String> {
-    let trimmed = raw_method.trim();
-    if trimmed.is_empty() {
+    // Strict production contract: reject any leading or trailing whitespace rather
+    // than silently trimming it, so a method value that a real producer would never
+    // emit cannot be normalized into a valid token.
+    if raw_method != raw_method.trim() {
         return None;
     }
-    if trimmed.len() > 20 {
+    if raw_method.is_empty() {
         return None;
     }
-
-    if !trimmed.as_bytes().iter().all(|b| is_token_char(*b as char)) {
+    if raw_method.len() > 20 {
         return None;
     }
-    Some(trimmed.to_ascii_uppercase())
+    // Internal whitespace and control characters are not RFC 7230 token chars and
+    // are rejected here.
+    if !raw_method
+        .as_bytes()
+        .iter()
+        .all(|b| is_token_char(*b as char))
+    {
+        return None;
+    }
+    Some(raw_method.to_ascii_uppercase())
 }
 
 fn is_token_char(byte: char) -> bool {
@@ -827,7 +845,7 @@ mod tests {
     }
 
     #[test]
-    fn get_and_post_are_distinct_when_method_is_observed() {
+    fn get_and_post_share_endpoint_identity_but_retain_distinct_method_attributes() {
         let extractor = EntityExtractor::new();
         let res_get = extractor.extract_from_evidence(&[ev_subj(
             subject(),
@@ -855,16 +873,55 @@ mod tests {
         );
     }
 
+    fn method_entities(value: &str) -> usize {
+        let extractor = EntityExtractor::new();
+        extractor
+            .extract_from_evidence(&[ev_subj(
+                subject(),
+                EvidenceKind::Http,
+                KnowledgePredicate::new("http.request", "method").unwrap(),
+                EvidenceValue::Text(value.into()),
+            )])
+            .entities
+            .len()
+    }
+
     #[test]
-    fn method_with_whitespace_is_rejected() {
+    fn method_with_internal_whitespace_is_rejected() {
+        assert_eq!(method_entities(" G\nET "), 0);
+        assert_eq!(method_entities("GE T"), 0);
+    }
+
+    #[test]
+    fn method_with_leading_or_trailing_space_is_rejected() {
+        assert_eq!(method_entities(" GET"), 0);
+        assert_eq!(method_entities("GET "), 0);
+    }
+
+    #[test]
+    fn method_with_tab_is_rejected() {
+        assert_eq!(method_entities("\tPOST\t"), 0);
+    }
+
+    #[test]
+    fn method_with_crlf_is_rejected() {
+        assert_eq!(method_entities("\r\nOPTIONS\r\n"), 0);
+    }
+
+    #[test]
+    fn lowercase_token_is_normalized_in_synthetic_contract() {
         let extractor = EntityExtractor::new();
         let res = extractor.extract_from_evidence(&[ev_subj(
             subject(),
             EvidenceKind::Http,
             KnowledgePredicate::new("http.request", "method").unwrap(),
-            EvidenceValue::Text(" G\nET ".into()),
+            EvidenceValue::Text("get".into()),
         )]);
-        assert_eq!(res.entities.len(), 0);
+        assert_eq!(res.entities.len(), 1);
+        assert_eq!(
+            res.entities[0].attributes().get("method"),
+            Some(&BTreeSet::from(["GET".to_string()]))
+        );
     }
 
     #[test]
@@ -978,6 +1035,30 @@ mod tests {
         assert_eq!(res.entities[0].id().as_str(), "v1:header:authorization");
         assert_eq!(res.entities[0].attributes().len(), 1);
         assert!(res.entities[0].attributes().contains_key("name"));
+    }
+
+    #[test]
+    fn oversized_header_value_still_produces_name_only_header_concept() {
+        // Header concepts are name-only. An ignored header value larger than
+        // `max_value_bytes` must not suppress the header concept, and the value
+        // must never appear anywhere in the entity.
+        let extractor = EntityExtractor::new();
+        let huge_value = "A".repeat(extractor.limits().max_value_bytes + 512);
+        let e = ev(
+            EvidenceKind::Http,
+            KnowledgePredicate::new("http.header", "content-security-policy").unwrap(),
+            EvidenceValue::Text(huge_value.clone()),
+        );
+        let res = extractor.extract_from_evidence(&[e]);
+        assert_eq!(res.entities.len(), 1);
+        assert_eq!(
+            res.entities[0].id().as_str(),
+            "v1:header:content-security-policy"
+        );
+        let json = serde_json::to_string(&res.entities[0]).unwrap();
+        let debug = format!("{:?}", res.entities[0]);
+        assert!(!json.contains(&huge_value));
+        assert!(!debug.contains(&huge_value));
     }
 
     #[test]
