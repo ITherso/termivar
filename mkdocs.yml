@@ -33,6 +33,7 @@ nav:
       - Observability: OBSERVABILITY.md
   - Internals:
       - Overview: internals/README.md
+      - Runtime map: internals/runtime-map.md
       - Scheduler: internals/scheduler.md
       - Event bus: internals/event-bus.md
       - Runner: internals/runner.md
@@ -74,6 +75,8 @@ nav:
       - ADR 0011 - API explanation semantics: adr/0011-version-api-explanation-semantics.md
       - ADR 0012 - Delivered transport bytes: adr/0012-account-delivered-transport-bytes.md
       - ADR 0013 - Runtime API visibility pairs: adr/0013-runtime-owned-api-visibility-pairs.md
+      - ADR 0014 - Runtime truth consolidation: adr/0014-runtime-truth-consolidation.md
+      - ADR 0015 - Platform-shell boundary: adr/0015-platform-shell-boundary.md
       - Release process: RELEASE.md
 markdown_extensions:
   - admonition

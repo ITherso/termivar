@@ -6,6 +6,7 @@ Venom is a modular Rust-based penetration testing framework focused on research 
 
 - [Getting started](GETTING_STARTED.md)
 - [Architecture](architecture.md)
+- [Runtime map (what actually runs)](internals/runtime-map.md)
 - [Editable Draw.io architecture source](architecture.drawio)
 - [Scanner](scanner.md)
 - [Scanner SDK](sdk.md)
