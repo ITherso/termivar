@@ -35,7 +35,7 @@ impl ContractClass {
         match name {
             "rest_request_url_and_method" => Self::ProductionBacked,
             "response_header_concepts" => Self::ProductionBacked,
-            "jwt_or_bearer_auth_artifact" => Self::SyntheticExtractorContract,
+            "authentication_artifact_kinds" => Self::SyntheticExtractorContract,
             "session_cookie_name_is_not_a_credential" => Self::ProductionBacked,
             "graphql_request_surface" => Self::SyntheticExtractorContract,
             "dns_domain_and_ip_are_distinct" => Self::SyntheticExtractorContract,
@@ -156,7 +156,7 @@ struct FixtureExpectedEntity {
 const FIXTURES: &[&str] = &[
     include_str!("fixtures/semantic/rest_request_url_and_method.json"),
     include_str!("fixtures/semantic/response_header_concepts.json"),
-    include_str!("fixtures/semantic/jwt_or_bearer_auth_artifact.json"),
+    include_str!("fixtures/semantic/authentication_artifact_kinds.json"),
     include_str!("fixtures/semantic/session_cookie_name_is_not_a_credential.json"),
     include_str!("fixtures/semantic/graphql_request_surface.json"),
     include_str!("fixtures/semantic/dns_domain_and_ip_are_distinct.json"),
@@ -207,11 +207,30 @@ fn parse_kind(raw: &str) -> EvidenceKind {
     }
 }
 
+/// Assert a fixture array is already canonical (strictly ascending => sorted and
+/// unique) before it is normalized into a `BTreeSet`, so malformed golden JSON
+/// (unsorted or duplicated) cannot silently pass through normalization.
+fn assert_sorted_unique(values: &[String], context: &str) {
+    for pair in values.windows(2) {
+        assert!(
+            pair[0] < pair[1],
+            "{context} must be sorted and unique in the fixture, found {:?} then {:?}",
+            pair[0],
+            pair[1]
+        );
+    }
+}
+
 fn to_expected_entity(raw: &FixtureExpectedEntity) -> SemanticEntity {
     let mut attributes = BTreeMap::new();
     for (key, values) in &raw.attributes {
+        assert_sorted_unique(values, &format!("{} attribute `{key}`", raw.id));
         attributes.insert(key.clone(), BTreeSet::from_iter(values.iter().cloned()));
     }
+    assert_sorted_unique(
+        &raw.source_evidence_ids,
+        &format!("{} source_evidence_ids", raw.id),
+    );
     let source_evidence_ids = raw
         .source_evidence_ids
         .iter()
@@ -262,6 +281,38 @@ fn fixture_evidence_by_name<'a>(
         .expect("required evidence should exist in fixture")
 }
 
+/// Explicitly pin the full production-backed tuple for one evidence record so a
+/// silent drift in kind/source is caught. Predicate namespace/name are already
+/// fixed by the lookup in [`fixture_evidence_by_name`]; the value is
+/// `EvidenceValue::Text` by fixture construction and asserted non-empty here.
+fn assert_production_tuple(
+    evidence: &FixtureEvidence,
+    expected_kind: &str,
+    expected_component: &str,
+    expected_method: &str,
+) {
+    assert_eq!(
+        evidence.kind, expected_kind,
+        "evidence {} kind",
+        evidence.id
+    );
+    assert_eq!(
+        evidence.source_component, expected_component,
+        "evidence {} source component",
+        evidence.id
+    );
+    assert_eq!(
+        evidence.source_method, expected_method,
+        "evidence {} source method",
+        evidence.id
+    );
+    assert!(
+        !evidence.value.is_empty(),
+        "evidence {} must carry a non-empty text value",
+        evidence.id
+    );
+}
+
 fn assert_fixture_contract_shape(fixture: &FixtureCollection) {
     assert_eq!(
         fixture.contract_class,
@@ -298,16 +349,14 @@ fn assert_fixture_contract_shape(fixture: &FixtureCollection) {
                     HttpEvidencePredicate::REQUEST_URL.namespace(),
                     HttpEvidencePredicate::REQUEST_URL.name(),
                 );
-                assert_eq!(url.source_component, "http.evidence");
-                assert_eq!(url.source_method, "request-url");
+                assert_production_tuple(url, "Http", "http.evidence", "request-url");
 
                 let method = fixture_evidence_by_name(
                     fixture,
                     HttpEvidencePredicate::REQUEST_METHOD.namespace(),
                     HttpEvidencePredicate::REQUEST_METHOD.name(),
                 );
-                assert_eq!(method.source_component, "http.evidence");
-                assert_eq!(method.source_method, "request-method");
+                assert_production_tuple(method, "Http", "http.evidence", "request-method");
             },
             "response_header_concepts" => {
                 let content_type = fixture_evidence_by_name(
@@ -320,11 +369,13 @@ fn assert_fixture_contract_shape(fixture: &FixtureCollection) {
                     HttpEvidencePredicate::HEADER_SERVER.namespace(),
                     HttpEvidencePredicate::HEADER_SERVER.name(),
                 );
-
-                assert_eq!(content_type.source_component, "http.evidence");
-                assert_eq!(content_type.source_method, "response-header:content-type");
-                assert_eq!(server.source_component, "http.evidence");
-                assert_eq!(server.source_method, "response-header:server");
+                assert_production_tuple(
+                    content_type,
+                    "Http",
+                    "http.evidence",
+                    "response-header:content-type",
+                );
+                assert_production_tuple(server, "Http", "http.evidence", "response-header:server");
             },
             "session_cookie_name_is_not_a_credential" => {
                 let cookie_name = fixture_evidence_by_name(
@@ -332,8 +383,15 @@ fn assert_fixture_contract_shape(fixture: &FixtureCollection) {
                     HttpEvidencePredicate::COOKIE_NAME.namespace(),
                     HttpEvidencePredicate::COOKIE_NAME.name(),
                 );
-                assert_eq!(cookie_name.source_component, "http.evidence");
-                assert_eq!(cookie_name.source_method, "response-set-cookie-name");
+                // The negative cookie contract must fail if EvidenceKind drifts
+                // away from Authentication: an unsupported kind would also produce
+                // zero entities, so this explicit assertion is the real guard.
+                assert_production_tuple(
+                    cookie_name,
+                    "Authentication",
+                    "http.evidence",
+                    "response-set-cookie-name",
+                );
             },
             _ => {},
         }
@@ -439,22 +497,40 @@ fn semantic_fixtures_are_deterministic_and_match_expected() {
                     "cookie names must not become auth artifacts"
                 );
             },
-            "jwt_or_bearer_auth_artifact" => {
-                let auth = &forward.entities[0];
-                assert_eq!(auth.entity_type(), SemanticEntityType::AuthArtifact);
-                let auth_attrs = auth.attributes();
+            "authentication_artifact_kinds" => {
                 assert_eq!(
-                    auth_attrs.get("auth_kind").expect("auth_kind must exist"),
-                    &BTreeSet::from(["jwt".to_string()])
+                    forward.entities.len(),
+                    3,
+                    "jwt, bearer and api_key each yield a distinct auth artifact"
                 );
-                let hash = auth_attrs
-                    .get("fingerprint")
-                    .expect("fingerprint must exist")
+                let kinds: BTreeSet<String> = forward
+                    .entities
                     .iter()
-                    .next()
-                    .expect("non-empty fingerprint")
-                    .clone();
-                assert_eq!(hash.len(), 64, "fingerprint remains stable length");
+                    .map(|entity| {
+                        assert_eq!(entity.entity_type(), SemanticEntityType::AuthArtifact);
+                        let fingerprint = entity
+                            .attributes()
+                            .get("fingerprint")
+                            .and_then(|values| values.iter().next())
+                            .expect("fingerprint must exist");
+                        assert_eq!(fingerprint.len(), 64, "fingerprint remains stable length");
+                        entity
+                            .attributes()
+                            .get("auth_kind")
+                            .and_then(|values| values.iter().next())
+                            .expect("auth_kind must exist")
+                            .clone()
+                    })
+                    .collect();
+                assert_eq!(
+                    kinds,
+                    BTreeSet::from([
+                        "api_key".to_string(),
+                        "bearer_token".to_string(),
+                        "jwt".to_string(),
+                    ]),
+                    "every accepted authentication predicate is represented in the golden corpus"
+                );
             },
             "bounded_truncation_receipt" => {
                 assert!(forward.truncated);
