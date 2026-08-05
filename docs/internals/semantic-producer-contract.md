@@ -43,7 +43,9 @@ These fixtures validate extractor logic but are not produced from current runtim
 
 | EvidenceKind | predicate.namespace | predicate.name | EvidenceValue | semantic entity output | Contract class | Typical fixture source |
 | --- | --- | --- | --- | --- | --- | --- |
-| `Authentication` | `authentication` | `jwt` | `Text` | `auth_artifact` | `synthetic_extractor_contract` | `semantic.fixture` |
+| `Authentication` | `authentication` | `jwt` | `Text` | `auth_artifact` (`auth_kind=jwt`) | `synthetic_extractor_contract` | `semantic.fixture` |
+| `Authentication` | `authentication` | `bearer` | `Text` | `auth_artifact` (`auth_kind=bearer_token`, or `jwt` if the value is a JWT) | `synthetic_extractor_contract` | `semantic.fixture` |
+| `Authentication` | `authentication` | `api_key` | `Text` | `auth_artifact` (`auth_kind=api_key`) | `synthetic_extractor_contract` | `semantic.fixture` |
 | `Dns` | `dns` | `ip` | `Text` | `ip_address` | `synthetic_extractor_contract` | `semantic.fixture` |
 | `Dns` | `dns` | `domain`, `hostname` | `Text` | `domain` | `synthetic_extractor_contract` | `semantic.fixture` |
 | `Technology` | `technology` | `web-server` | `Text` | `technology` | `synthetic_extractor_contract` | `semantic.fixture` |
@@ -67,13 +69,41 @@ Extraction routes by exact tuple only:
 There is no cross-namespace fallback for HTTP-like names. For example, `api.request.url`
 or `api.request.method` must not map to HTTP endpoint contracts.
 
+### Endpoint subject convention (production-backed)
+
+The URL+method merge is production-backed only for the standard `http.evidence`
+executor driven by `SubjectHttpProbeProvider`. In that path the case subject and
+the probe URL are the **same absolute request URL**, so both the
+`http.request.url` value and the `http.request.method` subject resolve to the same
+method-agnostic endpoint identity:
+
+`subject = endpoint:<same absolute request URL>`
+
+Endpoint identity is method-agnostic: the observed method is stored as a `method`
+attribute, never as part of the id (there is no `#GET` suffix).
+
+A custom `HttpProbeProvider` may return a probe URL that differs from the case
+subject. In that case the `http.request.method` evidence (keyed by subject) and the
+`http.request.url` evidence (keyed by value) can resolve to two different endpoint
+entities. Correlation-aware batch joining across a divergent provider is
+**deferred** — the production-backed contract above covers only the standard
+provider identity.
+
+### Authentication predicate allowlist
+
+The `authentication` namespace routes exactly `{jwt, bearer, api_key}`. `jwt` and
+`bearer` values that parse as a JWT structure classify as `auth_kind=jwt`; a
+non-JWT `bearer` value classifies as `auth_kind=bearer_token`; `api_key` classifies
+as `auth_kind=api_key`. There is no `cookie` or `token` predicate in this
+allowlist — cookie names arrive via `http.cookie` and are intentionally ignored.
+
 ## Golden fixtures used for contract verification
 
 The following fixtures live under `crates/venom-scanner/tests/fixtures/semantic/`:
 
 - `rest_request_url_and_method.json`
 - `response_header_concepts.json`
-- `jwt_or_bearer_auth_artifact.json`
+- `authentication_artifact_kinds.json`
 - `session_cookie_name_is_not_a_credential.json`
 - `graphql_request_surface.json`
 - `dns_domain_and_ip_are_distinct.json`
