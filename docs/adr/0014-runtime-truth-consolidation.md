@@ -1,6 +1,6 @@
 # ADR 0014: Consolidate runtime truth into three named surfaces
 
-- Status: In review
+- Status: Accepted
 - Date: 2026-08-05
 - Depends on: ADR 0004 (reasoning/runtime boundary)
 

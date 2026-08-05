@@ -43,6 +43,11 @@ exposes the separate `api` and `proxy` adapter commands described under surface 
 they do not run the scan pipeline and `venom scan` does not consult the
 deterministic decision runtime below.
 
+`ScanContext` instantiates and privately owns a `KnowledgeBase`, but the current
+legacy phases do **not** consume it — construction and ownership are not the same
+as active use. Surface B, by contrast, actively uses `KnowledgeBase` as
+deterministic reasoning/runtime state.
+
 ## B. Deterministic decision runtime
 
 `StandardWebDecisionRuntime` is a separate, budget-bounded runtime. It exists and
@@ -74,10 +79,11 @@ composed into `StandardWebDecisionRuntime` — a host must call them explicitly:
 - **Semantic Phase 1.5** (`semantic`: `EntityExtractor`, the producer contract,
   the golden corpus). Consumes `Evidence` only; not wired into the default
   `venom scan` runtime.
-- **Defense** (`defense`: projection / shadow / enforcement). Implemented and
-  tested, but the standard runtime composition does not call it; the only
-  non-test callers are the defense demo and explicit host integration. It is
-  **not currently composed into `StandardWebDecisionRuntime`**.
+- **Defense** (`defense`: projection / shadow / enforcement). The API is
+  implemented and tested. `StandardWebDecisionRuntime` does **not** compose it;
+  `tests/defense_aware_planning_demo.rs` exercises it, and no production runtime
+  caller exists in the repository. External hosts may integrate projection, shadow
+  planning, and enforcement explicitly.
 
 ## C. Platform shell
 

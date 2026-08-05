@@ -1,6 +1,6 @@
 # ADR 0015: Classify the platform shell by execution reality
 
-- Status: In review
+- Status: Accepted
 - Date: 2026-08-05
 - Extends: ADR 0014
 
@@ -20,10 +20,12 @@ stop.
 
 Classify runtime-critical module groups along **independent** axes rather than a
 single exclusive category, because build/execution facts and maturity are
-orthogonal (a module can be both opt-in and experimental) and a module can
-participate in more than one surface (`knowledge`, for example, is instantiated on
-the legacy `ScanContext` path *and* is a core part of the deterministic runtime).
-The axes are:
+orthogonal (a module can be both opt-in and experimental), and because a type may
+be present as owned state in one surface yet actively used only in another —
+**presence alone does not prove runtime participation**. For example,
+`ScanContext` instantiates and privately owns a `KnowledgeBase` on surface A, but
+the current legacy phases do not consume it; surface B actively uses
+`KnowledgeBase` as deterministic reasoning state. The axes are:
 
 - **Build availability** — always/default, opt-in cargo feature (`ml`,
   `distributed`, `monitoring`, `compliance`, `threat-intel`, `plugins`), a
