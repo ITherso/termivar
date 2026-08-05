@@ -39,9 +39,9 @@ shown conditionally — it is registered only with the opt-in
 9. `SsrfScanner`
 
 This is the only **scan runtime** executed by `venom scan`. The same binary also
-exposes the separate `api` and `proxy` adapter commands described under surface C;
-they do not run the scan pipeline and `venom scan` does not consult the
-deterministic decision runtime below.
+exposes the separate `decision-scan` (Surface B preview, below), `api`, and
+`proxy` commands; none of them run this phase pipeline and `venom scan` does not
+consult the deterministic decision runtime below.
 
 `ScanContext` instantiates and privately owns a `KnowledgeBase`, but the current
 legacy phases do **not** consume it — construction and ownership are not the same
@@ -51,11 +51,15 @@ deterministic reasoning/runtime state.
 ## B. Deterministic decision runtime
 
 `StandardWebDecisionRuntime` is a separate, budget-bounded runtime. It exists and
-is exercised by tests and the `decision_scan` example / library hosts, but it is
-**not** the path the default `venom scan` command takes.
+is exercised by tests, the `decision_scan` example / library hosts, and the
+explicit **`venom decision-scan <target>`** CLI preview command. It is **not** the
+path the default `venom scan` command takes, and `decision-scan` does not change
+`venom scan`. The preview uses a fixed conservative profile (target-scoped policy,
+≤16 requests, 60s, 1 MiB/response) and installs no payload binding, semantic
+extraction, defense composition, or API reasoning.
 
 ```text
-decision_scan example / library host
+venom decision-scan <target>  (or decision_scan example / library host)
   -> StandardWebDecisionRuntime
       -> RuntimeBudget
           -> Evidence
