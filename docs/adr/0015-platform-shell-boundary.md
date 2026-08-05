@@ -18,28 +18,31 @@ stop.
 
 ## Decision
 
-Every platform-shell module is classified along two verifiable axes: the default
-feature set (`["core", "scanning", "detection"]`) and the default execution path
-(the `venom scan` phase pipeline). Each module is exactly one of:
+Classify runtime-critical module groups along **independent** axes rather than a
+single exclusive category, because build/execution facts and maturity are
+orthogonal (a module can be both opt-in and experimental) and a module can
+participate in more than one surface (`knowledge`, for example, is instantiated on
+the legacy `ScanContext` path *and* is a core part of the deterministic runtime).
+The axes are:
 
-- **Executed by the default CLI** — on the surface A phase pipeline.
-- **Compiled but not executed by the default CLI** — present under the default
-  feature set, but not on the default scan path (for example the decision-runtime
-  stack and the detection modules).
-- **Opt-in feature** — requires a non-default cargo feature (`ml`, `distributed`,
-  `monitoring`, `compliance`, `threat-intel`, `plugins`).
-- **Experimental / scaffold** — present but with an explicitly unstable contract
-  (for example `venom-proxy`'s `AsyncMitmProxy`, with an unstable interception
-  API and a hard-coded upstream).
-- **Unsupported** — not wired into any runnable, supported path (for example the
-  `venom api` listener, which does not bind; and deployment manifests, removed in
-  the infrastructure consolidation).
+- **Build availability** — always/default, opt-in cargo feature (`ml`,
+  `distributed`, `monitoring`, `compliance`, `threat-intel`, `plugins`), a
+  separate workspace crate, or absent.
+- **Execution participation** — surface A (default scan), surface B (deterministic
+  runtime), an explicit CLI adapter (`api`, `proxy`), library/host-only, or none.
+- **Default `venom scan` participation** — yes, no, or conditional.
+- **Support status** — implemented and tested, legacy alpha, experimental,
+  scaffold, or unsupported.
 
-The per-module classification lives in
+The per-group classification lives in
 [`internals/runtime-map.md`](../internals/runtime-map.md) and is the single place
-to update when a module's status changes. This ADR **extends** ADR 0014; it does
-not supersede it — ADR 0014's runtime-truth decision stands, and this record adds
-the classification rule for surface C.
+to update when a module's status changes. The runtime map deliberately classifies
+**runtime-critical module groups**, not every `pub mod`; exhaustive module-level
+annotations are the scope of the source-level runtime-scope banners (PR-D2), not
+this record.
+
+This ADR **extends** ADR 0014; it does not supersede it — ADR 0014's runtime-truth
+decision stands, and this record adds the classification model for surface C.
 
 ## Consequences
 
