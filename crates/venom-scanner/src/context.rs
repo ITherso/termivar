@@ -1,3 +1,16 @@
+//! Scan context: shared state for the legacy `venom scan` pipeline.
+//!
+//! ## Runtime scope
+//!
+//! - **Build:** always/default.
+//! - **Execution:** Surface A — `ScanContext` owns the shared scan state. It also
+//!   constructs and privately owns a `KnowledgeBase`, but the current legacy
+//!   phases do not consume it (construction is not active use).
+//! - **Default `venom scan`:** yes.
+//! - **Support:** legacy alpha.
+//!
+//! See `docs/internals/runtime-map.md`.
+
 use crate::event_bus::EventBus;
 use crate::knowledge::KnowledgeBase;
 use crate::logging::{LogLevel, Logger};

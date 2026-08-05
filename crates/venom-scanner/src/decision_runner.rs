@@ -1,5 +1,14 @@
 //! Runner boundary for executing deterministic decision-loop commands.
 //!
+//! ## Runtime scope
+//!
+//! - **Build:** default via `scanning`.
+//! - **Execution:** Surface B (deterministic decision runtime).
+//! - **Default `venom scan`:** no.
+//! - **Support:** implemented and tested.
+//!
+//! See `docs/internals/runtime-map.md`.
+//!
 //! The decision loop chooses an action; this module resolves its executor,
 //! honors scheduler delays, records native evidence, and submits the resulting
 //! snapshot to the correct verifier. Executors never receive the knowledge

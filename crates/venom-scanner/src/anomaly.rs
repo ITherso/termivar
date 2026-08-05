@@ -1,5 +1,14 @@
 //! Anomaly Detection Engine (P0 - Outlier-resistant + P1 - Regex error keywords)
 //!
+//! ## Runtime scope
+//!
+//! - **Build:** default via `detection`.
+//! - **Execution:** no repository runtime caller (not on the default scan path).
+//! - **Default `venom scan`:** no.
+//! - **Support:** experimental/scaffold.
+//!
+//! See `docs/internals/runtime-map.md`.
+//!
 //! Detects unusual patterns in responses that may indicate vulnerabilities.
 //! Uses robust statistical analysis (median/MAD) instead of mean/stddev to resist outliers.
 //! Uses sliding window (last 100 responses) for performance and relevance.

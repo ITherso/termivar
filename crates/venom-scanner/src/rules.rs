@@ -1,5 +1,14 @@
 //! Deterministic expression evaluation and Bayesian reasoning rules.
 //!
+//! ## Runtime scope
+//!
+//! - **Build:** always/default.
+//! - **Execution:** Surface B (deterministic decision runtime).
+//! - **Default `venom scan`:** no.
+//! - **Support:** implemented and tested.
+//!
+//! See `docs/internals/runtime-map.md`.
+//!
 //! Rules consume an immutable [`KnowledgeSnapshot`]. They never execute
 //! plugins, schedule scans, or mutate evidence. A matched rule may materialize
 //! one stable, evidence-backed [`Hypothesis`].

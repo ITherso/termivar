@@ -1,5 +1,14 @@
 //! Deterministic, budget-aware attack planning.
 //!
+//! ## Runtime scope
+//!
+//! - **Build:** always/default.
+//! - **Execution:** Surface B (deterministic decision runtime).
+//! - **Default `venom scan`:** no.
+//! - **Support:** implemented and tested.
+//!
+//! See `docs/internals/runtime-map.md`.
+//!
 //! The planner ranks declarative actions but never executes them. It consumes
 //! one immutable knowledge snapshot, evaluates action requirements, derives
 //! confidence from Bayesian hypotheses, and emits an explainable plan.

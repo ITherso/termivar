@@ -1,5 +1,14 @@
 //! Host-facing runtime for the standard deterministic web decision stack.
 //!
+//! ## Runtime scope
+//!
+//! - **Build:** default via `scanning`.
+//! - **Execution:** Surface B — this is `StandardWebDecisionRuntime`.
+//! - **Default `venom scan`:** no (host/library and `examples/decision_scan.rs`).
+//! - **Support:** implemented and tested.
+//!
+//! See `docs/internals/runtime-map.md`.
+//!
 //! The runtime owns composition and bounded command driving. Domain layers
 //! remain independently testable and the caller remains responsible for
 //! target authorization and HTTP evidence policy.

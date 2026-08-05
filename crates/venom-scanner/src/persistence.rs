@@ -1,5 +1,14 @@
 //! Database Persistence Layer
 //!
+//! ## Runtime scope
+//!
+//! - **Build:** default via `scanning`.
+//! - **Execution:** no repository runtime caller (not on the default scan path).
+//! - **Default `venom scan`:** no.
+//! - **Support:** experimental/scaffold.
+//!
+//! See `docs/internals/runtime-map.md`.
+//!
 //! SQLite abstraction, schema management, and optimized queries.
 
 use serde::{Deserialize, Serialize};

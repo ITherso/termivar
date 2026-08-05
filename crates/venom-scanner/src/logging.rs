@@ -1,5 +1,14 @@
 //! Structured Logging System for VENOM Scanner
 //!
+//! ## Runtime scope
+//!
+//! - **Build:** always/default.
+//! - **Execution:** shared support (library logging plumbing).
+//! - **Default `venom scan`:** no (support type, not an execution stage).
+//! - **Support:** implemented.
+//!
+//! See `docs/internals/runtime-map.md`.
+//!
 //! Provides consistent, contextualized logging across all scanning phases
 //! with performance metrics, timing information, and structured output.
 

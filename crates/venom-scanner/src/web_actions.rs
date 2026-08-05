@@ -1,5 +1,14 @@
 //! Transport-neutral semantic action identities for standard web profiles.
 //!
+//! ## Runtime scope
+//!
+//! - **Build:** always/default.
+//! - **Execution:** Surface B (deterministic decision runtime).
+//! - **Default `venom scan`:** no.
+//! - **Support:** implemented and tested.
+//!
+//! See `docs/internals/runtime-map.md`.
+//!
 //! Planning, verification, and execution consume this catalog as sibling
 //! layers. The catalog defines stable meaning and routing identities but owns
 //! no HTTP method, client, executor, or runtime policy.

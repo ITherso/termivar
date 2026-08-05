@@ -1,5 +1,14 @@
 //! Scan Configuration Profiles
 //!
+//! ## Runtime scope
+//!
+//! - **Build:** always/default.
+//! - **Execution:** shared support (library configuration types).
+//! - **Default `venom scan`:** no (support type, not an execution stage).
+//! - **Support:** implemented.
+//!
+//! See `docs/internals/runtime-map.md`.
+//!
 //! Predefined and custom scan configurations for different scenarios.
 
 use serde::{Deserialize, Serialize};

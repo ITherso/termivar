@@ -1,5 +1,15 @@
 //! Scan pipeline orchestration with phase execution and finding aggregation
 //!
+//! ## Runtime scope
+//!
+//! - **Build:** default via `scanning`.
+//! - **Execution:** Surface A — `ScanRunner` drives the legacy `venom scan` phase
+//!   pipeline (direct I/O outside `StandardWebDecisionRuntime`/`RuntimeBudget`).
+//! - **Default `venom scan`:** yes.
+//! - **Support:** legacy alpha.
+//!
+//! See `docs/internals/runtime-map.md`.
+//!
 //! The ScanRunner coordinates sequential execution of all 9 scanning phases,
 //! manages error handling, and aggregates findings with timing metrics.
 

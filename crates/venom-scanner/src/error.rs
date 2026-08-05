@@ -1,5 +1,14 @@
 //! Error types and handling for VENOM Scanner
 //!
+//! ## Runtime scope
+//!
+//! - **Build:** always/default.
+//! - **Execution:** shared support (library plumbing used across surfaces).
+//! - **Default `venom scan`:** no (support type, not an execution stage).
+//! - **Support:** implemented.
+//!
+//! See `docs/internals/runtime-map.md`.
+//!
 //! Comprehensive error handling with contextual information for all scanner phases.
 //! Implements proper error propagation with conversion from external error types.
 

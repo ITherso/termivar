@@ -1,5 +1,14 @@
 //! Performance Metrics & Analytics
 //!
+//! ## Runtime scope
+//!
+//! - **Build:** always/default.
+//! - **Execution:** host/library only; no repository runtime caller.
+//! - **Default `venom scan`:** no.
+//! - **Support:** experimental/scaffold.
+//!
+//! See `docs/internals/runtime-map.md`.
+//!
 //! Tracks scanning performance, timing, and statistics for optimization.
 
 use std::collections::HashMap;

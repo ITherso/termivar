@@ -1,5 +1,14 @@
 //! Deterministic JSON, GraphQL, and paired-visibility reasoning.
 //!
+//! ## Runtime scope
+//!
+//! - **Build:** always/default.
+//! - **Execution:** Surface B support (API reasoning).
+//! - **Default `venom scan`:** no.
+//! - **Support:** implemented and tested.
+//!
+//! See `docs/internals/runtime-map.md`.
+//!
 //! The profile is transport-neutral and opt-in. It recognizes disclosed API
 //! representations and turns one already-paired visibility comparison into a
 //! reviewable boundary hypothesis. It never combines independent principals,

@@ -1,5 +1,14 @@
 //! Deterministic passive and active verification.
 //!
+//! ## Runtime scope
+//!
+//! - **Build:** always/default.
+//! - **Execution:** Surface B (deterministic decision runtime).
+//! - **Default `venom scan`:** no.
+//! - **Support:** implemented and tested.
+//!
+//! See `docs/internals/runtime-map.md`.
+//!
 //! Verifiers consume immutable knowledge snapshots and never execute probes.
 //! Passive rules may use existing evidence. Active rules are eligible only
 //! when their expression cites evidence added after the passive snapshot, so

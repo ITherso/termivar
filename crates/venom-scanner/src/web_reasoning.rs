@@ -1,5 +1,14 @@
 //! Standard deterministic ontology and reasoning rules for web observations.
 //!
+//! ## Runtime scope
+//!
+//! - **Build:** always/default.
+//! - **Execution:** Surface B (deterministic decision runtime).
+//! - **Default `venom scan`:** no.
+//! - **Support:** implemented and tested.
+//!
+//! See `docs/internals/runtime-map.md`.
+//!
 //! The profile is opt-in. It defines semantic vocabulary and Bayesian rules,
 //! but performs no network I/O and never verifies a vulnerability.
 

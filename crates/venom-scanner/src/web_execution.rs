@@ -1,5 +1,14 @@
 //! Scope-bound executors for standard web discovery actions.
 //!
+//! ## Runtime scope
+//!
+//! - **Build:** default via `scanning`.
+//! - **Execution:** Surface B (deterministic decision runtime).
+//! - **Default `venom scan`:** no.
+//! - **Support:** implemented and tested.
+//!
+//! See `docs/internals/runtime-map.md`.
+//!
 //! This profile binds a deliberately small set of semantic planner actions to
 //! the existing HTTP evidence boundary. It performs no credential guessing,
 //! payload injection, redirect following, or cross-origin navigation.

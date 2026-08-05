@@ -1,5 +1,14 @@
 //! Event Bus - Publish/Subscribe Event System
 //!
+//! ## Runtime scope
+//!
+//! - **Build:** always/default.
+//! - **Execution:** shared support (scanner event delivery; see ADR 0003).
+//! - **Default `venom scan`:** no (support type, not an execution stage).
+//! - **Support:** implemented.
+//!
+//! See `docs/internals/runtime-map.md`.
+//!
 //! Central event infrastructure for scanning lifecycle and plugin coordination.
 
 use dashmap::DashMap;

@@ -1,5 +1,14 @@
 //! One-shot composition of the standard deterministic web decision stack.
 //!
+//! ## Runtime scope
+//!
+//! - **Build:** default via `scanning`.
+//! - **Execution:** Surface B (deterministic decision runtime).
+//! - **Default `venom scan`:** no.
+//! - **Support:** implemented and tested.
+//!
+//! See `docs/internals/runtime-map.md`.
+//!
 //! The composite profile keeps domain reasoning, utility planning, bounded
 //! execution, and verification independently inspectable while providing one
 //! preflighted installation boundary for hosts.

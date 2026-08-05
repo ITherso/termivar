@@ -1,5 +1,14 @@
 //! Deterministic outcomes for standard web discovery evidence.
 //!
+//! ## Runtime scope
+//!
+//! - **Build:** always/default.
+//! - **Execution:** Surface B (deterministic decision runtime).
+//! - **Default `venom scan`:** no.
+//! - **Support:** implemented and tested.
+//!
+//! See `docs/internals/runtime-map.md`.
+//!
 //! Rules are scoped to both a semantic action and the current verification
 //! case correlation. This prevents historical responses or another executor's
 //! observations from being combined into a new outcome.

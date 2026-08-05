@@ -1,5 +1,17 @@
 //! Observation-only defensive posture layer.
 //!
+//! ## Runtime scope
+//!
+//! - **Build:** always/default.
+//! - **Execution:** host/test only via an explicit API. **Not composed into
+//!   `StandardWebDecisionRuntime`**; no production runtime caller exists in the
+//!   repository — `tests/defense_aware_planning_demo.rs` exercises it, and
+//!   external hosts may integrate projection/shadow/enforcement explicitly.
+//! - **Default `venom scan`:** no.
+//! - **Support:** implemented and tested.
+//!
+//! See `docs/internals/runtime-map.md`.
+//!
 //! This module turns raw response signals into a typed, bounded observation of a
 //! target's defensive behavior — product fingerprints and an overall
 //! [`DefenseState`]. It never selects a payload or an evasion technique: that

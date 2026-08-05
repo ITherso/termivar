@@ -1,5 +1,16 @@
 //! WAF (Web Application Firewall) Detection and Evasion
 //!
+//! ## Runtime scope
+//!
+//! - **Build:** default via `scanning`.
+//! - **Execution:** shared support — referenced by `payload_strategies` through a
+//!   legacy type conversion; not a standalone execution stage on the default scan
+//!   path. Provides detection/encoding helpers, not automatic WAF bypass.
+//! - **Default `venom scan`:** no.
+//! - **Support:** implemented (legacy bridge).
+//!
+//! See `docs/internals/runtime-map.md`.
+//!
 //! Detects WAF presence, fingerprints specific WAF products, and implements
 //! adaptive evasion techniques based on response patterns.
 

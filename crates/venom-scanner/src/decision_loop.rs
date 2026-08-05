@@ -1,5 +1,14 @@
 //! Deterministic orchestration across reasoning, planning, verification, adaptation, and experience.
 //!
+//! ## Runtime scope
+//!
+//! - **Build:** default via `scanning`.
+//! - **Execution:** Surface B (deterministic decision runtime).
+//! - **Default `venom scan`:** no.
+//! - **Support:** implemented and tested.
+//!
+//! See `docs/internals/runtime-map.md`.
+//!
 //! The decision loop is a state machine, not an executor. It mutates only the
 //! knowledge, adaptive ledger, and experience records supplied by the host.
 //! Network traffic, plugin execution, delays, and cancellation remain runner

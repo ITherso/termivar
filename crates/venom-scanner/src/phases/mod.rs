@@ -1,3 +1,16 @@
+//! Ordered scan phases for the legacy `venom scan` pipeline.
+//!
+//! ## Runtime scope
+//!
+//! - **Build:** default via `scanning`.
+//! - **Execution:** Surface A — the ordered phase sequence the CLI composes for
+//!   `venom scan` (direct I/O outside `StandardWebDecisionRuntime`/`RuntimeBudget`).
+//! - **Default `venom scan`:** yes (the `DirectoryFuzzer` phase is conditional on
+//!   `--legacy-directory-fuzz`).
+//! - **Support:** legacy alpha.
+//!
+//! See `docs/internals/runtime-map.md`.
+
 pub mod phase1_recon;
 pub mod phase2_crawl;
 pub mod phase3_fuzzer;

@@ -1,5 +1,14 @@
 //! Resource envelope for host-facing decision runtimes.
 //!
+//! ## Runtime scope
+//!
+//! - **Build:** default via `scanning`.
+//! - **Execution:** Surface B (budget for the decision runtime).
+//! - **Default `venom scan`:** no.
+//! - **Support:** implemented and tested.
+//!
+//! See `docs/internals/runtime-map.md`.
+//!
 //! These contracts deliberately live above planning, reasoning, verification,
 //! and experience. Domain layers describe what should happen; the runtime owns
 //! whether another side effect is still permitted.
