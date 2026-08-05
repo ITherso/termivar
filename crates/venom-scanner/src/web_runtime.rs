@@ -3,8 +3,11 @@
 //! ## Runtime scope
 //!
 //! - **Build:** default via `scanning`.
-//! - **Execution:** Surface B — this is `StandardWebDecisionRuntime`.
-//! - **Default `venom scan`:** no (host/library and `examples/decision_scan.rs`).
+//! - **Execution:** Surface B — this is `StandardWebDecisionRuntime`, invoked by
+//!   `venom decision-scan`, the `examples/decision_scan.rs` reference host, and
+//!   external library hosts.
+//! - **Default `venom scan`:** no; the explicit `decision-scan` preview is a
+//!   separate command.
 //! - **Support:** implemented and tested.
 //!
 //! See `docs/internals/runtime-map.md`.

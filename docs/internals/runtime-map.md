@@ -54,9 +54,12 @@ deterministic reasoning/runtime state.
 is exercised by tests, the `decision_scan` example / library hosts, and the
 explicit **`venom decision-scan <target>`** CLI preview command. It is **not** the
 path the default `venom scan` command takes, and `decision-scan` does not change
-`venom scan`. The preview uses a fixed conservative profile (target-scoped policy,
-≤16 requests, 60s, 1 MiB/response) and installs no payload binding, semantic
-extraction, defense composition, or API reasoning.
+`venom scan`. The preview uses a fixed conservative profile — at most 16 total
+dispatches, a 60-second wall-time limit, a **1 MiB cumulative delivered
+response-body threshold** (not a per-response cap; the crossing chunk is charged in
+full), a per-probe buffered-body limit of 256 KiB inherited from
+`HttpEvidencePolicy`, and an 8,192-character text sample — and installs no payload
+binding, semantic extraction, defense composition, or API reasoning.
 
 ```text
 venom decision-scan <target>  (or decision_scan example / library host)
