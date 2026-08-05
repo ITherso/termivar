@@ -10,8 +10,9 @@
 //!
 //! See `docs/internals/runtime-map.md`.
 //!
-//! ML-driven vulnerability detection using clustering, pattern learning,
-//! and automated exploitation discovery.
+//! Experimental pattern-grouping and exploit-helper prototype. Provides research
+//! scaffolding for signatures, grouping, and chain models; it is not a trained ML
+//! system or a production Machine Scanner.
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;

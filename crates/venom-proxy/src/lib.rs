@@ -1,4 +1,4 @@
-//! Experimental HTTP/TLS proxy boundary for Venom.
+//! Experimental fixed-upstream TCP relay boundary for Venom.
 //!
 //! ## Runtime scope
 //!
@@ -11,9 +11,9 @@
 //!
 //! See `docs/internals/runtime-map.md`.
 //!
-//! [`ProxyServer`] is the process-level adapter around [`AsyncMitmProxy`]. The
-//! interception API is unstable during the alpha release line and must only be
-//! used for explicitly authorized traffic.
+//! [`ProxyServer`] is the process-level adapter around the legacy-named
+//! [`AsyncMitmProxy`] relay. TLS and HTTP interception are not implemented; use
+//! only for explicitly authorized traffic.
 
 #![deny(rustdoc::broken_intra_doc_links)]
 

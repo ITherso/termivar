@@ -3,8 +3,9 @@
 //! ## Runtime scope
 //!
 //! - **Build:** always/default.
-//! - **Execution:** shared support (library contracts used across surfaces).
-//! - **Default `venom scan`:** no (support types, not an execution stage).
+//! - **Execution:** shared runtime support used by Surface A and/or Surface B
+//!   (`ScanRunner` drives `ScanPhase` and aggregates `ScanFinding`).
+//! - **Default `venom scan`:** yes, as shared runtime support; not an independent execution stage.
 //! - **Support:** implemented.
 //!
 //! See `docs/internals/runtime-map.md`.

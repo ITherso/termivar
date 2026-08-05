@@ -10,7 +10,7 @@
 //!
 //! See `docs/internals/runtime-map.md`.
 //!
-//! The ScanRunner coordinates sequential execution of all 9 scanning phases,
+//! The ScanRunner coordinates sequential execution of the registered scanning phases,
 //! manages error handling, and aggregates findings with timing metrics.
 
 use crate::{

@@ -8,6 +8,7 @@
 //! - **Default `venom scan`:** no.
 //! - **Support:** implemented and tested (reference host for the deterministic runtime).
 //!
+//! See `docs/internals/runtime-map.md`.
 //!
 //! Use only against a target you own or are explicitly authorized to test:
 //! `cargo run -p venom-examples --bin decision_scan -- https://target.example/`
