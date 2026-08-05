@@ -9,8 +9,8 @@
 //! Design intent is preserved as Markdown (see
 //! `docs/experimental/deployment-blueprint.md`), which this gate allows. Raising
 //! the status beyond `Unsupported` is a deliberate, reviewed decision (a future
-//! ADR), never a side effect of adding a manifest. This check reads only tracked
-//! files and performs no network access.
+//! ADR), never a side effect of adding a manifest. This check reads only
+//! workspace files and performs no network access.
 
 use std::{error::Error, fs, io, path::Path};
 
@@ -38,7 +38,7 @@ pub(super) fn check(workspace_root: &Path) -> Result<Vec<String>, Box<dyn Error>
     for dir in ACTIVE_INFRA_DIRS {
         let root = workspace_root.join(dir);
         if root.is_dir() {
-            collect_executable_manifests(dir, &root, &mut manifests)?;
+            collect_executable_manifests(dir, &root, &root, &mut manifests)?;
         }
     }
     manifests.sort();
@@ -47,30 +47,28 @@ pub(super) fn check(workspace_root: &Path) -> Result<Vec<String>, Box<dyn Error>
 
 fn collect_executable_manifests(
     top_dir: &str,
-    root: &Path,
+    base_root: &Path,
+    current_dir: &Path,
     manifests: &mut Vec<String>,
 ) -> io::Result<()> {
-    for entry in fs::read_dir(root)? {
+    for entry in fs::read_dir(current_dir)? {
         let path = entry?.path();
         if path.is_dir() {
-            collect_executable_manifests(top_dir, &path, manifests)?;
+            collect_executable_manifests(top_dir, base_root, &path, manifests)?;
             continue;
         }
-        if let Some(name) = path.file_name().and_then(|name| name.to_str()) {
-            if is_executable_infra_file(name) {
-                let relative = path
-                    .file_name()
-                    .and_then(|name| name.to_str())
-                    .unwrap_or(name);
-                // Report as `<top_dir>/…/<file>` for actionable context.
-                let display = path
-                    .strip_prefix(root)
-                    .ok()
-                    .and_then(|suffix| suffix.to_str())
-                    .map(|suffix| format!("{top_dir}/{}", suffix.replace('\\', "/")))
-                    .unwrap_or_else(|| format!("{top_dir}/{relative}"));
-                manifests.push(display);
-            }
+        let is_manifest = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(is_executable_infra_file);
+        if is_manifest {
+            // Report the full path relative to the directory root so nested
+            // manifests (e.g. `helm/templates/deployment.yaml`) are named exactly.
+            let suffix = path.strip_prefix(base_root).unwrap_or(&path);
+            manifests.push(format!(
+                "{top_dir}/{}",
+                suffix.to_string_lossy().replace('\\', "/")
+            ));
         }
     }
     Ok(())
@@ -109,6 +107,29 @@ fn deployment_violations(status: DeploymentStatus, manifests: &[String]) -> Vec<
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::TempDir;
+
+    #[test]
+    fn nested_manifest_reports_complete_relative_path() {
+        let temp = TempDir::new().unwrap();
+        let base = temp.path().join("helm");
+        fs::create_dir_all(base.join("templates")).unwrap();
+        fs::write(base.join("templates").join("deployment.yaml"), b"").unwrap();
+        fs::write(base.join("values.yaml"), b"").unwrap();
+
+        let mut manifests = Vec::new();
+        collect_executable_manifests("helm", &base, &base, &mut manifests).unwrap();
+        manifests.sort();
+
+        // The intermediate `templates/` directory must survive in the report.
+        assert_eq!(
+            manifests,
+            vec![
+                "helm/templates/deployment.yaml".to_owned(),
+                "helm/values.yaml".to_owned(),
+            ]
+        );
+    }
 
     #[test]
     fn executable_infra_extensions_are_recognized() {
