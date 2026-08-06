@@ -27,16 +27,20 @@ use venom_core::{EvidenceValue, HypothesisState, HypothesisStrength};
 use venom_scanner::{
     DecisionActionOrigin, DecisionExecutionStage, DecisionLoopCommand, DecisionStopReason,
     ExclusionReason, HttpBodyCapture, HttpEvidencePolicy, OutcomeStatus, RuntimeBudget,
-    StandardWebDecisionRuntime, StandardWebDecisionRuntimeTurn,
+    RuntimeBudgetDimension, StandardWebDecisionRuntime, StandardWebDecisionRuntimeTurn,
 };
 
 /// One hypothesis the runtime maintained. The posterior is stored as basis points
 /// (0..=10000) — the single numeric source of truth; text renders a whole-percent
-/// display derived from it.
+/// display derived from it. `value` is the scalar string form of the hypothesis
+/// value (present for text/boolean/integer kinds, absent for list/unknown kinds);
+/// `value_kind` names the underlying `EvidenceValue` variant. No value ever reaches
+/// output through Rust `Debug`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct HypothesisView {
     pub predicate: String,
-    pub value: String,
+    pub value: Option<String>,
+    pub value_kind: &'static str,
     pub strength: &'static str,
     pub posterior_basis_points: u16,
     pub state: &'static str,
@@ -47,6 +51,24 @@ impl HypothesisView {
     pub fn posterior_percent(&self) -> u16 {
         (f64::from(self.posterior_basis_points) / 100.0).round() as u16
     }
+
+    /// Text display of the value, with a stable placeholder for a non-scalar or
+    /// unknown value kind. Never a `Debug` dump.
+    pub fn value_display(&self) -> &str {
+        self.value.as_deref().unwrap_or("(non-scalar value)")
+    }
+}
+
+/// A controlled runtime-budget stop as a typed record rather than a human string.
+/// `limit`/`observed` units depend on `dimension`: bytes for
+/// `response_bytes`/`request_body_bytes`, a count for the request/verification/
+/// attempt dimensions, and milliseconds for `wall_time`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RuntimeLimitView {
+    pub dimension: &'static str,
+    pub limit: u64,
+    pub observed: u64,
+    pub action_id: Option<String>,
 }
 
 /// One planning turn: the dependency-safe plan steps the planner selected versus
@@ -108,7 +130,7 @@ pub(crate) struct DecisionScanSummary {
     pub active_verifications: u64,
     pub response_bytes: u64,
     pub elapsed_ms: u64,
-    pub limit_exceeded: Option<String>,
+    pub limit_exceeded: Option<RuntimeLimitView>,
     pub experience_records: usize,
     /// Explain view: hypotheses the runtime maintained, sorted for stability.
     pub hypotheses: Vec<HypothesisView>,
@@ -235,17 +257,21 @@ pub(crate) async fn run_decision_scan(target: Url) -> Result<DecisionScanSummary
     let mut hypotheses: Vec<HypothesisView> = snapshot
         .hypotheses()
         .iter()
-        .map(|hypothesis| HypothesisView {
-            predicate: hypothesis.predicate().dotted(),
-            value: value_text(hypothesis.value()),
-            strength: hypothesis_strength_code(hypothesis.strength()),
-            posterior_basis_points: (hypothesis.posterior().ratio() * 10_000.0).round() as u16,
-            state: hypothesis_state_code(hypothesis.state()),
+        .map(|hypothesis| {
+            let (value_kind, value) = evidence_value(hypothesis.value());
+            HypothesisView {
+                predicate: hypothesis.predicate().dotted(),
+                value,
+                value_kind,
+                strength: hypothesis_strength_code(hypothesis.strength()),
+                posterior_basis_points: (hypothesis.posterior().ratio() * 10_000.0).round() as u16,
+                state: hypothesis_state_code(hypothesis.state()),
+            }
         })
         .collect();
     hypotheses.sort_by(|left, right| {
-        (left.predicate.as_str(), left.value.as_str())
-            .cmp(&(right.predicate.as_str(), right.value.as_str()))
+        (left.predicate.as_str(), left.value.as_deref())
+            .cmp(&(right.predicate.as_str(), right.value.as_deref()))
     });
 
     // Explain view: the runtime's own unavailable executor-route authority. This is
@@ -270,7 +296,12 @@ pub(crate) async fn run_decision_scan(target: Url) -> Result<DecisionScanSummary
         active_verifications: u64::from(usage.active_verifications()),
         response_bytes: usage.response_bytes(),
         elapsed_ms: usage.elapsed_ms(),
-        limit_exceeded: report.limit_exceeded().map(|limit| limit.to_string()),
+        limit_exceeded: report.limit_exceeded().map(|limit| RuntimeLimitView {
+            dimension: dimension_code(limit.dimension()),
+            limit: limit.limit(),
+            observed: limit.observed(),
+            action_id: limit.action_id().map(str::to_owned),
+        }),
         experience_records: runtime.experience().len(),
         hypotheses,
         planning,
@@ -399,13 +430,34 @@ fn dispatch_label(dispatch: &DispatchView) -> &'static str {
     }
 }
 
-/// Renders a hypothesis value for display. Standard web hypotheses are textual;
-/// any non-text value is rendered as a stable placeholder rather than a `Debug`
-/// dump.
-fn value_text(value: &EvidenceValue) -> String {
+/// Explicit, stable mapping from an `EvidenceValue` to `(value_kind, scalar
+/// value)`. Every current variant has a hand-written mapping and the wildcard is a
+/// fail-closed fallback for a future `#[non_exhaustive]` variant — no value ever
+/// reaches output through Rust `Debug`. A list value has no scalar form, so it maps
+/// to `("text_list", None)`; an unknown variant maps to `("other", None)`.
+fn evidence_value(value: &EvidenceValue) -> (&'static str, Option<String>) {
     match value {
-        EvidenceValue::Text(text) => text.clone(),
-        _ => "(non-text value)".to_string(),
+        EvidenceValue::Text(text) => ("text", Some(text.clone())),
+        EvidenceValue::Boolean(flag) => ("boolean", Some(flag.to_string())),
+        EvidenceValue::Signed(number) => ("signed", Some(number.to_string())),
+        EvidenceValue::Unsigned(number) => ("unsigned", Some(number.to_string())),
+        EvidenceValue::TextList(_) => ("text_list", None),
+        _ => ("other", None),
+    }
+}
+
+/// Stable snake_case label for a runtime-budget dimension. `RuntimeBudgetDimension`
+/// is `#[non_exhaustive]`, so an unrecognized variant maps to `other`.
+fn dimension_code(dimension: RuntimeBudgetDimension) -> &'static str {
+    match dimension {
+        RuntimeBudgetDimension::TotalRequests => "total_requests",
+        RuntimeBudgetDimension::WallTime => "wall_time",
+        RuntimeBudgetDimension::ResponseBytes => "response_bytes",
+        RuntimeBudgetDimension::RequestBodyBytes => "request_body_bytes",
+        RuntimeBudgetDimension::ActiveVerifications => "active_verifications",
+        RuntimeBudgetDimension::SameActionAttempts => "same_action_attempts",
+        RuntimeBudgetDimension::ConsecutiveNoProgressTurns => "consecutive_no_progress_turns",
+        _ => "other",
     }
 }
 
@@ -441,9 +493,16 @@ pub(crate) fn render_summary(summary: &DecisionScanSummary) -> String {
         out.push_str(&format!("stop_reason: {reason}\n"));
     }
     if let Some(limit) = &summary.limit_exceeded {
+        // Human sentence derived from the typed limit view (the JSON carries the
+        // structured object, not this string).
         out.push_str(&format!(
-            "runtime limit reached (controlled stop): {limit}\n"
+            "runtime limit reached (controlled stop): {} limit {} observed {}",
+            limit.dimension, limit.limit, limit.observed
         ));
+        if let Some(action_id) = &limit.action_id {
+            out.push_str(&format!(" by {action_id}"));
+        }
+        out.push('\n');
     }
     out.push_str(&format!(
         "usage: requests={} active_verifications={} response_bytes={} elapsed_ms={}\n",
@@ -492,7 +551,8 @@ pub(crate) fn render_explain(summary: &DecisionScanSummary) -> String {
     for hypothesis in &summary.hypotheses {
         out.push_str(&format!(
             "  {}={}\n",
-            hypothesis.predicate, hypothesis.value
+            hypothesis.predicate,
+            hypothesis.value_display()
         ));
         out.push_str(&format!("    {:<9}: {}\n", "strength", hypothesis.strength));
         out.push_str(&format!(
@@ -597,7 +657,11 @@ struct JsonExecutorRoutes<'a> {
 #[derive(Serialize)]
 struct JsonHypothesis<'a> {
     predicate: &'a str,
-    value: &'a str,
+    /// Scalar string form of the value, or `null` for a list/unknown kind.
+    value: Option<&'a str>,
+    /// The `EvidenceValue` variant: `text` / `boolean` / `signed` / `unsigned` /
+    /// `text_list` / `other`.
+    value_kind: &'a str,
     strength: &'a str,
     posterior_basis_points: u16,
     state: &'a str,
@@ -639,7 +703,16 @@ struct JsonOutcome<'a> {
 struct JsonTerminal<'a> {
     command: &'a str,
     stop_reason: Option<&'a str>,
-    runtime_limit: Option<&'a str>,
+    /// A structured record when a runtime budget bound the run, else `null`.
+    runtime_limit: Option<JsonRuntimeLimit<'a>>,
+}
+
+#[derive(Serialize)]
+struct JsonRuntimeLimit<'a> {
+    dimension: &'a str,
+    limit: u64,
+    observed: u64,
+    action_id: Option<&'a str>,
 }
 
 #[derive(Serialize)]
@@ -674,7 +747,8 @@ pub(crate) fn render_json(summary: &DecisionScanSummary) -> Result<String, serde
             .iter()
             .map(|hypothesis| JsonHypothesis {
                 predicate: &hypothesis.predicate,
-                value: &hypothesis.value,
+                value: hypothesis.value.as_deref(),
+                value_kind: hypothesis.value_kind,
                 strength: hypothesis.strength,
                 posterior_basis_points: hypothesis.posterior_basis_points,
                 state: hypothesis.state,
@@ -716,7 +790,15 @@ pub(crate) fn render_json(summary: &DecisionScanSummary) -> Result<String, serde
         terminal: JsonTerminal {
             command: summary.terminal,
             stop_reason: summary.stop_reason,
-            runtime_limit: summary.limit_exceeded.as_deref(),
+            runtime_limit: summary
+                .limit_exceeded
+                .as_ref()
+                .map(|limit| JsonRuntimeLimit {
+                    dimension: limit.dimension,
+                    limit: limit.limit,
+                    observed: limit.observed,
+                    action_id: limit.action_id.as_deref(),
+                }),
         },
         usage: JsonUsage {
             total_requests: summary.total_requests,

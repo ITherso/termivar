@@ -457,7 +457,7 @@ mod tests {
         decision_scan::DecisionScanSummary {
             target: "https://example.test".to_string(),
             bootstrap_writes: 1,
-            planning_turns: 2,
+            planning_turns: 1,
             verification_outcomes: 1,
             conclusive_outcomes: 0,
             inconclusive_outcomes: 1,
@@ -476,7 +476,8 @@ mod tests {
             experience_records: 1,
             hypotheses: vec![decision_scan::HypothesisView {
                 predicate: "technology.web-server".to_string(),
-                value: "nginx".to_string(),
+                value: Some("nginx".to_string()),
+                value_kind: "text",
                 strength: "weak",
                 posterior_basis_points: 8900,
                 state: "supported",
@@ -617,7 +618,7 @@ mod tests {
             "engine: decision-preview\n",
             "target origin: https://example.test\n",
             "evidence: 1 bootstrap write(s)\n",
-            "planning: 2 turn(s)\n",
+            "planning: 1 turn(s)\n",
             "verification outcomes: 1 (conclusive 0, inconclusive 1)\n",
             "  outcome: action=web.action.probe status=unknown\n",
             "terminal: halt\n",
@@ -849,9 +850,135 @@ mod tests {
         assert_eq!(value["terminal"]["stop_reason"], "no_eligible_action");
         assert!(value["terminal"]["runtime_limit"].is_null());
         assert_eq!(value["usage"]["total_requests"], 3);
+        // Hypothesis value carries an explicit kind alongside the scalar value.
+        assert_eq!(value["hypotheses"][0]["value"], "nginx");
+        assert_eq!(value["hypotheses"][0]["value_kind"], "text");
         // Never a vulnerability claim, never a Debug dump.
         assert!(!json.to_lowercase().contains("vulnerabilit"));
         assert!(!json.contains("VerificationCase"));
+    }
+
+    #[test]
+    fn render_json_matches_the_exact_v1_golden() {
+        // Locks the FULL v1 shape (field order, nullability, types), not just the
+        // presence of selected keys. Regenerate deliberately on an intended change.
+        let expected = concat!(
+            "{\n",
+            "  \"schema_version\": \"decision-scan/v1\",\n",
+            "  \"engine\": \"decision-preview\",\n",
+            "  \"target_origin\": \"https://example.test\",\n",
+            "  \"summary\": {\n",
+            "    \"bootstrap_evidence_writes\": 1,\n",
+            "    \"planning_turns\": 1,\n",
+            "    \"verification_outcomes\": 1,\n",
+            "    \"conclusive_outcomes\": 0,\n",
+            "    \"inconclusive_outcomes\": 1,\n",
+            "    \"experience_records\": 1\n",
+            "  },\n",
+            "  \"executor_routes\": {\n",
+            "    \"unavailable\": [\n",
+            "      \"web.action.apache.configuration\",\n",
+            "      \"web.action.laravel.input-analysis\",\n",
+            "      \"web.action.nginx.configuration\",\n",
+            "      \"web.action.php.input-discovery\"\n",
+            "    ]\n",
+            "  },\n",
+            "  \"hypotheses\": [\n",
+            "    {\n",
+            "      \"predicate\": \"technology.web-server\",\n",
+            "      \"value\": \"nginx\",\n",
+            "      \"value_kind\": \"text\",\n",
+            "      \"strength\": \"weak\",\n",
+            "      \"posterior_basis_points\": 8900,\n",
+            "      \"state\": \"supported\"\n",
+            "    }\n",
+            "  ],\n",
+            "  \"planning_turns\": [\n",
+            "    {\n",
+            "      \"turn\": 0,\n",
+            "      \"planned\": [],\n",
+            "      \"excluded\": [\n",
+            "        {\n",
+            "          \"action_id\": \"web.action.nginx.configuration\",\n",
+            "          \"reason\": \"policy_suppressed\"\n",
+            "        }\n",
+            "      ]\n",
+            "    }\n",
+            "  ],\n",
+            "  \"dispatches\": [\n",
+            "    {\n",
+            "      \"sequence\": 0,\n",
+            "      \"action_id\": \"web.action.bootstrap\",\n",
+            "      \"stage\": \"passive\",\n",
+            "      \"origin\": \"bootstrap\"\n",
+            "    }\n",
+            "  ],\n",
+            "  \"verification_outcomes\": [\n",
+            "    {\n",
+            "      \"action_id\": \"web.action.probe\",\n",
+            "      \"status\": \"unknown\",\n",
+            "      \"conclusive\": false\n",
+            "    }\n",
+            "  ],\n",
+            "  \"terminal\": {\n",
+            "    \"command\": \"halt\",\n",
+            "    \"stop_reason\": \"no_eligible_action\",\n",
+            "    \"runtime_limit\": null\n",
+            "  },\n",
+            "  \"usage\": {\n",
+            "    \"total_requests\": 3,\n",
+            "    \"active_verifications\": 1,\n",
+            "    \"response_bytes\": 42,\n",
+            "    \"elapsed_ms\": 5\n",
+            "  }\n",
+            "}"
+        );
+        assert_eq!(
+            decision_scan::render_json(&sample_summary()).unwrap(),
+            expected
+        );
+    }
+
+    /// Structural invariants the v1 document must always satisfy on a real run.
+    #[tokio::test]
+    async fn json_invariants_hold_on_a_real_run() {
+        // Sanctum drives multiple planning entries, dispatches, and outcomes.
+        let value = json_for(
+            b"HTTP/1.1 200 OK\r\nSet-Cookie: laravel_session=eyJ; Path=/; HttpOnly\r\nSet-Cookie: XSRF-TOKEN=abc123; Path=/\r\nContent-Type: text/html\r\nContent-Length: 2\r\nConnection: close\r\n\r\nhi",
+        )
+        .await;
+
+        // Duplicated count fields must equal their array lengths.
+        assert_eq!(
+            value["summary"]["planning_turns"].as_u64().unwrap(),
+            value["planning_turns"].as_array().unwrap().len() as u64
+        );
+        let outcomes = value["verification_outcomes"].as_array().unwrap();
+        assert_eq!(
+            value["summary"]["verification_outcomes"].as_u64().unwrap(),
+            outcomes.len() as u64
+        );
+        // conclusive + inconclusive == total outcomes.
+        assert_eq!(
+            value["summary"]["conclusive_outcomes"].as_u64().unwrap()
+                + value["summary"]["inconclusive_outcomes"].as_u64().unwrap(),
+            outcomes.len() as u64
+        );
+        // Dispatch sequences are strictly increasing.
+        let sequences: Vec<u64> = value["dispatches"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|dispatch| dispatch["sequence"].as_u64().unwrap())
+            .collect();
+        assert!(
+            sequences.windows(2).all(|pair| pair[0] < pair[1]),
+            "dispatch sequences must be strictly increasing: {sequences:?}"
+        );
+        // Posterior basis points never exceed 10000.
+        for hypothesis in value["hypotheses"].as_array().unwrap() {
+            assert!(hypothesis["posterior_basis_points"].as_u64().unwrap() <= 10_000);
+        }
     }
 
     #[tokio::test]
