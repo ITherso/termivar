@@ -17,10 +17,26 @@
 
 mod decision_scan;
 
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use url::Url;
 use venom_proxy::ProxyServer;
 use venom_scanner::{phases, ScanContext, ScanRunner};
+
+/// Output format for `decision-scan`. `text` is the default human-readable report;
+/// `json` is the versioned machine-readable `decision-scan/v1` document.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+#[value(rename_all = "lowercase")]
+enum OutputFormat {
+    Text,
+    Json,
+}
+
+/// True when `--format json` is combined with `--explain` — an ambiguous
+/// combination rejected fail-fast, because the JSON document already carries the
+/// full diagnostics `--explain` adds to the text report.
+fn decision_scan_flags_conflict(format: OutputFormat, explain: bool) -> bool {
+    matches!(format, OutputFormat::Json) && explain
+}
 
 const LEGACY_DIRECTORY_FUZZ_WARNING: &str = "[WARNING] Legacy directory fuzzing is enabled. This brute-force phase uses direct network I/O outside RuntimeBudget; run it only against explicitly authorized targets.";
 const LEGACY_SCAN_RUNTIME_WARNING: &str = "[WARNING] The ordered CLI phase pipeline is legacy direct I/O outside StandardWebDecisionRuntime and RuntimeBudget. Use it only against an explicitly authorized exact origin.";
@@ -57,9 +73,14 @@ enum Commands {
     DecisionScan {
         /// Authorized HTTP(S) target origin. Only scan targets you own or may test.
         target: Url,
-        /// Print the full explainable decision chain: hypotheses, planned and
-        /// excluded actions (with the exact reason), dispatched actions, and
-        /// verification outcomes. Off by default; the default output is unchanged.
+        /// Output format. `text` (default) is the human-readable report; `json` is
+        /// the versioned machine-readable document with full diagnostics.
+        #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
+        format: OutputFormat,
+        /// Print the full explainable decision chain (hypotheses, planned/excluded
+        /// actions with reasons, dispatched actions, outcomes). Text format only —
+        /// `--format json` already contains full diagnostics. Off by default; the
+        /// default text output is unchanged.
         #[arg(long)]
         explain: bool,
     },
@@ -134,15 +155,39 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             log_task.abort();
         },
-        Some(Commands::DecisionScan { target, explain }) => {
+        Some(Commands::DecisionScan {
+            target,
+            format,
+            explain,
+        }) => {
+            // `--explain` is a text-only modifier; JSON already carries full
+            // diagnostics. Reject the ambiguous combination fail-fast as a Clap
+            // conflict rather than silently ignoring a flag.
+            if decision_scan_flags_conflict(format, explain) {
+                use clap::CommandFactory;
+                Cli::command()
+                    .error(
+                        clap::error::ErrorKind::ArgumentConflict,
+                        "`--explain` applies only to `--format text`; `--format json` already includes full diagnostics",
+                    )
+                    .exit();
+            }
             eprintln!("{DECISION_SCAN_PREVIEW_WARNING}");
             let summary = decision_scan::run_decision_scan(target).await?;
-            let rendered = if explain {
-                decision_scan::render_explain(&summary)
-            } else {
-                decision_scan::render_summary(&summary)
-            };
-            print!("{rendered}");
+            match format {
+                OutputFormat::Text => {
+                    let rendered = if explain {
+                        decision_scan::render_explain(&summary)
+                    } else {
+                        decision_scan::render_summary(&summary)
+                    };
+                    print!("{rendered}");
+                },
+                OutputFormat::Json => {
+                    // JSON to stdout; the preview warning above went to stderr.
+                    println!("{}", decision_scan::render_json(&summary)?);
+                },
+            }
         },
         Some(Commands::Api { addr }) => {
             venom_api::start_api(&addr).await?;
@@ -244,8 +289,13 @@ mod tests {
     fn decision_scan_selects_the_preview_command() {
         let cli = Cli::try_parse_from(["venom", "decision-scan", "https://example.test/"]).unwrap();
         match cli.command {
-            Some(Commands::DecisionScan { target, explain }) => {
+            Some(Commands::DecisionScan {
+                target,
+                format,
+                explain,
+            }) => {
                 assert_eq!(target.as_str(), "https://example.test/");
+                assert_eq!(format, OutputFormat::Text, "text is the default format");
                 assert!(
                     !explain,
                     "explain must default off so the default output is unchanged"
@@ -254,6 +304,34 @@ mod tests {
             _ => panic!("expected the decision-scan command"),
         }
         assert!(DECISION_SCAN_PREVIEW_WARNING.contains("not the default"));
+    }
+
+    #[test]
+    fn decision_scan_accepts_the_json_format() {
+        let cli = Cli::try_parse_from([
+            "venom",
+            "decision-scan",
+            "--format",
+            "json",
+            "https://example.test/",
+        ])
+        .unwrap();
+        match cli.command {
+            Some(Commands::DecisionScan { format, .. }) => {
+                assert_eq!(format, OutputFormat::Json);
+            },
+            _ => panic!("expected the decision-scan command"),
+        }
+    }
+
+    #[test]
+    fn decision_scan_rejects_json_with_explain() {
+        // The combination is ambiguous — JSON already contains full diagnostics —
+        // and is rejected fail-fast.
+        assert!(decision_scan_flags_conflict(OutputFormat::Json, true));
+        assert!(!decision_scan_flags_conflict(OutputFormat::Json, false));
+        assert!(!decision_scan_flags_conflict(OutputFormat::Text, true));
+        assert!(!decision_scan_flags_conflict(OutputFormat::Text, false));
     }
 
     #[test]
@@ -383,7 +461,11 @@ mod tests {
             verification_outcomes: 1,
             conclusive_outcomes: 0,
             inconclusive_outcomes: 1,
-            outcomes: vec![("web.action.probe".to_string(), "unknown")],
+            outcomes: vec![decision_scan::OutcomeView {
+                action_id: "web.action.probe".to_string(),
+                status: "unknown",
+                conclusive: false,
+            }],
             terminal: "halt",
             stop_reason: Some("no_eligible_action"),
             total_requests: 3,
@@ -396,7 +478,7 @@ mod tests {
                 predicate: "technology.web-server".to_string(),
                 value: "nginx".to_string(),
                 strength: "weak",
-                posterior_percent: 89,
+                posterior_basis_points: 8900,
                 state: "supported",
             }],
             planning: vec![decision_scan::PlanningView {
@@ -406,7 +488,12 @@ mod tests {
                     "policy_suppressed",
                 )],
             }],
-            dispatched: vec![("web.action.bootstrap".to_string(), "bootstrap")],
+            dispatched: vec![decision_scan::DispatchView {
+                sequence: 0,
+                action_id: "web.action.bootstrap".to_string(),
+                stage: "passive",
+                origin: Some("bootstrap"),
+            }],
             unavailable_routes: vec![
                 "web.action.apache.configuration".to_string(),
                 "web.action.laravel.input-analysis".to_string(),
@@ -696,6 +783,214 @@ mod tests {
         assert!(
             rendered.contains("• web.action.http-basic.auth-boundary — requirements_not_met"),
             "an available route can still be excluded this turn:\n{rendered}"
+        );
+    }
+
+    // --- Machine-readable (`--format json`) tests -----------------------------
+
+    /// Runs one fixture and returns the parsed JSON document.
+    async fn json_for(response: &'static [u8]) -> serde_json::Value {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            loop {
+                let (mut socket, _) = match listener.accept().await {
+                    Ok(pair) => pair,
+                    Err(_) => break,
+                };
+                let mut request = [0_u8; 2048];
+                let _ = socket.read(&mut request).await;
+                let _ = socket.write_all(response).await;
+                let _ = socket.shutdown().await;
+            }
+        });
+        let target = Url::parse(&format!("http://{address}/")).unwrap();
+        let summary = decision_scan::run_decision_scan(target).await.unwrap();
+        server.abort();
+        let json = decision_scan::render_json(&summary).unwrap();
+        serde_json::from_str(&json).unwrap()
+    }
+
+    #[test]
+    fn render_json_emits_the_versioned_schema() {
+        let json = decision_scan::render_json(&sample_summary()).unwrap();
+        // It is valid JSON.
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(value["schema_version"], "decision-scan/v1");
+        assert_eq!(value["engine"], "decision-preview");
+        assert_eq!(value["target_origin"], "https://example.test");
+        // Every top-level contract group is present with stable names.
+        for key in [
+            "summary",
+            "executor_routes",
+            "hypotheses",
+            "planning_turns",
+            "dispatches",
+            "verification_outcomes",
+            "terminal",
+            "usage",
+        ] {
+            assert!(value.get(key).is_some(), "missing top-level key {key}");
+        }
+        // Basis points is the numeric source of truth; there is no percent field.
+        assert_eq!(value["hypotheses"][0]["posterior_basis_points"], 8900);
+        assert!(value["hypotheses"][0].get("posterior_percent").is_none());
+        // Executor routes: only the unavailable set, never a synthesized available.
+        assert_eq!(
+            value["executor_routes"]["unavailable"]
+                .as_array()
+                .unwrap()
+                .len(),
+            4
+        );
+        assert!(value["executor_routes"].get("available").is_none());
+        // Terminal and usage.
+        assert_eq!(value["terminal"]["command"], "halt");
+        assert_eq!(value["terminal"]["stop_reason"], "no_eligible_action");
+        assert!(value["terminal"]["runtime_limit"].is_null());
+        assert_eq!(value["usage"]["total_requests"], 3);
+        // Never a vulnerability claim, never a Debug dump.
+        assert!(!json.to_lowercase().contains("vulnerabilit"));
+        assert!(!json.contains("VerificationCase"));
+    }
+
+    #[tokio::test]
+    async fn json_generic_structure_is_inert() {
+        let value = json_for(
+            b"HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: 5\r\nConnection: close\r\n\r\nhello",
+        )
+        .await;
+        assert_eq!(value["schema_version"], "decision-scan/v1");
+        assert!(value["hypotheses"].as_array().unwrap().is_empty());
+        assert!(value["planning_turns"][0]["planned"]
+            .as_array()
+            .unwrap()
+            .is_empty());
+        assert!(value["verification_outcomes"]
+            .as_array()
+            .unwrap()
+            .is_empty());
+        assert_eq!(value["terminal"]["command"], "halt");
+        assert_eq!(value["terminal"]["stop_reason"], "no_eligible_action");
+        // The unavailable-route inventory is present and fixture-independent.
+        assert_eq!(
+            value["executor_routes"]["unavailable"]
+                .as_array()
+                .unwrap()
+                .len(),
+            4
+        );
+    }
+
+    #[tokio::test]
+    async fn json_basic_structure_reports_a_conclusive_success() {
+        let value = json_for(
+            b"HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: Basic realm=\"admin\"\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+        )
+        .await;
+        let hypothesis = &value["hypotheses"][0];
+        assert_eq!(hypothesis["predicate"], "authentication.mechanism");
+        assert_eq!(hypothesis["value"], "http-basic");
+        assert_eq!(hypothesis["strength"], "strong");
+        assert!(hypothesis["posterior_basis_points"].as_u64().unwrap() >= 9000);
+        let outcome = &value["verification_outcomes"][0];
+        assert_eq!(outcome["action_id"], "web.action.http-basic.auth-boundary");
+        assert_eq!(outcome["status"], "success");
+        assert_eq!(outcome["conclusive"], true);
+        // No raw challenge header/realm leaks into the machine surface.
+        let json = value.to_string();
+        assert!(!json.contains("WWW-Authenticate"));
+        assert!(!json.contains("realm"));
+    }
+
+    #[tokio::test]
+    async fn json_livewire_structure_reports_a_dispatched_success() {
+        let value = json_for(
+            b"HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: 23\r\nConnection: close\r\n\r\n<div wire:id=\"x\"></div>",
+        )
+        .await;
+        assert_eq!(value["hypotheses"][0]["value"], "livewire");
+        assert!(value["planning_turns"][0]["planned"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|planned| *planned == "web.action.livewire.component-discovery"));
+        assert!(value["dispatches"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|dispatch| {
+                dispatch["action_id"] == "web.action.livewire.component-discovery"
+            }));
+        assert_eq!(value["verification_outcomes"][0]["status"], "success");
+    }
+
+    #[tokio::test]
+    async fn json_sanctum_separates_stage_origin_and_leaks_no_secrets() {
+        let value = json_for(
+            b"HTTP/1.1 200 OK\r\nSet-Cookie: laravel_session=eyJ; Path=/; HttpOnly\r\nSet-Cookie: XSRF-TOKEN=abc123; Path=/\r\nContent-Type: text/html\r\nContent-Length: 2\r\nConnection: close\r\n\r\nhi",
+        )
+        .await;
+
+        let dispatches = value["dispatches"].as_array().unwrap();
+        // An active-verification dispatch keeps stage/origin as separate facts:
+        // stage = "active", origin = null (never a fused "active_verification").
+        assert!(
+            dispatches
+                .iter()
+                .any(|dispatch| dispatch["stage"] == "active" && dispatch["origin"].is_null()),
+            "expected an active dispatch with null origin: {dispatches:?}"
+        );
+        // Passive/bootstrap dispatches carry an explicit origin.
+        assert!(dispatches
+            .iter()
+            .any(|dispatch| dispatch["origin"] == "bootstrap"));
+
+        // Sanctum is planned but never dispatched, and has an available route.
+        let planned = value["planning_turns"][0]["planned"].as_array().unwrap();
+        assert!(planned
+            .iter()
+            .any(|action| *action == "web.action.sanctum.auth-boundary"));
+        assert!(!dispatches
+            .iter()
+            .any(|dispatch| dispatch["action_id"] == "web.action.sanctum.auth-boundary"));
+        assert!(!value["executor_routes"]["unavailable"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|route| *route == "web.action.sanctum.auth-boundary"));
+
+        // No raw cookies, values, or headers leak into the machine surface.
+        let json = value.to_string();
+        for secret in [
+            "eyJ",
+            "abc123",
+            "Set-Cookie",
+            "laravel_session",
+            "XSRF-TOKEN",
+        ] {
+            assert!(!json.contains(secret), "json leaked `{secret}`: {json}");
+        }
+    }
+
+    #[tokio::test]
+    async fn json_is_deterministic_excluding_elapsed_ms() {
+        let (target, server) = serve_static().await;
+        let first = decision_scan::run_decision_scan(target.clone())
+            .await
+            .unwrap();
+        let second = decision_scan::run_decision_scan(target).await.unwrap();
+        server.abort();
+
+        let mut a: serde_json::Value =
+            serde_json::from_str(&decision_scan::render_json(&first).unwrap()).unwrap();
+        let mut b: serde_json::Value =
+            serde_json::from_str(&decision_scan::render_json(&second).unwrap()).unwrap();
+        a["usage"]["elapsed_ms"] = serde_json::json!(0);
+        b["usage"]["elapsed_ms"] = serde_json::json!(0);
+        assert_eq!(
+            a, b,
+            "JSON must be deterministic once elapsed time is excluded"
         );
     }
 }

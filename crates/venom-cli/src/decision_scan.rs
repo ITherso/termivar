@@ -21,6 +21,7 @@
 use std::error::Error;
 use std::time::Duration;
 
+use serde::Serialize;
 use url::Url;
 use venom_core::{EvidenceValue, HypothesisState, HypothesisStrength};
 use venom_scanner::{
@@ -29,15 +30,23 @@ use venom_scanner::{
     StandardWebDecisionRuntime, StandardWebDecisionRuntimeTurn,
 };
 
-/// One hypothesis the runtime maintained, rendered with stable labels for the
-/// `--explain` view.
+/// One hypothesis the runtime maintained. The posterior is stored as basis points
+/// (0..=10000) — the single numeric source of truth; text renders a whole-percent
+/// display derived from it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct HypothesisView {
     pub predicate: String,
     pub value: String,
     pub strength: &'static str,
-    pub posterior_percent: u8,
+    pub posterior_basis_points: u16,
     pub state: &'static str,
+}
+
+impl HypothesisView {
+    /// Whole-percent display derived from the basis-point source of truth.
+    pub fn posterior_percent(&self) -> u16 {
+        (f64::from(self.posterior_basis_points) / 100.0).round() as u16
+    }
 }
 
 /// One planning turn: the dependency-safe plan steps the planner selected versus
@@ -46,6 +55,27 @@ pub(crate) struct HypothesisView {
 pub(crate) struct PlanningView {
     pub eligible: Vec<String>,
     pub excluded: Vec<(String, &'static str)>,
+}
+
+/// One verification outcome turn. `conclusive` mirrors the runtime's own
+/// hypothesis-state determination (a verifier-owned Success/rejection), not a
+/// re-derivation from the status label.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct OutcomeView {
+    pub action_id: String,
+    pub status: &'static str,
+    pub conclusive: bool,
+}
+
+/// One wire dispatch. `stage` (passive/active) and `origin` (planned/bootstrap/…
+/// or absent) are kept as separate facts; the text renderer derives a single
+/// display label from them, but the machine surface keeps them distinct.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct DispatchView {
+    pub sequence: u64,
+    pub action_id: String,
+    pub stage: &'static str,
+    pub origin: Option<&'static str>,
 }
 
 /// Deterministic, transport-truthful summary of one decision-runtime preview run.
@@ -68,8 +98,8 @@ pub(crate) struct DecisionScanSummary {
     pub conclusive_outcomes: usize,
     /// Outcomes that do not (Blocked / Unknown / NeedsReview).
     pub inconclusive_outcomes: usize,
-    /// `(action_id, stable status label)` for each outcome turn, in order.
-    pub outcomes: Vec<(String, &'static str)>,
+    /// Each verification outcome turn, in order.
+    pub outcomes: Vec<OutcomeView>,
     /// Stable snake_case terminal command label.
     pub terminal: &'static str,
     /// Stable snake_case stop reason, when the runtime halted with one.
@@ -84,9 +114,9 @@ pub(crate) struct DecisionScanSummary {
     pub hypotheses: Vec<HypothesisView>,
     /// Explain view: every planning turn, in order.
     pub planning: Vec<PlanningView>,
-    /// Explain view: `(action_id, stable origin label)` for each wire dispatch, in
-    /// dispatch order (includes the bootstrap probe).
-    pub dispatched: Vec<(String, &'static str)>,
+    /// Explain view: each wire dispatch in dispatch order (includes the bootstrap
+    /// probe), with stage and origin as separate facts.
+    pub dispatched: Vec<DispatchView>,
     /// Explain view: the runtime's explicit unavailable/unsupported executor
     /// routes — semantic actions the planner knows but the current runtime
     /// composition cannot route to an executor. This is a fixed property of the
@@ -145,15 +175,17 @@ pub(crate) async fn run_decision_scan(target: Url) -> Result<DecisionScanSummary
             StandardWebDecisionRuntimeTurn::Planning(_) => planning_turns += 1,
             StandardWebDecisionRuntimeTurn::Outcome { decision, .. } => {
                 let status = decision.verification().outcome().status();
-                if status.hypothesis_state().is_some() {
+                let conclusive = status.hypothesis_state().is_some();
+                if conclusive {
                     conclusive_outcomes += 1;
                 } else {
                     inconclusive_outcomes += 1;
                 }
-                outcomes.push((
-                    decision.verification().outcome().action_id().to_string(),
-                    outcome_status_code(status),
-                ));
+                outcomes.push(OutcomeView {
+                    action_id: decision.verification().outcome().action_id().to_string(),
+                    status: outcome_status_code(status),
+                    conclusive,
+                });
             },
             _ => {},
         }
@@ -184,18 +216,17 @@ pub(crate) async fn run_decision_scan(target: Url) -> Result<DecisionScanSummary
         .collect();
 
     // Explain view: what actually hit the wire, distinct from what was planned.
-    // The origin label uses both the transport stage and the action origin so an
-    // active-verification probe (which carries no passive origin) is labelled
-    // meaningfully instead of "none".
-    let dispatched: Vec<(String, &'static str)> = report
+    // Stage and origin are captured as separate facts; the text renderer derives a
+    // display label, while the machine surface keeps them distinct.
+    let dispatched: Vec<DispatchView> = report
         .transport()
         .receipts()
         .iter()
-        .map(|receipt| {
-            (
-                receipt.action_id().to_string(),
-                dispatch_origin_label(receipt.stage(), receipt.origin()),
-            )
+        .map(|receipt| DispatchView {
+            sequence: receipt.sequence(),
+            action_id: receipt.action_id().to_string(),
+            stage: stage_code(receipt.stage()),
+            origin: origin_code(receipt.origin()),
         })
         .collect();
 
@@ -208,7 +239,7 @@ pub(crate) async fn run_decision_scan(target: Url) -> Result<DecisionScanSummary
             predicate: hypothesis.predicate().dotted(),
             value: value_text(hypothesis.value()),
             strength: hypothesis_strength_code(hypothesis.strength()),
-            posterior_percent: (hypothesis.posterior().ratio() * 100.0).round() as u8,
+            posterior_basis_points: (hypothesis.posterior().ratio() * 10_000.0).round() as u16,
             state: hypothesis_state_code(hypothesis.state()),
         })
         .collect();
@@ -330,27 +361,41 @@ fn exclusion_reason_code(reason: &ExclusionReason) -> &'static str {
     }
 }
 
-/// Stable snake_case label for a wire dispatch, resolved from both the transport
-/// stage and the action origin. An explicit origin is used directly; a dispatch
-/// with no passive origin is disambiguated by its stage, so an active-verification
-/// probe reads `active_verification` rather than the ambiguous `none`. Both
-/// `DecisionActionOrigin` and `DecisionExecutionStage` are `#[non_exhaustive]`, so
-/// unrecognized variants degrade to stable fallbacks.
-fn dispatch_origin_label(
-    stage: DecisionExecutionStage,
-    origin: Option<DecisionActionOrigin>,
-) -> &'static str {
+/// Stable snake_case label for a transport stage. `DecisionExecutionStage` is
+/// `#[non_exhaustive]`, so an unrecognized variant maps to `other`.
+fn stage_code(stage: DecisionExecutionStage) -> &'static str {
+    match stage {
+        DecisionExecutionStage::Passive => "passive",
+        DecisionExecutionStage::Active => "active",
+        _ => "other",
+    }
+}
+
+/// Stable snake_case label for a dispatch's action origin, or `None` when the
+/// dispatch carries no passive origin (e.g. an active-verification probe).
+/// `DecisionActionOrigin` is `#[non_exhaustive]`, so an unrecognized variant maps
+/// to `other`.
+fn origin_code(origin: Option<DecisionActionOrigin>) -> Option<&'static str> {
     match origin {
-        Some(DecisionActionOrigin::Bootstrap) => "bootstrap",
-        Some(DecisionActionOrigin::Planned) => "planned",
-        Some(DecisionActionOrigin::Adaptive) => "adaptive",
-        Some(DecisionActionOrigin::Retry) => "retry",
-        Some(_) => "other",
-        None => match stage {
-            DecisionExecutionStage::Active => "active_verification",
-            DecisionExecutionStage::Passive => "unattributed",
-            _ => "unattributed",
-        },
+        Some(DecisionActionOrigin::Bootstrap) => Some("bootstrap"),
+        Some(DecisionActionOrigin::Planned) => Some("planned"),
+        Some(DecisionActionOrigin::Adaptive) => Some("adaptive"),
+        Some(DecisionActionOrigin::Retry) => Some("retry"),
+        Some(_) => Some("other"),
+        None => None,
+    }
+}
+
+/// Text-only display label for a dispatch, derived from its separate stage and
+/// origin facts. An explicit origin is used directly; a dispatch with no passive
+/// origin is disambiguated by its stage, so an active-verification probe reads
+/// `active_verification` rather than the ambiguous `none`. The machine surface
+/// keeps `stage` and `origin` as distinct fields and does not use this label.
+fn dispatch_label(dispatch: &DispatchView) -> &'static str {
+    match dispatch.origin {
+        Some(origin) => origin,
+        None if dispatch.stage == "active" => "active_verification",
+        None => "unattributed",
     }
 }
 
@@ -382,8 +427,11 @@ pub(crate) fn render_summary(summary: &DecisionScanSummary) -> String {
         "verification outcomes: {} (conclusive {}, inconclusive {})\n",
         summary.verification_outcomes, summary.conclusive_outcomes, summary.inconclusive_outcomes,
     ));
-    for (action_id, status) in &summary.outcomes {
-        out.push_str(&format!("  outcome: action={action_id} status={status}\n"));
+    for outcome in &summary.outcomes {
+        out.push_str(&format!(
+            "  outcome: action={} status={}\n",
+            outcome.action_id, outcome.status
+        ));
     }
     if summary.outcomes.is_empty() {
         out.push_str("  no verification outcome was produced before the terminal state\n");
@@ -449,7 +497,8 @@ pub(crate) fn render_explain(summary: &DecisionScanSummary) -> String {
         out.push_str(&format!("    {:<9}: {}\n", "strength", hypothesis.strength));
         out.push_str(&format!(
             "    {:<9}: {}%\n",
-            "posterior", hypothesis.posterior_percent
+            "posterior",
+            hypothesis.posterior_percent()
         ));
         out.push_str(&format!("    {:<9}: {}\n", "state", hypothesis.state));
     }
@@ -477,16 +526,20 @@ pub(crate) fn render_explain(summary: &DecisionScanSummary) -> String {
     if summary.dispatched.is_empty() {
         out.push_str("  (nothing dispatched)\n");
     }
-    for (action, origin) in &summary.dispatched {
-        out.push_str(&format!("  {action} ({origin})\n"));
+    for dispatch in &summary.dispatched {
+        out.push_str(&format!(
+            "  {} ({})\n",
+            dispatch.action_id,
+            dispatch_label(dispatch)
+        ));
     }
 
     out.push_str("Verification\n");
     if summary.outcomes.is_empty() {
         out.push_str("  (no verification outcome before the terminal state)\n");
     }
-    for (action, status) in &summary.outcomes {
-        out.push_str(&format!("  {action}: {status}\n"));
+    for outcome in &summary.outcomes {
+        out.push_str(&format!("  {}: {}\n", outcome.action_id, outcome.status));
     }
 
     out.push_str("Terminal\n");
@@ -496,4 +549,181 @@ pub(crate) fn render_explain(summary: &DecisionScanSummary) -> String {
     }
 
     out
+}
+
+/// Stable schema version for the machine-readable output contract. Bump only on a
+/// breaking change to the JSON shape.
+pub(crate) const JSON_SCHEMA_VERSION: &str = "decision-scan/v1";
+
+// --- Machine-readable (`--format json`) document -----------------------------
+//
+// The JSON is built from the same typed `DecisionScanSummary` the text renderer
+// reads — never by parsing rendered text. Field groups are independent so a later
+// consumer can evolve each. It carries no raw response body, headers, cookies,
+// tokens, or evidence identifiers; only stable snake_case labels and numbers.
+
+#[derive(Serialize)]
+struct JsonDocument<'a> {
+    schema_version: &'static str,
+    engine: &'static str,
+    target_origin: &'a str,
+    summary: JsonSummary,
+    executor_routes: JsonExecutorRoutes<'a>,
+    hypotheses: Vec<JsonHypothesis<'a>>,
+    planning_turns: Vec<JsonPlanningTurn<'a>>,
+    dispatches: Vec<JsonDispatch<'a>>,
+    verification_outcomes: Vec<JsonOutcome<'a>>,
+    terminal: JsonTerminal<'a>,
+    usage: JsonUsage,
+}
+
+#[derive(Serialize)]
+struct JsonSummary {
+    bootstrap_evidence_writes: usize,
+    planning_turns: usize,
+    verification_outcomes: usize,
+    conclusive_outcomes: usize,
+    inconclusive_outcomes: usize,
+    experience_records: usize,
+}
+
+#[derive(Serialize)]
+struct JsonExecutorRoutes<'a> {
+    /// The runtime's explicit unavailable/unsupported executor routes. No
+    /// `available` list is synthesized by subtracting sets.
+    unavailable: &'a [String],
+}
+
+#[derive(Serialize)]
+struct JsonHypothesis<'a> {
+    predicate: &'a str,
+    value: &'a str,
+    strength: &'a str,
+    posterior_basis_points: u16,
+    state: &'a str,
+}
+
+#[derive(Serialize)]
+struct JsonPlanningTurn<'a> {
+    turn: usize,
+    planned: &'a [String],
+    excluded: Vec<JsonExcluded<'a>>,
+}
+
+#[derive(Serialize)]
+struct JsonExcluded<'a> {
+    action_id: &'a str,
+    reason: &'a str,
+}
+
+#[derive(Serialize)]
+struct JsonDispatch<'a> {
+    sequence: u64,
+    action_id: &'a str,
+    /// `passive` or `active` — kept separate from `origin` on purpose.
+    stage: &'a str,
+    /// The passive action origin, or `null` for a dispatch that carries none
+    /// (e.g. an active-verification probe). A consumer infers "active verification"
+    /// from `stage == "active"` and `origin == null`.
+    origin: Option<&'a str>,
+}
+
+#[derive(Serialize)]
+struct JsonOutcome<'a> {
+    action_id: &'a str,
+    status: &'a str,
+    conclusive: bool,
+}
+
+#[derive(Serialize)]
+struct JsonTerminal<'a> {
+    command: &'a str,
+    stop_reason: Option<&'a str>,
+    runtime_limit: Option<&'a str>,
+}
+
+#[derive(Serialize)]
+struct JsonUsage {
+    total_requests: u64,
+    active_verifications: u64,
+    response_bytes: u64,
+    elapsed_ms: u64,
+}
+
+/// Render a [`DecisionScanSummary`] as the versioned `decision-scan/v1` JSON
+/// document. Built from the typed summary, never from rendered text; carries no
+/// raw bodies, headers, credentials, or evidence identifiers.
+pub(crate) fn render_json(summary: &DecisionScanSummary) -> Result<String, serde_json::Error> {
+    let document = JsonDocument {
+        schema_version: JSON_SCHEMA_VERSION,
+        engine: "decision-preview",
+        target_origin: &summary.target,
+        summary: JsonSummary {
+            bootstrap_evidence_writes: summary.bootstrap_writes,
+            planning_turns: summary.planning_turns,
+            verification_outcomes: summary.verification_outcomes,
+            conclusive_outcomes: summary.conclusive_outcomes,
+            inconclusive_outcomes: summary.inconclusive_outcomes,
+            experience_records: summary.experience_records,
+        },
+        executor_routes: JsonExecutorRoutes {
+            unavailable: &summary.unavailable_routes,
+        },
+        hypotheses: summary
+            .hypotheses
+            .iter()
+            .map(|hypothesis| JsonHypothesis {
+                predicate: &hypothesis.predicate,
+                value: &hypothesis.value,
+                strength: hypothesis.strength,
+                posterior_basis_points: hypothesis.posterior_basis_points,
+                state: hypothesis.state,
+            })
+            .collect(),
+        planning_turns: summary
+            .planning
+            .iter()
+            .enumerate()
+            .map(|(turn, plan)| JsonPlanningTurn {
+                turn,
+                planned: &plan.eligible,
+                excluded: plan
+                    .excluded
+                    .iter()
+                    .map(|(action_id, reason)| JsonExcluded { action_id, reason })
+                    .collect(),
+            })
+            .collect(),
+        dispatches: summary
+            .dispatched
+            .iter()
+            .map(|dispatch| JsonDispatch {
+                sequence: dispatch.sequence,
+                action_id: &dispatch.action_id,
+                stage: dispatch.stage,
+                origin: dispatch.origin,
+            })
+            .collect(),
+        verification_outcomes: summary
+            .outcomes
+            .iter()
+            .map(|outcome| JsonOutcome {
+                action_id: &outcome.action_id,
+                status: outcome.status,
+                conclusive: outcome.conclusive,
+            })
+            .collect(),
+        terminal: JsonTerminal {
+            command: summary.terminal,
+            stop_reason: summary.stop_reason,
+            runtime_limit: summary.limit_exceeded.as_deref(),
+        },
+        usage: JsonUsage {
+            total_requests: summary.total_requests,
+            active_verifications: summary.active_verifications,
+            response_bytes: summary.response_bytes,
+            elapsed_ms: summary.elapsed_ms,
+        },
+    };
+    serde_json::to_string_pretty(&document)
 }
