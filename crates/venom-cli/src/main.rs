@@ -605,7 +605,9 @@ mod tests {
         // A generic 200 (no hypotheses) and a Basic challenge (a full supported
         // path) must report the identical unavailable-route inventory.
         let (generic_target, generic_server) = serve_static().await;
-        let generic = decision_scan::run_decision_scan(generic_target).await.unwrap();
+        let generic = decision_scan::run_decision_scan(generic_target)
+            .await
+            .unwrap();
         generic_server.abort();
 
         let basic_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -627,7 +629,9 @@ mod tests {
             }
         });
         let basic_target = Url::parse(&format!("http://{basic_address}/")).unwrap();
-        let basic = decision_scan::run_decision_scan(basic_target).await.unwrap();
+        let basic = decision_scan::run_decision_scan(basic_target)
+            .await
+            .unwrap();
         basic_server.abort();
 
         assert_eq!(
