@@ -439,11 +439,15 @@ mod tests {
         assert!(rendered.contains("strength : weak"));
         assert!(rendered.contains("posterior: 89%"));
         assert!(rendered.contains("state    : supported"));
-        // Planning turn with planned/excluded sections and the exact reason.
+        // Planning turn with counted sections and one-line excluded entries.
         assert!(rendered.contains("Planning (turn 0)"));
-        assert!(rendered.contains("  Excluded"));
-        assert!(rendered.contains("• web.action.nginx.configuration"));
-        assert!(rendered.contains("reason: policy_suppressed"));
+        assert!(rendered.contains("  Planned (0)"));
+        assert!(rendered.contains("  Excluded (1)"));
+        assert!(rendered.contains("• web.action.nginx.configuration — policy_suppressed"));
+        // The old two-line indented `reason:` form is gone (no information lost).
+        assert!(!rendered.contains("      reason:"));
+        // No ambiguous `(none)` token anywhere (empty sections rely on the count).
+        assert!(!rendered.contains("(none)"));
         // Dispatch, Verification, and Terminal sections.
         assert!(rendered.contains("Dispatch"));
         assert!(rendered.contains("web.action.bootstrap (bootstrap)"));
@@ -503,5 +507,68 @@ mod tests {
             "explain must surface the success outcome:\n{rendered}"
         );
         assert!(!rendered.to_lowercase().contains("vulnerabilit"));
+    }
+
+    #[test]
+    fn default_summary_output_is_byte_stable() {
+        // This PR changes only `--explain`. Pin the exact default `decision-scan`
+        // bytes so the default output cannot drift unnoticed.
+        let expected = concat!(
+            "== decision-scan (preview) ==\n",
+            "engine: decision-preview\n",
+            "target origin: https://example.test\n",
+            "evidence: 1 bootstrap write(s)\n",
+            "planning: 2 turn(s)\n",
+            "verification outcomes: 1 (conclusive 0, inconclusive 1)\n",
+            "  outcome: action=web.action.probe status=unknown\n",
+            "terminal: halt\n",
+            "stop_reason: no_eligible_action\n",
+            "usage: requests=3 active_verifications=1 response_bytes=42 elapsed_ms=5\n",
+            "experience records: 1\n",
+        );
+        assert_eq!(decision_scan::render_summary(&sample_summary()), expected);
+    }
+
+    #[tokio::test]
+    async fn decision_scan_explain_labels_the_active_verification_dispatch() {
+        // The Sanctum cookie pair drives Laravel route discovery, whose second
+        // probe is an active-verification dispatch with no passive origin. The
+        // explain view must label it `active_verification`, never `none`.
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            loop {
+                let (mut socket, _) = match listener.accept().await {
+                    Ok(pair) => pair,
+                    Err(_) => break,
+                };
+                let mut request = [0_u8; 2048];
+                let _ = socket.read(&mut request).await;
+                let _ = socket
+                    .write_all(
+                        b"HTTP/1.1 200 OK\r\nSet-Cookie: laravel_session=eyJ; Path=/; HttpOnly\r\nSet-Cookie: XSRF-TOKEN=abc123; Path=/\r\nContent-Type: text/html\r\nContent-Length: 2\r\nConnection: close\r\n\r\nhi",
+                    )
+                    .await;
+                let _ = socket.shutdown().await;
+            }
+        });
+        let target = Url::parse(&format!("http://{address}/")).unwrap();
+
+        let summary = decision_scan::run_decision_scan(target).await.unwrap();
+        server.abort();
+
+        let rendered = decision_scan::render_explain(&summary);
+        assert!(
+            rendered.contains("(active_verification)"),
+            "the active probe must be labelled active_verification:\n{rendered}"
+        );
+        assert!(
+            !rendered.contains("(none)"),
+            "no dispatch may render the ambiguous (none) label:\n{rendered}"
+        );
+        // Planned/dispatched/outcome distinctions remain intact.
+        assert!(rendered.contains("✓ web.action.laravel.route-discovery"));
+        assert!(rendered.contains("✓ web.action.sanctum.auth-boundary"));
+        assert!(rendered.contains("web.action.laravel.route-discovery (planned)"));
     }
 }
