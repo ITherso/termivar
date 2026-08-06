@@ -892,8 +892,11 @@ mod tests {
 
     #[test]
     fn render_json_matches_the_exact_v1_golden() {
-        // Locks the FULL v1 shape (field order, nullability, types), not just the
-        // presence of selected keys. Regenerate deliberately on an intended change.
+        // Pins the current canonical renderer output (field set, types,
+        // nullability, and the renderer's member order) — not just the presence of
+        // selected keys. JSON object member order is not itself a consumer-semantic
+        // contract (see the schema doc); this golden guards the renderer. Regenerate
+        // deliberately on an intended change.
         let expected = concat!(
             "{\n",
             "  \"schema_version\": \"decision-scan/v1\",\n",
@@ -1134,7 +1137,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn json_is_deterministic_excluding_elapsed_ms() {
+    async fn json_is_deterministic_for_equivalent_non_boundary_fixture_excluding_elapsed_ms() {
+        // A generic 200 sits well away from any budget boundary, so two runs agree
+        // once elapsed time is excluded. (Near a boundary, chunking/scheduling may
+        // affect response_bytes / runtime_limit.observed / total_requests — see the
+        // schema doc.)
         let (target, server) = serve_static().await;
         let first = decision_scan::run_decision_scan(target.clone())
             .await
