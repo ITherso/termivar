@@ -16,6 +16,7 @@
 //! See `docs/internals/runtime-map.md`.
 
 mod decision_scan;
+mod finding_projection;
 
 use clap::{Parser, Subcommand, ValueEnum};
 use url::Url;
