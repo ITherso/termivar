@@ -108,7 +108,7 @@ presentation-only derivation and never appears in JSON.)
 
 | Field | Type | Notes |
 | --- | --- | --- |
-| `action_id` | string | Verified action. |
+| `action_id` | string | Action associated with the verification outcome. |
 | `status` | string enum | `success` \| `blocked` \| `unknown` \| `false_positive` \| `needs_review` \| `confirmed_negative` \| `other`. |
 | `conclusive` | boolean | Whether the outcome maps to a verifier-owned hypothesis state. Not every outcome is a vulnerability. |
 
@@ -137,8 +137,32 @@ the request/verification/attempt dimensions, **milliseconds** for `wall_time`.
 | `response_bytes` | integer | bytes |
 | `elapsed_ms` | integer | milliseconds |
 
-`elapsed_ms` is the only non-deterministic field for an equivalent server;
-everything else is deterministic.
+## Determinism
+
+The semantic records and their ordering are deterministic for the **same target,
+the same runtime version/configuration, and equivalent non-boundary responses** —
+i.e. runs that do not sit against a transport-byte or wall-time budget boundary.
+
+- `usage.elapsed_ms` is inherently variable across runs.
+- **Near a budget boundary** (the cumulative response-byte threshold or the
+  wall-time limit), TCP chunking and scheduling can affect `usage.response_bytes`,
+  `terminal.runtime_limit.observed`, *which* request the bound is reached at (and
+  therefore `usage.total_requests`), and potentially the terminal timing/state
+  (whether the budget is crossed on this run at all). Consumers must not assume
+  byte-exact equality near a boundary.
+
+Away from boundaries, everything except `elapsed_ms` is deterministic.
+
+## Ordering
+
+- **Array element order is contractual**: `planning_turns` and `dispatches` are in
+  execution order, `verification_outcomes` in turn order, `hypotheses` sorted by
+  `(predicate, value)`, and `executor_routes.unavailable` sorted.
+- **JSON object member order is not a consumer-semantic contract.** Consumers must
+  address fields by name, not by position. The exact byte serialization (member
+  order, whitespace) reflects the current canonical renderer and may change without
+  a `schema_version` bump; only the field set, types, nullability, and the array
+  orderings above are contractual.
 
 ## Data the schema does not expose
 
