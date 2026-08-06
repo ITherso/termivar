@@ -87,6 +87,13 @@ pub(crate) struct DecisionScanSummary {
     /// Explain view: `(action_id, stable origin label)` for each wire dispatch, in
     /// dispatch order (includes the bootstrap probe).
     pub dispatched: Vec<(String, &'static str)>,
+    /// Explain view: the runtime's explicit unavailable/unsupported executor
+    /// routes — semantic actions the planner knows but the current runtime
+    /// composition cannot route to an executor. This is a fixed property of the
+    /// runtime (its executor registry), independent of the fixture/evidence, and
+    /// distinct from a given planning turn's eligibility decision. Sourced from the
+    /// runtime's own authority, never inferred from exclusion reasons.
+    pub unavailable_routes: Vec<String>,
 }
 
 /// Preview budget. `max_response_bytes` is a **cumulative session threshold**, not
@@ -210,6 +217,12 @@ pub(crate) async fn run_decision_scan(target: Url) -> Result<DecisionScanSummary
             .cmp(&(right.predicate.as_str(), right.value.as_str()))
     });
 
+    // Explain view: the runtime's own unavailable executor-route authority. This is
+    // fixture-independent (a property of the runtime's executor registry) and is
+    // never derived from planning exclusion reasons. `unsupported_actions` is a
+    // sorted set, so the inventory is deterministic.
+    let unavailable_routes: Vec<String> = runtime.unsupported_actions().iter().cloned().collect();
+
     let (terminal, stop_reason) = terminal_code(report.terminal());
     let usage = report.usage();
     Ok(DecisionScanSummary {
@@ -231,6 +244,7 @@ pub(crate) async fn run_decision_scan(target: Url) -> Result<DecisionScanSummary
         hypotheses,
         planning,
         dispatched,
+        unavailable_routes,
     })
 }
 
@@ -398,14 +412,30 @@ pub(crate) fn render_summary(summary: &DecisionScanSummary) -> String {
 }
 
 /// Render the full explainable decision chain on top of [`render_summary`] as a
-/// readable hierarchy: Hypotheses -> Planning (per turn: Planned, then Excluded
-/// with the exact reason) -> Dispatch -> Verification -> Terminal. Like
-/// [`render_summary`] it never labels an outcome a vulnerability and never dumps
-/// `Debug`; every runtime term is a stable snake_case label. This is presentation
-/// only; it reads exactly the same fields the default summary reads.
+/// readable hierarchy: Executor Routes (the runtime's fixed unavailable routes) ->
+/// Hypotheses -> Planning (per turn: Planned, then Excluded with the exact reason)
+/// -> Dispatch -> Verification -> Terminal. Like [`render_summary`] it never labels
+/// an outcome a vulnerability and never dumps `Debug`; every runtime term is a
+/// stable snake_case label. This is presentation only; it reads exactly the same
+/// fields the default summary reads.
 pub(crate) fn render_explain(summary: &DecisionScanSummary) -> String {
     let mut out = render_summary(summary);
     out.push_str("\n-- explain --\n");
+
+    // Executor Routes: the runtime's fixed executor-registry authority. Only the
+    // explicit unavailable/unsupported routes are shown — no "available" list is
+    // synthesized by subtracting sets, and this is never inferred from a planning
+    // turn's exclusion reasons. It is a distinct concept from planning eligibility:
+    // an action can have an available route yet still be excluded this turn, and an
+    // unavailable route is reported here independently of any turn's decision.
+    out.push_str("Executor Routes\n");
+    out.push_str(&format!(
+        "  Unavailable ({})\n",
+        summary.unavailable_routes.len()
+    ));
+    for action in &summary.unavailable_routes {
+        out.push_str(&format!("    • {action}\n"));
+    }
 
     out.push_str(&format!("Hypotheses ({})\n", summary.hypotheses.len()));
     if summary.hypotheses.is_empty() {

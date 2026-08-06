@@ -407,6 +407,12 @@ mod tests {
                 )],
             }],
             dispatched: vec![("web.action.bootstrap".to_string(), "bootstrap")],
+            unavailable_routes: vec![
+                "web.action.apache.configuration".to_string(),
+                "web.action.laravel.input-analysis".to_string(),
+                "web.action.nginx.configuration".to_string(),
+                "web.action.php.input-discovery".to_string(),
+            ],
         }
     }
 
@@ -433,6 +439,12 @@ mod tests {
         // It is a strict superset of the default summary.
         assert!(rendered.starts_with(&decision_scan::render_summary(&sample_summary())));
         assert!(rendered.contains("-- explain --"));
+        // Executor Routes: only the runtime's explicit unavailable routes, counted.
+        assert!(rendered.contains("Executor Routes"));
+        assert!(rendered.contains("  Unavailable (4)"));
+        assert!(rendered.contains("    • web.action.nginx.configuration\n"));
+        // No synthesized "available" list.
+        assert!(!rendered.contains("Available"));
         // Hierarchical hypotheses with aligned, stable labels.
         assert!(rendered.contains("Hypotheses (1)"));
         assert!(rendered.contains("  technology.web-server=nginx"));
@@ -570,5 +582,116 @@ mod tests {
         assert!(rendered.contains("✓ web.action.laravel.route-discovery"));
         assert!(rendered.contains("✓ web.action.sanctum.auth-boundary"));
         assert!(rendered.contains("web.action.laravel.route-discovery (planned)"));
+        // Sanctum is planned but never dispatched (route review defers it): it has
+        // an available executor route, so it is NOT in the unavailable inventory,
+        // and no dispatch line carries its action id.
+        assert!(
+            !summary
+                .unavailable_routes
+                .contains(&"web.action.sanctum.auth-boundary".to_string()),
+            "sanctum has an available route: {:?}",
+            summary.unavailable_routes
+        );
+        assert!(
+            !rendered.contains("web.action.sanctum.auth-boundary ("),
+            "sanctum is planned but never dispatched:\n{rendered}"
+        );
+    }
+
+    /// The unavailable executor-route inventory is a fixed property of the runtime
+    /// composition — identical regardless of what a fixture discloses.
+    #[tokio::test]
+    async fn executor_route_inventory_is_fixture_independent() {
+        // A generic 200 (no hypotheses) and a Basic challenge (a full supported
+        // path) must report the identical unavailable-route inventory.
+        let (generic_target, generic_server) = serve_static().await;
+        let generic = decision_scan::run_decision_scan(generic_target).await.unwrap();
+        generic_server.abort();
+
+        let basic_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let basic_address = basic_listener.local_addr().unwrap();
+        let basic_server = tokio::spawn(async move {
+            loop {
+                let (mut socket, _) = match basic_listener.accept().await {
+                    Ok(pair) => pair,
+                    Err(_) => break,
+                };
+                let mut request = [0_u8; 2048];
+                let _ = socket.read(&mut request).await;
+                let _ = socket
+                    .write_all(
+                        b"HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: Basic realm=\"admin\"\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                    )
+                    .await;
+                let _ = socket.shutdown().await;
+            }
+        });
+        let basic_target = Url::parse(&format!("http://{basic_address}/")).unwrap();
+        let basic = decision_scan::run_decision_scan(basic_target).await.unwrap();
+        basic_server.abort();
+
+        assert_eq!(
+            generic.unavailable_routes, basic.unavailable_routes,
+            "the unavailable-route inventory must not depend on the fixture"
+        );
+        // It is the runtime's fixed four executor-less actions, in sorted order.
+        assert_eq!(
+            generic.unavailable_routes,
+            vec![
+                "web.action.apache.configuration".to_string(),
+                "web.action.laravel.input-analysis".to_string(),
+                "web.action.nginx.configuration".to_string(),
+                "web.action.php.input-discovery".to_string(),
+            ]
+        );
+    }
+
+    /// Route status (runtime composition) and planning eligibility (this turn's
+    /// decision) are independent axes and must render as distinct facts.
+    #[tokio::test]
+    async fn decision_scan_explain_separates_route_status_from_planning_eligibility() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            loop {
+                let (mut socket, _) = match listener.accept().await {
+                    Ok(pair) => pair,
+                    Err(_) => break,
+                };
+                let mut request = [0_u8; 2048];
+                let _ = socket.read(&mut request).await;
+                let _ = socket
+                    .write_all(
+                        b"HTTP/1.1 200 OK\r\nServer: nginx\r\nContent-Type: text/html\r\nContent-Length: 2\r\nConnection: close\r\n\r\nhi",
+                    )
+                    .await;
+                let _ = socket.shutdown().await;
+            }
+        });
+        let target = Url::parse(&format!("http://{address}/")).unwrap();
+        let summary = decision_scan::run_decision_scan(target).await.unwrap();
+        server.abort();
+
+        // nginx: no executor route AND excluded this turn as policy_suppressed.
+        assert!(summary
+            .unavailable_routes
+            .contains(&"web.action.nginx.configuration".to_string()));
+        // http-basic: HAS an executor route (not in the unavailable inventory) yet
+        // is still excluded this turn — for a different reason (requirements not
+        // met). Route availability and eligibility are orthogonal.
+        assert!(!summary
+            .unavailable_routes
+            .contains(&"web.action.http-basic.auth-boundary".to_string()));
+
+        let rendered = decision_scan::render_explain(&summary);
+        // Both facts appear, framed distinctly: the route inventory lists nginx
+        // without a reason; the planning turn excludes it with a reason.
+        assert!(rendered.contains("Executor Routes"));
+        assert!(rendered.contains("    • web.action.nginx.configuration\n"));
+        assert!(rendered.contains("• web.action.nginx.configuration — policy_suppressed"));
+        assert!(
+            rendered.contains("• web.action.http-basic.auth-boundary — requirements_not_met"),
+            "an available route can still be excluded this turn:\n{rendered}"
+        );
     }
 }
