@@ -397,9 +397,15 @@ pub(crate) fn render_explain(summary: &DecisionScanSummary) -> String {
         out.push_str("  (none — no reasoning rule matched the bootstrap evidence)\n");
     }
     for hypothesis in &summary.hypotheses {
-        out.push_str(&format!("  {}={}\n", hypothesis.predicate, hypothesis.value));
+        out.push_str(&format!(
+            "  {}={}\n",
+            hypothesis.predicate, hypothesis.value
+        ));
         out.push_str(&format!("    {:<9}: {}\n", "strength", hypothesis.strength));
-        out.push_str(&format!("    {:<9}: {}%\n", "posterior", hypothesis.posterior_percent));
+        out.push_str(&format!(
+            "    {:<9}: {}%\n",
+            "posterior", hypothesis.posterior_percent
+        ));
         out.push_str(&format!("    {:<9}: {}\n", "state", hypothesis.state));
     }
 
