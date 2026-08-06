@@ -57,6 +57,11 @@ enum Commands {
     DecisionScan {
         /// Authorized HTTP(S) target origin. Only scan targets you own or may test.
         target: Url,
+        /// Print the full explainable decision chain: hypotheses, planned and
+        /// excluded actions (with the exact reason), dispatched actions, and
+        /// verification outcomes. Off by default; the default output is unchanged.
+        #[arg(long)]
+        explain: bool,
     },
     /// Start the API server
     Api {
@@ -129,10 +134,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             log_task.abort();
         },
-        Some(Commands::DecisionScan { target }) => {
+        Some(Commands::DecisionScan { target, explain }) => {
             eprintln!("{DECISION_SCAN_PREVIEW_WARNING}");
             let summary = decision_scan::run_decision_scan(target).await?;
-            print!("{}", decision_scan::render_summary(&summary));
+            let rendered = if explain {
+                decision_scan::render_explain(&summary)
+            } else {
+                decision_scan::render_summary(&summary)
+            };
+            print!("{rendered}");
         },
         Some(Commands::Api { addr }) => {
             venom_api::start_api(&addr).await?;
@@ -234,12 +244,26 @@ mod tests {
     fn decision_scan_selects_the_preview_command() {
         let cli = Cli::try_parse_from(["venom", "decision-scan", "https://example.test/"]).unwrap();
         match cli.command {
-            Some(Commands::DecisionScan { target }) => {
+            Some(Commands::DecisionScan { target, explain }) => {
                 assert_eq!(target.as_str(), "https://example.test/");
+                assert!(!explain, "explain must default off so the default output is unchanged");
             },
             _ => panic!("expected the decision-scan command"),
         }
         assert!(DECISION_SCAN_PREVIEW_WARNING.contains("not the default"));
+    }
+
+    #[test]
+    fn decision_scan_accepts_the_explain_flag() {
+        let cli =
+            Cli::try_parse_from(["venom", "decision-scan", "--explain", "https://example.test/"])
+                .unwrap();
+        match cli.command {
+            Some(Commands::DecisionScan { explain, .. }) => {
+                assert!(explain, "--explain must enable the explain view");
+            },
+            _ => panic!("expected the decision-scan command"),
+        }
     }
 
     #[test]
@@ -344,9 +368,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn render_summary_is_stable_and_never_labels_vulnerabilities() {
-        let summary = decision_scan::DecisionScanSummary {
+    fn sample_summary() -> decision_scan::DecisionScanSummary {
+        decision_scan::DecisionScanSummary {
             target: "https://example.test".to_string(),
             bootstrap_writes: 1,
             planning_turns: 2,
@@ -362,17 +385,102 @@ mod tests {
             elapsed_ms: 5,
             limit_exceeded: None,
             experience_records: 1,
-        };
-        let rendered = decision_scan::render_summary(&summary);
+            hypotheses: vec![decision_scan::HypothesisView {
+                predicate: "technology.web-server".to_string(),
+                value: "nginx".to_string(),
+                strength: "weak",
+                posterior_percent: 89,
+                state: "supported",
+            }],
+            planning: vec![decision_scan::PlanningView {
+                eligible: Vec::new(),
+                excluded: vec![(
+                    "web.action.nginx.configuration".to_string(),
+                    "policy_suppressed",
+                )],
+            }],
+            dispatched: vec![("web.action.bootstrap".to_string(), "bootstrap")],
+        }
+    }
+
+    #[test]
+    fn render_summary_is_stable_and_never_labels_vulnerabilities() {
+        let rendered = decision_scan::render_summary(&sample_summary());
         assert!(rendered.contains("engine: decision-preview"));
         assert!(rendered.contains("target origin: https://example.test"));
         assert!(rendered.contains("verification outcomes: 1"));
         assert!(rendered.contains("terminal: halt"));
         assert!(rendered.contains("stop_reason: no_eligible_action"));
         assert!(rendered.contains("usage: requests=3"));
+        // The default summary does not include the explain section.
+        assert!(!rendered.contains("-- explain --"));
         // The user surface never labels an outcome a vulnerability, and never
         // leaks a Debug dump of internal runtime types.
         assert!(!rendered.to_lowercase().contains("vulnerabilit"));
         assert!(!rendered.contains("VerificationCase {"));
+    }
+
+    #[test]
+    fn render_explain_extends_the_summary_with_the_full_chain() {
+        let rendered = decision_scan::render_explain(&sample_summary());
+        // It is a strict superset of the default summary.
+        assert!(rendered.starts_with(&decision_scan::render_summary(&sample_summary())));
+        assert!(rendered.contains("-- explain --"));
+        // Hypotheses with stable labels.
+        assert!(rendered.contains("hypothesis: technology.web-server=nginx"));
+        assert!(rendered.contains("strength=weak posterior=89% state=supported"));
+        // Planning turn with the exact exclusion reason.
+        assert!(rendered.contains("planning turns: 1"));
+        assert!(rendered.contains("reason=policy_suppressed"));
+        // Dispatched actions with origin.
+        assert!(rendered.contains("dispatched: web.action.bootstrap origin=bootstrap"));
+        // Same honesty guarantees as the summary.
+        assert!(!rendered.to_lowercase().contains("vulnerabilit"));
+        assert!(!rendered.contains("VerificationCase {"));
+        assert!(!rendered.contains("ExclusionReason"));
+    }
+
+    #[tokio::test]
+    async fn decision_scan_explain_reports_the_chain_for_a_basic_auth_origin() {
+        // A 401 Basic challenge activates the supported http-basic path end to end;
+        // the explain view must surface the hypothesis, the dispatched action, and
+        // a success outcome — all offline.
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            loop {
+                let (mut socket, _) = match listener.accept().await {
+                    Ok(pair) => pair,
+                    Err(_) => break,
+                };
+                let mut request = [0_u8; 2048];
+                let _ = socket.read(&mut request).await;
+                let _ = socket
+                    .write_all(
+                        b"HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: Basic realm=\"admin\"\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                    )
+                    .await;
+                let _ = socket.shutdown().await;
+            }
+        });
+        let target = Url::parse(&format!("http://{address}/")).unwrap();
+
+        let summary = decision_scan::run_decision_scan(target).await.unwrap();
+        server.abort();
+
+        let rendered = decision_scan::render_explain(&summary);
+        assert!(
+            rendered.contains("hypothesis: authentication.mechanism=http-basic strength=strong"),
+            "explain must surface the http-basic hypothesis:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("origin=planned"),
+            "explain must surface the planned dispatch:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("status=success"),
+            "explain must surface the success outcome:\n{rendered}"
+        );
+        assert!(!rendered.to_lowercase().contains("vulnerabilit"));
     }
 }
