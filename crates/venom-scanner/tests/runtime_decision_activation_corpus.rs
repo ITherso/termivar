@@ -1,30 +1,38 @@
 //! Activation corpus for the `venom decision-scan` preview runtime.
 //!
-//! This is a **characterization** test suite. It changes no production runtime
-//! behavior, planner action, reasoning rule, verification rule, executor route,
-//! threshold, semantic/defense integration, payload binding, API-reasoning
-//! default, or CLI output. It drives the existing [`StandardWebDecisionRuntime`]
-//! through the exact conservative profile the shipped `venom decision-scan`
-//! command composes (see `crates/venom-cli/src/decision_scan.rs`) against
-//! offline `127.0.0.1` fixtures, and pins the observable contract as deterministic
-//! goldens: emitted evidence predicates, resulting hypotheses and strength,
-//! eligible/excluded planner actions and the exact exclusion reason, the selected
-//! action, executor-route availability, verification outcome status, the terminal
-//! command with its stop reason, and request usage. Elapsed time and the ephemeral
-//! port are deliberately excluded so the goldens are stable.
+//! This is a **deterministic characterization corpus**, not a full golden of every
+//! field. It changes no production runtime behavior, planner action, reasoning
+//! rule, verification rule, executor route, threshold, semantic/defense
+//! integration, payload binding, API-reasoning default, or CLI output. It drives
+//! the existing [`StandardWebDecisionRuntime`] through a **manually mirrored
+//! snapshot of the current `venom decision-scan` preview profile** (see
+//! `preview_runtime` below and `crates/venom-cli/src/decision_scan.rs`) against
+//! offline `127.0.0.1` fixtures, and records the observable contract: emitted
+//! evidence predicates, resulting hypotheses and strength, per-turn
+//! eligible/excluded planner actions with the exact exclusion reason, the actions
+//! actually dispatched on the wire, executor-route availability, verification
+//! outcome status, the terminal command with its stop reason, and request usage.
+//! Elapsed time, the ephemeral port, and chunk-dependent byte counts are
+//! deliberately not pinned so the corpus stays stable.
 //!
 //! The corpus is split in two.
 //!
 //! * **Negative / neutral fixtures** carry no activation signal and must keep
 //!   halting with `no_eligible_action`.
 //! * **Positive activation fixtures** deliberately trip the built-in reasoning
-//!   rules. They fall into two truthful classes:
-//!   * `nginx` / `apache` / `php` create a hypothesis but their planner action is
-//!     always excluded as `policy_suppressed` because no built-in discovery
-//!     executor routes them — a visible **capability gap**, not a runtime bug.
-//!   * `http-basic` / `http-bearer` / `livewire` / `sanctum` / Laravel route
-//!     exercise the reasoning -> planning -> execution -> verification chain
-//!     end to end without adding any capability.
+//!   rules. They fall into three truthful classes:
+//!   * **Capability gap:** `nginx` / `apache` / `php` create a hypothesis but their
+//!     planner action is always excluded as `policy_suppressed` because no
+//!     built-in discovery executor routes them — visible gap, not a runtime bug.
+//!   * **Executor-backed end to end:** `http-basic` / `http-bearer` / `livewire`
+//!     run reasoning -> planning -> execution -> verification to a terminal
+//!     verification outcome (Success / complete) without adding any capability.
+//!   * **Activated but not executed end to end:** Laravel route discovery is
+//!     dispatched but resolves to `needs_review` and defers to human review;
+//!     Sanctum is activated and planned but **never dispatched**, because the same
+//!     cookie pair raises a higher-utility Laravel route that reaches human review
+//!     first. Their executor-backed verification is proven in isolation by
+//!     `web_verification::tests`, not by this end-to-end runtime path.
 //!
 //! ## The `Allow` header is a verification signal, not an activation signal
 //!
@@ -50,19 +58,28 @@ use tokio::task::JoinHandle;
 use url::Url;
 use venom_core::{EvidenceValue, HypothesisStrength, OutcomeStatus};
 use venom_scanner::{
-    DecisionLoopCommand, DecisionStopReason, ExclusionReason, HttpBodyCapture, HttpEvidencePolicy,
-    RuntimeBudget, StandardWebActionKind, StandardWebDecisionRuntime,
+    DecisionActionOrigin, DecisionLoopCommand, DecisionStopReason, ExclusionReason,
+    HttpBodyCapture, HttpEvidencePolicy, RuntimeBudget, StandardWebActionKind,
+    StandardWebDecisionRuntime,
 };
 
-// --- Preview profile (mirror of crates/venom-cli/src/decision_scan.rs) --------
+// --- Preview profile: manually mirrored snapshot of the decision-scan preview --
+//
+// These constants and `preview_runtime` are a MANUALLY MIRRORED SNAPSHOT of the
+// current `venom decision-scan` preview profile in
+// `crates/venom-cli/src/decision_scan.rs`. They are not shared code and are not
+// identical "by construction" — this milestone deliberately introduces no public
+// config API. Any change to the CLI preview profile (budget, body capture,
+// business value, planning budget, risk limit, action cycles) MUST update this
+// corpus in the same PR, or these goldens will silently describe a stale profile.
 
 const PREVIEW_MAX_TOTAL_REQUESTS: u32 = 16;
 const PREVIEW_MAX_WALL_TIME_SECS: u64 = 60;
 const PREVIEW_MAX_CUMULATIVE_RESPONSE_BYTES: u64 = 1024 * 1024;
 const PREVIEW_BODY_SAMPLE_CHARS: usize = 8_192;
 
-/// Builds a runtime with the identical conservative profile `venom decision-scan`
-/// composes. Kept in lockstep with the CLI adapter by construction.
+/// Builds a runtime from the manually mirrored snapshot of the decision-scan
+/// preview profile. See the module and section notes on the sync obligation.
 fn preview_runtime(target: Url) -> StandardWebDecisionRuntime {
     let policy = HttpEvidencePolicy::for_origin(target.clone())
         .unwrap()
@@ -185,18 +202,32 @@ struct Hypothesis {
     state: String,
 }
 
+/// One planning turn: what the planner ranked as eligible (dependency-safe plan
+/// steps) versus excluded, with the exact exclusion reason. Captured for *every*
+/// planning turn so future replanning cannot become invisible.
+#[derive(Debug, Clone, PartialEq)]
+struct PlanningObservation {
+    eligible: Vec<String>,
+    excluded: BTreeMap<String, String>,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 struct Observation {
     evidence: BTreeSet<String>,
     hypotheses: Vec<Hypothesis>,
-    eligible: Vec<String>,
-    excluded: BTreeMap<String, String>,
-    selected: Option<String>,
+    /// Every planning turn, in order. `planning[0]` is the initial plan.
+    planning: Vec<PlanningObservation>,
+    /// Actions actually dispatched on the wire, as `(action_id, origin)` in
+    /// dispatch order (includes the bootstrap probe). This is proof of what the
+    /// transport executed, distinct from what the planner merely ranked eligible.
+    dispatched: Vec<(String, String)>,
+    /// Verification outcomes, as `(action_id, status)` in turn order.
     outcomes: Vec<(String, String)>,
     terminal: String,
     total_requests: u32,
     active_verifications: u16,
     response_bytes: u64,
+    limit_dimension: Option<String>,
     methods: Vec<String>,
     unsupported: BTreeSet<String>,
 }
@@ -248,6 +279,17 @@ fn stop_reason_label(reason: &DecisionStopReason) -> &'static str {
     }
 }
 
+fn origin_label(origin: Option<DecisionActionOrigin>) -> String {
+    match origin {
+        Some(DecisionActionOrigin::Bootstrap) => "bootstrap",
+        Some(DecisionActionOrigin::Planned) => "planned",
+        Some(DecisionActionOrigin::Retry) => "retry",
+        Some(_) => "other",
+        None => "none",
+    }
+    .to_owned()
+}
+
 fn terminal_label(command: &DecisionLoopCommand) -> String {
     match command {
         DecisionLoopCommand::ExecuteAction { .. } => "execute_action".to_owned(),
@@ -295,20 +337,16 @@ async fn observe(fixture: Vec<u8>, delay: Duration) -> Observation {
             .cmp(&(right.predicate.as_str(), right.value.as_str()))
     });
 
-    let planning = report.planning_reports().next();
-    let eligible: Vec<String> = planning
-        .map(|report| {
-            report
+    let planning: Vec<PlanningObservation> = report
+        .planning_reports()
+        .map(|report| PlanningObservation {
+            eligible: report
                 .plan()
                 .steps()
                 .iter()
                 .map(|step| step.action_id().to_owned())
-                .collect()
-        })
-        .unwrap_or_default();
-    let excluded: BTreeMap<String, String> = planning
-        .map(|report| {
-            report
+                .collect(),
+            excluded: report
                 .plan()
                 .excluded()
                 .iter()
@@ -318,10 +356,21 @@ async fn observe(fixture: Vec<u8>, delay: Duration) -> Observation {
                         reason_tag(excluded.reason()).to_owned(),
                     )
                 })
-                .collect()
+                .collect(),
         })
-        .unwrap_or_default();
-    let selected = eligible.first().cloned();
+        .collect();
+
+    let dispatched: Vec<(String, String)> = report
+        .transport()
+        .receipts()
+        .iter()
+        .map(|receipt| {
+            (
+                receipt.action_id().to_owned(),
+                origin_label(receipt.origin()),
+            )
+        })
+        .collect();
 
     let outcomes: Vec<(String, String)> = report
         .outcome_reports()
@@ -339,23 +388,54 @@ async fn observe(fixture: Vec<u8>, delay: Duration) -> Observation {
     let total_requests = usage.total_requests();
     let active_verifications = usage.active_verifications();
     let response_bytes = usage.response_bytes();
+    let limit_dimension = report
+        .limit_exceeded()
+        .map(|limit| format!("{:?}", limit.dimension()));
     let methods = server.methods().await;
     let unsupported: BTreeSet<String> = runtime.unsupported_actions().iter().cloned().collect();
 
     Observation {
         evidence,
         hypotheses,
-        eligible,
-        excluded,
-        selected,
+        planning,
+        dispatched,
         outcomes,
         terminal,
         total_requests,
         active_verifications,
         response_bytes,
+        limit_dimension,
         methods,
         unsupported,
     }
+}
+
+/// The planned (dependency-safe) actions of the initial planning turn.
+fn initial_eligible(observation: &Observation) -> &[String] {
+    observation
+        .planning
+        .first()
+        .map(|turn| turn.eligible.as_slice())
+        .unwrap_or_default()
+}
+
+/// The exclusion reason recorded for `action` in the initial planning turn.
+fn initial_exclusion<'a>(observation: &'a Observation, action: &str) -> Option<&'a str> {
+    observation
+        .planning
+        .first()
+        .and_then(|turn| turn.excluded.get(action))
+        .map(String::as_str)
+}
+
+/// Actions actually dispatched with a non-bootstrap origin, in dispatch order.
+fn planned_dispatched(observation: &Observation) -> Vec<String> {
+    observation
+        .dispatched
+        .iter()
+        .filter(|(_, origin)| origin != "bootstrap")
+        .map(|(action, _)| action.clone())
+        .collect()
 }
 
 async fn observe_instant(fixture: Vec<u8>) -> Observation {
@@ -419,30 +499,48 @@ fn assert_universal(observation: &Observation) {
         expected_unsupported(),
         "the unsupported-executor set is a fixed capability boundary"
     );
-    for action in expected_unsupported() {
-        assert_eq!(
-            observation.excluded.get(&action).map(String::as_str),
-            Some("policy_suppressed"),
-            "action {action} must always be excluded as policy_suppressed"
-        );
+    // In every planning turn the four executor-less actions are excluded as
+    // policy_suppressed.
+    for turn in &observation.planning {
+        for action in expected_unsupported() {
+            assert_eq!(
+                turn.excluded.get(&action).map(String::as_str),
+                Some("policy_suppressed"),
+                "action {action} must always be excluded as policy_suppressed"
+            );
+        }
     }
-    // Bootstrap always records the response status.
+    // Bootstrap always records the response status and is always dispatched first.
     assert!(
         observation.evidence.contains("http.response.status"),
         "bootstrap evidence must include the response status: {:?}",
         observation.evidence
     );
+    assert_eq!(
+        observation
+            .dispatched
+            .first()
+            .map(|(_, origin)| origin.as_str()),
+        Some("bootstrap"),
+        "the first dispatch is always the bootstrap probe: {:?}",
+        observation.dispatched
+    );
 }
 
-/// Asserts a fixture halted with no eligible action, produced no outcome, and made
-/// exactly one (bootstrap) request.
+/// Asserts a fixture halted with no eligible action, dispatched nothing beyond the
+/// bootstrap probe, produced no outcome, and made exactly one request.
 fn assert_inert(observation: &Observation) {
     assert_universal(observation);
+    assert_eq!(observation.planning.len(), 1, "a single planning turn");
     assert!(
-        observation.eligible.is_empty(),
-        "no action should be eligible"
+        initial_eligible(observation).is_empty(),
+        "no action should be planned"
     );
-    assert_eq!(observation.selected, None);
+    assert!(
+        planned_dispatched(observation).is_empty(),
+        "nothing beyond bootstrap should dispatch: {:?}",
+        observation.dispatched
+    );
     assert!(observation.outcomes.is_empty(), "no verification outcome");
     assert_eq!(observation.terminal, "halt:no_eligible_action");
     assert_eq!(observation.total_requests, 1);
@@ -589,12 +687,14 @@ async fn server_nginx_activates_a_hypothesis_but_is_policy_suppressed() {
     assert_eq!(hypothesis.predicate, "technology.web-server");
     assert_eq!(hypothesis.value, "nginx");
     assert_eq!(hypothesis.strength, HypothesisStrength::Weak);
-    // Recognized action, but no executor route -> excluded, no outcome, one request.
+    // Recognized action, but no executor route -> excluded, nothing dispatched
+    // beyond bootstrap, no outcome, one request.
     assert_eq!(
-        observation.excluded.get(nginx()).map(String::as_str),
+        initial_exclusion(&observation, nginx()),
         Some("policy_suppressed")
     );
-    assert!(observation.eligible.is_empty());
+    assert!(initial_eligible(&observation).is_empty());
+    assert!(planned_dispatched(&observation).is_empty());
     assert!(observation.outcomes.is_empty());
     assert_eq!(observation.terminal, "halt:no_eligible_action");
     assert_eq!(observation.total_requests, 1);
@@ -616,10 +716,11 @@ async fn server_apache_activates_a_hypothesis_but_is_policy_suppressed() {
     assert_eq!(observation.hypotheses[0].value, "apache-http-server");
     assert_eq!(observation.hypotheses[0].strength, HypothesisStrength::Weak);
     assert_eq!(
-        observation.excluded.get(apache()).map(String::as_str),
+        initial_exclusion(&observation, apache()),
         Some("policy_suppressed")
     );
-    assert!(observation.eligible.is_empty());
+    assert!(initial_eligible(&observation).is_empty());
+    assert!(planned_dispatched(&observation).is_empty());
     assert!(observation.outcomes.is_empty());
     assert_eq!(observation.terminal, "halt:no_eligible_action");
     assert_eq!(observation.total_requests, 1);
@@ -641,10 +742,11 @@ async fn powered_by_php_activates_a_hypothesis_but_is_policy_suppressed() {
     assert_eq!(observation.hypotheses[0].value, "php");
     assert_eq!(observation.hypotheses[0].strength, HypothesisStrength::Weak);
     assert_eq!(
-        observation.excluded.get(php()).map(String::as_str),
+        initial_exclusion(&observation, php()),
         Some("policy_suppressed")
     );
-    assert!(observation.eligible.is_empty());
+    assert!(initial_eligible(&observation).is_empty());
+    assert!(planned_dispatched(&observation).is_empty());
     assert!(observation.outcomes.is_empty());
     assert_eq!(observation.terminal, "halt:no_eligible_action");
     assert_eq!(observation.total_requests, 1);
@@ -674,9 +776,11 @@ async fn www_authenticate_basic_drives_a_supported_success() {
         hypothesis.posterior_bp >= 9000,
         "strong basic posterior >= 90%"
     );
-    // Supported executor -> selected -> passive HEAD confirms -> Success -> Complete.
-    assert_eq!(observation.selected.as_deref(), Some(basic()));
-    assert_eq!(observation.excluded.get(basic()), None);
+    // Supported executor: planned, dispatched (passive HEAD), confirmed Success,
+    // objective complete.
+    assert_eq!(initial_eligible(&observation), [basic().to_owned()]);
+    assert_eq!(initial_exclusion(&observation, basic()), None);
+    assert_eq!(planned_dispatched(&observation), vec![basic().to_owned()]);
     assert_eq!(
         observation.outcomes,
         vec![(basic().to_owned(), "success".to_owned())]
@@ -713,7 +817,8 @@ async fn www_authenticate_bearer_drives_a_supported_success() {
         observation.hypotheses[0].strength,
         HypothesisStrength::Strong
     );
-    assert_eq!(observation.selected.as_deref(), Some(bearer()));
+    assert_eq!(initial_eligible(&observation), [bearer().to_owned()]);
+    assert_eq!(planned_dispatched(&observation), vec![bearer().to_owned()]);
     assert_eq!(
         observation.outcomes,
         vec![(bearer().to_owned(), "success".to_owned())]
@@ -745,7 +850,11 @@ async fn livewire_body_marker_drives_a_supported_path() {
     // Livewire is a supported discovery action. Its probe is a GET (the marker
     // lives in the body), so a single passive GET confirms the marker and the
     // objective completes: bootstrap GET + passive GET, one Success outcome.
-    assert_eq!(observation.selected.as_deref(), Some(livewire()));
+    assert_eq!(initial_eligible(&observation), [livewire().to_owned()]);
+    assert_eq!(
+        planned_dispatched(&observation),
+        vec![livewire().to_owned()]
+    );
     assert_eq!(
         observation.outcomes,
         vec![(livewire().to_owned(), "success".to_owned())]
@@ -789,14 +898,15 @@ async fn laravel_route_activation_reaches_route_review() {
     // The route probes with OPTIONS to elicit the Allow header; passive then
     // active both see it and yield the deliberately cautious needs_review, so the
     // runtime hands the case to human review rather than auto-confirming Laravel.
-    assert_eq!(observation.eligible, vec![laravel_route().to_owned()]);
-    assert_eq!(observation.selected.as_deref(), Some(laravel_route()));
+    assert_eq!(initial_eligible(&observation), [laravel_route().to_owned()]);
     assert_eq!(
-        observation
-            .excluded
-            .get(laravel_input())
-            .map(String::as_str),
+        initial_exclusion(&observation, laravel_input()),
         Some("policy_suppressed")
+    );
+    // Route dispatched twice: passive (planned) then active (retry-origin) probe.
+    assert_eq!(
+        planned_dispatched(&observation),
+        vec![laravel_route().to_owned(), laravel_route().to_owned()]
     );
     assert_eq!(
         observation.outcomes,
@@ -860,18 +970,24 @@ async fn sanctum_cookie_pair_coactivates_laravel_and_defers_to_route_review() {
     // Both discovery actions are planned (route ranked ahead of sanctum); input
     // analysis is the unsupported action.
     assert_eq!(
-        observation.eligible,
-        vec![laravel_route().to_owned(), sanctum().to_owned()]
+        initial_eligible(&observation),
+        [laravel_route().to_owned(), sanctum().to_owned()]
     );
     assert_eq!(
-        observation
-            .excluded
-            .get(laravel_input())
-            .map(String::as_str),
+        initial_exclusion(&observation, laravel_input()),
         Some("policy_suppressed")
     );
 
-    // Only the route executes; sanctum is planned-but-never-executed.
+    // Only the route is ever dispatched; sanctum is planned-but-never-executed.
+    assert_eq!(
+        planned_dispatched(&observation),
+        vec![laravel_route().to_owned(), laravel_route().to_owned()]
+    );
+    assert!(
+        !planned_dispatched(&observation).contains(&sanctum().to_owned()),
+        "sanctum must never dispatch: {:?}",
+        observation.dispatched
+    );
     assert_eq!(
         observation.outcomes,
         vec![
@@ -890,6 +1006,55 @@ async fn sanctum_cookie_pair_coactivates_laravel_and_defers_to_route_review() {
     assert_eq!(observation.terminal, "await_human_review");
     assert_eq!(observation.total_requests, 3);
     assert_eq!(observation.active_verifications, 1);
+    assert_eq!(
+        observation.methods,
+        vec!["GET".to_owned(), "OPTIONS".to_owned(), "OPTIONS".to_owned()]
+    );
+}
+
+// --- Cumulative response-budget termination -----------------------------------
+
+#[tokio::test]
+async fn cumulative_response_budget_halts_across_multiple_requests() {
+    // This complements the single-probe truncation fixture: instead of proving the
+    // per-probe 256 KiB retention cap, it crosses the runtime's 1 MiB *cumulative
+    // delivered-body* threshold across several requests. The Laravel route path
+    // dispatches three body-delivering probes (bootstrap GET, passive OPTIONS,
+    // active OPTIONS); at ~400 KiB delivered each, the first two stay under 1 MiB
+    // (~800 KiB) and the third crosses it, so the runtime halts under budget
+    // control. No threshold is changed; the preview profile's 1 MiB budget is used.
+    let body = vec![b'a'; 400 * 1024];
+    let observation = observe_instant(response(
+        "200 OK",
+        &[
+            "X-Powered-By: Laravel",
+            "Allow: GET,HEAD,POST,OPTIONS",
+            "Content-Type: text/html",
+        ],
+        &body,
+    ))
+    .await;
+
+    // Controlled RuntimeBudgetLimit termination on the response-bytes dimension.
+    assert_eq!(observation.terminal, "halt:runtime_budget_limit");
+    assert_eq!(
+        observation.limit_dimension.as_deref(),
+        Some("ResponseBytes")
+    );
+    // Request count stays within the 16-request preview cap.
+    assert_eq!(observation.total_requests, 3);
+    assert!(
+        observation.total_requests <= PREVIEW_MAX_TOTAL_REQUESTS,
+        "request count must remain within the preview cap"
+    );
+    // Reported delivered bytes reach/cross the 1 MiB cumulative threshold. The
+    // exact byte count depends on transport chunk boundaries, so it is asserted as
+    // a lower bound rather than pinned.
+    assert!(
+        observation.response_bytes >= PREVIEW_MAX_CUMULATIVE_RESPONSE_BYTES,
+        "cumulative delivered bytes must reach the 1 MiB threshold: {}",
+        observation.response_bytes
+    );
     assert_eq!(
         observation.methods,
         vec!["GET".to_owned(), "OPTIONS".to_owned(), "OPTIONS".to_owned()]
