@@ -22,16 +22,41 @@ use std::error::Error;
 use std::time::Duration;
 
 use url::Url;
+use venom_core::{EvidenceValue, HypothesisState, HypothesisStrength};
 use venom_scanner::{
-    DecisionLoopCommand, DecisionStopReason, HttpBodyCapture, HttpEvidencePolicy, OutcomeStatus,
-    RuntimeBudget, StandardWebDecisionRuntime, StandardWebDecisionRuntimeTurn,
+    DecisionActionOrigin, DecisionLoopCommand, DecisionStopReason, ExclusionReason, HttpBodyCapture,
+    HttpEvidencePolicy, OutcomeStatus, RuntimeBudget, StandardWebDecisionRuntime,
+    StandardWebDecisionRuntimeTurn,
 };
+
+/// One hypothesis the runtime maintained, rendered with stable labels for the
+/// `--explain` view.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct HypothesisView {
+    pub predicate: String,
+    pub value: String,
+    pub strength: &'static str,
+    pub posterior_percent: u8,
+    pub state: &'static str,
+}
+
+/// One planning turn: the dependency-safe plan steps the planner selected versus
+/// the actions it excluded, each with the exact stable exclusion reason.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PlanningView {
+    pub eligible: Vec<String>,
+    pub excluded: Vec<(String, &'static str)>,
+}
 
 /// Deterministic, transport-truthful summary of one decision-runtime preview run.
 ///
 /// Fields mirror the runtime's own report (evidence, planning, verification
 /// outcomes, bounded terminal state, and usage). Every field except `elapsed_ms`
 /// is deterministic for an equivalent server, which the end-to-end test relies on.
+///
+/// The `hypotheses` / `planning` / `dispatched` fields back the `--explain` view;
+/// the default `render_summary` does not consume them, so the default output is
+/// unchanged.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct DecisionScanSummary {
     pub target: String,
@@ -55,6 +80,13 @@ pub(crate) struct DecisionScanSummary {
     pub elapsed_ms: u64,
     pub limit_exceeded: Option<String>,
     pub experience_records: usize,
+    /// Explain view: hypotheses the runtime maintained, sorted for stability.
+    pub hypotheses: Vec<HypothesisView>,
+    /// Explain view: every planning turn, in order.
+    pub planning: Vec<PlanningView>,
+    /// Explain view: `(action_id, stable origin label)` for each wire dispatch, in
+    /// dispatch order (includes the bootstrap probe).
+    pub dispatched: Vec<(String, &'static str)>,
 }
 
 /// Preview budget. `max_response_bytes` is a **cumulative session threshold**, not
@@ -120,6 +152,61 @@ pub(crate) async fn run_decision_scan(target: Url) -> Result<DecisionScanSummary
         }
     }
 
+    // Explain view: every planning turn's eligible/excluded actions with reasons.
+    let planning: Vec<PlanningView> = report
+        .planning_reports()
+        .map(|planning| PlanningView {
+            eligible: planning
+                .plan()
+                .steps()
+                .iter()
+                .map(|step| step.action_id().to_string())
+                .collect(),
+            excluded: planning
+                .plan()
+                .excluded()
+                .iter()
+                .map(|excluded| {
+                    (
+                        excluded.action_id().to_string(),
+                        exclusion_reason_code(excluded.reason()),
+                    )
+                })
+                .collect(),
+        })
+        .collect();
+
+    // Explain view: what actually hit the wire, distinct from what was planned.
+    let dispatched: Vec<(String, &'static str)> = report
+        .transport()
+        .receipts()
+        .iter()
+        .map(|receipt| {
+            (
+                receipt.action_id().to_string(),
+                origin_code(receipt.origin()),
+            )
+        })
+        .collect();
+
+    // Explain view: hypotheses the runtime maintained, sorted for stability.
+    let snapshot = runtime.knowledge().snapshot_for_subject(runtime.subject());
+    let mut hypotheses: Vec<HypothesisView> = snapshot
+        .hypotheses()
+        .iter()
+        .map(|hypothesis| HypothesisView {
+            predicate: hypothesis.predicate().dotted(),
+            value: value_text(hypothesis.value()),
+            strength: hypothesis_strength_code(hypothesis.strength()),
+            posterior_percent: (hypothesis.posterior().ratio() * 100.0).round() as u8,
+            state: hypothesis_state_code(hypothesis.state()),
+        })
+        .collect();
+    hypotheses.sort_by(|left, right| {
+        (left.predicate.as_str(), left.value.as_str())
+            .cmp(&(right.predicate.as_str(), right.value.as_str()))
+    });
+
     let (terminal, stop_reason) = terminal_code(report.terminal());
     let usage = report.usage();
     Ok(DecisionScanSummary {
@@ -138,6 +225,9 @@ pub(crate) async fn run_decision_scan(target: Url) -> Result<DecisionScanSummary
         elapsed_ms: usage.elapsed_ms(),
         limit_exceeded: report.limit_exceeded().map(|limit| limit.to_string()),
         experience_records: runtime.experience().len(),
+        hypotheses,
+        planning,
+        dispatched,
     })
 }
 
@@ -181,6 +271,67 @@ fn terminal_code(command: &DecisionLoopCommand) -> (&'static str, Option<&'stati
         DecisionLoopCommand::AwaitHumanReview { .. } => ("await_human_review", None),
         DecisionLoopCommand::Halt { reason } => ("halt", Some(stop_reason_code(reason))),
         _ => ("other", None),
+    }
+}
+
+/// Stable snake_case label for a hypothesis strength. `HypothesisStrength` is
+/// `#[non_exhaustive]`, so an unrecognized variant maps to `other`.
+fn hypothesis_strength_code(strength: HypothesisStrength) -> &'static str {
+    match strength {
+        HypothesisStrength::Weak => "weak",
+        HypothesisStrength::Strong => "strong",
+        _ => "other",
+    }
+}
+
+/// Stable snake_case label for a hypothesis lifecycle state. `HypothesisState` is
+/// `#[non_exhaustive]`, so an unrecognized variant maps to `other`.
+fn hypothesis_state_code(state: HypothesisState) -> &'static str {
+    match state {
+        HypothesisState::Proposed => "proposed",
+        HypothesisState::Supported => "supported",
+        HypothesisState::Contradicted => "contradicted",
+        HypothesisState::Confirmed => "confirmed",
+        HypothesisState::Rejected => "rejected",
+        _ => "other",
+    }
+}
+
+/// Stable snake_case label for why the planner excluded an action. `ExclusionReason`
+/// is `#[non_exhaustive]`; the variants' payloads are intentionally not rendered.
+fn exclusion_reason_code(reason: &ExclusionReason) -> &'static str {
+    match reason {
+        ExclusionReason::PolicySuppressed => "policy_suppressed",
+        ExclusionReason::DefenseSuppressed => "defense_suppressed",
+        ExclusionReason::RequirementsNotMet => "requirements_not_met",
+        ExclusionReason::NoEligibleHypothesis => "no_eligible_hypothesis",
+        ExclusionReason::RiskLimitExceeded { .. } => "risk_limit_exceeded",
+        ExclusionReason::BelowMinimumUtility { .. } => "below_minimum_utility",
+        ExclusionReason::DependencyUnavailable { .. } => "dependency_unavailable",
+        ExclusionReason::BudgetExceeded { .. } => "budget_exceeded",
+        _ => "other",
+    }
+}
+
+/// Stable snake_case label for a wire dispatch's origin. `DecisionActionOrigin` is
+/// `#[non_exhaustive]`, so an unrecognized variant maps to `other`.
+fn origin_code(origin: Option<DecisionActionOrigin>) -> &'static str {
+    match origin {
+        Some(DecisionActionOrigin::Bootstrap) => "bootstrap",
+        Some(DecisionActionOrigin::Planned) => "planned",
+        Some(DecisionActionOrigin::Retry) => "retry",
+        Some(_) => "other",
+        None => "none",
+    }
+}
+
+/// Renders a hypothesis value for display. Standard web hypotheses are textual;
+/// any non-text value is rendered as a stable placeholder rather than a `Debug`
+/// dump.
+fn value_text(value: &EvidenceValue) -> String {
+    match value {
+        EvidenceValue::Text(text) => text.clone(),
+        _ => "(non-text value)".to_string(),
     }
 }
 
@@ -228,5 +379,52 @@ pub(crate) fn render_summary(summary: &DecisionScanSummary) -> String {
         "experience records: {}\n",
         summary.experience_records
     ));
+    out
+}
+
+/// Render the full explainable decision chain on top of [`render_summary`]:
+/// hypotheses -> planning (planned steps and excluded actions with the exact
+/// reason) -> dispatched actions with origin -> verification outcomes -> terminal.
+/// Like [`render_summary`] it never labels an outcome a vulnerability and never
+/// dumps `Debug`; every runtime term is a stable snake_case label.
+pub(crate) fn render_explain(summary: &DecisionScanSummary) -> String {
+    let mut out = render_summary(summary);
+    out.push_str("\n-- explain --\n");
+
+    out.push_str(&format!("hypotheses: {}\n", summary.hypotheses.len()));
+    if summary.hypotheses.is_empty() {
+        out.push_str("  (none — no reasoning rule matched the bootstrap evidence)\n");
+    }
+    for hypothesis in &summary.hypotheses {
+        out.push_str(&format!(
+            "  hypothesis: {}={} strength={} posterior={}% state={}\n",
+            hypothesis.predicate,
+            hypothesis.value,
+            hypothesis.strength,
+            hypothesis.posterior_percent,
+            hypothesis.state,
+        ));
+    }
+
+    out.push_str(&format!("planning turns: {}\n", summary.planning.len()));
+    for (index, turn) in summary.planning.iter().enumerate() {
+        out.push_str(&format!(
+            "  turn {index}: {} planned, {} excluded\n",
+            turn.eligible.len(),
+            turn.excluded.len()
+        ));
+        for action in &turn.eligible {
+            out.push_str(&format!("    planned: {action}\n"));
+        }
+        for (action, reason) in &turn.excluded {
+            out.push_str(&format!("    excluded: {action} reason={reason}\n"));
+        }
+    }
+
+    out.push_str(&format!("dispatched: {}\n", summary.dispatched.len()));
+    for (action, origin) in &summary.dispatched {
+        out.push_str(&format!("  dispatched: {action} origin={origin}\n"));
+    }
+
     out
 }
