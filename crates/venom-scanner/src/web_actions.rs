@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 pub const STANDARD_WEB_ACTION_COUNT: usize = 9;
 
 /// Number of semantic actions supported by the built-in discovery capability.
-pub const STANDARD_WEB_DISCOVERY_ACTION_COUNT: usize = 5;
+pub const STANDARD_WEB_DISCOVERY_ACTION_COUNT: usize = 6;
 
 /// Stable semantic action kinds shared by standard web profiles.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -69,6 +69,7 @@ impl StandardWebActionKind {
     /// verification.
     pub const fn discovery() -> [Self; STANDARD_WEB_DISCOVERY_ACTION_COUNT] {
         [
+            Self::NginxConfiguration,
             Self::LaravelRouteDiscovery,
             Self::LivewireComponentDiscovery,
             Self::SanctumAuthBoundary,

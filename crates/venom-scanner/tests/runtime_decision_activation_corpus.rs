@@ -21,12 +21,16 @@
 //!   halting with `no_eligible_action`.
 //! * **Positive activation fixtures** deliberately trip the built-in reasoning
 //!   rules. They fall into three truthful classes:
-//!   * **Capability gap:** `nginx` / `apache` / `php` create a hypothesis but their
+//!   * **Capability gap:** `apache` / `php` create a hypothesis but their
 //!     planner action is always excluded as `policy_suppressed` because no
 //!     built-in discovery executor routes them — visible gap, not a runtime bug.
-//!   * **Executor-backed end to end:** `http-basic` / `http-bearer` / `livewire`
-//!     run reasoning -> planning -> execution -> verification to a terminal
-//!     verification outcome (Success / complete) without adding any capability.
+//!   * **Executor-backed end to end:** `nginx` / `http-basic` / `http-bearer` /
+//!     `livewire` run reasoning -> planning -> execution -> verification to a
+//!     terminal verification outcome (Success / complete) without adding any
+//!     capability. nginx succeeds only on a version-bearing `Server` disclosure
+//!     (`nginx/<version>`); a bare `Server: nginx` gates the action but its probe
+//!     resolves to `unknown` and defers to human review, and a blocked status
+//!     (401/403/429) resolves to `blocked` even when a version is disclosed.
 //!   * **Activated but not executed end to end:** Laravel route discovery is
 //!     dispatched but resolves to `needs_review` and defers to human review;
 //!     Sanctum is activated and planned but **never dispatched**, because the same
@@ -472,10 +476,11 @@ fn bearer() -> &'static str {
     StandardWebActionKind::HttpBearerAuthBoundary.action_id()
 }
 
-/// The four semantic actions with no built-in discovery executor. Always excluded
-/// as `policy_suppressed`, independent of what a fixture discloses.
+/// The three semantic actions with no built-in discovery executor. Always excluded
+/// as `policy_suppressed`, independent of what a fixture discloses. nginx is no
+/// longer here: it is now an executor-backed route.
 fn expected_unsupported() -> BTreeSet<String> {
-    [nginx(), apache(), php(), laravel_input()]
+    [apache(), php(), laravel_input()]
         .into_iter()
         .map(str::to_owned)
         .collect()
@@ -672,35 +677,6 @@ async fn repeated_identical_response_is_deterministic() {
 // --- Positive activation fixtures: capability gap (policy-suppressed) ---------
 
 #[tokio::test]
-async fn server_nginx_activates_a_hypothesis_but_is_policy_suppressed() {
-    let observation = observe_instant(response(
-        "200 OK",
-        &["Server: nginx", "Content-Type: text/html"],
-        b"hi",
-    ))
-    .await;
-
-    assert_universal(&observation);
-    assert!(observation.evidence.contains("http.header.server"));
-    assert_eq!(observation.hypotheses.len(), 1);
-    let hypothesis = &observation.hypotheses[0];
-    assert_eq!(hypothesis.predicate, "technology.web-server");
-    assert_eq!(hypothesis.value, "nginx");
-    assert_eq!(hypothesis.strength, HypothesisStrength::Weak);
-    // Recognized action, but no executor route -> excluded, nothing dispatched
-    // beyond bootstrap, no outcome, one request.
-    assert_eq!(
-        initial_exclusion(&observation, nginx()),
-        Some("policy_suppressed")
-    );
-    assert!(initial_eligible(&observation).is_empty());
-    assert!(planned_dispatched(&observation).is_empty());
-    assert!(observation.outcomes.is_empty());
-    assert_eq!(observation.terminal, "halt:no_eligible_action");
-    assert_eq!(observation.total_requests, 1);
-}
-
-#[tokio::test]
 async fn server_apache_activates_a_hypothesis_but_is_policy_suppressed() {
     let observation = observe_instant(response(
         "200 OK",
@@ -753,6 +729,124 @@ async fn powered_by_php_activates_a_hypothesis_but_is_policy_suppressed() {
 }
 
 // --- Positive activation fixtures: supported end-to-end paths -----------------
+
+#[tokio::test]
+async fn server_nginx_version_disclosure_drives_a_supported_success() {
+    // A version-bearing `Server: nginx/<version>` token is the positive signal:
+    // the HEAD probe reads it and the objective completes. Bootstrap GET + passive
+    // HEAD, one Success outcome, no active verification.
+    let observation = observe_instant(response(
+        "200 OK",
+        &["Server: nginx/1.26.0", "Content-Type: text/html"],
+        b"hi",
+    ))
+    .await;
+
+    assert_universal(&observation);
+    assert!(observation.evidence.contains("http.header.server"));
+    assert_eq!(observation.hypotheses.len(), 1);
+    let hypothesis = &observation.hypotheses[0];
+    assert_eq!(hypothesis.predicate, "technology.web-server");
+    assert_eq!(hypothesis.value, "nginx");
+    assert_eq!(hypothesis.strength, HypothesisStrength::Weak);
+    // nginx is now an executor-backed route: planned, not excluded, dispatched.
+    assert_eq!(initial_eligible(&observation), [nginx().to_owned()]);
+    assert_eq!(initial_exclusion(&observation, nginx()), None);
+    assert_eq!(planned_dispatched(&observation), vec![nginx().to_owned()]);
+    assert_eq!(
+        observation.outcomes,
+        vec![(nginx().to_owned(), "success".to_owned())]
+    );
+    assert_eq!(observation.terminal, "complete");
+    assert_eq!(observation.total_requests, 2);
+    assert_eq!(observation.active_verifications, 0);
+    assert_eq!(
+        observation.methods,
+        vec!["GET".to_owned(), "HEAD".to_owned()]
+    );
+}
+
+#[tokio::test]
+async fn bare_server_nginx_dispatches_but_defers_to_human_review() {
+    // A bare `Server: nginx` (server_tokens off) gates the action but carries no
+    // version, so the version-disclosure signal never fires. The probe therefore
+    // resolves to `unknown` (passive then active) and defers to human review; it
+    // is NEVER promoted to success. This is the anti-circularity guarantee: the
+    // token that gates the action cannot by itself confirm it.
+    let observation = observe_instant(response(
+        "200 OK",
+        &["Server: nginx", "Content-Type: text/html"],
+        b"hi",
+    ))
+    .await;
+
+    assert_universal(&observation);
+    assert!(observation.evidence.contains("http.header.server"));
+    assert_eq!(observation.hypotheses.len(), 1);
+    assert_eq!(observation.hypotheses[0].predicate, "technology.web-server");
+    assert_eq!(observation.hypotheses[0].value, "nginx");
+    // Dispatched (executor-backed) but never a success outcome.
+    assert_eq!(initial_eligible(&observation), [nginx().to_owned()]);
+    assert_eq!(initial_exclusion(&observation, nginx()), None);
+    assert_eq!(
+        planned_dispatched(&observation),
+        vec![nginx().to_owned(), nginx().to_owned()]
+    );
+    assert_eq!(
+        observation.outcomes,
+        vec![
+            (nginx().to_owned(), "unknown".to_owned()),
+            (nginx().to_owned(), "unknown".to_owned()),
+        ]
+    );
+    assert!(
+        !observation
+            .outcomes
+            .iter()
+            .any(|(_, status)| status == "success"),
+        "a bare product token must never be promoted to success: {:?}",
+        observation.outcomes
+    );
+    assert_eq!(observation.terminal, "await_human_review");
+    assert_eq!(observation.total_requests, 3);
+    assert_eq!(observation.active_verifications, 1);
+    assert_eq!(
+        observation.methods,
+        vec!["GET".to_owned(), "HEAD".to_owned(), "HEAD".to_owned()]
+    );
+}
+
+#[tokio::test]
+async fn blocked_nginx_probe_reports_blocked_even_with_a_version() {
+    // A denying status (403) follows the shared blocked rule and outranks the
+    // version-disclosure signal: even though the response discloses a version,
+    // the outcome is `blocked`, not `success`. Blocked is terminal for
+    // verification, so there is no active retry.
+    let observation = observe_instant(response(
+        "403 Forbidden",
+        &["Server: nginx/1.26.0", "Content-Type: text/html"],
+        b"forbidden",
+    ))
+    .await;
+
+    assert_universal(&observation);
+    assert!(observation.evidence.contains("http.header.server"));
+    assert_eq!(observation.hypotheses.len(), 1);
+    assert_eq!(observation.hypotheses[0].value, "nginx");
+    assert_eq!(initial_eligible(&observation), [nginx().to_owned()]);
+    assert_eq!(planned_dispatched(&observation), vec![nginx().to_owned()]);
+    assert_eq!(
+        observation.outcomes,
+        vec![(nginx().to_owned(), "blocked".to_owned())]
+    );
+    assert_eq!(observation.terminal, "await_human_review");
+    assert_eq!(observation.total_requests, 2);
+    assert_eq!(observation.active_verifications, 0);
+    assert_eq!(
+        observation.methods,
+        vec!["GET".to_owned(), "HEAD".to_owned()]
+    );
+}
 
 #[tokio::test]
 async fn www_authenticate_basic_drives_a_supported_success() {

@@ -27,7 +27,7 @@ use crate::{
 };
 
 /// Number of passive and active rules installed by the standard profile.
-pub const STANDARD_WEB_VERIFICATION_RULE_COUNT: usize = 20;
+pub const STANDARD_WEB_VERIFICATION_RULE_COUNT: usize = 24;
 
 /// Failures while constructing or atomically installing standard web rules.
 #[derive(Debug, Error)]
@@ -254,8 +254,26 @@ fn signal_rule(
             99,
             "WWW-Authenticate explicitly advertises HTTP Bearer for this request",
         ),
-        StandardWebActionKind::NginxConfiguration
-        | StandardWebActionKind::ApacheConfiguration
+        // The nginx configuration signal fires only on a version-bearing Server
+        // token (`nginx/<version>`); the `/` delimiter is exactly what nginx
+        // emits when `server_tokens` is on, and a bare `Server: nginx`
+        // (`server_tokens off`) carries no `/` and therefore never matches. The
+        // bare product token remains a gating fingerprint only, so the executor
+        // cannot re-read its own gating signal and self-confirm. Priority is
+        // below the blocked rule (800) so 401/403/429 stay Blocked even when the
+        // denying response also discloses a version.
+        StandardWebActionKind::NginxConfiguration => (
+            Expression::text_contains_ascii_case_insensitive(
+                KnowledgeLayer::Evidence,
+                HttpEvidencePredicate::HEADER_SERVER.into(),
+                "nginx/",
+            )?,
+            OutcomeStatus::Success,
+            600,
+            90,
+            "The Server header discloses a specific nginx version",
+        ),
+        StandardWebActionKind::ApacheConfiguration
         | StandardWebActionKind::PhpInputDiscovery
         | StandardWebActionKind::LaravelInputAnalysis => {
             return Err(StandardWebVerificationError::UnsupportedAction { action: kind });
@@ -378,15 +396,15 @@ mod tests {
         let first = profile.install(&mut pipeline).unwrap();
         let second = profile.install(&mut pipeline).unwrap();
 
-        assert_eq!(first.passive_rules_inserted(), 10);
-        assert_eq!(first.active_rules_inserted(), 10);
+        assert_eq!(first.passive_rules_inserted(), 12);
+        assert_eq!(first.active_rules_inserted(), 12);
         assert_eq!(
             first.total_rules_inserted(),
             STANDARD_WEB_VERIFICATION_RULE_COUNT
         );
         assert_eq!(second, StandardWebVerificationInstallReport::default());
-        assert_eq!(pipeline.passive().len(), 10);
-        assert_eq!(pipeline.active().len(), 10);
+        assert_eq!(pipeline.passive().len(), 12);
+        assert_eq!(pipeline.active().len(), 12);
     }
 
     #[test]
@@ -558,6 +576,84 @@ mod tests {
                 .fresh_evidence_ids()
                 .len(),
             1
+        );
+    }
+
+    #[test]
+    fn nginx_version_disclosure_succeeds_but_bare_token_and_blocked_do_not() {
+        let kind = StandardWebActionKind::NginxConfiguration;
+        let pipeline = pipeline();
+
+        // A version-bearing Server token is the positive signal -> Success.
+        let versioned = case("case:nginx-versioned", kind);
+        let versioned_knowledge = knowledge();
+        versioned_knowledge
+            .insert_evidence(evidence(
+                &versioned,
+                "http.header",
+                "server",
+                EvidenceValue::Text("nginx/1.26.0".to_owned()),
+            ))
+            .unwrap();
+        assert_eq!(
+            pipeline
+                .passive()
+                .verify(&versioned_knowledge, &versioned)
+                .unwrap()
+                .outcome()
+                .status(),
+            OutcomeStatus::Success
+        );
+
+        // A bare product token carries no version, matches no signal, and is
+        // never promoted to success (the gating token cannot self-confirm).
+        let bare = case("case:nginx-bare", kind);
+        let bare_knowledge = knowledge();
+        bare_knowledge
+            .insert_evidence(evidence(
+                &bare,
+                "http.header",
+                "server",
+                EvidenceValue::Text("nginx".to_owned()),
+            ))
+            .unwrap();
+        assert_eq!(
+            pipeline
+                .passive()
+                .verify(&bare_knowledge, &bare)
+                .unwrap()
+                .outcome()
+                .status(),
+            OutcomeStatus::Unknown
+        );
+
+        // A denying status outranks the version disclosure -> Blocked.
+        let blocked = case("case:nginx-blocked", kind);
+        let blocked_knowledge = knowledge();
+        blocked_knowledge
+            .insert_evidence_batch(vec![
+                evidence(
+                    &blocked,
+                    "http.response",
+                    "status",
+                    EvidenceValue::Unsigned(403),
+                ),
+                evidence(
+                    &blocked,
+                    "http.header",
+                    "server",
+                    EvidenceValue::Text("nginx/1.26.0".to_owned()),
+                ),
+            ])
+            .unwrap();
+        assert_eq!(
+            pipeline
+                .passive()
+                .verify(&blocked_knowledge, &blocked)
+                .unwrap()
+                .outcome()
+                .status(),
+            OutcomeStatus::Blocked
         );
     }
 
