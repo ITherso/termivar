@@ -177,6 +177,37 @@ All string enums are closed vocabularies with a `other` catch-all so an
 unrecognized upstream variant degrades to a stable, non-`Debug` token rather than
 leaking type internals or breaking parsing.
 
+## Consumer safety guidance
+
+`decision-scan/v1` is an **operational-diagnostics** contract. It reports what the
+runtime observed, planned, dispatched, and verified — **not** security findings or
+vulnerabilities. When building automation on it:
+
+- **Read `hypotheses[].value` only when `value_disposition == "exposed"`.** For any
+  other disposition the value is withheld (`null`); do not treat a missing value as
+  an error, and do not read `value` unconditionally.
+- **A planned action is not necessarily dispatched.** To learn whether an action
+  actually ran, compare `planning_turns[].planned` against `dispatches[].action_id`
+  — an action can be planned but deferred (e.g. behind human review) and never
+  dispatched.
+- **`status == "success"`, `state == "confirmed"`, and `conclusive == true` are
+  verification semantics, not finding or vulnerability semantics.** A conclusive or
+  successful verification means the runtime reached a definite answer about a
+  detection (e.g. "this endpoint advertises HTTP Basic authentication", or "this
+  page contains a Livewire marker") — it does **not** mean a reportable security
+  issue.
+  Detecting a technology or an authentication mechanism is not itself a
+  vulnerability.
+- **`confirmed_negative` is also `conclusive == true`.** A definitive negative is
+  conclusive too, so `conclusive` alone cannot gate any finding.
+- **`redacted`, `non_scalar`, and `other` value dispositions, and the
+  `confirmed_negative`, `blocked`, `needs_review`, and `false_positive` outcome
+  statuses, may appear** even though the current standard fixture corpus does not
+  emit all of them. Handle every documented enum value.
+
+Turning these diagnostics into findings is the job of a separate, explicit
+projection layer — not of a consumer inferring findings from these fields.
+
 ## Versioning policy
 
 `schema_version` changes only on a **breaking** change. Within `v1`, changes are
