@@ -30,32 +30,36 @@ use venom_scanner::{
     RuntimeBudgetDimension, StandardWebDecisionRuntime, StandardWebDecisionRuntimeTurn,
 };
 
-/// One hypothesis the runtime maintained. The posterior is stored as basis points
-/// (0..=10000) — the single numeric source of truth; text renders a whole-percent
-/// display derived from it. `value` is the scalar string form of the hypothesis
-/// value (present for text/boolean/integer kinds, absent for list/unknown kinds);
-/// `value_kind` names the underlying `EvidenceValue` variant. No value ever reaches
-/// output through Rust `Debug`.
+/// One hypothesis the runtime maintained. `posterior_basis_points` (0..=10000) and
+/// `posterior_percent` are each derived directly from the upstream typed
+/// probability — never one from the other — so the text percent matches the legacy
+/// single-stage rounding exactly. `value` is the scalar string form of the value
+/// (present only when the machine-output safety policy exposes it); `value_kind`
+/// names the underlying `EvidenceValue` variant; `value_disposition` records the
+/// safety decision. No value ever reaches output through Rust `Debug`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct HypothesisView {
     pub predicate: String,
     pub value: Option<String>,
     pub value_kind: &'static str,
+    pub value_disposition: &'static str,
     pub strength: &'static str,
     pub posterior_basis_points: u16,
+    pub posterior_percent: u16,
     pub state: &'static str,
 }
 
 impl HypothesisView {
-    /// Whole-percent display derived from the basis-point source of truth.
-    pub fn posterior_percent(&self) -> u16 {
-        (f64::from(self.posterior_basis_points) / 100.0).round() as u16
-    }
-
-    /// Text display of the value, with a stable placeholder for a non-scalar or
-    /// unknown value kind. Never a `Debug` dump.
+    /// Text display of the value, with a stable placeholder when the safety policy
+    /// withheld it or the value is non-scalar/unknown. Never a `Debug` dump.
     pub fn value_display(&self) -> &str {
-        self.value.as_deref().unwrap_or("(non-scalar value)")
+        self.value
+            .as_deref()
+            .unwrap_or(match self.value_disposition {
+                "redacted" => "(redacted)",
+                "non_scalar" => "(non-scalar value)",
+                _ => "(unavailable value)",
+            })
     }
 }
 
@@ -130,7 +134,12 @@ pub(crate) struct DecisionScanSummary {
     pub active_verifications: u64,
     pub response_bytes: u64,
     pub elapsed_ms: u64,
+    /// Typed runtime-budget stop for the machine surface.
     pub limit_exceeded: Option<RuntimeLimitView>,
+    /// Legacy human sentence for the text surface (the exact `RuntimeLimitExceeded`
+    /// Display), preserved so default text output is byte-for-byte unchanged. Never
+    /// serialized to JSON.
+    pub limit_exceeded_text: Option<String>,
     pub experience_records: usize,
     /// Explain view: hypotheses the runtime maintained, sorted for stability.
     pub hypotheses: Vec<HypothesisView>,
@@ -258,13 +267,19 @@ pub(crate) async fn run_decision_scan(target: Url) -> Result<DecisionScanSummary
         .hypotheses()
         .iter()
         .map(|hypothesis| {
-            let (value_kind, value) = evidence_value(hypothesis.value());
+            let predicate = hypothesis.predicate().dotted();
+            let (value_kind, value, value_disposition) =
+                hypothesis_value(&predicate, hypothesis.value());
+            let (posterior_basis_points, posterior_percent) =
+                posterior_pair(hypothesis.posterior().ratio());
             HypothesisView {
-                predicate: hypothesis.predicate().dotted(),
+                predicate,
                 value,
                 value_kind,
+                value_disposition,
                 strength: hypothesis_strength_code(hypothesis.strength()),
-                posterior_basis_points: (hypothesis.posterior().ratio() * 10_000.0).round() as u16,
+                posterior_basis_points,
+                posterior_percent,
                 state: hypothesis_state_code(hypothesis.state()),
             }
         })
@@ -302,6 +317,8 @@ pub(crate) async fn run_decision_scan(target: Url) -> Result<DecisionScanSummary
             observed: limit.observed(),
             action_id: limit.action_id().map(str::to_owned),
         }),
+        // The exact legacy human sentence, for byte-for-byte text output.
+        limit_exceeded_text: report.limit_exceeded().map(|limit| limit.to_string()),
         experience_records: runtime.experience().len(),
         hypotheses,
         planning,
@@ -430,6 +447,18 @@ fn dispatch_label(dispatch: &DispatchView) -> &'static str {
     }
 }
 
+/// Predicates whose scalar value is safe to expose in output. The standard web
+/// reasoning profile produces only these; a value under any other predicate is
+/// withheld (fail-closed), so a future rule cannot leak a token, cookie, or other
+/// sensitive text through the hypothesis value.
+const EXPOSABLE_HYPOTHESIS_PREDICATES: [&str; 5] = [
+    "authentication.mechanism",
+    "technology.framework",
+    "technology.language",
+    "technology.ui-framework",
+    "technology.web-server",
+];
+
 /// Explicit, stable mapping from an `EvidenceValue` to `(value_kind, scalar
 /// value)`. Every current variant has a hand-written mapping and the wildcard is a
 /// fail-closed fallback for a future `#[non_exhaustive]` variant — no value ever
@@ -443,6 +472,37 @@ fn evidence_value(value: &EvidenceValue) -> (&'static str, Option<String>) {
         EvidenceValue::Unsigned(number) => ("unsigned", Some(number.to_string())),
         EvidenceValue::TextList(_) => ("text_list", None),
         _ => ("other", None),
+    }
+}
+
+/// Derives `(posterior_basis_points, posterior_percent)` directly from the
+/// probability ratio. Each is a single-stage round of the same source, so the
+/// percent never double-rounds through the basis points (which would drift by a
+/// point at some boundaries) and matches the legacy text rounding exactly.
+fn posterior_pair(ratio: f64) -> (u16, u16) {
+    (
+        (ratio * 10_000.0).round() as u16,
+        (ratio * 100.0).round() as u16,
+    )
+}
+
+/// Machine-output safety policy for a hypothesis value: returns `(value_kind,
+/// exposed value, disposition)`. A scalar value is exposed only under an
+/// allowlisted safe predicate; otherwise it is withheld (`redacted`, value
+/// `None`). A non-scalar list is `non_scalar`; an unknown value kind is `other`.
+/// This is fail-closed: an unknown predicate never exposes its value.
+fn hypothesis_value(
+    predicate: &str,
+    value: &EvidenceValue,
+) -> (&'static str, Option<String>, &'static str) {
+    let (kind, scalar) = evidence_value(value);
+    match scalar {
+        Some(text) if EXPOSABLE_HYPOTHESIS_PREDICATES.contains(&predicate) => {
+            (kind, Some(text), "exposed")
+        },
+        Some(_) => (kind, None, "redacted"),
+        None if kind == "text_list" => (kind, None, "non_scalar"),
+        None => (kind, None, "other"),
     }
 }
 
@@ -492,17 +552,13 @@ pub(crate) fn render_summary(summary: &DecisionScanSummary) -> String {
     if let Some(reason) = summary.stop_reason {
         out.push_str(&format!("stop_reason: {reason}\n"));
     }
-    if let Some(limit) = &summary.limit_exceeded {
-        // Human sentence derived from the typed limit view (the JSON carries the
-        // structured object, not this string).
+    if let Some(text) = &summary.limit_exceeded_text {
+        // The exact legacy human sentence (the JSON carries the structured object
+        // instead). Preserved verbatim so default text output is byte-for-byte
+        // unchanged.
         out.push_str(&format!(
-            "runtime limit reached (controlled stop): {} limit {} observed {}",
-            limit.dimension, limit.limit, limit.observed
+            "runtime limit reached (controlled stop): {text}\n"
         ));
-        if let Some(action_id) = &limit.action_id {
-            out.push_str(&format!(" by {action_id}"));
-        }
-        out.push('\n');
     }
     out.push_str(&format!(
         "usage: requests={} active_verifications={} response_bytes={} elapsed_ms={}\n",
@@ -557,8 +613,7 @@ pub(crate) fn render_explain(summary: &DecisionScanSummary) -> String {
         out.push_str(&format!("    {:<9}: {}\n", "strength", hypothesis.strength));
         out.push_str(&format!(
             "    {:<9}: {}%\n",
-            "posterior",
-            hypothesis.posterior_percent()
+            "posterior", hypothesis.posterior_percent
         ));
         out.push_str(&format!("    {:<9}: {}\n", "state", hypothesis.state));
     }
@@ -657,11 +712,15 @@ struct JsonExecutorRoutes<'a> {
 #[derive(Serialize)]
 struct JsonHypothesis<'a> {
     predicate: &'a str,
-    /// Scalar string form of the value, or `null` for a list/unknown kind.
+    /// Scalar string form of the value, or `null` when withheld by the safety
+    /// policy or when the kind is non-scalar/unknown.
     value: Option<&'a str>,
     /// The `EvidenceValue` variant: `text` / `boolean` / `signed` / `unsigned` /
     /// `text_list` / `other`.
     value_kind: &'a str,
+    /// The machine-output safety decision: `exposed` / `redacted` / `non_scalar` /
+    /// `other`. `value` is non-null only when `exposed`.
+    value_disposition: &'a str,
     strength: &'a str,
     posterior_basis_points: u16,
     state: &'a str,
@@ -749,6 +808,7 @@ pub(crate) fn render_json(summary: &DecisionScanSummary) -> Result<String, serde
                 predicate: &hypothesis.predicate,
                 value: hypothesis.value.as_deref(),
                 value_kind: hypothesis.value_kind,
+                value_disposition: hypothesis.value_disposition,
                 strength: hypothesis.strength,
                 posterior_basis_points: hypothesis.posterior_basis_points,
                 state: hypothesis.state,
@@ -808,4 +868,71 @@ pub(crate) fn render_json(summary: &DecisionScanSummary) -> Result<String, serde
         },
     };
     serde_json::to_string_pretty(&document)
+}
+
+#[cfg(test)]
+mod tests {
+    use venom_core::EvidenceValue;
+
+    use super::{hypothesis_value, posterior_pair};
+
+    #[test]
+    fn posterior_percent_uses_single_stage_rounding() {
+        // A ratio where two-stage rounding (percent from basis points) would
+        // disagree with the legacy single-stage round of the ratio.
+        let (basis_points, percent) = posterior_pair(0.944_96);
+        assert_eq!(basis_points, 9450);
+        assert_eq!(
+            percent, 94,
+            "percent must round the ratio, not the basis points"
+        );
+        // Double-rounding the basis points would wrongly yield 95.
+        assert_ne!((f64::from(basis_points) / 100.0).round() as u16, percent);
+    }
+
+    #[test]
+    fn known_safe_hypothesis_values_remain_exposed() {
+        let (kind, value, disposition) = hypothesis_value(
+            "authentication.mechanism",
+            &EvidenceValue::Text("http-basic".to_owned()),
+        );
+        assert_eq!(kind, "text");
+        assert_eq!(value.as_deref(), Some("http-basic"));
+        assert_eq!(disposition, "exposed");
+    }
+
+    #[test]
+    fn unknown_text_hypothesis_is_redacted() {
+        // A text value under a predicate outside the allowlist is withheld.
+        let (kind, value, disposition) = hypothesis_value(
+            "secret.session-token",
+            &EvidenceValue::Text("s3cr3t-value".to_owned()),
+        );
+        assert_eq!(kind, "text");
+        assert_eq!(value, None, "the value must be withheld");
+        assert_eq!(disposition, "redacted");
+    }
+
+    #[test]
+    fn credential_like_hypothesis_never_reaches_output() {
+        // Even a cookie/token-looking value under an unknown predicate never leaves
+        // the boundary: no exposed value carries the secret text.
+        let secret = "Bearer eyJhbGciOiJIUzI1NiJ9.payload.sig";
+        let (_, value, disposition) =
+            hypothesis_value("http.cookie.value", &EvidenceValue::Text(secret.to_owned()));
+        assert_eq!(disposition, "redacted");
+        assert!(value.is_none());
+        assert_ne!(value.as_deref(), Some(secret));
+    }
+
+    #[test]
+    fn non_scalar_and_unknown_value_kinds_are_withheld() {
+        let (kind, value, disposition) = hypothesis_value(
+            "technology.framework",
+            &EvidenceValue::TextList(vec!["a".to_owned(), "b".to_owned()]),
+        );
+        assert_eq!(kind, "text_list");
+        assert_eq!(value, None);
+        assert_eq!(disposition, "non_scalar");
+    }
 }
