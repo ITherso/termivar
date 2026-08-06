@@ -473,13 +473,16 @@ mod tests {
             response_bytes: 42,
             elapsed_ms: 5,
             limit_exceeded: None,
+            limit_exceeded_text: None,
             experience_records: 1,
             hypotheses: vec![decision_scan::HypothesisView {
                 predicate: "technology.web-server".to_string(),
                 value: Some("nginx".to_string()),
                 value_kind: "text",
+                value_disposition: "exposed",
                 strength: "weak",
                 posterior_basis_points: 8900,
+                posterior_percent: 89,
                 state: "supported",
             }],
             planning: vec![decision_scan::PlanningView {
@@ -627,6 +630,34 @@ mod tests {
             "experience records: 1\n",
         );
         assert_eq!(decision_scan::render_summary(&sample_summary()), expected);
+    }
+
+    #[test]
+    fn runtime_limit_text_matches_the_legacy_display_format() {
+        // The text surface emits the exact legacy `RuntimeLimitExceeded` Display
+        // (which `run_decision_scan` stores verbatim via `.to_string()`); only the
+        // JSON surface uses the structured object. The wall-time dimension keeps
+        // its `wall_time_ms` label in text.
+        let mut summary = sample_summary();
+        summary.limit_exceeded_text =
+            Some("runtime wall_time_ms limit 60000 reached by 60001".to_owned());
+        let rendered = decision_scan::render_summary(&summary);
+        assert!(rendered.contains(
+            "runtime limit reached (controlled stop): runtime wall_time_ms limit 60000 reached by 60001\n"
+        ));
+    }
+
+    #[test]
+    fn runtime_limit_with_action_matches_the_legacy_display_format() {
+        let mut summary = sample_summary();
+        summary.limit_exceeded_text = Some(
+            "runtime response_bytes limit 1048576 reached by 1100000 for action web.action.laravel.route-discovery"
+                .to_owned(),
+        );
+        let rendered = decision_scan::render_summary(&summary);
+        assert!(rendered.contains(
+            "runtime limit reached (controlled stop): runtime response_bytes limit 1048576 reached by 1100000 for action web.action.laravel.route-discovery\n"
+        ));
     }
 
     #[tokio::test]
@@ -850,9 +881,10 @@ mod tests {
         assert_eq!(value["terminal"]["stop_reason"], "no_eligible_action");
         assert!(value["terminal"]["runtime_limit"].is_null());
         assert_eq!(value["usage"]["total_requests"], 3);
-        // Hypothesis value carries an explicit kind alongside the scalar value.
+        // Hypothesis value carries an explicit kind and safety disposition.
         assert_eq!(value["hypotheses"][0]["value"], "nginx");
         assert_eq!(value["hypotheses"][0]["value_kind"], "text");
+        assert_eq!(value["hypotheses"][0]["value_disposition"], "exposed");
         // Never a vulnerability claim, never a Debug dump.
         assert!(!json.to_lowercase().contains("vulnerabilit"));
         assert!(!json.contains("VerificationCase"));
@@ -888,6 +920,7 @@ mod tests {
             "      \"predicate\": \"technology.web-server\",\n",
             "      \"value\": \"nginx\",\n",
             "      \"value_kind\": \"text\",\n",
+            "      \"value_disposition\": \"exposed\",\n",
             "      \"strength\": \"weak\",\n",
             "      \"posterior_basis_points\": 8900,\n",
             "      \"state\": \"supported\"\n",

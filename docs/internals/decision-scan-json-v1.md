@@ -60,11 +60,19 @@ Sorted by `(predicate, value)`.
 | Field | Type | Notes |
 | --- | --- | --- |
 | `predicate` | string | Dotted knowledge predicate, e.g. `authentication.mechanism`. |
-| `value` | string \| null | Scalar string form of the value; `null` for a list/unknown kind. |
+| `value` | string \| null | Scalar string form of the value; `null` unless `value_disposition == "exposed"`. |
 | `value_kind` | string enum | `text` \| `boolean` \| `signed` \| `unsigned` \| `text_list` \| `other`. |
+| `value_disposition` | string enum | `exposed` \| `redacted` \| `non_scalar` \| `other`. The machine-output safety decision (below). |
 | `strength` | string enum | `weak` \| `strong` \| `other`. |
-| `posterior_basis_points` | integer 0..=10000 | Posterior probability in basis points — the single numeric source of truth. Percent is a text-only display derived from it. |
+| `posterior_basis_points` | integer 0..=10000 | Posterior probability in basis points. Basis points and the text-only percent are each rounded directly from the upstream probability (never one from the other). |
 | `state` | string enum | `proposed` \| `supported` \| `contradicted` \| `confirmed` \| `rejected` \| `other`. |
+
+`value_disposition` is a fail-closed safety policy on the hypothesis value: a
+scalar value is `exposed` only under an allowlisted safe predicate (the standard
+web technology/authentication predicates); a scalar under any other predicate is
+`redacted` with `value == null` (so a future rule cannot leak a token, cookie, or
+other sensitive text); a list value is `non_scalar`; an unknown value kind is
+`other`. `value` is non-null only when `exposed`.
 
 ### `planning_turns[]`
 
