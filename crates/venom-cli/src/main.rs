@@ -246,7 +246,10 @@ mod tests {
         match cli.command {
             Some(Commands::DecisionScan { target, explain }) => {
                 assert_eq!(target.as_str(), "https://example.test/");
-                assert!(!explain, "explain must default off so the default output is unchanged");
+                assert!(
+                    !explain,
+                    "explain must default off so the default output is unchanged"
+                );
             },
             _ => panic!("expected the decision-scan command"),
         }
@@ -255,9 +258,13 @@ mod tests {
 
     #[test]
     fn decision_scan_accepts_the_explain_flag() {
-        let cli =
-            Cli::try_parse_from(["venom", "decision-scan", "--explain", "https://example.test/"])
-                .unwrap();
+        let cli = Cli::try_parse_from([
+            "venom",
+            "decision-scan",
+            "--explain",
+            "https://example.test/",
+        ])
+        .unwrap();
         match cli.command {
             Some(Commands::DecisionScan { explain, .. }) => {
                 assert!(explain, "--explain must enable the explain view");

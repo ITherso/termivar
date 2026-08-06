@@ -24,8 +24,8 @@ use std::time::Duration;
 use url::Url;
 use venom_core::{EvidenceValue, HypothesisState, HypothesisStrength};
 use venom_scanner::{
-    DecisionActionOrigin, DecisionLoopCommand, DecisionStopReason, ExclusionReason, HttpBodyCapture,
-    HttpEvidencePolicy, OutcomeStatus, RuntimeBudget, StandardWebDecisionRuntime,
+    DecisionActionOrigin, DecisionLoopCommand, DecisionStopReason, ExclusionReason,
+    HttpBodyCapture, HttpEvidencePolicy, OutcomeStatus, RuntimeBudget, StandardWebDecisionRuntime,
     StandardWebDecisionRuntimeTurn,
 };
 
