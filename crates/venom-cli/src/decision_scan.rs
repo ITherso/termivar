@@ -24,9 +24,9 @@ use std::time::Duration;
 use url::Url;
 use venom_core::{EvidenceValue, HypothesisState, HypothesisStrength};
 use venom_scanner::{
-    DecisionActionOrigin, DecisionLoopCommand, DecisionStopReason, ExclusionReason,
-    HttpBodyCapture, HttpEvidencePolicy, OutcomeStatus, RuntimeBudget, StandardWebDecisionRuntime,
-    StandardWebDecisionRuntimeTurn,
+    DecisionActionOrigin, DecisionExecutionStage, DecisionLoopCommand, DecisionStopReason,
+    ExclusionReason, HttpBodyCapture, HttpEvidencePolicy, OutcomeStatus, RuntimeBudget,
+    StandardWebDecisionRuntime, StandardWebDecisionRuntimeTurn,
 };
 
 /// One hypothesis the runtime maintained, rendered with stable labels for the
@@ -177,6 +177,9 @@ pub(crate) async fn run_decision_scan(target: Url) -> Result<DecisionScanSummary
         .collect();
 
     // Explain view: what actually hit the wire, distinct from what was planned.
+    // The origin label uses both the transport stage and the action origin so an
+    // active-verification probe (which carries no passive origin) is labelled
+    // meaningfully instead of "none".
     let dispatched: Vec<(String, &'static str)> = report
         .transport()
         .receipts()
@@ -184,7 +187,7 @@ pub(crate) async fn run_decision_scan(target: Url) -> Result<DecisionScanSummary
         .map(|receipt| {
             (
                 receipt.action_id().to_string(),
-                origin_code(receipt.origin()),
+                dispatch_origin_label(receipt.stage(), receipt.origin()),
             )
         })
         .collect();
@@ -313,15 +316,27 @@ fn exclusion_reason_code(reason: &ExclusionReason) -> &'static str {
     }
 }
 
-/// Stable snake_case label for a wire dispatch's origin. `DecisionActionOrigin` is
-/// `#[non_exhaustive]`, so an unrecognized variant maps to `other`.
-fn origin_code(origin: Option<DecisionActionOrigin>) -> &'static str {
+/// Stable snake_case label for a wire dispatch, resolved from both the transport
+/// stage and the action origin. An explicit origin is used directly; a dispatch
+/// with no passive origin is disambiguated by its stage, so an active-verification
+/// probe reads `active_verification` rather than the ambiguous `none`. Both
+/// `DecisionActionOrigin` and `DecisionExecutionStage` are `#[non_exhaustive]`, so
+/// unrecognized variants degrade to stable fallbacks.
+fn dispatch_origin_label(
+    stage: DecisionExecutionStage,
+    origin: Option<DecisionActionOrigin>,
+) -> &'static str {
     match origin {
         Some(DecisionActionOrigin::Bootstrap) => "bootstrap",
         Some(DecisionActionOrigin::Planned) => "planned",
+        Some(DecisionActionOrigin::Adaptive) => "adaptive",
         Some(DecisionActionOrigin::Retry) => "retry",
         Some(_) => "other",
-        None => "none",
+        None => match stage {
+            DecisionExecutionStage::Active => "active_verification",
+            DecisionExecutionStage::Passive => "unattributed",
+            _ => "unattributed",
+        },
     }
 }
 
@@ -394,7 +409,7 @@ pub(crate) fn render_explain(summary: &DecisionScanSummary) -> String {
 
     out.push_str(&format!("Hypotheses ({})\n", summary.hypotheses.len()));
     if summary.hypotheses.is_empty() {
-        out.push_str("  (none — no reasoning rule matched the bootstrap evidence)\n");
+        out.push_str("  (no reasoning rule matched the bootstrap evidence)\n");
     }
     for hypothesis in &summary.hypotheses {
         out.push_str(&format!(
@@ -414,26 +429,23 @@ pub(crate) fn render_explain(summary: &DecisionScanSummary) -> String {
     }
     for (index, turn) in summary.planning.iter().enumerate() {
         out.push_str(&format!("Planning (turn {index})\n"));
-        out.push_str("  Planned\n");
-        if turn.eligible.is_empty() {
-            out.push_str("    (none)\n");
-        }
+        // The count in each heading conveys emptiness, so no placeholder line is
+        // needed for an empty section.
+        out.push_str(&format!("  Planned ({})\n", turn.eligible.len()));
         for action in &turn.eligible {
             out.push_str(&format!("    ✓ {action}\n"));
         }
-        out.push_str("  Excluded\n");
-        if turn.excluded.is_empty() {
-            out.push_str("    (none)\n");
-        }
+        // One line per excluded action: `• <action_id> — <reason>`. Order stays
+        // deterministic; nothing is grouped, filtered, or hidden.
+        out.push_str(&format!("  Excluded ({})\n", turn.excluded.len()));
         for (action, reason) in &turn.excluded {
-            out.push_str(&format!("    • {action}\n"));
-            out.push_str(&format!("      reason: {reason}\n"));
+            out.push_str(&format!("    • {action} — {reason}\n"));
         }
     }
 
     out.push_str("Dispatch\n");
     if summary.dispatched.is_empty() {
-        out.push_str("  (none)\n");
+        out.push_str("  (nothing dispatched)\n");
     }
     for (action, origin) in &summary.dispatched {
         out.push_str(&format!("  {action} ({origin})\n"));
