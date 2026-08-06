@@ -433,14 +433,24 @@ mod tests {
         // It is a strict superset of the default summary.
         assert!(rendered.starts_with(&decision_scan::render_summary(&sample_summary())));
         assert!(rendered.contains("-- explain --"));
-        // Hypotheses with stable labels.
-        assert!(rendered.contains("hypothesis: technology.web-server=nginx"));
-        assert!(rendered.contains("strength=weak posterior=89% state=supported"));
-        // Planning turn with the exact exclusion reason.
-        assert!(rendered.contains("planning turns: 1"));
-        assert!(rendered.contains("reason=policy_suppressed"));
-        // Dispatched actions with origin.
-        assert!(rendered.contains("dispatched: web.action.bootstrap origin=bootstrap"));
+        // Hierarchical hypotheses with aligned, stable labels.
+        assert!(rendered.contains("Hypotheses (1)"));
+        assert!(rendered.contains("  technology.web-server=nginx"));
+        assert!(rendered.contains("strength : weak"));
+        assert!(rendered.contains("posterior: 89%"));
+        assert!(rendered.contains("state    : supported"));
+        // Planning turn with planned/excluded sections and the exact reason.
+        assert!(rendered.contains("Planning (turn 0)"));
+        assert!(rendered.contains("  Excluded"));
+        assert!(rendered.contains("• web.action.nginx.configuration"));
+        assert!(rendered.contains("reason: policy_suppressed"));
+        // Dispatch, Verification, and Terminal sections.
+        assert!(rendered.contains("Dispatch"));
+        assert!(rendered.contains("web.action.bootstrap (bootstrap)"));
+        assert!(rendered.contains("Verification"));
+        assert!(rendered.contains("web.action.probe: unknown"));
+        assert!(rendered.contains("Terminal"));
+        assert!(rendered.contains("halt (no_eligible_action)"));
         // Same honesty guarantees as the summary.
         assert!(!rendered.to_lowercase().contains("vulnerabilit"));
         assert!(!rendered.contains("VerificationCase {"));
@@ -477,15 +487,19 @@ mod tests {
 
         let rendered = decision_scan::render_explain(&summary);
         assert!(
-            rendered.contains("hypothesis: authentication.mechanism=http-basic strength=strong"),
+            rendered.contains("authentication.mechanism=http-basic"),
             "explain must surface the http-basic hypothesis:\n{rendered}"
         );
         assert!(
-            rendered.contains("origin=planned"),
+            rendered.contains("strength : strong"),
+            "explain must surface the hypothesis strength:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("(planned)"),
             "explain must surface the planned dispatch:\n{rendered}"
         );
         assert!(
-            rendered.contains("status=success"),
+            rendered.contains(": success"),
             "explain must surface the success outcome:\n{rendered}"
         );
         assert!(!rendered.to_lowercase().contains("vulnerabilit"));
