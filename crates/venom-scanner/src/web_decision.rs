@@ -277,8 +277,8 @@ mod tests {
         assert_eq!(second, StandardWebDecisionInstallReport::default());
         assert_eq!(decision_loop.rules().len(), STANDARD_WEB_RULE_COUNT);
         assert_eq!(decision_loop.planner().len(), STANDARD_WEB_ACTION_COUNT);
-        assert_eq!(decision_loop.verification().passive().len(), 10);
-        assert_eq!(decision_loop.verification().active().len(), 10);
+        assert_eq!(decision_loop.verification().passive().len(), 12);
+        assert_eq!(decision_loop.verification().active().len(), 12);
         assert_eq!(executors.len(), STANDARD_WEB_DISCOVERY_EXECUTOR_COUNT);
     }
 

@@ -343,8 +343,8 @@ fn builder_validates_decision_limits_and_exposes_runtime_defaults() {
 
     let runtime = StandardWebDecisionRuntime::builder(target).build().unwrap();
     assert_eq!(runtime.decision_loop.planner().len(), 9);
-    assert_eq!(runtime.runner.executors().len(), 6);
-    assert_eq!(runtime.unsupported_actions().len(), 4);
+    assert_eq!(runtime.runner.executors().len(), 7);
+    assert_eq!(runtime.unsupported_actions().len(), 3);
     assert_eq!(runtime.budget(), RuntimeBudget::default());
     assert_eq!(runtime.usage(), &RuntimeUsage::default());
     assert!(runtime.api_reasoning_installation().is_none());
@@ -352,9 +352,20 @@ fn builder_validates_decision_limits_and_exposes_runtime_defaults() {
         runtime.decision_loop.rules().len(),
         crate::STANDARD_WEB_RULE_COUNT
     );
-    assert!(runtime
+    // nginx configuration is now an executor-backed route and no longer appears
+    // in the unsupported inventory; apache/php/laravel-input remain unsupported.
+    assert!(!runtime
         .unsupported_actions()
         .contains(StandardWebActionKind::NginxConfiguration.action_id()));
+    assert!(runtime
+        .unsupported_actions()
+        .contains(StandardWebActionKind::ApacheConfiguration.action_id()));
+    assert!(runtime
+        .unsupported_actions()
+        .contains(StandardWebActionKind::PhpInputDiscovery.action_id()));
+    assert!(runtime
+        .unsupported_actions()
+        .contains(StandardWebActionKind::LaravelInputAnalysis.action_id()));
     assert!(!runtime
         .unsupported_actions()
         .contains(StandardWebActionKind::HttpBasicAuthBoundary.action_id()));
@@ -1181,9 +1192,12 @@ async fn runtime_exposes_reasoning_committed_before_a_planning_failure() {
 
 #[tokio::test]
 async fn unavailable_executor_is_reported_as_a_policy_suppression() {
-    let nginx =
-        b"HTTP/1.1 200 OK\r\nServer: nginx\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
-    let server = serve(vec![Reply::Response(nginx)]).await;
+    // apache remains an executor-less route: it activates a hypothesis but its
+    // planner action is excluded as a policy suppression, dispatching nothing
+    // beyond the bootstrap probe. (nginx is now executor-backed; see the
+    // decision-scan activation corpus for its end-to-end paths.)
+    let apache = b"HTTP/1.1 200 OK\r\nServer: Apache/2.4.58 (Unix)\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+    let server = serve(vec![Reply::Response(apache)]).await;
     let mut runtime = StandardWebDecisionRuntime::builder(server.target())
         .build()
         .unwrap();
@@ -1197,15 +1211,15 @@ async fn unavailable_executor_is_reported_as_a_policy_suppression() {
         }
     ));
     let planning = report.planning_reports().next().unwrap();
-    let nginx = planning
+    let apache = planning
         .plan()
         .excluded()
         .iter()
         .find(|excluded| {
-            excluded.action_id() == StandardWebActionKind::NginxConfiguration.action_id()
+            excluded.action_id() == StandardWebActionKind::ApacheConfiguration.action_id()
         })
         .unwrap();
-    assert!(matches!(nginx.reason(), ExclusionReason::PolicySuppressed));
+    assert!(matches!(apache.reason(), ExclusionReason::PolicySuppressed));
     assert_eq!(server.methods().await, ["GET"]);
 }
 

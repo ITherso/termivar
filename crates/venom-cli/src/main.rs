@@ -757,13 +757,13 @@ mod tests {
             generic.unavailable_routes, basic.unavailable_routes,
             "the unavailable-route inventory must not depend on the fixture"
         );
-        // It is the runtime's fixed four executor-less actions, in sorted order.
+        // It is the runtime's fixed three executor-less actions, in sorted order.
+        // nginx is now executor-backed and no longer appears in the inventory.
         assert_eq!(
             generic.unavailable_routes,
             vec![
                 "web.action.apache.configuration".to_string(),
                 "web.action.laravel.input-analysis".to_string(),
-                "web.action.nginx.configuration".to_string(),
                 "web.action.php.input-discovery".to_string(),
             ]
         );
@@ -785,7 +785,7 @@ mod tests {
                 let _ = socket.read(&mut request).await;
                 let _ = socket
                     .write_all(
-                        b"HTTP/1.1 200 OK\r\nServer: nginx\r\nContent-Type: text/html\r\nContent-Length: 2\r\nConnection: close\r\n\r\nhi",
+                        b"HTTP/1.1 200 OK\r\nServer: Apache/2.4.58 (Unix)\r\nContent-Type: text/html\r\nContent-Length: 2\r\nConnection: close\r\n\r\nhi",
                     )
                     .await;
                 let _ = socket.shutdown().await;
@@ -795,10 +795,10 @@ mod tests {
         let summary = decision_scan::run_decision_scan(target).await.unwrap();
         server.abort();
 
-        // nginx: no executor route AND excluded this turn as policy_suppressed.
+        // apache: no executor route AND excluded this turn as policy_suppressed.
         assert!(summary
             .unavailable_routes
-            .contains(&"web.action.nginx.configuration".to_string()));
+            .contains(&"web.action.apache.configuration".to_string()));
         // http-basic: HAS an executor route (not in the unavailable inventory) yet
         // is still excluded this turn — for a different reason (requirements not
         // met). Route availability and eligibility are orthogonal.
@@ -807,11 +807,11 @@ mod tests {
             .contains(&"web.action.http-basic.auth-boundary".to_string()));
 
         let rendered = decision_scan::render_explain(&summary);
-        // Both facts appear, framed distinctly: the route inventory lists nginx
+        // Both facts appear, framed distinctly: the route inventory lists apache
         // without a reason; the planning turn excludes it with a reason.
         assert!(rendered.contains("Executor Routes"));
-        assert!(rendered.contains("    • web.action.nginx.configuration\n"));
-        assert!(rendered.contains("• web.action.nginx.configuration — policy_suppressed"));
+        assert!(rendered.contains("    • web.action.apache.configuration\n"));
+        assert!(rendered.contains("• web.action.apache.configuration — policy_suppressed"));
         assert!(
             rendered.contains("• web.action.http-basic.auth-boundary — requirements_not_met"),
             "an available route can still be excluded this turn:\n{rendered}"
