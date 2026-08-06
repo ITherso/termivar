@@ -34,6 +34,7 @@ nav:
   - Internals:
       - Overview: internals/README.md
       - Runtime map: internals/runtime-map.md
+      - decision-scan JSON (v1): internals/decision-scan-json-v1.md
       - Scheduler: internals/scheduler.md
       - Event bus: internals/event-bus.md
       - Runner: internals/runner.md
