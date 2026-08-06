@@ -1036,12 +1036,13 @@ mod tests {
         assert_eq!(value["terminal"]["command"], "halt");
         assert_eq!(value["terminal"]["stop_reason"], "no_eligible_action");
         // The unavailable-route inventory is present and fixture-independent.
+        // nginx is now executor-backed, leaving three executor-less routes.
         assert_eq!(
             value["executor_routes"]["unavailable"]
                 .as_array()
                 .unwrap()
                 .len(),
-            4
+            3
         );
     }
 
