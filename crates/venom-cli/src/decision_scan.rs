@@ -382,48 +382,69 @@ pub(crate) fn render_summary(summary: &DecisionScanSummary) -> String {
     out
 }
 
-/// Render the full explainable decision chain on top of [`render_summary`]:
-/// hypotheses -> planning (planned steps and excluded actions with the exact
-/// reason) -> dispatched actions with origin -> verification outcomes -> terminal.
-/// Like [`render_summary`] it never labels an outcome a vulnerability and never
-/// dumps `Debug`; every runtime term is a stable snake_case label.
+/// Render the full explainable decision chain on top of [`render_summary`] as a
+/// readable hierarchy: Hypotheses -> Planning (per turn: Planned, then Excluded
+/// with the exact reason) -> Dispatch -> Verification -> Terminal. Like
+/// [`render_summary`] it never labels an outcome a vulnerability and never dumps
+/// `Debug`; every runtime term is a stable snake_case label. This is presentation
+/// only; it reads exactly the same fields the default summary reads.
 pub(crate) fn render_explain(summary: &DecisionScanSummary) -> String {
     let mut out = render_summary(summary);
     out.push_str("\n-- explain --\n");
 
-    out.push_str(&format!("hypotheses: {}\n", summary.hypotheses.len()));
+    out.push_str(&format!("Hypotheses ({})\n", summary.hypotheses.len()));
     if summary.hypotheses.is_empty() {
         out.push_str("  (none — no reasoning rule matched the bootstrap evidence)\n");
     }
     for hypothesis in &summary.hypotheses {
-        out.push_str(&format!(
-            "  hypothesis: {}={} strength={} posterior={}% state={}\n",
-            hypothesis.predicate,
-            hypothesis.value,
-            hypothesis.strength,
-            hypothesis.posterior_percent,
-            hypothesis.state,
-        ));
+        out.push_str(&format!("  {}={}\n", hypothesis.predicate, hypothesis.value));
+        out.push_str(&format!("    {:<9}: {}\n", "strength", hypothesis.strength));
+        out.push_str(&format!("    {:<9}: {}%\n", "posterior", hypothesis.posterior_percent));
+        out.push_str(&format!("    {:<9}: {}\n", "state", hypothesis.state));
     }
 
-    out.push_str(&format!("planning turns: {}\n", summary.planning.len()));
+    if summary.planning.is_empty() {
+        out.push_str("Planning (none)\n");
+    }
     for (index, turn) in summary.planning.iter().enumerate() {
-        out.push_str(&format!(
-            "  turn {index}: {} planned, {} excluded\n",
-            turn.eligible.len(),
-            turn.excluded.len()
-        ));
+        out.push_str(&format!("Planning (turn {index})\n"));
+        out.push_str("  Planned\n");
+        if turn.eligible.is_empty() {
+            out.push_str("    (none)\n");
+        }
         for action in &turn.eligible {
-            out.push_str(&format!("    planned: {action}\n"));
+            out.push_str(&format!("    ✓ {action}\n"));
+        }
+        out.push_str("  Excluded\n");
+        if turn.excluded.is_empty() {
+            out.push_str("    (none)\n");
         }
         for (action, reason) in &turn.excluded {
-            out.push_str(&format!("    excluded: {action} reason={reason}\n"));
+            out.push_str(&format!("    • {action}\n"));
+            out.push_str(&format!("      reason: {reason}\n"));
         }
     }
 
-    out.push_str(&format!("dispatched: {}\n", summary.dispatched.len()));
+    out.push_str("Dispatch\n");
+    if summary.dispatched.is_empty() {
+        out.push_str("  (none)\n");
+    }
     for (action, origin) in &summary.dispatched {
-        out.push_str(&format!("  dispatched: {action} origin={origin}\n"));
+        out.push_str(&format!("  {action} ({origin})\n"));
+    }
+
+    out.push_str("Verification\n");
+    if summary.outcomes.is_empty() {
+        out.push_str("  (no verification outcome before the terminal state)\n");
+    }
+    for (action, status) in &summary.outcomes {
+        out.push_str(&format!("  {action}: {status}\n"));
+    }
+
+    out.push_str("Terminal\n");
+    match summary.stop_reason {
+        Some(reason) => out.push_str(&format!("  {} ({reason})\n", summary.terminal)),
+        None => out.push_str(&format!("  {}\n", summary.terminal)),
     }
 
     out
