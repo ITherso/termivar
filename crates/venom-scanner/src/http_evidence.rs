@@ -2098,8 +2098,7 @@ mod tests {
              <input type=\"password\" name=\"password\" value=\"hunter2\">",
         )
         .await;
-        let adapter =
-            form_capturing_adapter(&url, HttpBodyCapture::TextSample { max_chars: 8192 });
+        let adapter = form_capturing_adapter(&url, HttpBodyCapture::TextSample { max_chars: 8192 });
         let knowledge = KnowledgeBase::new();
 
         let receipt = adapter
@@ -2129,8 +2128,7 @@ mod tests {
             "<input name=\"early\">{padding}<input name=\"late\">"
         ))
         .await;
-        let adapter =
-            form_capturing_adapter(&url, HttpBodyCapture::TextSample { max_chars: 64 });
+        let adapter = form_capturing_adapter(&url, HttpBodyCapture::TextSample { max_chars: 64 });
         let knowledge = KnowledgeBase::new();
 
         let receipt = adapter

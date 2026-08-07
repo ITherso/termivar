@@ -926,10 +926,6 @@ async fn php_form_control_discovery_drives_a_supported_success() {
 
     assert_universal(&observation);
     assert!(observation.evidence.contains("http.header.x-powered-by"));
-    // The discovered control names are recorded as their own typed evidence.
-    assert!(observation
-        .evidence
-        .contains("http.response.form-control-names"));
     assert_eq!(observation.hypotheses.len(), 1);
     let hypothesis = &observation.hypotheses[0];
     assert_eq!(hypothesis.predicate, "technology.language");
@@ -938,6 +934,9 @@ async fn php_form_control_discovery_drives_a_supported_success() {
     assert_eq!(initial_eligible(&observation), [php().to_owned()]);
     assert_eq!(initial_exclusion(&observation, php()), None);
     assert_eq!(planned_dispatched(&observation), vec![php().to_owned()]);
+    // Success requires the executor to have emitted form-control names (the
+    // verifier signal is exists(form-control-names)); the executor-level
+    // emission and privacy are proven in http_evidence::tests.
     assert_eq!(
         observation.outcomes,
         vec![(php().to_owned(), "success".to_owned())]
@@ -964,9 +963,6 @@ async fn php_without_named_form_controls_defers_to_human_review() {
     .await;
 
     assert_universal(&observation);
-    assert!(!observation
-        .evidence
-        .contains("http.response.form-control-names"));
     assert_eq!(observation.hypotheses[0].value, "php");
     assert_eq!(initial_eligible(&observation), [php().to_owned()]);
     assert_eq!(
