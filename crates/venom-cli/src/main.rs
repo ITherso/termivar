@@ -477,7 +477,7 @@ mod tests {
             experience_records: 1,
             hypotheses: vec![decision_scan::HypothesisView {
                 predicate: "technology.web-server".to_string(),
-                value: Some("nginx".to_string()),
+                value: Some("apache-http-server".to_string()),
                 value_kind: "text",
                 value_disposition: "exposed",
                 strength: "weak",
@@ -488,7 +488,7 @@ mod tests {
             planning: vec![decision_scan::PlanningView {
                 eligible: Vec::new(),
                 excluded: vec![(
-                    "web.action.nginx.configuration".to_string(),
+                    "web.action.apache.configuration".to_string(),
                     "policy_suppressed",
                 )],
             }],
@@ -501,7 +501,6 @@ mod tests {
             unavailable_routes: vec![
                 "web.action.apache.configuration".to_string(),
                 "web.action.laravel.input-analysis".to_string(),
-                "web.action.nginx.configuration".to_string(),
                 "web.action.php.input-discovery".to_string(),
             ],
         }
@@ -532,13 +531,13 @@ mod tests {
         assert!(rendered.contains("-- explain --"));
         // Executor Routes: only the runtime's explicit unavailable routes, counted.
         assert!(rendered.contains("Executor Routes"));
-        assert!(rendered.contains("  Unavailable (4)"));
-        assert!(rendered.contains("    • web.action.nginx.configuration\n"));
+        assert!(rendered.contains("  Unavailable (3)"));
+        assert!(rendered.contains("    • web.action.apache.configuration\n"));
         // No synthesized "available" list.
         assert!(!rendered.contains("Available"));
         // Hierarchical hypotheses with aligned, stable labels.
         assert!(rendered.contains("Hypotheses (1)"));
-        assert!(rendered.contains("  technology.web-server=nginx"));
+        assert!(rendered.contains("  technology.web-server=apache-http-server"));
         assert!(rendered.contains("strength : weak"));
         assert!(rendered.contains("posterior: 89%"));
         assert!(rendered.contains("state    : supported"));
@@ -546,7 +545,7 @@ mod tests {
         assert!(rendered.contains("Planning (turn 0)"));
         assert!(rendered.contains("  Planned (0)"));
         assert!(rendered.contains("  Excluded (1)"));
-        assert!(rendered.contains("• web.action.nginx.configuration — policy_suppressed"));
+        assert!(rendered.contains("• web.action.apache.configuration — policy_suppressed"));
         // The old two-line indented `reason:` form is gone (no information lost).
         assert!(!rendered.contains("      reason:"));
         // No ambiguous `(none)` token anywhere (empty sections rely on the count).
@@ -873,7 +872,7 @@ mod tests {
                 .as_array()
                 .unwrap()
                 .len(),
-            4
+            3
         );
         assert!(value["executor_routes"].get("available").is_none());
         // Terminal and usage.
@@ -882,7 +881,7 @@ mod tests {
         assert!(value["terminal"]["runtime_limit"].is_null());
         assert_eq!(value["usage"]["total_requests"], 3);
         // Hypothesis value carries an explicit kind and safety disposition.
-        assert_eq!(value["hypotheses"][0]["value"], "nginx");
+        assert_eq!(value["hypotheses"][0]["value"], "apache-http-server");
         assert_eq!(value["hypotheses"][0]["value_kind"], "text");
         assert_eq!(value["hypotheses"][0]["value_disposition"], "exposed");
         // Never a vulnerability claim, never a Debug dump.
@@ -914,14 +913,13 @@ mod tests {
             "    \"unavailable\": [\n",
             "      \"web.action.apache.configuration\",\n",
             "      \"web.action.laravel.input-analysis\",\n",
-            "      \"web.action.nginx.configuration\",\n",
             "      \"web.action.php.input-discovery\"\n",
             "    ]\n",
             "  },\n",
             "  \"hypotheses\": [\n",
             "    {\n",
             "      \"predicate\": \"technology.web-server\",\n",
-            "      \"value\": \"nginx\",\n",
+            "      \"value\": \"apache-http-server\",\n",
             "      \"value_kind\": \"text\",\n",
             "      \"value_disposition\": \"exposed\",\n",
             "      \"strength\": \"weak\",\n",
@@ -935,7 +933,7 @@ mod tests {
             "      \"planned\": [],\n",
             "      \"excluded\": [\n",
             "        {\n",
-            "          \"action_id\": \"web.action.nginx.configuration\",\n",
+            "          \"action_id\": \"web.action.apache.configuration\",\n",
             "          \"reason\": \"policy_suppressed\"\n",
             "        }\n",
             "      ]\n",

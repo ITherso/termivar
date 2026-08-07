@@ -255,19 +255,15 @@ fn signal_rule(
             "WWW-Authenticate explicitly advertises HTTP Bearer for this request",
         ),
         // The nginx configuration signal fires only on a version-bearing Server
-        // token (`nginx/<version>`); the `/` delimiter is exactly what nginx
-        // emits when `server_tokens` is on, and a bare `Server: nginx`
-        // (`server_tokens off`) carries no `/` and therefore never matches. The
-        // bare product token remains a gating fingerprint only, so the executor
-        // cannot re-read its own gating signal and self-confirm. Priority is
-        // below the blocked rule (800) so 401/403/429 stay Blocked even when the
-        // denying response also discloses a version.
+        // token (`nginx/<version>` where a digit follows the slash, e.g.
+        // `nginx/1.26.0`). A bare `Server: nginx` (`server_tokens off`), a
+        // trailing slash with no version (`nginx/`), or a non-numeric suffix
+        // (`nginx/foo`) never matches, so the product token that gates the action
+        // can never by itself confirm a version disclosure. Priority is below the
+        // blocked rule (800) so 401/403/429 stay Blocked even when the denying
+        // response also discloses a version.
         StandardWebActionKind::NginxConfiguration => (
-            Expression::text_contains_ascii_case_insensitive(
-                KnowledgeLayer::Evidence,
-                HttpEvidencePredicate::HEADER_SERVER.into(),
-                "nginx/",
-            )?,
+            nginx_version_disclosure_condition()?,
             OutcomeStatus::Success,
             600,
             90,
@@ -296,6 +292,28 @@ fn auth_header_condition(token: &str) -> Result<Expression, RuleEngineError> {
         KnowledgeLayer::Evidence,
         HttpEvidencePredicate::HEADER_WWW_AUTHENTICATE.into(),
         token,
+    )
+}
+
+/// Condition for a version-bearing nginx `Server` token.
+///
+/// A version disclosure requires a digit immediately after the `nginx/`
+/// delimiter (`nginx/1`, `nginx/1.26.0`, ...). This is expressed with the
+/// existing `Expression` API as an `any` over `nginx/0` ..= `nginx/9` — no new
+/// primitive — so a bare `nginx`, a trailing slash (`nginx/`), or a non-numeric
+/// suffix (`nginx/foo`) never matches. Fail-closed: the gating product token can
+/// never on its own satisfy the version-disclosure signal.
+fn nginx_version_disclosure_condition() -> Result<Expression, RuleEngineError> {
+    Expression::any(
+        (0..=9)
+            .map(|digit| {
+                Expression::text_contains_ascii_case_insensitive(
+                    KnowledgeLayer::Evidence,
+                    HttpEvidencePredicate::HEADER_SERVER.into(),
+                    &format!("nginx/{digit}"),
+                )
+            })
+            .collect::<Result<Vec<_>, RuleEngineError>>()?,
     )
 }
 
@@ -584,48 +602,64 @@ mod tests {
         let kind = StandardWebActionKind::NginxConfiguration;
         let pipeline = pipeline();
 
-        // A version-bearing Server token is the positive signal -> Success.
-        let versioned = case("case:nginx-versioned", kind);
-        let versioned_knowledge = knowledge();
-        versioned_knowledge
-            .insert_evidence(evidence(
-                &versioned,
-                "http.header",
-                "server",
-                EvidenceValue::Text("nginx/1.26.0".to_owned()),
-            ))
-            .unwrap();
-        assert_eq!(
-            pipeline
-                .passive()
-                .verify(&versioned_knowledge, &versioned)
-                .unwrap()
-                .outcome()
-                .status(),
-            OutcomeStatus::Success
-        );
+        // Only a token whose slash is followed by a digit is a version
+        // disclosure. A bare product token, a trailing slash, and a non-numeric
+        // suffix all fail closed to Unknown; the gating token cannot self-confirm.
+        for (label, server) in [
+            ("case:nginx-bare", "nginx"),
+            ("case:nginx-slash-only", "nginx/"),
+            ("case:nginx-nonnumeric", "nginx/foo"),
+        ] {
+            let case = case(label, kind);
+            let knowledge = knowledge();
+            knowledge
+                .insert_evidence(evidence(
+                    &case,
+                    "http.header",
+                    "server",
+                    EvidenceValue::Text(server.to_owned()),
+                ))
+                .unwrap();
+            assert_eq!(
+                pipeline
+                    .passive()
+                    .verify(&knowledge, &case)
+                    .unwrap()
+                    .outcome()
+                    .status(),
+                OutcomeStatus::Unknown,
+                "`Server: {server}` must not be a version disclosure",
+            );
+        }
 
-        // A bare product token carries no version, matches no signal, and is
-        // never promoted to success (the gating token cannot self-confirm).
-        let bare = case("case:nginx-bare", kind);
-        let bare_knowledge = knowledge();
-        bare_knowledge
-            .insert_evidence(evidence(
-                &bare,
-                "http.header",
-                "server",
-                EvidenceValue::Text("nginx".to_owned()),
-            ))
-            .unwrap();
-        assert_eq!(
-            pipeline
-                .passive()
-                .verify(&bare_knowledge, &bare)
-                .unwrap()
-                .outcome()
-                .status(),
-            OutcomeStatus::Unknown
-        );
+        // A digit after the slash is the positive signal -> Success (a single
+        // digit, a full dotted version, and an upper-case product name all match).
+        for (label, server) in [
+            ("case:nginx-v1", "nginx/1"),
+            ("case:nginx-vfull", "nginx/1.26.0"),
+            ("case:nginx-upper", "NGINX/1.26.0"),
+        ] {
+            let case = case(label, kind);
+            let knowledge = knowledge();
+            knowledge
+                .insert_evidence(evidence(
+                    &case,
+                    "http.header",
+                    "server",
+                    EvidenceValue::Text(server.to_owned()),
+                ))
+                .unwrap();
+            assert_eq!(
+                pipeline
+                    .passive()
+                    .verify(&knowledge, &case)
+                    .unwrap()
+                    .outcome()
+                    .status(),
+                OutcomeStatus::Success,
+                "`Server: {server}` must be a version disclosure",
+            );
+        }
 
         // A denying status outranks the version disclosure -> Blocked.
         let blocked = case("case:nginx-blocked", kind);
