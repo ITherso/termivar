@@ -122,9 +122,11 @@ impl HttpEvidencePredicate {
         PredicateDescriptor::new("http.response", "body-sample", "http.response.body-sample");
     /// Named HTML form-control names (`input`/`select`/`textarea` `name`
     /// attributes) conservatively observed in the bounded response sample.
-    /// Only control *names* are represented here; control values are never
-    /// recorded. Presence indicates candidate input discovery, not server
-    /// acceptance, and never implies a complete set.
+    /// This predicate contains control *names* only; control values are never
+    /// copied into it. (The separate, host-authorized [`Self::RESPONSE_BODY_SAMPLE`]
+    /// still carries the original bounded HTML, which may include `value=`
+    /// attribute contents.) Presence indicates candidate input discovery, not
+    /// server acceptance, and never implies a complete set.
     pub const RESPONSE_FORM_CONTROL_NAMES: PredicateDescriptor = PredicateDescriptor::new(
         "http.response",
         "form-control-names",
