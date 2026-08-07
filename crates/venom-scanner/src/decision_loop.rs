@@ -400,6 +400,23 @@ impl DecisionSession {
         };
     }
 
+    /// Finalizes a multi-objective session as completed at the aggregate
+    /// boundary, once automated work is exhausted with at least one success and
+    /// no unresolved case. Narrow host helper — not a general session resume.
+    pub(crate) fn finalize_objective_complete(&mut self) {
+        self.state = DecisionLoopState::Completed;
+    }
+
+    /// Finalizes a multi-objective session as pending human review at the
+    /// aggregate boundary, once automated work is exhausted while at least one
+    /// unresolved (blocked / active-inconclusive) case remains. Narrow host
+    /// helper — not a general session resume.
+    pub(crate) fn finalize_human_review(&mut self) {
+        self.state = DecisionLoopState::Halted {
+            reason: DecisionStopReason::HumanReview,
+        };
+    }
+
     /// Returns the adaptive transition ledger.
     pub fn adaptation(&self) -> &AdaptationLedger {
         &self.adaptation

@@ -23,17 +23,19 @@ use tokio_util::sync::CancellationToken;
 use url::Url;
 use venom_core::{
     EntityId, EvidenceValue, HttpEvidencePredicate, OutcomeStatus, ReasoningModelError,
+    VerificationStage,
 };
 
 use crate::{
     http_evidence::HttpRequestBroker, runtime_budget::RequestAccountingBroker, AdaptationLimits,
-    BenefitScore, DecisionActionOrigin, DecisionEvidenceReceipt, DecisionExecutionFailureReceipt,
-    DecisionExecutionLimits, DecisionExecutionStage, DecisionExecutorRegistry, DecisionLoop,
-    DecisionLoopCommand, DecisionLoopConfig, DecisionLoopError, DecisionOutcomeReport,
-    DecisionPlanningReport, DecisionReasoningCommitReceipt, DecisionRunnerAdapter,
-    DecisionRunnerError, DecisionRunnerTurn, DecisionSession, ExperiencePolicy, ExperienceStore,
-    ExperienceStoreError, HttpEvidenceError, HttpEvidenceExecutor, HttpEvidencePolicy,
-    HttpHeaderPayloadBinding, HttpProbe, HttpProbeMethod, KnowledgeBase, KnowledgeWrite,
+    AdaptationRule, AdaptivePipelineError, BenefitScore, DecisionActionOrigin,
+    DecisionEvidenceReceipt, DecisionExecutionFailureReceipt, DecisionExecutionLimits,
+    DecisionExecutionStage, DecisionExecutorRegistry, DecisionLoop, DecisionLoopCommand,
+    DecisionLoopConfig, DecisionLoopError, DecisionOutcomeReport, DecisionPlanningReport,
+    DecisionReasoningCommitReceipt, DecisionRunnerAdapter, DecisionRunnerError, DecisionRunnerTurn,
+    DecisionSession, DecisionStopReason, ExperiencePolicy, ExperienceStore, ExperienceStoreError,
+    HttpEvidenceError, HttpEvidenceExecutor, HttpEvidencePolicy, HttpHeaderPayloadBinding,
+    HttpProbe, HttpProbeMethod, KnowledgeBase, KnowledgeWrite, OutcomeSelector, PipelineDirective,
     PlannerError, PlanningContext, RiskScore, RuntimeBudget, RuntimeBudgetDimension,
     RuntimeLimitExceeded, RuntimeUsage, StandardApiInstallReport, StandardApiReasoning,
     StandardApiReasoningError, StandardWebActionKind, StandardWebDecisionError,
@@ -537,6 +539,16 @@ impl StandardWebDecisionRuntimeBuilder {
         let requests = HttpRequestBroker::new_metered(policy, request_accounting.clone())?;
         let profile = StandardWebDecisionProfile::new_with_request_broker(requests.clone())?;
         let installation = profile.install(&knowledge, &mut decision_loop, &mut executors)?;
+
+        // Surface-B multi-objective continuation: install continuation rules ONLY
+        // in this runtime's adaptive pipeline. The generic AdaptivePipeline
+        // fallback is unchanged, so library hosts keep single-objective semantics.
+        for rule in standard_web_continuation_rules().map_err(DecisionLoopError::Adaptive)? {
+            decision_loop
+                .adaptive_mut()
+                .register(rule)
+                .map_err(DecisionLoopError::Adaptive)?;
+        }
         let api_reasoning_installation = if self.api_reasoning_enabled {
             let profile = StandardApiReasoning::new()?;
             Some(profile.install(&knowledge, decision_loop.rules_mut())?)
@@ -801,6 +813,11 @@ impl StandardWebDecisionRuntime {
         }
 
         let mut command = DecisionLoopCommand::Replan;
+        // Deterministic representatives for the synthesized aggregate terminal:
+        // the first success case, and the first unresolved (blocked /
+        // active-inconclusive) case, in dispatch order.
+        let mut representative_success: Option<VerificationCase> = None;
+        let mut representative_unresolved: Option<VerificationCase> = None;
         let terminal = loop {
             match &command {
                 DecisionLoopCommand::Replan => {
@@ -960,6 +977,11 @@ impl StandardWebDecisionRuntime {
                             let progressed =
                                 outcome_made_progress(previous_stage, &command, decision.as_ref());
                             self.usage.record_execution_progress(progressed);
+                            classify_continuation_case(
+                                decision.as_ref(),
+                                &mut representative_success,
+                                &mut representative_unresolved,
+                            );
                             turns.push(StandardWebDecisionRuntimeTurn::Outcome {
                                 evidence,
                                 decision,
@@ -997,6 +1019,14 @@ impl StandardWebDecisionRuntime {
             }
         };
 
+        // Synthesize the aggregate terminal from the recorded outcomes, and keep
+        // the session state in agreement with it.
+        let terminal = self.finalize_multi_objective_terminal(
+            terminal,
+            representative_success,
+            representative_unresolved,
+        );
+
         self.refresh_elapsed(started_at);
 
         Ok(StandardWebDecisionRunReport {
@@ -1009,6 +1039,40 @@ impl StandardWebDecisionRuntime {
             limit_exceeded: None,
             execution_failure: None,
         })
+    }
+
+    /// Synthesizes the aggregate terminal for a multi-objective session once
+    /// automated work is exhausted, and keeps `session().state()` in agreement.
+    ///
+    /// Synthesis applies ONLY to natural exhaustion (`Halt { NoEligibleAction }`).
+    /// Every hard safety terminal — cycle/adaptation limits reaching here, and
+    /// the budget/wall-time/cancellation reports that return earlier — is
+    /// absolute and returned unchanged. Uses the existing terminal vocabulary:
+    /// unresolved cases -> `AwaitHumanReview`; else a success -> `Complete`; else
+    /// the untouched `Halt { NoEligibleAction }`.
+    fn finalize_multi_objective_terminal(
+        &mut self,
+        terminal: DecisionLoopCommand,
+        representative_success: Option<VerificationCase>,
+        representative_unresolved: Option<VerificationCase>,
+    ) -> DecisionLoopCommand {
+        if !matches!(
+            terminal,
+            DecisionLoopCommand::Halt {
+                reason: DecisionStopReason::NoEligibleAction
+            }
+        ) {
+            return terminal;
+        }
+        if let Some(case) = representative_unresolved {
+            self.session.finalize_human_review();
+            DecisionLoopCommand::AwaitHumanReview { case }
+        } else if let Some(case) = representative_success {
+            self.session.finalize_objective_complete();
+            DecisionLoopCommand::Complete { case }
+        } else {
+            terminal
+        }
     }
 
     fn run_failed(
@@ -1274,6 +1338,90 @@ fn is_terminal(command: &DecisionLoopCommand) -> bool {
     )
 }
 
+/// Records a representative case for the aggregate terminal when a continuation
+/// rule suppressed this action. A suppressed `Success` is a completed objective;
+/// a suppressed `Blocked` or active-inconclusive (`Unknown`/`NeedsReview`) is an
+/// unresolved case pending human review. `FalsePositive`/`ConfirmedNegative`
+/// (also carried on `Replan { suppress }` by the unchanged fallback) are
+/// conclusive negatives and count as neither. First-in-dispatch-order wins.
+fn classify_continuation_case(
+    decision: &DecisionOutcomeReport,
+    representative_success: &mut Option<VerificationCase>,
+    representative_unresolved: &mut Option<VerificationCase>,
+) {
+    if !matches!(
+        decision.adaptive().directive(),
+        PipelineDirective::Replan {
+            suppress_current_action: true
+        }
+    ) {
+        return;
+    }
+    let report = decision.verification();
+    match report.outcome().status() {
+        OutcomeStatus::Success => {
+            representative_success.get_or_insert_with(|| report.case().clone());
+        },
+        OutcomeStatus::Blocked => {
+            representative_unresolved.get_or_insert_with(|| report.case().clone());
+        },
+        OutcomeStatus::Unknown | OutcomeStatus::NeedsReview
+            if report.outcome().stage() == VerificationStage::Active =>
+        {
+            representative_unresolved.get_or_insert_with(|| report.case().clone());
+        },
+        _ => {},
+    }
+}
+
+/// Surface-B multi-objective continuation rules.
+///
+/// After an action reaches a terminal-worthy outcome, suppress it (via the
+/// existing adaptation-ledger suppression carried by `Replan { suppress_current_
+/// action: true }`) and replan, so the runtime can pursue another eligible
+/// discovery objective instead of stopping at the first. Outcome classification
+/// is never altered — only the follow-on directive. Passive inconclusive
+/// outcomes still escalate through the unchanged fallback
+/// (`AwaitActiveVerification`); false-positive / confirmed-negative also keep the
+/// unchanged fallback (`Replan { suppress }`).
+fn standard_web_continuation_rules() -> Result<Vec<AdaptationRule>, AdaptivePipelineError> {
+    let suppress = PipelineDirective::Replan {
+        suppress_current_action: true,
+    };
+    Ok(vec![
+        AdaptationRule::new(
+            "web.continue.success",
+            OutcomeSelector::any_stage(BTreeSet::from([OutcomeStatus::Success]))?,
+            700,
+            None,
+            suppress.clone(),
+            "record the success and continue to any other eligible objective",
+            u16::MAX,
+        )?,
+        AdaptationRule::new(
+            "web.continue.blocked",
+            OutcomeSelector::any_stage(BTreeSet::from([OutcomeStatus::Blocked]))?,
+            700,
+            None,
+            suppress.clone(),
+            "record the blocked outcome and continue to any other eligible objective",
+            u16::MAX,
+        )?,
+        AdaptationRule::new(
+            "web.continue.active-inconclusive",
+            OutcomeSelector::new(
+                BTreeSet::from([OutcomeStatus::Unknown, OutcomeStatus::NeedsReview]),
+                BTreeSet::from([VerificationStage::Active]),
+            )?,
+            700,
+            None,
+            suppress,
+            "record the inconclusive outcome after active verification and continue",
+            u16::MAX,
+        )?,
+    ])
+}
+
 fn outcome_made_progress(
     previous_stage: DecisionExecutionStage,
     next_command: &DecisionLoopCommand,
@@ -1292,7 +1440,17 @@ fn outcome_made_progress(
         outcome.verification().outcome().status(),
         OutcomeStatus::Success | OutcomeStatus::FalsePositive | OutcomeStatus::ConfirmedNegative
     );
-    hypothesis_changed || escalated_to_active || conclusive
+    // A suppression-driven replan is genuine forward progress: the source action
+    // is newly added to the adaptation suppression set, so the automated
+    // candidate set strictly shrinks. This is NOT true of arbitrary replans —
+    // only of `Replan { suppress_current_action: true }`.
+    let suppressed_source = matches!(
+        outcome.adaptive().directive(),
+        PipelineDirective::Replan {
+            suppress_current_action: true
+        }
+    );
+    hypothesis_changed || escalated_to_active || conclusive || suppressed_source
 }
 
 #[cfg(test)]
