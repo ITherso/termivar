@@ -139,6 +139,11 @@ enum ExpressionNode {
         needle: String,
         ascii_case_insensitive: bool,
     },
+    TextListContainsExact {
+        layer: KnowledgeLayer,
+        predicate: KnowledgePredicate,
+        value: String,
+    },
     OntologyRelation {
         subject: ConceptId,
         relation: RelationTypeId,
@@ -255,6 +260,27 @@ impl Expression {
         }))
     }
 
+    /// Matches exact membership of a value in an [`EvidenceValue::TextList`].
+    ///
+    /// Unlike [`Self::text_contains`], this compares complete list elements with
+    /// exact, case-sensitive string equality. It never performs substring
+    /// matching and never falls back to a scalar [`EvidenceValue::Text`]: a
+    /// record whose value is `Text("_token")` does not match, and a list element
+    /// `"_token_old"` does not match the value `"_token"`. This keeps typed
+    /// inventory reasoning fail-closed — only a record carrying the exact element
+    /// contributes.
+    pub fn text_list_contains_exact(
+        layer: KnowledgeLayer,
+        predicate: KnowledgePredicate,
+        value: impl Into<String>,
+    ) -> Result<Self, RuleEngineError> {
+        Ok(Self(ExpressionNode::TextListContainsExact {
+            layer,
+            predicate,
+            value: non_empty(value, "text-list exact value")?,
+        }))
+    }
+
     /// Matches one semantic relationship in the captured ontology.
     pub fn ontology_relation(
         subject: ConceptId,
@@ -284,7 +310,9 @@ impl Expression {
                 expressions.iter().all(Self::uses_only_evidence)
             },
             ExpressionNode::Not { expression } => expression.uses_only_evidence(),
-            ExpressionNode::Claim { layer, .. } | ExpressionNode::TextContains { layer, .. } => {
+            ExpressionNode::Claim { layer, .. }
+            | ExpressionNode::TextContains { layer, .. }
+            | ExpressionNode::TextListContainsExact { layer, .. } => {
                 matches!(layer, KnowledgeLayer::Evidence)
             },
             ExpressionNode::OntologyRelation { .. } => false,
@@ -312,6 +340,11 @@ impl<'de> Deserialize<'de> for Expression {
             ExpressionNode::TextContains { needle, .. } if needle.trim().is_empty() => {
                 return Err(serde::de::Error::custom(RuleEngineError::EmptyValue {
                     field: "text-match needle",
+                }));
+            },
+            ExpressionNode::TextListContainsExact { value, .. } if value.trim().is_empty() => {
+                return Err(serde::de::Error::custom(RuleEngineError::EmptyValue {
+                    field: "text-list exact value",
                 }));
             },
             _ => {},
@@ -435,6 +468,13 @@ fn evaluate_node(
             *ascii_case_insensitive,
             snapshot,
         )),
+        ExpressionNode::TextListContainsExact {
+            layer,
+            predicate,
+            value,
+        } => Ok(evaluate_text_list_contains_exact(
+            *layer, predicate, value, snapshot,
+        )),
         ExpressionNode::OntologyRelation {
             subject,
             relation,
@@ -532,6 +572,79 @@ fn text_contains(value: &str, needle: &str, ascii_case_insensitive: bool) -> boo
     } else {
         value.contains(needle)
     }
+}
+
+fn evaluate_text_list_contains_exact(
+    layer: KnowledgeLayer,
+    predicate: &KnowledgePredicate,
+    value: &str,
+    snapshot: &KnowledgeSnapshot,
+) -> ExpressionTrace {
+    let matches_list = |candidate: &EvidenceValue| text_list_contains_exact(candidate, value);
+    let mut evidence_ids = BTreeSet::new();
+    let matched = match layer {
+        KnowledgeLayer::Evidence => {
+            let matches: Vec<_> = snapshot
+                .evidence()
+                .iter()
+                .filter(|evidence| {
+                    evidence.predicate() == predicate && matches_list(evidence.value())
+                })
+                .collect();
+            evidence_ids.extend(matches.iter().map(|evidence| evidence.id().clone()));
+            !matches.is_empty()
+        },
+        KnowledgeLayer::Fact => {
+            let matches: Vec<_> = snapshot
+                .facts()
+                .iter()
+                .filter(|fact| fact.predicate() == predicate && matches_list(fact.value()))
+                .collect();
+            evidence_ids.extend(
+                matches
+                    .iter()
+                    .flat_map(|fact| fact.evidence_ids().iter().cloned()),
+            );
+            !matches.is_empty()
+        },
+        KnowledgeLayer::Hypothesis => {
+            let matches: Vec<_> = snapshot
+                .hypotheses()
+                .iter()
+                .filter(|hypothesis| {
+                    hypothesis.predicate() == predicate && matches_list(hypothesis.value())
+                })
+                .collect();
+            evidence_ids.extend(matches.iter().flat_map(|hypothesis| {
+                hypothesis
+                    .belief()
+                    .evidence()
+                    .iter()
+                    .map(|observation| observation.evidence_id().clone())
+            }));
+            !matches.is_empty()
+        },
+    };
+
+    ExpressionTrace {
+        label: format!(
+            "{layer:?}:{}:list-contains-exact:{value}",
+            predicate.dotted()
+        ),
+        matched,
+        evidence_ids,
+        children: Vec::new(),
+    }
+}
+
+/// Exact membership in a text list. Matches only [`EvidenceValue::TextList`]
+/// with element-wise, case-sensitive equality — never a scalar text value and
+/// never a substring.
+fn text_list_contains_exact(value: &EvidenceValue, target: &str) -> bool {
+    matches!(
+        value,
+        EvidenceValue::TextList(values) if values.iter().any(|element| element == target)
+    )
 }
 
 fn evaluate_children(
@@ -1436,6 +1549,105 @@ mod tests {
             Expression::text_contains(KnowledgeLayer::Evidence, framework_predicate(), " ")
                 .is_err()
         );
+    }
+
+    fn form_controls() -> KnowledgePredicate {
+        KnowledgePredicate::new("http.response", "form-control-names").unwrap()
+    }
+
+    fn evaluate_exact(value: EvidenceValue, target: &str) -> ExpressionEvaluation {
+        let knowledge = KnowledgeBase::new();
+        knowledge
+            .insert_evidence(evidence(form_controls(), value))
+            .unwrap();
+        Expression::text_list_contains_exact(KnowledgeLayer::Evidence, form_controls(), target)
+            .unwrap()
+            .evaluate(&knowledge.snapshot_for_subject(&subject()))
+            .unwrap()
+    }
+
+    fn list(values: &[&str]) -> EvidenceValue {
+        EvidenceValue::TextList(values.iter().map(|value| (*value).to_owned()).collect())
+    }
+
+    #[test]
+    fn text_list_contains_exact_matches_only_whole_elements() {
+        // Exact element membership: the value equals a complete list element,
+        // never a substring and never a scalar text fallback.
+        assert!(evaluate_exact(list(&["_token", "email"]), "_token").matched());
+        assert!(evaluate_exact(list(&["_method"]), "_method").matched());
+
+        for (value, target) in [
+            (list(&["_token_old"]), "_token"),
+            (list(&["my_token"]), "_token"),
+            (list(&["_METHOD"]), "_method"),
+            (list(&[]), "_token"),
+            // A scalar Text value never satisfies a list-membership predicate.
+            (EvidenceValue::Text("_token".to_owned()), "_token"),
+        ] {
+            assert!(
+                !evaluate_exact(value.clone(), target).matched(),
+                "`{value:?}` must not contain-exact `{target}`"
+            );
+        }
+    }
+
+    #[test]
+    fn text_list_contains_exact_attributes_only_the_contributing_evidence() {
+        let knowledge = KnowledgeBase::new();
+        let matching = evidence(form_controls(), list(&["email", "_token"]));
+        let matching_id = matching.id().clone();
+        let other = evidence(form_controls(), list(&["username", "_token_old"]));
+        let other_id = other.id().clone();
+        knowledge
+            .insert_evidence_batch(vec![matching, other])
+            .unwrap();
+
+        let evaluation = Expression::text_list_contains_exact(
+            KnowledgeLayer::Evidence,
+            form_controls(),
+            "_token",
+        )
+        .unwrap()
+        .evaluate(&knowledge.snapshot_for_subject(&subject()))
+        .unwrap();
+
+        assert!(evaluation.matched());
+        assert_eq!(evaluation.evidence_ids(), &BTreeSet::from([matching_id]));
+        assert!(!evaluation.evidence_ids().contains(&other_id));
+        assert!(evaluation.trace().label().contains("list-contains-exact"));
+    }
+
+    #[test]
+    fn text_list_contains_exact_validates_and_round_trips() {
+        let expression = Expression::text_list_contains_exact(
+            KnowledgeLayer::Evidence,
+            form_controls(),
+            "_token",
+        )
+        .unwrap();
+        let encoded = serde_json::to_value(&expression).unwrap();
+        assert_eq!(encoded["op"], "text_list_contains_exact");
+        assert_eq!(
+            serde_json::from_value::<Expression>(encoded).unwrap(),
+            expression
+        );
+
+        // Empty / whitespace-only values are rejected at both construction and
+        // deserialization; values are never silently trimmed.
+        assert!(Expression::text_list_contains_exact(
+            KnowledgeLayer::Evidence,
+            form_controls(),
+            " "
+        )
+        .is_err());
+        assert!(serde_json::from_value::<Expression>(serde_json::json!({
+            "op": "text_list_contains_exact",
+            "layer": "evidence",
+            "predicate": form_controls(),
+            "value": "   "
+        }))
+        .is_err());
     }
 
     #[test]
