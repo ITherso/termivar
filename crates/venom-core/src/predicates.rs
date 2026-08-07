@@ -247,6 +247,15 @@ impl WebKnowledgePredicate {
     /// Disclosed or inferred authentication mechanism.
     pub const AUTHENTICATION_MECHANISM: PredicateDescriptor =
         PredicateDescriptor::new("authentication", "mechanism", "authentication.mechanism");
+    /// A form-control naming convention observed in a bounded response sample.
+    ///
+    /// The value is a normalized convention label (e.g. `csrf-token`,
+    /// `method-override`), never a framework identity. It records that an
+    /// observed control name matches a convention *compatible with* a framework
+    /// — it does not assert the framework generated the form, that the parameter
+    /// is accepted, or that the observed control set is complete.
+    pub const FORM_CONVENTION: PredicateDescriptor =
+        PredicateDescriptor::new("web.form", "convention", "web.form.convention");
 }
 
 /// Raw, atomic API comparison observations.

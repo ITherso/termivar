@@ -35,7 +35,7 @@ pub const STANDARD_WEB_CONCEPT_COUNT: usize = 14;
 pub const STANDARD_WEB_AXIOM_COUNT: usize = 16;
 
 /// Number of deterministic fingerprint rules defined by [`StandardWebReasoning`].
-pub const STANDARD_WEB_RULE_COUNT: usize = 8;
+pub const STANDARD_WEB_RULE_COUNT: usize = 10;
 
 /// Failures while constructing or installing the standard web profile.
 #[derive(Debug, Error)]
@@ -269,7 +269,57 @@ fn standard_rules() -> Result<Vec<ReasoningRule>, RuleEngineError> {
             "X-Powered-By contains the PHP runtime token",
         )?,
         sanctum_cookie_rule()?,
+        form_convention_rule(
+            "web.form.convention.csrf-token",
+            "_token",
+            "csrf-token",
+            "_token matches a CSRF form-field convention used by Laravel",
+        )?,
+        form_convention_rule(
+            "web.form.convention.method-override",
+            "_method",
+            "method-override",
+            "_method matches an HTTP method-override form-field convention used by Laravel",
+        )?,
     ])
+}
+
+/// A zero-request reasoning rule that maps one exact form-control name to a
+/// normalized convention label. It reads only the deterministic
+/// `http.response.form-control-names` observation and concludes a **Weak,
+/// Supported** `web.form.convention` hypothesis — never Confirmed (only a
+/// verifier stage may confirm). The claim is "compatible with Laravel,
+/// observed"; it never asserts the framework, that the parameter is accepted,
+/// or that the control set is complete.
+fn form_convention_rule(
+    id: &str,
+    marker: &str,
+    convention: &str,
+    rationale: &str,
+) -> Result<ReasoningRule, RuleEngineError> {
+    let form_controls = HttpEvidencePredicate::RESPONSE_FORM_CONTROL_NAMES.into_knowledge();
+    ReasoningRule::new(
+        id,
+        Expression::text_list_contains_exact(
+            KnowledgeLayer::Evidence,
+            form_controls.clone(),
+            marker,
+        )?,
+        HypothesisConclusion::new(
+            WebKnowledgePredicate::FORM_CONVENTION.into(),
+            EvidenceValue::Text(convention.to_owned()),
+            probability(5)?,
+            HypothesisStrength::Weak,
+            HypothesisState::Supported,
+            vec![list_exact_calibration(
+                form_controls,
+                marker,
+                90,
+                10,
+                rationale,
+            )?],
+        )?,
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -497,6 +547,21 @@ fn exact_calibration(
     )
 }
 
+fn list_exact_calibration(
+    predicate: KnowledgePredicate,
+    value: &str,
+    likelihood_if_true: u8,
+    likelihood_if_false: u8,
+    rationale: &str,
+) -> Result<EvidenceCalibration, RuleEngineError> {
+    EvidenceCalibration::new(
+        EvidenceSelector::text_list_contains_exact(predicate, value)?,
+        probability(likelihood_if_true)?,
+        probability(likelihood_if_false)?,
+        rationale,
+    )
+}
+
 fn probability(percent: u8) -> Result<Probability, RuleEngineError> {
     Ok(Probability::from_percent(percent)?)
 }
@@ -636,5 +701,122 @@ mod tests {
         engine.apply(&knowledge, &subject()).unwrap();
 
         assert!(knowledge.hypotheses_for_subject(&subject()).is_empty());
+    }
+
+    fn form_controls(values: &[&str]) -> Evidence {
+        Evidence::new(
+            subject(),
+            EvidenceKind::Http,
+            HttpEvidencePredicate::RESPONSE_FORM_CONTROL_NAMES.into_knowledge(),
+            EvidenceValue::TextList(values.iter().map(|value| (*value).to_owned()).collect()),
+            EvidenceSource::new("http.evidence", "test-observation").unwrap(),
+            ConfidenceScore::MAX,
+        )
+    }
+
+    fn convention_hypotheses(controls: &[&str]) -> Vec<Hypothesis> {
+        let knowledge = KnowledgeBase::new();
+        knowledge.insert_evidence(form_controls(controls)).unwrap();
+        let mut engine = RuleEngine::new();
+        StandardWebReasoning::new()
+            .unwrap()
+            .install(&knowledge, &mut engine)
+            .unwrap();
+        engine.apply(&knowledge, &subject()).unwrap();
+        knowledge
+            .hypotheses_for_subject(&subject())
+            .into_iter()
+            .filter(|hypothesis| {
+                hypothesis.predicate() == &WebKnowledgePredicate::FORM_CONVENTION.into_knowledge()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn exact_token_marker_maps_to_a_supported_csrf_convention() {
+        let conventions = convention_hypotheses(&["_token", "email"]);
+        assert_eq!(conventions.len(), 1);
+        let csrf = &conventions[0];
+        assert_eq!(csrf.predicate().dotted(), "web.form.convention");
+        assert_eq!(csrf.value(), &EvidenceValue::Text("csrf-token".to_owned()));
+        assert_eq!(csrf.strength(), HypothesisStrength::Weak);
+        // A convention observation is a candidate signal, never conclusive: only
+        // a verifier stage may confirm a hypothesis.
+        assert_eq!(csrf.state(), HypothesisState::Supported);
+        assert_ne!(csrf.state(), HypothesisState::Confirmed);
+        assert_eq!(csrf.belief().evidence().len(), 1);
+    }
+
+    #[test]
+    fn exact_method_marker_maps_to_a_supported_method_override_convention() {
+        let conventions = convention_hypotheses(&["_method"]);
+        assert_eq!(conventions.len(), 1);
+        assert_eq!(
+            conventions[0].value(),
+            &EvidenceValue::Text("method-override".to_owned())
+        );
+        assert_eq!(conventions[0].state(), HypothesisState::Supported);
+    }
+
+    #[test]
+    fn non_exact_and_unrelated_markers_produce_no_convention() {
+        for controls in [
+            &["_token_old"][..],
+            &["my_token"][..],
+            &["_METHOD"][..],
+            &["email", "password"][..],
+        ] {
+            assert!(
+                convention_hypotheses(controls).is_empty(),
+                "controls {controls:?} must not produce a form convention"
+            );
+        }
+    }
+
+    #[test]
+    fn both_markers_produce_two_distinct_supported_conventions() {
+        let mut values: Vec<_> = convention_hypotheses(&["_token", "_method", "email"])
+            .iter()
+            .map(|hypothesis| match hypothesis.value() {
+                EvidenceValue::Text(text) => text.clone(),
+                other => panic!("unexpected convention value {other:?}"),
+            })
+            .collect();
+        values.sort();
+        assert_eq!(values, vec!["csrf-token", "method-override"]);
+    }
+
+    #[test]
+    fn convention_provenance_excludes_substring_only_records() {
+        // The calibration uses exact text-list membership, so a separate record
+        // that only substring-contains the marker is never cited as provenance.
+        let knowledge = KnowledgeBase::new();
+        let exact = form_controls(&["_token"]);
+        let exact_id = exact.id().clone();
+        let substring_only = form_controls(&["_token_backup"]);
+        let substring_id = substring_only.id().clone();
+        knowledge
+            .insert_evidence_batch(vec![exact, substring_only])
+            .unwrap();
+        let mut engine = RuleEngine::new();
+        StandardWebReasoning::new()
+            .unwrap()
+            .install(&knowledge, &mut engine)
+            .unwrap();
+        engine.apply(&knowledge, &subject()).unwrap();
+
+        let csrf = knowledge
+            .hypotheses_for_subject(&subject())
+            .into_iter()
+            .find(|hypothesis| hypothesis.value() == &EvidenceValue::Text("csrf-token".to_owned()))
+            .expect("csrf-token convention present");
+        let cited: Vec<_> = csrf
+            .belief()
+            .evidence()
+            .iter()
+            .map(|observation| observation.evidence_id().clone())
+            .collect();
+        assert!(cited.contains(&exact_id));
+        assert!(!cited.contains(&substring_id));
     }
 }
