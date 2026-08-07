@@ -13,16 +13,11 @@
 //! typed observations. It does not classify vulnerabilities, follow redirects,
 //! choose follow-up actions, or mutate the knowledge base directly.
 
-use std::{
-    collections::BTreeMap,
-    collections::BTreeSet,
-    fmt,
-    sync::{Arc, LazyLock},
-    time::Duration,
-};
+use std::{collections::BTreeMap, collections::BTreeSet, fmt, sync::Arc, time::Duration};
 
 use async_trait::async_trait;
-use regex::Regex;
+use html5ever::{parse_document, tendril::TendrilSink, ParseOpts};
+use markup5ever_rcdom::{Handle, NodeData, RcDom};
 use reqwest::{
     header::{HeaderMap, HeaderName, HeaderValue},
     Method, StatusCode, Url,
@@ -1187,64 +1182,43 @@ fn valid_cookie_name(name: &str) -> bool {
         })
 }
 
-// Staged strippers: each removes a region where markup-looking text is NOT a
-// real HTML start tag. In well-formed HTML a literal `<` inside text or an
-// attribute value is escaped (`&lt;`), so after these regions are removed any
-// remaining `<input|select|textarea …>` is a genuine start tag. The extraction
-// is deliberately conservative — it may miss controls (unquoted values,
-// malformed markup) but must not invent them.
-static FORM_COMMENT_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?s)<!--.*?-->").expect("valid comment regex"));
-static FORM_SCRIPT_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?is)<script\b[^>]*>.*?</\s*script\s*>").expect("valid script"));
-static FORM_STYLE_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?is)<style\b[^>]*>.*?</\s*style\s*>").expect("valid style"));
-static FORM_TITLE_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?is)<title\b[^>]*>.*?</\s*title\s*>").expect("valid title"));
-// Collapse a `textarea` element to just its opening tag: its own `name` is kept
-// but its RCDATA content (which may contain literal markup text) is dropped.
-static FORM_TEXTAREA_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?is)(<textarea\b[^>]*>).*?</\s*textarea\s*>").expect("valid textarea regex")
-});
-// A `name` attribute on an `input`/`select`/`textarea` start tag. The character
-// class before `name` requires an attribute boundary (whitespace or a preceding
-// attribute-value quote), so `data-name`/`formname` do not match. Only the name
-// attribute's own value is captured — never a `value=` attribute.
-static FORM_NAME_DQ_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"(?is)<(?:input|select|textarea)\b[^>]*?[\s"']name\s*=\s*"([^"]*)""#)
-        .expect("valid double-quoted name regex")
-});
-static FORM_NAME_SQ_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"(?is)<(?:input|select|textarea)\b[^>]*?[\s"']name\s*=\s*'([^']*)'"#)
-        .expect("valid single-quoted name regex")
-});
-
 /// Conservatively extracts named HTML form-control names (`input`, `select`,
 /// `textarea` `name` attributes) from a bounded response sample.
 ///
-/// Comment, `script`/`style`, and `title` regions are stripped and `textarea`
-/// elements are collapsed to their opening tag before any `name` is read, so
-/// markup-looking text inside comments, scripts, or a textarea body is never
-/// mistaken for a control. Only control *names* are returned — never values —
-/// deduplicated and in deterministic (sorted) order. An empty result means no
-/// control was conservatively observed; it never asserts that none exist.
+/// A real, spec-compliant HTML parser (`html5ever`, via an `RcDom` tree) drives
+/// the extraction, so attribute quote-state, comments, `script`/`style` raw
+/// text, and `textarea`/`title` RCDATA are handled by tree construction:
+/// markup-looking text inside a comment, a script string, a textarea body, or
+/// another element's quoted attribute value is never mistaken for a control.
+/// Only the `name` attribute of an `input`/`select`/`textarea` element is read;
+/// names are non-empty, deduplicated, and returned in deterministic (sorted)
+/// order. Control *values* are never copied here. An empty result means no
+/// control was observed; it never asserts that none exist.
 fn extract_form_control_names(sample: &str) -> Vec<String> {
-    let without_comments = FORM_COMMENT_RE.replace_all(sample, "");
-    let without_script = FORM_SCRIPT_RE.replace_all(&without_comments, "");
-    let without_style = FORM_STYLE_RE.replace_all(&without_script, "");
-    let without_title = FORM_TITLE_RE.replace_all(&without_style, "");
-    let collapsed = FORM_TEXTAREA_RE.replace_all(&without_title, "$1");
-
+    let dom = parse_document(RcDom::default(), ParseOpts::default())
+        .from_utf8()
+        .one(sample.as_bytes());
     let mut names = BTreeSet::new();
-    for regex in [&*FORM_NAME_DQ_RE, &*FORM_NAME_SQ_RE] {
-        for captures in regex.captures_iter(&collapsed) {
-            let name = captures.get(1).map_or("", |value| value.as_str().trim());
-            if !name.is_empty() {
-                names.insert(name.to_owned());
+    collect_form_control_names(&dom.document, &mut names);
+    names.into_iter().collect()
+}
+
+fn collect_form_control_names(handle: &Handle, names: &mut BTreeSet<String>) {
+    if let NodeData::Element { name, attrs, .. } = &handle.data {
+        if matches!(name.local.as_ref(), "input" | "select" | "textarea") {
+            for attr in attrs.borrow().iter() {
+                if attr.name.local.as_ref() == "name" {
+                    let value = attr.value.trim();
+                    if !value.is_empty() {
+                        names.insert(value.to_owned());
+                    }
+                }
             }
         }
     }
-    names.into_iter().collect()
+    for child in handle.children.borrow().iter() {
+        collect_form_control_names(child, names);
+    }
 }
 
 fn textual_response(headers: &HeaderMap) -> bool {
@@ -1469,6 +1443,18 @@ mod tests {
             "<input data-name=\"nickname\" formname=\"x\" name=\"real\">",
         );
         assert_eq!(names, ["real"]);
+    }
+
+    #[test]
+    fn form_control_extraction_respects_attribute_quote_state() {
+        // A `name=` sequence inside another attribute's quoted value is text, not
+        // a real attribute — the tokenizer tracks quote state so it is never read.
+        assert!(extract_form_control_names("<input title=\" name='fake'\">").is_empty());
+        assert!(extract_form_control_names("<input title=' name=\"fake\"'>").is_empty());
+        assert_eq!(
+            extract_form_control_names("<input title=\"ordinary\" name=\"real\">"),
+            ["real"]
+        );
     }
 
     struct CountedServer {
@@ -2092,7 +2078,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn form_control_capture_records_names_never_values() {
+    async fn form_control_names_predicate_carries_names_only_not_values() {
         let url = serve_html_once(
             "<input type=\"hidden\" name=\"_token\" value=\"SUPER_SECRET_CSRF\">\
              <input type=\"password\" name=\"password\" value=\"hunter2\">",
@@ -2107,15 +2093,24 @@ mod tests {
             .unwrap();
         let evidence = receipt.after_execution().evidence();
 
-        // The evidence record carries only control names, deduplicated and sorted;
-        // it never contains a control value.
+        // The derived form-control-names predicate carries only control names,
+        // deduplicated and sorted; control values are never copied into it.
+        let names = value(evidence, HttpEvidencePredicate::RESPONSE_FORM_CONTROL_NAMES);
         assert_eq!(
-            value(evidence, HttpEvidencePredicate::RESPONSE_FORM_CONTROL_NAMES),
+            names,
             Some(&EvidenceValue::TextList(vec![
                 "_token".to_owned(),
                 "password".to_owned()
             ]))
         );
+        if let Some(EvidenceValue::TextList(list)) = names {
+            assert!(list.iter().all(|name| name != "SUPER_SECRET_CSRF"));
+            assert!(list.iter().all(|name| name != "hunter2"));
+        }
+        // Note: this asserts the boundary of the DERIVED predicate only. The
+        // separate host-authorized RESPONSE_BODY_SAMPLE intentionally contains the
+        // original bounded HTML and may include these value= contents; that is not
+        // this feature's concern and is deliberately not asserted here.
     }
 
     #[tokio::test]

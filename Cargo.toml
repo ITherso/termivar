@@ -59,6 +59,8 @@ tower-http = { version = "0.5", features = ["trace", "cors"] }
 futures = "0.3"
 sha2 = "0.10"
 html-escape = "0.2"
+html5ever = "0.39"
+markup5ever_rcdom = "0.39"
 tempfile = "3.8"
 memmap2 = "0.9"
 sqlx = { version = "0.8", features = ["sqlite", "runtime-tokio"] }
