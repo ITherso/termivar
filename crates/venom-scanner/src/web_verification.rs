@@ -310,7 +310,7 @@ fn nginx_version_disclosure_condition() -> Result<Expression, RuleEngineError> {
                 Expression::text_contains_ascii_case_insensitive(
                     KnowledgeLayer::Evidence,
                     HttpEvidencePredicate::HEADER_SERVER.into(),
-                    &format!("nginx/{digit}"),
+                    format!("nginx/{digit}"),
                 )
             })
             .collect::<Result<Vec<_>, RuleEngineError>>()?,
