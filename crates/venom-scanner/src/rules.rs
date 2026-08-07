@@ -736,6 +736,8 @@ pub struct EvidenceSelector {
     value: Option<EvidenceValue>,
     #[serde(skip_serializing_if = "Option::is_none")]
     text_contains_ascii_case_insensitive: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    text_list_contains_exact: Option<String>,
 }
 
 impl EvidenceSelector {
@@ -745,6 +747,7 @@ impl EvidenceSelector {
             predicate,
             value: Some(value),
             text_contains_ascii_case_insensitive: None,
+            text_list_contains_exact: None,
         }
     }
 
@@ -754,6 +757,7 @@ impl EvidenceSelector {
             predicate,
             value: None,
             text_contains_ascii_case_insensitive: None,
+            text_list_contains_exact: None,
         }
     }
 
@@ -768,6 +772,27 @@ impl EvidenceSelector {
             text_contains_ascii_case_insensitive: Some(non_empty(
                 needle,
                 "evidence-selector text needle",
+            )?),
+            text_list_contains_exact: None,
+        })
+    }
+
+    /// Selects evidence whose [`EvidenceValue::TextList`] contains an exact
+    /// element. This is the calibration companion to
+    /// [`Expression::text_list_contains_exact`]: it attributes the likelihood
+    /// only to a record carrying the exact element, never a substring match and
+    /// never a scalar text value — so convention provenance stays truthful.
+    pub fn text_list_contains_exact(
+        predicate: KnowledgePredicate,
+        value: impl Into<String>,
+    ) -> Result<Self, RuleEngineError> {
+        Ok(Self {
+            predicate,
+            value: None,
+            text_contains_ascii_case_insensitive: None,
+            text_list_contains_exact: Some(non_empty(
+                value,
+                "evidence-selector text-list exact value",
             )?),
         })
     }
@@ -787,6 +812,11 @@ impl EvidenceSelector {
         self.text_contains_ascii_case_insensitive.as_deref()
     }
 
+    /// Returns the optional exact text-list membership constraint.
+    pub fn text_list_exact_value(&self) -> Option<&str> {
+        self.text_list_contains_exact.as_deref()
+    }
+
     fn matches(&self, evidence: &venom_core::Evidence) -> bool {
         evidence.predicate() == &self.predicate
             && self
@@ -800,6 +830,10 @@ impl EvidenceSelector {
                     evidence_value_texts(evidence.value())
                         .any(|text| text_contains(text, needle, true))
                 })
+            && self
+                .text_list_contains_exact
+                .as_ref()
+                .is_none_or(|value| text_list_contains_exact(evidence.value(), value))
     }
 }
 
@@ -814,12 +848,17 @@ impl<'de> Deserialize<'de> for EvidenceSelector {
             value: Option<EvidenceValue>,
             #[serde(default)]
             text_contains_ascii_case_insensitive: Option<String>,
+            #[serde(default)]
+            text_list_contains_exact: Option<String>,
         }
 
         let wire = WireSelector::deserialize(deserializer)?;
-        if wire.value.is_some() && wire.text_contains_ascii_case_insensitive.is_some() {
+        let matchers = usize::from(wire.value.is_some())
+            + usize::from(wire.text_contains_ascii_case_insensitive.is_some())
+            + usize::from(wire.text_list_contains_exact.is_some());
+        if matchers > 1 {
             return Err(serde::de::Error::custom(
-                "evidence selector cannot combine exact and text matching",
+                "evidence selector cannot combine exact, text, and text-list matching",
             ));
         }
         if wire
@@ -831,10 +870,20 @@ impl<'de> Deserialize<'de> for EvidenceSelector {
                 field: "evidence-selector text needle",
             }));
         }
+        if wire
+            .text_list_contains_exact
+            .as_ref()
+            .is_some_and(|value| value.trim().is_empty())
+        {
+            return Err(serde::de::Error::custom(RuleEngineError::EmptyValue {
+                field: "evidence-selector text-list exact value",
+            }));
+        }
         Ok(Self {
             predicate: wire.predicate,
             value: wire.value,
             text_contains_ascii_case_insensitive: wire.text_contains_ascii_case_insensitive,
+            text_list_contains_exact: wire.text_list_contains_exact,
         })
     }
 }
@@ -1648,6 +1697,40 @@ mod tests {
             "value": "   "
         }))
         .is_err());
+    }
+
+    #[test]
+    fn text_list_evidence_selector_matches_validates_and_round_trips() {
+        let selector =
+            EvidenceSelector::text_list_contains_exact(form_controls(), "_token").unwrap();
+        assert_eq!(selector.text_list_exact_value(), Some("_token"));
+
+        // Exact element membership only: a list with the exact element matches; a
+        // substring-only element and a scalar Text value do not.
+        assert!(selector.matches(&evidence(form_controls(), list(&["_token", "email"]))));
+        assert!(!selector.matches(&evidence(form_controls(), list(&["_token_old"]))));
+        assert!(!selector.matches(&evidence(
+            form_controls(),
+            EvidenceValue::Text("_token".to_owned())
+        )));
+
+        let encoded = serde_json::to_value(&selector).unwrap();
+        assert_eq!(encoded["text_list_contains_exact"], "_token");
+        assert_eq!(
+            serde_json::from_value::<EvidenceSelector>(encoded).unwrap(),
+            selector
+        );
+
+        // Empty value rejected, and matchers are mutually exclusive on the wire.
+        assert!(EvidenceSelector::text_list_contains_exact(form_controls(), " ").is_err());
+        assert!(
+            serde_json::from_value::<EvidenceSelector>(serde_json::json!({
+                "predicate": form_controls(),
+                "value": { "type": "text", "value": "_token" },
+                "text_list_contains_exact": "_token"
+            }))
+            .is_err()
+        );
     }
 
     #[test]
