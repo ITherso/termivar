@@ -21,18 +21,21 @@
 //!   halting with `no_eligible_action`.
 //! * **Positive activation fixtures** deliberately trip the built-in reasoning
 //!   rules. They fall into three truthful classes:
-//!   * **Capability gap:** `php` / `laravel-input` create/depend on a hypothesis
-//!     but their planner action is always excluded as `policy_suppressed` because
-//!     no built-in discovery executor routes them — visible gap, not a runtime
-//!     bug.
-//!   * **Executor-backed end to end:** `nginx` / `apache` / `http-basic` /
-//!     `http-bearer` / `livewire` run reasoning -> planning -> execution ->
+//!   * **Capability gap:** `laravel-input` depends on the Laravel hypothesis but
+//!     its planner action is always excluded as `policy_suppressed` because no
+//!     built-in discovery executor routes it — visible gap, not a runtime bug.
+//!   * **Executor-backed end to end:** `nginx` / `apache` / `php` / `http-basic`
+//!     / `http-bearer` / `livewire` run reasoning -> planning -> execution ->
 //!     verification to a terminal verification outcome (Success / complete)
 //!     without adding any capability. The nginx/apache configuration routes
 //!     succeed only on a version-bearing `Server` disclosure (`nginx/<version>`,
 //!     `Apache/<version>`); a bare product token gates the action but its probe
 //!     resolves to `unknown` and defers to human review, and a blocked status
-//!     (401/403/429) resolves to `blocked` even when a version is disclosed.
+//!     (401/403/429) resolves to `blocked` even when a version is disclosed. php
+//!     input discovery succeeds only when at least one named HTML form control is
+//!     observed in the bounded sample (candidate discovery, never server
+//!     acceptance and never a completeness claim); an HTML page with no named
+//!     control resolves to `unknown` and defers to human review.
 //!   * **Activated but not executed end to end:** Laravel route discovery is
 //!     dispatched but resolves to `needs_review` and defers to human review;
 //!     Sanctum is activated and planned but **never dispatched**, because the same
@@ -478,14 +481,12 @@ fn bearer() -> &'static str {
     StandardWebActionKind::HttpBearerAuthBoundary.action_id()
 }
 
-/// The two semantic actions with no built-in discovery executor. Always excluded
-/// as `policy_suppressed`, independent of what a fixture discloses. nginx and
-/// apache are no longer here: they are now executor-backed routes.
+/// The one semantic action with no built-in discovery executor. Always excluded
+/// as `policy_suppressed`, independent of what a fixture discloses. nginx,
+/// apache, and php input discovery are no longer here: they are executor-backed
+/// routes.
 fn expected_unsupported() -> BTreeSet<String> {
-    [php(), laravel_input()]
-        .into_iter()
-        .map(str::to_owned)
-        .collect()
+    [laravel_input()].into_iter().map(str::to_owned).collect()
 }
 
 fn signal_predicates() -> [&'static str; 5] {
@@ -674,34 +675,6 @@ async fn repeated_identical_response_is_deterministic() {
 
     assert_inert(&first);
     assert_eq!(first, second, "identical fixtures must observe identically");
-}
-
-// --- Positive activation fixtures: capability gap (policy-suppressed) ---------
-
-#[tokio::test]
-async fn powered_by_php_activates_a_hypothesis_but_is_policy_suppressed() {
-    let observation = observe_instant(response(
-        "200 OK",
-        &["X-Powered-By: PHP/8.3.7", "Content-Type: text/html"],
-        b"hi",
-    ))
-    .await;
-
-    assert_universal(&observation);
-    assert!(observation.evidence.contains("http.header.x-powered-by"));
-    assert_eq!(observation.hypotheses.len(), 1);
-    assert_eq!(observation.hypotheses[0].predicate, "technology.language");
-    assert_eq!(observation.hypotheses[0].value, "php");
-    assert_eq!(observation.hypotheses[0].strength, HypothesisStrength::Weak);
-    assert_eq!(
-        initial_exclusion(&observation, php()),
-        Some("policy_suppressed")
-    );
-    assert!(initial_eligible(&observation).is_empty());
-    assert!(planned_dispatched(&observation).is_empty());
-    assert!(observation.outcomes.is_empty());
-    assert_eq!(observation.terminal, "halt:no_eligible_action");
-    assert_eq!(observation.total_requests, 1);
 }
 
 // --- Positive activation fixtures: supported end-to-end paths -----------------
@@ -936,6 +909,121 @@ async fn blocked_apache_probe_reports_blocked_even_with_a_version() {
     assert_eq!(
         observation.methods,
         vec!["GET".to_owned(), "HEAD".to_owned()]
+    );
+}
+
+#[tokio::test]
+async fn php_form_control_discovery_drives_a_supported_success() {
+    // A PHP page whose bounded HTML sample contains named form controls: the GET
+    // probe observes the control names and the objective completes. Bootstrap GET
+    // + passive GET, one Success outcome, no active verification.
+    let observation = observe_instant(response(
+        "200 OK",
+        &["X-Powered-By: PHP/8.3.7", "Content-Type: text/html"],
+        b"<form><input name=\"username\"><input name=\"email\"></form>",
+    ))
+    .await;
+
+    assert_universal(&observation);
+    assert!(observation.evidence.contains("http.header.x-powered-by"));
+    // The discovered control names are recorded as their own typed evidence.
+    assert!(observation
+        .evidence
+        .contains("http.response.form-control-names"));
+    assert_eq!(observation.hypotheses.len(), 1);
+    let hypothesis = &observation.hypotheses[0];
+    assert_eq!(hypothesis.predicate, "technology.language");
+    assert_eq!(hypothesis.value, "php");
+    assert_eq!(hypothesis.strength, HypothesisStrength::Weak);
+    assert_eq!(initial_eligible(&observation), [php().to_owned()]);
+    assert_eq!(initial_exclusion(&observation, php()), None);
+    assert_eq!(planned_dispatched(&observation), vec![php().to_owned()]);
+    assert_eq!(
+        observation.outcomes,
+        vec![(php().to_owned(), "success".to_owned())]
+    );
+    assert_eq!(observation.terminal, "complete");
+    assert_eq!(observation.total_requests, 2);
+    assert_eq!(observation.active_verifications, 0);
+    assert_eq!(
+        observation.methods,
+        vec!["GET".to_owned(), "GET".to_owned()]
+    );
+}
+
+#[tokio::test]
+async fn php_without_named_form_controls_defers_to_human_review() {
+    // A PHP HTML page with no named form control: the probe observes nothing to
+    // discover, so it resolves to `unknown` (passive then active) and defers to
+    // human review. Discovery success requires at least one observed name.
+    let observation = observe_instant(response(
+        "200 OK",
+        &["X-Powered-By: PHP/8.3.7", "Content-Type: text/html"],
+        b"<p>No form controls on this page.</p>",
+    ))
+    .await;
+
+    assert_universal(&observation);
+    assert!(!observation
+        .evidence
+        .contains("http.response.form-control-names"));
+    assert_eq!(observation.hypotheses[0].value, "php");
+    assert_eq!(initial_eligible(&observation), [php().to_owned()]);
+    assert_eq!(
+        planned_dispatched(&observation),
+        vec![php().to_owned(), php().to_owned()]
+    );
+    assert_eq!(
+        observation.outcomes,
+        vec![
+            (php().to_owned(), "unknown".to_owned()),
+            (php().to_owned(), "unknown".to_owned()),
+        ]
+    );
+    assert!(
+        !observation
+            .outcomes
+            .iter()
+            .any(|(_, status)| status == "success"),
+        "zero observed controls must never be a success: {:?}",
+        observation.outcomes
+    );
+    assert_eq!(observation.terminal, "await_human_review");
+    assert_eq!(observation.total_requests, 3);
+    assert_eq!(observation.active_verifications, 1);
+    assert_eq!(
+        observation.methods,
+        vec!["GET".to_owned(), "GET".to_owned(), "GET".to_owned()]
+    );
+}
+
+#[tokio::test]
+async fn blocked_php_probe_reports_blocked_even_with_form_controls() {
+    // A denying status (403) follows the shared blocked rule and outranks the
+    // form-control signal: even though the body carries a named control, the
+    // outcome is `blocked`, not `success`. Blocked is terminal for verification,
+    // so there is no active retry.
+    let observation = observe_instant(response(
+        "403 Forbidden",
+        &["X-Powered-By: PHP/8.3.7", "Content-Type: text/html"],
+        b"<form><input name=\"username\"></form>",
+    ))
+    .await;
+
+    assert_universal(&observation);
+    assert_eq!(observation.hypotheses[0].value, "php");
+    assert_eq!(initial_eligible(&observation), [php().to_owned()]);
+    assert_eq!(planned_dispatched(&observation), vec![php().to_owned()]);
+    assert_eq!(
+        observation.outcomes,
+        vec![(php().to_owned(), "blocked".to_owned())]
+    );
+    assert_eq!(observation.terminal, "await_human_review");
+    assert_eq!(observation.total_requests, 2);
+    assert_eq!(observation.active_verifications, 0);
+    assert_eq!(
+        observation.methods,
+        vec!["GET".to_owned(), "GET".to_owned()]
     );
 }
 

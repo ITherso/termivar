@@ -13,9 +13,16 @@
 //! typed observations. It does not classify vulnerabilities, follow redirects,
 //! choose follow-up actions, or mutate the knowledge base directly.
 
-use std::{collections::BTreeMap, collections::BTreeSet, fmt, sync::Arc, time::Duration};
+use std::{
+    collections::BTreeMap,
+    collections::BTreeSet,
+    fmt,
+    sync::{Arc, LazyLock},
+    time::Duration,
+};
 
 use async_trait::async_trait;
+use regex::Regex;
 use reqwest::{
     header::{HeaderMap, HeaderName, HeaderValue},
     Method, StatusCode, Url,
@@ -654,6 +661,7 @@ pub struct HttpEvidenceExecutor {
     requests: HttpRequestBroker,
     probes: Arc<dyn HttpProbeProvider>,
     payload: Option<HttpHeaderPayloadBinding>,
+    capture_form_control_names: bool,
 }
 
 impl HttpEvidenceExecutor {
@@ -711,6 +719,7 @@ impl HttpEvidenceExecutor {
             requests,
             probes,
             payload: None,
+            capture_form_control_names: false,
         })
     }
 
@@ -730,7 +739,21 @@ impl HttpEvidenceExecutor {
             requests,
             probes,
             payload: None,
+            capture_form_control_names: false,
         })
+    }
+
+    /// Enables conservative HTML form-control-name discovery for this executor.
+    ///
+    /// When enabled, and only when the body-capture policy authorizes a bounded
+    /// [`HttpBodyCapture::TextSample`] and the response is `text/html`, the
+    /// executor reads named form controls from the *same* bounded sample and
+    /// emits [`HttpEvidencePredicate::RESPONSE_FORM_CONTROL_NAMES`]. It never
+    /// opens a second content-capture path, and never records control values.
+    /// This is a deliberately narrow opt-in, not a generic extractor hook.
+    pub(crate) fn with_form_control_capture(mut self) -> Self {
+        self.capture_form_control_names = true;
+        self
     }
 
     /// Binds a header-valued payload strategy this executor will materialize.
@@ -925,6 +948,27 @@ impl HttpEvidenceExecutor {
             if textual_response(&response.headers) {
                 let decoded = String::from_utf8_lossy(&response.body);
                 let sample: String = decoded.chars().take(max_chars).collect();
+
+                // Form-control discovery reads the SAME bounded sample and only
+                // for text/html. It cannot run under MetadataOnly (no sample is
+                // computed here at all), so the body-capture policy is never
+                // bypassed. Only control names are recorded, never values, and
+                // only when at least one name is conservatively observed.
+                if self.capture_form_control_names
+                    && normalized_media_type(&response.headers).as_deref() == Some("text/html")
+                {
+                    let names = extract_form_control_names(&sample);
+                    if !names.is_empty() {
+                        evidence.push(self.observation(
+                            decision,
+                            EvidenceKind::Content,
+                            HttpEvidencePredicate::RESPONSE_FORM_CONTROL_NAMES.into(),
+                            EvidenceValue::TextList(names),
+                            "response-form-control-names",
+                        )?);
+                    }
+                }
+
                 evidence.push(self.observation(
                     decision,
                     EvidenceKind::Content,
@@ -1143,6 +1187,66 @@ fn valid_cookie_name(name: &str) -> bool {
         })
 }
 
+// Staged strippers: each removes a region where markup-looking text is NOT a
+// real HTML start tag. In well-formed HTML a literal `<` inside text or an
+// attribute value is escaped (`&lt;`), so after these regions are removed any
+// remaining `<input|select|textarea …>` is a genuine start tag. The extraction
+// is deliberately conservative — it may miss controls (unquoted values,
+// malformed markup) but must not invent them.
+static FORM_COMMENT_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?s)<!--.*?-->").expect("valid comment regex"));
+static FORM_SCRIPT_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?is)<script\b[^>]*>.*?</\s*script\s*>").expect("valid script"));
+static FORM_STYLE_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?is)<style\b[^>]*>.*?</\s*style\s*>").expect("valid style"));
+static FORM_TITLE_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?is)<title\b[^>]*>.*?</\s*title\s*>").expect("valid title"));
+// Collapse a `textarea` element to just its opening tag: its own `name` is kept
+// but its RCDATA content (which may contain literal markup text) is dropped.
+static FORM_TEXTAREA_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?is)(<textarea\b[^>]*>).*?</\s*textarea\s*>").expect("valid textarea regex")
+});
+// A `name` attribute on an `input`/`select`/`textarea` start tag. The character
+// class before `name` requires an attribute boundary (whitespace or a preceding
+// attribute-value quote), so `data-name`/`formname` do not match. Only the name
+// attribute's own value is captured — never a `value=` attribute.
+static FORM_NAME_DQ_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"(?is)<(?:input|select|textarea)\b[^>]*?[\s"']name\s*=\s*"([^"]*)""#)
+        .expect("valid double-quoted name regex")
+});
+static FORM_NAME_SQ_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"(?is)<(?:input|select|textarea)\b[^>]*?[\s"']name\s*=\s*'([^']*)'"#)
+        .expect("valid single-quoted name regex")
+});
+
+/// Conservatively extracts named HTML form-control names (`input`, `select`,
+/// `textarea` `name` attributes) from a bounded response sample.
+///
+/// Comment, `script`/`style`, and `title` regions are stripped and `textarea`
+/// elements are collapsed to their opening tag before any `name` is read, so
+/// markup-looking text inside comments, scripts, or a textarea body is never
+/// mistaken for a control. Only control *names* are returned — never values —
+/// deduplicated and in deterministic (sorted) order. An empty result means no
+/// control was conservatively observed; it never asserts that none exist.
+fn extract_form_control_names(sample: &str) -> Vec<String> {
+    let without_comments = FORM_COMMENT_RE.replace_all(sample, "");
+    let without_script = FORM_SCRIPT_RE.replace_all(&without_comments, "");
+    let without_style = FORM_STYLE_RE.replace_all(&without_script, "");
+    let without_title = FORM_TITLE_RE.replace_all(&without_style, "");
+    let collapsed = FORM_TEXTAREA_RE.replace_all(&without_title, "$1");
+
+    let mut names = BTreeSet::new();
+    for regex in [&*FORM_NAME_DQ_RE, &*FORM_NAME_SQ_RE] {
+        for captures in regex.captures_iter(&collapsed) {
+            let name = captures.get(1).map_or("", |value| value.as_str().trim());
+            if !name.is_empty() {
+                names.insert(name.to_owned());
+            }
+        }
+    }
+    names.into_iter().collect()
+}
+
 fn textual_response(headers: &HeaderMap) -> bool {
     joined_header(headers, "content-type")
         .map(|content_type| {
@@ -1301,6 +1405,71 @@ mod tests {
         DecisionLoopCommand, DecisionRunnerAdapter, KnowledgeBase, RuleEngine, RuntimeBudget,
         RuntimeBudgetDimension, StandardWebReasoning, TransportDispatchOutcome, VerificationCase,
     };
+
+    #[test]
+    fn form_control_extraction_reads_named_controls_sorted_and_deduplicated() {
+        let names = extract_form_control_names(
+            "<form>\
+             <input name=\"username\">\
+             <select name=\"country\"><option>x</option></select>\
+             <textarea name=\"comment\"></textarea>\
+             <input name=\"username\">\
+             <input name='remember'>\
+             </form>",
+        );
+        // Sorted, deduplicated, single- and double-quoted both read.
+        assert_eq!(names, ["comment", "country", "remember", "username"]);
+    }
+
+    #[test]
+    fn form_control_extraction_ignores_unnamed_or_valueless_names() {
+        let names = extract_form_control_names(
+            "<input type=\"submit\"><input name=\"\"><button name=\"go\">",
+        );
+        // Nameless/empty-name controls are skipped; button is not a target element.
+        assert!(names.is_empty());
+    }
+
+    #[test]
+    fn form_control_extraction_never_treats_commented_or_scripted_markup_as_controls() {
+        let names = extract_form_control_names(
+            "<!-- <input name=\"fake_comment\"> -->\
+             <script>const x = '<input name=\"fake_script\">';</script>\
+             <style>input[name=\"fake_style\"] { color: red; }</style>\
+             <input name=\"real\">",
+        );
+        assert_eq!(names, ["real"]);
+    }
+
+    #[test]
+    fn form_control_extraction_keeps_textarea_name_but_drops_its_body() {
+        let names = extract_form_control_names(
+            "<textarea name=\"real\">\n  <input name=\"fake_in_textarea\">\n</textarea>",
+        );
+        // The textarea's own name is a control; markup inside its body is text.
+        assert_eq!(names, ["real"]);
+    }
+
+    #[test]
+    fn form_control_extraction_records_names_never_values() {
+        let names = extract_form_control_names(
+            "<input type=\"hidden\" name=\"_token\" value=\"SUPER_SECRET_CSRF\">\
+             <input type=\"password\" name=\"password\" value=\"hunter2\">",
+        );
+        assert_eq!(names, ["_token", "password"]);
+        // The captured set must never leak any control value.
+        assert!(!names.iter().any(|name| name.contains("SUPER_SECRET_CSRF")));
+        assert!(!names.iter().any(|name| name.contains("hunter2")));
+    }
+
+    #[test]
+    fn form_control_extraction_does_not_confuse_suffix_attributes_with_name() {
+        // `data-name` / `formname` are not the `name` attribute and must not leak.
+        let names = extract_form_control_names(
+            "<input data-name=\"nickname\" formname=\"x\" name=\"real\">",
+        );
+        assert_eq!(names, ["real"]);
+    }
 
     struct CountedServer {
         target: Url,
@@ -1861,6 +2030,119 @@ mod tests {
             .iter()
             .find(|item| item.predicate() == &predicate)
             .map(Evidence::value)
+    }
+
+    /// Serves one `text/html` response with an auto-computed `Content-Length`, so
+    /// tests can vary the HTML body without hand-counting bytes.
+    async fn serve_html_once(body: impl Into<String>) -> Url {
+        let body = body.into();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = [0_u8; 2048];
+            let _ = stream.read(&mut request).await.unwrap();
+            stream.write_all(response.as_bytes()).await.unwrap();
+            stream.shutdown().await.unwrap();
+        });
+        Url::parse(&format!("http://{address}/probe")).unwrap()
+    }
+
+    /// A GET executor with form-control capture enabled, under the given body
+    /// policy — the exact wiring the php input-discovery route uses.
+    fn form_capturing_adapter(url: &Url, capture: HttpBodyCapture) -> DecisionRunnerAdapter {
+        let probe_url = url.clone();
+        let provider: Arc<dyn HttpProbeProvider> =
+            Arc::new(move |_request: &DecisionExecutionRequest| {
+                HttpProbe::new(probe_url.clone(), HttpProbeMethod::Get)
+            });
+        let policy = HttpEvidencePolicy::new([url.clone()], Duration::from_secs(2), 65_536)
+            .unwrap()
+            .with_body_capture(capture)
+            .unwrap();
+        let executor = HttpEvidenceExecutor::new(policy, provider)
+            .unwrap()
+            .with_form_control_capture();
+        let mut registry = DecisionExecutorRegistry::new();
+        registry.register(Arc::new(executor)).unwrap();
+        DecisionRunnerAdapter::new(registry)
+    }
+
+    #[tokio::test]
+    async fn form_control_capture_is_suppressed_under_metadata_only_policy() {
+        let url = serve_html_once("<form><input name=\"username\"></form>").await;
+        let adapter = form_capturing_adapter(&url, HttpBodyCapture::MetadataOnly);
+        let knowledge = KnowledgeBase::new();
+
+        let receipt = adapter
+            .execute_command(&command(&url), &knowledge)
+            .await
+            .unwrap();
+        let evidence = receipt.after_execution().evidence();
+
+        // MetadataOnly authorizes no bounded sample, so no body content — and
+        // therefore no derived form-control names — may enter the knowledge base.
+        assert!(value(evidence, HttpEvidencePredicate::RESPONSE_BODY_SAMPLE).is_none());
+        assert!(value(evidence, HttpEvidencePredicate::RESPONSE_FORM_CONTROL_NAMES).is_none());
+    }
+
+    #[tokio::test]
+    async fn form_control_capture_records_names_never_values() {
+        let url = serve_html_once(
+            "<input type=\"hidden\" name=\"_token\" value=\"SUPER_SECRET_CSRF\">\
+             <input type=\"password\" name=\"password\" value=\"hunter2\">",
+        )
+        .await;
+        let adapter =
+            form_capturing_adapter(&url, HttpBodyCapture::TextSample { max_chars: 8192 });
+        let knowledge = KnowledgeBase::new();
+
+        let receipt = adapter
+            .execute_command(&command(&url), &knowledge)
+            .await
+            .unwrap();
+        let evidence = receipt.after_execution().evidence();
+
+        // The evidence record carries only control names, deduplicated and sorted;
+        // it never contains a control value.
+        assert_eq!(
+            value(evidence, HttpEvidencePredicate::RESPONSE_FORM_CONTROL_NAMES),
+            Some(&EvidenceValue::TextList(vec![
+                "_token".to_owned(),
+                "password".to_owned()
+            ]))
+        );
+    }
+
+    #[tokio::test]
+    async fn form_control_past_the_sample_boundary_is_not_observed() {
+        // The early control is within the 64-char sample; the late one is past it
+        // and must not be discovered — the bounded sample never implies a complete
+        // set.
+        let padding = "x".repeat(80);
+        let url = serve_html_once(format!(
+            "<input name=\"early\">{padding}<input name=\"late\">"
+        ))
+        .await;
+        let adapter =
+            form_capturing_adapter(&url, HttpBodyCapture::TextSample { max_chars: 64 });
+        let knowledge = KnowledgeBase::new();
+
+        let receipt = adapter
+            .execute_command(&command(&url), &knowledge)
+            .await
+            .unwrap();
+        let evidence = receipt.after_execution().evidence();
+
+        assert_eq!(
+            value(evidence, HttpEvidencePredicate::RESPONSE_FORM_CONTROL_NAMES),
+            Some(&EvidenceValue::TextList(vec!["early".to_owned()]))
+        );
     }
 
     #[tokio::test]

@@ -120,6 +120,16 @@ impl HttpEvidencePredicate {
     /// Optional bounded textual response body sample.
     pub const RESPONSE_BODY_SAMPLE: PredicateDescriptor =
         PredicateDescriptor::new("http.response", "body-sample", "http.response.body-sample");
+    /// Named HTML form-control names (`input`/`select`/`textarea` `name`
+    /// attributes) conservatively observed in the bounded response sample.
+    /// Only control *names* are represented here; control values are never
+    /// recorded. Presence indicates candidate input discovery, not server
+    /// acceptance, and never implies a complete set.
+    pub const RESPONSE_FORM_CONTROL_NAMES: PredicateDescriptor = PredicateDescriptor::new(
+        "http.response",
+        "form-control-names",
+        "http.response.form-control-names",
+    );
     /// Time to first response byte in milliseconds.
     pub const TIMING_TTFB_MS: PredicateDescriptor =
         PredicateDescriptor::new("http.timing", "ttfb-ms", "http.timing.ttfb-ms");
@@ -197,6 +207,7 @@ impl HttpEvidencePredicate {
             Self::RESPONSE_BODY_TRUNCATED,
             Self::RESPONSE_BODY_SHA256,
             Self::RESPONSE_BODY_SAMPLE,
+            Self::RESPONSE_FORM_CONTROL_NAMES,
             Self::TIMING_TTFB_MS,
             Self::TIMING_TOTAL_MS,
             Self::COOKIE_NAME,

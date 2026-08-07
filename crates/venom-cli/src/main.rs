@@ -476,8 +476,8 @@ mod tests {
             limit_exceeded_text: None,
             experience_records: 1,
             hypotheses: vec![decision_scan::HypothesisView {
-                predicate: "technology.language".to_string(),
-                value: Some("php".to_string()),
+                predicate: "technology.framework".to_string(),
+                value: Some("laravel".to_string()),
                 value_kind: "text",
                 value_disposition: "exposed",
                 strength: "weak",
@@ -488,7 +488,7 @@ mod tests {
             planning: vec![decision_scan::PlanningView {
                 eligible: Vec::new(),
                 excluded: vec![(
-                    "web.action.php.input-discovery".to_string(),
+                    "web.action.laravel.input-analysis".to_string(),
                     "policy_suppressed",
                 )],
             }],
@@ -498,10 +498,7 @@ mod tests {
                 stage: "passive",
                 origin: Some("bootstrap"),
             }],
-            unavailable_routes: vec![
-                "web.action.laravel.input-analysis".to_string(),
-                "web.action.php.input-discovery".to_string(),
-            ],
+            unavailable_routes: vec!["web.action.laravel.input-analysis".to_string()],
         }
     }
 
@@ -530,13 +527,13 @@ mod tests {
         assert!(rendered.contains("-- explain --"));
         // Executor Routes: only the runtime's explicit unavailable routes, counted.
         assert!(rendered.contains("Executor Routes"));
-        assert!(rendered.contains("  Unavailable (2)"));
-        assert!(rendered.contains("    • web.action.php.input-discovery\n"));
+        assert!(rendered.contains("  Unavailable (1)"));
+        assert!(rendered.contains("    • web.action.laravel.input-analysis\n"));
         // No synthesized "available" list.
         assert!(!rendered.contains("Available"));
         // Hierarchical hypotheses with aligned, stable labels.
         assert!(rendered.contains("Hypotheses (1)"));
-        assert!(rendered.contains("  technology.language=php"));
+        assert!(rendered.contains("  technology.framework=laravel"));
         assert!(rendered.contains("strength : weak"));
         assert!(rendered.contains("posterior: 89%"));
         assert!(rendered.contains("state    : supported"));
@@ -544,7 +541,7 @@ mod tests {
         assert!(rendered.contains("Planning (turn 0)"));
         assert!(rendered.contains("  Planned (0)"));
         assert!(rendered.contains("  Excluded (1)"));
-        assert!(rendered.contains("• web.action.php.input-discovery — policy_suppressed"));
+        assert!(rendered.contains("• web.action.laravel.input-analysis — policy_suppressed"));
         // The old two-line indented `reason:` form is gone (no information lost).
         assert!(!rendered.contains("      reason:"));
         // No ambiguous `(none)` token anywhere (empty sections rely on the count).
@@ -755,14 +752,11 @@ mod tests {
             generic.unavailable_routes, basic.unavailable_routes,
             "the unavailable-route inventory must not depend on the fixture"
         );
-        // It is the runtime's fixed two executor-less actions, in sorted order.
-        // nginx and apache are now executor-backed and no longer appear here.
+        // It is the runtime's single executor-less action. nginx, apache, and php
+        // input discovery are now executor-backed and no longer appear here.
         assert_eq!(
             generic.unavailable_routes,
-            vec![
-                "web.action.laravel.input-analysis".to_string(),
-                "web.action.php.input-discovery".to_string(),
-            ]
+            vec!["web.action.laravel.input-analysis".to_string()]
         );
     }
 
@@ -782,7 +776,7 @@ mod tests {
                 let _ = socket.read(&mut request).await;
                 let _ = socket
                     .write_all(
-                        b"HTTP/1.1 200 OK\r\nX-Powered-By: PHP/8.3.7\r\nContent-Type: text/html\r\nContent-Length: 2\r\nConnection: close\r\n\r\nhi",
+                        b"HTTP/1.1 200 OK\r\nX-Powered-By: Laravel\r\nContent-Type: text/html\r\nContent-Length: 2\r\nConnection: close\r\n\r\nhi",
                     )
                     .await;
                 let _ = socket.shutdown().await;
@@ -792,11 +786,11 @@ mod tests {
         let summary = decision_scan::run_decision_scan(target).await.unwrap();
         server.abort();
 
-        // php input discovery: no executor route AND excluded this turn as
+        // laravel input analysis: no executor route AND excluded this turn as
         // policy_suppressed.
         assert!(summary
             .unavailable_routes
-            .contains(&"web.action.php.input-discovery".to_string()));
+            .contains(&"web.action.laravel.input-analysis".to_string()));
         // http-basic: HAS an executor route (not in the unavailable inventory) yet
         // is still excluded this turn — for a different reason (requirements not
         // met). Route availability and eligibility are orthogonal.
@@ -805,11 +799,11 @@ mod tests {
             .contains(&"web.action.http-basic.auth-boundary".to_string()));
 
         let rendered = decision_scan::render_explain(&summary);
-        // Both facts appear, framed distinctly: the route inventory lists php
-        // without a reason; the planning turn excludes it with a reason.
+        // Both facts appear, framed distinctly: the route inventory lists laravel
+        // input analysis without a reason; the planning turn excludes it with one.
         assert!(rendered.contains("Executor Routes"));
-        assert!(rendered.contains("    • web.action.php.input-discovery\n"));
-        assert!(rendered.contains("• web.action.php.input-discovery — policy_suppressed"));
+        assert!(rendered.contains("    • web.action.laravel.input-analysis\n"));
+        assert!(rendered.contains("• web.action.laravel.input-analysis — policy_suppressed"));
         assert!(
             rendered.contains("• web.action.http-basic.auth-boundary — requirements_not_met"),
             "an available route can still be excluded this turn:\n{rendered}"
@@ -871,7 +865,7 @@ mod tests {
                 .as_array()
                 .unwrap()
                 .len(),
-            2
+            1
         );
         assert!(value["executor_routes"].get("available").is_none());
         // Terminal and usage.
@@ -880,7 +874,7 @@ mod tests {
         assert!(value["terminal"]["runtime_limit"].is_null());
         assert_eq!(value["usage"]["total_requests"], 3);
         // Hypothesis value carries an explicit kind and safety disposition.
-        assert_eq!(value["hypotheses"][0]["value"], "php");
+        assert_eq!(value["hypotheses"][0]["value"], "laravel");
         assert_eq!(value["hypotheses"][0]["value_kind"], "text");
         assert_eq!(value["hypotheses"][0]["value_disposition"], "exposed");
         // Never a vulnerability claim, never a Debug dump.
@@ -910,14 +904,13 @@ mod tests {
             "  },\n",
             "  \"executor_routes\": {\n",
             "    \"unavailable\": [\n",
-            "      \"web.action.laravel.input-analysis\",\n",
-            "      \"web.action.php.input-discovery\"\n",
+            "      \"web.action.laravel.input-analysis\"\n",
             "    ]\n",
             "  },\n",
             "  \"hypotheses\": [\n",
             "    {\n",
-            "      \"predicate\": \"technology.language\",\n",
-            "      \"value\": \"php\",\n",
+            "      \"predicate\": \"technology.framework\",\n",
+            "      \"value\": \"laravel\",\n",
             "      \"value_kind\": \"text\",\n",
             "      \"value_disposition\": \"exposed\",\n",
             "      \"strength\": \"weak\",\n",
@@ -931,7 +924,7 @@ mod tests {
             "      \"planned\": [],\n",
             "      \"excluded\": [\n",
             "        {\n",
-            "          \"action_id\": \"web.action.php.input-discovery\",\n",
+            "          \"action_id\": \"web.action.laravel.input-analysis\",\n",
             "          \"reason\": \"policy_suppressed\"\n",
             "        }\n",
             "      ]\n",
@@ -1032,14 +1025,14 @@ mod tests {
         assert_eq!(value["terminal"]["command"], "halt");
         assert_eq!(value["terminal"]["stop_reason"], "no_eligible_action");
         // The unavailable-route inventory is present and fixture-independent.
-        // nginx and apache are now executor-backed, leaving two executor-less
-        // routes.
+        // nginx, apache, and php input discovery are now executor-backed, leaving
+        // one executor-less route.
         assert_eq!(
             value["executor_routes"]["unavailable"]
                 .as_array()
                 .unwrap()
                 .len(),
-            2
+            1
         );
     }
 
