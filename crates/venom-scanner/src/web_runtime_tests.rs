@@ -11,8 +11,8 @@ use venom_core::{
     ApiKnowledgePredicate, ApiResponseFormat, ApiSurfaceKind, ApiVisibilityBoundaryKind,
     ApiVisibilityComparison, ApiVisibilityDimension, ApiVisibilityObservation,
     ApiVisibilityPairKind, ApiVisibilityResult, ConfidenceScore, EntityId, Evidence, EvidenceKind,
-    EvidenceSource, EvidenceValue, Hypothesis, HypothesisState, HypothesisStrength, OutcomeStatus,
-    PredicateDescriptor, Probability, WebKnowledgePredicate,
+    EvidenceSource, EvidenceValue, Hypothesis, HypothesisState, HypothesisStrength,
+    KnowledgePredicate, OutcomeStatus, PredicateDescriptor, Probability, WebKnowledgePredicate,
 };
 
 use super::*;
@@ -1588,4 +1588,121 @@ fn execution_metadata_fails_closed_for_non_execution_commands() {
             Err(StandardWebDecisionRuntimeError::ExecutionMetadataUnavailable)
         ));
     }
+}
+
+// A transport-free executor used to prove the runtime's local-knowledge
+// resource/telemetry boundary.
+struct LocalSnapshotExecutor;
+
+#[async_trait]
+impl DecisionActionExecutor for LocalSnapshotExecutor {
+    fn id(&self) -> &str {
+        "local.snapshot.test"
+    }
+
+    fn execution_class(&self) -> DecisionExecutionClass {
+        DecisionExecutionClass::LocalKnowledge
+    }
+
+    async fn execute(
+        &self,
+        _request: &DecisionExecutionRequest,
+    ) -> Result<Vec<Evidence>, DecisionExecutorError> {
+        Err(DecisionExecutorError::new(
+            "local executor requires a snapshot",
+        ))
+    }
+
+    async fn execute_with_snapshot(
+        &self,
+        request: &DecisionExecutionRequest,
+        snapshot: &KnowledgeSnapshot,
+    ) -> Result<Vec<Evidence>, DecisionExecutorError> {
+        let observed = u64::try_from(snapshot.evidence().len()).unwrap_or(u64::MAX);
+        let source = EvidenceSource::new(self.id(), "local")
+            .unwrap()
+            .with_correlation_id(request.case().id())
+            .unwrap();
+        Ok(vec![Evidence::new(
+            request.case().subject().clone(),
+            EvidenceKind::Content,
+            KnowledgePredicate::new("test.local", "count").unwrap(),
+            EvidenceValue::Unsigned(observed),
+            source,
+            ConfidenceScore::MAX,
+        )])
+    }
+}
+
+#[tokio::test]
+async fn local_knowledge_reserve_keeps_semantic_guards_without_transport_preflight() {
+    // G/F: a local reservation applies the semantic action-attempt guard but
+    // claims no transport response allowance and runs no request preflight.
+    let target = Url::parse("https://example.test/app").unwrap();
+    let mut runtime = StandardWebDecisionRuntime::builder(target).build().unwrap();
+    let started = tokio::time::Instant::now();
+
+    let limits = runtime
+        .reserve_execution(
+            "action.local",
+            DecisionExecutionStage::Passive,
+            DecisionExecutionClass::LocalKnowledge,
+            started,
+        )
+        .unwrap();
+
+    assert_eq!(runtime.usage.same_action_attempts("action.local"), 1);
+    assert_eq!(limits.max_response_body_bytes(), None);
+    // No transport request was reserved by a local reservation.
+    assert_eq!(runtime.usage.total_requests(), 0);
+}
+
+#[tokio::test]
+async fn local_receipt_bypasses_http_response_telemetry_but_transport_still_requires_it() {
+    // D/E: a LocalKnowledge receipt carries no RESPONSE_BODY_BYTES_OBSERVED
+    // and produces no transport receipt, yet passes local validation. The
+    // same receipt fails the TransportBound response-usage invariant.
+    let subject = EntityId::new("endpoint:https://example.test/app").unwrap();
+    let knowledge = KnowledgeBase::new();
+    knowledge
+        .insert_evidence(Evidence::new(
+            subject.clone(),
+            EvidenceKind::Http,
+            KnowledgePredicate::new("http.response", "status").unwrap(),
+            EvidenceValue::Unsigned(200),
+            EvidenceSource::new("seed", "seed").unwrap(),
+            ConfidenceScore::MAX,
+        ))
+        .unwrap();
+    let mut registry = DecisionExecutorRegistry::new();
+    registry.register(Arc::new(LocalSnapshotExecutor)).unwrap();
+    registry
+        .route_action(
+            DecisionExecutionStage::Passive,
+            "action.local",
+            "local.snapshot.test",
+        )
+        .unwrap();
+    let adapter = DecisionRunnerAdapter::new(registry);
+    let command = DecisionLoopCommand::ExecuteAction {
+        case: VerificationCase::new("case:local", subject, "action.local", "hypothesis:x").unwrap(),
+        executor: Some("local.snapshot.test".to_owned()),
+        origin: DecisionActionOrigin::Planned,
+        delay_ms: None,
+    };
+    let receipt = adapter.execute_command(&command, &knowledge).await.unwrap();
+    assert!(receipt
+        .evidence()
+        .iter()
+        .all(|evidence| evidence.predicate().dotted() != "http.response.body-bytes-observed"));
+
+    let target = Url::parse("https://example.test/app").unwrap();
+    let mut runtime = StandardWebDecisionRuntime::builder(target).build().unwrap();
+    assert!(runtime
+        .validate_response_usage_evidence(receipt.clone(), DecisionExecutionClass::LocalKnowledge)
+        .is_ok());
+    assert!(matches!(
+        runtime.validate_response_usage_evidence(receipt, DecisionExecutionClass::TransportBound),
+        Err(StandardWebDecisionRuntimeError::ResponseUsageEvidence { .. })
+    ));
 }

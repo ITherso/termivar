@@ -324,11 +324,47 @@ impl DecisionExecutionFailureReceipt {
     }
 }
 
+/// How a semantic action is executed: by touching the network, or purely from
+/// already-committed immutable knowledge.
+///
+/// The runtime uses this to decide whether transport accounting and HTTP
+/// response telemetry apply. It is declared explicitly by each executor and is
+/// never inferred from executor IDs, action names, request methods, or whether a
+/// broker happened to dispatch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum DecisionExecutionClass {
+    /// The executor performs transport I/O (an HTTP probe) to observe evidence.
+    TransportBound,
+    /// The executor performs no transport I/O and derives evidence solely from
+    /// an immutable, subject-scoped knowledge snapshot.
+    LocalKnowledge,
+}
+
 /// Narrow execution API implemented by native collectors and plugin bridges.
+///
+/// The contract for what an executor may read is deliberately minimal:
+///
+/// - A [`DecisionExecutionClass::TransportBound`] executor (the default) runs
+///   through [`execute`](Self::execute) and receives **no** reasoning state — no
+///   `KnowledgeBase`, no snapshot, no decision policy.
+/// - A [`DecisionExecutionClass::LocalKnowledge`] executor runs through
+///   [`execute_with_snapshot`](Self::execute_with_snapshot) and may read **only**
+///   an immutable, subject-scoped [`KnowledgeSnapshot`]. It never receives a
+///   mutable `KnowledgeBase`: the runner remains the sole authority that
+///   validates provenance and atomically commits any derived evidence.
 #[async_trait]
 pub trait DecisionActionExecutor: Send + Sync {
     /// Returns the stable identity used by planner executor fields and routes.
     fn id(&self) -> &str;
+
+    /// Returns how this executor is driven. Defaults to
+    /// [`DecisionExecutionClass::TransportBound`] so existing executors keep
+    /// their current transport-accounted execution path unchanged.
+    fn execution_class(&self) -> DecisionExecutionClass {
+        DecisionExecutionClass::TransportBound
+    }
 
     /// Returns whether this executor can materialize an exact strategy revision.
     ///
@@ -348,6 +384,21 @@ pub trait DecisionActionExecutor: Send + Sync {
         &self,
         request: &DecisionExecutionRequest,
     ) -> Result<Vec<Evidence>, DecisionExecutorError>;
+
+    /// Executes a [`DecisionExecutionClass::LocalKnowledge`] action from an
+    /// immutable subject-scoped snapshot, returning immutable observations under
+    /// the same provenance contract as [`execute`](Self::execute).
+    ///
+    /// The default delegates to `execute`, so this is additive: transport-bound
+    /// executors never observe the snapshot and need not implement it.
+    async fn execute_with_snapshot(
+        &self,
+        request: &DecisionExecutionRequest,
+        snapshot: &KnowledgeSnapshot,
+    ) -> Result<Vec<Evidence>, DecisionExecutorError> {
+        let _ = snapshot;
+        self.execute(request).await
+    }
 }
 
 /// Deterministic executor lookup used by the decision runner.
@@ -739,6 +790,45 @@ impl DecisionRunnerAdapter {
         &self.executors
     }
 
+    /// Resolves the execution class of the executor that would run this command,
+    /// using the same registry route authority as execution. Lets a host decide
+    /// which resource-accounting boundary to apply before it reserves resources.
+    pub fn execution_class_for_command(
+        &self,
+        command: &DecisionLoopCommand,
+    ) -> Result<DecisionExecutionClass, DecisionRunnerError> {
+        let (stage, action_id, requested_executor) = match command {
+            DecisionLoopCommand::ExecuteAction { case, executor, .. } => (
+                DecisionExecutionStage::Passive,
+                case.action_id(),
+                executor.as_deref(),
+            ),
+            DecisionLoopCommand::CollectActiveEvidence { case } => {
+                (DecisionExecutionStage::Active, case.action_id(), None)
+            },
+            DecisionLoopCommand::Replan => {
+                return Err(DecisionRunnerError::NonExecutionCommand { command: "replan" })
+            },
+            DecisionLoopCommand::Complete { .. } => {
+                return Err(DecisionRunnerError::NonExecutionCommand {
+                    command: "complete",
+                })
+            },
+            DecisionLoopCommand::AwaitHumanReview { .. } => {
+                return Err(DecisionRunnerError::NonExecutionCommand {
+                    command: "await_human_review",
+                })
+            },
+            DecisionLoopCommand::Halt { .. } => {
+                return Err(DecisionRunnerError::NonExecutionCommand { command: "halt" })
+            },
+        };
+        let (_, executor) = self
+            .executors
+            .resolve(stage, action_id, requested_executor)?;
+        Ok(executor.execution_class())
+    }
+
     /// Resolves and executes one evidence-producing command.
     ///
     /// The complete evidence batch is validated before it is atomically
@@ -812,7 +902,18 @@ impl DecisionRunnerAdapter {
         let baseline = (stage == DecisionExecutionStage::Active)
             .then(|| knowledge.snapshot_for_subject(case.subject()));
         let request = DecisionExecutionRequest::new(case.clone(), stage, origin, delay_ms, limits);
-        let evidence = executor.execute(&request).await.map_err(|source| {
+        // TransportBound executors observe the network and receive no reasoning
+        // state; LocalKnowledge executors derive evidence from an immutable
+        // subject-scoped snapshot and never touch the network. Either way the
+        // runner remains the sole authority that validates and commits.
+        let evidence = match executor.execution_class() {
+            DecisionExecutionClass::TransportBound => executor.execute(&request).await,
+            DecisionExecutionClass::LocalKnowledge => {
+                let snapshot = knowledge.snapshot_for_subject(case.subject());
+                executor.execute_with_snapshot(&request, &snapshot).await
+            },
+        }
+        .map_err(|source| {
             let source = source.with_execution_context(request.clone(), executor_id.clone());
             DecisionRunnerError::Executor {
                 executor_id: executor_id.clone(),
@@ -1318,12 +1419,179 @@ mod tests {
         }
     }
 
+    /// A transport-free executor: it declares `LocalKnowledge`, reads one
+    /// deterministic value from the immutable subject snapshot (the observed
+    /// evidence count), and derives one new evidence record. Its `execute`
+    /// (transport) path deliberately fails, proving the runner never routes a
+    /// local action through transport.
+    struct LocalKnowledgeExecutor {
+        id: &'static str,
+    }
+
+    #[async_trait]
+    impl DecisionActionExecutor for LocalKnowledgeExecutor {
+        fn id(&self) -> &str {
+            self.id
+        }
+
+        fn execution_class(&self) -> DecisionExecutionClass {
+            DecisionExecutionClass::LocalKnowledge
+        }
+
+        async fn execute(
+            &self,
+            _request: &DecisionExecutionRequest,
+        ) -> Result<Vec<Evidence>, DecisionExecutorError> {
+            Err(DecisionExecutorError::new(
+                "local-knowledge executor must run through execute_with_snapshot",
+            ))
+        }
+
+        async fn execute_with_snapshot(
+            &self,
+            request: &DecisionExecutionRequest,
+            snapshot: &KnowledgeSnapshot,
+        ) -> Result<Vec<Evidence>, DecisionExecutorError> {
+            let observed = u64::try_from(snapshot.evidence().len()).unwrap_or(u64::MAX);
+            let source = EvidenceSource::new(self.id, "local-derivation")
+                .unwrap()
+                .with_correlation_id(request.case().id())
+                .unwrap();
+            Ok(vec![Evidence::new(
+                request.case().subject().clone(),
+                EvidenceKind::Content,
+                KnowledgePredicate::new("test.local", "observed-evidence-count").unwrap(),
+                EvidenceValue::Unsigned(observed),
+                source,
+                ConfidenceScore::MAX,
+            )])
+        }
+    }
+
     fn subject() -> EntityId {
         EntityId::new("endpoint:https://example.test").unwrap()
     }
 
     fn case(action_id: &str) -> VerificationCase {
         VerificationCase::new("case:1", subject(), action_id, "hypothesis:1").unwrap()
+    }
+
+    fn baseline_evidence() -> Evidence {
+        Evidence::new(
+            subject(),
+            EvidenceKind::Http,
+            KnowledgePredicate::new("http.response", "status").unwrap(),
+            EvidenceValue::Unsigned(200),
+            EvidenceSource::new("test.seed", "seed").unwrap(),
+            ConfidenceScore::MAX,
+        )
+    }
+
+    fn execute_action(action_id: &str, executor_id: &str) -> DecisionLoopCommand {
+        DecisionLoopCommand::ExecuteAction {
+            case: case(action_id),
+            executor: Some(executor_id.to_owned()),
+            origin: DecisionActionOrigin::Planned,
+            delay_ms: None,
+        }
+    }
+
+    fn local_registry() -> DecisionExecutorRegistry {
+        let mut registry = DecisionExecutorRegistry::new();
+        registry
+            .register(Arc::new(LocalKnowledgeExecutor { id: "local.test" }))
+            .unwrap();
+        registry
+            .route_action(
+                DecisionExecutionStage::Passive,
+                "action.local",
+                "local.test",
+            )
+            .unwrap();
+        registry
+    }
+
+    #[tokio::test]
+    async fn local_knowledge_executor_derives_evidence_from_the_snapshot() {
+        // C + H: local-derived evidence passes the same provenance validation and
+        // atomic commit; the derived value is a deterministic function of the
+        // immutable snapshot (here: two seeded evidence records observed).
+        let knowledge = KnowledgeBase::new();
+        knowledge.insert_evidence(baseline_evidence()).unwrap();
+        knowledge
+            .insert_evidence(Evidence::new(
+                subject(),
+                EvidenceKind::Http,
+                KnowledgePredicate::new("http.header", "server").unwrap(),
+                EvidenceValue::Text("nginx".to_owned()),
+                EvidenceSource::new("test.seed", "seed-2").unwrap(),
+                ConfidenceScore::MAX,
+            ))
+            .unwrap();
+        let adapter = DecisionRunnerAdapter::new(local_registry());
+
+        let receipt = adapter
+            .execute_command(&execute_action("action.local", "local.test"), &knowledge)
+            .await
+            .unwrap();
+
+        assert_eq!(receipt.evidence().len(), 1);
+        let derived = &receipt.evidence()[0];
+        assert_eq!(
+            derived.predicate().dotted(),
+            "test.local.observed-evidence-count"
+        );
+        assert_eq!(derived.value(), &EvidenceValue::Unsigned(2));
+        assert_eq!(derived.subject(), &subject());
+        assert_eq!(derived.source().component(), "local.test");
+        assert_eq!(derived.source().correlation_id(), Some("case:1"));
+        // Committed atomically through the same knowledge writer.
+        assert!(knowledge.stats().evidence >= 3);
+    }
+
+    #[tokio::test]
+    async fn local_knowledge_never_routes_through_the_transport_execute_path() {
+        // The executor's transport `execute` fails; the run still succeeds because
+        // the runner dispatches a LocalKnowledge action through the snapshot path.
+        let knowledge = KnowledgeBase::new();
+        knowledge.insert_evidence(baseline_evidence()).unwrap();
+        let adapter = DecisionRunnerAdapter::new(local_registry());
+
+        let receipt = adapter
+            .execute_command(&execute_action("action.local", "local.test"), &knowledge)
+            .await
+            .unwrap();
+        assert_eq!(receipt.evidence().len(), 1);
+    }
+
+    #[test]
+    fn execution_class_is_resolved_from_the_registry_route() {
+        let adapter = DecisionRunnerAdapter::new(local_registry());
+        assert_eq!(
+            adapter
+                .execution_class_for_command(&execute_action("action.local", "local.test"))
+                .unwrap(),
+            DecisionExecutionClass::LocalKnowledge
+        );
+        // A default executor reports TransportBound without any implementation
+        // change (compatibility).
+        let mut registry = DecisionExecutorRegistry::new();
+        registry
+            .register(Arc::new(RecordingExecutor {
+                id: "http.test",
+                subject_override: None,
+            }))
+            .unwrap();
+        registry
+            .route_action(DecisionExecutionStage::Passive, "action.http", "http.test")
+            .unwrap();
+        let adapter = DecisionRunnerAdapter::new(registry);
+        assert_eq!(
+            adapter
+                .execution_class_for_command(&execute_action("action.http", "http.test"))
+                .unwrap(),
+            DecisionExecutionClass::TransportBound
+        );
     }
 
     fn executor(
