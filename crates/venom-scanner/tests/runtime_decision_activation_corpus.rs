@@ -36,12 +36,15 @@
 //!     observed in the bounded sample (candidate discovery, never server
 //!     acceptance and never a completeness claim); an HTML page with no named
 //!     control resolves to `unknown` and defers to human review.
-//!   * **Activated but not executed end to end:** Laravel route discovery is
-//!     dispatched but resolves to `needs_review` and defers to human review;
-//!     Sanctum is activated and planned but **never dispatched**, because the same
-//!     cookie pair raises a higher-utility Laravel route that reaches human review
-//!     first. Their executor-backed verification is proven in isolation by
-//!     `web_verification::tests`, not by this end-to-end runtime path.
+//!   * **Multi-objective continuation:** the runtime does not stop after the
+//!     first useful action. An action that reaches a terminal-worthy outcome is
+//!     suppressed and the session replans to any remaining eligible objective.
+//!     So Laravel route discovery resolves to `unknown`/`needs_review`, is
+//!     suppressed, and the session CONTINUES — e.g. the Sanctum cookie pair now
+//!     drives Sanctum to Success after the route is exhausted. The route's
+//!     unresolved outcome is preserved (never relabelled), so the aggregate
+//!     terminal is `await_human_review` even alongside a later Success. When every
+//!     final outcome is a Success the aggregate terminal is `complete`.
 //!
 //! ## The `Allow` header is a verification signal, not an activation signal
 //!
@@ -1197,17 +1200,17 @@ async fn laravel_route_activation_reaches_route_review() {
 async fn sanctum_cookie_pair_coactivates_laravel_and_defers_to_route_review() {
     // The `laravel_session` + `XSRF-TOKEN` cookie pair is the *only* activation
     // path for a Sanctum hypothesis, and that same pair also raises a Strong
-    // Laravel hypothesis. Sanctum therefore cannot be activated in isolation from
-    // the standard rules. Both discovery actions are planned, but Laravel route
-    // discovery outranks Sanctum by utility (Laravel posterior ~87% vs Sanctum
-    // ~51%), so the runtime executes the route first. Without an Allow header the
-    // route resolves to `unknown` (passive then active) and the session is handed
-    // to human review BEFORE the Sanctum action executes.
+    // Laravel hypothesis. Both discovery actions are planned, but Laravel route
+    // discovery outranks Sanctum by utility, so the runtime executes the route
+    // first. Without an Allow header the route resolves to `unknown` (passive then
+    // active).
     //
-    // This is a truthful capability characterization, not a runtime fault: the
-    // Sanctum verification path is proven in isolation by
-    // `web_verification::tests`, but it is not independently reachable end to end
-    // from a single decision-scan fixture. It is intentionally left unpatched.
+    // With multi-objective continuation the route is now suppressed after its
+    // passive/active lifecycle and the session CONTINUES to the sanctum action,
+    // which this cookie pair truthfully verifies as Success. The route's
+    // unresolved outcome is preserved (never relabelled), so the aggregate
+    // terminal is human review even though sanctum succeeded. (This exercises
+    // Sanctum end to end; it is no longer "planned but never dispatched".)
     let observation = observe_instant(response(
         "200 OK",
         &[
@@ -1247,38 +1250,138 @@ async fn sanctum_cookie_pair_coactivates_laravel_and_defers_to_route_review() {
         Some("policy_suppressed")
     );
 
-    // Only the route is ever dispatched; sanctum is planned-but-never-executed.
+    // Multi-objective continuation: the route runs passive+active, resolves to
+    // `unknown`, and is suppressed; the session then continues to the sanctum
+    // action rather than stopping. Sanctum's HEAD probe sees the laravel_session
+    // + XSRF-TOKEN cookie pair on this response and truthfully verifies Success.
     assert_eq!(
         planned_dispatched(&observation),
-        vec![laravel_route().to_owned(), laravel_route().to_owned()]
-    );
-    assert!(
-        !planned_dispatched(&observation).contains(&sanctum().to_owned()),
-        "sanctum must never dispatch: {:?}",
-        observation.dispatched
+        vec![
+            laravel_route().to_owned(),
+            laravel_route().to_owned(),
+            sanctum().to_owned()
+        ]
     );
     assert_eq!(
         observation.outcomes,
         vec![
             (laravel_route().to_owned(), "unknown".to_owned()),
             (laravel_route().to_owned(), "unknown".to_owned()),
+            (sanctum().to_owned(), "success".to_owned()),
         ]
     );
+    // The route's unresolved outcome is never relabelled; the aggregate terminal
+    // is human review because an unresolved case remains, even though sanctum
+    // succeeded (the success is visible in the outcomes above).
+    assert_eq!(observation.terminal, "await_human_review");
+    assert_eq!(observation.total_requests, 4);
+    assert_eq!(observation.active_verifications, 1);
+    assert_eq!(
+        observation.methods,
+        vec![
+            "GET".to_owned(),
+            "OPTIONS".to_owned(),
+            "OPTIONS".to_owned(),
+            "HEAD".to_owned()
+        ]
+    );
+}
+
+// --- Multi-objective continuation ---------------------------------------------
+
+#[tokio::test]
+async fn independent_successes_both_dispatch_and_complete() {
+    // Acceptance A: one target activates two independent supported actions —
+    // nginx version disclosure (HEAD) and php form-control discovery (GET). With
+    // multi-objective continuation both dispatch, both verify Success, each source
+    // is suppressed after completion, and the aggregate terminal is Complete.
+    let observation = observe_instant(response(
+        "200 OK",
+        &[
+            "Server: nginx/1.26.0",
+            "X-Powered-By: PHP/8.3.7",
+            "Content-Type: text/html",
+        ],
+        b"<form><input name=\"q\"></form>",
+    ))
+    .await;
+
+    assert_universal(&observation);
+    // Both objectives dispatch exactly once and both succeed; no source is
+    // dispatched twice after completion.
+    let dispatched = planned_dispatched(&observation);
+    assert_eq!(
+        dispatched.len(),
+        2,
+        "two objectives dispatch: {dispatched:?}"
+    );
+    assert!(dispatched.contains(&nginx().to_owned()));
+    assert!(dispatched.contains(&php().to_owned()));
+    let mut outcomes = observation.outcomes.clone();
+    outcomes.sort();
+    assert_eq!(
+        outcomes,
+        vec![
+            (nginx().to_owned(), "success".to_owned()),
+            (php().to_owned(), "success".to_owned()),
+        ]
+    );
+    assert_eq!(observation.terminal, "complete");
+    assert_eq!(observation.total_requests, 3);
+    assert_eq!(observation.active_verifications, 0);
+    // Exact bounded methods (order-robust): bootstrap GET + nginx HEAD + php GET.
+    let mut methods = observation.methods.clone();
+    methods.sort();
+    assert_eq!(
+        methods,
+        vec!["GET".to_owned(), "GET".to_owned(), "HEAD".to_owned()]
+    );
+}
+
+#[tokio::test]
+async fn pending_review_does_not_erase_unrelated_success() {
+    // Acceptance B: laravel route discovery reaches its truthful `unknown`
+    // lifecycle (passive+active, no Allow header) and is suppressed; the session
+    // continues to the independent nginx objective, which succeeds. The route's
+    // unresolved outcome is preserved (never relabelled Success), so the aggregate
+    // terminal is human review because unresolved review work remains.
+    let observation = observe_instant(response(
+        "200 OK",
+        &[
+            "X-Powered-By: Laravel",
+            "Server: nginx/1.26.0",
+            "Content-Type: text/html",
+        ],
+        b"hi",
+    ))
+    .await;
+
+    assert_universal(&observation);
+    let dispatched = planned_dispatched(&observation);
+    assert!(
+        dispatched.contains(&nginx().to_owned()),
+        "nginx dispatched: {dispatched:?}"
+    );
+    assert!(dispatched.contains(&laravel_route().to_owned()));
+    // The route keeps its inconclusive outcome; nginx succeeds.
+    assert!(observation
+        .outcomes
+        .iter()
+        .any(|(action, status)| action == laravel_route() && status == "unknown"));
+    assert!(observation
+        .outcomes
+        .iter()
+        .any(|(action, status)| action == nginx() && status == "success"));
     assert!(
         !observation
             .outcomes
             .iter()
-            .any(|(action, _)| action == sanctum()),
-        "sanctum is deferred behind route review and does not execute: {:?}",
+            .any(|(action, status)| action == laravel_route() && status == "success"),
+        "the route is never relabelled Success: {:?}",
         observation.outcomes
     );
     assert_eq!(observation.terminal, "await_human_review");
-    assert_eq!(observation.total_requests, 3);
     assert_eq!(observation.active_verifications, 1);
-    assert_eq!(
-        observation.methods,
-        vec!["GET".to_owned(), "OPTIONS".to_owned(), "OPTIONS".to_owned()]
-    );
 }
 
 // --- Cumulative response-budget accounting across multiple requests -----------

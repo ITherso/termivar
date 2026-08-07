@@ -696,9 +696,9 @@ mod tests {
         assert!(rendered.contains("✓ web.action.laravel.route-discovery"));
         assert!(rendered.contains("✓ web.action.sanctum.auth-boundary"));
         assert!(rendered.contains("web.action.laravel.route-discovery (planned)"));
-        // Sanctum is planned but never dispatched (route review defers it): it has
-        // an available executor route, so it is NOT in the unavailable inventory,
-        // and no dispatch line carries its action id.
+        // Sanctum has an available executor route (not in the unavailable
+        // inventory) and, under multi-objective continuation, now dispatches after
+        // the route is suppressed — so a dispatch line carries its action id.
         assert!(
             !summary
                 .unavailable_routes
@@ -707,8 +707,8 @@ mod tests {
             summary.unavailable_routes
         );
         assert!(
-            !rendered.contains("web.action.sanctum.auth-boundary ("),
-            "sanctum is planned but never dispatched:\n{rendered}"
+            rendered.contains("web.action.sanctum.auth-boundary ("),
+            "sanctum dispatches under multi-objective continuation:\n{rendered}"
         );
     }
 
@@ -1100,12 +1100,14 @@ mod tests {
             .iter()
             .any(|dispatch| dispatch["origin"] == "bootstrap"));
 
-        // Sanctum is planned but never dispatched, and has an available route.
+        // Sanctum is planned in the first turn and, under multi-objective
+        // continuation, dispatches after the route is suppressed; it has an
+        // available route.
         let planned = value["planning_turns"][0]["planned"].as_array().unwrap();
         assert!(planned
             .iter()
             .any(|action| *action == "web.action.sanctum.auth-boundary"));
-        assert!(!dispatches
+        assert!(dispatches
             .iter()
             .any(|dispatch| dispatch["action_id"] == "web.action.sanctum.auth-boundary"));
         assert!(!value["executor_routes"]["unavailable"]
