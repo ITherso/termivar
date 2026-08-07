@@ -181,8 +181,9 @@ const fn probe_method(
         StandardWebActionKind::LaravelRouteDiscovery => Ok(HttpProbeMethod::Options),
         StandardWebActionKind::LivewireComponentDiscovery => Ok(HttpProbeMethod::Get),
         // A header-only HEAD probe: the nginx configuration signal reads the
-        // `Server` response header, which HEAD returns identically to GET with
-        // no response body, so it introduces no new capture surface.
+        // `Server` response header. The probe only needs response metadata
+        // already captured from a HEAD response and never requires a body, so it
+        // introduces no new capture surface.
         StandardWebActionKind::NginxConfiguration
         | StandardWebActionKind::SanctumAuthBoundary
         | StandardWebActionKind::HttpBasicAuthBoundary
