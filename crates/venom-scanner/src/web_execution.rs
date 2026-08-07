@@ -121,6 +121,14 @@ impl StandardWebDiscoveryExecutorProfile {
                     requests.clone(),
                     provider,
                 )?;
+                // php input discovery is the only route that reads application
+                // structure from the bounded HTML sample; every other route
+                // observes response metadata only.
+                let executor = if matches!(kind, StandardWebActionKind::PhpInputDiscovery) {
+                    executor.with_form_control_capture()
+                } else {
+                    executor
+                };
                 Ok(ExecutorBinding {
                     kind,
                     executor: Arc::new(executor),
@@ -179,7 +187,10 @@ const fn probe_method(
 ) -> Result<HttpProbeMethod, StandardWebExecutionError> {
     match kind {
         StandardWebActionKind::LaravelRouteDiscovery => Ok(HttpProbeMethod::Options),
-        StandardWebActionKind::LivewireComponentDiscovery => Ok(HttpProbeMethod::Get),
+        // GET probes read the bounded response body: livewire matches a DOM
+        // marker, php input discovery reads named form controls from the sample.
+        StandardWebActionKind::LivewireComponentDiscovery
+        | StandardWebActionKind::PhpInputDiscovery => Ok(HttpProbeMethod::Get),
         // A header-only HEAD probe: the nginx/apache configuration signals read
         // the `Server` response header. The probe only needs response metadata
         // already captured from a HEAD response and never requires a body, so it
@@ -189,7 +200,7 @@ const fn probe_method(
         | StandardWebActionKind::SanctumAuthBoundary
         | StandardWebActionKind::HttpBasicAuthBoundary
         | StandardWebActionKind::HttpBearerAuthBoundary => Ok(HttpProbeMethod::Head),
-        StandardWebActionKind::PhpInputDiscovery | StandardWebActionKind::LaravelInputAnalysis => {
+        StandardWebActionKind::LaravelInputAnalysis => {
             Err(StandardWebExecutionError::UnsupportedAction { action: kind })
         },
     }

@@ -27,7 +27,7 @@ use crate::{
 };
 
 /// Number of passive and active rules installed by the standard profile.
-pub const STANDARD_WEB_VERIFICATION_RULE_COUNT: usize = 28;
+pub const STANDARD_WEB_VERIFICATION_RULE_COUNT: usize = 32;
 
 /// Failures while constructing or atomically installing standard web rules.
 #[derive(Debug, Error)]
@@ -276,7 +276,22 @@ fn signal_rule(
             90,
             "The Server header discloses a specific Apache version",
         ),
-        StandardWebActionKind::PhpInputDiscovery | StandardWebActionKind::LaravelInputAnalysis => {
+        // php input discovery succeeds when the executor conservatively observed
+        // at least one named HTML form control in the bounded sample. This is
+        // candidate discovery, not proof the server accepts these parameters, and
+        // never implies a complete set. Priority is below the blocked rule so a
+        // denying status still resolves to Blocked.
+        StandardWebActionKind::PhpInputDiscovery => (
+            Expression::exists(
+                KnowledgeLayer::Evidence,
+                HttpEvidencePredicate::RESPONSE_FORM_CONTROL_NAMES.into(),
+            ),
+            OutcomeStatus::Success,
+            600,
+            85,
+            "One or more named HTML form controls were observed in the bounded response sample",
+        ),
+        StandardWebActionKind::LaravelInputAnalysis => {
             return Err(StandardWebVerificationError::UnsupportedAction { action: kind });
         },
     };
@@ -421,15 +436,15 @@ mod tests {
         let first = profile.install(&mut pipeline).unwrap();
         let second = profile.install(&mut pipeline).unwrap();
 
-        assert_eq!(first.passive_rules_inserted(), 14);
-        assert_eq!(first.active_rules_inserted(), 14);
+        assert_eq!(first.passive_rules_inserted(), 16);
+        assert_eq!(first.active_rules_inserted(), 16);
         assert_eq!(
             first.total_rules_inserted(),
             STANDARD_WEB_VERIFICATION_RULE_COUNT
         );
         assert_eq!(second, StandardWebVerificationInstallReport::default());
-        assert_eq!(pipeline.passive().len(), 14);
-        assert_eq!(pipeline.active().len(), 14);
+        assert_eq!(pipeline.passive().len(), 16);
+        assert_eq!(pipeline.active().len(), 16);
     }
 
     #[test]
