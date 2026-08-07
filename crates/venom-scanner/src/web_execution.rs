@@ -180,16 +180,16 @@ const fn probe_method(
     match kind {
         StandardWebActionKind::LaravelRouteDiscovery => Ok(HttpProbeMethod::Options),
         StandardWebActionKind::LivewireComponentDiscovery => Ok(HttpProbeMethod::Get),
-        // A header-only HEAD probe: the nginx configuration signal reads the
-        // `Server` response header. The probe only needs response metadata
+        // A header-only HEAD probe: the nginx/apache configuration signals read
+        // the `Server` response header. The probe only needs response metadata
         // already captured from a HEAD response and never requires a body, so it
         // introduces no new capture surface.
         StandardWebActionKind::NginxConfiguration
+        | StandardWebActionKind::ApacheConfiguration
         | StandardWebActionKind::SanctumAuthBoundary
         | StandardWebActionKind::HttpBasicAuthBoundary
         | StandardWebActionKind::HttpBearerAuthBoundary => Ok(HttpProbeMethod::Head),
-        StandardWebActionKind::ApacheConfiguration
-        | StandardWebActionKind::PhpInputDiscovery
+        StandardWebActionKind::PhpInputDiscovery
         | StandardWebActionKind::LaravelInputAnalysis => {
             Err(StandardWebExecutionError::UnsupportedAction { action: kind })
         },

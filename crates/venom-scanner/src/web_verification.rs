@@ -27,7 +27,7 @@ use crate::{
 };
 
 /// Number of passive and active rules installed by the standard profile.
-pub const STANDARD_WEB_VERIFICATION_RULE_COUNT: usize = 24;
+pub const STANDARD_WEB_VERIFICATION_RULE_COUNT: usize = 28;
 
 /// Failures while constructing or atomically installing standard web rules.
 #[derive(Debug, Error)]
@@ -254,23 +254,29 @@ fn signal_rule(
             99,
             "WWW-Authenticate explicitly advertises HTTP Bearer for this request",
         ),
-        // The nginx configuration signal fires only on a version-bearing Server
-        // token (`nginx/<version>` where a digit follows the slash, e.g.
-        // `nginx/1.26.0`). A bare `Server: nginx` (`server_tokens off`), a
-        // trailing slash with no version (`nginx/`), or a non-numeric suffix
-        // (`nginx/foo`) never matches, so the product token that gates the action
-        // can never by itself confirm a version disclosure. Priority is below the
-        // blocked rule (800) so 401/403/429 stay Blocked even when the denying
-        // response also discloses a version.
+        // The nginx/apache configuration signals fire only on a version-bearing
+        // Server token (`<product>/<version>` where a digit follows the slash,
+        // e.g. `nginx/1.26.0`, `Apache/2.4.58`). A bare product token
+        // (`server_tokens off` / `ServerTokens Prod`), a trailing slash with no
+        // version, or a non-numeric suffix never matches, so the token that gates
+        // the action can never by itself confirm a version disclosure. Priority
+        // is below the blocked rule (800) so 401/403/429 stay Blocked even when
+        // the denying response also discloses a version.
         StandardWebActionKind::NginxConfiguration => (
-            nginx_version_disclosure_condition()?,
+            server_version_disclosure_condition("nginx")?,
             OutcomeStatus::Success,
             600,
             90,
             "The Server header discloses a specific nginx version",
         ),
-        StandardWebActionKind::ApacheConfiguration
-        | StandardWebActionKind::PhpInputDiscovery
+        StandardWebActionKind::ApacheConfiguration => (
+            server_version_disclosure_condition("apache")?,
+            OutcomeStatus::Success,
+            600,
+            90,
+            "The Server header discloses a specific Apache version",
+        ),
+        StandardWebActionKind::PhpInputDiscovery
         | StandardWebActionKind::LaravelInputAnalysis => {
             return Err(StandardWebVerificationError::UnsupportedAction { action: kind });
         },
@@ -295,22 +301,24 @@ fn auth_header_condition(token: &str) -> Result<Expression, RuleEngineError> {
     )
 }
 
-/// Condition for a version-bearing nginx `Server` token.
+/// Condition for a version-bearing `Server` product token (`<product>/<digit>`).
 ///
-/// A version disclosure requires a digit immediately after the `nginx/`
-/// delimiter (`nginx/1`, `nginx/1.26.0`, ...). This is expressed with the
-/// existing `Expression` API as an `any` over `nginx/0` ..= `nginx/9` — no new
-/// primitive — so a bare `nginx`, a trailing slash (`nginx/`), or a non-numeric
-/// suffix (`nginx/foo`) never matches. Fail-closed: the gating product token can
-/// never on its own satisfy the version-disclosure signal.
-fn nginx_version_disclosure_condition() -> Result<Expression, RuleEngineError> {
+/// A version disclosure requires a digit immediately after the `<product>/`
+/// delimiter (`nginx/1.26.0`, `apache/2.4.58`, ...). This is expressed with the
+/// existing `Expression` API as an `any` over `<product>/0` ..= `<product>/9` —
+/// no new primitive — so a bare product token, a trailing slash (`nginx/`), or a
+/// non-numeric suffix (`apache/foo`) never matches. Fail-closed: the product
+/// token that gates the action can never on its own satisfy the signal. The same
+/// helper serves every server-software route (nginx, apache); it is a shared
+/// condition, not a new abstraction layer.
+fn server_version_disclosure_condition(product: &str) -> Result<Expression, RuleEngineError> {
     Expression::any(
         (0..=9)
             .map(|digit| {
                 Expression::text_contains_ascii_case_insensitive(
                     KnowledgeLayer::Evidence,
                     HttpEvidencePredicate::HEADER_SERVER.into(),
-                    format!("nginx/{digit}"),
+                    format!("{product}/{digit}"),
                 )
             })
             .collect::<Result<Vec<_>, RuleEngineError>>()?,
@@ -414,15 +422,15 @@ mod tests {
         let first = profile.install(&mut pipeline).unwrap();
         let second = profile.install(&mut pipeline).unwrap();
 
-        assert_eq!(first.passive_rules_inserted(), 12);
-        assert_eq!(first.active_rules_inserted(), 12);
+        assert_eq!(first.passive_rules_inserted(), 14);
+        assert_eq!(first.active_rules_inserted(), 14);
         assert_eq!(
             first.total_rules_inserted(),
             STANDARD_WEB_VERIFICATION_RULE_COUNT
         );
         assert_eq!(second, StandardWebVerificationInstallReport::default());
-        assert_eq!(pipeline.passive().len(), 12);
-        assert_eq!(pipeline.active().len(), 12);
+        assert_eq!(pipeline.passive().len(), 14);
+        assert_eq!(pipeline.active().len(), 14);
     }
 
     #[test]
@@ -598,97 +606,88 @@ mod tests {
     }
 
     #[test]
-    fn nginx_version_disclosure_succeeds_but_bare_token_and_blocked_do_not() {
-        let kind = StandardWebActionKind::NginxConfiguration;
+    fn server_version_disclosure_succeeds_but_bare_token_and_blocked_do_not() {
         let pipeline = pipeline();
 
-        // Only a token whose slash is followed by a digit is a version
-        // disclosure. A bare product token, a trailing slash, and a non-numeric
-        // suffix all fail closed to Unknown; the gating token cannot self-confirm.
-        for (label, server) in [
-            ("case:nginx-bare", "nginx"),
-            ("case:nginx-slash-only", "nginx/"),
-            ("case:nginx-nonnumeric", "nginx/foo"),
-        ] {
-            let case = case(label, kind);
-            let knowledge = knowledge();
-            knowledge
-                .insert_evidence(evidence(
-                    &case,
-                    "http.header",
-                    "server",
-                    EvidenceValue::Text(server.to_owned()),
-                ))
-                .unwrap();
-            assert_eq!(
+        // Both server-software routes share the same anti-circular version rule:
+        // only a `<product>/<digit>` token is a version disclosure.
+        let products = [
+            (StandardWebActionKind::NginxConfiguration, "nginx", "nginx/1.26.0"),
+            (StandardWebActionKind::ApacheConfiguration, "Apache", "Apache/2.4.58"),
+        ];
+        for (kind, bare, versioned) in products {
+            let status_of = |label: &str, server: &str| {
+                let case = case(label, kind);
+                let knowledge = knowledge();
+                knowledge
+                    .insert_evidence(evidence(
+                        &case,
+                        "http.header",
+                        "server",
+                        EvidenceValue::Text(server.to_owned()),
+                    ))
+                    .unwrap();
                 pipeline
                     .passive()
                     .verify(&knowledge, &case)
                     .unwrap()
                     .outcome()
-                    .status(),
-                OutcomeStatus::Unknown,
-                "`Server: {server}` must not be a version disclosure",
-            );
-        }
+                    .status()
+            };
 
-        // A digit after the slash is the positive signal -> Success (a single
-        // digit, a full dotted version, and an upper-case product name all match).
-        for (label, server) in [
-            ("case:nginx-v1", "nginx/1"),
-            ("case:nginx-vfull", "nginx/1.26.0"),
-            ("case:nginx-upper", "NGINX/1.26.0"),
-        ] {
-            let case = case(label, kind);
-            let knowledge = knowledge();
-            knowledge
-                .insert_evidence(evidence(
-                    &case,
-                    "http.header",
-                    "server",
-                    EvidenceValue::Text(server.to_owned()),
-                ))
+            // A bare product token, a trailing slash, and a non-numeric suffix all
+            // fail closed to Unknown; the gating token cannot self-confirm.
+            let slash_only = format!("{bare}/");
+            let non_numeric = format!("{bare}/foo");
+            for server in [bare, slash_only.as_str(), non_numeric.as_str()] {
+                assert_eq!(
+                    status_of("case:bare", server),
+                    OutcomeStatus::Unknown,
+                    "`Server: {server}` must not be a version disclosure",
+                );
+            }
+
+            // A digit after the slash is the positive signal -> Success (a single
+            // digit, a full dotted version, and an upper-case product all match).
+            let one = format!("{bare}/1");
+            let upper = versioned.to_uppercase();
+            for server in [one.as_str(), versioned, upper.as_str()] {
+                assert_eq!(
+                    status_of("case:versioned", server),
+                    OutcomeStatus::Success,
+                    "`Server: {server}` must be a version disclosure",
+                );
+            }
+
+            // A denying status outranks the version disclosure -> Blocked.
+            let blocked = case("case:blocked", kind);
+            let blocked_knowledge = knowledge();
+            blocked_knowledge
+                .insert_evidence_batch(vec![
+                    evidence(
+                        &blocked,
+                        "http.response",
+                        "status",
+                        EvidenceValue::Unsigned(403),
+                    ),
+                    evidence(
+                        &blocked,
+                        "http.header",
+                        "server",
+                        EvidenceValue::Text(versioned.to_owned()),
+                    ),
+                ])
                 .unwrap();
             assert_eq!(
                 pipeline
                     .passive()
-                    .verify(&knowledge, &case)
+                    .verify(&blocked_knowledge, &blocked)
                     .unwrap()
                     .outcome()
                     .status(),
-                OutcomeStatus::Success,
-                "`Server: {server}` must be a version disclosure",
+                OutcomeStatus::Blocked
             );
         }
-
-        // A denying status outranks the version disclosure -> Blocked.
-        let blocked = case("case:nginx-blocked", kind);
-        let blocked_knowledge = knowledge();
-        blocked_knowledge
-            .insert_evidence_batch(vec![
-                evidence(
-                    &blocked,
-                    "http.response",
-                    "status",
-                    EvidenceValue::Unsigned(403),
-                ),
-                evidence(
-                    &blocked,
-                    "http.header",
-                    "server",
-                    EvidenceValue::Text("nginx/1.26.0".to_owned()),
-                ),
-            ])
-            .unwrap();
-        assert_eq!(
-            pipeline
-                .passive()
-                .verify(&blocked_knowledge, &blocked)
-                .unwrap()
-                .outcome()
-                .status(),
-            OutcomeStatus::Blocked
-        );
     }
 
     #[test]
