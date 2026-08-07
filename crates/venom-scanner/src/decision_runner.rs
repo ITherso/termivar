@@ -389,15 +389,23 @@ pub trait DecisionActionExecutor: Send + Sync {
     /// immutable subject-scoped snapshot, returning immutable observations under
     /// the same provenance contract as [`execute`](Self::execute).
     ///
-    /// The default delegates to `execute`, so this is additive: transport-bound
-    /// executors never observe the snapshot and need not implement it.
+    /// This is additive: transport-bound executors never receive this call, so
+    /// they need not implement it. It is deliberately **fail-closed** — the
+    /// default returns a deterministic error rather than delegating to
+    /// [`execute`](Self::execute). An executor that declares
+    /// [`DecisionExecutionClass::LocalKnowledge`] but forgets to override this
+    /// method therefore cannot silently run transport work while the runtime has
+    /// already skipped request preflight, response accounting, and HTTP
+    /// telemetry validation for it.
     async fn execute_with_snapshot(
         &self,
         request: &DecisionExecutionRequest,
         snapshot: &KnowledgeSnapshot,
     ) -> Result<Vec<Evidence>, DecisionExecutorError> {
-        let _ = snapshot;
-        self.execute(request).await
+        let _ = (request, snapshot);
+        Err(DecisionExecutorError::new(
+            "local-knowledge executor did not implement snapshot execution",
+        ))
     }
 }
 
@@ -1592,6 +1600,68 @@ mod tests {
                 .unwrap(),
             DecisionExecutionClass::TransportBound
         );
+    }
+
+    /// Declares LocalKnowledge but never overrides snapshot execution. Its
+    /// transport `execute` records a call so the test can prove it is never made.
+    struct MislabeledLocalExecutor {
+        executed: Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    #[async_trait]
+    impl DecisionActionExecutor for MislabeledLocalExecutor {
+        fn id(&self) -> &str {
+            "mislabeled.local"
+        }
+
+        fn execution_class(&self) -> DecisionExecutionClass {
+            DecisionExecutionClass::LocalKnowledge
+        }
+
+        async fn execute(
+            &self,
+            _request: &DecisionExecutionRequest,
+        ) -> Result<Vec<Evidence>, DecisionExecutorError> {
+            self.executed
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+            Ok(Vec::new())
+        }
+    }
+
+    #[tokio::test]
+    async fn local_knowledge_without_snapshot_override_is_fail_closed() {
+        // A LocalKnowledge executor that forgets to override snapshot execution
+        // must produce a deterministic error, and its transport `execute` must
+        // NEVER run — the runtime has already skipped transport accounting for it.
+        let executed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let mut registry = DecisionExecutorRegistry::new();
+        registry
+            .register(Arc::new(MislabeledLocalExecutor {
+                executed: executed.clone(),
+            }))
+            .unwrap();
+        registry
+            .route_action(
+                DecisionExecutionStage::Passive,
+                "action.mislabeled",
+                "mislabeled.local",
+            )
+            .unwrap();
+        let adapter = DecisionRunnerAdapter::new(registry);
+
+        let error = adapter
+            .execute_command(
+                &execute_action("action.mislabeled", "mislabeled.local"),
+                &KnowledgeBase::new(),
+            )
+            .await
+            .unwrap_err();
+
+        assert!(
+            !executed.load(std::sync::atomic::Ordering::SeqCst),
+            "the transport execute() path must not be reached"
+        );
+        assert!(matches!(error, DecisionRunnerError::Executor { .. }));
     }
 
     fn executor(

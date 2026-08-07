@@ -22,7 +22,7 @@ use crate::{
     DecisionExecutorRegistry, DecisionLoopState, DecisionRunnerAdapter, DecisionStopReason,
     ExclusionReason, Expression, HttpBodyCapture, HttpEvidenceExecutor, HypothesisSelector,
     KnowledgeLayer, KnowledgeSnapshot, RequiredStrength, StandardWebActionKind,
-    SubjectHttpProbeProvider, TransportDispatchOutcome,
+    SubjectHttpProbeProvider, TransportDispatchOutcome, VerificationRule,
 };
 
 const BASIC: &[u8] = b"HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: Basic realm=\"admin\"\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
@@ -1705,4 +1705,147 @@ async fn local_receipt_bypasses_http_response_telemetry_but_transport_still_requ
         runtime.validate_response_usage_evidence(receipt, DecisionExecutionClass::TransportBound),
         Err(StandardWebDecisionRuntimeError::ResponseUsageEvidence { .. })
     ));
+}
+
+#[tokio::test]
+async fn exhausted_request_budget_denies_transport_but_permits_local_knowledge() {
+    // Contract: transport-budget exhaustion must not prevent already-authorized
+    // local reasoning. With the HTTP request allowance exhausted, a transport
+    // reservation is refused by the request-count budget, but a local-knowledge
+    // reservation is still permitted because it consumes no request allowance.
+    let target = Url::parse("https://example.test/app").unwrap();
+    let mut runtime = StandardWebDecisionRuntime::builder(target)
+        .runtime_budget(RuntimeBudget::default().with_max_total_requests(0))
+        .build()
+        .unwrap();
+    let started = tokio::time::Instant::now();
+
+    let transport = runtime.reserve_execution(
+        "action.transport",
+        DecisionExecutionStage::Passive,
+        DecisionExecutionClass::TransportBound,
+        started,
+    );
+    assert!(
+        matches!(&transport, Err(limit) if limit.dimension() == RuntimeBudgetDimension::TotalRequests),
+        "transport reservation must be denied by the request budget"
+    );
+    assert!(runtime
+        .reserve_execution(
+            "action.local",
+            DecisionExecutionStage::Passive,
+            DecisionExecutionClass::LocalKnowledge,
+            started,
+        )
+        .is_ok());
+}
+
+#[tokio::test]
+async fn surface_b_runs_a_local_knowledge_action_end_to_end_with_zero_transport() {
+    // End-to-end Surface-B characterization: a planner-selected LocalKnowledge
+    // action reads the immutable snapshot, derives typed evidence committed
+    // through the existing runner boundary, verifies to passive Success, and —
+    // via #46 continuation — the session reaches a natural Complete. The local
+    // action's transport delta is zero (only the bootstrap GET reaches the wire).
+    let server = serve(vec![Reply::Response(OK)]).await;
+    let subject = EntityId::new(format!("endpoint:{}", server.target())).unwrap();
+    let mut runtime = StandardWebDecisionRuntime::builder(server.target())
+        .build()
+        .unwrap();
+
+    // Test-only composition (private field access from this child module; no
+    // public executor-injection API): local executor + route, a planner action
+    // gated on a seeded hypothesis, and a case-correlated Success verifier.
+    let mut registry = runtime.runner.executors().clone();
+    registry.register(Arc::new(LocalSnapshotExecutor)).unwrap();
+    registry
+        .route_action(
+            DecisionExecutionStage::Passive,
+            "action.local.e2e",
+            "local.snapshot.test",
+        )
+        .unwrap();
+    runtime.runner = DecisionRunnerAdapter::new(registry);
+
+    let predicate = KnowledgePredicate::new("technology", "candidate").unwrap();
+    let value = EvidenceValue::Text("local-ready".to_owned());
+    runtime
+        .decision_loop
+        .planner_mut()
+        .register(
+            AttackAction::new(
+                "action.local.e2e",
+                "local.snapshot.test",
+                Expression::equals(KnowledgeLayer::Hypothesis, predicate.clone(), value.clone()),
+                HypothesisSelector::new(
+                    predicate.clone(),
+                    value.clone(),
+                    Probability::from_percent(50).unwrap(),
+                    RequiredStrength::Any,
+                ),
+                BenefitScore::from_percent(90).unwrap(),
+                ActionCost::new(1).unwrap(),
+                RiskScore::from_percent(1).unwrap(),
+                BTreeSet::new(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    runtime
+        .decision_loop
+        .verification_mut()
+        .passive_mut()
+        .register(
+            VerificationRule::new(
+                "verify.local.e2e",
+                VerificationStage::Passive,
+                900,
+                Expression::exists(
+                    KnowledgeLayer::Evidence,
+                    KnowledgePredicate::new("test.local", "count").unwrap(),
+                ),
+                OutcomeStatus::Success,
+                Probability::from_percent(99).unwrap(),
+                "a local-knowledge derivation was observed",
+            )
+            .unwrap()
+            .scoped_to_action("action.local.e2e")
+            .unwrap()
+            .with_case_correlated_evidence()
+            .unwrap(),
+        )
+        .unwrap();
+
+    let mut hypothesis = Hypothesis::with_id(
+        "hypothesis:local",
+        subject.clone(),
+        predicate,
+        value,
+        Probability::from_percent(95).unwrap(),
+    )
+    .unwrap();
+    hypothesis.set_strength(HypothesisStrength::Strong);
+    hypothesis.set_state(HypothesisState::Confirmed);
+    runtime.knowledge().upsert_hypothesis(hypothesis).unwrap();
+
+    let report = runtime.analyze().await.unwrap();
+
+    assert!(
+        matches!(
+            report.terminal(),
+            DecisionLoopCommand::Complete { case } if case.action_id() == "action.local.e2e"
+        ),
+        "terminal: {:?}",
+        report.terminal()
+    );
+    // Zero transport delta for the local action: only the bootstrap GET dispatched.
+    assert_eq!(report.usage().total_requests(), 1);
+    assert_eq!(server.methods().await, vec!["GET".to_owned()]);
+    // The local-derived evidence was atomically committed to knowledge.
+    assert!(runtime
+        .knowledge()
+        .snapshot_for_subject(&subject)
+        .evidence()
+        .iter()
+        .any(|evidence| evidence.predicate().dotted() == "test.local.count"));
 }
