@@ -13,8 +13,9 @@ use super::{
 use crate::{
     api_observation::{api_visibility_review_for_commit, ingest_api_visibility_observation},
     ApiObservationReceipt, ApiVisibilityComparator, ApiVisibilityReview,
-    ApiVisibilityReviewDisposition, DecisionExecutionFailureKind, DecisionExecutionStage,
-    ProfiledApiVisibilityComparison, ProfiledApiVisibilityError, RuntimeLimitExceeded,
+    ApiVisibilityReviewDisposition, DecisionExecutionClass, DecisionExecutionFailureKind,
+    DecisionExecutionStage, ProfiledApiVisibilityComparison, ProfiledApiVisibilityError,
+    RuntimeLimitExceeded,
 };
 
 const CONTROL_ACTION_ID: &str = "api.visibility.authorization-context.control";
@@ -113,6 +114,7 @@ impl StandardWebDecisionRuntime {
         let control_limits = match self.reserve_execution(
             CONTROL_ACTION_ID,
             DecisionExecutionStage::Active,
+            DecisionExecutionClass::TransportBound,
             started_at,
         ) {
             Ok(limits) => limits,
@@ -244,6 +246,7 @@ impl StandardWebDecisionRuntime {
         let candidate_limits = match self.reserve_execution(
             CANDIDATE_ACTION_ID,
             DecisionExecutionStage::Active,
+            DecisionExecutionClass::TransportBound,
             started_at,
         ) {
             Ok(limits) => limits,

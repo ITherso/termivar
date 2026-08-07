@@ -300,10 +300,10 @@ pub use decision_loop::{
 
 #[cfg(feature = "scanning")]
 pub use decision_runner::{
-    DecisionActionExecutor, DecisionEvidenceReceipt, DecisionExecutionFailureKind,
-    DecisionExecutionFailureReceipt, DecisionExecutionLimits, DecisionExecutionRequest,
-    DecisionExecutionStage, DecisionExecutorError, DecisionExecutorRegistry, DecisionRunnerAdapter,
-    DecisionRunnerError, DecisionRunnerTurn,
+    DecisionActionExecutor, DecisionEvidenceReceipt, DecisionExecutionClass,
+    DecisionExecutionFailureKind, DecisionExecutionFailureReceipt, DecisionExecutionLimits,
+    DecisionExecutionRequest, DecisionExecutionStage, DecisionExecutorError,
+    DecisionExecutorRegistry, DecisionRunnerAdapter, DecisionRunnerError, DecisionRunnerTurn,
 };
 
 #[cfg(feature = "scanning")]

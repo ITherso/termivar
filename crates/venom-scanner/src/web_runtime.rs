@@ -29,18 +29,19 @@ use venom_core::{
 use crate::{
     http_evidence::HttpRequestBroker, runtime_budget::RequestAccountingBroker, AdaptationLimits,
     AdaptationRule, AdaptivePipelineError, BenefitScore, DecisionActionOrigin,
-    DecisionEvidenceReceipt, DecisionExecutionFailureReceipt, DecisionExecutionLimits,
-    DecisionExecutionStage, DecisionExecutorRegistry, DecisionLoop, DecisionLoopCommand,
-    DecisionLoopConfig, DecisionLoopError, DecisionOutcomeReport, DecisionPlanningReport,
-    DecisionReasoningCommitReceipt, DecisionRunnerAdapter, DecisionRunnerError, DecisionRunnerTurn,
-    DecisionSession, DecisionStopReason, ExperiencePolicy, ExperienceStore, ExperienceStoreError,
-    HttpEvidenceError, HttpEvidenceExecutor, HttpEvidencePolicy, HttpHeaderPayloadBinding,
-    HttpProbe, HttpProbeMethod, KnowledgeBase, KnowledgeWrite, OutcomeSelector, PipelineDirective,
-    PlannerError, PlanningContext, RiskScore, RuntimeBudget, RuntimeBudgetDimension,
-    RuntimeLimitExceeded, RuntimeUsage, StandardApiInstallReport, StandardApiReasoning,
-    StandardApiReasoningError, StandardWebActionKind, StandardWebDecisionError,
-    StandardWebDecisionInstallReport, StandardWebDecisionProfile, SubjectHttpProbeProvider,
-    TransportDispatchAudit, VerificationCase, VerificationError, HTTP_EVIDENCE_EXECUTOR_ID,
+    DecisionEvidenceReceipt, DecisionExecutionClass, DecisionExecutionFailureReceipt,
+    DecisionExecutionLimits, DecisionExecutionStage, DecisionExecutorRegistry, DecisionLoop,
+    DecisionLoopCommand, DecisionLoopConfig, DecisionLoopError, DecisionOutcomeReport,
+    DecisionPlanningReport, DecisionReasoningCommitReceipt, DecisionRunnerAdapter,
+    DecisionRunnerError, DecisionRunnerTurn, DecisionSession, DecisionStopReason, ExperiencePolicy,
+    ExperienceStore, ExperienceStoreError, HttpEvidenceError, HttpEvidenceExecutor,
+    HttpEvidencePolicy, HttpHeaderPayloadBinding, HttpProbe, HttpProbeMethod, KnowledgeBase,
+    KnowledgeWrite, OutcomeSelector, PipelineDirective, PlannerError, PlanningContext, RiskScore,
+    RuntimeBudget, RuntimeBudgetDimension, RuntimeLimitExceeded, RuntimeUsage,
+    StandardApiInstallReport, StandardApiReasoning, StandardApiReasoningError,
+    StandardWebActionKind, StandardWebDecisionError, StandardWebDecisionInstallReport,
+    StandardWebDecisionProfile, SubjectHttpProbeProvider, TransportDispatchAudit, VerificationCase,
+    VerificationError, HTTP_EVIDENCE_EXECUTOR_ID,
 };
 
 mod api_visibility;
@@ -750,16 +751,21 @@ impl StandardWebDecisionRuntime {
                 return Err(self.run_failed(None, turns, source, started_at));
             },
         };
-        let bootstrap_limits =
-            match self.reserve_execution(bootstrap_action_id, bootstrap_stage, started_at) {
-                Ok(limits) => limits,
-                Err(limit) => {
-                    if self.cancellation.is_cancelled() {
-                        return Ok(self.cancellation_report(None, turns, None, started_at));
-                    }
-                    return Ok(self.limit_report(None, turns, limit, started_at));
-                },
-            };
+        // Bootstrap is always the transport-bound HTTP evidence probe.
+        let bootstrap_limits = match self.reserve_execution(
+            bootstrap_action_id,
+            bootstrap_stage,
+            DecisionExecutionClass::TransportBound,
+            started_at,
+        ) {
+            Ok(limits) => limits,
+            Err(limit) => {
+                if self.cancellation.is_cancelled() {
+                    return Ok(self.cancellation_report(None, turns, None, started_at));
+                }
+                return Ok(self.limit_report(None, turns, limit, started_at));
+            },
+        };
         if self.cancellation.is_cancelled() {
             return Ok(self.cancellation_report(None, turns, None, started_at));
         }
@@ -796,7 +802,9 @@ impl StandardWebDecisionRuntime {
                 return Ok(self.limit_report(None, turns, limit, started_at));
             },
         };
-        let bootstrap = match self.validate_response_usage_evidence(bootstrap) {
+        let bootstrap = match self
+            .validate_response_usage_evidence(bootstrap, DecisionExecutionClass::TransportBound)
+        {
             Ok(receipt) => receipt,
             Err(source) => {
                 let committed_bootstrap = source.committed_evidence().cloned();
@@ -866,18 +874,34 @@ impl StandardWebDecisionRuntime {
                             return Err(self.run_failed(bootstrap, turns, source, started_at));
                         },
                     };
+                    let execution_class = match self.runner.execution_class_for_command(&command) {
+                        Ok(class) => class,
+                        Err(source) => {
+                            return Err(self.run_failed(
+                                bootstrap,
+                                turns,
+                                source.into(),
+                                started_at,
+                            ));
+                        },
+                    };
                     let completed_action_id = action_id.to_owned();
-                    let limits =
-                        match self.reserve_execution(action_id, previous_stage, started_at) {
-                            Ok(limits) => limits,
-                            Err(limit) => {
-                                if self.cancellation.is_cancelled() {
-                                    return Ok(self
-                                        .cancellation_report(bootstrap, turns, None, started_at));
-                                }
-                                return Ok(self.limit_report(bootstrap, turns, limit, started_at));
-                            },
-                        };
+                    let limits = match self.reserve_execution(
+                        action_id,
+                        previous_stage,
+                        execution_class,
+                        started_at,
+                    ) {
+                        Ok(limits) => limits,
+                        Err(limit) => {
+                            if self.cancellation.is_cancelled() {
+                                return Ok(
+                                    self.cancellation_report(bootstrap, turns, None, started_at)
+                                );
+                            }
+                            return Ok(self.limit_report(bootstrap, turns, limit, started_at));
+                        },
+                    };
                     if self.cancellation.is_cancelled() {
                         return Ok(self.cancellation_report(bootstrap, turns, None, started_at));
                     }
@@ -920,16 +944,21 @@ impl StandardWebDecisionRuntime {
                             return Ok(self.limit_report(bootstrap, turns, limit, started_at));
                         },
                     };
-                    let evidence = match self.validate_response_usage_evidence(evidence) {
-                        Ok(receipt) => receipt,
-                        Err(source) => {
-                            return Err(self.run_failed(bootstrap, turns, source, started_at));
-                        },
-                    };
-                    if let Some(limit) = self.response_limit_if_exceeded(&completed_action_id) {
-                        return Ok(self.limit_report_with_unverified_evidence(
-                            bootstrap, turns, evidence, limit, started_at,
-                        ));
+                    let evidence =
+                        match self.validate_response_usage_evidence(evidence, execution_class) {
+                            Ok(receipt) => receipt,
+                            Err(source) => {
+                                return Err(self.run_failed(bootstrap, turns, source, started_at));
+                            },
+                        };
+                    // Cumulative response-byte enforcement is a transport concern;
+                    // a local-knowledge action delivers no response bytes.
+                    if execution_class == DecisionExecutionClass::TransportBound {
+                        if let Some(limit) = self.response_limit_if_exceeded(&completed_action_id) {
+                            return Ok(self.limit_report_with_unverified_evidence(
+                                bootstrap, turns, evidence, limit, started_at,
+                            ));
+                        }
                     }
                     if self.cancellation.is_cancelled() {
                         return Ok(self.cancellation_report(
@@ -1098,13 +1127,34 @@ impl StandardWebDecisionRuntime {
         &mut self,
         action_id: &str,
         stage: DecisionExecutionStage,
+        execution_class: DecisionExecutionClass,
         started_at: tokio::time::Instant,
     ) -> Result<DecisionExecutionLimits, RuntimeLimitExceeded> {
         if let Some(limit) = self.wall_limit_if_reached(started_at) {
             return Err(limit);
         }
-        self.sync_request_accounting();
-        let preflight = self.request_accounting.preflight(action_id, stage)?;
+        // The transport-bound path is preserved byte-for-byte: request preflight,
+        // then the semantic action-attempt guard, then the response allowance.
+        // The local-knowledge path applies only the semantic guard — no request
+        // preflight and no response-byte allowance, because it makes no request.
+        match execution_class {
+            DecisionExecutionClass::TransportBound => {
+                self.sync_request_accounting();
+                let preflight = self.request_accounting.preflight(action_id, stage)?;
+                self.reserve_action_attempt(action_id)?;
+                Ok(DecisionExecutionLimits::new()
+                    .with_max_response_body_bytes(preflight.remaining_response_bytes()))
+            },
+            DecisionExecutionClass::LocalKnowledge => {
+                self.reserve_action_attempt(action_id)?;
+                Ok(DecisionExecutionLimits::new())
+            },
+        }
+    }
+
+    /// Enforces and reserves the semantic same-action-attempt guard, which
+    /// applies to every execution class.
+    fn reserve_action_attempt(&mut self, action_id: &str) -> Result<(), RuntimeLimitExceeded> {
         let attempts = self.usage.same_action_attempts(action_id);
         if attempts >= self.budget.max_same_action_attempts() {
             return Err(RuntimeLimitExceeded::new(
@@ -1114,16 +1164,21 @@ impl StandardWebDecisionRuntime {
                 Some(action_id.to_owned()),
             ));
         }
-
         self.usage.reserve_action_attempt(action_id);
-        Ok(DecisionExecutionLimits::new()
-            .with_max_response_body_bytes(preflight.remaining_response_bytes()))
+        Ok(())
     }
 
     fn validate_response_usage_evidence(
         &mut self,
         receipt: DecisionEvidenceReceipt,
+        execution_class: DecisionExecutionClass,
     ) -> Result<DecisionEvidenceReceipt, StandardWebDecisionRuntimeError> {
+        // HTTP response telemetry is a transport-bound invariant only. A
+        // local-knowledge action performs no request and emits no response-body
+        // observation, so the requirement does not apply to it.
+        if execution_class == DecisionExecutionClass::LocalKnowledge {
+            return Ok(receipt);
+        }
         let response_body_bytes =
             HttpEvidencePredicate::RESPONSE_BODY_BYTES_OBSERVED.into_knowledge();
         let correlated: Vec<_> = receipt
