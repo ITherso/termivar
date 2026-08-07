@@ -189,8 +189,7 @@ const fn probe_method(
         | StandardWebActionKind::SanctumAuthBoundary
         | StandardWebActionKind::HttpBasicAuthBoundary
         | StandardWebActionKind::HttpBearerAuthBoundary => Ok(HttpProbeMethod::Head),
-        StandardWebActionKind::PhpInputDiscovery
-        | StandardWebActionKind::LaravelInputAnalysis => {
+        StandardWebActionKind::PhpInputDiscovery | StandardWebActionKind::LaravelInputAnalysis => {
             Err(StandardWebExecutionError::UnsupportedAction { action: kind })
         },
     }

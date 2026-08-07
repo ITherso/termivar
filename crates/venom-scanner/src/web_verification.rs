@@ -276,8 +276,7 @@ fn signal_rule(
             90,
             "The Server header discloses a specific Apache version",
         ),
-        StandardWebActionKind::PhpInputDiscovery
-        | StandardWebActionKind::LaravelInputAnalysis => {
+        StandardWebActionKind::PhpInputDiscovery | StandardWebActionKind::LaravelInputAnalysis => {
             return Err(StandardWebVerificationError::UnsupportedAction { action: kind });
         },
     };
@@ -612,8 +611,16 @@ mod tests {
         // Both server-software routes share the same anti-circular version rule:
         // only a `<product>/<digit>` token is a version disclosure.
         let products = [
-            (StandardWebActionKind::NginxConfiguration, "nginx", "nginx/1.26.0"),
-            (StandardWebActionKind::ApacheConfiguration, "Apache", "Apache/2.4.58"),
+            (
+                StandardWebActionKind::NginxConfiguration,
+                "nginx",
+                "nginx/1.26.0",
+            ),
+            (
+                StandardWebActionKind::ApacheConfiguration,
+                "Apache",
+                "Apache/2.4.58",
+            ),
         ];
         for (kind, bare, versioned) in products {
             let status_of = |label: &str, server: &str| {
