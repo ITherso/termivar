@@ -28,6 +28,7 @@ semantic HTTP evidence
 | Action | Evidence from the current case | Outcome |
 | --- | --- | --- |
 | Laravel route boundary | `Allow` exists | `NeedsReview` |
+| PHP input discovery | bounded HTML sample contains a named form control | `Success` |
 | Livewire component discovery | bounded body sample contains `wire:id=` or `wire:snapshot=` | `Success` |
 | Sanctum auth boundary | both `laravel_session` and `XSRF-TOKEN` cookie names | `Success` |
 | HTTP Basic auth boundary | `WWW-Authenticate` contains `Basic` | `Success` |
@@ -37,6 +38,12 @@ semantic HTTP evidence
 An explicit authentication challenge outranks the generic `401` blocked rule. This records the advertised authentication mechanism instead of treating its expected challenge as a failed probe.
 
 The Laravel `Allow` signal is deliberately non-conclusive. It proves that the endpoint advertised a method boundary, not that Laravel produced it. Missing markers produce the canonical evidence-free `Unknown`; absence alone never becomes `FalsePositive`.
+
+Outcome status and hypothesis transition are separate contracts. PHP input
+discovery is `KnowledgeOnly`: a named form control yields `Success` and completes
+the discovery objective, while the motivating PHP hypothesis remains
+`Supported`. Directly coupled actions retain the default `Motivation` target, so
+their transition-authorized Success can confirm the selected hypothesis.
 
 ## Isolation
 
@@ -51,7 +58,7 @@ Action matching is retained in every `VerificationRuleEvaluation`, so an audit t
 
 ## Active freshness
 
-Active verification keeps the existing monotonic snapshot rule. A matching expression is eligible only when it cites at least one evidence ID absent from the passive baseline. Reusing a stale marker with the same case correlation therefore remains `Unknown`; a fresh active observation can become conclusive.
+Active verification keeps the existing monotonic snapshot rule. A matching expression is eligible only when it cites at least one evidence ID absent from the passive baseline. Reusing a stale marker with the same case correlation therefore remains `Unknown`; a fresh active observation can produce a terminal result, which becomes hypothesis-conclusive only when the case authorizes a transition.
 
 ## Commit concurrency
 
@@ -63,8 +70,9 @@ instead of confirming or rejecting a newer evaluation. Replaying the same
 terminal state is idempotent; attempting to reverse `Confirmed` and `Rejected`
 is an explicit conflict rather than last-writer-wins.
 
-The lower-level `apply_outcome` compatibility function has no snapshot token.
-It preserves monotonic terminal behavior, but cannot detect intervening
+The lower-level `apply_outcome` compatibility function has neither a snapshot
+token nor the case-level transition policy. It is restricted to callers that
+have already established transition authorization and cannot detect intervening
 recalibration; production decision turns apply the complete report.
 
 ## Installation

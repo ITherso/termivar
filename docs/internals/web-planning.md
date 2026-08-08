@@ -32,21 +32,26 @@ Their stable identities live in the transport-neutral `web_actions` catalog;
 planning assigns utility while execution separately binds supported identities
 to concrete probes.
 
-| Hypothesis | Action | Required strength | Minimum posterior |
-| --- | --- | --- | --- |
-| nginx web server | configuration discovery | Any | 70% |
-| Apache HTTP Server | configuration discovery | Any | 70% |
-| PHP runtime | input discovery | Any | 70% |
-| Laravel framework | route discovery | Strong | 80% |
-| Laravel framework | input analysis | Strong | 80% |
-| Livewire UI framework | component discovery | Any | 60% |
-| Sanctum authentication | auth-boundary analysis | Any | 50% |
-| HTTP Basic | auth-boundary analysis | Strong | 90% |
-| HTTP Bearer | auth-boundary analysis | Strong | 90% |
+| Hypothesis | Action | Required strength | Minimum posterior | Verification target |
+| --- | --- | --- | --- | --- |
+| nginx web server | configuration discovery | Any | 70% | Motivation |
+| Apache HTTP Server | configuration discovery | Any | 70% | Motivation |
+| PHP runtime | input discovery | Any | 70% | KnowledgeOnly |
+| Laravel framework | route discovery | Strong | 80% | Motivation |
+| Laravel framework | input analysis | Strong | 80% | Motivation |
+| Livewire UI framework | component discovery | Any | 60% | Motivation |
+| Sanctum authentication | auth-boundary analysis | Any | 50% | Motivation |
+| HTTP Basic | auth-boundary analysis | Strong | 90% | Motivation |
+| HTTP Bearer | auth-boundary analysis | Strong | 90% | Motivation |
 
 Laravel input analysis depends on Laravel route discovery. The planner can rank input analysis first by utility, but its dependency closure always places route discovery earlier in the emitted plan.
 
 The lower Sanctum threshold does not imply verification. The underlying cookie-based hypothesis remains weak, and the action carries higher operational risk so conservative planning contexts exclude it automatically.
+
+PHP input discovery is deliberately `KnowledgeOnly`. The PHP hypothesis still
+motivates and supplies confidence for the action, but finding a named HTML form
+control proves only that the discovery objective succeeded; it does not prove
+that PHP produced the control and therefore cannot confirm or reject PHP.
 
 ## Executor boundary
 
@@ -60,7 +65,7 @@ for kind in StandardWebActionKind::all() {
 
 This profile does not silently map semantic actions to generic exploit plugins. Route discovery, component discovery, and authentication analysis remain isolated executor contracts that a host can implement with its own scope, rate, and authorization policy.
 
-The opt-in [standard web discovery executor profile](web-execution.md) now supplies bounded built-in implementations for Laravel route boundaries, Livewire component discovery, and Sanctum/HTTP authentication boundaries. Configuration and input-analysis executors remain host-owned.
+The opt-in [standard web discovery executor profile](web-execution.md) supplies bounded built-in implementations for eight actions, including nginx/Apache configuration discovery, PHP input discovery, Laravel route boundaries, Livewire component discovery, and Sanctum/HTTP authentication boundaries. Laravel input analysis remains host-owned.
 
 ## Installation
 
@@ -84,6 +89,9 @@ Each selected `PlanStep` retains:
 
 - the requirements expression trace;
 - the hypothesis supplying confidence;
+- the separately resolved verification target (`Motivation`, `Distinct`, or
+  `KnowledgeOnly`) in the in-process plan; the existing serialized plan shape
+  intentionally omits this additive field for wire compatibility;
 - gain, posterior, business value, cost, and risk;
 - the calculated fixed-point utility;
 - prerequisite action identities;

@@ -23,7 +23,7 @@ use venom_core::{
 use crate::{
     planner::{
         ActionCost, AttackAction, AttackPlanner, BenefitScore, HypothesisSelector, PlannerError,
-        PlannerWrite, RequiredStrength, RiskScore,
+        PlannerWrite, RequiredStrength, RiskScore, VerificationTarget,
     },
     rules::{Expression, KnowledgeLayer},
 };
@@ -142,7 +142,7 @@ fn build_action(kind: StandardWebActionKind) -> Result<AttackAction, StandardWeb
         .iter()
         .map(|kind| kind.action_id().to_owned())
         .collect();
-    Ok(AttackAction::new(
+    let action = AttackAction::new(
         kind.action_id(),
         kind.executor_id(),
         Expression::equals(KnowledgeLayer::Hypothesis, predicate.clone(), value.clone()),
@@ -156,7 +156,13 @@ fn build_action(kind: StandardWebActionKind) -> Result<AttackAction, StandardWeb
         ActionCost::new(definition.cost)?,
         RiskScore::from_percent(definition.risk)?,
         prerequisites,
-    )?)
+    )?;
+    Ok(match kind {
+        StandardWebActionKind::PhpInputDiscovery => {
+            action.with_verification_target(VerificationTarget::KnowledgeOnly)
+        },
+        _ => action,
+    })
 }
 
 fn action_definition(kind: StandardWebActionKind) -> ActionDefinition {
@@ -319,6 +325,14 @@ mod tests {
         assert_eq!(second, StandardWebAttackInstallReport::default());
         assert_eq!(planner.len(), STANDARD_WEB_ACTION_COUNT);
         assert_eq!(profile.executor_ids().len(), STANDARD_WEB_ACTION_COUNT);
+        for action in profile.actions() {
+            let expected = if action.id() == StandardWebActionKind::PhpInputDiscovery.action_id() {
+                &VerificationTarget::KnowledgeOnly
+            } else {
+                &VerificationTarget::Motivation
+            };
+            assert_eq!(action.verification_target(), expected, "{}", action.id());
+        }
         assert_eq!(
             StandardWebActionKind::LaravelRouteDiscovery.executor_id(),
             "web.probe.laravel-routes"

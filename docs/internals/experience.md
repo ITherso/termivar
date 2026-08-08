@@ -1,11 +1,16 @@
 # Experience classification
 
-`ExperienceStore` is an append-only, subject-scoped audit of completed attempts. It helps the planner avoid repeating verified negatives without interpreting temporary execution failures as evidence that an action has no utility.
+`ExperienceStore` is an append-only, subject-scoped audit of completed action attempts. It helps the planner avoid repeating verified negatives without interpreting temporary execution failures as evidence that an action has no utility.
 
 Verifier outcomes and experience dispositions are separate contracts:
 
 - `OutcomeStatus` states what a verifier concluded.
 - `ExperienceDisposition` states how that result may influence later planning.
+
+Experience is action-outcome learning history. It does not preserve the
+`VerificationCase` transition-authorization policy, and its dispositions are not
+authoritative hypothesis state. Consult `KnowledgeBase` and the complete
+`VerificationReport` to determine whether a hypothesis transition was applied.
 
 Transport, executor, target, and host-policy failures therefore do not expand the core verifier status model.
 
@@ -13,7 +18,7 @@ Transport, executor, target, and host-policy failures therefore do not expand th
 
 | Disposition | Meaning | Suppression streak |
 | --- | --- | --- |
-| `ConfirmedPositive` | The hypothesis was verified | Reset |
+| `ConfirmedPositive` | The verifier reported a successful outcome for the action; this alone does not prove its associated hypothesis transitioned | Reset |
 | `VerificationRejected` | A verifier rejected the hypothesis | Increment |
 | `ConfirmedNegative` | An audited negative control disproved the hypothesis | Increment |
 | `NotApplicable` | The action does not apply to this subject | Neutral |

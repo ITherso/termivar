@@ -198,7 +198,7 @@ that receipt in `unverified_evidence()` and does not synthesize an outcome.
 
 All built-in HTTP executors installed by `StandardWebDecisionRuntime` share one broker, one redirect-disabled and implicit-retry-disabled client, and one accounting authority. Bootstrap, planned, adaptive, retry, and active-verification dispatches therefore compete for the same atomic envelope. Redirect responses consume the request that produced them but are not followed. Semantic retries re-enter the broker and acquire a fresh lease. Low-level callers that construct and run an arbitrary `DecisionActionExecutor` outside this standard runtime remain responsible for their own transport policy and accounting.
 
-No-progress accounting ignores raw evidence IDs, timing changes, retry case IDs, and experience inserts. A completed execution turn resets the counter only when it inserts or updates a hypothesis, escalates passive verification to an active probe, or reaches a conclusive Success/FalsePositive/ConfirmedNegative result. When the configured count is reached, the next command is not dispatched.
+No-progress accounting ignores raw evidence IDs, timing changes, retry case IDs, and experience inserts. A completed execution turn resets the counter only when it inserts or updates a hypothesis, escalates passive verification to an active probe, or reaches a terminal Success/FalsePositive/ConfirmedNegative result. A knowledge-only Success therefore still records objective progress even though it transitions no hypothesis. When the configured count is reached, the next command is not dispatched.
 
 Expected exhaustion is an auditable result rather than an execution error. The report ends with `Halt { reason: RuntimeBudgetLimit }`, exposes the structured dimension through `limit_exceeded()`, and carries final broker counters through `usage()`. If the broker refuses a later dispatch inside an already-started executor, `execution_failure()` also preserves the exact request, executor, stage, origin, limits, and structured runtime limit. If a natural `Complete`, `AwaitHumanReview`, or policy `Halt` is reached on the same completed turn, that domain terminal takes precedence.
 
@@ -214,9 +214,9 @@ complete.
 
 ## Executable-plan boundary
 
-The standard planner currently declares nine semantic actions while the built-in discovery profile implements five. The runtime compares planner executor identities with the installed registry before each planning cycle. Actions without an executor are supplied as host policy suppressions, remain visible as `PolicySuppressed` exclusions, and are never handed to the runner.
+The standard planner currently declares nine semantic actions while the built-in discovery profile implements eight. The runtime compares planner executor identities with the installed registry before each planning cycle. Actions without an executor are supplied as host policy suppressions, remain visible as `PolicySuppressed` exclusions, and are never handed to the runner.
 
-This prevents a discovered nginx, Apache, PHP, or Laravel input hypothesis from becoming an `UnknownExecutor` runtime failure. A future audited executor can remove its action from that suppression set simply by becoming part of the installed profile.
+This prevents a discovered Laravel input hypothesis from becoming an `UnknownExecutor` runtime failure. A future audited executor can remove its action from that suppression set simply by becoming part of the installed profile.
 
 ## Lifecycle and audit
 

@@ -145,7 +145,11 @@ fn is_false(value: &bool) -> bool {
     !*value
 }
 
-/// Stable identity linking a planned action to the hypothesis it verifies.
+/// Stable identity linking a planned action to its hypothesis provenance.
+///
+/// Most cases authorize a conclusive outcome to transition `hypothesis_id`.
+/// Knowledge-only cases retain that identity solely as the motivation/audit
+/// anchor and explicitly suppress every hypothesis-state transition.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct VerificationCase {
     id: String,
@@ -154,10 +158,25 @@ pub struct VerificationCase {
     hypothesis_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     payload_strategy: Option<PayloadStrategyRef>,
+    #[serde(skip_serializing_if = "transition_is_default")]
+    applies_hypothesis_transition: bool,
+    // Legacy readers already reject unknown `payload_*` fields. Emitting this
+    // guard for knowledge-only cases prevents them from ignoring the new policy
+    // bit and reconstructing a transition-authorized case.
+    #[serde(
+        default,
+        rename = "payload_claim_policy_guard",
+        skip_serializing_if = "is_false"
+    )]
+    claim_policy_guard: bool,
 }
 
 impl VerificationCase {
     /// Creates a validated verification case.
+    ///
+    /// By default a conclusive outcome transitions [`Self::hypothesis_id`]. Use
+    /// [`Self::without_hypothesis_transition`] for a knowledge-only case whose
+    /// outcome is recorded without confirming or rejecting any hypothesis.
     pub fn new(
         id: impl Into<String>,
         subject: EntityId,
@@ -170,6 +189,8 @@ impl VerificationCase {
             action_id: non_empty(action_id, "verification action id")?,
             hypothesis_id: non_empty(hypothesis_id, "verification hypothesis id")?,
             payload_strategy: None,
+            applies_hypothesis_transition: true,
+            claim_policy_guard: false,
         })
     }
 
@@ -177,6 +198,21 @@ impl VerificationCase {
     pub fn with_payload_strategy(mut self, strategy: Option<PayloadStrategyRef>) -> Self {
         self.payload_strategy = strategy;
         self
+    }
+
+    /// Marks this case knowledge-only: its outcome is still recorded (and can be
+    /// `Success`), but no hypothesis-state transition is applied. This separates
+    /// "the action's objective was achieved" from "the motivating hypothesis was
+    /// conclusively verified".
+    pub fn without_hypothesis_transition(mut self) -> Self {
+        self.applies_hypothesis_transition = false;
+        self.claim_policy_guard = true;
+        self
+    }
+
+    /// Returns whether a conclusive outcome transitions the case hypothesis.
+    pub fn applies_hypothesis_transition(&self) -> bool {
+        self.applies_hypothesis_transition
     }
 
     /// Returns the stable case identity.
@@ -194,7 +230,8 @@ impl VerificationCase {
         &self.action_id
     }
 
-    /// Returns the hypothesis affected by a conclusive outcome.
+    /// Returns the transition target, or the motivation/audit anchor when this
+    /// case does not authorize hypothesis transitions.
     pub fn hypothesis_id(&self) -> &str {
         &self.hypothesis_id
     }
@@ -218,6 +255,10 @@ impl<'de> Deserialize<'de> for VerificationCase {
             hypothesis_id: String,
             #[serde(default)]
             payload_strategy: Option<PayloadStrategyRef>,
+            #[serde(default = "default_applies_transition")]
+            applies_hypothesis_transition: bool,
+            #[serde(default)]
+            payload_claim_policy_guard: bool,
             #[serde(flatten)]
             extensions: BTreeMap<String, IgnoredAny>,
         }
@@ -226,15 +267,25 @@ impl<'de> Deserialize<'de> for VerificationCase {
         if wire
             .extensions
             .keys()
-            .any(|field| field.starts_with("payload_"))
+            .any(|field| field.starts_with("payload_") || field.starts_with("applies_hypothesis_"))
         {
             return Err(serde::de::Error::custom(
-                "unknown reserved payload strategy field",
+                "unknown reserved verification case field",
             ));
         }
-        Self::new(wire.id, wire.subject, wire.action_id, wire.hypothesis_id)
+        if wire.payload_claim_policy_guard != !wire.applies_hypothesis_transition {
+            return Err(serde::de::Error::custom(
+                "verification case compatibility guard is missing or inconsistent",
+            ));
+        }
+        let case = Self::new(wire.id, wire.subject, wire.action_id, wire.hypothesis_id)
             .map(|case| case.with_payload_strategy(wire.payload_strategy))
-            .map_err(serde::de::Error::custom)
+            .map_err(serde::de::Error::custom)?;
+        Ok(if wire.applies_hypothesis_transition {
+            case
+        } else {
+            case.without_hypothesis_transition()
+        })
     }
 }
 
@@ -507,20 +558,38 @@ impl VerificationReport {
         &self.evaluations
     }
 
-    /// Applies this report's conclusive state transition with snapshot CAS.
+    /// Applies this report's authorized state transition with snapshot CAS.
     ///
     /// The report is bound to the subject and ontology revisions used for its
     /// evaluation. If rule-visible knowledge changed before the transition, the
     /// complete state update is rejected as stale. Audit-only nonterminal reports
     /// are validated too, because their callers may still commit adaptive or
     /// session decisions. Replaying an already-applied terminal report is
-    /// idempotent; an opposite terminal result is rejected.
+    /// idempotent; an opposite terminal result is rejected. A knowledge-only
+    /// case validates the same snapshot token but returns `None` without
+    /// transitioning its audit-anchor hypothesis.
     pub fn apply(
         &self,
         knowledge: &KnowledgeBase,
     ) -> Result<Option<KnowledgeWrite>, VerificationError> {
+        if !self.case.applies_hypothesis_transition() {
+            // Knowledge-only case: record the outcome without confirming or
+            // rejecting any hypothesis. The snapshot revisions are still
+            // validated (as for any audit-only report) so callers that commit
+            // adaptive or session decisions observe a fresh snapshot.
+            validate_commit_token(knowledge, self.case.subject(), self.commit_token)?;
+            return Ok(None);
+        }
         apply_outcome_with_token(knowledge, &self.outcome, Some(self.commit_token))
     }
+}
+
+fn default_applies_transition() -> bool {
+    true
+}
+
+fn transition_is_default(applies: &bool) -> bool {
+    *applies
 }
 
 #[derive(Debug, Clone)]
@@ -800,11 +869,13 @@ impl VerificationPipelineReport {
 /// reject it. Other outcomes are audit records only and leave hypothesis state
 /// unchanged.
 ///
-/// This compatibility entry point has no snapshot token and therefore cannot
-/// detect recalibration between verification and application. It still makes
-/// terminal transitions monotonic: same-state replay is idempotent and an
-/// opposite terminal transition is rejected. Prefer [`VerificationReport::apply`]
-/// whenever the report is available.
+/// This compatibility entry point has no [`VerificationCase`], so it cannot
+/// enforce a knowledge-only case's transition policy. Call it only for outcomes
+/// already authorized to transition their hypothesis. It also has no snapshot
+/// token and therefore cannot detect recalibration between verification and
+/// application. Terminal transitions remain monotonic: same-state replay is
+/// idempotent and an opposite terminal transition is rejected. Prefer
+/// [`VerificationReport::apply`] whenever the report is available.
 pub fn apply_outcome(
     knowledge: &KnowledgeBase,
     outcome: &Outcome,
@@ -1127,10 +1198,11 @@ mod tests {
         .unwrap();
         let legacy_wire = serde_json::to_value(&legacy).unwrap();
         assert!(legacy_wire.get("payload_strategy").is_none());
-        assert!(serde_json::from_value::<VerificationCase>(legacy_wire)
-            .unwrap()
-            .payload_strategy()
-            .is_none());
+        assert!(legacy_wire.get("applies_hypothesis_transition").is_none());
+        assert!(legacy_wire.get("payload_claim_policy_guard").is_none());
+        let restored_legacy = serde_json::from_value::<VerificationCase>(legacy_wire).unwrap();
+        assert!(restored_legacy.payload_strategy().is_none());
+        assert!(restored_legacy.applies_hypothesis_transition());
         let mut misspelled = serde_json::to_value(&legacy).unwrap();
         misspelled["payload_stratgey"] = serde_json::json!({
             "id": "visibility.control-pair",
@@ -1147,6 +1219,25 @@ mod tests {
             serde_json::from_value(serde_json::to_value(&selected).unwrap()).unwrap();
         assert_eq!(restored, selected);
         assert_eq!(restored.payload_strategy(), Some(&strategy));
+
+        let knowledge_only = legacy.without_hypothesis_transition();
+        let knowledge_only_wire = serde_json::to_value(&knowledge_only).unwrap();
+        assert_eq!(knowledge_only_wire["applies_hypothesis_transition"], false);
+        assert_eq!(knowledge_only_wire["payload_claim_policy_guard"], true);
+        let mut unguarded = knowledge_only_wire.clone();
+        unguarded
+            .as_object_mut()
+            .unwrap()
+            .remove("payload_claim_policy_guard");
+        assert!(serde_json::from_value::<VerificationCase>(unguarded).is_err());
+        assert_eq!(
+            serde_json::from_value::<VerificationCase>(knowledge_only_wire).unwrap(),
+            knowledge_only
+        );
+
+        let mut misspelled = serde_json::to_value(&restored_legacy).unwrap();
+        misspelled["applies_hypothesis_transiton"] = serde_json::json!(false);
+        assert!(serde_json::from_value::<VerificationCase>(misspelled).is_err());
     }
 
     fn case() -> VerificationCase {
@@ -1429,6 +1520,45 @@ mod tests {
         assert_eq!(
             apply_outcome(&knowledge, report.outcome()).unwrap(),
             Some(KnowledgeWrite::Unchanged)
+        );
+    }
+
+    #[test]
+    fn knowledge_only_success_is_audited_without_transitioning_its_anchor() {
+        let knowledge = knowledge();
+        let mut verifier = PassiveVerifier::new();
+        verifier
+            .register(rule(
+                "passive.success",
+                VerificationStage::Passive,
+                10,
+                boolean_predicate(),
+                OutcomeStatus::Success,
+            ))
+            .unwrap();
+        let knowledge_only = case().without_hypothesis_transition();
+        let report = verifier.verify(&knowledge, &knowledge_only).unwrap();
+
+        assert_eq!(report.outcome().status(), OutcomeStatus::Success);
+        assert_eq!(report.apply(&knowledge).unwrap(), None);
+        assert_eq!(
+            knowledge.hypothesis("hypothesis:sqli").unwrap().state(),
+            HypothesisState::Supported
+        );
+
+        let stale_report = verifier.verify(&knowledge, &knowledge_only).unwrap();
+        knowledge
+            .insert_evidence(evidence(timing_predicate(), "late-observation", true))
+            .unwrap();
+        assert!(matches!(
+            stale_report.apply(&knowledge),
+            Err(VerificationError::Knowledge(
+                KnowledgeBaseError::StaleSnapshot { .. }
+            ))
+        ));
+        assert_eq!(
+            knowledge.hypothesis("hypothesis:sqli").unwrap().state(),
+            HypothesisState::Supported
         );
     }
 
