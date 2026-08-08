@@ -110,7 +110,7 @@ presentation-only derivation and never appears in JSON.)
 | --- | --- | --- |
 | `action_id` | string | Action associated with the verification outcome. |
 | `status` | string enum | `success` \| `blocked` \| `unknown` \| `false_positive` \| `needs_review` \| `confirmed_negative` \| `other`. |
-| `conclusive` | boolean | Whether the outcome maps to a verifier-owned hypothesis state. Not every outcome is a vulnerability. |
+| `conclusive` | boolean | Whether the case authorizes a hypothesis transition **and** the outcome maps to a verifier-owned hypothesis state. A `Success` may therefore be `false`, and no outcome is automatically a vulnerability. |
 
 ### `terminal`
 
@@ -191,14 +191,17 @@ vulnerabilities. When building automation on it:
   — an action can be planned but deferred (e.g. behind human review) and never
   dispatched.
 - **`status == "success"`, `state == "confirmed"`, and `conclusive == true` are
-  verification semantics, not finding or vulnerability semantics.** A conclusive or
-  successful verification means the runtime reached a definite answer about a
-  detection (e.g. "this endpoint advertises HTTP Basic authentication", or "this
-  page contains a Livewire marker") — it does **not** mean a reportable security
-  issue.
+  separate verification semantics, not finding or vulnerability semantics.** A
+  `Success` means the action objective was satisfied, but a knowledge-only case
+  intentionally reports `conclusive == false` and leaves its motivating
+  hypothesis unmodified. A transition-authorized conclusive verification means
+  the runtime reached a definite answer about a detection (e.g. "this endpoint
+  advertises HTTP Basic authentication", or "this page contains a Livewire
+  marker") — it does **not** mean a reportable security issue.
   Detecting a technology or an authentication mechanism is not itself a
   vulnerability.
-- **`confirmed_negative` is also `conclusive == true`.** A definitive negative is
+- **`confirmed_negative` is `conclusive == true` only when its case authorizes a
+  hypothesis transition.** A transition-authorized definitive negative is
   conclusive too, so `conclusive` alone cannot gate any finding.
 - **`redacted`, `non_scalar`, and `other` value dispositions, and the
   `confirmed_negative`, `blocked`, `needs_review`, and `false_positive` outcome

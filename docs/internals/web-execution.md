@@ -79,4 +79,4 @@ The opt-in [standard web verification profile](web-verification.md) consumes the
 
 ## Intentionally unsupported actions
 
-Nginx/Apache configuration analysis, PHP input discovery, and Laravel input analysis do not yet have built-in executors. Their planner identities remain stable, so hosts may register audited implementations without changing reasoning or planning policy.
+Laravel input analysis does not yet have a built-in executor. Its planner identity remains stable, so hosts may register an audited implementation without changing reasoning or planning policy.

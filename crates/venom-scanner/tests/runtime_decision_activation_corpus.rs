@@ -8,7 +8,7 @@
 //! snapshot of the current `venom decision-scan` preview profile** (see
 //! `preview_runtime` below and `crates/venom-cli/src/decision_scan.rs`) against
 //! offline `127.0.0.1` fixtures, and records the observable contract: emitted
-//! evidence predicates, resulting hypotheses and strength, per-turn
+//! evidence predicates, resulting hypotheses, strength, and lifecycle state, per-turn
 //! eligible/excluded planner actions with the exact exclusion reason, the actions
 //! actually dispatched on the wire, executor-route availability, verification
 //! outcome status, the terminal command with its stop reason, and request usage.
@@ -27,7 +27,9 @@
 //!   * **Executor-backed end to end:** `nginx` / `apache` / `php` / `http-basic`
 //!     / `http-bearer` / `livewire` run reasoning -> planning -> execution ->
 //!     verification to a terminal verification outcome (Success / complete)
-//!     without adding any capability. The nginx/apache configuration routes
+//!     without adding any capability. Directly coupled observations confirm the
+//!     corresponding hypothesis; PHP form discovery is knowledge-only and leaves
+//!     the motivating PHP hypothesis Supported. The nginx/apache configuration routes
 //!     succeed only on a version-bearing `Server` disclosure (`nginx/<version>`,
 //!     `Apache/<version>`); a bare product token gates the action but its probe
 //!     resolves to `unknown` and defers to human review, and a blocked status
@@ -68,7 +70,7 @@ use tokio::net::TcpListener;
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 use url::Url;
-use venom_core::{EvidenceValue, HypothesisStrength, OutcomeStatus};
+use venom_core::{EvidenceValue, HypothesisState, HypothesisStrength, OutcomeStatus};
 use venom_scanner::{
     DecisionActionOrigin, DecisionLoopCommand, DecisionStopReason, ExclusionReason,
     HttpBodyCapture, HttpEvidencePolicy, RuntimeBudget, StandardWebActionKind,
@@ -211,7 +213,7 @@ struct Hypothesis {
     value: String,
     strength: HypothesisStrength,
     posterior_bp: u16,
-    state: String,
+    state: HypothesisState,
 }
 
 /// One planning turn: what the planner ranked as eligible (dependency-safe plan
@@ -341,7 +343,7 @@ async fn observe(fixture: Vec<u8>, delay: Duration) -> Observation {
             value: value_text(hypothesis.value()),
             strength: hypothesis.strength(),
             posterior_bp: (hypothesis.posterior().ratio() * 10_000.0).round() as u16,
-            state: format!("{:?}", hypothesis.state()),
+            state: hypothesis.state(),
         })
         .collect();
     hypotheses.sort_by(|left, right| {
@@ -701,6 +703,7 @@ async fn server_nginx_version_disclosure_drives_a_supported_success() {
     assert_eq!(hypothesis.predicate, "technology.web-server");
     assert_eq!(hypothesis.value, "nginx");
     assert_eq!(hypothesis.strength, HypothesisStrength::Weak);
+    assert_eq!(hypothesis.state, HypothesisState::Confirmed);
     // nginx is now an executor-backed route: planned, not excluded, dispatched.
     assert_eq!(initial_eligible(&observation), [nginx().to_owned()]);
     assert_eq!(initial_exclusion(&observation, nginx()), None);
@@ -819,6 +822,7 @@ async fn server_apache_version_disclosure_drives_a_supported_success() {
     assert_eq!(hypothesis.predicate, "technology.web-server");
     assert_eq!(hypothesis.value, "apache-http-server");
     assert_eq!(hypothesis.strength, HypothesisStrength::Weak);
+    assert_eq!(hypothesis.state, HypothesisState::Confirmed);
     // apache is now an executor-backed route: planned, not excluded, dispatched.
     assert_eq!(initial_eligible(&observation), [apache().to_owned()]);
     assert_eq!(initial_exclusion(&observation, apache()), None);
@@ -916,14 +920,14 @@ async fn blocked_apache_probe_reports_blocked_even_with_a_version() {
 }
 
 #[tokio::test]
-async fn php_form_control_discovery_drives_a_supported_success() {
+async fn php_form_control_discovery_succeeds_without_confirming_php() {
     // A PHP page whose bounded HTML sample contains named form controls: the GET
     // probe observes the control names and the objective completes. Bootstrap GET
     // + passive GET, one Success outcome, no active verification.
     let observation = observe_instant(response(
         "200 OK",
         &["X-Powered-By: PHP/8.3.7", "Content-Type: text/html"],
-        b"<form><input name=\"username\"><input name=\"email\"></form>",
+        b"<form><input name=\"username\"></form>",
     ))
     .await;
 
@@ -934,6 +938,8 @@ async fn php_form_control_discovery_drives_a_supported_success() {
     assert_eq!(hypothesis.predicate, "technology.language");
     assert_eq!(hypothesis.value, "php");
     assert_eq!(hypothesis.strength, HypothesisStrength::Weak);
+    assert_eq!(hypothesis.state, HypothesisState::Supported);
+    assert_ne!(hypothesis.state, HypothesisState::Confirmed);
     assert_eq!(initial_eligible(&observation), [php().to_owned()]);
     assert_eq!(initial_exclusion(&observation, php()), None);
     assert_eq!(planned_dispatched(&observation), vec![php().to_owned()]);
@@ -1044,6 +1050,7 @@ async fn www_authenticate_basic_drives_a_supported_success() {
     assert_eq!(hypothesis.predicate, "authentication.mechanism");
     assert_eq!(hypothesis.value, "http-basic");
     assert_eq!(hypothesis.strength, HypothesisStrength::Strong);
+    assert_eq!(hypothesis.state, HypothesisState::Confirmed);
     assert!(
         hypothesis.posterior_bp >= 9000,
         "strong basic posterior >= 90%"
@@ -1089,6 +1096,7 @@ async fn www_authenticate_bearer_drives_a_supported_success() {
         observation.hypotheses[0].strength,
         HypothesisStrength::Strong
     );
+    assert_eq!(observation.hypotheses[0].state, HypothesisState::Confirmed);
     assert_eq!(initial_eligible(&observation), [bearer().to_owned()]);
     assert_eq!(planned_dispatched(&observation), vec![bearer().to_owned()]);
     assert_eq!(
@@ -1119,6 +1127,7 @@ async fn livewire_body_marker_drives_a_supported_path() {
     assert_eq!(hypothesis.predicate, "technology.ui-framework");
     assert_eq!(hypothesis.value, "livewire");
     assert_eq!(hypothesis.strength, HypothesisStrength::Weak);
+    assert_eq!(hypothesis.state, HypothesisState::Confirmed);
     // Livewire is a supported discovery action. Its probe is a GET (the marker
     // lives in the body), so a single passive GET confirms the marker and the
     // objective completes: bootstrap GET + passive GET, one Success outcome.

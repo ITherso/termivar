@@ -1058,6 +1058,30 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn json_php_form_discovery_reports_success_without_a_conclusive_transition() {
+        let value = json_for(
+            b"HTTP/1.1 200 OK\r\nX-Powered-By: PHP/8.3.7\r\nContent-Type: text/html\r\nContent-Length: 36\r\nConnection: close\r\n\r\n<form><input name=\"username\"></form>",
+        )
+        .await;
+
+        assert_eq!(value["schema_version"], "decision-scan/v1");
+        let hypothesis = &value["hypotheses"][0];
+        assert_eq!(hypothesis["predicate"], "technology.language");
+        assert_eq!(hypothesis["value"], "php");
+        assert_eq!(hypothesis["state"], "supported");
+        let outcome = &value["verification_outcomes"][0];
+        assert_eq!(outcome["action_id"], "web.action.php.input-discovery");
+        assert_eq!(outcome["status"], "success");
+        assert_eq!(outcome["conclusive"], false);
+        assert_eq!(value["summary"]["verification_outcomes"], 1);
+        assert_eq!(value["summary"]["conclusive_outcomes"], 0);
+        assert_eq!(value["summary"]["inconclusive_outcomes"], 1);
+        assert_eq!(value["terminal"]["command"], "complete");
+        assert_eq!(value["usage"]["total_requests"], 2);
+        assert_eq!(value["usage"]["active_verifications"], 0);
+    }
+
+    #[tokio::test]
     async fn json_livewire_structure_reports_a_dispatched_success() {
         let value = json_for(
             b"HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: 23\r\nConnection: close\r\n\r\n<div wire:id=\"x\"></div>",

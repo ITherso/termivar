@@ -122,7 +122,8 @@ pub(crate) struct DecisionScanSummary {
     /// Transition-authorized outcomes that map to a verifier-owned hypothesis
     /// state (Success / rejected).
     pub conclusive_outcomes: usize,
-    /// Outcomes that do not (Blocked / Unknown / NeedsReview).
+    /// Outcomes that do not, including transition-suppressed Success/rejection
+    /// and statuses such as Blocked / Unknown / NeedsReview.
     pub inconclusive_outcomes: usize,
     /// Each verification outcome turn, in order.
     pub outcomes: Vec<OutcomeView>,
