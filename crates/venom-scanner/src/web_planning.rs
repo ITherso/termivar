@@ -158,7 +158,7 @@ fn build_action(kind: StandardWebActionKind) -> Result<AttackAction, StandardWeb
         prerequisites,
     )?;
     Ok(match kind {
-        StandardWebActionKind::PhpInputDiscovery => {
+        StandardWebActionKind::PhpInputDiscovery | StandardWebActionKind::SanctumAuthBoundary => {
             action.with_verification_target(VerificationTarget::KnowledgeOnly)
         },
         _ => action,
@@ -326,7 +326,12 @@ mod tests {
         assert_eq!(planner.len(), STANDARD_WEB_ACTION_COUNT);
         assert_eq!(profile.executor_ids().len(), STANDARD_WEB_ACTION_COUNT);
         for action in profile.actions() {
-            let expected = if action.id() == StandardWebActionKind::PhpInputDiscovery.action_id() {
+            let expected = if [
+                StandardWebActionKind::PhpInputDiscovery.action_id(),
+                StandardWebActionKind::SanctumAuthBoundary.action_id(),
+            ]
+            .contains(&action.id())
+            {
                 &VerificationTarget::KnowledgeOnly
             } else {
                 &VerificationTarget::Motivation

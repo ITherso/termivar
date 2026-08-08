@@ -1104,7 +1104,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn json_sanctum_separates_stage_origin_and_leaks_no_secrets() {
+    async fn json_sanctum_success_is_nonconclusive_and_leaks_no_secrets() {
         let value = json_for(
             b"HTTP/1.1 200 OK\r\nSet-Cookie: laravel_session=eyJ; Path=/; HttpOnly\r\nSet-Cookie: XSRF-TOKEN=abc123; Path=/\r\nContent-Type: text/html\r\nContent-Length: 2\r\nConnection: close\r\n\r\nhi",
         )
@@ -1139,6 +1139,28 @@ mod tests {
             .unwrap()
             .iter()
             .any(|route| *route == "web.action.sanctum.auth-boundary"));
+
+        let sanctum_hypothesis = value["hypotheses"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|hypothesis| hypothesis["value"] == "sanctum")
+            .expect("Sanctum motivation");
+        assert_eq!(sanctum_hypothesis["state"], "supported");
+        let sanctum_outcome = value["verification_outcomes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|outcome| outcome["action_id"] == "web.action.sanctum.auth-boundary")
+            .expect("Sanctum-compatible action outcome");
+        assert_eq!(sanctum_outcome["status"], "success");
+        assert_eq!(sanctum_outcome["conclusive"], false);
+        assert_eq!(value["summary"]["verification_outcomes"], 3);
+        assert_eq!(value["summary"]["conclusive_outcomes"], 0);
+        assert_eq!(value["summary"]["inconclusive_outcomes"], 3);
+        assert_eq!(value["terminal"]["command"], "await_human_review");
+        assert_eq!(value["usage"]["total_requests"], 4);
+        assert_eq!(value["usage"]["active_verifications"], 1);
 
         // No raw cookies, values, or headers leak into the machine surface.
         let json = value.to_string();

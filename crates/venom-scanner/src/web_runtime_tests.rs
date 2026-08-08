@@ -20,8 +20,8 @@ use crate::{
     ActionCost, AdaptivePipeline, ApiVisibilityReviewQuery, AttackAction, DecisionActionExecutor,
     DecisionExecutionFailureKind, DecisionExecutionRequest, DecisionExecutorError,
     DecisionExecutorRegistry, DecisionLoopState, DecisionRunnerAdapter, DecisionStopReason,
-    ExclusionReason, Expression, HttpBodyCapture, HttpEvidenceExecutor, HypothesisSelector,
-    KnowledgeLayer, KnowledgeSnapshot, RequiredStrength, StandardWebActionKind,
+    ExclusionReason, ExperienceDisposition, Expression, HttpBodyCapture, HttpEvidenceExecutor,
+    HypothesisSelector, KnowledgeLayer, KnowledgeSnapshot, RequiredStrength, StandardWebActionKind,
     SubjectHttpProbeProvider, TransportDispatchOutcome, VerificationRule,
 };
 
@@ -33,6 +33,7 @@ const NGINX: &[u8] =
     b"HTTP/1.1 200 OK\r\nServer: nginx\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
 const JSON: &[u8] = b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}";
 const GRAPHQL: &[u8] = b"HTTP/1.1 200 OK\r\nContent-Type: application/graphql-response+json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}";
+const SANCTUM_COMPATIBLE: &[u8] = b"HTTP/1.1 200 OK\r\nSet-Cookie: laravel_session=eyJ; Path=/; HttpOnly\r\nSet-Cookie: XSRF-TOKEN=abc123; Path=/\r\nContent-Type: text/html\r\nContent-Length: 2\r\nConnection: close\r\n\r\nhi";
 
 struct FailingRuntimeExecutor {
     id: &'static str,
@@ -1131,6 +1132,64 @@ async fn runtime_drives_basic_evidence_to_a_confirmed_outcome_at_exact_request_l
         runtime.analyze().await,
         Err(StandardWebDecisionRuntimeError::AlreadyStarted)
     ));
+}
+
+#[tokio::test]
+async fn sanctum_compatible_success_records_experience_without_confirming_sanctum() {
+    let server = serve(vec![
+        Reply::Response(SANCTUM_COMPATIBLE),
+        Reply::Response(SANCTUM_COMPATIBLE),
+        Reply::Response(SANCTUM_COMPATIBLE),
+        Reply::Response(SANCTUM_COMPATIBLE),
+    ])
+    .await;
+    let mut runtime = StandardWebDecisionRuntime::builder(server.target())
+        .build()
+        .unwrap();
+
+    let report = runtime.analyze().await.unwrap();
+    let sanctum = report
+        .outcome_reports()
+        .find(|outcome| {
+            outcome.verification().outcome().action_id()
+                == StandardWebActionKind::SanctumAuthBoundary.action_id()
+        })
+        .expect("Sanctum-compatible action outcome");
+
+    assert_eq!(
+        sanctum.verification().outcome().status(),
+        OutcomeStatus::Success
+    );
+    assert!(!sanctum
+        .verification()
+        .case()
+        .applies_hypothesis_transition());
+    assert_eq!(sanctum.hypothesis_write(), None);
+    let hypothesis_id = sanctum.verification().case().hypothesis_id();
+    assert_eq!(
+        runtime
+            .knowledge()
+            .hypothesis(hypothesis_id)
+            .expect("Sanctum motivation")
+            .state(),
+        HypothesisState::Supported
+    );
+    let experience = runtime.experience().assess(
+        runtime.subject(),
+        StandardWebActionKind::SanctumAuthBoundary.action_id(),
+        ExperiencePolicy::default(),
+    );
+    assert_eq!(
+        experience.last_disposition(),
+        Some(ExperienceDisposition::ConfirmedPositive)
+    );
+    assert_eq!(experience.consecutive_suppressible_failures(), 0);
+    assert_eq!(report.usage().total_requests(), 4);
+    assert_eq!(report.usage().active_verifications(), 1);
+    assert_eq!(
+        server.methods().await,
+        ["GET", "OPTIONS", "OPTIONS", "HEAD"]
+    );
 }
 
 #[tokio::test]

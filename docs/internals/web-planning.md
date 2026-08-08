@@ -40,7 +40,7 @@ to concrete probes.
 | Laravel framework | route discovery | Strong | 80% | Motivation |
 | Laravel framework | input analysis | Strong | 80% | Motivation |
 | Livewire UI framework | component discovery | Any | 60% | Motivation |
-| Sanctum authentication | auth-boundary analysis | Any | 50% | Motivation |
+| Sanctum authentication (Weak hypothesis) | compatible cookie-boundary observation | Any | 50% | KnowledgeOnly |
 | HTTP Basic | auth-boundary analysis | Strong | 90% | Motivation |
 | HTTP Bearer | auth-boundary analysis | Strong | 90% | Motivation |
 
@@ -52,6 +52,14 @@ PHP input discovery is deliberately `KnowledgeOnly`. The PHP hypothesis still
 motivates and supplies confidence for the action, but finding a named HTML form
 control proves only that the discovery objective succeeded; it does not prove
 that PHP produced the control and therefore cannot confirm or reject PHP.
+
+Sanctum auth-boundary observation is also `KnowledgeOnly`. The weak Sanctum
+hypothesis still motivates the credential-free `HEAD`, but observing
+`laravel_session` and `XSRF-TOKEN` in the current response proves only a
+Laravel-compatible cookie-name surface. Laravel's CSRF middleware can emit the
+XSRF cookie independently of Sanctum, while Sanctum may be configured for
+token-only use. A successful action therefore leaves the Sanctum hypothesis
+`Supported`.
 
 ## Executor boundary
 
