@@ -30,7 +30,7 @@ semantic HTTP evidence
 | Laravel route boundary | `Allow` exists | `NeedsReview` |
 | PHP input discovery | bounded HTML sample contains a named form control | `Success` |
 | Livewire component discovery | bounded body sample contains `wire:id=` or `wire:snapshot=` | `Success` |
-| Sanctum auth boundary | both `laravel_session` and `XSRF-TOKEN` cookie names | `Success` |
+| Sanctum-compatible cookie boundary | both `laravel_session` and `XSRF-TOKEN` cookie names | `Success` |
 | HTTP Basic auth boundary | `WWW-Authenticate` contains `Basic` | `Success` |
 | HTTP Bearer auth boundary | `WWW-Authenticate` contains `Bearer` | `Success` |
 | Any built-in discovery action | status is `401`, `403`, or `429` without a higher-priority semantic signal | `Blocked` |
@@ -40,9 +40,13 @@ An explicit authentication challenge outranks the generic `401` blocked rule. Th
 The Laravel `Allow` signal is deliberately non-conclusive. It proves that the endpoint advertised a method boundary, not that Laravel produced it. Missing markers produce the canonical evidence-free `Unknown`; absence alone never becomes `FalsePositive`.
 
 Outcome status and hypothesis transition are separate contracts. PHP input
-discovery is `KnowledgeOnly`: a named form control yields `Success` and completes
-the discovery objective, while the motivating PHP hypothesis remains
-`Supported`. Directly coupled actions retain the default `Motivation` target, so
+discovery and Sanctum-compatible cookie observation are `KnowledgeOnly`. A named
+form control or a current-case Laravel session/XSRF cookie pair yields
+action-level `Success` and completes its discovery objective, while the
+motivating PHP or Sanctum hypothesis remains `Supported`. The cookie pair is
+compatible with Sanctum SPA authentication but also follows an ordinary Laravel
+session/CSRF cookie-name convention, so it is not proof that Sanctum is installed
+or active. Directly coupled actions retain the default `Motivation` target, so
 their transition-authorized Success can confirm the selected hypothesis.
 
 ## Isolation

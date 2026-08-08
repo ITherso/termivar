@@ -28,9 +28,10 @@
 //!     / `http-bearer` / `livewire` run reasoning -> planning -> execution ->
 //!     verification to a terminal verification outcome (Success / complete)
 //!     without adding any capability. Directly coupled observations confirm the
-//!     corresponding hypothesis; PHP form discovery is knowledge-only and leaves
-//!     the motivating PHP hypothesis Supported. The nginx/apache configuration routes
-//!     succeed only on a version-bearing `Server` disclosure (`nginx/<version>`,
+//!     corresponding hypothesis; PHP form discovery and Sanctum-compatible cookie
+//!     observation are knowledge-only and leave their motivating hypotheses
+//!     Supported. The nginx/apache configuration routes succeed only on a
+//!     version-bearing `Server` disclosure (`nginx/<version>`,
 //!     `Apache/<version>`); a bare product token gates the action but its probe
 //!     resolves to `unknown` and defers to human review, and a blocked status
 //!     (401/403/429) resolves to `blocked` even when a version is disclosed. php
@@ -43,10 +44,11 @@
 //!     suppressed and the session replans to any remaining eligible objective.
 //!     So Laravel route discovery resolves to `unknown`/`needs_review`, is
 //!     suppressed, and the session CONTINUES — e.g. the Sanctum cookie pair now
-//!     drives Sanctum to Success after the route is exhausted. The route's
-//!     unresolved outcome is preserved (never relabelled), so the aggregate
-//!     terminal is `await_human_review` even alongside a later Success. When every
-//!     final outcome is a Success the aggregate terminal is `complete`.
+//!     drives its knowledge-only action to Success after the route is exhausted
+//!     without confirming Sanctum. The route's unresolved outcome is preserved
+//!     (never relabelled), so the aggregate terminal is `await_human_review` even
+//!     alongside a later Success. When every final outcome is a Success the
+//!     aggregate terminal is `complete`.
 //!
 //! ## The `Allow` header is a verification signal, not an activation signal
 //!
@@ -1206,7 +1208,7 @@ async fn laravel_route_activation_reaches_route_review() {
 }
 
 #[tokio::test]
-async fn sanctum_cookie_pair_coactivates_laravel_and_defers_to_route_review() {
+async fn sanctum_cookie_pair_succeeds_without_confirming_sanctum() {
     // The `laravel_session` + `XSRF-TOKEN` cookie pair is the *only* activation
     // path for a Sanctum hypothesis, and that same pair also raises a Strong
     // Laravel hypothesis. Both discovery actions are planned, but Laravel route
@@ -1215,11 +1217,11 @@ async fn sanctum_cookie_pair_coactivates_laravel_and_defers_to_route_review() {
     // active).
     //
     // With multi-objective continuation the route is now suppressed after its
-    // passive/active lifecycle and the session CONTINUES to the sanctum action,
-    // which this cookie pair truthfully verifies as Success. The route's
-    // unresolved outcome is preserved (never relabelled), so the aggregate
-    // terminal is human review even though sanctum succeeded. (This exercises
-    // Sanctum end to end; it is no longer "planned but never dispatched".)
+    // passive/active lifecycle and the session CONTINUES to the sanctum action.
+    // The repeated cookie pair truthfully satisfies that action's observation
+    // objective, but it is not exclusive proof of Sanctum, so Success remains
+    // knowledge-only. The route's unresolved outcome is preserved (never
+    // relabelled), so the aggregate terminal is human review.
     let observation = observe_instant(response(
         "200 OK",
         &[
@@ -1247,6 +1249,7 @@ async fn sanctum_cookie_pair_coactivates_laravel_and_defers_to_route_review() {
         .expect("sanctum hypothesis present");
     assert_eq!(sanctum_hypothesis.predicate, "authentication.mechanism");
     assert_eq!(sanctum_hypothesis.strength, HypothesisStrength::Weak);
+    assert_eq!(sanctum_hypothesis.state, HypothesisState::Supported);
 
     // Both discovery actions are planned (route ranked ahead of sanctum); input
     // analysis is the unsupported action.
@@ -1262,7 +1265,8 @@ async fn sanctum_cookie_pair_coactivates_laravel_and_defers_to_route_review() {
     // Multi-objective continuation: the route runs passive+active, resolves to
     // `unknown`, and is suppressed; the session then continues to the sanctum
     // action rather than stopping. Sanctum's HEAD probe sees the laravel_session
-    // + XSRF-TOKEN cookie pair on this response and truthfully verifies Success.
+    // + XSRF-TOKEN cookie pair and records action-level Success without promoting
+    // the motivating Sanctum hypothesis to Confirmed.
     assert_eq!(
         planned_dispatched(&observation),
         vec![

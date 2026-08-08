@@ -38,7 +38,10 @@ pub enum StandardWebActionKind {
     LaravelInputAnalysis,
     /// Enumerate Livewire component boundaries.
     LivewireComponentDiscovery,
-    /// Analyze stateful Sanctum authentication boundaries.
+    /// Observe a Sanctum-compatible session/CSRF cookie-name convention.
+    ///
+    /// The cookie convention motivates this action but does not independently
+    /// prove that Sanctum authentication is installed or active.
     SanctumAuthBoundary,
     /// Analyze an advertised HTTP Basic authentication boundary.
     HttpBasicAuthBoundary,

@@ -46,7 +46,11 @@ Rules use ASCII case-insensitive substring matching for protocol and product tok
 | Laravel session plus XSRF cookies | authentication=sanctum | Weak |
 | `WWW-Authenticate` advertises Basic or Bearer | authentication mechanism | Strong |
 
-The Sanctum conclusion deliberately remains weak because the cookie pair is compatible with Sanctum but is not exclusive proof. An isolated XSRF cookie produces no Laravel or Sanctum claim.
+The Sanctum conclusion deliberately remains weak because the cookie pair is
+compatible with Sanctum but is not exclusive proof. An isolated XSRF cookie
+produces no Laravel or Sanctum claim. The corresponding planner action is
+knowledge-only: re-observing the pair records action success without confirming
+the Sanctum hypothesis.
 
 ## Bayesian behavior
 
