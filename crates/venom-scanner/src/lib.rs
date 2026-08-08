@@ -237,7 +237,8 @@ pub use payload_strategy::{
 pub use planner::{
     ActionCost, AttackAction, AttackPlan, AttackPlanner, BenefitScore, ExcludedAction,
     ExclusionReason, HypothesisSelector, PlanStep, PlannerError, PlannerWrite, PlanningContext,
-    RequiredStrength, RiskScore, UtilityBreakdown, UtilityScore,
+    RequiredStrength, ResolvedVerificationTarget, RiskScore, UtilityBreakdown, UtilityScore,
+    VerificationTarget,
 };
 pub use rules::{
     EvidenceAggregation, EvidenceCalibration, EvidenceSelector, Expression, ExpressionEvaluation,

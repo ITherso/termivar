@@ -69,7 +69,10 @@ impl VerificationStage {
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum OutcomeStatus {
-    /// The hypothesis was verified.
+    /// The verifier's success condition was satisfied.
+    ///
+    /// Whether that success may transition the associated hypothesis is an
+    /// orchestration policy carried outside this core outcome value.
     Success,
     /// Verification could not proceed because the target or a control blocked it.
     Blocked,
@@ -106,7 +109,7 @@ impl OutcomeStatus {
     }
 }
 
-/// Immutable, evidence-backed result of verifying one planned action.
+/// Immutable, evidence-backed result of evaluating one planned action.
 ///
 /// `Unknown` is canonical: it has zero confidence, no rule identity, and no
 /// evidence. Every other status must identify the winning verifier rule and
@@ -219,7 +222,7 @@ impl Outcome {
         &self.case_id
     }
 
-    /// Returns the entity whose hypothesis was verified.
+    /// Returns the entity evaluated by this outcome.
     pub fn subject(&self) -> &EntityId {
         &self.subject
     }
@@ -229,7 +232,10 @@ impl Outcome {
         &self.action_id
     }
 
-    /// Returns the hypothesis affected by a conclusive result.
+    /// Returns the hypothesis associated with this outcome's case.
+    ///
+    /// The host orchestration contract decides whether a conclusive result may
+    /// transition this hypothesis.
     pub fn hypothesis_id(&self) -> &str {
         &self.hypothesis_id
     }

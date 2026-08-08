@@ -25,8 +25,8 @@ use crate::{
     AttackAction, AttackPlan, AttackPlanner, ExperiencePolicy, ExperienceStore,
     ExperienceStoreError, ExperienceWrite, KnowledgeBase, KnowledgeBaseError, KnowledgeSnapshot,
     KnowledgeWrite, PayloadStrategyRef, PipelineDirective, PlannerError, PlanningContext,
-    RuleApplication, RuleEngine, RuleEngineError, VerificationCase, VerificationError,
-    VerificationPipeline, VerificationReport,
+    ResolvedVerificationTarget, RuleApplication, RuleEngine, RuleEngineError, VerificationCase,
+    VerificationError, VerificationPipeline, VerificationReport,
 };
 
 /// Reasoning applications committed before a later planning-stage failure.
@@ -99,6 +99,22 @@ pub enum DecisionLoopError {
     /// The monotonic action-cycle counter could not be incremented safely.
     #[error("decision-loop action cycle counter overflowed")]
     ActionCycleOverflow,
+
+    /// An adaptively scheduled action declared a distinct verification target
+    /// that was absent from the current immutable snapshot.
+    #[error("scheduled action {action_id} has no eligible verification target")]
+    NoEligibleScheduledVerificationTarget {
+        /// Scheduled action whose target could not be resolved.
+        action_id: String,
+    },
+
+    /// An adaptively scheduled action's own confidence source was absent from
+    /// the current immutable snapshot.
+    #[error("scheduled action {action_id} has no eligible motivation hypothesis")]
+    NoEligibleScheduledMotivationHypothesis {
+        /// Scheduled action whose confidence source could not be resolved.
+        action_id: String,
+    },
 
     /// Reasoning failed.
     #[error(transparent)]
@@ -594,7 +610,8 @@ impl DecisionOutcomeReport {
         self.experience_write
     }
 
-    /// Returns the verifier-owned hypothesis state write, when conclusive.
+    /// Returns the verifier-owned hypothesis state write when the outcome is
+    /// conclusive and its case authorizes a transition.
     pub fn hypothesis_write(&self) -> Option<KnowledgeWrite> {
         self.hypothesis_write
     }
@@ -831,6 +848,7 @@ impl DecisionLoop {
                     &candidate_session,
                     step.action_id(),
                     step.confidence_hypothesis_id(),
+                    step.verification_target(),
                     step.payload_strategy().cloned(),
                     "planned",
                 )?;
@@ -918,14 +936,7 @@ impl DecisionLoop {
             .verification
             .passive()
             .verify_snapshot(&case, &snapshot)?;
-        self.finalize_outcome(
-            knowledge,
-            experience,
-            session,
-            verification,
-            &snapshot,
-            case.payload_strategy().cloned(),
-        )
+        self.finalize_outcome(knowledge, experience, session, verification, &snapshot)
     }
 
     /// Evaluates evidence produced by an explicit active verification probe.
@@ -950,14 +961,7 @@ impl DecisionLoop {
             self.verification
                 .active()
                 .verify_snapshots(&case, baseline, after_probe)?;
-        self.finalize_outcome(
-            knowledge,
-            experience,
-            session,
-            verification,
-            after_probe,
-            case.payload_strategy().cloned(),
-        )
+        self.finalize_outcome(knowledge, experience, session, verification, after_probe)
     }
 
     fn finalize_outcome(
@@ -967,7 +971,6 @@ impl DecisionLoop {
         session: &mut DecisionSession,
         verification: VerificationReport,
         snapshot: &KnowledgeSnapshot,
-        current_payload_strategy: Option<PayloadStrategyRef>,
     ) -> Result<DecisionOutcomeReport, DecisionLoopError> {
         let before = session.transition_summary();
         let outcome = verification.outcome();
@@ -991,7 +994,8 @@ impl DecisionLoop {
             &mut candidate_session,
             self.config.max_action_cycles,
             &self.planner,
-            current_payload_strategy,
+            snapshot,
+            verification.case(),
             outcome,
             adaptive.directive(),
         )?;
@@ -1042,7 +1046,30 @@ fn combined_suppressions(
 fn next_case(
     session: &DecisionSession,
     action_id: &str,
+    motivation_hypothesis_id: &str,
+    verification_target: &ResolvedVerificationTarget,
+    payload_strategy: Option<PayloadStrategyRef>,
+    origin: &str,
+) -> Result<VerificationCase, DecisionLoopError> {
+    let (hypothesis_id, applies_hypothesis_transition) = match verification_target {
+        ResolvedVerificationTarget::Hypothesis(hypothesis_id) => (hypothesis_id.as_str(), true),
+        ResolvedVerificationTarget::KnowledgeOnly => (motivation_hypothesis_id, false),
+    };
+    next_case_with_policy(
+        session,
+        action_id,
+        hypothesis_id,
+        applies_hypothesis_transition,
+        payload_strategy,
+        origin,
+    )
+}
+
+fn next_case_with_policy(
+    session: &DecisionSession,
+    action_id: &str,
     hypothesis_id: &str,
+    applies_hypothesis_transition: bool,
     payload_strategy: Option<PayloadStrategyRef>,
     origin: &str,
 ) -> Result<VerificationCase, DecisionLoopError> {
@@ -1050,13 +1077,18 @@ fn next_case(
         .action_cycles
         .checked_add(1)
         .ok_or(DecisionLoopError::ActionCycleOverflow)?;
-    Ok(VerificationCase::new(
+    let case = VerificationCase::new(
         format!("case:decision:{next_cycle}:{origin}:{action_id}"),
         session.subject.clone(),
         action_id,
         hypothesis_id,
     )?
-    .with_payload_strategy(payload_strategy))
+    .with_payload_strategy(payload_strategy);
+    Ok(if applies_hypothesis_transition {
+        case
+    } else {
+        case.without_hypothesis_transition()
+    })
 }
 
 fn issue_action(
@@ -1086,28 +1118,59 @@ fn transition_from_adaptive(
     session: &mut DecisionSession,
     max_action_cycles: u32,
     planner: &AttackPlanner,
-    current_payload_strategy: Option<PayloadStrategyRef>,
+    snapshot: &KnowledgeSnapshot,
+    current_case: &VerificationCase,
     outcome: &Outcome,
     directive: &PipelineDirective,
 ) -> Result<DecisionLoopCommand, DecisionLoopError> {
     match directive {
         PipelineDirective::Complete => {
-            let case = case_from_outcome(outcome, current_payload_strategy)?;
             session.state = DecisionLoopState::Completed;
-            Ok(DecisionLoopCommand::Complete { case })
+            Ok(DecisionLoopCommand::Complete {
+                case: current_case.clone(),
+            })
         },
         PipelineDirective::ScheduleAction { action_id } => {
             let payload_strategy = planner
                 .action(action_id)
                 .and_then(AttackAction::payload_strategy)
                 .cloned();
-            let case = next_case(
-                session,
-                action_id,
-                outcome.hypothesis_id(),
-                payload_strategy,
-                "adaptive",
-            )?;
+            let case = match planner.action(action_id) {
+                Some(action) => {
+                    let motivation = action
+                        .confidence_source()
+                        .select(snapshot.hypotheses())
+                        .ok_or_else(|| {
+                            DecisionLoopError::NoEligibleScheduledMotivationHypothesis {
+                                action_id: action_id.clone(),
+                            }
+                        })?;
+                    let target = action
+                        .verification_target()
+                        .resolve(snapshot.hypotheses(), motivation.id())
+                        .ok_or_else(|| {
+                            DecisionLoopError::NoEligibleScheduledVerificationTarget {
+                                action_id: action_id.clone(),
+                            }
+                        })?;
+                    next_case(
+                        session,
+                        action_id,
+                        motivation.id(),
+                        &target,
+                        payload_strategy,
+                        "adaptive",
+                    )?
+                },
+                None => next_case_with_policy(
+                    session,
+                    action_id,
+                    current_case.hypothesis_id(),
+                    current_case.applies_hypothesis_transition(),
+                    payload_strategy,
+                    "adaptive",
+                )?,
+            };
             Ok(issue_action(
                 session,
                 max_action_cycles,
@@ -1125,11 +1188,12 @@ fn transition_from_adaptive(
             delay_ms,
             retry_current_action: true,
         } => {
-            let case = next_case(
+            let case = next_case_with_policy(
                 session,
                 outcome.action_id(),
-                outcome.hypothesis_id(),
-                current_payload_strategy,
+                current_case.hypothesis_id(),
+                current_case.applies_hypothesis_transition(),
+                current_case.payload_strategy().cloned(),
                 "retry",
             )?;
             Ok(issue_action(
@@ -1149,12 +1213,12 @@ fn transition_from_adaptive(
             Ok(DecisionLoopCommand::Replan)
         },
         PipelineDirective::AwaitActiveVerification => {
-            let case = case_from_outcome(outcome, current_payload_strategy)?;
+            let case = current_case.clone();
             session.state = DecisionLoopState::AwaitingActive { case: case.clone() };
             Ok(DecisionLoopCommand::CollectActiveEvidence { case })
         },
         PipelineDirective::AwaitHumanReview => {
-            let case = case_from_outcome(outcome, current_payload_strategy)?;
+            let case = current_case.clone();
             let reason = DecisionStopReason::HumanReview;
             session.state = DecisionLoopState::Halted { reason };
             Ok(DecisionLoopCommand::AwaitHumanReview { case })
@@ -1167,19 +1231,6 @@ fn transition_from_adaptive(
     }
 }
 
-fn case_from_outcome(
-    outcome: &Outcome,
-    payload_strategy: Option<PayloadStrategyRef>,
-) -> Result<VerificationCase, VerificationError> {
-    VerificationCase::new(
-        outcome.case_id(),
-        outcome.subject().clone(),
-        outcome.action_id(),
-        outcome.hypothesis_id(),
-    )
-    .map(|case| case.with_payload_strategy(payload_strategy))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1187,10 +1238,12 @@ mod tests {
         ActionCost, AttackAction, BenefitScore, EvidenceCalibration, EvidenceSelector,
         ExperienceDisposition, Expression, HypothesisConclusion, HypothesisSelector,
         KnowledgeLayer, ReasoningRule, RequiredStrength, RiskScore, VerificationRule,
+        VerificationTarget,
     };
     use venom_core::{
-        ConfidenceScore, Evidence, EvidenceKind, EvidenceSource, EvidenceValue, HypothesisState,
-        HypothesisStrength, KnowledgePredicate, OutcomeStatus, Probability, VerificationStage,
+        ConfidenceScore, Evidence, EvidenceKind, EvidenceSource, EvidenceValue, Hypothesis,
+        HypothesisState, HypothesisStrength, KnowledgePredicate, OutcomeStatus, Probability,
+        VerificationStage,
     };
 
     fn subject() -> EntityId {
@@ -1258,6 +1311,22 @@ mod tests {
         max_action_cycles: u32,
         payload_strategy: Option<PayloadStrategyRef>,
     ) -> DecisionLoop {
+        configured_loop_with_target(
+            passive_status,
+            experience_limit,
+            max_action_cycles,
+            payload_strategy,
+            VerificationTarget::Motivation,
+        )
+    }
+
+    fn configured_loop_with_target(
+        passive_status: Option<OutcomeStatus>,
+        experience_limit: u16,
+        max_action_cycles: u32,
+        payload_strategy: Option<PayloadStrategyRef>,
+        verification_target: VerificationTarget,
+    ) -> DecisionLoop {
         let planning = PlanningContext::new(
             BenefitScore::from_percent(90).unwrap(),
             100,
@@ -1319,6 +1388,7 @@ mod tests {
             BTreeSet::new(),
         )
         .unwrap();
+        let action = action.with_verification_target(verification_target);
         let action = match payload_strategy {
             Some(strategy) => action.with_payload_strategy(strategy),
             None => action,
@@ -1351,9 +1421,456 @@ mod tests {
     }
 
     #[test]
-    fn strategy_reference_survives_planned_active_and_retry_cases() {
+    fn planned_knowledge_only_target_keeps_motivation_as_audit_anchor() {
+        let decision_loop =
+            configured_loop_with_target(None, 1, 8, None, VerificationTarget::KnowledgeOnly);
+        let knowledge = knowledge(false);
+        let experience = ExperienceStore::new();
+        let mut session = DecisionSession::new(subject());
+
+        let planning = decision_loop
+            .plan_next(&knowledge, &experience, &mut session)
+            .unwrap();
+        let case = execution_case(planning.command());
+
+        assert_eq!(
+            planning.plan().steps()[0].confidence_hypothesis_id(),
+            case.hypothesis_id()
+        );
+        assert_eq!(
+            planning.plan().steps()[0].verification_target(),
+            &ResolvedVerificationTarget::KnowledgeOnly
+        );
+        assert!(!case.applies_hypothesis_transition());
+    }
+
+    #[test]
+    fn distinct_target_confirms_only_the_separately_resolved_hypothesis() {
+        let distinct_predicate = active_predicate();
+        let distinct_value = EvidenceValue::Boolean(true);
+        let decision_loop = configured_loop_with_target(
+            Some(OutcomeStatus::Success),
+            1,
+            8,
+            None,
+            VerificationTarget::Distinct(HypothesisSelector::new(
+                distinct_predicate.clone(),
+                distinct_value.clone(),
+                Probability::from_percent(60).unwrap(),
+                RequiredStrength::Strong,
+            )),
+        );
+        let knowledge = knowledge(true);
+        let mut distinct = Hypothesis::with_id(
+            "hypothesis:distinct",
+            subject(),
+            distinct_predicate,
+            distinct_value,
+            Probability::from_percent(80).unwrap(),
+        )
+        .unwrap();
+        distinct.set_strength(HypothesisStrength::Strong);
+        distinct.set_state(HypothesisState::Supported);
+        knowledge.upsert_hypothesis(distinct).unwrap();
+        let mut experience = ExperienceStore::new();
+        let mut session = DecisionSession::new(subject());
+
+        let planning = decision_loop
+            .plan_next(&knowledge, &experience, &mut session)
+            .unwrap();
+        let motivation_id = planning.plan().steps()[0]
+            .confidence_hypothesis_id()
+            .to_owned();
+        let case = execution_case(planning.command());
+        assert_eq!(case.hypothesis_id(), "hypothesis:distinct");
+        assert!(case.applies_hypothesis_transition());
+
+        let report = decision_loop
+            .submit_passive(&knowledge, &mut experience, &mut session)
+            .unwrap();
+
+        assert_eq!(
+            report.verification().outcome().status(),
+            OutcomeStatus::Success
+        );
+        assert_eq!(
+            knowledge.hypothesis("hypothesis:distinct").unwrap().state(),
+            HypothesisState::Confirmed
+        );
+        assert_eq!(
+            knowledge.hypothesis(&motivation_id).unwrap().state(),
+            HypothesisState::Supported
+        );
+    }
+
+    #[test]
+    fn adaptive_schedule_resolves_the_registered_actions_own_target_policy() {
+        let mut decision_loop = configured_loop(None, 1, 8);
+        decision_loop
+            .planner_mut()
+            .register(
+                AttackAction::new(
+                    "knowledge.followup",
+                    "plugin.knowledge-followup",
+                    Expression::equals(
+                        KnowledgeLayer::Hypothesis,
+                        hypothesis_predicate(),
+                        laravel(),
+                    ),
+                    HypothesisSelector::new(
+                        active_predicate(),
+                        EvidenceValue::Boolean(true),
+                        Probability::from_percent(50).unwrap(),
+                        RequiredStrength::Strong,
+                    ),
+                    BenefitScore::from_percent(10).unwrap(),
+                    ActionCost::new(10).unwrap(),
+                    RiskScore::from_percent(20).unwrap(),
+                    BTreeSet::new(),
+                )
+                .unwrap()
+                .with_verification_target(VerificationTarget::KnowledgeOnly),
+            )
+            .unwrap();
+        let knowledge = knowledge(false);
+        let mut scheduled_motivation = Hypothesis::with_id(
+            "hypothesis:scheduled-motivation",
+            subject(),
+            active_predicate(),
+            EvidenceValue::Boolean(true),
+            Probability::from_percent(80).unwrap(),
+        )
+        .unwrap();
+        scheduled_motivation.set_strength(HypothesisStrength::Strong);
+        scheduled_motivation.set_state(HypothesisState::Supported);
+        knowledge.upsert_hypothesis(scheduled_motivation).unwrap();
+        let experience = ExperienceStore::new();
+        let mut planned_session = DecisionSession::new(subject());
+        let planning = decision_loop
+            .plan_next(&knowledge, &experience, &mut planned_session)
+            .unwrap();
+        let source_case = execution_case(planning.command());
+        assert!(source_case.applies_hypothesis_transition());
+        let outcome = Outcome::unknown(
+            source_case.id(),
+            subject(),
+            source_case.action_id(),
+            source_case.hypothesis_id(),
+            VerificationStage::Passive,
+            "fixture schedules a separate action",
+        )
+        .unwrap();
+        let snapshot = knowledge.snapshot_for_subject(&subject());
+        let mut scheduled_session = DecisionSession::new(subject());
+
+        let command = transition_from_adaptive(
+            &mut scheduled_session,
+            8,
+            decision_loop.planner(),
+            &snapshot,
+            &source_case,
+            &outcome,
+            &PipelineDirective::ScheduleAction {
+                action_id: "knowledge.followup".to_owned(),
+            },
+        )
+        .unwrap();
+        let scheduled_case = execution_case(&command);
+
+        assert_eq!(scheduled_case.action_id(), "knowledge.followup");
+        assert_eq!(
+            scheduled_case.hypothesis_id(),
+            "hypothesis:scheduled-motivation"
+        );
+        assert!(!scheduled_case.applies_hypothesis_transition());
+    }
+
+    #[test]
+    fn adaptive_schedule_uses_the_registered_actions_own_motivation_hypothesis() {
+        let mut decision_loop = configured_loop(None, 1, 8);
+        decision_loop
+            .planner_mut()
+            .register(
+                AttackAction::new(
+                    "motivated.followup",
+                    "plugin.motivated-followup",
+                    Expression::equals(
+                        KnowledgeLayer::Hypothesis,
+                        hypothesis_predicate(),
+                        laravel(),
+                    ),
+                    HypothesisSelector::new(
+                        active_predicate(),
+                        EvidenceValue::Boolean(true),
+                        Probability::from_percent(50).unwrap(),
+                        RequiredStrength::Strong,
+                    ),
+                    BenefitScore::from_percent(10).unwrap(),
+                    ActionCost::new(10).unwrap(),
+                    RiskScore::from_percent(20).unwrap(),
+                    BTreeSet::new(),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let knowledge = knowledge(false);
+        let mut scheduled_motivation = Hypothesis::with_id(
+            "hypothesis:scheduled-motivation",
+            subject(),
+            active_predicate(),
+            EvidenceValue::Boolean(true),
+            Probability::from_percent(80).unwrap(),
+        )
+        .unwrap();
+        scheduled_motivation.set_strength(HypothesisStrength::Strong);
+        scheduled_motivation.set_state(HypothesisState::Supported);
+        knowledge.upsert_hypothesis(scheduled_motivation).unwrap();
+        let experience = ExperienceStore::new();
+        let mut planned_session = DecisionSession::new(subject());
+        let planning = decision_loop
+            .plan_next(&knowledge, &experience, &mut planned_session)
+            .unwrap();
+        let source_case = execution_case(planning.command());
+        let outcome = Outcome::unknown(
+            source_case.id(),
+            subject(),
+            source_case.action_id(),
+            source_case.hypothesis_id(),
+            VerificationStage::Passive,
+            "fixture schedules a separately motivated action",
+        )
+        .unwrap();
+        let snapshot = knowledge.snapshot_for_subject(&subject());
+        let mut scheduled_session = DecisionSession::new(subject());
+
+        let command = transition_from_adaptive(
+            &mut scheduled_session,
+            8,
+            decision_loop.planner(),
+            &snapshot,
+            &source_case,
+            &outcome,
+            &PipelineDirective::ScheduleAction {
+                action_id: "motivated.followup".to_owned(),
+            },
+        )
+        .unwrap();
+        let scheduled_case = execution_case(&command);
+
+        assert_eq!(
+            scheduled_case.hypothesis_id(),
+            "hypothesis:scheduled-motivation"
+        );
+        assert!(scheduled_case.applies_hypothesis_transition());
+    }
+
+    #[test]
+    fn adaptive_schedule_missing_motivation_fails_without_mutating_session() {
+        let mut decision_loop = configured_loop(None, 1, 8);
+        decision_loop
+            .planner_mut()
+            .register(
+                AttackAction::new(
+                    "missing-motivation.followup",
+                    "plugin.missing-motivation-followup",
+                    Expression::equals(
+                        KnowledgeLayer::Hypothesis,
+                        hypothesis_predicate(),
+                        laravel(),
+                    ),
+                    HypothesisSelector::new(
+                        active_predicate(),
+                        EvidenceValue::Boolean(true),
+                        Probability::from_percent(50).unwrap(),
+                        RequiredStrength::Strong,
+                    ),
+                    BenefitScore::from_percent(10).unwrap(),
+                    ActionCost::new(10).unwrap(),
+                    RiskScore::from_percent(20).unwrap(),
+                    BTreeSet::new(),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let knowledge = knowledge(false);
+        let experience = ExperienceStore::new();
+        let mut planned_session = DecisionSession::new(subject());
+        let planning = decision_loop
+            .plan_next(&knowledge, &experience, &mut planned_session)
+            .unwrap();
+        let source_case = execution_case(planning.command());
+        let outcome = Outcome::unknown(
+            source_case.id(),
+            subject(),
+            source_case.action_id(),
+            source_case.hypothesis_id(),
+            VerificationStage::Passive,
+            "fixture schedules an action without its motivation",
+        )
+        .unwrap();
+        let snapshot = knowledge.snapshot_for_subject(&subject());
+        let mut scheduled_session = DecisionSession::new(subject());
+        let before = scheduled_session.transition_summary();
+
+        let error = transition_from_adaptive(
+            &mut scheduled_session,
+            8,
+            decision_loop.planner(),
+            &snapshot,
+            &source_case,
+            &outcome,
+            &PipelineDirective::ScheduleAction {
+                action_id: "missing-motivation.followup".to_owned(),
+            },
+        )
+        .unwrap_err();
+
+        assert!(matches!(
+            error,
+            DecisionLoopError::NoEligibleScheduledMotivationHypothesis { action_id }
+                if action_id == "missing-motivation.followup"
+        ));
+        assert_eq!(scheduled_session.transition_summary(), before);
+    }
+
+    #[test]
+    fn adaptive_schedule_invalid_distinct_targets_fail_without_mutating_session() {
+        let mut decision_loop = configured_loop(None, 1, 8);
+        decision_loop
+            .planner_mut()
+            .register(
+                AttackAction::new(
+                    "distinct.followup",
+                    "plugin.distinct-followup",
+                    Expression::equals(
+                        KnowledgeLayer::Hypothesis,
+                        hypothesis_predicate(),
+                        laravel(),
+                    ),
+                    HypothesisSelector::new(
+                        hypothesis_predicate(),
+                        laravel(),
+                        Probability::from_percent(50).unwrap(),
+                        RequiredStrength::Strong,
+                    ),
+                    BenefitScore::from_percent(10).unwrap(),
+                    ActionCost::new(10).unwrap(),
+                    RiskScore::from_percent(20).unwrap(),
+                    BTreeSet::new(),
+                )
+                .unwrap()
+                .with_verification_target(VerificationTarget::Distinct(HypothesisSelector::new(
+                    active_predicate(),
+                    EvidenceValue::Boolean(true),
+                    Probability::from_percent(50).unwrap(),
+                    RequiredStrength::Strong,
+                ))),
+            )
+            .unwrap();
+        decision_loop
+            .planner_mut()
+            .register(
+                AttackAction::new(
+                    "same-target.followup",
+                    "plugin.same-target-followup",
+                    Expression::equals(
+                        KnowledgeLayer::Hypothesis,
+                        hypothesis_predicate(),
+                        laravel(),
+                    ),
+                    HypothesisSelector::new(
+                        hypothesis_predicate(),
+                        laravel(),
+                        Probability::from_percent(50).unwrap(),
+                        RequiredStrength::Strong,
+                    ),
+                    BenefitScore::from_percent(10).unwrap(),
+                    ActionCost::new(10).unwrap(),
+                    RiskScore::from_percent(20).unwrap(),
+                    BTreeSet::new(),
+                )
+                .unwrap()
+                .with_verification_target(VerificationTarget::Distinct(HypothesisSelector::new(
+                    hypothesis_predicate(),
+                    laravel(),
+                    Probability::from_percent(50).unwrap(),
+                    RequiredStrength::Strong,
+                ))),
+            )
+            .unwrap();
+        let knowledge = knowledge(false);
+        let experience = ExperienceStore::new();
+        let mut planned_session = DecisionSession::new(subject());
+        let planning = decision_loop
+            .plan_next(&knowledge, &experience, &mut planned_session)
+            .unwrap();
+        let source_case = execution_case(planning.command());
+        let outcome = Outcome::unknown(
+            source_case.id(),
+            subject(),
+            source_case.action_id(),
+            source_case.hypothesis_id(),
+            VerificationStage::Passive,
+            "fixture schedules an action without its distinct target",
+        )
+        .unwrap();
+        let snapshot = knowledge.snapshot_for_subject(&subject());
+        let mut scheduled_session = DecisionSession::new(subject());
+        let before = scheduled_session.transition_summary();
+
+        let error = transition_from_adaptive(
+            &mut scheduled_session,
+            8,
+            decision_loop.planner(),
+            &snapshot,
+            &source_case,
+            &outcome,
+            &PipelineDirective::ScheduleAction {
+                action_id: "distinct.followup".to_owned(),
+            },
+        )
+        .unwrap_err();
+
+        assert!(matches!(
+            error,
+            DecisionLoopError::NoEligibleScheduledVerificationTarget { action_id }
+                if action_id == "distinct.followup"
+        ));
+        assert_eq!(scheduled_session.transition_summary(), before);
+
+        let mut same_target_session = DecisionSession::new(subject());
+        let same_target_before = same_target_session.transition_summary();
+        let error = transition_from_adaptive(
+            &mut same_target_session,
+            8,
+            decision_loop.planner(),
+            &snapshot,
+            &source_case,
+            &outcome,
+            &PipelineDirective::ScheduleAction {
+                action_id: "same-target.followup".to_owned(),
+            },
+        )
+        .unwrap_err();
+
+        assert!(matches!(
+            error,
+            DecisionLoopError::NoEligibleScheduledVerificationTarget { action_id }
+                if action_id == "same-target.followup"
+        ));
+        assert_eq!(same_target_session.transition_summary(), same_target_before);
+    }
+
+    #[test]
+    fn strategy_and_transition_policy_survive_active_and_retry_cases() {
         let strategy = PayloadStrategyRef::new("visibility.control-pair", 1).unwrap();
-        let decision_loop = configured_loop_with_strategy(None, 1, 8, Some(strategy.clone()));
+        let decision_loop = configured_loop_with_target(
+            None,
+            1,
+            8,
+            Some(strategy.clone()),
+            VerificationTarget::KnowledgeOnly,
+        );
         let knowledge = knowledge(false);
         let experience = ExperienceStore::new();
         let mut planned_session = DecisionSession::new(subject());
@@ -1362,7 +1879,9 @@ mod tests {
             .plan_next(&knowledge, &experience, &mut planned_session)
             .unwrap();
         let planned_case = execution_case(planning.command());
+        let snapshot = knowledge.snapshot_for_subject(&subject());
         assert_eq!(planned_case.payload_strategy(), Some(&strategy));
+        assert!(!planned_case.applies_hypothesis_transition());
 
         let outcome = Outcome::unknown(
             planned_case.id(),
@@ -1378,7 +1897,8 @@ mod tests {
             &mut active_session,
             8,
             decision_loop.planner(),
-            Some(strategy.clone()),
+            &snapshot,
+            &planned_case,
             &outcome,
             &PipelineDirective::AwaitActiveVerification,
         )
@@ -1388,13 +1908,15 @@ mod tests {
             other => panic!("expected active evidence command, got {other:?}"),
         };
         assert_eq!(active_case.payload_strategy(), Some(&strategy));
+        assert!(!active_case.applies_hypothesis_transition());
 
         let mut retry_session = DecisionSession::new(subject());
         let retry = transition_from_adaptive(
             &mut retry_session,
             8,
             decision_loop.planner(),
-            Some(strategy.clone()),
+            &snapshot,
+            &planned_case,
             &outcome,
             &PipelineDirective::Throttle {
                 delay_ms: 5,
@@ -1402,7 +1924,9 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(execution_case(&retry).payload_strategy(), Some(&strategy));
+        let retry_case = execution_case(&retry);
+        assert_eq!(retry_case.payload_strategy(), Some(&strategy));
+        assert!(!retry_case.applies_hypothesis_transition());
     }
 
     #[test]

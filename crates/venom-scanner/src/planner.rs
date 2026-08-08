@@ -30,6 +30,10 @@ use crate::{
 
 const MAX_BASIS_POINTS: u16 = 10_000;
 
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
 /// Validation and consistency failures raised by the attack planner.
 #[derive(Debug, Error)]
 #[non_exhaustive]
@@ -402,7 +406,7 @@ impl HypothesisSelector {
         self.required_strength
     }
 
-    fn select<'a>(&self, hypotheses: &'a [Hypothesis]) -> Option<&'a Hypothesis> {
+    pub(crate) fn select<'a>(&self, hypotheses: &'a [Hypothesis]) -> Option<&'a Hypothesis> {
         let mut selected: Option<&Hypothesis> = None;
         for hypothesis in hypotheses.iter().filter(|hypothesis| {
             hypothesis.predicate() == &self.predicate
@@ -426,6 +430,86 @@ impl HypothesisSelector {
     }
 }
 
+/// What a conclusive outcome may transition, kept distinct from the confidence
+/// hypothesis that motivated planning the action.
+///
+/// The default, [`Self::Motivation`], preserves the historical behavior where a
+/// `Success` confirms the same hypothesis the planner used for confidence. The
+/// other variants let an action's *justification for running* differ from the
+/// *claim its result verifies* — the core of claim discipline.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum VerificationTarget {
+    /// Confirm the confidence (motivation) hypothesis. Historical default.
+    #[default]
+    Motivation,
+    /// Confirm a distinct, already-supported result hypothesis instead of the
+    /// motivation hypothesis.
+    Distinct(HypothesisSelector),
+    /// Record the outcome (which may be `Success`) without transitioning any
+    /// hypothesis state. "The action's objective was achieved" is not "the
+    /// motivating hypothesis was conclusively verified".
+    KnowledgeOnly,
+}
+
+impl VerificationTarget {
+    fn is_motivation(&self) -> bool {
+        matches!(self, Self::Motivation)
+    }
+
+    pub(crate) fn resolve(
+        &self,
+        hypotheses: &[Hypothesis],
+        motivation_hypothesis_id: &str,
+    ) -> Option<ResolvedVerificationTarget> {
+        match self {
+            Self::Motivation => Some(ResolvedVerificationTarget::Hypothesis(
+                motivation_hypothesis_id.to_owned(),
+            )),
+            Self::Distinct(selector) => selector
+                .select(hypotheses)
+                .filter(|hypothesis| hypothesis.id() != motivation_hypothesis_id)
+                .map(|hypothesis| {
+                    ResolvedVerificationTarget::Hypothesis(hypothesis.id().to_owned())
+                }),
+            Self::KnowledgeOnly => Some(ResolvedVerificationTarget::KnowledgeOnly),
+        }
+    }
+}
+
+/// Plan-time resolution of the claim an action outcome may transition.
+///
+/// The planner resolves both [`VerificationTarget::Motivation`] and
+/// [`VerificationTarget::Distinct`] to an existing hypothesis identity.
+/// [`Self::KnowledgeOnly`] deliberately resolves to no transition target; the
+/// motivating hypothesis remains available separately on [`PlanStep`] for
+/// utility provenance and audit correlation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum ResolvedVerificationTarget {
+    /// A conclusive outcome may transition this pre-existing hypothesis.
+    Hypothesis(String),
+    /// The action outcome is auditable but cannot transition a hypothesis.
+    KnowledgeOnly,
+}
+
+impl ResolvedVerificationTarget {
+    /// Returns the hypothesis a conclusive outcome may transition, if any.
+    pub fn hypothesis_id(&self) -> Option<&str> {
+        match self {
+            Self::Hypothesis(id) => Some(id),
+            Self::KnowledgeOnly => None,
+        }
+    }
+
+    /// Returns whether this target authorizes a hypothesis-state transition.
+    pub fn applies_hypothesis_transition(&self) -> bool {
+        matches!(self, Self::Hypothesis(_))
+    }
+}
+
 /// Declarative executable candidate considered by the planner.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct AttackAction {
@@ -439,6 +523,17 @@ pub struct AttackAction {
     cost: ActionCost,
     risk: RiskScore,
     prerequisites: BTreeSet<String>,
+    #[serde(default, skip_serializing_if = "VerificationTarget::is_motivation")]
+    verification_target: VerificationTarget,
+    // This sentinel deliberately uses the only namespace that legacy readers
+    // already reject. It prevents an older binary from silently discarding a
+    // non-default verification target and reconstructing it as Motivation.
+    #[serde(
+        default,
+        rename = "payload_claim_policy_guard",
+        skip_serializing_if = "is_false"
+    )]
+    claim_policy_guard: bool,
 }
 
 impl AttackAction {
@@ -474,7 +569,22 @@ impl AttackAction {
             cost,
             risk,
             prerequisites,
+            verification_target: VerificationTarget::Motivation,
+            claim_policy_guard: false,
         })
+    }
+
+    /// Sets what a conclusive outcome may transition. Defaults to
+    /// [`VerificationTarget::Motivation`] (confirm the confidence hypothesis).
+    pub fn with_verification_target(mut self, target: VerificationTarget) -> Self {
+        self.claim_policy_guard = !target.is_motivation();
+        self.verification_target = target;
+        self
+    }
+
+    /// Returns what a conclusive outcome may transition.
+    pub fn verification_target(&self) -> &VerificationTarget {
+        &self.verification_target
     }
 
     /// Returns the stable action identity.
@@ -546,6 +656,10 @@ impl<'de> Deserialize<'de> for AttackAction {
             cost: ActionCost,
             risk: RiskScore,
             prerequisites: BTreeSet<String>,
+            #[serde(default)]
+            verification_target: VerificationTarget,
+            #[serde(default)]
+            payload_claim_policy_guard: bool,
             #[serde(flatten)]
             extensions: BTreeMap<String, IgnoredAny>,
         }
@@ -554,10 +668,13 @@ impl<'de> Deserialize<'de> for AttackAction {
         if wire
             .extensions
             .keys()
-            .any(|field| field.starts_with("payload_"))
+            .any(|field| field.starts_with("payload_") || field.starts_with("verification_"))
         {
+            return Err(serde::de::Error::custom("unknown reserved action field"));
+        }
+        if wire.payload_claim_policy_guard != !wire.verification_target.is_motivation() {
             return Err(serde::de::Error::custom(
-                "unknown reserved payload strategy field",
+                "verification target compatibility guard is missing or inconsistent",
             ));
         }
         let action = Self::new(
@@ -571,6 +688,7 @@ impl<'de> Deserialize<'de> for AttackAction {
             wire.prerequisites,
         )
         .map_err(serde::de::Error::custom)?;
+        let action = action.with_verification_target(wire.verification_target);
         Ok(match wire.payload_strategy {
             Some(strategy) => action.with_payload_strategy(strategy),
             None => action,
@@ -639,6 +757,9 @@ pub enum ExclusionReason {
     RequirementsNotMet,
     /// No supported hypothesis met the selector threshold.
     NoEligibleHypothesis,
+    /// A distinct verification target did not resolve to a pre-existing,
+    /// supported hypothesis in the planning snapshot.
+    NoEligibleVerificationTarget,
     /// Action risk exceeded the planning context limit.
     RiskLimitExceeded {
         /// Action risk.
@@ -696,6 +817,8 @@ pub struct PlanStep {
     payload_strategy: Option<PayloadStrategyRef>,
     prerequisites: BTreeSet<String>,
     confidence_hypothesis_id: String,
+    #[serde(skip)]
+    verification_target: ResolvedVerificationTarget,
     requirements: ExpressionEvaluation,
     utility: UtilityBreakdown,
 }
@@ -729,6 +852,11 @@ impl PlanStep {
     /// Returns the hypothesis selected as the confidence source.
     pub fn confidence_hypothesis_id(&self) -> &str {
         &self.confidence_hypothesis_id
+    }
+
+    /// Returns the separately resolved claim this step may transition.
+    pub fn verification_target(&self) -> &ResolvedVerificationTarget {
+        &self.verification_target
     }
 
     /// Returns the requirement evaluation trace.
@@ -794,6 +922,7 @@ pub enum PlannerWrite {
 struct EligibleCandidate {
     action: AttackAction,
     confidence_hypothesis_id: String,
+    verification_target: ResolvedVerificationTarget,
     requirements: ExpressionEvaluation,
     utility: UtilityBreakdown,
 }
@@ -932,6 +1061,16 @@ impl AttackPlanner {
                 exclusions.insert(action.id.clone(), ExclusionReason::NoEligibleHypothesis);
                 continue;
             };
+            let Some(verification_target) = action
+                .verification_target
+                .resolve(snapshot.hypotheses(), hypothesis.id())
+            else {
+                exclusions.insert(
+                    action.id.clone(),
+                    ExclusionReason::NoEligibleVerificationTarget,
+                );
+                continue;
+            };
             let utility = UtilityBreakdown::calculate(
                 action.gain,
                 hypothesis.posterior(),
@@ -954,6 +1093,7 @@ impl AttackPlanner {
                 EligibleCandidate {
                     action: action.clone(),
                     confidence_hypothesis_id: hypothesis.id().to_owned(),
+                    verification_target,
                     requirements,
                     utility,
                 },
@@ -1027,6 +1167,7 @@ impl AttackPlanner {
                     payload_strategy: candidate.action.payload_strategy.clone(),
                     prerequisites: candidate.action.prerequisites.clone(),
                     confidence_hypothesis_id: candidate.confidence_hypothesis_id.clone(),
+                    verification_target: candidate.verification_target.clone(),
                     requirements: candidate.requirements.clone(),
                     utility: candidate.utility,
                 }
@@ -1500,6 +1641,8 @@ mod tests {
     fn action_registration_and_wire_invariants_are_enforced() {
         let action = action("sqli.verify", 80, 10, 20, &[]);
         let encoded = serde_json::to_value(&action).unwrap();
+        assert!(encoded.get("verification_target").is_none());
+        assert!(encoded.get("payload_claim_policy_guard").is_none());
         assert_eq!(
             serde_json::from_value::<AttackAction>(encoded).unwrap(),
             action
@@ -1517,6 +1660,14 @@ mod tests {
             planner.register(action.clone()).unwrap(),
             PlannerWrite::Unchanged
         );
+        assert!(matches!(
+            planner.register(
+                action
+                    .clone()
+                    .with_verification_target(VerificationTarget::KnowledgeOnly)
+            ),
+            Err(PlannerError::ActionIdentityConflict { .. })
+        ));
         let conflicting = AttackAction::new(
             action.id(),
             "plugin.other",
@@ -1532,6 +1683,154 @@ mod tests {
             planner.register(conflicting),
             Err(PlannerError::ActionIdentityConflict { .. })
         ));
+    }
+
+    #[test]
+    fn verification_targets_round_trip_and_reserved_typos_fail_closed() {
+        let knowledge_only = action("form.discover", 80, 10, 20, &[])
+            .with_verification_target(VerificationTarget::KnowledgeOnly);
+        let encoded = serde_json::to_value(&knowledge_only).unwrap();
+        assert_eq!(encoded["verification_target"], "knowledge_only");
+        assert_eq!(encoded["payload_claim_policy_guard"], true);
+        let mut unguarded = encoded.clone();
+        unguarded
+            .as_object_mut()
+            .unwrap()
+            .remove("payload_claim_policy_guard");
+        assert!(serde_json::from_value::<AttackAction>(unguarded).is_err());
+        assert_eq!(
+            serde_json::from_value::<AttackAction>(encoded).unwrap(),
+            knowledge_only
+        );
+
+        let distinct_selector = HypothesisSelector::new(
+            KnowledgePredicate::new("auth", "mechanism").unwrap(),
+            EvidenceValue::Text("http-basic".to_owned()),
+            Probability::from_percent(60).unwrap(),
+            RequiredStrength::Any,
+        );
+        let distinct = action("auth.verify", 80, 10, 20, &[])
+            .with_verification_target(VerificationTarget::Distinct(distinct_selector));
+        assert_eq!(
+            serde_json::from_value::<AttackAction>(serde_json::to_value(&distinct).unwrap())
+                .unwrap(),
+            distinct
+        );
+
+        let mut misspelled = serde_json::to_value(action("typo", 80, 10, 20, &[])).unwrap();
+        misspelled["verification_targte"] = serde_json::json!("knowledge_only");
+        assert!(serde_json::from_value::<AttackAction>(misspelled).is_err());
+    }
+
+    #[test]
+    fn planner_separates_confidence_from_resolved_verification_target() {
+        let knowledge = knowledge_with_hypothesis((80, 20));
+        let target_predicate = KnowledgePredicate::new("auth", "mechanism").unwrap();
+        let target_value = EvidenceValue::Text("http-basic".to_owned());
+        let mut target = Hypothesis::with_id(
+            "hypothesis:http-basic",
+            subject(),
+            target_predicate.clone(),
+            target_value.clone(),
+            Probability::from_percent(80).unwrap(),
+        )
+        .unwrap();
+        target.set_strength(HypothesisStrength::Strong);
+        target.set_state(HypothesisState::Supported);
+        knowledge.upsert_hypothesis(target).unwrap();
+
+        let mut planner = AttackPlanner::new();
+        planner
+            .register(action("motivation", 80, 10, 20, &[]))
+            .unwrap();
+        planner
+            .register(
+                action("distinct", 80, 10, 20, &[]).with_verification_target(
+                    VerificationTarget::Distinct(HypothesisSelector::new(
+                        target_predicate,
+                        target_value,
+                        Probability::from_percent(60).unwrap(),
+                        RequiredStrength::Any,
+                    )),
+                ),
+            )
+            .unwrap();
+        planner
+            .register(
+                action("knowledge-only", 80, 10, 20, &[])
+                    .with_verification_target(VerificationTarget::KnowledgeOnly),
+            )
+            .unwrap();
+
+        let plan = planner.plan(&knowledge, &subject(), context(100)).unwrap();
+        let step = |action_id| {
+            plan.steps()
+                .iter()
+                .find(|step| step.action_id() == action_id)
+                .unwrap()
+        };
+
+        for action_id in ["motivation", "distinct", "knowledge-only"] {
+            assert_eq!(
+                step(action_id).confidence_hypothesis_id(),
+                "hypothesis:laravel"
+            );
+        }
+        assert_eq!(
+            step("motivation").verification_target().hypothesis_id(),
+            Some("hypothesis:laravel")
+        );
+        assert_eq!(
+            step("distinct").verification_target().hypothesis_id(),
+            Some("hypothesis:http-basic")
+        );
+        assert_eq!(
+            step("knowledge-only").verification_target(),
+            &ResolvedVerificationTarget::KnowledgeOnly
+        );
+        assert!(!step("knowledge-only")
+            .verification_target()
+            .applies_hypothesis_transition());
+    }
+
+    #[test]
+    fn missing_distinct_verification_target_is_excluded_fail_closed() {
+        let knowledge = knowledge_with_hypothesis((80, 20));
+        let distinct_action = action("distinct", 80, 10, 20, &[]).with_verification_target(
+            VerificationTarget::Distinct(HypothesisSelector::new(
+                KnowledgePredicate::new("auth", "mechanism").unwrap(),
+                EvidenceValue::Text("http-basic".to_owned()),
+                Probability::from_percent(60).unwrap(),
+                RequiredStrength::Any,
+            )),
+        );
+        let mut planner = AttackPlanner::new();
+        planner.register(distinct_action).unwrap();
+
+        let plan = planner.plan(&knowledge, &subject(), context(100)).unwrap();
+
+        assert!(plan.steps().is_empty());
+        assert_eq!(
+            plan.excluded()[0].reason(),
+            &ExclusionReason::NoEligibleVerificationTarget
+        );
+
+        let same_as_motivation = action("same-target", 80, 10, 20, &[]).with_verification_target(
+            VerificationTarget::Distinct(HypothesisSelector::new(
+                stack_predicate(),
+                stack_value(),
+                Probability::from_percent(50).unwrap(),
+                RequiredStrength::Strong,
+            )),
+        );
+        let mut planner = AttackPlanner::new();
+        planner.register(same_as_motivation).unwrap();
+        let plan = planner.plan(&knowledge, &subject(), context(100)).unwrap();
+        assert!(plan.steps().is_empty());
+        assert_eq!(
+            plan.excluded()[0].reason(),
+            &ExclusionReason::NoEligibleVerificationTarget
+        );
     }
 
     #[test]

@@ -83,9 +83,8 @@ pub(crate) struct PlanningView {
     pub excluded: Vec<(String, &'static str)>,
 }
 
-/// One verification outcome turn. `conclusive` mirrors the runtime's own
-/// hypothesis-state determination (a verifier-owned Success/rejection), not a
-/// re-derivation from the status label.
+/// One verification outcome turn. `conclusive` requires both a verifier-owned
+/// Success/rejection and case-level authorization to transition its hypothesis.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct OutcomeView {
     pub action_id: String,
@@ -120,7 +119,8 @@ pub(crate) struct DecisionScanSummary {
     pub planning_turns: usize,
     /// Total `Outcome` turns. Not every outcome is a confirmed vulnerability.
     pub verification_outcomes: usize,
-    /// Outcomes that map to a verifier-owned hypothesis state (Success / rejected).
+    /// Transition-authorized outcomes that map to a verifier-owned hypothesis
+    /// state (Success / rejected).
     pub conclusive_outcomes: usize,
     /// Outcomes that do not (Blocked / Unknown / NeedsReview).
     pub inconclusive_outcomes: usize,
@@ -206,7 +206,11 @@ pub(crate) async fn run_decision_scan(target: Url) -> Result<DecisionScanSummary
             StandardWebDecisionRuntimeTurn::Planning(_) => planning_turns += 1,
             StandardWebDecisionRuntimeTurn::Outcome { decision, .. } => {
                 let status = decision.verification().outcome().status();
-                let conclusive = status.hypothesis_state().is_some();
+                let conclusive = decision
+                    .verification()
+                    .case()
+                    .applies_hypothesis_transition()
+                    && status.hypothesis_state().is_some();
                 if conclusive {
                     conclusive_outcomes += 1;
                 } else {
