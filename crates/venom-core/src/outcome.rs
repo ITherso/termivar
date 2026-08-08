@@ -99,7 +99,11 @@ impl OutcomeStatus {
         )
     }
 
-    /// Maps conclusive verification results to verifier-owned hypothesis states.
+    /// Returns the candidate verifier-owned hypothesis transition state
+    /// associated with this status.
+    ///
+    /// Verification-case and orchestration policy decide whether that candidate
+    /// state is actually applied.
     pub const fn hypothesis_state(self) -> Option<HypothesisState> {
         match self {
             Self::Success => Some(HypothesisState::Confirmed),

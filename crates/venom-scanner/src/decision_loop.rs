@@ -1236,14 +1236,14 @@ mod tests {
     use super::*;
     use crate::{
         ActionCost, AttackAction, BenefitScore, EvidenceCalibration, EvidenceSelector,
-        ExperienceDisposition, Expression, HypothesisConclusion, HypothesisSelector,
-        KnowledgeLayer, ReasoningRule, RequiredStrength, RiskScore, VerificationRule,
-        VerificationTarget,
+        ExperienceDisposition, ExperienceRecommendation, Expression, HypothesisConclusion,
+        HypothesisSelector, KnowledgeLayer, ReasoningRule, RequiredStrength, RiskScore,
+        VerificationRule, VerificationTarget,
     };
     use venom_core::{
-        ConfidenceScore, Evidence, EvidenceKind, EvidenceSource, EvidenceValue, Hypothesis,
-        HypothesisState, HypothesisStrength, KnowledgePredicate, OutcomeStatus, Probability,
-        VerificationStage,
+        ConfidenceScore, Evidence, EvidenceId, EvidenceKind, EvidenceSource, EvidenceValue,
+        Hypothesis, HypothesisState, HypothesisStrength, KnowledgePredicate, OutcomeStatus,
+        Probability, VerificationStage,
     };
 
     fn subject() -> EntityId {
@@ -1442,6 +1442,83 @@ mod tests {
             &ResolvedVerificationTarget::KnowledgeOnly
         );
         assert!(!case.applies_hypothesis_transition());
+    }
+
+    #[test]
+    fn knowledge_only_success_resets_action_experience_without_transitioning_motivation() {
+        let planning_policy = ExperiencePolicy::new(2).unwrap();
+        let suppression_policy = ExperiencePolicy::new(1).unwrap();
+        let decision_loop = configured_loop_with_target(
+            Some(OutcomeStatus::Success),
+            planning_policy.consecutive_suppressible_failure_limit(),
+            8,
+            None,
+            VerificationTarget::KnowledgeOnly,
+        );
+        let knowledge = knowledge(true);
+        let mut experience = ExperienceStore::new();
+        experience
+            .observe(
+                Outcome::verified(
+                    "case:prior-negative",
+                    subject(),
+                    "http.probe",
+                    "hypothesis:prior-http-probe",
+                    "verify.prior-negative",
+                    VerificationStage::Active,
+                    OutcomeStatus::ConfirmedNegative,
+                    Probability::from_percent(99).unwrap(),
+                    "prior active control confirmed a negative action result",
+                    BTreeSet::from([EvidenceId::parse("evidence:prior-negative").unwrap()]),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let before = experience.assess(&subject(), "http.probe", suppression_policy);
+        assert_eq!(before.consecutive_suppressible_failures(), 1);
+        assert!(before.is_suppressed());
+        assert_eq!(
+            before.last_disposition(),
+            Some(ExperienceDisposition::ConfirmedNegative)
+        );
+        let mut session = DecisionSession::new(subject());
+
+        let planning = decision_loop
+            .plan_next(&knowledge, &experience, &mut session)
+            .unwrap();
+        let case = execution_case(planning.command());
+        let motivation_id = case.hypothesis_id().to_owned();
+        assert!(!case.applies_hypothesis_transition());
+        assert_eq!(
+            knowledge.hypothesis(&motivation_id).unwrap().state(),
+            HypothesisState::Supported
+        );
+
+        let report = decision_loop
+            .submit_passive(&knowledge, &mut experience, &mut session)
+            .unwrap();
+
+        assert_eq!(
+            report.verification().outcome().status(),
+            OutcomeStatus::Success
+        );
+        assert!(!report.verification().case().applies_hypothesis_transition());
+        assert_eq!(report.experience_write(), ExperienceWrite::Inserted);
+        assert_eq!(report.hypothesis_write(), None);
+        assert_eq!(
+            knowledge.hypothesis(&motivation_id).unwrap().state(),
+            HypothesisState::Supported
+        );
+        let after = experience.assess(&subject(), "http.probe", suppression_policy);
+        assert_eq!(after.completed_attempts(), 2);
+        assert_eq!(after.last_status(), Some(OutcomeStatus::Success));
+        assert_eq!(
+            after.last_disposition(),
+            Some(ExperienceDisposition::ConfirmedPositive)
+        );
+        assert_eq!(after.consecutive_suppressible_failures(), 0);
+        assert_eq!(after.recommendation(), ExperienceRecommendation::Continue);
+        assert!(!after.is_suppressed());
     }
 
     #[test]

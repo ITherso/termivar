@@ -104,7 +104,12 @@ pub enum ExperienceWrite {
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum ExperienceDisposition {
-    /// Verification confirmed the tested hypothesis.
+    /// The verifier reported a successful outcome for the action.
+    ///
+    /// This resets the action-scoped negative suppression streak. It does not,
+    /// by itself, prove that the associated hypothesis was authorized to
+    /// transition or that its state changed; consult the knowledge base and the
+    /// complete verification report for authoritative hypothesis state.
     ConfirmedPositive,
     /// The action does not apply to the observed subject.
     NotApplicable,
@@ -129,6 +134,8 @@ impl ExperienceDisposition {
     ///
     /// `FalsePositive` remains `VerificationRejected`: an outcome alone does
     /// not prove that an audited active negative check was performed.
+    /// `Success` remains the action-level [`Self::ConfirmedPositive`] even when
+    /// case policy suppresses a hypothesis transition.
     pub fn from_outcome(outcome: &Outcome) -> Self {
         match outcome.status() {
             OutcomeStatus::Success => Self::ConfirmedPositive,
@@ -377,6 +384,13 @@ impl ExperienceAssessment {
 /// clock time. Recording an identical outcome is idempotent. Passive
 /// inconclusive results do not count as completed attempts; a later active
 /// result for the same case replaces them during assessment.
+///
+/// This store is action-outcome learning history. It does not receive or
+/// preserve [`crate::VerificationCase`] transition authorization, so an
+/// [`ExperienceDisposition::ConfirmedPositive`] is not evidence that a
+/// hypothesis state changed. The [`KnowledgeBase`](crate::KnowledgeBase) and
+/// complete [`VerificationReport`](crate::VerificationReport) remain
+/// authoritative for hypothesis state and transition audit.
 ///
 /// # Example
 ///
