@@ -145,6 +145,25 @@ fn is_false(value: &bool) -> bool {
     !*value
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum VerificationScopeGuard {
+    Action,
+    Case,
+    ActionAndCase,
+}
+
+impl VerificationScopeGuard {
+    fn for_scope(action_id: Option<&str>, case_correlated_evidence: bool) -> Option<Self> {
+        match (action_id.is_some(), case_correlated_evidence) {
+            (true, false) => Some(Self::Action),
+            (false, true) => Some(Self::Case),
+            (true, true) => Some(Self::ActionAndCase),
+            (false, false) => None,
+        }
+    }
+}
+
 /// Stable identity linking a planned action to its hypothesis provenance.
 ///
 /// Most cases authorize a conclusive outcome to transition `hypothesis_id`.
@@ -264,11 +283,11 @@ impl<'de> Deserialize<'de> for VerificationCase {
         }
 
         let wire = WireCase::deserialize(deserializer)?;
-        if wire
-            .extensions
-            .keys()
-            .any(|field| field.starts_with("payload_") || field.starts_with("applies_hypothesis_"))
-        {
+        if wire.extensions.keys().any(|field| {
+            field.starts_with("payload_")
+                || field.starts_with("applies_hypothesis_")
+                || field.starts_with("verification_")
+        }) {
             return Err(serde::de::Error::custom(
                 "unknown reserved verification case field",
             ));
@@ -303,6 +322,8 @@ pub struct VerificationRule {
     action_id: Option<String>,
     #[serde(default, skip_serializing_if = "is_false")]
     case_correlated_evidence: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    verification_scope_guard: Option<VerificationScopeGuard>,
 }
 
 impl VerificationRule {
@@ -337,6 +358,7 @@ impl VerificationRule {
             rationale: non_empty(rationale, "verification rule rationale")?,
             action_id: None,
             case_correlated_evidence: false,
+            verification_scope_guard: None,
         })
     }
 
@@ -346,6 +368,7 @@ impl VerificationRule {
         action_id: impl Into<String>,
     ) -> Result<Self, VerificationError> {
         self.action_id = Some(non_empty(action_id, "verification rule action id")?);
+        self.refresh_scope_guard();
         Ok(self)
     }
 
@@ -360,7 +383,15 @@ impl VerificationRule {
             });
         }
         self.case_correlated_evidence = true;
+        self.refresh_scope_guard();
         Ok(self)
+    }
+
+    fn refresh_scope_guard(&mut self) {
+        self.verification_scope_guard = VerificationScopeGuard::for_scope(
+            self.action_id.as_deref(),
+            self.case_correlated_evidence,
+        );
     }
 
     /// Returns the stable rule identity.
@@ -415,6 +446,7 @@ impl<'de> Deserialize<'de> for VerificationRule {
         D: Deserializer<'de>,
     {
         #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
         struct WireRule {
             id: String,
             stage: VerificationStage,
@@ -427,9 +459,22 @@ impl<'de> Deserialize<'de> for VerificationRule {
             action_id: Option<String>,
             #[serde(default)]
             case_correlated_evidence: bool,
+            #[serde(default)]
+            verification_scope_guard: Option<VerificationScopeGuard>,
         }
 
         let wire = WireRule::deserialize(deserializer)?;
+        let expected_scope_guard = VerificationScopeGuard::for_scope(
+            wire.action_id.as_deref(),
+            wire.case_correlated_evidence,
+        );
+        if wire.verification_scope_guard.is_some()
+            && wire.verification_scope_guard != expected_scope_guard
+        {
+            return Err(serde::de::Error::custom(
+                "verification rule scope guard is inconsistent",
+            ));
+        }
         let mut rule = Self::new(
             wire.id,
             wire.stage,
@@ -1238,6 +1283,19 @@ mod tests {
         let mut misspelled = serde_json::to_value(&restored_legacy).unwrap();
         misspelled["applies_hypothesis_transiton"] = serde_json::json!(false);
         assert!(serde_json::from_value::<VerificationCase>(misspelled).is_err());
+
+        let mut masquerading_policy = serde_json::to_value(&restored_legacy).unwrap();
+        masquerading_policy["verification_target"] = serde_json::json!("knowledge_only");
+        assert!(serde_json::from_value::<VerificationCase>(masquerading_policy.clone()).is_err());
+
+        let mut session_wire =
+            serde_json::to_value(crate::DecisionSession::new(subject())).unwrap();
+        session_wire["action_cycles"] = serde_json::json!(1);
+        session_wire["state"] = serde_json::json!({
+            "state": "awaiting_passive",
+            "case": masquerading_policy
+        });
+        assert!(serde_json::from_value::<crate::DecisionSession>(session_wire).is_err());
     }
 
     fn case() -> VerificationCase {
@@ -1304,6 +1362,101 @@ mod tests {
             hypothesis_rule.with_case_correlated_evidence(),
             Err(VerificationError::CaseCorrelationRequiresEvidenceOnly { .. })
         ));
+    }
+
+    #[test]
+    fn verification_rule_wire_rejects_scope_corruption() {
+        let action_only = rule(
+            "wire.scope.action",
+            VerificationStage::Passive,
+            10,
+            boolean_predicate(),
+            OutcomeStatus::Success,
+        )
+        .scoped_to_action("sqli.verify")
+        .unwrap();
+        assert_eq!(
+            serde_json::to_value(&action_only).unwrap()["verification_scope_guard"],
+            "action"
+        );
+        let case_only = rule(
+            "wire.scope.case",
+            VerificationStage::Passive,
+            10,
+            boolean_predicate(),
+            OutcomeStatus::Success,
+        )
+        .with_case_correlated_evidence()
+        .unwrap();
+        assert_eq!(
+            serde_json::to_value(&case_only).unwrap()["verification_scope_guard"],
+            "case"
+        );
+
+        let scoped = rule(
+            "wire.scope.strict",
+            VerificationStage::Passive,
+            10,
+            boolean_predicate(),
+            OutcomeStatus::Success,
+        )
+        .scoped_to_action("sqli.verify")
+        .unwrap()
+        .with_case_correlated_evidence()
+        .unwrap();
+        let encoded = serde_json::to_value(&scoped).unwrap();
+
+        let mut legacy_guardless = encoded.clone();
+        legacy_guardless
+            .as_object_mut()
+            .unwrap()
+            .remove("verification_scope_guard");
+        let restored_legacy = serde_json::from_value::<VerificationRule>(legacy_guardless).unwrap();
+        assert_eq!(restored_legacy, scoped);
+        assert_eq!(
+            serde_json::to_value(&restored_legacy).unwrap()["verification_scope_guard"],
+            "action_and_case"
+        );
+
+        let mut verifier = PassiveVerifier::new();
+        verifier.register(restored_legacy).unwrap();
+        assert_eq!(
+            verifier
+                .verify(&knowledge(), &case())
+                .unwrap()
+                .outcome()
+                .status(),
+            OutcomeStatus::Unknown
+        );
+
+        let mut misspelled_action = encoded.clone();
+        let action_id = misspelled_action
+            .as_object_mut()
+            .unwrap()
+            .remove("action_id")
+            .unwrap();
+        misspelled_action["action_idd"] = action_id;
+        assert!(serde_json::from_value::<VerificationRule>(misspelled_action).is_err());
+
+        let mut misspelled_correlation = encoded.clone();
+        let correlation = misspelled_correlation
+            .as_object_mut()
+            .unwrap()
+            .remove("case_correlated_evidence")
+            .unwrap();
+        misspelled_correlation["case_correlated_evidnce"] = correlation;
+        assert!(serde_json::from_value::<VerificationRule>(misspelled_correlation).is_err());
+
+        assert_eq!(encoded["verification_scope_guard"], "action_and_case");
+        for field in ["action_id", "case_correlated_evidence"] {
+            let mut missing = encoded.clone();
+            missing.as_object_mut().unwrap().remove(field);
+            assert!(serde_json::from_value::<VerificationRule>(missing).is_err());
+        }
+
+        let mut inconsistent = encoded;
+        inconsistent["verification_scope_guard"] = serde_json::json!("action");
+        assert!(serde_json::from_value::<VerificationRule>(inconsistent).is_err());
     }
 
     #[test]

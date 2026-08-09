@@ -103,6 +103,66 @@ fn non_empty(value: impl Into<String>, field: &'static str) -> Result<String, Ru
     Ok(value)
 }
 
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
+/// A nullable wire value whose field must nevertheless be present.
+///
+/// Serde treats a missing `Option<T>` field as `None`, which is unsafe where
+/// `null` has an explicit meaning distinct from an omitted semantic field. The
+/// transparent wrapper preserves the historical JSON shape while making field
+/// omission a deserialization error.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(transparent)]
+struct RequiredNullable<T> {
+    value: Option<T>,
+    #[serde(skip)]
+    present: bool,
+}
+
+impl<T> RequiredNullable<T> {
+    fn present(value: Option<T>) -> Self {
+        Self {
+            value,
+            present: true,
+        }
+    }
+
+    fn as_ref(&self) -> Option<&T> {
+        self.value.as_ref()
+    }
+
+    fn is_present(&self) -> bool {
+        self.present
+    }
+
+    fn into_inner(self) -> Option<T> {
+        self.value
+    }
+}
+
+impl<T> Default for RequiredNullable<T> {
+    fn default() -> Self {
+        Self {
+            value: None,
+            present: false,
+        }
+    }
+}
+
+impl<'de, T> Deserialize<'de> for RequiredNullable<T>
+where
+    T: Deserialize<'de>,
+{
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Option::<T>::deserialize(deserializer).map(Self::present)
+    }
+}
+
 /// Knowledge record layer queried by a claim expression.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -117,7 +177,7 @@ pub enum KnowledgeLayer {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "op", rename_all = "snake_case")]
+#[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
 enum ExpressionNode {
     All {
         expressions: Vec<Expression>,
@@ -131,7 +191,8 @@ enum ExpressionNode {
     Claim {
         layer: KnowledgeLayer,
         predicate: KnowledgePredicate,
-        value: Option<EvidenceValue>,
+        #[serde(default)]
+        value: RequiredNullable<EvidenceValue>,
     },
     TextContains {
         layer: KnowledgeLayer,
@@ -156,6 +217,9 @@ enum ExpressionNode {
 /// Empty `all` and `any` groups are rejected, avoiding vacuous truth and
 /// configuration mistakes. Negated branches never contribute evidence to a
 /// Bayesian conclusion because absence is not an immutable observation.
+/// Claim wire objects require `value` to be present: exact claims carry a typed
+/// value and existence claims carry explicit `null`. Unknown fields reject, so
+/// a misspelled exact value cannot broaden into existence.
 ///
 /// # Example
 ///
@@ -216,7 +280,7 @@ impl Expression {
         Self(ExpressionNode::Claim {
             layer,
             predicate,
-            value: Some(value),
+            value: RequiredNullable::present(Some(value)),
         })
     }
 
@@ -225,7 +289,7 @@ impl Expression {
         Self(ExpressionNode::Claim {
             layer,
             predicate,
-            value: None,
+            value: RequiredNullable::present(None),
         })
     }
 
@@ -336,6 +400,11 @@ impl<'de> Deserialize<'de> for Expression {
                 return Err(serde::de::Error::custom(RuleEngineError::EmptyExpression {
                     operator: "any",
                 }));
+            },
+            ExpressionNode::Claim { value, .. } if !value.is_present() => {
+                return Err(serde::de::Error::custom(
+                    "claim expression value field must be present; use null for existence",
+                ));
             },
             ExpressionNode::TextContains { needle, .. } if needle.trim().is_empty() => {
                 return Err(serde::de::Error::custom(RuleEngineError::EmptyValue {
@@ -730,6 +799,12 @@ fn evaluate_claim(
 }
 
 /// Selects raw evidence for one Bayesian calibration.
+///
+/// The wire contract requires an explicit nullable `value` field. Canonical
+/// constrained selectors also carry a compatibility guard, so losing one text
+/// matcher cannot silently reconstruct the selector as predicate existence.
+/// Guardless constrained selectors emitted by earlier Venom releases remain
+/// readable and are canonicalized when serialized again.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct EvidenceSelector {
     predicate: KnowledgePredicate,
@@ -738,6 +813,8 @@ pub struct EvidenceSelector {
     text_contains_ascii_case_insensitive: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     text_list_contains_exact: Option<String>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    matcher_policy_guard: bool,
 }
 
 impl EvidenceSelector {
@@ -748,6 +825,7 @@ impl EvidenceSelector {
             value: Some(value),
             text_contains_ascii_case_insensitive: None,
             text_list_contains_exact: None,
+            matcher_policy_guard: true,
         }
     }
 
@@ -758,6 +836,7 @@ impl EvidenceSelector {
             value: None,
             text_contains_ascii_case_insensitive: None,
             text_list_contains_exact: None,
+            matcher_policy_guard: false,
         }
     }
 
@@ -774,6 +853,7 @@ impl EvidenceSelector {
                 "evidence-selector text needle",
             )?),
             text_list_contains_exact: None,
+            matcher_policy_guard: true,
         })
     }
 
@@ -794,6 +874,7 @@ impl EvidenceSelector {
                 value,
                 "evidence-selector text-list exact value",
             )?),
+            matcher_policy_guard: true,
         })
     }
 
@@ -843,22 +924,40 @@ impl<'de> Deserialize<'de> for EvidenceSelector {
         D: Deserializer<'de>,
     {
         #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
         struct WireSelector {
             predicate: KnowledgePredicate,
-            value: Option<EvidenceValue>,
+            #[serde(default)]
+            value: RequiredNullable<EvidenceValue>,
             #[serde(default)]
             text_contains_ascii_case_insensitive: Option<String>,
             #[serde(default)]
             text_list_contains_exact: Option<String>,
+            #[serde(default)]
+            matcher_policy_guard: Option<bool>,
         }
 
         let wire = WireSelector::deserialize(deserializer)?;
-        let matchers = usize::from(wire.value.is_some())
+        if !wire.value.is_present() {
+            return Err(serde::de::Error::custom(
+                "evidence selector value field must be present; use null for predicate existence",
+            ));
+        }
+        let value = wire.value.into_inner();
+        let matchers = usize::from(value.is_some())
             + usize::from(wire.text_contains_ascii_case_insensitive.is_some())
             + usize::from(wire.text_list_contains_exact.is_some());
         if matchers > 1 {
             return Err(serde::de::Error::custom(
                 "evidence selector cannot combine exact, text, and text-list matching",
+            ));
+        }
+        if wire
+            .matcher_policy_guard
+            .is_some_and(|guard| !guard || matchers != 1)
+        {
+            return Err(serde::de::Error::custom(
+                "evidence selector matcher compatibility guard is inconsistent",
             ));
         }
         if wire
@@ -881,9 +980,10 @@ impl<'de> Deserialize<'de> for EvidenceSelector {
         }
         Ok(Self {
             predicate: wire.predicate,
-            value: wire.value,
+            value,
             text_contains_ascii_case_insensitive: wire.text_contains_ascii_case_insensitive,
             text_list_contains_exact: wire.text_list_contains_exact,
+            matcher_policy_guard: matchers == 1,
         })
     }
 }
@@ -933,6 +1033,12 @@ impl EvidenceAggregation {
 }
 
 /// Bayesian likelihoods assigned to evidence selected by a rule.
+///
+/// Missing aggregation remains the historical independent policy. Canonical
+/// bounded calibrations carry a compatibility guard; losing their aggregation
+/// field therefore fails closed instead of removing the contribution cap.
+/// Guardless bounded calibrations emitted by earlier releases remain readable
+/// and are canonicalized when serialized again.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct EvidenceCalibration {
     selector: EvidenceSelector,
@@ -941,6 +1047,8 @@ pub struct EvidenceCalibration {
     rationale: String,
     #[serde(default, skip_serializing_if = "EvidenceAggregation::is_independent")]
     aggregation: EvidenceAggregation,
+    #[serde(default, skip_serializing_if = "is_false")]
+    aggregation_policy_guard: bool,
 }
 
 impl EvidenceCalibration {
@@ -957,11 +1065,13 @@ impl EvidenceCalibration {
             likelihood_if_false,
             rationale: non_empty(rationale, "evidence calibration rationale")?,
             aggregation: EvidenceAggregation::Independent,
+            aggregation_policy_guard: false,
         })
     }
 
     /// Applies an explicit contribution policy to this calibration.
     pub fn with_aggregation(mut self, aggregation: EvidenceAggregation) -> Self {
+        self.aggregation_policy_guard = !aggregation.is_independent();
         self.aggregation = aggregation;
         self
     }
@@ -1006,9 +1116,20 @@ impl<'de> Deserialize<'de> for EvidenceCalibration {
             rationale: String,
             #[serde(default)]
             aggregation: EvidenceAggregation,
+            #[serde(default)]
+            aggregation_policy_guard: Option<bool>,
         }
 
         let wire = WireCalibration::deserialize(deserializer)?;
+        let bounded = !wire.aggregation.is_independent();
+        if wire
+            .aggregation_policy_guard
+            .is_some_and(|guard| !guard || !bounded)
+        {
+            return Err(serde::de::Error::custom(
+                "evidence aggregation compatibility guard is inconsistent",
+            ));
+        }
         Self::new(
             wire.selector,
             wire.likelihood_if_true,
@@ -1097,6 +1218,7 @@ impl<'de> Deserialize<'de> for HypothesisConclusion {
         D: Deserializer<'de>,
     {
         #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
         struct WireConclusion {
             predicate: KnowledgePredicate,
             value: EvidenceValue,
@@ -1163,6 +1285,7 @@ impl<'de> Deserialize<'de> for ReasoningRule {
         D: Deserializer<'de>,
     {
         #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
         struct WireRule {
             id: String,
             condition: Expression,
@@ -1559,6 +1682,48 @@ mod tests {
     }
 
     #[test]
+    fn all_and_any_preserve_truth_and_root_provenance() {
+        let knowledge = KnowledgeBase::new();
+        let matching = evidence(framework_predicate(), EvidenceValue::Text("Laravel".into()));
+        let matching_id = matching.id().clone();
+        knowledge.insert_evidence(matching).unwrap();
+        let missing = KnowledgePredicate::new("security", "waf").unwrap();
+        let snapshot = knowledge.snapshot_for_subject(&subject());
+
+        let any = Expression::any(vec![
+            Expression::equals(
+                KnowledgeLayer::Evidence,
+                framework_predicate(),
+                EvidenceValue::Text("Laravel".into()),
+            ),
+            Expression::exists(KnowledgeLayer::Evidence, missing.clone()),
+        ])
+        .unwrap()
+        .evaluate(&snapshot)
+        .unwrap();
+        assert!(any.matched());
+        assert_eq!(any.evidence_ids(), &BTreeSet::from([matching_id.clone()]));
+
+        let all = Expression::all(vec![
+            Expression::equals(
+                KnowledgeLayer::Evidence,
+                framework_predicate(),
+                EvidenceValue::Text("Laravel".into()),
+            ),
+            Expression::exists(KnowledgeLayer::Evidence, missing),
+        ])
+        .unwrap()
+        .evaluate(&snapshot)
+        .unwrap();
+        assert!(!all.matched());
+        assert!(all.evidence_ids().is_empty());
+        assert_eq!(
+            all.trace().children()[0].evidence_ids(),
+            &BTreeSet::from([matching_id])
+        );
+    }
+
+    #[test]
     fn expression_wire_format_rejects_empty_groups() {
         assert!(Expression::all(Vec::new()).is_err());
         assert!(serde_json::from_value::<Expression>(serde_json::json!({
@@ -1566,6 +1731,66 @@ mod tests {
             "expressions": []
         }))
         .is_err());
+    }
+
+    #[test]
+    fn malformed_expression_wire_cannot_broaden_equals_to_exists() {
+        let expression = Expression::equals(
+            KnowledgeLayer::Evidence,
+            framework_predicate(),
+            EvidenceValue::Text("Laravel".into()),
+        );
+        let knowledge = KnowledgeBase::new();
+        knowledge
+            .insert_evidence(evidence(
+                framework_predicate(),
+                EvidenceValue::Text("Apache".into()),
+            ))
+            .unwrap();
+        assert!(!expression
+            .evaluate(&knowledge.snapshot_for_subject(&subject()))
+            .unwrap()
+            .matched());
+        let mut encoded = serde_json::to_value(&expression).unwrap();
+        let value = encoded.as_object_mut().unwrap().remove("value").unwrap();
+        let missing = encoded.clone();
+        encoded["vlaue"] = value;
+
+        assert!(serde_json::from_value::<Expression>(missing).is_err());
+        assert!(serde_json::from_value::<Expression>(encoded).is_err());
+    }
+
+    #[test]
+    fn expression_wire_requires_explicit_null_for_historical_exists() {
+        let expression = Expression::exists(KnowledgeLayer::Evidence, framework_predicate());
+        let encoded = serde_json::to_value(&expression).unwrap();
+        assert!(encoded.get("value").is_some_and(serde_json::Value::is_null));
+        assert_eq!(
+            serde_json::from_value::<Expression>(encoded.clone()).unwrap(),
+            expression
+        );
+
+        let mut missing = encoded.clone();
+        missing.as_object_mut().unwrap().remove("value");
+        assert!(serde_json::from_value::<Expression>(missing).is_err());
+
+        let mut extended = encoded;
+        extended["matcher_future"] = serde_json::json!(true);
+        assert!(serde_json::from_value::<Expression>(extended).is_err());
+    }
+
+    #[test]
+    fn malformed_nested_expression_cannot_broaden_a_reasoning_rule() {
+        let mut encoded = serde_json::to_value(laravel_rule("wire.expression.strict")).unwrap();
+        let first_claim = &mut encoded["condition"]["expressions"][0];
+        let value = first_claim
+            .as_object_mut()
+            .unwrap()
+            .remove("value")
+            .unwrap();
+        first_claim["vlaue"] = value;
+
+        assert!(serde_json::from_value::<ReasoningRule>(encoded).is_err());
     }
 
     #[test]
@@ -1627,8 +1852,10 @@ mod tests {
         assert!(evaluate_exact(list(&["_method"]), "_method").matched());
 
         for (value, target) in [
+            (list(&["_token_backup"]), "_token"),
             (list(&["_token_old"]), "_token"),
             (list(&["my_token"]), "_token"),
+            (list(&[" _token "]), "_token"),
             (list(&["_METHOD"]), "_method"),
             (list(&[]), "_token"),
             // A scalar Text value never satisfies a list-membership predicate.
@@ -1731,6 +1958,176 @@ mod tests {
             }))
             .is_err()
         );
+    }
+
+    #[test]
+    fn malformed_evidence_selector_cannot_broaden_exact_matching_to_exists() {
+        let selector =
+            EvidenceSelector::text_list_contains_exact(form_controls(), "_token").unwrap();
+        let mut encoded = serde_json::to_value(selector).unwrap();
+        let matcher = encoded
+            .as_object_mut()
+            .unwrap()
+            .remove("text_list_contains_exact")
+            .unwrap();
+        encoded["text_list_contians_exact"] = matcher;
+
+        assert!(serde_json::from_value::<EvidenceSelector>(encoded).is_err());
+    }
+
+    #[test]
+    fn selector_guard_preserves_history_and_rejects_tampering() {
+        let selector =
+            EvidenceSelector::text_list_contains_exact(form_controls(), "_token").unwrap();
+        let encoded = serde_json::to_value(&selector).unwrap();
+        assert_eq!(encoded["matcher_policy_guard"], true);
+
+        let mut current_history = encoded.clone();
+        current_history
+            .as_object_mut()
+            .unwrap()
+            .remove("matcher_policy_guard");
+        let restored: EvidenceSelector = serde_json::from_value(current_history).unwrap();
+        assert_eq!(restored, selector);
+        assert_eq!(
+            serde_json::to_value(&restored).unwrap()["matcher_policy_guard"],
+            true
+        );
+
+        let mut false_guard = encoded.clone();
+        false_guard["matcher_policy_guard"] = serde_json::json!(false);
+        assert!(serde_json::from_value::<EvidenceSelector>(false_guard).is_err());
+
+        let mut missing_matcher = encoded.clone();
+        missing_matcher
+            .as_object_mut()
+            .unwrap()
+            .remove("text_list_contains_exact");
+        assert!(serde_json::from_value::<EvidenceSelector>(missing_matcher).is_err());
+
+        let exists = EvidenceSelector::exists(form_controls());
+        let exists_wire = serde_json::to_value(&exists).unwrap();
+        assert!(exists_wire.get("matcher_policy_guard").is_none());
+        assert!(exists_wire
+            .get("value")
+            .is_some_and(serde_json::Value::is_null));
+        assert_eq!(
+            serde_json::from_value::<EvidenceSelector>(exists_wire.clone()).unwrap(),
+            exists
+        );
+
+        let mut guarded_exists = exists_wire.clone();
+        guarded_exists["matcher_policy_guard"] = serde_json::json!(true);
+        assert!(serde_json::from_value::<EvidenceSelector>(guarded_exists).is_err());
+
+        let mut missing_nullable = exists_wire.clone();
+        missing_nullable.as_object_mut().unwrap().remove("value");
+        assert!(serde_json::from_value::<EvidenceSelector>(missing_nullable).is_err());
+
+        let mut unknown_matcher = exists_wire;
+        unknown_matcher["matcher_future"] = serde_json::json!("_token");
+        assert!(serde_json::from_value::<EvidenceSelector>(unknown_matcher).is_err());
+    }
+
+    #[test]
+    fn malformed_calibration_selector_cannot_gain_unrelated_provenance() {
+        let mut encoded = serde_json::to_value(laravel_rule("wire.selector.strict")).unwrap();
+        let selector = &mut encoded["conclusion"]["calibrations"][0]["selector"];
+        let value = selector.as_object_mut().unwrap().remove("value").unwrap();
+        selector["vlaue"] = value;
+
+        assert!(serde_json::from_value::<ReasoningRule>(encoded).is_err());
+    }
+
+    #[test]
+    fn exact_calibration_attributes_only_matching_condition_evidence() {
+        let knowledge = KnowledgeBase::new();
+        let predicate = framework_predicate();
+        let laravel = evidence(predicate.clone(), EvidenceValue::Text("Laravel".into()));
+        let laravel_id = laravel.id().clone();
+        let apache = evidence(predicate.clone(), EvidenceValue::Text("Apache".into()));
+        let apache_id = apache.id().clone();
+        knowledge
+            .insert_evidence_batch(vec![laravel, apache])
+            .unwrap();
+
+        let rule = ReasoningRule::new(
+            "wire.selector.provenance",
+            Expression::exists(KnowledgeLayer::Evidence, predicate.clone()),
+            HypothesisConclusion::new(
+                KnowledgePredicate::new("audit", "exact-selector").unwrap(),
+                EvidenceValue::Boolean(true),
+                Probability::from_percent(50).unwrap(),
+                HypothesisStrength::Weak,
+                HypothesisState::Supported,
+                vec![EvidenceCalibration::new(
+                    EvidenceSelector::equals(predicate, EvidenceValue::Text("Laravel".into())),
+                    Probability::from_percent(90).unwrap(),
+                    Probability::from_percent(10).unwrap(),
+                    "exact framework",
+                )
+                .unwrap()],
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let mut engine = RuleEngine::new();
+        engine.register(rule).unwrap();
+
+        let evaluations = engine.evaluate(&knowledge, &subject()).unwrap();
+        let observations = evaluations[0].hypothesis().unwrap().belief().evidence();
+        assert_eq!(observations.len(), 1);
+        assert_eq!(observations[0].evidence_id(), &laravel_id);
+        assert_ne!(observations[0].evidence_id(), &apache_id);
+    }
+
+    #[test]
+    fn bounded_aggregation_wire_detects_single_field_policy_loss() {
+        let bounded = calibration(
+            framework_predicate(),
+            EvidenceValue::Text("Laravel".into()),
+            80,
+            20,
+        )
+        .with_aggregation(EvidenceAggregation::max_contributions(1).unwrap());
+        let encoded = serde_json::to_value(&bounded).unwrap();
+        assert_eq!(encoded["aggregation_policy_guard"], true);
+
+        let mut current_history = encoded.clone();
+        current_history
+            .as_object_mut()
+            .unwrap()
+            .remove("aggregation_policy_guard");
+        let restored = serde_json::from_value::<EvidenceCalibration>(current_history).unwrap();
+        assert_eq!(
+            restored.aggregation(),
+            EvidenceAggregation::max_contributions(1).unwrap()
+        );
+        assert_eq!(
+            serde_json::to_value(restored).unwrap()["aggregation_policy_guard"],
+            true
+        );
+
+        let mut false_guard = encoded.clone();
+        false_guard["aggregation_policy_guard"] = serde_json::json!(false);
+        assert!(serde_json::from_value::<EvidenceCalibration>(false_guard).is_err());
+
+        let mut corrupted = encoded;
+        corrupted.as_object_mut().unwrap().remove("aggregation");
+        assert!(serde_json::from_value::<EvidenceCalibration>(corrupted).is_err());
+
+        let independent = calibration(
+            framework_predicate(),
+            EvidenceValue::Text("Laravel".into()),
+            80,
+            20,
+        );
+        let mut guarded_independent = serde_json::to_value(independent).unwrap();
+        assert!(guarded_independent
+            .get("aggregation_policy_guard")
+            .is_none());
+        guarded_independent["aggregation_policy_guard"] = serde_json::json!(true);
+        assert!(serde_json::from_value::<EvidenceCalibration>(guarded_independent).is_err());
     }
 
     #[test]
@@ -2320,6 +2717,25 @@ mod tests {
             engine.register(conflicting),
             Err(RuleEngineError::RuleIdentityConflict { .. })
         ));
+    }
+
+    #[test]
+    fn reasoning_rule_and_conclusion_reject_unknown_semantic_fields() {
+        let rule = laravel_rule("wire.strict-container");
+
+        let mut unknown_rule_field = serde_json::to_value(&rule).unwrap();
+        unknown_rule_field["scope_future"] = serde_json::json!("global");
+        assert!(serde_json::from_value::<ReasoningRule>(unknown_rule_field).is_err());
+
+        let mut unknown_conclusion_field = serde_json::to_value(&rule).unwrap();
+        unknown_conclusion_field["conclusion"]["transition_future"] =
+            serde_json::json!("confirmed");
+        assert!(serde_json::from_value::<ReasoningRule>(unknown_conclusion_field).is_err());
+
+        assert_eq!(
+            serde_json::from_value::<ReasoningRule>(serde_json::to_value(&rule).unwrap()).unwrap(),
+            rule
+        );
     }
 
     #[test]
