@@ -48,6 +48,14 @@ All five executors inherit the same host-owned controls:
 
 The Laravel route action currently observes the method boundary of the subject endpoint with `OPTIONS`; it is a safe seed for later route discovery, not a crawler. Livewire uses `GET` so an explicitly enabled bounded text sample can expose component markers. Authentication actions use credential-free `HEAD` and retain status plus allowed headers such as `WWW-Authenticate`.
 
+PHP input discovery is the only built-in executor that derives HTML
+form-control names. It parses at most 64 KiB of the already authorized body
+sample, accepts only HTML-namespace `input`, `select`, and `textarea` elements,
+and never copies control values. A larger sample remains available as bounded
+body evidence but produces no partial form-control observation; absence of that
+derived predicate is unknown, not evidence that the document contains no
+controls.
+
 ## Registry installation
 
 ```rust

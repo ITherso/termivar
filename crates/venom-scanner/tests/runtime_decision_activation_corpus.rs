@@ -995,6 +995,45 @@ async fn php_padded_form_control_name_does_not_fabricate_an_exact_convention() {
 }
 
 #[tokio::test]
+async fn php_foreign_namespace_control_lookalike_does_not_succeed_or_support_a_convention() {
+    let observation = observe_instant(response(
+        "200 OK",
+        &["X-Powered-By: PHP/8.3.7", "Content-Type: text/html"],
+        b"<svg><input name=\"_token\"></input></svg>",
+    ))
+    .await;
+
+    assert_universal(&observation);
+    assert_eq!(observation.hypotheses.len(), 1);
+    assert_eq!(observation.hypotheses[0].predicate, "technology.language");
+    assert_eq!(observation.hypotheses[0].value, "php");
+    assert_eq!(observation.hypotheses[0].state, HypothesisState::Supported);
+    assert!(
+        observation
+            .hypotheses
+            .iter()
+            .all(|hypothesis| hypothesis.value != "csrf-token"),
+        "a foreign-namespace lookalike must not become an HTML `_token` convention: {:?}",
+        observation.hypotheses
+    );
+    assert_eq!(initial_eligible(&observation), [php().to_owned()]);
+    assert_eq!(
+        planned_dispatched(&observation),
+        vec![php().to_owned(), php().to_owned()]
+    );
+    assert_eq!(
+        observation.outcomes,
+        vec![
+            (php().to_owned(), "unknown".to_owned()),
+            (php().to_owned(), "unknown".to_owned()),
+        ]
+    );
+    assert_eq!(observation.terminal, "await_human_review");
+    assert_eq!(observation.total_requests, 3);
+    assert_eq!(observation.active_verifications, 1);
+}
+
+#[tokio::test]
 async fn php_without_named_form_controls_defers_to_human_review() {
     // A PHP HTML page with no named form control: the probe observes nothing to
     // discover, so it resolves to `unknown` (passive then active) and defers to

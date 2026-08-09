@@ -41,7 +41,7 @@ use crate::{
 mod form_controls;
 mod request_broker;
 
-use form_controls::extract_form_control_names;
+use form_controls::{extract_form_control_names, FormControlExtraction};
 pub(crate) use request_broker::{HttpRequestBroker, HttpRequestBrokerError};
 
 /// Default maximum number of response-body bytes read by one probe.
@@ -952,15 +952,18 @@ impl HttpEvidenceExecutor {
                 if self.capture_form_control_names
                     && normalized_media_type(&response.headers).as_deref() == Some("text/html")
                 {
-                    let names = extract_form_control_names(&sample);
-                    if !names.is_empty() {
-                        evidence.push(self.observation(
-                            decision,
-                            EvidenceKind::Content,
-                            HttpEvidencePredicate::RESPONSE_FORM_CONTROL_NAMES.into(),
-                            EvidenceValue::TextList(names),
-                            "response-form-control-names",
-                        )?);
+                    if let FormControlExtraction::Observed(names) =
+                        extract_form_control_names(&sample)
+                    {
+                        if !names.is_empty() {
+                            evidence.push(self.observation(
+                                decision,
+                                EvidenceKind::Content,
+                                HttpEvidencePredicate::RESPONSE_FORM_CONTROL_NAMES.into(),
+                                EvidenceValue::TextList(names),
+                                "response-form-control-names",
+                            )?);
+                        }
                     }
                 }
 
@@ -1341,9 +1344,18 @@ mod tests {
         RuntimeBudgetDimension, StandardWebReasoning, TransportDispatchOutcome, VerificationCase,
     };
 
+    fn observed_form_control_names(sample: &str) -> Vec<String> {
+        match extract_form_control_names(sample) {
+            FormControlExtraction::Observed(names) => names,
+            FormControlExtraction::SampleTooLarge => {
+                panic!("test sample unexpectedly exceeded the form-control parse boundary")
+            },
+        }
+    }
+
     #[test]
     fn form_control_extraction_reads_named_controls_sorted_and_deduplicated() {
-        let names = extract_form_control_names(
+        let names = observed_form_control_names(
             "<form>\
              <input name=\"username\">\
              <select name=\"country\"><option>x</option></select>\
@@ -1358,7 +1370,7 @@ mod tests {
 
     #[test]
     fn form_control_extraction_ignores_unnamed_or_valueless_names() {
-        let names = extract_form_control_names(
+        let names = observed_form_control_names(
             "<input type=\"submit\"><input name=\"\"><button name=\"go\">",
         );
         // Nameless/empty-name controls are skipped; button is not a target element.
@@ -1367,7 +1379,7 @@ mod tests {
 
     #[test]
     fn form_control_extraction_never_treats_commented_or_scripted_markup_as_controls() {
-        let names = extract_form_control_names(
+        let names = observed_form_control_names(
             "<!-- <input name=\"fake_comment\"> -->\
              <script>const x = '<input name=\"fake_script\">';</script>\
              <style>input[name=\"fake_style\"] { color: red; }</style>\
@@ -1378,7 +1390,7 @@ mod tests {
 
     #[test]
     fn form_control_extraction_keeps_textarea_name_but_drops_its_body() {
-        let names = extract_form_control_names(
+        let names = observed_form_control_names(
             "<textarea name=\"real\">\n  <input name=\"fake_in_textarea\">\n</textarea>",
         );
         // The textarea's own name is a control; markup inside its body is text.
@@ -1387,7 +1399,7 @@ mod tests {
 
     #[test]
     fn form_control_extraction_records_names_never_values() {
-        let names = extract_form_control_names(
+        let names = observed_form_control_names(
             "<input type=\"hidden\" name=\"_token\" value=\"SUPER_SECRET_CSRF\">\
              <input type=\"password\" name=\"password\" value=\"hunter2\">",
         );
@@ -1400,7 +1412,7 @@ mod tests {
     #[test]
     fn form_control_extraction_does_not_confuse_suffix_attributes_with_name() {
         // `data-name` / `formname` are not the `name` attribute and must not leak.
-        let names = extract_form_control_names(
+        let names = observed_form_control_names(
             "<input data-name=\"nickname\" formname=\"x\" name=\"real\">",
         );
         assert_eq!(names, ["real"]);
@@ -1410,17 +1422,17 @@ mod tests {
     fn form_control_extraction_respects_attribute_quote_state() {
         // A `name=` sequence inside another attribute's quoted value is text, not
         // a real attribute — the tokenizer tracks quote state so it is never read.
-        assert!(extract_form_control_names("<input title=\" name='fake'\">").is_empty());
-        assert!(extract_form_control_names("<input title=' name=\"fake\"'>").is_empty());
+        assert!(observed_form_control_names("<input title=\" name='fake'\">").is_empty());
+        assert!(observed_form_control_names("<input title=' name=\"fake\"'>").is_empty());
         assert_eq!(
-            extract_form_control_names("<input title=\"ordinary\" name=\"real\">"),
+            observed_form_control_names("<input title=\"ordinary\" name=\"real\">"),
             ["real"]
         );
     }
 
     #[test]
     fn form_control_extraction_preserves_name_attribute_whitespace() {
-        let names = extract_form_control_names(
+        let names = observed_form_control_names(
             "<input name=\" _token \"><input name=\" \"><input name=\"\">",
         );
 
@@ -1429,6 +1441,41 @@ mod tests {
         // cannot be promoted into an exact `_token` observation.
         assert_eq!(names, [" ", " _token "]);
         assert!(!names.iter().any(|name| name == "_token"));
+    }
+
+    #[test]
+    fn form_control_extraction_rejects_foreign_namespace_lookalikes() {
+        let names = observed_form_control_names(
+            "<svg><input name=\"svg-input\"></input>\
+                   <select name=\"svg-select\"></select>\
+                   <textarea name=\"svg-textarea\"></textarea></svg>\
+             <math><input name=\"math-input\"></input>\
+                    <select name=\"math-select\"></select>\
+                    <textarea name=\"math-textarea\"></textarea></math>",
+        );
+
+        // SVG/MathML elements can share an HTML control's local name, but they
+        // are not HTML form controls and must not manufacture PHP/convention
+        // evidence.
+        assert_eq!(names, Vec::<String>::new());
+    }
+
+    #[test]
+    fn form_control_extraction_observes_html_integration_points_only() {
+        // HTML integration points return descendants to the HTML namespace.
+        // Re-entering SVG makes the nested lookalike foreign again.
+        assert_eq!(
+            observed_form_control_names(
+                "<svg><foreignObject><input name=\"foreign-object\">\
+                      <svg><input name=\"nested-svg\"></svg>\
+                    </foreignObject></svg>\
+                 <math><mtext><select name=\"math-text\"></select></mtext>\
+                   <annotation-xml encoding=\"text/html\">\
+                     <textarea name=\"annotation\"></textarea>\
+                   </annotation-xml></math>"
+            ),
+            ["annotation", "foreign-object", "math-text"]
+        );
     }
 
     #[test]
@@ -1444,7 +1491,43 @@ mod tests {
         }
 
         assert!((63 * 1024..=64 * 1024).contains(&html.len()));
-        assert_eq!(extract_form_control_names(&html), ["deep"]);
+        assert_eq!(observed_form_control_names(&html), ["deep"]);
+    }
+
+    #[test]
+    fn form_control_extraction_is_stack_safe_at_compact_nesting_limit() {
+        use super::form_controls::MAX_FORM_CONTROL_PARSE_BYTES;
+
+        let control = "<input name=\"compact-deep\">";
+        let depth = (MAX_FORM_CONTROL_PARSE_BYTES - control.len()) / 3;
+        let mut html = "<q>".repeat(depth);
+        html.push_str(control);
+        html.push_str(&"x".repeat(MAX_FORM_CONTROL_PARSE_BYTES - html.len()));
+
+        assert_eq!(html.len(), MAX_FORM_CONTROL_PARSE_BYTES);
+        assert_eq!(observed_form_control_names(&html), ["compact-deep"]);
+    }
+
+    #[test]
+    fn form_control_extraction_accepts_exact_limit_and_rejects_limit_plus_one() {
+        use super::form_controls::MAX_FORM_CONTROL_PARSE_BYTES;
+
+        assert_eq!(MAX_FORM_CONTROL_PARSE_BYTES, 64 * 1024);
+        let mut exact = "<input name=\"boundary\">".to_owned();
+        exact.push_str(&"x".repeat(MAX_FORM_CONTROL_PARSE_BYTES - exact.len()));
+        assert_eq!(exact.len(), MAX_FORM_CONTROL_PARSE_BYTES);
+        assert_eq!(
+            extract_form_control_names(&exact),
+            FormControlExtraction::Observed(vec!["boundary".to_owned()])
+        );
+
+        exact.push('x');
+        assert_eq!(exact.len(), MAX_FORM_CONTROL_PARSE_BYTES + 1);
+        assert_eq!(
+            extract_form_control_names(&exact),
+            FormControlExtraction::SampleTooLarge,
+            "an over-limit sample must not be partially parsed"
+        );
     }
 
     struct CountedServer {
@@ -2011,11 +2094,15 @@ mod tests {
     /// Serves one `text/html` response with an auto-computed `Content-Length`, so
     /// tests can vary the HTML body without hand-counting bytes.
     async fn serve_html_once(body: impl Into<String>) -> Url {
+        serve_body_once("text/html", body).await
+    }
+
+    async fn serve_body_once(content_type: &str, body: impl Into<String>) -> Url {
         let body = body.into();
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let response = format!(
-            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
             body.len(),
             body
         );
@@ -2032,12 +2119,20 @@ mod tests {
     /// A GET executor with form-control capture enabled, under the given body
     /// policy — the exact wiring the php input-discovery route uses.
     fn form_capturing_adapter(url: &Url, capture: HttpBodyCapture) -> DecisionRunnerAdapter {
+        form_capturing_adapter_with_limit(url, capture, 65_536)
+    }
+
+    fn form_capturing_adapter_with_limit(
+        url: &Url,
+        capture: HttpBodyCapture,
+        max_body_bytes: usize,
+    ) -> DecisionRunnerAdapter {
         let probe_url = url.clone();
         let provider: Arc<dyn HttpProbeProvider> =
             Arc::new(move |_request: &DecisionExecutionRequest| {
                 HttpProbe::new(probe_url.clone(), HttpProbeMethod::Get)
             });
-        let policy = HttpEvidencePolicy::new([url.clone()], Duration::from_secs(2), 65_536)
+        let policy = HttpEvidencePolicy::new([url.clone()], Duration::from_secs(2), max_body_bytes)
             .unwrap()
             .with_body_capture(capture)
             .unwrap();
@@ -2064,6 +2159,46 @@ mod tests {
         // MetadataOnly authorizes no bounded sample, so no body content — and
         // therefore no derived form-control names — may enter the knowledge base.
         assert!(value(evidence, HttpEvidencePredicate::RESPONSE_BODY_SAMPLE).is_none());
+        assert!(value(evidence, HttpEvidencePredicate::RESPONSE_FORM_CONTROL_NAMES).is_none());
+    }
+
+    #[tokio::test]
+    async fn form_control_capture_requires_explicit_executor_opt_in() {
+        let body = "<input name=\"not-authorized\">";
+        let url = serve_html_once(body).await;
+        let adapter = adapter(&url, HttpBodyCapture::TextSample { max_chars: 1024 }, 1024);
+        let knowledge = KnowledgeBase::new();
+
+        let receipt = adapter
+            .execute_command(&command(&url), &knowledge)
+            .await
+            .unwrap();
+        let evidence = receipt.after_execution().evidence();
+
+        assert_eq!(
+            value(evidence, HttpEvidencePredicate::RESPONSE_BODY_SAMPLE),
+            Some(&EvidenceValue::Text(body.to_owned()))
+        );
+        assert!(value(evidence, HttpEvidencePredicate::RESPONSE_FORM_CONTROL_NAMES).is_none());
+    }
+
+    #[tokio::test]
+    async fn form_control_capture_requires_exact_html_media_type() {
+        let body = "<input name=\"not-html\">";
+        let url = serve_body_once("text/plain", body).await;
+        let adapter = form_capturing_adapter(&url, HttpBodyCapture::TextSample { max_chars: 8192 });
+        let knowledge = KnowledgeBase::new();
+
+        let receipt = adapter
+            .execute_command(&command(&url), &knowledge)
+            .await
+            .unwrap();
+        let evidence = receipt.after_execution().evidence();
+
+        assert_eq!(
+            value(evidence, HttpEvidencePredicate::RESPONSE_BODY_SAMPLE),
+            Some(&EvidenceValue::Text(body.to_owned()))
+        );
         assert!(value(evidence, HttpEvidencePredicate::RESPONSE_FORM_CONTROL_NAMES).is_none());
     }
 
@@ -2120,6 +2255,63 @@ mod tests {
                 HttpEvidencePredicate::RESPONSE_FORM_CONTROL_NAMES
             ),
             Some(&EvidenceValue::TextList(vec![" _token ".to_owned()]))
+        );
+    }
+
+    #[tokio::test]
+    async fn form_control_capture_rejects_foreign_namespace_lookalikes() {
+        let body = "<svg><input name=\"_token\"></input></svg>\
+                    <math><select name=\"_method\"></select></math>";
+        let url = serve_html_once(body).await;
+        let adapter = form_capturing_adapter(&url, HttpBodyCapture::TextSample { max_chars: 8192 });
+        let knowledge = KnowledgeBase::new();
+
+        let receipt = adapter
+            .execute_command(&command(&url), &knowledge)
+            .await
+            .unwrap();
+        let evidence = receipt.after_execution().evidence();
+
+        assert_eq!(
+            value(evidence, HttpEvidencePredicate::RESPONSE_BODY_SAMPLE),
+            Some(&EvidenceValue::Text(body.to_owned())),
+            "the sample capture path must actually run"
+        );
+        assert!(
+            value(evidence, HttpEvidencePredicate::RESPONSE_FORM_CONTROL_NAMES).is_none(),
+            "foreign elements must not produce typed HTML form-control evidence"
+        );
+    }
+
+    #[tokio::test]
+    async fn oversized_form_control_sample_remains_body_evidence_but_is_not_parsed() {
+        use super::form_controls::MAX_FORM_CONTROL_PARSE_BYTES;
+
+        let mut body = "<input name=\"must-not-be-partially-observed\">".to_owned();
+        body.push_str(&"x".repeat(MAX_FORM_CONTROL_PARSE_BYTES + 1 - body.len()));
+        let url = serve_html_once(body.clone()).await;
+        let adapter = form_capturing_adapter_with_limit(
+            &url,
+            HttpBodyCapture::TextSample {
+                max_chars: body.len(),
+            },
+            body.len(),
+        );
+        let knowledge = KnowledgeBase::new();
+
+        let receipt = adapter
+            .execute_command(&command(&url), &knowledge)
+            .await
+            .unwrap();
+        let evidence = receipt.after_execution().evidence();
+
+        assert_eq!(
+            value(evidence, HttpEvidencePredicate::RESPONSE_BODY_SAMPLE),
+            Some(&EvidenceValue::Text(body))
+        );
+        assert!(
+            value(evidence, HttpEvidencePredicate::RESPONSE_FORM_CONTROL_NAMES).is_none(),
+            "an over-limit sample must not be partially parsed"
         );
     }
 
