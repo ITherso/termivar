@@ -28,7 +28,7 @@ semantic HTTP evidence
 | Action | Evidence from the current case | Outcome |
 | --- | --- | --- |
 | Laravel route boundary | `Allow` exists | `NeedsReview` |
-| PHP input discovery | bounded HTML sample contains a named form control | `Success` |
+| PHP input discovery | bounded HTML sample contains a named HTML-namespace form control | `Success` |
 | Livewire component discovery | bounded body sample contains `wire:id=` or `wire:snapshot=` | `Success` |
 | Sanctum-compatible cookie boundary | both `laravel_session` and `XSRF-TOKEN` cookie names | `Success` |
 | HTTP Basic auth boundary | `WWW-Authenticate` contains `Basic` | `Success` |

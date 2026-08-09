@@ -80,6 +80,11 @@ struct ExecutorBinding {
 /// captured headers, and optional text samples. Existing executor identities
 /// are treated as explicit host overrides and are never replaced.
 ///
+/// PHP input discovery may derive form-control names from an authorized HTML
+/// sample. That optional derivation has its own fixed 64-KiB parser ceiling:
+/// larger body samples remain ordinary evidence, but produce no partial
+/// form-control observation. Missing derived evidence is never a negative fact.
+///
 /// # Examples
 ///
 /// ```rust
