@@ -13,7 +13,8 @@ independent security assurance.
 | Trivy | Configured in security CI | SHA-pinned `trivy-action` v0.36.0 runs Trivy v0.70.0 against the repository filesystem for vulnerability, secret, and misconfiguration findings at the declared severity policy |
 | Semgrep CE | Configured in security CI | A digest-pinned Semgrep CE image runs declared community rules with metrics disabled |
 | Dependabot | Configured | Weekly Cargo, npm, and GitHub Actions update proposals are defined; configuration does not guarantee that an update exists, is safe, or has been merged |
-| `cargo-fuzz` | Scheduled and bounded | Five parser targets have weekly time limits; the [committed baseline](reports/fuzzing/7515b79.md) is historical evidence for its recorded commit, not a safety proof |
+| `cargo-fuzz` | Scheduled and bounded | Four product-semantic and five parser targets replay reviewed seeds and compile on relevant PRs, then run bounded scheduled/manual campaigns; the older [committed parser baseline](reports/fuzzing/7515b79.md) remains evidence only for its recorded commit |
+| `cargo-mutants` | Scoped and manual | Selected policy, planner/runtime, and extraction contracts have evidenced review campaigns; no mutation workflow, workspace-wide baseline, or aggregate score is committed |
 | MSRV | Configured in CI | Workspace packages declare Rust `1.88`; the compatibility matrix also exercises stable, beta, and nightly |
 | SemVer | Configured for `venom-core` | `cargo xtask semver` compares the all-features core API with the recorded `v0.9.0-alpha` baseline using a patch-compatibility threshold |
 | Architecture boundaries | Configured in CI | `cargo xtask architecture` checks virtual-root source, workspace edges, protected imports, and the transport-free reasoning build |
@@ -67,6 +68,7 @@ Dependabot proposals still require review.
 - The security workflow configuration does not establish that its latest run passed; consult the result for the exact commit under review.
 - Trivy, Semgrep, Cargo Audit, and cargo-deny are scoped automated tools and can produce false positives and false negatives.
 - Fuzzing is time-bounded and does not prove parser safety.
+- Scoped mutation campaigns do not establish project-wide mutation adequacy; survivor classification remains a review responsibility.
 - Coverage is generated in CI, but no minimum coverage threshold or current percentage is claimed here.
 - Scanner construction policy is documented, but Scanner SDK and plugin contracts still lack an accepted post-transition compatibility baseline.
 - Automated API linting does not prove complete Rust source compatibility; public-API review and downstream compile fixtures remain required.

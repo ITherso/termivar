@@ -1,6 +1,6 @@
 # Runtime map (what actually runs)
 
-> Snapshot: `main` at commit `0208b38`. This page describes the **executable
+> Snapshot: `main` at commit `7310870`. This page describes the **executable
 > truth** of the repository today, not aspirations. Where a capability is not
 > wired into a runnable path, it is labelled as such. Release line `0.9.0-alpha`
 > is not production-ready.

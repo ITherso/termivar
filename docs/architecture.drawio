@@ -4,7 +4,7 @@
       <root>
         <mxCell id="0" />
         <mxCell id="1" parent="0" />
-        <mxCell id="cli" value="CLI / API / Library" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="1"><mxGeometry x="40" y="180" width="120" height="60" as="geometry" /></mxCell>
+        <mxCell id="cli" value="CLI / Library" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="1"><mxGeometry x="40" y="180" width="120" height="60" as="geometry" /></mxCell>
         <mxCell id="runner" value="Runner" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1"><mxGeometry x="210" y="180" width="120" height="60" as="geometry" /></mxCell>
         <mxCell id="phases" value="Scan Pipeline" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="1"><mxGeometry x="380" y="110" width="120" height="60" as="geometry" /></mxCell>
         <mxCell id="plugins" value="Plugin Engine (Preview)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="1"><mxGeometry x="380" y="250" width="120" height="60" as="geometry" /></mxCell>

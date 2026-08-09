@@ -12,8 +12,8 @@ The editable diagrams.net source is [architecture.drawio](architecture.drawio). 
 | --- | --- | --- |
 | `venom-core` | Transport-neutral events, findings, configuration, models, errors, and predicate vocabulary | External libraries only |
 | `venom-scanner` | Phase/plugin traits, deterministic reasoning, runner, detection, and reports | `venom-core` |
-| `venom-proxy` | HTTP/TLS proxy boundary | `venom-core` |
-| `venom-api` | HTTP application transport | `venom-core`, `venom-scanner` |
+| `venom-proxy` | Experimental fixed-upstream TCP relay; no HTTP/TLS interception | `venom-core` |
+| `venom-api` | Library health router; the CLI listener adapter is unsupported | `venom-core`, `venom-scanner` |
 | `venom-cli` | Composition root and command routing | All application crates |
 
 `xtask` is repository tooling rather than a runtime layer. It may orchestrate workspace commands but application crates must not depend on it.
@@ -44,11 +44,11 @@ No lower-level crate may depend on `venom-cli` or `venom-api`. A cycle between w
 
 ```mermaid
 flowchart TD
-    Host["CLI / API / library host"] --> Runner
+    Host["CLI / library host"] --> Runner
     Runner --> Pipeline["Ordered Scan Pipeline"]
     Pipeline --> Recon
     Pipeline --> Crawl
-    Pipeline --> Directory
+    Pipeline --> Directory["Directory · explicit opt-in"]
     Pipeline --> SQLi
     Pipeline --> XSS
     Pipeline --> SSRF
@@ -56,8 +56,12 @@ flowchart TD
     PluginEngine["Plugin Engine (parallel Preview API)"] --> Findings
     Runner --> Events["Event Bus"]
     Findings --> Reporter
-    Events --> Observers["Dashboard / telemetry"]
+    Events -. "optional host projection" .-> Observers["Telemetry consumers"]
 ```
+
+This diagram describes the legacy Surface-A finding path. It does not imply that
+the deterministic Surface-B runtime projects verification outcomes into findings,
+or that a dashboard subscriber is composed by either CLI scan command.
 
 The runner knows `ScanPhase`, not concrete phase implementations. The plugin registry knows `Plugin`, not concrete plugin types. Today these are parallel execution paths; convergence behind a versioned request context is required before a stable plugin SDK.
 

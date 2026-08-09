@@ -26,16 +26,33 @@ examples package that are not declared Cargo targets. These repository-size
 counts are not a coverage or quality score. Running the script requires Bash,
 Git, Cargo, and Python 3 for decoding Cargo's JSON output.
 
+## Scoped mutation evidence
+
+Mutation testing is used as a review technique for selected semantic contracts,
+not as a permanent repository-wide score. Recent hardening work used pinned
+`cargo-mutants` campaigns around declarative policy, planner/runtime authority,
+and HTML extraction boundaries in [PR #53](https://github.com/ITherso/venom/pull/53),
+[PR #54](https://github.com/ITherso/venom/pull/54), and
+[PR #55](https://github.com/ITherso/venom/pull/55). Viable survivors were
+classified by behavior; serious semantic gaps became focused deterministic
+regressions and were rerun in narrowed campaigns.
+
+Those pull-request records are scoped evidence for their exact revisions. Venom
+does not have a committed mutation workflow, an aggregate workspace score, or a
+claim that every mutation-relevant function has been exercised.
+
 ## Not measured yet
 
 | Metric | State | Exit criterion |
 | --- | --- | --- |
-| Mutation score | Missing | Select a tool, define exclusions, and publish a repeatable baseline |
+| Project-wide mutation baseline | Missing | Commit a repeatable scope, exclusions, survivor policy, and comparable baseline |
 | Endpoint throughput/latency | Missing | Controlled fixture at 100, 1,000, and 10,000 request scales |
 | Scanner peak RAM/CPU | Missing | End-to-end workload with pinned hardware and feature flags |
 | External audit findings | Missing | Independent scope, report, and remediation record |
 
-Mutation testing should normally run on a schedule rather than every push because it executes many modified test builds. It must not be represented as complete until an actual score and survivor policy exist.
+If a permanent mutation job is introduced, it should normally run on a schedule
+rather than every push because it executes many modified test builds. Scoped
+campaign evidence must not be represented as complete mutation coverage.
 
 ## Reproduce microbenchmarks
 
