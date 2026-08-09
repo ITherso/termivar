@@ -104,6 +104,10 @@ fn non_empty(
     Ok(value)
 }
 
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
 /// Outcome statuses and verification stages accepted by one policy rule.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct OutcomeSelector {
@@ -156,6 +160,7 @@ impl<'de> Deserialize<'de> for OutcomeSelector {
         D: Deserializer<'de>,
     {
         #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
         struct WireSelector {
             statuses: BTreeSet<OutcomeStatus>,
             stages: BTreeSet<VerificationStage>,
@@ -167,7 +172,7 @@ impl<'de> Deserialize<'de> for OutcomeSelector {
 }
 
 /// Side-effect-free command emitted for the runner or scheduler.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "directive", rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum PipelineDirective {
@@ -196,6 +201,54 @@ pub enum PipelineDirective {
     AwaitHumanReview,
     /// Stop adaptation because the global transition budget was exhausted.
     Halt,
+}
+
+impl<'de> Deserialize<'de> for PipelineDirective {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(tag = "directive", rename_all = "snake_case", deny_unknown_fields)]
+        enum WireDirective {
+            Complete {},
+            ScheduleAction {
+                action_id: String,
+            },
+            Replan {
+                suppress_current_action: bool,
+            },
+            Throttle {
+                delay_ms: u64,
+                retry_current_action: bool,
+            },
+            AwaitActiveVerification {},
+            AwaitHumanReview {},
+            Halt {},
+        }
+
+        let directive = match WireDirective::deserialize(deserializer)? {
+            WireDirective::Complete {} => Self::Complete,
+            WireDirective::ScheduleAction { action_id } => Self::ScheduleAction { action_id },
+            WireDirective::Replan {
+                suppress_current_action,
+            } => Self::Replan {
+                suppress_current_action,
+            },
+            WireDirective::Throttle {
+                delay_ms,
+                retry_current_action,
+            } => Self::Throttle {
+                delay_ms,
+                retry_current_action,
+            },
+            WireDirective::AwaitActiveVerification {} => Self::AwaitActiveVerification,
+            WireDirective::AwaitHumanReview {} => Self::AwaitHumanReview,
+            WireDirective::Halt {} => Self::Halt,
+        };
+        directive.validate().map_err(serde::de::Error::custom)?;
+        Ok(directive)
+    }
 }
 
 impl PipelineDirective {
@@ -242,6 +295,8 @@ pub struct AdaptationRule {
     selector: OutcomeSelector,
     priority: u16,
     condition: Option<Expression>,
+    #[serde(skip_serializing_if = "is_false")]
+    condition_policy_guard: bool,
     directive: PipelineDirective,
     rationale: String,
     max_applications: u16,
@@ -268,6 +323,7 @@ impl AdaptationRule {
             id,
             selector,
             priority,
+            condition_policy_guard: condition.is_some(),
             condition,
             directive,
             rationale: non_empty(rationale, "adaptation rationale")?,
@@ -317,22 +373,36 @@ impl<'de> Deserialize<'de> for AdaptationRule {
         D: Deserializer<'de>,
     {
         #[derive(Deserialize)]
+        #[serde(transparent)]
+        struct RequiredCondition(Option<Expression>);
+
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
         struct WireRule {
             id: String,
             selector: OutcomeSelector,
             priority: u16,
-            condition: Option<Expression>,
+            condition: RequiredCondition,
+            #[serde(default)]
+            condition_policy_guard: Option<bool>,
             directive: PipelineDirective,
             rationale: String,
             max_applications: u16,
         }
 
         let wire = WireRule::deserialize(deserializer)?;
+        if let Some(condition_policy_guard) = wire.condition_policy_guard {
+            if !condition_policy_guard || wire.condition.0.is_none() {
+                return Err(serde::de::Error::custom(
+                    "adaptation rule condition guard is inconsistent",
+                ));
+            }
+        }
         Self::new(
             wire.id,
             wire.selector,
             wire.priority,
-            wire.condition,
+            wire.condition.0,
             wire.directive,
             wire.rationale,
             wire.max_applications,
@@ -1619,9 +1689,40 @@ mod tests {
         assert!(serde_json::from_value::<AdaptationRule>(encoded).is_err());
 
         assert!(
+            serde_json::from_value::<PipelineDirective>(serde_json::json!({
+                "directive": "schedule_action",
+                "action_id": ""
+            }))
+            .is_err()
+        );
+        assert!(
+            serde_json::from_value::<PipelineDirective>(serde_json::json!({
+                "directive": "throttle",
+                "delay_ms": 0,
+                "retry_current_action": true
+            }))
+            .is_err()
+        );
+        assert!(
+            serde_json::from_value::<PipelineDirective>(serde_json::json!({
+                "directive": "complete",
+                "action_id": "must-not-be-ignored"
+            }))
+            .is_err()
+        );
+
+        assert!(
             serde_json::from_value::<OutcomeSelector>(serde_json::json!({
                 "statuses": [],
                 "stages": ["passive"]
+            }))
+            .is_err()
+        );
+        assert!(
+            serde_json::from_value::<OutcomeSelector>(serde_json::json!({
+                "statuses": ["blocked"],
+                "stages": ["passive"],
+                "condition": "must-not-be-ignored"
             }))
             .is_err()
         );
@@ -1649,6 +1750,100 @@ mod tests {
                 "suppressed_actions": []
             }))
             .is_err()
+        );
+    }
+
+    #[test]
+    fn adaptation_rule_wire_cannot_broaden_a_condition_to_unconditional() {
+        let conditional = AdaptationRule::new(
+            "conditional.schedule",
+            OutcomeSelector::any_stage(BTreeSet::from([OutcomeStatus::Blocked])).unwrap(),
+            10,
+            Some(Expression::equals(
+                KnowledgeLayer::Evidence,
+                status_predicate(),
+                EvidenceValue::Unsigned(403),
+            )),
+            PipelineDirective::ScheduleAction {
+                action_id: "http.bypass".into(),
+            },
+            "schedule only for a correlated 403",
+            1,
+        )
+        .unwrap();
+        let encoded = serde_json::to_value(&conditional).unwrap();
+        assert_eq!(encoded["condition_policy_guard"], true);
+
+        let mut legacy_guardless = encoded.clone();
+        legacy_guardless
+            .as_object_mut()
+            .unwrap()
+            .remove("condition_policy_guard");
+        let restored_legacy = serde_json::from_value::<AdaptationRule>(legacy_guardless).unwrap();
+        assert_eq!(restored_legacy, conditional);
+        assert_eq!(
+            serde_json::to_value(&restored_legacy).unwrap()["condition_policy_guard"],
+            true
+        );
+
+        let mismatch = fixture(200);
+        let mismatch_outcome = verified_outcome(
+            OutcomeStatus::Blocked,
+            VerificationStage::Passive,
+            mismatch.evidence_id,
+        );
+        let mut pipeline = AdaptivePipeline::new();
+        pipeline.register(restored_legacy).unwrap();
+        assert_eq!(
+            pipeline
+                .decide(
+                    &mismatch_outcome,
+                    &mismatch.knowledge.snapshot_for_subject(&subject()),
+                    &AdaptationLedger::new(),
+                    AdaptationLimits::default(),
+                )
+                .unwrap()
+                .directive(),
+            &PipelineDirective::AwaitHumanReview
+        );
+
+        let mut misspelled = encoded.clone();
+        let condition = misspelled
+            .as_object_mut()
+            .unwrap()
+            .remove("condition")
+            .unwrap();
+        misspelled["conditon"] = condition;
+        assert!(serde_json::from_value::<AdaptationRule>(misspelled).is_err());
+
+        let mut missing = encoded.clone();
+        missing.as_object_mut().unwrap().remove("condition");
+        assert!(serde_json::from_value::<AdaptationRule>(missing).is_err());
+
+        let mut nulled = encoded;
+        nulled["condition"] = serde_json::Value::Null;
+        assert!(serde_json::from_value::<AdaptationRule>(nulled).is_err());
+
+        let mut inconsistent = serde_json::to_value(&conditional).unwrap();
+        inconsistent["condition_policy_guard"] = serde_json::json!(false);
+        assert!(serde_json::from_value::<AdaptationRule>(inconsistent).is_err());
+
+        let unconditional = AdaptationRule::new(
+            "unconditional.review",
+            OutcomeSelector::any_stage(BTreeSet::from([OutcomeStatus::NeedsReview])).unwrap(),
+            1,
+            None,
+            PipelineDirective::AwaitHumanReview,
+            "explicit unconditional fallback",
+            1,
+        )
+        .unwrap();
+        let unconditional_wire = serde_json::to_value(&unconditional).unwrap();
+        assert!(unconditional_wire["condition"].is_null());
+        assert!(unconditional_wire.get("condition_policy_guard").is_none());
+        assert_eq!(
+            serde_json::from_value::<AdaptationRule>(unconditional_wire).unwrap(),
+            unconditional
         );
     }
 
