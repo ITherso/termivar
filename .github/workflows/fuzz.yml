@@ -6,9 +6,16 @@ on:
     branches: [main]
     paths:
       - "fuzz/**"
+      - "crates/venom-core/src/reasoning.rs"
+      - "crates/venom-scanner/src/experience.rs"
+      - "crates/venom-scanner/src/knowledge.rs"
       - "crates/venom-scanner/src/rules.rs"
+      - "crates/venom-scanner/src/planner.rs"
       - "crates/venom-scanner/src/verification.rs"
       - "crates/venom-scanner/src/adaptive/pipeline.rs"
+      - "crates/venom-scanner/src/decision_loop.rs"
+      - "crates/venom-scanner/src/decision_runner.rs"
+      - "crates/venom-scanner/src/web_runtime.rs"
       - "crates/venom-scanner/src/http_evidence.rs"
       - "crates/venom-scanner/src/http_evidence/form_controls.rs"
       - ".github/workflows/fuzz.yml"
@@ -51,7 +58,7 @@ jobs:
           CARGO_PROFILE_RELEASE_STRIP: "none"
         shell: bash
         run: |
-          for target in html_form_controls expression_semantics declarative_policy_wire; do
+          for target in html_form_controls expression_semantics declarative_policy_wire decision_loop_authority; do
             cargo fuzz build "$target"
           done
 
@@ -86,6 +93,9 @@ jobs:
             max_len: 16384
             input_timeout: 2
           - target: declarative_policy_wire
+            max_len: 16384
+            input_timeout: 2
+          - target: decision_loop_authority
             max_len: 16384
             input_timeout: 2
     steps:

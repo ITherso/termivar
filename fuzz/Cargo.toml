@@ -74,3 +74,10 @@ path = "fuzz_targets/declarative_policy_wire.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "decision_loop_authority"
+path = "fuzz_targets/decision_loop_authority.rs"
+test = false
+doc = false
+bench = false

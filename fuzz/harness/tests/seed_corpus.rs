@@ -33,6 +33,7 @@ fn committed_expression_corpus_satisfies_the_semantic_oracle() {
     replay_json_corpus(
         "expression_semantics",
         13,
+        venom_fuzz_harness::MAX_SEMANTIC_FUZZ_INPUT_BYTES,
         venom_fuzz_harness::check_expression_semantics,
     );
 }
@@ -42,11 +43,44 @@ fn committed_declarative_policy_corpus_satisfies_the_semantic_oracle() {
     replay_json_corpus(
         "declarative_policy_wire",
         22,
+        venom_fuzz_harness::MAX_SEMANTIC_FUZZ_INPUT_BYTES,
         venom_fuzz_harness::check_declarative_policy_wire,
     );
 }
 
-fn replay_json_corpus(directory: &str, minimum_seed_count: usize, check: fn(&[u8])) {
+#[test]
+fn committed_decision_loop_authority_corpus_satisfies_the_semantic_oracle() {
+    replay_json_corpus(
+        "decision_loop_authority",
+        14,
+        venom_fuzz_harness::MAX_AUTHORITY_FUZZ_INPUT_BYTES,
+        venom_fuzz_harness::check_decision_loop_authority,
+    );
+}
+
+#[test]
+fn bounded_decision_loop_authority_models_cover_numeric_edges() {
+    for scenario in 0_u8..14 {
+        for boundary in [0_u8, 1, 4, 63, 64, 99, 100, u8::MAX] {
+            venom_fuzz_harness::check_decision_loop_authority(&[
+                scenario,
+                boundary,
+                u8::MAX - boundary,
+                boundary,
+                boundary,
+                b'_',
+                b'x',
+            ]);
+        }
+    }
+}
+
+fn replay_json_corpus(
+    directory: &str,
+    minimum_seed_count: usize,
+    maximum_seed_bytes: usize,
+    check: fn(&[u8]),
+) {
     let corpus = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("..")
         .join("corpus")
@@ -71,7 +105,7 @@ fn replay_json_corpus(directory: &str, minimum_seed_count: usize, check: fn(&[u8
             panic!("seed must be structured JSON: {}: {error}", seed.display())
         });
         assert!(
-            data.len() <= venom_fuzz_harness::MAX_SEMANTIC_FUZZ_INPUT_BYTES,
+            data.len() <= maximum_seed_bytes,
             "seed exceeds the harness input bound: {}",
             seed.display()
         );
