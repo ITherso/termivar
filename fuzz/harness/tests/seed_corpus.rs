@@ -16,7 +16,7 @@ fn committed_html_form_control_corpus_satisfies_the_semantic_oracle() {
         .collect();
     seeds.sort();
 
-    assert!(seeds.len() >= 16, "semantic corpus unexpectedly shrank");
+    assert!(seeds.len() >= 23, "semantic corpus unexpectedly shrank");
     for seed in seeds {
         let data = fs::read(&seed).expect("committed HTML seed must be readable");
         assert!(

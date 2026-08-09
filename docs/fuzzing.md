@@ -43,10 +43,14 @@ Run fuzzing on a dedicated machine or bounded CI job. Start with a small, non-se
 
 `html_form_controls` compiles the same private extractor source used by
 `HttpEvidenceExecutor`; no production API is made public for fuzzability. Its
-oracle asserts exact HTML `name` preservation (including whitespace), excludes
-empty names and non-control/decoy content, protects the names-only privacy
-boundary, and requires deterministic sorted/deduplicated output. The harness
-accepts at most 64 KiB per input.
+structured oracle computes expected names independently from the parser output.
+It asserts exact HTML `name` preservation (including whitespace), independent
+coverage of the `input`/`select`/`textarea` branches, HTML element namespaces,
+unqualified `name`-attribute selection, integration-point behavior, and
+exclusion of empty names and non-control/decoy content. Raw malformed inputs
+must classify the 64-KiB parse boundary exactly, remain deterministic, and
+return sorted/deduplicated non-empty observations. The target also protects the
+names-only privacy boundary and accepts at most 64 KiB of raw input.
 
 `expression_semantics` builds bounded typed evidence through public Venom APIs.
 Its independent oracle requires complete, case-sensitive TextList element
@@ -84,8 +88,10 @@ Reviewed seeds under `fuzz/corpus/html_form_controls/` include the minimized
 whitespace-normalization reproducer, exact and substring-only convention names,
 real/empty/duplicate/Unicode controls, quote-state spoofing, raw-text/comment
 decoys, values, character references, malformed/truncated markup, a long name,
-and modest nesting. Generated hash-named corpus files remain ignored until they
-are deliberately reviewed and promoted.
+modest nesting, SVG/MathML control lookalikes, genuine HTML integration-point
+descendants, foreign-content re-entry, and distinct identities for every
+supported control tag. Generated hash-named corpus files remain ignored until
+they are deliberately reviewed and promoted.
 
 `fuzz/corpus/expression_semantics/` contains exact `_token`, substring-only,
 padded, case-sensitive `_METHOD`, scalar/list mismatch, duplicates, Unicode,
