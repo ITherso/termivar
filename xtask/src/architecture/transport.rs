@@ -23,6 +23,7 @@ const BOUNDED_RUNTIME_SOURCES: &[&str] = &[
     "crates/venom-scanner/src/decision_loop.rs",
     "crates/venom-scanner/src/decision_runner.rs",
     "crates/venom-scanner/src/http_evidence.rs",
+    "crates/venom-scanner/src/http_evidence/form_controls.rs",
     "crates/venom-scanner/src/payload_strategy.rs",
     "crates/venom-scanner/src/planner.rs",
     "crates/venom-scanner/src/runtime_budget.rs",
@@ -346,7 +347,8 @@ impl<'ast> Visit<'ast> for OwnershipVisitor<'_> {
                 (
                     "crates/venom-scanner/src/http_evidence.rs",
                     "request_broker"
-                ) | ("crates/venom-scanner/src/web_runtime.rs", "api_visibility")
+                ) | ("crates/venom-scanner/src/http_evidence.rs", "form_controls")
+                    | ("crates/venom-scanner/src/web_runtime.rs", "api_visibility")
                     | (
                         "crates/venom-scanner/src/web_runtime/api_visibility.rs",
                         "differential"
@@ -913,6 +915,10 @@ mod tests {
             (
                 "crates/venom-scanner/src/http_evidence.rs",
                 "mod request_broker;",
+            ),
+            (
+                "crates/venom-scanner/src/http_evidence.rs",
+                "mod form_controls;",
             ),
             (
                 "crates/venom-scanner/src/web_runtime.rs",

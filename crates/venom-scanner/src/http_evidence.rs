@@ -16,8 +16,6 @@
 use std::{collections::BTreeMap, collections::BTreeSet, fmt, sync::Arc, time::Duration};
 
 use async_trait::async_trait;
-use html5ever::{parse_document, tendril::TendrilSink, ParseOpts};
-use markup5ever_rcdom::{Handle, NodeData, RcDom};
 use reqwest::{
     header::{HeaderMap, HeaderName, HeaderValue},
     Method, StatusCode, Url,
@@ -40,8 +38,10 @@ use crate::{
     DecisionExecutionStage, DecisionExecutorError,
 };
 
+mod form_controls;
 mod request_broker;
 
+use form_controls::extract_form_control_names;
 pub(crate) use request_broker::{HttpRequestBroker, HttpRequestBrokerError};
 
 /// Default maximum number of response-body bytes read by one probe.
@@ -1182,45 +1182,6 @@ fn valid_cookie_name(name: &str) -> bool {
         })
 }
 
-/// Conservatively extracts named HTML form-control names (`input`, `select`,
-/// `textarea` `name` attributes) from a bounded response sample.
-///
-/// A real, spec-compliant HTML parser (`html5ever`, via an `RcDom` tree) drives
-/// the extraction, so attribute quote-state, comments, `script`/`style` raw
-/// text, and `textarea`/`title` RCDATA are handled by tree construction:
-/// markup-looking text inside a comment, a script string, a textarea body, or
-/// another element's quoted attribute value is never mistaken for a control.
-/// Only the `name` attribute of an `input`/`select`/`textarea` element is read;
-/// names are non-empty, deduplicated, and returned in deterministic (sorted)
-/// order. Control *values* are never copied here. An empty result means no
-/// control was observed; it never asserts that none exist.
-fn extract_form_control_names(sample: &str) -> Vec<String> {
-    let dom = parse_document(RcDom::default(), ParseOpts::default())
-        .from_utf8()
-        .one(sample.as_bytes());
-    let mut names = BTreeSet::new();
-    collect_form_control_names(&dom.document, &mut names);
-    names.into_iter().collect()
-}
-
-fn collect_form_control_names(handle: &Handle, names: &mut BTreeSet<String>) {
-    if let NodeData::Element { name, attrs, .. } = &handle.data {
-        if matches!(name.local.as_ref(), "input" | "select" | "textarea") {
-            for attr in attrs.borrow().iter() {
-                if attr.name.local.as_ref() == "name" {
-                    let value = attr.value.trim();
-                    if !value.is_empty() {
-                        names.insert(value.to_owned());
-                    }
-                }
-            }
-        }
-    }
-    for child in handle.children.borrow().iter() {
-        collect_form_control_names(child, names);
-    }
-}
-
 fn textual_response(headers: &HeaderMap) -> bool {
     joined_header(headers, "content-type")
         .map(|content_type| {
@@ -1455,6 +1416,35 @@ mod tests {
             extract_form_control_names("<input title=\"ordinary\" name=\"real\">"),
             ["real"]
         );
+    }
+
+    #[test]
+    fn form_control_extraction_preserves_name_attribute_whitespace() {
+        let names = extract_form_control_names(
+            "<input name=\" _token \"><input name=\" \"><input name=\"\">",
+        );
+
+        // HTML form-control names are attribute values, not space-separated
+        // tokens. Preserve non-empty values exactly so a padded convention name
+        // cannot be promoted into an exact `_token` observation.
+        assert_eq!(names, [" ", " _token "]);
+        assert!(!names.iter().any(|name| name == "_token"));
+    }
+
+    #[test]
+    fn form_control_extraction_is_stack_safe_near_sixty_four_kibibytes() {
+        const DEPTH: usize = 5_900;
+        let mut html = String::with_capacity(DEPTH * 11 + 32);
+        for _ in 0..DEPTH {
+            html.push_str("<div>");
+        }
+        html.push_str("<input name=\"deep\">");
+        for _ in 0..DEPTH {
+            html.push_str("</div>");
+        }
+
+        assert!((63 * 1024..=64 * 1024).contains(&html.len()));
+        assert_eq!(extract_form_control_names(&html), ["deep"]);
     }
 
     struct CountedServer {
@@ -2111,6 +2101,26 @@ mod tests {
         // separate host-authorized RESPONSE_BODY_SAMPLE intentionally contains the
         // original bounded HTML and may include these value= contents; that is not
         // this feature's concern and is deliberately not asserted here.
+    }
+
+    #[tokio::test]
+    async fn form_control_names_predicate_preserves_exact_attribute_value() {
+        let url = serve_html_once("<form><input name=\" _token \"></form>").await;
+        let adapter = form_capturing_adapter(&url, HttpBodyCapture::TextSample { max_chars: 8192 });
+        let knowledge = KnowledgeBase::new();
+
+        let receipt = adapter
+            .execute_command(&command(&url), &knowledge)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            value(
+                receipt.after_execution().evidence(),
+                HttpEvidencePredicate::RESPONSE_FORM_CONTROL_NAMES
+            ),
+            Some(&EvidenceValue::TextList(vec![" _token ".to_owned()]))
+        );
     }
 
     #[tokio::test]
