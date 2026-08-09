@@ -15,7 +15,11 @@
 //! base or decision policy, so plugins cannot bypass provenance checks or
 //! mutate reasoning state directly.
 
-use std::{collections::BTreeMap, sync::Arc, time::Duration};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
+    time::Duration,
+};
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -437,9 +441,10 @@ impl DecisionExecutorRegistry {
 
     /// Routes an action to an executor when the command does not name one.
     ///
-    /// Adaptive and active commands intentionally carry only an action ID.
-    /// Separate stage routes allow the explicit probe to use a stricter
-    /// executor than the original action.
+    /// Active probes and explicitly host-owned low-level commands may carry
+    /// only an action ID. Separate stage routes allow the explicit probe to use
+    /// a stricter executor than the original passive action; high-level
+    /// adaptive and retry commands pin the planner-authorized executor.
     pub fn route_action(
         &mut self,
         stage: DecisionExecutionStage,
@@ -643,6 +648,21 @@ pub enum DecisionRunnerError {
     /// An active execution receipt violated an adapter-owned invariant.
     #[error("active execution receipt did not capture a baseline snapshot")]
     MissingActiveBaseline,
+
+    /// A high-level continuation command was supplied without the current
+    /// host-owned suppression context.
+    #[error("command {command} requires explicit host suppression context before execution")]
+    HostPolicyContextRequired {
+        /// Stable command class rejected before any executor work.
+        command: &'static str,
+    },
+
+    /// Current host policy suppressed the outstanding action before dispatch.
+    #[error("host policy suppresses action {action_id} before execution")]
+    ActionSuppressedByHostPolicy {
+        /// Action rejected before executor work or evidence commit.
+        action_id: String,
+    },
 
     /// Executor evidence described another subject.
     #[error("evidence {evidence_id} subject {actual} does not match case subject {expected}")]
@@ -949,6 +969,8 @@ impl DecisionRunnerAdapter {
     /// `ExecuteAction` submits passive evidence, `CollectActiveEvidence`
     /// submits the captured before/after snapshots, and `Replan` invokes the
     /// reasoner and utility planner. Terminal commands are returned unchanged.
+    /// Adaptive, retry, active, and replan continuations fail before execution;
+    /// use [`Self::drive_command_with_suppressed_actions`] to reauthorize them.
     pub async fn drive_command(
         &self,
         decision_loop: &DecisionLoop,
@@ -957,13 +979,39 @@ impl DecisionRunnerAdapter {
         experience: &mut ExperienceStore,
         session: &mut DecisionSession,
     ) -> Result<DecisionRunnerTurn, DecisionRunnerError> {
-        self.drive_command_with_limits(
+        self.drive_command_with_optional_suppressions(
             decision_loop,
             command,
             knowledge,
             experience,
             session,
             DecisionExecutionLimits::default(),
+            None,
+        )
+        .await
+    }
+
+    /// Executes and resumes a command under explicit current host policy.
+    ///
+    /// Current suppressions are checked before executor work and remain in
+    /// force through verification, adaptive authorization, and replanning.
+    pub async fn drive_command_with_suppressed_actions(
+        &self,
+        decision_loop: &DecisionLoop,
+        command: &DecisionLoopCommand,
+        knowledge: &KnowledgeBase,
+        experience: &mut ExperienceStore,
+        session: &mut DecisionSession,
+        host_suppressed_actions: &BTreeSet<String>,
+    ) -> Result<DecisionRunnerTurn, DecisionRunnerError> {
+        self.drive_command_with_optional_suppressions(
+            decision_loop,
+            command,
+            knowledge,
+            experience,
+            session,
+            DecisionExecutionLimits::default(),
+            Some(host_suppressed_actions),
         )
         .await
     }
@@ -978,24 +1026,99 @@ impl DecisionRunnerAdapter {
         session: &mut DecisionSession,
         limits: DecisionExecutionLimits,
     ) -> Result<DecisionRunnerTurn, DecisionRunnerError> {
+        self.drive_command_with_optional_suppressions(
+            decision_loop,
+            command,
+            knowledge,
+            experience,
+            session,
+            limits,
+            None,
+        )
+        .await
+    }
+
+    /// Drives one command under explicit host policy and execution allowance.
+    ///
+    /// Current suppressions are checked before executor work and remain in
+    /// force through verification, adaptive authorization, and replanning.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn drive_command_with_limits_and_suppressed_actions(
+        &self,
+        decision_loop: &DecisionLoop,
+        command: &DecisionLoopCommand,
+        knowledge: &KnowledgeBase,
+        experience: &mut ExperienceStore,
+        session: &mut DecisionSession,
+        limits: DecisionExecutionLimits,
+        host_suppressed_actions: &BTreeSet<String>,
+    ) -> Result<DecisionRunnerTurn, DecisionRunnerError> {
+        self.drive_command_with_optional_suppressions(
+            decision_loop,
+            command,
+            knowledge,
+            experience,
+            session,
+            limits,
+            Some(host_suppressed_actions),
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn drive_command_with_optional_suppressions(
+        &self,
+        decision_loop: &DecisionLoop,
+        command: &DecisionLoopCommand,
+        knowledge: &KnowledgeBase,
+        experience: &mut ExperienceStore,
+        session: &mut DecisionSession,
+        limits: DecisionExecutionLimits,
+        host_suppressed_actions: Option<&BTreeSet<String>>,
+    ) -> Result<DecisionRunnerTurn, DecisionRunnerError> {
+        if host_suppressed_actions.is_none() {
+            if let Some(command) = command_requiring_host_policy_context(command) {
+                return Err(DecisionRunnerError::HostPolicyContextRequired { command });
+            }
+        }
+        if let Some(suppressions) = host_suppressed_actions {
+            if let Some(action_id) = execution_command_action_id(command) {
+                if suppressions.contains(action_id) {
+                    return Err(DecisionRunnerError::ActionSuppressedByHostPolicy {
+                        action_id: action_id.to_owned(),
+                    });
+                }
+            }
+        }
+        decision_loop.validate_execution_command_authority(knowledge, command)?;
         match command {
             DecisionLoopCommand::ExecuteAction { .. }
             | DecisionLoopCommand::CollectActiveEvidence { .. } => {
                 let evidence = self
                     .execute_session_command_with_limits(command, knowledge, session, limits)
                     .await?;
-                self.resume_session_command(
+                self.resume_session_command_with_optional_suppressions(
                     decision_loop,
                     command,
                     knowledge,
                     experience,
                     session,
                     evidence,
+                    host_suppressed_actions,
                 )
             },
-            DecisionLoopCommand::Replan => Ok(DecisionRunnerTurn::Planning(Box::new(
-                decision_loop.plan_next(knowledge, experience, session)?,
-            ))),
+            DecisionLoopCommand::Replan => {
+                let planning = match host_suppressed_actions {
+                    Some(suppressions) => decision_loop.plan_next_with_suppressed_actions(
+                        knowledge,
+                        experience,
+                        session,
+                        suppressions,
+                    )?,
+                    None => decision_loop.plan_next(knowledge, experience, session)?,
+                };
+                Ok(DecisionRunnerTurn::Planning(Box::new(planning)))
+            },
             DecisionLoopCommand::Complete { .. }
             | DecisionLoopCommand::AwaitHumanReview { .. }
             | DecisionLoopCommand::Halt { .. } => Ok(DecisionRunnerTurn::Terminal(command.clone())),
@@ -1037,6 +1160,7 @@ impl DecisionRunnerAdapter {
             .await
     }
 
+    #[cfg(test)]
     pub(crate) fn resume_session_command(
         &self,
         decision_loop: &DecisionLoop,
@@ -1046,30 +1170,88 @@ impl DecisionRunnerAdapter {
         session: &mut DecisionSession,
         evidence: DecisionEvidenceReceipt,
     ) -> Result<DecisionRunnerTurn, DecisionRunnerError> {
+        self.resume_session_command_with_optional_suppressions(
+            decision_loop,
+            command,
+            knowledge,
+            experience,
+            session,
+            evidence,
+            None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn resume_session_command_with_suppressed_actions(
+        &self,
+        decision_loop: &DecisionLoop,
+        command: &DecisionLoopCommand,
+        knowledge: &KnowledgeBase,
+        experience: &mut ExperienceStore,
+        session: &mut DecisionSession,
+        evidence: DecisionEvidenceReceipt,
+        host_suppressed_actions: &BTreeSet<String>,
+    ) -> Result<DecisionRunnerTurn, DecisionRunnerError> {
+        self.resume_session_command_with_optional_suppressions(
+            decision_loop,
+            command,
+            knowledge,
+            experience,
+            session,
+            evidence,
+            Some(host_suppressed_actions),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn resume_session_command_with_optional_suppressions(
+        &self,
+        decision_loop: &DecisionLoop,
+        command: &DecisionLoopCommand,
+        knowledge: &KnowledgeBase,
+        experience: &mut ExperienceStore,
+        session: &mut DecisionSession,
+        evidence: DecisionEvidenceReceipt,
+        host_suppressed_actions: Option<&BTreeSet<String>>,
+    ) -> Result<DecisionRunnerTurn, DecisionRunnerError> {
         let decision = (|| -> Result<Box<DecisionOutcomeReport>, DecisionRunnerError> {
             match command {
                 DecisionLoopCommand::ExecuteAction { case, .. } => {
                     validate_session_case(session, DecisionExecutionStage::Passive, case)?;
-                    decision_loop
-                        .submit_passive(knowledge, experience, session)
-                        .map(Box::new)
-                        .map_err(DecisionRunnerError::from)
+                    let report = match host_suppressed_actions {
+                        Some(suppressions) => decision_loop.submit_passive_with_suppressed_actions(
+                            knowledge,
+                            experience,
+                            session,
+                            suppressions,
+                        ),
+                        None => decision_loop.submit_passive(knowledge, experience, session),
+                    }?;
+                    Ok(Box::new(report))
                 },
                 DecisionLoopCommand::CollectActiveEvidence { case } => {
                     validate_session_case(session, DecisionExecutionStage::Active, case)?;
                     let baseline = evidence
                         .baseline()
                         .ok_or(DecisionRunnerError::MissingActiveBaseline)?;
-                    decision_loop
-                        .submit_active(
+                    let report = match host_suppressed_actions {
+                        Some(suppressions) => decision_loop.submit_active_with_suppressed_actions(
                             knowledge,
                             experience,
                             session,
                             baseline,
                             evidence.after_execution(),
-                        )
-                        .map(Box::new)
-                        .map_err(DecisionRunnerError::from)
+                            suppressions,
+                        ),
+                        None => decision_loop.submit_active(
+                            knowledge,
+                            experience,
+                            session,
+                            baseline,
+                            evidence.after_execution(),
+                        ),
+                    }?;
+                    Ok(Box::new(report))
                 },
                 DecisionLoopCommand::Replan => {
                     Err(DecisionRunnerError::NonExecutionCommand { command: "replan" })
@@ -1100,6 +1282,36 @@ impl DecisionRunnerAdapter {
                 source: Box::new(source),
             }),
         }
+    }
+}
+
+fn command_requiring_host_policy_context(command: &DecisionLoopCommand) -> Option<&'static str> {
+    match command {
+        DecisionLoopCommand::ExecuteAction {
+            origin: DecisionActionOrigin::Adaptive,
+            ..
+        } => Some("adaptive_execute_action"),
+        DecisionLoopCommand::ExecuteAction {
+            origin: DecisionActionOrigin::Retry,
+            ..
+        } => Some("retry_execute_action"),
+        DecisionLoopCommand::CollectActiveEvidence { .. } => Some("collect_active_evidence"),
+        DecisionLoopCommand::Replan => Some("replan"),
+        DecisionLoopCommand::ExecuteAction { .. }
+        | DecisionLoopCommand::Complete { .. }
+        | DecisionLoopCommand::AwaitHumanReview { .. }
+        | DecisionLoopCommand::Halt { .. } => None,
+    }
+}
+
+fn execution_command_action_id(command: &DecisionLoopCommand) -> Option<&str> {
+    match command {
+        DecisionLoopCommand::ExecuteAction { case, .. }
+        | DecisionLoopCommand::CollectActiveEvidence { case } => Some(case.action_id()),
+        DecisionLoopCommand::Replan
+        | DecisionLoopCommand::Complete { .. }
+        | DecisionLoopCommand::AwaitHumanReview { .. }
+        | DecisionLoopCommand::Halt { .. } => None,
     }
 }
 
@@ -1331,7 +1543,7 @@ mod tests {
     use crate::{
         ActionCost, AdaptationLimits, AttackAction, BenefitScore, DecisionLoopConfig,
         ExperiencePolicy, Expression, HypothesisSelector, KnowledgeLayer, PlanningContext,
-        RequiredStrength, RiskScore, VerificationRule,
+        RequiredStrength, RiskScore, VerificationRule, VerificationTarget,
     };
     use venom_core::{
         ConfidenceScore, EvidenceKind, EvidenceSource, EvidenceValue, Hypothesis, HypothesisState,
@@ -1352,6 +1564,11 @@ mod tests {
     struct StrategyExecutor {
         id: &'static str,
         strategy: PayloadStrategyRef,
+        calls: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    struct CountingExecutor {
+        id: &'static str,
         calls: Arc<std::sync::atomic::AtomicUsize>,
     }
 
@@ -1413,6 +1630,32 @@ mod tests {
             assert_eq!(request.payload_strategy(), Some(&self.strategy));
             self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             let source = EvidenceSource::new(self.id, "strategy-observation")
+                .unwrap()
+                .with_correlation_id(request.case().id())
+                .unwrap();
+            Ok(vec![Evidence::new(
+                request.case().subject().clone(),
+                EvidenceKind::Http,
+                KnowledgePredicate::new("http.response", "status").unwrap(),
+                EvidenceValue::Unsigned(200),
+                source,
+                ConfidenceScore::MAX,
+            )])
+        }
+    }
+
+    #[async_trait]
+    impl DecisionActionExecutor for CountingExecutor {
+        fn id(&self) -> &str {
+            self.id
+        }
+
+        async fn execute(
+            &self,
+            request: &DecisionExecutionRequest,
+        ) -> Result<Vec<Evidence>, DecisionExecutorError> {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let source = EvidenceSource::new(self.id, "counted-observation")
                 .unwrap()
                 .with_correlation_id(request.case().id())
                 .unwrap();
@@ -1701,6 +1944,57 @@ mod tests {
             )
             .unwrap(),
         )
+    }
+
+    fn loop_with_supported_http_action() -> (DecisionLoop, KnowledgeBase) {
+        loop_with_supported_http_action_target(VerificationTarget::Motivation)
+    }
+
+    fn loop_with_supported_http_action_target(
+        target: VerificationTarget,
+    ) -> (DecisionLoop, KnowledgeBase) {
+        let mut decision_loop = empty_decision_loop();
+        let predicate = KnowledgePredicate::new("stack", "framework").unwrap();
+        let value = EvidenceValue::Text("Laravel".to_owned());
+        decision_loop
+            .planner_mut()
+            .register(
+                AttackAction::new(
+                    "http.probe",
+                    "plugin.http",
+                    Expression::equals(
+                        KnowledgeLayer::Hypothesis,
+                        predicate.clone(),
+                        value.clone(),
+                    ),
+                    HypothesisSelector::new(
+                        predicate.clone(),
+                        value.clone(),
+                        Probability::from_percent(50).unwrap(),
+                        RequiredStrength::Strong,
+                    ),
+                    BenefitScore::from_percent(80).unwrap(),
+                    ActionCost::new(10).unwrap(),
+                    RiskScore::from_percent(20).unwrap(),
+                    BTreeSet::new(),
+                )
+                .unwrap()
+                .with_verification_target(target),
+            )
+            .unwrap();
+        let knowledge = KnowledgeBase::new();
+        let mut hypothesis = Hypothesis::with_id(
+            "hypothesis:1",
+            subject(),
+            predicate,
+            value,
+            Probability::from_percent(90).unwrap(),
+        )
+        .unwrap();
+        hypothesis.set_strength(HypothesisStrength::Strong);
+        hypothesis.set_state(HypothesisState::Supported);
+        knowledge.upsert_hypothesis(hypothesis).unwrap();
+        (decision_loop, knowledge)
     }
 
     #[tokio::test]
@@ -2073,7 +2367,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn verification_failure_after_commit_keeps_evidence_auditable() {
+    async fn unregistered_case_after_low_level_commit_keeps_evidence_auditable() {
         let mut registry = DecisionExecutorRegistry::new();
         registry.register(executor("plugin.http", None)).unwrap();
         let adapter = DecisionRunnerAdapter::new(registry);
@@ -2122,9 +2416,9 @@ mod tests {
             DecisionRunnerError::OutcomeAfterEvidenceCommit { source, .. }
                 if matches!(
                     source.as_ref(),
-                    DecisionRunnerError::Decision(DecisionLoopError::Verification(
-                        crate::VerificationError::UnknownHypothesis { .. }
-                    ))
+                    DecisionRunnerError::Decision(
+                        DecisionLoopError::UnregisteredDecisionAction { .. }
+                    )
                 )
         ));
         let committed = error.committed_evidence().unwrap();
@@ -2143,8 +2437,7 @@ mod tests {
         let mut registry = DecisionExecutorRegistry::new();
         registry.register(executor("plugin.http", None)).unwrap();
         let adapter = DecisionRunnerAdapter::new(registry);
-        let decision_loop = empty_decision_loop();
-        let knowledge = KnowledgeBase::new();
+        let (decision_loop, knowledge) = loop_with_supported_http_action();
         let mut experience = ExperienceStore::new();
         let mut session = DecisionSession::new(subject());
         let command = DecisionLoopCommand::ExecuteAction {
@@ -2170,7 +2463,282 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn replan_command_advances_the_decision_loop_without_an_executor() {
+    async fn context_free_drive_rejects_every_continuation_before_executor_work() {
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut registry = DecisionExecutorRegistry::new();
+        registry
+            .register(Arc::new(CountingExecutor {
+                id: "plugin.http",
+                calls: Arc::clone(&calls),
+            }))
+            .unwrap();
+        let adapter = DecisionRunnerAdapter::new(registry);
+        let decision_loop = empty_decision_loop();
+        let knowledge = KnowledgeBase::new();
+        let commands = [
+            DecisionLoopCommand::ExecuteAction {
+                case: case("http.probe"),
+                executor: Some("plugin.http".to_owned()),
+                origin: DecisionActionOrigin::Adaptive,
+                delay_ms: None,
+            },
+            DecisionLoopCommand::ExecuteAction {
+                case: case("http.probe"),
+                executor: Some("plugin.http".to_owned()),
+                origin: DecisionActionOrigin::Retry,
+                delay_ms: None,
+            },
+            DecisionLoopCommand::CollectActiveEvidence {
+                case: case("http.probe"),
+            },
+            DecisionLoopCommand::Replan,
+        ];
+
+        for (command, expected) in commands.into_iter().zip([
+            "adaptive_execute_action",
+            "retry_execute_action",
+            "collect_active_evidence",
+            "replan",
+        ]) {
+            let mut experience = ExperienceStore::new();
+            let mut session = DecisionSession::new(subject());
+            assert!(matches!(
+                adapter
+                    .drive_command(
+                        &decision_loop,
+                        &command,
+                        &knowledge,
+                        &mut experience,
+                        &mut session,
+                    )
+                    .await,
+                Err(DecisionRunnerError::HostPolicyContextRequired { command })
+                    if command == expected
+            ));
+            assert_eq!(session, DecisionSession::new(subject()));
+            assert!(experience.is_empty());
+        }
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert_eq!(knowledge.stats().evidence, 0);
+    }
+
+    #[tokio::test]
+    async fn current_host_suppression_rejects_execution_before_executor_work() {
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut registry = DecisionExecutorRegistry::new();
+        registry
+            .register(Arc::new(CountingExecutor {
+                id: "plugin.http",
+                calls: Arc::clone(&calls),
+            }))
+            .unwrap();
+        let adapter = DecisionRunnerAdapter::new(registry);
+        let decision_loop = empty_decision_loop();
+        let knowledge = KnowledgeBase::new();
+        let suppressions = BTreeSet::from(["http.probe".to_owned()]);
+        let commands = [
+            DecisionLoopCommand::ExecuteAction {
+                case: case("http.probe"),
+                executor: Some("plugin.http".to_owned()),
+                origin: DecisionActionOrigin::Planned,
+                delay_ms: None,
+            },
+            DecisionLoopCommand::CollectActiveEvidence {
+                case: case("http.probe"),
+            },
+        ];
+
+        for command in commands {
+            let mut experience = ExperienceStore::new();
+            let mut session = DecisionSession::new(subject());
+            assert!(matches!(
+                adapter
+                    .drive_command_with_suppressed_actions(
+                        &decision_loop,
+                        &command,
+                        &knowledge,
+                        &mut experience,
+                        &mut session,
+                        &suppressions,
+                    )
+                    .await,
+                Err(DecisionRunnerError::ActionSuppressedByHostPolicy { action_id })
+                    if action_id == "http.probe"
+            ));
+            assert_eq!(session, DecisionSession::new(subject()));
+            assert!(experience.is_empty());
+        }
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert_eq!(knowledge.stats().evidence, 0);
+    }
+
+    #[tokio::test]
+    async fn high_level_runner_rejects_broadened_knowledge_only_replay_before_executor_work() {
+        for active in [false, true] {
+            let (decision_loop, knowledge) =
+                loop_with_supported_http_action_target(VerificationTarget::KnowledgeOnly);
+            let experience = ExperienceStore::new();
+            let mut issued = DecisionSession::new(subject());
+            decision_loop
+                .plan_next(&knowledge, &experience, &mut issued)
+                .unwrap();
+            let mut wire = serde_json::to_value(&issued).unwrap();
+            let state = wire["state"].as_object_mut().unwrap();
+            if active {
+                state.insert("state".to_owned(), serde_json::json!("awaiting_active"));
+            }
+            let case_wire = state["case"].as_object_mut().unwrap();
+            case_wire.remove("applies_hypothesis_transition");
+            case_wire.remove("payload_claim_policy_guard");
+            let mut session: DecisionSession = serde_json::from_value(wire).unwrap();
+            let broadened_case = match session.state() {
+                DecisionLoopState::AwaitingPassive { case }
+                | DecisionLoopState::AwaitingActive { case } => case.clone(),
+                state => panic!("expected replayed outstanding case, got {state:?}"),
+            };
+            assert!(broadened_case.applies_hypothesis_transition());
+            let command = if active {
+                DecisionLoopCommand::CollectActiveEvidence {
+                    case: broadened_case,
+                }
+            } else {
+                DecisionLoopCommand::ExecuteAction {
+                    case: broadened_case,
+                    executor: Some("plugin.http".to_owned()),
+                    origin: DecisionActionOrigin::Planned,
+                    delay_ms: None,
+                }
+            };
+            let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let executor_id = if active {
+                "plugin.active"
+            } else {
+                "plugin.http"
+            };
+            let mut registry = DecisionExecutorRegistry::new();
+            registry
+                .register(Arc::new(CountingExecutor {
+                    id: executor_id,
+                    calls: Arc::clone(&calls),
+                }))
+                .unwrap();
+            if active {
+                registry
+                    .route_action(DecisionExecutionStage::Active, "http.probe", executor_id)
+                    .unwrap();
+            }
+            let adapter = DecisionRunnerAdapter::new(registry);
+            let before_session = session.clone();
+            let mut replay_experience = experience.clone();
+
+            let error = adapter
+                .drive_command_with_suppressed_actions(
+                    &decision_loop,
+                    &command,
+                    &knowledge,
+                    &mut replay_experience,
+                    &mut session,
+                    &BTreeSet::new(),
+                )
+                .await
+                .unwrap_err();
+
+            assert!(matches!(
+                error,
+                DecisionRunnerError::Decision(
+                    DecisionLoopError::DecisionCaseAuthorityExceeded { action_id }
+                ) if action_id == "http.probe"
+            ));
+            assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+            assert_eq!(knowledge.stats().evidence, 0);
+            assert_eq!(session, before_session);
+            assert_eq!(replay_experience, experience);
+        }
+    }
+
+    #[tokio::test]
+    async fn explicit_empty_host_policy_allows_authorized_adaptive_and_retry_execution() {
+        for origin in [DecisionActionOrigin::Adaptive, DecisionActionOrigin::Retry] {
+            let (decision_loop, knowledge) = loop_with_supported_http_action();
+            let mut experience = ExperienceStore::new();
+            let mut session = DecisionSession::new(subject());
+            let planning = decision_loop
+                .plan_next(&knowledge, &experience, &mut session)
+                .unwrap();
+            let (case, executor) = match planning.command() {
+                DecisionLoopCommand::ExecuteAction { case, executor, .. } => {
+                    (case.clone(), executor.clone())
+                },
+                other => panic!("expected planned execution, got {other:?}"),
+            };
+            let command = DecisionLoopCommand::ExecuteAction {
+                case,
+                executor,
+                origin,
+                delay_ms: None,
+            };
+            let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let mut registry = DecisionExecutorRegistry::new();
+            registry
+                .register(Arc::new(CountingExecutor {
+                    id: "plugin.http",
+                    calls: Arc::clone(&calls),
+                }))
+                .unwrap();
+            let adapter = DecisionRunnerAdapter::new(registry);
+
+            let turn = adapter
+                .drive_command_with_suppressed_actions(
+                    &decision_loop,
+                    &command,
+                    &knowledge,
+                    &mut experience,
+                    &mut session,
+                    &BTreeSet::new(),
+                )
+                .await
+                .unwrap();
+
+            assert!(matches!(
+                turn,
+                DecisionRunnerTurn::Outcome { decision, .. }
+                    if matches!(decision.command(), DecisionLoopCommand::CollectActiveEvidence { .. })
+            ));
+            assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+            assert_eq!(knowledge.stats().evidence, 1);
+        }
+    }
+
+    #[tokio::test]
+    async fn suppression_aware_replan_forwards_policy_into_planning() {
+        let adapter = DecisionRunnerAdapter::new(DecisionExecutorRegistry::new());
+        let (decision_loop, knowledge) = loop_with_supported_http_action();
+        let mut experience = ExperienceStore::new();
+        let mut session = DecisionSession::new(subject());
+
+        let turn = adapter
+            .drive_command_with_suppressed_actions(
+                &decision_loop,
+                &DecisionLoopCommand::Replan,
+                &knowledge,
+                &mut experience,
+                &mut session,
+                &BTreeSet::from(["http.probe".to_owned()]),
+            )
+            .await
+            .unwrap();
+
+        assert!(matches!(
+            turn,
+            DecisionRunnerTurn::Planning(report)
+                if report.plan().steps().is_empty()
+                    && report.suppressed_actions().contains("http.probe")
+                    && matches!(report.command(), DecisionLoopCommand::Halt { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn replan_command_with_explicit_host_policy_advances_without_an_executor() {
         let adapter = DecisionRunnerAdapter::new(DecisionExecutorRegistry::new());
         let decision_loop = empty_decision_loop();
         let knowledge = KnowledgeBase::new();
@@ -2178,12 +2746,13 @@ mod tests {
         let mut session = DecisionSession::new(subject());
 
         let turn = adapter
-            .drive_command(
+            .drive_command_with_suppressed_actions(
                 &decision_loop,
                 &DecisionLoopCommand::Replan,
                 &knowledge,
                 &mut experience,
                 &mut session,
+                &BTreeSet::new(),
             )
             .await
             .unwrap();

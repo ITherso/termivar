@@ -20,11 +20,12 @@ use serde::{Deserialize, Deserializer, Serialize};
 use thiserror::Error;
 use venom_core::{EntityId, Outcome};
 
+use crate::planner::ScheduledActionAuthorizationError;
 use crate::{
     AdaptationLedger, AdaptationLimits, AdaptiveDecision, AdaptivePipeline, AdaptivePipelineError,
-    AttackAction, AttackPlan, AttackPlanner, ExperiencePolicy, ExperienceStore,
-    ExperienceStoreError, ExperienceWrite, KnowledgeBase, KnowledgeBaseError, KnowledgeSnapshot,
-    KnowledgeWrite, PayloadStrategyRef, PipelineDirective, PlannerError, PlanningContext,
+    AttackPlan, AttackPlanner, ExperiencePolicy, ExperienceStore, ExperienceStoreError,
+    ExperienceWrite, KnowledgeBase, KnowledgeBaseError, KnowledgeSnapshot, KnowledgeWrite,
+    PayloadStrategyRef, PipelineDirective, PlannerError, PlanningContext,
     ResolvedVerificationTarget, RuleApplication, RuleEngine, RuleEngineError, VerificationCase,
     VerificationError, VerificationPipeline, VerificationReport,
 };
@@ -113,6 +114,45 @@ pub enum DecisionLoopError {
     #[error("scheduled action {action_id} has no eligible motivation hypothesis")]
     NoEligibleScheduledMotivationHypothesis {
         /// Scheduled action whose confidence source could not be resolved.
+        action_id: String,
+    },
+
+    /// Adaptive execution was requested without an explicit current host
+    /// suppression context.
+    #[error("adaptive execution of action {action_id} requires explicit host suppression context")]
+    AdaptiveExecutionRequiresHostPolicyContext {
+        /// Action whose adaptive continuation requires current host policy.
+        action_id: String,
+    },
+
+    /// A decision case or adaptive policy named an unregistered action.
+    #[error("decision action {action_id} is not registered with the planner")]
+    UnregisteredDecisionAction {
+        /// Unknown action identity.
+        action_id: String,
+    },
+
+    /// A persisted case would authorize a broader claim transition than the
+    /// currently registered action policy.
+    #[error("decision case for action {action_id} exceeds current claim authority")]
+    DecisionCaseAuthorityExceeded {
+        /// Action whose transition target no longer authorizes the case claim.
+        action_id: String,
+    },
+
+    /// A registered adaptive action failed current planner authorization.
+    #[error("adaptive action {action_id} is not eligible under current planner policy")]
+    IneligibleAdaptiveAction {
+        /// Registered action excluded by current planner policy.
+        action_id: String,
+    },
+
+    /// Direct adaptive dispatch would skip declared prerequisites.
+    #[error(
+        "adaptive action {action_id} declares prerequisites and must be selected by normal planning"
+    )]
+    AdaptiveActionRequiresPlanning {
+        /// Adaptive action whose dependency order must be planned normally.
         action_id: String,
     },
 
@@ -752,7 +792,9 @@ impl DecisionLoop {
     ///
     /// Explicit suppressions are combined with experience and adaptive-session
     /// suppressions. They remain visible as policy exclusions in the returned
-    /// planner audit record.
+    /// planner audit record. A host that later submits passive or active
+    /// evidence must use the matching suppression-aware submission method so
+    /// adaptive execution is reauthorized against current policy.
     pub fn plan_next_with_suppressed_actions(
         &self,
         knowledge: &KnowledgeBase,
@@ -922,6 +964,36 @@ impl DecisionLoop {
         experience: &mut ExperienceStore,
         session: &mut DecisionSession,
     ) -> Result<DecisionOutcomeReport, DecisionLoopError> {
+        self.submit_passive_with_optional_suppressions(knowledge, experience, session, None)
+    }
+
+    /// Evaluates passive evidence under an explicit current host policy.
+    ///
+    /// Adaptive directives that continue automated work require this explicit
+    /// context, even when the set is empty. This prevents replay or a mixed
+    /// planning/submission API from silently forgetting host authority.
+    pub fn submit_passive_with_suppressed_actions(
+        &self,
+        knowledge: &KnowledgeBase,
+        experience: &mut ExperienceStore,
+        session: &mut DecisionSession,
+        host_suppressed_actions: &BTreeSet<String>,
+    ) -> Result<DecisionOutcomeReport, DecisionLoopError> {
+        self.submit_passive_with_optional_suppressions(
+            knowledge,
+            experience,
+            session,
+            Some(host_suppressed_actions),
+        )
+    }
+
+    fn submit_passive_with_optional_suppressions(
+        &self,
+        knowledge: &KnowledgeBase,
+        experience: &mut ExperienceStore,
+        session: &mut DecisionSession,
+        host_suppressed_actions: Option<&BTreeSet<String>>,
+    ) -> Result<DecisionOutcomeReport, DecisionLoopError> {
         let case = match session.state() {
             DecisionLoopState::AwaitingPassive { case } => case.clone(),
             state => {
@@ -932,11 +1004,19 @@ impl DecisionLoop {
             },
         };
         let snapshot = knowledge.snapshot_for_subject(session.subject());
+        self.validate_outstanding_case_authority(&snapshot, &case)?;
         let verification = self
             .verification
             .passive()
             .verify_snapshot(&case, &snapshot)?;
-        self.finalize_outcome(knowledge, experience, session, verification, &snapshot)
+        self.finalize_outcome(
+            knowledge,
+            experience,
+            session,
+            verification,
+            &snapshot,
+            host_suppressed_actions,
+        )
     }
 
     /// Evaluates evidence produced by an explicit active verification probe.
@@ -948,6 +1028,48 @@ impl DecisionLoop {
         baseline: &KnowledgeSnapshot,
         after_probe: &KnowledgeSnapshot,
     ) -> Result<DecisionOutcomeReport, DecisionLoopError> {
+        self.submit_active_with_optional_suppressions(
+            knowledge,
+            experience,
+            session,
+            baseline,
+            after_probe,
+            None,
+        )
+    }
+
+    /// Evaluates active evidence under an explicit current host policy.
+    ///
+    /// See [`Self::submit_passive_with_suppressed_actions`] for why adaptive
+    /// execution requires an explicit, replay-time host authority context.
+    pub fn submit_active_with_suppressed_actions(
+        &self,
+        knowledge: &KnowledgeBase,
+        experience: &mut ExperienceStore,
+        session: &mut DecisionSession,
+        baseline: &KnowledgeSnapshot,
+        after_probe: &KnowledgeSnapshot,
+        host_suppressed_actions: &BTreeSet<String>,
+    ) -> Result<DecisionOutcomeReport, DecisionLoopError> {
+        self.submit_active_with_optional_suppressions(
+            knowledge,
+            experience,
+            session,
+            baseline,
+            after_probe,
+            Some(host_suppressed_actions),
+        )
+    }
+
+    fn submit_active_with_optional_suppressions(
+        &self,
+        knowledge: &KnowledgeBase,
+        experience: &mut ExperienceStore,
+        session: &mut DecisionSession,
+        baseline: &KnowledgeSnapshot,
+        after_probe: &KnowledgeSnapshot,
+        host_suppressed_actions: Option<&BTreeSet<String>>,
+    ) -> Result<DecisionOutcomeReport, DecisionLoopError> {
         let case = match session.state() {
             DecisionLoopState::AwaitingActive { case } => case.clone(),
             state => {
@@ -957,11 +1079,19 @@ impl DecisionLoop {
                 })
             },
         };
+        self.validate_outstanding_case_authority(after_probe, &case)?;
         let verification =
             self.verification
                 .active()
                 .verify_snapshots(&case, baseline, after_probe)?;
-        self.finalize_outcome(knowledge, experience, session, verification, after_probe)
+        self.finalize_outcome(
+            knowledge,
+            experience,
+            session,
+            verification,
+            after_probe,
+            host_suppressed_actions,
+        )
     }
 
     fn finalize_outcome(
@@ -971,16 +1101,18 @@ impl DecisionLoop {
         session: &mut DecisionSession,
         verification: VerificationReport,
         snapshot: &KnowledgeSnapshot,
+        host_suppressed_actions: Option<&BTreeSet<String>>,
     ) -> Result<DecisionOutcomeReport, DecisionLoopError> {
         let before = session.transition_summary();
         let outcome = verification.outcome();
         let mut candidate_experience = experience.clone();
         let experience_write = candidate_experience.observe(outcome.clone())?;
+        let empty_host_suppressions = BTreeSet::new();
         let suppressions = combined_suppressions(
             &candidate_experience,
             session,
             self.config.experience,
-            &BTreeSet::new(),
+            host_suppressed_actions.unwrap_or(&empty_host_suppressions),
         );
         let mut candidate_session = session.clone();
         let adaptive = self.adaptive.decide_and_record_with_suppressed_actions(
@@ -990,14 +1122,35 @@ impl DecisionLoop {
             self.config.adaptation,
             &suppressions,
         )?;
+        if host_suppressed_actions.is_none()
+            && !matches!(
+                adaptive.directive(),
+                PipelineDirective::Complete
+                    | PipelineDirective::AwaitHumanReview
+                    | PipelineDirective::Halt
+            )
+        {
+            let action_id = match adaptive.directive() {
+                PipelineDirective::ScheduleAction { action_id } => action_id.as_str(),
+                _ => outcome.action_id(),
+            };
+            return Err(
+                DecisionLoopError::AdaptiveExecutionRequiresHostPolicyContext {
+                    action_id: action_id.to_owned(),
+                },
+            );
+        }
+        let authorization_snapshot = verification.prospective_snapshot(snapshot)?;
         let command = transition_from_adaptive(
             &mut candidate_session,
             self.config.max_action_cycles,
             &self.planner,
-            snapshot,
+            self.config.planning,
+            &authorization_snapshot,
             verification.case(),
             outcome,
             adaptive.directive(),
+            &suppressions,
         )?;
         let hypothesis_write = verification.apply(knowledge)?;
         let session_transition =
@@ -1013,6 +1166,60 @@ impl DecisionLoop {
             session_transition,
             command,
         })
+    }
+
+    fn validate_outstanding_case_authority(
+        &self,
+        snapshot: &KnowledgeSnapshot,
+        case: &VerificationCase,
+    ) -> Result<(), DecisionLoopError> {
+        let action = self.planner.action(case.action_id()).ok_or_else(|| {
+            DecisionLoopError::UnregisteredDecisionAction {
+                action_id: case.action_id().to_owned(),
+            }
+        })?;
+        if !case.applies_hypothesis_transition() {
+            return Ok(());
+        }
+        let authorized_target = action
+            .confidence_source()
+            .select(snapshot.hypotheses())
+            .and_then(|motivation| {
+                action
+                    .verification_target()
+                    .resolve(snapshot.hypotheses(), motivation.id())
+            })
+            .and_then(|target| target.hypothesis_id().map(str::to_owned));
+        if authorized_target.as_deref() != Some(case.hypothesis_id()) {
+            return Err(DecisionLoopError::DecisionCaseAuthorityExceeded {
+                action_id: case.action_id().to_owned(),
+            });
+        }
+        Ok(())
+    }
+
+    pub(crate) fn validate_execution_command_authority(
+        &self,
+        knowledge: &KnowledgeBase,
+        command: &DecisionLoopCommand,
+    ) -> Result<(), DecisionLoopError> {
+        match command {
+            DecisionLoopCommand::ExecuteAction { case, origin, .. }
+                if !matches!(origin, DecisionActionOrigin::Bootstrap) =>
+            {
+                let snapshot = knowledge.snapshot_for_subject(case.subject());
+                self.validate_outstanding_case_authority(&snapshot, case)
+            },
+            DecisionLoopCommand::CollectActiveEvidence { case } => {
+                let snapshot = knowledge.snapshot_for_subject(case.subject());
+                self.validate_outstanding_case_authority(&snapshot, case)
+            },
+            DecisionLoopCommand::ExecuteAction { .. }
+            | DecisionLoopCommand::Replan
+            | DecisionLoopCommand::Complete { .. }
+            | DecisionLoopCommand::AwaitHumanReview { .. }
+            | DecisionLoopCommand::Halt { .. } => Ok(()),
+        }
     }
 }
 
@@ -1114,14 +1321,17 @@ fn issue_action(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn transition_from_adaptive(
     session: &mut DecisionSession,
     max_action_cycles: u32,
     planner: &AttackPlanner,
+    planning_context: PlanningContext,
     snapshot: &KnowledgeSnapshot,
     current_case: &VerificationCase,
     outcome: &Outcome,
     directive: &PipelineDirective,
+    suppressions: &BTreeSet<String>,
 ) -> Result<DecisionLoopCommand, DecisionLoopError> {
     match directive {
         PipelineDirective::Complete => {
@@ -1131,51 +1341,32 @@ fn transition_from_adaptive(
             })
         },
         PipelineDirective::ScheduleAction { action_id } => {
-            let payload_strategy = planner
-                .action(action_id)
-                .and_then(AttackAction::payload_strategy)
-                .cloned();
-            let case = match planner.action(action_id) {
-                Some(action) => {
-                    let motivation = action
-                        .confidence_source()
-                        .select(snapshot.hypotheses())
-                        .ok_or_else(|| {
-                            DecisionLoopError::NoEligibleScheduledMotivationHypothesis {
-                                action_id: action_id.clone(),
-                            }
-                        })?;
-                    let target = action
-                        .verification_target()
-                        .resolve(snapshot.hypotheses(), motivation.id())
-                        .ok_or_else(|| {
-                            DecisionLoopError::NoEligibleScheduledVerificationTarget {
-                                action_id: action_id.clone(),
-                            }
-                        })?;
-                    next_case(
-                        session,
-                        action_id,
-                        motivation.id(),
-                        &target,
-                        payload_strategy,
-                        "adaptive",
-                    )?
-                },
-                None => next_case_with_policy(
-                    session,
-                    action_id,
-                    current_case.hypothesis_id(),
-                    current_case.applies_hypothesis_transition(),
-                    payload_strategy,
-                    "adaptive",
-                )?,
-            };
+            if session.action_cycles >= max_action_cycles {
+                let reason = DecisionStopReason::ActionCycleLimit;
+                session.state = DecisionLoopState::Halted { reason };
+                return Ok(DecisionLoopCommand::Halt { reason });
+            }
+            let step = authorize_adaptive_action(
+                planner,
+                snapshot,
+                planning_context,
+                suppressions,
+                action_id,
+                true,
+            )?;
+            let case = next_case(
+                session,
+                step.action_id(),
+                step.confidence_hypothesis_id(),
+                step.verification_target(),
+                step.payload_strategy().cloned(),
+                "adaptive",
+            )?;
             Ok(issue_action(
                 session,
                 max_action_cycles,
                 case,
-                None,
+                Some(step.executor().to_owned()),
                 DecisionActionOrigin::Adaptive,
                 None,
             ))
@@ -1188,6 +1379,19 @@ fn transition_from_adaptive(
             delay_ms,
             retry_current_action: true,
         } => {
+            if session.action_cycles >= max_action_cycles {
+                let reason = DecisionStopReason::ActionCycleLimit;
+                session.state = DecisionLoopState::Halted { reason };
+                return Ok(DecisionLoopCommand::Halt { reason });
+            }
+            let step = authorize_adaptive_action(
+                planner,
+                snapshot,
+                planning_context,
+                suppressions,
+                outcome.action_id(),
+                false,
+            )?;
             let case = next_case_with_policy(
                 session,
                 outcome.action_id(),
@@ -1200,7 +1404,7 @@ fn transition_from_adaptive(
                 session,
                 max_action_cycles,
                 case,
-                None,
+                Some(step.executor().to_owned()),
                 DecisionActionOrigin::Retry,
                 Some(*delay_ms),
             ))
@@ -1213,6 +1417,14 @@ fn transition_from_adaptive(
             Ok(DecisionLoopCommand::Replan)
         },
         PipelineDirective::AwaitActiveVerification => {
+            authorize_adaptive_action(
+                planner,
+                snapshot,
+                planning_context,
+                suppressions,
+                current_case.action_id(),
+                false,
+            )?;
             let case = current_case.clone();
             session.state = DecisionLoopState::AwaitingActive { case: case.clone() };
             Ok(DecisionLoopCommand::CollectActiveEvidence { case })
@@ -1231,14 +1443,55 @@ fn transition_from_adaptive(
     }
 }
 
+fn authorize_adaptive_action(
+    planner: &AttackPlanner,
+    snapshot: &KnowledgeSnapshot,
+    planning_context: PlanningContext,
+    suppressions: &BTreeSet<String>,
+    action_id: &str,
+    preserve_scheduled_target_errors: bool,
+) -> Result<crate::PlanStep, DecisionLoopError> {
+    planner
+        .authorize_scheduled_action(snapshot, planning_context, suppressions, action_id)
+        .map_err(|error| match error {
+            ScheduledActionAuthorizationError::Planner(source) => {
+                DecisionLoopError::Planner(source)
+            },
+            ScheduledActionAuthorizationError::Unregistered { action_id } => {
+                DecisionLoopError::UnregisteredDecisionAction { action_id }
+            },
+            ScheduledActionAuthorizationError::HasPrerequisites { action_id } => {
+                DecisionLoopError::AdaptiveActionRequiresPlanning { action_id }
+            },
+            ScheduledActionAuthorizationError::Excluded { action_id, reason } => {
+                if preserve_scheduled_target_errors {
+                    match reason {
+                        crate::ExclusionReason::NoEligibleHypothesis => {
+                            return DecisionLoopError::NoEligibleScheduledMotivationHypothesis {
+                                action_id,
+                            };
+                        },
+                        crate::ExclusionReason::NoEligibleVerificationTarget => {
+                            return DecisionLoopError::NoEligibleScheduledVerificationTarget {
+                                action_id,
+                            };
+                        },
+                        _ => {},
+                    }
+                }
+                DecisionLoopError::IneligibleAdaptiveAction { action_id }
+            },
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::{
-        ActionCost, AttackAction, BenefitScore, EvidenceCalibration, EvidenceSelector,
-        ExperienceDisposition, ExperienceRecommendation, Expression, HypothesisConclusion,
-        HypothesisSelector, KnowledgeLayer, ReasoningRule, RequiredStrength, RiskScore,
-        VerificationRule, VerificationTarget,
+        ActionCost, AdaptationRule, AttackAction, BenefitScore, EvidenceCalibration,
+        EvidenceSelector, ExperienceDisposition, ExperienceRecommendation, Expression,
+        HypothesisConclusion, HypothesisSelector, KnowledgeLayer, OutcomeSelector, ReasoningRule,
+        RequiredStrength, RiskScore, VerificationRule, VerificationTarget,
     };
     use venom_core::{
         ConfidenceScore, Evidence, EvidenceId, EvidenceKind, EvidenceSource, EvidenceValue,
@@ -1420,6 +1673,41 @@ mod tests {
         decision_loop
     }
 
+    fn register_adaptive_action(
+        decision_loop: &mut DecisionLoop,
+        action_id: &str,
+        executor: &str,
+        cost: u32,
+        risk_percent: u8,
+        prerequisites: BTreeSet<String>,
+    ) {
+        decision_loop
+            .planner_mut()
+            .register(
+                AttackAction::new(
+                    action_id,
+                    executor,
+                    Expression::equals(
+                        KnowledgeLayer::Hypothesis,
+                        hypothesis_predicate(),
+                        laravel(),
+                    ),
+                    HypothesisSelector::new(
+                        hypothesis_predicate(),
+                        laravel(),
+                        Probability::from_percent(50).unwrap(),
+                        RequiredStrength::Strong,
+                    ),
+                    BenefitScore::from_percent(10).unwrap(),
+                    ActionCost::new(cost).unwrap(),
+                    RiskScore::from_percent(risk_percent).unwrap(),
+                    prerequisites,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+    }
+
     #[test]
     fn planned_knowledge_only_target_keeps_motivation_as_audit_anchor() {
         let decision_loop =
@@ -1519,6 +1807,92 @@ mod tests {
         assert_eq!(after.consecutive_suppressible_failures(), 0);
         assert_eq!(after.recommendation(), ExperienceRecommendation::Continue);
         assert!(!after.is_suppressed());
+    }
+
+    #[test]
+    fn replayed_case_cannot_broaden_current_knowledge_only_authority() {
+        let decision_loop = configured_loop_with_target(
+            Some(OutcomeStatus::Success),
+            2,
+            8,
+            None,
+            VerificationTarget::KnowledgeOnly,
+        );
+        let knowledge = knowledge(true);
+        let experience = ExperienceStore::new();
+        let mut issued = DecisionSession::new(subject());
+        decision_loop
+            .plan_next(&knowledge, &experience, &mut issued)
+            .unwrap();
+        let genuine_case = issued.state().case().unwrap();
+        assert!(!genuine_case.applies_hypothesis_transition());
+        let hypothesis_id = genuine_case.hypothesis_id().to_owned();
+
+        let mut wire = serde_json::to_value(&issued).unwrap();
+        let case = wire["state"]["case"].as_object_mut().unwrap();
+        case.remove("applies_hypothesis_transition");
+        case.remove("payload_claim_policy_guard");
+        let mut replayed: DecisionSession = serde_json::from_value(wire).unwrap();
+        assert!(replayed
+            .state()
+            .case()
+            .unwrap()
+            .applies_hypothesis_transition());
+        let before_session = replayed.clone();
+        let before_hypothesis = knowledge.hypothesis(&hypothesis_id).unwrap();
+        let mut replay_experience = experience.clone();
+
+        let error = decision_loop
+            .submit_passive_with_suppressed_actions(
+                &knowledge,
+                &mut replay_experience,
+                &mut replayed,
+                &BTreeSet::new(),
+            )
+            .unwrap_err();
+
+        assert!(matches!(
+            error,
+            DecisionLoopError::DecisionCaseAuthorityExceeded { action_id }
+                if action_id == "http.probe"
+        ));
+        assert_eq!(replayed, before_session);
+        assert_eq!(replay_experience, experience);
+        assert_eq!(
+            knowledge.hypothesis(&hypothesis_id).unwrap(),
+            before_hypothesis
+        );
+    }
+
+    #[test]
+    fn replayed_unregistered_case_is_rejected_atomically() {
+        let mut decision_loop = configured_loop(Some(OutcomeStatus::Success), 2, 8);
+        let knowledge = knowledge(true);
+        let mut experience = ExperienceStore::new();
+        let mut session = DecisionSession::new(subject());
+        decision_loop
+            .plan_next(&knowledge, &experience, &mut session)
+            .unwrap();
+        *decision_loop.planner_mut() = AttackPlanner::new();
+        let before_session = session.clone();
+        let before_experience = experience.clone();
+
+        let error = decision_loop
+            .submit_passive_with_suppressed_actions(
+                &knowledge,
+                &mut experience,
+                &mut session,
+                &BTreeSet::new(),
+            )
+            .unwrap_err();
+
+        assert!(matches!(
+            error,
+            DecisionLoopError::UnregisteredDecisionAction { action_id }
+                if action_id == "http.probe"
+        ));
+        assert_eq!(session, before_session);
+        assert_eq!(experience, before_experience);
     }
 
     #[test]
@@ -1644,12 +2018,14 @@ mod tests {
             &mut scheduled_session,
             8,
             decision_loop.planner(),
+            decision_loop.config().planning(),
             &snapshot,
             &source_case,
             &outcome,
             &PipelineDirective::ScheduleAction {
                 action_id: "knowledge.followup".to_owned(),
             },
+            &BTreeSet::new(),
         )
         .unwrap();
         let scheduled_case = execution_case(&command);
@@ -1724,12 +2100,14 @@ mod tests {
             &mut scheduled_session,
             8,
             decision_loop.planner(),
+            decision_loop.config().planning(),
             &snapshot,
             &source_case,
             &outcome,
             &PipelineDirective::ScheduleAction {
                 action_id: "motivated.followup".to_owned(),
             },
+            &BTreeSet::new(),
         )
         .unwrap();
         let scheduled_case = execution_case(&command);
@@ -1793,12 +2171,14 @@ mod tests {
             &mut scheduled_session,
             8,
             decision_loop.planner(),
+            decision_loop.config().planning(),
             &snapshot,
             &source_case,
             &outcome,
             &PipelineDirective::ScheduleAction {
                 action_id: "missing-motivation.followup".to_owned(),
             },
+            &BTreeSet::new(),
         )
         .unwrap_err();
 
@@ -1899,12 +2279,14 @@ mod tests {
             &mut scheduled_session,
             8,
             decision_loop.planner(),
+            decision_loop.config().planning(),
             &snapshot,
             &source_case,
             &outcome,
             &PipelineDirective::ScheduleAction {
                 action_id: "distinct.followup".to_owned(),
             },
+            &BTreeSet::new(),
         )
         .unwrap_err();
 
@@ -1921,12 +2303,14 @@ mod tests {
             &mut same_target_session,
             8,
             decision_loop.planner(),
+            decision_loop.config().planning(),
             &snapshot,
             &source_case,
             &outcome,
             &PipelineDirective::ScheduleAction {
                 action_id: "same-target.followup".to_owned(),
             },
+            &BTreeSet::new(),
         )
         .unwrap_err();
 
@@ -1974,10 +2358,12 @@ mod tests {
             &mut active_session,
             8,
             decision_loop.planner(),
+            decision_loop.config().planning(),
             &snapshot,
             &planned_case,
             &outcome,
             &PipelineDirective::AwaitActiveVerification,
+            &BTreeSet::new(),
         )
         .unwrap();
         let active_case = match active {
@@ -1992,6 +2378,7 @@ mod tests {
             &mut retry_session,
             8,
             decision_loop.planner(),
+            decision_loop.config().planning(),
             &snapshot,
             &planned_case,
             &outcome,
@@ -1999,6 +2386,7 @@ mod tests {
                 delay_ms: 5,
                 retry_current_action: true,
             },
+            &BTreeSet::new(),
         )
         .unwrap();
         let retry_case = execution_case(&retry);
@@ -2027,7 +2415,12 @@ mod tests {
 
         *decision_loop.planner_mut() = replacement.planner().clone();
         let passive = decision_loop
-            .submit_passive(&knowledge, &mut experience, &mut session)
+            .submit_passive_with_suppressed_actions(
+                &knowledge,
+                &mut experience,
+                &mut session,
+                &BTreeSet::new(),
+            )
             .unwrap();
         let active_case = match passive.command() {
             DecisionLoopCommand::CollectActiveEvidence { case } => case,
@@ -2187,7 +2580,15 @@ mod tests {
 
     #[test]
     fn blocked_action_uses_bounded_adaptation_without_learning_a_negative() {
-        let decision_loop = configured_loop(Some(OutcomeStatus::Blocked), 1, 8);
+        let mut decision_loop = configured_loop(Some(OutcomeStatus::Blocked), 1, 8);
+        register_adaptive_action(
+            &mut decision_loop,
+            "http.403-bypass",
+            "plugin.http-403-bypass",
+            10,
+            20,
+            BTreeSet::new(),
+        );
         let knowledge = knowledge(true);
         let mut experience = ExperienceStore::new();
         let mut session = DecisionSession::new(subject());
@@ -2196,7 +2597,8 @@ mod tests {
             .plan_next(&knowledge, &experience, &mut session)
             .unwrap();
         assert_eq!(planning.rule_applications().len(), 1);
-        assert_eq!(planning.plan().steps().len(), 1);
+        assert_eq!(planning.plan().steps().len(), 2);
+        assert_eq!(execution_case(planning.command()).action_id(), "http.probe");
         assert!(planning.suppressed_actions().is_empty());
         assert!(matches!(
             planning.session_transition().before().state(),
@@ -2220,7 +2622,12 @@ mod tests {
         ));
 
         let first = decision_loop
-            .submit_passive(&knowledge, &mut experience, &mut session)
+            .submit_passive_with_suppressed_actions(
+                &knowledge,
+                &mut experience,
+                &mut session,
+                &BTreeSet::new(),
+            )
             .unwrap();
         assert_eq!(first.adaptive().selected_rule_id(), Some("http.403.bypass"));
         assert!(matches!(
@@ -2228,14 +2635,20 @@ mod tests {
             DecisionLoopCommand::ExecuteAction {
                 case,
                 origin: DecisionActionOrigin::Adaptive,
-                executor: None,
+                executor: Some(executor),
                 delay_ms: None,
             } if case.action_id() == "http.403-bypass"
+                && executor == "plugin.http-403-bypass"
         ));
         assert_eq!(session.action_cycles(), 2);
 
         let second = decision_loop
-            .submit_passive(&knowledge, &mut experience, &mut session)
+            .submit_passive_with_suppressed_actions(
+                &knowledge,
+                &mut experience,
+                &mut session,
+                &BTreeSet::new(),
+            )
             .unwrap();
         assert_eq!(
             second.adaptive().selected_rule_id(),
@@ -2251,7 +2664,12 @@ mod tests {
         ));
 
         let third = decision_loop
-            .submit_passive(&knowledge, &mut experience, &mut session)
+            .submit_passive_with_suppressed_actions(
+                &knowledge,
+                &mut experience,
+                &mut session,
+                &BTreeSet::new(),
+            )
             .unwrap();
         assert!(third.adaptive().selected_rule_id().is_none());
         assert!(matches!(
@@ -2279,6 +2697,383 @@ mod tests {
                 .consecutive_suppressible_failures(),
             0
         );
+    }
+
+    #[test]
+    fn adaptive_execution_without_explicit_host_context_fails_atomically() {
+        let decision_loop = configured_loop(Some(OutcomeStatus::Blocked), 1, 8);
+        let knowledge = knowledge(true);
+        let mut experience = ExperienceStore::new();
+        let mut session = DecisionSession::new(subject());
+        decision_loop
+            .plan_next(&knowledge, &experience, &mut session)
+            .unwrap();
+        let initial_session = session.clone();
+        let initial_experience = experience.clone();
+        let hypothesis_id = session.state().case().unwrap().hypothesis_id().to_owned();
+        let initial_hypothesis = knowledge.hypothesis(&hypothesis_id).unwrap();
+
+        let error = decision_loop
+            .submit_passive(&knowledge, &mut experience, &mut session)
+            .unwrap_err();
+
+        assert!(matches!(
+            error,
+            DecisionLoopError::AdaptiveExecutionRequiresHostPolicyContext { action_id }
+                if action_id == "http.403-bypass"
+        ));
+        assert_eq!(session, initial_session);
+        assert_eq!(experience, initial_experience);
+        assert_eq!(
+            knowledge.hypothesis(&hypothesis_id).unwrap(),
+            initial_hypothesis
+        );
+    }
+
+    #[test]
+    fn active_and_replan_continuations_without_host_context_fail_atomically() {
+        for passive_status in [None, Some(OutcomeStatus::FalsePositive)] {
+            let decision_loop = configured_loop(passive_status, 1, 8);
+            let knowledge = knowledge(true);
+            let mut experience = ExperienceStore::new();
+            let mut session = DecisionSession::new(subject());
+            decision_loop
+                .plan_next(&knowledge, &experience, &mut session)
+                .unwrap();
+            let initial_session = session.clone();
+            let initial_experience = experience.clone();
+            let hypothesis_id = session.state().case().unwrap().hypothesis_id().to_owned();
+            let initial_hypothesis = knowledge.hypothesis(&hypothesis_id).unwrap();
+
+            let error = decision_loop
+                .submit_passive(&knowledge, &mut experience, &mut session)
+                .unwrap_err();
+
+            assert!(matches!(
+                error,
+                DecisionLoopError::AdaptiveExecutionRequiresHostPolicyContext { action_id }
+                    if action_id == "http.probe"
+            ));
+            assert_eq!(session, initial_session);
+            assert_eq!(experience, initial_experience);
+            assert_eq!(
+                knowledge.hypothesis(&hypothesis_id).unwrap(),
+                initial_hypothesis
+            );
+        }
+    }
+
+    #[test]
+    fn unregistered_adaptive_action_is_rejected_atomically() {
+        let decision_loop = configured_loop(Some(OutcomeStatus::Blocked), 1, 8);
+        let knowledge = knowledge(true);
+        let mut experience = ExperienceStore::new();
+        let mut session = DecisionSession::new(subject());
+        decision_loop
+            .plan_next(&knowledge, &experience, &mut session)
+            .unwrap();
+        let initial_session = session.clone();
+        let initial_experience = experience.clone();
+        let hypothesis_id = session.state().case().unwrap().hypothesis_id().to_owned();
+        let initial_hypothesis = knowledge.hypothesis(&hypothesis_id).unwrap();
+
+        let error = decision_loop
+            .submit_passive_with_suppressed_actions(
+                &knowledge,
+                &mut experience,
+                &mut session,
+                &BTreeSet::new(),
+            )
+            .unwrap_err();
+
+        assert!(matches!(
+            error,
+            DecisionLoopError::UnregisteredDecisionAction { action_id }
+                if action_id == "http.403-bypass"
+        ));
+        assert_eq!(session, initial_session);
+        assert_eq!(experience, initial_experience);
+        assert_eq!(
+            knowledge.hypothesis(&hypothesis_id).unwrap(),
+            initial_hypothesis
+        );
+    }
+
+    #[test]
+    fn host_suppression_survives_planning_and_adaptive_selection() {
+        let mut decision_loop = configured_loop(Some(OutcomeStatus::Blocked), 1, 8);
+        register_adaptive_action(
+            &mut decision_loop,
+            "http.403-bypass",
+            "plugin.http-403-bypass",
+            10,
+            20,
+            BTreeSet::new(),
+        );
+        let knowledge = knowledge(true);
+        let mut experience = ExperienceStore::new();
+        let mut session = DecisionSession::new(subject());
+        let host_suppressions = BTreeSet::from(["http.403-bypass".to_owned()]);
+
+        let planning = decision_loop
+            .plan_next_with_suppressed_actions(
+                &knowledge,
+                &experience,
+                &mut session,
+                &host_suppressions,
+            )
+            .unwrap();
+        assert_eq!(execution_case(planning.command()).action_id(), "http.probe");
+        assert!(planning.suppressed_actions().contains("http.403-bypass"));
+
+        let outcome = decision_loop
+            .submit_passive_with_suppressed_actions(
+                &knowledge,
+                &mut experience,
+                &mut session,
+                &host_suppressions,
+            )
+            .unwrap();
+
+        assert!(outcome.adaptive().selected_rule_id().is_none());
+        assert!(matches!(
+            outcome.command(),
+            DecisionLoopCommand::AwaitHumanReview { case }
+                if case.action_id() == "http.probe"
+        ));
+        assert_eq!(session.action_cycles(), 1);
+        assert!(matches!(
+            session.state(),
+            DecisionLoopState::Halted {
+                reason: DecisionStopReason::HumanReview
+            }
+        ));
+    }
+
+    #[test]
+    fn registered_but_ineligible_adaptive_action_is_rejected_atomically() {
+        let mut decision_loop = configured_loop(Some(OutcomeStatus::Blocked), 1, 8);
+        register_adaptive_action(
+            &mut decision_loop,
+            "http.403-bypass",
+            "plugin.http-403-bypass",
+            101,
+            20,
+            BTreeSet::new(),
+        );
+        let knowledge = knowledge(true);
+        let mut experience = ExperienceStore::new();
+        let mut session = DecisionSession::new(subject());
+        decision_loop
+            .plan_next(&knowledge, &experience, &mut session)
+            .unwrap();
+        let initial_session = session.clone();
+        let initial_experience = experience.clone();
+
+        let error = decision_loop
+            .submit_passive_with_suppressed_actions(
+                &knowledge,
+                &mut experience,
+                &mut session,
+                &BTreeSet::new(),
+            )
+            .unwrap_err();
+
+        assert!(matches!(
+            error,
+            DecisionLoopError::IneligibleAdaptiveAction { action_id }
+                if action_id == "http.403-bypass"
+        ));
+        assert_eq!(session, initial_session);
+        assert_eq!(experience, initial_experience);
+    }
+
+    #[test]
+    fn adaptive_schedule_cannot_skip_registered_prerequisites() {
+        let mut decision_loop = configured_loop(Some(OutcomeStatus::Blocked), 1, 8);
+        let knowledge = knowledge(true);
+        let mut experience = ExperienceStore::new();
+        let mut session = DecisionSession::new(subject());
+        decision_loop
+            .plan_next(&knowledge, &experience, &mut session)
+            .unwrap();
+        register_adaptive_action(
+            &mut decision_loop,
+            "http.prepare-bypass",
+            "plugin.http-prepare-bypass",
+            10,
+            20,
+            BTreeSet::new(),
+        );
+        register_adaptive_action(
+            &mut decision_loop,
+            "http.403-bypass",
+            "plugin.http-403-bypass",
+            10,
+            20,
+            BTreeSet::from(["http.prepare-bypass".to_owned()]),
+        );
+        let initial_session = session.clone();
+        let initial_experience = experience.clone();
+
+        let error = decision_loop
+            .submit_passive_with_suppressed_actions(
+                &knowledge,
+                &mut experience,
+                &mut session,
+                &BTreeSet::new(),
+            )
+            .unwrap_err();
+
+        assert!(matches!(
+            error,
+            DecisionLoopError::AdaptiveActionRequiresPlanning { action_id }
+                if action_id == "http.403-bypass"
+        ));
+        assert_eq!(session, initial_session);
+        assert_eq!(experience, initial_experience);
+    }
+
+    #[test]
+    fn adaptive_authorization_observes_the_outcomes_prospective_hypothesis_state() {
+        let mut decision_loop = configured_loop(Some(OutcomeStatus::FalsePositive), 1, 8);
+        let knowledge = knowledge(true);
+        let mut experience = ExperienceStore::new();
+        let mut session = DecisionSession::new(subject());
+        decision_loop
+            .plan_next(&knowledge, &experience, &mut session)
+            .unwrap();
+        register_adaptive_action(
+            &mut decision_loop,
+            "followup.after-rejection",
+            "plugin.followup-after-rejection",
+            10,
+            20,
+            BTreeSet::new(),
+        );
+        decision_loop
+            .adaptive_mut()
+            .register(
+                AdaptationRule::new(
+                    "test.schedule-after-rejection",
+                    OutcomeSelector::any_stage(BTreeSet::from([OutcomeStatus::FalsePositive]))
+                        .unwrap(),
+                    1_000,
+                    None,
+                    PipelineDirective::ScheduleAction {
+                        action_id: "followup.after-rejection".to_owned(),
+                    },
+                    "fixture attempts to schedule from a rejected motivation",
+                    1,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let initial_session = session.clone();
+        let initial_experience = experience.clone();
+        let hypothesis_id = session.state().case().unwrap().hypothesis_id().to_owned();
+        let initial_hypothesis = knowledge.hypothesis(&hypothesis_id).unwrap();
+
+        let error = decision_loop
+            .submit_passive_with_suppressed_actions(
+                &knowledge,
+                &mut experience,
+                &mut session,
+                &BTreeSet::new(),
+            )
+            .unwrap_err();
+
+        assert!(matches!(
+            error,
+            DecisionLoopError::NoEligibleScheduledMotivationHypothesis { action_id }
+                if action_id == "followup.after-rejection"
+        ));
+        assert_eq!(session, initial_session);
+        assert_eq!(experience, initial_experience);
+        assert_eq!(
+            knowledge.hypothesis(&hypothesis_id).unwrap(),
+            initial_hypothesis
+        );
+    }
+
+    #[test]
+    fn adaptive_retry_requires_context_and_honors_dynamic_host_suppression() {
+        let mut decision_loop = configured_loop(None, 1, 8);
+        decision_loop
+            .verification_mut()
+            .passive_mut()
+            .register(
+                VerificationRule::new(
+                    "verify.http-429",
+                    VerificationStage::Passive,
+                    100,
+                    Expression::equals(
+                        KnowledgeLayer::Evidence,
+                        status_predicate(),
+                        EvidenceValue::Unsigned(429),
+                    ),
+                    OutcomeStatus::Blocked,
+                    Probability::from_percent(95).unwrap(),
+                    "HTTP rate limiting blocks the current action",
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let knowledge = knowledge(false);
+        knowledge
+            .insert_evidence(Evidence::new(
+                subject(),
+                EvidenceKind::Http,
+                status_predicate(),
+                EvidenceValue::Unsigned(429),
+                EvidenceSource::new("http.executor", "rate-limit-status").unwrap(),
+                ConfidenceScore::MAX,
+            ))
+            .unwrap();
+
+        let mut no_context_experience = ExperienceStore::new();
+        let mut no_context_session = DecisionSession::new(subject());
+        decision_loop
+            .plan_next(&knowledge, &no_context_experience, &mut no_context_session)
+            .unwrap();
+        let initial_session = no_context_session.clone();
+        let initial_experience = no_context_experience.clone();
+        let error = decision_loop
+            .submit_passive(
+                &knowledge,
+                &mut no_context_experience,
+                &mut no_context_session,
+            )
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            DecisionLoopError::AdaptiveExecutionRequiresHostPolicyContext { action_id }
+                if action_id == "http.probe"
+        ));
+        assert_eq!(no_context_session, initial_session);
+        assert_eq!(no_context_experience, initial_experience);
+
+        let mut suppressed_experience = ExperienceStore::new();
+        let mut suppressed_session = DecisionSession::new(subject());
+        decision_loop
+            .plan_next(&knowledge, &suppressed_experience, &mut suppressed_session)
+            .unwrap();
+        let suppressions = BTreeSet::from(["http.probe".to_owned()]);
+        let outcome = decision_loop
+            .submit_passive_with_suppressed_actions(
+                &knowledge,
+                &mut suppressed_experience,
+                &mut suppressed_session,
+                &suppressions,
+            )
+            .unwrap();
+        assert!(outcome.adaptive().selected_rule_id().is_none());
+        assert!(matches!(
+            outcome.command(),
+            DecisionLoopCommand::AwaitHumanReview { case }
+                if case.action_id() == "http.probe"
+        ));
+        assert_eq!(suppressed_session.action_cycles(), 1);
     }
 
     #[test]
@@ -2314,7 +3109,12 @@ mod tests {
         let baseline = knowledge.snapshot_for_subject(&subject());
 
         let passive = decision_loop
-            .submit_passive(&knowledge, &mut experience, &mut session)
+            .submit_passive_with_suppressed_actions(
+                &knowledge,
+                &mut experience,
+                &mut session,
+                &BTreeSet::new(),
+            )
             .unwrap();
         assert_eq!(
             passive.verification().outcome().status(),
@@ -2338,12 +3138,13 @@ mod tests {
             .unwrap();
         let after_probe = knowledge.snapshot_for_subject(&subject());
         let active = decision_loop
-            .submit_active(
+            .submit_active_with_suppressed_actions(
                 &knowledge,
                 &mut experience,
                 &mut session,
                 &baseline,
                 &after_probe,
+                &BTreeSet::new(),
             )
             .unwrap();
 
@@ -2399,7 +3200,12 @@ mod tests {
         let baseline = knowledge.snapshot_for_subject(&subject());
 
         let passive = decision_loop
-            .submit_passive(&knowledge, &mut experience, &mut session)
+            .submit_passive_with_suppressed_actions(
+                &knowledge,
+                &mut experience,
+                &mut session,
+                &BTreeSet::new(),
+            )
             .unwrap();
         assert!(matches!(
             passive.command(),
@@ -2418,12 +3224,13 @@ mod tests {
             .unwrap();
         let after_probe = knowledge.snapshot_for_subject(&subject());
         let active = decision_loop
-            .submit_active(
+            .submit_active_with_suppressed_actions(
                 &knowledge,
                 &mut experience,
                 &mut session,
                 &baseline,
                 &after_probe,
+                &BTreeSet::new(),
             )
             .unwrap();
 
@@ -2458,7 +3265,12 @@ mod tests {
             .unwrap();
 
         let rejected = decision_loop
-            .submit_passive(&knowledge, &mut experience, &mut session)
+            .submit_passive_with_suppressed_actions(
+                &knowledge,
+                &mut experience,
+                &mut session,
+                &BTreeSet::new(),
+            )
             .unwrap();
         let hypothesis_id = rejected.verification().outcome().hypothesis_id().to_owned();
         assert!(matches!(rejected.command(), DecisionLoopCommand::Replan));
@@ -2525,7 +3337,12 @@ mod tests {
             .unwrap();
 
         let outcome = decision_loop
-            .submit_passive(&knowledge, &mut experience, &mut session)
+            .submit_passive_with_suppressed_actions(
+                &knowledge,
+                &mut experience,
+                &mut session,
+                &BTreeSet::new(),
+            )
             .unwrap();
         assert_eq!(
             outcome.adaptive().selected_rule_id(),

@@ -927,6 +927,43 @@ struct EligibleCandidate {
     utility: UtilityBreakdown,
 }
 
+type CandidateEligibility = Result<EligibleCandidate, ExclusionReason>;
+
+/// Why a registered action could not be authorized for immediate adaptive
+/// dispatch.
+///
+/// This stays crate-private because it is an orchestration boundary between the
+/// planner and decision loop, not a second public planning API.
+#[derive(Debug, Error)]
+pub(crate) enum ScheduledActionAuthorizationError {
+    /// The registered action graph was invalid or requirement evaluation failed.
+    #[error(transparent)]
+    Planner(#[from] PlannerError),
+
+    /// Adaptive policy referenced an action outside the planner registry.
+    #[error("scheduled action {action_id} is not registered")]
+    Unregistered {
+        /// Unknown action identity.
+        action_id: String,
+    },
+
+    /// Immediate dispatch cannot prove that prerequisites have already run.
+    #[error("scheduled action {action_id} has prerequisites and cannot be dispatched directly")]
+    HasPrerequisites {
+        /// Registered action identity.
+        action_id: String,
+    },
+
+    /// The normal planner eligibility policy excluded the requested action.
+    #[error("scheduled action {action_id} is not authorized: {reason:?}")]
+    Excluded {
+        /// Registered action identity.
+        action_id: String,
+        /// Exact planner exclusion that denied authority.
+        reason: ExclusionReason,
+    },
+}
+
 /// Deterministic utility planner for declarative attack actions.
 #[derive(Debug, Clone, Default)]
 pub struct AttackPlanner {
@@ -1034,70 +1071,21 @@ impl AttackPlanner {
         let mut eligible = BTreeMap::<String, EligibleCandidate>::new();
         let mut exclusions = BTreeMap::<String, ExclusionReason>::new();
         for action in self.actions.values() {
-            if defense_suppressed_actions.contains(action.id()) {
-                exclusions.insert(action.id.clone(), ExclusionReason::DefenseSuppressed);
-                continue;
-            }
-            if policy_suppressed_actions.contains(action.id()) {
-                exclusions.insert(action.id.clone(), ExclusionReason::PolicySuppressed);
-                continue;
-            }
-            let requirements = action.requirements.evaluate(snapshot)?;
-            if !requirements.matched() {
-                exclusions.insert(action.id.clone(), ExclusionReason::RequirementsNotMet);
-                continue;
-            }
-            if action.risk > context.maximum_risk {
-                exclusions.insert(
-                    action.id.clone(),
-                    ExclusionReason::RiskLimitExceeded {
-                        actual: action.risk,
-                        maximum: context.maximum_risk,
-                    },
-                );
-                continue;
-            }
-            let Some(hypothesis) = action.confidence_source.select(snapshot.hypotheses()) else {
-                exclusions.insert(action.id.clone(), ExclusionReason::NoEligibleHypothesis);
-                continue;
+            let suppression = if defense_suppressed_actions.contains(action.id()) {
+                Some(ExclusionReason::DefenseSuppressed)
+            } else if policy_suppressed_actions.contains(action.id()) {
+                Some(ExclusionReason::PolicySuppressed)
+            } else {
+                None
             };
-            let Some(verification_target) = action
-                .verification_target
-                .resolve(snapshot.hypotheses(), hypothesis.id())
-            else {
-                exclusions.insert(
-                    action.id.clone(),
-                    ExclusionReason::NoEligibleVerificationTarget,
-                );
-                continue;
-            };
-            let utility = UtilityBreakdown::calculate(
-                action.gain,
-                hypothesis.posterior(),
-                context.business_value,
-                action.cost,
-                action.risk,
-            );
-            if utility.score < context.minimum_utility {
-                exclusions.insert(
-                    action.id.clone(),
-                    ExclusionReason::BelowMinimumUtility {
-                        actual: utility.score,
-                        minimum: context.minimum_utility,
-                    },
-                );
-                continue;
-            }
-            eligible.insert(
-                action.id.clone(),
-                EligibleCandidate {
-                    action: action.clone(),
-                    confidence_hypothesis_id: hypothesis.id().to_owned(),
-                    verification_target,
-                    requirements,
-                    utility,
+            match evaluate_candidate(action, snapshot, context, suppression)? {
+                Ok(candidate) => {
+                    eligible.insert(action.id.clone(), candidate);
                 },
-            );
+                Err(reason) => {
+                    exclusions.insert(action.id.clone(), reason);
+                },
+            }
         }
 
         let mut ranked: Vec<String> = eligible.keys().cloned().collect();
@@ -1158,20 +1146,7 @@ impl AttackPlanner {
         let steps = ordered
             .into_iter()
             .enumerate()
-            .map(|(position, id)| {
-                let candidate = &eligible[&id];
-                PlanStep {
-                    position,
-                    action_id: candidate.action.id.clone(),
-                    executor: candidate.action.executor.clone(),
-                    payload_strategy: candidate.action.payload_strategy.clone(),
-                    prerequisites: candidate.action.prerequisites.clone(),
-                    confidence_hypothesis_id: candidate.confidence_hypothesis_id.clone(),
-                    verification_target: candidate.verification_target.clone(),
-                    requirements: candidate.requirements.clone(),
-                    utility: candidate.utility,
-                }
-            })
+            .map(|(position, id)| plan_step(position, &eligible[&id]))
             .collect();
         let mut excluded = Vec::new();
         for id in self.actions.keys().filter(|id| !selected.contains(*id)) {
@@ -1195,6 +1170,60 @@ impl AttackPlanner {
         })
     }
 
+    /// Re-applies planner authority to one registered action before immediate
+    /// adaptive dispatch.
+    ///
+    /// Unlike normal planning this does not rank the action against unrelated
+    /// candidates. It does validate the complete registered graph, then applies
+    /// the same suppression, requirement, risk, confidence, verification-target,
+    /// and minimum-utility checks as [`Self::plan_snapshot_with_suppressed`]. A
+    /// direct adaptive dispatch cannot safely satisfy a prerequisite closure,
+    /// because the session does not preserve proof that those actions completed;
+    /// such actions therefore fail closed. The requested action's own cost must
+    /// fit the complete planning budget.
+    pub(crate) fn authorize_scheduled_action(
+        &self,
+        snapshot: &KnowledgeSnapshot,
+        context: PlanningContext,
+        policy_suppressed_actions: &BTreeSet<String>,
+        action_id: &str,
+    ) -> Result<PlanStep, ScheduledActionAuthorizationError> {
+        self.validate_dependencies()?;
+        let action = self.actions.get(action_id).ok_or_else(|| {
+            ScheduledActionAuthorizationError::Unregistered {
+                action_id: action_id.to_owned(),
+            }
+        })?;
+        let suppression = policy_suppressed_actions
+            .contains(action_id)
+            .then_some(ExclusionReason::PolicySuppressed);
+        let candidate = match evaluate_candidate(action, snapshot, context, suppression)? {
+            Ok(candidate) => candidate,
+            Err(reason) => {
+                return Err(ScheduledActionAuthorizationError::Excluded {
+                    action_id: action_id.to_owned(),
+                    reason,
+                })
+            },
+        };
+        if !candidate.action.prerequisites.is_empty() {
+            return Err(ScheduledActionAuthorizationError::HasPrerequisites {
+                action_id: action_id.to_owned(),
+            });
+        }
+        let required = u64::from(candidate.action.cost.units());
+        if required > context.budget {
+            return Err(ScheduledActionAuthorizationError::Excluded {
+                action_id: action_id.to_owned(),
+                reason: ExclusionReason::BudgetExceeded {
+                    required,
+                    remaining: context.budget,
+                },
+            });
+        }
+        Ok(plan_step(0, &candidate))
+    }
+
     fn validate_dependencies(&self) -> Result<(), PlannerError> {
         for action in self.actions.values() {
             for prerequisite in &action.prerequisites {
@@ -1212,6 +1241,70 @@ impl AttackPlanner {
             visit_dependency(action_id, &self.actions, &mut visiting, &mut visited)?;
         }
         Ok(())
+    }
+}
+
+fn evaluate_candidate(
+    action: &AttackAction,
+    snapshot: &KnowledgeSnapshot,
+    context: PlanningContext,
+    suppression: Option<ExclusionReason>,
+) -> Result<CandidateEligibility, PlannerError> {
+    if let Some(reason) = suppression {
+        return Ok(Err(reason));
+    }
+    let requirements = action.requirements.evaluate(snapshot)?;
+    if !requirements.matched() {
+        return Ok(Err(ExclusionReason::RequirementsNotMet));
+    }
+    if action.risk > context.maximum_risk {
+        return Ok(Err(ExclusionReason::RiskLimitExceeded {
+            actual: action.risk,
+            maximum: context.maximum_risk,
+        }));
+    }
+    let Some(hypothesis) = action.confidence_source.select(snapshot.hypotheses()) else {
+        return Ok(Err(ExclusionReason::NoEligibleHypothesis));
+    };
+    let Some(verification_target) = action
+        .verification_target
+        .resolve(snapshot.hypotheses(), hypothesis.id())
+    else {
+        return Ok(Err(ExclusionReason::NoEligibleVerificationTarget));
+    };
+    let utility = UtilityBreakdown::calculate(
+        action.gain,
+        hypothesis.posterior(),
+        context.business_value,
+        action.cost,
+        action.risk,
+    );
+    if utility.score < context.minimum_utility {
+        return Ok(Err(ExclusionReason::BelowMinimumUtility {
+            actual: utility.score,
+            minimum: context.minimum_utility,
+        }));
+    }
+    Ok(Ok(EligibleCandidate {
+        action: action.clone(),
+        confidence_hypothesis_id: hypothesis.id().to_owned(),
+        verification_target,
+        requirements,
+        utility,
+    }))
+}
+
+fn plan_step(position: usize, candidate: &EligibleCandidate) -> PlanStep {
+    PlanStep {
+        position,
+        action_id: candidate.action.id.clone(),
+        executor: candidate.action.executor.clone(),
+        payload_strategy: candidate.action.payload_strategy.clone(),
+        prerequisites: candidate.action.prerequisites.clone(),
+        confidence_hypothesis_id: candidate.confidence_hypothesis_id.clone(),
+        verification_target: candidate.verification_target.clone(),
+        requirements: candidate.requirements.clone(),
+        utility: candidate.utility,
     }
 }
 
@@ -1390,6 +1483,318 @@ mod tests {
         assert_eq!(first.steps()[0].action_id(), "alpha");
         assert_eq!(first.steps()[1].action_id(), "zeta");
         assert_eq!(first.total_cost(), 20);
+    }
+
+    #[test]
+    fn registration_order_cannot_change_dependency_or_suppression_semantics() {
+        let knowledge = knowledge_with_hypothesis((80, 20));
+        let actions = [
+            action("root", 60, 10, 20, &[]),
+            action("dependent", 90, 10, 20, &["root"]),
+            action("independent", 70, 10, 20, &[]),
+            action("knowledge-only", 50, 10, 20, &[])
+                .with_verification_target(VerificationTarget::KnowledgeOnly),
+        ];
+        let mut forward = AttackPlanner::new();
+        let mut reverse = AttackPlanner::new();
+        for action in &actions {
+            forward.register(action.clone()).unwrap();
+        }
+        for action in actions.iter().rev() {
+            reverse.register(action.clone()).unwrap();
+        }
+        let suppressions = BTreeSet::from(["independent".to_owned()]);
+
+        let forward_plan = forward
+            .plan_with_suppressed(&knowledge, &subject(), context(100), &suppressions)
+            .unwrap();
+        let reverse_plan = reverse
+            .plan_with_suppressed(&knowledge, &subject(), context(100), &suppressions)
+            .unwrap();
+
+        assert_eq!(forward_plan, reverse_plan);
+        let positions: BTreeMap<_, _> = forward_plan
+            .steps()
+            .iter()
+            .map(|step| (step.action_id(), step.position()))
+            .collect();
+        assert!(positions["root"] < positions["dependent"]);
+        assert!(!positions.contains_key("independent"));
+        assert_eq!(
+            forward_plan
+                .excluded()
+                .iter()
+                .find(|excluded| excluded.action_id() == "independent")
+                .unwrap()
+                .reason(),
+            &ExclusionReason::PolicySuppressed
+        );
+    }
+
+    #[test]
+    fn scheduled_action_authorization_reuses_exact_planner_eligibility_and_policy() {
+        let knowledge = knowledge_with_hypothesis((80, 20));
+        let selected = action("direct", 80, 10, 20, &[])
+            .with_payload_strategy(PayloadStrategyRef::new("direct.strategy", 2).unwrap())
+            .with_verification_target(VerificationTarget::KnowledgeOnly);
+        let mut planner = AttackPlanner::new();
+        planner.register(selected).unwrap();
+        let snapshot = knowledge.snapshot_for_subject(&subject());
+        let exact_context = PlanningContext::new(
+            BenefitScore::from_percent(90).unwrap(),
+            10,
+            RiskScore::from_percent(20).unwrap(),
+        );
+
+        let planned = planner.plan_snapshot(&snapshot, exact_context).unwrap();
+        let authorized = planner
+            .authorize_scheduled_action(&snapshot, exact_context, &BTreeSet::new(), "direct")
+            .unwrap();
+
+        assert_eq!(&authorized, &planned.steps()[0]);
+        assert_eq!(authorized.executor(), "plugin.direct");
+        assert_eq!(
+            authorized.payload_strategy(),
+            Some(&PayloadStrategyRef::new("direct.strategy", 2).unwrap())
+        );
+        assert_eq!(
+            authorized.verification_target(),
+            &ResolvedVerificationTarget::KnowledgeOnly
+        );
+        assert!(!authorized
+            .verification_target()
+            .applies_hypothesis_transition());
+    }
+
+    #[test]
+    fn scheduled_action_authorization_enforces_suppression_budget_and_risk_boundaries() {
+        let knowledge = knowledge_with_hypothesis((80, 20));
+        let mut planner = AttackPlanner::new();
+        planner.register(action("direct", 80, 10, 20, &[])).unwrap();
+        let snapshot = knowledge.snapshot_for_subject(&subject());
+        let exact_context = PlanningContext::new(
+            BenefitScore::from_percent(90).unwrap(),
+            10,
+            RiskScore::from_percent(20).unwrap(),
+        );
+
+        planner
+            .authorize_scheduled_action(&snapshot, exact_context, &BTreeSet::new(), "direct")
+            .unwrap();
+        let suppressed = planner
+            .authorize_scheduled_action(
+                &snapshot,
+                exact_context,
+                &BTreeSet::from(["direct".to_owned()]),
+                "direct",
+            )
+            .unwrap_err();
+        assert!(matches!(
+            suppressed,
+            ScheduledActionAuthorizationError::Excluded {
+                action_id,
+                reason: ExclusionReason::PolicySuppressed,
+            } if action_id == "direct"
+        ));
+
+        let budget = planner
+            .authorize_scheduled_action(
+                &snapshot,
+                PlanningContext::new(
+                    BenefitScore::from_percent(90).unwrap(),
+                    9,
+                    RiskScore::from_percent(20).unwrap(),
+                ),
+                &BTreeSet::new(),
+                "direct",
+            )
+            .unwrap_err();
+        assert!(matches!(
+            budget,
+            ScheduledActionAuthorizationError::Excluded {
+                action_id,
+                reason: ExclusionReason::BudgetExceeded {
+                    required: 10,
+                    remaining: 9,
+                },
+            } if action_id == "direct"
+        ));
+
+        let risk = planner
+            .authorize_scheduled_action(
+                &snapshot,
+                PlanningContext::new(
+                    BenefitScore::from_percent(90).unwrap(),
+                    10,
+                    RiskScore::from_percent(19).unwrap(),
+                ),
+                &BTreeSet::new(),
+                "direct",
+            )
+            .unwrap_err();
+        assert!(matches!(
+            risk,
+            ScheduledActionAuthorizationError::Excluded {
+                action_id,
+                reason: ExclusionReason::RiskLimitExceeded { .. },
+            } if action_id == "direct"
+        ));
+    }
+
+    #[test]
+    fn scheduled_action_authorization_fails_closed_on_registry_and_dependency_graphs() {
+        let knowledge = knowledge_with_hypothesis((80, 20));
+        let snapshot = knowledge.snapshot_for_subject(&subject());
+        let mut planner = AttackPlanner::new();
+        planner.register(action("base", 40, 5, 10, &[])).unwrap();
+        planner
+            .register(action("dependent", 80, 5, 10, &["base"]))
+            .unwrap();
+
+        assert!(matches!(
+            planner.authorize_scheduled_action(
+                &snapshot,
+                context(10),
+                &BTreeSet::new(),
+                "unknown",
+            ),
+            Err(ScheduledActionAuthorizationError::Unregistered { action_id })
+                if action_id == "unknown"
+        ));
+        assert!(matches!(
+            planner.authorize_scheduled_action(
+                &snapshot,
+                context(10),
+                &BTreeSet::new(),
+                "dependent",
+            ),
+            Err(ScheduledActionAuthorizationError::HasPrerequisites { action_id })
+                if action_id == "dependent"
+        ));
+        assert!(matches!(
+            planner.authorize_scheduled_action(
+                &snapshot,
+                context(10),
+                &BTreeSet::from(["dependent".to_owned()]),
+                "dependent",
+            ),
+            Err(ScheduledActionAuthorizationError::Excluded {
+                action_id,
+                reason: ExclusionReason::PolicySuppressed,
+            }) if action_id == "dependent"
+        ));
+
+        let mut invalid = AttackPlanner::new();
+        invalid
+            .register(action("invalid", 80, 5, 10, &["missing"]))
+            .unwrap();
+        invalid.register(action("direct", 80, 5, 10, &[])).unwrap();
+        assert!(matches!(
+            invalid.authorize_scheduled_action(&snapshot, context(10), &BTreeSet::new(), "direct",),
+            Err(ScheduledActionAuthorizationError::Planner(
+                PlannerError::UnknownPrerequisite { .. }
+            ))
+        ));
+    }
+
+    #[test]
+    fn scheduled_action_authorization_reuses_requirement_target_and_utility_checks() {
+        let knowledge = knowledge_with_hypothesis((80, 20));
+        let snapshot = knowledge.snapshot_for_subject(&subject());
+        let unmet = AttackAction::new(
+            "unmet",
+            "plugin.unmet",
+            Expression::exists(
+                KnowledgeLayer::Evidence,
+                KnowledgePredicate::new("authentication", "mfa").unwrap(),
+            ),
+            HypothesisSelector::new(
+                stack_predicate(),
+                stack_value(),
+                Probability::from_percent(50).unwrap(),
+                RequiredStrength::Strong,
+            ),
+            BenefitScore::from_percent(80).unwrap(),
+            ActionCost::new(10).unwrap(),
+            RiskScore::from_percent(10).unwrap(),
+            BTreeSet::new(),
+        )
+        .unwrap();
+        let missing_motivation = AttackAction::new(
+            "missing-motivation",
+            "plugin.missing-motivation",
+            Expression::equals(KnowledgeLayer::Hypothesis, stack_predicate(), stack_value()),
+            HypothesisSelector::new(
+                KnowledgePredicate::new("auth", "missing-motivation").unwrap(),
+                EvidenceValue::Boolean(true),
+                Probability::from_percent(50).unwrap(),
+                RequiredStrength::Any,
+            ),
+            BenefitScore::from_percent(80).unwrap(),
+            ActionCost::new(10).unwrap(),
+            RiskScore::from_percent(10).unwrap(),
+            BTreeSet::new(),
+        )
+        .unwrap();
+        let missing_target = action("missing-target", 80, 10, 10, &[]).with_verification_target(
+            VerificationTarget::Distinct(HypothesisSelector::new(
+                KnowledgePredicate::new("auth", "mechanism").unwrap(),
+                EvidenceValue::Text("missing".to_owned()),
+                Probability::from_percent(50).unwrap(),
+                RequiredStrength::Any,
+            )),
+        );
+        let mut planner = AttackPlanner::new();
+        planner.register(unmet).unwrap();
+        planner.register(missing_motivation).unwrap();
+        planner.register(missing_target).unwrap();
+        planner
+            .register(action("low-utility", 80, 10, 10, &[]))
+            .unwrap();
+
+        assert!(matches!(
+            planner.authorize_scheduled_action(&snapshot, context(100), &BTreeSet::new(), "unmet",),
+            Err(ScheduledActionAuthorizationError::Excluded {
+                reason: ExclusionReason::RequirementsNotMet,
+                ..
+            })
+        ));
+        assert!(matches!(
+            planner.authorize_scheduled_action(
+                &snapshot,
+                context(100),
+                &BTreeSet::new(),
+                "missing-motivation",
+            ),
+            Err(ScheduledActionAuthorizationError::Excluded {
+                reason: ExclusionReason::NoEligibleHypothesis,
+                ..
+            })
+        ));
+        assert!(matches!(
+            planner.authorize_scheduled_action(
+                &snapshot,
+                context(100),
+                &BTreeSet::new(),
+                "missing-target",
+            ),
+            Err(ScheduledActionAuthorizationError::Excluded {
+                reason: ExclusionReason::NoEligibleVerificationTarget,
+                ..
+            })
+        ));
+        assert!(matches!(
+            planner.authorize_scheduled_action(
+                &snapshot,
+                context(100).with_minimum_utility(UtilityScore::from_units(u64::MAX)),
+                &BTreeSet::new(),
+                "low-utility",
+            ),
+            Err(ScheduledActionAuthorizationError::Excluded {
+                reason: ExclusionReason::BelowMinimumUtility { .. },
+                ..
+            })
+        ));
     }
 
     #[test]
