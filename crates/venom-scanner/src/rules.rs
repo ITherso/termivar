@@ -1726,11 +1726,25 @@ mod tests {
     #[test]
     fn expression_wire_format_rejects_empty_groups() {
         assert!(Expression::all(Vec::new()).is_err());
-        assert!(serde_json::from_value::<Expression>(serde_json::json!({
-            "op": "any",
-            "expressions": []
-        }))
-        .is_err());
+        for operator in ["all", "any"] {
+            assert!(serde_json::from_value::<Expression>(serde_json::json!({
+                "op": operator,
+                "expressions": []
+            }))
+            .is_err());
+        }
+
+        let leaf = Expression::exists(KnowledgeLayer::Evidence, framework_predicate());
+        for expression in [
+            Expression::all(vec![leaf.clone()]).unwrap(),
+            Expression::any(vec![leaf]).unwrap(),
+        ] {
+            let wire = serde_json::to_value(&expression).unwrap();
+            assert_eq!(
+                serde_json::from_value::<Expression>(wire).unwrap(),
+                expression
+            );
+        }
     }
 
     #[test]
@@ -1780,7 +1794,7 @@ mod tests {
     }
 
     #[test]
-    fn malformed_nested_expression_cannot_broaden_a_reasoning_rule() {
+    fn malformed_nested_expressions_cannot_broaden_a_reasoning_rule() {
         let mut encoded = serde_json::to_value(laravel_rule("wire.expression.strict")).unwrap();
         let first_claim = &mut encoded["condition"]["expressions"][0];
         let value = first_claim
@@ -1791,6 +1805,25 @@ mod tests {
         first_claim["vlaue"] = value;
 
         assert!(serde_json::from_value::<ReasoningRule>(encoded).is_err());
+
+        let mut empty_all =
+            serde_json::to_value(laravel_rule("wire.expression.empty-all")).unwrap();
+        empty_all["condition"] = serde_json::json!({
+            "op": "all",
+            "expressions": []
+        });
+        assert!(serde_json::from_value::<ReasoningRule>(empty_all).is_err());
+
+        let mut empty_contains =
+            serde_json::to_value(laravel_rule("wire.expression.empty-contains")).unwrap();
+        empty_contains["condition"] = serde_json::json!({
+            "op": "text_contains",
+            "layer": "evidence",
+            "predicate": framework_predicate(),
+            "needle": " ",
+            "ascii_case_insensitive": false
+        });
+        assert!(serde_json::from_value::<ReasoningRule>(empty_contains).is_err());
     }
 
     #[test]
@@ -1823,6 +1856,10 @@ mod tests {
             Expression::text_contains(KnowledgeLayer::Evidence, framework_predicate(), " ")
                 .is_err()
         );
+
+        let mut empty_wire = serde_json::to_value(&expression).unwrap();
+        empty_wire["needle"] = serde_json::json!(" ");
+        assert!(serde_json::from_value::<Expression>(empty_wire).is_err());
     }
 
     fn form_controls() -> KnowledgePredicate {
