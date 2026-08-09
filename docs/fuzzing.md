@@ -70,7 +70,8 @@ are deliberately reviewed and promoted.
 
 `fuzz/corpus/expression_semantics/` contains exact `_token`, substring-only,
 padded, case-sensitive `_METHOD`, scalar/list mismatch, duplicates, Unicode,
-depth-boundary, valid nested, and malformed nested-expression examples.
+depth-boundary, valid nested, malformed nested-expression, empty `all`/`any`,
+and blank text-matcher examples.
 `fuzz/corpus/declarative_policy_wire/` contains one reviewed seed for every
 corruption scenario: matcher, aggregation, reasoning condition, verification
 scope/case guard, adaptation condition, and pipeline directive loss or typo.

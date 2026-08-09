@@ -32,7 +32,7 @@ fn committed_html_form_control_corpus_satisfies_the_semantic_oracle() {
 fn committed_expression_corpus_satisfies_the_semantic_oracle() {
     replay_json_corpus(
         "expression_semantics",
-        8,
+        13,
         venom_fuzz_harness::check_expression_semantics,
     );
 }
@@ -41,7 +41,7 @@ fn committed_expression_corpus_satisfies_the_semantic_oracle() {
 fn committed_declarative_policy_corpus_satisfies_the_semantic_oracle() {
     replay_json_corpus(
         "declarative_policy_wire",
-        16,
+        22,
         venom_fuzz_harness::check_declarative_policy_wire,
     );
 }
