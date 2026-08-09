@@ -14,9 +14,10 @@ quick-xml = "0.37"
 serde_json = "1"
 serde_yaml = "0.9"
 url = "2"
+venom-fuzz-harness = { path = "harness" }
 
 [workspace]
-members = ["."]
+members = [".", "harness"]
 
 [[bin]]
 name = "http_parser"
@@ -49,6 +50,13 @@ bench = false
 [[bin]]
 name = "text_parser"
 path = "fuzz_targets/text_parser.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "html_form_controls"
+path = "fuzz_targets/html_form_controls.rs"
 test = false
 doc = false
 bench = false

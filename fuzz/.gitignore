@@ -1,4 +1,7 @@
 artifacts/
-corpus/
+corpus/*
+!corpus/html_form_controls/
+corpus/html_form_controls/*
+!corpus/html_form_controls/*.html
 coverage/
 target/
