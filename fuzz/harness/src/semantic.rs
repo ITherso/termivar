@@ -118,6 +118,15 @@ pub fn check_expression_semantics(data: &[u8]) {
             .expect("round-tripped expression evaluation must succeed"),
         first
     );
+    for group in [
+        Expression::all(vec![expression.clone()]).expect("non-empty all must construct"),
+        Expression::any(vec![expression.clone()]).expect("non-empty any must construct"),
+    ] {
+        let wire = serde_json::to_value(&group).expect("expression group must serialize");
+        let decoded: Expression =
+            serde_json::from_value(wire).expect("non-empty expression group must deserialize");
+        assert_eq!(decoded, group, "group round trip changed semantics");
+    }
 
     check_bounded_nested_expression(&expression, &snapshot, model.depth);
     check_selector_oracle(&fixture, &model);
@@ -506,7 +515,10 @@ fn check_expression_corruption(expression: &Expression, root: Option<&Value>, da
         "claim_value_typo" => 1,
         "claim_unknown_field" => 2,
         "claim_value_type_changed" => 3,
-        _ => usize::from(data.first().copied().unwrap_or(0)) % 4,
+        "empty_all" => 4,
+        "empty_any" => 5,
+        "blank_text_contains" => 6,
+        _ => usize::from(data.first().copied().unwrap_or(0)) % 7,
     };
     let exact = Expression::equals(
         KnowledgeLayer::Evidence,
@@ -524,6 +536,30 @@ fn check_expression_corruption(expression: &Expression, root: Option<&Value>, da
         },
         3 => {
             object_mut(&mut wire).insert("value".into(), Value::Bool(true));
+        },
+        4 => {
+            wire = serde_json::json!({
+                "op": "all",
+                "expressions": []
+            });
+        },
+        5 => {
+            wire = serde_json::json!({
+                "op": "any",
+                "expressions": []
+            });
+        },
+        6 => {
+            wire = serde_json::json!({
+                "op": "text_contains",
+                "layer": "evidence",
+                "predicate": {
+                    "namespace": "fuzz",
+                    "name": "claim"
+                },
+                "needle": " ",
+                "ascii_case_insensitive": false
+            });
         },
         _ => unreachable!(),
     }
