@@ -1,0 +1,9 @@
+[package]
+name = "venom-fuzz-harness"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[dependencies]
+html5ever = "0.39"
+markup5ever_rcdom = "0.39"
