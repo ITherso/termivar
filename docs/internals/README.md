@@ -67,6 +67,7 @@ Task producer --> TaskQueue --> WorkerPool --> WorkerNode
 - [Event bus](event-bus.md): synchronous publication, subscriptions, history, and correlation.
 - [Runner](runner.md): ordered phase execution, timeouts, cancellation, and partial results.
 - [Decision runner](decision-runner.md): command execution, executor routing, evidence provenance, and verifier handoff.
+- [Declarative policy wire contracts](declarative-policy-wire.md): fail-closed semantic fields, compatibility guards, and host loader limits.
 - [HTTP evidence executor](http-evidence.md): scope policy, bounded collection, typed observations, and rate-limit normalization.
 - [API predicate vocabulary](api-predicates.md): canonical and normalized HTTP/API predicates plus atomic evidence/resource-scope observation bundles.
 - [API visibility evidence](api-evidence.md): bounded JSON comparison, broker-backed authorization-context pairs, atomic ingestion receipts, and resource-scoped review projections.

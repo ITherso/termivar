@@ -1,0 +1,6 @@
+{
+  "scenario": "claim_unknown_field",
+  "needle": "名_é",
+  "lists": [["名_é"], ["名"], [" 名_é "]],
+  "depth": 16
+}

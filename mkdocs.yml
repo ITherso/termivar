@@ -39,6 +39,7 @@ nav:
       - Event bus: internals/event-bus.md
       - Runner: internals/runner.md
       - Decision runner: internals/decision-runner.md
+      - Declarative policy wire: internals/declarative-policy-wire.md
       - Experience classification: internals/experience.md
       - HTTP evidence executor: internals/http-evidence.md
       - API predicate vocabulary: internals/api-predicates.md

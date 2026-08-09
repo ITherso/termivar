@@ -6,6 +6,13 @@ use std::collections::BTreeSet;
 use html5ever::{parse_document, tendril::TendrilSink, ParseOpts};
 use markup5ever_rcdom::{NodeData, RcDom};
 
+mod semantic;
+
+pub use semantic::{
+    check_declarative_policy_wire, check_expression_semantics, MAX_EXPRESSION_FUZZ_DEPTH,
+    MAX_EXPRESSION_FUZZ_NODES, MAX_SEMANTIC_FUZZ_INPUT_BYTES, MAX_SEMANTIC_FUZZ_STRING_BYTES,
+};
+
 // Compile the exact private production extractor into this fuzz-only crate.
 // The scanner wires the same source as `http_evidence::form_controls`; this
 // keeps the normal production API private while avoiding a copied harness.

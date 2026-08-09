@@ -3,5 +3,11 @@ corpus/*
 !corpus/html_form_controls/
 corpus/html_form_controls/*
 !corpus/html_form_controls/*.html
+!corpus/expression_semantics/
+corpus/expression_semantics/*
+!corpus/expression_semantics/*.json
+!corpus/declarative_policy_wire/
+corpus/declarative_policy_wire/*
+!corpus/declarative_policy_wire/*.json
 coverage/
 target/

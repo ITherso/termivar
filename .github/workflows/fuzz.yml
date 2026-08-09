@@ -6,6 +6,9 @@ on:
     branches: [main]
     paths:
       - "fuzz/**"
+      - "crates/venom-scanner/src/rules.rs"
+      - "crates/venom-scanner/src/verification.rs"
+      - "crates/venom-scanner/src/adaptive/pipeline.rs"
       - "crates/venom-scanner/src/http_evidence.rs"
       - "crates/venom-scanner/src/http_evidence/form_controls.rs"
       - ".github/workflows/fuzz.yml"
@@ -41,12 +44,16 @@ jobs:
           CARGO_PROFILE_RELEASE_LTO: "false"
           CARGO_PROFILE_RELEASE_STRIP: "none"
         run: cargo test --manifest-path fuzz/harness/Cargo.toml --locked
-      - name: Compile Venom-owned target
+      - name: Compile Venom-owned targets
         working-directory: fuzz
         env:
           CARGO_PROFILE_RELEASE_LTO: "false"
           CARGO_PROFILE_RELEASE_STRIP: "none"
-        run: cargo fuzz build html_form_controls
+        shell: bash
+        run: |
+          for target in html_form_controls expression_semantics declarative_policy_wire; do
+            cargo fuzz build "$target"
+          done
 
   fuzz:
     name: ${{ matrix.target }}
@@ -56,7 +63,31 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target: [http_parser, json_parser, yaml_parser, xml_parser, text_parser, html_form_controls]
+        include:
+          - target: http_parser
+            max_len: 65536
+            input_timeout: 5
+          - target: json_parser
+            max_len: 65536
+            input_timeout: 5
+          - target: yaml_parser
+            max_len: 65536
+            input_timeout: 5
+          - target: xml_parser
+            max_len: 65536
+            input_timeout: 5
+          - target: text_parser
+            max_len: 65536
+            input_timeout: 5
+          - target: html_form_controls
+            max_len: 65536
+            input_timeout: 5
+          - target: expression_semantics
+            max_len: 16384
+            input_timeout: 2
+          - target: declarative_policy_wire
+            max_len: 16384
+            input_timeout: 2
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
@@ -87,8 +118,8 @@ jobs:
           started_epoch=$(date +%s)
           cargo fuzz run "${{ matrix.target }}" -- \
             -max_total_time=60 \
-            -max_len=65536 \
-            -timeout=5 \
+            -max_len=${{ matrix.max_len }} \
+            -timeout=${{ matrix.input_timeout }} \
             -rss_limit_mb=1024 \
             -seed=1337 \
             -print_final_stats=1 \
@@ -106,7 +137,7 @@ jobs:
             echo "| Commit | \`${GITHUB_SHA}\` |"
             echo "| Started | ${started_at} |"
             echo "| Wall time | ${elapsed_seconds} s |"
-            echo "| Budget | 60 s, 64 KiB/input, 5 s/input, 1024 MiB RSS |"
+            echo "| Budget | 60 s, ${{ matrix.max_len }} bytes/input, ${{ matrix.input_timeout }} s/input, 1024 MiB RSS |"
             echo "| Outcome | ${outcome} |"
             echo "| Exit code | ${fuzz_exit} |"
             echo "| Corpus files after run | ${corpus_files} |"

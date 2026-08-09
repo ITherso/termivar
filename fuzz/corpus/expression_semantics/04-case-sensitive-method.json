@@ -1,0 +1,6 @@
+{
+  "scenario": "claim_value_type_changed",
+  "needle": "_method",
+  "lists": [["_METHOD"], ["_method"]],
+  "depth": 3
+}

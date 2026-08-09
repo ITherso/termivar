@@ -1,0 +1,6 @@
+{
+  "scenario": "claim_value_type_changed",
+  "needle": "_token",
+  "lists": [["_token"]],
+  "depth": 32
+}

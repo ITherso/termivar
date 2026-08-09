@@ -1,0 +1,11 @@
+{
+  "scenario": "claim_value_typo",
+  "needle": "_token",
+  "lists": [["_token_backup"]],
+  "expression": {
+    "op": "claim",
+    "layer": "evidence",
+    "predicate": {"namespace": "fuzz.form", "name": "control_names"},
+    "vlaue": {"type": "text", "value": "_token"}
+  }
+}
