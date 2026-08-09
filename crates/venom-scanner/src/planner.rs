@@ -1567,6 +1567,43 @@ mod tests {
     }
 
     #[test]
+    fn minimum_utility_exact_boundary_remains_eligible() {
+        let knowledge = knowledge_with_hypothesis((80, 20));
+        let mut planner = AttackPlanner::new();
+        planner.register(action("direct", 80, 10, 20, &[])).unwrap();
+        let snapshot = knowledge.snapshot_for_subject(&subject());
+        let base_context = context(100);
+        let score = planner
+            .authorize_scheduled_action(&snapshot, base_context, &BTreeSet::new(), "direct")
+            .unwrap()
+            .utility()
+            .score();
+
+        planner
+            .authorize_scheduled_action(
+                &snapshot,
+                base_context.with_minimum_utility(score),
+                &BTreeSet::new(),
+                "direct",
+            )
+            .unwrap();
+        assert!(matches!(
+            planner.authorize_scheduled_action(
+                &snapshot,
+                base_context.with_minimum_utility(UtilityScore::from_units(
+                    score.units().checked_add(1).unwrap(),
+                )),
+                &BTreeSet::new(),
+                "direct",
+            ),
+            Err(ScheduledActionAuthorizationError::Excluded {
+                reason: ExclusionReason::BelowMinimumUtility { .. },
+                ..
+            })
+        ));
+    }
+
+    #[test]
     fn scheduled_action_authorization_enforces_suppression_budget_and_risk_boundaries() {
         let knowledge = knowledge_with_hypothesis((80, 20));
         let mut planner = AttackPlanner::new();

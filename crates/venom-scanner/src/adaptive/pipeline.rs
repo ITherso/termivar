@@ -1303,6 +1303,13 @@ mod tests {
             decision.directive().scheduled_action_id(),
             Some("http.enumeration")
         );
+        let selected: Vec<_> = decision
+            .evaluations()
+            .iter()
+            .filter(|evaluation| evaluation.selected())
+            .map(AdaptationRuleEvaluation::rule_id)
+            .collect();
+        assert_eq!(selected, vec!["http.404.enumerate"]);
     }
 
     #[test]

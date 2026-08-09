@@ -1896,6 +1896,41 @@ mod tests {
     }
 
     #[test]
+    fn bootstrap_execution_is_the_only_unregistered_authority_exemption() {
+        let decision_loop = configured_loop(Some(OutcomeStatus::Success), 2, 8);
+        let knowledge = knowledge(true);
+        let case = VerificationCase::new(
+            "case:bootstrap",
+            subject(),
+            "bootstrap.http",
+            "hypothesis:bootstrap",
+        )
+        .unwrap();
+        let bootstrap = DecisionLoopCommand::ExecuteAction {
+            case: case.clone(),
+            executor: Some("bootstrap.http".to_owned()),
+            origin: DecisionActionOrigin::Bootstrap,
+            delay_ms: None,
+        };
+
+        decision_loop
+            .validate_execution_command_authority(&knowledge, &bootstrap)
+            .unwrap();
+
+        let planned = DecisionLoopCommand::ExecuteAction {
+            case,
+            executor: Some("bootstrap.http".to_owned()),
+            origin: DecisionActionOrigin::Planned,
+            delay_ms: None,
+        };
+        assert!(matches!(
+            decision_loop.validate_execution_command_authority(&knowledge, &planned),
+            Err(DecisionLoopError::UnregisteredDecisionAction { action_id })
+                if action_id == "bootstrap.http"
+        ));
+    }
+
+    #[test]
     fn distinct_target_confirms_only_the_separately_resolved_hypothesis() {
         let distinct_predicate = active_predicate();
         let distinct_value = EvidenceValue::Boolean(true);
