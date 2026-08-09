@@ -1,10 +1,11 @@
 # Fuzzing
 
-The `fuzz/` package contains three Venom-owned semantic targets plus five bounded
+The `fuzz/` package contains four Venom-owned semantic targets plus five bounded
 upstream-parser targets. `html_form_controls`, `expression_semantics`, and
-`declarative_policy_wire` exercise product contracts. The parser targets are
-dependency-level signals and must not be reported as Venom decision-runtime
-coverage.
+`declarative_policy_wire` exercise extraction and declarative-policy contracts;
+`decision_loop_authority` exercises adaptive planner authority. The parser
+targets are dependency-level signals and must not be reported as Venom
+decision-runtime coverage.
 
 ## Setup
 
@@ -14,10 +15,11 @@ cargo fuzz list
 cargo fuzz run html_form_controls
 cargo fuzz run expression_semantics
 cargo fuzz run declarative_policy_wire
+cargo fuzz run decision_loop_authority
 ```
 
 Every pull request replays the committed semantic corpora and compiles all
-Venom-owned targets. The `Scheduled Fuzzing` workflow runs all eight targets in
+Venom-owned targets. The `Scheduled Fuzzing` workflow runs all nine targets in
 bounded weekly campaigns and when fuzz harnesses change on `main`. Every target
 uploads its libFuzzer log and a structured campaign summary for 90 days;
 failures also retain crash artifacts. This provides regression pressure, not
@@ -32,6 +34,7 @@ Run fuzzing on a dedicated machine or bounded CI job. Start with a small, non-se
 | `html_form_controls` | Venom | Bounded HTML sample to exact, names-only, sorted and deduplicated form-control observations |
 | `expression_semantics` | Venom | Exact TextList truth table, truthful contributing evidence IDs, deterministic evaluation, and bounded expression round trips |
 | `declarative_policy_wire` | Venom | One-field semantic corruption rejects or reconstructs an exactly equivalent historical policy |
+| `decision_loop_authority` | Venom | Adaptive scheduling cannot bypass registration, host suppression, requirements, risk, budget, prerequisites, executor identity, or claim policy; errors are atomic |
 | `http_parser` | Upstream | `httparse` request parser survival |
 | `json_parser` | Upstream | `serde_json` value parser survival |
 | `yaml_parser` | Upstream-only dependency | `serde_yaml` value parser survival |
@@ -57,7 +60,23 @@ rules, verification rules/cases, adaptation rules, and directives. It deletes,
 misspells, nulls, conflicts, or corrupts one semantics-bearing field. The result
 must reject unless it is a documented historical representation that
 reconstructs exactly the original policy and canonicalizes on the next write.
-Both semantic targets cap inputs at 16 KiB and semantic strings at 256 bytes.
+The expression and declarative-policy targets cap inputs at 16 KiB and semantic
+strings at 256 bytes.
+
+`decision_loop_authority` converts at most 16 KiB of input into one of fourteen
+small, network-free DecisionLoop scenarios. It runs every scenario twice and
+compares normalized session, Experience, command, and hypothesis semantics. An
+unregistered, suppressed, ineligible, over-risk, over-budget, or dependent
+scheduled action cannot dispatch; missing host context fails closed for both
+schedule and retry directives. Active continuation is reauthorized against
+dynamic host suppression, and authorization observes a conclusive outcome's
+prospective hypothesis state. Every returned authorization error must leave
+the session, Experience store, and motivation hypothesis exactly unchanged. An
+eligible independent action must carry its registered executor and its own
+Motivation or KnowledgeOnly transition policy. A replay cannot continue an
+outstanding action after that action is absent from the planner registry. It
+also rejects a legacy/default replay that would broaden a currently registered
+KnowledgeOnly action into hypothesis-transition authority.
 
 ## Semantic corpus and reproduction
 
@@ -75,6 +94,13 @@ and blank text-matcher examples.
 `fuzz/corpus/declarative_policy_wire/` contains one reviewed seed for every
 corruption scenario: matcher, aggregation, reasoning condition, verification
 scope/case guard, adaptation condition, and pipeline directive loss or typo.
+`fuzz/corpus/decision_loop_authority/` contains one reviewed seed for each
+authority boundary: unregistered and host-suppressed scheduling, unmet
+requirements, risk and budget rejection, prerequisite rejection, eligible
+Motivation and KnowledgeOnly dispatch, context-free schedule/retry, prospective
+motivation rejection, active host suppression, and a legacy/default replay that
+references an action no longer registered with the planner or broadens a
+KnowledgeOnly case into hypothesis-transition authority.
 Generated hash-named files in every corpus remain ignored until reviewed.
 
 Replay all committed seeds without libFuzzer:
@@ -91,6 +117,8 @@ cargo fuzz run html_form_controls artifacts/html_form_controls/<artifact>
 cargo fuzz tmin html_form_controls artifacts/html_form_controls/<artifact>
 cargo fuzz run expression_semantics artifacts/expression_semantics/<artifact>
 cargo fuzz tmin declarative_policy_wire artifacts/declarative_policy_wire/<artifact>
+cargo fuzz run decision_loop_authority artifacts/decision_loop_authority/<artifact>
+cargo fuzz tmin decision_loop_authority artifacts/decision_loop_authority/<artifact>
 ```
 
 Scheduled campaigns use an explicit 60-second budget and 1024-MiB RSS limit with

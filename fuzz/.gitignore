@@ -9,5 +9,8 @@ corpus/expression_semantics/*
 !corpus/declarative_policy_wire/
 corpus/declarative_policy_wire/*
 !corpus/declarative_policy_wire/*.json
+!corpus/decision_loop_authority/
+corpus/decision_loop_authority/*
+!corpus/decision_loop_authority/*.json
 coverage/
 target/
