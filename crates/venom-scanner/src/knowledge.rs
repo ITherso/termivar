@@ -304,6 +304,20 @@ impl KnowledgeSnapshot {
             hypotheses: self.hypotheses.clone(),
         }
     }
+
+    pub(crate) fn with_projected_hypothesis_state(
+        &self,
+        hypothesis_id: &str,
+        state: HypothesisState,
+    ) -> Option<Self> {
+        let mut projected = self.clone();
+        projected
+            .hypotheses
+            .iter_mut()
+            .find(|hypothesis| hypothesis.id() == hypothesis_id)?
+            .set_state(state);
+        Some(projected)
+    }
 }
 
 #[derive(Debug, Default)]

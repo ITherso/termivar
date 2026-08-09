@@ -968,13 +968,14 @@ impl StandardWebDecisionRuntime {
                             started_at,
                         ));
                     }
-                    let runner_turn = self.runner.resume_session_command(
+                    let runner_turn = self.runner.resume_session_command_with_suppressed_actions(
                         &self.decision_loop,
                         &command,
                         &self.knowledge,
                         &mut self.experience,
                         &mut self.session,
                         evidence,
+                        &self.unsupported_actions,
                     );
                     self.refresh_elapsed(started_at);
                     let runner_turn = match runner_turn {

@@ -802,6 +802,12 @@ impl AdaptivePipeline {
     /// - `403` schedules `http.403-bypass`;
     /// - `404` schedules `http.enumeration`;
     /// - `429` throttles for two seconds and retries the current action.
+    ///
+    /// The pipeline only proposes directives. A [`crate::DecisionLoop`] grants
+    /// execution authority separately: scheduled actions must be registered,
+    /// satisfy current planner policy, and be submitted with an explicit host
+    /// suppression context. These example action IDs are not implicit executor
+    /// registrations.
     pub fn with_standard_policies() -> Result<Self, AdaptivePipelineError> {
         let mut pipeline = Self::new();
         let unresolved = OutcomeSelector::any_stage(BTreeSet::from([

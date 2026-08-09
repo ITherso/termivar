@@ -32,7 +32,7 @@ The adapter accepts only commands emitted by the decision loop. It never selects
 
 ## Executor resolution
 
-Planner commands may name an executor directly. Adaptive actions and active probes carry only an action ID, so the registry resolves a stage-specific route. Separate passive and active routes let verification use a stricter probe without coupling planner policy to a concrete plugin.
+Planner commands, registered `ScheduleAction` commands, and retries name the exact executor declared by the currently authorized `PlanStep`. Active probes carry the outstanding case identity and resolve a stage-specific route, allowing verification to use a stricter probe without changing the planner-pinned passive executor.
 
 Duplicate executor IDs and ambiguous action routes are rejected. Missing routes fail before delay or executor work begins.
 
@@ -49,6 +49,14 @@ An executor returns native `Evidence`, not findings or decisions. Before any wri
 `DecisionEvidenceReceipt` retains the exact evidence emitted by that execution in addition to the write results and verification snapshots. Its `write_set()` iterator pairs each observation with its input-order `KnowledgeWrite`, making the atomic commit set explicit. This matters for active verification, where passive and active requests intentionally reuse one case correlation ID: resource accounting reads the exact batch rather than double-counting the cumulative subject snapshot.
 
 The host may attach `DecisionExecutionLimits` to reduce executor resource use. Unrestricted requests preserve the existing serialized request shape. The runner exposes execution/commit and decision resumption as separate internal stages so a runtime can account for a committed receipt before verification or experience transition begins.
+
+## Adaptive execution authority
+
+`AdaptivePipeline` proposes control flow; it does not create executor authority. Before `DecisionLoop` turns `ScheduleAction` into an execution command, the action must be registered and pass the same current suppression, requirement, risk, confidence, verification-target, minimum-utility, and budget checks as normal planning. Direct adaptive dispatch rejects actions with prerequisites because the session has no proof that their dependency order already ran. The resulting case uses the authorized action's own motivation and `VerificationTarget`; it never inherits another case's claim permission.
+
+Every adaptive directive that continues automated work (`ScheduleAction`, retry, active verification, or replan) requires an explicit current host-suppression context, even when that set is empty. Context-free submission succeeds only for terminal completion, human review, or halt and otherwise fails atomically. Hosts that planned with `plan_next_with_suppressed_actions` must resume and drive commands with the matching suppression-aware APIs. The high-level runner rejects a missing context and any newly suppressed outstanding action before executor work; its low-level execution API remains an explicit host-owned boundary.
+
+Replay must re-supply current host policy; host executor availability and operator policy deliberately do not become untrusted `DecisionSession` wire state. Outstanding actions must still be registered. A replayed case may preserve a more conservative no-transition policy and its issued payload strategy, but a transition-authorized case must remain within the registered action's currently resolved claim target. This preserves issued-case pinning without letting replay broaden KnowledgeOnly or Distinct authority.
 
 Verifier rules may additionally opt into an action identity and current-case evidence correlation. This is required when a long-lived subject snapshot can contain responses from multiple semantic actions or retries; unrelated and historical observations remain visible to the knowledge base but cannot win that scoped verification rule.
 

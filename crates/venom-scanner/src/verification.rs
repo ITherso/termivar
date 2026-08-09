@@ -603,6 +603,30 @@ impl VerificationReport {
         &self.evaluations
     }
 
+    /// Projects the hypothesis state that a successful [`Self::apply`] would
+    /// expose to follow-on planner authorization without mutating knowledge.
+    ///
+    /// Decision-loop transitions are prepared before the verifier CAS commits.
+    /// Using this projection prevents adaptive scheduling from authorizing an
+    /// action against a hypothesis that the same outcome is about to reject,
+    /// while preserving error-atomic session, Experience, and knowledge writes.
+    pub(crate) fn prospective_snapshot(
+        &self,
+        snapshot: &KnowledgeSnapshot,
+    ) -> Result<KnowledgeSnapshot, VerificationError> {
+        if !self.case.applies_hypothesis_transition() {
+            return Ok(snapshot.clone());
+        }
+        let Some(state) = self.outcome.status().hypothesis_state() else {
+            return Ok(snapshot.clone());
+        };
+        snapshot
+            .with_projected_hypothesis_state(self.outcome.hypothesis_id(), state)
+            .ok_or_else(|| VerificationError::UnknownHypothesis {
+                hypothesis_id: self.outcome.hypothesis_id().to_owned(),
+            })
+    }
+
     /// Applies this report's authorized state transition with snapshot CAS.
     ///
     /// The report is bound to the subject and ontology revisions used for its
