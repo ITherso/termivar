@@ -962,6 +962,39 @@ async fn php_form_control_discovery_succeeds_without_confirming_php() {
 }
 
 #[tokio::test]
+async fn php_padded_form_control_name_does_not_fabricate_an_exact_convention() {
+    let observation = observe_instant(response(
+        "200 OK",
+        &["X-Powered-By: PHP/8.3.7", "Content-Type: text/html"],
+        b"<form><input name=\" _token \"></form>",
+    ))
+    .await;
+
+    assert_universal(&observation);
+    assert_eq!(observation.hypotheses.len(), 1);
+    assert_eq!(observation.hypotheses[0].predicate, "technology.language");
+    assert_eq!(observation.hypotheses[0].value, "php");
+    assert_eq!(observation.hypotheses[0].state, HypothesisState::Supported);
+    assert!(
+        observation
+            .hypotheses
+            .iter()
+            .all(|hypothesis| hypothesis.value != "csrf-token"),
+        "a padded HTML name must not become the exact `_token` convention: {:?}",
+        observation.hypotheses
+    );
+    // The form-control discovery action still succeeds at the action level;
+    // this regression concerns only the fabricated exact semantic convention.
+    assert_eq!(
+        observation.outcomes,
+        vec![(php().to_owned(), "success".to_owned())]
+    );
+    assert_eq!(observation.terminal, "complete");
+    assert_eq!(observation.total_requests, 2);
+    assert_eq!(observation.active_verifications, 0);
+}
+
+#[tokio::test]
 async fn php_without_named_form_controls_defers_to_human_review() {
     // A PHP HTML page with no named form control: the probe observes nothing to
     // discover, so it resolves to `unknown` (passive then active) and defers to
