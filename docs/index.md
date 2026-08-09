@@ -1,6 +1,6 @@
 # Venom documentation
 
-Venom is a modular Rust-based penetration testing framework focused on research and extensibility. The current release line is `0.9.0-alpha` and is not production-ready.
+Venom is an experimental Rust security-testing project centered on a deterministic decision runtime that turns bounded web observations into typed evidence, hypotheses, risk-aware plans, and verifier-scoped outcomes. The current release line is `0.9.0-alpha`, is not production-ready, and must be used only on systems the operator owns or is explicitly authorized to test.
 
 ## Start here
 

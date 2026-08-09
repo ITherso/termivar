@@ -1,315 +1,148 @@
-# VENOM Getting Started Guide
+# Getting started
 
-Welcome to Venom v0.9.0-alpha. This guide covers a local development build.
+Venom `0.9.0-alpha` is an experimental Rust security-testing project. It is not production-ready. Run it only against systems you own or are explicitly authorized to test.
 
----
+This guide covers the two real CLI scan surfaces. It does not describe a dashboard, API service, TLS-intercepting proxy, team service, or cloud control plane because those are not supported runtime products today.
 
 ## Prerequisites
 
-- **Rust:** 1.70+ ([install](https://rustup.rs/))
-- **Docker:** Optional (for containerized deployment)
-- **Modern Browser:** Chrome, Firefox, Safari, or Edge
-- **Linux/macOS:** Recommended (Windows via WSL2)
+- Rust 1.88 or newer ([rustup](https://rustup.rs/))
+- Git
+- An authorized, reachable HTTP(S) origin
 
----
+Docker is optional. PostgreSQL, Redis, Node.js, and a browser are not required to build or run the CLI scan commands.
 
-## Installation
-
-### Option 1: Build from Source
+## Build from source
 
 ```bash
-# Clone repository
 git clone https://github.com/ITherso/venom.git
 cd venom
-
-# Build release binary
-cargo build --release
-
-# Binary location
-./target/release/venom
+cargo build --locked -p venom-cli
+cargo run -p venom-cli --locked -- --help
 ```
 
-### Option 2: Docker
+The root manifest is a virtual workspace. The CLI package is `venom-cli`; its binary is named `venom`.
+
+## Preview the deterministic runtime
+
+`decision-scan` is the current deterministic Surface-B preview:
 
 ```bash
-# Build image
-docker build -t venom:latest .
-
-# Run container
-docker run -p 8080:8080 -p 3000:3000 venom:latest
+cargo run -p venom-cli --locked -- decision-scan https://authorized.example.test
 ```
 
----
+`example.test` is a reserved placeholder and will not normally resolve. Replace it with an exact origin you own or have explicit permission to assess.
 
-## Quick Start (5 Minutes)
+The command:
 
-### Step 1: Start VENOM Proxy
-```bash
-./target/release/venom proxy --host 127.0.0.1 --port 8080
-```
+- bootstraps bounded HTTP evidence for one authorized origin;
+- reasons over typed evidence and subject-scoped hypotheses;
+- selects eligible actions using deterministic utility, cost, risk, requirements, prerequisites, and suppression policy;
+- executes built-in requests through one redirect-disabled, metered broker;
+- applies passive or active verification under the action's claim policy;
+- stops under fixed request, byte, wall-time, action-attempt, and no-progress limits.
 
-Output:
-```
-Venom - modular web security testing framework v0.9.0-alpha
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-[+] CA Generated: ~/.venom/ca.crt
-[+] Database: ~/.venom/history.db
-[+] Proxy: http://127.0.0.1:8080
-[+] API: http://127.0.0.1:3000
-[+] Dashboard: http://127.0.0.1:3000/dashboard
-```
+It emits operational decisions and outcomes, not deterministic-runtime findings or vulnerability declarations.
 
-### Step 2: Trust Certificate
-
-**Firefox:**
-1. Open Preferences → Privacy & Security → Certificates
-2. Click "View Certificates" → Authorities → Import
-3. Select `~/.venom/ca.crt` → Trust for identifying websites
-
-**Chrome:**
-1. Settings → Privacy and security → Security
-2. Manage certificates → Authorities → Import
-3. Select `~/.venom/ca.crt` → Trust
-
-**macOS/Safari:**
-```bash
-sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain ~/.venom/ca.crt
-```
-
-### Step 3: Configure Proxy
-
-**Firefox:**
-1. Settings → Network → Manual proxy configuration
-2. HTTP Proxy: `127.0.0.1` Port: `8080`
-3. HTTPS Proxy: `127.0.0.1` Port: `8080`
-
-**Chrome:**
-```bash
-# macOS
-open -a Google\ Chrome --args --proxy-server="127.0.0.1:8080"
-
-# Linux
-google-chrome --proxy-server="127.0.0.1:8080"
-```
-
-### Step 4: Test Configuration
+### Explain mode
 
 ```bash
-# In browser, visit:
-https://httpbin.org/get
-
-# In VENOM terminal, you should see:
-[+] REQUEST: GET https://httpbin.org/get
-[+] RESPONSE: 200 OK
-[+] Captured and logged to database
+cargo run -p venom-cli --locked -- decision-scan https://authorized.example.test --explain
 ```
 
-### Step 5: Open Dashboard
+The expanded text includes hypotheses, selected and excluded actions, dispatches, outcomes, and terminal reasoning.
 
-Open browser to: `http://127.0.0.1:3000/dashboard`
-
-You should see:
-- System status (CPU, Memory, Disk)
-- Active scans
-- Recent audit logs
-- SLA metrics
-
----
-
-## First Scan (10 Minutes)
-
-### Via Dashboard
-
-1. Click "Security Scans"
-2. Click "Start New Scan"
-3. Enter target: `https://httpbin.org`
-4. Select "Full Scan"
-5. Click "Start"
-
-Monitor progress in real-time on dashboard.
-
-### Via CLI
+### JSON diagnostics
 
 ```bash
-# List available commands
-./target/release/venom help
-
-# Start a scan
-./target/release/venom scan:start --target https://httpbin.org --type full
-
-# Check status
-./target/release/venom scan:status scan_abc123
-
-# View results
-./target/release/venom scan:results scan_abc123
+cargo run -p venom-cli --locked -- decision-scan https://authorized.example.test --format json
 ```
 
-### Via API
+The JSON document uses schema [`decision-scan/v1`](internals/decision-scan-json-v1.md). It already carries full diagnostics, so `--format json` and `--explain` cannot be combined.
+
+### Safe local smoke target
+
+For a network-isolated smoke run, serve a temporary directory on loopback in one terminal:
 
 ```bash
-# Generate API key first
-./target/release/venom user:create admin --role admin
-
-# Start scan via API
-curl -X POST http://localhost:3000/api/scans/start \
-  -H "Authorization: Bearer YOUR_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "target": "https://httpbin.org",
-    "type": "full"
-  }'
+python3 -m http.server 8088 --bind 127.0.0.1
 ```
 
----
-
-## Understanding Results
-
-### Vulnerability Severity
-
-| Level | CVSS | Action |
-|-------|------|--------|
-| Critical | 9.0-10.0 | Fix immediately |
-| High | 7.0-8.9 | Fix within 1 week |
-| Medium | 4.0-6.9 | Fix within 1 month |
-| Low | 0.1-3.9 | Fix within quarter |
-
-### Findings Details
-
-Each finding includes:
-- **Type:** Vulnerability class
-- **Location:** Affected parameter/endpoint
-- **Evidence:** Proof of vulnerability
-- **Remediation:** How to fix
-
-Example:
-```
-Type: SQL Injection
-Location: /api/users?id=
-Evidence: Response time difference detected
-CVSS: 8.5
-Remediation: Use parameterized queries
-```
-
----
-
-## Team Collaboration
-
-### Create a Team
+Then run Venom in another terminal:
 
 ```bash
-./target/release/venom team:create "Security Squad"
+cargo run -p venom-cli --locked -- decision-scan http://127.0.0.1:8088
 ```
 
-### Add Members
+This proves command wiring and output shape; it is not a meaningful security assessment.
+
+## Legacy ordered scanner
+
+`venom scan` remains available as a migration surface:
 
 ```bash
-./target/release/venom team:add-member team_123 user_456 --role analyst
+cargo run -p venom-cli --locked -- scan https://authorized.example.test
 ```
 
-### Share Scans
+It runs the ordered legacy phase pipeline and legacy finding aggregation. It performs direct network I/O outside `StandardWebDecisionRuntime` and `RuntimeBudget`, and the CLI prints that warning before execution.
+
+Wordlist-based directory brute forcing is off by default. The explicit `--legacy-directory-fuzz` option enables that additional direct-I/O phase; use it only when the target authorization and expected load are clear.
+
+`scan` and `decision-scan` are different engines. Results, accounting, and claim semantics must not be compared as though one were an output mode of the other.
+
+## Understanding deterministic output
+
+| Term | Meaning |
+| --- | --- |
+| Observed | Present in bounded typed evidence |
+| Supported | Deterministic reasoning supports a hypothesis |
+| Confirmed | A verifier-authorized transition occurred |
+| Success | The action objective completed; confirmation may still be forbidden |
+| NeedsReview / Unknown | Evidence does not authorize a terminal claim |
+
+For example, collecting PHP-style form-control names or Sanctum-compatible cookie names is KnowledgeOnly. The action can succeed while its motivating technology hypothesis remains Supported rather than Confirmed.
+
+## Other CLI adapters
+
+The binary exposes `api` and `proxy` subcommands, but they are not scan alternatives:
+
+- `venom api` is unsupported: the library has a health router, but the CLI adapter does not bind a listener.
+- `venom proxy` is an experimental fixed-upstream TCP relay. It does not implement HTTP `CONNECT`, TLS termination, generated certificates, or request inspection.
+
+The dashboard, distributed scheduler, monitoring, compliance, profile, and Lua modules are disconnected, opt-in, host-owned, or experimental. See the [runtime map](internals/runtime-map.md) before treating any module as executable product behavior.
+
+## Validate a checkout
 
 ```bash
-./target/release/venom scan:share scan_abc123 --team team_123 --permission view
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+cargo test --workspace --all-features --locked
+cargo xtask architecture
+cargo xtask docs
 ```
 
----
+The last command requires the documentation dependencies from `requirements-docs.txt`.
 
-## Common Use Cases
+## Extend Venom
 
-### Security Assessment
+The Scanner SDK and native plugin starters are Preview and compile in CI:
+
 ```bash
-# 1. Start comprehensive scan
-./target/release/venom scan:start --target target.com --aggressive
-
-# 2. Wait for completion (monitor via dashboard)
-
-# 3. Generate report
-./target/release/venom report:generate scan_abc123 --format pdf
-
-# 4. Share with stakeholders
-./target/release/venom scan:share scan_abc123 --team stakeholders
+cargo install cargo-generate
+cargo xtask generate scanner my-scanner
+cargo xtask generate plugin my-venom-plugin
 ```
 
-### Compliance Audit
-```bash
-# 1. Start compliance scan
-./target/release/venom compliance:scan --framework gdpr
+They are source-level library integrations, not runtime-loaded extensions for `decision-scan`. Read the [Scanner SDK](sdk.md), [plugin guide](plugin.md), and [plugin API policy](plugin-api-policy.md) before depending on pre-stable contracts.
 
-# 2. View compliance status
-./target/release/venom compliance:status
+## Next steps
 
-# 3. Generate audit report
-./target/release/venom compliance:report --framework gdpr --period monthly
-```
-
-### Load Testing
-```bash
-# 1. Create load profile
-./target/release/venom loadtest:create --target target.com --concurrent 100
-
-# 2. Run test
-./target/release/venom loadtest:run profile_123
-
-# 3. View results
-./target/release/venom loadtest:report profile_123
-```
-
----
-
-## Troubleshooting
-
-### Certificate Issues
-```bash
-# Reset certificates
-rm -rf ~/.venom/ca
-
-# Restart VENOM
-./target/release/venom proxy --host 127.0.0.1 --port 8080
-
-# Re-import CA certificate to browser
-```
-
-### Proxy Not Intercepting
-```bash
-# Check proxy is running
-curl -v http://127.0.0.1:8080
-
-# Check browser proxy settings
-# Verify certificate is trusted
-
-# Check firewall isn't blocking
-sudo lsof -i :8080
-```
-
-### Database Issues
-```bash
-# Check database
-sqlite3 ~/.venom/history.db ".tables"
-
-# Clear database (if needed)
-rm ~/.venom/history.db
-
-# Restart VENOM
-```
-
----
-
-## Next Steps
-
-1. **Read API Docs:** [docs/API.md](API.md)
-2. **Learn Architecture:** [docs/architecture.md](architecture.md)
-3. **CLI Reference:** [README Quick Start](https://github.com/ITherso/venom#quick-start)
-4. **Advanced Guide:** [Scanner](scanner.md)
-5. **Security Best Practices:** [Security policy](https://github.com/ITherso/venom/blob/main/SECURITY.md)
-
----
-
-## Support
-
-- **Documentation:** https://github.com/ITherso/venom/docs
-- **Issues:** https://github.com/ITherso/venom/issues
-- **Discussions:** https://github.com/ITherso/venom/discussions
-
----
-
-**Happy Pentesting! 🔍**
+- [Root project overview](https://github.com/ITherso/venom#readme)
+- [Runtime map](internals/runtime-map.md)
+- [Architecture](architecture.md)
+- [Decision runner](internals/decision-runner.md)
+- [Web execution](internals/web-execution.md)
+- [Web verification](internals/web-verification.md)
+- [Feature lifecycle](https://github.com/ITherso/venom/blob/main/FEATURES.md)
+- [Project status](https://github.com/ITherso/venom/blob/main/PROJECT_STATUS.md)
+- [Security policy](https://github.com/ITherso/venom/blob/main/SECURITY.md)

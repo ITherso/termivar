@@ -1,158 +1,23 @@
-# VENOM Scanning Profiles
+# Scanning profile scaffolds
 
-Pre-configured scanning strategies for different scenarios and threat models.
+> **Status: experimental and not CLI-wired.** The TOML files in this directory are illustrative configuration samples. Neither `venom scan` nor `venom decision-scan` reads them, and their named plugins, scripts, compliance options, cloud checks, or reporting settings are not proof that those behaviors execute.
 
-## Available Profiles
+The current CLI does **not** implement `--profile`, `--merge-profile`, or `--target` flags. Targets are positional arguments:
 
-### 🟢 Enterprise (enterprise.toml)
-**Recommended for:** Compliance-focused security assessments, audit trails
-
-- **Intensity:** Light
-- **Workers:** 4
-- **Rate Limit:** 10 RPS
-- **Timeout:** 300s
-- **Plugins:** SQLi, XSS, LFI
-- **Features:** Compliance tracking, detailed reporting, audit logging
-- **Use Case:** GDPR/HIPAA/SOC2 compliance assessments
-
-**Example:**
-```bash
-venom scan --profile enterprise --target http://app.example.com
+```text
+venom scan <TARGET>
+venom decision-scan <TARGET>
 ```
 
----
+`venom-scanner` also exposes an experimental in-memory `ConfigLoader` / `ScanningProfile` library scaffold. No repository runtime caller connects that loader to either CLI command, and it does not load the TOML files in this directory.
 
-### ☁️ Cloud (cloud.toml)
-**Recommended for:** Cloud infrastructure assessment (AWS/GCP/Azure)
+The files are retained as design inputs for a future, explicitly versioned configuration contract:
 
-- **Intensity:** Aggressive
-- **Workers:** 16
-- **Rate Limit:** 50 RPS
-- **Timeout:** 600s
-- **Plugins:** SQLi, XSS, SSRF, LFI, XXE
-- **Features:** Cloud provider detection, metadata endpoint scanning
-- **Use Case:** AWS/GCP/Azure security testing
+- `enterprise.toml`
+- `cloud.toml`
+- `aggressive.toml`
+- `stealth.toml`
 
-**Example:**
-```bash
-venom scan --profile cloud --target https://api.example.com
-```
+Do not use these samples as operational security, compliance, cloud, WAF-evasion, plugin, or reporting profiles. A future profile loader must define schema validation, authorization, runtime ownership, supported capabilities, and fail-closed handling before these files can become executable configuration.
 
----
-
-### ⚡ Aggressive (aggressive.toml)
-**Recommended for:** Full vulnerability assessment, all-in testing
-
-- **Intensity:** Aggressive
-- **Workers:** 32
-- **Rate Limit:** 100 RPS
-- **Timeout:** 180s
-- **Plugins:** All (6 plugins)
-- **Features:** ML engine, post-exploitation, exploit chains
-- **Use Case:** Comprehensive penetration testing
-
-**Example:**
-```bash
-venom scan --profile aggressive --target http://app.example.com
-```
-
----
-
-### 🥷 Stealth (stealth.toml)
-**Recommended for:** Authorized testing against defended targets, WAF evasion
-
-- **Intensity:** Stealth
-- **Workers:** 1
-- **Rate Limit:** 2 RPS
-- **Timeout:** 3600s
-- **Plugins:** SQLi, XSS (carefully)
-- **Features:** WAF detection/evasion, request randomization, encoding
-- **Use Case:** Sneaky scanning against defended targets
-
-**Example:**
-```bash
-venom scan --profile stealth --target http://app.example.com
-```
-
----
-
-## Custom Profiles
-
-Create your own profile by copying a built-in profile:
-
-```bash
-cp profiles/enterprise.toml profiles/custom.toml
-# Edit custom.toml
-venom scan --profile custom --target http://target.com
-```
-
----
-
-## Profile Structure
-
-Each profile contains:
-
-```toml
-[scan]
-name = "profile_name"
-intensity = "light|normal|aggressive|stealth"
-concurrent_workers = 8
-rate_limit_rps = 20
-
-[plugins]
-enabled = ["plugin_id_1", "plugin_id_2"]
-
-[lua_scripts]
-enabled = ["script_id_1"]
-
-[compliance]
-frameworks = ["gdpr", "hipaa"]
-
-[options]
-custom_option = "value"
-```
-
----
-
-## Selecting a Profile
-
-### By Use Case:
-
-| Scenario | Profile | Reason |
-|----------|---------|--------|
-| Compliance audit | enterprise | Low noise, detailed reporting |
-| Cloud assessment | cloud | Cloud-specific checks enabled |
-| Full pentest | aggressive | All features, max coverage |
-| Stealth testing | stealth | WAF evasion, slow rate |
-| Custom needs | custom.toml | Build your own |
-
----
-
-## Profile Recommendations
-
-- **Starting out?** → Use `enterprise` (safe, auditable)
-- **Cloud testing?** → Use `cloud` (AWS/GCP/Azure optimized)
-- **Full assessment?** → Use `aggressive` (comprehensive)
-- **Against WAF?** → Use `stealth` (evasion enabled)
-- **Something else?** → Create `custom.toml` (extend built-in)
-
----
-
-## Advanced: Merging Profiles
-
-Combine two profiles (overlay one on another):
-
-```bash
-venom scan \
-  --profile enterprise \
-  --merge-profile aggressive \
-  --target http://target.com
-```
-
-This takes enterprise's baseline but adds aggressive's plugins/scripts.
-
----
-
-**Last Updated:** 2026-07-17  
-**Version:** 0.9.0  
-**Status:** Experimental
+For current commands and runtime boundaries, use the root [README](../README.md), [Getting Started](../docs/GETTING_STARTED.md), and [runtime map](../docs/internals/runtime-map.md).

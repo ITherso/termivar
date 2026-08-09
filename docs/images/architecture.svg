@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1600" height="980" viewBox="0 0 1600 980" role="img" aria-labelledby="title desc">
   <title id="title">Venom architecture</title>
-  <desc id="desc">Runtime flow from hosts through the runner, scan phases, plugins, events, findings and reports, followed by the inward Cargo crate dependency direction.</desc>
+  <desc id="desc">Legacy scan flow from an authorized host through phases, plugins, events, findings and reports, followed by the inward Cargo crate dependency direction.</desc>
   <defs>
     <linearGradient id="background" x1="0" y1="0" x2="1" y2="1">
       <stop offset="0" stop-color="#07111f"/>
@@ -36,14 +36,14 @@
 
   <rect width="1600" height="980" rx="28" fill="url(#background)"/>
   <text class="title" x="70" y="74">Venom Architecture</text>
-  <text class="subtitle" x="70" y="108">v0.9.0-alpha · modular Rust security-testing framework · dependencies point inward</text>
+  <text class="subtitle" x="70" y="108">v0.9.0-alpha · legacy scan flow and inward crate dependencies</text>
 
   <rect class="panel" x="50" y="145" width="1500" height="475" rx="22"/>
   <text class="section" x="80" y="188">Runtime flow</text>
 
   <rect class="host" filter="url(#shadow)" x="85" y="250" width="190" height="94" rx="16"/>
   <text class="box-title" x="180" y="288" text-anchor="middle">Host</text>
-  <text class="box-copy" x="180" y="315" text-anchor="middle">CLI · API · library</text>
+  <text class="box-copy" x="180" y="315" text-anchor="middle">CLI · library</text>
 
   <rect class="runner" filter="url(#shadow)" x="345" y="250" width="190" height="94" rx="16"/>
   <text class="box-title" x="440" y="288" text-anchor="middle">Runner</text>
@@ -55,7 +55,7 @@
   <g>
     <rect x="638" y="291" width="66" height="30" rx="15" fill="#273f58"/><text class="chip" x="671" y="311" text-anchor="middle">Recon</text>
     <rect x="714" y="291" width="66" height="30" rx="15" fill="#273f58"/><text class="chip" x="747" y="311" text-anchor="middle">Crawl</text>
-    <rect x="790" y="291" width="91" height="30" rx="15" fill="#273f58"/><text class="chip" x="835" y="311" text-anchor="middle">Directory</text>
+    <rect x="790" y="291" width="91" height="30" rx="15" fill="#273f58"/><text class="chip" x="835" y="311" text-anchor="middle">Dir · opt-in</text>
     <rect x="652" y="333" width="55" height="30" rx="15" fill="#273f58"/><text class="chip" x="679" y="353" text-anchor="middle">SQLi</text>
     <rect x="717" y="333" width="55" height="30" rx="15" fill="#273f58"/><text class="chip" x="744" y="353" text-anchor="middle">XSS</text>
     <rect x="782" y="333" width="62" height="30" rx="15" fill="#273f58"/><text class="chip" x="813" y="353" text-anchor="middle">SSRF</text>
@@ -72,7 +72,7 @@
 
   <rect class="report" filter="url(#shadow)" x="1250" y="250" width="210" height="94" rx="16"/>
   <text class="box-title" x="1355" y="288" text-anchor="middle">Consumers</text>
-  <text class="box-copy" x="1355" y="315" text-anchor="middle">report · dashboard · telemetry</text>
+  <text class="box-copy" x="1355" y="315" text-anchor="middle">report · optional telemetry</text>
 
   <rect class="engine" filter="url(#shadow)" x="610" y="455" width="300" height="94" rx="16"/>
   <text class="box-title" x="760" y="491" text-anchor="middle">Plugin engine · Preview</text>
@@ -95,11 +95,11 @@
 
   <rect class="product" x="85" y="770" width="235" height="86" rx="16"/>
   <text class="box-title" x="202" y="805" text-anchor="middle">Product layer</text>
-  <text class="box-copy" x="202" y="830" text-anchor="middle">web / dashboard / compliance</text>
+  <text class="box-copy" x="202" y="830" text-anchor="middle">future web / dashboard / compliance</text>
 
   <rect class="crate" x="390" y="770" width="210" height="86" rx="16"/>
   <text class="box-title" x="495" y="805" text-anchor="middle">venom-cli / api</text>
-  <text class="box-copy" x="495" y="830" text-anchor="middle">composition / transport</text>
+  <text class="box-copy" x="495" y="830" text-anchor="middle">composition / health router</text>
 
   <rect class="crate" x="670" y="770" width="210" height="86" rx="16"/>
   <text class="box-title" x="775" y="805" text-anchor="middle">venom-scanner</text>
@@ -107,7 +107,7 @@
 
   <rect class="crate" x="950" y="770" width="210" height="86" rx="16"/>
   <text class="box-title" x="1055" y="805" text-anchor="middle">venom-proxy</text>
-  <text class="box-copy" x="1055" y="830" text-anchor="middle">HTTP / TLS boundary</text>
+  <text class="box-copy" x="1055" y="830" text-anchor="middle">experimental TCP relay</text>
 
   <rect class="core" filter="url(#shadow)" x="1230" y="757" width="245" height="112" rx="16"/>
   <text class="box-title" x="1352" y="797" text-anchor="middle">venom-core</text>

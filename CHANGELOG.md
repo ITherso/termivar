@@ -66,6 +66,7 @@ All notable changes to Venom are recorded here. Releases use the categories from
 
 ### Changed
 
+- Reframed the public README and linked onboarding, distribution, architecture, and profile guidance around the deterministic decision runtime, explicitly separating the legacy direct-I/O scan, unsupported adapters, and library-only surfaces.
 - Replaced the long-form promotional README with a concise project guide.
 - Standardized the pre-release version as `0.9.0-alpha`.
 - Replaced absolute completion claims with lifecycle labels such as Beta, Preview, and Experimental.

@@ -8,14 +8,14 @@ Venom `0.9.0-alpha` is primarily a Rust library framework. The generated Rust AP
 | --- | --- | --- |
 | `venom-core` | Transport-neutral events, findings, errors, configuration, models, and predicate vocabulary | [Open rustdoc](https://itherso.github.io/venom/rust/venom_core/) |
 | `venom-scanner` | Scanner SDK, phase/plugin and execution contracts, deterministic reasoning profiles, and reports | [Open rustdoc](https://itherso.github.io/venom/rust/venom_scanner/) |
-| `venom-api` | Experimental HTTP adapter | [Open rustdoc](https://itherso.github.io/venom/rust/venom_api/) |
-| `venom-proxy` | HTTP/TLS proxy boundary | [Open rustdoc](https://itherso.github.io/venom/rust/venom_proxy/) |
+| `venom-api` | Library health router; the CLI listener adapter is unsupported | [Open rustdoc](https://itherso.github.io/venom/rust/venom_api/) |
+| `venom-proxy` | Experimental fixed-upstream TCP relay; no HTTP/TLS interception | [Open rustdoc](https://itherso.github.io/venom/rust/venom_proxy/) |
 
 The documentation workflow builds every public crate with all features and treats rustdoc warnings and broken intra-doc links as errors.
 
 ## Scanner SDK
 
-Application authors should start with [`ScannerSdk`](https://itherso.github.io/venom/rust/venom_scanner/struct.ScannerSdk.html) and implement [`ScanPhase`](https://itherso.github.io/venom/rust/venom_scanner/trait.ScanPhase.html):
+Application authors should start with [`ScannerSdk`](https://itherso.github.io/venom/rust/venom_scanner/sdk/struct.ScannerSdk.html) and implement [`ScanPhase`](https://itherso.github.io/venom/rust/venom_scanner/contracts/trait.ScanPhase.html):
 
 ```rust
 use venom_scanner::ScannerSdk;
