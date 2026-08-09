@@ -1288,14 +1288,17 @@ mod tests {
         masquerading_policy["verification_target"] = serde_json::json!("knowledge_only");
         assert!(serde_json::from_value::<VerificationCase>(masquerading_policy.clone()).is_err());
 
-        let mut session_wire =
-            serde_json::to_value(crate::DecisionSession::new(subject())).unwrap();
-        session_wire["action_cycles"] = serde_json::json!(1);
-        session_wire["state"] = serde_json::json!({
-            "state": "awaiting_passive",
-            "case": masquerading_policy
-        });
-        assert!(serde_json::from_value::<crate::DecisionSession>(session_wire).is_err());
+        #[cfg(feature = "scanning")]
+        {
+            let mut session_wire =
+                serde_json::to_value(crate::DecisionSession::new(subject())).unwrap();
+            session_wire["action_cycles"] = serde_json::json!(1);
+            session_wire["state"] = serde_json::json!({
+                "state": "awaiting_passive",
+                "case": masquerading_policy
+            });
+            assert!(serde_json::from_value::<crate::DecisionSession>(session_wire).is_err());
+        }
     }
 
     fn case() -> VerificationCase {
