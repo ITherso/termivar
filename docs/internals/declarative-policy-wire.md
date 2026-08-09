@@ -70,6 +70,15 @@ preserve an intact object. A future semantic variant that an older reader does
 not understand needs its own old-reader rejection design. The current guards
 must not be treated as generic versioning.
 
+This does not retroactively harden preceding binaries against damaged wire.
+Those readers ignore the selector, verification, and adaptation guards, and the
+preceding expression reader has no equivalent guard, so removing one of their
+known semantic fields can still broaden an object when it is read by an older
+binary. Updated readers reject the same corruption. If durable mixed-version
+declarative loading becomes a product surface, it needs a separately designed
+versioned policy envelope; intact current semantics do not justify that wire
+migration before a real consumer exists.
+
 ## Validation boundaries
 
 `PipelineDirective` validates standalone deserialization as well as nested rule
