@@ -1,0 +1,6 @@
+{
+  "scenario": "claim_value_deleted",
+  "needle": "_token",
+  "lists": [],
+  "depth": 4
+}

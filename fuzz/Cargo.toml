@@ -60,3 +60,17 @@ path = "fuzz_targets/html_form_controls.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "expression_semantics"
+path = "fuzz_targets/expression_semantics.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "declarative_policy_wire"
+path = "fuzz_targets/declarative_policy_wire.rs"
+test = false
+doc = false
+bench = false

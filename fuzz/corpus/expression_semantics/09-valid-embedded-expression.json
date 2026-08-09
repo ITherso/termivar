@@ -1,0 +1,25 @@
+{
+  "scenario": "claim_value_deleted",
+  "needle": "_token",
+  "lists": [["_token"]],
+  "expression": {
+    "op": "all",
+    "expressions": [
+      {
+        "op": "text_list_contains_exact",
+        "layer": "evidence",
+        "predicate": {"namespace": "fuzz.form", "name": "control_names"},
+        "value": "_token"
+      },
+      {
+        "op": "not",
+        "expression": {
+          "op": "claim",
+          "layer": "evidence",
+          "predicate": {"namespace": "fuzz.form", "name": "missing"},
+          "value": null
+        }
+      }
+    ]
+  }
+}

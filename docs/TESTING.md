@@ -140,8 +140,9 @@ MSRV failures are release blockers. Beta and nightly expose upcoming compiler
 changes; investigate failures before deciding whether an upstream regression
 is involved.
 
-The scheduled fuzz workflow runs bounded HTTP, JSON, YAML, XML, and text parser
-campaigns. See [Fuzzing](fuzzing.md) for reproduction and artifact policy.
+The scheduled fuzz workflow runs bounded Venom HTML/declarative-semantic targets
+plus HTTP, JSON, YAML, XML, and text dependency-parser campaigns. See
+[Fuzzing](fuzzing.md) for reproduction and artifact policy.
 
 ## Coverage and performance
 
