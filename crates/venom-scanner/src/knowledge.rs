@@ -1587,7 +1587,7 @@ mod tests {
         let stored = store.evidence(&child_id).unwrap();
         assert_eq!(
             stored.origin().derivation().unwrap().parents(),
-            &[parent_id.clone()]
+            std::slice::from_ref(&parent_id)
         );
         assert!(store.derivation_children(&parent_id).contains(&child_id));
         // A direct sibling has no lineage.

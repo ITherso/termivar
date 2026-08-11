@@ -24,8 +24,8 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 use venom_core::{
-    ConfidenceScore, Evidence, EvidenceKind, EvidenceSource, EvidenceValue, HttpEvidencePredicate,
-    KnowledgePredicate,
+    ConfidenceScore, DerivationAlgorithm, Evidence, EvidenceDerivation, EvidenceKind,
+    EvidenceSource, EvidenceValue, HttpEvidencePredicate, KnowledgePredicate,
 };
 
 use crate::{
@@ -948,32 +948,52 @@ impl HttpEvidenceExecutor {
                 // for text/html. It cannot run under MetadataOnly (no sample is
                 // computed here at all), so the body-capture policy is never
                 // bypassed. Only control names are recorded, never values, and
-                // only when at least one name is conservatively observed.
-                if self.capture_form_control_names
+                // only when at least one name is conservatively observed. Names
+                // are extracted from the borrowed sample first, before the
+                // sample is moved into its own observation.
+                let form_control_names = if self.capture_form_control_names
                     && normalized_media_type(&response.headers).as_deref() == Some("text/html")
                 {
-                    if let FormControlExtraction::Observed(names) =
-                        extract_form_control_names(&sample)
-                    {
-                        if !names.is_empty() {
-                            evidence.push(self.observation(
-                                decision,
-                                EvidenceKind::Content,
-                                HttpEvidencePredicate::RESPONSE_FORM_CONTROL_NAMES.into(),
-                                EvidenceValue::TextList(names),
-                                "response-form-control-names",
-                            )?);
-                        }
+                    match extract_form_control_names(&sample) {
+                        FormControlExtraction::Observed(names) if !names.is_empty() => Some(names),
+                        _ => None,
                     }
-                }
+                } else {
+                    None
+                };
 
-                evidence.push(self.observation(
+                // Build the body-sample observation so a derived form-control
+                // record can cite its exact EvidenceId as lineage. The body
+                // sample is the sole transformation input; the media type and
+                // truncation observations are gating/context, not lineage.
+                let body_sample = self.observation(
                     decision,
                     EvidenceKind::Content,
                     HttpEvidencePredicate::RESPONSE_BODY_SAMPLE.into(),
                     EvidenceValue::Text(sample),
                     "response-body-sample",
-                )?);
+                )?;
+
+                if let Some(names) = form_control_names {
+                    let derivation = EvidenceDerivation::new(
+                        [body_sample.id().clone()],
+                        form_control_derivation_algorithm(),
+                    )?;
+                    evidence.push(
+                        self.observation(
+                            decision,
+                            EvidenceKind::Content,
+                            HttpEvidencePredicate::RESPONSE_FORM_CONTROL_NAMES.into(),
+                            EvidenceValue::TextList(names),
+                            "response-form-control-names",
+                        )?
+                        .derived_from(derivation),
+                    );
+                }
+
+                // Preserve the historical batch order: form-control names (when
+                // present) precede the body sample.
+                evidence.push(body_sample);
             }
         }
 
@@ -1183,6 +1203,13 @@ fn valid_cookie_name(name: &str) -> bool {
                         | b'}'
                 )
         })
+}
+
+/// Stable identity of the bounded HTML form-control-name extraction, cited as
+/// the derivation algorithm of the derived form-control evidence.
+fn form_control_derivation_algorithm() -> DerivationAlgorithm {
+    DerivationAlgorithm::new("http.form-control-names", 1)
+        .expect("static form-control derivation algorithm identity is valid")
 }
 
 fn textual_response(headers: &HeaderMap) -> bool {
@@ -2091,6 +2118,14 @@ mod tests {
             .map(Evidence::value)
     }
 
+    fn record<P>(evidence: &[Evidence], predicate: P) -> Option<&Evidence>
+    where
+        P: Into<KnowledgePredicate>,
+    {
+        let predicate = predicate.into();
+        evidence.iter().find(|item| item.predicate() == &predicate)
+    }
+
     /// Serves one `text/html` response with an auto-computed `Content-Length`, so
     /// tests can vary the HTML body without hand-counting bytes.
     async fn serve_html_once(body: impl Into<String>) -> Url {
@@ -2256,6 +2291,45 @@ mod tests {
             ),
             Some(&EvidenceValue::TextList(vec![" _token ".to_owned()]))
         );
+    }
+
+    #[tokio::test]
+    async fn form_control_names_are_derived_from_the_exact_body_sample() {
+        let url = serve_html_once("<form><input name=\"_token\"></form>").await;
+        let adapter = form_capturing_adapter(&url, HttpBodyCapture::TextSample { max_chars: 8192 });
+        let knowledge = KnowledgeBase::new();
+
+        let receipt = adapter
+            .execute_command(&command(&url), &knowledge)
+            .await
+            .unwrap();
+        let evidence = receipt.after_execution().evidence();
+
+        let body_sample = record(evidence, HttpEvidencePredicate::RESPONSE_BODY_SAMPLE).unwrap();
+        let form_controls =
+            record(evidence, HttpEvidencePredicate::RESPONSE_FORM_CONTROL_NAMES).unwrap();
+
+        // The body sample is a direct observation; the form-control record is
+        // derived from exactly that record — not merely case-correlated with it.
+        assert!(body_sample.origin().is_direct());
+        let derivation = form_controls
+            .origin()
+            .derivation()
+            .expect("form-control evidence must carry derivation lineage");
+        assert_eq!(derivation.parents(), std::slice::from_ref(body_sample.id()));
+        assert_eq!(derivation.algorithm().name(), "http.form-control-names");
+        assert_eq!(derivation.algorithm().version(), 1);
+        // Same subject and same case as the parent.
+        assert_eq!(form_controls.subject(), body_sample.subject());
+        assert_eq!(
+            form_controls.source().correlation_id(),
+            body_sample.source().correlation_id()
+        );
+
+        // The committed knowledge base exposes the reverse edge.
+        assert!(knowledge
+            .derivation_children(body_sample.id())
+            .contains(form_controls.id()));
     }
 
     #[tokio::test]
