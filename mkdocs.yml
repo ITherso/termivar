@@ -42,6 +42,7 @@ nav:
       - Declarative policy wire: internals/declarative-policy-wire.md
       - Experience classification: internals/experience.md
       - HTTP evidence executor: internals/http-evidence.md
+      - Derived-evidence lineage: internals/derived-evidence-lineage.md
       - API predicate vocabulary: internals/api-predicates.md
       - API visibility evidence: internals/api-evidence.md
       - API reasoning: internals/api-reasoning.md
