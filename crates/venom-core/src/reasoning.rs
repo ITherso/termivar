@@ -13,6 +13,15 @@ use thiserror::Error;
 const MAX_CONFIDENCE_BASIS_POINTS: u16 = 10_000;
 const MAX_PROBABILITY_PARTS_PER_MILLION: u32 = 1_000_000;
 
+/// Maximum distinct parent records one derived evidence record may reference.
+///
+/// Conservative and far above every current consumer (form-control discovery
+/// references exactly one parent). Bounds validation work and index growth.
+pub const MAX_DERIVATION_PARENTS: usize = 32;
+
+/// Maximum byte length of a derivation algorithm identifier.
+pub const MAX_DERIVATION_ALGORITHM_BYTES: usize = 64;
+
 /// Validation errors for decision-engine domain contracts.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 #[non_exhaustive]
@@ -32,6 +41,28 @@ pub enum ReasoningModelError {
     /// Bayes' theorem had a zero denominator for the supplied observation.
     #[error("Bayesian posterior is undefined for the supplied likelihoods")]
     UndefinedPosterior,
+
+    /// Derived evidence declared no parent record.
+    #[error("derived evidence must reference at least one parent evidence record")]
+    EmptyDerivationParents,
+
+    /// Derived evidence referenced more parents than the compiled bound allows.
+    #[error("derived evidence references {count} parents, exceeding the maximum of {max}")]
+    TooManyDerivationParents {
+        /// Distinct parent count after canonicalization.
+        count: usize,
+        /// Compiled maximum parent count.
+        max: usize,
+    },
+
+    /// A derivation algorithm identifier exceeded the compiled byte bound.
+    #[error("derivation algorithm identifier is {len} bytes, exceeding the maximum of {max}")]
+    DerivationAlgorithmTooLong {
+        /// Identifier length in bytes.
+        len: usize,
+        /// Compiled maximum identifier length in bytes.
+        max: usize,
+    },
 }
 
 fn non_empty(value: impl Into<String>, field: &'static str) -> Result<String, ReasoningModelError> {
@@ -476,7 +507,176 @@ impl EvidenceSource {
     }
 }
 
+/// Stable identity of the transformation that produced a derived evidence
+/// record.
+///
+/// The `name` is a bounded, non-empty, stable identifier (for example
+/// `http.form-control-names`). The `version` distinguishes incompatible
+/// revisions of the same transformation so a consumer can tell exactly which
+/// algorithm produced a child, not merely that some transformation did.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
+pub struct DerivationAlgorithm {
+    name: String,
+    version: u32,
+}
+
+impl DerivationAlgorithm {
+    /// Creates a validated algorithm identity from a bounded name and version.
+    pub fn new(name: impl Into<String>, version: u32) -> Result<Self, ReasoningModelError> {
+        let name = non_empty(name, "derivation algorithm name")?;
+        if name.len() > MAX_DERIVATION_ALGORITHM_BYTES {
+            return Err(ReasoningModelError::DerivationAlgorithmTooLong {
+                len: name.len(),
+                max: MAX_DERIVATION_ALGORITHM_BYTES,
+            });
+        }
+        Ok(Self { name, version })
+    }
+
+    /// Returns the stable algorithm name.
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Returns the algorithm revision.
+    pub fn version(&self) -> u32 {
+        self.version
+    }
+}
+
+impl<'de> Deserialize<'de> for DerivationAlgorithm {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Wire {
+            name: String,
+            version: u32,
+        }
+        let wire = Wire::deserialize(deserializer)?;
+        Self::new(wire.name, wire.version).map_err(serde::de::Error::custom)
+    }
+}
+
+/// The exact immutable evidence record(s) a derived record was computed from.
+///
+/// This is **derivation lineage**, not producer provenance, case correlation,
+/// or reasoning support: it names the precise transformation inputs. Parents
+/// are stored canonicalized (sorted, de-duplicated) so acceptance never depends
+/// on input order and an equivalent lineage is a single stable value. Structural
+/// validity (non-empty, bounded, canonical) is enforced here; contextual
+/// validity that requires the knowledge store (parent existence, self-reference,
+/// cycles, subject agreement) is enforced atomically at insertion time.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct EvidenceDerivation {
+    parents: Vec<EvidenceId>,
+    algorithm: DerivationAlgorithm,
+}
+
+impl EvidenceDerivation {
+    /// Creates a validated derivation from one or more parent evidence IDs.
+    ///
+    /// Duplicate parents are canonicalized to a single occurrence; the bound is
+    /// applied to the distinct set. An empty parent set is rejected — a record
+    /// with no parents is direct evidence, never a zero-parent derivation.
+    pub fn new(
+        parents: impl IntoIterator<Item = EvidenceId>,
+        algorithm: DerivationAlgorithm,
+    ) -> Result<Self, ReasoningModelError> {
+        let canonical: BTreeSet<EvidenceId> = parents.into_iter().collect();
+        if canonical.is_empty() {
+            return Err(ReasoningModelError::EmptyDerivationParents);
+        }
+        if canonical.len() > MAX_DERIVATION_PARENTS {
+            return Err(ReasoningModelError::TooManyDerivationParents {
+                count: canonical.len(),
+                max: MAX_DERIVATION_PARENTS,
+            });
+        }
+        Ok(Self {
+            parents: canonical.into_iter().collect(),
+            algorithm,
+        })
+    }
+
+    /// Returns the canonical (sorted, de-duplicated) parent evidence IDs.
+    pub fn parents(&self) -> &[EvidenceId] {
+        &self.parents
+    }
+
+    /// Returns the transformation identity that produced the child.
+    pub fn algorithm(&self) -> &DerivationAlgorithm {
+        &self.algorithm
+    }
+
+    /// Returns whether the given evidence ID is a parent of this derivation.
+    pub fn references_parent(&self, id: &EvidenceId) -> bool {
+        self.parents.binary_search(id).is_ok()
+    }
+}
+
+impl<'de> Deserialize<'de> for EvidenceDerivation {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Wire {
+            parents: Vec<EvidenceId>,
+            algorithm: DerivationAlgorithm,
+        }
+        let wire = Wire::deserialize(deserializer)?;
+        Self::new(wire.parents, wire.algorithm).map_err(serde::de::Error::custom)
+    }
+}
+
+/// Whether an evidence record was directly observed or derived from other
+/// records.
+///
+/// `Direct` is the default and the historical meaning of every evidence record.
+/// `Derived` carries exact lineage. This distinction is authoritative in the
+/// live knowledge store; it is intentionally **not** part of the serialized
+/// [`Evidence`] wire in this revision (see [`Evidence`]).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum EvidenceOrigin {
+    /// A first-hand observation with no derivation lineage.
+    #[default]
+    Direct,
+    /// A record computed from exact parent evidence record(s).
+    Derived(EvidenceDerivation),
+}
+
+impl EvidenceOrigin {
+    /// Returns whether this is a direct (non-derived) observation.
+    pub fn is_direct(&self) -> bool {
+        matches!(self, Self::Direct)
+    }
+
+    /// Returns the derivation lineage when this record is derived.
+    pub fn derivation(&self) -> Option<&EvidenceDerivation> {
+        match self {
+            Self::Derived(derivation) => Some(derivation),
+            Self::Direct => None,
+        }
+    }
+}
+
 /// Immutable observation recorded by discovery or execution code.
+///
+/// # Lineage
+///
+/// An evidence record is [`EvidenceOrigin::Direct`] by default. A producer that
+/// computes a record from exact source records attaches lineage with
+/// [`Self::derived_from`]. Lineage is **runtime truth held in the live
+/// knowledge store**: the `origin` is deliberately excluded from the serialized
+/// wire, so the serialized form of every record — direct or derived — is
+/// byte-identical to the historical contract. Durable lineage export is a
+/// future versioned surface, not this record's wire.
 ///
 /// # Examples
 ///
@@ -510,6 +710,13 @@ pub struct Evidence {
     source: EvidenceSource,
     reliability: ConfidenceScore,
     observed_at_ms: u64,
+    // Derivation lineage is runtime truth: it participates in structural
+    // equality (so reusing an ID with a different origin is an identity
+    // conflict) but is intentionally excluded from the serialized wire, keeping
+    // the direct-evidence contract byte-identical and refusing to encode a
+    // strippable derived/direct discriminator on the wire.
+    #[serde(skip)]
+    origin: EvidenceOrigin,
 }
 
 impl Evidence {
@@ -583,7 +790,19 @@ impl Evidence {
             source,
             reliability,
             observed_at_ms,
+            origin: EvidenceOrigin::Direct,
         }
+    }
+
+    /// Marks this record as derived from exact parent evidence record(s).
+    ///
+    /// Structural validity of the lineage is enforced when the
+    /// [`EvidenceDerivation`] is constructed; contextual validity (parent
+    /// existence, subject agreement, self-reference, and cycles) is enforced
+    /// atomically by the knowledge store on insertion.
+    pub fn derived_from(mut self, derivation: EvidenceDerivation) -> Self {
+        self.origin = EvidenceOrigin::Derived(derivation);
+        self
     }
 
     /// Returns the evidence identifier.
@@ -622,8 +841,16 @@ impl Evidence {
     }
 
     /// Returns the observation timestamp in Unix milliseconds.
+    ///
+    /// For a derived record this is the derivation instant, not an independent
+    /// re-observation of the underlying subject.
     pub fn observed_at_ms(&self) -> u64 {
         self.observed_at_ms
+    }
+
+    /// Returns whether this record is direct or derived, with exact lineage.
+    pub fn origin(&self) -> &EvidenceOrigin {
+        &self.origin
     }
 }
 
@@ -1466,6 +1693,103 @@ mod tests {
         assert_eq!(decoded.source().component(), "fingerprint.headers");
         assert_eq!(decoded.source().correlation_id(), Some("scan-42"));
         assert_eq!(decoded.reliability().basis_points(), 9_000);
+    }
+
+    fn algorithm() -> DerivationAlgorithm {
+        DerivationAlgorithm::new("test.transform", 1).unwrap()
+    }
+
+    #[test]
+    fn derivation_algorithm_validates_name_bounds() {
+        assert_eq!(
+            DerivationAlgorithm::new("  ", 1),
+            Err(ReasoningModelError::EmptyValue {
+                field: "derivation algorithm name"
+            })
+        );
+        let long = "a".repeat(MAX_DERIVATION_ALGORITHM_BYTES + 1);
+        assert!(matches!(
+            DerivationAlgorithm::new(long, 1),
+            Err(ReasoningModelError::DerivationAlgorithmTooLong { .. })
+        ));
+    }
+
+    #[test]
+    fn derivation_rejects_empty_parent_set() {
+        assert_eq!(
+            EvidenceDerivation::new(Vec::new(), algorithm()),
+            Err(ReasoningModelError::EmptyDerivationParents)
+        );
+    }
+
+    #[test]
+    fn derivation_canonicalizes_parents_order_independently() {
+        let a = EvidenceId::parse("id-a").unwrap();
+        let b = EvidenceId::parse("id-b").unwrap();
+        let forward =
+            EvidenceDerivation::new([a.clone(), b.clone(), a.clone()], algorithm()).unwrap();
+        let reverse = EvidenceDerivation::new([b.clone(), a.clone()], algorithm()).unwrap();
+
+        // Duplicates collapse and input order does not affect the value.
+        assert_eq!(forward, reverse);
+        assert_eq!(forward.parents(), &[a.clone(), b.clone()]);
+        assert!(forward.references_parent(&a));
+        assert!(!forward.references_parent(&EvidenceId::parse("id-c").unwrap()));
+    }
+
+    #[test]
+    fn derivation_rejects_more_parents_than_the_bound() {
+        let parents: Vec<EvidenceId> = (0..=MAX_DERIVATION_PARENTS)
+            .map(|index| EvidenceId::parse(format!("parent-{index}")).unwrap())
+            .collect();
+        assert!(matches!(
+            EvidenceDerivation::new(parents, algorithm()),
+            Err(ReasoningModelError::TooManyDerivationParents { .. })
+        ));
+    }
+
+    #[test]
+    fn derived_from_sets_lineage_and_participates_in_equality() {
+        let parent = EvidenceId::parse("body-sample").unwrap();
+        let derivation = EvidenceDerivation::new([parent.clone()], algorithm()).unwrap();
+        let direct = evidence();
+        let derived = evidence().derived_from(derivation.clone());
+
+        assert!(direct.origin().is_direct());
+        assert_eq!(derived.origin().derivation(), Some(&derivation));
+        assert_eq!(derived.origin().derivation().unwrap().parents(), &[parent]);
+        // Origin is part of structural identity, so a derived record is never
+        // equal to an otherwise-identical direct record.
+        let direct_same_id = Evidence::with_id(
+            derived.id().clone(),
+            derived.subject().clone(),
+            derived.kind().clone(),
+            derived.predicate().clone(),
+            derived.value().clone(),
+            derived.source().clone(),
+            derived.reliability(),
+        );
+        assert_ne!(direct_same_id, derived);
+    }
+
+    #[test]
+    fn derived_evidence_wire_is_byte_identical_to_direct_and_omits_lineage() {
+        // The pivotal contract: lineage is runtime-only truth. The serialized
+        // wire carries no origin field, so a direct and a derived record with
+        // otherwise-equal fields serialize identically, and a derived record
+        // round-trips to Direct (lineage is not persisted on this wire).
+        let parent = EvidenceId::parse("body-sample").unwrap();
+        let derivation = EvidenceDerivation::new([parent], algorithm()).unwrap();
+        let base = evidence();
+        let derived = base.clone().derived_from(derivation);
+
+        let direct_wire = serde_json::to_value(&base).unwrap();
+        let derived_wire = serde_json::to_value(&derived).unwrap();
+        assert_eq!(direct_wire, derived_wire);
+        assert!(direct_wire.get("origin").is_none());
+
+        let restored: Evidence = serde_json::from_value(derived_wire).unwrap();
+        assert!(restored.origin().is_direct());
     }
 
     #[test]

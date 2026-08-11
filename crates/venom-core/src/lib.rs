@@ -51,8 +51,9 @@ pub use predicates::{
 };
 pub use reasoning::{
     BayesianBelief, BayesianEvidence, BayesianUpdate, BeliefWrite, ConfidenceScore,
-    ContributionDirection, EntityId, EntityKind, Evidence, EvidenceContribution, EvidenceId,
-    EvidenceKind, EvidenceSource, EvidenceValue, Fact, Hypothesis, HypothesisState,
-    HypothesisStrength, KnowledgeEntity, KnowledgePredicate, KnowledgeRelation, Probability,
-    ReasoningModelError, RelationId, RelationKind,
+    ContributionDirection, DerivationAlgorithm, EntityId, EntityKind, Evidence,
+    EvidenceContribution, EvidenceDerivation, EvidenceId, EvidenceKind, EvidenceOrigin,
+    EvidenceSource, EvidenceValue, Fact, Hypothesis, HypothesisState, HypothesisStrength,
+    KnowledgeEntity, KnowledgePredicate, KnowledgeRelation, Probability, ReasoningModelError,
+    RelationId, RelationKind, MAX_DERIVATION_ALGORITHM_BYTES, MAX_DERIVATION_PARENTS,
 };
