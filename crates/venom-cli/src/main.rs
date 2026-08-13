@@ -7,13 +7,16 @@
 //! - **Execution:** `scan` runs the bounded deterministic
 //!   `StandardWebDecisionRuntime`. `decision-scan` is a deprecated compatibility
 //!   alias to that same command definition and implementation.
-//! - **Optional surfaces:** the historical direct-I/O runner is available only
-//!   as `legacy-scan` under `legacy-scanner`; unsupported API and experimental
-//!   proxy adapters are separately feature-gated.
+//! - **Optional surfaces:** the historical mixed-authority, whole-run-unmetered
+//!   runner is available only as `legacy-scan` under `legacy-scanner`;
+//!   unsupported API and experimental proxy adapters are separately
+//!   feature-gated.
 //! - **Support:** all surfaces remain alpha. The default runtime emits
 //!   operational decisions and verifier outcomes, not vulnerability findings.
 //!
 //! See `docs/internals/runtime-map.md`.
+
+#![forbid(unsafe_code)]
 
 mod decision_scan;
 
@@ -44,9 +47,9 @@ fn scan_flags_conflict(format: OutputFormat, explain: bool) -> bool {
 }
 
 #[cfg(feature = "legacy-scanner")]
-const LEGACY_DIRECTORY_FUZZ_WARNING: &str = "[WARNING] Legacy directory fuzzing is enabled. This brute-force phase uses direct network I/O outside RuntimeBudget; run it only against explicitly authorized targets.";
+const LEGACY_DIRECTORY_FUZZ_WARNING: &str = "[WARNING] Legacy directory discovery is enabled. This wordlist phase uses the bounded exact-origin discovery broker, but still increases request volume; run it only against explicitly authorized targets.";
 #[cfg(feature = "legacy-scanner")]
-const LEGACY_SCAN_RUNTIME_WARNING: &str = "[WARNING] The ordered CLI phase pipeline is legacy direct I/O outside StandardWebDecisionRuntime and RuntimeBudget. Use it only against an explicitly authorized exact origin.";
+const LEGACY_SCAN_RUNTIME_WARNING: &str = "[WARNING] The ordered CLI phase pipeline remains outside StandardWebDecisionRuntime. Discovery phases 2-4 use a bounded exact-origin authority, but the complete legacy run remains Unmetered because phases 1 and 5-9 retain direct I/O. Use it only against an explicitly authorized exact origin.";
 const DETERMINISTIC_SCAN_WARNING: &str = "[ALPHA] Running the bounded deterministic decision runtime. Use only against an exact origin you own or are explicitly authorized to test.";
 
 #[cfg(feature = "legacy-scanner")]
@@ -83,7 +86,7 @@ enum Commands {
         #[arg(long)]
         explain: bool,
     },
-    /// Run the historical direct-I/O heuristic pipeline.
+    /// Run the historical mixed-authority, whole-run-unmetered heuristic pipeline.
     #[cfg(feature = "legacy-scanner")]
     LegacyScan {
         /// Authorized HTTP(S) target origin. Only scan targets you own or may test.
@@ -92,7 +95,7 @@ enum Commands {
         /// observations, not verifier-backed vulnerability confirmations.
         #[arg(long, required = true)]
         acknowledge_legacy_heuristics: bool,
-        /// Opt in to the legacy wordlist-based directory brute-force phase.
+        /// Opt in to bounded, calibrated wordlist directory discovery.
         #[arg(long)]
         legacy_directory_fuzz: bool,
     },
@@ -170,10 +173,12 @@ async fn run_legacy_scan(
     runner.register_phase(Box::new(phases::CrawlPhase));
     if legacy_directory_fuzz {
         eprintln!("{LEGACY_DIRECTORY_FUZZ_WARNING}");
-        runner.register_phase(Box::new(phases::DirectoryFuzzer::with_default_wordlist(20)));
+        runner.register_phase(Box::new(
+            phases::DirectoryFuzzer::with_default_wordlist_sequential(),
+        ));
     }
     runner.register_phase(Box::new(
-        phases::ParameterDiscoverer::with_default_wordlist(20),
+        phases::ParameterDiscoverer::with_default_wordlist_sequential(),
     ));
     runner.register_phase(Box::new(phases::SqliScanner));
     runner.register_phase(Box::new(phases::XssScanner));
@@ -487,7 +492,10 @@ mod tests {
             })
         ));
         assert!(LEGACY_SCAN_RUNTIME_WARNING.contains("outside StandardWebDecisionRuntime"));
-        assert!(LEGACY_DIRECTORY_FUZZ_WARNING.contains("outside RuntimeBudget"));
+        assert!(LEGACY_SCAN_RUNTIME_WARNING.contains("complete legacy run remains Unmetered"));
+        assert!(LEGACY_DIRECTORY_FUZZ_WARNING.contains("bounded exact-origin discovery broker"));
+        assert!(LEGACY_DIRECTORY_FUZZ_WARNING.contains("increases request volume"));
+        assert!(!LEGACY_DIRECTORY_FUZZ_WARNING.contains("outside RuntimeBudget"));
     }
 
     #[tokio::test]

@@ -1060,6 +1060,14 @@ impl CollectedHttpResponse {
         self.status.as_u16()
     }
 
+    pub(crate) fn final_url(&self) -> &Url {
+        &self.final_url
+    }
+
+    pub(crate) fn header(&self, name: &str) -> Option<&str> {
+        self.headers.get(name)?.to_str().ok()
+    }
+
     pub(crate) fn body(&self) -> &[u8] {
         &self.body
     }

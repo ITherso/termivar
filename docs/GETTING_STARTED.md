@@ -85,9 +85,25 @@ cargo run -p venom-cli --locked --features legacy-scanner -- legacy-scan \
   https://authorized.example.test --acknowledge-legacy-heuristics
 ```
 
-It runs the historical phase pipeline and performs direct network I/O outside `StandardWebDecisionRuntime` and `RuntimeBudget`. The CLI prints that warning before execution and renders only a claim-safe observation summary; untyped phase prose and evidence details are withheld pending verifier migration.
+It runs the historical phase pipeline. Its crawler, wordlist-based directory
+discovery, and parameter discovery share an exact-origin, redirect-disabled
+authority with configurable finite depth, page, request, request-timeout,
+wall-time, cumulative-body, and per-response-body limits. Those phases stage
+typed endpoint/form state atomically. Directory discovery calibrates two
+stable randomized nonexistent-path controls for each eligible path shape;
+parameter discovery requires a
+baseline/control/candidate/identical-replay differential. Their records are
+informational observations, not vulnerability confirmation.
 
-Wordlist-based directory brute forcing is still off within this opt-in runtime. The additional `--legacy-directory-fuzz` option enables that direct-I/O phase; use it only when the target authorization and expected load are clear.
+Wordlist-based directory discovery is still off within this opt-in runtime. The
+additional `--legacy-directory-fuzz` option enables it; use it only when target
+authorization and expected load are clear. Reconnaissance and phases five
+through nine still perform direct network I/O outside
+`StandardWebDecisionRuntime` and `RuntimeBudget`, so the CLI reports the whole
+run as `Unmetered`, prints that warning before execution, and renders only a
+claim-safe observation summary. Untyped phase prose and evidence details are
+withheld pending verifier migration. See
+[ADR 0016](adr/0016-bound-legacy-discovery-authority.md).
 
 `scan` and its `decision-scan` alias are the same deterministic engine. `legacy-scan` is a different engine; its results, accounting, and claim semantics must not be compared as though it were an output mode of `scan`.
 

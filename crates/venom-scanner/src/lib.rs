@@ -9,6 +9,7 @@
 //! [`KnowledgeBase`] separates ontology, instance knowledge, and observations
 //! without coupling evidence producers to decision policy.
 
+#![forbid(unsafe_code)]
 #![deny(rustdoc::broken_intra_doc_links)]
 
 #[cfg(all(feature = "legacy-scanner", panic = "abort"))]
@@ -35,6 +36,8 @@ pub mod defense;
 pub mod error;
 pub mod experience;
 pub mod knowledge;
+#[cfg(feature = "legacy-scanner")]
+mod legacy_discovery;
 pub mod logging;
 pub mod metrics;
 pub mod payload_strategies;
@@ -214,6 +217,8 @@ pub use knowledge::{
     MAX_KNOWLEDGE_RELATION_EVIDENCE_ID_BYTES, MAX_KNOWLEDGE_RELATION_ID_BYTES,
     MAX_KNOWLEDGE_RELATION_KIND_BYTES,
 };
+#[cfg(feature = "legacy-scanner")]
+pub use legacy_discovery::{DiscoveryForm, DiscoveryFormMethod, DiscoveryLimits};
 pub use logging::{LogEntry, LogLevel, Logger};
 pub use metrics::{MetricsCollector, MetricsSummary, PhaseMetrics};
 pub use payload_strategies::{

@@ -82,7 +82,7 @@ venom --help
 venom scan --help
 ```
 
-The supported CLI truth is documented in [Getting Started](GETTING_STARTED.md). `venom scan` is the bounded deterministic Preview, while `decision-scan` is its deprecated compatibility alias. The direct-I/O `legacy-scan`, unsupported `api`, and experimental `proxy` adapters are absent from default builds and require explicit Cargo features.
+The supported CLI truth is documented in [Getting Started](GETTING_STARTED.md). `venom scan` is the bounded deterministic Preview, while `decision-scan` is its deprecated compatibility alias. The mixed-authority `legacy-scan` (whose complete run remains `Unmetered`), unsupported `api`, and experimental `proxy` adapters are absent from default builds and require explicit Cargo features.
 
 ## Reporting problems
 

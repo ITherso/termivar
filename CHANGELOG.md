@@ -47,7 +47,7 @@ All notable changes to Venom are recorded here. Releases use the categories from
 - Host-owned standard-runtime cancellation with a distinct terminal reason and an auditable receipt for evidence committed before verification was skipped.
 - A versioned API review cursor that binds continuation state to a pseudonymous resource digest and rejects cross-resource reuse before scanning.
 - A process-local runtime failure receipt that preserves committed bootstrap work, completed turns, and monotonic usage across later execution, accounting, reasoning, or verification errors.
-- A transport-ownership ADR and architecture invariant that keeps raw network capabilities out of bounded standard-runtime consumers and freezes the legacy phase I/O inventory.
+- A transport-ownership ADR and architecture invariant that keeps raw network capabilities out of bounded standard-runtime consumers and tracks the explicit legacy phase I/O inventory.
 - Planner-selected, versioned payload-strategy reference and derivation contracts with hard byte limits, redacted audit receipts, and fail-closed executor support negotiation; no production payload capability is enabled by this plumbing.
 - A first native production payload strategy, `http.header.control-pair@1`, deriving a deterministic control/candidate pair for a single benign request header, plus a `standard_payload_strategies` registry builder and repeat/concurrency conformance tests.
 - A second native production payload strategy, `api.authorization.context-pair@1`, deriving an anonymous (empty, header-omitting) control and an authorized candidate credential to measure the same resource's visibility difference; registered in `standard_payload_strategies` with repeat/concurrency conformance tests.
@@ -63,13 +63,14 @@ All notable changes to Venom are recorded here. Releases use the categories from
 - A host-triggered, single-use JSON authorization-context differential workflow that moves two broker-backed views through Comparator V3, atomic observation ingestion, and exact human-review projection without becoming a planner action or vulnerability verdict.
 - Pinned golden API-authorization replay metadata and broker-backed runtime coverage for anonymous/member, owner/unrelated-user, and read/write-capability context pairs.
 - Bounded, raw-target-free transport dispatch receipts with ordered per-attempt byte accounting and typed completion, failure, timeout, response-limit, and cancellation outcomes.
+- A context-owned legacy discovery authority shared by crawler, optional directory, and parameter phases, with exact-origin redirect-disabled transport plus configurable depth, page, request, request-timeout, wall-time, cumulative-body, and per-response-body limits.
 
 ### Changed
 
-- Made `venom scan` the default bounded deterministic runtime, retained `decision-scan` as a deprecated compatibility alias with the unchanged `decision-scan/v1` wire contract, and moved the historical direct-I/O heuristic runner behind the non-default `legacy-scanner` feature as acknowledged `legacy-scan`.
+- Made `venom scan` the default bounded deterministic runtime, retained `decision-scan` as a deprecated compatibility alias with the unchanged `decision-scan/v1` wire contract, and moved the historical mixed-authority heuristic runner behind the non-default `legacy-scanner` feature as acknowledged `legacy-scan`.
 - Removed unsupported API and experimental proxy adapters from default CLI builds; their commands now require explicit `api-adapter` or `proxy-adapter` features, and the API adapter fails nonzero instead of implying that a listener started.
 - Changed the repository container's default command to `venom --help`; it no longer starts an experimental network listener by default.
-- Reframed the public README and linked onboarding, distribution, architecture, and profile guidance around the deterministic decision runtime, explicitly separating the legacy direct-I/O scan, unsupported adapters, and library-only surfaces.
+- Reframed the public README and linked onboarding, distribution, architecture, and profile guidance around the deterministic decision runtime, explicitly separating the opt-in legacy runner, unsupported adapters, and library-only surfaces.
 - Replaced the long-form promotional README with a concise project guide.
 - Standardized the pre-release version as `0.9.0-alpha`.
 - Replaced absolute completion claims with lifecycle labels such as Beta, Preview, and Experimental.
@@ -97,7 +98,8 @@ All notable changes to Venom are recorded here. Releases use the categories from
 - Moved unsafe-code and crate-documentation policy from global compiler flags into centrally inherited workspace lints.
 - Classified per-request deadlines as `RequestTimeout` instead of conflating them with other transport failures.
 - Made classic directory fuzzing an explicit `--legacy-directory-fuzz` CLI option instead of part of every historical ordered scan.
-- Made every ordered CLI scan disclose that its legacy direct-I/O phases remain outside `StandardWebDecisionRuntime` and restricted crawler discoveries to the target's exact normalized origin.
+- Made every ordered CLI scan disclose that its unmigrated direct-I/O phases remain outside `StandardWebDecisionRuntime` and `RuntimeBudget`, keeping whole-run accounting `Unmetered` even though discovery phases two through four now have a separate bounded authority.
+- Retained the legacy directory/parameter constructor shapes while adding explicit sequential constructors; positive compatibility concurrency values are conservatively narrowed to deterministic sequential dispatch, and the parameter constructor preserves zero as no request authority. Extended the alpha `ScannerError` enum as non-exhaustive before adding typed discovery cancellation, budget, policy, and state-limit failures.
 - Advanced profiled API comparison metadata to v3; persisted v2 profiles are rejected instead of being silently reinterpreted after explanation semantics changed.
 - Changed the alpha `RuntimeUsage.response_bytes` meaning from retained evidence bytes to complete response chunks delivered to the broker collector; a threshold-crossing chunk is charged, audited, and terminates the same turn.
 - Enforced the Preview plugin registry's host-side enable flag, payload-size ceiling, and execution deadline without automatically retrying potentially side-effecting plugin calls.
@@ -131,6 +133,7 @@ All notable changes to Venom are recorded here. Releases use the categories from
 - Isolated control and candidate connection pools while sharing one host-owned accounting authority; exact-target and context-header preflight, two active-verification leases, and monotonic partial/post-commit receipts prevent credential bleed and unaccounted paired transport.
 - Replaced mutable or deprecated security-scanner actions with SHA/digest-pinned RustSec, cargo-deny, Trivy, CodeQL upload, Semgrep, and Codecov integrations; scans use least-privilege job tokens and audit the locked dependency graph without mutating it. Privileged release actions are SHA-pinned as well.
 - Added bounded weekly Dependabot update queues for Cargo, the web preview, and GitHub Actions.
+- Made legacy discovery state error-atomic, limited HTML extraction to complete `text/html` parser trees under a hard 64 KiB parse cap, retained POST/dialog form semantics without GET conversion, calibrated each eligible directory shape against two stable randomized nonexistent paths, and required reproducible four-leg parameter differentials. These remain `INFO` observations projected as `Unknown`, not findings.
 
 ## [0.9.0-alpha] - 2026-07-31
 

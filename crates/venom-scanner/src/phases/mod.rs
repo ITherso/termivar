@@ -3,9 +3,10 @@
 //! ## Runtime scope
 //!
 //! - **Build:** non-default `legacy-scanner` feature.
-//! - **Execution:** Surface A — the ordered phase sequence the CLI composes for
-//!   `venom legacy-scan` (direct I/O outside
-//!   `StandardWebDecisionRuntime`/`RuntimeBudget`).
+//! - **Execution:** Surface A — the mixed-authority ordered sequence composed
+//!   for `venom legacy-scan`. Phases 2–4 use a separate bounded discovery
+//!   authority; phases 1 and 5–9 retain direct I/O, so the complete run remains
+//!   outside `StandardWebDecisionRuntime` and reports `Unmetered` accounting.
 //! - **Default `venom scan`:** no. Within `legacy-scan`, `DirectoryFuzzer` is
 //!   conditional on `--legacy-directory-fuzz`.
 //! - **Support:** legacy alpha.

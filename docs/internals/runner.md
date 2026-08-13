@@ -19,8 +19,12 @@ each phase that remains eligible, the runner:
    outcome records with no fabricated evidence identity;
 7. records one typed step status for every registered phase.
 
-Errors, panics while polling phase execution, and timeouts do not stop later phases, but they make the
-run `Partial` or `Failed`; they can no longer become an empty successful result.
+Ordinary phase errors, panics while polling phase execution, and timeouts do not
+stop later phases, but they make the run `Partial` or `Failed`; they can no
+longer become an empty successful result. A typed discovery
+`BudgetExhausted` step stops the dependent remainder of the ordered pipeline
+and records those later phases as `Skipped`, preventing unbounded legacy work
+from continuing after the shared discovery authority is depleted.
 Cancellation stops the loop. The active `ScanPhase::execute` future is dropped
 before the runner returns, and later phases are represented as `Skipped`.
 Dropping the caller's `run_pipeline` future follows the same structurally owned
@@ -45,12 +49,14 @@ returns the shared `venom_core::RunReport` contract.
 ## Current constraints
 
 - Execution is sequential; there is no dependency graph or parallel phase scheduling.
-- Duplicate phase numbers are ordered by the stable phase name. Registering two
-  implementations with the same number and name remains semantically
-  ambiguous and is unsupported.
-- The historical phases perform direct HTTP I/O. Their request and body-byte
-  accounting is therefore `Unmetered`, never a fabricated zero; elapsed wall
-  time is recorded only as observed.
+- Duplicate phase numbers are ordered by the stable phase name. Two
+  implementations with the same number and name are rejected before any phase
+  event, state mutation, or I/O so report identity cannot depend on insertion order.
+- Discovery phases two through four share a separate bounded HTTP authority;
+  custom phases and phases one and five through nine can still perform raw
+  direct I/O. Whole-run request and body-byte accounting is therefore
+  `Unmetered`, never a fabricated zero; elapsed wall time is recorded only as
+  observed.
 - Raw phase descriptions, claimed severity, and evidence do not cross the
   public report boundary. The report retains a stable fingerprint, trusted
   phase action identity, an informational/unassessed severity, fixed rationale,

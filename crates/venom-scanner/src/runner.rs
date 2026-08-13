@@ -46,6 +46,7 @@ enum PhaseExecution {
     JoinFailed,
     TimedOut,
     Cancelled,
+    BudgetExhausted,
 }
 
 impl ScanRunner {
@@ -75,6 +76,11 @@ impl ScanRunner {
                 limit: MAX_RUN_REPORT_STEPS,
             });
         }
+        if self.phases.windows(2).any(|pair| {
+            pair[0].phase_number() == pair[1].phase_number() && pair[0].name() == pair[1].name()
+        }) {
+            return Err(RunReportError::DuplicateStepIdentity);
+        }
         let run_started_at = Utc::now();
         let run_started = Instant::now();
         let context = Arc::new(context);
@@ -102,10 +108,15 @@ impl ScanRunner {
         let mut failed_steps = 0_usize;
         let mut saw_timeout = false;
         let mut saw_join_failure = false;
+        let mut saw_budget_exhaustion = false;
         let mut cancelled = context.cancel_token.is_cancelled();
 
         if cancelled {
-            append_skipped_steps(&mut steps, &self.phases)?;
+            append_skipped_steps(
+                &mut steps,
+                &self.phases,
+                "Host cancellation prevented this legacy phase from starting.",
+            )?;
         }
 
         for (index, phase) in self.phases.iter().enumerate() {
@@ -113,7 +124,11 @@ impl ScanRunner {
                 break;
             }
             if context.cancel_token.is_cancelled() {
-                append_skipped_steps(&mut steps, &self.phases[index..])?;
+                append_skipped_steps(
+                    &mut steps,
+                    &self.phases[index..],
+                    "Host cancellation prevented this legacy phase from starting.",
+                )?;
                 cancelled = true;
                 break;
             }
@@ -171,6 +186,14 @@ impl ScanRunner {
                         "Host cancellation stopped the active legacy phase.",
                     )
                 },
+                PhaseExecution::BudgetExhausted => {
+                    failed_steps = failed_steps.saturating_add(1);
+                    saw_budget_exhaustion = true;
+                    (
+                        RunStepStatus::BudgetExhausted,
+                        "A bounded discovery resource limit stopped this legacy phase.",
+                    )
+                },
             };
 
             steps.push(RunStepReport::new(
@@ -187,7 +210,19 @@ impl ScanRunner {
             ));
 
             if cancelled {
-                append_skipped_steps(&mut steps, &self.phases[index + 1..])?;
+                append_skipped_steps(
+                    &mut steps,
+                    &self.phases[index + 1..],
+                    "Host cancellation prevented this legacy phase from starting.",
+                )?;
+                break;
+            }
+            if status == RunStepStatus::BudgetExhausted {
+                append_skipped_steps(
+                    &mut steps,
+                    &self.phases[index + 1..],
+                    "Discovery budget exhaustion prevented this dependent legacy phase from starting.",
+                )?;
                 break;
             }
         }
@@ -199,6 +234,7 @@ impl ScanRunner {
                 failed_steps,
                 saw_timeout,
                 saw_join_failure,
+                saw_budget_exhaustion,
                 true,
             )
         } else {
@@ -208,6 +244,7 @@ impl ScanRunner {
                 failed_steps,
                 saw_timeout,
                 saw_join_failure,
+                saw_budget_exhaustion,
                 cancelled,
             )
         };
@@ -243,6 +280,9 @@ async fn execute_phase(
     context: Arc<ScanContext>,
     phase_timeout: Duration,
 ) -> PhaseExecution {
+    if phase_timeout.is_zero() {
+        return PhaseExecution::TimedOut;
+    }
     let cancellation = context.cancel_token.clone();
     let execution = AssertUnwindSafe(phase.execute(&context)).catch_unwind();
     tokio::pin!(execution);
@@ -261,6 +301,8 @@ fn classify_phase_result(
     match completed {
         Ok(Ok(findings)) => PhaseExecution::Succeeded(findings),
         Ok(Err(ScannerError::TaskJoinFailed)) => PhaseExecution::JoinFailed,
+        Ok(Err(ScannerError::Cancelled)) => PhaseExecution::Cancelled,
+        Ok(Err(ScannerError::BudgetExceeded(_))) => PhaseExecution::BudgetExhausted,
         Ok(Err(_)) => PhaseExecution::Failed,
         Err(_) => PhaseExecution::Panicked,
     }
@@ -271,6 +313,7 @@ fn classify_phase_result(
 /// Any join failure aborts and drains every remaining worker before returning a
 /// constant-detail error. The original [`tokio::task::JoinError`] is intentionally dropped:
 /// it can contain a target-controlled panic payload.
+#[cfg(test)]
 pub(crate) async fn collect_join_set<T: 'static>(
     tasks: &mut tokio::task::JoinSet<T>,
 ) -> crate::Result<Vec<T>> {
@@ -290,6 +333,7 @@ pub(crate) async fn collect_join_set<T: 'static>(
 fn append_skipped_steps(
     steps: &mut Vec<RunStepReport>,
     phases: &[Arc<dyn ScanPhase>],
+    rationale: &str,
 ) -> Result<(), RunReportError> {
     for phase in phases {
         let ordinal = step_sequence(steps)?;
@@ -298,7 +342,7 @@ fn append_skipped_steps(
             phase_action_id(phase.phase_number(), phase.name(), ordinal),
             RunStepStatus::Skipped,
             0,
-            Some("Host cancellation prevented this legacy phase from starting.".to_string()),
+            Some(rationale.to_string()),
         )?);
     }
     Ok(())
@@ -318,6 +362,7 @@ fn classify_run(
     failed_steps: usize,
     saw_timeout: bool,
     saw_join_failure: bool,
+    saw_budget_exhaustion: bool,
     cancelled: bool,
 ) -> (RunStatus, RunStopCode, &'static str) {
     if cancelled {
@@ -346,6 +391,8 @@ fn classify_run(
             RunStatus::Partial,
             if saw_join_failure {
                 RunStopCode::TaskJoinFailed
+            } else if saw_budget_exhaustion {
+                RunStopCode::BudgetExhausted
             } else if saw_timeout {
                 RunStopCode::StepTimedOut
             } else {
@@ -359,6 +406,12 @@ fn classify_run(
             RunStatus::Failed,
             RunStopCode::TaskJoinFailed,
             "No legacy phase completed successfully; at least one task failed to join.",
+        )
+    } else if saw_budget_exhaustion {
+        (
+            RunStatus::Failed,
+            RunStopCode::BudgetExhausted,
+            "No legacy phase completed successfully; a discovery budget was exhausted.",
         )
     } else if saw_timeout {
         (
@@ -587,6 +640,7 @@ mod tests {
     enum TestBehavior {
         Success,
         Error,
+        Budget,
         Panic,
         ChildJoinFailure {
             sibling_entered: Arc<Notify>,
@@ -627,6 +681,14 @@ mod tests {
                     evidence: "Authorization: Bearer secret-value".to_string(),
                 }]),
                 TestBehavior::Error => Err(ScannerError::InvalidTarget),
+                TestBehavior::Budget => Err(ScannerError::BudgetExceeded(
+                    crate::RuntimeLimitExceeded::new(
+                        crate::RuntimeBudgetDimension::TotalRequests,
+                        1,
+                        2,
+                        Some("legacy.discovery.test".to_owned()),
+                    ),
+                )),
                 TestBehavior::Panic => panic!("target-controlled panic detail"),
                 TestBehavior::ChildJoinFailure {
                     sibling_entered,
@@ -765,6 +827,28 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn duplicate_phase_identity_fails_before_any_phase_executes() {
+        let first_executed = Arc::new(AtomicBool::new(false));
+        let second_executed = Arc::new(AtomicBool::new(false));
+        let mut runner = ScanRunner::new();
+        runner.register_phase(Box::new(CountingPhase {
+            executed: Arc::clone(&first_executed),
+        }));
+        runner.register_phase(Box::new(CountingPhase {
+            executed: Arc::clone(&second_executed),
+        }));
+
+        let error = runner
+            .run_pipeline(context(1, CancellationToken::new()))
+            .await
+            .unwrap_err();
+
+        assert_eq!(error, RunReportError::DuplicateStepIdentity);
+        assert!(!first_executed.load(Ordering::SeqCst));
+        assert!(!second_executed.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
     async fn success_becomes_unknown_without_fabricated_evidence() {
         let mut runner = ScanRunner::new();
         runner.register_phase(phase(1, TestBehavior::Success));
@@ -815,6 +899,30 @@ mod tests {
         assert_eq!(report.status(), RunStatus::Partial);
         assert_eq!(report.steps()[0].status(), RunStepStatus::Failed);
         assert_eq!(report.steps()[1].status(), RunStepStatus::Succeeded);
+    }
+
+    #[tokio::test]
+    async fn discovery_budget_exhaustion_is_typed_and_stops_dependent_phases() {
+        let mut runner = ScanRunner::new();
+        runner.register_phase(phase(1, TestBehavior::Success));
+        runner.register_phase(phase(2, TestBehavior::Budget));
+        runner.register_phase(phase(3, TestBehavior::Success));
+
+        let report = runner
+            .run_pipeline(context(1, CancellationToken::new()))
+            .await
+            .unwrap();
+
+        assert_eq!(report.status(), RunStatus::Partial);
+        assert_eq!(report.stop_reason().code(), RunStopCode::BudgetExhausted);
+        assert_eq!(report.steps()[0].status(), RunStepStatus::Succeeded);
+        assert_eq!(report.steps()[1].status(), RunStepStatus::BudgetExhausted);
+        assert_eq!(report.steps()[2].status(), RunStepStatus::Skipped);
+        assert_eq!(
+            report.accounting().requests().mode(),
+            ResourceAccountingMode::Unmetered,
+            "remaining raw legacy phases keep the whole-run accounting contract unmetered"
+        );
     }
 
     #[tokio::test]
@@ -883,6 +991,25 @@ mod tests {
         assert_eq!(report.status(), RunStatus::Failed);
         assert_eq!(report.steps()[0].status(), RunStepStatus::TimedOut);
         assert!(dropped.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn zero_phase_timeout_denies_execution_before_polling() {
+        let executed = Arc::new(AtomicBool::new(false));
+        let mut runner = ScanRunner::new();
+        runner.register_phase(Box::new(CountingPhase {
+            executed: Arc::clone(&executed),
+        }));
+
+        let report = runner
+            .run_pipeline(context(0, CancellationToken::new()))
+            .await
+            .unwrap();
+
+        assert_eq!(report.status(), RunStatus::Failed);
+        assert_eq!(report.stop_reason().code(), RunStopCode::StepTimedOut);
+        assert_eq!(report.steps()[0].status(), RunStepStatus::TimedOut);
+        assert!(!executed.load(Ordering::SeqCst));
     }
 
     #[tokio::test]

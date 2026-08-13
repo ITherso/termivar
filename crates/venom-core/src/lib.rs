@@ -3,6 +3,7 @@
 //! `venom-core` contains transport-neutral data: configuration, events,
 //! findings, errors, and request/response models. Execution behavior belongs
 //! in higher-level crates.
+
 //!
 //! # Example
 //!
@@ -22,6 +23,7 @@
 //! assert_eq!(finding.phase, 1);
 //! ```
 
+#![forbid(unsafe_code)]
 #![deny(rustdoc::broken_intra_doc_links)]
 
 pub mod config;

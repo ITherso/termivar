@@ -8,7 +8,40 @@ Default builds expose `venom scan`, which composes `StandardWebDecisionRuntime` 
 
 ## Historical ordered pipeline
 
-The ordered runner, scanner SDK, context, and phases require the non-default `legacy-scanner` feature. The CLI exposes them only as `legacy-scan`, and only after `--acknowledge-legacy-heuristics`. It registers reconnaissance, crawling, parameter discovery, SQL injection, XSS, SSTI, LFI/XXE, and SSRF phases. This historical pipeline performs direct I/O outside `StandardWebDecisionRuntime` and `RuntimeBudget`; its CLI emits typed completion state, suppresses phase prose/evidence, and projects compatibility records only as informational `Unknown` observations. `DirectoryFuzzer` requires the additional `--legacy-directory-fuzz` opt-in. Redirects remain disabled for the shared client, and crawler discoveries are restricted to the target's normalized scheme, host, and port.
+The ordered runner, scanner SDK, context, and phases require the non-default
+`legacy-scanner` feature. The CLI exposes them only as `legacy-scan`, and only
+after `--acknowledge-legacy-heuristics`. It registers reconnaissance, crawling,
+parameter discovery, SQL injection, XSS, SSTI, LFI/XXE, and SSRF phases;
+`DirectoryFuzzer` requires the additional `--legacy-directory-fuzz` opt-in.
+
+This is currently a mixed-authority pipeline:
+
+- Crawler, optional directory discovery, and parameter discovery (phases two
+  through four) share a context-owned exact-origin, redirect-disabled broker.
+  `DiscoveryLimits` configures finite crawl-depth, page, request,
+  per-request-timeout, wall-time, cumulative-body, and per-response-body
+  ceilings across those phases.
+- The crawler uses deterministic breadth-first traversal and an HTML5 parser
+  only for complete `text/html` bodies no larger than 64 KiB. Its typed forms retain action, method,
+  and named parser-tree-descendant controls. POST and dialog forms are recorded,
+  never requested as GET.
+- Directory discovery compares candidates to two stable randomized
+  nonexistent-path controls in the same parent namespace and with the same
+  trailing-slash and extension shape. Parameter discovery requires a
+  reproducible four-leg differential:
+  baseline, randomized unknown parameter, candidate, and identical replay.
+  Both produce `INFO` observations, not vulnerability conclusions.
+- Discovery endpoints, visits, and forms are staged and committed atomically;
+  a failed or budget-exhausted batch does not publish partial state.
+- Reconnaissance and phases five through nine still use the raw legacy client
+  outside `StandardWebDecisionRuntime` and `RuntimeBudget`. Consequently the
+  complete ordered run is reported as `Unmetered` even though its discovery
+  slice is bounded.
+
+The CLI emits typed completion state, suppresses phase prose/evidence, and
+projects compatibility records only as informational `Unknown` observations.
+See the [runtime map](internals/runtime-map.md) and
+[ADR 0016](adr/0016-bound-legacy-discovery-authority.md).
 
 Each phase implements:
 
@@ -26,7 +59,7 @@ pub trait ScanPhase: Send + Sync {
 | Feature | Purpose | Maturity |
 | --- | --- | --- |
 | `scanning` | Deterministic evidence, reasoning, planning, execution, verification, and bounded runtime | Preview |
-| `legacy-scanner` | Historical ordered runner, context, phases, and Scanner SDK | Legacy |
+| `legacy-scanner` | Historical ordered runner, context, phases, and Scanner SDK; bounded discovery phases within an otherwise unmetered run | Legacy |
 | `detection` | Advanced and anomaly detection | Experimental |
 | `plugins` | Native plugin registry and Lua engine | Preview |
 | `distributed` | Queues, workers, and aggregation | Experimental |

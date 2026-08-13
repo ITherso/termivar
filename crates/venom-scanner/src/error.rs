@@ -22,9 +22,14 @@ use std::fmt;
 /// - `PayloadGenerationError`: Malformed payload generation parameters
 /// - `PhaseTimeout`: Scanning phase exceeded timeout threshold
 /// - `TaskJoinFailed`: A structurally owned scanner worker failed to join
+/// - `Cancelled`: Host cancellation stopped bounded discovery
+/// - `BudgetExceeded`: A bounded discovery resource threshold stopped work
+/// - `InvalidDiscoveryLimits`: A discovery policy is incoherent or too large
+/// - `DiscoveryStateLimitExceeded`: A staged state transition exceeds retention bounds
 /// - `InvalidTarget`: Target URL doesn't meet validation requirements
 /// - `IoError`: File system or I/O operation failures
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum ScannerError {
     /// Network I/O failures with detailed error message
     NetworkError(String),
@@ -39,6 +44,14 @@ pub enum ScannerError {
     /// Deliberately carries no [`tokio::task::JoinError`] or panic payload so
     /// target-controlled panic details cannot cross the scanner boundary.
     TaskJoinFailed,
+    /// Host cancellation stopped bounded discovery.
+    Cancelled,
+    /// A shared discovery resource limit denied or stopped work.
+    BudgetExceeded(crate::RuntimeLimitExceeded),
+    /// Discovery limits are zero, inconsistent, or exceed hard bounds.
+    InvalidDiscoveryLimits,
+    /// A staged discovery update exceeded a deterministic state bound.
+    DiscoveryStateLimitExceeded,
     /// Target validation failure
     InvalidTarget,
     /// File I/O operation failure
@@ -89,6 +102,16 @@ impl fmt::Display for ScannerError {
                     "Scanner worker task failed to join; no result was accepted."
                 )
             },
+            ScannerError::Cancelled => {
+                write!(f, "Host cancellation stopped bounded discovery.")
+            },
+            ScannerError::BudgetExceeded(limit) => write!(f, "Discovery budget exhausted: {limit}"),
+            ScannerError::InvalidDiscoveryLimits => {
+                write!(f, "Invalid bounded discovery limits.")
+            },
+            ScannerError::DiscoveryStateLimitExceeded => {
+                write!(f, "Bounded discovery state limit exceeded.")
+            },
             ScannerError::RunReport(error) => write!(f, "Run report error: {error}"),
         }
     }
@@ -99,6 +122,7 @@ impl std::error::Error for ScannerError {
         match self {
             ScannerError::IoError(e) => Some(e),
             ScannerError::RunReport(error) => Some(error),
+            ScannerError::BudgetExceeded(error) => Some(error),
             _ => None,
         }
     }

@@ -11,12 +11,13 @@ use tokio_util::sync::CancellationToken;
 use url::Url;
 use venom_core::RunReport;
 
-use crate::{EventBus, Result, ScanContext, ScanPhase, ScanRunner};
+use crate::{DiscoveryLimits, EventBus, Result, ScanContext, ScanPhase, ScanRunner};
 
 /// Reusable scanner assembled from application-defined [`ScanPhase`] values.
 pub struct ScannerSdk {
     runner: ScanRunner,
     client: Client,
+    discovery_limits: DiscoveryLimits,
     phase_timeout_secs: u64,
     event_bus: Arc<EventBus>,
 }
@@ -49,7 +50,8 @@ impl ScannerSdk {
             self.phase_timeout_secs,
             cancellation,
             Arc::clone(&self.event_bus),
-        );
+        )
+        .with_pre_execution_discovery_limits(self.discovery_limits);
         Ok(self.runner.run_pipeline(context).await?)
     }
 
@@ -63,6 +65,7 @@ impl ScannerSdk {
 pub struct ScannerBuilder {
     phases: Vec<Box<dyn ScanPhase>>,
     client: Client,
+    discovery_limits: DiscoveryLimits,
     phase_timeout_secs: u64,
     event_bus: Arc<EventBus>,
 }
@@ -73,6 +76,7 @@ impl ScannerBuilder {
         Self {
             phases: Vec::new(),
             client: Client::new(),
+            discovery_limits: DiscoveryLimits::default(),
             phase_timeout_secs: 300,
             event_bus: Arc::new(EventBus::new()),
         }
@@ -93,9 +97,18 @@ impl ScannerBuilder {
         self
     }
 
-    /// Replaces the HTTP client shared by all phases.
+    /// Replaces the raw HTTP client used by unmigrated and custom legacy
+    /// phases. Built-in discovery phases 2–4 always use their isolated,
+    /// redirect-disabled discovery authority instead.
     pub fn client(mut self, client: Client) -> Self {
         self.client = client;
+        self
+    }
+
+    /// Replaces the finite exact-origin envelope shared by built-in discovery
+    /// phases 2–4.
+    pub fn discovery_limits(mut self, limits: DiscoveryLimits) -> Self {
+        self.discovery_limits = limits;
         self
     }
 
@@ -120,6 +133,7 @@ impl ScannerBuilder {
         ScannerSdk {
             runner,
             client: self.client,
+            discovery_limits: self.discovery_limits,
             phase_timeout_secs: self.phase_timeout_secs,
             event_bus: self.event_bus,
         }
@@ -175,5 +189,13 @@ mod tests {
         let json = serde_json::to_string(&report).unwrap();
         assert!(!json.contains("SDK phase executed"));
         assert!(!json.contains("HIGH"));
+    }
+
+    #[test]
+    fn builder_retains_explicit_discovery_limits() {
+        let limits = DiscoveryLimits::new().with_max_requests(7);
+        let scanner = ScannerSdk::builder().discovery_limits(limits).build();
+
+        assert_eq!(scanner.discovery_limits.max_requests(), 7);
     }
 }

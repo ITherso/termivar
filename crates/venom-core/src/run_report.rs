@@ -57,6 +57,9 @@ pub enum RunReportError {
     /// A step ordinal was duplicated or out of order.
     #[error("step ordinals must be strictly increasing")]
     InvalidStepOrder,
+    /// Two executable steps declared the same host-visible identity.
+    #[error("registered step identities must be unique")]
+    DuplicateStepIdentity,
     /// An outcome fingerprint was malformed or duplicated.
     #[error("invalid or duplicate outcome fingerprint")]
     InvalidFingerprint,

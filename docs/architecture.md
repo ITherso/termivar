@@ -46,22 +46,27 @@ No lower-level crate may depend on `venom-cli` or `venom-api`. A cycle between w
 flowchart TD
     Host["CLI / library host"] --> Runner
     Runner --> Pipeline["Ordered Scan Pipeline"]
-    Pipeline --> Recon
-    Pipeline --> Crawl
-    Pipeline --> Directory["Directory · explicit opt-in"]
-    Pipeline --> SQLi
-    Pipeline --> XSS
-    Pipeline --> SSRF
-    Pipeline --> Findings
+    Pipeline --> Discovery["Bounded discovery authority<br/>phases 2–4"]
+    Discovery --> Crawl
+    Discovery --> Directory["Directory · explicit opt-in"]
+    Discovery --> Parameters
+    Pipeline --> RawLegacy["Raw legacy client<br/>phases 1 and 5–9"]
+    Discovery --> DiscoveryRecords["INFO discovery observations"]
+    RawLegacy --> LegacyRecords["Legacy compatibility records"]
+    DiscoveryRecords --> RunReport["Typed run report · Unknown observations"]
+    LegacyRecords --> RunReport
     PluginEngine["Plugin Engine (parallel Preview API)"] --> Findings
     Runner --> Events["Event Bus"]
     Findings --> Reporter
     Events -. "optional host projection" .-> Observers["Telemetry consumers"]
 ```
 
-This diagram describes the legacy Surface-A finding path. It does not imply that
-the deterministic Surface-B runtime projects verification outcomes into findings,
-or that a dashboard subscriber is composed by either CLI scan command.
+This diagram describes the legacy Surface-A orchestration boundary. Its
+phase-two-to-four discovery envelope does not make whole-run accounting metered:
+phases one and five through nine retain raw direct-I/O authority. It also does
+not imply that the deterministic Surface-B runtime projects verification
+outcomes into findings, that legacy compatibility records are verifier-backed
+findings, or that a dashboard subscriber is composed by either CLI scan command.
 
 The runner knows `ScanPhase`, not concrete phase implementations. The plugin registry knows `Plugin`, not concrete plugin types. Today these are parallel execution paths; convergence behind a versioned request context is required before a stable plugin SDK.
 
@@ -70,6 +75,7 @@ The runner knows `ScanPhase`, not concrete phase implementations. The plugin reg
 ```text
 venom-scanner/src/
 |-- phases/          ordered scan implementations
+|-- legacy_discovery.rs  bounded transport/state for ordered phases 2–4
 |-- plugins/         built-in Plugin implementations
 |-- contracts.rs     scanner traits and core contract re-exports
 |-- runner.rs        scheduling, timeouts, cancellation, aggregation
@@ -129,11 +135,19 @@ Within the bounded standard runtime, `http_evidence/request_broker.rs` is the
 sole owner of a raw HTTP client. Built-in bootstrap, planned, adaptive, retry,
 and active-verification traffic must pass through its shared atomic accounting
 authority. The architecture check rejects direct client or socket acquisition
-from the surrounding decision/runtime modules. The ordered legacy phase runner
-is a separate, currently unbudgeted surface; its existing direct-client and
-`.send()` inventory is frozen so that debt cannot silently spread.
-The standard runtime must call the explicitly metered broker constructor; the
-architecture gate rejects a switch to the named legacy unmetered constructor.
+from the surrounding decision/runtime modules. The standard runtime must call
+the explicitly metered broker constructor; the architecture gate rejects a
+switch to the named legacy unmetered constructor.
+
+The ordered legacy runner is separate. Its phases two through four now share a
+context-owned discovery authority that accepts exact-origin requests, disables
+redirects, applies one configurable request/time/body envelope, and commits
+typed discovery deltas atomically. The architecture gate prevents these three
+phases from reacquiring direct `.send()` authority. Phases one and five through
+nine still retain the raw legacy client, so their enumerated direct-client and
+`.send()` sites remain frozen and the whole ordered run remains `Unmetered`.
+This discovery authority neither composes `StandardWebDecisionRuntime` nor
+extends `RuntimeBudget` over the other phases.
 
 `web_actions` owns stable semantic action and route identities. Planning,
 verification, and execution are sibling consumers; an executor's HTTP method or
@@ -206,14 +220,17 @@ The command rejects uncompiled source at the virtual workspace root and
 undeclared top-level Rust sources in the examples package, validates workspace
 dependencies and centrally inherited lint policy through locked Cargo metadata,
 inspects protected production imports through the Rust AST, enforces
-standard-runtime transport ownership, freezes the legacy direct-I/O inventory,
+standard-runtime transport ownership, prevents migrated discovery phases from
+reacquiring direct I/O, freezes the remaining legacy direct-I/O inventory,
 verifies canonical `lib.rs` module and external-root wiring, and compiles
 `venom-scanner` with no default features. See
 [ADR 0004](adr/0004-reasoning-runtime-boundary.md) and
 [ADR 0012](adr/0012-account-delivered-transport-bytes.md), which supersedes
 [ADR 0009](adr/0009-host-owned-transport-accounting.md). Planner-selected,
 raw-value-free execution strategy references are specified by
-[ADR 0010](adr/0010-planner-selected-payload-strategies.md).
+[ADR 0010](adr/0010-planner-selected-payload-strategies.md). The scoped legacy
+discovery migration is specified by
+[ADR 0016](adr/0016-bound-legacy-discovery-authority.md).
 
 ## Dependency review
 
@@ -228,10 +245,11 @@ Before adding an edge, ask:
 
 - Plugin inputs are still target and payload strings rather than a versioned request context.
 - Native plugin execution and the ordered phase runner are separate orchestration paths.
-- The ordered phase runner still exposes a raw HTTP client and is not covered by
-  `StandardWebDecisionRuntime` resource accounting. Its directory fuzzer is no
-  longer part of the default CLI pipeline and requires the explicit
-  `--legacy-directory-fuzz` option.
+- The ordered phase runner still exposes a raw HTTP client to phases one and
+  five through nine and is not covered as a whole by
+  `StandardWebDecisionRuntime` or `RuntimeBudget`. Phases two through four use a
+  separate bounded discovery authority; the directory phase still requires the
+  explicit `--legacy-directory-fuzz` option.
 - Dashboard, distributed, and compliance modules still live in `venom-scanner`.
 - Several optional modules expose broad APIs that require stability review.
 - `DecisionExecutionLimits` still names an HTTP response-body allowance in a

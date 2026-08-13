@@ -57,7 +57,7 @@ composed into the default runtime:
   library API. `StandardWebDecisionRuntime` does not compose it, and no
   production runtime caller exists in the repository.
 
-## Historical direct-I/O runner (Surface A)
+## Historical mixed-authority runner (Surface A)
 
 The ordered context, runner, Scanner SDK, and phase modules are absent from the
 default scanner and CLI feature sets. A host must compile
@@ -85,12 +85,43 @@ The phase sequence is:
 8. `LfiXxeScanner`
 9. `SsrfScanner`
 
-These phases use a shared `reqwest` client directly and do not consume
-`RuntimeBudget`. The CLI therefore treats their results as partial heuristic
-observations, suppresses untyped phase prose and details, and never presents
-them as verifier-backed vulnerability confirmations. `ScanContext` owns a
-`KnowledgeBase`, but the historical phases do not consume it; ownership is not
-execution participation.
+The whole ordered run remains `Unmetered`: reconnaissance and phases five
+through nine retain the raw legacy `reqwest` client and do not consume
+`RuntimeBudget`. The run report therefore cannot derive complete request or
+body usage from the bounded work performed by only part of the pipeline.
+
+Phases two through four are a deliberately narrower migration boundary. They
+share a context-owned, exact-origin, redirect-disabled request authority with
+finite configurable limits for crawl depth, scheduled pages, total requests,
+per-request timeout, shared wall time, cumulative delivered response-body bytes,
+and retained bytes per response. This authority is not
+`StandardWebDecisionRuntime`, and its envelope is not the whole-run
+`RuntimeBudget`.
+
+The bounded discovery slice has these semantics:
+
+- Phase two performs deterministic breadth-first traversal, parses only
+  non-truncated `text/html` bodies no larger than 64 KiB, and commits canonically ordered endpoints, visits,
+  and typed forms atomically. Form ownership covers parser-tree descendants;
+  POST and dialog forms are recorded with named controls but are never
+  flattened into GET requests.
+- Optional phase three calibrates two stable randomized nonexistent-path
+  responses for each eligible depth/trailing-slash/extension shape before
+  recording a materially distinct endpoint. Candidates equivalent to the
+  normalized wildcard/soft-404 or redirect controls are suppressed. HTTP 401/403
+  can remain endpoint observations, not authentication findings.
+- Phase four uses baseline, randomized unknown-parameter, candidate, and
+  identical-replay legs. A parameter is recorded only when the candidate is
+  reproducible and differs materially from both controls.
+- A transport, cancellation, limit, state-validation, or comparison-batch failure
+  publishes no partial discovery delta.
+
+Discovery records are informational observations. The CLI suppresses raw phase
+prose/evidence and projects any compatibility records as `Unknown`; neither
+successful transport nor a differential is a verifier-backed finding or
+vulnerability verdict. `ScanContext` owns a `KnowledgeBase`, but the historical
+phases do not consume it; ownership is not execution participation. See
+[ADR 0016](../adr/0016-bound-legacy-discovery-authority.md).
 
 ## Optional adapters and platform shell (Surface C)
 
@@ -110,7 +141,7 @@ The following matrix separates build availability from actual execution:
 | Deterministic stack (`web_runtime`, `decision_runner`, `runtime_budget`, `http_evidence`, `planner`, `rules`, `knowledge`, `experience`, `verification`, `adaptive`, `web_*`, `api_*`) | scanner default (`core`, `scanning`) | Surface B (composed, except opt-in API reasoning) | yes | implemented and tested Preview |
 | `semantic` | scanner default | library / test only, host-owned | no | implemented and tested Preview |
 | `defense` | scanner default | library / test only, host-owned | no | implemented and tested; not composed into `StandardWebDecisionRuntime` |
-| `phases/*`, `runner`, `context`, `sdk` | opt-in (`legacy-scanner`) | Surface A | no | historical alpha runtime / SDK |
+| `phases/*`, `legacy_discovery`, `runner`, `context`, `sdk` | opt-in (`legacy-scanner`) | Surface A; phases 2–4 use bounded discovery authority, other phases retain raw direct I/O | no | historical alpha runtime / SDK; whole-run accounting remains `Unmetered` |
 | `advanced_detection`, `anomaly` | opt-in (`detection`) | no repository product caller | no | Experimental |
 | `post_exploitation`, `persistence`, `reporting`, `realtime`, `dashboard`, `waf` | scanner default (`scanning`) | no default command caller | no | compiled library/scaffold surfaces |
 | `ml` | opt-in (`ml`) | no default path | no | Experimental |

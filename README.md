@@ -9,7 +9,7 @@
 Venom is an experimental Rust security-testing project centered on a deterministic decision runtime that turns bounded web observations into typed evidence, hypotheses, risk-aware plans, and verifier-scoped outcomes.
 
 > [!WARNING]
-> **Venom v0.9.0-alpha is not production-ready.** Use it only on systems you own or are explicitly authorized to test. The default `scan` command is bounded, but it still makes network requests. The separately compiled `legacy-scan` path performs direct I/O outside `RuntimeBudget`. Preview and Experimental contracts may change.
+> **Venom v0.9.0-alpha is not production-ready.** Use it only on systems you own or are explicitly authorized to test. The default `scan` command is bounded, but it still makes network requests. The separately compiled `legacy-scan` has bounded discovery phases but retains direct I/O outside `RuntimeBudget` elsewhere, so its whole-run accounting is `Unmetered`. Preview and Experimental contracts may change.
 
 **Why an action ran is not what it proved.** Venom keeps the evidence that motivates an action separate from the evidence that may change a hypothesis. An action can return `Success` after completing a knowledge-gathering objective without confirming its motivating hypothesis.
 
@@ -103,7 +103,23 @@ cargo run -p venom-cli --locked --features legacy-scanner -- legacy-scan \
   https://authorized.example.test --acknowledge-legacy-heuristics
 ```
 
-`legacy-scan` runs the historical direct-I/O heuristic phase pipeline. It does not use `StandardWebDecisionRuntime` or `RuntimeBudget`, and its CLI output deliberately withholds unverified detail rather than presenting heuristic observations as confirmed vulnerabilities. Wordlist-based directory brute forcing remains separately disabled unless `--legacy-directory-fuzz` is supplied.
+`legacy-scan` runs the historical heuristic phase pipeline. Its crawler,
+wordlist-based directory discovery, and parameter discovery share an
+exact-origin, redirect-disabled broker with finite depth, page, request,
+request-timeout, wall-time, cumulative-body, and per-response-body limits.
+Directory discovery remains separately disabled unless
+`--legacy-directory-fuzz` is supplied. These phases commit typed discovery state
+atomically and produce only informational observations: directory candidates
+must differ from two stable randomized nonexistent-path controls in the same
+parent namespace and path shape, while parameters must
+pass a reproducible baseline/control/candidate/replay comparison.
+
+That scoped boundary does not make the historical runner a bounded decision
+runtime. Reconnaissance and phases five through nine retain direct I/O outside
+`StandardWebDecisionRuntime` and `RuntimeBudget`, so the complete run remains
+`Unmetered`. CLI output deliberately withholds unverified phase detail and
+projects compatibility records as `Unknown` rather than confirmed
+vulnerabilities. See [ADR 0016](docs/adr/0016-bound-legacy-discovery-authority.md).
 
 See the [runtime map](docs/internals/runtime-map.md) for the exact module and command inventory.
 
@@ -123,7 +139,7 @@ See the [runtime map](docs/internals/runtime-map.md) for the exact module and co
 | --- | --- | --- |
 | `venom scan` | Preview | Default bounded deterministic web decision runtime with text, explain, and JSON diagnostics |
 | `venom decision-scan` | Deprecated alias | Compatibility name for the same deterministic command and engine; the wire schema remains `decision-scan/v1` |
-| `venom legacy-scan` | Legacy alpha, opt-in | Historical direct-I/O heuristic phases; requires the non-default `legacy-scanner` feature and explicit acknowledgement |
+| `venom legacy-scan` | Legacy alpha, opt-in | Historical mixed-authority heuristics: phases 2–4 have bounded discovery transport; remaining raw-I/O phases keep the whole run `Unmetered`; requires `legacy-scanner` and explicit acknowledgement |
 | Scanner SDK / native plugins | Preview, opt-in | Source-level host extension APIs with generated starters; not merged into the default deterministic runtime |
 | `venom api` | Unsupported, opt-in | Absent from default builds; the `api-adapter` feature reports that no listener is implemented |
 | `venom proxy` | Experimental, opt-in | Absent from default builds; `proxy-adapter` exposes a fixed-upstream TCP relay with no `CONNECT`, TLS termination, certificate generation, or HTTP inspection |

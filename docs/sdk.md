@@ -59,9 +59,14 @@ assert_eq!(report.outcomes()[0].confidence().parts_per_million(), 0);
 - Raw phase descriptions/evidence and telemetry do not cross the public report
   boundary. Compatibility records become informational `Unknown` observations
   with zero confidence and no fabricated evidence IDs.
-- Legacy direct-I/O request/byte dimensions are explicitly `Unmetered`; only
-  elapsed wall time is observed.
-- A host may provide a configured HTTP client and event bus through the builder.
+- Whole-run request/byte dimensions are explicitly `Unmetered` because custom
+  and unmigrated legacy phases can retain raw transport authority. The bounded
+  phase-two-to-four discovery slice is not complete-run accounting; only elapsed
+  wall time is observed at the report boundary.
+- A host may provide an event bus, the finite `DiscoveryLimits` envelope, and a
+  configured raw HTTP client through the builder. The raw client is used only
+  by custom and unmigrated legacy phases; built-in phases two through four use
+  an isolated redirect-disabled broker under `DiscoveryLimits`.
 - Product policy, UI, report rendering, and transports remain outside phase implementations.
 
 `ScanContext` is non-exhaustive and runtime-constructed. Extensions borrow it,
