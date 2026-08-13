@@ -23,6 +23,8 @@ pub mod mitm;
 
 pub use mitm::{AsyncMitmProxy, CertCache};
 
+type Result<T> = std::io::Result<T>;
+
 /// Configures the listening address for the experimental proxy adapter.
 pub struct ProxyServer {
     listen_addr: String,
@@ -72,5 +74,3 @@ mod tests {
         assert_eq!(server.listen_addr, "[::1]:8081");
     }
 }
-
-type Result<T> = std::io::Result<T>;

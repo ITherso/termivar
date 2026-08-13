@@ -32,6 +32,7 @@ pub mod ontology;
 pub mod outcome;
 pub mod predicates;
 pub mod reasoning;
+pub mod run_report;
 
 pub use config::{Config, ConfigBuilder, ConfigError, ScanIntensity};
 pub use error::{Error, Result};
@@ -56,4 +57,10 @@ pub use reasoning::{
     EvidenceSource, EvidenceValue, Fact, Hypothesis, HypothesisState, HypothesisStrength,
     KnowledgeEntity, KnowledgePredicate, KnowledgeRelation, Probability, ReasoningModelError,
     RelationId, RelationKind, MAX_DERIVATION_ALGORITHM_BYTES, MAX_DERIVATION_PARENTS,
+};
+pub use run_report::{
+    ResourceAccounting, ResourceAccountingMode, RunAccounting, RunOutcomeRecord, RunReport,
+    RunReportError, RunReportInput, RunStatus, RunStepReport, RunStepStatus, RunStopCode,
+    RunStopReason, SecuritySeverity, MAX_RUN_REPORT_EVIDENCE_IDS, MAX_RUN_REPORT_OUTCOMES,
+    MAX_RUN_REPORT_STEPS, MAX_RUN_REPORT_TEXT_BYTES, RUN_REPORT_SCHEMA,
 };

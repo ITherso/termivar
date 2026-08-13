@@ -21,6 +21,7 @@ use std::fmt;
 /// - `UrlParseError`: Invalid URL format or scheme
 /// - `PayloadGenerationError`: Malformed payload generation parameters
 /// - `PhaseTimeout`: Scanning phase exceeded timeout threshold
+/// - `TaskJoinFailed`: A structurally owned scanner worker failed to join
 /// - `InvalidTarget`: Target URL doesn't meet validation requirements
 /// - `IoError`: File system or I/O operation failures
 #[derive(Debug)]
@@ -33,10 +34,17 @@ pub enum ScannerError {
     PayloadGenerationError(String),
     /// Phase execution timeout
     PhaseTimeout,
+    /// A structurally owned worker task failed to join.
+    ///
+    /// Deliberately carries no [`tokio::task::JoinError`] or panic payload so
+    /// target-controlled panic details cannot cross the scanner boundary.
+    TaskJoinFailed,
     /// Target validation failure
     InvalidTarget,
     /// File I/O operation failure
     IoError(std::io::Error),
+    /// Typed run report construction failed closed.
+    RunReport(venom_core::RunReportError),
 }
 
 impl fmt::Display for ScannerError {
@@ -75,6 +83,13 @@ impl fmt::Display for ScannerError {
             ScannerError::IoError(e) => {
                 write!(f, "IO error: {}. Check file permissions and disk space.", e)
             },
+            ScannerError::TaskJoinFailed => {
+                write!(
+                    f,
+                    "Scanner worker task failed to join; no result was accepted."
+                )
+            },
+            ScannerError::RunReport(error) => write!(f, "Run report error: {error}"),
         }
     }
 }
@@ -83,6 +98,7 @@ impl std::error::Error for ScannerError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             ScannerError::IoError(e) => Some(e),
+            ScannerError::RunReport(error) => Some(error),
             _ => None,
         }
     }
@@ -115,6 +131,12 @@ impl From<std::io::Error> for ScannerError {
     }
 }
 
+impl From<venom_core::RunReportError> for ScannerError {
+    fn from(error: venom_core::RunReportError) -> Self {
+        Self::RunReport(error)
+    }
+}
+
 /// Result type for scanner operations
 pub type Result<T> = std::result::Result<T, ScannerError>;
 
@@ -126,6 +148,7 @@ mod tests {
     fn test_error_display_messages() {
         let errors = vec![
             (ScannerError::PhaseTimeout, "timeout"),
+            (ScannerError::TaskJoinFailed, "failed to join"),
             (ScannerError::InvalidTarget, "Invalid target"),
             (
                 ScannerError::NetworkError("connection refused".to_string()),

@@ -1,238 +1,234 @@
-//! Scan pipeline orchestration with phase execution and finding aggregation
+//! Typed orchestration for the opt-in historical phase scanner.
 //!
-//! ## Runtime scope
-//!
-//! - **Build:** non-default `legacy-scanner` feature.
-//! - **Execution:** historical surface — `ScanRunner` drives the
-//!   `venom legacy-scan` phase pipeline (direct I/O outside
-//!   `StandardWebDecisionRuntime`/`RuntimeBudget`).
-//! - **Default `venom scan`:** no.
-//! - **Support:** legacy alpha.
-//!
-//! See `docs/internals/runtime-map.md`.
-//!
-//! The ScanRunner coordinates sequential execution of the registered scanning phases,
-//! manages error handling, and aggregates findings with timing metrics.
+//! `ScanRunner` polls each legacy phase as a structurally owned future so
+//! cancellation, timeout, and panic boundaries are observable. Its public result is a
+//! fail-closed [`RunReport`]: raw legacy findings are retained only as
+//! zero-confidence informational `unknown` records. Direct-I/O request and byte
+//! accounting is unmetered; elapsed wall time is observed.
+
+use std::{
+    panic::AssertUnwindSafe,
+    sync::Arc,
+    time::{Duration, Instant},
+};
+
+use chrono::Utc;
+use futures::FutureExt;
+use sha2::{Digest, Sha256};
+use venom_core::{
+    EntityId, ResourceAccounting, RunAccounting, RunOutcomeRecord, RunReport, RunReportError,
+    RunReportInput, RunStatus, RunStepReport, RunStepStatus, RunStopCode, RunStopReason,
+    ScanFinding, MAX_RUN_REPORT_STEPS,
+};
 
 use crate::{
     context::ScanContext,
-    contracts::{ScanFinding, ScanPhase},
+    contracts::ScanPhase,
+    error::ScannerError,
     event_bus::{Event, EventType},
-    logging::{LogEntry, LogLevel},
 };
-use std::sync::Arc;
-use std::time::{Duration, Instant};
-use tokio::time::timeout;
 
-/// Orchestrates multi-phase scanning pipeline
-///
-/// - Maintains phase registry in execution order
-/// - Tracks timing for performance metrics
-/// - Aggregates findings from all phases
-/// - Handles phase-level errors gracefully
+const LEGACY_UNKNOWN_RATIONALE: &str =
+    "Legacy heuristic output has not passed verifier policy; its disposition is unknown.";
+const LEGACY_REDACTED_SUMMARY: &str =
+    "Legacy phase evidence is withheld at the typed report boundary.";
+
+/// Orchestrates historical scan phases in deterministic phase-number order.
 pub struct ScanRunner {
-    phases: Vec<Box<dyn ScanPhase>>,
+    phases: Vec<Arc<dyn ScanPhase>>,
+}
+
+#[derive(Debug)]
+enum PhaseExecution {
+    Succeeded(Vec<ScanFinding>),
+    Failed,
+    Panicked,
+    JoinFailed,
+    TimedOut,
+    Cancelled,
 }
 
 impl ScanRunner {
-    /// Creates a new empty runner
+    /// Creates a new empty runner.
     pub fn new() -> Self {
         Self { phases: Vec::new() }
     }
 
-    /// Registers a phase for execution
-    ///
-    /// Automatically maintains phases in order by phase_number()
+    /// Registers a phase and preserves stable phase-number ordering.
     pub fn register_phase(&mut self, phase: Box<dyn ScanPhase>) {
-        self.phases.push(phase);
-        // Sort by phase number to ensure proper execution order
-        self.phases.sort_by_key(|p| p.phase_number());
+        self.phases.push(Arc::from(phase));
+        self.phases
+            .sort_by_key(|phase| (phase.phase_number(), phase.name()));
     }
 
-    /// Executes all registered phases sequentially
+    /// Executes every registered phase and returns a typed, serializable report.
     ///
-    /// # Process
-    /// 1. For each phase (in order):
-    ///    - Log phase start with structured logging
-    ///    - Execute phase with timeout
-    ///    - Log completion with timing metrics
-    ///    - Aggregate findings
-    /// 2. Return combined findings from all phases
-    ///
-    /// # Error Handling
-    /// Phase errors are logged but don't halt pipeline. Returns partial results.
-    pub async fn run_pipeline(&self, ctx: ScanContext) -> Vec<ScanFinding> {
-        let mut all_findings = Vec::new();
-        let ctx_arc = Arc::new(ctx);
+    /// Errors and timeouts are isolated to their phase and make the report
+    /// partial (or failed when no phase succeeds). Host cancellation stops the
+    /// active phase future and marks later phases skipped. Dropping this future
+    /// also drops the active phase future instead of detaching it.
+    pub async fn run_pipeline(&self, context: ScanContext) -> Result<RunReport, RunReportError> {
+        if self.phases.len() > MAX_RUN_REPORT_STEPS {
+            return Err(RunReportError::TooMany {
+                field: "registered phases",
+                actual: self.phases.len(),
+                limit: MAX_RUN_REPORT_STEPS,
+            });
+        }
+        let run_started_at = Utc::now();
+        let run_started = Instant::now();
+        let context = Arc::new(context);
+        let target = redacted_target(&context.target);
+        let authorized_origin = authorized_origin(&context.target);
+        let subject = subject_for_origin(&authorized_origin)?;
+        // Validate every externally derived envelope field before a phase can
+        // publish an event, perform I/O, or mutate shared state. The final
+        // report construction cannot then discover a target/origin bound error
+        // only after those effects occurred.
+        let _validated_envelope = RunReportInput::new(
+            RunStatus::Complete,
+            RunStopReason::new(
+                RunStopCode::NoEligibleAction,
+                "Run envelope validated before legacy phase execution.",
+            )?,
+            target.clone(),
+            authorized_origin.clone(),
+            run_started_at,
+            run_started_at,
+        )?;
+        let mut steps = Vec::with_capacity(self.phases.len());
+        let mut outcomes = Vec::new();
+        let mut successful_steps = 0_usize;
+        let mut failed_steps = 0_usize;
+        let mut saw_timeout = false;
+        let mut saw_join_failure = false;
+        let mut cancelled = context.cancel_token.is_cancelled();
 
-        for phase in &self.phases {
-            let phase_num = phase.phase_number();
-            let phase_name = phase.name();
-            let start = Instant::now();
+        if cancelled {
+            append_skipped_steps(&mut steps, &self.phases)?;
+        }
 
-            // Log structured phase start
-            let start_entry = LogEntry::new(
-                LogLevel::Info,
-                format!("Starting Phase {}: {}", phase_num, phase_name),
-            )
-            .with_phase(phase_num);
-            ctx_arc.logger.log(start_entry);
-            ctx_arc.log(format!("[*] Phase {}: {}", phase_num, phase_name));
-
-            // Publish PhaseStarted event for real-time dashboard updates
-            let start_event =
-                Event::builder(EventType::PhaseStarted, format!("Phase {}", phase_num))
-                    .data("phase_number", phase_num.to_string())
-                    .data("phase_name", phase_name.to_string())
-                    .build();
-            ctx_arc.event_bus.publish(start_event);
-
-            // Execute phase with timeout + cancellation (CRITICAL: prevent hangs, allow graceful stop)
-            let phase_timeout = Duration::from_secs(ctx_arc.phase_timeout_secs);
-            let cancel_token = ctx_arc.cancel_token.clone();
-
-            // Check if cancellation requested before starting phase
-            if cancel_token.is_cancelled() {
-                let elapsed = start.elapsed().as_millis() as u64;
-                let cancel_entry = LogEntry::new(
-                    LogLevel::Error,
-                    format!("Scan cancelled before Phase {} started", phase_num),
-                )
-                .with_phase(phase_num)
-                .with_duration(elapsed);
-                ctx_arc.logger.log(cancel_entry);
-                ctx_arc.log(format!("[!] Scan cancelled (Phase {} skipped)", phase_num));
-                break; // Exit scan loop immediately
+        for (index, phase) in self.phases.iter().enumerate() {
+            if cancelled {
+                break;
+            }
+            if context.cancel_token.is_cancelled() {
+                append_skipped_steps(&mut steps, &self.phases[index..])?;
+                cancelled = true;
+                break;
             }
 
-            // Execute phase with both timeout and cancellation protection
-            let result = tokio::select! {
-                _ = cancel_token.cancelled() => {
-                    // Cancellation signal received (CTRL+C, Dashboard cancel, cloud kill)
-                    Err::<Vec<ScanFinding>, String>("cancelled".to_string())
-                }
-                result = timeout(phase_timeout, phase.execute(&ctx_arc)) => {
-                    match result {
-                        Ok(Ok(findings)) => Ok(findings),
-                        Ok(Err(e)) => Err(format!("phase error: {}", e)),
-                        Err(_) => Err("timeout".to_string()),
+            let phase_number = phase.phase_number();
+            let step_ordinal = step_sequence(&steps)?;
+            let action_id = phase_action_id(phase_number, phase.name(), step_ordinal);
+            let started = Instant::now();
+            publish_started(&context, phase_number, &action_id);
+            context.log(format!("legacy phase started: {action_id}"));
+
+            let execution = execute_phase(
+                Arc::clone(phase),
+                Arc::clone(&context),
+                Duration::from_secs(context.phase_timeout_secs),
+            )
+            .await;
+            let duration_ms = duration_ms(started.elapsed());
+
+            let (status, rationale) = match execution {
+                PhaseExecution::Succeeded(findings) => {
+                    successful_steps = successful_steps.saturating_add(1);
+                    if !findings.is_empty() {
+                        outcomes.push(outcome_from_legacy_findings(subject.clone(), &action_id)?);
                     }
-                }
+                    (RunStepStatus::Succeeded, "Legacy phase returned normally.")
+                },
+                PhaseExecution::Failed => {
+                    failed_steps = failed_steps.saturating_add(1);
+                    (
+                        RunStepStatus::Failed,
+                        "Legacy phase returned an error; no result was accepted.",
+                    )
+                },
+                PhaseExecution::Panicked | PhaseExecution::JoinFailed => {
+                    failed_steps = failed_steps.saturating_add(1);
+                    saw_join_failure = true;
+                    (
+                        RunStepStatus::Failed,
+                        "Legacy phase execution did not complete normally; no result was accepted.",
+                    )
+                },
+                PhaseExecution::TimedOut => {
+                    failed_steps = failed_steps.saturating_add(1);
+                    saw_timeout = true;
+                    (
+                        RunStepStatus::TimedOut,
+                        "Legacy phase exceeded its deadline and was stopped.",
+                    )
+                },
+                PhaseExecution::Cancelled => {
+                    cancelled = true;
+                    (
+                        RunStepStatus::Cancelled,
+                        "Host cancellation stopped the active legacy phase.",
+                    )
+                },
             };
 
-            match result {
-                Ok(findings) => {
-                    let elapsed = start.elapsed().as_millis() as u64;
-                    let finding_count = findings.len();
+            steps.push(RunStepReport::new(
+                step_ordinal,
+                action_id.clone(),
+                status,
+                duration_ms,
+                Some(rationale.to_string()),
+            )?);
+            publish_finished(&context, phase_number, &action_id, status);
+            context.log(format!(
+                "legacy phase finished: {action_id} status={}",
+                step_status_name(status)
+            ));
 
-                    // Log structured completion
-                    let complete_entry = LogEntry::new(
-                        LogLevel::Info,
-                        format!("Phase {} completed: {} findings", phase_num, finding_count),
-                    )
-                    .with_phase(phase_num)
-                    .with_duration(elapsed);
-                    ctx_arc.logger.log(complete_entry);
-                    ctx_arc.log(format!(
-                        "[+] Phase {} complete: {} findings in {}ms",
-                        phase_num, finding_count, elapsed
-                    ));
-
-                    // Publish PhaseCompleted event for real-time dashboard updates
-                    let complete_event =
-                        Event::builder(EventType::PhaseCompleted, format!("Phase {}", phase_num))
-                            .data("phase_number", phase_num.to_string())
-                            .data("phase_name", phase_name.to_string())
-                            .data("finding_count", finding_count.to_string())
-                            .data("elapsed_ms", elapsed.to_string())
-                            .build();
-                    ctx_arc.event_bus.publish(complete_event);
-
-                    all_findings.extend(findings);
-                },
-                Err(e) if e == "cancelled" => {
-                    let elapsed = start.elapsed().as_millis() as u64;
-
-                    // Log cancellation (graceful shutdown)
-                    let cancel_entry = LogEntry::new(
-                        LogLevel::Error,
-                        format!("Phase {} cancelled by user", phase_num),
-                    )
-                    .with_phase(phase_num)
-                    .with_duration(elapsed);
-                    ctx_arc.logger.log(cancel_entry);
-                    ctx_arc.log(format!("[!] Phase {} cancelled by user", phase_num));
-
-                    // Publish PhaseFailed event for dashboard
-                    let cancel_event =
-                        Event::builder(EventType::PhaseFailed, format!("Phase {}", phase_num))
-                            .data("phase_number", phase_num.to_string())
-                            .data("phase_name", phase_name.to_string())
-                            .data("reason", "cancelled")
-                            .data("elapsed_ms", elapsed.to_string())
-                            .build();
-                    ctx_arc.event_bus.publish(cancel_event);
-
-                    break; // Exit scan loop, return partial results
-                },
-                Err(e) if e == "timeout" => {
-                    let elapsed = start.elapsed().as_millis() as u64;
-
-                    // Log timeout (CRITICAL: phase exceeded timeout)
-                    let timeout_entry = LogEntry::new(
-                        LogLevel::Error,
-                        format!(
-                            "Phase {} timed out after {}s",
-                            phase_num, ctx_arc.phase_timeout_secs
-                        ),
-                    )
-                    .with_phase(phase_num)
-                    .with_duration(elapsed);
-                    ctx_arc.logger.log(timeout_entry);
-                    ctx_arc.log(format!(
-                        "[-] Phase {} timeout (exceeded {}s limit)",
-                        phase_num, ctx_arc.phase_timeout_secs
-                    ));
-
-                    // Publish PhaseFailed event for dashboard
-                    let timeout_event =
-                        Event::builder(EventType::PhaseFailed, format!("Phase {}", phase_num))
-                            .data("phase_number", phase_num.to_string())
-                            .data("phase_name", phase_name.to_string())
-                            .data("reason", "timeout")
-                            .data("timeout_secs", ctx_arc.phase_timeout_secs.to_string())
-                            .data("elapsed_ms", elapsed.to_string())
-                            .build();
-                    ctx_arc.event_bus.publish(timeout_event);
-                },
-                Err(e) => {
-                    let elapsed = start.elapsed().as_millis() as u64;
-
-                    // Log error with context
-                    let error_entry = LogEntry::new(
-                        LogLevel::Error,
-                        format!("Phase {} failed: {}", phase_num, e),
-                    )
-                    .with_phase(phase_num)
-                    .with_duration(elapsed);
-                    ctx_arc.logger.log(error_entry);
-                    ctx_arc.log(format!("[-] Phase {} error: {}", phase_num, e));
-
-                    // Publish PhaseFailed event for dashboard
-                    let error_event =
-                        Event::builder(EventType::PhaseFailed, format!("Phase {}", phase_num))
-                            .data("phase_number", phase_num.to_string())
-                            .data("phase_name", phase_name.to_string())
-                            .data("reason", "error")
-                            .data("error", e.clone())
-                            .data("elapsed_ms", elapsed.to_string())
-                            .build();
-                    ctx_arc.event_bus.publish(error_event);
-                },
+            if cancelled {
+                append_skipped_steps(&mut steps, &self.phases[index + 1..])?;
+                break;
             }
         }
 
-        all_findings
+        let (status, stop_code, stop_detail) = if cancelled {
+            classify_run(
+                self.phases.is_empty(),
+                successful_steps,
+                failed_steps,
+                saw_timeout,
+                saw_join_failure,
+                true,
+            )
+        } else {
+            classify_run(
+                self.phases.is_empty(),
+                successful_steps,
+                failed_steps,
+                saw_timeout,
+                saw_join_failure,
+                cancelled,
+            )
+        };
+        let run_completed_at = Utc::now().max(run_started_at);
+        let report_input = RunReportInput::new(
+            status,
+            RunStopReason::new(stop_code, stop_detail)?,
+            target,
+            authorized_origin,
+            run_started_at,
+            run_completed_at,
+        )?
+        .with_accounting(RunAccounting::new(
+            ResourceAccounting::unmetered(),
+            ResourceAccounting::unmetered(),
+            ResourceAccounting::unmetered(),
+            ResourceAccounting::observed(duration_ms(run_started.elapsed())),
+        ))
+        .with_steps(steps)
+        .with_outcomes(outcomes);
+        RunReport::new(report_input)
     }
 }
 
@@ -242,27 +238,954 @@ impl Default for ScanRunner {
     }
 }
 
+async fn execute_phase(
+    phase: Arc<dyn ScanPhase>,
+    context: Arc<ScanContext>,
+    phase_timeout: Duration,
+) -> PhaseExecution {
+    let cancellation = context.cancel_token.clone();
+    let execution = AssertUnwindSafe(phase.execute(&context)).catch_unwind();
+    tokio::pin!(execution);
+
+    tokio::select! {
+        biased;
+        _ = cancellation.cancelled() => PhaseExecution::Cancelled,
+        completed = &mut execution => classify_phase_result(completed),
+        _ = tokio::time::sleep(phase_timeout) => PhaseExecution::TimedOut,
+    }
+}
+
+fn classify_phase_result(
+    completed: std::thread::Result<crate::Result<Vec<ScanFinding>>>,
+) -> PhaseExecution {
+    match completed {
+        Ok(Ok(findings)) => PhaseExecution::Succeeded(findings),
+        Ok(Err(ScannerError::TaskJoinFailed)) => PhaseExecution::JoinFailed,
+        Ok(Err(_)) => PhaseExecution::Failed,
+        Err(_) => PhaseExecution::Panicked,
+    }
+}
+
+/// Collects a structurally owned worker set without accepting partial output.
+///
+/// Any join failure aborts and drains every remaining worker before returning a
+/// constant-detail error. The original [`tokio::task::JoinError`] is intentionally dropped:
+/// it can contain a target-controlled panic payload.
+pub(crate) async fn collect_join_set<T: 'static>(
+    tasks: &mut tokio::task::JoinSet<T>,
+) -> crate::Result<Vec<T>> {
+    let mut completed = Vec::with_capacity(tasks.len());
+    while let Some(joined) = tasks.join_next().await {
+        match joined {
+            Ok(value) => completed.push(value),
+            Err(_) => {
+                tasks.shutdown().await;
+                return Err(ScannerError::TaskJoinFailed);
+            },
+        }
+    }
+    Ok(completed)
+}
+
+fn append_skipped_steps(
+    steps: &mut Vec<RunStepReport>,
+    phases: &[Arc<dyn ScanPhase>],
+) -> Result<(), RunReportError> {
+    for phase in phases {
+        let ordinal = step_sequence(steps)?;
+        steps.push(RunStepReport::new(
+            ordinal,
+            phase_action_id(phase.phase_number(), phase.name(), ordinal),
+            RunStepStatus::Skipped,
+            0,
+            Some("Host cancellation prevented this legacy phase from starting.".to_string()),
+        )?);
+    }
+    Ok(())
+}
+
+fn step_sequence(steps: &[RunStepReport]) -> Result<u32, RunReportError> {
+    u32::try_from(steps.len() + 1).map_err(|_| RunReportError::TooMany {
+        field: "run steps",
+        actual: steps.len() + 1,
+        limit: u32::MAX as usize,
+    })
+}
+
+fn classify_run(
+    no_phases: bool,
+    successful_steps: usize,
+    failed_steps: usize,
+    saw_timeout: bool,
+    saw_join_failure: bool,
+    cancelled: bool,
+) -> (RunStatus, RunStopCode, &'static str) {
+    if cancelled {
+        return (
+            RunStatus::Cancelled,
+            RunStopCode::Cancelled,
+            "Host cancellation stopped the legacy run.",
+        );
+    }
+    if no_phases {
+        return (
+            RunStatus::Complete,
+            RunStopCode::NoEligibleAction,
+            "No legacy phases were registered.",
+        );
+    }
+    if failed_steps == 0 {
+        return (
+            RunStatus::Complete,
+            RunStopCode::Completed,
+            "Every registered legacy phase returned normally.",
+        );
+    }
+    if successful_steps > 0 {
+        return (
+            RunStatus::Partial,
+            if saw_join_failure {
+                RunStopCode::TaskJoinFailed
+            } else if saw_timeout {
+                RunStopCode::StepTimedOut
+            } else {
+                RunStopCode::StepFailed
+            },
+            "One or more legacy phases did not complete; successful phase output is partial.",
+        );
+    }
+    if saw_join_failure {
+        (
+            RunStatus::Failed,
+            RunStopCode::TaskJoinFailed,
+            "No legacy phase completed successfully; at least one task failed to join.",
+        )
+    } else if saw_timeout {
+        (
+            RunStatus::Failed,
+            RunStopCode::StepTimedOut,
+            "No legacy phase completed successfully; at least one phase timed out.",
+        )
+    } else {
+        (
+            RunStatus::Failed,
+            RunStopCode::StepFailed,
+            "No legacy phase completed successfully.",
+        )
+    }
+}
+
+fn outcome_from_legacy_findings(
+    subject: EntityId,
+    phase_action_id: &str,
+) -> Result<RunOutcomeRecord, RunReportError> {
+    let action_id = format!("{phase_action_id}.observations");
+    RunOutcomeRecord::unresolved(
+        subject,
+        action_id,
+        LEGACY_UNKNOWN_RATIONALE,
+        LEGACY_REDACTED_SUMMARY,
+    )
+}
+
+fn phase_action_id(phase: u8, name: &str, ordinal: u32) -> String {
+    format!("{}.step.{ordinal}", stable_action_id("phase", phase, name))
+}
+
+fn stable_action_id(kind: &str, phase: u8, value: &str) -> String {
+    let mut slug = String::with_capacity(32);
+    for character in value.chars() {
+        let character = character.to_ascii_lowercase();
+        if character.is_ascii_alphanumeric()
+            || (matches!(character, '-' | '_' | '.') && !slug.is_empty())
+        {
+            slug.push(character);
+        }
+        if slug.len() >= 32 {
+            break;
+        }
+    }
+    let slug = slug.trim_matches(['-', '_', '.']);
+    let slug = if slug.is_empty() { "unnamed" } else { slug };
+    let digest = sha256_hex(&[value.as_bytes()]);
+    format!("legacy.{kind}.{phase}.{slug}.{}", &digest[..12])
+}
+
+fn redacted_target(url: &url::Url) -> String {
+    match serialized_authority(url) {
+        Some(authority) if url.path() == "/" => format!("{authority}/"),
+        Some(authority) => format!("{authority}/[path-redacted]"),
+        None => format!("{}:[target-redacted]", url.scheme()),
+    }
+}
+
+fn authorized_origin(url: &url::Url) -> String {
+    serialized_authority(url).unwrap_or_else(|| format!("{}:[origin-unavailable]", url.scheme()))
+}
+
+fn serialized_authority(url: &url::Url) -> Option<String> {
+    let host = url.host_str()?;
+    let host = if host.starts_with('[') && host.ends_with(']') {
+        host.to_string()
+    } else if host.contains(':') {
+        format!("[{host}]")
+    } else {
+        host.to_string()
+    };
+    let port = url
+        .port()
+        .map_or_else(String::new, |port| format!(":{port}"));
+    Some(format!("{}://{host}{port}", url.scheme()))
+}
+
+fn subject_for_origin(origin: &str) -> Result<EntityId, RunReportError> {
+    EntityId::new(format!(
+        "authorized-origin:sha256:{}",
+        sha256_hex(&[origin.as_bytes()])
+    ))
+    .map_err(|_| RunReportError::Blank { field: "subject" })
+}
+
+fn sha256_hex(parts: &[&[u8]]) -> String {
+    let mut digest = Sha256::new();
+    for part in parts {
+        digest.update((part.len() as u64).to_be_bytes());
+        digest.update(part);
+    }
+    format!("{:x}", digest.finalize())
+}
+
+fn duration_ms(duration: Duration) -> u64 {
+    u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
+}
+
+fn publish_started(context: &ScanContext, phase: u8, action_id: &str) {
+    context.event_bus.publish(
+        Event::builder(EventType::PhaseStarted, action_id)
+            .data("phase_number", phase.to_string())
+            .data("action_id", action_id)
+            .build(),
+    );
+}
+
+fn publish_finished(context: &ScanContext, phase: u8, action_id: &str, status: RunStepStatus) {
+    let event_type = if status == RunStepStatus::Succeeded {
+        EventType::PhaseCompleted
+    } else {
+        EventType::PhaseFailed
+    };
+    context.event_bus.publish(
+        Event::builder(event_type, action_id)
+            .data("phase_number", phase.to_string())
+            .data("action_id", action_id)
+            .data("status", step_status_name(status))
+            .build(),
+    );
+}
+
+fn step_status_name(status: RunStepStatus) -> &'static str {
+    match status {
+        RunStepStatus::Succeeded => "succeeded",
+        RunStepStatus::Failed => "failed",
+        RunStepStatus::TimedOut => "timed_out",
+        RunStepStatus::Cancelled => "cancelled",
+        RunStepStatus::Skipped => "skipped",
+        RunStepStatus::BudgetExhausted => "budget_exhausted",
+        _ => "unknown",
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use std::{
+        future::pending,
+        sync::{
+            atomic::{AtomicBool, Ordering},
+            Arc,
+        },
+    };
 
-    #[test]
-    fn test_runner_creation() {
-        let runner = ScanRunner::new();
-        assert_eq!(runner.phases.len(), 0);
+    use tokio::sync::Notify;
+    use tokio_util::sync::CancellationToken;
+    use venom_core::{
+        Probability, ResourceAccountingMode, RunStopCode, SecuritySeverity,
+        MAX_RUN_REPORT_TEXT_BYTES,
+    };
+
+    use super::*;
+    use crate::{Result, ScannerError};
+
+    fn context(timeout_secs: u64, cancellation: CancellationToken) -> ScanContext {
+        context_for_target(
+            url::Url::parse(
+                "https://user:secret@example.test/path-secret-3d83a1?q=secret#fragment",
+            )
+            .unwrap(),
+            timeout_secs,
+            cancellation,
+        )
+    }
+
+    fn context_for_target(
+        target: url::Url,
+        timeout_secs: u64,
+        cancellation: CancellationToken,
+    ) -> ScanContext {
+        let (telemetry, _receiver) = tokio::sync::mpsc::unbounded_channel();
+        ScanContext::with_cancellation(
+            target,
+            reqwest::Client::new(),
+            telemetry,
+            timeout_secs,
+            cancellation,
+        )
+    }
+
+    fn raw_finding(
+        phase: u8,
+        module_name: &str,
+        severity: &str,
+        description: &str,
+        evidence: &str,
+    ) -> ScanFinding {
+        ScanFinding {
+            phase,
+            module_name: module_name.to_string(),
+            severity: severity.to_string(),
+            description: description.to_string(),
+            evidence: evidence.to_string(),
+        }
+    }
+
+    async fn report_for_findings(findings: Vec<ScanFinding>) -> RunReport {
+        let mut runner = ScanRunner::new();
+        runner.register_phase(phase(1, TestBehavior::Findings(findings)));
+        runner
+            .run_pipeline(context(1, CancellationToken::new()))
+            .await
+            .unwrap()
+    }
+
+    fn outcome_identities(report: &RunReport) -> Vec<(String, String)> {
+        report
+            .outcomes()
+            .iter()
+            .map(|record| {
+                (
+                    record.action_id().to_string(),
+                    record.fingerprint().to_string(),
+                )
+            })
+            .collect()
+    }
+
+    struct TestPhase {
+        number: u8,
+        behavior: TestBehavior,
+    }
+
+    enum TestBehavior {
+        Success,
+        Error,
+        Panic,
+        ChildJoinFailure {
+            sibling_entered: Arc<Notify>,
+            sibling_dropped: Arc<AtomicBool>,
+        },
+        Pending {
+            entered: Arc<Notify>,
+            dropped: Arc<AtomicBool>,
+        },
+        Findings(Vec<ScanFinding>),
+    }
+
+    struct DropSignal(Arc<AtomicBool>);
+
+    impl Drop for DropSignal {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::SeqCst);
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl ScanPhase for TestPhase {
+        fn phase_number(&self) -> u8 {
+            self.number
+        }
+
+        fn name(&self) -> &'static str {
+            "test-phase"
+        }
+
+        async fn execute(&self, _context: &ScanContext) -> Result<Vec<ScanFinding>> {
+            match &self.behavior {
+                TestBehavior::Success => Ok(vec![ScanFinding {
+                    phase: self.number,
+                    module_name: "custom module".to_string(),
+                    severity: "HIGH".to_string(),
+                    description: "unverified target-controlled claim".to_string(),
+                    evidence: "Authorization: Bearer secret-value".to_string(),
+                }]),
+                TestBehavior::Error => Err(ScannerError::InvalidTarget),
+                TestBehavior::Panic => panic!("target-controlled panic detail"),
+                TestBehavior::ChildJoinFailure {
+                    sibling_entered,
+                    sibling_dropped,
+                } => {
+                    let mut tasks = tokio::task::JoinSet::new();
+                    let entered = Arc::clone(sibling_entered);
+                    let dropped = Arc::clone(sibling_dropped);
+                    tasks.spawn(async move {
+                        let _drop_signal = DropSignal(dropped);
+                        entered.notify_one();
+                        pending::<()>().await;
+                    });
+                    sibling_entered.notified().await;
+
+                    let aborted = tasks.spawn(pending::<()>());
+                    aborted.abort();
+                    let _completed = collect_join_set(&mut tasks).await?;
+                    Ok(Vec::new())
+                },
+                TestBehavior::Pending { entered, dropped } => {
+                    let _drop_signal = DropSignal(Arc::clone(dropped));
+                    entered.notify_one();
+                    pending().await
+                },
+                TestBehavior::Findings(findings) => Ok(findings.clone()),
+            }
+        }
+    }
+
+    fn phase(number: u8, behavior: TestBehavior) -> Box<dyn ScanPhase> {
+        Box::new(TestPhase { number, behavior })
+    }
+
+    struct NamedPhase {
+        name: &'static str,
+    }
+
+    #[async_trait::async_trait]
+    impl ScanPhase for NamedPhase {
+        fn phase_number(&self) -> u8 {
+            7
+        }
+
+        fn name(&self) -> &'static str {
+            self.name
+        }
+
+        async fn execute(&self, _context: &ScanContext) -> Result<Vec<ScanFinding>> {
+            Ok(Vec::new())
+        }
+    }
+
+    struct CountingPhase {
+        executed: Arc<AtomicBool>,
+    }
+
+    #[async_trait::async_trait]
+    impl ScanPhase for CountingPhase {
+        fn phase_number(&self) -> u8 {
+            1
+        }
+
+        fn name(&self) -> &'static str {
+            "counting"
+        }
+
+        async fn execute(&self, _context: &ScanContext) -> Result<Vec<ScanFinding>> {
+            self.executed.store(true, Ordering::SeqCst);
+            Ok(Vec::new())
+        }
+    }
+
+    #[tokio::test]
+    async fn excessive_phase_registration_fails_before_any_phase_executes() {
+        let executed = Arc::new(AtomicBool::new(false));
+        let phase: Arc<dyn ScanPhase> = Arc::new(CountingPhase {
+            executed: Arc::clone(&executed),
+        });
+        let runner = ScanRunner {
+            phases: vec![phase; MAX_RUN_REPORT_STEPS + 1],
+        };
+
+        let error = runner
+            .run_pipeline(context(1, CancellationToken::new()))
+            .await
+            .unwrap_err();
+
+        assert_eq!(
+            error,
+            RunReportError::TooMany {
+                field: "registered phases",
+                actual: MAX_RUN_REPORT_STEPS + 1,
+                limit: MAX_RUN_REPORT_STEPS,
+            }
+        );
+        assert!(!executed.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn equal_phase_numbers_use_stable_name_order() {
+        let mut runner = ScanRunner::new();
+        runner.register_phase(Box::new(NamedPhase { name: "zeta" }));
+        runner.register_phase(Box::new(NamedPhase { name: "alpha" }));
+
+        let report = runner
+            .run_pipeline(context(1, CancellationToken::new()))
+            .await
+            .unwrap();
+
+        assert!(report.steps()[0].action_id().contains("alpha"));
+        assert!(report.steps()[1].action_id().contains("zeta"));
+    }
+
+    #[tokio::test]
+    async fn registration_order_does_not_change_equal_number_steps() {
+        async fn action_ids(names: [&'static str; 2]) -> Vec<String> {
+            let mut runner = ScanRunner::new();
+            for name in names {
+                runner.register_phase(Box::new(NamedPhase { name }));
+            }
+            runner
+                .run_pipeline(context(1, CancellationToken::new()))
+                .await
+                .unwrap()
+                .steps()
+                .iter()
+                .map(|step| step.action_id().to_string())
+                .collect()
+        }
+
+        assert_eq!(
+            action_ids(["alpha", "zeta"]).await,
+            action_ids(["zeta", "alpha"]).await
+        );
+    }
+
+    #[tokio::test]
+    async fn success_becomes_unknown_without_fabricated_evidence() {
+        let mut runner = ScanRunner::new();
+        runner.register_phase(phase(1, TestBehavior::Success));
+
+        let report = runner
+            .run_pipeline(context(1, CancellationToken::new()))
+            .await
+            .unwrap();
+
+        assert_eq!(report.status(), RunStatus::Complete);
+        assert_eq!(report.steps()[0].status(), RunStepStatus::Succeeded);
+        assert_eq!(
+            report.outcomes()[0].disposition(),
+            venom_core::OutcomeStatus::Unknown
+        );
+        assert_eq!(report.outcomes()[0].severity(), SecuritySeverity::Info);
+        assert_eq!(report.outcomes()[0].confidence(), Probability::ZERO);
+        assert!(report.outcomes()[0].evidence_ids().is_empty());
+        let json = serde_json::to_string(&report).unwrap();
+        assert!(!json.contains("secret-value"));
+        assert!(!json.contains("unverified target-controlled claim"));
+        assert!(!json.contains("user:secret"));
+        assert!(!json.contains("path-secret-3d83a1"));
+        assert!(!json.contains("q=secret"));
+        assert!(!json.contains("fragment"));
+        assert!(json.contains("unmetered"));
+        assert_eq!(
+            report.accounting().requests().mode(),
+            ResourceAccountingMode::Unmetered
+        );
+        assert_eq!(
+            report.accounting().wall_time_ms().mode(),
+            ResourceAccountingMode::Observed
+        );
+    }
+
+    #[tokio::test]
+    async fn phase_error_is_failed_and_does_not_hide_later_success() {
+        let mut runner = ScanRunner::new();
+        runner.register_phase(phase(1, TestBehavior::Error));
+        runner.register_phase(phase(2, TestBehavior::Success));
+
+        let report = runner
+            .run_pipeline(context(1, CancellationToken::new()))
+            .await
+            .unwrap();
+
+        assert_eq!(report.status(), RunStatus::Partial);
+        assert_eq!(report.steps()[0].status(), RunStepStatus::Failed);
+        assert_eq!(report.steps()[1].status(), RunStepStatus::Succeeded);
+    }
+
+    #[tokio::test]
+    async fn phase_panic_is_a_failed_step_not_empty_success() {
+        let mut runner = ScanRunner::new();
+        runner.register_phase(phase(1, TestBehavior::Panic));
+
+        let report = runner
+            .run_pipeline(context(1, CancellationToken::new()))
+            .await
+            .unwrap();
+
+        assert_eq!(report.status(), RunStatus::Failed);
+        assert_eq!(report.steps()[0].status(), RunStepStatus::Failed);
+        assert_eq!(report.stop_reason().code(), RunStopCode::TaskJoinFailed);
+        assert!(report.outcomes().is_empty());
+    }
+
+    #[tokio::test]
+    async fn child_join_failure_aborts_siblings_and_is_not_empty_success() {
+        let sibling_entered = Arc::new(Notify::new());
+        let sibling_dropped = Arc::new(AtomicBool::new(false));
+        let mut runner = ScanRunner::new();
+        runner.register_phase(phase(
+            1,
+            TestBehavior::ChildJoinFailure {
+                sibling_entered,
+                sibling_dropped: Arc::clone(&sibling_dropped),
+            },
+        ));
+
+        let report = runner
+            .run_pipeline(context(1, CancellationToken::new()))
+            .await
+            .unwrap();
+
+        assert_eq!(report.status(), RunStatus::Failed);
+        assert_eq!(report.steps()[0].status(), RunStepStatus::Failed);
+        assert_eq!(report.stop_reason().code(), RunStopCode::TaskJoinFailed);
+        assert!(report.outcomes().is_empty());
+        assert!(sibling_dropped.load(Ordering::SeqCst));
+        assert_eq!(
+            report.steps()[0].detail(),
+            Some("Legacy phase execution did not complete normally; no result was accepted.")
+        );
+    }
+
+    #[tokio::test]
+    async fn timeout_drops_the_owned_phase_future() {
+        let entered = Arc::new(Notify::new());
+        let dropped = Arc::new(AtomicBool::new(false));
+        let mut runner = ScanRunner::new();
+        runner.register_phase(phase(
+            1,
+            TestBehavior::Pending {
+                entered,
+                dropped: Arc::clone(&dropped),
+            },
+        ));
+
+        let report = runner
+            .run_pipeline(context(1, CancellationToken::new()))
+            .await
+            .unwrap();
+
+        assert_eq!(report.status(), RunStatus::Failed);
+        assert_eq!(report.steps()[0].status(), RunStepStatus::TimedOut);
+        assert!(dropped.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn caller_timeout_drops_run_future_and_aborts_the_phase_task() {
+        let entered = Arc::new(Notify::new());
+        let dropped = Arc::new(AtomicBool::new(false));
+        let mut runner = ScanRunner::new();
+        runner.register_phase(phase(
+            1,
+            TestBehavior::Pending {
+                entered: Arc::clone(&entered),
+                dropped: Arc::clone(&dropped),
+            },
+        ));
+
+        let result = tokio::time::timeout(
+            Duration::from_millis(25),
+            runner.run_pipeline(context(60, CancellationToken::new())),
+        )
+        .await;
+
+        assert!(result.is_err());
+        tokio::task::yield_now().await;
+        assert!(dropped.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn cancellation_aborts_active_task_and_skips_remaining_phases() {
+        let entered = Arc::new(Notify::new());
+        let dropped = Arc::new(AtomicBool::new(false));
+        let cancellation = CancellationToken::new();
+        let mut runner = ScanRunner::new();
+        runner.register_phase(phase(
+            1,
+            TestBehavior::Pending {
+                entered: Arc::clone(&entered),
+                dropped: Arc::clone(&dropped),
+            },
+        ));
+        runner.register_phase(phase(2, TestBehavior::Success));
+        let run_cancellation = cancellation.clone();
+        let task =
+            tokio::spawn(async move { runner.run_pipeline(context(60, run_cancellation)).await });
+
+        entered.notified().await;
+        cancellation.cancel();
+        let report = task.await.unwrap().unwrap();
+
+        assert_eq!(report.status(), RunStatus::Cancelled);
+        assert_eq!(report.steps()[0].status(), RunStepStatus::Cancelled);
+        assert_eq!(report.steps()[1].status(), RunStepStatus::Skipped);
+        assert!(dropped.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn pre_cancelled_run_marks_every_phase_skipped() {
+        let cancellation = CancellationToken::new();
+        cancellation.cancel();
+        let mut runner = ScanRunner::new();
+        runner.register_phase(phase(1, TestBehavior::Success));
+        runner.register_phase(phase(2, TestBehavior::Success));
+
+        let report = runner.run_pipeline(context(1, cancellation)).await.unwrap();
+
+        assert_eq!(report.status(), RunStatus::Cancelled);
+        assert_eq!(report.stop_reason().code(), RunStopCode::Cancelled);
+        assert!(report
+            .steps()
+            .iter()
+            .all(|step| step.status() == RunStepStatus::Skipped));
+        assert!(report.outcomes().is_empty());
+    }
+
+    #[tokio::test]
+    async fn pre_cancelled_empty_run_is_cancelled() {
+        let cancellation = CancellationToken::new();
+        cancellation.cancel();
+
+        let report = ScanRunner::new()
+            .run_pipeline(context(1, cancellation))
+            .await
+            .unwrap();
+
+        assert_eq!(report.status(), RunStatus::Cancelled);
+        assert_eq!(report.stop_reason().code(), RunStopCode::Cancelled);
+        assert!(report.steps().is_empty());
+        assert!(report.outcomes().is_empty());
+    }
+
+    #[tokio::test]
+    async fn invalid_report_envelope_fails_before_phase_execution() {
+        let executed = Arc::new(AtomicBool::new(false));
+        let mut runner = ScanRunner::new();
+        runner.register_phase(Box::new(CountingPhase {
+            executed: Arc::clone(&executed),
+        }));
+        let scheme = "a".repeat(MAX_RUN_REPORT_TEXT_BYTES + 1);
+        let target = url::Url::parse(&format!("{scheme}:opaque-target")).unwrap();
+
+        let error = runner
+            .run_pipeline(context_for_target(target, 1, CancellationToken::new()))
+            .await
+            .unwrap_err();
+
+        assert_eq!(
+            error,
+            RunReportError::TextTooLong {
+                field: "run target",
+                limit: MAX_RUN_REPORT_TEXT_BYTES,
+            }
+        );
+        assert!(!executed.load(Ordering::SeqCst));
     }
 
     #[test]
-    fn test_runner_phase_sorting() {
-        use crate::phases::{CrawlPhase, ReconPhase, SqliScanner};
+    fn target_rendering_redacts_path_and_strips_credentials_query_and_fragment() {
+        let raw_path = "/path-secret-b33791";
+        let url = url::Url::parse(&format!(
+            "https://user:secret@[2001:db8::1]:8443{raw_path}?q=token#fragment"
+        ))
+        .unwrap();
+        let rendered = redacted_target(&url);
 
+        assert_eq!(rendered, "https://[2001:db8::1]:8443/[path-redacted]");
+        assert!(!rendered.contains(raw_path));
+        assert_eq!(authorized_origin(&url), "https://[2001:db8::1]:8443");
+    }
+
+    #[test]
+    fn different_non_root_paths_have_the_same_redacted_target() {
+        let first = url::Url::parse("https://example.test/first-secret").unwrap();
+        let second = url::Url::parse("https://example.test/second-secret/nested").unwrap();
+
+        assert_eq!(redacted_target(&first), redacted_target(&second));
+        assert_eq!(
+            redacted_target(&first),
+            "https://example.test/[path-redacted]"
+        );
+    }
+
+    #[test]
+    fn authority_less_target_contains_no_raw_value_or_digest() {
+        let url = url::Url::parse("mailto:raw-recipient-secret@example.test").unwrap();
+
+        assert_eq!(redacted_target(&url), "mailto:[target-redacted]");
+    }
+
+    #[test]
+    fn authority_less_origins_use_a_constant_without_raw_values() {
+        let first = url::Url::parse("mailto:first-origin-secret@example.test").unwrap();
+        let second = url::Url::parse("mailto:second-origin-secret@example.test").unwrap();
+        let first_origin = authorized_origin(&first);
+        let second_origin = authorized_origin(&second);
+
+        assert_eq!(first_origin, "mailto:[origin-unavailable]");
+        assert_eq!(first_origin, second_origin);
+        assert!(!first_origin.contains("first-origin-secret"));
+        assert!(!second_origin.contains("second-origin-secret"));
+    }
+
+    #[test]
+    fn root_target_path_is_preserved_exactly() {
+        let url = url::Url::parse("https://example.test/?q=secret#fragment").unwrap();
+
+        assert_eq!(redacted_target(&url), "https://example.test/");
+    }
+
+    #[test]
+    fn fingerprints_are_stable_and_domain_framed() {
+        assert_eq!(sha256_hex(&[b"ab", b"c"]), sha256_hex(&[b"ab", b"c"]));
+        assert_ne!(sha256_hex(&[b"ab", b"c"]), sha256_hex(&[b"a", b"bc"]));
+    }
+
+    #[tokio::test]
+    async fn equivalent_raw_sets_have_stable_projected_fingerprints() {
+        let first = vec![
+            raw_finding(1, "untrusted-module", "CRITICAL", "z", "secret-z"),
+            raw_finding(1, "untrusted-module", "CRITICAL", "a", "secret-a"),
+        ];
+        let second = first.iter().rev().cloned().collect();
+        let first_report = report_for_findings(first).await;
+        let second_report = report_for_findings(second).await;
+
+        assert_eq!(
+            outcome_identities(&first_report),
+            outcome_identities(&second_report)
+        );
+        assert_eq!(first_report.outcomes().len(), 1);
+        assert!(first_report.outcomes()[0]
+            .action_id()
+            .ends_with(".observations"));
+    }
+
+    #[tokio::test]
+    async fn adding_unrelated_raw_finding_does_not_change_phase_aggregate_identity() {
+        let first = raw_finding(1, "module", "LOW", "first", "evidence-first");
+        let second = raw_finding(1, "module", "LOW", "second", "evidence-second");
+        let unrelated = raw_finding(1, "aaa", "INFO", "sorts first", "unrelated");
+        let baseline = report_for_findings(vec![first.clone(), second.clone()]).await;
+        let expanded = report_for_findings(vec![first, unrelated, second]).await;
+        let baseline_identities = outcome_identities(&baseline);
+        let expanded_identities = outcome_identities(&expanded);
+
+        assert_eq!(baseline_identities.len(), 1);
+        assert_eq!(expanded_identities.len(), 1);
+        assert_eq!(baseline_identities, expanded_identities);
+    }
+
+    #[tokio::test]
+    async fn same_count_different_raw_content_has_the_same_aggregate_identity() {
+        let first = report_for_findings(vec![raw_finding(
+            1,
+            "module",
+            "LOW",
+            "description",
+            "evidence-a",
+        )])
+        .await;
+        let second = report_for_findings(vec![raw_finding(
+            1,
+            "module",
+            "LOW",
+            "description",
+            "evidence-b",
+        )])
+        .await;
+
+        assert_eq!(first.outcomes().len(), 1);
+        assert_eq!(second.outcomes().len(), 1);
+        assert_eq!(outcome_identities(&first), outcome_identities(&second));
+    }
+
+    #[tokio::test]
+    async fn no_raw_field_contributes_to_public_aggregate_identity() {
+        let baseline = raw_finding(1, "module", "LOW", "description", "evidence");
+        let variants = [
+            raw_finding(2, "module", "LOW", "description", "evidence"),
+            raw_finding(1, "other", "LOW", "description", "evidence"),
+            raw_finding(1, "module", "HIGH", "description", "evidence"),
+            raw_finding(1, "module", "LOW", "other", "evidence"),
+            raw_finding(1, "module", "LOW", "description", "other"),
+        ];
+        let baseline_report = report_for_findings(vec![baseline]).await;
+        let baseline_identity = outcome_identities(&baseline_report);
+
+        for variant in variants {
+            let variant_report = report_for_findings(vec![variant]).await;
+            assert_eq!(variant_report.outcomes().len(), 1);
+            assert_eq!(outcome_identities(&variant_report), baseline_identity);
+        }
+    }
+
+    #[tokio::test]
+    async fn identical_raw_findings_collapse_to_one_phase_aggregate() {
+        let duplicate = raw_finding(1, "module", "LOW", "duplicate", "same evidence");
+        let report = report_for_findings(vec![duplicate.clone(), duplicate]).await;
+
+        assert_eq!(report.outcomes().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn serialized_projection_does_not_expose_raw_finding_fields() {
+        let raw_values = [
+            "raw-module-secret-71c65e",
+            "raw-severity-secret-6bbd49",
+            "raw-description-secret-02a8a1",
+            "raw-evidence-secret-30d38d",
+        ];
+        let report = report_for_findings(vec![raw_finding(
+            1,
+            raw_values[0],
+            raw_values[1],
+            raw_values[2],
+            raw_values[3],
+        )])
+        .await;
+        let serialized = serde_json::to_string(&report).unwrap();
+
+        assert!(raw_values.iter().all(|value| !serialized.contains(value)));
+    }
+
+    #[tokio::test]
+    async fn many_raw_findings_still_produce_one_complete_phase_aggregate() {
+        let findings = (0..128)
+            .map(|index| ScanFinding {
+                phase: 1,
+                module_name: "untrusted-module".to_string(),
+                severity: "HIGH".to_string(),
+                description: format!("unresolved-{index}"),
+                evidence: "withheld".to_string(),
+            })
+            .collect();
         let mut runner = ScanRunner::new();
-        runner.register_phase(Box::new(SqliScanner));
-        runner.register_phase(Box::new(ReconPhase));
-        runner.register_phase(Box::new(CrawlPhase));
+        runner.register_phase(phase(1, TestBehavior::Findings(findings)));
 
-        assert_eq!(runner.phases[0].phase_number(), 1);
-        assert_eq!(runner.phases[1].phase_number(), 2);
-        assert_eq!(runner.phases[2].phase_number(), 5);
+        let report = runner
+            .run_pipeline(context(1, CancellationToken::new()))
+            .await
+            .unwrap();
+
+        assert_eq!(report.status(), RunStatus::Complete);
+        assert_eq!(report.stop_reason().code(), RunStopCode::Completed);
+        assert_eq!(report.outcomes().len(), 1);
+        assert!(report.steps()[0].status() == RunStepStatus::Succeeded);
     }
 }

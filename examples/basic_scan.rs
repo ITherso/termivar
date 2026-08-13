@@ -36,11 +36,14 @@ async fn main() -> Result<()> {
     let scanner = ScannerSdk::builder().phase(InventoryPhase).build();
     let report = scanner.scan("https://example.test").await?;
 
-    println!("target: {}", report.target);
-    for finding in report.findings {
+    println!("target: {}", report.target());
+    println!("status: {:?}", report.status());
+    for observation in report.outcomes() {
         println!(
-            "phase={} module={} severity={} description={}",
-            finding.phase, finding.module_name, finding.severity, finding.description
+            "id={} action={} disposition={:?}",
+            observation.fingerprint(),
+            observation.action_id(),
+            observation.disposition(),
         );
     }
 

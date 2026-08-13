@@ -42,9 +42,19 @@ async fn main() -> Result<()> {
     let scanner = ScannerSdk::builder().phase(AuthorizedTargetPhase).build();
     let report = scanner.scan(target.as_ref()).await?;
 
-    println!("{} finding(s) for {}", report.findings.len(), report.target);
-    for finding in report.findings {
-        println!("[{}] {}", finding.severity, finding.description);
+    println!(
+        "status={:?} observations={} target={}",
+        report.status(),
+        report.outcomes().len(),
+        report.target()
+    );
+    for observation in report.outcomes() {
+        println!(
+            "id={} action={} disposition={:?}",
+            observation.fingerprint(),
+            observation.action_id(),
+            observation.disposition()
+        );
     }
 
     Ok(())
@@ -58,7 +68,8 @@ mod tests {
     async fn generated_scanner_executes() {
         let scanner = ScannerSdk::builder().phase(AuthorizedTargetPhase).build();
         let report = scanner.scan("https://example.test").await.unwrap();
-        assert_eq!(report.findings.len(), 1);
+        assert_eq!(report.outcomes().len(), 1);
+        assert_eq!(report.outcomes()[0].confidence().parts_per_million(), 0);
     }
 
     #[test]

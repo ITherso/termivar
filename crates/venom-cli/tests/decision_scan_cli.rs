@@ -209,7 +209,7 @@ fn explicit_text_format_matches_the_default_output() {
 }
 
 #[test]
-fn deprecated_alias_produces_the_same_json_as_scan() {
+fn deprecated_alias_produces_the_same_result_as_scan() {
     let server = serve(GENERIC_OK);
     let primary = venom()
         .args(["scan", "--format", "json", &server.url])
@@ -229,9 +229,7 @@ fn deprecated_alias_produces_the_same_json_as_scan() {
 
     let primary_stderr = String::from_utf8(primary.stderr).unwrap();
     let alias_stderr = String::from_utf8(alias.stderr).unwrap();
-    assert!(!primary_stderr.contains("[DEPRECATED]"));
-    assert!(alias_stderr.contains("[DEPRECATED]"));
-    assert!(alias_stderr.contains("same deterministic engine"));
+    assert_eq!(primary_stderr, alias_stderr);
 }
 
 #[test]

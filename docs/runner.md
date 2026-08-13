@@ -5,19 +5,21 @@
 ## Responsibilities
 
 - register `ScanPhase` trait objects;
-- order phases by `phase_number()`;
+- order phases by `(phase_number(), name())`;
 - enforce per-phase timeouts;
 - observe cancellation;
 - publish phase lifecycle events;
-- aggregate `ScanFinding` values;
-- return partial results when a phase fails.
+- convert raw `ScanFinding` values at a claim-safe compatibility boundary;
+- return typed completion, failure, timeout, cancellation, and skip state.
 
 ## Execution sequence
 
 ```text
 register phases
       ↓
-sort by phase number
+sort by phase number, then name
+      ↓
+validate bounded report envelope
       ↓
 check cancellation
       ↓
@@ -27,7 +29,7 @@ ScanPhase::execute(context)
       ↓
 publish PhaseCompleted or PhaseFailed
       ↓
-aggregate findings
+build typed run report
 ```
 
 ## Contract boundary
@@ -36,7 +38,18 @@ The runner may call methods defined by `ScanPhase`; it must not match on concret
 
 ## Failure behavior
 
-Phase errors and timeouts are logged and emitted as events. They do not panic the process. Cancellation stops subsequent phases and returns findings collected so far.
+Phase errors, panics while polling phase execution, and timeouts are emitted as typed failed/timed-out
+steps. They do not become empty success. Cancellation drops the structurally
+owned `ScanPhase::execute` future, marks subsequent phases skipped, and returns
+a `Cancelled` report. Dropping the caller's run future follows the same owned
+drop path instead of detaching phase execution. A phase must structurally
+own any child tasks it starts so dropping `execute` aborts them; detached tasks
+are outside the runner's control
+and violate the phase contract. Panic isolation catches only panics that unwind
+while polling `execute`, not `panic = "abort"` builds or detached work.
+Because this historical runner does not own its phases' transport, request and
+body-byte accounting is explicitly `Unmetered`; elapsed wall time is merely
+observed.
 
 ## Testing expectations
 

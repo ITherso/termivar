@@ -1,6 +1,9 @@
 # Scanner SDK
 
-`ScannerSdk` is the composition surface for applications that build scanners with Venom. Hosts supply `ScanPhase` implementations; Venom owns ordering, per-phase timeouts, cancellation context, lifecycle events, telemetry, and finding aggregation.
+`ScannerSdk` is the opt-in historical composition surface for applications that
+build scanners with Venom. Hosts supply `ScanPhase` implementations; Venom owns
+ordering, per-phase timeouts, cancellation context, lifecycle events, and the
+typed run-report boundary.
 
 ## Generate a scanner
 
@@ -40,15 +43,24 @@ impl ScanPhase for Headers {
 # async fn example() -> Result<()> {
 let scanner = ScannerSdk::builder().phase(Headers).build();
 let report = scanner.scan("https://example.test").await?;
-assert_eq!(report.findings.len(), 1);
+assert_eq!(report.outcomes().len(), 1);
+assert_eq!(report.outcomes()[0].confidence().parts_per_million(), 0);
 # Ok(())
 # }
 ```
 
 ## Boundary
 
-- A phase owns detection behavior and returns structured findings.
+- A phase owns historical heuristic behavior and returns compatibility records.
 - The SDK owns execution policy and shared runtime context.
+- The public SDK result is `venom_core::RunReport`; phase errors, timeouts,
+  cancellation, and panics while polling phase execution remain visible as
+  typed step state.
+- Raw phase descriptions/evidence and telemetry do not cross the public report
+  boundary. Compatibility records become informational `Unknown` observations
+  with zero confidence and no fabricated evidence IDs.
+- Legacy direct-I/O request/byte dimensions are explicitly `Unmetered`; only
+  elapsed wall time is observed.
 - A host may provide a configured HTTP client and event bus through the builder.
 - Product policy, UI, report rendering, and transports remain outside phase implementations.
 

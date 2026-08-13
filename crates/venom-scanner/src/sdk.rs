@@ -1,37 +1,19 @@
-//! Public composition API for building scanners from Venom phases.
+//! Public composition API for the opt-in historical scanner SDK.
 //!
-//! ## Runtime scope
-//!
-//! - **Build:** non-default `legacy-scanner` feature.
-//! - **Execution:** host/library Surface A composition API; not invoked by the
-//!   deterministic `venom scan` command.
-//! - **Default `venom scan`:** no.
-//! - **Support:** legacy alpha and tested by the Scanner SDK template.
-//!
-//! See `docs/internals/runtime-map.md`.
+//! The SDK returns the shared typed [`RunReport`]
+//! contract. Raw phase telemetry and `ScanFinding` strings do not cross this
+//! host boundary.
 
-use crate::{EventBus, Result, ScanContext, ScanFinding, ScanPhase, ScanRunner};
-use reqwest::Client;
 use std::{sync::Arc, time::Duration};
-use url::Url;
 
-/// Result returned by a scanner assembled with [`ScannerSdk`].
-#[non_exhaustive]
-#[derive(Debug, Clone)]
-pub struct ScanReport {
-    /// Authorized target supplied to [`ScannerSdk::scan`].
-    pub target: String,
-    /// Findings aggregated in phase order.
-    pub findings: Vec<ScanFinding>,
-    /// Human-readable telemetry emitted during the scan.
-    pub telemetry: Vec<String>,
-}
+use reqwest::Client;
+use tokio_util::sync::CancellationToken;
+use url::Url;
+use venom_core::RunReport;
+
+use crate::{EventBus, Result, ScanContext, ScanPhase, ScanRunner};
 
 /// Reusable scanner assembled from application-defined [`ScanPhase`] values.
-///
-/// The SDK owns composition and execution policy while phases own detection
-/// behavior. Hosts do not need to construct [`ScanContext`] or [`ScanRunner`]
-/// directly.
 pub struct ScannerSdk {
     runner: ScanRunner,
     client: Client,
@@ -45,35 +27,35 @@ impl ScannerSdk {
         ScannerBuilder::new()
     }
 
-    /// Executes the configured phases against an authorized target.
-    pub async fn scan(&self, target: &str) -> Result<ScanReport> {
+    /// Executes configured phases against an authorized target.
+    pub async fn scan(&self, target: &str) -> Result<RunReport> {
+        self.scan_with_cancellation(target, CancellationToken::new())
+            .await
+    }
+
+    /// Executes configured phases with a host-owned cancellation token.
+    pub async fn scan_with_cancellation(
+        &self,
+        target: &str,
+        cancellation: CancellationToken,
+    ) -> Result<RunReport> {
         let target_url = Url::parse(target)?;
-        let (telemetry_tx, mut telemetry_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (telemetry, receiver) = tokio::sync::mpsc::unbounded_channel();
+        drop(receiver);
         let context = ScanContext::with_event_bus(
             target_url,
             self.client.clone(),
-            telemetry_tx,
-            self.phase_timeout_secs,
-            tokio_util::sync::CancellationToken::new(),
-            self.event_bus.clone(),
-        );
-
-        let findings = self.runner.run_pipeline(context).await;
-        let mut telemetry = Vec::new();
-        while let Ok(message) = telemetry_rx.try_recv() {
-            telemetry.push(message);
-        }
-
-        Ok(ScanReport {
-            target: target.to_string(),
-            findings,
             telemetry,
-        })
+            self.phase_timeout_secs,
+            cancellation,
+            Arc::clone(&self.event_bus),
+        );
+        Ok(self.runner.run_pipeline(context).await?)
     }
 
     /// Returns the event bus used by this scanner for host subscriptions.
     pub fn event_bus(&self) -> Arc<EventBus> {
-        self.event_bus.clone()
+        Arc::clone(&self.event_bus)
     }
 }
 
@@ -135,7 +117,6 @@ impl ScannerBuilder {
         for phase in self.phases {
             runner.register_phase(phase);
         }
-
         ScannerSdk {
             runner,
             client: self.client,
@@ -153,7 +134,10 @@ impl Default for ScannerBuilder {
 
 #[cfg(test)]
 mod tests {
+    use venom_core::{OutcomeStatus, Probability, RunStatus, RunStepStatus, SecuritySeverity};
+
     use super::*;
+    use crate::ScanFinding;
 
     struct ExamplePhase;
 
@@ -171,7 +155,7 @@ mod tests {
             Ok(vec![ScanFinding {
                 phase: self.phase_number(),
                 module_name: self.name().to_string(),
-                severity: "INFO".to_string(),
+                severity: "HIGH".to_string(),
                 description: "SDK phase executed".to_string(),
                 evidence: context.target.to_string(),
             }])
@@ -179,12 +163,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn custom_scanner_executes_registered_phase() {
+    async fn custom_scanner_returns_only_the_typed_report_boundary() {
         let scanner = ScannerSdk::builder().phase(ExamplePhase).build();
         let report = scanner.scan("https://example.test").await.unwrap();
 
-        assert_eq!(report.findings.len(), 1);
-        assert_eq!(report.findings[0].phase, 42);
-        assert!(!report.telemetry.is_empty());
+        assert_eq!(report.status(), RunStatus::Complete);
+        assert_eq!(report.steps()[0].status(), RunStepStatus::Succeeded);
+        assert_eq!(report.outcomes()[0].disposition(), OutcomeStatus::Unknown);
+        assert_eq!(report.outcomes()[0].severity(), SecuritySeverity::Info);
+        assert_eq!(report.outcomes()[0].confidence(), Probability::ZERO);
+        let json = serde_json::to_string(&report).unwrap();
+        assert!(!json.contains("SDK phase executed"));
+        assert!(!json.contains("HIGH"));
     }
 }

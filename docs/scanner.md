@@ -8,7 +8,7 @@ Default builds expose `venom scan`, which composes `StandardWebDecisionRuntime` 
 
 ## Historical ordered pipeline
 
-The ordered runner, scanner SDK, context, and phases require the non-default `legacy-scanner` feature. The CLI exposes them only as `legacy-scan`, and only after `--acknowledge-legacy-heuristics`. It registers reconnaissance, crawling, parameter discovery, SQL injection, XSS, SSTI, LFI/XXE, and SSRF phases. This historical pipeline performs direct I/O outside `StandardWebDecisionRuntime` and `RuntimeBudget`; its CLI output suppresses unverified phase prose and details. `DirectoryFuzzer` requires the additional `--legacy-directory-fuzz` opt-in. Redirects remain disabled for the shared client, and crawler discoveries are restricted to the target's normalized scheme, host, and port.
+The ordered runner, scanner SDK, context, and phases require the non-default `legacy-scanner` feature. The CLI exposes them only as `legacy-scan`, and only after `--acknowledge-legacy-heuristics`. It registers reconnaissance, crawling, parameter discovery, SQL injection, XSS, SSTI, LFI/XXE, and SSRF phases. This historical pipeline performs direct I/O outside `StandardWebDecisionRuntime` and `RuntimeBudget`; its CLI emits typed completion state, suppresses phase prose/evidence, and projects compatibility records only as informational `Unknown` observations. `DirectoryFuzzer` requires the additional `--legacy-directory-fuzz` opt-in. Redirects remain disabled for the shared client, and crawler discoveries are restricted to the target's normalized scheme, host, and port.
 
 Each phase implements:
 
@@ -45,7 +45,9 @@ by the default command. See the [runtime map](internals/runtime-map.md).
 
 1. Implement `ScanPhase` in `src/phases/`.
 2. Keep transport and CLI types out of the implementation.
-3. Return structured findings; do not render reports in the phase.
+3. Return internal compatibility records; do not render or claim findings in
+   the phase. The typed SDK boundary projects these records only as unresolved
+   observations.
 4. Cover network failures, cancellation, and false-positive boundaries.
 5. Register the phase in the composition root only after its ordering is explicit.
 

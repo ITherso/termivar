@@ -20,6 +20,8 @@ venom-core = { version = "0.9.0-alpha", path = "../venom-core" }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
 reqwest = { workspace = true, features = ["json", "cookies"] }
+chrono = { workspace = true }
+futures = { workspace = true }
 async-trait = "0.1"
 dashmap = "5.5"
 url = "2.5"

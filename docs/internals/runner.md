@@ -1,31 +1,65 @@
 # Runner internals
 
-`ScanRunner` owns execution policy for `ScanPhase` trait objects. Registering a phase inserts it into a list sorted by `phase_number`; running the pipeline executes that list sequentially.
+`ScanRunner` owns execution policy for `ScanPhase` trait objects. Registering a
+phase inserts it into a list sorted by `(phase_number, name)`; running the
+pipeline executes that list sequentially.
 
 ## Phase lifecycle
 
-For each phase, the runner:
+Before any phase can publish telemetry or run, the runner validates the bounded
+public report envelope and observes a pre-existing cancellation signal. For
+each phase that remains eligible, the runner:
 
-1. checks the shared cancellation token;
+1. rechecks the shared cancellation token;
 2. writes structured and human-readable start telemetry;
 3. publishes `PhaseStarted`;
 4. races `ScanPhase::execute` against cancellation and the configured timeout;
 5. publishes `PhaseCompleted` or `PhaseFailed`;
-6. appends successful findings in phase order.
+6. converts successful raw phase records into zero-confidence, `Unknown`
+   outcome records with no fabricated evidence identity;
+7. records one typed step status for every registered phase.
 
-Errors and timeouts do not stop later phases. Cancellation stops the loop. In every case, findings from previously completed phases are returned as partial results.
+Errors, panics while polling phase execution, and timeouts do not stop later phases, but they make the
+run `Partial` or `Failed`; they can no longer become an empty successful result.
+Cancellation stops the loop. The active `ScanPhase::execute` future is dropped
+before the runner returns, and later phases are represented as `Skipped`.
+Dropping the caller's `run_pipeline` future follows the same structurally owned
+drop path instead of detaching phase execution. The runner cannot reclaim work
+that a phase detaches: phase
+implementations must keep child tasks structurally owned and ensure dropping
+their `execute` future aborts that work. The built-in concurrent legacy phases
+use drop-aborting task sets for this reason.
 
 ## Ownership
 
-The runner owns ordering, timeout, cancellation, lifecycle events, and aggregation. A phase owns detection behavior and may use only the shared `ScanContext` contract. The runner must never inspect a concrete phase or plugin type.
+The runner owns ordering, timeout, cancellation, lifecycle events, and
+aggregation for the owned `execute` future. A phase owns detection behavior and
+all child work it starts, and may use only the shared `ScanContext` contract.
+Third-party phases must not detach tasks that can outlive `execute`. The runner
+must never inspect a concrete phase or plugin type.
 
-`ScannerSdk` is the public composition layer above the runner. It creates the context, HTTP client, telemetry channel, cancellation token, and event bus, then returns a `ScanReport`.
+`ScannerSdk` is the public composition layer above the runner. It creates the
+context, HTTP client, telemetry channel, cancellation token, and event bus, then
+returns the shared `venom_core::RunReport` contract.
 
 ## Current constraints
 
 - Execution is sequential; there is no dependency graph or parallel phase scheduling.
-- Duplicate phase numbers are allowed and retain no documented tie-break guarantee.
-- Errors are normalized into log/event strings and are not returned in `ScanReport` as structured phase outcomes.
-- The SDK creates a new cancellation token for each scan and does not yet expose cancellation to its caller.
+- Duplicate phase numbers are ordered by the stable phase name. Registering two
+  implementations with the same number and name remains semantically
+  ambiguous and is unsupported.
+- The historical phases perform direct HTTP I/O. Their request and body-byte
+  accounting is therefore `Unmetered`, never a fabricated zero; elapsed wall
+  time is recorded only as observed.
+- Raw phase descriptions, claimed severity, and evidence do not cross the
+  public report boundary. The report retains a stable fingerprint, trusted
+  phase action identity, an informational/unassessed severity, fixed rationale,
+  and a bounded redacted summary. A non-informational impact rating requires a
+  separate verifier-backed projection policy; an action `Success` alone is not
+  enough.
+- Panic isolation catches panics that unwind while polling `ScanPhase::execute`;
+  it is not
+  a process-crash boundary and cannot recover from `panic = "abort"` or from
+  detached child tasks.
 
 Changes to these semantics require focused ordering, timeout, cancellation, failure-isolation, and partial-result tests.

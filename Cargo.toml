@@ -71,6 +71,6 @@ debug = false
 debug-assertions = false
 overflow-checks = false
 lto = true
-panic = "abort"
+panic = "unwind"
 codegen-units = 1
 strip = true

@@ -18,12 +18,14 @@
 mod decision_scan;
 
 use clap::{Parser, Subcommand, ValueEnum};
-use std::ffi::OsStr;
 use url::Url;
 #[cfg(feature = "proxy-adapter")]
 use venom_proxy::ProxyServer;
 #[cfg(feature = "legacy-scanner")]
-use venom_scanner::{phases, ScanContext, ScanRunner};
+use venom_scanner::{
+    phases, OutcomeStatus, ResourceAccounting, ResourceAccountingMode, RunStatus, RunStepStatus,
+    ScanContext, ScanRunner, SecuritySeverity,
+};
 
 /// Output format for deterministic `scan`. `text` is the default human-readable
 /// report; `json` preserves the versioned `decision-scan/v1` wire document.
@@ -46,7 +48,6 @@ const LEGACY_DIRECTORY_FUZZ_WARNING: &str = "[WARNING] Legacy directory fuzzing 
 #[cfg(feature = "legacy-scanner")]
 const LEGACY_SCAN_RUNTIME_WARNING: &str = "[WARNING] The ordered CLI phase pipeline is legacy direct I/O outside StandardWebDecisionRuntime and RuntimeBudget. Use it only against an explicitly authorized exact origin.";
 const DETERMINISTIC_SCAN_WARNING: &str = "[ALPHA] Running the bounded deterministic decision runtime. Use only against an exact origin you own or are explicitly authorized to test.";
-const DECISION_SCAN_ALIAS_WARNING: &str = "[DEPRECATED] `decision-scan` is a compatibility alias; use `venom scan`. Both names run the same deterministic engine.";
 
 #[cfg(feature = "legacy-scanner")]
 fn scan_http_client() -> Result<reqwest::Client, reqwest::Error> {
@@ -158,10 +159,8 @@ async fn run_legacy_scan(
 
     eprintln!("{LEGACY_SCAN_RUNTIME_WARNING}");
     let client = scan_http_client()?;
-    // The legacy phases emit untyped prose, including claims that have not
-    // passed verifier policy. Drain it at the producer boundary by dropping the
-    // receiver; the CLI intentionally renders only a claim-safe summary until
-    // Phase 2 replaces this boundary with typed completion data.
+    // Legacy phase prose is untrusted claim material. Drop the receiver so only
+    // the typed report below crosses the CLI boundary.
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
     drop(rx);
     let ctx = ScanContext::new(target, client, tx);
@@ -182,29 +181,131 @@ async fn run_legacy_scan(
     runner.register_phase(Box::new(phases::LfiXxeScanner::new()));
     runner.register_phase(Box::new(phases::SsrfScanner::new()));
 
-    let observations = tokio::spawn(async move { runner.run_pipeline(ctx).await }).await?;
+    let report = runner.run_pipeline(ctx).await?;
+    println!("\n== legacy-scan typed report ==");
+    println!("schema={}", report.schema());
+    println!("status={}", legacy_run_status(report.status()));
+    println!("stop_code={:?}", report.stop_reason().code());
+    println!("stop_detail={}", report.stop_reason().detail());
+    println!("target={}", report.target());
+    println!("authorized_origin={}", report.authorized_origin());
+    println!("started_at={}", report.started_at().to_rfc3339());
+    println!("completed_at={}", report.completed_at().to_rfc3339());
     println!(
-        "\n[*] Legacy scan returned {} partial heuristic observations.",
-        observations.len()
+        "accounting requests={} response_body_bytes={} request_body_bytes={} wall_time_ms={}",
+        legacy_accounting(report.accounting().requests()),
+        legacy_accounting(report.accounting().response_body_bytes()),
+        legacy_accounting(report.accounting().request_body_bytes()),
+        legacy_accounting(report.accounting().wall_time_ms()),
     );
-    println!(
-        "[*] Phase failures are not represented by this alpha summary; coverage may be incomplete."
-    );
-    println!("[*] These observations are not verifier-backed vulnerability confirmations.");
-    for (index, observation) in observations.iter().enumerate() {
+    for step in report.steps() {
         println!(
-            "\n[HEURISTIC {}] source={} details=suppressed-pending-verifier-migration",
-            index + 1,
-            observation.module_name
+            "step ordinal={} action={} status={} duration_ms={}",
+            step.ordinal(),
+            step.action_id(),
+            legacy_step_status(step.status()),
+            step.duration_ms(),
         );
     }
-    Ok(())
+    for outcome in report.outcomes() {
+        println!(
+            "outcome id={} subject={} action={} severity={} disposition={} confidence_parts_per_million={} evidence_ids={} rationale={} summary={}",
+            outcome.fingerprint(),
+            outcome.subject(),
+            outcome.action_id(),
+            legacy_severity(outcome.severity()),
+            legacy_disposition(outcome.disposition()),
+            outcome.confidence().parts_per_million(),
+            outcome.evidence_ids().len(),
+            outcome.rationale(),
+            outcome.redacted_summary(),
+        );
+    }
+    println!("[*] Legacy records are unresolved observations, not verifier-backed findings.");
+
+    if !matches!(report.status(), RunStatus::Complete) {
+        Err(std::io::Error::other("legacy scan did not complete").into())
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(feature = "legacy-scanner")]
+fn legacy_run_status(status: RunStatus) -> &'static str {
+    match status {
+        RunStatus::Complete => "complete",
+        RunStatus::Partial => "partial",
+        RunStatus::Cancelled => "cancelled",
+        RunStatus::Failed => "failed",
+        _ => "unknown",
+    }
+}
+
+#[cfg(feature = "legacy-scanner")]
+fn legacy_step_status(status: RunStepStatus) -> &'static str {
+    match status {
+        RunStepStatus::Succeeded => "succeeded",
+        RunStepStatus::Failed => "failed",
+        RunStepStatus::TimedOut => "timed_out",
+        RunStepStatus::Cancelled => "cancelled",
+        RunStepStatus::Skipped => "skipped",
+        RunStepStatus::BudgetExhausted => "budget_exhausted",
+        _ => "unknown",
+    }
+}
+
+#[cfg(feature = "legacy-scanner")]
+fn legacy_accounting(accounting: &ResourceAccounting) -> String {
+    match accounting.mode() {
+        ResourceAccountingMode::Metered => format!(
+            "metered(limit={},consumed={},remaining={})",
+            legacy_optional_count(accounting.limit()),
+            legacy_optional_count(accounting.consumed()),
+            legacy_optional_count(accounting.remaining()),
+        ),
+        ResourceAccountingMode::Observed => {
+            format!(
+                "observed(consumed={})",
+                legacy_optional_count(accounting.consumed())
+            )
+        },
+        ResourceAccountingMode::Unmetered => "unmetered".to_string(),
+        _ => "unknown".to_string(),
+    }
+}
+
+#[cfg(feature = "legacy-scanner")]
+fn legacy_optional_count(value: Option<u64>) -> String {
+    value.map_or_else(|| "unavailable".to_string(), |value| value.to_string())
+}
+
+#[cfg(feature = "legacy-scanner")]
+fn legacy_severity(severity: SecuritySeverity) -> &'static str {
+    match severity {
+        SecuritySeverity::Info => "info",
+        SecuritySeverity::Low => "low",
+        SecuritySeverity::Medium => "medium",
+        SecuritySeverity::High => "high",
+        SecuritySeverity::Critical => "critical",
+        _ => "unknown",
+    }
+}
+
+#[cfg(feature = "legacy-scanner")]
+fn legacy_disposition(disposition: OutcomeStatus) -> &'static str {
+    match disposition {
+        OutcomeStatus::Success => "success",
+        OutcomeStatus::Blocked => "blocked",
+        OutcomeStatus::Unknown => "unknown",
+        OutcomeStatus::FalsePositive => "false_positive",
+        OutcomeStatus::NeedsReview => "needs_review",
+        OutcomeStatus::ConfirmedNegative => "confirmed_negative",
+        _ => "unknown",
+    }
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let used_decision_scan_alias =
-        std::env::args_os().nth(1).as_deref() == Some(OsStr::new("decision-scan"));
     let cli = Cli::parse();
 
     match cli.command {
@@ -213,9 +314,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             format,
             explain,
         }) => {
-            if used_decision_scan_alias {
-                eprintln!("{DECISION_SCAN_ALIAS_WARNING}");
-            }
             run_deterministic_scan(target, format, explain).await?;
         },
         #[cfg(feature = "legacy-scanner")]
@@ -285,7 +383,6 @@ mod tests {
             },
             _ => panic!("expected the deterministic scan command"),
         }
-        assert!(DECISION_SCAN_ALIAS_WARNING.contains("compatibility alias"));
     }
 
     #[test]

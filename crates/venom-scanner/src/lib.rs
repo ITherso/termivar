@@ -11,6 +11,11 @@
 
 #![deny(rustdoc::broken_intra_doc_links)]
 
+#[cfg(all(feature = "legacy-scanner", panic = "abort"))]
+const _: () = panic!(
+    "the legacy-scanner feature requires panic=unwind so panics while polling phase execution become typed run failures"
+);
+
 // Core modules (always compiled)
 pub mod api;
 pub mod api_evidence;
@@ -238,7 +243,11 @@ pub use rules::{
 pub use venom_core::{
     ApiSurfaceKind, ApiVisibilityComparison, ApiVisibilityDimension, ApiVisibilityObservation,
     ApiVisibilityPairKind, ApiVisibilityResult, ConfidenceScore, EntityId, Outcome, OutcomeError,
-    OutcomeStatus, ScanFinding, VerificationStage,
+    OutcomeStatus, ResourceAccounting, ResourceAccountingMode, RunAccounting, RunOutcomeRecord,
+    RunReport, RunReportError, RunReportInput, RunStatus, RunStepReport, RunStepStatus,
+    RunStopCode, RunStopReason, ScanFinding, SecuritySeverity, VerificationStage,
+    MAX_RUN_REPORT_EVIDENCE_IDS, MAX_RUN_REPORT_OUTCOMES, MAX_RUN_REPORT_STEPS,
+    MAX_RUN_REPORT_TEXT_BYTES, RUN_REPORT_SCHEMA,
 };
 pub use verification::{
     apply_outcome, ActiveVerifier, PassiveVerifier, VerificationCase, VerificationError,
@@ -268,7 +277,7 @@ pub use web_verification::{
 pub use runner::ScanRunner;
 
 #[cfg(feature = "legacy-scanner")]
-pub use sdk::{ScanReport, ScannerBuilder, ScannerSdk};
+pub use sdk::{ScannerBuilder, ScannerSdk};
 
 #[cfg(feature = "scanning")]
 pub use waf::{EvisionTechnique, PayloadEncoder, WafDetector, WafProduct};

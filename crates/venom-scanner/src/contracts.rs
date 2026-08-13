@@ -18,6 +18,13 @@ pub use venom_core::ScanFinding;
 /// Implementations contain detection logic only. Scheduling, cancellation,
 /// event publication, and aggregation remain runner responsibilities.
 ///
+/// Implementations must structurally own any child work they start. Dropping
+/// the future returned by [`ScanPhase::execute`] must stop its child requests
+/// and shared-state mutations; detached tasks violate this contract. The
+/// runner structurally owns and can drop only the outer `execute` future. Its
+/// panic boundary likewise covers only panics that unwind while polling that
+/// future, not detached work or `panic = "abort"` builds.
+///
 /// # Examples
 ///
 /// ```
