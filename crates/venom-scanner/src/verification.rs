@@ -25,8 +25,8 @@ use venom_core::{
 
 use crate::{
     knowledge::{
-        HypothesisStateTransition, KnowledgeBase, KnowledgeBaseError, KnowledgeSnapshot,
-        KnowledgeWrite,
+        HypothesisStateTransition, KnowledgeAuthority, KnowledgeBase, KnowledgeBaseError,
+        KnowledgeSnapshot, KnowledgeWrite,
     },
     payload_strategy::PayloadStrategyRef,
     rules::{Expression, ExpressionEvaluation, RuleEngineError},
@@ -576,11 +576,24 @@ pub struct VerificationReport {
     commit_token: VerificationCommitToken,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 struct VerificationCommitToken {
+    authority: KnowledgeAuthority,
     subject_revision: u64,
     ontology_revision: u64,
 }
+
+// The opaque authority is an application guard, not part of a report's stable
+// semantic value. Equivalent reports from independent runs remain comparable,
+// while `apply` still checks pointer identity explicitly.
+impl PartialEq for VerificationCommitToken {
+    fn eq(&self, other: &Self) -> bool {
+        self.subject_revision == other.subject_revision
+            && self.ontology_revision == other.ontology_revision
+    }
+}
+
+impl Eq for VerificationCommitToken {}
 
 impl VerificationReport {
     /// Returns the verified case.
@@ -646,10 +659,10 @@ impl VerificationReport {
             // rejecting any hypothesis. The snapshot revisions are still
             // validated (as for any audit-only report) so callers that commit
             // adaptive or session decisions observe a fresh snapshot.
-            validate_commit_token(knowledge, self.case.subject(), self.commit_token)?;
+            validate_commit_token(knowledge, self.case.subject(), &self.commit_token)?;
             return Ok(None);
         }
-        apply_outcome_with_token(knowledge, &self.outcome, Some(self.commit_token))
+        apply_outcome_with_token(knowledge, &self.outcome, Some(&self.commit_token))
     }
 }
 
@@ -955,7 +968,7 @@ pub fn apply_outcome(
 fn apply_outcome_with_token(
     knowledge: &KnowledgeBase,
     outcome: &Outcome,
-    commit_token: Option<VerificationCommitToken>,
+    commit_token: Option<&VerificationCommitToken>,
 ) -> Result<Option<KnowledgeWrite>, VerificationError> {
     let Some(state) = outcome.status().hypothesis_state() else {
         if let Some(commit_token) = commit_token {
@@ -963,6 +976,9 @@ fn apply_outcome_with_token(
         }
         return Ok(None);
     };
+    if let Some(commit_token) = commit_token {
+        knowledge.validate_snapshot_authority(&commit_token.authority, outcome.subject())?;
+    }
     let hypothesis = knowledge
         .hypothesis(outcome.hypothesis_id())
         .ok_or_else(|| VerificationError::UnknownHypothesis {
@@ -1020,8 +1036,9 @@ fn apply_outcome_with_token(
 fn validate_commit_token(
     knowledge: &KnowledgeBase,
     subject: &EntityId,
-    commit_token: VerificationCommitToken,
+    commit_token: &VerificationCommitToken,
 ) -> Result<(), VerificationError> {
+    knowledge.validate_snapshot_authority(&commit_token.authority, subject)?;
     knowledge
         .validate_snapshot_revisions(
             subject,
@@ -1148,6 +1165,7 @@ fn evaluate_registry(
         outcome,
         evaluations,
         commit_token: VerificationCommitToken {
+            authority: snapshot.authority().clone(),
             subject_revision: snapshot.subject_revision(),
             ontology_revision: snapshot.ontology_revision(),
         },
@@ -1180,6 +1198,12 @@ fn validate_monotonic(
     baseline: &KnowledgeSnapshot,
     after_probe: &KnowledgeSnapshot,
 ) -> Result<(), VerificationError> {
+    if !baseline.authority().is_same_as(after_probe.authority()) {
+        return Err(KnowledgeBaseError::SnapshotAuthorityMismatch {
+            subject: after_probe.subject().clone(),
+        }
+        .into());
+    }
     let after_ids: BTreeSet<_> = after_probe
         .evidence()
         .iter()
@@ -1882,7 +1906,7 @@ mod tests {
     }
 
     #[test]
-    fn active_snapshot_must_preserve_baseline_evidence() {
+    fn active_snapshots_must_share_authority() {
         let baseline_knowledge = knowledge();
         let after_knowledge = knowledge();
         let baseline = baseline_knowledge.snapshot_for_subject(&subject());
@@ -1891,6 +1915,24 @@ mod tests {
 
         assert!(matches!(
             verifier.verify_snapshots(&case(), &baseline, &after),
+            Err(VerificationError::Knowledge(
+                KnowledgeBaseError::SnapshotAuthorityMismatch { .. }
+            ))
+        ));
+    }
+
+    #[test]
+    fn active_snapshot_must_preserve_same_authority_baseline_evidence() {
+        let knowledge = knowledge();
+        let before = knowledge.snapshot_for_subject(&subject());
+        knowledge
+            .insert_evidence(evidence(timing_predicate(), "later", true))
+            .unwrap();
+        let after = knowledge.snapshot_for_subject(&subject());
+        let verifier = ActiveVerifier::new();
+
+        assert!(matches!(
+            verifier.verify_snapshots(&case(), &after, &before),
             Err(VerificationError::NonMonotonicSnapshot { .. })
         ));
     }

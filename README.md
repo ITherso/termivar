@@ -9,7 +9,7 @@
 Venom is an experimental Rust security-testing project centered on a deterministic decision runtime that turns bounded web observations into typed evidence, hypotheses, risk-aware plans, and verifier-scoped outcomes.
 
 > [!WARNING]
-> **Venom v0.9.0-alpha is not production-ready.** Use it only on systems you own or are explicitly authorized to test. The default `scan` command is bounded, but it still makes network requests. The separately compiled `legacy-scan` has bounded discovery phases but retains direct I/O outside `RuntimeBudget` elsewhere, so its whole-run accounting is `Unmetered`. Preview and Experimental contracts may change.
+> **Venom v0.9.0-alpha is not production-ready.** Use it only on systems you own or are explicitly authorized to test. The default `scan` command is bounded, but it still makes network requests. The separately compiled `legacy-scan` has distinct bounded discovery and verification authorities, but phase one and custom extensions can still perform direct I/O outside `RuntimeBudget`, so its whole-run accounting is `Unmetered`. Preview and Experimental contracts may change.
 
 **Why an action ran is not what it proved.** Venom keeps the evidence that motivates an action separate from the evidence that may change a hypothesis. An action can return `Success` after completing a knowledge-gathering objective without confirming its motivating hypothesis.
 
@@ -27,7 +27,12 @@ flowchart LR
 
     Host --> Legacy["legacy-scan · opt-in legacy alpha"]
     Legacy --> Phases["Ordered phases"]
-    Phases --> LegacyRecords["Heuristic records · details suppressed"]
+    Phases --> Passive["Passive discovery · phases 2–4"]
+    Phases --> Active["Active verification · phases 5–9"]
+    Phases --> Raw["Raw compatibility I/O · phase 1 / custom"]
+    Passive --> LegacyRecords["Informational observations · Unknown"]
+    Active --> Review["Unknown / verifier-scoped NeedsReview / no outcome"]
+    Raw --> LegacyRecords
 ```
 
 The two paths are separate. The deterministic runtime currently emits operational decisions and outcomes, not Surface-B findings. `decision-scan` is a deprecated command alias for the same deterministic path; it is not a second engine. Scanner SDK and plugin APIs are optional library surfaces and are not silently inserted into `scan`.
@@ -104,7 +109,7 @@ cargo run -p venom-cli --locked --features legacy-scanner -- legacy-scan \
 ```
 
 `legacy-scan` runs the historical heuristic phase pipeline. Its crawler,
-wordlist-based directory discovery, and parameter discovery share an
+wordlist-based directory discovery, and parameter discovery share a passive,
 exact-origin, redirect-disabled broker with finite depth, page, request,
 request-timeout, wall-time, cumulative-body, and per-response-body limits.
 Directory discovery remains separately disabled unless
@@ -114,12 +119,26 @@ must differ from two stable randomized nonexistent-path controls in the same
 parent namespace and path shape, while parameters must
 pass a reproducible baseline/control/candidate/replay comparison.
 
+Phases five through nine use a second exact-origin, redirect- and
+retry-disabled authority accounted at the `Active` stage. `VerificationLimits`
+bounds its requests, per-request timeout, shared wall time, cumulative delivered
+body bytes, and retained bytes per response. SQL behavior and template
+arithmetic differentials—and an SDK host's explicitly configured benign local-file
+canary—can produce verifier-owned, knowledge-only `NeedsReview` outcomes. Exact
+reflection remains an `Unknown` observation because no browser-execution
+verifier exists. XXE is inert; SSRF is inert by default, and an SDK host's
+explicit OOB delivery records only a nonce-bearing probe receipt. The current
+legacy contract has no callback verifier and produces no SSRF outcome. No
+cloud-metadata or sensitive-file probe is compiled as a default.
+
 That scoped boundary does not make the historical runner a bounded decision
-runtime. Reconnaissance and phases five through nine retain direct I/O outside
-`StandardWebDecisionRuntime` and `RuntimeBudget`, so the complete run remains
-`Unmetered`. CLI output deliberately withholds unverified phase detail and
-projects compatibility records as `Unknown` rather than confirmed
-vulnerabilities. See [ADR 0016](docs/adr/0016-bound-legacy-discovery-authority.md).
+runtime. Phase one and custom `ScanPhase` extensions can retain direct I/O
+outside `StandardWebDecisionRuntime` and both bounded authorities, so the
+complete run remains `Unmetered`. CLI output deliberately withholds unverified
+phase detail; raw compatibility records project as `Unknown`, while only the
+allowlisted verifier bridge can project the `NeedsReview` outcomes above. See
+[ADR 0016](docs/adr/0016-bound-legacy-discovery-authority.md) and
+[ADR 0018](docs/adr/0018-bound-legacy-verification-authority.md).
 
 See the [runtime map](docs/internals/runtime-map.md) for the exact module and command inventory.
 
@@ -131,6 +150,8 @@ See the [runtime map](docs/internals/runtime-map.md) for the exact module and co
 - A same-origin route is not authorization to request it; the host remains the authority boundary.
 - Missing evidence in a bounded or truncated sample is not evidence of absence.
 - Successful execution is not automatically confirmation, a finding, or a vulnerability claim.
+- A repeated SQL timing differential, exact text reflection, or template-arithmetic result still requires claim-specific review; none is an exploit or vulnerability verdict.
+- Delivering an OOB callback URL to the target is not evidence that the target made the callback. HTTP 200, 401, or 403 is only the probe response.
 - JSON/GraphQL fingerprints and paired visibility differences remain observations or review hypotheses unless a dedicated verifier says otherwise.
 
 ## Runtime surfaces
@@ -139,7 +160,7 @@ See the [runtime map](docs/internals/runtime-map.md) for the exact module and co
 | --- | --- | --- |
 | `venom scan` | Preview | Default bounded deterministic web decision runtime with text, explain, and JSON diagnostics |
 | `venom decision-scan` | Deprecated alias | Compatibility name for the same deterministic command and engine; the wire schema remains `decision-scan/v1` |
-| `venom legacy-scan` | Legacy alpha, opt-in | Historical mixed-authority heuristics: phases 2–4 have bounded discovery transport; remaining raw-I/O phases keep the whole run `Unmetered`; requires `legacy-scanner` and explicit acknowledgement |
+| `venom legacy-scan` | Legacy alpha, opt-in | Historical mixed-authority pipeline: phases 2–4 share bounded passive discovery, phases 5–9 share separate bounded active verification, and phase-one/custom raw I/O keeps the whole run `Unmetered`; requires `legacy-scanner` and explicit acknowledgement |
 | Scanner SDK / native plugins | Preview, opt-in | Source-level host extension APIs with generated starters; not merged into the default deterministic runtime |
 | `venom api` | Unsupported, opt-in | Absent from default builds; the `api-adapter` feature reports that no listener is implemented |
 | `venom proxy` | Experimental, opt-in | Absent from default builds; `proxy-adapter` exposes a fixed-upstream TCP relay with no `CONNECT`, TLS termination, certificate generation, or HTTP inspection |

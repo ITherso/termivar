@@ -22,10 +22,13 @@ use std::fmt;
 /// - `PayloadGenerationError`: Malformed payload generation parameters
 /// - `PhaseTimeout`: Scanning phase exceeded timeout threshold
 /// - `TaskJoinFailed`: A structurally owned scanner worker failed to join
-/// - `Cancelled`: Host cancellation stopped bounded discovery
-/// - `BudgetExceeded`: A bounded discovery resource threshold stopped work
+/// - `Cancelled`: Host cancellation stopped bounded legacy transport
+/// - `BudgetExceeded`: A bounded legacy resource threshold stopped work
 /// - `InvalidDiscoveryLimits`: A discovery policy is incoherent or too large
+/// - `InvalidVerificationLimits`: A verification policy is incoherent or too large
 /// - `DiscoveryStateLimitExceeded`: A staged state transition exceeds retention bounds
+/// - `InvalidLegacyVerificationReport`: A legacy phase attempted to bypass claim policy
+/// - `LegacyVerificationStateLimitExceeded`: Verification outcome retention is exhausted
 /// - `InvalidTarget`: Target URL doesn't meet validation requirements
 /// - `IoError`: File system or I/O operation failures
 #[derive(Debug)]
@@ -44,14 +47,21 @@ pub enum ScannerError {
     /// Deliberately carries no [`tokio::task::JoinError`] or panic payload so
     /// target-controlled panic details cannot cross the scanner boundary.
     TaskJoinFailed,
-    /// Host cancellation stopped bounded discovery.
+    /// Host cancellation stopped bounded legacy transport.
     Cancelled,
-    /// A shared discovery resource limit denied or stopped work.
+    /// A shared bounded legacy resource limit denied or stopped work.
     BudgetExceeded(crate::RuntimeLimitExceeded),
     /// Discovery limits are zero, inconsistent, or exceed hard bounds.
     InvalidDiscoveryLimits,
+    /// Verification limits are zero, inconsistent, or exceed hard bounds.
+    InvalidVerificationLimits,
     /// A staged discovery update exceeded a deterministic state bound.
     DiscoveryStateLimitExceeded,
+    /// A corrected legacy phase supplied a report outside the constrained
+    /// active, knowledge-only, manual-review bridge.
+    InvalidLegacyVerificationReport,
+    /// Accepted legacy verification outcomes exceeded the report bound.
+    LegacyVerificationStateLimitExceeded,
     /// Target validation failure
     InvalidTarget,
     /// File I/O operation failure
@@ -103,14 +113,25 @@ impl fmt::Display for ScannerError {
                 )
             },
             ScannerError::Cancelled => {
-                write!(f, "Host cancellation stopped bounded discovery.")
+                write!(f, "Host cancellation stopped bounded legacy transport.")
             },
-            ScannerError::BudgetExceeded(limit) => write!(f, "Discovery budget exhausted: {limit}"),
+            ScannerError::BudgetExceeded(limit) => {
+                write!(f, "Bounded legacy transport budget exhausted: {limit}")
+            },
             ScannerError::InvalidDiscoveryLimits => {
                 write!(f, "Invalid bounded discovery limits.")
             },
+            ScannerError::InvalidVerificationLimits => {
+                write!(f, "Invalid bounded legacy verification limits.")
+            },
             ScannerError::DiscoveryStateLimitExceeded => {
                 write!(f, "Bounded discovery state limit exceeded.")
+            },
+            ScannerError::InvalidLegacyVerificationReport => {
+                write!(f, "Invalid legacy verification report was rejected.")
+            },
+            ScannerError::LegacyVerificationStateLimitExceeded => {
+                write!(f, "Bounded legacy verification outcome limit exceeded.")
             },
             ScannerError::RunReport(error) => write!(f, "Run report error: {error}"),
         }

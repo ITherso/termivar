@@ -10,8 +10,9 @@ Venom owns phase ordering, timeout, cancellation, events, and typed run-report
 construction. Raw phase strings do not cross the SDK boundary: unresolved
 legacy records are projected as informational `Unknown` observations with zero
 confidence and no fabricated evidence IDs. Whole-run request and body resource
-dimensions are reported as unmetered: Venom's bounded discovery slice cannot
-account for transport performed by custom or unmigrated legacy phases.
+dimensions are reported as unmetered: Venom's bounded discovery and
+active-verification slices cannot account for transport performed by this
+custom phase or by built-in reconnaissance.
 
 ```bash
 cargo run -- https://target-you-are-authorized-to-test.example

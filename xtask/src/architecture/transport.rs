@@ -45,14 +45,34 @@ const TRANSPORT_OWNER_SOURCE: &str = "crates/venom-scanner/src/http_evidence/req
 const STANDARD_RUNTIME_COMPOSITION_SOURCE: &str = "crates/venom-scanner/src/web_runtime.rs";
 const LEGACY_DISCOVERY_AUTHORITY_SOURCE: &str = "crates/venom-scanner/src/legacy_discovery.rs";
 
-/// Legacy discovery sources that have migrated behind one exact-origin,
-/// metered transport authority. They may use `ScanContext`, but must never
-/// regain its public raw client or another direct transport capability.
+/// Legacy sources migrated behind context-owned exact-origin, metered
+/// authorities. Discovery and verification have distinct finite envelopes;
+/// phase consumers must never regain the public raw client or construct a
+/// second transport capability.
 const MIGRATED_LEGACY_DISCOVERY_SOURCES: &[&str] = &[
     LEGACY_DISCOVERY_AUTHORITY_SOURCE,
     "crates/venom-scanner/src/phases/phase2_crawl.rs",
     "crates/venom-scanner/src/phases/phase3_fuzzer.rs",
     "crates/venom-scanner/src/phases/phase4_param.rs",
+    "crates/venom-scanner/src/phases/phase5_sqli.rs",
+    "crates/venom-scanner/src/phases/phase6_xss.rs",
+    "crates/venom-scanner/src/phases/phase7_ssti.rs",
+    "crates/venom-scanner/src/phases/phase8_lfi_xxe.rs",
+    "crates/venom-scanner/src/phases/phase9_ssrf.rs",
+];
+
+const LEGACY_VERIFICATION_PHASE_SOURCES: &[&str] = &[
+    "crates/venom-scanner/src/phases/phase5_sqli.rs",
+    "crates/venom-scanner/src/phases/phase6_xss.rs",
+    "crates/venom-scanner/src/phases/phase7_ssti.rs",
+    "crates/venom-scanner/src/phases/phase8_lfi_xxe.rs",
+    "crates/venom-scanner/src/phases/phase9_ssrf.rs",
+];
+
+const LEGACY_CLAIM_BRIDGE_PHASE_SOURCES: &[&str] = &[
+    "crates/venom-scanner/src/phases/phase5_sqli.rs",
+    "crates/venom-scanner/src/phases/phase7_ssti.rs",
+    "crates/venom-scanner/src/phases/phase8_lfi_xxe.rs",
 ];
 
 /// Existing standalone facades that intentionally construct an unmetered
@@ -75,14 +95,8 @@ const DIRECT_CLIENT_SOURCE_ALLOWLIST: &[&str] = &[
 ];
 
 /// Exact production `.send()` inventory for the legacy phase pipeline.
-const LEGACY_PHASE_SEND_ALLOWLIST: &[(&str, usize)] = &[
-    ("crates/venom-scanner/src/phases/phase1_recon.rs", 1),
-    ("crates/venom-scanner/src/phases/phase5_sqli.rs", 3),
-    ("crates/venom-scanner/src/phases/phase6_xss.rs", 2),
-    ("crates/venom-scanner/src/phases/phase7_ssti.rs", 1),
-    ("crates/venom-scanner/src/phases/phase8_lfi_xxe.rs", 4),
-    ("crates/venom-scanner/src/phases/phase9_ssrf.rs", 2),
-];
+const LEGACY_PHASE_SEND_ALLOWLIST: &[(&str, usize)] =
+    &[("crates/venom-scanner/src/phases/phase1_recon.rs", 1)];
 
 pub(super) fn check(workspace_root: &Path) -> Result<Vec<String>, Box<dyn Error>> {
     let mut violations = validate_policy_inventory();
@@ -94,6 +108,12 @@ pub(super) fn check(workspace_root: &Path) -> Result<Vec<String>, Box<dyn Error>
     for source_name in MIGRATED_LEGACY_DISCOVERY_SOURCES {
         let source = fs::read_to_string(workspace_root.join(source_name))?;
         violations.extend(inspect_migrated_discovery_source(source_name, &source)?);
+        if LEGACY_VERIFICATION_PHASE_SOURCES.contains(source_name) {
+            violations.extend(inspect_legacy_verification_claim_language(
+                source_name,
+                &source,
+            ));
+        }
     }
 
     let standard_runtime =
@@ -137,6 +157,39 @@ pub(super) fn check(workspace_root: &Path) -> Result<Vec<String>, Box<dyn Error>
     }
 
     Ok(violations)
+}
+
+fn inspect_legacy_verification_claim_language(source_name: &str, source: &str) -> Vec<String> {
+    let production = source.split("#[cfg(test)]").next().unwrap_or(source);
+    let normalized = production.to_ascii_lowercase();
+    let mut violations = [
+        ("confirmed", "verifier-owned confirmation language"),
+        ("vulnerability", "vulnerability language"),
+        ("severity: \"high\"", "HIGH raw severity"),
+        ("severity: \"critical\"", "CRITICAL raw severity"),
+        (" expert", "expert product identity"),
+        ("escaper", "exploit-escaper identity"),
+    ]
+    .into_iter()
+    .filter(|(needle, _)| normalized.contains(needle))
+    .map(|(_, label)| {
+            format!(
+                "{source_name} contains {label} in a legacy verification phase; emit INFO observations and defer claim transitions to a verifier"
+            )
+    })
+    .collect::<Vec<_>>();
+    for (needle, label) in [
+        ("Outcome::new", "direct Outcome construction"),
+        ("RunOutcomeRecord::", "direct run-outcome construction"),
+        ("RunOutcomeRecordInput", "direct run-outcome input"),
+    ] {
+        if production.contains(needle) {
+            violations.push(format!(
+                "{source_name} contains {label}; legacy verification phases must use VerificationReport through the context bridge"
+            ));
+        }
+    }
+    violations
 }
 
 fn inspect_standard_runtime_accounting(source: &str) -> Vec<String> {
@@ -226,6 +279,11 @@ fn inspect_migrated_discovery_source(
         let mut visitor = DiscoveryConsumerVisitor {
             source: source_name,
             context_aliases: collect_context_aliases(&syntax),
+            forbidden_claim_aliases: if LEGACY_VERIFICATION_PHASE_SOURCES.contains(&source_name) {
+                collect_forbidden_claim_aliases(&syntax)
+            } else {
+                BTreeSet::new()
+            },
             violations: BTreeSet::new(),
         };
         visitor.visit_file(&syntax);
@@ -503,7 +561,48 @@ impl<'ast> Visit<'ast> for OwnershipVisitor<'_> {
 struct DiscoveryConsumerVisitor<'source> {
     source: &'source str,
     context_aliases: BTreeSet<String>,
+    forbidden_claim_aliases: BTreeSet<String>,
     violations: BTreeSet<String>,
+}
+
+const FORBIDDEN_LEGACY_CLAIM_TYPES: &[&str] =
+    &["Outcome", "RunOutcomeRecord", "RunOutcomeRecordInput"];
+
+fn collect_forbidden_claim_aliases(syntax: &syn::File) -> BTreeSet<String> {
+    let mut aliases = FORBIDDEN_LEGACY_CLAIM_TYPES
+        .iter()
+        .map(|value| (*value).to_owned())
+        .collect::<BTreeSet<_>>();
+    for item in &syntax.items {
+        match item {
+            Item::Use(item_use) if !has_cfg_test(&item_use.attrs) => {
+                let mut paths = Vec::new();
+                collect_use_paths(&item_use.tree, Vec::new(), &mut paths);
+                for (segments, binding, _) in paths {
+                    if segments.last().is_some_and(|segment| {
+                        FORBIDDEN_LEGACY_CLAIM_TYPES.contains(&normalize_identifier(segment))
+                    }) {
+                        if let Some(alias) = binding.or_else(|| segments.last().cloned()) {
+                            aliases.insert(normalize_identifier(&alias).to_owned());
+                        }
+                    }
+                }
+            },
+            Item::Type(item_type) if !has_cfg_test(&item_type.attrs) => {
+                if let syn::Type::Path(path) = item_type.ty.as_ref() {
+                    if path.path.segments.last().is_some_and(|segment| {
+                        FORBIDDEN_LEGACY_CLAIM_TYPES
+                            .contains(&normalize_identifier(&segment.ident.to_string()))
+                    }) {
+                        aliases
+                            .insert(normalize_identifier(&item_type.ident.to_string()).to_owned());
+                    }
+                }
+            },
+            _ => {},
+        }
+    }
+    aliases
 }
 
 fn collect_context_aliases(syntax: &syn::File) -> BTreeSet<String> {
@@ -594,8 +693,25 @@ fn is_allowed_discovery_consumer_path(source: &str, segments: &[String]) -> bool
             .map(String::as_str)
             .map(normalize_identifier)
     };
+    let claim_bridge = LEGACY_CLAIM_BRIDGE_PHASE_SOURCES.contains(&source);
     match segment(0) {
         Some("crate") => match (segment(1), segment(2)) {
+            (
+                Some(
+                    "ActiveVerifier" | "Expression" | "KnowledgeLayer" | "VerificationCase"
+                    | "VerificationReport" | "VerificationRule",
+                ),
+                None,
+            ) if claim_bridge => true,
+            (Some("knowledge"), Some("KnowledgeWrite")) if claim_bridge => true,
+            (Some("rules"), Some("Expression" | "KnowledgeLayer")) if claim_bridge => true,
+            (
+                Some("verification"),
+                Some(
+                    "ActiveVerifier" | "VerificationCase" | "VerificationReport"
+                    | "VerificationRule",
+                ),
+            ) if claim_bridge => true,
             (Some("context"), Some("ScanContext")) => segments.len() == 3,
             (Some("contracts"), Some("ScanFinding" | "ScanPhase")) => true,
             (Some("error"), Some("ScannerError")) => true,
@@ -622,6 +738,18 @@ fn is_allowed_discovery_consumer_path(source: &str, segments: &[String]) -> bool
 
 impl DiscoveryConsumerVisitor<'_> {
     fn inspect_segments(&mut self, segments: &[String]) {
+        if LEGACY_VERIFICATION_PHASE_SOURCES.contains(&self.source)
+            && segments.iter().any(|segment| {
+                self.forbidden_claim_aliases
+                    .contains(normalize_identifier(segment))
+            })
+        {
+            self.violations.insert(format!(
+                "{} imports or constructs a direct outcome type {}; use VerificationReport through the context bridge",
+                self.source,
+                display_path(segments)
+            ));
+        }
         let forbidden = segments.iter().any(|segment| {
             matches!(
                 normalize_identifier(segment),
@@ -633,6 +761,8 @@ impl DiscoveryConsumerVisitor<'_> {
                     | "ScannerSdk"
                     | "StandardWebDiscoveryExecutorProfile"
                     | "LegacyDiscoveryAuthority"
+                    | "LegacyVerificationAuthority"
+                    | "VerificationLimits"
             )
         });
         if forbidden {
@@ -703,7 +833,9 @@ impl DiscoveryConsumerVisitor<'_> {
                     "add_endpoint"
                         | "mark_visited"
                         | "with_pre_execution_discovery_limits"
+                        | "with_pre_execution_verification_limits"
                         | "new_with_discovery_limits"
+                        | "new_with_verification_limits"
                         | "discovered_endpoints"
                         | "visited_urls"
                 )
@@ -775,15 +907,33 @@ impl<'ast> Visit<'ast> for DiscoveryConsumerVisitor<'_> {
     }
 
     fn visit_expr_method_call(&mut self, expression: &'ast syn::ExprMethodCall) {
+        let method = ident_name(&expression.method);
         if matches!(
-            ident_name(&expression.method).as_str(),
+            method.as_str(),
             "add_endpoint"
                 | "mark_visited"
                 | "with_pre_execution_discovery_limits"
+                | "with_pre_execution_verification_limits"
                 | "new_with_discovery_limits"
+                | "new_with_verification_limits"
         ) {
             self.violations.insert(format!(
                 "{} bypasses or replaces the shared typed discovery authority",
+                self.source
+            ));
+        }
+        if LEGACY_VERIFICATION_PHASE_SOURCES.contains(&self.source) && method == "request" {
+            self.violations.insert(format!(
+                "{} consumes the passive discovery request seam from a verification phase; use verification_request",
+                self.source
+            ));
+        }
+        if !LEGACY_VERIFICATION_PHASE_SOURCES.contains(&self.source)
+            && self.source != LEGACY_DISCOVERY_AUTHORITY_SOURCE
+            && method == "verification_request"
+        {
+            self.violations.insert(format!(
+                "{} consumes the active verification request seam from a discovery phase",
                 self.source
             ));
         }
@@ -1279,6 +1429,24 @@ mod tests {
                 "migrated discovery transport escape unexpectedly passed: {source}"
             );
         }
+
+        for source in [
+            "use venom_core::Outcome as Claim; fn forge() { Claim::new(input()); }",
+            "type Claim = venom_core::RunOutcomeRecord; fn forge() { Claim::unresolved(a(), b(), c(), d()); }",
+            "fn forge() { audit!(venom_core::RunOutcomeRecord::from_outcome(a(), b())); }",
+        ] {
+            let violations = inspect_migrated_discovery_source(
+                "crates/venom-scanner/src/phases/phase9_ssrf.rs",
+                source,
+            )
+            .unwrap();
+            assert!(
+                violations
+                    .iter()
+                    .any(|violation| violation.contains("direct outcome type")),
+                "direct claim alias unexpectedly passed: {source}; {violations:?}"
+            );
+        }
     }
 
     #[test]
@@ -1288,11 +1456,14 @@ mod tests {
             "use crate::runtime_budget::RequestAccountingBroker;",
             "use crate::RuntimeBudget;",
             "use crate::legacy_discovery::LegacyDiscoveryAuthority;",
+            "use crate::legacy_discovery::LegacyVerificationAuthority;",
+            "use crate::VerificationLimits;",
             "fn escape(context: &ScanContext) { context.add_endpoint(); }",
             "fn escape(context: &ScanContext) { context.mark_visited(); }",
             "fn escape(context: &ScanContext) { let _ = &context.discovered_endpoints; }",
             "fn escape(context: &ScanContext) { let _ = &context.visited_urls; }",
             "fn escape(context: ScanContext) { context.with_pre_execution_discovery_limits(); }",
+            "fn escape(context: ScanContext) { context.with_pre_execution_verification_limits(); }",
             "fn escape() { crate::context::ScanContext::new(target(), Default::default(), telemetry()); }",
             "use crate::context::ScanContext as Fresh; fn escape() { Fresh::with_timeout(target(), Default::default(), telemetry(), 30); }",
             "fn escape(context: ScanContext) { let ScanContext { discovered_endpoints, .. } = context; mutate(discovered_endpoints); }",
@@ -1307,6 +1478,66 @@ mod tests {
                 .unwrap()
                 .is_empty(),
                 "discovery authority escape unexpectedly passed: {source}"
+            );
+        }
+    }
+
+    #[test]
+    fn migrated_phases_cannot_cross_passive_and_active_request_seams() {
+        let passive = "use crate::context::ScanContext; async fn run(context: &ScanContext) { context.request(); }";
+        assert!(inspect_migrated_discovery_source(
+            "crates/venom-scanner/src/phases/phase2_crawl.rs",
+            passive,
+        )
+        .unwrap()
+        .is_empty());
+        assert!(!inspect_migrated_discovery_source(
+            "crates/venom-scanner/src/phases/phase5_sqli.rs",
+            passive,
+        )
+        .unwrap()
+        .is_empty());
+
+        let active = "use crate::context::ScanContext; async fn run(context: &ScanContext) { context.verification_request(); }";
+        assert!(inspect_migrated_discovery_source(
+            "crates/venom-scanner/src/phases/phase5_sqli.rs",
+            active,
+        )
+        .unwrap()
+        .is_empty());
+        assert!(!inspect_migrated_discovery_source(
+            "crates/venom-scanner/src/phases/phase2_crawl.rs",
+            active,
+        )
+        .unwrap()
+        .is_empty());
+    }
+
+    #[test]
+    fn legacy_verification_claim_language_is_fail_closed() {
+        let safe = r#"
+            fn observation() -> ScanFinding {
+                ScanFinding { severity: "INFO", description: "manual review", evidence: "bounded" }
+            }
+            #[cfg(test)]
+            mod tests { const NEGATIVE_ASSERTION: &str = "not confirmed"; }
+        "#;
+        assert!(inspect_legacy_verification_claim_language("phase.rs", safe).is_empty());
+
+        for source in [
+            "fn result() { let _ = \"confirmed SQL injection\"; }",
+            "fn result() { let _ = \"vulnerability\"; }",
+            "fn result() { ScanFinding { severity: \"HIGH\" }; }",
+            "fn result() { ScanFinding { severity: \"CRITICAL\" }; }",
+            "fn name() -> &'static str { \"SQL Expert\" }",
+            "fn name() -> &'static str { \"Sandbox Escaper\" }",
+            "fn forge() { Outcome::new(input()); }",
+            "fn forge() { RunOutcomeRecord::unresolved(a(), b(), c(), d()); }",
+            "fn forge(_: RunOutcomeRecordInput) {}",
+        ] {
+            assert!(
+                !inspect_legacy_verification_claim_language("phase.rs", source).is_empty(),
+                "legacy claim language unexpectedly passed: {source}"
             );
         }
     }

@@ -3,8 +3,10 @@
 //! `ScanRunner` polls each legacy phase as a structurally owned future so
 //! cancellation, timeout, and panic boundaries are observable. Its public result is a
 //! fail-closed [`RunReport`]: raw legacy findings are retained only as
-//! zero-confidence informational `unknown` records. Direct-I/O request and byte
-//! accounting is unmetered; elapsed wall time is observed.
+//! zero-confidence informational `unknown` records, while corrected built-in
+//! phases may project existing verifier-owned, knowledge-only `NeedsReview`
+//! outcomes. Phase-one/custom direct-I/O accounting remains unmetered; elapsed
+//! wall time is observed.
 
 use std::{
     panic::AssertUnwindSafe,
@@ -22,7 +24,7 @@ use venom_core::{
 };
 
 use crate::{
-    context::ScanContext,
+    context::{legacy_subject_digest, ScanContext},
     contracts::ScanPhase,
     error::ScannerError,
     event_bus::{Event, EventType},
@@ -69,6 +71,9 @@ impl ScanRunner {
     /// active phase future and marks later phases skipped. Dropping this future
     /// also drops the active phase future instead of detaching it.
     pub async fn run_pipeline(&self, context: ScanContext) -> Result<RunReport, RunReportError> {
+        if !context.runtime_authority_is_intact() {
+            return Err(RunReportError::RunAuthorityMismatch);
+        }
         if self.phases.len() > MAX_RUN_REPORT_STEPS {
             return Err(RunReportError::TooMany {
                 field: "registered phases",
@@ -84,8 +89,8 @@ impl ScanRunner {
         let run_started_at = Utc::now();
         let run_started = Instant::now();
         let context = Arc::new(context);
-        let target = redacted_target(&context.target);
-        let authorized_origin = authorized_origin(&context.target);
+        let target = redacted_target(context.authorized_target());
+        let authorized_origin = authorized_origin(context.authorized_target());
         let subject = subject_for_origin(&authorized_origin)?;
         // Validate every externally derived envelope field before a phase can
         // publish an event, perform I/O, or mutate shared state. The final
@@ -109,7 +114,7 @@ impl ScanRunner {
         let mut saw_timeout = false;
         let mut saw_join_failure = false;
         let mut saw_budget_exhaustion = false;
-        let mut cancelled = context.cancel_token.is_cancelled();
+        let mut cancelled = context.runtime_cancel_token().is_cancelled();
 
         if cancelled {
             append_skipped_steps(
@@ -123,7 +128,7 @@ impl ScanRunner {
             if cancelled {
                 break;
             }
-            if context.cancel_token.is_cancelled() {
+            if context.runtime_cancel_token().is_cancelled() {
                 append_skipped_steps(
                     &mut steps,
                     &self.phases[index..],
@@ -137,6 +142,7 @@ impl ScanRunner {
             let step_ordinal = step_sequence(&steps)?;
             let action_id = phase_action_id(phase_number, phase.name(), step_ordinal);
             let started = Instant::now();
+            let verification_checkpoint = context.legacy_verification_checkpoint();
             publish_started(&context, phase_number, &action_id);
             context.log(format!("legacy phase started: {action_id}"));
 
@@ -151,12 +157,17 @@ impl ScanRunner {
             let (status, rationale) = match execution {
                 PhaseExecution::Succeeded(findings) => {
                     successful_steps = successful_steps.saturating_add(1);
-                    if !findings.is_empty() {
+                    let verified_outcomes =
+                        context.legacy_verification_outcomes_since(verification_checkpoint);
+                    let has_verified_outcomes = !verified_outcomes.is_empty();
+                    outcomes.extend(verified_outcomes);
+                    if !has_verified_outcomes && !findings.is_empty() {
                         outcomes.push(outcome_from_legacy_findings(subject.clone(), &action_id)?);
                     }
                     (RunStepStatus::Succeeded, "Legacy phase returned normally.")
                 },
                 PhaseExecution::Failed => {
+                    context.rollback_legacy_verification_outcomes(verification_checkpoint);
                     failed_steps = failed_steps.saturating_add(1);
                     (
                         RunStepStatus::Failed,
@@ -164,6 +175,7 @@ impl ScanRunner {
                     )
                 },
                 PhaseExecution::Panicked | PhaseExecution::JoinFailed => {
+                    context.rollback_legacy_verification_outcomes(verification_checkpoint);
                     failed_steps = failed_steps.saturating_add(1);
                     saw_join_failure = true;
                     (
@@ -172,6 +184,7 @@ impl ScanRunner {
                     )
                 },
                 PhaseExecution::TimedOut => {
+                    context.rollback_legacy_verification_outcomes(verification_checkpoint);
                     failed_steps = failed_steps.saturating_add(1);
                     saw_timeout = true;
                     (
@@ -180,6 +193,7 @@ impl ScanRunner {
                     )
                 },
                 PhaseExecution::Cancelled => {
+                    context.rollback_legacy_verification_outcomes(verification_checkpoint);
                     cancelled = true;
                     (
                         RunStepStatus::Cancelled,
@@ -187,11 +201,12 @@ impl ScanRunner {
                     )
                 },
                 PhaseExecution::BudgetExhausted => {
+                    context.rollback_legacy_verification_outcomes(verification_checkpoint);
                     failed_steps = failed_steps.saturating_add(1);
                     saw_budget_exhaustion = true;
                     (
                         RunStepStatus::BudgetExhausted,
-                        "A bounded discovery resource limit stopped this legacy phase.",
+                        "A bounded legacy transport resource limit stopped this phase.",
                     )
                 },
             };
@@ -221,7 +236,7 @@ impl ScanRunner {
                 append_skipped_steps(
                     &mut steps,
                     &self.phases[index + 1..],
-                    "Discovery budget exhaustion prevented this dependent legacy phase from starting.",
+                    "Bounded legacy transport budget exhaustion prevented this dependent phase from starting.",
                 )?;
                 break;
             }
@@ -283,7 +298,7 @@ async fn execute_phase(
     if phase_timeout.is_zero() {
         return PhaseExecution::TimedOut;
     }
-    let cancellation = context.cancel_token.clone();
+    let cancellation = context.runtime_cancel_token();
     let execution = AssertUnwindSafe(phase.execute(&context)).catch_unwind();
     tokio::pin!(execution);
 
@@ -411,7 +426,7 @@ fn classify_run(
         (
             RunStatus::Failed,
             RunStopCode::BudgetExhausted,
-            "No legacy phase completed successfully; a discovery budget was exhausted.",
+            "No legacy phase completed successfully; a bounded transport budget was exhausted.",
         )
     } else if saw_timeout {
         (
@@ -494,7 +509,7 @@ fn serialized_authority(url: &url::Url) -> Option<String> {
 fn subject_for_origin(origin: &str) -> Result<EntityId, RunReportError> {
     EntityId::new(format!(
         "authorized-origin:sha256:{}",
-        sha256_hex(&[origin.as_bytes()])
+        legacy_subject_digest(origin)
     ))
     .map_err(|_| RunReportError::Blank { field: "subject" })
 }
@@ -561,12 +576,97 @@ mod tests {
     use tokio::sync::Notify;
     use tokio_util::sync::CancellationToken;
     use venom_core::{
-        Probability, ResourceAccountingMode, RunStopCode, SecuritySeverity,
-        MAX_RUN_REPORT_TEXT_BYTES,
+        ConfidenceScore, Evidence, EvidenceId, EvidenceKind, EvidenceSource, EvidenceValue,
+        Hypothesis, KnowledgePredicate, OutcomeStatus, Probability, ResourceAccountingMode,
+        RunStopCode, SecuritySeverity, VerificationStage, MAX_RUN_REPORT_TEXT_BYTES,
     };
 
     use super::*;
-    use crate::{Result, ScannerError};
+    use crate::{
+        rules::{Expression, KnowledgeLayer},
+        verification::{ActiveVerifier, VerificationCase, VerificationReport, VerificationRule},
+        Result, ScannerError,
+    };
+
+    const TYPED_TEST_ACTION_ID: &str = "legacy.observer.template_arithmetic";
+    const TYPED_TEST_CASE_ID: &str = "case:legacy.runner-test.review";
+    const TYPED_TEST_HYPOTHESIS_ID: &str = "hypothesis:legacy.runner-test.review";
+
+    fn invalid_bridge_error<T>(_error: T) -> ScannerError {
+        ScannerError::InvalidLegacyVerificationReport
+    }
+
+    fn typed_review_report(context: &ScanContext) -> Result<VerificationReport> {
+        let subject = context.legacy_verification_subject()?;
+        let predicate = KnowledgePredicate::new("legacy.runner-test", "review-signal")
+            .map_err(invalid_bridge_error)?;
+        let hypothesis = Hypothesis::with_id(
+            TYPED_TEST_HYPOTHESIS_ID,
+            subject.clone(),
+            KnowledgePredicate::new("legacy.runner-test", "audit-anchor")
+                .map_err(invalid_bridge_error)?,
+            EvidenceValue::Text("manual-review".to_owned()),
+            Probability::from_percent(50).map_err(invalid_bridge_error)?,
+        )
+        .map_err(invalid_bridge_error)?;
+        context
+            .knowledge()
+            .upsert_hypothesis(hypothesis)
+            .map_err(invalid_bridge_error)?;
+        let baseline = context.knowledge().snapshot_for_subject(&subject);
+
+        let source = EvidenceSource::new(TYPED_TEST_ACTION_ID, "bounded-review-observation")
+            .and_then(|source| source.with_correlation_id(TYPED_TEST_CASE_ID))
+            .map_err(invalid_bridge_error)?;
+        let evidence = Evidence::with_id_at(
+            EvidenceId::parse("evidence:legacy.runner-test.review")
+                .map_err(invalid_bridge_error)?,
+            subject.clone(),
+            EvidenceKind::Content,
+            predicate.clone(),
+            EvidenceValue::Boolean(true),
+            source,
+            ConfidenceScore::from_percent(70).map_err(invalid_bridge_error)?,
+            0,
+        );
+        context
+            .knowledge()
+            .insert_evidence(evidence)
+            .map_err(invalid_bridge_error)?;
+        let after_probe = context.knowledge().snapshot_for_subject(&subject);
+
+        let case = VerificationCase::new(
+            TYPED_TEST_CASE_ID,
+            subject,
+            TYPED_TEST_ACTION_ID,
+            TYPED_TEST_HYPOTHESIS_ID,
+        )
+        .map_err(invalid_bridge_error)?
+        .without_hypothesis_transition();
+        let rule = VerificationRule::new(
+            "verify:legacy.runner-test.needs-review",
+            VerificationStage::Active,
+            100,
+            Expression::equals(
+                KnowledgeLayer::Evidence,
+                predicate,
+                EvidenceValue::Boolean(true),
+            ),
+            OutcomeStatus::NeedsReview,
+            Probability::from_percent(70).map_err(invalid_bridge_error)?,
+            "Bounded observation requires review",
+        )
+        .map_err(invalid_bridge_error)?
+        .scoped_to_action(TYPED_TEST_ACTION_ID)
+        .map_err(invalid_bridge_error)?
+        .with_case_correlated_evidence()
+        .map_err(invalid_bridge_error)?;
+        let mut verifier = ActiveVerifier::new();
+        verifier.register(rule).map_err(invalid_bridge_error)?;
+        verifier
+            .verify_snapshots(&case, &baseline, &after_probe)
+            .map_err(invalid_bridge_error)
+    }
 
     fn context(timeout_secs: u64, cancellation: CancellationToken) -> ScanContext {
         context_for_target(
@@ -617,6 +717,23 @@ mod tests {
             .run_pipeline(context(1, CancellationToken::new()))
             .await
             .unwrap()
+    }
+
+    #[tokio::test]
+    async fn public_target_replacement_is_rejected_before_report_or_phase_effects() {
+        let authorized = url::Url::parse("https://authorized.example.test/root").unwrap();
+        let mut scan_context = context_for_target(authorized, 1, CancellationToken::new());
+        scan_context.target = url::Url::parse("https://replacement.example.test/secret").unwrap();
+        let executed = Arc::new(AtomicBool::new(false));
+        let mut runner = ScanRunner::new();
+        runner.register_phase(Box::new(CountingPhase {
+            executed: Arc::clone(&executed),
+        }));
+
+        let error = runner.run_pipeline(scan_context).await.unwrap_err();
+
+        assert_eq!(error, RunReportError::RunAuthorityMismatch);
+        assert!(!executed.load(Ordering::SeqCst));
     }
 
     fn outcome_identities(report: &RunReport) -> Vec<(String, String)> {
@@ -721,6 +838,121 @@ mod tests {
 
     fn phase(number: u8, behavior: TestBehavior) -> Box<dyn ScanPhase> {
         Box::new(TestPhase { number, behavior })
+    }
+
+    enum TypedBridgeBehavior {
+        SuccessWithRawFinding,
+        ErrorAfterRecord,
+        PanicAfterRecord,
+        JoinFailureAfterRecord,
+        BudgetAfterRecord,
+        DuplicateThenReturnRaw,
+        PendingAfterRecord {
+            entered: Arc<Notify>,
+            dropped: Arc<AtomicBool>,
+        },
+    }
+
+    struct TypedBridgePhase {
+        behavior: TypedBridgeBehavior,
+    }
+
+    #[async_trait::async_trait]
+    impl ScanPhase for TypedBridgePhase {
+        fn phase_number(&self) -> u8 {
+            7
+        }
+
+        fn name(&self) -> &'static str {
+            "typed-bridge-test"
+        }
+
+        async fn execute(&self, context: &ScanContext) -> Result<Vec<ScanFinding>> {
+            let report = typed_review_report(context)?;
+            match &self.behavior {
+                TypedBridgeBehavior::SuccessWithRawFinding => {
+                    context.record_legacy_verification_reports(vec![report])?;
+                    Ok(vec![raw_finding(
+                        7,
+                        "typed bridge test",
+                        "HIGH",
+                        "raw claim must not leak beside verifier output",
+                        "Authorization: Bearer raw-secret",
+                    )])
+                },
+                TypedBridgeBehavior::ErrorAfterRecord => {
+                    context.record_legacy_verification_reports(vec![report])?;
+                    Err(ScannerError::InvalidTarget)
+                },
+                TypedBridgeBehavior::PanicAfterRecord => {
+                    context.record_legacy_verification_reports(vec![report])?;
+                    panic!("typed bridge panic detail")
+                },
+                TypedBridgeBehavior::JoinFailureAfterRecord => {
+                    context.record_legacy_verification_reports(vec![report])?;
+                    Err(ScannerError::TaskJoinFailed)
+                },
+                TypedBridgeBehavior::BudgetAfterRecord => {
+                    context.record_legacy_verification_reports(vec![report])?;
+                    Err(ScannerError::BudgetExceeded(
+                        crate::RuntimeLimitExceeded::new(
+                            crate::RuntimeBudgetDimension::TotalRequests,
+                            1,
+                            2,
+                            Some(TYPED_TEST_ACTION_ID.to_owned()),
+                        ),
+                    ))
+                },
+                TypedBridgeBehavior::DuplicateThenReturnRaw => {
+                    context.record_legacy_verification_reports(vec![report.clone()])?;
+                    context.record_legacy_verification_reports(vec![report])?;
+                    Ok(vec![raw_finding(
+                        7,
+                        "typed bridge duplicate",
+                        "HIGH",
+                        "duplicate acceptance must not become output",
+                        "duplicate raw secret",
+                    )])
+                },
+                TypedBridgeBehavior::PendingAfterRecord { entered, dropped } => {
+                    context.record_legacy_verification_reports(vec![report])?;
+                    let _drop_signal = DropSignal(Arc::clone(dropped));
+                    entered.notify_one();
+                    pending().await
+                },
+            }
+        }
+    }
+
+    fn typed_phase(behavior: TypedBridgeBehavior) -> Box<dyn ScanPhase> {
+        Box::new(TypedBridgePhase { behavior })
+    }
+
+    #[tokio::test]
+    async fn typed_and_unresolved_outcomes_share_one_origin_subject_identity() {
+        let mut runner = ScanRunner::new();
+        runner.register_phase(typed_phase(TypedBridgeBehavior::SuccessWithRawFinding));
+        runner.register_phase(phase(
+            8,
+            TestBehavior::Findings(vec![raw_finding(
+                8,
+                "unresolved observation",
+                "INFO",
+                "bounded raw observation",
+                "withheld",
+            )]),
+        ));
+
+        let report = runner
+            .run_pipeline(context(1, CancellationToken::new()))
+            .await
+            .unwrap();
+
+        assert_eq!(report.outcomes().len(), 2);
+        assert!(report
+            .outcomes()
+            .iter()
+            .all(|outcome| outcome.subject() == report.outcomes()[0].subject()));
     }
 
     struct NamedPhase {
@@ -883,6 +1115,150 @@ mod tests {
             report.accounting().wall_time_ms().mode(),
             ResourceAccountingMode::Observed
         );
+    }
+
+    #[tokio::test]
+    async fn verifier_owned_needs_review_suppresses_raw_unknown_projection() {
+        let mut runner = ScanRunner::new();
+        runner.register_phase(typed_phase(TypedBridgeBehavior::SuccessWithRawFinding));
+
+        let report = runner
+            .run_pipeline(context(1, CancellationToken::new()))
+            .await
+            .unwrap();
+
+        assert_eq!(report.status(), RunStatus::Complete);
+        assert_eq!(report.steps()[0].status(), RunStepStatus::Succeeded);
+        assert_eq!(report.outcomes().len(), 1);
+        let outcome = &report.outcomes()[0];
+        assert_eq!(outcome.action_id(), TYPED_TEST_ACTION_ID);
+        assert_eq!(outcome.disposition(), OutcomeStatus::NeedsReview);
+        assert_eq!(outcome.severity(), SecuritySeverity::Info);
+        assert_eq!(outcome.evidence_ids().len(), 1);
+        assert_eq!(
+            outcome.verification_outcome().unwrap().stage(),
+            VerificationStage::Active
+        );
+        let wire = serde_json::to_string(&report).unwrap();
+        assert!(!wire.contains("raw claim must not leak"));
+        assert!(!wire.contains("raw-secret"));
+        assert!(!report
+            .outcomes()
+            .iter()
+            .any(|outcome| outcome.disposition() == OutcomeStatus::Unknown));
+    }
+
+    #[tokio::test]
+    async fn failure_after_verifier_record_rolls_back_the_phase_ledger() {
+        let scan_context = context(1, CancellationToken::new());
+        let ledger_view = scan_context.clone();
+        let mut runner = ScanRunner::new();
+        runner.register_phase(typed_phase(TypedBridgeBehavior::ErrorAfterRecord));
+
+        let report = runner.run_pipeline(scan_context).await.unwrap();
+
+        assert_eq!(report.status(), RunStatus::Failed);
+        assert_eq!(report.steps()[0].status(), RunStepStatus::Failed);
+        assert!(report.outcomes().is_empty());
+        assert_eq!(ledger_view.legacy_verification_checkpoint(), 0);
+    }
+
+    #[tokio::test]
+    async fn every_terminal_failure_after_verifier_record_rolls_back_the_phase_ledger() {
+        for (behavior, expected_step, expected_stop) in [
+            (
+                TypedBridgeBehavior::PanicAfterRecord,
+                RunStepStatus::Failed,
+                RunStopCode::TaskJoinFailed,
+            ),
+            (
+                TypedBridgeBehavior::JoinFailureAfterRecord,
+                RunStepStatus::Failed,
+                RunStopCode::TaskJoinFailed,
+            ),
+            (
+                TypedBridgeBehavior::BudgetAfterRecord,
+                RunStepStatus::BudgetExhausted,
+                RunStopCode::BudgetExhausted,
+            ),
+        ] {
+            let scan_context = context(1, CancellationToken::new());
+            let ledger_view = scan_context.clone();
+            let mut runner = ScanRunner::new();
+            runner.register_phase(typed_phase(behavior));
+
+            let report = runner.run_pipeline(scan_context).await.unwrap();
+
+            assert_eq!(report.steps()[0].status(), expected_step);
+            assert_eq!(report.stop_reason().code(), expected_stop);
+            assert!(report.outcomes().is_empty());
+            assert_eq!(ledger_view.legacy_verification_checkpoint(), 0);
+        }
+    }
+
+    #[tokio::test]
+    async fn timeout_after_verifier_record_rolls_back_the_phase_ledger() {
+        let entered = Arc::new(Notify::new());
+        let dropped = Arc::new(AtomicBool::new(false));
+        let scan_context = context(1, CancellationToken::new());
+        let ledger_view = scan_context.clone();
+        let mut runner = ScanRunner::new();
+        runner.register_phase(typed_phase(TypedBridgeBehavior::PendingAfterRecord {
+            entered: Arc::clone(&entered),
+            dropped: Arc::clone(&dropped),
+        }));
+
+        let report = runner.run_pipeline(scan_context).await.unwrap();
+
+        assert_eq!(report.steps()[0].status(), RunStepStatus::TimedOut);
+        assert_eq!(report.stop_reason().code(), RunStopCode::StepTimedOut);
+        assert!(report.outcomes().is_empty());
+        assert_eq!(ledger_view.legacy_verification_checkpoint(), 0);
+        assert!(dropped.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn duplicate_verifier_fingerprint_fails_without_raw_unknown_leakage() {
+        let scan_context = context(1, CancellationToken::new());
+        let ledger_view = scan_context.clone();
+        let mut runner = ScanRunner::new();
+        runner.register_phase(typed_phase(TypedBridgeBehavior::DuplicateThenReturnRaw));
+
+        let report = runner.run_pipeline(scan_context).await.unwrap();
+
+        assert_eq!(report.status(), RunStatus::Failed);
+        assert_eq!(report.steps()[0].status(), RunStepStatus::Failed);
+        assert!(report.outcomes().is_empty());
+        assert_eq!(ledger_view.legacy_verification_checkpoint(), 0);
+        let wire = serde_json::to_string(&report).unwrap();
+        assert!(!wire.contains("duplicate acceptance"));
+        assert!(!wire.contains("duplicate raw secret"));
+    }
+
+    #[tokio::test]
+    async fn cancellation_after_verifier_record_rolls_back_the_phase_ledger() {
+        let entered = Arc::new(Notify::new());
+        let dropped = Arc::new(AtomicBool::new(false));
+        let cancellation = CancellationToken::new();
+        let scan_context = context(60, cancellation.clone());
+        let ledger_view = scan_context.clone();
+        let mut runner = ScanRunner::new();
+        runner.register_phase(typed_phase(TypedBridgeBehavior::PendingAfterRecord {
+            entered: Arc::clone(&entered),
+            dropped: Arc::clone(&dropped),
+        }));
+        let task = tokio::spawn(async move { runner.run_pipeline(scan_context).await });
+
+        entered.notified().await;
+        assert_eq!(ledger_view.legacy_verification_checkpoint(), 1);
+        cancellation.cancel();
+        let report = task.await.unwrap().unwrap();
+
+        assert_eq!(report.status(), RunStatus::Cancelled);
+        assert_eq!(report.steps()[0].status(), RunStepStatus::Cancelled);
+        assert!(report.outcomes().is_empty());
+        assert_eq!(ledger_view.legacy_verification_checkpoint(), 0);
+        assert!(dropped.load(Ordering::SeqCst));
     }
 
     #[tokio::test]

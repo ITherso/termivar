@@ -82,6 +82,7 @@ nav:
       - ADR 0015 - Platform-shell boundary: adr/0015-platform-shell-boundary.md
       - ADR 0016 - Bounded legacy discovery: adr/0016-bound-legacy-discovery-authority.md
       - ADR 0017 - Deterministic scan default: adr/0017-make-deterministic-scan-the-default.md
+      - ADR 0018 - Bounded legacy verification: adr/0018-bound-legacy-verification-authority.md
       - Release process: RELEASE.md
 markdown_extensions:
   - admonition

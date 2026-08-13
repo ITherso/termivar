@@ -58,15 +58,19 @@ assert_eq!(report.outcomes()[0].confidence().parts_per_million(), 0);
   typed step state.
 - Raw phase descriptions/evidence and telemetry do not cross the public report
   boundary. Compatibility records become informational `Unknown` observations
-  with zero confidence and no fabricated evidence IDs.
+  with zero confidence and no fabricated evidence IDs. Only the built-in,
+  allowlisted SQL-behavior, template-arithmetic, and local-file-canary paths can
+  instead publish verifier-owned, knowledge-only `NeedsReview` outcomes.
 - Whole-run request/byte dimensions are explicitly `Unmetered` because custom
-  and unmigrated legacy phases can retain raw transport authority. The bounded
-  phase-two-to-four discovery slice is not complete-run accounting; only elapsed
-  wall time is observed at the report boundary.
-- A host may provide an event bus, the finite `DiscoveryLimits` envelope, and a
-  configured raw HTTP client through the builder. The raw client is used only
-  by custom and unmigrated legacy phases; built-in phases two through four use
-  an isolated redirect-disabled broker under `DiscoveryLimits`.
+  phases and built-in phase one can retain raw transport authority. The bounded
+  phase-two-to-four discovery and phase-five-to-nine active-verification slices
+  are not complete-run accounting; only elapsed wall time is observed at the
+  report boundary.
+- A host may provide an event bus, finite `DiscoveryLimits` and
+  `VerificationLimits` envelopes, and a configured raw HTTP client through the
+  builder. The raw client is used only by phase one and custom phases;
+  built-in phases two through four use an isolated passive broker, and built-in
+  phases five through nine use a distinct `Active`-stage broker.
 - Product policy, UI, report rendering, and transports remain outside phase implementations.
 
 `ScanContext` is non-exhaustive and runtime-constructed. Extensions borrow it,
@@ -79,3 +83,7 @@ This is a Preview source-level SDK. The plugin registration contract follows
 the [Plugin API and SemVer policy](plugin-api-policy.md); broader scanner source
 compatibility remains governed by the release notes, accepted ADRs, and the
 explicit baseline status in [Repository health](repository-health.md).
+
+The ordered runtime boundaries are recorded in
+[ADR 0016](adr/0016-bound-legacy-discovery-authority.md) and
+[ADR 0018](adr/0018-bound-legacy-verification-authority.md).

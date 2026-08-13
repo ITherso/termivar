@@ -79,24 +79,25 @@ The phase sequence is:
 3. `DirectoryFuzzer` — only with the additional
    `--legacy-directory-fuzz` opt-in
 4. `ParameterDiscoverer`
-5. `SqliScanner`
-6. `XssScanner`
-7. `SstiScanner`
-8. `LfiXxeScanner`
-9. `SsrfScanner`
+5. `SqliScanner` — bounded SQL-behavior differentials
+6. `XssScanner` — bounded exact-reflection observation
+7. `SstiScanner` — bounded template-arithmetic differential
+8. `LfiXxeScanner` — inert by default; SDK-only benign file-canary opt-in,
+   with XXE dispatch quarantined
+9. `SsrfScanner` — inert by default; SDK-only OOB delivery opt-in records probe
+   receipts without collecting callbacks
 
-The whole ordered run remains `Unmetered`: reconnaissance and phases five
-through nine retain the raw legacy `reqwest` client and do not consume
-`RuntimeBudget`. The run report therefore cannot derive complete request or
-body usage from the bounded work performed by only part of the pipeline.
+The whole ordered run remains `Unmetered`: phase one and host-defined custom
+phases can retain the raw legacy `reqwest` client. The run report therefore
+cannot derive complete request or body usage even though built-in phases two
+through nine use scoped bounded transport authorities. Neither authority is the
+standard runtime's `RuntimeBudget`.
 
-Phases two through four are a deliberately narrower migration boundary. They
-share a context-owned, exact-origin, redirect-disabled request authority with
-finite configurable limits for crawl depth, scheduled pages, total requests,
-per-request timeout, shared wall time, cumulative delivered response-body bytes,
-and retained bytes per response. This authority is not
-`StandardWebDecisionRuntime`, and its envelope is not the whole-run
-`RuntimeBudget`.
+Phases two through four are one deliberately narrow migration boundary. They
+share a context-owned passive, exact-origin, redirect-disabled request
+authority with finite configurable limits for crawl depth, scheduled pages,
+total requests, per-request timeout, shared wall time, cumulative delivered
+response-body bytes, and retained bytes per response.
 
 The bounded discovery slice has these semantics:
 
@@ -119,9 +120,54 @@ The bounded discovery slice has these semantics:
 Discovery records are informational observations. The CLI suppresses raw phase
 prose/evidence and projects any compatibility records as `Unknown`; neither
 successful transport nor a differential is a verifier-backed finding or
-vulnerability verdict. `ScanContext` owns a `KnowledgeBase`, but the historical
-phases do not consume it; ownership is not execution participation. See
+vulnerability verdict. See
 [ADR 0016](../adr/0016-bound-legacy-discovery-authority.md).
+
+Phases five through nine form a second migration boundary. They share a
+distinct context-owned, exact-origin, redirect- and retry-disabled authority
+with a finite `VerificationLimits` envelope for total requests, per-request
+timeout, shared wall time, cumulative delivered response-body bytes, and
+retained bytes per response. Requests are bodyless and charged at the `Active`
+stage inside this authority; they do not consume or reset the passive discovery
+envelope.
+
+The active slice has these claim semantics:
+
+- Phase five requires a negative baseline, a randomized control, an exact
+  diagnostic replay, or repeated control/test timing samples with alternating
+  order and robust median/MAD thresholds. Accepted SQL-behavior categories can
+  project only knowledge-only `NeedsReview`.
+- Phase six requires reproducible byte-exact reflection of a benign nonce and
+  records response content type and a bounded context classification. A nonce
+  already present in the baseline, a truncated response, an encoded-only value,
+  or inconsistent replay is rejected. With no browser-execution verifier, the
+  public result remains `Unknown` even for an HTML script or attribute context.
+- Phase seven uses randomized arithmetic operands, a syntactically similar
+  non-evaluating control, an exact expected result, and exact replay. An
+  accepted differential can project only knowledge-only `NeedsReview`; it does
+  not identify a template engine or code execution.
+- Phase eight dispatches nothing by default. An SDK host can explicitly provide
+  two independent version-four UUIDs for a benign canary file name and expected
+  contents on an authorized fixture. Baseline and randomized missing-file
+  controls must be negative, and two candidate replays must contain the exact
+  marker before a knowledge-only `NeedsReview` outcome is eligible. XXE remains
+  inert even when the compatibility OOB string is set.
+- Phase nine dispatches nothing by default. An SDK host may configure a
+  validated bare DNS OOB domain; Venom then delivers a nonce-bearing callback
+  URL only through already observed parameters at the authorized origin and
+  records the target request's status as typed probe evidence. It has no
+  callback collector or verifier, so HTTP 200, 401, or 403 produces no SSRF
+  conclusion. No localhost, cloud-metadata, or other sensitive default payload
+  is compiled into this phase.
+
+Only allowlisted phase-five, phase-seven, and opt-in phase-eight action IDs can
+cross the context's verifier bridge. Reports must be active, origin-scoped,
+case-correlated, knowledge-only `NeedsReview` outcomes backed by evidence in the
+same `KnowledgeBase`; raw phase strings never gain that authority. The runner
+checkpoints this typed ledger per phase and discards the phase's public
+projection on error, panic, timeout, cancellation, or bounded-transport
+exhaustion. See
+[ADR 0018](../adr/0018-bound-legacy-verification-authority.md).
 
 ## Optional adapters and platform shell (Surface C)
 
@@ -141,7 +187,7 @@ The following matrix separates build availability from actual execution:
 | Deterministic stack (`web_runtime`, `decision_runner`, `runtime_budget`, `http_evidence`, `planner`, `rules`, `knowledge`, `experience`, `verification`, `adaptive`, `web_*`, `api_*`) | scanner default (`core`, `scanning`) | Surface B (composed, except opt-in API reasoning) | yes | implemented and tested Preview |
 | `semantic` | scanner default | library / test only, host-owned | no | implemented and tested Preview |
 | `defense` | scanner default | library / test only, host-owned | no | implemented and tested; not composed into `StandardWebDecisionRuntime` |
-| `phases/*`, `legacy_discovery`, `runner`, `context`, `sdk` | opt-in (`legacy-scanner`) | Surface A; phases 2–4 use bounded discovery authority, other phases retain raw direct I/O | no | historical alpha runtime / SDK; whole-run accounting remains `Unmetered` |
+| `phases/*`, `legacy_discovery`, `runner`, `context`, `sdk` | opt-in (`legacy-scanner`) | Surface A; phases 2–4 use bounded passive discovery, phases 5–9 use separate bounded active verification, and phase-one/custom raw I/O remains possible | no | historical alpha runtime / SDK; whole-run accounting remains `Unmetered` |
 | `advanced_detection`, `anomaly` | opt-in (`detection`) | no repository product caller | no | Experimental |
 | `post_exploitation`, `persistence`, `reporting`, `realtime`, `dashboard`, `waf` | scanner default (`scanning`) | no default command caller | no | compiled library/scaffold surfaces |
 | `ml` | opt-in (`ml`) | no default path | no | Experimental |

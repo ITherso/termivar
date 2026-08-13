@@ -64,6 +64,8 @@ All notable changes to Venom are recorded here. Releases use the categories from
 - Pinned golden API-authorization replay metadata and broker-backed runtime coverage for anonymous/member, owner/unrelated-user, and read/write-capability context pairs.
 - Bounded, raw-target-free transport dispatch receipts with ordered per-attempt byte accounting and typed completion, failure, timeout, response-limit, and cancellation outcomes.
 - A context-owned legacy discovery authority shared by crawler, optional directory, and parameter phases, with exact-origin redirect-disabled transport plus configurable depth, page, request, request-timeout, wall-time, cumulative-body, and per-response-body limits.
+- A distinct context-owned legacy verification authority for phases five through nine, with exact-origin bodyless transport, `Active`-stage accounting, disabled redirects/retries, and configurable request, timeout, wall-time, cumulative-body, and per-response-body limits.
+- A fail-closed legacy verifier bridge that accepts only allowlisted, case-correlated, knowledge-only `NeedsReview` reports and rolls their public projection back when a phase errors, times out, panics, is cancelled, or exhausts its bounded transport authority.
 
 ### Changed
 
@@ -98,7 +100,8 @@ All notable changes to Venom are recorded here. Releases use the categories from
 - Moved unsafe-code and crate-documentation policy from global compiler flags into centrally inherited workspace lints.
 - Classified per-request deadlines as `RequestTimeout` instead of conflating them with other transport failures.
 - Made classic directory fuzzing an explicit `--legacy-directory-fuzz` CLI option instead of part of every historical ordered scan.
-- Made every ordered CLI scan disclose that its unmigrated direct-I/O phases remain outside `StandardWebDecisionRuntime` and `RuntimeBudget`, keeping whole-run accounting `Unmetered` even though discovery phases two through four now have a separate bounded authority.
+- Made every ordered CLI scan disclose that its discovery and active-verification authorities remain separate from `StandardWebDecisionRuntime` and `RuntimeBudget`; phase-one and custom extension direct I/O still keep whole-run accounting `Unmetered`.
+- Replaced broad legacy exploit labels with bounded claim semantics: reproduced SQL diagnostics/timing, exact template arithmetic, and an opt-in benign local-file canary may require manual review; exact reflection stays unresolved, XXE stays inert, and OOB probe delivery records no callback conclusion by itself.
 - Retained the legacy directory/parameter constructor shapes while adding explicit sequential constructors; positive compatibility concurrency values are conservatively narrowed to deterministic sequential dispatch, and the parameter constructor preserves zero as no request authority. Extended the alpha `ScannerError` enum as non-exhaustive before adding typed discovery cancellation, budget, policy, and state-limit failures.
 - Advanced profiled API comparison metadata to v3; persisted v2 profiles are rejected instead of being silently reinterpreted after explanation semantics changed.
 - Changed the alpha `RuntimeUsage.response_bytes` meaning from retained evidence bytes to complete response chunks delivered to the broker collector; a threshold-crossing chunk is charged, audited, and terminates the same turn.
@@ -134,6 +137,7 @@ All notable changes to Venom are recorded here. Releases use the categories from
 - Replaced mutable or deprecated security-scanner actions with SHA/digest-pinned RustSec, cargo-deny, Trivy, CodeQL upload, Semgrep, and Codecov integrations; scans use least-privilege job tokens and audit the locked dependency graph without mutating it. Privileged release actions are SHA-pinned as well.
 - Added bounded weekly Dependabot update queues for Cargo, the web preview, and GitHub Actions.
 - Made legacy discovery state error-atomic, limited HTML extraction to complete `text/html` parser trees under a hard 64 KiB parse cap, retained POST/dialog form semantics without GET conversion, calibrated each eligible directory shape against two stable randomized nonexistent paths, and required reproducible four-leg parameter differentials. These remain `INFO` observations projected as `Unknown`, not findings.
+- Hardened the historical verification phases with negative baselines, reproducible controls, randomized probe ordering/operands, robust timing samples, exact nonce/canary replay, and local positive/negative fixtures. Removed default sensitive-file and cloud-metadata payloads; XXE dispatch remains disabled, and SSRF requires explicit OOB configuration while treating HTTP status only as a probe receipt.
 
 ## [0.9.0-alpha] - 2026-07-31
 

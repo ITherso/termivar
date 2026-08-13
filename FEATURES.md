@@ -23,7 +23,7 @@ A compiled module is not necessarily a runtime feature. The [runtime map](docs/i
 | Deterministic decision runtime | Preview | Bounded typed evidence, reasoning, planning, execution, verification, Experience, and continuation in `venom-scanner` |
 | `venom scan` | Preview | Default bounded CLI profile over `StandardWebDecisionRuntime`; text, explain, and historically named `decision-scan/v1` JSON output |
 | `venom decision-scan` | Deprecated | Compatibility alias for `venom scan`; identical command definition and deterministic engine |
-| `venom legacy-scan` | Legacy | Historical mixed-authority pipeline: phases 2–4 share a bounded discovery broker, while phases 1 and 5–9 retain direct I/O outside `StandardWebDecisionRuntime` and `RuntimeBudget`; the whole run is `Unmetered` and requires `legacy-scanner` plus explicit acknowledgement |
+| `venom legacy-scan` | Legacy | Historical mixed-authority pipeline: phases 2–4 share bounded passive discovery and phases 5–9 share a separate bounded active-verification broker; phase one and custom phases may retain direct I/O, so the whole run is `Unmetered`; requires `legacy-scanner` plus explicit acknowledgement |
 | Scanner SDK | Preview | Application-defined phases composed through `ScannerSdk` and a generated starter |
 | HTTP API adapter | Unsupported | Absent by default; opt-in `api-adapter` exposes a command that fails nonzero because no listener is implemented |
 | Proxy adapter | Experimental | Absent by default; opt-in `proxy-adapter` is a fixed-upstream TCP relay only, with no `CONNECT`, TLS termination, certificate generation, or HTTP inspection |
@@ -36,7 +36,9 @@ A compiled module is not necessarily a runtime feature. The [runtime map](docs/i
 | Plugin starter | Preview | `cargo-generate` template under `templates/venom-plugin`, rendered and tested in CI |
 | Lua execution | Preview | Opt-in, host-owned script surface; not part of either CLI scan runtime |
 | Legacy discovery phases | Legacy | Crawler, opt-in directory discovery, and parameter discovery share exact-origin redirect-disabled request/time/body limits and atomic typed state; their `INFO` records project as `Unknown`, not findings |
-| Other legacy phases | Legacy | Recon, SQLi, XSS, SSTI, LFI/XXE, and SSRF heuristics retain raw direct I/O; directory discovery is a second explicit opt-in within the ordered runner |
+| Legacy verification phases | Legacy | Phases 5–9 share separate exact-origin, bodyless, redirect- and retry-disabled request/time/body limits accounted at the `Active` stage; this authority is not the standard runtime's `RuntimeBudget` |
+| Legacy verification claims | Legacy | Reproduced SQL diagnostics/timing, template arithmetic, and an explicitly configured benign local-file canary may project only knowledge-only `NeedsReview`; exact reflection remains `Unknown`, XXE is inert, and configured SSRF OOB delivery records a receipt without a callback conclusion |
+| Legacy raw client | Legacy | Reconnaissance and host-defined custom phases may use direct I/O; this prevents whole-run request/body accounting even though built-in phases 2–9 use bounded authorities |
 | Anomaly detection | Experimental | Heuristic scoring requires manual validation and is not on a default scan path |
 | Semantic extraction | Preview | Evidence-only, bounded library surface; not automatically composed into either CLI scan command |
 | API predicate vocabulary | Preview | Canonical descriptors, normalized media/path observations, and resource-scope bundles in `venom-core` |

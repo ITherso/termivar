@@ -116,7 +116,7 @@ impl ScanPhase for ReconPhase {
         let mut findings = Vec::new();
 
         // Passive recon: HEAD request to check server headers
-        let target_str = ctx.target.to_string();
+        let target_str = ctx.authorized_target().to_string();
         match ctx.client.head(&target_str).send().await {
             Ok(response) => {
                 ctx.log(format!(

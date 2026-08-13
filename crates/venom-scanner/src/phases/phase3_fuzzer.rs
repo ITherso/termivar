@@ -93,7 +93,7 @@ impl DirectoryFuzzer {
         }
         let mut candidates = BTreeSet::new();
         for word in &self.wordlist {
-            let joined = context.target.join(word)?;
+            let joined = context.authorized_target().join(word)?;
             candidates.insert(context.canonicalize_discovery_url(&joined)?.to_string());
         }
         candidates
@@ -279,7 +279,7 @@ impl DirectoryShape {
         if self.trailing_slash {
             path.push('/');
         }
-        let control = context.target.join(&path)?;
+        let control = context.authorized_target().join(&path)?;
         context.canonicalize_discovery_url(&control)
     }
 }

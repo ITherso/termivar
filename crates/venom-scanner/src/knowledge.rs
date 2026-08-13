@@ -3,11 +3,11 @@
 //! ## Runtime scope
 //!
 //! - **Build:** always/default.
-//! - **Execution:** `ScanContext` constructs and privately owns a `KnowledgeBase`
-//!   on Surface A, but the current legacy phases do not consume it (construction
-//!   is not active use); Surface B actively uses it as deterministic reasoning
-//!   state.
-//! - **Default `venom scan`:** no (constructed but not consumed by the phases).
+//! - **Execution:** Surface B uses the base as deterministic reasoning state.
+//!   Surface A's opt-in legacy runner also records bounded probe receipts and
+//!   verifier-owned manual-review outcomes from phases 5, 7, 8, and 9.
+//! - **Default `venom scan`:** yes, through Surface B; legacy knowledge writes
+//!   require the explicit `legacy-scan` path and its acknowledgement flag.
 //! - **Support:** implemented and tested.
 //!
 //! See `docs/internals/runtime-map.md`.
@@ -29,6 +29,27 @@ use venom_core::{
     KnowledgePredicate, KnowledgeRelation, Ontology, OntologyAxiom, OntologyConcept, OntologyError,
     OntologyRelationType, OntologyStats, OntologyWrite, RelationId, RelationKind, RelationTypeId,
 };
+
+/// Opaque, process-local identity shared by one knowledge base and its snapshots.
+///
+/// The identity is deliberately neither serialized nor exposed publicly. It
+/// prevents a snapshot or verifier receipt produced by one in-memory authority
+/// from being committed to a different authority that happens to contain the
+/// same records and revision counters.
+#[derive(Clone, Default)]
+pub(crate) struct KnowledgeAuthority(Arc<()>);
+
+impl KnowledgeAuthority {
+    pub(crate) fn is_same_as(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl fmt::Debug for KnowledgeAuthority {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("KnowledgeAuthority(<opaque>)")
+    }
+}
 
 /// Hard byte ceiling for one stored knowledge-relation identifier.
 pub const MAX_KNOWLEDGE_RELATION_ID_BYTES: usize = 512;
@@ -101,6 +122,12 @@ impl fmt::Display for KnowledgeRecordKind {
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum KnowledgeBaseError {
+    /// A snapshot or commit token was minted by another knowledge-base instance.
+    SnapshotAuthorityMismatch {
+        /// Subject whose snapshot authority did not match this knowledge base.
+        subject: EntityId,
+    },
+
     /// The identity exists, but its immutable claim or graph identity differs.
     IdentityConflict {
         /// Category of the conflicting record.
@@ -196,6 +223,10 @@ pub enum KnowledgeBaseError {
 impl fmt::Display for KnowledgeBaseError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::SnapshotAuthorityMismatch { subject } => write!(
+                formatter,
+                "knowledge snapshot for {subject} belongs to a different knowledge base"
+            ),
             Self::IdentityConflict { kind, id } => {
                 write!(
                     formatter,
@@ -289,6 +320,7 @@ pub struct KnowledgeBaseStats {
 /// cycle observes the same ontology, evidence, facts, and hypotheses.
 #[derive(Debug, Clone)]
 pub struct KnowledgeSnapshot {
+    authority: KnowledgeAuthority,
     subject: EntityId,
     subject_revision: u64,
     ontology_revision: u64,
@@ -334,8 +366,13 @@ impl KnowledgeSnapshot {
         &self.ontology
     }
 
+    pub(crate) fn authority(&self) -> &KnowledgeAuthority {
+        &self.authority
+    }
+
     pub(crate) fn with_evidence_correlation(&self, correlation_id: &str) -> Self {
         Self {
+            authority: self.authority.clone(),
             subject: self.subject.clone(),
             subject_revision: self.subject_revision,
             ontology_revision: self.ontology_revision,
@@ -430,6 +467,7 @@ struct KnowledgeState {
 /// ```
 #[derive(Debug, Clone, Default)]
 pub struct KnowledgeBase {
+    authority: KnowledgeAuthority,
     state: Arc<RwLock<KnowledgeState>>,
 }
 
@@ -812,6 +850,9 @@ impl KnowledgeBase {
         preserve_terminal_state: bool,
         expected_snapshot: Option<&KnowledgeSnapshot>,
     ) -> Result<Vec<KnowledgeWrite>, KnowledgeBaseError> {
+        if let Some(snapshot) = expected_snapshot {
+            self.validate_snapshot_authority(snapshot.authority(), snapshot.subject())?;
+        }
         let mut state = self.write_state();
         if let Some(snapshot) = expected_snapshot {
             let actual_subject_revision = subject_revision(&state, snapshot.subject());
@@ -1150,6 +1191,7 @@ impl KnowledgeBase {
     pub fn snapshot_for_subject(&self, subject: &EntityId) -> KnowledgeSnapshot {
         let state = self.read_state();
         KnowledgeSnapshot {
+            authority: self.authority.clone(),
             subject: subject.clone(),
             subject_revision: subject_revision(&state, subject),
             ontology_revision: state.ontology_revision,
@@ -1179,6 +1221,21 @@ impl KnowledgeBase {
         )
     }
 
+    /// Rejects a snapshot token minted by a different in-memory knowledge base.
+    pub(crate) fn validate_snapshot_authority(
+        &self,
+        authority: &KnowledgeAuthority,
+        subject: &EntityId,
+    ) -> Result<(), KnowledgeBaseError> {
+        if self.authority.is_same_as(authority) {
+            Ok(())
+        } else {
+            Err(KnowledgeBaseError::SnapshotAuthorityMismatch {
+                subject: subject.clone(),
+            })
+        }
+    }
+
     /// Runs a short external commit only while a snapshot remains current.
     ///
     /// The read lock stays held for the callback, preventing knowledge writers
@@ -1191,6 +1248,7 @@ impl KnowledgeBase {
         snapshot: &KnowledgeSnapshot,
         commit: impl FnOnce() -> T,
     ) -> Result<T, KnowledgeBaseError> {
+        self.validate_snapshot_authority(snapshot.authority(), snapshot.subject())?;
         let state = self.read_state();
         validate_revisions(
             &state,

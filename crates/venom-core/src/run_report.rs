@@ -60,6 +60,10 @@ pub enum RunReportError {
     /// Two executable steps declared the same host-visible identity.
     #[error("registered step identities must be unique")]
     DuplicateStepIdentity,
+    /// A mutable host view no longer matched the immutable authority captured
+    /// for this run before execution.
+    #[error("run authority no longer matches its captured execution scope")]
+    RunAuthorityMismatch,
     /// An outcome fingerprint was malformed or duplicated.
     #[error("invalid or duplicate outcome fingerprint")]
     InvalidFingerprint,

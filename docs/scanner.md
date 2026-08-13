@@ -11,7 +11,9 @@ Default builds expose `venom scan`, which composes `StandardWebDecisionRuntime` 
 The ordered runner, scanner SDK, context, and phases require the non-default
 `legacy-scanner` feature. The CLI exposes them only as `legacy-scan`, and only
 after `--acknowledge-legacy-heuristics`. It registers reconnaissance, crawling,
-parameter discovery, SQL injection, XSS, SSTI, LFI/XXE, and SSRF phases;
+parameter discovery, SQL-behavior observation, reflection observation,
+template-arithmetic observation, an inert-by-default file-canary/XXE phase, and
+an inert-by-default OOB delivery phase;
 `DirectoryFuzzer` requires the additional `--legacy-directory-fuzz` opt-in.
 
 This is currently a mixed-authority pipeline:
@@ -33,15 +35,35 @@ This is currently a mixed-authority pipeline:
   Both produce `INFO` observations, not vulnerability conclusions.
 - Discovery endpoints, visits, and forms are staged and committed atomically;
   a failed or budget-exhausted batch does not publish partial state.
-- Reconnaissance and phases five through nine still use the raw legacy client
-  outside `StandardWebDecisionRuntime` and `RuntimeBudget`. Consequently the
-  complete ordered run is reported as `Unmetered` even though its discovery
-  slice is bounded.
+- Phases five through nine share a second context-owned exact-origin broker.
+  `VerificationLimits` configures its finite request, per-request-timeout,
+  wall-time, cumulative-body, and per-response-body ceilings. Requests are
+  bodyless, redirects and retries are disabled, and broker accounting uses the
+  `Active` stage. The default shared request ceiling is 96; phase-local
+  ceilings (20/18/16/16/16) prevent one built-in phase from consuming the full
+  envelope. This is a separate migration authority, not the standard runtime's
+  `RuntimeBudget`.
+- Reproduced SQL diagnostics and robust timing differentials, exact replayed
+  template arithmetic, and an SDK host's explicitly configured benign
+  local-file canary may project only verifier-owned, knowledge-only
+  `NeedsReview`. Exact nonce reflection remains `Unknown` because there is no
+  browser-execution verifier. The default phase-eight path dispatches neither
+  LFI nor XXE probes; an OOB string does not enable XXE. Phase nine is inert by
+  default, and explicit OOB delivery records a nonce-bearing request receipt,
+  not callback evidence. No cloud-metadata or sensitive-file destination is a
+  default probe.
+- Reconnaissance and host-defined custom phases can still use the raw legacy
+  client outside both bounded authorities and `RuntimeBudget`. Consequently the
+  complete ordered run is reported as `Unmetered` even though built-in phases
+  two through nine have scoped limits.
 
-The CLI emits typed completion state, suppresses phase prose/evidence, and
-projects compatibility records only as informational `Unknown` observations.
-See the [runtime map](internals/runtime-map.md) and
-[ADR 0016](adr/0016-bound-legacy-discovery-authority.md).
+The CLI emits typed completion state and suppresses phase prose/evidence. Raw
+compatibility records project only as informational `Unknown` observations;
+the allowlisted phase-five, phase-seven, and opt-in phase-eight bridge can
+instead publish the verifier-scoped `NeedsReview` outcomes described above.
+See the [runtime map](internals/runtime-map.md),
+[ADR 0016](adr/0016-bound-legacy-discovery-authority.md), and
+[ADR 0018](adr/0018-bound-legacy-verification-authority.md).
 
 Each phase implements:
 
@@ -59,7 +81,7 @@ pub trait ScanPhase: Send + Sync {
 | Feature | Purpose | Maturity |
 | --- | --- | --- |
 | `scanning` | Deterministic evidence, reasoning, planning, execution, verification, and bounded runtime | Preview |
-| `legacy-scanner` | Historical ordered runner, context, phases, and Scanner SDK; bounded discovery phases within an otherwise unmetered run | Legacy |
+| `legacy-scanner` | Historical ordered runner, context, phases, and Scanner SDK; separate bounded discovery and active-verification slices within an otherwise unmetered run | Legacy |
 | `detection` | Advanced and anomaly detection | Experimental |
 | `plugins` | Native plugin registry and Lua engine | Preview |
 | `distributed` | Queues, workers, and aggregation | Experimental |
@@ -77,10 +99,13 @@ by the default command. See the [runtime map](internals/runtime-map.md).
 ## Adding a phase
 
 1. Implement `ScanPhase` in `src/phases/`.
-2. Keep transport and CLI types out of the implementation.
+2. Keep CLI types out of the implementation. A built-in phase must use its
+   assigned context-owned transport authority; an external custom phase that
+   uses the compatibility client keeps the whole run explicitly `Unmetered`.
 3. Return internal compatibility records; do not render or claim findings in
-   the phase. The typed SDK boundary projects these records only as unresolved
-   observations.
+   the phase. The typed SDK boundary projects raw records only as unresolved
+   observations. New verifier-backed projections require an explicit,
+   allowlisted case and claim policy rather than a severity string.
 4. Cover network failures, cancellation, and false-positive boundaries.
 5. Register the phase in the composition root only after its ordering is explicit.
 

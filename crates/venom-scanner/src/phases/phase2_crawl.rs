@@ -151,7 +151,7 @@ async fn crawl_with_broker(
     ctx: &ScanContext,
     policy: CrawlPolicy,
 ) -> Result<CrawlDiscovery, ScannerError> {
-    let root = ctx.canonicalize_discovery_url(&ctx.target)?;
+    let root = ctx.canonicalize_discovery_url(ctx.authorized_target())?;
     let visited_before_crawl = ctx.discovery_snapshot().visited().clone();
     let mut discovery = CrawlDiscovery::default();
     discovery.register_endpoint(&root);

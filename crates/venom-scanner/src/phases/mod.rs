@@ -4,9 +4,11 @@
 //!
 //! - **Build:** non-default `legacy-scanner` feature.
 //! - **Execution:** Surface A — the mixed-authority ordered sequence composed
-//!   for `venom legacy-scan`. Phases 2–4 use a separate bounded discovery
-//!   authority; phases 1 and 5–9 retain direct I/O, so the complete run remains
-//!   outside `StandardWebDecisionRuntime` and reports `Unmetered` accounting.
+//!   for `venom legacy-scan`. Phases 2–4 use a bounded passive discovery
+//!   authority and phases 5–9 use a separate bounded active-verification
+//!   authority. Phase 1 and custom extensions may retain direct I/O, so the
+//!   complete run remains outside `StandardWebDecisionRuntime` and reports
+//!   `Unmetered` accounting.
 //! - **Default `venom scan`:** no. Within `legacy-scan`, `DirectoryFuzzer` is
 //!   conditional on `--legacy-directory-fuzz`.
 //! - **Support:** legacy alpha.

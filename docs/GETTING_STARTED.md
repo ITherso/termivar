@@ -97,13 +97,20 @@ informational observations, not vulnerability confirmation.
 
 Wordlist-based directory discovery is still off within this opt-in runtime. The
 additional `--legacy-directory-fuzz` option enables it; use it only when target
-authorization and expected load are clear. Reconnaissance and phases five
-through nine still perform direct network I/O outside
-`StandardWebDecisionRuntime` and `RuntimeBudget`, so the CLI reports the whole
-run as `Unmetered`, prints that warning before execution, and renders only a
-claim-safe observation summary. Untyped phase prose and evidence details are
-withheld pending verifier migration. See
-[ADR 0016](adr/0016-bound-legacy-discovery-authority.md).
+authorization and expected load are clear. Phases five through nine use a
+second exact-origin, redirect- and retry-disabled authority with finite
+`VerificationLimits`. Reproduced SQL behavior and template arithmetic can
+project only knowledge-only `NeedsReview`; exact reflection remains `Unknown`.
+The CLI's phase-eight and phase-nine defaults are inert. SDK hosts can opt into
+a benign local-file canary or OOB URL delivery, but XXE remains disabled and a
+probe response is not callback evidence.
+
+Phase one and custom extensions can still perform direct network I/O outside
+both scoped authorities and `RuntimeBudget`, so the CLI reports the whole run
+as `Unmetered` and prints that warning before execution. Raw phase prose and
+evidence details are withheld at the public boundary. See
+[ADR 0016](adr/0016-bound-legacy-discovery-authority.md) and
+[ADR 0018](adr/0018-bound-legacy-verification-authority.md).
 
 `scan` and its `decision-scan` alias are the same deterministic engine. `legacy-scan` is a different engine; its results, accounting, and claim semantics must not be compared as though it were an output mode of `scan`.
 

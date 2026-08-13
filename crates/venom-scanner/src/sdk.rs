@@ -2,7 +2,10 @@
 //!
 //! The SDK returns the shared typed [`RunReport`]
 //! contract. Raw phase telemetry and `ScanFinding` strings do not cross this
-//! host boundary.
+//! host boundary. Built-in phases 2–4 and 5–9 receive separate finite
+//! discovery and active-verification envelopes. Phase 1 or a custom phase may
+//! still use the compatibility client, so whole-run request/body accounting is
+//! `Unmetered`.
 
 use std::{sync::Arc, time::Duration};
 
@@ -11,13 +14,20 @@ use tokio_util::sync::CancellationToken;
 use url::Url;
 use venom_core::RunReport;
 
-use crate::{DiscoveryLimits, EventBus, Result, ScanContext, ScanPhase, ScanRunner};
+use crate::{
+    DiscoveryLimits, EventBus, Result, ScanContext, ScanPhase, ScanRunner, VerificationLimits,
+};
 
-/// Reusable scanner assembled from application-defined [`ScanPhase`] values.
+/// Reusable legacy scanner assembled from application-defined [`ScanPhase`]
+/// values.
+///
+/// Custom phases can use the raw compatibility client and therefore cannot
+/// inherit the bounded-accounting claim of either built-in transport slice.
 pub struct ScannerSdk {
     runner: ScanRunner,
     client: Client,
     discovery_limits: DiscoveryLimits,
+    verification_limits: VerificationLimits,
     phase_timeout_secs: u64,
     event_bus: Arc<EventBus>,
 }
@@ -51,7 +61,8 @@ impl ScannerSdk {
             cancellation,
             Arc::clone(&self.event_bus),
         )
-        .with_pre_execution_discovery_limits(self.discovery_limits);
+        .with_pre_execution_discovery_limits(self.discovery_limits)
+        .with_pre_execution_verification_limits(self.verification_limits);
         Ok(self.runner.run_pipeline(context).await?)
     }
 
@@ -66,6 +77,7 @@ pub struct ScannerBuilder {
     phases: Vec<Box<dyn ScanPhase>>,
     client: Client,
     discovery_limits: DiscoveryLimits,
+    verification_limits: VerificationLimits,
     phase_timeout_secs: u64,
     event_bus: Arc<EventBus>,
 }
@@ -77,6 +89,7 @@ impl ScannerBuilder {
             phases: Vec::new(),
             client: Client::new(),
             discovery_limits: DiscoveryLimits::default(),
+            verification_limits: VerificationLimits::default(),
             phase_timeout_secs: 300,
             event_bus: Arc::new(EventBus::new()),
         }
@@ -97,9 +110,9 @@ impl ScannerBuilder {
         self
     }
 
-    /// Replaces the raw HTTP client used by unmigrated and custom legacy
-    /// phases. Built-in discovery phases 2–4 always use their isolated,
-    /// redirect-disabled discovery authority instead.
+    /// Replaces the raw HTTP client used by phase one and custom legacy
+    /// phases. Built-in phases two through nine use isolated, bounded,
+    /// redirect-disabled authorities instead.
     pub fn client(mut self, client: Client) -> Self {
         self.client = client;
         self
@@ -109,6 +122,13 @@ impl ScannerBuilder {
     /// phases 2–4.
     pub fn discovery_limits(mut self, limits: DiscoveryLimits) -> Self {
         self.discovery_limits = limits;
+        self
+    }
+
+    /// Replaces the finite exact-origin envelope shared by built-in legacy
+    /// verification phases five through nine.
+    pub fn verification_limits(mut self, limits: VerificationLimits) -> Self {
+        self.verification_limits = limits;
         self
     }
 
@@ -134,6 +154,7 @@ impl ScannerBuilder {
             runner,
             client: self.client,
             discovery_limits: self.discovery_limits,
+            verification_limits: self.verification_limits,
             phase_timeout_secs: self.phase_timeout_secs,
             event_bus: self.event_bus,
         }
@@ -197,5 +218,13 @@ mod tests {
         let scanner = ScannerSdk::builder().discovery_limits(limits).build();
 
         assert_eq!(scanner.discovery_limits.max_requests(), 7);
+    }
+
+    #[test]
+    fn builder_retains_explicit_verification_limits() {
+        let limits = VerificationLimits::new().with_max_requests(11).unwrap();
+        let scanner = ScannerSdk::builder().verification_limits(limits).build();
+
+        assert_eq!(scanner.verification_limits.max_requests(), 11);
     }
 }

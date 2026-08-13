@@ -218,7 +218,9 @@ pub use knowledge::{
     MAX_KNOWLEDGE_RELATION_KIND_BYTES,
 };
 #[cfg(feature = "legacy-scanner")]
-pub use legacy_discovery::{DiscoveryForm, DiscoveryFormMethod, DiscoveryLimits};
+pub use legacy_discovery::{
+    DiscoveryForm, DiscoveryFormMethod, DiscoveryLimits, VerificationLimits,
+};
 pub use logging::{LogEntry, LogLevel, Logger};
 pub use metrics::{MetricsCollector, MetricsSummary, PhaseMetrics};
 pub use payload_strategies::{

@@ -15,16 +15,17 @@ each phase that remains eligible, the runner:
 3. publishes `PhaseStarted`;
 4. races `ScanPhase::execute` against cancellation and the configured timeout;
 5. publishes `PhaseCompleted` or `PhaseFailed`;
-6. converts successful raw phase records into zero-confidence, `Unknown`
-   outcome records with no fabricated evidence identity;
+6. accepts new allowlisted verifier-owned `NeedsReview` outcomes after a normal
+   phase completion, otherwise converts successful raw phase records into a
+   zero-confidence `Unknown` aggregate with no fabricated evidence identity;
 7. records one typed step status for every registered phase.
 
 Ordinary phase errors, panics while polling phase execution, and timeouts do not
 stop later phases, but they make the run `Partial` or `Failed`; they can no
-longer become an empty successful result. A typed discovery
-`BudgetExhausted` step stops the dependent remainder of the ordered pipeline
-and records those later phases as `Skipped`, preventing unbounded legacy work
-from continuing after the shared discovery authority is depleted.
+longer become an empty successful result. A typed `BudgetExhausted` step from
+either bounded legacy authority stops the dependent remainder of the ordered
+pipeline and records those later phases as `Skipped`, preventing other legacy
+work from continuing after that authority is depleted.
 Cancellation stops the loop. The active `ScanPhase::execute` future is dropped
 before the runner returns, and later phases are represented as `Skipped`.
 Dropping the caller's `run_pipeline` future follows the same structurally owned
@@ -52,17 +53,27 @@ returns the shared `venom_core::RunReport` contract.
 - Duplicate phase numbers are ordered by the stable phase name. Two
   implementations with the same number and name are rejected before any phase
   event, state mutation, or I/O so report identity cannot depend on insertion order.
-- Discovery phases two through four share a separate bounded HTTP authority;
-  custom phases and phases one and five through nine can still perform raw
-  direct I/O. Whole-run request and body-byte accounting is therefore
-  `Unmetered`, never a fabricated zero; elapsed wall time is recorded only as
-  observed.
+- Discovery phases two through four share a bounded passive HTTP authority;
+  phases five through nine share a distinct bounded authority accounted at the
+  `Active` stage. Both enforce exact-origin, bodyless, redirect-disabled
+  transport with separate request/time/body envelopes. Phase one and custom
+  phases can still perform raw direct I/O. Whole-run request and body-byte
+  accounting is therefore `Unmetered`, never a fabricated zero; elapsed wall
+  time is recorded only as observed.
 - Raw phase descriptions, claimed severity, and evidence do not cross the
   public report boundary. The report retains a stable fingerprint, trusted
   phase action identity, an informational/unassessed severity, fixed rationale,
   and a bounded redacted summary. A non-informational impact rating requires a
   separate verifier-backed projection policy; an action `Success` alone is not
   enough.
+- Corrected built-in phases have a narrower typed seam. The context accepts
+  only allowlisted SQL-behavior, template-arithmetic, and local-file-canary
+  reports that are active, case-correlated, knowledge-only, origin-scoped, and
+  `NeedsReview`. The runner checkpoints that ledger per phase, publishes it
+  only after normal completion, suppresses a duplicate raw aggregate, and
+  rolls the ledger slice back on error, panic, timeout, cancellation, or
+  transport-budget exhaustion. XSS reflection has no such verifier and remains
+  `Unknown`; SSRF probe receipts remain knowledge evidence without an outcome.
 - Panic isolation catches panics that unwind while polling `ScanPhase::execute`;
   it is not
   a process-crash boundary and cannot recover from `panic = "abort"` or from
