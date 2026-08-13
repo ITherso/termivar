@@ -12,7 +12,7 @@
 //! Comprehensive REST API for scan management, reporting, and control.
 //! Supports JSON requests/responses, error handling, and real-time updates.
 
-use crate::contracts::ScanFinding;
+use crate::ScanFinding;
 use serde::{Deserialize, Serialize};
 
 /// API Request to start a new scan

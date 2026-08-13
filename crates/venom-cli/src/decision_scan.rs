@@ -1,14 +1,14 @@
-//! CLI adapter for the `venom decision-scan` preview command.
+//! CLI adapter for the canonical `venom scan` deterministic runtime.
 //!
 //! ## Runtime scope
 //!
 //! - **Build:** `venom-cli` binary crate.
-//! - **Execution:** explicit Surface B preview entry point — composes the existing
-//!   `StandardWebDecisionRuntime` with a `RuntimeBudget`. Does not touch the legacy
-//!   `venom scan` Surface A pipeline.
-//! - **Default `venom scan`:** no.
-//! - **Support:** preview of an implemented-and-tested runtime; not the default
-//!   scanner and not a new scanning capability.
+//! - **Execution:** default Surface B entry point — composes the existing
+//!   `StandardWebDecisionRuntime` with a `RuntimeBudget`. The deprecated
+//!   `decision-scan` spelling aliases this same command; the historical phase
+//!   pipeline is feature-gated as `legacy-scan`.
+//! - **Default `venom scan`:** yes.
+//! - **Support:** alpha implementation with bounded, tested runtime policy.
 //!
 //! See `docs/internals/runtime-map.md`.
 //!
@@ -532,7 +532,7 @@ fn dimension_code(dimension: RuntimeBudgetDimension) -> &'static str {
 /// outcomes, and a bounded terminal state.
 pub(crate) fn render_summary(summary: &DecisionScanSummary) -> String {
     let mut out = String::new();
-    out.push_str("== decision-scan (preview) ==\n");
+    out.push_str("== scan (deterministic alpha) ==\n");
     out.push_str("engine: decision-preview\n");
     out.push_str(&format!("target origin: {}\n", summary.target));
     out.push_str(&format!(

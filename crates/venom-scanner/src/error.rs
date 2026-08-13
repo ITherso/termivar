@@ -2,11 +2,10 @@
 //!
 //! ## Runtime scope
 //!
-//! - **Build:** always/default.
-//! - **Execution:** shared runtime support used by Surface A and/or Surface B
-//!   (`ScanPhase::execute` returns this crate's `Result`).
-//! - **Default `venom scan`:** yes, as shared runtime support; not an independent execution stage.
-//! - **Support:** implemented.
+//! - **Build:** non-default `legacy-scanner` feature.
+//! - **Execution:** Surface A error contract used by historical scan phases.
+//! - **Default `venom scan`:** no.
+//! - **Support:** legacy alpha.
 //!
 //! See `docs/internals/runtime-map.md`.
 //!

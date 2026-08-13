@@ -1,29 +1,32 @@
-//! Process-level command-line composition for Venom's scanner, API, and proxy adapters.
+//! Process-level command-line composition for Venom's scanner and optional
+//! adapters.
 //!
 //! ## Runtime scope
 //!
 //! - **Build:** `venom-cli` binary crate.
-//! - **Execution:** hosts four commands — `scan` runs Surface A (legacy phase
-//!   pipeline), `decision-scan` is an explicit Surface B preview of the
-//!   deterministic `StandardWebDecisionRuntime`, while `api` and `proxy` are
-//!   separate explicit adapter commands (none of them share the scan pipeline).
-//! - **Default `venom scan`:** yes for the `scan` command; `decision-scan`,
-//!   `api`, and `proxy` are separate.
-//! - **Support:** `scan` is legacy alpha; `decision-scan` previews an
-//!   implemented-and-tested runtime (not the default scanner); the `api` listener
-//!   is unsupported and the `proxy` is an experimental TCP relay (see their crates).
+//! - **Execution:** `scan` runs the bounded deterministic
+//!   `StandardWebDecisionRuntime`. `decision-scan` is a deprecated compatibility
+//!   alias to that same command definition and implementation.
+//! - **Optional surfaces:** the historical direct-I/O runner is available only
+//!   as `legacy-scan` under `legacy-scanner`; unsupported API and experimental
+//!   proxy adapters are separately feature-gated.
+//! - **Support:** all surfaces remain alpha. The default runtime emits
+//!   operational decisions and verifier outcomes, not vulnerability findings.
 //!
 //! See `docs/internals/runtime-map.md`.
 
 mod decision_scan;
 
 use clap::{Parser, Subcommand, ValueEnum};
+use std::ffi::OsStr;
 use url::Url;
+#[cfg(feature = "proxy-adapter")]
 use venom_proxy::ProxyServer;
+#[cfg(feature = "legacy-scanner")]
 use venom_scanner::{phases, ScanContext, ScanRunner};
 
-/// Output format for `decision-scan`. `text` is the default human-readable report;
-/// `json` is the versioned machine-readable `decision-scan/v1` document.
+/// Output format for deterministic `scan`. `text` is the default human-readable
+/// report; `json` preserves the versioned `decision-scan/v1` wire document.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
 #[value(rename_all = "lowercase")]
 enum OutputFormat {
@@ -34,14 +37,18 @@ enum OutputFormat {
 /// True when `--format json` is combined with `--explain` — an ambiguous
 /// combination rejected fail-fast, because the JSON document already carries the
 /// full diagnostics `--explain` adds to the text report.
-fn decision_scan_flags_conflict(format: OutputFormat, explain: bool) -> bool {
+fn scan_flags_conflict(format: OutputFormat, explain: bool) -> bool {
     matches!(format, OutputFormat::Json) && explain
 }
 
+#[cfg(feature = "legacy-scanner")]
 const LEGACY_DIRECTORY_FUZZ_WARNING: &str = "[WARNING] Legacy directory fuzzing is enabled. This brute-force phase uses direct network I/O outside RuntimeBudget; run it only against explicitly authorized targets.";
+#[cfg(feature = "legacy-scanner")]
 const LEGACY_SCAN_RUNTIME_WARNING: &str = "[WARNING] The ordered CLI phase pipeline is legacy direct I/O outside StandardWebDecisionRuntime and RuntimeBudget. Use it only against an explicitly authorized exact origin.";
-const DECISION_SCAN_PREVIEW_WARNING: &str = "[PREVIEW] Running the deterministic decision runtime. This is not the default `venom scan` engine. Use only against an exact origin you own or are explicitly authorized to test.";
+const DETERMINISTIC_SCAN_WARNING: &str = "[ALPHA] Running the bounded deterministic decision runtime. Use only against an exact origin you own or are explicitly authorized to test.";
+const DECISION_SCAN_ALIAS_WARNING: &str = "[DEPRECATED] `decision-scan` is a compatibility alias; use `venom scan`. Both names run the same deterministic engine.";
 
+#[cfg(feature = "legacy-scanner")]
 fn scan_http_client() -> Result<reqwest::Client, reqwest::Error> {
     reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
@@ -50,7 +57,7 @@ fn scan_http_client() -> Result<reqwest::Client, reqwest::Error> {
 
 #[derive(Parser)]
 #[command(name = "venom")]
-#[command(about = "Venom - modular web security testing framework", long_about = None)]
+#[command(about = "Venom - bounded evidence-driven web security runtime", long_about = None)]
 #[command(version)]
 struct Cli {
     #[command(subcommand)]
@@ -59,18 +66,9 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Start the scanning engine
+    /// Run the bounded deterministic scanner against an authorized origin.
+    #[command(visible_alias = "decision-scan")]
     Scan {
-        target: String,
-        /// Opt in to the legacy wordlist-based directory brute-force phase.
-        #[arg(long)]
-        legacy_directory_fuzz: bool,
-    },
-    /// Preview the deterministic decision runtime against an authorized origin.
-    ///
-    /// This is not the default `venom scan` engine; it exposes the existing
-    /// StandardWebDecisionRuntime through a bounded, conservative profile.
-    DecisionScan {
         /// Authorized HTTP(S) target origin. Only scan targets you own or may test.
         target: Url,
         /// Output format. `text` (default) is the human-readable report; `json` is
@@ -84,120 +82,157 @@ enum Commands {
         #[arg(long)]
         explain: bool,
     },
-    /// Start the API server
+    /// Run the historical direct-I/O heuristic pipeline.
+    #[cfg(feature = "legacy-scanner")]
+    LegacyScan {
+        /// Authorized HTTP(S) target origin. Only scan targets you own or may test.
+        target: Url,
+        /// Required acknowledgement that results are partial heuristic
+        /// observations, not verifier-backed vulnerability confirmations.
+        #[arg(long, required = true)]
+        acknowledge_legacy_heuristics: bool,
+        /// Opt in to the legacy wordlist-based directory brute-force phase.
+        #[arg(long)]
+        legacy_directory_fuzz: bool,
+    },
+    /// Report that the unsupported API listener adapter is unavailable.
+    #[cfg(feature = "api-adapter")]
     Api {
         #[arg(long, default_value = "127.0.0.1:8080")]
-        addr: String,
+        addr: std::net::SocketAddr,
     },
-    /// Start the proxy server
+    /// Start the experimental fixed-upstream TCP relay.
+    #[cfg(feature = "proxy-adapter")]
     Proxy {
         #[arg(long, default_value = "127.0.0.1:8081")]
-        addr: String,
+        addr: std::net::SocketAddr,
     },
+}
+
+async fn run_deterministic_scan(
+    target: Url,
+    format: OutputFormat,
+    explain: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if scan_flags_conflict(format, explain) {
+        use clap::CommandFactory;
+        Cli::command()
+            .error(
+                clap::error::ErrorKind::ArgumentConflict,
+                "`--explain` applies only to `--format text`; `--format json` already includes full diagnostics",
+            )
+            .exit();
+    }
+
+    eprintln!("{DETERMINISTIC_SCAN_WARNING}");
+    let summary = decision_scan::run_decision_scan(target).await?;
+    match format {
+        OutputFormat::Text => {
+            let rendered = if explain {
+                decision_scan::render_explain(&summary)
+            } else {
+                decision_scan::render_summary(&summary)
+            };
+            print!("{rendered}");
+        },
+        OutputFormat::Json => {
+            println!("{}", decision_scan::render_json(&summary)?);
+        },
+    }
+    Ok(())
+}
+
+#[cfg(feature = "legacy-scanner")]
+async fn run_legacy_scan(
+    target: Url,
+    acknowledge_legacy_heuristics: bool,
+    legacy_directory_fuzz: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if !acknowledge_legacy_heuristics {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "legacy-scan requires --acknowledge-legacy-heuristics",
+        )
+        .into());
+    }
+
+    eprintln!("{LEGACY_SCAN_RUNTIME_WARNING}");
+    let client = scan_http_client()?;
+    // The legacy phases emit untyped prose, including claims that have not
+    // passed verifier policy. Drain it at the producer boundary by dropping the
+    // receiver; the CLI intentionally renders only a claim-safe summary until
+    // Phase 2 replaces this boundary with typed completion data.
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    drop(rx);
+    let ctx = ScanContext::new(target, client, tx);
+
+    let mut runner = ScanRunner::new();
+    runner.register_phase(Box::new(phases::ReconPhase));
+    runner.register_phase(Box::new(phases::CrawlPhase));
+    if legacy_directory_fuzz {
+        eprintln!("{LEGACY_DIRECTORY_FUZZ_WARNING}");
+        runner.register_phase(Box::new(phases::DirectoryFuzzer::with_default_wordlist(20)));
+    }
+    runner.register_phase(Box::new(
+        phases::ParameterDiscoverer::with_default_wordlist(20),
+    ));
+    runner.register_phase(Box::new(phases::SqliScanner));
+    runner.register_phase(Box::new(phases::XssScanner));
+    runner.register_phase(Box::new(phases::SstiScanner));
+    runner.register_phase(Box::new(phases::LfiXxeScanner::new()));
+    runner.register_phase(Box::new(phases::SsrfScanner::new()));
+
+    let observations = tokio::spawn(async move { runner.run_pipeline(ctx).await }).await?;
+    println!(
+        "\n[*] Legacy scan returned {} partial heuristic observations.",
+        observations.len()
+    );
+    println!(
+        "[*] Phase failures are not represented by this alpha summary; coverage may be incomplete."
+    );
+    println!("[*] These observations are not verifier-backed vulnerability confirmations.");
+    for (index, observation) in observations.iter().enumerate() {
+        println!(
+            "\n[HEURISTIC {}] source={} details=suppressed-pending-verifier-migration",
+            index + 1,
+            observation.module_name
+        );
+    }
+    Ok(())
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let used_decision_scan_alias =
+        std::env::args_os().nth(1).as_deref() == Some(OsStr::new("decision-scan"));
     let cli = Cli::parse();
 
     match cli.command {
         Some(Commands::Scan {
             target,
-            legacy_directory_fuzz,
-        }) => {
-            eprintln!("{LEGACY_SCAN_RUNTIME_WARNING}");
-            let target_url = Url::parse(&target)?;
-            let client = scan_http_client()?;
-            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-
-            let ctx = ScanContext::new(target_url, client, tx);
-
-            let mut runner = ScanRunner::new();
-            runner.register_phase(Box::new(phases::ReconPhase));
-            runner.register_phase(Box::new(phases::CrawlPhase));
-            if legacy_directory_fuzz {
-                eprintln!("{LEGACY_DIRECTORY_FUZZ_WARNING}");
-                runner.register_phase(Box::new(phases::DirectoryFuzzer::with_default_wordlist(20)));
-            }
-            runner.register_phase(Box::new(
-                phases::ParameterDiscoverer::with_default_wordlist(20),
-            ));
-            runner.register_phase(Box::new(phases::SqliScanner));
-            runner.register_phase(Box::new(phases::XssScanner));
-            runner.register_phase(Box::new(phases::SstiScanner));
-            runner.register_phase(Box::new(phases::LfiXxeScanner::new()));
-            runner.register_phase(Box::new(phases::SsrfScanner::new()));
-
-            let scan_task = tokio::spawn(async move { runner.run_pipeline(ctx).await });
-
-            let log_task = tokio::spawn(async move {
-                while let Some(msg) = rx.recv().await {
-                    println!("[LOG] {}", msg);
-                }
-            });
-
-            let findings = scan_task.await.unwrap_or_default();
-            println!(
-                "\n[*] Scan completed. Found {} vulnerabilities.",
-                findings.len()
-            );
-
-            for finding in findings {
-                println!(
-                    "\n[{}] {} ({})\n  Description: {}\n  Evidence: {}",
-                    finding.severity,
-                    finding.description,
-                    finding.module_name,
-                    finding.description,
-                    finding.evidence
-                );
-            }
-
-            log_task.abort();
-        },
-        Some(Commands::DecisionScan {
-            target,
             format,
             explain,
         }) => {
-            // `--explain` is a text-only modifier; JSON already carries full
-            // diagnostics. Reject the ambiguous combination fail-fast as a Clap
-            // conflict rather than silently ignoring a flag.
-            if decision_scan_flags_conflict(format, explain) {
-                use clap::CommandFactory;
-                Cli::command()
-                    .error(
-                        clap::error::ErrorKind::ArgumentConflict,
-                        "`--explain` applies only to `--format text`; `--format json` already includes full diagnostics",
-                    )
-                    .exit();
+            if used_decision_scan_alias {
+                eprintln!("{DECISION_SCAN_ALIAS_WARNING}");
             }
-            eprintln!("{DECISION_SCAN_PREVIEW_WARNING}");
-            let summary = decision_scan::run_decision_scan(target).await?;
-            match format {
-                OutputFormat::Text => {
-                    let rendered = if explain {
-                        decision_scan::render_explain(&summary)
-                    } else {
-                        decision_scan::render_summary(&summary)
-                    };
-                    print!("{rendered}");
-                },
-                OutputFormat::Json => {
-                    // JSON to stdout; the preview warning above went to stderr.
-                    println!("{}", decision_scan::render_json(&summary)?);
-                },
-            }
+            run_deterministic_scan(target, format, explain).await?;
         },
+        #[cfg(feature = "legacy-scanner")]
+        Some(Commands::LegacyScan {
+            target,
+            acknowledge_legacy_heuristics,
+            legacy_directory_fuzz,
+        }) => {
+            run_legacy_scan(target, acknowledge_legacy_heuristics, legacy_directory_fuzz).await?;
+        },
+        #[cfg(feature = "api-adapter")]
         Some(Commands::Api { addr }) => {
-            venom_api::start_api(&addr).await?;
+            venom_api::start_api(&addr.to_string()).await?;
         },
+        #[cfg(feature = "proxy-adapter")]
         Some(Commands::Proxy { addr }) => {
-            let parts: Vec<&str> = addr.split(':').collect();
-            if parts.len() == 2 {
-                let proxy = ProxyServer::new(parts[0].to_string(), parts[1].parse()?);
-                proxy.start().await?;
-            }
+            ProxyServer::from_socket_addr(addr).start().await?;
         },
         None => {
             println!("Venom v{}", env!("CARGO_PKG_VERSION"));
@@ -215,43 +250,152 @@ mod tests {
     use tokio::net::TcpListener;
 
     #[test]
-    fn scan_does_not_enable_legacy_directory_fuzz_by_default() {
+    fn scan_selects_the_deterministic_command() {
         let cli = Cli::try_parse_from(["venom", "scan", "https://example.test"]).unwrap();
-
-        assert!(matches!(
-            cli.command,
+        match cli.command {
             Some(Commands::Scan {
-                legacy_directory_fuzz: false,
-                ..
-            })
-        ));
-        assert!(LEGACY_SCAN_RUNTIME_WARNING.contains("outside StandardWebDecisionRuntime"));
-        assert!(LEGACY_SCAN_RUNTIME_WARNING.contains("exact origin"));
+                target,
+                format,
+                explain,
+            }) => {
+                assert_eq!(target.as_str(), "https://example.test/");
+                assert_eq!(format, OutputFormat::Text);
+                assert!(!explain);
+            },
+            _ => panic!("expected the deterministic scan command"),
+        }
+        assert!(DETERMINISTIC_SCAN_WARNING.contains("bounded deterministic"));
     }
 
     #[test]
-    fn scan_accepts_explicit_legacy_directory_fuzz_opt_in() {
+    fn decision_scan_is_an_alias_to_the_same_command_variant() {
+        let cli = Cli::try_parse_from(["venom", "decision-scan", "https://example.test/"]).unwrap();
+        match cli.command {
+            Some(Commands::Scan {
+                target,
+                format,
+                explain,
+            }) => {
+                assert_eq!(target.as_str(), "https://example.test/");
+                assert_eq!(format, OutputFormat::Text, "text is the default format");
+                assert!(
+                    !explain,
+                    "explain must default off so the default output is unchanged"
+                );
+            },
+            _ => panic!("expected the deterministic scan command"),
+        }
+        assert!(DECISION_SCAN_ALIAS_WARNING.contains("compatibility alias"));
+    }
+
+    #[test]
+    fn scan_and_compatibility_alias_accept_the_same_json_format() {
+        let primary =
+            Cli::try_parse_from(["venom", "scan", "--format", "json", "https://example.test/"])
+                .unwrap();
         let cli = Cli::try_parse_from([
             "venom",
-            "scan",
-            "https://example.test",
-            "--legacy-directory-fuzz",
+            "decision-scan",
+            "--format",
+            "json",
+            "https://example.test/",
         ])
         .unwrap();
-
+        assert!(matches!(
+            primary.command,
+            Some(Commands::Scan {
+                format: OutputFormat::Json,
+                ..
+            })
+        ));
         assert!(matches!(
             cli.command,
             Some(Commands::Scan {
+                format: OutputFormat::Json,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn scan_rejects_json_with_explain() {
+        // The combination is ambiguous — JSON already contains full diagnostics —
+        // and is rejected fail-fast.
+        assert!(scan_flags_conflict(OutputFormat::Json, true));
+        assert!(!scan_flags_conflict(OutputFormat::Json, false));
+        assert!(!scan_flags_conflict(OutputFormat::Text, true));
+        assert!(!scan_flags_conflict(OutputFormat::Text, false));
+    }
+
+    #[test]
+    fn scan_accepts_the_explain_flag() {
+        let cli =
+            Cli::try_parse_from(["venom", "scan", "--explain", "https://example.test/"]).unwrap();
+        match cli.command {
+            Some(Commands::Scan { explain, .. }) => {
+                assert!(explain, "--explain must enable the explain view");
+            },
+            _ => panic!("expected the deterministic scan command"),
+        }
+    }
+
+    #[test]
+    fn both_scan_spellings_require_a_target() {
+        assert!(Cli::try_parse_from(["venom", "scan"]).is_err());
+        assert!(Cli::try_parse_from(["venom", "decision-scan"]).is_err());
+    }
+
+    #[test]
+    fn both_scan_spellings_reject_a_malformed_url() {
+        assert!(Cli::try_parse_from(["venom", "scan", "not a url"]).is_err());
+        assert!(Cli::try_parse_from(["venom", "decision-scan", "not a url"]).is_err());
+    }
+
+    #[test]
+    #[cfg(not(feature = "legacy-scanner"))]
+    fn default_cli_has_no_legacy_command() {
+        assert!(Cli::try_parse_from(["venom", "legacy-scan"]).is_err());
+    }
+
+    #[test]
+    #[cfg(not(feature = "api-adapter"))]
+    fn default_cli_has_no_api_command() {
+        assert!(Cli::try_parse_from(["venom", "api"]).is_err());
+    }
+
+    #[test]
+    #[cfg(not(feature = "proxy-adapter"))]
+    fn default_cli_has_no_proxy_command() {
+        assert!(Cli::try_parse_from(["venom", "proxy"]).is_err());
+    }
+
+    #[test]
+    #[cfg(feature = "legacy-scanner")]
+    fn legacy_scan_requires_acknowledgement_and_keeps_directory_fuzz_separate() {
+        assert!(Cli::try_parse_from(["venom", "legacy-scan", "https://example.test"]).is_err());
+        let cli = Cli::try_parse_from([
+            "venom",
+            "legacy-scan",
+            "https://example.test",
+            "--acknowledge-legacy-heuristics",
+            "--legacy-directory-fuzz",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Commands::LegacyScan {
+                acknowledge_legacy_heuristics: true,
                 legacy_directory_fuzz: true,
                 ..
             })
         ));
+        assert!(LEGACY_SCAN_RUNTIME_WARNING.contains("outside StandardWebDecisionRuntime"));
         assert!(LEGACY_DIRECTORY_FUZZ_WARNING.contains("outside RuntimeBudget"));
-        assert!(LEGACY_DIRECTORY_FUZZ_WARNING.contains("explicitly authorized targets"));
     }
 
     #[tokio::test]
-    async fn scan_client_never_follows_cross_origin_redirects() {
+    #[cfg(feature = "legacy-scanner")]
+    async fn legacy_scan_client_never_follows_cross_origin_redirects() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let server = tokio::spawn(async move {
@@ -277,96 +421,26 @@ mod tests {
         server.await.unwrap();
     }
 
-    // --- command selection (legacy command invariance) -----------------------
-
     #[test]
-    fn scan_still_selects_the_legacy_command() {
-        let cli = Cli::try_parse_from(["venom", "scan", "https://example.test"]).unwrap();
-        assert!(matches!(cli.command, Some(Commands::Scan { .. })));
+    #[cfg(feature = "api-adapter")]
+    fn api_adapter_uses_socket_addr_and_accepts_ipv6() {
+        let cli = Cli::try_parse_from(["venom", "api", "--addr", "[::1]:8080"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Api { addr }) if addr == "[::1]:8080".parse().unwrap()
+        ));
+        assert!(Cli::try_parse_from(["venom", "api", "--addr", "invalid"]).is_err());
     }
 
     #[test]
-    fn decision_scan_selects_the_preview_command() {
-        let cli = Cli::try_parse_from(["venom", "decision-scan", "https://example.test/"]).unwrap();
-        match cli.command {
-            Some(Commands::DecisionScan {
-                target,
-                format,
-                explain,
-            }) => {
-                assert_eq!(target.as_str(), "https://example.test/");
-                assert_eq!(format, OutputFormat::Text, "text is the default format");
-                assert!(
-                    !explain,
-                    "explain must default off so the default output is unchanged"
-                );
-            },
-            _ => panic!("expected the decision-scan command"),
-        }
-        assert!(DECISION_SCAN_PREVIEW_WARNING.contains("not the default"));
-    }
-
-    #[test]
-    fn decision_scan_accepts_the_json_format() {
-        let cli = Cli::try_parse_from([
-            "venom",
-            "decision-scan",
-            "--format",
-            "json",
-            "https://example.test/",
-        ])
-        .unwrap();
-        match cli.command {
-            Some(Commands::DecisionScan { format, .. }) => {
-                assert_eq!(format, OutputFormat::Json);
-            },
-            _ => panic!("expected the decision-scan command"),
-        }
-    }
-
-    #[test]
-    fn decision_scan_rejects_json_with_explain() {
-        // The combination is ambiguous — JSON already contains full diagnostics —
-        // and is rejected fail-fast.
-        assert!(decision_scan_flags_conflict(OutputFormat::Json, true));
-        assert!(!decision_scan_flags_conflict(OutputFormat::Json, false));
-        assert!(!decision_scan_flags_conflict(OutputFormat::Text, true));
-        assert!(!decision_scan_flags_conflict(OutputFormat::Text, false));
-    }
-
-    #[test]
-    fn decision_scan_accepts_the_explain_flag() {
-        let cli = Cli::try_parse_from([
-            "venom",
-            "decision-scan",
-            "--explain",
-            "https://example.test/",
-        ])
-        .unwrap();
-        match cli.command {
-            Some(Commands::DecisionScan { explain, .. }) => {
-                assert!(explain, "--explain must enable the explain view");
-            },
-            _ => panic!("expected the decision-scan command"),
-        }
-    }
-
-    #[test]
-    fn decision_scan_requires_a_target() {
-        assert!(Cli::try_parse_from(["venom", "decision-scan"]).is_err());
-    }
-
-    #[test]
-    fn decision_scan_rejects_a_malformed_url() {
-        assert!(Cli::try_parse_from(["venom", "decision-scan", "not a url"]).is_err());
-    }
-
-    #[test]
-    fn api_and_proxy_parsing_remain_unchanged() {
-        let api = Cli::try_parse_from(["venom", "api"]).unwrap();
-        assert!(matches!(api.command, Some(Commands::Api { .. })));
-        let proxy = Cli::try_parse_from(["venom", "proxy"]).unwrap();
-        assert!(matches!(proxy.command, Some(Commands::Proxy { .. })));
+    #[cfg(feature = "proxy-adapter")]
+    fn proxy_adapter_uses_socket_addr_and_accepts_ipv6() {
+        let cli = Cli::try_parse_from(["venom", "proxy", "--addr", "[::1]:8081"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Proxy { addr }) if addr == "[::1]:8081".parse().unwrap()
+        ));
+        assert!(Cli::try_parse_from(["venom", "proxy", "--addr", "invalid"]).is_err());
     }
 
     // --- offline end-to-end preview run --------------------------------------
@@ -612,7 +686,7 @@ mod tests {
         // This PR changes only `--explain`. Pin the exact default `decision-scan`
         // bytes so the default output cannot drift unnoticed.
         let expected = concat!(
-            "== decision-scan (preview) ==\n",
+            "== scan (deterministic alpha) ==\n",
             "engine: decision-preview\n",
             "target origin: https://example.test\n",
             "evidence: 1 bootstrap write(s)\n",

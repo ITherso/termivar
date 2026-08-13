@@ -24,7 +24,6 @@ FROM debian:bookworm-slim AS runtime
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
-    netcat-openbsd \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --gid 1000 venom \
     && useradd --uid 1000 --gid venom --create-home venom
@@ -37,10 +36,5 @@ RUN mkdir -p /app/.venom && chown -R venom:venom /app
 
 USER venom
 
-HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
-    CMD ["nc", "-z", "127.0.0.1", "8080"]
-
-EXPOSE 8080
-
 ENTRYPOINT ["venom"]
-CMD ["proxy", "--addr", "0.0.0.0:8080"]
+CMD ["--help"]

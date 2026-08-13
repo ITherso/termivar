@@ -1,29 +1,13 @@
-//! Composable scanning contracts and execution behavior for Venom.
+//! Deterministic evidence, reasoning, planning, execution, and verification for
+//! Venom's scanner runtime.
 //!
-//! The crate exposes two extension surfaces:
-//!
-//! - [`ScannerSdk`] composes application-defined [`ScanPhase`] values;
-//! - `Plugin` defines the source-level Preview plugin contract when the
-//!   `plugins` feature is enabled.
+//! The default `scanning` feature contains the bounded decision runtime used by
+//! `venom scan`. The historical ordered phase runner and Scanner SDK are
+//! available only through the non-default `legacy-scanner` feature. Native
+//! plugins remain a separate source-level Preview contract under `plugins`.
 //!
 //! [`KnowledgeBase`] separates ontology, instance knowledge, and observations
 //! without coupling evidence producers to decision policy.
-//!
-//! The runner owns ordering, timeouts, cancellation, event publication, and
-//! finding aggregation. Extensions own detection behavior.
-//!
-//! # Scanner SDK
-//!
-//! ```rust,no_run
-//! use venom_scanner::ScannerSdk;
-//!
-//! # async fn run() -> venom_scanner::Result<()> {
-//! let scanner = ScannerSdk::builder().build();
-//! let report = scanner.scan("https://example.test").await?;
-//! assert!(report.findings.is_empty());
-//! # Ok(())
-//! # }
-//! ```
 
 #![deny(rustdoc::broken_intra_doc_links)]
 
@@ -37,9 +21,12 @@ pub mod auth;
 pub mod cache;
 pub mod config;
 pub mod config_loader;
+#[cfg(feature = "legacy-scanner")]
 pub mod context;
+#[cfg(feature = "legacy-scanner")]
 pub mod contracts;
 pub mod defense;
+#[cfg(feature = "legacy-scanner")]
 pub mod error;
 pub mod experience;
 pub mod knowledge;
@@ -61,14 +48,14 @@ pub use semantic::{
     SemanticExtractionLimits, SemanticExtractionResult,
 };
 
-// Scanning engine (feature: scanning)
-#[cfg(feature = "scanning")]
+// Historical ordered scanner (feature: legacy-scanner)
+#[cfg(feature = "legacy-scanner")]
 pub mod phases;
 
-#[cfg(feature = "scanning")]
+#[cfg(feature = "legacy-scanner")]
 pub mod runner;
 
-#[cfg(feature = "scanning")]
+#[cfg(feature = "legacy-scanner")]
 pub mod sdk;
 
 #[cfg(feature = "scanning")]
@@ -195,8 +182,10 @@ pub use auth::{AuthToken, LoginRequest, LoginResponse, User, UserInfo, UserManag
 pub use cache::{CacheEntry, CacheStats, LruCache, ResponseCache};
 pub use config::{ScanConfig, ScanIntensity};
 pub use config_loader::{ConfigLoader, ScanProfile as ScanningProfile};
+#[cfg(feature = "legacy-scanner")]
 pub use context::ScanContext;
-pub use contracts::{ScanFinding, ScanPhase};
+#[cfg(feature = "legacy-scanner")]
+pub use contracts::ScanPhase;
 pub use defense::{
     defense_aware_plan, defense_aware_shadow_plan, DefenseAwareShadowPlan, DefenseFingerprint,
     DefenseInteractionClass, DefenseObservationContext, DefensePlanningPolicy, DefensePosture,
@@ -205,6 +194,7 @@ pub use defense::{
     PlanAdjustment, PostureShift, ResourceDefenseObservation, ResourceDefenseSignal,
     ShadowPlanDelta, SuppressedAction, MAX_FINGERPRINT_BODY_SCAN_BYTES,
 };
+#[cfg(feature = "legacy-scanner")]
 pub use error::{Result, ScannerError};
 pub use event_bus::{Event, EventBuilder, EventBus, EventHandler, EventSeverity, EventType};
 pub use experience::{
@@ -248,7 +238,7 @@ pub use rules::{
 pub use venom_core::{
     ApiSurfaceKind, ApiVisibilityComparison, ApiVisibilityDimension, ApiVisibilityObservation,
     ApiVisibilityPairKind, ApiVisibilityResult, ConfidenceScore, EntityId, Outcome, OutcomeError,
-    OutcomeStatus, VerificationStage,
+    OutcomeStatus, ScanFinding, VerificationStage,
 };
 pub use verification::{
     apply_outcome, ActiveVerifier, PassiveVerifier, VerificationCase, VerificationError,
@@ -271,13 +261,13 @@ pub use web_verification::{
     StandardWebVerificationProfile, STANDARD_WEB_VERIFICATION_RULE_COUNT,
 };
 
-// Scanning engine exports (feature: scanning)
+// Historical ordered scanner exports (feature: legacy-scanner)
 // Note: phases module is re-exported automatically
 
-#[cfg(feature = "scanning")]
+#[cfg(feature = "legacy-scanner")]
 pub use runner::ScanRunner;
 
-#[cfg(feature = "scanning")]
+#[cfg(feature = "legacy-scanner")]
 pub use sdk::{ScanReport, ScannerBuilder, ScannerSdk};
 
 #[cfg(feature = "scanning")]

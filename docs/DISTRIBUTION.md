@@ -55,7 +55,7 @@ docker build -t venom:local .
 docker run --rm venom:local --help
 ```
 
-The image's current default command starts `venom proxy`, which is only an experimental fixed-upstream TCP relay. It is not a TLS-intercepting proxy and does not expose a working Venom API or dashboard. Pass an explicit CLI command when using the image.
+The image's default command is `venom --help`; it does not open a listener or contact a target. Pass an explicit deterministic `scan` command and an authorized reachable origin when using the image for an assessment. The non-default API and proxy adapters are not compiled into this image.
 
 Repository workflows do not publish a supported image to Docker Hub or GHCR, and no `latest`, `slim`, or `full` image contract is promised.
 
@@ -79,10 +79,10 @@ The non-deployable [deployment blueprint](experimental/deployment-blueprint.md) 
 ```bash
 venom --version
 venom --help
-venom decision-scan --help
+venom scan --help
 ```
 
-The supported CLI truth is documented in [Getting Started](GETTING_STARTED.md). `venom decision-scan` is the bounded deterministic Preview; `venom scan` is the legacy direct-I/O phase runner. The `api` and `proxy` adapters are not production services.
+The supported CLI truth is documented in [Getting Started](GETTING_STARTED.md). `venom scan` is the bounded deterministic Preview, while `decision-scan` is its deprecated compatibility alias. The direct-I/O `legacy-scan`, unsupported `api`, and experimental `proxy` adapters are absent from default builds and require explicit Cargo features.
 
 ## Reporting problems
 

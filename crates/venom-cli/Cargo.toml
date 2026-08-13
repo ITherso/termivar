@@ -18,13 +18,19 @@ workspace = true
 name = "venom"
 path = "src/main.rs"
 
+[features]
+default = []
+legacy-scanner = ["dep:reqwest", "venom-scanner/legacy-scanner"]
+api-adapter = ["dep:venom-api"]
+proxy-adapter = ["dep:venom-proxy"]
+
 [dependencies]
 venom-core = { version = "0.9.0-alpha", path = "../venom-core" }
-venom-scanner = { version = "0.9.0-alpha", path = "../venom-scanner" }
-venom-api = { version = "0.9.0-alpha", path = "../venom-api" }
-venom-proxy = { version = "0.9.0-alpha", path = "../venom-proxy" }
+venom-scanner = { version = "0.9.0-alpha", path = "../venom-scanner", default-features = false, features = ["scanning"] }
+venom-api = { version = "0.9.0-alpha", path = "../venom-api", optional = true }
+venom-proxy = { version = "0.9.0-alpha", path = "../venom-proxy", optional = true }
 tokio = { workspace = true }
-reqwest = { workspace = true }
+reqwest = { workspace = true, optional = true }
 url = "2.5"
 clap = { workspace = true }
 serde = { workspace = true }

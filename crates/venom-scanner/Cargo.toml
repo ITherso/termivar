@@ -42,14 +42,18 @@ tempfile = "3.8"
 criterion = "0.5"
 
 [features]
-# Default features: core scanner with detection capabilities
-default = ["core", "scanning", "detection"]
+# Default product: deterministic evidence/reasoning/runtime surface.
+default = ["core", "scanning"]
 
 # Core scanning engine (always compiled)
 core = []
 
-# Vulnerability scanning phases
+# Deterministic scanner runtime
 scanning = ["core"]
+
+# Historical direct-I/O phases, ordered runner, and Scanner SDK.
+# This is intentionally absent from the default product.
+legacy-scanner = ["scanning"]
 
 # Detection & analysis capabilities
 detection = ["scanning"]
@@ -73,13 +77,13 @@ threat-intel = ["detection"]
 plugins = ["core"]
 
 # Full-featured scanner (all capabilities)
-full = ["core", "scanning", "detection", "ml", "distributed", "monitoring", "compliance", "threat-intel", "plugins"]
+full = ["core", "scanning", "legacy-scanner", "detection", "ml", "distributed", "monitoring", "compliance", "threat-intel", "plugins"]
 
-# Minimal scanner (just core phases, no advanced features)
+# Minimal deterministic scanner runtime
 minimal = ["core", "scanning"]
 
 # Enterprise package (everything except threat-intel)
-enterprise = ["core", "scanning", "detection", "ml", "distributed", "monitoring", "compliance", "plugins"]
+enterprise = ["core", "scanning", "legacy-scanner", "detection", "ml", "distributed", "monitoring", "compliance", "plugins"]
 
 # Research package (all features enabled)
 research = ["full"]

@@ -14,7 +14,7 @@ async-trait.workspace = true
 clap.workspace = true
 tokio.workspace = true
 url = "2.5"
-venom-scanner = { version = "0.9.0-alpha", path = "../crates/venom-scanner", features = ["distributed", "plugins"] }
+venom-scanner = { version = "0.9.0-alpha", path = "../crates/venom-scanner", default-features = false, features = ["legacy-scanner", "distributed", "plugins"] }
 
 [[bin]]
 name = "basic_scan"

@@ -342,7 +342,7 @@ fn allowed_workspace_graph() -> BTreeMap<String, BTreeSet<String>> {
         ("venom-core", &[][..]),
         ("venom-scanner", &["venom-core"][..]),
         ("venom-proxy", &["venom-core"][..]),
-        ("venom-api", &["venom-core", "venom-scanner"][..]),
+        ("venom-api", &["venom-core"][..]),
         (
             "venom-cli",
             &["venom-api", "venom-core", "venom-proxy", "venom-scanner"][..],

@@ -38,6 +38,16 @@ jobs:
         run: cargo test --lib --verbose
       - name: Run doc tests
         run: cargo test --doc --verbose
+      - name: Verify default and opt-in CLI contracts
+        run: |
+          cargo test --locked -p venom-cli --no-default-features
+          cargo test --locked -p venom-cli --no-default-features --features legacy-scanner
+          cargo test --locked -p venom-cli --no-default-features --features api-adapter
+          cargo test --locked -p venom-cli --no-default-features --features proxy-adapter
+      - name: Verify deterministic and historical scanner feature boundaries
+        run: |
+          cargo test --locked -p venom-scanner --no-default-features --features scanning --lib
+          cargo test --locked -p venom-scanner --no-default-features --features legacy-scanner --lib
 
   integration-tests:
     name: Integration Tests
@@ -127,7 +137,7 @@ jobs:
             "$scanner_dir/Cargo.toml" \
             "$scanner_dir/README.md"
           sed -i \
-            "s#venom-scanner = .*#venom-scanner = { path = \"${GITHUB_WORKSPACE}/crates/venom-scanner\", default-features = false, features = [\"scanning\"] }#" \
+            "s#venom-scanner = .*#venom-scanner = { path = \"${GITHUB_WORKSPACE}/crates/venom-scanner\", default-features = false, features = [\"legacy-scanner\"] }#" \
             "$scanner_dir/Cargo.toml"
           cargo test --manifest-path "$scanner_dir/Cargo.toml"
 

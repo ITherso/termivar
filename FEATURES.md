@@ -2,7 +2,7 @@
 
 This document is the capability map for Venom `0.9.0-alpha`. It records what exists, how mature it is, and the most important limitation. It is not a completion score or a production-readiness claim.
 
-A compiled module is not necessarily a runtime feature. The [runtime map](docs/internals/runtime-map.md) records whether each major surface participates in `venom scan`, `venom decision-scan`, an opt-in library host, or no repository execution path.
+A compiled module is not necessarily a runtime feature. The [runtime map](docs/internals/runtime-map.md) records whether each major surface participates in the default deterministic `venom scan`, the feature-gated `venom legacy-scan`, an opt-in library host, or no repository execution path.
 
 ## Lifecycle labels
 
@@ -21,20 +21,21 @@ A compiled module is not necessarily a runtime feature. The [runtime map](docs/i
 | --- | --- | --- |
 | Core contracts | Beta | Shared events, findings, configuration, models, errors, and predicate vocabulary in `venom-core` |
 | Deterministic decision runtime | Preview | Bounded typed evidence, reasoning, planning, execution, verification, Experience, and continuation in `venom-scanner` |
-| `venom decision-scan` | Preview | Explicit bounded CLI profile over `StandardWebDecisionRuntime`; text, explain, and `decision-scan/v1` JSON output |
-| `venom scan` | Legacy | Ordered phases and legacy finding aggregation with direct I/O outside `StandardWebDecisionRuntime` and `RuntimeBudget` |
+| `venom scan` | Preview | Default bounded CLI profile over `StandardWebDecisionRuntime`; text, explain, and historically named `decision-scan/v1` JSON output |
+| `venom decision-scan` | Deprecated | Compatibility alias for `venom scan`; identical command definition and deterministic engine |
+| `venom legacy-scan` | Legacy | Historical heuristic phases with direct I/O outside `StandardWebDecisionRuntime` and `RuntimeBudget`; available only with `legacy-scanner` and explicit acknowledgement |
 | Scanner SDK | Preview | Application-defined phases composed through `ScannerSdk` and a generated starter |
-| HTTP API adapter | Unsupported | Library router exposes `GET /health`; `venom api` does not bind a listener |
-| Proxy adapter | Experimental | Fixed-upstream TCP relay only; no `CONNECT`, TLS termination, certificate generation, or HTTP inspection |
+| HTTP API adapter | Unsupported | Absent by default; opt-in `api-adapter` exposes a command that fails nonzero because no listener is implemented |
+| Proxy adapter | Experimental | Absent by default; opt-in `proxy-adapter` is a fixed-upstream TCP relay only, with no `CONNECT`, TLS termination, certificate generation, or HTTP inspection |
 
 ## Extensibility and analysis
 
 | Capability | Lifecycle | Current boundary |
 | --- | --- | --- |
-| Native plugins | Preview | Source-level Rust trait and registry; no runtime crate discovery or stable ABI; not merged into `decision-scan` |
+| Native plugins | Preview | Source-level Rust trait and registry; no runtime crate discovery or stable ABI; not merged into default `scan` |
 | Plugin starter | Preview | `cargo-generate` template under `templates/venom-plugin`, rendered and tested in CI |
 | Lua execution | Preview | Opt-in, host-owned script surface; not part of either CLI scan runtime |
-| Legacy detection phases | Legacy | Recon, crawl, parameter, SQLi, XSS, SSTI, LFI/XXE, and SSRF phases; directory fuzzing is explicit opt-in |
+| Legacy detection phases | Legacy | Non-default `legacy-scanner` feature: recon, crawl, parameter, SQLi, XSS, SSTI, LFI/XXE, and SSRF heuristics; directory fuzzing is a second explicit opt-in |
 | Anomaly detection | Experimental | Heuristic scoring requires manual validation and is not on a default scan path |
 | Semantic extraction | Preview | Evidence-only, bounded library surface; not automatically composed into either CLI scan command |
 | API predicate vocabulary | Preview | Canonical descriptors, normalized media/path observations, and resource-scope bundles in `venom-core` |

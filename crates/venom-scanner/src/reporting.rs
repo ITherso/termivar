@@ -12,7 +12,7 @@
 //! Generates comprehensive vulnerability reports in multiple formats:
 //! JSON, HTML, CSV, and executive summaries.
 
-use crate::contracts::ScanFinding;
+use crate::ScanFinding;
 use std::collections::HashMap;
 
 /// Vulnerability report with aggregate statistics

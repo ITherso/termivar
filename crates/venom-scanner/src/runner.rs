@@ -2,10 +2,11 @@
 //!
 //! ## Runtime scope
 //!
-//! - **Build:** default via `scanning`.
-//! - **Execution:** Surface A — `ScanRunner` drives the legacy `venom scan` phase
-//!   pipeline (direct I/O outside `StandardWebDecisionRuntime`/`RuntimeBudget`).
-//! - **Default `venom scan`:** yes.
+//! - **Build:** non-default `legacy-scanner` feature.
+//! - **Execution:** historical surface — `ScanRunner` drives the
+//!   `venom legacy-scan` phase pipeline (direct I/O outside
+//!   `StandardWebDecisionRuntime`/`RuntimeBudget`).
+//! - **Default `venom scan`:** no.
 //! - **Support:** legacy alpha.
 //!
 //! See `docs/internals/runtime-map.md`.

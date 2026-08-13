@@ -2,7 +2,7 @@
 
 Venom `0.9.0-alpha` is an experimental Rust security-testing project. It is not production-ready. Run it only against systems you own or are explicitly authorized to test.
 
-This guide covers the two real CLI scan surfaces. It does not describe a dashboard, API service, TLS-intercepting proxy, team service, or cloud control plane because those are not supported runtime products today.
+This guide covers the default deterministic CLI and the separately compiled historical runner. It does not describe a dashboard, API service, TLS-intercepting proxy, team service, or cloud control plane because those are not supported runtime products today.
 
 ## Prerequisites
 
@@ -23,12 +23,12 @@ cargo run -p venom-cli --locked -- --help
 
 The root manifest is a virtual workspace. The CLI package is `venom-cli`; its binary is named `venom`.
 
-## Preview the deterministic runtime
+## Run the deterministic runtime
 
-`decision-scan` is the current deterministic Surface-B preview:
+`scan` is the current deterministic Surface-B preview and the default product command:
 
 ```bash
-cargo run -p venom-cli --locked -- decision-scan https://authorized.example.test
+cargo run -p venom-cli --locked -- scan https://authorized.example.test
 ```
 
 `example.test` is a reserved placeholder and will not normally resolve. Replace it with an exact origin you own or have explicit permission to assess.
@@ -47,7 +47,7 @@ It emits operational decisions and outcomes, not deterministic-runtime findings 
 ### Explain mode
 
 ```bash
-cargo run -p venom-cli --locked -- decision-scan https://authorized.example.test --explain
+cargo run -p venom-cli --locked -- scan https://authorized.example.test --explain
 ```
 
 The expanded text includes hypotheses, selected and excluded actions, dispatches, outcomes, and terminal reasoning.
@@ -55,10 +55,10 @@ The expanded text includes hypotheses, selected and excluded actions, dispatches
 ### JSON diagnostics
 
 ```bash
-cargo run -p venom-cli --locked -- decision-scan https://authorized.example.test --format json
+cargo run -p venom-cli --locked -- scan https://authorized.example.test --format json
 ```
 
-The JSON document uses schema [`decision-scan/v1`](internals/decision-scan-json-v1.md). It already carries full diagnostics, so `--format json` and `--explain` cannot be combined.
+The JSON document retains the historically named schema [`decision-scan/v1`](internals/decision-scan-json-v1.md). It already carries full diagnostics, so `--format json` and `--explain` cannot be combined. `decision-scan` remains a deprecated command alias for `scan`; it runs the same implementation and emits a migration notice.
 
 ### Safe local smoke target
 
@@ -71,24 +71,25 @@ python3 -m http.server 8088 --bind 127.0.0.1
 Then run Venom in another terminal:
 
 ```bash
-cargo run -p venom-cli --locked -- decision-scan http://127.0.0.1:8088
+cargo run -p venom-cli --locked -- scan http://127.0.0.1:8088
 ```
 
 This proves command wiring and output shape; it is not a meaningful security assessment.
 
 ## Legacy ordered scanner
 
-`venom scan` remains available as a migration surface:
+The historical ordered runner is not present in a default build. To use it, compile the explicit feature and acknowledge its heuristic claim boundary:
 
 ```bash
-cargo run -p venom-cli --locked -- scan https://authorized.example.test
+cargo run -p venom-cli --locked --features legacy-scanner -- legacy-scan \
+  https://authorized.example.test --acknowledge-legacy-heuristics
 ```
 
-It runs the ordered legacy phase pipeline and legacy finding aggregation. It performs direct network I/O outside `StandardWebDecisionRuntime` and `RuntimeBudget`, and the CLI prints that warning before execution.
+It runs the historical phase pipeline and performs direct network I/O outside `StandardWebDecisionRuntime` and `RuntimeBudget`. The CLI prints that warning before execution and renders only a claim-safe observation summary; untyped phase prose and evidence details are withheld pending verifier migration.
 
-Wordlist-based directory brute forcing is off by default. The explicit `--legacy-directory-fuzz` option enables that additional direct-I/O phase; use it only when the target authorization and expected load are clear.
+Wordlist-based directory brute forcing is still off within this opt-in runtime. The additional `--legacy-directory-fuzz` option enables that direct-I/O phase; use it only when the target authorization and expected load are clear.
 
-`scan` and `decision-scan` are different engines. Results, accounting, and claim semantics must not be compared as though one were an output mode of the other.
+`scan` and its `decision-scan` alias are the same deterministic engine. `legacy-scan` is a different engine; its results, accounting, and claim semantics must not be compared as though it were an output mode of `scan`.
 
 ## Understanding deterministic output
 
@@ -102,12 +103,12 @@ Wordlist-based directory brute forcing is off by default. The explicit `--legacy
 
 For example, collecting PHP-style form-control names or Sanctum-compatible cookie names is KnowledgeOnly. The action can succeed while its motivating technology hypothesis remains Supported rather than Confirmed.
 
-## Other CLI adapters
+## Optional CLI adapters
 
-The binary exposes `api` and `proxy` subcommands, but they are not scan alternatives:
+Default builds expose neither `api` nor `proxy`. They can be compiled as explicit adapters, but they are not scan alternatives:
 
-- `venom api` is unsupported: the library has a health router, but the CLI adapter does not bind a listener.
-- `venom proxy` is an experimental fixed-upstream TCP relay. It does not implement HTTP `CONNECT`, TLS termination, generated certificates, or request inspection.
+- `cargo run -p venom-cli --locked --features api-adapter -- api --addr 127.0.0.1:8080` is unsupported and exits nonzero: the library has a health router, but no listener is implemented.
+- `cargo run -p venom-cli --locked --features proxy-adapter -- proxy --addr 127.0.0.1:8081` starts an experimental fixed-upstream TCP relay. It does not implement HTTP `CONNECT`, TLS termination, generated certificates, or request inspection.
 
 The dashboard, distributed scheduler, monitoring, compliance, profile, and Lua modules are disconnected, opt-in, host-owned, or experimental. See the [runtime map](internals/runtime-map.md) before treating any module as executable product behavior.
 
@@ -133,7 +134,7 @@ cargo xtask generate scanner my-scanner
 cargo xtask generate plugin my-venom-plugin
 ```
 
-They are source-level library integrations, not runtime-loaded extensions for `decision-scan`. Read the [Scanner SDK](sdk.md), [plugin guide](plugin.md), and [plugin API policy](plugin-api-policy.md) before depending on pre-stable contracts.
+They are source-level, opt-in library integrations, not runtime-loaded extensions for the default deterministic `scan`. Read the [Scanner SDK](sdk.md), [plugin guide](plugin.md), and [plugin API policy](plugin-api-policy.md) before depending on pre-stable contracts.
 
 ## Next steps
 

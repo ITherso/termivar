@@ -1,10 +1,14 @@
 # Scanner
 
-`venom-scanner` contains scan contracts, the ordered runner, detection phases, optional analysis modules, plugins, events, persistence, and reports.
+`venom-scanner` contains the default deterministic evidence/reasoning/runtime stack plus feature-gated historical scan contracts, optional analysis modules, plugins, events, persistence, and reports.
 
-## Default pipeline
+## Default deterministic runtime
 
-The CLI currently registers reconnaissance, crawling, parameter discovery, SQL injection, XSS, SSTI, LFI/XXE, and SSRF phases. This complete ordered pipeline is a legacy direct-I/O surface outside `StandardWebDecisionRuntime` and `RuntimeBudget`, so the CLI emits an authorization and exact-origin warning for every scan. The `DirectoryFuzzer` runs only after explicit `--legacy-directory-fuzz` opt-in; redirects remain disabled for the shared client, and crawler discoveries are restricted to the target's normalized scheme, host, and port.
+Default builds expose `venom scan`, which composes `StandardWebDecisionRuntime` with a fixed bounded profile. Its network actions use the runtime's redirect-disabled metered broker, and its output consists of operational decisions and verifier outcomes rather than findings.
+
+## Historical ordered pipeline
+
+The ordered runner, scanner SDK, context, and phases require the non-default `legacy-scanner` feature. The CLI exposes them only as `legacy-scan`, and only after `--acknowledge-legacy-heuristics`. It registers reconnaissance, crawling, parameter discovery, SQL injection, XSS, SSTI, LFI/XXE, and SSRF phases. This historical pipeline performs direct I/O outside `StandardWebDecisionRuntime` and `RuntimeBudget`; its CLI output suppresses unverified phase prose and details. `DirectoryFuzzer` requires the additional `--legacy-directory-fuzz` opt-in. Redirects remain disabled for the shared client, and crawler discoveries are restricted to the target's normalized scheme, host, and port.
 
 Each phase implements:
 
@@ -21,7 +25,8 @@ pub trait ScanPhase: Send + Sync {
 
 | Feature | Purpose | Maturity |
 | --- | --- | --- |
-| `scanning` | Runner, phases, adaptive behavior, reporting | Beta |
+| `scanning` | Deterministic evidence, reasoning, planning, execution, verification, and bounded runtime | Preview |
+| `legacy-scanner` | Historical ordered runner, context, phases, and Scanner SDK | Legacy |
 | `detection` | Advanced and anomaly detection | Experimental |
 | `plugins` | Native plugin registry and Lua engine | Preview |
 | `distributed` | Queues, workers, and aggregation | Experimental |
@@ -31,7 +36,10 @@ pub trait ScanPhase: Send + Sync {
 | `threat-intel` | Feed and correlation models | Preview |
 | `full` / `research` | All optional capabilities | Experimental |
 
-Default builds enable `core`, `scanning`, and `detection`.
+Default builds enable `core` and `scanning`. Detection, the historical runner,
+and the other feature-flagged surfaces listed above require explicit opt-in;
+some library/scaffold modules still compile under `scanning` without being called
+by the default command. See the [runtime map](internals/runtime-map.md).
 
 ## Adding a phase
 

@@ -2,6 +2,8 @@
 //!
 //! Tests core functionality of individual scanning phases
 
+#![cfg(feature = "legacy-scanner")]
+
 use venom_scanner::{ScanFinding, ScanPhase};
 
 // ============================================================================

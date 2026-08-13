@@ -2,11 +2,11 @@
 //!
 //! ## Runtime scope
 //!
-//! - **Build:** default via `scanning`.
-//! - **Execution:** host/library only (public composition API for host-built
-//!   scanners; not invoked by `venom scan`).
+//! - **Build:** non-default `legacy-scanner` feature.
+//! - **Execution:** host/library Surface A composition API; not invoked by the
+//!   deterministic `venom scan` command.
 //! - **Default `venom scan`:** no.
-//! - **Support:** implemented and tested (Scanner SDK Template).
+//! - **Support:** legacy alpha and tested by the Scanner SDK template.
 //!
 //! See `docs/internals/runtime-map.md`.
 

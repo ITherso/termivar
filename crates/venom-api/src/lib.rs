@@ -3,8 +3,9 @@
 //! ## Runtime scope
 //!
 //! - **Build:** separate workspace crate (`venom-api`).
-//! - **Execution:** explicit CLI startup hook (`venom api`). `start_api` does not
-//!   bind a listener; `router` exposes only `GET /health` as a library value.
+//! - **Execution:** optional CLI startup hook (`venom-cli/api-adapter`).
+//!   `start_api` fails nonzero and does not bind a listener; `router` exposes only
+//!   `GET /health` as a library value.
 //! - **Default `venom scan`:** no.
 //! - **Support:** unsupported — no live network listener.
 //!
@@ -24,7 +25,7 @@
 #![deny(rustdoc::broken_intra_doc_links)]
 
 use axum::{routing::get, Router};
-use venom_core::Result;
+use venom_core::{Error, Result};
 
 /// Returns `OK` for process-level health checks.
 pub async fn health() -> &'static str {
@@ -38,12 +39,26 @@ pub fn router() -> Router {
     Router::new().route("/health", get(health))
 }
 
-/// Runs the current API startup hook.
+/// Rejects the unsupported API startup hook.
 ///
-/// This function does not bind `addr` yet. Callers that need a live server
-/// should serve [`router`] with their own Tokio listener until the transport
-/// lifecycle is stabilized.
+/// This function deliberately returns an error because it does not bind `addr`.
+/// Callers that need a live server may serve [`router`] with their own Tokio
+/// listener until the transport lifecycle is stabilized.
 pub async fn start_api(addr: &str) -> Result<()> {
-    println!("API starting on {}", addr);
-    Ok(())
+    Err(Error::api(format!(
+        "the API listener adapter is unsupported and did not bind {addr}"
+    )))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn unsupported_startup_fails_closed() {
+        let error = start_api("127.0.0.1:8080").await.unwrap_err();
+        assert_eq!(error.kind(), "API");
+        assert!(error.to_string().contains("unsupported"));
+        assert!(error.to_string().contains("did not bind"));
+    }
 }

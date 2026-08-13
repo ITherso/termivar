@@ -1,10 +1,11 @@
 # Project Status
 
-The latest tagged Venom release is **v0.9.0-alpha**; `main` targets the next Preview release. Venom is a modular Rust-based penetration testing framework focused on research and extensibility, and it is not production-ready.
+The latest tagged Venom release is **v0.9.0-alpha**; `main` targets the next Preview release. Venom is an experimental Rust security-testing project centered on a bounded deterministic decision runtime, and it is not production-ready.
 
 ## Why alpha
 
 - The Scanner SDK and plugin API are public and usable, but their contracts may still change before v1.
+- The default `venom scan` command now exercises the deterministic runtime; its operational outcomes are not findings or vulnerability verdicts. The historical heuristic runner is separately feature-gated and requires explicit acknowledgement.
 - `ScanContext` now has an accepted non-exhaustive, constructor-owned policy, but the intentional transition from the tagged struct-literal contract still needs a new Preview release and post-transition scanner baseline.
 - The distributed worker pool is an in-process scheduling preview, not a durable multi-node control plane.
 - Criterion and fuzz baselines exist, but endpoint-scale CPU, memory, latency, and throughput evidence is incomplete.

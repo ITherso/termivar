@@ -1,12 +1,12 @@
-//! Scan context: shared state for the legacy `venom scan` pipeline.
+//! Scan context: shared state for the historical `venom legacy-scan` pipeline.
 //!
 //! ## Runtime scope
 //!
-//! - **Build:** always/default.
+//! - **Build:** non-default `legacy-scanner` feature.
 //! - **Execution:** Surface A — `ScanContext` owns the shared scan state. It also
 //!   constructs and privately owns a `KnowledgeBase`, but the current legacy
 //!   phases do not consume it (construction is not active use).
-//! - **Default `venom scan`:** yes.
+//! - **Default `venom scan`:** no.
 //! - **Support:** legacy alpha.
 //!
 //! See `docs/internals/runtime-map.md`.

@@ -9,13 +9,13 @@
 Venom is an experimental Rust security-testing project centered on a deterministic decision runtime that turns bounded web observations into typed evidence, hypotheses, risk-aware plans, and verifier-scoped outcomes.
 
 > [!WARNING]
-> **Venom v0.9.0-alpha is not production-ready.** Use it only on systems you own or are explicitly authorized to test. `decision-scan` is bounded, but it still makes network requests; the legacy `scan` path performs direct I/O outside `RuntimeBudget`. Preview and Experimental contracts may change.
+> **Venom v0.9.0-alpha is not production-ready.** Use it only on systems you own or are explicitly authorized to test. The default `scan` command is bounded, but it still makes network requests. The separately compiled `legacy-scan` path performs direct I/O outside `RuntimeBudget`. Preview and Experimental contracts may change.
 
 **Why an action ran is not what it proved.** Venom keeps the evidence that motivates an action separate from the evidence that may change a hypothesis. An action can return `Success` after completing a knowledge-gathering objective without confirming its motivating hypothesis.
 
 ```mermaid
 flowchart LR
-    Host["Authorized host"] --> Preview["decision-scan · Preview"]
+    Host["Authorized host"] --> Preview["scan · Preview"]
     Preview --> Observe["Bounded observe"]
     Observe --> Evidence["Typed evidence"]
     Evidence --> Reason["Reason"]
@@ -25,12 +25,12 @@ flowchart LR
     Verify --> Outcome["Outcome"]
     Outcome -. "bounded continuation" .-> Reason
 
-    Host --> Legacy["scan · legacy alpha"]
+    Host --> Legacy["legacy-scan · opt-in legacy alpha"]
     Legacy --> Phases["Ordered phases"]
-    Phases --> Findings["Legacy findings / reporting"]
+    Phases --> LegacyRecords["Heuristic records · details suppressed"]
 ```
 
-The two paths are separate. The deterministic runtime currently emits operational decisions and outcomes, not Surface-B findings. Scanner SDK and plugin APIs are optional library surfaces; they are not silently inserted into `decision-scan`.
+The two paths are separate. The deterministic runtime currently emits operational decisions and outcomes, not Surface-B findings. `decision-scan` is a deprecated command alias for the same deterministic path; it is not a second engine. Scanner SDK and plugin APIs are optional library surfaces and are not silently inserted into `scan`.
 
 ## Why Venom is different
 
@@ -78,7 +78,7 @@ Requirements: Rust 1.88 or newer, Git, and an authorized reachable HTTP(S) origi
 ```bash
 git clone https://github.com/ITherso/venom.git
 cd venom
-cargo run -p venom-cli --locked -- decision-scan https://authorized.example.test
+cargo run -p venom-cli --locked -- scan https://authorized.example.test
 ```
 
 `example.test` is a reserved placeholder. Replace it with an origin you own or are explicitly permitted to assess.
@@ -86,23 +86,24 @@ cargo run -p venom-cli --locked -- decision-scan https://authorized.example.test
 Inspect the decision chain or consume structured diagnostics:
 
 ```bash
-cargo run -p venom-cli --locked -- decision-scan https://authorized.example.test --explain
-cargo run -p venom-cli --locked -- decision-scan https://authorized.example.test --format json
+cargo run -p venom-cli --locked -- scan https://authorized.example.test --explain
+cargo run -p venom-cli --locked -- scan https://authorized.example.test --format json
 ```
 
-`--explain` expands the text report. JSON already contains the full diagnostics and uses the documented [`decision-scan/v1`](docs/internals/decision-scan-json-v1.md) schema, so the two flags cannot be combined.
+`--explain` expands the text report. JSON already contains the full diagnostics and uses the documented, historically named [`decision-scan/v1`](docs/internals/decision-scan-json-v1.md) schema, so the two flags cannot be combined. The deprecated `decision-scan` alias accepts the same options and produces the same engine output while directing users to `scan`.
 
 The Preview profile enforces fixed request, wall-time, response-byte, request-body, active-verification, same-action, and no-progress limits. Redirects are disabled and every built-in request competes for the same runtime budget.
 
 ### Legacy ordered scanner
 
-The maintained migration path is still available:
+The historical ordered runner is absent from default builds. It can be compiled explicitly and requires acknowledgement at invocation:
 
 ```bash
-cargo run -p venom-cli --locked -- scan https://authorized.example.test
+cargo run -p venom-cli --locked --features legacy-scanner -- legacy-scan \
+  https://authorized.example.test --acknowledge-legacy-heuristics
 ```
 
-`venom scan` runs the legacy ordered phase pipeline and legacy finding/reporting path. It does not use `StandardWebDecisionRuntime` or `RuntimeBudget`. Wordlist-based directory brute forcing is disabled by default and requires the explicit `--legacy-directory-fuzz` option.
+`legacy-scan` runs the historical direct-I/O heuristic phase pipeline. It does not use `StandardWebDecisionRuntime` or `RuntimeBudget`, and its CLI output deliberately withholds unverified detail rather than presenting heuristic observations as confirmed vulnerabilities. Wordlist-based directory brute forcing remains separately disabled unless `--legacy-directory-fuzz` is supplied.
 
 See the [runtime map](docs/internals/runtime-map.md) for the exact module and command inventory.
 
@@ -120,13 +121,14 @@ See the [runtime map](docs/internals/runtime-map.md) for the exact module and co
 
 | Surface | Status | Current boundary |
 | --- | --- | --- |
-| `venom decision-scan` | Preview | Bounded deterministic web decision runtime with text, explain, and JSON diagnostics |
-| `venom scan` | Legacy alpha | Ordered phases and legacy findings, using direct I/O outside the deterministic runtime budget |
-| Scanner SDK / native plugins | Preview | Source-level host extension APIs with generated starters; not merged into `decision-scan` |
-| `venom api` | Unsupported | The library exposes a health router, but the CLI adapter does not bind a listener |
-| `venom proxy` | Experimental | Fixed-upstream TCP relay; no `CONNECT`, TLS termination, certificate generation, or HTTP inspection |
+| `venom scan` | Preview | Default bounded deterministic web decision runtime with text, explain, and JSON diagnostics |
+| `venom decision-scan` | Deprecated alias | Compatibility name for the same deterministic command and engine; the wire schema remains `decision-scan/v1` |
+| `venom legacy-scan` | Legacy alpha, opt-in | Historical direct-I/O heuristic phases; requires the non-default `legacy-scanner` feature and explicit acknowledgement |
+| Scanner SDK / native plugins | Preview, opt-in | Source-level host extension APIs with generated starters; not merged into the default deterministic runtime |
+| `venom api` | Unsupported, opt-in | Absent from default builds; the `api-adapter` feature reports that no listener is implemented |
+| `venom proxy` | Experimental, opt-in | Absent from default builds; `proxy-adapter` exposes a fixed-upstream TCP relay with no `CONNECT`, TLS termination, certificate generation, or HTTP inspection |
 
-Dashboard, distributed, monitoring, compliance, threat-intelligence, Lua, and related modules are optional, host-owned, compile-only, or experimental depending on the feature. Their presence in the repository does not mean they run in either scan command. The [runtime map](docs/internals/runtime-map.md) is the source of truth.
+Dashboard, distributed, monitoring, compliance, threat-intelligence, Lua, and related modules are optional, host-owned, compile-only, or experimental depending on the feature. Their presence in the repository does not mean they run in the default deterministic path or `legacy-scan`. The [runtime map](docs/internals/runtime-map.md) is the source of truth.
 
 ## Quality and robustness
 

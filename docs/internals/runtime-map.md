@@ -1,36 +1,83 @@
 # Runtime map (what actually runs)
 
-> Snapshot: `main` at commit `7310870`. This page describes the **executable
-> truth** of the repository today, not aspirations. Where a capability is not
-> wired into a runnable path, it is labelled as such. Release line `0.9.0-alpha`
-> is not production-ready.
+> This page describes the executable truth of the current main-line source, not
+> aspirations. A compiled module is not necessarily part of a product runtime.
+> Release line `0.9.0-alpha` is not production-ready.
 
-Venom has **three distinct runtime surfaces**. They are separate on purpose; a
-capability existing in one surface does not mean it runs in another. The single
-`venom` binary also exposes separate adapter subcommands (`api`, `proxy`) that are
-not part of the scan runtime.
+Venom has one default scan runtime, one separately compiled historical runner,
+and optional host/adapter surfaces. A capability in one surface does not silently
+participate in another.
 
-## A. Default CLI scan runtime (legacy direct I/O)
+## Default deterministic scan runtime (Surface B)
 
-`venom scan <target>` runs an ordered phase pipeline built directly on a
-`reqwest` client. It is **legacy direct I/O** and does **not** go through
-`StandardWebDecisionRuntime` or `RuntimeBudget`; the CLI prints this warning
-before running (`LEGACY_SCAN_RUNTIME_WARNING` in `crates/venom-cli/src/main.rs`).
+`venom scan <target>` is the canonical CLI path. It composes
+`StandardWebDecisionRuntime` with a fixed conservative profile and routes every
+built-in request through the runtime-owned, redirect-disabled, metered broker.
+`venom decision-scan` is a deprecated Clap alias for the same command variant and
+implementation; it is not a second engine.
 
 ```text
-venom scan
-  -> ScanContext
-      -> ScanRunner
-          -> ordered phases/*
+venom scan <target>  (or deprecated decision-scan alias)
+  -> StandardWebDecisionRuntime
+      -> RuntimeBudget
+          -> Evidence
+          -> Knowledge and deterministic rules
+          -> Planner
+          -> Executor registry and metered broker
+          -> Passive / active verification
+          -> Experience and bounded continuation
 ```
 
-The phase sequence the CLI composes for the scan, in order (the directory phase is
-shown conditionally — it is registered only with the opt-in
-`--legacy-directory-fuzz` flag):
+The CLI profile permits at most 16 total dispatches, 60 seconds of wall time, a
+1 MiB cumulative delivered response-body threshold, a per-probe buffered-body
+limit of 256 KiB inherited from `HttpEvidencePolicy`, and an 8,192-character text
+sample. It uses planning budget 100, risk limit 40, and at most eight semantic
+action cycles. API reasoning, payload binding, semantic extraction, and defense
+composition remain absent unless a library host explicitly opts into their
+separate APIs.
+
+Text summary, `--explain`, and `--format json` are renderings of the same typed
+runtime report. The JSON contract keeps its historical
+[`decision-scan/v1`](decision-scan-json-v1.md) name; the command rename does not
+reinterpret or fork that wire contract. Runtime outcomes are operational
+decisions and verifier results, not Surface-B findings or vulnerability verdicts.
+
+The deterministic modules are compiled through the scanner crate's default
+`core` + `scanning` features: `web_runtime`, `web_decision`, `web_reasoning`,
+`web_planning`, `web_execution`, `web_verification`, `decision_loop`,
+`decision_runner`, `runtime_budget`, `http_evidence`, `planner`, `rules`,
+`knowledge`, `experience`, `verification`, and `adaptive`.
+
+Two implemented-and-tested surfaces are host-owned and are not automatically
+composed into the default runtime:
+
+- **Semantic extraction** (`semantic`) consumes evidence through a bounded
+  library API; `venom scan` does not call it.
+- **Defense projection / shadow / enforcement** (`defense`) is an explicit
+  library API. `StandardWebDecisionRuntime` does not compose it, and no
+  production runtime caller exists in the repository.
+
+## Historical direct-I/O runner (Surface A)
+
+The ordered context, runner, Scanner SDK, and phase modules are absent from the
+default scanner and CLI feature sets. A host must compile
+`venom-cli/legacy-scanner`, invoke `legacy-scan`, and pass the required
+`--acknowledge-legacy-heuristics` flag:
+
+```text
+cargo run -p venom-cli --locked --features legacy-scanner -- legacy-scan \
+  <authorized-target> --acknowledge-legacy-heuristics
+    -> ScanContext
+        -> ScanRunner
+            -> historical phases/*
+```
+
+The phase sequence is:
 
 1. `ReconPhase`
 2. `CrawlPhase`
-3. `DirectoryFuzzer` — **conditional**, only with `--legacy-directory-fuzz`
+3. `DirectoryFuzzer` — only with the additional
+   `--legacy-directory-fuzz` opt-in
 4. `ParameterDiscoverer`
 5. `SqliScanner`
 6. `XssScanner`
@@ -38,116 +85,69 @@ shown conditionally — it is registered only with the opt-in
 8. `LfiXxeScanner`
 9. `SsrfScanner`
 
-This is the only **scan runtime** executed by `venom scan`. The same binary also
-exposes the separate `decision-scan` (Surface B preview, below), `api`, and
-`proxy` commands; none of them run this phase pipeline and `venom scan` does not
-consult the deterministic decision runtime below.
+These phases use a shared `reqwest` client directly and do not consume
+`RuntimeBudget`. The CLI therefore treats their results as partial heuristic
+observations, suppresses untyped phase prose and details, and never presents
+them as verifier-backed vulnerability confirmations. `ScanContext` owns a
+`KnowledgeBase`, but the historical phases do not consume it; ownership is not
+execution participation.
 
-`ScanContext` instantiates and privately owns a `KnowledgeBase`, but the current
-legacy phases do **not** consume it — construction and ownership are not the same
-as active use. Surface B, by contrast, actively uses `KnowledgeBase` as
-deterministic reasoning/runtime state.
+## Optional adapters and platform shell (Surface C)
 
-## B. Deterministic decision runtime
+Default `venom-cli` features are empty, so the binary exposes neither `api` nor
+`proxy` unless explicitly compiled:
 
-`StandardWebDecisionRuntime` is a separate, budget-bounded runtime. It exists and
-is exercised by tests, the `decision_scan` example / library hosts, and the
-explicit **`venom decision-scan <target>`** CLI preview command. It is **not** the
-path the default `venom scan` command takes, and `decision-scan` does not change
-`venom scan`. The preview uses a fixed conservative profile — at most 16 total
-dispatches, a 60-second wall-time limit, a **1 MiB cumulative delivered
-response-body threshold** (not a per-response cap; the crossing chunk is charged in
-full), a per-probe buffered-body limit of 256 KiB inherited from
-`HttpEvidencePolicy`, and an 8,192-character text sample — and installs no payload
-binding, semantic extraction, defense composition, or API reasoning.
+- `api-adapter` adds `venom api`. The command returns a typed nonzero error
+  because `venom-api::start_api` does not bind. The library's `router()` value
+  contains only `GET /health` for an application-owned host.
+- `proxy-adapter` adds `venom proxy`. It starts the experimental
+  fixed-upstream TCP relay described below.
 
-```text
-venom decision-scan <target>  (or decision_scan example / library host)
-  -> StandardWebDecisionRuntime
-      -> RuntimeBudget
-          -> Evidence
-          -> Knowledge
-          -> Rules
-          -> Planner
-          -> Executor (HttpEvidenceExecutor, metered broker)
-          -> Verification
-```
-
-Modules composed into this runtime are compiled under the default feature set
-(`core`, `scanning`) but are not invoked by the default CLI scan: `web_runtime`,
-`web_decision`, `web_reasoning`, `web_planning`, `web_execution`,
-`web_verification`, `decision_loop`, `decision_runner`, `runtime_budget`,
-`http_evidence`, `planner`, `rules`, `knowledge`, `experience`, `verification`,
-`adaptive`, and the `api_*` reasoning/evidence modules.
-
-Two implemented-and-tested surfaces are **host-owned** and are *not* automatically
-composed into `StandardWebDecisionRuntime` — a host must call them explicitly:
-
-- **Semantic Phase 1.5** (`semantic`: `EntityExtractor`, the producer contract,
-  the golden corpus). Consumes `Evidence` only; not wired into the default
-  `venom scan` runtime.
-- **Defense** (`defense`: projection / shadow / enforcement). The API is
-  implemented and tested. `StandardWebDecisionRuntime` does **not** compose it;
-  `tests/defense_aware_planning_demo.rs` exercises it, and no production runtime
-  caller exists in the repository. External hosts may integrate projection, shadow
-  planning, and enforcement explicitly.
-
-## C. Platform shell
-
-The table below classifies the **runtime-critical module groups** along
-independent axes — build availability, execution participation, whether the
-default `venom scan` path uses it, and support status — because these are not
-mutually exclusive (a module can be both opt-in and experimental, and some
-modules participate in more than one surface). This table groups the
-runtime-critical modules; every top-level public module additionally carries a
-source-level `//! ## Runtime scope` banner in its module root, using the same four
-axes.
+The following matrix separates build availability from actual execution:
 
 | Module / group | Build availability | Execution participation | Default `venom scan` | Support status |
 | --- | --- | --- | --- | --- |
-| `phases/*`, `runner`, `context` | default | Surface A | yes (directory phase conditional) | legacy alpha runtime |
-| Deterministic stack (`web_runtime`, `decision_runner`, `runtime_budget`, `http_evidence`, `planner`, `rules`, `knowledge`, `experience`, `verification`, `adaptive`, `web_*`, `api_*`) | default | Surface B (composed) | no | implemented and tested |
-| `semantic` (Phase 1.5) | default | library / test only (host-owned) | no | implemented and tested; not wired into the default CLI runtime |
-| `defense` (projection / shadow / enforcement) | default | host / test only (explicit API) | no | implemented and tested; **not composed into `StandardWebDecisionRuntime`** |
-| `advanced_detection`, `anomaly` | default (`detection`) | none on the default scan path | no | compiled, not executed by the default CLI |
-| `post_exploitation`, `persistence`, `reporting`, `realtime`, `dashboard`, `waf`, `sdk` | default (`scanning`) | none on the default scan path | no | compiled, not executed by the default CLI |
-| `ml` | opt-in (`ml`) | none on any default path | no | experimental |
-| `distributed` | opt-in (`distributed`) | none on any default path | no | experimental / scaffold |
-| `monitoring` | opt-in (`monitoring`) | none on any default path | no | experimental / scaffold |
-| `compliance` | opt-in (`compliance`) | none on any default path | no | experimental / scaffold |
-| `threat_intelligence` | opt-in (`threat-intel`) | none on any default path | no | experimental / scaffold |
-| `plugin`, `plugins`, `lua_engine` | opt-in (`plugins`) | host-owned | no | opt-in extension surface |
-| `venom-api` (`venom api`) | separate workspace crate | explicit CLI hook | no | **unsupported listener** — `start_api` does not bind; `router` exposes only `GET /health` as a library value |
-| `venom-proxy` (`venom proxy`) | separate workspace crate | explicit CLI adapter | no | **experimental fixed-upstream TCP relay** (see below) |
-| Deployment (Helm / Terraform / Kubernetes) | absent | none | no | unsupported — removed as non-deployable; see the [deployment blueprint](../experimental/deployment-blueprint.md) |
+| Deterministic stack (`web_runtime`, `decision_runner`, `runtime_budget`, `http_evidence`, `planner`, `rules`, `knowledge`, `experience`, `verification`, `adaptive`, `web_*`, `api_*`) | scanner default (`core`, `scanning`) | Surface B (composed, except opt-in API reasoning) | yes | implemented and tested Preview |
+| `semantic` | scanner default | library / test only, host-owned | no | implemented and tested Preview |
+| `defense` | scanner default | library / test only, host-owned | no | implemented and tested; not composed into `StandardWebDecisionRuntime` |
+| `phases/*`, `runner`, `context`, `sdk` | opt-in (`legacy-scanner`) | Surface A | no | historical alpha runtime / SDK |
+| `advanced_detection`, `anomaly` | opt-in (`detection`) | no repository product caller | no | Experimental |
+| `post_exploitation`, `persistence`, `reporting`, `realtime`, `dashboard`, `waf` | scanner default (`scanning`) | no default command caller | no | compiled library/scaffold surfaces |
+| `ml` | opt-in (`ml`) | no default path | no | Experimental |
+| `distributed` | opt-in (`distributed`) | no default path | no | Experimental / scaffold |
+| `monitoring` | opt-in (`monitoring`) | no default path | no | Experimental / scaffold |
+| `compliance` | opt-in (`compliance`) | no default path | no | Experimental / scaffold |
+| `threat_intelligence` | opt-in (`threat-intel`) | no default path | no | Experimental / scaffold |
+| `plugin`, `plugins`, `lua_engine` | opt-in (`plugins`) | host-owned | no | source-level extension Preview |
+| `venom-api` / `venom api` | CLI opt-in (`api-adapter`) | command fails closed; router is host-owned | no | unsupported listener |
+| `venom-proxy` / `venom proxy` | CLI opt-in (`proxy-adapter`) | explicit adapter | no | Experimental fixed-upstream TCP relay |
+| Deployment (Helm / Terraform / Kubernetes) | absent | none | no | unsupported; see the [deployment blueprint](../experimental/deployment-blueprint.md) |
 
-Always-compiled support modules not listed above (for example `api_gateway`,
-`auth`, `cache`, `config`, `config_loader`, `contracts`, `event_bus`, `logging`,
-`metrics`, `error`, `payload_strategy`) are library plumbing for the surfaces
-above; each carries its own source-level runtime-scope banner in its module root.
+Always-compiled support modules not listed separately (for example
+`api_gateway`, `auth`, `cache`, `config`, `config_loader`, `event_bus`, `logging`,
+`metrics`, and `payload_strategy`) are library plumbing. Compilation does not
+mean a default command calls them.
 
 ### The proxy is a TCP relay, not a MITM proxy
 
-`venom proxy` starts `venom-proxy::AsyncMitmProxy`. Despite the type name, the
-current connection handler is an **experimental fixed-upstream bidirectional TCP
-relay**: it accepts a client connection, opens a TCP connection to a hard-coded
-upstream (`127.0.0.1:80`), and copies bytes in both directions. It does **not**
-parse `CONNECT`, terminate TLS, present generated certificates, or inspect/modify
-HTTP. The `CertCache` type exists but is **not used** by the connection path.
-`AsyncMitmProxy` is a legacy/aspirational type name; it is not a statement that
-TLS interception is implemented.
+With `proxy-adapter`, `venom proxy` starts
+`venom-proxy::AsyncMitmProxy`. Despite the legacy type name, the current handler
+accepts a client TCP connection, opens a connection to fixed upstream
+`127.0.0.1:80`, and copies bytes in both directions. It does not parse
+`CONNECT`, terminate TLS, present generated certificates, or inspect/modify HTTP.
+`CertCache` is not used by the connection path.
 
 ## Not implemented
 
-The following are **not** implemented and must not be described as if they were:
-a Relation Engine, Planes, a Knowledge Graph, a Machine Scanner, a bound API
-listener, a supported/configurable MITM proxy, and any cloud deployment. (The
-`knowledge` module is an evidence/hypothesis store, not a "Knowledge Graph".)
+The following must not be described as shipped product behavior: a Relation
+Engine, Planes, a Knowledge Graph, a Machine Scanner, a bound API listener, a
+supported/configurable MITM proxy, or cloud deployment. The `knowledge` module
+is an evidence/hypothesis store, not a knowledge graph.
 
-## How to reproduce the module inventory
+## How to reproduce the inventory
 
-The module set and feature gates above come from
-`crates/venom-scanner/src/lib.rs` and `crates/venom-scanner/Cargo.toml`. Any
-numeric counts are intentionally omitted here; if a count is needed, generate it
-against a named snapshot commit with an explicit command rather than quoting a
-static number that will drift.
+The feature and module inventory comes from
+`crates/venom-scanner/Cargo.toml`, `crates/venom-scanner/src/lib.rs`,
+`crates/venom-cli/Cargo.toml`, and `crates/venom-cli/src/main.rs`. Numeric module
+counts are intentionally omitted because they drift; generate any count against
+a named commit with an explicit command.

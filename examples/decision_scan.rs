@@ -5,7 +5,8 @@
 //! - **Build:** example binary (`venom-examples`).
 //! - **Execution:** Surface B host — composes `StandardWebDecisionRuntime` with a
 //!   `RuntimeBudget`.
-//! - **Default `venom scan`:** no.
+//! - **Default `venom scan`:** yes; this is a small library-host equivalent of
+//!   the canonical deterministic command.
 //! - **Support:** implemented and tested (reference host for the deterministic runtime).
 //!
 //! See `docs/internals/runtime-map.md`.

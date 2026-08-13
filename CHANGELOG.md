@@ -66,6 +66,9 @@ All notable changes to Venom are recorded here. Releases use the categories from
 
 ### Changed
 
+- Made `venom scan` the default bounded deterministic runtime, retained `decision-scan` as a deprecated compatibility alias with the unchanged `decision-scan/v1` wire contract, and moved the historical direct-I/O heuristic runner behind the non-default `legacy-scanner` feature as acknowledged `legacy-scan`.
+- Removed unsupported API and experimental proxy adapters from default CLI builds; their commands now require explicit `api-adapter` or `proxy-adapter` features, and the API adapter fails nonzero instead of implying that a listener started.
+- Changed the repository container's default command to `venom --help`; it no longer starts an experimental network listener by default.
 - Reframed the public README and linked onboarding, distribution, architecture, and profile guidance around the deterministic decision runtime, explicitly separating the legacy direct-I/O scan, unsupported adapters, and library-only surfaces.
 - Replaced the long-form promotional README with a concise project guide.
 - Standardized the pre-release version as `0.9.0-alpha`.
@@ -93,7 +96,7 @@ All notable changes to Venom are recorded here. Releases use the categories from
 - Centralized canonical rule-hypothesis identity generation while preserving existing IDs byte-for-byte.
 - Moved unsafe-code and crate-documentation policy from global compiler flags into centrally inherited workspace lints.
 - Classified per-request deadlines as `RequestTimeout` instead of conflating them with other transport failures.
-- Made classic directory fuzzing an explicit `--legacy-directory-fuzz` CLI option instead of part of every default scan.
+- Made classic directory fuzzing an explicit `--legacy-directory-fuzz` CLI option instead of part of every historical ordered scan.
 - Made every ordered CLI scan disclose that its legacy direct-I/O phases remain outside `StandardWebDecisionRuntime` and restricted crawler discoveries to the target's exact normalized origin.
 - Advanced profiled API comparison metadata to v3; persisted v2 profiles are rejected instead of being silently reinterpreted after explanation semantics changed.
 - Changed the alpha `RuntimeUsage.response_bytes` meaning from retained evidence bytes to complete response chunks delivered to the broker collector; a threshold-crossing chunk is charged, audited, and terminates the same turn.

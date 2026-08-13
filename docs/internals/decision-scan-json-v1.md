@@ -1,14 +1,17 @@
-# `decision-scan` JSON output — schema `decision-scan/v1`
+# Deterministic scan JSON output — schema `decision-scan/v1`
 
-`venom decision-scan <target> --format json` prints a single JSON document to
-**stdout**; the `[PREVIEW]` warning and any error go to **stderr**. The document is
+`venom scan <target> --format json` prints a single JSON document to **stdout**;
+the `[ALPHA]` warning and any error go to **stderr**. The deprecated
+`decision-scan` command alias runs the same implementation and adds a deprecation
+notice on stderr. The document is
 built from the same typed summary the text renderer uses — it is never produced by
 parsing rendered text. `--format json` cannot be combined with `--explain` (the
 JSON already carries the full diagnostics); the combination is rejected as an
 argument conflict.
 
-The `schema_version` field is the contract handle. This page pins the exact shape
-of `decision-scan/v1`.
+The `schema_version` field is the contract handle. Its historical name remains
+`decision-scan/v1` even though `scan` is now the canonical command. Renaming it
+would be a breaking wire change. This page pins its exact shape.
 
 ## Top-level document
 
