@@ -10,14 +10,8 @@ rate_limit_rps = 100
 concurrent_workers = 32
 
 [plugins]
-enabled = [
-    "sqli_plugin",
-    "xss_plugin",
-    "lfi_plugin",
-    "xxe_plugin",
-    "ssrf_plugin",
-    "ssti_plugin",
-]
+# No stock detector plugins ship. Hosts must register reviewed plugin IDs.
+enabled = []
 
 [lua_scripts]
 enabled = [

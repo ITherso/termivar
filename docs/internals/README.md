@@ -13,7 +13,13 @@ ScanRunner -----> EventBus
     v
 ScanPhase
 
-Plugin host ----> PluginRegistry ----> Plugin::execute
+Plugin host ----> host-created request ----> PluginRegistry
+                                               |
+                                               v
+                                  invocation PluginContext ----> Plugin::execute
+                                      |                           |
+                                      v                           v
+                               bounded broker             evidence recorder
 
 DecisionLoop ---> DecisionRunnerAdapter ---> DecisionActionExecutor
                          |
@@ -79,7 +85,7 @@ Task producer --> TaskQueue --> WorkerPool --> WorkerNode
 - [Payload strategies](payload-strategies.md): planner-selected revisions, deterministic derivation contract, redaction, and transport requirements.
 - [Web execution](web-execution.md): semantic executor installation, discovery-only HTTP methods, and scope controls.
 - [Web verification](web-verification.md): action/case isolation, passive/active rules, and conservative outcomes.
-- [Plugin registry](plugin-registry.md): validation, compatibility, lookup, execution, and accounting.
+- [Plugin registry](plugin-registry.md): host-owned scope, request/evidence budgets, redaction, validation, execution, and accounting.
 - [Semantic producer contract](semantic-producer-contract.md): production evidence vocabulary compatibility for semantic entity extraction and explicit deferred gaps.
 
 Cross-boundary changes should start in [Architecture Decisions](../adr/README.md). Public contract changes must also follow the [Plugin API policy](../plugin-api-policy.md).

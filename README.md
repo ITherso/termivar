@@ -161,7 +161,7 @@ See the [runtime map](docs/internals/runtime-map.md) for the exact module and co
 | `venom scan` | Preview | Default bounded deterministic web decision runtime with text, explain, and JSON diagnostics |
 | `venom decision-scan` | Deprecated alias | Compatibility name for the same deterministic command and engine; the wire schema remains `decision-scan/v1` |
 | `venom legacy-scan` | Legacy alpha, opt-in | Historical mixed-authority pipeline: phases 2–4 share bounded passive discovery, phases 5–9 share separate bounded active verification, and phase-one/custom raw I/O keeps the whole run `Unmetered`; requires `legacy-scanner` and explicit acknowledgement |
-| Scanner SDK / native plugins | Preview, opt-in | Source-level host extension APIs with generated starters; not merged into the default deterministic runtime |
+| Scanner SDK / native plugins | Preview, opt-in | Source-level host extensions; plugins receive a host-owned bounded context and record observations, not findings. No stock detector plugins ship, and plugins are not merged into the default runtime |
 | `venom api` | Unsupported, opt-in | Absent from default builds; the `api-adapter` feature reports that no listener is implemented |
 | `venom proxy` | Experimental, opt-in | Absent from default builds; `proxy-adapter` exposes a fixed-upstream TCP relay with no `CONNECT`, TLS termination, certificate generation, or HTTP inspection |
 
@@ -211,7 +211,7 @@ The root `Cargo.toml` is a virtual workspace manifest. Runtime ownership and fea
 
 ## Scanner SDK and plugins
 
-Both generated starters compile in CI, but their source-level contracts remain Preview:
+Both generated starters compile in CI, but their source-level contracts remain Preview. The plugin starter is an INFO-only trait-boundary fixture: Venom ships no stock detector plugins, and plugin observations still require host reasoning and verification before any finding projection.
 
 ```bash
 cargo install cargo-generate

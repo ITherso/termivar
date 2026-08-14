@@ -17,6 +17,7 @@ use syn::{
 };
 
 mod deployment;
+mod plugin;
 mod reachability;
 mod transport;
 mod workflows;
@@ -179,6 +180,7 @@ pub(crate) fn check(workspace_root: &Path) -> Result<(), Box<dyn Error>> {
     violations.extend(transport::check(workspace_root)?);
     violations.extend(reachability::check(workspace_root)?);
     violations.extend(deployment::check(workspace_root)?);
+    violations.extend(plugin::check(workspace_root)?);
     violations.extend(workflows::check(workspace_root)?);
     violations.sort();
     violations.dedup();

@@ -60,11 +60,11 @@ Replay must re-supply current host policy; host executor availability and operat
 
 Verifier rules may additionally opt into an action identity and current-case evidence correlation. This is required when a long-lived subject snapshot can contain responses from multiple semantic actions or retries; unrelated and historical observations remain visible to the knowledge base but cannot win that scoped verification rule.
 
-## Legacy plugin bridge
+## Plugin observation bridge
 
-`PluginDecisionExecutor` adapts the Preview `PluginRegistry` contract to native evidence. A host-owned `PluginInputProvider` maps a decision request to the legacy `target` and `payload` strings; the adapter does not assume an action ID is a payload. Successful `ScanFinding` values become correlated `plugin.finding` evidence. Plugin failures remain executor failures and do not enter the knowledge base.
+`PluginDecisionExecutor` adapts one Preview `PluginRegistry` entry to the decision runner without converting plugin execution into a finding. A host-owned `PluginExecutionRequestProvider` derives a capability-bound `PluginExecutionRequest` from the complete immutable `DecisionExecutionRequest`; an action ID is neither plugin input nor an authorization grant. The adapter rejects a request whose subject or case correlation differs from the outstanding decision case before registry execution.
 
-The bridge is a migration boundary. New reasoning-aware extensions should implement `DecisionActionExecutor` directly so they can emit typed evidence without the lossy `ScanFinding` conversion.
+The plugin recorder returns already normalized native `Evidence`. The adapter forwards that evidence through the runner's ordinary source, subject, and correlation checks before the atomic knowledge write. Successful execution therefore means only that the plugin call completed and its observations were accepted; it does not create a finding, a hypothesis transition, or a verifier outcome. Plugin or request-provider failures remain executor failures and stage no evidence.
 
 ## Failure semantics
 

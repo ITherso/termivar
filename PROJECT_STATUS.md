@@ -4,7 +4,7 @@ The latest tagged Venom release is **v0.9.0-alpha**; `main` targets the next Pre
 
 ## Why alpha
 
-- The Scanner SDK and plugin API are public and usable, but their contracts may still change before v1.
+- The Scanner SDK and plugin API are public and usable, but their contracts may still change before v1. Plugins are linked, in-process extensions that receive a host-owned bounded context and record observations; Venom ships no stock detector plugins, and plugin output is not an automatic finding.
 - The default `venom scan` command now exercises the deterministic runtime; its operational outcomes are not findings or vulnerability verdicts. The historical heuristic runner is separately feature-gated and requires explicit acknowledgement. Its phases 2–4 share bounded passive discovery and phases 5–9 share a distinct bounded active-verification authority. Phase one and custom extensions can still perform raw I/O, so whole-run accounting remains `Unmetered`; the narrower phase-5-to-9 authority must not be mistaken for `RuntimeBudget` coverage.
 - `ScanContext` now has an accepted non-exhaustive, constructor-owned policy, but the intentional transition from the tagged struct-literal contract still needs a new Preview release and post-transition scanner baseline.
 - The distributed worker pool is an in-process scheduling preview, not a durable multi-node control plane.

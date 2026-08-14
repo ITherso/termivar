@@ -157,7 +157,13 @@ cargo xtask generate scanner my-scanner
 cargo xtask generate plugin my-venom-plugin
 ```
 
-They are source-level, opt-in library integrations, not runtime-loaded extensions for the default deterministic `scan`. Read the [Scanner SDK](sdk.md), [plugin guide](plugin.md), and [plugin API policy](plugin-api-policy.md) before depending on pre-stable contracts.
+They are source-level, opt-in library integrations, not runtime-loaded
+extensions for the default deterministic `scan`. Venom ships no stock detector
+plugins; the generated plugin records an INFO-only trait-boundary observation
+through host-owned policy and makes no security claim. Read the
+[Scanner SDK](sdk.md), [plugin guide](plugin.md), and
+[plugin API policy](plugin-api-policy.md) before depending on pre-stable
+contracts.
 
 ## Next steps
 

@@ -1,14 +1,23 @@
 # Plugin SDK preview
 
-Native plugins implement `Plugin` and are stored as `Arc<dyn Plugin>` in `PluginRegistry`. The registry owns validation, lookup, configuration, execution accounting, and error normalization; it does not inspect concrete plugin types.
+Native plugins implement `Plugin` and are linked into a host that registers
+them with `PluginRegistry`. The API is a source-level Rust **Preview**, not a
+stable dynamic ABI, and the stock CLI does not discover arbitrary plugin crates
+at runtime. The current Preview API line is `0.2.0`.
 
-The API is **Preview**. It is currently a source-level Rust extension API, not a stable dynamic ABI. A host application must link and register third-party plugin crates explicitly.
+Venom ships no detector plugins. The six former SQL, XSS, LFI, XXE, SSRF, and
+SSTI marker types were removed from the production namespace because substring
+matches did not verify vulnerabilities. The harmless types under
+[`examples/plugin-fixtures/`](https://github.com/ITherso/venom/tree/main/examples/plugin-fixtures) exist only
+to exercise this trait boundary.
 
-Compatibility is defined in the [Plugin API and SemVer policy](plugin-api-policy.md). Public plugin enums and configuration/result types are non-exhaustive, and registration rejects plugins targeting a different preview API line.
+Compatibility is defined in the [Plugin API and SemVer policy](plugin-api-policy.md).
+The host rejects plugins targeting another Preview API line before execution.
 
 ## Generate a plugin
 
-Install [`cargo-generate`](https://cargo-generate.github.io/cargo-generate/) and expand the repository template:
+Install [`cargo-generate`](https://cargo-generate.github.io/cargo-generate/)
+and expand the repository template:
 
 ```bash
 cargo install cargo-generate
@@ -17,68 +26,111 @@ cd my-venom-plugin
 cargo test
 ```
 
-The template asks for a stable plugin ID, implements the complete trait, and includes a registry/execution test. The command is a repository-local wrapper around `cargo-generate`. During alpha the generated dependency tracks Venom `main`; pin it to a tag or commit before publishing.
+The template records one fixed INFO observation to demonstrate the API. It is
+not a detector and makes no security claim. During alpha the generated
+dependency tracks Venom `main`; pin it to a tag or commit before publishing.
 
-## Contract
+## Host-owned execution
 
-```rust
-#[async_trait::async_trait]
-pub trait Plugin: Send + Sync {
-    fn api_version(&self) -> &str { PLUGIN_API_VERSION }
-    fn id(&self) -> &str;
-    fn name(&self) -> &str;
-    fn version(&self) -> &str;
-    fn description(&self) -> &str;
-    fn author(&self) -> &str;
-    fn category(&self) -> PluginCategory;
-    fn enabled(&self) -> bool;
-    async fn execute(
-        &self,
-        target: &str,
-        payload: &str,
-    ) -> Result<Vec<ScanFinding>, PluginError>;
-}
+A plugin no longer receives loose `target` and `payload` strings. The host
+creates one `PluginExecutionRequest` for an authorized invocation; the registry
+validates it and materializes the `PluginContext` passed to the plugin. That
+immutable boundary binds:
+
+- the authorized subject and exact origin;
+- cancellation and the current correlation/case identity;
+- request, body, observation, and execution limits;
+- a host-owned bounded request broker;
+- an evidence recorder and redaction policy.
+
+The registry validates the API line and plugin self-check, rejects duplicate IDs
+without replacing existing state, applies the host enable flag and deadline,
+and updates one consistent metadata record. There is no automatic retry: the
+public config does not advertise a retry count while the trait has no
+idempotency contract.
+
+A conforming plugin performs network work only through the context broker and
+records observations through the context recorder. It cannot return
+`ScanFinding`, `Outcome`, or a hypothesis transition. The host owns subject,
+source, correlation, reliability, redaction, knowledge insertion, verification,
+and any later finding projection.
+
+For each request, the context derives a response-capture ceiling as the smaller
+of the per-response limit and the invocation's unreserved cumulative remainder.
+The trusted broker contract forbids redirects and retries, requires body
+collection to stop at that ceiling, and reports truncation. The context
+independently validates both request and final-response origin, capture
+metadata, and accounting before returning the response to plugin code.
+
+```text
+host authorization + case
+          |
+          v
+   PluginContext
+      |       |
+      |       +----> bounded request broker
+      v
+ Plugin::execute
+      |
+      v
+ evidence recorder ---> host reasoning / verification ---> optional reporting
 ```
 
-The generated crate contains a compilable implementation. The public Rust API documentation also contains an inline trait example.
+Successful execution means that the trait call completed. It does not mean an
+observation was recorded, a hypothesis was supported, or a vulnerability was
+confirmed.
 
-## Host integration
+## Register and execute
 
-Add the generated crate to a host application and register it:
+The generated crate includes a complete registration/execution test using a
+local, no-I/O host context. See its source for the exact constructors on the
+current Preview API line:
 
-```rust
-use std::sync::Arc;
-use my_venom_plugin::GeneratedPlugin;
-use venom_scanner::PluginRegistry;
+- [`templates/venom-plugin/src/lib.rs`](https://github.com/ITherso/venom/blob/main/templates/venom-plugin/src/lib.rs)
+- [`examples/custom_plugin.rs`](https://github.com/ITherso/venom/blob/main/examples/custom_plugin.rs)
 
-let registry = PluginRegistry::new();
-registry
-    .register(Arc::new(GeneratedPlugin))
-    .expect("plugin must validate");
-```
-
-The stock CLI does not discover arbitrary shared libraries or crates at runtime. Dynamic discovery requires an explicit ABI, signing/trust policy, version negotiation, and sandbox decision; those are pre-stable design work.
+Hosts must construct authorization, budgets, request policy, cancellation,
+redaction, and correlation explicitly. Do not synthesize those values inside a
+plugin or infer authorization from same-origin alone.
 
 ## Design rules
 
-- Runner and registry code may call `Plugin::execute`; it must not branch on concrete plugin types.
-- Plugins communicate through inputs, findings, errors, and versioned public events.
-- Plugins must not render reports, start transports, mutate registry internals, or assume dashboard availability.
-- Plugin IDs are stable machine identifiers; display names are not identifiers.
-- Configuration must be explicit and serializable where practical.
-- `PluginRegistry` enforces its snapshotted `timeout_ms`, `max_payload_size`, and host-side `enabled` policy before or around every invocation. Hosts remain responsible for target authorization and for network/resource policy inside plugin implementations.
-- `retry_count` is reserved during Preview. The registry does not silently replay plugin code because the current trait cannot declare whether an invocation is idempotent.
+- Registry and host code call the `Plugin` trait; they do not branch on a
+  concrete fixture or plugin type.
+- Plugin IDs are stable machine identities. Duplicate registration fails.
+  Unregistration also fails while that exact entry has an invocation in
+  flight, so the ID cannot be rebound around an older execution receipt.
+- Plugins record bounded observations. They do not render reports or declare
+  findings, outcomes, hypotheses, severities, or vulnerability status.
+- Plugin transport goes through the host broker. A broker scope rejection is a
+  policy result, not evidence about the target.
+- Raw or sensitive values are subject to host redaction before evidence is
+  retained. Plugins must not copy them into errors, IDs, metadata, or logs.
+- Cancellation, deadline, request limits, and body limits fail closed. Work
+  already charged at the broker boundary is not refunded.
+- Native plugins execute in-process. The context is an authority contract, not
+  a sandbox or crash-isolation mechanism; hosts must trust linked plugin code.
+  Timeout and cancellation are cooperative: a non-yielding async poll or
+  blocking native call can stall its host thread. The API provides no CPU,
+  memory, or process isolation.
 
 ## Lifecycle
 
 ```text
-generate -> implement -> test -> validate -> register -> execute -> collect findings
+generate -> implement -> test -> validate -> register -> execute
+                                                     -> record observations
+                                                     -> host verification
 ```
 
 ## Stable SDK exit criteria
 
-- Replace target/payload strings with a versioned request context.
-- Converge the plugin and ordered phase execution paths.
-- Define capability declarations and API-version negotiation.
-- Add compatibility tests across released SDK versions.
-- Decide whether runtime plugins are linked, process-isolated, WebAssembly, or another sandboxed format.
+- Define capability declarations and compatibility tests across released SDK
+  versions.
+- Publish a scanner/plugin compatibility baseline and migration window.
+- Decide whether a future runtime plugin format is linked, process-isolated,
+  WebAssembly-based, or another sandboxed form.
+- Define signing, trust, discovery, and dependency-resolution policy before any
+  dynamic loading claim.
+
+See [ADR 0019](adr/0019-host-own-plugin-execution.md) for the execution and
+claim-ownership decision.

@@ -83,7 +83,7 @@ pub trait ScanPhase: Send + Sync {
 | `scanning` | Deterministic evidence, reasoning, planning, execution, verification, and bounded runtime | Preview |
 | `legacy-scanner` | Historical ordered runner, context, phases, and Scanner SDK; separate bounded discovery and active-verification slices within an otherwise unmetered run | Legacy |
 | `detection` | Advanced and anomaly detection | Experimental |
-| `plugins` | Native plugin registry and Lua engine | Preview |
+| `plugins` | Evidence-only native plugin registry plus the separate Lua engine; no stock detector plugins | Preview |
 | `distributed` | Queues, workers, and aggregation | Experimental |
 | `ml` | Pattern learning models | Experimental |
 | `monitoring` | Performance models | Preview |

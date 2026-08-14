@@ -7,7 +7,7 @@ Architecture decision records (ADRs) preserve why a durable technical choice was
 | ADR | Status | Decision |
 | --- | --- | --- |
 | [0001](0001-use-workspace.md) | Accepted | Use a Cargo workspace with inward dependencies |
-| [0002](0002-plugin-boundary.md) | Accepted | Keep plugins behind a source-level Rust trait boundary |
+| [0002](0002-plugin-boundary.md) | Partially superseded by [0019](0019-host-own-plugin-execution.md) | Keep plugins behind a source-level Rust trait boundary |
 | [0003](0003-event-bus.md) | Accepted | Separate core event contracts from scanner event delivery |
 | [0004](0004-reasoning-runtime-boundary.md) | Accepted | Keep deterministic reasoning inward of execution and runtime |
 | [0005](0005-shared-predicate-vocabulary.md) | Accepted | Share predicate vocabulary through venom-core |
@@ -24,6 +24,7 @@ Architecture decision records (ADRs) preserve why a durable technical choice was
 | [0016](0016-bound-legacy-discovery-authority.md) | Accepted; phase 5–9 inventory superseded by 0018 | Bound legacy discovery behind a shared authority |
 | [0017](0017-make-deterministic-scan-the-default.md) | Accepted | Make the deterministic runtime the canonical `scan` command |
 | [0018](0018-bound-legacy-verification-authority.md) | Accepted | Bound legacy verification behind a separate active authority |
+| [0019](0019-host-own-plugin-execution.md) | Accepted | Make plugin execution host-owned and evidence-only |
 
 ## Format
 

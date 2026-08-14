@@ -195,7 +195,7 @@ The following matrix separates build availability from actual execution:
 | `monitoring` | opt-in (`monitoring`) | no default path | no | Experimental / scaffold |
 | `compliance` | opt-in (`compliance`) | no default path | no | Experimental / scaffold |
 | `threat_intelligence` | opt-in (`threat-intel`) | no default path | no | Experimental / scaffold |
-| `plugin`, `plugins`, `lua_engine` | opt-in (`plugins`) | host-owned | no | source-level extension Preview |
+| `plugin`, `lua_engine` | opt-in (`plugins`) | host-owned; `PluginDecisionExecutor` can forward registry observations when a host supplies the execution request, while Lua remains a separate extension surface | no | source-level extension Preview; no stock detector plugins or dynamic loading |
 | `venom-api` / `venom api` | CLI opt-in (`api-adapter`) | command fails closed; router is host-owned | no | unsupported listener |
 | `venom-proxy` / `venom proxy` | CLI opt-in (`proxy-adapter`) | explicit adapter | no | Experimental fixed-upstream TCP relay |
 | Deployment (Helm / Terraform / Kubernetes) | absent | none | no | unsupported; see the [deployment blueprint](../experimental/deployment-blueprint.md) |

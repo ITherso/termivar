@@ -40,7 +40,12 @@ build typed run report
 
 ## Contract boundary
 
-The runner may call methods defined by `ScanPhase`; it must not match on concrete phase types or inspect detector internals. Plugins should be integrated through an adapter implementing a common execution contract rather than by adding plugin-specific branching to the runner.
+The runner may call methods defined by `ScanPhase`; it must not match on
+concrete phase types or inspect detector internals. Native plugins remain
+outside this ordered runner. The deterministic decision runner can instead
+adapt one registered plugin through `PluginDecisionExecutor` and a host-owned
+`PluginExecutionRequestProvider`; that bridge forwards observation evidence and
+does not convert successful plugin execution into a finding.
 
 ## Failure behavior
 

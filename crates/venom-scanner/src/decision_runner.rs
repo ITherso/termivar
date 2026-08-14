@@ -1380,80 +1380,50 @@ fn validate_evidence(
     Ok(())
 }
 
-/// Legacy plugin input selected by the host from a decision request.
+/// Host policy that creates one capability-bound plugin invocation.
+///
+/// The provider receives the complete immutable decision request so it can bind
+/// the plugin request to the exact evidence subject and verification case while
+/// selecting host-owned origin, broker, input, budget, cancellation, redaction,
+/// and reliability policy.
 #[cfg(feature = "plugins")]
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PluginExecutionInput {
-    target: String,
-    payload: String,
-}
-
-#[cfg(feature = "plugins")]
-impl PluginExecutionInput {
-    /// Creates validated legacy plugin arguments.
-    pub fn new(
-        target: impl Into<String>,
-        payload: impl Into<String>,
-    ) -> Result<Self, DecisionExecutorError> {
-        let target = target.into();
-        if target.trim().is_empty() {
-            return Err(DecisionExecutorError::new(
-                "plugin target must not be empty",
-            ));
-        }
-        Ok(Self {
-            target,
-            payload: payload.into(),
-        })
-    }
-
-    /// Returns the plugin target argument.
-    pub fn target(&self) -> &str {
-        &self.target
-    }
-
-    /// Returns the plugin payload or observed response argument.
-    pub fn payload(&self) -> &str {
-        &self.payload
-    }
-}
-
-/// Host policy that maps a decision case to the legacy plugin arguments.
-#[cfg(feature = "plugins")]
-pub trait PluginInputProvider: Send + Sync {
-    /// Produces target and payload values without mutating decision state.
-    fn input_for(
+pub trait PluginExecutionRequestProvider: Send + Sync {
+    /// Produces a host-owned plugin request without performing plugin work.
+    fn request_for(
         &self,
         request: &DecisionExecutionRequest,
-    ) -> Result<PluginExecutionInput, DecisionExecutorError>;
+    ) -> Result<crate::PluginExecutionRequest, DecisionExecutorError>;
 }
 
 #[cfg(feature = "plugins")]
-impl<F> PluginInputProvider for F
+impl<F> PluginExecutionRequestProvider for F
 where
-    F: Fn(&DecisionExecutionRequest) -> Result<PluginExecutionInput, DecisionExecutorError>
+    F: Fn(
+            &DecisionExecutionRequest,
+        ) -> Result<crate::PluginExecutionRequest, DecisionExecutorError>
         + Send
         + Sync,
 {
-    fn input_for(
+    fn request_for(
         &self,
         request: &DecisionExecutionRequest,
-    ) -> Result<PluginExecutionInput, DecisionExecutorError> {
+    ) -> Result<crate::PluginExecutionRequest, DecisionExecutorError> {
         self(request)
     }
 }
 
 /// Bridge from the source-level [`crate::PluginRegistry`] to native evidence.
 ///
-/// The input provider remains host-owned because an action ID is not an HTTP
-/// payload. Findings are normalized into evidence only after plugin execution;
-/// the regular adapter provenance checks still apply.
+/// The request provider remains host-owned because an action ID is neither an
+/// authorization grant nor plugin input. The registry returns only recorder-
+/// owned evidence, and the regular adapter provenance checks still apply before
+/// any knowledge write. A successful plugin invocation is not an outcome or a
+/// finding.
 #[cfg(feature = "plugins")]
 pub struct PluginDecisionExecutor {
     registry: Arc<crate::PluginRegistry>,
     plugin_id: String,
-    input: Arc<dyn PluginInputProvider>,
-    reliability: venom_core::ConfidenceScore,
+    requests: Arc<dyn PluginExecutionRequestProvider>,
 }
 
 #[cfg(feature = "plugins")]
@@ -1462,8 +1432,7 @@ impl PluginDecisionExecutor {
     pub fn new(
         registry: Arc<crate::PluginRegistry>,
         plugin_id: impl Into<String>,
-        input: Arc<dyn PluginInputProvider>,
-        reliability: venom_core::ConfidenceScore,
+        requests: Arc<dyn PluginExecutionRequestProvider>,
     ) -> Result<Self, DecisionExecutorError> {
         let plugin_id = plugin_id.into();
         if plugin_id.trim().is_empty() {
@@ -1472,8 +1441,7 @@ impl PluginDecisionExecutor {
         Ok(Self {
             registry,
             plugin_id,
-            input,
-            reliability,
+            requests,
         })
     }
 }
@@ -1489,52 +1457,52 @@ impl DecisionActionExecutor for PluginDecisionExecutor {
         &self,
         request: &DecisionExecutionRequest,
     ) -> Result<Vec<Evidence>, DecisionExecutorError> {
-        use venom_core::{EvidenceKind, EvidenceSource, EvidenceValue, KnowledgePredicate};
-
-        let input = self.input.input_for(request)?;
-        let result = self
-            .registry
-            .execute(&self.plugin_id, input.target(), input.payload())
-            .await
-            .map_err(|error| DecisionExecutorError::new(error.to_string()))?;
-        if !result.success {
-            return Err(DecisionExecutorError::new(
-                result
-                    .error
-                    .unwrap_or_else(|| "plugin execution failed".to_owned()),
+        let mut plugin_request = self.requests.request_for(request)?;
+        if plugin_request.subject() != request.case().subject() {
+            return Err(DecisionExecutorError::with_kind(
+                DecisionExecutionFailureKind::BlockedByPolicy,
+                "plugin request subject does not match the decision case",
             ));
         }
-
-        result
-            .findings
-            .into_iter()
-            .map(|finding| {
-                let method = if finding.module_name.trim().is_empty() {
-                    "finding".to_owned()
-                } else {
-                    finding.module_name.clone()
-                };
-                let source = EvidenceSource::new(self.plugin_id.clone(), method)
-                    .and_then(|source| source.with_correlation_id(request.case().id()))
-                    .map_err(|error| DecisionExecutorError::new(error.to_string()))?;
-                let predicate = KnowledgePredicate::new("plugin.finding", self.plugin_id.clone())
-                    .map_err(|error| DecisionExecutorError::new(error.to_string()))?;
-                Ok(Evidence::new(
-                    request.case().subject().clone(),
-                    EvidenceKind::Custom("plugin.finding".to_owned()),
-                    predicate,
-                    EvidenceValue::TextList(vec![
-                        format!("severity={}", finding.severity),
-                        format!("description={}", finding.description),
-                        format!("evidence={}", finding.evidence),
-                        format!("phase={}", finding.phase),
-                    ]),
-                    source,
-                    self.reliability,
-                ))
-            })
-            .collect()
+        if plugin_request.case_id() != request.case().id() {
+            return Err(DecisionExecutorError::with_kind(
+                DecisionExecutionFailureKind::BlockedByPolicy,
+                "plugin request correlation does not match the decision case",
+            ));
+        }
+        if let Some(maximum) = request.limits().max_response_body_bytes() {
+            plugin_request = plugin_request.restrict_response_body_bytes(maximum);
+        }
+        self.registry
+            .execute(&self.plugin_id, plugin_request)
+            .await
+            .map(crate::PluginExecutionResult::into_observations)
+            .map_err(plugin_executor_error)
     }
+}
+
+#[cfg(feature = "plugins")]
+fn plugin_executor_error(error: crate::PluginError) -> DecisionExecutorError {
+    use crate::PluginError;
+    let kind = match &error {
+        PluginError::Disabled
+        | PluginError::Cancelled
+        | PluginError::InputBudgetExceeded { .. }
+        | PluginError::RequestBudgetExceeded
+        | PluginError::ResponseBodyBudgetExceeded { .. }
+        | PluginError::ResponseBodyBudgetUnavailable
+        | PluginError::CumulativeBodyBudgetExceeded
+        | PluginError::ObservationBudgetExceeded
+        | PluginError::ObservationBytesBudgetExceeded
+        | PluginError::ScopeViolation
+        | PluginError::ContextSealed => DecisionExecutionFailureKind::BlockedByPolicy,
+        PluginError::BrokerFailure(_) => DecisionExecutionFailureKind::TransportFailure,
+        PluginError::RequestTimeout | PluginError::WallTimeExceeded => {
+            DecisionExecutionFailureKind::RequestTimeout
+        },
+        _ => DecisionExecutionFailureKind::ExecutorFailure,
+    };
+    DecisionExecutorError::with_kind(kind, error.to_string())
 }
 
 #[cfg(test)]
@@ -2880,21 +2848,21 @@ mod tests {
     }
 
     #[cfg(feature = "plugins")]
-    struct LegacyPlugin;
+    struct ObservationPlugin;
 
     #[cfg(feature = "plugins")]
     #[async_trait]
-    impl crate::Plugin for LegacyPlugin {
+    impl crate::Plugin for ObservationPlugin {
         fn id(&self) -> &str {
-            "legacy.http"
+            "plugin.observer"
         }
 
         fn name(&self) -> &str {
-            "Legacy HTTP"
+            "Observation Plugin"
         }
 
         fn version(&self) -> &str {
-            "0.1.0"
+            "0.2.0"
         }
 
         fn description(&self) -> &str {
@@ -2909,48 +2877,185 @@ mod tests {
             crate::PluginCategory::Custom
         }
 
-        fn enabled(&self) -> bool {
-            true
+        async fn execute(&self, context: &crate::PluginContext) -> Result<(), crate::PluginError> {
+            context.record(crate::PluginObservation::new(
+                EvidenceKind::Custom("plugin.observation".to_owned()),
+                KnowledgePredicate::new("plugin.observation", "marker").unwrap(),
+                EvidenceValue::Text(String::from_utf8_lossy(context.input()).into_owned()),
+                "marker",
+            )?)
+        }
+    }
+
+    #[cfg(feature = "plugins")]
+    struct RequestingPlugin;
+
+    #[cfg(feature = "plugins")]
+    #[async_trait]
+    impl crate::Plugin for RequestingPlugin {
+        fn id(&self) -> &str {
+            "plugin.requesting"
         }
 
+        fn name(&self) -> &str {
+            "Requesting Plugin"
+        }
+
+        fn version(&self) -> &str {
+            "0.2.0"
+        }
+
+        fn description(&self) -> &str {
+            "test response allowance bridge"
+        }
+
+        fn author(&self) -> &str {
+            "Venom"
+        }
+
+        fn category(&self) -> crate::PluginCategory {
+            crate::PluginCategory::Custom
+        }
+
+        async fn execute(&self, context: &crate::PluginContext) -> Result<(), crate::PluginError> {
+            context
+                .request(
+                    crate::PluginHttpMethod::Get,
+                    context.authorized_origin().clone(),
+                )
+                .await?;
+            Ok(())
+        }
+    }
+
+    #[cfg(feature = "plugins")]
+    struct CaptureLimitBroker {
+        limits: std::sync::Mutex<Vec<u64>>,
+    }
+
+    #[cfg(feature = "plugins")]
+    #[async_trait]
+    impl crate::PluginRequestBroker for CaptureLimitBroker {
         async fn execute(
             &self,
-            target: &str,
-            payload: &str,
-        ) -> Result<Vec<crate::ScanFinding>, crate::PluginError> {
-            Ok(vec![crate::ScanFinding {
-                phase: 1,
-                module_name: self.id().to_owned(),
-                severity: "INFO".to_owned(),
-                description: format!("observed {payload}"),
-                evidence: target.to_owned(),
-            }])
+            request: crate::PluginHttpRequest,
+        ) -> Result<crate::PluginHttpResponse, crate::PluginError> {
+            self.limits
+                .lock()
+                .map_err(|_| crate::PluginError::HostStateUnavailable)?
+                .push(request.max_response_body_bytes());
+            crate::PluginHttpResponse::new(200, request.url().clone(), Vec::new())
+        }
+    }
+
+    #[cfg(feature = "plugins")]
+    struct UnusedPluginBroker;
+
+    #[cfg(feature = "plugins")]
+    #[async_trait]
+    impl crate::PluginRequestBroker for UnusedPluginBroker {
+        async fn execute(
+            &self,
+            _request: crate::PluginHttpRequest,
+        ) -> Result<crate::PluginHttpResponse, crate::PluginError> {
+            Err(crate::PluginError::BrokerFailure(
+                "observation-only test broker must not execute".to_owned(),
+            ))
+        }
+    }
+
+    #[cfg(feature = "plugins")]
+    fn plugin_request(
+        subject: EntityId,
+        case_id: &str,
+    ) -> Result<crate::PluginExecutionRequest, DecisionExecutorError> {
+        crate::PluginExecutionRequest::new(
+            subject,
+            url::Url::parse("https://example.test").unwrap(),
+            case_id,
+            Arc::new(UnusedPluginBroker),
+        )
+        .map_err(|error| DecisionExecutorError::new(error.to_string()))
+    }
+
+    #[cfg(feature = "plugins")]
+    #[tokio::test]
+    async fn plugin_bridge_rejects_provider_identity_mismatch_before_plugin_execution() {
+        let providers: Vec<Arc<dyn PluginExecutionRequestProvider>> = vec![
+            Arc::new(|request: &DecisionExecutionRequest| {
+                plugin_request(
+                    EntityId::new("endpoint:https://other.test").unwrap(),
+                    request.case().id(),
+                )
+            }),
+            Arc::new(|request: &DecisionExecutionRequest| {
+                plugin_request(request.case().subject().clone(), "case:other")
+            }),
+        ];
+
+        for provider in providers {
+            let plugins = Arc::new(crate::PluginRegistry::new());
+            plugins
+                .register(Arc::new(ObservationPlugin), crate::PluginConfig::default())
+                .unwrap();
+            let bridge =
+                PluginDecisionExecutor::new(Arc::clone(&plugins), "plugin.observer", provider)
+                    .unwrap();
+            let mut registry = DecisionExecutorRegistry::new();
+            registry.register(Arc::new(bridge)).unwrap();
+            let command = DecisionLoopCommand::ExecuteAction {
+                case: case("http.probe"),
+                executor: Some("plugin.observer".to_owned()),
+                origin: DecisionActionOrigin::Planned,
+                delay_ms: None,
+            };
+
+            let error = DecisionRunnerAdapter::new(registry)
+                .execute_command(&command, &KnowledgeBase::new())
+                .await
+                .unwrap_err();
+
+            assert_eq!(
+                error.execution_failure().unwrap().kind(),
+                DecisionExecutionFailureKind::BlockedByPolicy
+            );
+            assert_eq!(
+                plugins
+                    .get_metadata("plugin.observer")
+                    .unwrap()
+                    .execution_count(),
+                0
+            );
         }
     }
 
     #[cfg(feature = "plugins")]
     #[tokio::test]
-    async fn plugin_registry_bridge_normalizes_findings_into_correlated_evidence() {
+    async fn plugin_registry_bridge_commits_observation_without_creating_a_claim() {
         let plugins = Arc::new(crate::PluginRegistry::new());
-        plugins.register(Arc::new(LegacyPlugin)).unwrap();
-        let input: Arc<dyn PluginInputProvider> =
-            Arc::new(|_request: &DecisionExecutionRequest| {
-                PluginExecutionInput::new("https://example.test", "server: nginx")
+        plugins
+            .register(Arc::new(ObservationPlugin), crate::PluginConfig::default())
+            .unwrap();
+        let requests: Arc<dyn PluginExecutionRequestProvider> =
+            Arc::new(|request: &DecisionExecutionRequest| {
+                plugin_request(request.case().subject().clone(), request.case().id())
+                    .and_then(|plugin_request| {
+                        plugin_request
+                            .with_input(b"server: nginx".to_vec())
+                            .map_err(|error| DecisionExecutorError::new(error.to_string()))
+                    })
+                    .map(|plugin_request| {
+                        plugin_request.with_reliability(ConfidenceScore::from_percent(90).unwrap())
+                    })
             });
-        let bridge = PluginDecisionExecutor::new(
-            plugins,
-            "legacy.http",
-            input,
-            ConfidenceScore::from_percent(90).unwrap(),
-        )
-        .unwrap();
+        let bridge = PluginDecisionExecutor::new(plugins, "plugin.observer", requests).unwrap();
         let mut registry = DecisionExecutorRegistry::new();
         registry.register(Arc::new(bridge)).unwrap();
         let adapter = DecisionRunnerAdapter::new(registry);
         let knowledge = KnowledgeBase::new();
         let command = DecisionLoopCommand::ExecuteAction {
             case: case("http.probe"),
-            executor: Some("legacy.http".to_owned()),
+            executor: Some("plugin.observer".to_owned()),
             origin: DecisionActionOrigin::Planned,
             delay_ms: None,
         };
@@ -2959,11 +3064,136 @@ mod tests {
         let observation = &receipt.after_execution().evidence()[0];
 
         assert_eq!(receipt.writes(), &[KnowledgeWrite::Inserted]);
-        assert_eq!(observation.source().component(), "legacy.http");
+        assert_eq!(observation.source().component(), "plugin.observer");
         assert_eq!(observation.source().correlation_id(), Some("case:1"));
         assert_eq!(
             observation.predicate().dotted(),
-            "plugin.finding.legacy.http"
+            "plugin.observation.marker"
         );
+        assert_eq!(knowledge.stats().facts, 0);
+        assert_eq!(knowledge.stats().hypotheses, 0);
+
+        let mut decision_loop = empty_decision_loop();
+        let hypothesis_predicate = KnowledgePredicate::new("stack", "framework").unwrap();
+        let hypothesis_value = EvidenceValue::Text("fixture".to_owned());
+        decision_loop
+            .planner_mut()
+            .register(
+                AttackAction::new(
+                    "http.probe",
+                    "plugin.observer",
+                    Expression::equals(
+                        KnowledgeLayer::Hypothesis,
+                        hypothesis_predicate.clone(),
+                        hypothesis_value.clone(),
+                    ),
+                    HypothesisSelector::new(
+                        hypothesis_predicate.clone(),
+                        hypothesis_value.clone(),
+                        Probability::from_percent(50).unwrap(),
+                        RequiredStrength::Strong,
+                    ),
+                    BenefitScore::from_percent(80).unwrap(),
+                    ActionCost::new(10).unwrap(),
+                    RiskScore::from_percent(20).unwrap(),
+                    BTreeSet::new(),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let knowledge = KnowledgeBase::new();
+        let mut hypothesis = Hypothesis::with_id(
+            "hypothesis:plugin-observation",
+            subject(),
+            hypothesis_predicate,
+            hypothesis_value,
+            Probability::from_percent(90).unwrap(),
+        )
+        .unwrap();
+        hypothesis.set_strength(HypothesisStrength::Strong);
+        hypothesis.set_state(HypothesisState::Supported);
+        knowledge.upsert_hypothesis(hypothesis).unwrap();
+        let mut experience = ExperienceStore::new();
+        let mut session = DecisionSession::new(subject());
+        let planning = decision_loop
+            .plan_next(&knowledge, &experience, &mut session)
+            .unwrap();
+        let turn = adapter
+            .drive_command_with_suppressed_actions(
+                &decision_loop,
+                planning.command(),
+                &knowledge,
+                &mut experience,
+                &mut session,
+                &BTreeSet::new(),
+            )
+            .await
+            .unwrap();
+        assert!(matches!(
+            turn,
+            DecisionRunnerTurn::Outcome { decision, .. }
+                if decision.verification().outcome().status() == OutcomeStatus::Unknown
+        ));
+        let snapshot = knowledge.snapshot_for_subject(&subject());
+        let retained = snapshot
+            .hypotheses()
+            .iter()
+            .find(|candidate| candidate.id() == "hypothesis:plugin-observation")
+            .unwrap();
+        assert_eq!(retained.state(), HypothesisState::Supported);
+    }
+
+    #[cfg(feature = "plugins")]
+    #[tokio::test]
+    async fn plugin_bridge_intersects_response_allowance_and_preserves_failure_kind() {
+        let plugins = Arc::new(crate::PluginRegistry::new());
+        plugins
+            .register(Arc::new(RequestingPlugin), crate::PluginConfig::default())
+            .unwrap();
+        let broker = Arc::new(CaptureLimitBroker {
+            limits: std::sync::Mutex::new(Vec::new()),
+        });
+        let provider_broker = broker.clone();
+        let provider: Arc<dyn PluginExecutionRequestProvider> =
+            Arc::new(move |request: &DecisionExecutionRequest| {
+                crate::PluginExecutionRequest::new(
+                    request.case().subject().clone(),
+                    url::Url::parse("https://example.test").unwrap(),
+                    request.case().id(),
+                    provider_broker.clone(),
+                )
+                .map_err(|error| DecisionExecutorError::new(error.to_string()))
+            });
+        let bridge = PluginDecisionExecutor::new(plugins, "plugin.requesting", provider).unwrap();
+        let request = DecisionExecutionRequest::new(
+            case("http.probe"),
+            DecisionExecutionStage::Passive,
+            Some(DecisionActionOrigin::Planned),
+            None,
+            DecisionExecutionLimits::new().with_max_response_body_bytes(3),
+        );
+        assert!(bridge.execute(&request).await.unwrap().is_empty());
+        assert_eq!(*broker.limits.lock().unwrap(), vec![3]);
+
+        for (error, expected) in [
+            (
+                crate::PluginError::ScopeViolation,
+                DecisionExecutionFailureKind::BlockedByPolicy,
+            ),
+            (
+                crate::PluginError::BrokerFailure("transport".to_owned()),
+                DecisionExecutionFailureKind::TransportFailure,
+            ),
+            (
+                crate::PluginError::RequestTimeout,
+                DecisionExecutionFailureKind::RequestTimeout,
+            ),
+            (
+                crate::PluginError::ExecutionFailed("plugin".to_owned()),
+                DecisionExecutionFailureKind::ExecutorFailure,
+            ),
+        ] {
+            assert_eq!(plugin_executor_error(error).kind(), expected);
+        }
     }
 }

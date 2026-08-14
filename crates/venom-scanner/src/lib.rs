@@ -17,6 +17,11 @@ const _: () = panic!(
     "the legacy-scanner feature requires panic=unwind so panics while polling phase execution become typed run failures"
 );
 
+#[cfg(all(feature = "plugins", panic = "abort"))]
+const _: () = panic!(
+    "the plugins feature requires panic=unwind so plugin panics become typed invocation failures"
+);
+
 // Core modules (always compiled)
 pub mod api;
 pub mod api_evidence;
@@ -127,9 +132,6 @@ pub mod post_exploitation;
 // Plugin system (feature: plugins)
 #[cfg(feature = "plugins")]
 pub mod plugin;
-
-#[cfg(feature = "plugins")]
-pub mod plugins;
 
 #[cfg(feature = "plugins")]
 pub mod lua_engine;
@@ -249,12 +251,12 @@ pub use rules::{
 };
 pub use venom_core::{
     ApiSurfaceKind, ApiVisibilityComparison, ApiVisibilityDimension, ApiVisibilityObservation,
-    ApiVisibilityPairKind, ApiVisibilityResult, ConfidenceScore, EntityId, Outcome, OutcomeError,
-    OutcomeStatus, ResourceAccounting, ResourceAccountingMode, RunAccounting, RunOutcomeRecord,
-    RunReport, RunReportError, RunReportInput, RunStatus, RunStepReport, RunStepStatus,
-    RunStopCode, RunStopReason, ScanFinding, SecuritySeverity, VerificationStage,
-    MAX_RUN_REPORT_EVIDENCE_IDS, MAX_RUN_REPORT_OUTCOMES, MAX_RUN_REPORT_STEPS,
-    MAX_RUN_REPORT_TEXT_BYTES, RUN_REPORT_SCHEMA,
+    ApiVisibilityPairKind, ApiVisibilityResult, ConfidenceScore, EntityId, EvidenceKind,
+    EvidenceValue, KnowledgePredicate, Outcome, OutcomeError, OutcomeStatus, ResourceAccounting,
+    ResourceAccountingMode, RunAccounting, RunOutcomeRecord, RunReport, RunReportError,
+    RunReportInput, RunStatus, RunStepReport, RunStepStatus, RunStopCode, RunStopReason,
+    ScanFinding, SecuritySeverity, VerificationStage, MAX_RUN_REPORT_EVIDENCE_IDS,
+    MAX_RUN_REPORT_OUTCOMES, MAX_RUN_REPORT_STEPS, MAX_RUN_REPORT_TEXT_BYTES, RUN_REPORT_SCHEMA,
 };
 pub use verification::{
     apply_outcome, ActiveVerifier, PassiveVerifier, VerificationCase, VerificationError,
@@ -353,7 +355,7 @@ pub use web_runtime::{
 };
 
 #[cfg(all(feature = "scanning", feature = "plugins"))]
-pub use decision_runner::{PluginDecisionExecutor, PluginExecutionInput, PluginInputProvider};
+pub use decision_runner::{PluginDecisionExecutor, PluginExecutionRequestProvider};
 
 #[cfg(feature = "scanning")]
 pub use persistence::{
@@ -431,12 +433,11 @@ pub use threat_intelligence::{
 // Plugin system exports (feature: plugins)
 #[cfg(feature = "plugins")]
 pub use plugin::{
-    Plugin, PluginCategory, PluginConfig, PluginError, PluginExecutionResult, PluginMetadata,
-    PluginRegistry, PLUGIN_API_VERSION,
+    Plugin, PluginBudget, PluginCategory, PluginConfig, PluginContext, PluginError,
+    PluginExecutionRequest, PluginExecutionResult, PluginHttpMethod, PluginHttpRequest,
+    PluginHttpResponse, PluginMetadata, PluginObservation, PluginRedactionPolicy, PluginRegistry,
+    PluginRequestBroker, PluginUsage, SecretRedactionPolicy, PLUGIN_API_VERSION,
 };
-
-#[cfg(feature = "plugins")]
-pub use plugins::{LFIPlugin, SQLiPlugin, SSRFPlugin, SSTIPlugin, XSSPlugin, XXEPlugin};
 
 #[cfg(feature = "plugins")]
 pub use lua_engine::{

@@ -48,6 +48,8 @@ jobs:
         run: |
           cargo test --locked -p venom-scanner --no-default-features --features scanning --lib
           cargo test --locked -p venom-scanner --no-default-features --features legacy-scanner --lib
+          cargo test --locked -p venom-scanner --no-default-features --features plugins --lib
+          cargo test --locked -p venom-scanner --no-default-features --features plugins --test plugin_integration_tests
 
   integration-tests:
     name: Integration Tests

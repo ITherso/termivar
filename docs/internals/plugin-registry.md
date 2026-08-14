@@ -1,44 +1,110 @@
 # Plugin registry internals
 
-`PluginRegistry` stores `Arc<dyn Plugin>` values in concurrent maps keyed by stable plugin ID. The registry depends only on the `Plugin` trait; it does not inspect concrete plugin types.
+`PluginRegistry` stores linked `Arc<dyn Plugin>` implementations by stable
+plugin ID. It depends on the trait rather than concrete plugin types. No stock
+detectors are registered, and the stock CLI does not discover crates or shared
+libraries at runtime.
 
 ## Registration
 
-Registration performs three steps:
+Registration is a fail-closed transaction:
 
-1. compare the plugin's declared API line with `PLUGIN_API_VERSION`;
-2. call `Plugin::validate`;
-3. snapshot configuration and metadata, then store the trait object.
+1. validate the non-empty plugin identity and declared API line;
+2. run `Plugin::validate` and snapshot host configuration and metadata;
+3. reject an existing ID without changing its plugin, configuration, or
+   metadata;
+4. publish one consistent registered entry.
 
-Preview compatibility currently requires matching major and minor components. Registering the same ID replaces the existing plugin and metadata; callers that need duplicate rejection must check ownership before registration until the contract is tightened.
+Preview compatibility requires matching major and minor components. Timestamp
+acquisition is fallible and cannot panic registration. Unregistration removes
+the complete entry rather than coordinating independent maps. Each execution
+acquires an entry-scoped lease while the registry shard is held; unregistering
+an in-use entry fails, preventing same-ID replacement from rebinding an older
+invocation's provenance or statistics.
+
+## Host context
+
+The host constructs a `PluginExecutionRequest` for every authorized invocation.
+The registry validates it and materializes a `PluginContext` that binds the
+subject, exact origin, case/correlation identity, cancellation, immutable
+budget, bounded request broker, evidence recorder, and redaction policy. A
+plugin receives no loose target/payload pair.
+
+The request broker is the plugin contract's only transport authority. For each
+dispatch, the context supplies a capture ceiling equal to the smaller of the
+per-response limit and the invocation's unreserved cumulative remainder. The
+trusted broker contract forbids redirects and retries, requires collection to
+stop at that ceiling, and reports delivered bytes and truncation. The context
+independently validates the requested and final response origins, capture
+metadata, and request/body accounting before returning bounded data.
+Cancellation and deadline are host policy, not target observations.
+
+The recorder accepts observation drafts, then applies host-owned subject,
+source, correlation, reliability, size/count bounds, and redaction. It does not
+accept `ScanFinding`, `Outcome`, or a hypothesis transition.
 
 ## Execution
 
 ```text
-lookup by ID
+lookup registered entry
     |
-load the registered host configuration
+check trait + host enabled policy
     |
-check trait + host enabled flags
+validate host-built PluginExecutionRequest
     |
-reject payloads above max_payload_size
+materialize invocation PluginContext
     |
-run Plugin::execute(target, payload) under timeout_ms
+run Plugin::execute(context) under cancellation + deadline
     |
-normalize result + elapsed time
+seal bounded recorded observations
     |
-increment success/error counters
+return execution receipt and update metadata
 ```
 
-A plugin-returned error or elapsed deadline is represented as a successful registry call containing `success: false` and an error string. Registry-level failures such as a missing, disabled, incompatible, invalid, or oversized invocation return `PluginError` directly before plugin code runs. Timeout drops the in-process plugin future and increments the error counter; it is cancellation, not process isolation.
+A plugin error, cancellation, or elapsed deadline records a failed invocation.
+Pre-execution policy rejection does not call plugin code. Execution success
+means only that the invocation completed; an empty observation set is valid.
+The registry never promotes evidence to a finding.
+
+There is no automatic retry. The removed `retry_count` field had no idempotency
+semantics and performed no work. A future retry design must require an explicit
+idempotency declaration and account every broker attempt independently.
+
+## Claim path
+
+```text
+plugin observation
+      |
+      v
+host evidence recorder
+      |
+      v
+knowledge / reasoning
+      |
+      v
+host verifier
+      |
+      v
+optional finding projection
+```
+
+The last edge is owned by the host's verified reporting path. No repository
+plugin fixture installs a reasoning rule or verifier, so executing a fixture
+cannot create a confirmed finding.
 
 ## Current constraints
 
-- Registry execution enforces `timeout_ms`, `max_payload_size`, and the host-side `enabled` flag. `retry_count` remains reserved metadata: the registry does not automatically replay a potentially side-effecting plugin call.
-- Plugin execution is in-process with no sandbox or crash isolation.
-- A plugin can still create its own network client. This legacy registry is not covered by the standard runtime's host-owned request broker or `RuntimeBudget` accounting.
-- There is no runtime discovery, signature verification, capability declaration, or dependency resolution.
-- Metrics are process-local counters and reset on restart.
-- Target and payload are raw strings rather than a versioned execution context.
+- Plugin execution is trusted native code in the host process; the context is
+  not a sandbox or crash-isolation mechanism. Timeout and cancellation are
+  cooperative, so a non-yielding async poll or blocking native call can stall
+  the host thread. There is no CPU, memory, or process isolation.
+- There is no runtime discovery, signature verification, capability
+  declaration, dependency resolution, or stable ABI.
+- Metrics are process-local and reset on restart.
+- Plugin execution is separate from both stock CLI scan orchestration paths.
+- A malicious linked crate could ignore the contract and use capabilities it
+  compiled for itself. Hosts must review and trust native plugin code.
 
-These gaps are why the API remains Preview. See [Plugin development](../plugin.md) and the [Plugin API policy](../plugin-api-policy.md) before publishing an external plugin.
+See [Plugin development](../plugin.md), the
+[Plugin API policy](../plugin-api-policy.md), and
+[ADR 0019](../adr/0019-host-own-plugin-execution.md).

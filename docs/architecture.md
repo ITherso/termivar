@@ -36,7 +36,7 @@ flowchart TD
     Proxy --> Core
 ```
 
-`Event`, `EventType`, `EventSeverity`, and `ScanFinding` live in `venom-core`. The scanner owns behavior such as `EventBus`, `ScanRunner`, `ScanPhase`, and `Plugin`. Scanner re-exports the core contracts so alpha consumers keep their existing import paths.
+`Event`, `EventType`, `EventSeverity`, and `ScanFinding` live in `venom-core`. The scanner owns behavior such as `EventBus`, `ScanRunner`, `ScanPhase`, and `Plugin`. `ScanFinding` remains a legacy/reporting contract; the Preview plugin trait records observations and does not return it. Scanner re-exports core contracts so alpha consumers keep their existing import paths.
 
 No lower-level crate may depend on `venom-cli` or `venom-api`. A cycle between workspace crates is a release blocker.
 
@@ -59,9 +59,11 @@ flowchart TD
     DiscoveryRecords --> RunReport["Typed run report · Unknown observations"]
     ReviewRecords --> RunReport
     LegacyRecords --> RunReport
-    PluginEngine["Plugin Engine (parallel Preview API)"] --> Findings
+    PluginHost["Linked plugin host · Preview"] --> PluginContext["Host-owned PluginContext<br/>scope · budget · broker · redaction"]
+    PluginContext --> PluginCode["Plugin trait implementation"]
+    PluginCode --> PluginEvidence["Recorded observations"]
+    PluginEvidence --> HostVerification["Host reasoning / verification"]
     Runner --> Events["Event Bus"]
-    Findings --> Reporter
     Events -. "optional host projection" .-> Observers["Telemetry consumers"]
 ```
 
@@ -73,7 +75,16 @@ not imply that the deterministic Surface-B runtime projects verification
 outcomes into findings, that a legacy `NeedsReview` outcome is a vulnerability
 verdict, or that a dashboard subscriber is composed by either CLI scan command.
 
-The runner knows `ScanPhase`, not concrete phase implementations. The plugin registry knows `Plugin`, not concrete plugin types. Today these are parallel execution paths; convergence behind a versioned request context is required before a stable plugin SDK.
+The runner knows `ScanPhase`, not concrete phase implementations. The plugin
+registry knows `Plugin`, not concrete plugin types. A linked host constructs the
+execution request, the registry materializes the plugin context, and the host
+retains authorization, transport, redaction, provenance, and verification
+authority. Plugin observations do not automatically become
+findings. An opt-in `PluginDecisionExecutor` can forward registry observations
+through the deterministic runner when a host supplies the full execution
+request; no stock CLI composes that bridge. Native plugin execution and the
+ordered phase runner remain parallel paths, and neither CLI scan command loads
+plugin crates dynamically.
 
 ## Scanner modules
 
@@ -81,7 +92,7 @@ The runner knows `ScanPhase`, not concrete phase implementations. The plugin reg
 venom-scanner/src/
 |-- phases/          ordered scan implementations
 |-- legacy_discovery.rs  distinct bounded transport for ordered phases 2–4 and 5–9
-|-- plugins/         built-in Plugin implementations
+|-- plugin.rs        Preview trait, host context, registry, and evidence boundary
 |-- contracts.rs     scanner traits and core contract re-exports
 |-- runner.rs        scheduling, timeouts, cancellation, aggregation
 |-- event_bus.rs     publish/subscribe behavior over core Event values
@@ -108,7 +119,9 @@ This target supports separate open-source and commercial distributions without m
 
 1. The CLI or application crate is the composition root.
 2. The runner owns scheduling, timeout, cancellation, events, and aggregation, not detection logic.
-3. Phases and plugins own detection behavior, not rendering or transport.
+3. Legacy phases implement their documented observation/verification contracts;
+   plugins record observations through host policy and never own finding or
+   transport authority.
 4. The event bus carries immutable lifecycle facts; subscribers do not control execution through hidden callbacks.
 5. Distributed workers exchange serializable task/result contracts, not concrete runner or plugin objects.
 6. Lua receives a deliberately small context and cannot access internal Rust state directly.
@@ -249,6 +262,8 @@ discovery migration is specified by
 [ADR 0016](adr/0016-bound-legacy-discovery-authority.md); the separate active
 verification authority and claim bridge are specified by
 [ADR 0018](adr/0018-bound-legacy-verification-authority.md).
+The host-owned, evidence-only plugin contract is specified by
+[ADR 0019](adr/0019-host-own-plugin-execution.md).
 
 ## Dependency review
 
@@ -261,8 +276,9 @@ Before adding an edge, ask:
 
 ## Known alpha debt
 
-- Plugin inputs are still target and payload strings rather than a versioned request context.
-- Native plugin execution and the ordered phase runner are separate orchestration paths.
+- Native plugin execution is linked and in-process, with no sandbox, dynamic
+  discovery, signing, or stable compatibility baseline. It remains separate
+  from both CLI orchestration paths.
 - The ordered phase runner still exposes a raw HTTP client to phase one and
   custom extensions and is not covered as a whole by
   `StandardWebDecisionRuntime` or `RuntimeBudget`. Phases two through four use a

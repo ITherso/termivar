@@ -69,6 +69,8 @@ All notable changes to Venom are recorded here. Releases use the categories from
 
 ### Changed
 
+- Replaced the original loose `target`/`payload` plugin invocation and plugin-authored `ScanFinding` output with a host-owned bounded context and observation recorder. The Preview API line changes intentionally; plugin observations require host reasoning and verification before any finding projection.
+- Removed the six substring-matching SQL, XSS, LFI, XXE, SSRF, and SSTI types from the production plugin namespace. Harmless INFO-only marker fixtures now exercise the trait boundary under `examples/plugin-fixtures/`, and stock profile scaffolds no longer name nonexistent detector plugins.
 - Made `venom scan` the default bounded deterministic runtime, retained `decision-scan` as a deprecated compatibility alias with the unchanged `decision-scan/v1` wire contract, and moved the historical mixed-authority heuristic runner behind the non-default `legacy-scanner` feature as acknowledged `legacy-scan`.
 - Removed unsupported API and experimental proxy adapters from default CLI builds; their commands now require explicit `api-adapter` or `proxy-adapter` features, and the API adapter fails nonzero instead of implying that a listener started.
 - Changed the repository container's default command to `venom --help`; it no longer starts an experimental network listener by default.
@@ -122,6 +124,7 @@ All notable changes to Venom are recorded here. Releases use the categories from
 
 ### Security
 
+- Made plugin registration reject duplicate IDs without replacing existing state, blocked unregistration and same-ID rebinding while an invocation is active, removed decorative retry policy, eliminated registration/execution-boundary panics, and placed plugin network access behind an exact-origin, cancellation-aware broker contract with context-validated capture caps, request/body accounting, opaque error details, and bounded redaction policy.
 - Expanded the responsible disclosure policy, supported-version table, response targets, CVE process, and researcher credit policy.
 - Added hard depth, node, field, and canonical-byte ceilings for API visibility evidence preparation without weakening decision-runner subject isolation.
 - Bounded relation identifiers, endpoints, custom kinds, provenance sets, review cursors, and page cloning; redacted deterministic visibility fingerprints and cursors from `Debug` output.
@@ -129,7 +132,7 @@ All notable changes to Venom are recorded here. Releases use the categories from
 - Made request dispatch, buffered request-body, and delivered response-body charges non-refundable at the transport boundary, including partial reads and executor cancellation, and preserved structured audit receipts for broker limit denials.
 - Bound profiled comparison identities to comparator, canonicalization, and projection-policy metadata; redacted legacy view handles from `Debug` output and kept raw JSON values and clear observed paths out of versioned reports.
 - Made host cancellation preserve monotonic transport accounting and any post-commit, pre-verification evidence receipt without misreporting a wall-time or request-timeout limit.
-- Rejected oversized plugin payloads before plugin code runs and cancelled in-process plugin futures when their configured deadline expires.
+- Rejected oversized plugin payloads before plugin code runs and cooperatively cancelled yielding in-process plugin futures when their configured deadline expires; this is not CPU, memory, blocking-call, or process isolation.
 - Added strict, bounded cursor parsing and redacted cursor diagnostics while preserving the legacy in-process pagination wire contract.
 - Added active multi-request and pre-socket retry budget regressions so nested dispatches cannot escape host accounting.
 - Kept raw strategy seeds and derived artifacts out of serialization and debug output while retaining length, role, revision, and SHA-256 provenance.

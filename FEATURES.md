@@ -32,8 +32,8 @@ A compiled module is not necessarily a runtime feature. The [runtime map](docs/i
 
 | Capability | Lifecycle | Current boundary |
 | --- | --- | --- |
-| Native plugins | Preview | Source-level Rust trait and registry; no runtime crate discovery or stable ABI; not merged into default `scan` |
-| Plugin starter | Preview | `cargo-generate` template under `templates/venom-plugin`, rendered and tested in CI |
+| Native plugins | Preview | Source-level Rust trait and registry with a host-owned bounded `PluginContext`; plugins record observations rather than findings, no stock detector plugins ship, and there is no runtime crate discovery or stable ABI |
+| Plugin starter | Preview | INFO-only trait-boundary fixture under `templates/venom-plugin`, rendered and tested in CI; it makes no security claim |
 | Lua execution | Preview | Opt-in, host-owned script surface; not part of either CLI scan runtime |
 | Legacy discovery phases | Legacy | Crawler, opt-in directory discovery, and parameter discovery share exact-origin redirect-disabled request/time/body limits and atomic typed state; their `INFO` records project as `Unknown`, not findings |
 | Legacy verification phases | Legacy | Phases 5–9 share separate exact-origin, bodyless, redirect- and retry-disabled request/time/body limits accounted at the `Active` stage; this authority is not the standard runtime's `RuntimeBudget` |

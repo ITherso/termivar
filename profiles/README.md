@@ -18,6 +18,10 @@ The files are retained as design inputs for a future, explicitly versioned confi
 - `aggressive.toml`
 - `stealth.toml`
 
+Their plugin lists are intentionally empty. Venom ships no stock detector
+plugins, and a future host must register and authorize every plugin ID it makes
+available.
+
 Do not use these samples as operational security, compliance, cloud, WAF-evasion, plugin, or reporting profiles. A future profile loader must define schema validation, authorization, runtime ownership, supported capabilities, and fail-closed handling before these files can become executable configuration.
 
 For current commands and runtime boundaries, use the root [README](../README.md), [Getting Started](../docs/GETTING_STARTED.md), and [runtime map](../docs/internals/runtime-map.md).

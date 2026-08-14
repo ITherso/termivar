@@ -47,11 +47,7 @@ impl ScanProfile {
             timeout_secs: 300,
             rate_limit_rps: 10,
             concurrent_workers: 4,
-            plugins_enabled: vec![
-                "sqli_plugin".to_string(),
-                "xss_plugin".to_string(),
-                "lfi_plugin".to_string(),
-            ],
+            plugins_enabled: vec![],
             lua_scripts_enabled: vec![
                 "compliance_check".to_string(),
                 "risk_assessment".to_string(),
@@ -75,11 +71,7 @@ impl ScanProfile {
             timeout_secs: 600,
             rate_limit_rps: 50,
             concurrent_workers: 16,
-            plugins_enabled: vec![
-                "sqli_plugin".to_string(),
-                "xss_plugin".to_string(),
-                "ssrf_plugin".to_string(),
-            ],
+            plugins_enabled: vec![],
             lua_scripts_enabled: vec!["cloud_config_check".to_string(), "api_security".to_string()],
             event_subscriptions: vec!["finding_found".to_string(), "worker_finished".to_string()],
             options: {
@@ -101,14 +93,7 @@ impl ScanProfile {
             timeout_secs: 180,
             rate_limit_rps: 100,
             concurrent_workers: 32,
-            plugins_enabled: vec![
-                "sqli_plugin".to_string(),
-                "xss_plugin".to_string(),
-                "lfi_plugin".to_string(),
-                "xxe_plugin".to_string(),
-                "ssrf_plugin".to_string(),
-                "ssti_plugin".to_string(),
-            ],
+            plugins_enabled: vec![],
             lua_scripts_enabled: vec!["aggressive_scan".to_string(), "waf_bypass".to_string()],
             event_subscriptions: vec![
                 "finding_found".to_string(),
@@ -327,7 +312,7 @@ mod tests {
         let profile = ScanProfile::aggressive();
         assert_eq!(profile.name, "aggressive");
         assert_eq!(profile.scan_intensity, ScanIntensity::Aggressive);
-        assert_eq!(profile.plugins_enabled.len(), 6);
+        assert!(profile.plugins_enabled.is_empty());
     }
 
     #[test]
@@ -356,8 +341,8 @@ mod tests {
     #[test]
     fn test_profile_with_plugins() {
         let profile = ScanProfile::custom("test", ScanIntensity::Normal)
-            .add_plugin("sqli_plugin")
-            .add_plugin("xss_plugin");
+            .add_plugin("example.marker.one")
+            .add_plugin("example.marker.two");
 
         assert_eq!(profile.plugins_enabled.len(), 2);
     }

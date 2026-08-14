@@ -1,81 +1,73 @@
-//! Register and execute a third-party-style plugin.
+//! Exercise the six harmless, INFO-only native plugin trait fixtures.
 //!
 //! Run with:
 //! `cargo run -p venom-examples --bin custom_plugin`
 
+#[path = "plugin-fixtures/mod.rs"]
+mod plugin_fixtures;
+
 use async_trait::async_trait;
+use plugin_fixtures::{
+    LfiMarkerFixture, SqlMarkerFixture, SsrfMarkerFixture, SstiMarkerFixture, XssMarkerFixture,
+    XxeMarkerFixture, LFI_MARKER, SQL_MARKER, SSRF_MARKER, SSTI_MARKER, XSS_MARKER, XXE_MARKER,
+};
 use std::sync::Arc;
+use url::Url;
 use venom_scanner::{
-    Plugin, PluginCategory, PluginError, PluginRegistry, ScanFinding, PLUGIN_API_VERSION,
+    EntityId, Plugin, PluginConfig, PluginError, PluginExecutionRequest, PluginHttpRequest,
+    PluginHttpResponse, PluginRegistry, PluginRequestBroker, PLUGIN_API_VERSION,
 };
 
-struct MarkerPlugin;
+/// This example grants no network authority. The fixtures never call it.
+struct NoIoBroker;
 
 #[async_trait]
-impl Plugin for MarkerPlugin {
-    fn id(&self) -> &str {
-        "example.marker"
-    }
-
-    fn name(&self) -> &str {
-        "Marker Plugin"
-    }
-
-    fn version(&self) -> &str {
-        "0.1.0"
-    }
-
-    fn description(&self) -> &str {
-        "Reports a harmless marker in supplied content"
-    }
-
-    fn author(&self) -> &str {
-        "Venom contributors"
-    }
-
-    fn category(&self) -> PluginCategory {
-        PluginCategory::Custom
-    }
-
-    fn enabled(&self) -> bool {
-        true
-    }
-
-    async fn execute(&self, target: &str, payload: &str) -> Result<Vec<ScanFinding>, PluginError> {
-        if !payload.contains("venom-example-marker") {
-            return Ok(Vec::new());
-        }
-
-        Ok(vec![ScanFinding {
-            phase: 0,
-            module_name: self.id().into(),
-            severity: "INFO".into(),
-            description: "Example marker observed".into(),
-            evidence: target.into(),
-        }])
+impl PluginRequestBroker for NoIoBroker {
+    async fn execute(
+        &self,
+        _request: PluginHttpRequest,
+    ) -> Result<PluginHttpResponse, PluginError> {
+        Err(PluginError::BrokerFailure(
+            "the trait-fixture host grants no transport authority".to_owned(),
+        ))
     }
 }
 
 #[tokio::main]
-async fn main() -> Result<(), PluginError> {
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let registry = PluginRegistry::new();
-    registry.register(Arc::new(MarkerPlugin))?;
-
-    let result = registry
-        .execute(
-            "example.marker",
-            "https://example.test",
-            "response contains venom-example-marker",
-        )
-        .await?;
+    let broker: Arc<dyn PluginRequestBroker> = Arc::new(NoIoBroker);
+    let subject = EntityId::new("authorized-origin:plugin-fixture")?;
+    let origin = Url::parse("https://example.test/")?;
+    let fixtures: Vec<(Arc<dyn Plugin>, &'static str)> = vec![
+        (Arc::new(SqlMarkerFixture), SQL_MARKER),
+        (Arc::new(XssMarkerFixture), XSS_MARKER),
+        (Arc::new(LfiMarkerFixture), LFI_MARKER),
+        (Arc::new(XxeMarkerFixture), XXE_MARKER),
+        (Arc::new(SsrfMarkerFixture), SSRF_MARKER),
+        (Arc::new(SstiMarkerFixture), SSTI_MARKER),
+    ];
 
     println!("plugin API: {PLUGIN_API_VERSION}");
-    println!(
-        "success={} findings={} elapsed={}ms",
-        result.success,
-        result.findings.len(),
-        result.execution_time_ms
-    );
+    for (fixture, marker) in fixtures {
+        let id = fixture.id().to_owned();
+        registry.register(fixture, PluginConfig::default())?;
+        let request = PluginExecutionRequest::new(
+            subject.clone(),
+            origin.clone(),
+            format!("case:{id}"),
+            broker.clone(),
+        )?
+        .with_input(marker.as_bytes().to_vec())?;
+        let receipt = registry.execute(&id, request).await?;
+        println!(
+            "plugin={} completed=true observations={} requests={} elapsed={}ms",
+            receipt.plugin_id(),
+            receipt.observations().len(),
+            receipt.usage().requests(),
+            receipt.elapsed_ms()
+        );
+    }
 
     Ok(())
 }

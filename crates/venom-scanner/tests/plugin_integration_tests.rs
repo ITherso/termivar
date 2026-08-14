@@ -1,246 +1,226 @@
-use std::sync::Arc;
+use async_trait::async_trait;
+use std::sync::{
+    atomic::{AtomicUsize, Ordering},
+    Arc,
+};
+use url::Url;
 use venom_scanner::{
-    LFIPlugin, Plugin, PluginCategory, PluginConfig, PluginError, PluginRegistry, SQLiPlugin,
-    SSRFPlugin, SSTIPlugin, XSSPlugin, XXEPlugin,
+    ConfidenceScore, EntityId, EvidenceKind, EvidenceValue, KnowledgePredicate, Plugin,
+    PluginCategory, PluginConfig, PluginContext, PluginError, PluginExecutionRequest,
+    PluginHttpRequest, PluginHttpResponse, PluginObservation, PluginRegistry, PluginRequestBroker,
 };
 
-#[tokio::test]
-async fn test_plugin_registry_multi_plugin_loading() {
-    let registry = PluginRegistry::new();
+const PLUGIN_ID: &str = "fixture.marker";
+const CASE_ID: &str = "case:plugin-integration";
 
-    let xss = Arc::new(XSSPlugin);
-    let sqli = Arc::new(SQLiPlugin);
-    let lfi = Arc::new(LFIPlugin);
+struct MarkerFixture {
+    calls: Arc<AtomicUsize>,
+}
 
-    registry.register(xss).unwrap();
-    registry.register(sqli).unwrap();
-    registry.register(lfi).unwrap();
+#[async_trait]
+impl Plugin for MarkerFixture {
+    fn id(&self) -> &str {
+        PLUGIN_ID
+    }
 
-    assert_eq!(registry.count(), 3);
+    fn name(&self) -> &str {
+        "Marker Fixture"
+    }
+
+    fn version(&self) -> &str {
+        "0.1.0"
+    }
+
+    fn description(&self) -> &str {
+        "Exercises the plugin trait boundary without making a security claim"
+    }
+
+    fn author(&self) -> &str {
+        "Venom"
+    }
+
+    fn category(&self) -> PluginCategory {
+        PluginCategory::Custom
+    }
+
+    async fn execute(&self, context: &PluginContext) -> Result<(), PluginError> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        if context.input() == b"fixture-marker" {
+            context.record(PluginObservation::new(
+                EvidenceKind::Custom("plugin.fixture".to_owned()),
+                KnowledgePredicate::new("plugin.fixture", "marker")
+                    .map_err(|error| PluginError::ExecutionFailed(error.to_string()))?,
+                EvidenceValue::Boolean(true),
+                "marker-match",
+            )?)?;
+        }
+        Ok(())
+    }
+}
+
+struct IncompatibleFixture;
+
+#[async_trait]
+impl Plugin for IncompatibleFixture {
+    fn api_version(&self) -> &str {
+        "0.1.99"
+    }
+
+    fn id(&self) -> &str {
+        "fixture.incompatible"
+    }
+
+    fn name(&self) -> &str {
+        "Incompatible Fixture"
+    }
+
+    fn version(&self) -> &str {
+        "0.1.0"
+    }
+
+    fn description(&self) -> &str {
+        "Exercises API-line rejection"
+    }
+
+    fn author(&self) -> &str {
+        "Venom"
+    }
+
+    fn category(&self) -> PluginCategory {
+        PluginCategory::Custom
+    }
+
+    async fn execute(&self, _context: &PluginContext) -> Result<(), PluginError> {
+        Ok(())
+    }
+}
+
+struct NoNetworkBroker;
+
+#[async_trait]
+impl PluginRequestBroker for NoNetworkBroker {
+    async fn execute(&self, request: PluginHttpRequest) -> Result<PluginHttpResponse, PluginError> {
+        Err(PluginError::BrokerFailure(format!(
+            "unexpected request to {}",
+            request.url().origin().ascii_serialization()
+        )))
+    }
+}
+
+fn request(input: &[u8]) -> PluginExecutionRequest {
+    PluginExecutionRequest::new(
+        EntityId::new("endpoint:https://fixture.test/").unwrap(),
+        Url::parse("https://fixture.test/").unwrap(),
+        CASE_ID,
+        Arc::new(NoNetworkBroker),
+    )
+    .unwrap()
+    .with_input(input.to_vec())
+    .unwrap()
+    .with_reliability(ConfidenceScore::from_percent(80).unwrap())
 }
 
 #[tokio::test]
-async fn test_plugin_execution_workflow() {
+async fn registry_returns_host_bound_observation_not_a_finding() {
+    let calls = Arc::new(AtomicUsize::new(0));
     let registry = PluginRegistry::new();
-
-    let xss = Arc::new(XSSPlugin);
-    registry.register(xss).unwrap();
+    registry
+        .register(
+            Arc::new(MarkerFixture {
+                calls: Arc::clone(&calls),
+            }),
+            PluginConfig::default(),
+        )
+        .unwrap();
 
     let result = registry
-        .execute(
-            "xss_plugin",
-            "http://target.com",
-            "<script>alert('xss')</script>",
-        )
+        .execute(PLUGIN_ID, request(b"fixture-marker"))
         .await
         .unwrap();
 
-    assert!(result.success);
-    assert_eq!(result.findings.len(), 1);
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    assert_eq!(result.plugin_id(), PLUGIN_ID);
+    assert_eq!(result.usage().observations(), 1);
+    assert_eq!(result.observations().len(), 1);
+    let observation = &result.observations()[0];
+    assert_eq!(
+        observation.subject().as_str(),
+        "endpoint:https://fixture.test/"
+    );
+    assert_eq!(observation.source().component(), PLUGIN_ID);
+    assert_eq!(observation.source().correlation_id(), Some(CASE_ID));
+    assert_eq!(observation.predicate().dotted(), "plugin.fixture.marker");
+    assert_eq!(observation.value(), &EvidenceValue::Boolean(true));
+
+    let wire = serde_json::to_string(&result).unwrap();
+    assert!(!wire.contains("finding"));
+    assert!(!wire.contains("confirmed"));
+    assert!(!wire.contains("severity"));
 }
 
 #[tokio::test]
-async fn test_plugin_category_filtering() {
+async fn duplicate_registration_preserves_the_original_entry() {
+    let original_calls = Arc::new(AtomicUsize::new(0));
+    let duplicate_calls = Arc::new(AtomicUsize::new(0));
     let registry = PluginRegistry::new();
+    registry
+        .register(
+            Arc::new(MarkerFixture {
+                calls: Arc::clone(&original_calls),
+            }),
+            PluginConfig::default(),
+        )
+        .unwrap();
 
-    let plugins: Vec<Arc<dyn Plugin>> = vec![
-        Arc::new(XSSPlugin),
-        Arc::new(SQLiPlugin),
-        Arc::new(LFIPlugin),
-        Arc::new(XXEPlugin),
-        Arc::new(SSRFPlugin),
-        Arc::new(SSTIPlugin),
-    ];
+    assert_eq!(
+        registry.register(
+            Arc::new(MarkerFixture {
+                calls: Arc::clone(&duplicate_calls),
+            }),
+            PluginConfig::new(false),
+        ),
+        Err(PluginError::DuplicateId)
+    );
+    registry.execute(PLUGIN_ID, request(b"")).await.unwrap();
 
-    for plugin in plugins {
-        registry.register(plugin).unwrap();
-    }
-
-    let xss_plugins = registry.list_by_category(PluginCategory::XSS);
-    assert_eq!(xss_plugins.len(), 1);
-
-    let sqli_plugins = registry.list_by_category(PluginCategory::SQLi);
-    assert_eq!(sqli_plugins.len(), 1);
-
-    let ssti_plugins = registry.list_by_category(PluginCategory::SSTI);
-    assert_eq!(ssti_plugins.len(), 1);
+    assert_eq!(registry.count(), 1);
+    assert_eq!(original_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(duplicate_calls.load(Ordering::SeqCst), 0);
+    assert!(registry.get_config(PLUGIN_ID).unwrap().enabled());
 }
 
 #[tokio::test]
-async fn test_plugin_config_customization() {
+async fn disabled_plugin_is_rejected_before_plugin_code_runs() {
+    let calls = Arc::new(AtomicUsize::new(0));
     let registry = PluginRegistry::new();
-    let xss = Arc::new(XSSPlugin);
+    registry
+        .register(
+            Arc::new(MarkerFixture {
+                calls: Arc::clone(&calls),
+            }),
+            PluginConfig::new(false),
+        )
+        .unwrap();
 
-    registry.register(xss).unwrap();
-
-    let mut custom_config = PluginConfig::default();
-    custom_config.timeout_ms = 10000;
-    custom_config.max_payload_size = 20480;
-
-    registry.update_config("xss_plugin", custom_config).unwrap();
-
-    let retrieved = registry.get_config("xss_plugin").unwrap();
-    assert_eq!(retrieved.timeout_ms, 10000);
-    assert_eq!(retrieved.max_payload_size, 20480);
-}
-
-#[tokio::test]
-async fn test_plugin_metadata_tracking() {
-    let registry = PluginRegistry::new();
-    let sqli = Arc::new(SQLiPlugin);
-
-    registry.register(sqli).unwrap();
-
-    // Execute multiple times
-    for i in 0..5 {
-        let payload = if i % 2 == 0 {
-            "' OR '1'='1"
-        } else {
-            "normal_input"
-        };
-
+    assert_eq!(
         registry
-            .execute("sqli_plugin", "http://target.com", payload)
-            .await
-            .ok();
-    }
-
-    let meta = registry.get_metadata("sqli_plugin").unwrap();
-    assert_eq!(meta.execution_count, 5);
-    assert!(meta.success_count > 0);
+            .execute(PLUGIN_ID, request(b"fixture-marker"))
+            .await,
+        Err(PluginError::Disabled)
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    let metadata = registry.get_metadata(PLUGIN_ID).unwrap();
+    assert_eq!(metadata.execution_count(), 0);
+    assert_eq!(metadata.success_count(), 0);
+    assert_eq!(metadata.error_count(), 0);
 }
 
-#[tokio::test]
-async fn test_comprehensive_vulnerability_scanning() {
+#[test]
+fn incompatible_api_line_is_rejected_without_registration() {
     let registry = PluginRegistry::new();
-
-    // Register all plugins
-    let plugins: Vec<(&str, Arc<dyn Plugin>)> = vec![
-        ("XSS", Arc::new(XSSPlugin)),
-        ("SQLi", Arc::new(SQLiPlugin)),
-        ("LFI", Arc::new(LFIPlugin)),
-        ("XXE", Arc::new(XXEPlugin)),
-        ("SSRF", Arc::new(SSRFPlugin)),
-        ("SSTI", Arc::new(SSTIPlugin)),
-    ];
-
-    for (name, plugin) in &plugins {
-        println!("Registering {} plugin", name);
-        registry.register(plugin.clone()).unwrap();
-    }
-
-    assert_eq!(registry.count(), 6);
-
-    // List all plugins
-    let all_plugins = registry.list_all();
-    assert_eq!(all_plugins.len(), 6);
-
-    println!("Available Plugins:");
-    for meta in &all_plugins {
-        println!("  - {} ({})", meta.name, meta.category);
-    }
-
-    // Execute each plugin with vulnerable payloads
-    let test_cases = vec![
-        (
-            "xss_plugin",
-            "http://target.com",
-            "<script>alert('xss')</script>",
-        ),
-        ("sqli_plugin", "http://target.com", "' OR '1'='1"),
-        (
-            "lfi_plugin",
-            "http://target.com?file=",
-            "../../../etc/passwd",
-        ),
-        (
-            "xxe_plugin",
-            "http://target.com",
-            "<!DOCTYPE foo [<!ENTITY xxe SYSTEM \"file:///etc/passwd\">]>",
-        ),
-        ("ssrf_plugin", "http://target.com", "http://localhost/admin"),
-        ("ssti_plugin", "http://target.com", "{{7*7}}"),
-    ];
-
-    let mut total_findings = 0;
-
-    for (plugin_id, target, payload) in test_cases {
-        let result = registry.execute(plugin_id, target, payload).await.unwrap();
-
-        println!("Plugin {}: {} findings", plugin_id, result.findings.len());
-
-        total_findings += result.findings.len();
-    }
-
-    assert!(total_findings > 0);
-}
-
-#[tokio::test]
-async fn test_plugin_unregister_and_reregister() {
-    let registry = PluginRegistry::new();
-    let lfi = Arc::new(LFIPlugin);
-
-    registry.register(lfi.clone()).unwrap();
-    assert_eq!(registry.count(), 1);
-
-    registry.unregister("lfi_plugin").unwrap();
+    assert!(matches!(
+        registry.register(Arc::new(IncompatibleFixture), PluginConfig::default()),
+        Err(PluginError::IncompatibleApiVersion { .. })
+    ));
     assert_eq!(registry.count(), 0);
-
-    registry.register(lfi).unwrap();
-    assert_eq!(registry.count(), 1);
-}
-
-#[tokio::test]
-async fn test_plugin_not_found_error() {
-    let registry = PluginRegistry::new();
-
-    let result = registry
-        .execute("nonexistent_plugin", "target", "payload")
-        .await;
-
-    assert!(result.is_err());
-    match result.unwrap_err() {
-        PluginError::NotFound(_) => {},
-        _ => panic!("Expected NotFound error"),
-    }
-}
-
-#[tokio::test]
-async fn test_all_plugins_enabled() {
-    let registry = PluginRegistry::new();
-
-    let plugins: Vec<Arc<dyn Plugin>> = vec![
-        Arc::new(XSSPlugin),
-        Arc::new(SQLiPlugin),
-        Arc::new(LFIPlugin),
-        Arc::new(XXEPlugin),
-        Arc::new(SSRFPlugin),
-        Arc::new(SSTIPlugin),
-    ];
-
-    for plugin in plugins {
-        registry.register(plugin).unwrap();
-    }
-
-    let all_plugins = registry.list_all();
-    assert!(all_plugins.iter().all(|p| p.enabled));
-}
-
-#[tokio::test]
-async fn test_plugin_performance_tracking() {
-    let registry = PluginRegistry::new();
-    let ssrf = Arc::new(SSRFPlugin);
-
-    registry.register(ssrf).unwrap();
-
-    let result = registry
-        .execute(
-            "ssrf_plugin",
-            "http://target.com",
-            "http://169.254.169.254/",
-        )
-        .await
-        .unwrap();
-
-    println!("Plugin execution time: {} ms", result.execution_time_ms);
 }
