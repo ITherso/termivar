@@ -2,10 +2,10 @@
 //!
 //! ## Runtime scope
 //!
-//! - **Build:** always/default.
-//! - **Execution:** shared runtime support used by Surface A and/or Surface B
+//! - **Build:** opt-in via `legacy-scanner`.
+//! - **Execution:** historical scanner runtime support
 //!   (`ScanRunner` emits `LogEntry` values).
-//! - **Default `venom scan`:** yes, as shared runtime support; not an independent execution stage.
+//! - **Default `venom scan`:** no.
 //! - **Support:** implemented.
 //!
 //! See `docs/internals/runtime-map.md`.

@@ -1,6 +1,6 @@
 # Venom feature lifecycle
 
-This document is the capability map for Venom `0.9.0-alpha`. It records what exists, how mature it is, and the most important limitation. It is not a completion score or a production-readiness claim.
+This document maps the current unreleased source state, whose package version is `0.10.0-alpha.1`. The published `v0.9.0-alpha` tag predates this remediation and is not the executable represented here. This map records what exists, how mature it is, and the most important limitation; it is not a completion score or a production-readiness claim.
 
 A compiled module is not necessarily a runtime feature. The [runtime map](docs/internals/runtime-map.md) records whether each major surface participates in the default deterministic `venom scan`, the feature-gated `venom legacy-scan`, an opt-in library host, or no repository execution path.
 
@@ -19,7 +19,7 @@ A compiled module is not necessarily a runtime feature. The [runtime map](docs/i
 
 | Capability | Lifecycle | Current boundary |
 | --- | --- | --- |
-| Core contracts | Beta | Shared events, findings, configuration, models, errors, and predicate vocabulary in `venom-core` |
+| Core contracts | Beta | Default `venom-core` exposes transport-neutral evidence, reasoning, ontology, outcome, predicate, and run-report records; its pre-quarantine config, error, event, finding, HTTP, vulnerability, and result facade requires non-default `legacy-contracts` |
 | Deterministic decision runtime | Preview | Bounded typed evidence, reasoning, planning, execution, verification, Experience, and continuation in `venom-scanner` |
 | `venom scan` | Preview | Default bounded CLI profile over `StandardWebDecisionRuntime`; text, explain, and historically named `decision-scan/v1` JSON output |
 | `venom decision-scan` | Deprecated | Compatibility alias for `venom scan`; identical command definition and deterministic engine |
@@ -34,12 +34,15 @@ A compiled module is not necessarily a runtime feature. The [runtime map](docs/i
 | --- | --- | --- |
 | Native plugins | Preview | Source-level Rust trait and registry with a host-owned bounded `PluginContext`; plugins record observations rather than findings, no stock detector plugins ship, and there is no runtime crate discovery or stable ABI |
 | Plugin starter | Preview | INFO-only trait-boundary fixture under `templates/venom-plugin`, rendered and tested in CI; it makes no security claim |
-| Lua execution | Preview | Opt-in, host-owned script surface; not part of either CLI scan runtime |
+| Lua registry scaffold | Experimental | Independent opt-in `lua` feature; registered source loading is not implemented, so `LuaScript::execute` fails closed and runs no script |
+| Platform models | Experimental | Opt-in `platform-models` records, catalogs, and in-memory utilities; no API/auth/persistence/realtime execution path, and callers own collection capacity except where a type states a limit |
+| Historical report renderers | Legacy | Opt-in `reporting` transformation types; not the deterministic `RunReport` path |
 | Legacy discovery phases | Legacy | Crawler, opt-in directory discovery, and parameter discovery share exact-origin redirect-disabled request/time/body limits and atomic typed state; their `INFO` records project as `Unknown`, not findings |
 | Legacy verification phases | Legacy | Phases 5–9 share separate exact-origin, bodyless, redirect- and retry-disabled request/time/body limits accounted at the `Active` stage; this authority is not the standard runtime's `RuntimeBudget` |
 | Legacy verification claims | Legacy | Reproduced SQL diagnostics/timing, template arithmetic, and an explicitly configured benign local-file canary may project only knowledge-only `NeedsReview`; exact reflection remains `Unknown`, XXE is inert, and configured SSRF OOB delivery records a receipt without a callback conclusion |
 | Legacy raw client | Legacy | Reconnaissance and host-defined custom phases may use direct I/O; this prevents whole-run request/body accounting even though built-in phases 2–9 use bounded authorities |
-| Anomaly detection | Experimental | Heuristic scoring requires manual validation and is not on a default scan path |
+| Detection and deviation records | Experimental | Caller-supplied signal definitions, technique scores, and normalized deviation dimensions are validated or catalogued only; Venom does not calculate or classify them |
+| External-model records | Experimental | Opt-in `ml` serializable records only; no training, clustering, classification, success estimation, or stage execution |
 | Semantic extraction | Preview | Evidence-only, bounded library surface; not automatically composed into either CLI scan command |
 | API predicate vocabulary | Preview | Canonical descriptors, normalized media/path observations, and resource-scope bundles in `venom-core` |
 | JSON/GraphQL reasoning | Preview | Opt-in deterministic fingerprinting; paired differences remain review hypotheses, not vulnerability verification |
@@ -50,10 +53,10 @@ A compiled module is not necessarily a runtime feature. The [runtime map](docs/i
 | Capability | Lifecycle | Current boundary |
 | --- | --- | --- |
 | Distributed execution | Experimental | In-process worker, queue, and aggregation APIs; no durable multi-node control plane |
-| Monitoring | Preview | Opt-in metrics and event projections; not a performance SLA |
+| Monitoring | Experimental | Opt-in caller-supplied profiles and comparisons; not telemetry collection or a performance SLA |
 | Dashboard | Experimental | Disconnected web preview; not a scan-runtime component |
-| Compliance | Preview | Optional models; not a certification or audit result |
-| Threat intelligence | Preview | Optional correlation surface with unstable provider contracts |
+| Compliance | Experimental | Optional caller-supplied catalogs and reports; not a certification or audit result |
+| Threat intelligence | Experimental | Optional feed/rule records and catalogs; no repository correlation or alert execution path |
 | Scanning profile files | Experimental | Illustrative configuration samples; no CLI loader or active scan integration |
 
 ## Quality evidence

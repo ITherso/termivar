@@ -1,4 +1,4 @@
-//! Native, production [`crate::payload_strategy::PayloadStrategy`]
+//! Native, built-in [`crate::payload_strategy::PayloadStrategy`]
 //!
 //! ## Runtime scope
 //!
@@ -26,13 +26,12 @@ use crate::payload_strategy::{PayloadStrategyError, PayloadStrategyRegistry};
 pub mod api_authorization_context_pair;
 pub mod encoding;
 pub mod http_header_control_pair;
-pub mod normalization;
 
 pub use api_authorization_context_pair::{
     ApiAuthorizationContextPairStrategy, API_AUTHORIZATION_CONTEXT_PAIR_HEADER_NAME,
     API_AUTHORIZATION_CONTEXT_PAIR_ID, API_AUTHORIZATION_CONTEXT_PAIR_REVISION,
 };
-pub use encoding::{apply_evasion, encode_into_artifact, EvasionTechnique};
+pub use encoding::{encode_into_artifact, hex_encode, percent_encode, PayloadEncoding};
 pub use http_header_control_pair::{
     HttpHeaderControlPairStrategy, HTTP_HEADER_CONTROL_PAIR_HEADER_NAME,
     HTTP_HEADER_CONTROL_PAIR_ID, HTTP_HEADER_CONTROL_PAIR_REVISION,
@@ -58,7 +57,7 @@ mod tests {
     };
 
     #[test]
-    fn standard_registry_registers_every_production_strategy() {
+    fn standard_registry_registers_every_built_in_strategy() {
         let registry = standard_payload_strategies().unwrap();
         let header_pair = PayloadStrategyRef::new(
             HTTP_HEADER_CONTROL_PAIR_ID,

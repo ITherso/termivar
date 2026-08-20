@@ -16,15 +16,10 @@ categories = ["web-programming::http-server"]
 workspace = true
 
 [dependencies]
-venom-core = { version = "0.9.0-alpha", path = "../venom-core" }
 axum = { workspace = true }
+
+[dev-dependencies]
 tokio = { workspace = true }
-tower = { workspace = true }
-tower-http = { workspace = true }
-serde = { workspace = true }
-serde_json = { workspace = true }
-uuid = { workspace = true }
-tracing = { workspace = true }
 
 [lib]
 name = "venom_api"

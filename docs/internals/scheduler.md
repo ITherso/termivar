@@ -6,7 +6,7 @@ The compiled `distributed` feature currently exposes three in-process building b
 - `WorkerPool` owns registered `WorkerNode` values and coordinates task assignment and completion.
 - `ResultAggregator` stores task result bytes for later collection.
 
-This is a **Preview control-plane model**, not a networked scheduler service.
+This is an **Experimental in-process control-plane model**, not a networked scheduler service.
 
 ## Selection and assignment
 

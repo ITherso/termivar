@@ -1,56 +1,8 @@
-# VENOM Stealth Profile
-# Slow, evasive, WAF-aware scanning
+# INERT DESIGN INPUT - not loaded by any Venom CLI or repository runtime.
+# Identity metadata only; see profiles/README.md.
 
-[scan]
-name = "stealth"
-description = "Slow, stealth scanning with WAF evasion"
-intensity = "stealth"
-timeout_secs = 3600
-rate_limit_rps = 2
-concurrent_workers = 1
-
-[plugins]
-# No stock detector plugins ship. Hosts must register reviewed plugin IDs.
-enabled = []
-
-[lua_scripts]
-enabled = [
-    "waf_detection",
-    "waf_bypass_check",
-    "rate_limit_detection",
-]
-
-[event_bus]
-subscriptions = [
-    "finding_found",
-    "scan_completed",
-]
-
-[waf]
-detection = true
-evasion = true
-bypass_enabled = true
-
-[timing]
-request_delay_ms = 5000
-batch_delay_ms = 30000
-randomize_delays = true
-
-[encoding]
-methods = [
-    "url",
-    "double_url",
-    "hex",
-    "html",
-    "base64",
-]
-randomize = true
-
-[options]
-waf_detection = "true"
-waf_bypass = "true"
-fuzzing_level = "low"
-payload_obfuscation = "high"
-request_randomization = "true"
-no_aggressive_payloads = "true"
-no_dos_payloads = "true"
+[profile]
+id = "stealth"
+description = "Historical low-rate profile label"
+lifecycle = "experimental-design-input"
+runtime_wired = false

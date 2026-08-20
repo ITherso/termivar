@@ -4,13 +4,14 @@
 //!
 //! - **Build:** always/default.
 //! - **Execution:** Surface B (deterministic decision runtime).
-//! - **Default `venom scan`:** no.
+//! - **Default `venom scan`:** yes, through `StandardWebDecisionRuntime`.
 //! - **Support:** implemented and tested.
 //!
 //! See `docs/internals/runtime-map.md`.
 //!
-//! The profile is opt-in. It defines semantic vocabulary and Bayesian rules,
-//! but performs no network I/O and never verifies a vulnerability.
+//! The standard runtime composes this profile by default. Direct lower-level
+//! hosts may choose whether to install it. It defines semantic vocabulary and
+//! Bayesian rules, but performs no network I/O and never verifies a vulnerability.
 
 use serde::Serialize;
 use thiserror::Error;

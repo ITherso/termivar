@@ -1,6 +1,7 @@
 //! Supply-chain policy: every external action referenced by a workflow must be
 //! pinned to an immutable selector — a full 40-character commit SHA for GitHub
-//! and reusable actions, or a `sha256:` digest for container actions.
+//! and reusable actions, or a `sha256:` digest for container actions, job
+//! containers, and service containers.
 //!
 //! A mutable ref (`@v4`, `@main`, `@stable`, a container tag, …) lets the
 //! upstream owner change the code a pinned name points at; an immutable selector
@@ -14,6 +15,15 @@
 //! not as workflow keys. This check reads only tracked files and does no network.
 
 use std::{error::Error, fs, path::Path};
+
+const RELEASE_WORKFLOW: &str = ".github/workflows/release.yml";
+const METADATA_GATE: &str = "cargo run --locked -p xtask -- release-metadata \"$tag_version\"";
+const TAG_FETCH_GATE: &str = "git fetch --force --no-tags origin \"refs/tags/${GITHUB_REF_NAME}:refs/tags/${GITHUB_REF_NAME}\"";
+const TAG_TYPE_GATE: &str = "test \"$(git cat-file -t \"refs/tags/${GITHUB_REF_NAME}\")\" = tag";
+const TAG_COMMIT_GATE: &str =
+    "test \"$(git rev-parse \"refs/tags/${GITHUB_REF_NAME}^{commit}\")\" = \"$(git rev-parse \"${GITHUB_SHA}^{commit}\")\"";
+const CHECKSUM_GATE: &str = "sha256sum venom-* | sort -k2 > ../SHA256SUMS";
+const RELEASE_CREATE_GATE: &str = "gh release create \"$GITHUB_REF_NAME\" \\";
 
 pub(super) fn check(workspace_root: &Path) -> Result<Vec<String>, Box<dyn Error>> {
     let roots = [
@@ -29,7 +39,46 @@ pub(super) fn check(workspace_root: &Path) -> Result<Vec<String>, Box<dyn Error>
     }
     files.sort();
 
-    Ok(workflow_pin_violations(&files))
+    let mut violations = workflow_pin_violations(&files);
+    violations.extend(release_workflow_policy_violations(&files));
+    Ok(violations)
+}
+
+fn release_workflow_policy_violations(files: &[(String, String)]) -> Vec<String> {
+    let Some((_, contents)) = files.iter().find(|(path, _)| path == RELEASE_WORKFLOW) else {
+        return vec![format!(
+            "{RELEASE_WORKFLOW}: reviewed release workflow is missing"
+        )];
+    };
+    let lines: Vec<_> = contents.lines().map(str::trim).collect();
+    let mut violations = Vec::new();
+    if !lines.contains(&METADATA_GATE) {
+        violations.push(format!(
+            "{RELEASE_WORKFLOW}: tag publication must run the exact changelog/support metadata gate `{METADATA_GATE}`"
+        ));
+    }
+
+    let mut next_line = 0;
+    for (required, purpose) in [
+        (TAG_FETCH_GATE, "force-fetch the triggering tag"),
+        (TAG_TYPE_GATE, "revalidate the annotated tag object"),
+        (
+            TAG_COMMIT_GATE,
+            "bind the fetched tag to the normalized triggering commit",
+        ),
+        (CHECKSUM_GATE, "checksum the verified build artifacts"),
+        (RELEASE_CREATE_GATE, "create the GitHub Release"),
+    ] {
+        let Some(offset) = lines[next_line..].iter().position(|line| *line == required) else {
+            violations.push(format!(
+                "{RELEASE_WORKFLOW}: release publication must {purpose} with the exact ordered command `{required}`"
+            ));
+            break;
+        };
+        next_line += offset + 1;
+    }
+
+    violations
 }
 
 fn collect_workflow_files(
@@ -93,9 +142,38 @@ fn workflow_pin_violations(files: &[(String, String)]) -> Vec<String> {
                 block_scalar_indent = None;
             }
 
+            let unsupported_key_syntax = if is_quoted_mapping_key(line) {
+                violations.push(format!(
+                    "{path}:{line_number}: quoted YAML mapping keys are forbidden in workflow policy files"
+                ));
+                true
+            } else if uses_yaml_key_indirection(line) {
+                violations.push(format!(
+                    "{path}:{line_number}: YAML explicit, tagged, anchored, or aliased keys/values are forbidden in workflow policy files"
+                ));
+                true
+            } else if contains_flow_mapping(line) {
+                violations.push(format!(
+                    "{path}:{line_number}: YAML flow mappings are forbidden in workflow policy files"
+                ));
+                true
+            } else {
+                false
+            };
+
             // A `key: |` / `key: >` line opens a block scalar; its body follows.
             if opens_block_scalar(line) {
+                for key in ["uses", "image", "container"] {
+                    if is_mapping_key(line, key) {
+                        violations.push(format!(
+                            "{path}:{line_number}: `{key}:` references must use a plain scalar, not a block scalar"
+                        ));
+                    }
+                }
                 block_scalar_indent = Some(indent);
+                continue;
+            }
+            if unsupported_key_syntax {
                 continue;
             }
 
@@ -107,6 +185,36 @@ fn workflow_pin_violations(files: &[(String, String)]) -> Vec<String> {
                 UsesLine::Reference(reference) => {
                     if let Some(reason) = reference_violation(reference) {
                         violations.push(format!("{path}:{line_number}: {reason}"));
+                    }
+                },
+            }
+
+            match parse_image_line(line) {
+                UsesLine::NotUses => {},
+                UsesLine::Malformed(reason) => violations.push(format!(
+                    "{path}:{line_number}: malformed container `image:` reference ({reason})"
+                )),
+                UsesLine::Reference(reference) => {
+                    if !is_immutable_image_reference(reference) {
+                        violations.push(format!(
+                            "{path}:{line_number}: container image `{reference}` is not an immutable digest; \
+                             use `image:tag@sha256:<64-lowercase-hex>`"
+                        ));
+                    }
+                },
+            }
+
+            match parse_container_line(line) {
+                UsesLine::NotUses => {},
+                UsesLine::Malformed(reason) => violations.push(format!(
+                    "{path}:{line_number}: malformed job `container:` reference ({reason})"
+                )),
+                UsesLine::Reference(reference) => {
+                    if !is_immutable_image_reference(reference) {
+                        violations.push(format!(
+                            "{path}:{line_number}: job container `{reference}` is not an immutable digest; \
+                             use `image:tag@sha256:<64-lowercase-hex>`"
+                        ));
                     }
                 },
             }
@@ -139,6 +247,18 @@ fn opens_block_scalar(line: &str) -> bool {
 /// Classify a line as a `uses:` key and, if so, extract its reference token.
 /// Fail-closed: a recognizable-but-broken `uses:` value yields `Malformed`.
 fn parse_uses_line(line: &str) -> UsesLine<'_> {
+    parse_reference_line(line, "uses", false)
+}
+
+fn parse_image_line(line: &str) -> UsesLine<'_> {
+    parse_reference_line(line, "image", false)
+}
+
+fn parse_container_line(line: &str) -> UsesLine<'_> {
+    parse_reference_line(line, "container", true)
+}
+
+fn parse_reference_line<'a>(line: &'a str, key: &str, allow_empty_mapping: bool) -> UsesLine<'a> {
     let trimmed = line.trim_start();
     // Drop an optional YAML list dash (`- uses: …`, `-   uses: …`).
     let trimmed = match trimmed.strip_prefix('-') {
@@ -146,7 +266,7 @@ fn parse_uses_line(line: &str) -> UsesLine<'_> {
         _ => trimmed,
     };
     // The key must be exactly `uses` followed by optional spaces and a colon.
-    let Some(after_key) = trimmed.strip_prefix("uses") else {
+    let Some(after_key) = trimmed.strip_prefix(key) else {
         return UsesLine::NotUses;
     };
     let Some(value) = after_key.trim_start().strip_prefix(':') else {
@@ -155,7 +275,11 @@ fn parse_uses_line(line: &str) -> UsesLine<'_> {
 
     let value = value.trim();
     if value.is_empty() {
-        return UsesLine::Malformed("empty value");
+        return if allow_empty_mapping {
+            UsesLine::NotUses
+        } else {
+            UsesLine::Malformed("empty value")
+        };
     }
     if let Some(rest) = value.strip_prefix('"') {
         return parse_quoted_value(rest, '"');
@@ -174,6 +298,68 @@ fn parse_uses_line(line: &str) -> UsesLine<'_> {
     } else {
         UsesLine::Reference(token)
     }
+}
+
+fn is_mapping_key(line: &str, key: &str) -> bool {
+    let trimmed = line.trim_start();
+    let trimmed = match trimmed.strip_prefix('-') {
+        Some(rest) if rest.starts_with(char::is_whitespace) => rest.trim_start(),
+        _ => trimmed,
+    };
+    trimmed
+        .strip_prefix(key)
+        .is_some_and(|after| after.trim_start().starts_with(':'))
+}
+
+fn is_quoted_mapping_key(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    let trimmed = match trimmed.strip_prefix('-') {
+        Some(rest) if rest.starts_with(char::is_whitespace) => rest.trim_start(),
+        _ => trimmed,
+    };
+    let Some(quote @ ('"' | '\'')) = trimmed.chars().next() else {
+        return false;
+    };
+    let rest = &trimmed[quote.len_utf8()..];
+    rest.match_indices(quote)
+        .any(|(end, _)| rest[end + quote.len_utf8()..].trim_start().starts_with(':'))
+}
+
+fn uses_yaml_key_indirection(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    let trimmed = match trimmed.strip_prefix('-') {
+        Some(rest) if rest.starts_with(char::is_whitespace) => rest.trim_start(),
+        _ => trimmed,
+    };
+    if trimmed
+        .chars()
+        .next()
+        .is_some_and(|character| matches!(character, '?' | '!' | '&' | '*'))
+    {
+        return true;
+    }
+    trimmed.find(':').is_some_and(|colon| {
+        trimmed[colon + 1..]
+            .trim_start()
+            .chars()
+            .next()
+            .is_some_and(|character| matches!(character, '!' | '&' | '*'))
+    })
+}
+
+fn contains_flow_mapping(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    let trimmed = match trimmed.strip_prefix('-') {
+        Some(rest) if rest.starts_with(char::is_whitespace) => rest.trim_start(),
+        _ => trimmed,
+    };
+    if trimmed.starts_with('{') {
+        return true;
+    }
+    trimmed.find(':').is_some_and(|colon| {
+        let value = trimmed[colon + 1..].trim_start();
+        value.starts_with('{') || (value.starts_with('[') && value.contains('{'))
+    })
 }
 
 /// Parse the remainder of a quoted `uses:` value (`rest` starts just after the
@@ -238,6 +424,13 @@ fn is_immutable_docker_reference(reference: &str) -> bool {
     !image.is_empty() && digest.len() == 64 && digest.bytes().all(is_lowercase_hex)
 }
 
+fn is_immutable_image_reference(reference: &str) -> bool {
+    let Some((image, digest)) = reference.rsplit_once("@sha256:") else {
+        return false;
+    };
+    !image.is_empty() && digest.len() == 64 && digest.bytes().all(is_lowercase_hex)
+}
+
 fn is_lowercase_hex(byte: u8) -> bool {
     byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)
 }
@@ -251,6 +444,73 @@ mod tests {
 
     fn violations(contents: &str) -> Vec<String> {
         workflow_pin_violations(&[("wf.yml".to_owned(), contents.to_owned())])
+    }
+
+    #[test]
+    fn release_workflow_requires_the_tag_metadata_gate() {
+        let path = ".github/workflows/release.yml".to_owned();
+        let publication = [
+            TAG_FETCH_GATE,
+            TAG_TYPE_GATE,
+            TAG_COMMIT_GATE,
+            CHECKSUM_GATE,
+            RELEASE_CREATE_GATE,
+        ]
+        .join("\n  ");
+        let valid = format!("run: |\n  {METADATA_GATE}\n  {publication}\n");
+        assert!(release_workflow_policy_violations(&[(path.clone(), valid.to_owned())]).is_empty());
+
+        for invalid in [
+            format!("run: |\n  # {METADATA_GATE}\n  {publication}\n"),
+            format!("name: document this command: {METADATA_GATE}\n  {publication}\n"),
+        ] {
+            let violations = release_workflow_policy_violations(&[(path.clone(), invalid)]);
+            assert_eq!(violations.len(), 1, "{violations:?}");
+            assert!(violations[0].contains("changelog/support metadata gate"));
+        }
+    }
+
+    #[test]
+    fn release_workflow_reverifies_tag_identity_before_checksums_and_publication() {
+        let path = ".github/workflows/release.yml".to_owned();
+        let valid = [
+            METADATA_GATE,
+            TAG_FETCH_GATE,
+            TAG_TYPE_GATE,
+            TAG_COMMIT_GATE,
+            CHECKSUM_GATE,
+            RELEASE_CREATE_GATE,
+        ]
+        .join("\n");
+        assert!(release_workflow_policy_violations(&[(path.clone(), valid)]).is_empty());
+
+        let missing_commit = [
+            METADATA_GATE,
+            TAG_FETCH_GATE,
+            TAG_TYPE_GATE,
+            CHECKSUM_GATE,
+            RELEASE_CREATE_GATE,
+        ]
+        .join("\n");
+        let violations = release_workflow_policy_violations(&[(path.clone(), missing_commit)]);
+        assert_eq!(violations.len(), 1, "{violations:?}");
+        assert!(
+            violations[0].contains("triggering commit"),
+            "{violations:?}"
+        );
+
+        let reordered = [
+            METADATA_GATE,
+            RELEASE_CREATE_GATE,
+            TAG_FETCH_GATE,
+            TAG_TYPE_GATE,
+            TAG_COMMIT_GATE,
+            CHECKSUM_GATE,
+        ]
+        .join("\n");
+        let violations = release_workflow_policy_violations(&[(path, reordered)]);
+        assert_eq!(violations.len(), 1, "{violations:?}");
+        assert!(violations[0].contains("create the GitHub Release"));
     }
 
     // --- accepted forms ------------------------------------------------------
@@ -421,6 +681,70 @@ mod tests {
     fn a_docker_digest_reference_is_accepted() {
         let line = format!("      - uses: docker://alpine@sha256:{DOCKER_DIGEST}\n");
         assert!(violations(&line).is_empty());
+    }
+
+    #[test]
+    fn job_and_service_container_images_require_digests() {
+        let pinned =
+            format!("    container:\n      image: semgrep/semgrep:1.2.3@sha256:{DOCKER_DIGEST}\n");
+        assert!(violations(&pinned).is_empty(), "{:?}", violations(&pinned));
+
+        let mutable = "    services:\n      database:\n        image: postgres:16\n";
+        let out = violations(mutable);
+        assert_eq!(out.len(), 1, "{out:?}");
+        assert!(out[0].contains("container image `postgres:16`"), "{out:?}");
+
+        let shorthand = format!("    container: rust:1.88@sha256:{DOCKER_DIGEST}\n");
+        assert!(
+            violations(&shorthand).is_empty(),
+            "{:?}",
+            violations(&shorthand)
+        );
+        assert_eq!(violations("    container: rust:latest\n").len(), 1);
+    }
+
+    #[test]
+    fn block_scalar_and_flow_reference_forms_fail_closed() {
+        let block_uses = "      - uses: >-\n          owner/action@v4\n";
+        let block_image = "    container:\n      image: |\n        postgres:16\n";
+        let flow_uses = "      - { uses: owner/action@v4, name: fixture }\n";
+        let flow_image = "      database: { image: postgres:16 }\n";
+
+        for contents in [block_uses, block_image, flow_uses, flow_image] {
+            assert_eq!(violations(contents).len(), 1, "{contents:?}");
+        }
+    }
+
+    #[test]
+    fn quoted_explicit_tagged_and_aliased_keys_fail_closed() {
+        let quoted = "      - \"uses\": owner/action@v4\n";
+        let escaped = "      - \"u\\u0073es\": owner/action@v4\n";
+        let explicit = "      - ? uses\n        : owner/action@v4\n";
+        let tagged = "      - !!str uses: owner/action@v4\n";
+        let anchored = "      - &step uses: owner/action@v4\n";
+        let aliased = "      - *step\n";
+
+        for contents in [quoted, escaped, explicit, tagged, anchored, aliased] {
+            assert!(!violations(contents).is_empty(), "{contents:?}");
+        }
+    }
+
+    #[test]
+    fn quoted_keys_are_rejected_when_values_reuse_or_change_the_quote_style() {
+        let fixtures = [
+            "      - \"uses\": \"owner/action@v4\"\n",
+            "      - \"uses\": 'owner/action@v4'\n",
+            "    \"container\": \"rust:latest\"\n",
+            "    'container': \"rust:latest\"\n",
+            "        \"image\": 'postgres:16'\n",
+            "        'image': 'postgres:16'\n",
+        ];
+
+        for contents in fixtures {
+            let out = violations(contents);
+            assert_eq!(out.len(), 1, "{contents:?}: {out:?}");
+            assert!(out[0].contains("quoted YAML mapping keys"), "{out:?}");
+        }
     }
 
     #[test]

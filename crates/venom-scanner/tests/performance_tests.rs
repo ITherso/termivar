@@ -5,6 +5,7 @@
 // Coverage instrumentation changes timing enough to invalidate the strict
 // micro-benchmarks in this file. They still run in the normal test workflow.
 #![allow(unexpected_cfgs)]
+#![cfg(feature = "legacy-scanner")]
 #![cfg(not(tarpaulin))]
 
 use std::time::{Duration, Instant};

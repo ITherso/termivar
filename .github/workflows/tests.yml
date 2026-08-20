@@ -11,6 +11,18 @@ env:
   RUST_BACKTRACE: 1
 
 jobs:
+  distribution-contracts:
+    name: Distribution Contracts
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - name: Build default CLI container
+        run: docker build --tag venom:ci .
+      - name: Verify container contract
+        run: sh tests/distribution/container-contract.sh venom:ci
+
   architecture:
     name: Architecture Boundaries
     runs-on: ubuntu-latest
@@ -44,39 +56,23 @@ jobs:
           cargo test --locked -p venom-cli --no-default-features --features legacy-scanner
           cargo test --locked -p venom-cli --no-default-features --features api-adapter
           cargo test --locked -p venom-cli --no-default-features --features proxy-adapter
-      - name: Verify deterministic and historical scanner feature boundaries
+      - name: Verify scanner feature boundaries independently
         run: |
-          cargo test --locked -p venom-scanner --no-default-features --features scanning --lib
-          cargo test --locked -p venom-scanner --no-default-features --features legacy-scanner --lib
-          cargo test --locked -p venom-scanner --no-default-features --features plugins --lib
-          cargo test --locked -p venom-scanner --no-default-features --features plugins --test plugin_integration_tests
+          set -euo pipefail
+          for feature in \
+            core scanning legacy-scanner platform-models reporting detection ml \
+            distributed monitoring compliance threat-intel plugins lua
+          do
+            cargo test --locked -p venom-scanner --no-default-features --features "$feature" --lib --tests
+          done
+          for aggregate in minimal full enterprise research
+          do
+            cargo check --locked -p venom-scanner --no-default-features --features "$aggregate"
+          done
 
   integration-tests:
     name: Integration Tests
     runs-on: ubuntu-latest
-    services:
-      postgres:
-        image: postgres:15
-        env:
-          POSTGRES_USER: test
-          POSTGRES_PASSWORD: test
-          POSTGRES_DB: venom_test
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-        ports:
-          - 5432:5432
-      redis:
-        image: redis:7
-        options: >-
-          --health-cmd "redis-cli ping"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-        ports:
-          - 6379:6379
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
@@ -85,9 +81,6 @@ jobs:
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
       - name: Run integration tests
         run: cargo test --test '*' --all-features --verbose
-        env:
-          DATABASE_URL: postgres://test:test@localhost:5432/venom_test
-          REDIS_URL: redis://localhost:6379
 
   plugin-template:
     name: Plugin Template

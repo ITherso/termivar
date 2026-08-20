@@ -20,11 +20,12 @@ Architecture decision records (ADRs) preserve why a durable technical choice was
 | [0012](0012-account-delivered-transport-bytes.md) | Accepted | Account delivered transport bytes at the broker boundary |
 | [0013](0013-runtime-owned-api-visibility-pairs.md) | Accepted | Run authorized API visibility pairs as a runtime-owned workflow |
 | [0014](0014-runtime-truth-consolidation.md) | Superseded by 0017 | Consolidate runtime truth into three named surfaces |
-| [0015](0015-platform-shell-boundary.md) | Accepted | Classify the platform shell by execution reality |
+| [0015](0015-platform-shell-boundary.md) | Build inventory superseded by [0020](0020-quarantine-platform-and-distribution-surfaces.md); classification axes retained | Classify the platform shell by execution reality |
 | [0016](0016-bound-legacy-discovery-authority.md) | Accepted; phase 5–9 inventory superseded by 0018 | Bound legacy discovery behind a shared authority |
 | [0017](0017-make-deterministic-scan-the-default.md) | Accepted | Make the deterministic runtime the canonical `scan` command |
 | [0018](0018-bound-legacy-verification-authority.md) | Accepted | Bound legacy verification behind a separate active authority |
 | [0019](0019-host-own-plugin-execution.md) | Accepted | Make plugin execution host-owned and evidence-only |
+| [0020](0020-quarantine-platform-and-distribution-surfaces.md) | Accepted | Quarantine platform and distribution surfaces |
 
 ## Format
 

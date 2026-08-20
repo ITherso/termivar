@@ -2,10 +2,10 @@
 //!
 //! ## Runtime scope
 //!
-//! - **Build:** default via `scanning`.
+//! - **Build:** opt-in via `reporting`.
 //! - **Execution:** no repository runtime caller (not on the default scan path).
 //! - **Default `venom scan`:** no.
-//! - **Support:** experimental/scaffold.
+//! - **Support:** Legacy host-library renderer, separate from deterministic `RunReport`.
 //!
 //! See `docs/internals/runtime-map.md`.
 //!

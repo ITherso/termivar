@@ -1,45 +1,150 @@
-//! Real-time Updates & WebSocket Support
+//! Recorded event and subscription data models.
 //!
 //! ## Runtime scope
 //!
-//! - **Build:** default via `scanning`.
+//! - **Build:** opt-in via `platform-models`.
 //! - **Execution:** no repository runtime caller (not on the default scan path).
 //! - **Default `venom scan`:** no.
-//! - **Support:** experimental/scaffold.
+//! - **Support:** experimental in-memory models.
 //!
-//! See `docs/internals/runtime-map.md`.
-//!
-//! Provides streaming updates for live scan progress, findings, and metrics.
+//! `EventStream` is an in-process event journal. This module has no WebSocket
+//! listener, connection manager, subscriber delivery, or network broadcast.
 
 use dashmap::DashMap;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::sync::Arc;
 
-/// Real-time event types
-#[derive(Debug, Clone, Serialize, Deserialize)]
+fn validate_bounded_f32(value: f32, minimum: f32, maximum: f32) -> bool {
+    value.is_finite() && (minimum..=maximum).contains(&value)
+}
+
+fn serialize_bounded_f32<S>(
+    value: &f32,
+    minimum: f32,
+    maximum: f32,
+    field: &'static str,
+    serializer: S,
+) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    if !validate_bounded_f32(*value, minimum, maximum) {
+        return Err(serde::ser::Error::custom(format_args!(
+            "{field} must be finite and in {minimum}..={maximum}"
+        )));
+    }
+    serializer.serialize_f32(*value)
+}
+
+fn deserialize_bounded_f32<'de, D>(
+    deserializer: D,
+    minimum: f32,
+    maximum: f32,
+    field: &'static str,
+) -> Result<f32, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = f32::deserialize(deserializer)?;
+    if !validate_bounded_f32(value, minimum, maximum) {
+        return Err(serde::de::Error::custom(format_args!(
+            "{field} must be finite and in {minimum}..={maximum}"
+        )));
+    }
+    Ok(value)
+}
+
+mod percentage {
+    use super::*;
+
+    pub fn serialize<S>(value: &f32, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serialize_bounded_f32(value, 0.0, 100.0, "percentage", serializer)
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<f32, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserialize_bounded_f32(deserializer, 0.0, 100.0, "percentage")
+    }
+}
+
+mod normalized_score {
+    use super::*;
+
+    pub fn serialize<S>(value: &f32, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serialize_bounded_f32(value, 0.0, 1.0, "normalized score", serializer)
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<f32, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserialize_bounded_f32(deserializer, 0.0, 1.0, "normalized score")
+    }
+}
+
+mod optional_percentage {
+    use super::*;
+
+    pub fn serialize<S>(value: &Option<f32>, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        if let Some(value) = value {
+            if !validate_bounded_f32(*value, 0.0, 100.0) {
+                return Err(serde::ser::Error::custom(
+                    "percentage must be finite and in 0..=100",
+                ));
+            }
+        }
+        value.serialize(serializer)
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Option<f32>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = Option::<f32>::deserialize(deserializer)?;
+        if let Some(value) = value {
+            if !validate_bounded_f32(value, 0.0, 100.0) {
+                return Err(serde::de::Error::custom(
+                    "percentage must be finite and in 0..=100",
+                ));
+            }
+        }
+        Ok(value)
+    }
+}
+
+/// Caller-supplied scan event record.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum RealtimeEvent {
-    /// Scan started
     ScanStarted {
         scan_id: String,
         target: String,
         timestamp: u64,
     },
-    /// Phase started
     PhaseStarted {
         scan_id: String,
         phase: u8,
         phase_name: String,
         timestamp: u64,
     },
-    /// Phase progress update
     PhaseProgress {
         scan_id: String,
         phase: u8,
+        #[serde(with = "percentage")]
         progress: f32,
         timestamp: u64,
     },
-    /// Finding discovered
     FindingDiscovered {
         scan_id: String,
         phase: u8,
@@ -47,242 +152,200 @@ pub enum RealtimeEvent {
         description: String,
         timestamp: u64,
     },
-    /// Phase completed
     PhaseCompleted {
         scan_id: String,
         phase: u8,
-        findings_count: usize,
+        findings_count: u64,
         duration_ms: u64,
         timestamp: u64,
     },
-    /// Scan completed
     ScanCompleted {
         scan_id: String,
-        total_findings: usize,
+        total_findings: u64,
+        #[serde(with = "normalized_score")]
         risk_score: f32,
         duration_ms: u64,
         timestamp: u64,
     },
-    /// Error occurred
     Error {
         scan_id: String,
         error_message: String,
         timestamp: u64,
     },
-    /// Metrics update
     Metrics {
         scan_id: String,
         requests: u64,
         responses: u64,
         findings: u64,
         errors: u64,
-        success_rate: f32,
+        #[serde(with = "optional_percentage")]
+        response_request_ratio_percent: Option<f32>,
         timestamp: u64,
     },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RealtimeEventValidationError {
+    EmptyScanId,
+    InvalidPhaseProgress,
+    InvalidRiskScore,
+    InvalidResponseRequestRatioPercent,
 }
 
 impl RealtimeEvent {
     pub fn timestamp(&self) -> u64 {
         match self {
-            RealtimeEvent::ScanStarted { timestamp, .. } => *timestamp,
-            RealtimeEvent::PhaseStarted { timestamp, .. } => *timestamp,
-            RealtimeEvent::PhaseProgress { timestamp, .. } => *timestamp,
-            RealtimeEvent::FindingDiscovered { timestamp, .. } => *timestamp,
-            RealtimeEvent::PhaseCompleted { timestamp, .. } => *timestamp,
-            RealtimeEvent::ScanCompleted { timestamp, .. } => *timestamp,
-            RealtimeEvent::Error { timestamp, .. } => *timestamp,
-            RealtimeEvent::Metrics { timestamp, .. } => *timestamp,
+            Self::ScanStarted { timestamp, .. }
+            | Self::PhaseStarted { timestamp, .. }
+            | Self::PhaseProgress { timestamp, .. }
+            | Self::FindingDiscovered { timestamp, .. }
+            | Self::PhaseCompleted { timestamp, .. }
+            | Self::ScanCompleted { timestamp, .. }
+            | Self::Error { timestamp, .. }
+            | Self::Metrics { timestamp, .. } => *timestamp,
         }
     }
 
-    pub fn scan_id(&self) -> String {
+    pub fn scan_id(&self) -> &str {
         match self {
-            RealtimeEvent::ScanStarted { scan_id, .. } => scan_id.clone(),
-            RealtimeEvent::PhaseStarted { scan_id, .. } => scan_id.clone(),
-            RealtimeEvent::PhaseProgress { scan_id, .. } => scan_id.clone(),
-            RealtimeEvent::FindingDiscovered { scan_id, .. } => scan_id.clone(),
-            RealtimeEvent::PhaseCompleted { scan_id, .. } => scan_id.clone(),
-            RealtimeEvent::ScanCompleted { scan_id, .. } => scan_id.clone(),
-            RealtimeEvent::Error { scan_id, .. } => scan_id.clone(),
-            RealtimeEvent::Metrics { scan_id, .. } => scan_id.clone(),
+            Self::ScanStarted { scan_id, .. }
+            | Self::PhaseStarted { scan_id, .. }
+            | Self::PhaseProgress { scan_id, .. }
+            | Self::FindingDiscovered { scan_id, .. }
+            | Self::PhaseCompleted { scan_id, .. }
+            | Self::ScanCompleted { scan_id, .. }
+            | Self::Error { scan_id, .. }
+            | Self::Metrics { scan_id, .. } => scan_id,
+        }
+    }
+
+    pub fn validate(&self) -> Result<(), RealtimeEventValidationError> {
+        if self.scan_id().is_empty() {
+            return Err(RealtimeEventValidationError::EmptyScanId);
+        }
+        match self {
+            Self::PhaseProgress { progress, .. }
+                if !validate_bounded_f32(*progress, 0.0, 100.0) =>
+            {
+                Err(RealtimeEventValidationError::InvalidPhaseProgress)
+            },
+            Self::ScanCompleted { risk_score, .. }
+                if !validate_bounded_f32(*risk_score, 0.0, 1.0) =>
+            {
+                Err(RealtimeEventValidationError::InvalidRiskScore)
+            },
+            Self::Metrics {
+                response_request_ratio_percent: Some(ratio),
+                ..
+            } if !validate_bounded_f32(*ratio, 0.0, 100.0) => {
+                Err(RealtimeEventValidationError::InvalidResponseRequestRatioPercent)
+            },
+            _ => Ok(()),
         }
     }
 }
 
-/// Event stream for a scan
-#[derive(Debug, Clone)]
+/// Cloneable, in-memory journal keyed by scan ID.
+#[derive(Debug, Clone, Default)]
 pub struct EventStream {
     events: Arc<DashMap<String, Vec<RealtimeEvent>>>,
 }
 
 impl EventStream {
-    /// Creates a new event stream
     pub fn new() -> Self {
-        Self {
-            events: Arc::new(DashMap::new()),
-        }
+        Self::default()
     }
 
-    /// Publishes an event
-    pub fn publish(&self, event: RealtimeEvent) {
-        let scan_id = event.scan_id();
-        self.events.entry(scan_id).or_default().push(event);
+    /// Records a valid event in memory. It does not deliver the event to a client.
+    ///
+    /// Invalid float ranges and empty scan IDs are rejected without mutating the journal.
+    pub fn record(&self, event: RealtimeEvent) -> Result<(), RealtimeEventValidationError> {
+        event.validate()?;
+        self.events
+            .entry(event.scan_id().to_string())
+            .or_default()
+            .push(event);
+        Ok(())
     }
 
-    /// Gets events for a scan
-    pub fn get_events(&self, scan_id: &str) -> Vec<RealtimeEvent> {
+    pub fn events(&self, scan_id: &str) -> Vec<RealtimeEvent> {
         self.events
             .get(scan_id)
-            .map(|e| e.clone())
+            .map(|events| events.clone())
             .unwrap_or_default()
     }
 
-    /// Gets events since a timestamp
-    pub fn get_events_since(&self, scan_id: &str, since: u64) -> Vec<RealtimeEvent> {
+    pub fn events_since(&self, scan_id: &str, since_exclusive: u64) -> Vec<RealtimeEvent> {
         self.events
             .get(scan_id)
             .map(|events| {
                 events
                     .iter()
-                    .filter(|e| e.timestamp() > since)
+                    .filter(|event| event.timestamp() > since_exclusive)
                     .cloned()
                     .collect()
             })
             .unwrap_or_default()
     }
 
-    /// Gets recent events
-    pub fn get_recent_events(&self, scan_id: &str, limit: usize) -> Vec<RealtimeEvent> {
+    pub fn recent_events(&self, scan_id: &str, limit: usize) -> Vec<RealtimeEvent> {
         self.events
             .get(scan_id)
             .map(|events| {
-                events
-                    .iter()
-                    .rev()
-                    .take(limit)
-                    .cloned()
-                    .collect::<Vec<_>>()
-                    .into_iter()
-                    .rev()
-                    .collect()
+                let start = events.len().saturating_sub(limit);
+                events[start..].to_vec()
             })
             .unwrap_or_default()
     }
 
-    /// Clears events for a scan
-    pub fn clear_events(&self, scan_id: &str) {
-        self.events.remove(scan_id);
+    /// Removes an in-memory journal and returns the number of removed events.
+    pub fn clear_events(&self, scan_id: &str) -> usize {
+        self.events
+            .remove(scan_id)
+            .map(|(_, events)| events.len())
+            .unwrap_or_default()
     }
 
-    /// Gets event count
     pub fn event_count(&self, scan_id: &str) -> usize {
         self.events
             .get(scan_id)
-            .map(|e| e.len())
+            .map(|events| events.len())
             .unwrap_or_default()
     }
 }
 
-impl Default for EventStream {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-/// WebSocket message format
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct WebSocketMessage {
-    pub id: String,
-    pub action: String,
-    pub data: Option<serde_json::Value>,
-}
-
-/// WebSocket subscription
-#[derive(Debug, Clone)]
+/// Caller-owned record of subscription state; no network connection is implied.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Subscription {
     pub subscriber_id: String,
     pub scan_id: String,
     pub subscribed_at: u64,
-    pub active: bool,
+    pub ended_at: Option<u64>,
 }
 
 impl Subscription {
-    pub fn new(subscriber_id: String, scan_id: String) -> Self {
+    pub fn new(subscriber_id: String, scan_id: String, subscribed_at: u64) -> Self {
         Self {
             subscriber_id,
             scan_id,
-            subscribed_at: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs(),
-            active: true,
-        }
-    }
-}
-
-/// WebSocket connection manager
-pub struct ConnectionManager {
-    subscriptions: Arc<DashMap<String, Vec<Subscription>>>,
-    event_stream: EventStream,
-}
-
-impl ConnectionManager {
-    /// Creates a new connection manager
-    pub fn new(event_stream: EventStream) -> Self {
-        Self {
-            subscriptions: Arc::new(DashMap::new()),
-            event_stream,
+            subscribed_at,
+            ended_at: None,
         }
     }
 
-    /// Subscribes to scan updates
-    pub fn subscribe(&self, subscriber_id: String, scan_id: String) -> Subscription {
-        let sub = Subscription::new(subscriber_id.clone(), scan_id.clone());
-        self.subscriptions
-            .entry(scan_id)
-            .or_default()
-            .push(sub.clone());
-        sub
+    pub fn is_active(&self) -> bool {
+        self.ended_at.is_none()
     }
 
-    /// Unsubscribes from scan updates
-    pub fn unsubscribe(&self, subscriber_id: &str, scan_id: &str) -> bool {
-        if let Some(mut subs) = self.subscriptions.get_mut(scan_id) {
-            subs.retain(|s| s.subscriber_id != subscriber_id);
-            true
-        } else {
-            false
+    /// Records the end of this subscription.
+    ///
+    /// Returns `false` for a repeated end or a timestamp before subscription.
+    pub fn end(&mut self, ended_at: u64) -> bool {
+        if self.ended_at.is_some() || ended_at < self.subscribed_at {
+            return false;
         }
-    }
-
-    /// Gets subscribers for a scan
-    pub fn get_subscribers(&self, scan_id: &str) -> Vec<Subscription> {
-        self.subscriptions
-            .get(scan_id)
-            .map(|s| s.clone())
-            .unwrap_or_default()
-    }
-
-    /// Publishes event to all subscribers
-    pub fn broadcast(&self, event: RealtimeEvent) {
-        let scan_id = event.scan_id();
-        self.event_stream.publish(event);
-
-        // Notify all subscribers (in real implementation, would send via WebSocket)
-        if let Some(subs) = self.subscriptions.get(&scan_id) {
-            for sub in subs.iter() {
-                // WebSocket send would happen here
-                let _ = sub.clone();
-            }
-        }
-    }
-
-    /// Gets connection count for scan
-    pub fn connection_count(&self, scan_id: &str) -> usize {
-        self.subscriptions
-            .get(scan_id)
-            .map(|s| s.len())
-            .unwrap_or_default()
+        self.ended_at = Some(ended_at);
+        true
     }
 }
 
@@ -290,121 +353,122 @@ impl ConnectionManager {
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_event_stream_creation() {
-        let stream = EventStream::new();
-        assert_eq!(stream.event_count("scan1"), 0);
-    }
-
-    #[test]
-    fn test_publish_event() {
-        let stream = EventStream::new();
-        let event = RealtimeEvent::ScanStarted {
-            scan_id: "scan1".to_string(),
-            target: "https://example.com".to_string(),
-            timestamp: 1000,
-        };
-
-        stream.publish(event);
-        assert_eq!(stream.event_count("scan1"), 1);
-    }
-
-    #[test]
-    fn test_get_events() {
-        let stream = EventStream::new();
-        let event = RealtimeEvent::ScanStarted {
-            scan_id: "scan1".to_string(),
-            target: "https://example.com".to_string(),
-            timestamp: 1000,
-        };
-
-        stream.publish(event);
-        let events = stream.get_events("scan1");
-        assert_eq!(events.len(), 1);
-    }
-
-    #[test]
-    fn test_subscription() {
-        let sub = Subscription::new("user1".to_string(), "scan1".to_string());
-        assert_eq!(sub.subscriber_id, "user1");
-        assert!(sub.active);
-    }
-
-    #[test]
-    fn test_connection_manager() {
-        let stream = EventStream::new();
-        let manager = ConnectionManager::new(stream);
-
-        manager.subscribe("user1".to_string(), "scan1".to_string());
-        assert_eq!(manager.connection_count("scan1"), 1);
-    }
-
-    #[test]
-    fn test_broadcast() {
-        let stream = EventStream::new();
-        let manager = ConnectionManager::new(stream);
-
-        manager.subscribe("user1".to_string(), "scan1".to_string());
-
-        let event = RealtimeEvent::FindingDiscovered {
-            scan_id: "scan1".to_string(),
-            phase: 5,
-            severity: "CRITICAL".to_string(),
-            description: "Test finding".to_string(),
-            timestamp: 1000,
-        };
-
-        manager.broadcast(event);
-        assert_eq!(manager.connection_count("scan1"), 1);
-    }
-
-    #[test]
-    fn test_events_since() {
-        let stream = EventStream::new();
-
-        stream.publish(RealtimeEvent::ScanStarted {
-            scan_id: "scan1".to_string(),
-            target: "https://example.com".to_string(),
-            timestamp: 1000,
-        });
-
-        stream.publish(RealtimeEvent::PhaseStarted {
-            scan_id: "scan1".to_string(),
+    fn event(timestamp: u64) -> RealtimeEvent {
+        RealtimeEvent::PhaseProgress {
+            scan_id: "scan-1".to_string(),
             phase: 1,
-            phase_name: "Recon".to_string(),
-            timestamp: 1100,
-        });
-
-        let recent = stream.get_events_since("scan1", 1050);
-        assert_eq!(recent.len(), 1);
-    }
-
-    #[test]
-    fn test_recent_events() {
-        let stream = EventStream::new();
-
-        for i in 0..5 {
-            stream.publish(RealtimeEvent::PhaseProgress {
-                scan_id: "scan1".to_string(),
-                phase: 1,
-                progress: (i * 20) as f32,
-                timestamp: 1000 + i as u64,
-            });
+            progress: 50.0,
+            timestamp,
         }
-
-        let recent = stream.get_recent_events("scan1", 2);
-        assert_eq!(recent.len(), 2);
     }
 
     #[test]
-    fn test_unsubscribe() {
+    fn journal_records_without_claiming_delivery() {
         let stream = EventStream::new();
-        let manager = ConnectionManager::new(stream);
+        stream.record(event(10)).unwrap();
+        stream.record(event(20)).unwrap();
 
-        manager.subscribe("user1".to_string(), "scan1".to_string());
-        assert_eq!(manager.connection_count("scan1"), 1);
+        assert_eq!(stream.event_count("scan-1"), 2);
+        assert_eq!(stream.events_since("scan-1", 10), vec![event(20)]);
+        assert!(stream.events("unknown").is_empty());
+    }
 
-        manager.unsubscribe("user1", "scan1");
-        assert_eq!(manager.connection_count("scan1"), 0);
+    #[test]
+    fn recent_limit_zero_is_empty() {
+        let stream = EventStream::new();
+        stream.record(event(10)).unwrap();
+        assert!(stream.recent_events("scan-1", 0).is_empty());
+    }
+
+    #[test]
+    fn clear_reports_what_was_actually_removed() {
+        let stream = EventStream::new();
+        stream.record(event(10)).unwrap();
+
+        assert_eq!(stream.clear_events("scan-1"), 1);
+        assert_eq!(stream.clear_events("scan-1"), 0);
+    }
+
+    #[test]
+    fn subscription_end_is_truthful() {
+        let mut subscription = Subscription::new("observer".into(), "scan-1".into(), 100);
+        assert!(subscription.is_active());
+        assert!(!subscription.end(99));
+        assert!(subscription.is_active());
+        assert!(subscription.end(110));
+        assert!(!subscription.is_active());
+        assert!(!subscription.end(120));
+        assert_eq!(subscription.ended_at, Some(110));
+    }
+
+    #[test]
+    fn record_rejects_invalid_events_without_mutating_the_journal() {
+        let stream = EventStream::new();
+        let invalid = RealtimeEvent::PhaseProgress {
+            scan_id: "scan-1".into(),
+            phase: 1,
+            progress: f32::NAN,
+            timestamp: 10,
+        };
+
+        assert_eq!(
+            stream.record(invalid),
+            Err(RealtimeEventValidationError::InvalidPhaseProgress)
+        );
+        assert!(stream.events("scan-1").is_empty());
+    }
+
+    #[test]
+    fn valid_events_round_trip_and_wire_counts_are_u64() {
+        let event = RealtimeEvent::ScanCompleted {
+            scan_id: "scan-1".into(),
+            total_findings: u64::MAX,
+            risk_score: 0.75,
+            duration_ms: 25,
+            timestamp: 100,
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains(&u64::MAX.to_string()));
+        assert_eq!(serde_json::from_str::<RealtimeEvent>(&json).unwrap(), event);
+    }
+
+    #[test]
+    fn serialization_and_deserialization_reject_invalid_floats() {
+        let invalid_progress = RealtimeEvent::PhaseProgress {
+            scan_id: "scan-1".into(),
+            phase: 1,
+            progress: -0.1,
+            timestamp: 1,
+        };
+        assert!(serde_json::to_string(&invalid_progress).is_err());
+
+        let invalid = RealtimeEvent::ScanCompleted {
+            scan_id: "scan-1".into(),
+            total_findings: 0,
+            risk_score: f32::INFINITY,
+            duration_ms: 25,
+            timestamp: 100,
+        };
+        assert!(serde_json::to_string(&invalid).is_err());
+
+        let invalid_score = r#"{"type":"scancompleted","scan_id":"scan-1","total_findings":0,"risk_score":1.1,"duration_ms":25,"timestamp":100}"#;
+        assert!(serde_json::from_str::<RealtimeEvent>(invalid_score).is_err());
+
+        let out_of_range = r#"{"type":"phaseprogress","scan_id":"scan-1","phase":1,"progress":100.1,"timestamp":1}"#;
+        assert!(serde_json::from_str::<RealtimeEvent>(out_of_range).is_err());
+
+        let invalid_ratio = RealtimeEvent::Metrics {
+            scan_id: "scan-1".into(),
+            requests: 1,
+            responses: 1,
+            findings: 0,
+            errors: 0,
+            response_request_ratio_percent: Some(-0.1),
+            timestamp: 1,
+        };
+        assert!(serde_json::to_string(&invalid_ratio).is_err());
+
+        let out_of_range_ratio = r#"{"type":"metrics","scan_id":"scan-1","requests":1,"responses":1,"findings":0,"errors":0,"response_request_ratio_percent":101.0,"timestamp":1}"#;
+        assert!(serde_json::from_str::<RealtimeEvent>(out_of_range_ratio).is_err());
     }
 }

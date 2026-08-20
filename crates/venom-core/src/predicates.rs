@@ -1,4 +1,4 @@
-//! Stable predicate vocabulary shared by evidence producers and reasoners.
+//! Canonical predicate vocabulary shared by evidence producers and reasoners.
 //!
 //! The descriptors in this module compile into [`KnowledgePredicate`] and do
 //! not introduce a second serialized predicate format. Custom predicates and

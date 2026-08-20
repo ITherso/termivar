@@ -1,6 +1,6 @@
 # Architecture
 
-This document defines dependency direction and runtime ownership for Venom `0.9.0-alpha`. It is a design contract, not a production-readiness claim.
+This document defines dependency direction and runtime ownership for the unreleased Venom `0.10.0-alpha.1` source line. It is a design contract, not a production-readiness claim.
 
 The editable diagrams.net source is [architecture.drawio](architecture.drawio). A presentation- and print-friendly export is available as [architecture.svg](images/architecture.svg).
 
@@ -10,11 +10,11 @@ The editable diagrams.net source is [architecture.drawio](architecture.drawio). 
 
 | Crate | Responsibility | May depend on |
 | --- | --- | --- |
-| `venom-core` | Transport-neutral events, findings, configuration, models, errors, and predicate vocabulary | External libraries only |
+| `venom-core` | Default transport-neutral evidence, reasoning, ontology, outcome, predicate, and run-report contracts; the pre-quarantine facade is feature-gated | External libraries only |
 | `venom-scanner` | Phase/plugin traits, deterministic reasoning, runner, detection, and reports | `venom-core` |
-| `venom-proxy` | Experimental fixed-upstream TCP relay; no HTTP/TLS interception | `venom-core` |
-| `venom-api` | Library health router; the CLI listener adapter is unsupported | `venom-core`, `venom-scanner` |
-| `venom-cli` | Composition root and command routing | All application crates |
+| `venom-proxy` | Experimental fixed-upstream TCP relay; no HTTP/TLS interception | External libraries only |
+| `venom-api` | Library health router and its local unsupported-listener error | External libraries only |
+| `venom-cli` | Composition root and command routing | `venom-scanner` by default; `venom-api` and `venom-proxy` only through explicit adapter features |
 
 `xtask` is repository tooling rather than a runtime layer. It may orchestrate workspace commands but application crates must not depend on it.
 
@@ -28,15 +28,21 @@ a Cargo target, so example source cannot silently fall outside compilation.
 ```mermaid
 flowchart TD
     CLI[venom-cli] --> Scanner[venom-scanner]
-    CLI --> API[venom-api]
-    CLI --> Proxy[venom-proxy]
-    API --> Scanner
-    Scanner --> Core["venom-core<br/>Events / Findings / Errors / Models / Predicates"]
-    API --> Core
-    Proxy --> Core
+    CLI -. "api-adapter" .-> API[venom-api]
+    CLI -. "proxy-adapter" .-> Proxy[venom-proxy]
+    Scanner --> Core["venom-core<br/>Evidence / Reasoning / Outcomes / Reports"]
 ```
 
-`Event`, `EventType`, `EventSeverity`, and `ScanFinding` live in `venom-core`. The scanner owns behavior such as `EventBus`, `ScanRunner`, `ScanPhase`, and `Plugin`. `ScanFinding` remains a legacy/reporting contract; the Preview plugin trait records observations and does not return it. Scanner re-exports core contracts so alpha consumers keep their existing import paths.
+The pre-quarantine `Config`, shared `Error`, lifecycle-event, `ScanFinding`, raw
+HTTP, vulnerability, and scan-result records remain in `venom-core` only behind
+its non-default `legacy-contracts` feature for the pinned alpha compatibility
+baseline. `venom-scanner` forwards that feature only for `legacy-scanner`,
+`platform-models`, and `reporting`; the default decision runtime cannot import
+those records. The scanner owns behavior such as `EventBus`, `ScanRunner`,
+`ScanPhase`, and `Plugin`. `ScanFinding` is a legacy phase/reporting contract;
+the Preview plugin trait records observations and does not return it.
+`venom-api` owns its small adapter error locally and has no workspace-crate
+dependency.
 
 No lower-level crate may depend on `venom-cli` or `venom-api`. A cycle between workspace crates is a release blocker.
 
@@ -44,8 +50,8 @@ No lower-level crate may depend on `venom-cli` or `venom-api`. A cycle between w
 
 ```mermaid
 flowchart TD
-    Host["CLI / library host"] --> Runner
-    Runner --> Pipeline["Ordered Scan Pipeline"]
+    Host["CLI / library host"] --> LegacyRunner["Legacy runner · opt-in"]
+    LegacyRunner --> Pipeline["Ordered legacy phase pipeline"]
     Pipeline --> Discovery["Bounded discovery authority<br/>phases 2–4"]
     Discovery --> Crawl
     Discovery --> Directory["Directory · explicit opt-in"]
@@ -63,7 +69,7 @@ flowchart TD
     PluginContext --> PluginCode["Plugin trait implementation"]
     PluginCode --> PluginEvidence["Recorded observations"]
     PluginEvidence --> HostVerification["Host reasoning / verification"]
-    Runner --> Events["Event Bus"]
+    LegacyRunner --> Events["Event Bus"]
     Events -. "optional host projection" .-> Observers["Telemetry consumers"]
 ```
 
@@ -95,11 +101,13 @@ venom-scanner/src/
 |-- plugin.rs        Preview trait, host context, registry, and evidence boundary
 |-- contracts.rs     scanner traits and core contract re-exports
 |-- runner.rs        scheduling, timeouts, cancellation, aggregation
-|-- event_bus.rs     publish/subscribe behavior over core Event values
-|-- reporting.rs     findings-to-report transformation
-|-- distributed.rs   task queues and workers
-|-- anomaly.rs       heuristic scoring
-`-- lua_engine.rs    Lua lifecycle and limits
+|-- event_bus.rs     legacy-scanner host event delivery (opt-in)
+|-- reporting.rs     historical findings-to-report transformation (opt-in)
+|-- distributed.rs   task queues and workers (opt-in)
+|-- advanced_detection.rs  validated signal and technique records (opt-in)
+|-- anomaly.rs       validated deviation records and text matching (opt-in)
+|-- ml.rs            external-model record types only (opt-in)
+`-- lua_engine.rs    fail-closed Lua registry scaffold (opt-in)
 ```
 
 ## Target product-layer split
@@ -110,7 +118,7 @@ Dashboard, distributed orchestration, compliance, and web application concerns s
 flowchart TD
     Product["Optional product layer<br/>Dashboard / Distributed / Compliance / Web"] --> App["CLI / application composition"]
     App --> Scanner[venom-scanner]
-    Scanner --> Core["venom-core<br/>Events / Types / Errors"]
+    Scanner --> Core["venom-core<br/>Evidence / Reasoning / Outcomes / Reports"]
 ```
 
 This target supports separate open-source and commercial distributions without making `venom-core` or `venom-scanner` aware of product policy. No placeholder `venom-enterprise` crate should be created until ownership, licensing, and stable interfaces are defined.
@@ -123,8 +131,8 @@ This target supports separate open-source and commercial distributions without m
    plugins record observations through host policy and never own finding or
    transport authority.
 4. The event bus carries immutable lifecycle facts; subscribers do not control execution through hidden callbacks.
-5. Distributed workers exchange serializable task/result contracts, not concrete runner or plugin objects.
-6. Lua receives a deliberately small context and cannot access internal Rust state directly.
+5. In-process distributed models use serializable task/result contracts; no remote worker transport is implemented.
+6. Lua execution is quarantined until registered source loading exists; its intended context remains deliberately small.
 7. Reports consume findings after execution and do not mutate scanner state.
 
 ## Reasoning and runtime boundary

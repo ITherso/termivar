@@ -1,34 +1,32 @@
-//! Stable inward-facing contracts shared by Venom crates.
+//! Inward-facing, transport-neutral contracts shared by Venom crates.
 //!
-//! `venom-core` contains transport-neutral data: configuration, events,
-//! findings, errors, and request/response models. Execution behavior belongs
-//! in higher-level crates.
+//! The default crate surface contains evidence, reasoning, ontology, outcome,
+//! predicate, and run-report records. Execution behavior and transport models
+//! belong in higher-level crates. The pre-quarantine configuration, error,
+//! event, finding, and raw HTTP/result records remain available only through
+//! the non-default `legacy-contracts` compatibility feature.
 
 //!
 //! # Example
 //!
 //! ```rust
-//! use venom_core::{Event, EventType, ScanFinding};
+//! use venom_core::ConfidenceScore;
 //!
-//! let event = Event::builder(EventType::ScanStarted, "authorized scan").build();
-//! let finding = ScanFinding {
-//!     phase: 1,
-//!     module_name: "example".to_string(),
-//!     severity: "INFO".to_string(),
-//!     description: "Contract example".to_string(),
-//!     evidence: "https://example.test".to_string(),
-//! };
-//!
-//! assert_eq!(event.event_type, EventType::ScanStarted);
-//! assert_eq!(finding.phase, 1);
+//! let confidence = ConfidenceScore::from_basis_points(8_500)?;
+//! assert_eq!(confidence.basis_points(), 8_500);
+//! # Ok::<(), venom_core::ReasoningModelError>(())
 //! ```
 
 #![forbid(unsafe_code)]
 #![deny(rustdoc::broken_intra_doc_links)]
 
+#[cfg(feature = "legacy-contracts")]
 pub mod config;
+#[cfg(feature = "legacy-contracts")]
 pub mod error;
+#[cfg(feature = "legacy-contracts")]
 pub mod events;
+#[cfg(feature = "legacy-contracts")]
 pub mod models;
 pub mod ontology;
 pub mod outcome;
@@ -36,9 +34,13 @@ pub mod predicates;
 pub mod reasoning;
 pub mod run_report;
 
+#[cfg(feature = "legacy-contracts")]
 pub use config::{Config, ConfigBuilder, ConfigError, ScanIntensity};
+#[cfg(feature = "legacy-contracts")]
 pub use error::{Error, Result};
+#[cfg(feature = "legacy-contracts")]
 pub use events::{Event, EventBuilder, EventSeverity, EventType};
+#[cfg(feature = "legacy-contracts")]
 pub use models::{HttpRequest, HttpResponse, ScanFinding, ScanResult, Vulnerability};
 pub use ontology::{
     ConceptId, Ontology, OntologyAxiom, OntologyConcept, OntologyError, OntologyRecordKind,

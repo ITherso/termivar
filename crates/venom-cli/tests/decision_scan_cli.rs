@@ -175,6 +175,20 @@ fn unsupported_api_adapter_exits_nonzero_without_fake_startup_success() {
     );
 }
 
+#[cfg(feature = "proxy-adapter")]
+#[test]
+fn proxy_adapter_requires_an_explicit_upstream_before_binding() {
+    let output = venom()
+        .args(["proxy", "--addr", "127.0.0.1:0"])
+        .output()
+        .expect("failed to run venom");
+
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(stderr.contains("--upstream"), "unexpected stderr: {stderr}");
+}
+
 #[test]
 fn explicit_text_format_matches_the_default_output() {
     // Both runs hit the SAME server (same origin); only the elapsed time differs,

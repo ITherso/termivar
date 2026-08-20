@@ -2,10 +2,9 @@
 //!
 //! ## Runtime scope
 //!
-//! - **Build:** always/default.
-//! - **Execution:** shared runtime support used by Surface A and/or Surface B
-//!   (`ScanRunner` publishes `Event` values; see ADR 0003).
-//! - **Default `venom scan`:** yes, as shared runtime support; not an independent execution stage.
+//! - **Build:** opt-in via `legacy-scanner`.
+//! - **Execution:** `ScanRunner` publishes `Event` values.
+//! - **Default `venom scan`:** no.
 //! - **Support:** implemented.
 //!
 //! See `docs/internals/runtime-map.md`.
@@ -77,7 +76,9 @@ impl EventBus {
         // Call subscribers
         if let Some(handlers) = self.subscribers.get(&event.event_type) {
             for (_, handler) in handlers.iter() {
-                handler(&event);
+                let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    handler(&event);
+                }));
             }
         }
     }
@@ -494,44 +495,29 @@ mod tests {
 
     #[test]
     fn test_subscriber_panic_isolation() {
-        // In production async context, panics in subscribers are isolated with catch_unwind.
-        // This test verifies that normal subscribers still execute when panic would occur.
         let bus = Arc::new(EventBus::new());
-        let normal_called = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        bus.subscribe(
+            EventType::ScanStarted,
+            "panicking_handler",
+            Arc::new(|_| {
+                panic!("subscriber fixture panic");
+            }),
+        );
 
-        // First subscriber (normal)
+        let normal_called = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let normal_clone = normal_called.clone();
         bus.subscribe(
             EventType::ScanStarted,
-            "normal_handler_1",
+            "normal_handler",
             Arc::new(move |_| {
                 normal_clone.store(true, std::sync::atomic::Ordering::SeqCst);
             }),
         );
 
-        // Second subscriber (normal) - simulates what would happen if first panicked
-        let normal_called_2 = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let normal_clone_2 = normal_called_2.clone();
-        bus.subscribe(
-            EventType::ScanStarted,
-            "normal_handler_2",
-            Arc::new(move |_| {
-                normal_clone_2.store(true, std::sync::atomic::Ordering::SeqCst);
-            }),
-        );
+        bus.publish(Event::new(EventType::ScanStarted, "test"));
 
-        let event = Event::new(EventType::ScanStarted, "test");
-
-        // Both handlers should be called in sequence
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            bus.publish(event);
-        }));
-
-        // Handlers should have been called regardless of panic
         assert!(normal_called.load(std::sync::atomic::Ordering::SeqCst));
-        assert!(normal_called_2.load(std::sync::atomic::Ordering::SeqCst));
-        // In real async, panics would be caught; here we just verify handlers run
-        let _ = result;
+        assert_eq!(bus.total_events(), 1);
     }
 
     #[test]

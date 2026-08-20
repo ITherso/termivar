@@ -1,12 +1,12 @@
 # API reference
 
-Venom `0.9.0-alpha` is primarily a Rust library framework. The generated Rust API documentation is the source of truth for public types, traits, feature gates, and examples.
+The unreleased Venom `0.10.0-alpha.1` source line is primarily a Rust library framework. The generated Rust API documentation is the source of truth for public types, traits, feature gates, and examples.
 
 ## Rust crates
 
 | Crate | Purpose | Generated documentation |
 | --- | --- | --- |
-| `venom-core` | Transport-neutral events, findings, errors, configuration, models, and predicate vocabulary | [Open rustdoc](https://itherso.github.io/venom/rust/venom_core/) |
+| `venom-core` | Default transport-neutral evidence, reasoning, ontology, outcome, predicate, and run-report contracts; opt-in pre-quarantine compatibility facade | [Open rustdoc](https://itherso.github.io/venom/rust/venom_core/) |
 | `venom-scanner` | Scanner SDK, phase/plugin and execution contracts, deterministic reasoning profiles, and reports | [Open rustdoc](https://itherso.github.io/venom/rust/venom_scanner/) |
 | `venom-api` | Library health router; the CLI listener adapter is unsupported | [Open rustdoc](https://itherso.github.io/venom/rust/venom_api/) |
 | `venom-proxy` | Experimental fixed-upstream TCP relay; no HTTP/TLS interception | [Open rustdoc](https://itherso.github.io/venom/rust/venom_proxy/) |
@@ -15,7 +15,19 @@ The documentation workflow builds every public crate with all features and treat
 
 ## Scanner SDK
 
-Application authors should start with [`ScannerSdk`](https://itherso.github.io/venom/rust/venom_scanner/sdk/struct.ScannerSdk.html) and implement [`ScanPhase`](https://itherso.github.io/venom/rust/venom_scanner/contracts/trait.ScanPhase.html):
+`ScannerSdk` is the opt-in historical ordered scanner host, not the default
+decision runtime. Applications that deliberately need that compatibility
+surface must enable `legacy-scanner` explicitly:
+
+```toml
+[dependencies]
+venom-scanner = { path = "/path/to/reviewed/venom/crates/venom-scanner", default-features = false, features = ["legacy-scanner"] }
+```
+
+No published package currently represents the remediated source contract. Pin
+and review a source checkout before using this compatibility API.
+
+They can then start with [`ScannerSdk`](https://itherso.github.io/venom/rust/venom_scanner/sdk/struct.ScannerSdk.html) and implement [`ScanPhase`](https://itherso.github.io/venom/rust/venom_scanner/contracts/trait.ScanPhase.html):
 
 ```rust
 use venom_scanner::ScannerSdk;
@@ -25,7 +37,8 @@ let scanner = ScannerSdk::builder()
     .build();
 ```
 
-See [Scanner SDK](sdk.md) for a complete compiling phase and the generated starter project.
+See [Scanner SDK](sdk.md) for its authority limits, a complete compiling phase,
+and the generated starter project.
 
 ## Deterministic API reasoning
 

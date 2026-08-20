@@ -1,142 +1,234 @@
-//! Caching Layer for Performance Optimization
+//! Bounded in-memory cache.
 //!
 //! ## Runtime scope
 //!
-//! - **Build:** always/default.
+//! - **Build:** opt-in via `platform-models`.
 //! - **Execution:** host/library only; no repository runtime caller.
 //! - **Default `venom scan`:** no.
 //! - **Support:** experimental/scaffold.
 //!
 //! See `docs/internals/runtime-map.md`.
 //!
-//! LRU cache for responses, patterns, and scan results.
+//! [`LruCache`] provides process-local TTL storage with true access-recency
+//! eviction. TTL uses a monotonic clock; recency uses a sequence allocated
+//! while the cache lock is held. This module does
+//! not cache HTTP responses because a URL alone cannot identify authorization,
+//! cookies, headers, request body, or other response-varying context safely.
 
-use dashmap::DashMap;
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::hash::Hash;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
+use std::time::{Duration, Instant};
 
-/// Cache entry with TTL
-#[derive(Debug, Clone)]
-pub struct CacheEntry<T> {
-    pub value: T,
-    pub created_at: u64,
-    pub ttl_secs: u64,
+trait Clock: Send + Sync {
+    fn now(&self) -> Duration;
+}
+
+struct SystemClock {
+    origin: Instant,
+}
+
+impl SystemClock {
+    fn new() -> Self {
+        Self {
+            origin: Instant::now(),
+        }
+    }
+}
+
+impl Clock for SystemClock {
+    fn now(&self) -> Duration {
+        self.origin.elapsed()
+    }
+}
+
+struct CacheEntry<T> {
+    value: T,
+    created_at: Duration,
+    last_access_sequence: u128,
+    ttl: Duration,
 }
 
 impl<T> CacheEntry<T> {
-    pub fn new(value: T, ttl_secs: u64) -> Self {
+    fn new(value: T, ttl: Duration, now: Duration, access_sequence: u128) -> Self {
         Self {
             value,
-            created_at: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs(),
-            ttl_secs,
+            created_at: now,
+            last_access_sequence: access_sequence,
+            ttl,
         }
     }
 
-    pub fn is_expired(&self) -> bool {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-        now - self.created_at > self.ttl_secs
+    fn is_expired_at(&self, now: Duration) -> bool {
+        now.saturating_sub(self.created_at) >= self.ttl
     }
 }
 
-/// LRU Cache with TTL support
-pub struct LruCache<K, V> {
-    cache: Arc<DashMap<K, CacheEntry<V>>>,
-    max_size: usize,
-    hits: Arc<std::sync::atomic::AtomicU64>,
-    misses: Arc<std::sync::atomic::AtomicU64>,
+struct CacheState<K, V> {
+    entries: HashMap<K, CacheEntry<V>>,
+    next_access_sequence: u128,
 }
 
-impl<K: Eq + std::hash::Hash + Clone, V: Clone> LruCache<K, V> {
-    /// Creates a new LRU cache
-    pub fn new(max_size: usize) -> Self {
+impl<K, V> Default for CacheState<K, V> {
+    fn default() -> Self {
         Self {
-            cache: Arc::new(DashMap::new()),
+            entries: HashMap::new(),
+            next_access_sequence: 0,
+        }
+    }
+}
+
+impl<K, V> CacheState<K, V> {
+    fn allocate_access_sequence(&mut self) -> u128 {
+        if self.next_access_sequence == u128::MAX {
+            let mut entries: Vec<_> = self.entries.values_mut().collect();
+            entries.sort_by_key(|entry| entry.last_access_sequence);
+            for (sequence, entry) in entries.into_iter().enumerate() {
+                entry.last_access_sequence = sequence as u128;
+            }
+            self.next_access_sequence = self.entries.len() as u128;
+        }
+        let sequence = self.next_access_sequence;
+        self.next_access_sequence += 1;
+        sequence
+    }
+}
+
+/// A process-local, bounded least-recently-used cache with TTL expiration.
+pub struct LruCache<K, V> {
+    cache: Mutex<CacheState<K, V>>,
+    max_size: usize,
+    hits: AtomicU64,
+    misses: AtomicU64,
+    clock: Arc<dyn Clock>,
+}
+
+impl<K: Eq + Hash + Clone, V: Clone> LruCache<K, V> {
+    /// Creates an empty cache using a monotonic process clock.
+    #[must_use]
+    pub fn new(max_size: usize) -> Self {
+        Self::with_clock(max_size, Arc::new(SystemClock::new()))
+    }
+
+    fn with_clock(max_size: usize, clock: Arc<dyn Clock>) -> Self {
+        Self {
+            cache: Mutex::new(CacheState::default()),
             max_size,
-            hits: Arc::new(std::sync::atomic::AtomicU64::new(0)),
-            misses: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            hits: AtomicU64::new(0),
+            misses: AtomicU64::new(0),
+            clock,
         }
     }
 
-    /// Inserts a value with TTL
+    /// Inserts or replaces a value with a TTL measured from this call.
     pub fn insert(&self, key: K, value: V, ttl_secs: u64) {
         if self.max_size == 0 {
             return;
         }
 
-        if self.cache.len() >= self.max_size {
-            // Clone the eviction key while the iterator holds DashMap's shard
-            // lock, then drop the iterator before mutating the same map.
-            let eviction_key = self
-                .cache
+        let mut state = self.cache.lock().unwrap_or_else(PoisonError::into_inner);
+        let now = self.clock.now();
+        if !state.entries.contains_key(&key) && state.entries.len() >= self.max_size {
+            let eviction_key = state
+                .entries
                 .iter()
-                .min_by_key(|entry| entry.created_at)
-                .map(|entry| entry.key().clone());
-
+                .min_by_key(|(_, entry)| entry.last_access_sequence)
+                .map(|(key, _)| key.clone());
             if let Some(eviction_key) = eviction_key {
-                self.cache.remove(&eviction_key);
+                state.entries.remove(&eviction_key);
             }
         }
-        self.cache.insert(key, CacheEntry::new(value, ttl_secs));
+
+        let access_sequence = state.allocate_access_sequence();
+        state.entries.insert(
+            key,
+            CacheEntry::new(value, Duration::from_secs(ttl_secs), now, access_sequence),
+        );
     }
 
-    /// Gets a value if not expired
+    /// Returns an unexpired value and records this lookup as the latest access.
     pub fn get(&self, key: &K) -> Option<V> {
-        if let Some(entry) = self.cache.get(key) {
-            if entry.is_expired() {
-                drop(entry);
-                self.cache.remove(key);
-                self.misses
-                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                None
-            } else {
-                let value = entry.value.clone();
-                self.hits.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                Some(value)
+        let mut state = self.cache.lock().unwrap_or_else(PoisonError::into_inner);
+        let now = self.clock.now();
+
+        let expired = state
+            .entries
+            .get(key)
+            .is_some_and(|entry| entry.is_expired_at(now));
+        if expired {
+            state.entries.remove(key);
+            increment(&self.misses);
+            return None;
+        }
+
+        if let Some(value) = state.entries.get(key).map(|entry| entry.value.clone()) {
+            let access_sequence = state.allocate_access_sequence();
+            if let Some(entry) = state.entries.get_mut(key) {
+                entry.last_access_sequence = access_sequence;
             }
+            increment(&self.hits);
+            Some(value)
         } else {
-            self.misses
-                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            increment(&self.misses);
             None
         }
     }
 
-    /// Removes a key
+    /// Removes a key.
     pub fn remove(&self, key: &K) -> bool {
-        self.cache.remove(key).is_some()
+        self.cache
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .entries
+            .remove(key)
+            .is_some()
     }
 
-    /// Clears entire cache
+    /// Clears all entries without changing accumulated statistics.
     pub fn clear(&self) {
-        self.cache.clear();
+        self.cache
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .entries
+            .clear();
     }
 
-    /// Gets cache statistics
+    /// Returns a point-in-time statistics snapshot.
+    #[must_use]
     pub fn stats(&self) -> CacheStats {
-        let hits = self.hits.load(std::sync::atomic::Ordering::Relaxed);
-        let misses = self.misses.load(std::sync::atomic::Ordering::Relaxed);
-        let total = hits + misses;
+        let hits = self.hits.load(Ordering::Relaxed);
+        let misses = self.misses.load(Ordering::Relaxed);
+        let total = hits.saturating_add(misses);
+        let size = self
+            .cache
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .entries
+            .len();
 
         CacheStats {
             hits,
             misses,
-            hit_rate: if total > 0 {
-                (hits as f64 / total as f64) * 100.0
-            } else {
+            hit_rate: if total == 0 {
                 0.0
+            } else {
+                (hits as f64 / total as f64) * 100.0
             },
-            size: self.cache.len(),
+            size,
             max_size: self.max_size,
         }
     }
 }
 
-/// Cache statistics
-#[derive(Debug, Clone)]
+fn increment(counter: &AtomicU64) {
+    let _ = counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+        Some(value.saturating_add(1))
+    });
+}
+
+/// Cache statistics snapshot.
+#[derive(Debug, Clone, PartialEq)]
 pub struct CacheStats {
     pub hits: u64,
     pub misses: u64,
@@ -145,149 +237,139 @@ pub struct CacheStats {
     pub max_size: usize,
 }
 
-/// Response cache for HTTP results
-pub struct ResponseCache {
-    cache: LruCache<String, Vec<u8>>,
-}
-
-impl ResponseCache {
-    /// Creates a new response cache
-    pub fn new(max_size: usize) -> Self {
-        Self {
-            cache: LruCache::new(max_size),
-        }
-    }
-
-    /// Caches a response
-    pub fn cache_response(&self, url: &str, response: Vec<u8>, ttl_secs: u64) {
-        self.cache.insert(url.to_string(), response, ttl_secs);
-    }
-
-    /// Gets a cached response
-    pub fn get_response(&self, url: &str) -> Option<Vec<u8>> {
-        self.cache.get(&url.to_string())
-    }
-
-    /// Gets cache stats
-    pub fn stats(&self) -> CacheStats {
-        self.cache.stats()
-    }
-}
-
-impl Default for ResponseCache {
-    fn default() -> Self {
-        Self::new(1000)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_cache_entry_creation() {
-        let entry = CacheEntry::new("value".to_string(), 3600);
-        assert_eq!(entry.value, "value");
-        assert!(!entry.is_expired());
+    #[derive(Default)]
+    struct TestClock {
+        seconds: AtomicU64,
+    }
+
+    impl TestClock {
+        fn set(&self, seconds: u64) {
+            self.seconds.store(seconds, Ordering::Relaxed);
+        }
+
+        fn advance(&self, seconds: u64) {
+            self.seconds.fetch_add(seconds, Ordering::Relaxed);
+        }
+    }
+
+    impl Clock for TestClock {
+        fn now(&self) -> Duration {
+            Duration::from_secs(self.seconds.load(Ordering::Relaxed))
+        }
+    }
+
+    fn cache_with_clock<K: Eq + Hash + Clone, V: Clone>(
+        max_size: usize,
+        clock: Arc<TestClock>,
+    ) -> LruCache<K, V> {
+        LruCache::with_clock(max_size, clock)
     }
 
     #[test]
-    fn test_cache_entry_expiration() {
-        let mut entry = CacheEntry::new("value".to_string(), 3600);
-        // Manually set to past
-        entry.created_at -= 7200;
-        assert!(entry.is_expired());
+    fn ttl_expiration_uses_the_injected_monotonic_clock() {
+        let clock = Arc::new(TestClock::default());
+        let cache = cache_with_clock(1, Arc::clone(&clock));
+        cache.insert("key", "value", 10);
+
+        clock.advance(9);
+        assert_eq!(cache.get(&"key"), Some("value"));
+        clock.advance(1);
+        assert_eq!(cache.get(&"key"), None);
     }
 
     #[test]
-    fn test_lru_cache_insert_get() {
-        let cache: LruCache<String, String> = LruCache::new(100);
-        cache.insert("key1".to_string(), "value1".to_string(), 3600);
+    fn backward_clock_values_do_not_underflow_or_expire_entries() {
+        let clock = Arc::new(TestClock::default());
+        clock.set(10);
+        let cache = cache_with_clock(1, Arc::clone(&clock));
+        cache.insert("key", "value", 5);
 
-        let value = cache.get(&"key1".to_string());
-        assert_eq!(value, Some("value1".to_string()));
+        clock.set(1);
+        assert_eq!(cache.get(&"key"), Some("value"));
     }
 
     #[test]
-    fn test_cache_miss() {
-        let cache: LruCache<String, String> = LruCache::new(100);
-        let value = cache.get(&"nonexistent".to_string());
-        assert!(value.is_none());
+    fn successful_get_refreshes_lru_recency() {
+        let clock = Arc::new(TestClock::default());
+        let cache = cache_with_clock(2, Arc::clone(&clock));
+        cache.insert("first", "one", 100);
+        clock.advance(1);
+        cache.insert("second", "two", 100);
+        clock.advance(1);
+        assert_eq!(cache.get(&"first"), Some("one"));
+        clock.advance(1);
+        cache.insert("third", "three", 100);
+
+        assert_eq!(cache.get(&"second"), None);
+        assert_eq!(cache.get(&"first"), Some("one"));
+        assert_eq!(cache.get(&"third"), Some("three"));
     }
 
     #[test]
-    fn test_cache_stats() {
-        let cache: LruCache<String, String> = LruCache::new(100);
-        cache.insert("key1".to_string(), "value1".to_string(), 3600);
+    fn equal_clock_values_still_evict_by_serialized_access_order() {
+        let clock = Arc::new(TestClock::default());
+        let cache = cache_with_clock(2, clock);
+        cache.insert("first", "one", 100);
+        cache.insert("second", "two", 100);
+        assert_eq!(cache.get(&"first"), Some("one"));
+        cache.insert("third", "three", 100);
 
-        let _ = cache.get(&"key1".to_string());
-        let _ = cache.get(&"key2".to_string());
+        assert_eq!(cache.get(&"second"), None);
+        assert_eq!(cache.get(&"first"), Some("one"));
+        assert_eq!(cache.get(&"third"), Some("three"));
+    }
+
+    #[test]
+    fn replacing_an_existing_key_does_not_evict_another_entry() {
+        let clock = Arc::new(TestClock::default());
+        let cache = cache_with_clock(2, Arc::clone(&clock));
+        cache.insert("first", "one", 100);
+        clock.advance(1);
+        cache.insert("second", "two", 100);
+        clock.advance(1);
+        cache.insert("first", "updated", 100);
+
+        assert_eq!(cache.stats().size, 2);
+        assert_eq!(cache.get(&"first"), Some("updated"));
+        assert_eq!(cache.get(&"second"), Some("two"));
+    }
+
+    #[test]
+    fn zero_size_cache_stores_nothing_and_counts_a_miss() {
+        let cache = LruCache::new(0);
+        cache.insert(1, "value", 100);
+
+        assert_eq!(cache.get(&1), None);
+        assert_eq!(
+            cache.stats(),
+            CacheStats {
+                hits: 0,
+                misses: 1,
+                hit_rate: 0.0,
+                size: 0,
+                max_size: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn remove_clear_and_stats_report_real_operations() {
+        let cache = LruCache::new(2);
+        cache.insert("first", "one", 100);
+        cache.insert("second", "two", 100);
+        assert_eq!(cache.get(&"first"), Some("one"));
+        assert!(cache.remove(&"second"));
+        assert!(!cache.remove(&"missing"));
+        cache.clear();
 
         let stats = cache.stats();
         assert_eq!(stats.hits, 1);
-        assert_eq!(stats.misses, 1);
-    }
-
-    #[test]
-    fn test_cache_remove() {
-        let cache: LruCache<String, String> = LruCache::new(100);
-        cache.insert("key1".to_string(), "value1".to_string(), 3600);
-
-        assert!(cache.remove(&"key1".to_string()));
-        assert!(cache.get(&"key1".to_string()).is_none());
-    }
-
-    #[test]
-    fn test_cache_clear() {
-        let cache: LruCache<String, String> = LruCache::new(100);
-        cache.insert("key1".to_string(), "value1".to_string(), 3600);
-        cache.insert("key2".to_string(), "value2".to_string(), 3600);
-
-        cache.clear();
-        assert!(cache.get(&"key1".to_string()).is_none());
-    }
-
-    #[test]
-    fn test_response_cache() {
-        let cache = ResponseCache::new(100);
-        let response = vec![1, 2, 3, 4, 5];
-
-        cache.cache_response("https://example.com", response.clone(), 3600);
-        let cached = cache.get_response("https://example.com");
-
-        assert_eq!(cached, Some(response));
-    }
-
-    #[test]
-    fn test_cache_max_size() {
-        let cache: LruCache<usize, String> = LruCache::new(2);
-        cache.insert(1, "value1".to_string(), 3600);
-        cache.insert(2, "value2".to_string(), 3600);
-        cache.insert(3, "value3".to_string(), 3600);
-
-        assert!(cache.stats().size <= 2);
-    }
-
-    #[test]
-    fn test_zero_size_cache_does_not_store_entries() {
-        let cache: LruCache<usize, String> = LruCache::new(0);
-        cache.insert(1, "value1".to_string(), 3600);
-
-        assert_eq!(cache.stats().size, 0);
-        assert!(cache.get(&1).is_none());
-    }
-
-    #[test]
-    fn test_hit_rate_calculation() {
-        let cache: LruCache<String, String> = LruCache::new(100);
-        cache.insert("key1".to_string(), "value1".to_string(), 3600);
-
-        for _ in 0..2 {
-            let _ = cache.get(&"key1".to_string());
-        }
-        let _ = cache.get(&"key2".to_string());
-
-        let stats = cache.stats();
-        assert!(stats.hit_rate > 0.0 && stats.hit_rate < 100.0);
+        assert_eq!(stats.misses, 0);
+        assert_eq!(stats.hit_rate, 100.0);
+        assert_eq!(stats.size, 0);
     }
 }

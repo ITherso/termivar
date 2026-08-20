@@ -2,6 +2,8 @@
 //!
 //! Tests phase execution, finding generation, and inter-phase data flow
 
+#![cfg(feature = "legacy-scanner")]
+
 use url::Url;
 use venom_scanner::{LogLevel, Logger, ScanFinding};
 

@@ -19,9 +19,8 @@
 //! separation is deliberate, so a defensive-fingerprint change can never silently
 //! change attack behavior.
 //!
-//! The legacy [`crate::waf`] utility remains for backward compatibility. New work
-//! should build on this observation layer; payload derivation lives in
-//! [`crate::payload_strategies`].
+//! The former legacy WAF detector/evasion utility has been removed. Payload
+//! derivation lives behind [`crate::payload_strategies`].
 
 pub mod enforcement;
 pub mod fingerprint;

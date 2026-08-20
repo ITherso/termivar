@@ -2,7 +2,8 @@
 
 > This page describes the executable truth of the current main-line source, not
 > aspirations. A compiled module is not necessarily part of a product runtime.
-> Release line `0.9.0-alpha` is not production-ready.
+> This unreleased source state uses package version `0.10.0-alpha.1`; the published
+> `v0.9.0-alpha` tag predates this runtime map. Neither is production-ready.
 
 Venom has one default scan runtime, one separately compiled historical runner,
 and optional host/adapter surfaces. A capability in one surface does not silently
@@ -184,35 +185,39 @@ The following matrix separates build availability from actual execution:
 
 | Module / group | Build availability | Execution participation | Default `venom scan` | Support status |
 | --- | --- | --- | --- | --- |
-| Deterministic stack (`web_runtime`, `decision_runner`, `runtime_budget`, `http_evidence`, `planner`, `rules`, `knowledge`, `experience`, `verification`, `adaptive`, `web_*`, `api_*`) | scanner default (`core`, `scanning`) | Surface B (composed, except opt-in API reasoning) | yes | implemented and tested Preview |
+| Deterministic stack (`web_runtime`, `decision_runner`, `runtime_budget`, `http_evidence`, `planner`, `rules`, `knowledge`, `experience`, `verification`, `adaptive`, `web_*`, `api_evidence`, `api_observation`, `api_reasoning`) | scanner default (`core`, `scanning`) | Surface B (composed, except opt-in API reasoning) | yes | implemented and tested Preview |
 | `semantic` | scanner default | library / test only, host-owned | no | implemented and tested Preview |
 | `defense` | scanner default | library / test only, host-owned | no | implemented and tested; not composed into `StandardWebDecisionRuntime` |
 | `phases/*`, `legacy_discovery`, `runner`, `context`, `sdk` | opt-in (`legacy-scanner`) | Surface A; phases 2–4 use bounded passive discovery, phases 5–9 use separate bounded active verification, and phase-one/custom raw I/O remains possible | no | historical alpha runtime / SDK; whole-run accounting remains `Unmetered` |
-| `advanced_detection`, `anomaly` | opt-in (`detection`) | no repository product caller | no | Experimental |
-| `post_exploitation`, `persistence`, `reporting`, `realtime`, `dashboard`, `waf` | scanner default (`scanning`) | no default command caller | no | compiled library/scaffold surfaces |
-| `ml` | opt-in (`ml`) | no default path | no | Experimental |
+| `advanced_detection`, `anomaly` | opt-in (`detection`) | no repository product caller; validated/catalogued caller records plus text matching only | no | Experimental; no deviation computation, response classification, or finding production |
+| `api`, `api_gateway`, `auth`, `cache`, `config`, `config_loader`, `metrics`, `post_exploitation`, `persistence`, `realtime`, `dashboard` | opt-in (`platform-models`) | no repository product caller | no | Experimental records, catalogs, and in-memory utilities; no API/auth/persistence/realtime execution path, and caller-owned collections are not uniformly capacity-bounded |
+| `reporting` | opt-in (`reporting`) | host library only | no | Legacy finding-to-report renderer; separate from deterministic `RunReport` |
+| `ml` | opt-in (`ml`) | external-model records only; no repository computation or execution | no | Experimental data-model scaffold |
 | `distributed` | opt-in (`distributed`) | no default path | no | Experimental / scaffold |
 | `monitoring` | opt-in (`monitoring`) | no default path | no | Experimental / scaffold |
 | `compliance` | opt-in (`compliance`) | no default path | no | Experimental / scaffold |
 | `threat_intelligence` | opt-in (`threat-intel`) | no default path | no | Experimental / scaffold |
-| `plugin`, `lua_engine` | opt-in (`plugins`) | host-owned; `PluginDecisionExecutor` can forward registry observations when a host supplies the execution request, while Lua remains a separate extension surface | no | source-level extension Preview; no stock detector plugins or dynamic loading |
+| `plugin` | opt-in (`plugins`) | host-owned; `PluginDecisionExecutor` can forward registry observations when a host supplies the execution request | no | source-level extension Preview; no stock detector plugins or dynamic loading |
+| `lua_engine` | opt-in (`lua`) | host-owned registry scaffold; execution fails closed without loading source | no | Experimental; no executable script host |
 | `venom-api` / `venom api` | CLI opt-in (`api-adapter`) | command fails closed; router is host-owned | no | unsupported listener |
 | `venom-proxy` / `venom proxy` | CLI opt-in (`proxy-adapter`) | explicit adapter | no | Experimental fixed-upstream TCP relay |
-| Deployment (Helm / Terraform / Kubernetes) | absent | none | no | unsupported; see the [deployment blueprint](../experimental/deployment-blueprint.md) |
+| Deployment (Compose / Helm / Terraform / Kubernetes) | absent | none | no | unsupported; see the [deployment blueprint](../experimental/deployment-blueprint.md) |
 
-Always-compiled support modules not listed separately (for example
-`api_gateway`, `auth`, `cache`, `config`, `config_loader`, `event_bus`, `logging`,
-`metrics`, and `payload_strategy`) are library plumbing. Compilation does not
-mean a default command calls them.
+The default scanner feature closure is exactly `core` plus `scanning`.
+`LuaEngineConfig` is a small shared support type reachable through either
+`platform-models` or `lua`; the broader `config` module remains platform-only.
+`event_bus` and `logging` are historical `legacy-scanner` host utilities. The architecture gate
+checks the opt-in module declarations and prevents a broad default feature from
+silently restoring quarantined surfaces.
 
 ### The proxy is a TCP relay, not a MITM proxy
 
-With `proxy-adapter`, `venom proxy` starts
-`venom-proxy::AsyncMitmProxy`. Despite the legacy type name, the current handler
-accepts a client TCP connection, opens a connection to fixed upstream
-`127.0.0.1:80`, and copies bytes in both directions. It does not parse
-`CONNECT`, terminate TLS, present generated certificates, or inspect/modify HTTP.
-`CertCache` is not used by the connection path.
+With `proxy-adapter`, `venom proxy --addr <LISTEN> --upstream <UPSTREAM>` starts
+`venom-proxy::FixedUpstreamTcpRelay`. Both socket addresses are explicit; there
+is no implicit destination. The handler accepts a client TCP connection, opens
+the configured upstream connection, and copies bytes in both directions. It
+does not parse `CONNECT`, terminate TLS, generate/present certificates, or
+inspect/modify HTTP.
 
 ## Not implemented
 

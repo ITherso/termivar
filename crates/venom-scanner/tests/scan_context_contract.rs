@@ -1,5 +1,7 @@
 //! Downstream contract tests for runtime-owned scan context construction.
 
+#![cfg(feature = "legacy-scanner")]
+
 use std::sync::Arc;
 
 use reqwest::Client;

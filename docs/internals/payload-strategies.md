@@ -6,7 +6,7 @@ capability executor is the only component that may resolve that reference and
 derive one bounded artifact.
 
 > Current maturity: this release ships the reference, derivation, propagation,
-> and exact-support negotiation contracts, the first two native production
+> and exact-support negotiation contracts, the first two native built-in
 > strategies (`http.header.control-pair@1` and
 > `api.authorization.context-pair@1`), the `standard_payload_strategies` registry
 > builder, and a strategy-aware `HttpEvidenceExecutor` that resolves the bound
@@ -16,7 +16,7 @@ derive one bounded artifact.
 > artifacts unless a host explicitly opts in with
 > `HttpEvidenceExecutor::with_payload_binding`.
 
-## Registered production strategies
+## Registered built-in strategies
 
 ### `http.header.control-pair@1`
 
@@ -145,29 +145,21 @@ response-body bytes while bounding the retained prefix.
 Opaque streaming bodies whose length cannot be charged are rejected before
 dispatch.
 
-The legacy plugin bridge and ordered phase runner do not inherit this guarantee.
-Do not attach strategy-aware actions to them. The classic directory fuzzer is
-available only through the explicit `--legacy-directory-fuzz` CLI option while
-its broker migration remains pending.
+Plugin execution and the ordered legacy runner do not accept planner-selected
+payload-strategy actions. Their separate bounded authorities therefore cannot be
+used to bypass this artifact boundary.
 
 ## Encoding and normalization primitives
 
-`payload_strategies::encoding` and `payload_strategies::normalization` are the
-corrected, relocated home for the payload encoders and the evasion enum that
-previously lived on the legacy `waf` utility. They are pure building blocks — no
-primitive is registered as a runtime strategy, wired to an executor, or allowed
-to issue a request, so they change no scan behavior.
+`payload_strategies::encoding` contains only neutral byte encodings: ASCII URL
+percent encoding and lowercase hexadecimal encoding. The old WAF detector and
+attack-shaped evasion dispatcher (comment injection, parameter pollution, HTTP
+splitting, case/whitespace mutation, and double encoding) were removed.
 
-- `normalization` holds `case_variation`, `sql_comment_injection`, and
-  `whitespace_to_tab`; `encoding` holds `url_encode`, `double_url_encode`, and
-  `hex_encode`. Each is behavior-equivalent to its legacy counterpart.
-- `EvasionTechnique` corrects the legacy `EvisionTechnique`/`WhespaceVariation`
-  spelling. It stays compatible: a `From<waf::EvisionTechnique>` conversion keeps
-  legacy source working, and a serde `alias` accepts the old `whespace_variation`
-  spelling on deserialization.
-- `encode_into_artifact` routes a technique's output through
-  `PayloadArtifact`, so encoded bytes inherit the same per-turn byte bound and
-  raw-payload redaction as any other artifact.
+`PayloadEncoding` is selected explicitly by a host. `encode_into_artifact`
+routes its output through `PayloadArtifact`, so encoded bytes inherit the same
+per-turn byte bound and raw-value redaction as any other artifact. No encoding
+helper is registered as a runtime strategy or allowed to issue a request.
 
 ## Differential analysis
 

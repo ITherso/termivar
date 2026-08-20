@@ -1,9 +1,9 @@
-//! First production payload strategy: `http.header.control-pair@1`.
+//! First built-in payload strategy: `http.header.control-pair@1`.
 //!
 //! This strategy derives a matched control/candidate pair for a single benign
 //! request header so a strategy-aware capability executor can measure whether a
 //! target responds differently to exactly one controlled header change. It is
-//! deliberately the lowest-risk production strategy: it emits only visible ASCII
+//! deliberately the lowest-risk built-in strategy: it emits only visible ASCII
 //! header-value bytes and can never introduce control characters, so it cannot
 //! perform header injection or request splitting.
 //!
@@ -34,7 +34,7 @@ const BASELINE_VALUE: &[u8] = b"*/*";
 /// Prefix the candidate leg prepends before the controlled seed variation.
 const CANDIDATE_PREFIX: &[u8] = b"*/*, ";
 
-/// First production [`PayloadStrategy`]: a single-header control/candidate pair.
+/// First built-in [`PayloadStrategy`]: a single-header control/candidate pair.
 #[derive(Debug, Clone)]
 pub struct HttpHeaderControlPairStrategy {
     reference: PayloadStrategyRef,

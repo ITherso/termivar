@@ -4,13 +4,14 @@
 //!
 //! - **Build:** always/default.
 //! - **Execution:** Surface B (deterministic decision runtime).
-//! - **Default `venom scan`:** no.
+//! - **Default `venom scan`:** yes, through `StandardWebDecisionRuntime`.
 //! - **Support:** implemented and tested.
 //!
 //! See `docs/internals/runtime-map.md`.
 //!
-//! The profile declares executor-routable candidates and utility metadata. It
-//! never performs network I/O and remains opt-in for every host application.
+//! The standard runtime composes this profile by default. Direct lower-level
+//! hosts may choose whether to install it. The profile declares executor-routable
+//! candidates and utility metadata, and never performs network I/O.
 
 use std::collections::BTreeSet;
 

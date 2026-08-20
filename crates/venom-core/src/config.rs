@@ -1,17 +1,20 @@
-//! Configuration Management with Builder Pattern, Validation, and Environment Overrides
+//! Historical configuration compatibility facade.
 //!
-//! Provides a robust configuration system for VENOM with:
-//! - Builder pattern for intuitive config creation
-//! - Serde support for TOML/JSON/YAML loading
-//! - Environment variable overrides
-//! - Comprehensive validation
+//! This module is available only with the non-default `legacy-contracts`
+//! feature. No repository runtime consumes this configuration or its
+//! environment overrides; scanner hosts use their feature-specific contracts.
+//!
+//! ## Deprecated compatibility surface
+//!
+//! These types remain solely for the pinned pre-1.0 patch-compatibility
+//! baseline. New integrations should not adopt them.
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::env;
 use std::path::Path;
 
-/// Scan configuration with validation
+/// Historical scan configuration retained for compatibility.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
     /// Target URL/IP to scan

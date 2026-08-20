@@ -1,208 +1,88 @@
-//! Scan Configuration Profiles
+//! Caller-supplied scan-configuration records.
 //!
 //! ## Runtime scope
 //!
-//! - **Build:** always/default.
-//! - **Execution:** shared support (library configuration types).
-//! - **Default `venom scan`:** no (support type, not an execution stage).
-//! - **Support:** implemented.
+//! - **Build:** opt-in via `platform-models`.
+//! - **Execution:** host/library data model only; no repository runtime caller.
+//! - **Default `venom scan`:** no.
+//! - **Support:** experimental/scaffold.
 //!
-//! See `docs/internals/runtime-map.md`.
-//!
-//! Predefined and custom scan configurations for different scenarios.
+//! The repository does not provide behavior presets and does not apply these
+//! values to either scanner runtime. An integrating host must define and enforce
+//! the meaning of every field. See `docs/internals/runtime-map.md`.
 
 use serde::{Deserialize, Serialize};
 
-/// Lua Engine Configuration (P0 - configurable from config file)
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct LuaEngineConfig {
-    /// Maximum execution history per script (prevents unbounded memory)
-    /// Example: adaptive: history_size = 50
-    pub history_size: usize,
-    /// Maximum memory per Lua VM (bytes)
-    pub max_memory_bytes: usize,
-    /// Default script timeout (milliseconds)
-    pub default_timeout_ms: u64,
-}
+use crate::lua_config::LuaEngineConfig;
 
-impl LuaEngineConfig {
-    /// Default config: reasonable limits for production
-    #[allow(clippy::should_implement_trait)]
-    pub fn default() -> Self {
-        <Self as Default>::default()
-    }
-
-    /// Minimal config: for CI/tests
-    pub fn minimal() -> Self {
-        Self {
-            history_size: 10,
-            max_memory_bytes: 10_000_000,
-            default_timeout_ms: 1000,
-        }
-    }
-
-    /// Extended config: for dashboards/analysis
-    pub fn extended() -> Self {
-        Self {
-            history_size: 500,             // Keep more history
-            max_memory_bytes: 100_000_000, // 100MB per script
-            default_timeout_ms: 30000,     // 30 second limit
-        }
-    }
-
-    pub fn validate(&self) -> Result<(), String> {
-        if self.history_size == 0 {
-            return Err("history_size must be > 0".to_string());
-        }
-        if self.max_memory_bytes == 0 {
-            return Err("max_memory_bytes must be > 0".to_string());
-        }
-        if self.default_timeout_ms == 0 {
-            return Err("default_timeout_ms must be > 0".to_string());
-        }
-        Ok(())
-    }
-}
-
-impl Default for LuaEngineConfig {
-    fn default() -> Self {
-        Self {
-            history_size: 100,            // Keep last 100 executions
-            max_memory_bytes: 50_000_000, // 50MB per script
-            default_timeout_ms: 5000,     // 5 second default
-        }
-    }
-}
-
-/// Scan intensity levels
+/// Caller-assigned intensity label; it grants no scanner behavior by itself.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ScanIntensity {
-    /// Light: Fast, low resource usage
     Light,
-    /// Normal: Balanced performance and thoroughness
     Normal,
-    /// Aggressive: Thorough, high resource usage
     Aggressive,
-    /// Stealth: Slow, evasive, WAF-aware
     Stealth,
 }
 
 impl ScanIntensity {
+    #[must_use]
     pub fn as_str(&self) -> &str {
         match self {
-            ScanIntensity::Light => "light",
-            ScanIntensity::Normal => "normal",
-            ScanIntensity::Aggressive => "aggressive",
-            ScanIntensity::Stealth => "stealth",
+            Self::Light => "light",
+            Self::Normal => "normal",
+            Self::Aggressive => "aggressive",
+            Self::Stealth => "stealth",
         }
     }
 }
 
-/// Scan configuration profile
-#[derive(Debug, Clone)]
+/// Uninterpreted host configuration record with basic value validation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScanConfig {
-    /// Scan intensity level
     pub intensity: ScanIntensity,
-    /// Request timeout in seconds
     pub timeout_secs: u64,
-    /// Maximum concurrent connections
-    pub max_concurrency: usize,
-    /// Rate limit (requests per second)
+    pub max_concurrency: u32,
+    #[serde(with = "positive_f32")]
     pub rate_limit: f32,
-    /// Enable WAF evasion
-    pub enable_waf_evasion: bool,
-    /// Enable adaptive payloads
-    pub enable_adaptive_payloads: bool,
-    /// Enable anomaly detection
-    pub enable_anomaly_detection: bool,
-    /// Maximum payload size
-    pub max_payload_size: usize,
-    /// Phases to execute (1-9)
+    pub max_payload_size: u64,
+    /// Historical phase identifiers supplied by a host; this module does not run them.
     pub phases: Vec<u8>,
-    /// Custom headers
-    pub headers: Vec<(String, String)>,
-    /// Lua Engine configuration (P0 - configurable from file)
     pub lua_engine: LuaEngineConfig,
 }
 
+mod positive_f32 {
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S>(value: &f32, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        if value.is_finite() && *value > 0.0 {
+            serializer.serialize_f32(*value)
+        } else {
+            Err(serde::ser::Error::custom(
+                "rate limit must be finite and greater than zero",
+            ))
+        }
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<f32, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = f32::deserialize(deserializer)?;
+        if value.is_finite() && value > 0.0 {
+            Ok(value)
+        } else {
+            Err(serde::de::Error::custom(
+                "rate limit must be finite and greater than zero",
+            ))
+        }
+    }
+}
+
 impl ScanConfig {
-    /// Creates a new config with defaults
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Returns a light scan profile
-    pub fn light() -> Self {
-        Self {
-            intensity: ScanIntensity::Light,
-            timeout_secs: 3,
-            max_concurrency: 10,
-            rate_limit: 50.0,
-            enable_waf_evasion: false,
-            enable_adaptive_payloads: false,
-            enable_anomaly_detection: false,
-            max_payload_size: 1000,
-            phases: vec![1, 2, 3],
-            headers: Vec::new(),
-            lua_engine: LuaEngineConfig::minimal(),
-        }
-    }
-
-    /// Returns a normal scan profile
-    pub fn normal() -> Self {
-        Self {
-            intensity: ScanIntensity::Normal,
-            timeout_secs: 5,
-            max_concurrency: 25,
-            rate_limit: 20.0,
-            enable_waf_evasion: true,
-            enable_adaptive_payloads: true,
-            enable_anomaly_detection: true,
-            max_payload_size: 5000,
-            phases: vec![1, 2, 3, 4, 5, 6, 7, 8, 9],
-            headers: Vec::new(),
-            lua_engine: LuaEngineConfig::default(),
-        }
-    }
-
-    /// Returns an aggressive scan profile
-    pub fn aggressive() -> Self {
-        Self {
-            intensity: ScanIntensity::Aggressive,
-            timeout_secs: 10,
-            max_concurrency: 100,
-            rate_limit: 100.0,
-            enable_waf_evasion: true,
-            enable_adaptive_payloads: true,
-            enable_anomaly_detection: true,
-            max_payload_size: 10000,
-            phases: vec![1, 2, 3, 4, 5, 6, 7, 8, 9],
-            headers: Vec::new(),
-            lua_engine: LuaEngineConfig::default(),
-        }
-    }
-
-    /// Returns a stealth scan profile
-    pub fn stealth() -> Self {
-        Self {
-            intensity: ScanIntensity::Stealth,
-            timeout_secs: 15,
-            max_concurrency: 5,
-            rate_limit: 2.0,
-            enable_waf_evasion: true,
-            enable_adaptive_payloads: true,
-            enable_anomaly_detection: true,
-            max_payload_size: 2000,
-            phases: vec![1, 2, 3, 5, 6, 7, 8],
-            headers: vec![(
-                "User-Agent".to_string(),
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36".to_string(),
-            )],
-            lua_engine: LuaEngineConfig::extended(), // Extended history for stealth
-        }
-    }
-
-    /// Validates configuration
+    /// Validates the record envelope without authorizing or executing a scan.
     pub fn validate(&self) -> Result<(), String> {
         if self.timeout_secs == 0 {
             return Err("Timeout must be > 0".to_string());
@@ -210,27 +90,24 @@ impl ScanConfig {
         if self.max_concurrency == 0 {
             return Err("Max concurrency must be > 0".to_string());
         }
-        if self.rate_limit <= 0.0 {
-            return Err("Rate limit must be > 0".to_string());
+        if !self.rate_limit.is_finite() || self.rate_limit <= 0.0 {
+            return Err("Rate limit must be finite and > 0".to_string());
         }
         if self.max_payload_size == 0 {
             return Err("Max payload size must be > 0".to_string());
         }
         if self.phases.is_empty() {
-            return Err("At least one phase must be enabled".to_string());
+            return Err("At least one phase identifier must be supplied".to_string());
         }
         for phase in &self.phases {
-            if *phase < 1 || *phase > 9 {
-                return Err(format!("Invalid phase number: {}", phase));
+            if !(1..=9).contains(phase) {
+                return Err(format!("Invalid phase number: {phase}"));
             }
         }
+        self.lua_engine
+            .validate()
+            .map_err(|error| format!("Invalid Lua engine configuration: {error}"))?;
         Ok(())
-    }
-}
-
-impl Default for ScanConfig {
-    fn default() -> Self {
-        Self::normal()
     }
 }
 
@@ -238,62 +115,69 @@ impl Default for ScanConfig {
 mod tests {
     use super::*;
 
+    fn valid_record() -> ScanConfig {
+        ScanConfig {
+            intensity: ScanIntensity::Normal,
+            timeout_secs: 5,
+            max_concurrency: 4,
+            rate_limit: 10.0,
+            max_payload_size: 1024,
+            phases: vec![1, 2],
+            lua_engine: LuaEngineConfig::minimal(),
+        }
+    }
+
     #[test]
-    fn test_scan_intensity_str() {
+    fn intensity_is_only_a_stable_label() {
         assert_eq!(ScanIntensity::Light.as_str(), "light");
         assert_eq!(ScanIntensity::Stealth.as_str(), "stealth");
     }
 
     #[test]
-    fn test_light_config() {
-        let cfg = ScanConfig::light();
-        assert_eq!(cfg.intensity, ScanIntensity::Light);
-        assert_eq!(cfg.timeout_secs, 3);
-        assert!(cfg.validate().is_ok());
+    fn valid_host_record_passes_envelope_validation() {
+        assert!(valid_record().validate().is_ok());
     }
 
     #[test]
-    fn test_normal_config() {
-        let cfg = ScanConfig::normal();
-        assert_eq!(cfg.intensity, ScanIntensity::Normal);
-        assert_eq!(cfg.phases.len(), 9);
-        assert!(cfg.validate().is_ok());
+    fn invalid_limits_and_phase_ids_fail_closed() {
+        let mut config = valid_record();
+        config.timeout_secs = 0;
+        assert!(config.validate().is_err());
+
+        let mut config = valid_record();
+        config.phases = vec![0];
+        assert!(config.validate().is_err());
+
+        for invalid_rate in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, 0.0, -1.0] {
+            let mut config = valid_record();
+            config.rate_limit = invalid_rate;
+            assert_eq!(
+                config.validate().unwrap_err(),
+                "Rate limit must be finite and > 0"
+            );
+        }
     }
 
     #[test]
-    fn test_aggressive_config() {
-        let cfg = ScanConfig::aggressive();
-        assert_eq!(cfg.intensity, ScanIntensity::Aggressive);
-        assert_eq!(cfg.max_concurrency, 100);
-        assert!(cfg.validate().is_ok());
+    fn nested_lua_limits_are_validated() {
+        let mut config = valid_record();
+        config.lua_engine.default_timeout_ms = 0;
+        assert_eq!(
+            config.validate().unwrap_err(),
+            "Invalid Lua engine configuration: default_timeout_ms must be > 0"
+        );
     }
 
     #[test]
-    fn test_stealth_config() {
-        let cfg = ScanConfig::stealth();
-        assert_eq!(cfg.intensity, ScanIntensity::Stealth);
-        assert_eq!(cfg.rate_limit, 2.0);
-        assert!(cfg.validate().is_ok());
-    }
+    fn wire_rejects_invalid_rate_and_uses_fixed_width_limits() {
+        let mut invalid = valid_record();
+        invalid.rate_limit = f32::NAN;
+        assert!(serde_json::to_string(&invalid).is_err());
 
-    #[test]
-    fn test_config_validation() {
-        let mut cfg = ScanConfig::normal();
-        assert!(cfg.validate().is_ok());
-
-        cfg.timeout_secs = 0;
-        assert!(cfg.validate().is_err());
-
-        cfg.timeout_secs = 5;
-        cfg.phases.clear();
-        assert!(cfg.validate().is_err());
-    }
-
-    #[test]
-    fn test_custom_headers() {
-        let mut cfg = ScanConfig::normal();
-        cfg.headers
-            .push(("X-Custom".to_string(), "value".to_string()));
-        assert_eq!(cfg.headers.len(), 1);
+        let record = valid_record();
+        let encoded = serde_json::to_string(&record).expect("valid record serializes");
+        let decoded: ScanConfig = serde_json::from_str(&encoded).expect("record round-trips");
+        assert_eq!(decoded.max_concurrency, 4_u32);
+        assert_eq!(decoded.max_payload_size, 1_024_u64);
     }
 }

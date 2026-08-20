@@ -18,7 +18,11 @@ immutable HTTP evidence
  StandardWebVerificationProfile ---> Outcome
 ```
 
-The profile is opt-in. Construction requires a host-owned `HttpEvidencePolicy`, so network scope, timeouts, response limits, allowed headers, and text sampling remain explicit policy decisions.
+`StandardWebDecisionRuntime` composes this profile for the default deterministic
+scan. Direct lower-level hosts may also install it explicitly. Construction
+always requires a host-owned `HttpEvidencePolicy`, so network scope, timeouts,
+response limits, allowed headers, and text sampling remain explicit policy
+decisions.
 
 ## Installation
 

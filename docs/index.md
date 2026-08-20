@@ -1,6 +1,6 @@
 # Venom documentation
 
-Venom is an experimental Rust security-testing project centered on a deterministic decision runtime that turns bounded web observations into typed evidence, hypotheses, risk-aware plans, and verifier-scoped outcomes. The current release line is `0.9.0-alpha`, is not production-ready, and must be used only on systems the operator owns or is explicitly authorized to test.
+Venom is an experimental Rust security-testing project centered on a deterministic decision runtime that turns bounded web observations into typed evidence, hypotheses, risk-aware plans, and verifier-scoped outcomes. This remediated source state is unreleased and not production-ready; the published `v0.9.0-alpha` binaries predate its bounded default runtime. Build a reviewed, pinned commit and use it only on systems the operator owns or is explicitly authorized to test.
 
 ## Start here
 

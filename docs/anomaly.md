@@ -1,23 +1,19 @@
-# Anomaly detection
+# Deviation records
 
-The anomaly module compares response characteristics and produces heuristic scores and severity classes. It is Experimental.
+The opt-in `detection` feature exposes an Experimental, host-owned data/helper
+surface. It does not establish a baseline, score a response, assign confidence
+or severity, classify a vulnerability, or create a finding.
 
-## Inputs
+`ResponseDeviation` carries four caller-computed normalized dimensions: timing,
+response size, text marker, and status code. Its validation rejects non-finite
+or out-of-range values, and its dominant-dimension helper is a deterministic
+description of those supplied values only.
 
-The model can use response status, body size, timing, headers, and content indicators. Callers must normalize observations and preserve enough evidence for manual review.
+`ErrorKeywordMatcher` is a literal/regular-expression text utility. A match is
+not evidence of a vulnerability or even an application error. Hosts remain
+responsible for authorization, input normalization, evidence provenance,
+controlled repetition, and any downstream review policy.
 
-## Outputs
-
-An anomaly score is a signal, not a confirmed vulnerability. Reports should distinguish observed evidence, heuristic interpretation, and final finding severity.
-
-## False positives
-
-Dynamic pages, rate limiting, personalization, caching, geographic routing, and unstable targets can all create anomalous responses. Baselines should contain multiple samples, and timing-sensitive conclusions should use controlled repetition.
-
-## Design rules
-
-- Keep scoring deterministic for the same normalized input.
-- Version scoring behavior when weights or thresholds change.
-- Store evidence alongside scores.
-- Never let anomaly output bypass authorization or rate limits.
-- Evaluate precision and recall on a documented corpus before calling a model stable.
+The same feature also exposes validated signal-definition and caller-scored
+technique catalogs. Those catalogs store records; Venom does not apply a
+transformation or automatically inspect a response against a definition.

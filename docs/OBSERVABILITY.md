@@ -1,17 +1,19 @@
 # Observability
 
-Observability support in Venom `0.9.0-alpha` is Preview. The compiled scanner
-provides in-process logging, counters, scan profiles, and benchmark records. It
-does not currently provide a stable Prometheus exporter, OpenTelemetry
-pipeline, remote telemetry service, health-check server, or Sentry integration.
+Observability-adjacent APIs in the current source have separate, opt-in
+lifecycle contracts. They provide in-process logging, counters, scan profiles,
+and benchmark records; the default scanner does not compile those model
+modules. Venom does not currently provide a stable Prometheus exporter,
+OpenTelemetry pipeline, remote telemetry service, health-check server, or
+Sentry integration.
 
 ## Current modules
 
 | Module | Availability | Responsibility |
 | --- | --- | --- |
-| `venom_scanner::logging` | Default build | Console-oriented `LogEntry`, `LogLevel`, and `Logger` types |
-| `venom_scanner::metrics` | Default build | Process-local atomic counters and snapshots |
-| `venom_scanner::monitoring` | `monitoring` feature | In-memory phase/resource profiles and comparisons |
+| `venom_scanner::logging` | `legacy-scanner` feature (Legacy) | Console-oriented `LogEntry`, `LogLevel`, and `Logger` types |
+| `venom_scanner::metrics` | `platform-models` feature (Experimental) | Process-local atomic counters and snapshots |
+| `venom_scanner::monitoring` | `monitoring` feature (Experimental) | Caller-supplied in-memory phase/resource profiles and comparisons; no telemetry collection |
 | Criterion suite | Repository tooling | Repeatable microbenchmark samples and regression artifacts |
 | Quality Metrics workflow | CI | Compile time, binary size, and runner peak-memory artifacts |
 
@@ -20,7 +22,14 @@ state is lost when the process exits.
 
 ## Metrics collector
 
-`MetricsCollector` is cloneable and uses atomics for its counters:
+`MetricsCollector` uses saturating atomic counters and owns one phase-sample
+history mutated through exclusive access. It is intentionally not cloneable: one collector is one
+coherent in-process accounting authority.
+
+```toml
+[dependencies]
+venom-scanner = { path = "/path/to/reviewed/venom/crates/venom-scanner", default-features = false, features = ["platform-models"] }
+```
 
 ```rust
 use venom_scanner::MetricsCollector;
@@ -45,7 +54,13 @@ credentials, and response values.
 
 ## Logging
 
-The current logger emits formatted entries to standard output:
+The historical logger is available only with `legacy-scanner` and emits
+formatted entries to standard output:
+
+```toml
+[dependencies]
+venom-scanner = { path = "/path/to/reviewed/venom/crates/venom-scanner", default-features = false, features = ["legacy-scanner"] }
+```
 
 ```rust
 use venom_scanner::{LogEntry, LogLevel, Logger};
@@ -72,7 +87,7 @@ Enable the optional in-memory profile types with:
 
 ```toml
 [dependencies]
-venom-scanner = { version = "0.9.0-alpha", features = ["monitoring"] }
+venom-scanner = { path = "/path/to/reviewed/venom/crates/venom-scanner", default-features = false, features = ["monitoring"] }
 ```
 
 The feature exposes `PhaseProfile`, `ResourceMetrics`, `ScanProfile`,

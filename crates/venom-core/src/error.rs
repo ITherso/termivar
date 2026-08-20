@@ -1,15 +1,17 @@
-//! Rich Error Handling with thiserror
+//! Historical cross-crate error compatibility facade.
 //!
-//! Provides structured error types with:
-//! - Automatic Display/Error trait impl via thiserror
-//! - Source chain tracking for debugging
-//! - Type-safe error variants
-//! - Easy logging integration
+//! This module is available only with the non-default `legacy-contracts`
+//! feature. Current scanner and adapter crates own their errors locally.
+//!
+//! ## Deprecated compatibility surface
+//!
+//! The broad variants remain solely for the pinned pre-1.0 patch-compatibility
+//! baseline. They do not describe errors emitted by the default runtime.
 
 use std::io;
 use thiserror::Error;
 
-/// VENOM Error types with rich context
+/// Historical shared error variants retained for compatibility.
 #[derive(Error, Debug)]
 pub enum Error {
     /// Configuration validation or loading error
@@ -179,7 +181,7 @@ impl Error {
     }
 }
 
-/// Standard Result type using VENOM Error
+/// Historical result alias retained for compatibility.
 pub type Result<T> = std::result::Result<T, Error>;
 
 // Additional helper methods for common patterns

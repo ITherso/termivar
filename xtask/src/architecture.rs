@@ -17,8 +17,10 @@ use syn::{
 };
 
 mod deployment;
+mod platform;
 mod plugin;
 mod reachability;
+mod source_hygiene;
 mod transport;
 mod workflows;
 
@@ -180,6 +182,8 @@ pub(crate) fn check(workspace_root: &Path) -> Result<(), Box<dyn Error>> {
     violations.extend(transport::check(workspace_root)?);
     violations.extend(reachability::check(workspace_root)?);
     violations.extend(deployment::check(workspace_root)?);
+    violations.extend(platform::check(workspace_root)?);
+    violations.extend(source_hygiene::check(workspace_root)?);
     violations.extend(plugin::check(workspace_root)?);
     violations.extend(workflows::check(workspace_root)?);
     violations.sort();
@@ -343,8 +347,8 @@ fn allowed_workspace_graph() -> BTreeMap<String, BTreeSet<String>> {
     [
         ("venom-core", &[][..]),
         ("venom-scanner", &["venom-core"][..]),
-        ("venom-proxy", &["venom-core"][..]),
-        ("venom-api", &["venom-core"][..]),
+        ("venom-proxy", &[][..]),
+        ("venom-api", &[][..]),
         (
             "venom-cli",
             &["venom-api", "venom-core", "venom-proxy", "venom-scanner"][..],

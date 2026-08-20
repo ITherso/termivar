@@ -49,7 +49,7 @@ fn scan_flags_conflict(format: OutputFormat, explain: bool) -> bool {
 #[cfg(feature = "legacy-scanner")]
 const LEGACY_DIRECTORY_FUZZ_WARNING: &str = "[WARNING] Legacy directory discovery is enabled. This wordlist phase uses the bounded exact-origin discovery broker, but still increases request volume; run it only against explicitly authorized targets.";
 #[cfg(feature = "legacy-scanner")]
-const LEGACY_SCAN_RUNTIME_WARNING: &str = "[WARNING] The ordered CLI phase pipeline remains outside StandardWebDecisionRuntime. Discovery phases 2-4 use a bounded exact-origin authority, but the complete legacy run remains Unmetered because phases 1 and 5-9 retain direct I/O. Use it only against an explicitly authorized exact origin.";
+const LEGACY_SCAN_RUNTIME_WARNING: &str = "[WARNING] The ordered CLI phase pipeline remains outside StandardWebDecisionRuntime. Phases 2-4 use bounded passive discovery and phases 5-9 use a separate bounded active-verification authority, but the complete legacy run remains Unmetered because phase 1 and custom extensions can retain direct I/O. Use it only against an explicitly authorized exact origin.";
 const DETERMINISTIC_SCAN_WARNING: &str = "[ALPHA] Running the bounded deterministic decision runtime. Use only against an exact origin you own or are explicitly authorized to test.";
 
 #[cfg(feature = "legacy-scanner")]
@@ -108,8 +108,12 @@ enum Commands {
     /// Start the experimental fixed-upstream TCP relay.
     #[cfg(feature = "proxy-adapter")]
     Proxy {
+        /// Local socket on which the relay accepts connections.
         #[arg(long, default_value = "127.0.0.1:8081")]
         addr: std::net::SocketAddr,
+        /// Explicit fixed upstream socket. No implicit destination is used.
+        #[arg(long)]
+        upstream: std::net::SocketAddr,
     },
 }
 
@@ -334,8 +338,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             venom_api::start_api(&addr.to_string()).await?;
         },
         #[cfg(feature = "proxy-adapter")]
-        Some(Commands::Proxy { addr }) => {
-            ProxyServer::from_socket_addr(addr).start().await?;
+        Some(Commands::Proxy { addr, upstream }) => {
+            ProxyServer::new(addr, upstream).start().await?;
         },
         None => {
             println!("Venom v{}", env!("CARGO_PKG_VERSION"));
@@ -540,12 +544,31 @@ mod tests {
     #[test]
     #[cfg(feature = "proxy-adapter")]
     fn proxy_adapter_uses_socket_addr_and_accepts_ipv6() {
-        let cli = Cli::try_parse_from(["venom", "proxy", "--addr", "[::1]:8081"]).unwrap();
+        let cli = Cli::try_parse_from([
+            "venom",
+            "proxy",
+            "--addr",
+            "[::1]:8081",
+            "--upstream",
+            "[::1]:9081",
+        ])
+        .unwrap();
         assert!(matches!(
             cli.command,
-            Some(Commands::Proxy { addr }) if addr == "[::1]:8081".parse().unwrap()
+            Some(Commands::Proxy { addr, upstream })
+                if addr == "[::1]:8081".parse().unwrap()
+                    && upstream == "[::1]:9081".parse().unwrap()
         ));
-        assert!(Cli::try_parse_from(["venom", "proxy", "--addr", "invalid"]).is_err());
+        assert!(Cli::try_parse_from([
+            "venom",
+            "proxy",
+            "--addr",
+            "invalid",
+            "--upstream",
+            "127.0.0.1:9081",
+        ])
+        .is_err());
+        assert!(Cli::try_parse_from(["venom", "proxy", "--addr", "127.0.0.1:8081"]).is_err());
     }
 
     // --- offline end-to-end preview run --------------------------------------

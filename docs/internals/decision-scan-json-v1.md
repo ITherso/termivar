@@ -1,9 +1,9 @@
 # Deterministic scan JSON output — schema `decision-scan/v1`
 
 `venom scan <target> --format json` prints a single JSON document to **stdout**;
-the `[ALPHA]` warning and any error go to **stderr**. The deprecated
-`decision-scan` command alias runs the same implementation and adds a deprecation
-notice on stderr. The document is
+the `[ALPHA]` warning and any error go to **stderr**. The deprecated, discoverable
+`decision-scan` command alias runs the same implementation and produces identical
+stdout and stderr. The document is
 built from the same typed summary the text renderer uses — it is never produced by
 parsing rendered text. `--format json` cannot be combined with `--explain` (the
 JSON already carries the full diagnostics); the combination is rejected as an

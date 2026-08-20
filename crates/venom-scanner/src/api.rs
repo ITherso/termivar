@@ -1,16 +1,16 @@
-//! REST API Module
+//! REST API data models
 //!
 //! ## Runtime scope
 //!
-//! - **Build:** always/default.
+//! - **Build:** opt-in via `platform-models`.
 //! - **Execution:** host/library only; no repository runtime caller.
 //! - **Default `venom scan`:** no.
 //! - **Support:** experimental/scaffold.
 //!
 //! See `docs/internals/runtime-map.md`.
 //!
-//! Comprehensive REST API for scan management, reporting, and control.
-//! Supports JSON requests/responses, error handling, and real-time updates.
+//! Request/response data contracts only. This module does not bind a listener
+//! or route HTTP requests.
 
 use crate::ScanFinding;
 use serde::{Deserialize, Serialize};
@@ -23,16 +23,17 @@ pub struct StartScanRequest {
     pub tags: Option<Vec<String>>,
 }
 
-/// API Request for scan configuration
+/// Uninterpreted host configuration metadata.
+///
+/// The repository API model does not authorize or apply these values.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScanConfigRequest {
     pub intensity: Option<String>,
     pub timeout_secs: Option<u64>,
-    pub max_concurrency: Option<usize>,
+    pub max_concurrency: Option<u32>,
+    #[serde(with = "optional_positive_f32")]
     pub rate_limit: Option<f32>,
-    pub enable_waf_evasion: Option<bool>,
-    pub enable_adaptive_payloads: Option<bool>,
-    pub enable_anomaly_detection: Option<bool>,
+    /// Historical phase identifiers; this record does not execute them.
     pub phases: Option<Vec<u8>>,
 }
 
@@ -42,8 +43,9 @@ pub struct ScanStatus {
     pub scan_id: String,
     pub target: String,
     pub status: ScanStatusType,
+    #[serde(with = "percent_f32")]
     pub progress: f32,
-    pub findings_count: usize,
+    pub findings_count: u64,
     pub elapsed_ms: u64,
     pub started_at: u64,
     pub current_phase: Option<u8>,
@@ -86,27 +88,23 @@ pub struct ApiResponse<T> {
 }
 
 impl<T> ApiResponse<T> {
-    pub fn ok(data: T) -> Self {
+    /// Builds a success record at a caller-supplied timestamp.
+    pub fn ok_at(data: T, timestamp: u64) -> Self {
         Self {
             success: true,
             data: Some(data),
             error: None,
-            timestamp: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs(),
+            timestamp,
         }
     }
 
-    pub fn err(error: String) -> Self {
+    /// Builds an error record at a caller-supplied timestamp.
+    pub fn err_at(error: String, timestamp: u64) -> Self {
         Self {
             success: false,
             data: None,
             error: Some(error),
-            timestamp: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs(),
+            timestamp,
         }
     }
 }
@@ -118,6 +116,7 @@ pub struct ScanResultResponse {
     pub target: String,
     pub status: String,
     pub findings: Vec<ScanFinding>,
+    #[serde(with = "unit_interval_f32")]
     pub risk_score: f32,
     pub duration_ms: u64,
     pub completed_at: u64,
@@ -129,8 +128,8 @@ pub struct FindingFilter {
     pub severity: Option<String>,
     pub phase: Option<u8>,
     pub module: Option<String>,
-    pub offset: Option<usize>,
-    pub limit: Option<usize>,
+    pub offset: Option<u64>,
+    pub limit: Option<u64>,
 }
 
 /// Statistics response
@@ -143,83 +142,115 @@ pub struct StatsResponse {
     pub high_count: u64,
     pub medium_count: u64,
     pub low_count: u64,
+    #[serde(with = "nonnegative_f64")]
     pub avg_scan_duration_ms: f64,
 }
 
-/// Endpoint definitions
-pub struct ApiEndpoints;
+mod optional_positive_f32 {
+    use serde::{Deserialize, Deserializer, Serializer};
 
-impl ApiEndpoints {
-    /// POST /api/v1/scans - Start new scan
-    pub fn start_scan() -> &'static str {
-        "POST /api/v1/scans"
+    pub fn serialize<S>(value: &Option<f32>, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        match value {
+            Some(value) if value.is_finite() && *value > 0.0 => serializer.serialize_some(value),
+            Some(_) => Err(serde::ser::Error::custom(
+                "rate limit must be finite and greater than zero",
+            )),
+            None => serializer.serialize_none(),
+        }
     }
 
-    /// GET /api/v1/scans/{scan_id} - Get scan status
-    pub fn get_scan_status() -> &'static str {
-        "GET /api/v1/scans/{scan_id}"
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Option<f32>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = Option::<f32>::deserialize(deserializer)?;
+        match value {
+            Some(value) if value.is_finite() && value > 0.0 => Ok(Some(value)),
+            Some(_) => Err(serde::de::Error::custom(
+                "rate limit must be finite and greater than zero",
+            )),
+            None => Ok(None),
+        }
+    }
+}
+
+macro_rules! ranged_float_serde {
+    ($module:ident, $type:ty, $minimum:expr, $maximum:expr, $message:literal) => {
+        mod $module {
+            use serde::{Deserialize, Deserializer, Serializer};
+
+            pub fn serialize<S>(value: &$type, serializer: S) -> Result<S::Ok, S::Error>
+            where
+                S: Serializer,
+            {
+                if value.is_finite() && ($minimum..=$maximum).contains(value) {
+                    serializer.serialize_f64(*value as f64)
+                } else {
+                    Err(serde::ser::Error::custom($message))
+                }
+            }
+
+            pub fn deserialize<'de, D>(deserializer: D) -> Result<$type, D::Error>
+            where
+                D: Deserializer<'de>,
+            {
+                let value = <$type>::deserialize(deserializer)?;
+                if value.is_finite() && ($minimum..=$maximum).contains(&value) {
+                    Ok(value)
+                } else {
+                    Err(serde::de::Error::custom($message))
+                }
+            }
+        }
+    };
+}
+
+ranged_float_serde!(
+    percent_f32,
+    f32,
+    0.0_f32,
+    100.0_f32,
+    "progress must be finite and between 0 and 100"
+);
+ranged_float_serde!(
+    unit_interval_f32,
+    f32,
+    0.0_f32,
+    1.0_f32,
+    "risk score must be finite and between 0 and 1"
+);
+
+mod nonnegative_f64 {
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S>(value: &f64, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        if value.is_finite() && *value >= 0.0 {
+            serializer.serialize_f64(*value)
+        } else {
+            Err(serde::ser::Error::custom(
+                "average duration must be finite and non-negative",
+            ))
+        }
     }
 
-    /// GET /api/v1/scans - List all scans
-    pub fn list_scans() -> &'static str {
-        "GET /api/v1/scans"
-    }
-
-    /// DELETE /api/v1/scans/{scan_id} - Cancel scan
-    pub fn cancel_scan() -> &'static str {
-        "DELETE /api/v1/scans/{scan_id}"
-    }
-
-    /// POST /api/v1/scans/{scan_id}/pause - Pause scan
-    pub fn pause_scan() -> &'static str {
-        "POST /api/v1/scans/{scan_id}/pause"
-    }
-
-    /// POST /api/v1/scans/{scan_id}/resume - Resume scan
-    pub fn resume_scan() -> &'static str {
-        "POST /api/v1/scans/{scan_id}/resume"
-    }
-
-    /// GET /api/v1/scans/{scan_id}/results - Get scan results
-    pub fn get_scan_results() -> &'static str {
-        "GET /api/v1/scans/{scan_id}/results"
-    }
-
-    /// GET /api/v1/scans/{scan_id}/report - Export report
-    pub fn export_report() -> &'static str {
-        "GET /api/v1/scans/{scan_id}/report?format=json|csv|html|markdown"
-    }
-
-    /// GET /api/v1/findings - Query findings
-    pub fn query_findings() -> &'static str {
-        "GET /api/v1/findings?severity=CRITICAL&phase=5&limit=50"
-    }
-
-    /// GET /api/v1/stats - Get statistics
-    pub fn get_statistics() -> &'static str {
-        "GET /api/v1/stats"
-    }
-
-    /// GET /api/v1/health - Health check
-    pub fn health_check() -> &'static str {
-        "GET /api/v1/health"
-    }
-
-    /// Lists all endpoints
-    pub fn all_endpoints() -> Vec<&'static str> {
-        vec![
-            Self::start_scan(),
-            Self::get_scan_status(),
-            Self::list_scans(),
-            Self::cancel_scan(),
-            Self::pause_scan(),
-            Self::resume_scan(),
-            Self::get_scan_results(),
-            Self::export_report(),
-            Self::query_findings(),
-            Self::get_statistics(),
-            Self::health_check(),
-        ]
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<f64, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = f64::deserialize(deserializer)?;
+        if value.is_finite() && value >= 0.0 {
+            Ok(value)
+        } else {
+            Err(serde::de::Error::custom(
+                "average duration must be finite and non-negative",
+            ))
+        }
     }
 }
 
@@ -285,7 +316,7 @@ mod tests {
 
     #[test]
     fn test_api_response_ok() {
-        let response: ApiResponse<String> = ApiResponse::ok("Success".to_string());
+        let response: ApiResponse<String> = ApiResponse::ok_at("Success".to_string(), 123);
         assert!(response.success);
         assert_eq!(response.data, Some("Success".to_string()));
         assert!(response.error.is_none());
@@ -293,7 +324,7 @@ mod tests {
 
     #[test]
     fn test_api_response_err() {
-        let response: ApiResponse<String> = ApiResponse::err("Error".to_string());
+        let response: ApiResponse<String> = ApiResponse::err_at("Error".to_string(), 123);
         assert!(!response.success);
         assert!(response.data.is_none());
         assert_eq!(response.error, Some("Error".to_string()));
@@ -311,12 +342,6 @@ mod tests {
 
         assert_eq!(filter.severity, Some("CRITICAL".to_string()));
         assert_eq!(filter.limit, Some(50));
-    }
-
-    #[test]
-    fn test_api_endpoints_count() {
-        let endpoints = ApiEndpoints::all_endpoints();
-        assert_eq!(endpoints.len(), 11);
     }
 
     #[test]
@@ -368,14 +393,62 @@ mod tests {
             timeout_secs: Some(10),
             max_concurrency: Some(100),
             rate_limit: Some(50.0),
-            enable_waf_evasion: Some(true),
-            enable_adaptive_payloads: Some(true),
-            enable_anomaly_detection: Some(true),
             phases: Some(vec![1, 2, 3, 5, 6, 7, 8]),
         };
 
         assert_eq!(config.intensity, Some("aggressive".to_string()));
         assert_eq!(config.max_concurrency, Some(100));
-        assert!(config.enable_waf_evasion.unwrap());
+        assert_eq!(config.phases, Some(vec![1, 2, 3, 5, 6, 7, 8]));
+    }
+
+    #[test]
+    fn api_wire_rejects_nonfinite_and_out_of_range_numbers() {
+        let invalid_status = ScanStatus {
+            scan_id: "scan".into(),
+            target: "https://example.test".into(),
+            status: ScanStatusType::Running,
+            progress: f32::NAN,
+            findings_count: 0,
+            elapsed_ms: 0,
+            started_at: 0,
+            current_phase: None,
+        };
+        assert!(serde_json::to_string(&invalid_status).is_err());
+
+        let invalid_config = r#"{
+            "intensity": null,
+            "timeout_secs": null,
+            "max_concurrency": null,
+            "rate_limit": -1.0,
+            "phases": null
+        }"#;
+        assert!(serde_json::from_str::<ScanConfigRequest>(invalid_config).is_err());
+
+        let invalid_stats = StatsResponse {
+            total_scans: 0,
+            completed_scans: 0,
+            total_findings: 0,
+            critical_count: 0,
+            high_count: 0,
+            medium_count: 0,
+            low_count: 0,
+            avg_scan_duration_ms: f64::INFINITY,
+        };
+        assert!(serde_json::to_string(&invalid_stats).is_err());
+    }
+
+    #[test]
+    fn api_wire_counts_are_fixed_width() {
+        let filter = FindingFilter {
+            severity: None,
+            phase: None,
+            module: None,
+            offset: Some(u64::MAX),
+            limit: Some(u64::MAX),
+        };
+        let encoded = serde_json::to_string(&filter).expect("fixed-width record serializes");
+        let decoded: FindingFilter = serde_json::from_str(&encoded).expect("record round-trips");
+        assert_eq!(decoded.offset, Some(u64::MAX));
+        assert_eq!(decoded.limit, Some(u64::MAX));
     }
 }

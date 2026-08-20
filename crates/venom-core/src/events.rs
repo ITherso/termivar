@@ -1,4 +1,7 @@
-//! Transport-neutral event contracts shared across Venom components.
+//! Historical scanner lifecycle event records.
+//!
+//! This module is available only with the non-default `legacy-contracts`
+//! feature. The default reasoning runtime does not publish these events.
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -43,7 +46,7 @@ pub enum EventType {
 }
 
 impl EventType {
-    /// Returns the stable wire name for the event type.
+    /// Returns the serialized name for the event type.
     pub fn as_str(&self) -> &str {
         match self {
             EventType::ScanStarted => "scan_started",
@@ -82,7 +85,7 @@ pub enum EventSeverity {
     Critical = 4,
 }
 
-/// Versioned event data shared by scanner, proxy, worker, plugin, and UI code.
+/// Versioned event data used by the opt-in historical scanner event bus.
 ///
 /// # Examples
 ///

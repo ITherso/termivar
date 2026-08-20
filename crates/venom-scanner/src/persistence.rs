@@ -1,44 +1,20 @@
-//! Database Persistence Layer
+//! Persistence record and schema metadata.
 //!
 //! ## Runtime scope
 //!
-//! - **Build:** default via `scanning`.
+//! - **Build:** opt-in via `platform-models`.
 //! - **Execution:** no repository runtime caller (not on the default scan path).
 //! - **Default `venom scan`:** no.
-//! - **Support:** experimental/scaffold.
+//! - **Support:** experimental data models.
 //!
-//! See `docs/internals/runtime-map.md`.
-//!
-//! SQLite abstraction, schema management, and optimized queries.
+//! This module contains serializable records and an in-memory schema catalog.
+//! It does not build SQL, connect to a database, manage a pool, execute a
+//! transaction, or provide durable storage.
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-/// Database connection pool configuration
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DbConfig {
-    pub database_path: String,
-    pub pool_size: u32,
-    pub connection_timeout_secs: u32,
-    pub enable_wal: bool,
-    pub enable_journal_mode: bool,
-    pub max_connections: u32,
-}
-
-impl DbConfig {
-    pub fn default_sqlite() -> Self {
-        Self {
-            database_path: ".venom/scans.db".to_string(),
-            pool_size: 10,
-            connection_timeout_secs: 30,
-            enable_wal: true,
-            enable_journal_mode: true,
-            max_connections: 50,
-        }
-    }
-}
-
-/// Database entity types
+/// Kind of record represented by persistence metadata.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum EntityType {
     #[serde(rename = "scan")]
@@ -54,29 +30,19 @@ pub enum EntityType {
 }
 
 impl EntityType {
-    pub fn as_str(&self) -> &str {
+    pub fn as_str(self) -> &'static str {
         match self {
-            EntityType::Scan => "scan",
-            EntityType::Finding => "finding",
-            EntityType::Endpoint => "endpoint",
-            EntityType::Vulnerability => "vulnerability",
-            EntityType::ScanResult => "scan_result",
-        }
-    }
-
-    pub fn table_name(&self) -> &str {
-        match self {
-            EntityType::Scan => "scans",
-            EntityType::Finding => "findings",
-            EntityType::Endpoint => "endpoints",
-            EntityType::Vulnerability => "vulnerabilities",
-            EntityType::ScanResult => "scan_results",
+            Self::Scan => "scan",
+            Self::Finding => "finding",
+            Self::Endpoint => "endpoint",
+            Self::Vulnerability => "vulnerability",
+            Self::ScanResult => "scan_result",
         }
     }
 }
 
-/// Scan record
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Caller-supplied scan record.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ScanRecord {
     pub scan_id: String,
     pub target_url: String,
@@ -89,8 +55,8 @@ pub struct ScanRecord {
     pub high_count: u32,
 }
 
-/// Finding record
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Caller-supplied finding record.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FindingRecord {
     pub finding_id: String,
     pub scan_id: String,
@@ -102,8 +68,8 @@ pub struct FindingRecord {
     pub discovered_at: u64,
 }
 
-/// Endpoint record
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Caller-supplied endpoint record.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EndpointRecord {
     pub endpoint_id: String,
     pub scan_id: String,
@@ -114,79 +80,8 @@ pub struct EndpointRecord {
     pub discovered_at: u64,
 }
 
-/// Database query builder
-pub struct QueryBuilder {
-    entity_type: EntityType,
-    filters: HashMap<String, String>,
-    limit: Option<u32>,
-    offset: Option<u32>,
-}
-
-impl QueryBuilder {
-    pub fn new(entity_type: EntityType) -> Self {
-        Self {
-            entity_type,
-            filters: HashMap::new(),
-            limit: None,
-            offset: None,
-        }
-    }
-
-    /// Adds filter condition
-    pub fn filter(mut self, key: String, value: String) -> Self {
-        self.filters.insert(key, value);
-        self
-    }
-
-    /// Sets result limit
-    pub fn limit(mut self, limit: u32) -> Self {
-        self.limit = Some(limit);
-        self
-    }
-
-    /// Sets result offset
-    pub fn offset(mut self, offset: u32) -> Self {
-        self.offset = Some(offset);
-        self
-    }
-
-    /// Builds SQL query string
-    pub fn build(&self) -> String {
-        let mut query = format!("SELECT * FROM {}", self.entity_type.table_name());
-
-        if !self.filters.is_empty() {
-            query.push_str(" WHERE ");
-            let conditions: Vec<String> = self
-                .filters
-                .iter()
-                .map(|(k, v)| format!("{} = '{}'", k, v))
-                .collect();
-            query.push_str(&conditions.join(" AND "));
-        }
-
-        if let Some(limit) = self.limit {
-            query.push_str(&format!(" LIMIT {}", limit));
-        }
-
-        if let Some(offset) = self.offset {
-            query.push_str(&format!(" OFFSET {}", offset));
-        }
-
-        query
-    }
-
-    pub fn filter_count(&self) -> usize {
-        self.filters.len()
-    }
-}
-
-/// Database schema manager
-pub struct SchemaManager {
-    schemas: HashMap<String, TableSchema>,
-}
-
-/// Table schema definition
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Declarative table metadata. Values are not interpreted as SQL.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TableSchema {
     pub table_name: String,
     pub columns: Vec<ColumnDef>,
@@ -194,8 +89,8 @@ pub struct TableSchema {
     pub primary_key: String,
 }
 
-/// Column definition
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Declarative column metadata. `data_type` is an opaque caller-supplied label.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ColumnDef {
     pub name: String,
     pub data_type: String,
@@ -203,302 +98,101 @@ pub struct ColumnDef {
     pub indexed: bool,
 }
 
-/// Index definition
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Declarative index metadata.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IndexDef {
     pub name: String,
     pub columns: Vec<String>,
     pub unique: bool,
 }
 
+/// In-memory catalog of caller-supplied schema metadata.
+#[derive(Debug, Clone, Default)]
+pub struct SchemaManager {
+    schemas: HashMap<String, TableSchema>,
+}
+
 impl SchemaManager {
     pub fn new() -> Self {
-        Self {
-            schemas: HashMap::new(),
-        }
+        Self::default()
     }
 
-    /// Registers a table schema
-    pub fn register_schema(&mut self, schema: TableSchema) {
-        self.schemas.insert(schema.table_name.clone(), schema);
+    /// Records metadata and returns the previous value for the same name.
+    ///
+    /// This method does not create or alter a database table.
+    pub fn register_schema(&mut self, schema: TableSchema) -> Option<TableSchema> {
+        self.schemas.insert(schema.table_name.clone(), schema)
     }
 
-    /// Gets schema by table name
     pub fn get_schema(&self, table_name: &str) -> Option<&TableSchema> {
         self.schemas.get(table_name)
-    }
-
-    /// Generates CREATE TABLE statement
-    pub fn generate_create_statement(&self, table_name: &str) -> Option<String> {
-        if let Some(schema) = self.get_schema(table_name) {
-            let mut stmt = format!("CREATE TABLE IF NOT EXISTS {} (", table_name);
-
-            let columns: Vec<String> = schema
-                .columns
-                .iter()
-                .map(|col| {
-                    let nullable = if col.nullable { "" } else { " NOT NULL" };
-                    format!("{} {}{}", col.name, col.data_type, nullable)
-                })
-                .collect();
-
-            stmt.push_str(&columns.join(", "));
-            stmt.push_str(&format!(", PRIMARY KEY ({})", schema.primary_key));
-            stmt.push(')');
-
-            Some(stmt)
-        } else {
-            None
-        }
     }
 
     pub fn schema_count(&self) -> usize {
         self.schemas.len()
     }
-}
 
-impl Default for SchemaManager {
-    fn default() -> Self {
-        Self::new()
+    pub fn is_empty(&self) -> bool {
+        self.schemas.is_empty()
     }
-}
-
-/// Query result
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct QueryResult {
-    pub query: String,
-    pub row_count: u32,
-    pub execution_time_ms: u32,
-    pub success: bool,
-}
-
-/// Database connection pool
-pub struct ConnectionPool {
-    pub config: DbConfig,
-    pub active_connections: u32,
-    pub total_queries: u64,
-    pub failed_queries: u64,
-}
-
-impl ConnectionPool {
-    pub fn new(config: DbConfig) -> Self {
-        Self {
-            config,
-            active_connections: 0,
-            total_queries: 0,
-            failed_queries: 0,
-        }
-    }
-
-    /// Records a query execution
-    pub fn record_query(&mut self, success: bool) {
-        self.total_queries += 1;
-        if !success {
-            self.failed_queries += 1;
-        }
-    }
-
-    /// Gets query success rate
-    pub fn query_success_rate(&self) -> f32 {
-        if self.total_queries == 0 {
-            return 100.0;
-        }
-        ((self.total_queries - self.failed_queries) as f32 / self.total_queries as f32) * 100.0
-    }
-
-    pub fn connection_count(&self) -> u32 {
-        self.active_connections
-    }
-}
-
-/// Database transaction
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Transaction {
-    pub transaction_id: String,
-    pub status: TransactionStatus,
-    pub started_at: u64,
-    pub operations: u32,
-}
-
-/// Transaction status
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum TransactionStatus {
-    #[serde(rename = "active")]
-    Active,
-    #[serde(rename = "committed")]
-    Committed,
-    #[serde(rename = "rolled_back")]
-    RolledBack,
-    #[serde(rename = "failed")]
-    Failed,
-}
-
-impl TransactionStatus {
-    pub fn as_str(&self) -> &str {
-        match self {
-            TransactionStatus::Active => "active",
-            TransactionStatus::Committed => "committed",
-            TransactionStatus::RolledBack => "rolled_back",
-            TransactionStatus::Failed => "failed",
-        }
-    }
-}
-
-/// Transaction manager
-pub struct TransactionManager {
-    transactions: HashMap<String, Transaction>,
-}
-
-impl TransactionManager {
-    pub fn new() -> Self {
-        Self {
-            transactions: HashMap::new(),
-        }
-    }
-
-    /// Begins a transaction
-    pub fn begin_transaction(&mut self, transaction_id: String) -> Transaction {
-        let txn = Transaction {
-            transaction_id: transaction_id.clone(),
-            status: TransactionStatus::Active,
-            started_at: current_timestamp(),
-            operations: 0,
-        };
-        self.transactions.insert(transaction_id, txn.clone());
-        txn
-    }
-
-    /// Gets transaction by ID
-    pub fn get_transaction(&self, transaction_id: &str) -> Option<&Transaction> {
-        self.transactions.get(transaction_id)
-    }
-
-    /// Commits transaction
-    pub fn commit(&mut self, transaction_id: &str) -> bool {
-        if let Some(txn) = self.transactions.get_mut(transaction_id) {
-            txn.status = TransactionStatus::Committed;
-            true
-        } else {
-            false
-        }
-    }
-
-    pub fn transaction_count(&self) -> usize {
-        self.transactions.len()
-    }
-}
-
-impl Default for TransactionManager {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-fn current_timestamp() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_db_config() {
-        let config = DbConfig::default_sqlite();
-        assert_eq!(config.pool_size, 10);
-        assert!(config.enable_wal);
-    }
-
-    #[test]
-    fn test_entity_types() {
-        assert_eq!(EntityType::Scan.as_str(), "scan");
-        assert_eq!(EntityType::Finding.table_name(), "findings");
-    }
-
-    #[test]
-    fn test_scan_record() {
-        let record = ScanRecord {
-            scan_id: "scan1".to_string(),
-            target_url: "https://example.com".to_string(),
-            status: "completed".to_string(),
-            started_at: 1000,
-            completed_at: Some(2000),
-            duration_ms: Some(1000),
-            findings_count: 5,
-            critical_count: 1,
-            high_count: 2,
-        };
-
-        assert_eq!(record.findings_count, 5);
-    }
-
-    #[test]
-    fn test_query_builder() {
-        let builder = QueryBuilder::new(EntityType::Finding)
-            .filter("scan_id".to_string(), "scan1".to_string())
-            .filter("severity".to_string(), "CRITICAL".to_string())
-            .limit(10)
-            .offset(0);
-
-        assert_eq!(builder.filter_count(), 2);
-        let query = builder.build();
-        assert!(query.contains("findings"));
-    }
-
-    #[test]
-    fn test_schema_manager() {
-        let mut manager = SchemaManager::new();
-        let schema = TableSchema {
-            table_name: "scans".to_string(),
+    fn schema(name: &str, data_type: &str) -> TableSchema {
+        TableSchema {
+            table_name: name.to_string(),
             columns: vec![ColumnDef {
                 name: "scan_id".to_string(),
-                data_type: "TEXT".to_string(),
+                data_type: data_type.to_string(),
                 nullable: false,
                 indexed: true,
             }],
-            indexes: vec![],
+            indexes: Vec::new(),
             primary_key: "scan_id".to_string(),
-        };
-
-        manager.register_schema(schema);
-        assert_eq!(manager.schema_count(), 1);
+        }
     }
 
     #[test]
-    fn test_connection_pool() {
-        let config = DbConfig::default_sqlite();
-        let mut pool = ConnectionPool::new(config);
-
-        pool.record_query(true);
-        pool.record_query(true);
-        pool.record_query(false);
-
-        assert_eq!(pool.total_queries, 3);
-        assert_eq!(pool.failed_queries, 1);
-        assert!(pool.query_success_rate() > 60.0);
+    fn entity_type_is_metadata_without_table_mapping() {
+        assert_eq!(EntityType::Finding.as_str(), "finding");
     }
 
     #[test]
-    fn test_transaction_manager() {
-        let mut manager = TransactionManager::new();
-        let txn = manager.begin_transaction("txn1".to_string());
-
-        assert_eq!(txn.status, TransactionStatus::Active);
-        assert_eq!(manager.transaction_count(), 1);
+    fn schema_catalog_is_empty_until_the_caller_records_metadata() {
+        let catalog = SchemaManager::new();
+        assert!(catalog.is_empty());
+        assert!(catalog.get_schema("scans").is_none());
     }
 
     #[test]
-    fn test_transaction_commit() {
-        let mut manager = TransactionManager::new();
-        manager.begin_transaction("txn1".to_string());
+    fn duplicate_schema_names_replace_and_return_the_previous_record() {
+        let mut catalog = SchemaManager::new();
+        assert!(catalog.register_schema(schema("scans", "TEXT")).is_none());
 
-        let success = manager.commit("txn1");
-        assert!(success);
+        let previous = catalog
+            .register_schema(schema("scans", "opaque-not-sql"))
+            .expect("the original metadata must be returned");
 
-        let txn = manager.get_transaction("txn1").unwrap();
-        assert_eq!(txn.status, TransactionStatus::Committed);
+        assert_eq!(previous.columns[0].data_type, "TEXT");
+        assert_eq!(catalog.schema_count(), 1);
+        assert_eq!(
+            catalog.get_schema("scans").unwrap().columns[0].data_type,
+            "opaque-not-sql"
+        );
+    }
+
+    #[test]
+    fn schema_values_remain_opaque_metadata() {
+        let suspicious = "TEXT); DROP TABLE scans; --";
+        let mut catalog = SchemaManager::new();
+        let _ = catalog.register_schema(schema("scans", suspicious));
+
+        assert_eq!(
+            catalog.get_schema("scans").unwrap().columns[0].data_type,
+            suspicious
+        );
     }
 }

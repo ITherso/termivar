@@ -1,6 +1,18 @@
+//! Historical raw scanner and HTTP record compatibility facade.
+//!
+//! This module is available only with the non-default `legacy-contracts`
+//! feature. The records are not produced by the default decision runtime.
+//!
+//! ## Deprecated compatibility surface
+//!
+//! These unconstrained records remain solely for the pinned pre-1.0
+//! patch-compatibility baseline. New runtimes should use verified
+//! [`crate::Outcome`] and [`crate::RunReport`] records and own transport models
+//! at the transport boundary.
+
 use serde::{Deserialize, Serialize};
 
-/// A structured observation produced by a scan phase or plugin.
+/// A raw observation returned by a bespoke historical `ScanPhase`.
 ///
 /// # Examples
 ///
@@ -9,7 +21,7 @@ use serde::{Deserialize, Serialize};
 ///
 /// let finding = ScanFinding {
 ///     phase: 1,
-///     module_name: "example-plugin".into(),
+///     module_name: "legacy-header-phase".into(),
 ///     severity: "LOW".into(),
 ///     description: "Example observation".into(),
 ///     evidence: "response marker".into(),
@@ -26,6 +38,7 @@ pub struct ScanFinding {
     pub evidence: String,
 }
 
+/// Historical unconstrained vulnerability record retained for compatibility.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Vulnerability {
     pub id: String,
@@ -37,6 +50,7 @@ pub struct Vulnerability {
     pub evidence: String,
 }
 
+/// Historical raw scan result retained for compatibility.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScanResult {
     pub target: String,
@@ -44,6 +58,7 @@ pub struct ScanResult {
     pub scan_time_ms: u64,
 }
 
+/// Historical transport request record retained for compatibility.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HttpRequest {
     pub method: String,
@@ -52,6 +67,7 @@ pub struct HttpRequest {
     pub body: Option<Vec<u8>>,
 }
 
+/// Historical transport response record retained for compatibility.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HttpResponse {
     pub status: u16,

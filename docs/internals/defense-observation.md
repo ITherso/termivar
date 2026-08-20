@@ -7,8 +7,8 @@ which consumes these observations. Keeping detection and payload selection in
 separate modules means a change to a defensive fingerprint can never silently
 change attack behavior.
 
-The legacy `waf` utility remains for backward compatibility. New work should
-build on this layer; payload derivation lives in `payload_strategies`.
+The former legacy `waf` detector/evasion utility has been removed. Payload
+derivation lives behind the bounded `payload_strategies` contract.
 
 ## Fingerprinting
 

@@ -1,11 +1,15 @@
 # Compliance-oriented capabilities
 
-Venom v0.9.0-alpha provides Preview data models that can help an integrator
+The current source provides Experimental data models that can help an integrator
 organize compliance-oriented evidence. Venom is not certified, independently
 audited, or a substitute for legal, privacy, or assurance work. Whether a
 deployment meets a law, regulation, contractual obligation, or control
 framework depends on the entire deployed system and the operating
 organization—not on this repository alone.
+
+These caller-supplied, in-memory models require the independent `compliance`
+feature. No repository runtime calls them, and they are absent from the default
+scanner build.
 
 ## Capability and evidence matrix
 
@@ -13,16 +17,16 @@ organization—not on this repository alone.
 | --- | --- | --- |
 | Framework labels | Serializable identifiers for GDPR, HIPAA, SOC 2, and PCI DSS | An official control catalog, validated control mapping, legal interpretation, or framework approval |
 | Requirements | Caller-supplied requirement and control records | That a requirement is complete, current, applicable, or satisfied |
-| Assessments | In-memory assessment records and arithmetic over caller-supplied control counts | A legal compliance determination, attestation, audit opinion, or calibrated assurance score |
+| Assessments | In-memory assessment records, consistency checks, explicit percentages, and caller-selected thresholds | A legal compliance determination, attestation, audit opinion, or calibrated assurance score |
 | Reports | In-memory report records and score history | An auditor-ready report, signed evidence package, or regulator submission |
 | Audit events | Process-local event records with basic filtering | Durable, immutable, complete, access-controlled, or retention-enforced audit logging |
 | Data classification | Metadata records and queries for caller-declared classifications and encryption flags | Encryption, key management, data discovery, access control, deletion, or retention enforcement |
 | Repository controls | CI definitions for tests and security tooling | A passing result for an unverified commit, production safety, certification, or independent review |
 
-The built-in compliance module is therefore a reporting and integration model,
-not a compliance engine. Its `is_compliant` helper applies a local numeric
-threshold to supplied counts; applications must not present that value as a
-legal or certification decision.
+The built-in compliance module is therefore a record/catalog surface, not a
+compliance engine. `ComplianceAssessment::meets_threshold` evaluates only a
+caller-selected numeric threshold over consistent caller-supplied counts;
+applications must not present that value as a legal or certification decision.
 
 ## Current assurance status
 
@@ -61,7 +65,7 @@ known gaps, [Code quality](CODE_QUALITY.md) for the local verification commands,
 and [Security policy](https://github.com/ITherso/venom/blob/main/SECURITY.md) for
 private vulnerability reporting.
 
-## Using the Preview models responsibly
+## Using the Experimental models responsibly
 
 An integrator that uses the compliance module should:
 
@@ -71,7 +75,7 @@ An integrator that uses the compliance module should:
    system;
 4. distinguish observed facts from caller-entered assertions and calculated
    scores;
-5. label generated output as Preview and subject to human review; and
+5. label derived output as Experimental and subject to human review; and
 6. obtain qualified legal, privacy, and assurance advice for the target
    jurisdiction and deployment.
 

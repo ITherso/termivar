@@ -16,7 +16,7 @@ source of truth.
 | Template smoke tests | `templates/` in CI | Generated scanner and plugin projects compile independently |
 | Benchmarks | `crates/venom-scanner/benches/` | Criterion regression signals |
 | Fuzz targets | `fuzz/` | Bounded parser campaigns outside the main workspace |
-| Dashboard tests | `web/` | Frontend unit, build, and separately configured browser checks |
+| Dashboard tests | `web/` | Server-render smoke, typecheck, lint, and production-build checks; no browser interaction or accessibility suite is currently configured |
 
 ## Local commands
 
@@ -38,7 +38,7 @@ Focus on one package or one test name while iterating:
 ```bash
 cargo test -p venom-core
 cargo test -p venom-scanner --all-features runtime_budget
-cargo test -p venom-scanner --test integration_tests
+cargo test --locked -p venom-scanner --no-default-features --features legacy-scanner --test integration_tests
 ```
 
 Public examples must compile as documentation tests where applicable:
@@ -54,15 +54,14 @@ the architecture gate, and a release CLI build:
 cargo xtask release
 ```
 
-## Service-backed tests
+## Integration tests
 
-The GitHub integration-test job starts PostgreSQL 15 and Redis 7, then runs the
-all-feature integration suite with explicit local connection strings. To
-reproduce that job, start disposable local services and set:
+The GitHub integration-test job runs the all-feature suite without PostgreSQL or
+Redis. The current tests use in-memory state and loopback fixtures; provisioning
+unused services would imply a runtime dependency that does not exist. Reproduce
+the job with:
 
 ```bash
-export DATABASE_URL=postgres://test:test@localhost:5432/venom_test
-export REDIS_URL=redis://localhost:6379
 cargo test --workspace --all-features --tests --locked
 ```
 

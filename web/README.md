@@ -1,6 +1,6 @@
 # VENOM Dashboard Preview
 
-This directory contains a static UI preview for VENOM `0.9.0-alpha`.
+This directory contains a static UI preview for the unreleased VENOM `0.10.0-alpha.1` source line.
 
 > This preview is not production-ready. It is not connected to the Rust API and it does not provide authentication, authorization, or any other security boundary.
 

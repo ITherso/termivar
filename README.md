@@ -9,7 +9,7 @@
 Venom is an experimental Rust security-testing project centered on a deterministic decision runtime that turns bounded web observations into typed evidence, hypotheses, risk-aware plans, and verifier-scoped outcomes.
 
 > [!WARNING]
-> **Venom v0.9.0-alpha is not production-ready.** Use it only on systems you own or are explicitly authorized to test. The default `scan` command is bounded, but it still makes network requests. The separately compiled `legacy-scan` has distinct bounded discovery and verification authorities, but phase one and custom extensions can still perform direct I/O outside `RuntimeBudget`, so its whole-run accounting is `Unmetered`. Preview and Experimental contracts may change.
+> **This remediated `0.10.0-alpha.1` source state is unreleased and not production-ready.** The historical `v0.9.0-alpha` binaries predate the bounded default runtime documented here and are not an installation path for this behavior. Build a reviewed, pinned commit from source and use it only on systems you own or are explicitly authorized to test. The default `scan` command is bounded, but it still makes network requests. The separately compiled `legacy-scan` has distinct bounded discovery and verification authorities, but phase one and custom extensions can still perform direct I/O outside `RuntimeBudget`, so its whole-run accounting is `Unmetered`. Preview and Experimental contracts may change.
 
 **Why an action ran is not what it proved.** Venom keeps the evidence that motivates an action separate from the evidence that may change a hypothesis. An action can return `Success` after completing a knowledge-gathering objective without confirming its motivating hypothesis.
 
@@ -83,6 +83,10 @@ Requirements: Rust 1.88 or newer, Git, and an authorized reachable HTTP(S) origi
 ```bash
 git clone https://github.com/ITherso/venom.git
 cd venom
+REVIEWED_COMMIT="REPLACE_WITH_THE_REVIEWED_FULL_COMMIT_SHA"
+test "$REVIEWED_COMMIT" != "REPLACE_WITH_THE_REVIEWED_FULL_COMMIT_SHA"
+git checkout --detach "$REVIEWED_COMMIT"
+test "$(git rev-parse HEAD)" = "$REVIEWED_COMMIT"
 cargo run -p venom-cli --locked -- scan https://authorized.example.test
 ```
 
@@ -95,7 +99,7 @@ cargo run -p venom-cli --locked -- scan https://authorized.example.test --explai
 cargo run -p venom-cli --locked -- scan https://authorized.example.test --format json
 ```
 
-`--explain` expands the text report. JSON already contains the full diagnostics and uses the documented, historically named [`decision-scan/v1`](docs/internals/decision-scan-json-v1.md) schema, so the two flags cannot be combined. The deprecated `decision-scan` alias accepts the same options and produces the same engine output while directing users to `scan`.
+`--explain` expands the text report. JSON already contains the full diagnostics and uses the documented, historically named [`decision-scan/v1`](docs/internals/decision-scan-json-v1.md) schema, so the two flags cannot be combined. The deprecated, discoverable `decision-scan` compatibility alias accepts the same options and produces identical stdout and stderr.
 
 The Preview profile enforces fixed request, wall-time, response-byte, request-body, active-verification, same-action, and no-progress limits. Redirects are disabled and every built-in request competes for the same runtime budget.
 
@@ -163,9 +167,15 @@ See the [runtime map](docs/internals/runtime-map.md) for the exact module and co
 | `venom legacy-scan` | Legacy alpha, opt-in | Historical mixed-authority pipeline: phases 2–4 share bounded passive discovery, phases 5–9 share separate bounded active verification, and phase-one/custom raw I/O keeps the whole run `Unmetered`; requires `legacy-scanner` and explicit acknowledgement |
 | Scanner SDK / native plugins | Preview, opt-in | Source-level host extensions; plugins receive a host-owned bounded context and record observations, not findings. No stock detector plugins ship, and plugins are not merged into the default runtime |
 | `venom api` | Unsupported, opt-in | Absent from default builds; the `api-adapter` feature reports that no listener is implemented |
-| `venom proxy` | Experimental, opt-in | Absent from default builds; `proxy-adapter` exposes a fixed-upstream TCP relay with no `CONNECT`, TLS termination, certificate generation, or HTTP inspection |
+| `venom proxy` | Experimental, opt-in | Absent from default builds; `proxy-adapter` exposes an explicit fixed-upstream TCP relay with no `CONNECT`, TLS termination, certificate generation, or HTTP inspection |
 
 Dashboard, distributed, monitoring, compliance, threat-intelligence, Lua, and related modules are optional, host-owned, compile-only, or experimental depending on the feature. Their presence in the repository does not mean they run in the default deterministic path or `legacy-scan`. The [runtime map](docs/internals/runtime-map.md) is the source of truth.
+
+The scanner default is exactly `core` plus `scanning`. Historical phases,
+platform data models, report renderers, native plugins, Lua, and distributed
+workers require the independent `legacy-scanner`, `platform-models`,
+`reporting`, `plugins`, `lua`, and `distributed` features. The CLI's unsupported
+API hook and experimental relay require `api-adapter` and `proxy-adapter`.
 
 ## Quality and robustness
 
@@ -186,13 +196,13 @@ See [Fuzzing](docs/fuzzing.md), [Quality metrics](docs/quality-metrics.md), [Rep
 
 ## Project status
 
-The latest release is **v0.9.0-alpha** and `main` targets the next Preview release. Alpha means public contracts, output details, and integration boundaries may change. Lifecycle labels describe maturity, not completeness:
+The latest published tag, **v0.9.0-alpha**, is historical and predates this source contract; `main` targets the next Preview release. Build from a reviewed, pinned source commit until a remediated tag exists. Alpha means public contracts, output details, and integration boundaries may change. Lifecycle labels describe maturity, not completeness:
 
 - [Feature lifecycle](FEATURES.md)
 - [Stable-release gates and active blockers](PROJECT_STATUS.md)
 - [Changelog](CHANGELOG.md)
 
-The current release has no independent security audit, stable scanner/plugin ABI, endpoint-scale performance report, supported API service, supported MITM proxy, or deployable distributed control plane.
+The current source state has no independent security audit, stable scanner/plugin ABI, endpoint-scale performance report, supported API service, supported MITM proxy, or deployable distributed control plane.
 
 ## Repository layout
 

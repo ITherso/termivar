@@ -1,6 +1,10 @@
 # Getting started
 
-Venom `0.9.0-alpha` is an experimental Rust security-testing project. It is not production-ready. Run it only against systems you own or are explicitly authorized to test.
+This unreleased source state (package version `0.10.0-alpha.1`) is an experimental
+Rust security-testing project. The historical `v0.9.0-alpha` tag predates the
+bounded default runtime documented here. Build a reviewed, pinned
+commit; it is not production-ready and must be run only against systems you own
+or are explicitly authorized to test.
 
 This guide covers the default deterministic CLI and the separately compiled historical runner. It does not describe a dashboard, API service, TLS-intercepting proxy, team service, or cloud control plane because those are not supported runtime products today.
 
@@ -17,6 +21,10 @@ Docker is optional. PostgreSQL, Redis, Node.js, and a browser are not required t
 ```bash
 git clone https://github.com/ITherso/venom.git
 cd venom
+REVIEWED_COMMIT="REPLACE_WITH_THE_REVIEWED_FULL_COMMIT_SHA"
+test "$REVIEWED_COMMIT" != "REPLACE_WITH_THE_REVIEWED_FULL_COMMIT_SHA"
+git checkout --detach "$REVIEWED_COMMIT"
+test "$(git rev-parse HEAD)" = "$REVIEWED_COMMIT"
 cargo build --locked -p venom-cli
 cargo run -p venom-cli --locked -- --help
 ```
@@ -58,7 +66,7 @@ The expanded text includes hypotheses, selected and excluded actions, dispatches
 cargo run -p venom-cli --locked -- scan https://authorized.example.test --format json
 ```
 
-The JSON document retains the historically named schema [`decision-scan/v1`](internals/decision-scan-json-v1.md). It already carries full diagnostics, so `--format json` and `--explain` cannot be combined. `decision-scan` remains a deprecated command alias for `scan`; it runs the same implementation and emits a migration notice.
+The JSON document retains the historically named schema [`decision-scan/v1`](internals/decision-scan-json-v1.md). It already carries full diagnostics, so `--format json` and `--explain` cannot be combined. `decision-scan` remains a deprecated, discoverable command alias for `scan`; it runs the same implementation and produces identical stdout and stderr.
 
 ### Safe local smoke target
 
@@ -131,7 +139,7 @@ For example, collecting PHP-style form-control names or Sanctum-compatible cooki
 Default builds expose neither `api` nor `proxy`. They can be compiled as explicit adapters, but they are not scan alternatives:
 
 - `cargo run -p venom-cli --locked --features api-adapter -- api --addr 127.0.0.1:8080` is unsupported and exits nonzero: the library has a health router, but no listener is implemented.
-- `cargo run -p venom-cli --locked --features proxy-adapter -- proxy --addr 127.0.0.1:8081` starts an experimental fixed-upstream TCP relay. It does not implement HTTP `CONNECT`, TLS termination, generated certificates, or request inspection.
+- `cargo run -p venom-cli --locked --features proxy-adapter -- proxy --addr 127.0.0.1:8081 --upstream 127.0.0.1:9081` starts an experimental TCP relay to the explicitly selected upstream. It does not implement HTTP `CONNECT`, TLS termination, generated certificates, or request inspection.
 
 The dashboard, distributed scheduler, monitoring, compliance, profile, and Lua modules are disconnected, opt-in, host-owned, or experimental. See the [runtime map](internals/runtime-map.md) before treating any module as executable product behavior.
 

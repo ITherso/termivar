@@ -646,44 +646,29 @@ mod tests {
         evidence: Evidence,
     }
 
-    #[allow(clippy::too_many_arguments)]
+    type ReportIdentity<'a> = (&'a str, &'a str, &'a str);
+    type ReportBehavior = (VerificationStage, OutcomeStatus, bool);
+    type ReportScope<'a> = (bool, Option<&'a str>);
+
     fn report_fixture(
         knowledge: &KnowledgeBase,
         subject: EntityId,
-        action_id: &str,
-        source_component: &str,
-        stage: VerificationStage,
-        status: OutcomeStatus,
-        knowledge_only: bool,
-        suffix: &str,
+        identity: ReportIdentity<'_>,
+        behavior: ReportBehavior,
     ) -> ReportFixture {
-        report_fixture_with_scope(
-            knowledge,
-            subject,
-            action_id,
-            source_component,
-            stage,
-            status,
-            knowledge_only,
-            suffix,
-            true,
-            None,
-        )
+        report_fixture_with_scope(knowledge, subject, identity, behavior, (true, None))
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn report_fixture_with_scope(
         knowledge: &KnowledgeBase,
         subject: EntityId,
-        action_id: &str,
-        source_component: &str,
-        stage: VerificationStage,
-        status: OutcomeStatus,
-        knowledge_only: bool,
-        suffix: &str,
-        case_correlated_evidence: bool,
-        correlation_id: Option<&str>,
+        identity: ReportIdentity<'_>,
+        behavior: ReportBehavior,
+        scope: ReportScope<'_>,
     ) -> ReportFixture {
+        let (action_id, source_component, suffix) = identity;
+        let (stage, status, knowledge_only) = behavior;
+        let (case_correlated_evidence, correlation_id) = scope;
         let hypothesis_id = format!("hypothesis:legacy.bridge-test.{suffix}");
         let case_id = format!("case:legacy.bridge-test.{suffix}");
         let predicate = KnowledgePredicate::new("legacy.bridge-test", suffix).unwrap();
@@ -850,12 +835,8 @@ mod tests {
         let fixture = report_fixture(
             &foreign,
             context.legacy_verification_subject().unwrap(),
-            TEST_ACTION_ID,
-            TEST_ACTION_ID,
-            VerificationStage::Active,
-            OutcomeStatus::NeedsReview,
-            true,
-            "foreign",
+            (TEST_ACTION_ID, TEST_ACTION_ID, "foreign"),
+            (VerificationStage::Active, OutcomeStatus::NeedsReview, true),
         );
 
         let error = context
@@ -876,12 +857,8 @@ mod tests {
         let fixture = report_fixture(
             &foreign,
             context.legacy_verification_subject().unwrap(),
-            TEST_ACTION_ID,
-            TEST_ACTION_ID,
-            VerificationStage::Active,
-            OutcomeStatus::NeedsReview,
-            true,
-            "mirrored-foreign",
+            (TEST_ACTION_ID, TEST_ACTION_ID, "mirrored-foreign"),
+            (VerificationStage::Active, OutcomeStatus::NeedsReview, true),
         );
 
         // Reproduce the exact records and write order locally so subjects,
@@ -917,12 +894,8 @@ mod tests {
             missing_evidence_context
                 .legacy_verification_subject()
                 .unwrap(),
-            TEST_ACTION_ID,
-            TEST_ACTION_ID,
-            VerificationStage::Active,
-            OutcomeStatus::NeedsReview,
-            true,
-            "missing-evidence",
+            (TEST_ACTION_ID, TEST_ACTION_ID, "missing-evidence"),
+            (VerificationStage::Active, OutcomeStatus::NeedsReview, true),
         );
         missing_evidence_context
             .knowledge()
@@ -945,12 +918,8 @@ mod tests {
             missing_hypothesis_context
                 .legacy_verification_subject()
                 .unwrap(),
-            TEST_ACTION_ID,
-            TEST_ACTION_ID,
-            VerificationStage::Active,
-            OutcomeStatus::NeedsReview,
-            true,
-            "missing-hypothesis",
+            (TEST_ACTION_ID, TEST_ACTION_ID, "missing-hypothesis"),
+            (VerificationStage::Active, OutcomeStatus::NeedsReview, true),
         );
         missing_hypothesis_context
             .knowledge()
@@ -998,12 +967,8 @@ mod tests {
             let fixture = report_fixture(
                 context.knowledge(),
                 context.legacy_verification_subject().unwrap(),
-                TEST_ACTION_ID,
-                TEST_ACTION_ID,
-                stage,
-                status,
-                knowledge_only,
-                suffix,
+                (TEST_ACTION_ID, TEST_ACTION_ID, suffix),
+                (stage, status, knowledge_only),
             );
 
             let error = context
@@ -1023,12 +988,8 @@ mod tests {
         let wrong_subject = report_fixture(
             wrong_subject_context.knowledge(),
             EntityId::new("authorized-origin:https://other.test").unwrap(),
-            TEST_ACTION_ID,
-            TEST_ACTION_ID,
-            VerificationStage::Active,
-            OutcomeStatus::NeedsReview,
-            true,
-            "wrong-subject",
+            (TEST_ACTION_ID, TEST_ACTION_ID, "wrong-subject"),
+            (VerificationStage::Active, OutcomeStatus::NeedsReview, true),
         );
         assert!(matches!(
             wrong_subject_context.record_legacy_verification_reports(vec![wrong_subject.report]),
@@ -1039,12 +1000,12 @@ mod tests {
         let wrong_action = report_fixture(
             wrong_action_context.knowledge(),
             wrong_action_context.legacy_verification_subject().unwrap(),
-            "legacy.observer.unsupported",
-            "legacy.observer.unsupported",
-            VerificationStage::Active,
-            OutcomeStatus::NeedsReview,
-            true,
-            "wrong-action",
+            (
+                "legacy.observer.unsupported",
+                "legacy.observer.unsupported",
+                "wrong-action",
+            ),
+            (VerificationStage::Active, OutcomeStatus::NeedsReview, true),
         );
         assert!(matches!(
             wrong_action_context.record_legacy_verification_reports(vec![wrong_action.report]),
@@ -1057,12 +1018,12 @@ mod tests {
             wrong_producer_context
                 .legacy_verification_subject()
                 .unwrap(),
-            TEST_ACTION_ID,
-            "legacy.observer.different-producer",
-            VerificationStage::Active,
-            OutcomeStatus::NeedsReview,
-            true,
-            "wrong-producer",
+            (
+                TEST_ACTION_ID,
+                "legacy.observer.different-producer",
+                "wrong-producer",
+            ),
+            (VerificationStage::Active, OutcomeStatus::NeedsReview, true),
         );
         assert!(matches!(
             wrong_producer_context.record_legacy_verification_reports(vec![wrong_producer.report]),
@@ -1080,14 +1041,9 @@ mod tests {
         let fixture = report_fixture_with_scope(
             context.knowledge(),
             context.legacy_verification_subject().unwrap(),
-            TEST_ACTION_ID,
-            TEST_ACTION_ID,
-            VerificationStage::Active,
-            OutcomeStatus::NeedsReview,
-            true,
-            "wrong-correlation",
-            false,
-            Some("case:legacy.bridge-test.another-case"),
+            (TEST_ACTION_ID, TEST_ACTION_ID, "wrong-correlation"),
+            (VerificationStage::Active, OutcomeStatus::NeedsReview, true),
+            (false, Some("case:legacy.bridge-test.another-case")),
         );
         assert_eq!(
             fixture.report.outcome().status(),
@@ -1107,12 +1063,8 @@ mod tests {
         let fixture = report_fixture(
             context.knowledge(),
             context.legacy_verification_subject().unwrap(),
-            LEGACY_SQL_ACTION_ID,
-            LEGACY_SQL_ACTION_ID,
-            VerificationStage::Active,
-            OutcomeStatus::NeedsReview,
-            true,
-            "duplicate",
+            (LEGACY_SQL_ACTION_ID, LEGACY_SQL_ACTION_ID, "duplicate"),
+            (VerificationStage::Active, OutcomeStatus::NeedsReview, true),
         );
 
         let error = context
@@ -1132,12 +1084,8 @@ mod tests {
         let fixture = report_fixture(
             context.knowledge(),
             context.legacy_verification_subject().unwrap(),
-            TEST_ACTION_ID,
-            TEST_ACTION_ID,
-            VerificationStage::Active,
-            OutcomeStatus::NeedsReview,
-            true,
-            "replay",
+            (TEST_ACTION_ID, TEST_ACTION_ID, "replay"),
+            (VerificationStage::Active, OutcomeStatus::NeedsReview, true),
         );
 
         context
@@ -1162,12 +1110,8 @@ mod tests {
         let fixture = report_fixture(
             context.knowledge(),
             context.legacy_verification_subject().unwrap(),
-            TEST_ACTION_ID,
-            TEST_ACTION_ID,
-            VerificationStage::Active,
-            OutcomeStatus::NeedsReview,
-            true,
-            "cancelled",
+            (TEST_ACTION_ID, TEST_ACTION_ID, "cancelled"),
+            (VerificationStage::Active, OutcomeStatus::NeedsReview, true),
         );
         cancellation.cancel();
 
@@ -1194,12 +1138,8 @@ mod tests {
         let fixture = report_fixture(
             context.knowledge(),
             context.legacy_verification_subject().unwrap(),
-            TEST_ACTION_ID,
-            TEST_ACTION_ID,
-            VerificationStage::Active,
-            OutcomeStatus::NeedsReview,
-            true,
-            "deadline",
+            (TEST_ACTION_ID, TEST_ACTION_ID, "deadline"),
+            (VerificationStage::Active, OutcomeStatus::NeedsReview, true),
         );
         context
             .ensure_legacy_verification_commit(TEST_ACTION_ID)

@@ -1,164 +1,121 @@
-//! Machine Learning & Pattern Discovery
+//! Experimental research records for externally computed model output.
 //!
 //! ## Runtime scope
 //!
 //! - **Build:** opt-in via `ml`.
 //! - **Execution:** no repository runtime caller (not on any default path).
 //! - **Default `venom scan`:** no.
-//! - **Support:** experimental prototype — single-pass pattern grouping and
-//!   exploit helpers, not a production machine-learning scanner.
+//! - **Support:** experimental data-model scaffold only.
 //!
+//! The repository does not train models, cluster observations, classify anomalies,
+//! estimate exploitation success, or execute a recorded stage. Hosts may use these
+//! serializable records to carry results computed by their own reviewed systems.
 //! See `docs/internals/runtime-map.md`.
-//!
-//! Experimental pattern-grouping and exploit-helper prototype. Provides research
-//! scaffolding for signatures, grouping, and chain models; it is not a trained ML
-//! system or a production Machine Scanner.
 
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::BTreeSet;
+use thiserror::Error;
 
-/// Vulnerability pattern for ML clustering
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Caller-supplied pattern record. No claim is inferred from this record.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct VulnerabilityPattern {
     pub pattern_id: String,
     pub pattern_name: String,
+    #[serde(with = "finite_f32_vector")]
     pub signature: Vec<f32>,
+    #[serde(with = "unit_interval_f32")]
     pub confidence: f32,
     pub occurrences: u32,
     pub severity: String,
     pub exploit_chain: Vec<String>,
 }
 
-/// ML clustering result
-#[derive(Debug, Clone, Serialize, Deserialize)]
+impl VulnerabilityPattern {
+    pub fn validate(&self) -> Result<(), MlRecordValidationError> {
+        if self.pattern_id.trim().is_empty() || self.pattern_name.trim().is_empty() {
+            return Err(MlRecordValidationError::BlankIdentity);
+        }
+        if self.signature.is_empty() || self.signature.iter().any(|value| !value.is_finite()) {
+            return Err(MlRecordValidationError::InvalidVector);
+        }
+        if !normalized(self.confidence) {
+            return Err(MlRecordValidationError::InvalidScore);
+        }
+        if self.severity.trim().is_empty()
+            || self
+                .exploit_chain
+                .iter()
+                .any(|identifier| identifier.trim().is_empty())
+        {
+            return Err(MlRecordValidationError::BlankLabel);
+        }
+        Ok(())
+    }
+}
+
+/// Caller-supplied clustering record from an external model.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClusterResult {
     pub cluster_id: u32,
+    #[serde(with = "finite_f32_vector")]
     pub centroid: Vec<f32>,
     pub members: Vec<String>,
-    pub size: usize,
+    #[serde(with = "unit_interval_f32")]
     pub similarity_score: f32,
 }
 
-/// Pattern learner for discovering new vulnerability patterns
-pub struct PatternLearner {
-    patterns: HashMap<String, VulnerabilityPattern>,
-    clusters: Vec<ClusterResult>,
-}
-
-impl PatternLearner {
-    pub fn new() -> Self {
-        Self {
-            patterns: HashMap::new(),
-            clusters: Vec::new(),
+impl ClusterResult {
+    pub fn validate(&self) -> Result<(), MlRecordValidationError> {
+        if self.centroid.is_empty() || self.centroid.iter().any(|value| !value.is_finite()) {
+            return Err(MlRecordValidationError::InvalidVector);
         }
-    }
-
-    /// Registers a new pattern
-    pub fn register_pattern(&mut self, pattern: VulnerabilityPattern) {
-        self.patterns.insert(pattern.pattern_id.clone(), pattern);
-    }
-
-    /// Gets pattern by ID
-    pub fn get_pattern(&self, pattern_id: &str) -> Option<&VulnerabilityPattern> {
-        self.patterns.get(pattern_id)
-    }
-
-    /// Gets all patterns
-    pub fn get_patterns(&self) -> Vec<&VulnerabilityPattern> {
-        self.patterns.values().collect()
-    }
-
-    /// Simple k-means clustering
-    pub fn cluster_patterns(&mut self, k: usize) -> Vec<ClusterResult> {
-        if self.patterns.is_empty() {
-            return Vec::new();
+        if self.members.iter().any(|member| member.trim().is_empty()) {
+            return Err(MlRecordValidationError::InvalidMembers);
         }
-
-        let patterns: Vec<&VulnerabilityPattern> = self.patterns.values().collect();
-        let mut centroids: Vec<Vec<f32>> = Vec::new();
-
-        // Initialize centroids randomly
-        for i in 0..k.min(patterns.len()) {
-            if let Some(pattern) = patterns.get(i) {
-                centroids.push(pattern.signature.clone());
-            }
+        if !normalized(self.similarity_score) {
+            return Err(MlRecordValidationError::InvalidScore);
         }
-
-        // Simple clustering (1 iteration for now)
-        let mut clusters: Vec<Vec<String>> = vec![Vec::new(); centroids.len()];
-
-        for pattern in &patterns {
-            let mut min_distance = f32::MAX;
-            let mut closest_centroid = 0;
-
-            for (j, centroid) in centroids.iter().enumerate() {
-                let distance = Self::euclidean_distance(&pattern.signature, centroid);
-                if distance < min_distance {
-                    min_distance = distance;
-                    closest_centroid = j;
-                }
-            }
-
-            clusters[closest_centroid].push(pattern.pattern_id.clone());
-        }
-
-        // Build results
-        self.clusters = clusters
-            .into_iter()
-            .enumerate()
-            .filter(|(_, members)| !members.is_empty())
-            .map(|(idx, members)| {
-                let size = members.len();
-                ClusterResult {
-                    cluster_id: idx as u32,
-                    centroid: centroids[idx].clone(),
-                    members,
-                    size,
-                    similarity_score: 0.85,
-                }
-            })
-            .collect();
-
-        self.clusters.clone()
+        Ok(())
     }
 
-    /// Euclidean distance between two vectors
-    fn euclidean_distance(a: &[f32], b: &[f32]) -> f32 {
-        a.iter()
-            .zip(b.iter())
-            .map(|(x, y)| (x - y).powi(2))
-            .sum::<f32>()
-            .sqrt()
-    }
-
-    /// Gets clusters
-    pub fn get_clusters(&self) -> &[ClusterResult] {
-        &self.clusters
-    }
-
-    /// Pattern count
-    pub fn pattern_count(&self) -> usize {
-        self.patterns.len()
+    /// Returns the derived member count in a target-independent wire width.
+    #[must_use]
+    pub fn member_count(&self) -> u64 {
+        u64::try_from(self.members.len()).unwrap_or(u64::MAX)
     }
 }
 
-impl Default for PatternLearner {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-/// Exploitation chain builder for automated exploitation
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Caller-supplied research-chain record. The scanner never executes its stages.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ExploitationChain {
     pub chain_id: String,
     pub stages: Vec<ExploitStage>,
+    #[serde(with = "unit_interval_f32")]
     pub success_rate: f32,
     pub time_to_exploit_secs: u32,
 }
 
-/// Single stage in exploitation chain
-#[derive(Debug, Clone, Serialize, Deserialize)]
+impl ExploitationChain {
+    pub fn validate(&self) -> Result<(), MlRecordValidationError> {
+        if self.chain_id.trim().is_empty() {
+            return Err(MlRecordValidationError::BlankIdentity);
+        }
+        if !normalized(self.success_rate) {
+            return Err(MlRecordValidationError::InvalidScore);
+        }
+        let mut stage_ids = BTreeSet::new();
+        for stage in &self.stages {
+            stage.validate()?;
+            if !stage_ids.insert(stage.stage_id) {
+                return Err(MlRecordValidationError::DuplicateStageId);
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Caller-supplied stage record containing inert host data.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ExploitStage {
     pub stage_id: u32,
     pub name: String,
@@ -168,90 +125,52 @@ pub struct ExploitStage {
     pub fallback: Option<String>,
 }
 
-/// Exploit builder for assembling multi-stage exploitation chains
-pub struct ExploitBuilder {
-    chains: HashMap<String, ExploitationChain>,
-}
-
-impl ExploitBuilder {
-    pub fn new() -> Self {
-        Self {
-            chains: HashMap::new(),
+impl ExploitStage {
+    pub fn validate(&self) -> Result<(), MlRecordValidationError> {
+        if self.name.trim().is_empty()
+            || self.technique.trim().is_empty()
+            || self.payload.trim().is_empty()
+            || self.expected_response.trim().is_empty()
+            || self
+                .fallback
+                .as_ref()
+                .is_some_and(|fallback| fallback.trim().is_empty())
+        {
+            return Err(MlRecordValidationError::BlankLabel);
         }
-    }
-
-    /// Creates a new exploitation chain
-    pub fn create_chain(&mut self, chain_id: String) -> ExploitationChain {
-        let chain = ExploitationChain {
-            chain_id: chain_id.clone(),
-            stages: Vec::new(),
-            success_rate: 0.0,
-            time_to_exploit_secs: 0,
-        };
-        self.chains.insert(chain_id, chain.clone());
-        chain
-    }
-
-    /// Adds stage to chain
-    pub fn add_stage(&mut self, chain_id: &str, stage: ExploitStage) -> bool {
-        if let Some(chain) = self.chains.get_mut(chain_id) {
-            chain.stages.push(stage);
-            true
-        } else {
-            false
-        }
-    }
-
-    /// Gets chain by ID
-    pub fn get_chain(&self, chain_id: &str) -> Option<&ExploitationChain> {
-        self.chains.get(chain_id)
-    }
-
-    /// Gets all chains
-    pub fn get_chains(&self) -> Vec<&ExploitationChain> {
-        self.chains.values().collect()
-    }
-
-    /// Estimates success rate based on stages
-    pub fn estimate_success_rate(&self, chain_id: &str) -> f32 {
-        if let Some(chain) = self.chains.get(chain_id) {
-            if chain.stages.is_empty() {
-                return 0.0;
-            }
-            // Simple estimation: 0.8 per stage
-            0.8_f32.powi(chain.stages.len() as i32)
-        } else {
-            0.0
-        }
-    }
-
-    /// Chain count
-    pub fn chain_count(&self) -> usize {
-        self.chains.len()
+        Ok(())
     }
 }
 
-impl Default for ExploitBuilder {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-/// Anomaly pattern classifier using isolation forest concept
-pub struct AnomalyClassifier {
-    patterns: Vec<AnomalyPattern>,
-}
-
-/// Pattern representing anomalous behavior
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Caller-supplied anomaly-pattern record from an external model.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AnomalyPattern {
     pub pattern_id: String,
+    #[serde(with = "finite_f32_vector")]
     pub feature_vector: Vec<f32>,
+    #[serde(with = "unit_interval_f32")]
     pub anomaly_score: f32,
     pub pattern_type: AnomalyType,
 }
 
-/// Types of anomalies
+impl AnomalyPattern {
+    pub fn validate(&self) -> Result<(), MlRecordValidationError> {
+        if self.pattern_id.trim().is_empty() {
+            return Err(MlRecordValidationError::BlankIdentity);
+        }
+        if self.feature_vector.is_empty()
+            || self.feature_vector.iter().any(|value| !value.is_finite())
+        {
+            return Err(MlRecordValidationError::InvalidVector);
+        }
+        if !normalized(self.anomaly_score) {
+            return Err(MlRecordValidationError::InvalidScore);
+        }
+        Ok(())
+    }
+}
+
+/// Caller-assigned anomaly dimension.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AnomalyType {
     #[serde(rename = "timing")]
@@ -264,58 +183,82 @@ pub enum AnomalyType {
     Behavior,
 }
 
-impl AnomalyClassifier {
-    pub fn new() -> Self {
-        Self {
-            patterns: Vec::new(),
+/// Validation failure for externally computed research records.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+pub enum MlRecordValidationError {
+    #[error("record identity fields must not be blank")]
+    BlankIdentity,
+    #[error("record labels and markers must not be blank")]
+    BlankLabel,
+    #[error("vectors must be nonempty and contain only finite values")]
+    InvalidVector,
+    #[error("reported scores must be finite and within 0..=1")]
+    InvalidScore,
+    #[error("cluster members must not contain blank identifiers")]
+    InvalidMembers,
+    #[error("research-chain stage IDs must be unique")]
+    DuplicateStageId,
+}
+
+fn normalized(value: f32) -> bool {
+    value.is_finite() && (0.0..=1.0).contains(&value)
+}
+
+mod finite_f32_vector {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    const ERROR: &str = "vector values must be finite";
+
+    pub fn serialize<S>(values: &[f32], serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        if values.iter().all(|value| value.is_finite()) {
+            values.serialize(serializer)
+        } else {
+            Err(serde::ser::Error::custom(ERROR))
         }
     }
 
-    /// Adds anomaly pattern
-    pub fn add_pattern(&mut self, pattern: AnomalyPattern) {
-        self.patterns.push(pattern);
-    }
-
-    /// Classifies new data point as anomalous
-    pub fn classify(&self, feature_vector: &[f32]) -> (bool, f32) {
-        if self.patterns.is_empty() {
-            return (false, 0.0);
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Vec<f32>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let values = Vec::<f32>::deserialize(deserializer)?;
+        if values.iter().all(|value| value.is_finite()) {
+            Ok(values)
+        } else {
+            Err(serde::de::Error::custom(ERROR))
         }
-
-        let mut anomaly_scores = Vec::new();
-
-        for pattern in &self.patterns {
-            let distance = Self::euclidean_distance(feature_vector, &pattern.feature_vector);
-            anomaly_scores.push(distance);
-        }
-
-        let mean_distance = anomaly_scores.iter().sum::<f32>() / anomaly_scores.len() as f32;
-        let threshold = mean_distance * 2.0; // 2-sigma threshold
-
-        let is_anomalous = mean_distance > threshold;
-        let normalized_score = (mean_distance / (threshold + 1.0)).min(1.0);
-
-        (is_anomalous, normalized_score)
-    }
-
-    /// Euclidean distance
-    fn euclidean_distance(a: &[f32], b: &[f32]) -> f32 {
-        a.iter()
-            .zip(b.iter())
-            .map(|(x, y)| (x - y).powi(2))
-            .sum::<f32>()
-            .sqrt()
-    }
-
-    /// Gets pattern count
-    pub fn pattern_count(&self) -> usize {
-        self.patterns.len()
     }
 }
 
-impl Default for AnomalyClassifier {
-    fn default() -> Self {
-        Self::new()
+mod unit_interval_f32 {
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    const ERROR: &str = "score must be finite and within 0..=1";
+
+    pub fn serialize<S>(value: &f32, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        if super::normalized(*value) {
+            serializer.serialize_f32(*value)
+        } else {
+            Err(serde::ser::Error::custom(ERROR))
+        }
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<f32, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = f32::deserialize(deserializer)?;
+        if super::normalized(value) {
+            Ok(value)
+        } else {
+            Err(serde::de::Error::custom(ERROR))
+        }
     }
 }
 
@@ -324,150 +267,129 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_pattern_registration() {
-        let mut learner = PatternLearner::new();
+    fn records_round_trip_without_computation() {
         let pattern = VulnerabilityPattern {
-            pattern_id: "p1".to_string(),
-            pattern_name: "SQLi".to_string(),
-            signature: vec![0.1, 0.2, 0.3],
-            confidence: 0.95,
-            occurrences: 10,
-            severity: "CRITICAL".to_string(),
-            exploit_chain: vec!["stage1".to_string()],
+            pattern_id: "pattern-1".to_string(),
+            pattern_name: "host-label".to_string(),
+            signature: vec![0.1, 0.2],
+            confidence: 0.4,
+            occurrences: 2,
+            severity: "host-label".to_string(),
+            exploit_chain: vec!["chain-1".to_string()],
         };
 
-        learner.register_pattern(pattern);
-        assert_eq!(learner.pattern_count(), 1);
+        assert_eq!(pattern.validate(), Ok(()));
+        let encoded = serde_json::to_string(&pattern).expect("record serializes");
+        let decoded: VulnerabilityPattern =
+            serde_json::from_str(&encoded).expect("record deserializes");
+        assert_eq!(decoded, pattern);
     }
 
     #[test]
-    fn test_pattern_retrieval() {
-        let mut learner = PatternLearner::new();
-        let pattern = VulnerabilityPattern {
-            pattern_id: "p1".to_string(),
-            pattern_name: "SQLi".to_string(),
-            signature: vec![0.1, 0.2, 0.3],
-            confidence: 0.95,
-            occurrences: 10,
-            severity: "CRITICAL".to_string(),
-            exploit_chain: vec!["stage1".to_string()],
-        };
-
-        learner.register_pattern(pattern);
-        let retrieved = learner.get_pattern("p1");
-        assert!(retrieved.is_some());
-    }
-
-    #[test]
-    fn test_pattern_clustering() {
-        let mut learner = PatternLearner::new();
-
-        for i in 0..5 {
-            let pattern = VulnerabilityPattern {
-                pattern_id: format!("p{}", i),
-                pattern_name: "SQLi".to_string(),
-                signature: vec![0.1 * i as f32, 0.2 * i as f32, 0.3 * i as f32],
-                confidence: 0.95,
-                occurrences: 10,
-                severity: "CRITICAL".to_string(),
-                exploit_chain: vec!["stage1".to_string()],
-            };
-            learner.register_pattern(pattern);
-        }
-
-        let clusters = learner.cluster_patterns(2);
-        assert!(!clusters.is_empty());
-    }
-
-    #[test]
-    fn test_exploit_chain_creation() {
-        let mut builder = ExploitBuilder::new();
-        let chain = builder.create_chain("chain1".to_string());
-        assert_eq!(chain.chain_id, "chain1");
-    }
-
-    #[test]
-    fn test_exploit_stage_addition() {
-        let mut builder = ExploitBuilder::new();
-        builder.create_chain("chain1".to_string());
-
-        let stage = ExploitStage {
-            stage_id: 1,
-            name: "Initial".to_string(),
-            technique: "SQLi".to_string(),
-            payload: "1' OR '1'='1".to_string(),
-            expected_response: "error".to_string(),
-            fallback: Some("alt_payload".to_string()),
-        };
-
-        builder.add_stage("chain1", stage);
-        let chain = builder.get_chain("chain1").unwrap();
-        assert_eq!(chain.stages.len(), 1);
-    }
-
-    #[test]
-    fn test_success_rate_estimation() {
-        let mut builder = ExploitBuilder::new();
-        builder.create_chain("chain1".to_string());
-
-        for i in 0..3 {
-            let stage = ExploitStage {
-                stage_id: i,
-                name: format!("Stage{}", i),
-                technique: "SQLi".to_string(),
-                payload: "payload".to_string(),
-                expected_response: "response".to_string(),
-                fallback: None,
-            };
-            builder.add_stage("chain1", stage);
-        }
-
-        let success_rate = builder.estimate_success_rate("chain1");
-        assert!(success_rate > 0.0 && success_rate < 1.0);
-    }
-
-    #[test]
-    fn test_anomaly_classifier() {
-        let mut classifier = AnomalyClassifier::new();
-        let pattern = AnomalyPattern {
-            pattern_id: "a1".to_string(),
-            feature_vector: vec![0.1, 0.2, 0.3],
-            anomaly_score: 0.8,
-            pattern_type: AnomalyType::Timing,
-        };
-
-        classifier.add_pattern(pattern);
-        assert_eq!(classifier.pattern_count(), 1);
-    }
-
-    #[test]
-    fn test_anomaly_detection() {
-        let mut classifier = AnomalyClassifier::new();
-        let pattern = AnomalyPattern {
-            pattern_id: "a1".to_string(),
-            feature_vector: vec![0.1, 0.2, 0.3],
-            anomaly_score: 0.8,
-            pattern_type: AnomalyType::Timing,
-        };
-
-        classifier.add_pattern(pattern);
-        let (is_anomalous, score) = classifier.classify(&[0.1, 0.2, 0.3]);
-
-        assert!(!is_anomalous);
-        assert!((0.0..=1.0).contains(&score));
-    }
-
-    #[test]
-    fn test_exploit_chain_serialization() {
+    fn stage_content_remains_inert_caller_data() {
         let chain = ExploitationChain {
-            chain_id: "chain1".to_string(),
-            stages: vec![],
-            success_rate: 0.75,
-            time_to_exploit_secs: 30,
+            chain_id: "chain-1".to_string(),
+            stages: vec![ExploitStage {
+                stage_id: 1,
+                name: "fixture-stage".to_string(),
+                technique: "fixture-marker".to_string(),
+                payload: "inert-input-marker".to_string(),
+                expected_response: "inert-output-marker".to_string(),
+                fallback: None,
+            }],
+            success_rate: 0.25,
+            time_to_exploit_secs: 0,
         };
 
-        let json = serde_json::to_string(&chain).unwrap();
-        let deserialized: ExploitationChain = serde_json::from_str(&json).unwrap();
-        assert_eq!(deserialized.chain_id, "chain1");
+        assert_eq!(chain.validate(), Ok(()));
+        let encoded = serde_json::to_string(&chain).expect("record serializes");
+        let decoded: ExploitationChain =
+            serde_json::from_str(&encoded).expect("record deserializes");
+        assert_eq!(decoded, chain);
+    }
+
+    #[test]
+    fn every_record_type_rejects_nonfinite_or_inconsistent_values() {
+        let cluster = ClusterResult {
+            cluster_id: 1,
+            centroid: vec![0.2],
+            members: vec![" ".to_string()],
+            similarity_score: 0.5,
+        };
+        assert_eq!(
+            cluster.validate(),
+            Err(MlRecordValidationError::InvalidMembers)
+        );
+
+        let anomaly = AnomalyPattern {
+            pattern_id: "anomaly".to_string(),
+            feature_vector: vec![f32::NAN],
+            anomaly_score: 0.5,
+            pattern_type: AnomalyType::Behavior,
+        };
+        assert_eq!(
+            anomaly.validate(),
+            Err(MlRecordValidationError::InvalidVector)
+        );
+    }
+
+    #[test]
+    fn ml_wire_rejects_nonfinite_vectors_and_out_of_range_scores() {
+        let invalid_pattern = VulnerabilityPattern {
+            pattern_id: "pattern-1".to_string(),
+            pattern_name: "host-label".to_string(),
+            signature: vec![f32::NAN],
+            confidence: 0.5,
+            occurrences: 1,
+            severity: "host-label".to_string(),
+            exploit_chain: Vec::new(),
+        };
+        assert!(serde_json::to_string(&invalid_pattern).is_err());
+
+        let mut pattern_json = serde_json::json!({
+            "pattern_id": "pattern-1",
+            "pattern_name": "host-label",
+            "signature": [0.25],
+            "confidence": 1.01,
+            "occurrences": 1,
+            "severity": "host-label",
+            "exploit_chain": []
+        });
+        assert!(serde_json::from_value::<VulnerabilityPattern>(pattern_json.clone()).is_err());
+        pattern_json["confidence"] = serde_json::json!(0.5);
+        assert!(serde_json::from_value::<VulnerabilityPattern>(pattern_json).is_ok());
+
+        let invalid_chain = ExploitationChain {
+            chain_id: "chain-1".to_string(),
+            stages: Vec::new(),
+            success_rate: f32::INFINITY,
+            time_to_exploit_secs: 0,
+        };
+        assert!(serde_json::to_string(&invalid_chain).is_err());
+
+        let invalid_anomaly = serde_json::json!({
+            "pattern_id": "anomaly-1",
+            "feature_vector": [0.25],
+            "anomaly_score": -0.01,
+            "pattern_type": "behavior"
+        });
+        assert!(serde_json::from_value::<AnomalyPattern>(invalid_anomaly).is_err());
+    }
+
+    #[test]
+    fn cluster_member_count_is_derived_and_wire_has_no_redundant_size() {
+        let cluster = ClusterResult {
+            cluster_id: 7,
+            centroid: vec![0.25, -0.5],
+            members: vec!["member-a".to_string(), "member-b".to_string()],
+            similarity_score: 0.75,
+        };
+
+        let encoded = serde_json::to_string(&cluster).expect("finite cluster serializes");
+        assert!(!encoded.contains("\"size\""));
+        let decoded: ClusterResult =
+            serde_json::from_str(&encoded).expect("finite cluster deserializes");
+        assert_eq!(decoded, cluster);
+        assert_eq!(decoded.member_count(), 2);
     }
 }

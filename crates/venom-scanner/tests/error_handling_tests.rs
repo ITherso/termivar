@@ -2,6 +2,8 @@
 //!
 //! Verifies proper error propagation and handling across scanner
 
+#![cfg(feature = "legacy-scanner")]
+
 use venom_scanner::{Result, ScannerError};
 
 /// Tests ScannerError creation

@@ -6,4 +6,13 @@ target
 fuzz/target
 site
 web/node_modules
+/.venom
+.env*
+secrets.toml
+config.local.toml
+*.key
+*.pem
+*.crt
+db.sqlite3
+*.db
 *.log

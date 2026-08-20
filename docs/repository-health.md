@@ -33,9 +33,15 @@ The configured `Public API Compatibility` CI job runs
 `cargo-semver-checks 0.50.0` through `cargo xtask semver`. It compares only
 `venom-core`, with all features enabled, against commit
 `9f65c661028af2d7129caeee640f9b6185c357ca`, the commit referenced by the
-annotated `v0.9.0-alpha` tag. The explicit patch release type makes a detected
-breaking change fail even while the workspace remains on the same alpha
-version.
+annotated `v0.9.0-alpha` tag. The explicit patch comparison mode makes a
+detected breaking change fail even though the unreleased workspace has moved
+to the distinct `0.10.0-alpha.1` pre-1.0 minor line.
+
+The all-features comparison deliberately enables core's non-default
+`legacy-contracts` feature. That feature preserves the historical configuration,
+error, event, raw finding, vulnerability, and HTTP records solely for the pinned
+`v0.9.0-alpha` API check; passing the check does not place those records in the
+default core crate or the default product runtime.
 
 This is deliberately a core-contract gate, not a workspace-wide stability
 claim. [ADR 0007](adr/0007-scan-context-construction-boundary.md) makes
@@ -58,9 +64,9 @@ commit-SHA pinned; the Semgrep CE container is image-digest pinned. Trivy's
 action version and scanner version are separate and both are declared.
 
 This hardening reduces mutable-reference risk but does not eliminate workflow
-supply-chain risk. Other workflows still contain major-version action tags,
-hosted runners and downloaded toolchains remain external dependencies, and
-Dependabot proposals still require review.
+supply-chain risk. Workflow actions are full-SHA pinned and container jobs are
+digest-pinned by architecture policy; hosted runners and downloaded toolchains
+remain external dependencies, and Dependabot proposals still require review.
 
 ## Open gaps
 

@@ -1,15 +1,16 @@
-//! Configuration Management - TOML-based Config Profiles
+//! In-memory profile models and registry.
 //!
 //! ## Runtime scope
 //!
-//! - **Build:** always/default.
+//! - **Build:** opt-in via `platform-models`.
 //! - **Execution:** host/library only; no repository runtime caller.
 //! - **Default `venom scan`:** no.
 //! - **Support:** experimental/scaffold.
 //!
 //! See `docs/internals/runtime-map.md`.
 //!
-//! Load and manage scanning profiles (enterprise, cloud, aggressive, etc.)
+//! This module does not parse TOML, load files, or drive a scanner. Hosts may
+//! use it to store descriptive profile values for an experimental integration.
 
 use crate::config::ScanIntensity;
 use serde::{Deserialize, Serialize};
@@ -42,23 +43,15 @@ impl ScanProfile {
     pub fn enterprise() -> Self {
         Self {
             name: "enterprise".to_string(),
-            description: "Compliance-focused scanning with detailed reporting".to_string(),
+            description: "Descriptive enterprise policy model; not runtime-wired".to_string(),
             scan_intensity: ScanIntensity::Normal,
             timeout_secs: 300,
             rate_limit_rps: 10,
             concurrent_workers: 4,
             plugins_enabled: vec![],
-            lua_scripts_enabled: vec![
-                "compliance_check".to_string(),
-                "risk_assessment".to_string(),
-            ],
-            event_subscriptions: vec!["finding_found".to_string(), "scan_completed".to_string()],
-            options: {
-                let mut opts = HashMap::new();
-                opts.insert("report_format".to_string(), "pdf".to_string());
-                opts.insert("include_compliance".to_string(), "true".to_string());
-                opts
-            },
+            lua_scripts_enabled: vec![],
+            event_subscriptions: vec![],
+            options: HashMap::new(),
         }
     }
 
@@ -66,21 +59,15 @@ impl ScanProfile {
     pub fn cloud() -> Self {
         Self {
             name: "cloud".to_string(),
-            description: "Optimized for cloud infrastructure scanning".to_string(),
+            description: "Descriptive cloud policy model; not runtime-wired".to_string(),
             scan_intensity: ScanIntensity::Aggressive,
             timeout_secs: 600,
             rate_limit_rps: 50,
             concurrent_workers: 16,
             plugins_enabled: vec![],
-            lua_scripts_enabled: vec!["cloud_config_check".to_string(), "api_security".to_string()],
-            event_subscriptions: vec!["finding_found".to_string(), "worker_finished".to_string()],
-            options: {
-                let mut opts = HashMap::new();
-                opts.insert("aws_detection".to_string(), "true".to_string());
-                opts.insert("gcp_detection".to_string(), "true".to_string());
-                opts.insert("azure_detection".to_string(), "true".to_string());
-                opts
-            },
+            lua_scripts_enabled: vec![],
+            event_subscriptions: vec![],
+            options: HashMap::new(),
         }
     }
 
@@ -88,24 +75,15 @@ impl ScanProfile {
     pub fn aggressive() -> Self {
         Self {
             name: "aggressive".to_string(),
-            description: "Fast, comprehensive scanning".to_string(),
+            description: "Descriptive high-intensity policy model; not runtime-wired".to_string(),
             scan_intensity: ScanIntensity::Aggressive,
             timeout_secs: 180,
             rate_limit_rps: 100,
             concurrent_workers: 32,
             plugins_enabled: vec![],
-            lua_scripts_enabled: vec!["aggressive_scan".to_string(), "waf_bypass".to_string()],
-            event_subscriptions: vec![
-                "finding_found".to_string(),
-                "worker_finished".to_string(),
-                "plugin_executed".to_string(),
-            ],
-            options: {
-                let mut opts = HashMap::new();
-                opts.insert("waf_detection".to_string(), "true".to_string());
-                opts.insert("fuzzing_level".to_string(), "high".to_string());
-                opts
-            },
+            lua_scripts_enabled: vec![],
+            event_subscriptions: vec![],
+            options: HashMap::new(),
         }
     }
 
@@ -113,19 +91,15 @@ impl ScanProfile {
     pub fn passive() -> Self {
         Self {
             name: "passive".to_string(),
-            description: "Non-invasive passive scanning only".to_string(),
+            description: "Descriptive low-activity policy model; not runtime-wired".to_string(),
             scan_intensity: ScanIntensity::Stealth,
             timeout_secs: 60,
             rate_limit_rps: 5,
             concurrent_workers: 2,
             plugins_enabled: vec![],
-            lua_scripts_enabled: vec!["passive_recon".to_string(), "header_analysis".to_string()],
-            event_subscriptions: vec!["finding_found".to_string()],
-            options: {
-                let mut opts = HashMap::new();
-                opts.insert("no_payloads".to_string(), "true".to_string());
-                opts
-            },
+            lua_scripts_enabled: vec![],
+            event_subscriptions: vec![],
+            options: HashMap::new(),
         }
     }
 
@@ -186,7 +160,7 @@ impl ScanProfile {
     }
 }
 
-/// Configuration loader
+/// In-memory profile registry; it performs no file or environment loading.
 pub struct ConfigLoader {
     profiles: dashmap::DashMap<String, ScanProfile>,
     active_profile: std::sync::Mutex<String>,
@@ -221,10 +195,13 @@ impl ConfigLoader {
 
     /// Lists all available profiles
     pub fn list_profiles(&self) -> Vec<String> {
-        self.profiles
+        let mut profiles = self
+            .profiles
             .iter()
             .map(|ref_multi| ref_multi.key().clone())
-            .collect()
+            .collect::<Vec<_>>();
+        profiles.sort();
+        profiles
     }
 
     /// Gets currently active profile
@@ -249,7 +226,11 @@ impl ConfigLoader {
         self.profiles.len()
     }
 
-    /// Merges profiles (overlay custom on base)
+    /// Overlays every profile field using deterministic collection semantics.
+    ///
+    /// Scalar fields come from `overlay`. List fields retain the base order,
+    /// append overlay-only values in overlay order, and remove duplicates.
+    /// Overlay option values replace base values with the same key.
     pub fn merge_profiles(&self, base: &str, overlay: &str) -> Result<ScanProfile, String> {
         let base_profile = self
             .get_profile(base)
@@ -260,18 +241,31 @@ impl ConfigLoader {
 
         let mut merged = base_profile;
         merged.name = format!("{}_merged_with_{}", base, overlay);
+        merged.description = overlay_profile.description;
+        merged.scan_intensity = overlay_profile.scan_intensity;
         merged.timeout_secs = overlay_profile.timeout_secs;
         merged.rate_limit_rps = overlay_profile.rate_limit_rps;
         merged.concurrent_workers = overlay_profile.concurrent_workers;
-        merged
-            .plugins_enabled
-            .extend(overlay_profile.plugins_enabled);
-        merged
-            .lua_scripts_enabled
-            .extend(overlay_profile.lua_scripts_enabled);
+        extend_unique(&mut merged.plugins_enabled, overlay_profile.plugins_enabled);
+        extend_unique(
+            &mut merged.lua_scripts_enabled,
+            overlay_profile.lua_scripts_enabled,
+        );
+        extend_unique(
+            &mut merged.event_subscriptions,
+            overlay_profile.event_subscriptions,
+        );
         merged.options.extend(overlay_profile.options);
 
         Ok(merged)
+    }
+}
+
+fn extend_unique(values: &mut Vec<String>, additions: Vec<String>) {
+    for addition in additions {
+        if !values.contains(&addition) {
+            values.push(addition);
+        }
     }
 }
 
@@ -313,6 +307,22 @@ mod tests {
         assert_eq!(profile.name, "aggressive");
         assert_eq!(profile.scan_intensity, ScanIntensity::Aggressive);
         assert!(profile.plugins_enabled.is_empty());
+    }
+
+    #[test]
+    fn built_in_profiles_do_not_claim_unwired_capabilities() {
+        for profile in [
+            ScanProfile::enterprise(),
+            ScanProfile::cloud(),
+            ScanProfile::aggressive(),
+            ScanProfile::passive(),
+        ] {
+            assert!(profile.plugins_enabled.is_empty());
+            assert!(profile.lua_scripts_enabled.is_empty());
+            assert!(profile.event_subscriptions.is_empty());
+            assert!(profile.options.is_empty());
+            assert!(profile.description.contains("not runtime-wired"));
+        }
     }
 
     #[test]
@@ -421,18 +431,64 @@ mod tests {
     }
 
     #[test]
-    fn test_config_loader_merge_profiles() {
+    fn profile_merge_overlays_every_field_deterministically() {
         let loader = ConfigLoader::new();
 
-        let custom = ScanProfile::custom("custom", ScanIntensity::Normal).add_plugin("test_plugin");
-        loader.register_profile(custom);
+        let mut base = ScanProfile::custom("base", ScanIntensity::Light)
+            .with_description("base description")
+            .with_timeout(10)
+            .with_rate_limit(2)
+            .with_workers(1)
+            .add_plugin("base-plugin")
+            .add_plugin("shared-plugin")
+            .add_script("base-script")
+            .add_subscription("base-event")
+            .add_option("base-only", "base")
+            .add_option("shared-option", "base");
+        base.options
+            .insert("stable-option".to_owned(), "stable".to_owned());
 
-        let merged = loader.merge_profiles("enterprise", "custom");
-        assert!(merged.is_ok());
+        let overlay = ScanProfile::custom("overlay", ScanIntensity::Aggressive)
+            .with_description("overlay description")
+            .with_timeout(99)
+            .with_rate_limit(42)
+            .with_workers(8)
+            .add_plugin("shared-plugin")
+            .add_plugin("overlay-plugin")
+            .add_script("overlay-script")
+            .add_subscription("overlay-event")
+            .add_option("shared-option", "overlay")
+            .add_option("overlay-only", "overlay");
+        loader.register_profile(base);
+        loader.register_profile(overlay);
 
-        let merged_profile = merged.unwrap();
-        assert!(merged_profile
-            .plugins_enabled
-            .contains(&"test_plugin".to_string()));
+        let merged = loader.merge_profiles("base", "overlay").unwrap();
+
+        assert_eq!(merged.name, "base_merged_with_overlay");
+        assert_eq!(merged.description, "overlay description");
+        assert_eq!(merged.scan_intensity, ScanIntensity::Aggressive);
+        assert_eq!(merged.timeout_secs, 99);
+        assert_eq!(merged.rate_limit_rps, 42);
+        assert_eq!(merged.concurrent_workers, 8);
+        assert_eq!(
+            merged.plugins_enabled,
+            vec![
+                "base-plugin".to_owned(),
+                "shared-plugin".to_owned(),
+                "overlay-plugin".to_owned(),
+            ]
+        );
+        assert_eq!(
+            merged.lua_scripts_enabled,
+            vec!["base-script".to_owned(), "overlay-script".to_owned()]
+        );
+        assert_eq!(
+            merged.event_subscriptions,
+            vec!["base-event".to_owned(), "overlay-event".to_owned()]
+        );
+        assert_eq!(merged.options["base-only"], "base");
+        assert_eq!(merged.options["stable-option"], "stable");
+        assert_eq!(merged.options["shared-option"], "overlay");
+        assert_eq!(merged.options["overlay-only"], "overlay");
     }
 }

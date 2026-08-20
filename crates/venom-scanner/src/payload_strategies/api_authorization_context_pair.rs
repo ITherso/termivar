@@ -1,4 +1,4 @@
-//! Second production payload strategy: `api.authorization.context-pair@1`.
+//! Second built-in payload strategy: `api.authorization.context-pair@1`.
 //!
 //! This strategy derives a matched control/candidate pair that varies only the
 //! authorization context of an otherwise identical request, so a strategy-aware
@@ -31,7 +31,7 @@ pub const API_AUTHORIZATION_CONTEXT_PAIR_REVISION: u32 = 1;
 /// artifact as this header's value; the control leg omits it.
 pub const API_AUTHORIZATION_CONTEXT_PAIR_HEADER_NAME: &str = "authorization";
 
-/// Second production [`PayloadStrategy`]: an anonymous/authorized context pair.
+/// Second built-in [`PayloadStrategy`]: an anonymous/authorized context pair.
 #[derive(Debug, Clone)]
 pub struct ApiAuthorizationContextPairStrategy {
     reference: PayloadStrategyRef,

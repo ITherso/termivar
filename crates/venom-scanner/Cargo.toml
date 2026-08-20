@@ -16,32 +16,29 @@ categories = ["development-tools", "network-programming"]
 workspace = true
 
 [dependencies]
-venom-core = { version = "0.9.0-alpha", path = "../venom-core" }
-tokio = { workspace = true }
-tokio-util = { workspace = true }
-reqwest = { workspace = true, features = ["json", "cookies"] }
-chrono = { workspace = true }
-futures = { workspace = true }
-async-trait = "0.1"
-dashmap = "5.5"
+venom-core = { version = "0.10.0-alpha.1", path = "../venom-core", default-features = false }
+tokio = { workspace = true, optional = true }
+tokio-util = { workspace = true, optional = true }
+reqwest = { workspace = true, optional = true }
+chrono = { workspace = true, optional = true }
+futures = { workspace = true, optional = true }
+async-trait = { version = "0.1", optional = true }
+dashmap = { version = "5.5", optional = true }
 url = "2.5"
 base64 = { workspace = true }
-regex = { workspace = true }
-html5ever = { workspace = true }
-markup5ever_rcdom = { workspace = true }
+regex = { workspace = true, optional = true }
+html5ever = { workspace = true, optional = true }
+markup5ever_rcdom = { workspace = true, optional = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
-tracing = { workspace = true }
 thiserror = { workspace = true }
-uuid = { workspace = true }
-memmap2 = { workspace = true }
-nom = { workspace = true }
-mlua = { version = "0.9", features = ["lua54", "serialize", "vendored"] }
-tempfile = "3.8"
+uuid = { workspace = true, optional = true }
+mlua = { version = "0.9", features = ["lua54", "serialize", "vendored"], optional = true }
 
 [dev-dependencies]
 criterion = "0.5"
+tempfile = { workspace = true }
 
 [features]
 # Default product: deterministic evidence/reasoning/runtime surface.
@@ -51,43 +48,58 @@ default = ["core", "scanning"]
 core = []
 
 # Deterministic scanner runtime
-scanning = ["core"]
+scanning = ["core", "dep:async-trait", "dep:html5ever", "dep:markup5ever_rcdom", "dep:reqwest", "dep:tokio", "dep:tokio-util"]
 
 # Historical direct-I/O phases, ordered runner, and Scanner SDK.
 # This is intentionally absent from the default product.
-legacy-scanner = ["scanning"]
+legacy-scanner = ["scanning", "venom-core/legacy-contracts", "dep:chrono", "dep:dashmap", "dep:futures", "dep:uuid"]
 
-# Detection & analysis capabilities
-detection = ["scanning"]
+# Unwired REST/auth/dashboard/persistence/realtime data and service models.
+# These types are retained for explicit library consumers, but no repository
+# runtime composes them and they are intentionally absent from the default.
+platform-models = ["core", "venom-core/legacy-contracts", "dep:dashmap", "dep:uuid"]
 
-# Machine learning for pattern discovery
-ml = ["detection"]
+# Historical report renderers. Kept separate so report hardening and consumers
+# do not enlarge the default decision runtime.
+reporting = ["core", "venom-core/legacy-contracts"]
 
-# Distributed scaling (worker pools, task queues)
-distributed = ["scanning"]
+# Detection & analysis models
+detection = ["dep:regex"]
 
-# Performance monitoring & profiling
-monitoring = ["scanning"]
+# Serializable records for externally computed model output; no learning runtime
+ml = []
 
-# Compliance & audit logging
-compliance = ["scanning"]
+# In-memory experimental coordinator
+distributed = ["dep:dashmap"]
 
-# Threat intelligence feeds & correlation
-threat-intel = ["detection"]
+# Caller-supplied measurement and comparison records; no telemetry collector
+monitoring = []
+
+# Caller-supplied compliance/audit record catalogs; no audit execution
+compliance = []
+
+# Offline threat record catalogs; no feed retrieval or correlation engine
+threat-intel = []
 
 # Plugin system support
-plugins = ["core"]
+plugins = ["core", "dep:async-trait", "dep:dashmap", "dep:futures", "dep:regex", "dep:tokio", "dep:tokio-util"]
 
-# Full-featured scanner (all capabilities)
-full = ["core", "scanning", "legacy-scanner", "detection", "ml", "distributed", "monitoring", "compliance", "threat-intel", "plugins"]
+# Experimental fail-closed Lua registry scaffold. Lua is independent from the
+# native plugin ABI and carries its VM dependency only when explicitly requested.
+lua = ["core", "dep:dashmap", "dep:mlua", "dep:tokio", "dep:uuid"]
+
+# Historical compatibility aggregate enabling every opt-in source surface.
+# This is not a supported product tier or a production-readiness claim.
+full = ["core", "scanning", "legacy-scanner", "detection", "ml", "distributed", "monitoring", "compliance", "threat-intel", "platform-models", "reporting", "plugins", "lua"]
 
 # Minimal deterministic scanner runtime
 minimal = ["core", "scanning"]
 
-# Enterprise package (everything except threat-intel)
-enterprise = ["core", "scanning", "legacy-scanner", "detection", "ml", "distributed", "monitoring", "compliance", "plugins"]
+# Historical compatibility aggregate excluding threat intelligence.
+# It is not an enterprise distribution or supported package.
+enterprise = ["core", "scanning", "legacy-scanner", "detection", "ml", "distributed", "monitoring", "compliance", "platform-models", "reporting", "plugins", "lua"]
 
-# Research package (all features enabled)
+# Historical alias for the all-opt-in compatibility aggregate.
 research = ["full"]
 
 [lib]

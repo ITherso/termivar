@@ -84,6 +84,7 @@ nav:
       - ADR 0017 - Deterministic scan default: adr/0017-make-deterministic-scan-the-default.md
       - ADR 0018 - Bounded legacy verification: adr/0018-bound-legacy-verification-authority.md
       - ADR 0019 - Host-owned plugin execution: adr/0019-host-own-plugin-execution.md
+      - ADR 0020 - Platform and distribution quarantine: adr/0020-quarantine-platform-and-distribution-surfaces.md
       - Release process: RELEASE.md
 markdown_extensions:
   - admonition

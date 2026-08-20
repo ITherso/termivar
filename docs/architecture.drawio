@@ -5,8 +5,8 @@
         <mxCell id="0" />
         <mxCell id="1" parent="0" />
         <mxCell id="cli" value="CLI / Library" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="1"><mxGeometry x="40" y="180" width="120" height="60" as="geometry" /></mxCell>
-        <mxCell id="runner" value="Runner" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1"><mxGeometry x="210" y="180" width="120" height="60" as="geometry" /></mxCell>
-        <mxCell id="phases" value="Scan Pipeline" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="1"><mxGeometry x="380" y="110" width="120" height="60" as="geometry" /></mxCell>
+        <mxCell id="runner" value="Legacy Runner" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1"><mxGeometry x="210" y="180" width="120" height="60" as="geometry" /></mxCell>
+        <mxCell id="phases" value="Legacy Phase Pipeline" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="1"><mxGeometry x="380" y="110" width="120" height="60" as="geometry" /></mxCell>
         <mxCell id="plugins" value="Host-owned Plugin Context (Preview)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="1"><mxGeometry x="380" y="250" width="120" height="60" as="geometry" /></mxCell>
         <mxCell id="contracts" value="Recorded Observations" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;" vertex="1" parent="1"><mxGeometry x="550" y="110" width="130" height="60" as="geometry" /></mxCell>
         <mxCell id="events" value="Event bus" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;" vertex="1" parent="1"><mxGeometry x="550" y="250" width="130" height="60" as="geometry" /></mxCell>
@@ -15,8 +15,7 @@
         <mxCell id="e2" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" edge="1" parent="1" source="runner" target="phases"><mxGeometry relative="1" as="geometry" /></mxCell>
         <mxCell id="e3" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" edge="1" parent="1" source="phases" target="contracts"><mxGeometry relative="1" as="geometry" /></mxCell>
         <mxCell id="e4" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" edge="1" parent="1" source="plugins" target="contracts"><mxGeometry relative="1" as="geometry" /></mxCell>
-        <mxCell id="e5" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" edge="1" parent="1" source="phases" target="events"><mxGeometry relative="1" as="geometry" /></mxCell>
-        <mxCell id="e6" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" edge="1" parent="1" source="plugins" target="events"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e5" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" edge="1" parent="1" source="runner" target="events"><mxGeometry relative="1" as="geometry" /></mxCell>
         <mxCell id="e7" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" edge="1" parent="1" source="contracts" target="report"><mxGeometry relative="1" as="geometry" /></mxCell>
         <mxCell id="e8" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" edge="1" parent="1" source="events" target="report"><mxGeometry relative="1" as="geometry" /></mxCell>
       </root>
@@ -28,16 +27,13 @@
         <mxCell id="0" />
         <mxCell id="1" parent="0" />
         <mxCell id="c-cli" value="venom-cli" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="1"><mxGeometry x="420" y="60" width="140" height="60" as="geometry" /></mxCell>
-        <mxCell id="c-api" value="venom-api" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="1"><mxGeometry x="230" y="190" width="140" height="60" as="geometry" /></mxCell>
-        <mxCell id="c-proxy" value="venom-proxy" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="1"><mxGeometry x="420" y="190" width="140" height="60" as="geometry" /></mxCell>
+        <mxCell id="c-api" value="venom-api&#xa;(optional adapter)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="1"><mxGeometry x="230" y="190" width="140" height="60" as="geometry" /></mxCell>
+        <mxCell id="c-proxy" value="venom-proxy&#xa;(optional adapter)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="1"><mxGeometry x="420" y="190" width="140" height="60" as="geometry" /></mxCell>
         <mxCell id="c-scanner" value="venom-scanner" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="1"><mxGeometry x="610" y="190" width="140" height="60" as="geometry" /></mxCell>
-        <mxCell id="c-core" value="venom-core&#xa;Events / Findings / Errors / Models" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1"><mxGeometry x="420" y="340" width="140" height="60" as="geometry" /></mxCell>
-        <mxCell id="ce1" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" edge="1" parent="1" source="c-cli" target="c-api"><mxGeometry relative="1" as="geometry" /></mxCell>
-        <mxCell id="ce2" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" edge="1" parent="1" source="c-cli" target="c-proxy"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="c-core" value="venom-core&#xa;Reasoning / Outcomes / Reports" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1"><mxGeometry x="420" y="340" width="140" height="60" as="geometry" /></mxCell>
+        <mxCell id="ce1" value="optional" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;dashed=1;endArrow=block;" edge="1" parent="1" source="c-cli" target="c-api"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="ce2" value="optional" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;dashed=1;endArrow=block;" edge="1" parent="1" source="c-cli" target="c-proxy"><mxGeometry relative="1" as="geometry" /></mxCell>
         <mxCell id="ce3" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" edge="1" parent="1" source="c-cli" target="c-scanner"><mxGeometry relative="1" as="geometry" /></mxCell>
-        <mxCell id="ce4" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" edge="1" parent="1" source="c-api" target="c-scanner"><mxGeometry relative="1" as="geometry" /></mxCell>
-        <mxCell id="ce5" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" edge="1" parent="1" source="c-api" target="c-core"><mxGeometry relative="1" as="geometry" /></mxCell>
-        <mxCell id="ce6" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" edge="1" parent="1" source="c-proxy" target="c-core"><mxGeometry relative="1" as="geometry" /></mxCell>
         <mxCell id="ce7" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" edge="1" parent="1" source="c-scanner" target="c-core"><mxGeometry relative="1" as="geometry" /></mxCell>
       </root>
     </mxGraphModel>

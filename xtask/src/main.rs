@@ -1,6 +1,7 @@
 //! Repository maintenance commands exposed through `cargo xtask`.
 
 mod architecture;
+mod release_metadata;
 mod semver;
 
 use clap::{Parser, Subcommand, ValueEnum};
@@ -30,6 +31,8 @@ enum Task {
     Docs,
     /// Run the local release preflight without tagging or publishing.
     Release,
+    /// Verify tag-time changelog and supported-version metadata.
+    ReleaseMetadata { version: String },
     /// Check venom-core's public API against the pinned compatibility baseline.
     Semver,
     /// Generate an SDK starter project.
@@ -76,6 +79,7 @@ fn main() -> TaskResult {
             run_mkdocs(&root)
         },
         Task::Release => release_preflight(&root),
+        Task::ReleaseMetadata { version } => release_metadata::check(&root, &version),
         Task::Semver => semver::check(&root),
         Task::Generate { template, name } => generate(&root, template, &name),
     }

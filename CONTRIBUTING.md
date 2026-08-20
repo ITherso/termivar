@@ -4,7 +4,9 @@ Venom welcomes focused changes that preserve its crate boundaries and authorized
 
 ## Development setup
 
-Required: Git and Rust `1.88` or newer. Docker is optional for service-backed integration tests.
+Required: Git and Rust `1.88` or newer. Docker is optional for the local
+container build and runtime contract; repository tests do not require database
+or cache services.
 
 ```bash
 git clone https://github.com/ITherso/venom.git

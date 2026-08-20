@@ -1,21 +1,21 @@
-//! Advanced Monitoring & Performance Analytics
+//! In-memory scan measurement and comparison models.
 //!
 //! ## Runtime scope
 //!
 //! - **Build:** opt-in via `monitoring`.
 //! - **Execution:** no repository runtime caller (not on any default path).
 //! - **Default `venom scan`:** no.
-//! - **Support:** experimental/scaffold.
+//! - **Support:** experimental data models.
 //!
-//! See `docs/internals/runtime-map.md`.
-//!
-//! Comprehensive scan profiling, resource tracking, and optimization recommendations.
+//! Calculations are derived from caller-supplied measurements. This module does
+//! not observe resources, select a winner when measurements tie, diagnose a
+//! cause, or prescribe optimization actions.
 
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 
-/// Phase execution metrics
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Caller-supplied measurements for one phase.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PhaseProfile {
     pub phase_number: u8,
     pub phase_name: String,
@@ -26,49 +26,132 @@ pub struct PhaseProfile {
     pub responses_received: u64,
     pub findings_discovered: u64,
     pub error_count: u64,
-    pub avg_response_time_ms: f32,
+    pub response_time_samples_ms: Vec<u64>,
 }
 
 impl PhaseProfile {
-    pub fn success_rate(&self) -> f32 {
-        if self.requests_sent == 0 {
-            return 0.0;
-        }
-        (self.responses_received as f32 / self.requests_sent as f32) * 100.0
+    pub fn response_request_ratio_percent(&self) -> Option<f64> {
+        ratio_percent(self.responses_received, self.requests_sent)
     }
 
-    pub fn finding_density(&self) -> f32 {
-        if self.responses_received == 0 {
-            return 0.0;
-        }
-        (self.findings_discovered as f32 / self.responses_received as f32) * 100.0
+    pub fn findings_per_100_responses(&self) -> Option<f64> {
+        ratio_percent(self.findings_discovered, self.responses_received)
+    }
+
+    pub fn mean_response_time_ms(&self) -> Option<f64> {
+        mean(&self.response_time_samples_ms)
     }
 }
 
-/// Resource usage during scan
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Caller-supplied resource measurements. No sampler is implemented here.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ResourceMetrics {
+    #[serde(with = "nonnegative_f32")]
     pub memory_used_mb: f32,
+    #[serde(with = "nonnegative_f32")]
     pub memory_peak_mb: f32,
+    #[serde(with = "percent_f32")]
     pub cpu_usage_percent: f32,
+    #[serde(with = "percent_f32")]
     pub cpu_peak_percent: f32,
+    #[serde(with = "nonnegative_f32")]
     pub disk_read_mb: f32,
+    #[serde(with = "nonnegative_f32")]
     pub disk_write_mb: f32,
+    #[serde(with = "nonnegative_f32")]
     pub network_in_mb: f32,
+    #[serde(with = "nonnegative_f32")]
     pub network_out_mb: f32,
 }
 
-/// Scan performance profile
-#[derive(Debug, Clone, Serialize, Deserialize)]
+impl ResourceMetrics {
+    /// Returns whether every measurement is finite and within its documented range.
+    pub fn is_valid(&self) -> bool {
+        [
+            self.memory_used_mb,
+            self.memory_peak_mb,
+            self.disk_read_mb,
+            self.disk_write_mb,
+            self.network_in_mb,
+            self.network_out_mb,
+        ]
+        .into_iter()
+        .all(|value| value.is_finite() && value >= 0.0)
+            && [self.cpu_usage_percent, self.cpu_peak_percent]
+                .into_iter()
+                .all(|value| value.is_finite() && (0.0..=100.0).contains(&value))
+    }
+}
+
+mod nonnegative_f32 {
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S>(value: &f32, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        if value.is_finite() && *value >= 0.0 {
+            serializer.serialize_f32(*value)
+        } else {
+            Err(serde::ser::Error::custom(
+                "resource measurement must be finite and non-negative",
+            ))
+        }
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<f32, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = f32::deserialize(deserializer)?;
+        if value.is_finite() && value >= 0.0 {
+            Ok(value)
+        } else {
+            Err(serde::de::Error::custom(
+                "resource measurement must be finite and non-negative",
+            ))
+        }
+    }
+}
+
+mod percent_f32 {
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S>(value: &f32, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        if value.is_finite() && (0.0..=100.0).contains(value) {
+            serializer.serialize_f32(*value)
+        } else {
+            Err(serde::ser::Error::custom(
+                "percentage must be finite and between 0 and 100",
+            ))
+        }
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<f32, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = f32::deserialize(deserializer)?;
+        if value.is_finite() && (0.0..=100.0).contains(&value) {
+            Ok(value)
+        } else {
+            Err(serde::de::Error::custom(
+                "percentage must be finite and between 0 and 100",
+            ))
+        }
+    }
+}
+
+/// In-memory profile composed of caller-supplied phase measurements.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ScanProfile {
     pub scan_id: String,
     pub total_duration_ms: u64,
     pub phases: Vec<PhaseProfile>,
     pub resources: ResourceMetrics,
-    pub total_requests: u64,
-    pub total_responses: u64,
-    pub total_findings: u64,
-    pub total_errors: u64,
 }
 
 impl ScanProfile {
@@ -77,210 +160,127 @@ impl ScanProfile {
             scan_id,
             total_duration_ms: 0,
             phases: Vec::new(),
-            resources: ResourceMetrics {
-                memory_used_mb: 0.0,
-                memory_peak_mb: 0.0,
-                cpu_usage_percent: 0.0,
-                cpu_peak_percent: 0.0,
-                disk_read_mb: 0.0,
-                disk_write_mb: 0.0,
-                network_in_mb: 0.0,
-                network_out_mb: 0.0,
-            },
-            total_requests: 0,
-            total_responses: 0,
-            total_findings: 0,
-            total_errors: 0,
+            resources: ResourceMetrics::default(),
         }
     }
 
     pub fn add_phase(&mut self, phase: PhaseProfile) {
-        self.total_requests += phase.requests_sent;
-        self.total_responses += phase.responses_received;
-        self.total_findings += phase.findings_discovered;
-        self.total_errors += phase.error_count;
         self.phases.push(phase);
     }
 
-    pub fn overall_success_rate(&self) -> f32 {
-        if self.total_requests == 0 {
-            return 0.0;
-        }
-        (self.total_responses as f32 / self.total_requests as f32) * 100.0
+    /// Returns whether every retained resource measurement is wire-safe.
+    pub fn is_valid(&self) -> bool {
+        self.resources.is_valid()
     }
 
-    pub fn slowest_phase(&self) -> Option<&PhaseProfile> {
-        self.phases.iter().max_by_key(|p| p.duration_ms)
+    pub fn total_requests(&self) -> u128 {
+        self.phases
+            .iter()
+            .map(|phase| u128::from(phase.requests_sent))
+            .sum()
     }
 
-    pub fn most_productive_phase(&self) -> Option<&PhaseProfile> {
-        self.phases.iter().max_by_key(|p| p.findings_discovered)
+    pub fn total_responses(&self) -> u128 {
+        self.phases
+            .iter()
+            .map(|phase| u128::from(phase.responses_received))
+            .sum()
+    }
+
+    pub fn total_findings(&self) -> u128 {
+        self.phases
+            .iter()
+            .map(|phase| u128::from(phase.findings_discovered))
+            .sum()
+    }
+
+    pub fn total_errors(&self) -> u128 {
+        self.phases
+            .iter()
+            .map(|phase| u128::from(phase.error_count))
+            .sum()
+    }
+
+    pub fn response_request_ratio_percent(&self) -> Option<f64> {
+        ratio_percent_u128(self.total_responses(), self.total_requests())
+    }
+
+    /// Returns every phase tied for the greatest recorded duration.
+    pub fn slowest_phases(&self) -> Vec<&PhaseProfile> {
+        let Some(maximum) = self.phases.iter().map(|phase| phase.duration_ms).max() else {
+            return Vec::new();
+        };
+        self.phases
+            .iter()
+            .filter(|phase| phase.duration_ms == maximum)
+            .collect()
+    }
+
+    /// Returns every phase tied for the greatest recorded finding count.
+    pub fn most_productive_phases(&self) -> Vec<&PhaseProfile> {
+        let Some(maximum) = self
+            .phases
+            .iter()
+            .map(|phase| phase.findings_discovered)
+            .max()
+        else {
+            return Vec::new();
+        };
+        self.phases
+            .iter()
+            .filter(|phase| phase.findings_discovered == maximum)
+            .collect()
     }
 }
 
-/// Optimization recommendation
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct OptimizationRecommendation {
-    pub recommendation_id: String,
-    pub category: RecommendationCategory,
-    pub severity: String,
-    pub description: String,
-    pub impact: String,
-    pub suggested_action: String,
-}
-
-/// Recommendation categories
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum RecommendationCategory {
-    #[serde(rename = "performance")]
-    Performance,
-    #[serde(rename = "resource")]
-    Resource,
-    #[serde(rename = "efficiency")]
-    Efficiency,
-    #[serde(rename = "accuracy")]
-    Accuracy,
-}
-
-impl RecommendationCategory {
-    pub fn as_str(&self) -> &str {
-        match self {
-            RecommendationCategory::Performance => "performance",
-            RecommendationCategory::Resource => "resource",
-            RecommendationCategory::Efficiency => "efficiency",
-            RecommendationCategory::Accuracy => "accuracy",
-        }
-    }
-}
-
-/// Performance analyzer
+/// In-memory profile catalog with pure comparison helpers.
+#[derive(Debug, Clone, Default)]
 pub struct PerformanceAnalyzer {
-    profiles: HashMap<String, ScanProfile>,
+    profiles: BTreeMap<String, ScanProfile>,
 }
 
 impl PerformanceAnalyzer {
     pub fn new() -> Self {
-        Self {
-            profiles: HashMap::new(),
+        Self::default()
+    }
+
+    /// Records a validated profile, returning the rejected record on failure.
+    pub fn record_profile(
+        &mut self,
+        profile: ScanProfile,
+    ) -> Result<Option<ScanProfile>, ScanProfile> {
+        if !profile.is_valid() {
+            return Err(profile);
         }
+        Ok(self.profiles.insert(profile.scan_id.clone(), profile))
     }
 
-    /// Records a scan profile
-    pub fn record_profile(&mut self, profile: ScanProfile) {
-        self.profiles.insert(profile.scan_id.clone(), profile);
-    }
-
-    /// Gets profile by ID
     pub fn get_profile(&self, scan_id: &str) -> Option<&ScanProfile> {
         self.profiles.get(scan_id)
     }
 
-    /// Analyzes profile and generates recommendations
-    pub fn analyze(&self, scan_id: &str) -> Vec<OptimizationRecommendation> {
-        let mut recommendations = Vec::new();
-
-        if let Some(profile) = self.get_profile(scan_id) {
-            // Detect slow phases
-            if let Some(slowest) = profile.slowest_phase() {
-                if slowest.duration_ms > 30000 {
-                    recommendations.push(OptimizationRecommendation {
-                        recommendation_id: format!("slow_phase_{}", slowest.phase_number),
-                        category: RecommendationCategory::Performance,
-                        severity: "HIGH".to_string(),
-                        description: format!(
-                            "Phase {} ({}) took {}ms",
-                            slowest.phase_number, slowest.phase_name, slowest.duration_ms
-                        ),
-                        impact: "Slow phases delay overall scan completion".to_string(),
-                        suggested_action: "Consider increasing concurrency or reducing timeout values"
-                            .to_string(),
-                    });
-                }
-            }
-
-            // Detect high error rates
-            if profile.total_requests > 0 {
-                let error_rate =
-                    (profile.total_errors as f32 / profile.total_requests as f32) * 100.0;
-                if error_rate > 5.0 {
-                    recommendations.push(OptimizationRecommendation {
-                        recommendation_id: "high_error_rate".to_string(),
-                        category: RecommendationCategory::Resource,
-                        severity: "MEDIUM".to_string(),
-                        description: format!("Error rate is {:.1}%", error_rate),
-                        impact: "High error rates indicate potential connectivity issues"
-                            .to_string(),
-                        suggested_action: "Check network stability and target server availability"
-                            .to_string(),
-                    });
-                }
-            }
-
-            // Detect low efficiency
-            let low_finding_phases: Vec<_> = profile
-                .phases
-                .iter()
-                .filter(|p| p.finding_density() < 0.5)
-                .collect();
-
-            if low_finding_phases.len() > 2 {
-                recommendations.push(OptimizationRecommendation {
-                    recommendation_id: "low_efficiency".to_string(),
-                    category: RecommendationCategory::Efficiency,
-                    severity: "LOW".to_string(),
-                    description: "Multiple phases have low finding density".to_string(),
-                    impact: "Time spent on less productive phases".to_string(),
-                    suggested_action: "Consider reducing intensity or phases for faster scans"
-                        .to_string(),
-                });
-            }
-
-            // Detect resource spikes
-            if profile.resources.memory_peak_mb > 500.0 {
-                recommendations.push(OptimizationRecommendation {
-                    recommendation_id: "high_memory".to_string(),
-                    category: RecommendationCategory::Resource,
-                    severity: "MEDIUM".to_string(),
-                    description: format!(
-                        "Peak memory usage: {:.1} MB",
-                        profile.resources.memory_peak_mb
-                    ),
-                    impact: "High memory usage limits parallelism".to_string(),
-                    suggested_action: "Reduce concurrency or scan fewer endpoints at once"
-                        .to_string(),
-                });
-            }
-        }
-
-        recommendations
-    }
-
-    /// Gets all profiles
     pub fn get_profiles(&self) -> Vec<&ScanProfile> {
         self.profiles.values().collect()
     }
 
-    /// Compares two scan profiles
-    pub fn compare(&self, scan_id1: &str, scan_id2: &str) -> Option<ScanComparison> {
-        let profile1 = self.profiles.get(scan_id1)?;
-        let profile2 = self.profiles.get(scan_id2)?;
-
-        let duration_diff = profile2.total_duration_ms as i64 - profile1.total_duration_ms as i64;
-        let success_rate_diff = profile2.overall_success_rate() - profile1.overall_success_rate();
-        let finding_diff = profile2.total_findings as i64 - profile1.total_findings as i64;
-
+    pub fn compare(&self, first_id: &str, second_id: &str) -> Option<ScanComparison> {
+        let first = self.profiles.get(first_id)?;
+        let second = self.profiles.get(second_id)?;
         Some(ScanComparison {
-            scan_id1: scan_id1.to_string(),
-            scan_id2: scan_id2.to_string(),
-            duration_diff_ms: duration_diff,
-            success_rate_diff,
-            finding_diff,
-            faster: if duration_diff > 0 {
-                "scan_1"
-            } else {
-                "scan_2"
-            }
-            .to_string(),
+            first_scan_id: first_id.to_string(),
+            second_scan_id: second_id.to_string(),
+            duration: DurationComparison::between(
+                first.total_duration_ms,
+                second.total_duration_ms,
+            ),
+            findings: CountComparison::between(first.total_findings(), second.total_findings()),
+            response_request_ratio_difference_percentage_points: match (
+                first.response_request_ratio_percent(),
+                second.response_request_ratio_percent(),
+            ) {
+                (Some(first_ratio), Some(second_ratio)) => Some(second_ratio - first_ratio),
+                _ => None,
+            },
         })
     }
 
@@ -289,70 +289,142 @@ impl PerformanceAnalyzer {
     }
 }
 
-impl Default for PerformanceAnalyzer {
-    fn default() -> Self {
-        Self::new()
+/// Explicit duration comparison, including ties.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DurationComparison {
+    FirstFasterBy(u64),
+    Equal,
+    SecondFasterBy(u64),
+}
+
+impl DurationComparison {
+    fn between(first_ms: u64, second_ms: u64) -> Self {
+        match first_ms.cmp(&second_ms) {
+            std::cmp::Ordering::Less => Self::FirstFasterBy(second_ms - first_ms),
+            std::cmp::Ordering::Equal => Self::Equal,
+            std::cmp::Ordering::Greater => Self::SecondFasterBy(first_ms - second_ms),
+        }
     }
 }
 
-/// Comparison between two scans
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ScanComparison {
-    pub scan_id1: String,
-    pub scan_id2: String,
-    pub duration_diff_ms: i64,
-    pub success_rate_diff: f32,
-    pub finding_diff: i64,
-    pub faster: String,
+/// Explicit count comparison, including ties.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CountComparison {
+    FirstHigherBy(u128),
+    Equal,
+    SecondHigherBy(u128),
 }
 
-/// Benchmark suite for performance testing
+impl CountComparison {
+    fn between(first: u128, second: u128) -> Self {
+        match first.cmp(&second) {
+            std::cmp::Ordering::Less => Self::SecondHigherBy(second - first),
+            std::cmp::Ordering::Equal => Self::Equal,
+            std::cmp::Ordering::Greater => Self::FirstHigherBy(first - second),
+        }
+    }
+}
+
+/// Direct comparison between two recorded profiles.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ScanComparison {
+    pub first_scan_id: String,
+    pub second_scan_id: String,
+    pub duration: DurationComparison,
+    pub findings: CountComparison,
+    #[serde(with = "optional_finite_f64")]
+    pub response_request_ratio_difference_percentage_points: Option<f64>,
+}
+
+mod optional_finite_f64 {
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S>(value: &Option<f64>, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        match value {
+            Some(value) if value.is_finite() => serializer.serialize_some(value),
+            Some(_) => Err(serde::ser::Error::custom("value must be finite")),
+            None => serializer.serialize_none(),
+        }
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Option<f64>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = Option::<f64>::deserialize(deserializer)?;
+        match value {
+            Some(value) if value.is_finite() => Ok(Some(value)),
+            Some(_) => Err(serde::de::Error::custom("value must be finite")),
+            None => Ok(None),
+        }
+    }
+}
+
+/// Raw benchmark duration samples supplied by a caller.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BenchmarkResult {
+    pub benchmark_id: String,
+    pub benchmark_name: String,
+    pub duration_samples_micros: Vec<u64>,
+}
+
+impl BenchmarkResult {
+    pub fn mean_duration_micros(&self) -> Option<f64> {
+        mean(&self.duration_samples_micros)
+    }
+
+    /// Nearest-rank percentile derived from the raw samples.
+    pub fn percentile_duration_micros(&self, percentile: f64) -> Option<u64> {
+        if self.duration_samples_micros.is_empty()
+            || !percentile.is_finite()
+            || !(0.0..=100.0).contains(&percentile)
+        {
+            return None;
+        }
+        let mut samples = self.duration_samples_micros.clone();
+        samples.sort_unstable();
+        let rank = ((percentile / 100.0) * samples.len() as f64).ceil() as usize;
+        Some(samples[rank.saturating_sub(1).min(samples.len() - 1)])
+    }
+}
+
+/// In-memory benchmark result catalog.
+#[derive(Debug, Clone, Default)]
 pub struct BenchmarkSuite {
     results: Vec<BenchmarkResult>,
 }
 
-/// Individual benchmark result
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BenchmarkResult {
-    pub benchmark_id: String,
-    pub benchmark_name: String,
-    pub iterations: u32,
-    pub min_ms: f32,
-    pub max_ms: f32,
-    pub avg_ms: f32,
-    pub median_ms: f32,
-    pub p95_ms: f32,
-    pub p99_ms: f32,
-    pub throughput_per_sec: f32,
-}
-
 impl BenchmarkSuite {
     pub fn new() -> Self {
-        Self {
-            results: Vec::new(),
-        }
+        Self::default()
     }
 
-    /// Records a benchmark result
     pub fn record_result(&mut self, result: BenchmarkResult) {
         self.results.push(result);
     }
 
-    /// Gets benchmark by ID
     pub fn get_result(&self, benchmark_id: &str) -> Option<&BenchmarkResult> {
-        self.results.iter().find(|r| r.benchmark_id == benchmark_id)
+        self.results
+            .iter()
+            .find(|result| result.benchmark_id == benchmark_id)
     }
 
-    /// Gets all results
     pub fn get_results(&self) -> &[BenchmarkResult] {
         &self.results
     }
 
-    /// Finds regressions (results slower than baseline)
-    pub fn detect_regressions(&self, baseline_avg_ms: f32) -> Vec<&BenchmarkResult> {
+    /// Selects records whose calculated mean exceeds the caller's threshold.
+    pub fn results_with_mean_above(&self, threshold_micros: f64) -> Vec<&BenchmarkResult> {
         self.results
             .iter()
-            .filter(|r| r.avg_ms > baseline_avg_ms * 1.1) // 10% slower = regression
+            .filter(|result| {
+                result
+                    .mean_duration_micros()
+                    .is_some_and(|mean| mean > threshold_micros)
+            })
             .collect()
     }
 
@@ -361,173 +433,153 @@ impl BenchmarkSuite {
     }
 }
 
-impl Default for BenchmarkSuite {
-    fn default() -> Self {
-        Self::new()
+fn ratio_percent(numerator: u64, denominator: u64) -> Option<f64> {
+    ratio_percent_u128(u128::from(numerator), u128::from(denominator))
+}
+
+fn ratio_percent_u128(numerator: u128, denominator: u128) -> Option<f64> {
+    (denominator != 0).then_some((numerator as f64 / denominator as f64) * 100.0)
+}
+
+fn mean(samples: &[u64]) -> Option<f64> {
+    if samples.is_empty() {
+        return None;
     }
+    let sum: u128 = samples.iter().map(|&sample| u128::from(sample)).sum();
+    Some(sum as f64 / samples.len() as f64)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    fn phase(number: u8, duration_ms: u64, findings: u64) -> PhaseProfile {
+        PhaseProfile {
+            phase_number: number,
+            phase_name: format!("phase-{number}"),
+            start_time: 0,
+            end_time: duration_ms,
+            duration_ms,
+            requests_sent: 2,
+            responses_received: 1,
+            findings_discovered: findings,
+            error_count: 1,
+            response_time_samples_ms: vec![10, 30],
+        }
+    }
+
     #[test]
-    fn test_phase_profile_creation() {
-        let phase = PhaseProfile {
-            phase_number: 1,
-            phase_name: "Recon".to_string(),
-            start_time: 1000,
-            end_time: 2000,
-            duration_ms: 1000,
-            requests_sent: 100,
-            responses_received: 95,
-            findings_discovered: 5,
-            error_count: 5,
-            avg_response_time_ms: 10.5,
+    fn ratios_and_means_are_derived_from_raw_measurements() {
+        let phase = phase(1, 40, 1);
+        assert_eq!(phase.response_request_ratio_percent(), Some(50.0));
+        assert_eq!(phase.findings_per_100_responses(), Some(100.0));
+        assert_eq!(phase.mean_response_time_ms(), Some(20.0));
+    }
+
+    #[test]
+    fn ties_return_every_tied_phase() {
+        let mut profile = ScanProfile::new("scan".into());
+        profile.add_phase(phase(1, 50, 2));
+        profile.add_phase(phase(2, 50, 2));
+
+        assert_eq!(profile.slowest_phases().len(), 2);
+        assert_eq!(profile.most_productive_phases().len(), 2);
+    }
+
+    #[test]
+    fn equal_profiles_are_reported_as_equal() {
+        let mut catalog = PerformanceAnalyzer::new();
+        let mut first = ScanProfile::new("first".into());
+        first.total_duration_ms = 100;
+        first.add_phase(phase(1, 100, 1));
+        let mut second = first.clone();
+        second.scan_id = "second".into();
+        catalog.record_profile(first).expect("valid profile");
+        catalog.record_profile(second).expect("valid profile");
+
+        let comparison = catalog.compare("first", "second").unwrap();
+        assert_eq!(comparison.duration, DurationComparison::Equal);
+        assert_eq!(comparison.findings, CountComparison::Equal);
+        assert_eq!(
+            comparison.response_request_ratio_difference_percentage_points,
+            Some(0.0)
+        );
+    }
+
+    #[test]
+    fn benchmark_statistics_require_raw_samples() {
+        let empty = BenchmarkResult {
+            benchmark_id: "empty".into(),
+            benchmark_name: "empty".into(),
+            duration_samples_micros: Vec::new(),
         };
-
-        assert_eq!(phase.success_rate(), 95.0);
-        assert!(phase.finding_density() > 0.0);
-    }
-
-    #[test]
-    fn test_scan_profile() {
-        let mut profile = ScanProfile::new("scan1".to_string());
-        let phase = PhaseProfile {
-            phase_number: 1,
-            phase_name: "Recon".to_string(),
-            start_time: 1000,
-            end_time: 2000,
-            duration_ms: 1000,
-            requests_sent: 100,
-            responses_received: 100,
-            findings_discovered: 5,
-            error_count: 0,
-            avg_response_time_ms: 10.0,
-        };
-
-        profile.add_phase(phase);
-        assert_eq!(profile.total_requests, 100);
-        assert_eq!(profile.total_findings, 5);
-    }
-
-    #[test]
-    fn test_performance_analyzer() {
-        let mut analyzer = PerformanceAnalyzer::new();
-        let profile = ScanProfile::new("scan1".to_string());
-        analyzer.record_profile(profile);
-
-        assert_eq!(analyzer.profile_count(), 1);
-    }
-
-    #[test]
-    fn test_optimization_recommendations() {
-        let mut analyzer = PerformanceAnalyzer::new();
-
-        let mut profile = ScanProfile::new("scan1".to_string());
-        profile.total_duration_ms = 60000;
-        profile.resources.memory_peak_mb = 600.0;
-
-        let phase = PhaseProfile {
-            phase_number: 1,
-            phase_name: "Recon".to_string(),
-            start_time: 1000,
-            end_time: 31000,
-            duration_ms: 30000,
-            requests_sent: 100,
-            responses_received: 100,
-            findings_discovered: 1,
-            error_count: 0,
-            avg_response_time_ms: 10.0,
-        };
-
-        profile.add_phase(phase);
-        analyzer.record_profile(profile);
-
-        let recommendations = analyzer.analyze("scan1");
-        assert!(!recommendations.is_empty());
-    }
-
-    #[test]
-    fn test_scan_comparison() {
-        let mut analyzer = PerformanceAnalyzer::new();
-
-        let mut profile1 = ScanProfile::new("scan1".to_string());
-        profile1.total_duration_ms = 10000;
-
-        let mut profile2 = ScanProfile::new("scan2".to_string());
-        profile2.total_duration_ms = 5000;
-
-        analyzer.record_profile(profile1);
-        analyzer.record_profile(profile2);
-
-        let comparison = analyzer.compare("scan1", "scan2");
-        assert!(comparison.is_some());
-    }
-
-    #[test]
-    fn test_benchmark_suite() {
-        let mut suite = BenchmarkSuite::new();
+        assert_eq!(empty.mean_duration_micros(), None);
+        assert_eq!(empty.percentile_duration_micros(95.0), None);
 
         let result = BenchmarkResult {
-            benchmark_id: "bench1".to_string(),
-            benchmark_name: "SQLi Detection".to_string(),
-            iterations: 1000,
-            min_ms: 0.5,
-            max_ms: 5.0,
-            avg_ms: 2.0,
-            median_ms: 1.8,
-            p95_ms: 4.5,
-            p99_ms: 4.9,
-            throughput_per_sec: 500.0,
+            benchmark_id: "fixture".into(),
+            benchmark_name: "fixture".into(),
+            duration_samples_micros: vec![40, 10, 30, 20],
         };
-
-        suite.record_result(result);
-        assert_eq!(suite.result_count(), 1);
+        assert_eq!(result.mean_duration_micros(), Some(25.0));
+        assert_eq!(result.percentile_duration_micros(50.0), Some(20));
+        assert_eq!(result.percentile_duration_micros(f64::NAN), None);
     }
 
     #[test]
-    fn test_regression_detection() {
-        let mut suite = BenchmarkSuite::new();
-
-        let baseline = BenchmarkResult {
-            benchmark_id: "bench1".to_string(),
-            benchmark_name: "Test".to_string(),
-            iterations: 100,
-            min_ms: 1.0,
-            max_ms: 2.0,
-            avg_ms: 1.5,
-            median_ms: 1.4,
-            p95_ms: 1.9,
-            p99_ms: 2.0,
-            throughput_per_sec: 667.0,
+    fn resource_measurements_reject_nonfinite_and_out_of_range_wire_values() {
+        let metrics = ResourceMetrics {
+            memory_used_mb: f32::NAN,
+            ..ResourceMetrics::default()
         };
+        assert!(!metrics.is_valid());
+        assert!(serde_json::to_string(&metrics).is_err());
 
-        let regression = BenchmarkResult {
-            benchmark_id: "bench2".to_string(),
-            benchmark_name: "Test".to_string(),
-            iterations: 100,
-            min_ms: 2.0,
-            max_ms: 3.0,
-            avg_ms: 2.5, // 67% slower
-            median_ms: 2.4,
-            p95_ms: 2.9,
-            p99_ms: 3.0,
-            throughput_per_sec: 400.0,
-        };
-
-        suite.record_result(baseline);
-        suite.record_result(regression);
-
-        let regressions = suite.detect_regressions(1.5);
-        assert_eq!(regressions.len(), 1);
+        let invalid_cpu = r#"{
+            "memory_used_mb": 1.0,
+            "memory_peak_mb": 1.0,
+            "cpu_usage_percent": 101.0,
+            "cpu_peak_percent": 1.0,
+            "disk_read_mb": 0.0,
+            "disk_write_mb": 0.0,
+            "network_in_mb": 0.0,
+            "network_out_mb": 0.0
+        }"#;
+        assert!(serde_json::from_str::<ResourceMetrics>(invalid_cpu).is_err());
     }
 
     #[test]
-    fn test_recommendation_category() {
-        assert_eq!(RecommendationCategory::Performance.as_str(), "performance");
-        assert_eq!(RecommendationCategory::Resource.as_str(), "resource");
-        assert_eq!(RecommendationCategory::Efficiency.as_str(), "efficiency");
-        assert_eq!(RecommendationCategory::Accuracy.as_str(), "accuracy");
+    fn profile_catalog_rejects_invalid_resources_and_orders_by_id() {
+        let mut catalog = PerformanceAnalyzer::new();
+        let mut invalid = ScanProfile::new("invalid".into());
+        invalid.resources.cpu_peak_percent = f32::INFINITY;
+        assert!(catalog.record_profile(invalid).is_err());
+        assert_eq!(catalog.profile_count(), 0);
+
+        for id in ["zeta", "alpha"] {
+            catalog
+                .record_profile(ScanProfile::new(id.into()))
+                .expect("valid profile");
+        }
+        assert_eq!(
+            catalog
+                .get_profiles()
+                .into_iter()
+                .map(|profile| profile.scan_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["alpha", "zeta"]
+        );
+    }
+
+    #[test]
+    fn comparison_wire_rejects_nonfinite_values() {
+        let comparison = ScanComparison {
+            first_scan_id: "first".into(),
+            second_scan_id: "second".into(),
+            duration: DurationComparison::Equal,
+            findings: CountComparison::Equal,
+            response_request_ratio_difference_percentage_points: Some(f64::NAN),
+        };
+        assert!(serde_json::to_string(&comparison).is_err());
     }
 }

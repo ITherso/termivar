@@ -1,20 +1,53 @@
-//! Threat Intelligence & Security Alerts
+//! Offline threat-intelligence records, catalogs, and rule predicates.
 //!
 //! ## Runtime scope
 //!
 //! - **Build:** opt-in via `threat-intel`.
 //! - **Execution:** no repository runtime caller (not on any default path).
 //! - **Default `venom scan`:** no.
-//! - **Support:** experimental/scaffold.
+//! - **Support:** experimental data models.
 //!
-//! See `docs/internals/runtime-map.md`.
-//!
-//! CVE correlation, threat feeds, automated responses.
+//! This module does not fetch a feed, correlate observations, emit an alert,
+//! execute an alert action, or persist data. Catalog queries inspect only
+//! caller-supplied records. Alert rules evaluate one explicit severity
+//! predicate and return a pure evaluation record.
 
-use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use std::collections::BTreeMap;
 
-/// Threat intelligence feed source
+mod cvss_score {
+    use super::*;
+
+    fn is_valid(value: f32) -> bool {
+        value.is_finite() && (0.0..=10.0).contains(&value)
+    }
+
+    pub fn serialize<S>(value: &f32, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        if !is_valid(*value) {
+            return Err(serde::ser::Error::custom(
+                "CVSS score must be finite and in 0..=10",
+            ));
+        }
+        serializer.serialize_f32(*value)
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<f32, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = f32::deserialize(deserializer)?;
+        if !is_valid(value) {
+            return Err(serde::de::Error::custom(
+                "CVSS score must be finite and in 0..=10",
+            ));
+        }
+        Ok(value)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ThreatFeedSource {
     #[serde(rename = "nvd")]
@@ -30,23 +63,23 @@ pub enum ThreatFeedSource {
 }
 
 impl ThreatFeedSource {
-    pub fn as_str(&self) -> &str {
+    pub fn as_str(self) -> &'static str {
         match self {
-            ThreatFeedSource::NVD => "nvd",
-            ThreatFeedSource::CISA => "cisa",
-            ThreatFeedSource::ExploitDB => "exploit_db",
-            ThreatFeedSource::MitreAttack => "mitre_att&ck",
-            ThreatFeedSource::Custom => "custom",
+            Self::NVD => "nvd",
+            Self::CISA => "cisa",
+            Self::ExploitDB => "exploit_db",
+            Self::MitreAttack => "mitre_att&ck",
+            Self::Custom => "custom",
         }
     }
 }
 
-/// CVE record
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CVERecord {
     pub cve_id: String,
     pub title: String,
     pub description: String,
+    #[serde(with = "cvss_score")]
     pub cvss_score: f32,
     pub published_date: u64,
     pub updated_date: u64,
@@ -55,8 +88,17 @@ pub struct CVERecord {
     pub active_exploitation: bool,
 }
 
-/// Threat feed entry
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// A CVE record carried a non-finite score or a score outside `0..=10`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InvalidCvssScore;
+
+impl CVERecord {
+    pub fn has_valid_cvss_score(&self) -> bool {
+        self.cvss_score.is_finite() && (0.0..=10.0).contains(&self.cvss_score)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ThreatFeedEntry {
     pub entry_id: String,
     pub source: ThreatFeedSource,
@@ -67,7 +109,6 @@ pub struct ThreatFeedEntry {
     pub last_updated: u64,
 }
 
-/// Threat severity levels
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum ThreatSeverity {
     #[serde(rename = "low")]
@@ -81,135 +122,123 @@ pub enum ThreatSeverity {
 }
 
 impl ThreatSeverity {
-    pub fn as_str(&self) -> &str {
+    pub fn as_str(self) -> &'static str {
         match self {
-            ThreatSeverity::Low => "low",
-            ThreatSeverity::Medium => "medium",
-            ThreatSeverity::High => "high",
-            ThreatSeverity::Critical => "critical",
+            Self::Low => "low",
+            Self::Medium => "medium",
+            Self::High => "high",
+            Self::Critical => "critical",
         }
     }
 
-    pub fn score(&self) -> u8 {
+    pub fn score(self) -> u8 {
         match self {
-            ThreatSeverity::Low => 1,
-            ThreatSeverity::Medium => 2,
-            ThreatSeverity::High => 3,
-            ThreatSeverity::Critical => 4,
+            Self::Low => 1,
+            Self::Medium => 2,
+            Self::High => 3,
+            Self::Critical => 4,
         }
     }
 }
 
-/// CVE correlator for matching vulnerabilities
-pub struct CVECorrelator {
-    cves: HashMap<String, CVERecord>,
+/// In-memory catalog of caller-supplied CVE records.
+#[derive(Debug, Clone, Default)]
+pub struct CveCatalog {
+    records: BTreeMap<String, CVERecord>,
 }
 
-impl CVECorrelator {
+impl CveCatalog {
     pub fn new() -> Self {
-        Self {
-            cves: HashMap::new(),
+        Self::default()
+    }
+
+    pub fn record(&mut self, record: CVERecord) -> Result<Option<CVERecord>, InvalidCvssScore> {
+        if !record.has_valid_cvss_score() {
+            return Err(InvalidCvssScore);
         }
+        Ok(self.records.insert(record.cve_id.clone(), record))
     }
 
-    /// Registers a CVE record
-    pub fn register_cve(&mut self, cve: CVERecord) {
-        self.cves.insert(cve.cve_id.clone(), cve);
+    pub fn get(&self, cve_id: &str) -> Option<&CVERecord> {
+        self.records.get(cve_id)
     }
 
-    /// Gets CVE by ID
-    pub fn get_cve(&self, cve_id: &str) -> Option<&CVERecord> {
-        self.cves.get(cve_id)
+    /// Filters valid caller-supplied scores using an explicit valid threshold.
+    pub fn records_at_or_above_cvss(&self, minimum: f32) -> Option<Vec<&CVERecord>> {
+        if !minimum.is_finite() || !(0.0..=10.0).contains(&minimum) {
+            return None;
+        }
+        Some(
+            self.records
+                .values()
+                .filter(|record| record.cvss_score >= minimum)
+                .collect(),
+        )
     }
 
-    /// Finds CVEs by severity
-    pub fn get_cves_by_severity(&self, min_cvss: f32) -> Vec<&CVERecord> {
-        self.cves
+    /// Returns records whose caller-supplied exploit flags contain evidence.
+    pub fn records_with_reported_exploit_evidence(&self) -> Vec<&CVERecord> {
+        self.records
             .values()
-            .filter(|cve| cve.cvss_score >= min_cvss)
+            .filter(|record| record.exploit_available || record.active_exploitation)
             .collect()
     }
 
-    /// Finds exploitable CVEs
-    pub fn get_exploitable_cves(&self) -> Vec<&CVERecord> {
-        self.cves
-            .values()
-            .filter(|cve| cve.exploit_available || cve.active_exploitation)
-            .collect()
+    pub fn len(&self) -> usize {
+        self.records.len()
     }
 
-    pub fn cve_count(&self) -> usize {
-        self.cves.len()
+    pub fn is_empty(&self) -> bool {
+        self.records.is_empty()
     }
 }
 
-impl Default for CVECorrelator {
-    fn default() -> Self {
-        Self::new()
-    }
+/// In-memory catalog of caller-supplied feed-entry records.
+#[derive(Debug, Clone, Default)]
+pub struct ThreatFeedCatalog {
+    entries: BTreeMap<String, ThreatFeedEntry>,
 }
 
-/// Threat feed manager
-pub struct ThreatFeedManager {
-    feeds: HashMap<String, ThreatFeedEntry>,
-}
-
-impl ThreatFeedManager {
+impl ThreatFeedCatalog {
     pub fn new() -> Self {
-        Self {
-            feeds: HashMap::new(),
-        }
+        Self::default()
     }
 
-    /// Ingests a threat feed entry
-    pub fn ingest_entry(&mut self, entry: ThreatFeedEntry) {
-        self.feeds.insert(entry.entry_id.clone(), entry);
+    pub fn record(&mut self, entry: ThreatFeedEntry) -> Option<ThreatFeedEntry> {
+        self.entries.insert(entry.entry_id.clone(), entry)
     }
 
-    /// Gets entries by source
-    pub fn get_by_source(&self, source: ThreatFeedSource) -> Vec<&ThreatFeedEntry> {
-        self.feeds.values().filter(|e| e.source == source).collect()
-    }
-
-    /// Gets critical threats
-    pub fn get_critical_threats(&self) -> Vec<&ThreatFeedEntry> {
-        self.feeds
+    pub fn entries_from(&self, source: ThreatFeedSource) -> Vec<&ThreatFeedEntry> {
+        self.entries
             .values()
-            .filter(|e| e.severity == ThreatSeverity::Critical)
+            .filter(|entry| entry.source == source)
             .collect()
     }
 
-    /// Gets recent threats
-    pub fn get_recent_threats(&self, since: u64) -> Vec<&ThreatFeedEntry> {
-        self.feeds
+    pub fn entries_at_or_above(&self, minimum: ThreatSeverity) -> Vec<&ThreatFeedEntry> {
+        self.entries
             .values()
-            .filter(|e| e.last_updated >= since)
+            .filter(|entry| entry.severity >= minimum)
             .collect()
     }
 
-    pub fn entry_count(&self) -> usize {
-        self.feeds.len()
+    pub fn entries_updated_at_or_after(&self, timestamp: u64) -> Vec<&ThreatFeedEntry> {
+        self.entries
+            .values()
+            .filter(|entry| entry.last_updated >= timestamp)
+            .collect()
+    }
+
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
     }
 }
 
-impl Default for ThreatFeedManager {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-/// Alert rule for automated responses
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AlertRule {
-    pub rule_id: String,
-    pub name: String,
-    pub condition: String,
-    pub severity_threshold: ThreatSeverity,
-    pub enabled: bool,
-    pub actions: Vec<AlertAction>,
-}
-
-/// Alert actions
+/// Action requested by a matching rule. Evaluation does not execute it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AlertAction {
     #[serde(rename = "notify")]
@@ -225,82 +254,91 @@ pub enum AlertAction {
 }
 
 impl AlertAction {
-    pub fn as_str(&self) -> &str {
+    pub fn as_str(self) -> &'static str {
         match self {
-            AlertAction::Notify => "notify",
-            AlertAction::Isolate => "isolate",
-            AlertAction::Block => "block",
-            AlertAction::Escalate => "escalate",
-            AlertAction::Report => "report",
+            Self::Notify => "notify",
+            Self::Isolate => "isolate",
+            Self::Block => "block",
+            Self::Escalate => "escalate",
+            Self::Report => "report",
         }
     }
 }
 
-/// Alert engine for rule processing
-pub struct AlertEngine {
-    rules: HashMap<String, AlertRule>,
-    alerts: Vec<SecurityAlert>,
-}
-
-/// Security alert
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SecurityAlert {
-    pub alert_id: String,
+/// A single implemented predicate: enabled and severity at or above threshold.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AlertRule {
     pub rule_id: String,
-    pub severity: ThreatSeverity,
-    pub message: String,
-    pub timestamp: u64,
-    pub triggered: bool,
+    pub name: String,
+    pub severity_threshold: ThreatSeverity,
+    pub enabled: bool,
+    pub requested_actions: Vec<AlertAction>,
 }
 
-impl AlertEngine {
-    pub fn new() -> Self {
-        Self {
-            rules: HashMap::new(),
-            alerts: Vec::new(),
+impl AlertRule {
+    pub fn evaluate(&self, observed_severity: ThreatSeverity) -> AlertEvaluation {
+        let matched = self.enabled && observed_severity >= self.severity_threshold;
+        AlertEvaluation {
+            rule_id: self.rule_id.clone(),
+            observed_severity,
+            matched,
+            requested_actions: if matched {
+                self.requested_actions.clone()
+            } else {
+                Vec::new()
+            },
         }
     }
+}
 
-    /// Registers an alert rule
-    pub fn register_rule(&mut self, rule: AlertRule) {
-        self.rules.insert(rule.rule_id.clone(), rule);
+/// Pure rule-evaluation result. No alert was delivered and no action was run.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AlertEvaluation {
+    pub rule_id: String,
+    pub observed_severity: ThreatSeverity,
+    pub matched: bool,
+    pub requested_actions: Vec<AlertAction>,
+}
+
+/// In-memory rule catalog. It stores rules, not emitted alerts.
+#[derive(Debug, Clone, Default)]
+pub struct AlertRuleCatalog {
+    rules: BTreeMap<String, AlertRule>,
+}
+
+impl AlertRuleCatalog {
+    pub fn new() -> Self {
+        Self::default()
     }
 
-    /// Processes an alert
-    pub fn process_alert(&mut self, alert: SecurityAlert) {
-        self.alerts.push(alert);
+    pub fn record_rule(&mut self, rule: AlertRule) -> Option<AlertRule> {
+        self.rules.insert(rule.rule_id.clone(), rule)
     }
 
-    /// Gets active alerts
-    pub fn get_active_alerts(&self) -> Vec<&SecurityAlert> {
-        self.alerts.iter().filter(|a| a.triggered).collect()
-    }
-
-    /// Gets alerts by severity
-    pub fn get_alerts_by_severity(&self, severity: ThreatSeverity) -> Vec<&SecurityAlert> {
-        self.alerts
-            .iter()
-            .filter(|a| a.severity == severity)
+    pub fn evaluate_all(&self, observed_severity: ThreatSeverity) -> Vec<AlertEvaluation> {
+        self.rules
+            .values()
+            .map(|rule| rule.evaluate(observed_severity))
             .collect()
     }
 
-    pub fn rule_count(&self) -> usize {
+    pub fn matching_rules(&self, observed_severity: ThreatSeverity) -> Vec<&AlertRule> {
+        self.rules
+            .values()
+            .filter(|rule| rule.enabled && observed_severity >= rule.severity_threshold)
+            .collect()
+    }
+
+    pub fn len(&self) -> usize {
         self.rules.len()
     }
 
-    pub fn alert_count(&self) -> usize {
-        self.alerts.len()
+    pub fn is_empty(&self) -> bool {
+        self.rules.is_empty()
     }
 }
 
-impl Default for AlertEngine {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-/// Threat actor profile
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ThreatActorProfile {
     pub actor_id: String,
     pub name: String,
@@ -311,44 +349,38 @@ pub struct ThreatActorProfile {
     pub threat_level: ThreatSeverity,
 }
 
-/// Threat intelligence repository
-pub struct ThreatIntelligenceRepo {
-    actors: HashMap<String, ThreatActorProfile>,
+/// In-memory catalog of caller-supplied actor profiles.
+#[derive(Debug, Clone, Default)]
+pub struct ThreatActorCatalog {
+    actors: BTreeMap<String, ThreatActorProfile>,
 }
 
-impl ThreatIntelligenceRepo {
+impl ThreatActorCatalog {
     pub fn new() -> Self {
-        Self {
-            actors: HashMap::new(),
-        }
+        Self::default()
     }
 
-    /// Registers a threat actor
-    pub fn register_actor(&mut self, actor: ThreatActorProfile) {
-        self.actors.insert(actor.actor_id.clone(), actor);
+    pub fn record(&mut self, actor: ThreatActorProfile) -> Option<ThreatActorProfile> {
+        self.actors.insert(actor.actor_id.clone(), actor)
     }
 
-    /// Gets actor by ID
-    pub fn get_actor(&self, actor_id: &str) -> Option<&ThreatActorProfile> {
+    pub fn get(&self, actor_id: &str) -> Option<&ThreatActorProfile> {
         self.actors.get(actor_id)
     }
 
-    /// Gets critical threat actors
-    pub fn get_critical_actors(&self) -> Vec<&ThreatActorProfile> {
+    pub fn actors_at_or_above(&self, minimum: ThreatSeverity) -> Vec<&ThreatActorProfile> {
         self.actors
             .values()
-            .filter(|a| a.threat_level == ThreatSeverity::Critical)
+            .filter(|actor| actor.threat_level >= minimum)
             .collect()
     }
 
-    pub fn actor_count(&self) -> usize {
+    pub fn len(&self) -> usize {
         self.actors.len()
     }
-}
 
-impl Default for ThreatIntelligenceRepo {
-    fn default() -> Self {
-        Self::new()
+    pub fn is_empty(&self) -> bool {
+        self.actors.is_empty()
     }
 }
 
@@ -356,108 +388,152 @@ impl Default for ThreatIntelligenceRepo {
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_threat_feed_source() {
-        assert_eq!(ThreatFeedSource::NVD.as_str(), "nvd");
-        assert_eq!(ThreatFeedSource::CISA.as_str(), "cisa");
-    }
-
-    #[test]
-    fn test_cve_record() {
-        let cve = CVERecord {
-            cve_id: "CVE-2024-1234".to_string(),
-            title: "Critical RCE".to_string(),
-            description: "Remote code execution".to_string(),
-            cvss_score: 9.8,
-            published_date: 1000,
-            updated_date: 2000,
-            affected_products: vec!["product1".to_string()],
-            exploit_available: true,
-            active_exploitation: true,
-        };
-
-        assert_eq!(cve.cvss_score, 9.8);
-        assert!(cve.exploit_available);
-    }
-
-    #[test]
-    fn test_threat_severity() {
-        assert_eq!(ThreatSeverity::Low.score(), 1);
-        assert_eq!(ThreatSeverity::Critical.score(), 4);
-        assert!(ThreatSeverity::Critical > ThreatSeverity::High);
-    }
-
-    #[test]
-    fn test_cve_correlator() {
-        let mut correlator = CVECorrelator::new();
-        let cve = CVERecord {
-            cve_id: "CVE-2024-0001".to_string(),
-            title: "Test".to_string(),
-            description: "Test CVE".to_string(),
-            cvss_score: 9.0,
-            published_date: 1000,
-            updated_date: 2000,
-            affected_products: vec![],
-            exploit_available: true,
+    fn cve(id: &str, score: f32) -> CVERecord {
+        CVERecord {
+            cve_id: id.into(),
+            title: "fixture".into(),
+            description: "fixture".into(),
+            cvss_score: score,
+            published_date: 1,
+            updated_date: 2,
+            affected_products: Vec::new(),
+            exploit_available: false,
             active_exploitation: false,
+        }
+    }
+
+    #[test]
+    fn cve_catalog_queries_records_without_claiming_correlation() {
+        let mut catalog = CveCatalog::new();
+        catalog.record(cve("valid", 9.0)).unwrap();
+        assert_eq!(catalog.record(cve("invalid", 11.0)), Err(InvalidCvssScore));
+
+        let records = catalog.records_at_or_above_cvss(8.0).unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].cve_id, "valid");
+        assert_eq!(catalog.records_at_or_above_cvss(f32::NAN), None);
+    }
+
+    #[test]
+    fn cvss_score_round_trips_and_rejects_invalid_wire_values() {
+        let valid = cve("CVE-1", 7.5);
+        let json = serde_json::to_string(&valid).unwrap();
+        assert_eq!(serde_json::from_str::<CVERecord>(&json).unwrap(), valid);
+
+        assert!(serde_json::to_string(&cve("CVE-2", f32::NAN)).is_err());
+        let invalid = r#"{"cve_id":"CVE-3","title":"fixture","description":"fixture","cvss_score":10.1,"published_date":1,"updated_date":2,"affected_products":[],"exploit_available":false,"active_exploitation":false}"#;
+        assert!(serde_json::from_str::<CVERecord>(invalid).is_err());
+    }
+
+    #[test]
+    fn catalog_queries_are_ordered_by_record_id() {
+        let mut cves = CveCatalog::new();
+        cves.record(cve("CVE-Z", 9.0)).unwrap();
+        cves.record(cve("CVE-A", 9.0)).unwrap();
+        let ids: Vec<_> = cves
+            .records_at_or_above_cvss(0.0)
+            .unwrap()
+            .into_iter()
+            .map(|record| record.cve_id.as_str())
+            .collect();
+        assert_eq!(ids, vec!["CVE-A", "CVE-Z"]);
+
+        let mut rules = AlertRuleCatalog::new();
+        for id in ["z-rule", "a-rule"] {
+            rules.record_rule(AlertRule {
+                rule_id: id.into(),
+                name: id.into(),
+                severity_threshold: ThreatSeverity::Low,
+                enabled: true,
+                requested_actions: Vec::new(),
+            });
+        }
+        let rule_ids: Vec<_> = rules
+            .evaluate_all(ThreatSeverity::Low)
+            .into_iter()
+            .map(|evaluation| evaluation.rule_id)
+            .collect();
+        assert_eq!(rule_ids, vec!["a-rule", "z-rule"]);
+
+        let mut feeds = ThreatFeedCatalog::new();
+        for id in ["z-entry", "a-entry"] {
+            feeds.record(ThreatFeedEntry {
+                entry_id: id.into(),
+                source: ThreatFeedSource::CISA,
+                threat_type: "fixture".into(),
+                severity: ThreatSeverity::High,
+                description: "fixture".into(),
+                indicators: Vec::new(),
+                last_updated: 1,
+            });
+        }
+        let entry_ids: Vec<_> = feeds
+            .entries_at_or_above(ThreatSeverity::Low)
+            .into_iter()
+            .map(|entry| entry.entry_id.as_str())
+            .collect();
+        assert_eq!(entry_ids, vec!["a-entry", "z-entry"]);
+
+        let mut actors = ThreatActorCatalog::new();
+        for id in ["z-actor", "a-actor"] {
+            actors.record(ThreatActorProfile {
+                actor_id: id.into(),
+                name: id.into(),
+                aliases: Vec::new(),
+                techniques: Vec::new(),
+                infrastructure: Vec::new(),
+                last_seen: 1,
+                threat_level: ThreatSeverity::High,
+            });
+        }
+        let actor_ids: Vec<_> = actors
+            .actors_at_or_above(ThreatSeverity::Low)
+            .into_iter()
+            .map(|actor| actor.actor_id.as_str())
+            .collect();
+        assert_eq!(actor_ids, vec!["a-actor", "z-actor"]);
+    }
+
+    #[test]
+    fn disabled_and_below_threshold_rules_do_not_match() {
+        let disabled = AlertRule {
+            rule_id: "disabled".into(),
+            name: "disabled".into(),
+            severity_threshold: ThreatSeverity::Low,
+            enabled: false,
+            requested_actions: vec![AlertAction::Block],
         };
-
-        correlator.register_cve(cve);
-        assert_eq!(correlator.cve_count(), 1);
-    }
-
-    #[test]
-    fn test_threat_feed_manager() {
-        let mut manager = ThreatFeedManager::new();
-        let entry = ThreatFeedEntry {
-            entry_id: "threat1".to_string(),
-            source: ThreatFeedSource::CISA,
-            threat_type: "Malware".to_string(),
-            severity: ThreatSeverity::High,
-            description: "Active threat".to_string(),
-            indicators: vec!["ip1".to_string()],
-            last_updated: 1000,
-        };
-
-        manager.ingest_entry(entry);
-        assert_eq!(manager.entry_count(), 1);
-    }
-
-    #[test]
-    fn test_alert_action() {
-        assert_eq!(AlertAction::Notify.as_str(), "notify");
-        assert_eq!(AlertAction::Block.as_str(), "block");
-    }
-
-    #[test]
-    fn test_alert_engine() {
-        let mut engine = AlertEngine::new();
-        let rule = AlertRule {
-            rule_id: "rule1".to_string(),
-            name: "Critical Alert".to_string(),
-            condition: "severity >= critical".to_string(),
+        let enabled = AlertRule {
+            rule_id: "enabled".into(),
+            name: "enabled".into(),
             severity_threshold: ThreatSeverity::Critical,
             enabled: true,
-            actions: vec![AlertAction::Escalate],
+            requested_actions: vec![AlertAction::Notify],
         };
 
-        engine.register_rule(rule);
-        assert_eq!(engine.rule_count(), 1);
+        assert!(!disabled.evaluate(ThreatSeverity::Critical).matched);
+        assert!(disabled
+            .evaluate(ThreatSeverity::Critical)
+            .requested_actions
+            .is_empty());
+        assert!(!enabled.evaluate(ThreatSeverity::High).matched);
+        assert!(enabled
+            .evaluate(ThreatSeverity::High)
+            .requested_actions
+            .is_empty());
     }
 
     #[test]
-    fn test_threat_actor_profile() {
-        let actor = ThreatActorProfile {
-            actor_id: "actor1".to_string(),
-            name: "APT28".to_string(),
-            aliases: vec!["Fancy Bear".to_string()],
-            techniques: vec!["Spear Phishing".to_string()],
-            infrastructure: vec!["server1".to_string()],
-            last_seen: 1000,
-            threat_level: ThreatSeverity::Critical,
+    fn matching_rule_returns_requested_actions_without_execution_claim() {
+        let rule = AlertRule {
+            rule_id: "rule".into(),
+            name: "fixture".into(),
+            severity_threshold: ThreatSeverity::High,
+            enabled: true,
+            requested_actions: vec![AlertAction::Escalate],
         };
-
-        assert_eq!(actor.name, "APT28");
-        assert_eq!(actor.threat_level, ThreatSeverity::Critical);
+        let evaluation = rule.evaluate(ThreatSeverity::Critical);
+        assert!(evaluation.matched);
+        assert_eq!(evaluation.requested_actions, vec![AlertAction::Escalate]);
     }
 }

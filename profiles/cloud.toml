@@ -1,50 +1,8 @@
-# VENOM Cloud Profile
-# Optimized for cloud infrastructure scanning
+# INERT DESIGN INPUT - not loaded by any Venom CLI or repository runtime.
+# Identity metadata only; see profiles/README.md.
 
-[scan]
-name = "cloud"
-description = "Cloud infrastructure scanning (AWS/GCP/Azure)"
-intensity = "aggressive"
-timeout_secs = 600
-rate_limit_rps = 50
-concurrent_workers = 16
-
-[plugins]
-# No stock detector plugins ship. Hosts must register reviewed plugin IDs.
-enabled = []
-
-[lua_scripts]
-enabled = [
-    "cloud_config_check",
-    "api_security",
-    "cloud_metadata_scan",
-]
-
-[event_bus]
-subscriptions = [
-    "finding_found",
-    "worker_finished",
-    "plugin_executed",
-]
-
-[cloud_detection]
-aws = true
-gcp = true
-azure = true
-kubernetes = true
-
-[targets]
-metadata_endpoints = [
-    "http://169.254.169.254/latest/meta-data",
-    "http://metadata.google.internal/",
-    "http://169.254.169.254/metadata/v1/",
-]
-
-[options]
-aws_detection = "true"
-gcp_detection = "true"
-azure_detection = "true"
-check_bucket_permissions = "true"
-check_iam_roles = "true"
-check_api_keys = "true"
-waf_detection = "false"
+[profile]
+id = "cloud"
+description = "Historical cloud profile label"
+lifecycle = "experimental-design-input"
+runtime_wired = false

@@ -80,21 +80,28 @@ pub trait ScanPhase: Send + Sync {
 
 | Feature | Purpose | Maturity |
 | --- | --- | --- |
+| `core` | Transport-neutral evidence, knowledge, planning, and verification contracts | Preview |
 | `scanning` | Deterministic evidence, reasoning, planning, execution, verification, and bounded runtime | Preview |
 | `legacy-scanner` | Historical ordered runner, context, phases, and Scanner SDK; separate bounded discovery and active-verification slices within an otherwise unmetered run | Legacy |
-| `detection` | Advanced and anomaly detection | Experimental |
-| `plugins` | Evidence-only native plugin registry plus the separate Lua engine; no stock detector plugins | Preview |
-| `distributed` | Queues, workers, and aggregation | Experimental |
-| `ml` | Pattern learning models | Experimental |
-| `monitoring` | Performance models | Preview |
-| `compliance` | Audit and compliance models | Preview |
-| `threat-intel` | Feed and correlation models | Preview |
-| `full` / `research` | All optional capabilities | Experimental |
+| `platform-models` | Unwired API/auth/dashboard/persistence/post-exploitation/realtime library models | Experimental |
+| `reporting` | Historical finding-to-report renderers, separate from deterministic `RunReport` | Legacy |
+| `detection` | Signal-definition validation, caller-scored technique catalogs, neutral deviation records, and text matching; no scoring or classification | Experimental |
+| `plugins` | Evidence-only native plugin registry; no stock detector plugins | Preview |
+| `lua` | Independent registry scaffold; source execution fails closed | Experimental |
+| `distributed` | In-process queue/worker models; no remote or durable coordination | Experimental |
+| `ml` | Serializable external-model records; no learning, clustering, classification, or execution | Experimental |
+| `monitoring` | Caller-supplied performance records and comparisons; no telemetry collector | Experimental |
+| `compliance` | Caller-supplied audit/catalog records; no compliance determination | Experimental |
+| `threat-intel` | Caller-supplied feed/rule records and catalogs; no correlation or alert engine | Experimental |
+| `full` / `research` | Historical all-opt-in compatibility aggregates; not supported product tiers | Experimental |
+| `enterprise` | Historical aggregate excluding `threat-intel`; not an enterprise package | Experimental |
 
-Default builds enable `core` and `scanning`. Detection, the historical runner,
-and the other feature-flagged surfaces listed above require explicit opt-in;
-some library/scaffold modules still compile under `scanning` without being called
-by the default command. See the [runtime map](internals/runtime-map.md).
+Default builds enable exactly `core` and `scanning`. Detection, the historical
+runner, platform models, renderers, extension runtimes, and the other
+feature-flagged surfaces listed above require explicit opt-in. CI compiles the
+quarantined feature groups independently, and the architecture gate binds their
+module declarations to the expected Cargo features. See the
+[runtime map](internals/runtime-map.md).
 
 ## Adding a phase
 

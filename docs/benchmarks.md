@@ -8,13 +8,17 @@ cargo bench -p venom-scanner --bench scanner_benchmarks
 cargo xtask benchmark
 ```
 
-The active suite measures cache access, WAF header detection, and payload encoding. Criterion stores reports under `target/criterion/`.
+The active suite measures generic LRU-cache access and neutral percent encoding.
+Criterion stores reports under `target/criterion/`.
 
 The `Quality Metrics` GitHub Actions workflow runs this suite on every push and pull request, then uploads Criterion output with build timing, binary size, and runner peak-RSS measurements. See [Quality metrics](quality-metrics.md).
 
-## Latest measured baseline
+## Historical baseline (not the current suite)
 
-The first committed baseline comes from green main commit [`f7d5120`](reports/benchmarks/f7d5120.md):
+The first committed baseline comes from green main commit
+[`f7d5120`](reports/benchmarks/f7d5120.md). It measured the now-removed URL-only
+response cache, WAF detector, and double-encoding façade, so its values are
+historical evidence and are not a baseline for the current suite:
 
 | Benchmark | Mean | 95% confidence interval |
 | --- | ---: | ---: |
@@ -22,7 +26,11 @@ The first committed baseline comes from green main commit [`f7d5120`](reports/be
 | WAF header detection | 152.28 ns | 151.27–153.99 ns |
 | Double URL encoding | 3.113 µs | 3.106–3.124 µs |
 
-The [full report](reports/benchmarks/f7d5120.md) includes workflow provenance, the compiler version, process-level resource measurements, limitations, and a [machine-readable JSON record](reports/benchmarks/f7d5120.json).
+The [full historical report](reports/benchmarks/f7d5120.md) includes workflow
+provenance, the compiler version, process-level resource measurements,
+limitations, and a [machine-readable JSON record](reports/benchmarks/f7d5120.json).
+A new current-suite baseline must come from a green run at the remediated commit;
+this document does not invent replacement measurements.
 
 ## Release baseline
 

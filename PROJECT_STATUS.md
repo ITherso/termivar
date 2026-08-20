@@ -1,13 +1,13 @@
 # Project Status
 
-The latest tagged Venom release is **v0.9.0-alpha**; `main` targets the next Preview release. Venom is an experimental Rust security-testing project centered on a bounded deterministic decision runtime, and it is not production-ready.
+The latest tagged Venom release is **v0.9.0-alpha**, but its binaries predate the remediated runtime documented by this unreleased source state; `main` targets the next Preview release. Venom is an experimental Rust security-testing project centered on a bounded deterministic decision runtime, and it is not production-ready.
 
 ## Why alpha
 
 - The Scanner SDK and plugin API are public and usable, but their contracts may still change before v1. Plugins are linked, in-process extensions that receive a host-owned bounded context and record observations; Venom ships no stock detector plugins, and plugin output is not an automatic finding.
 - The default `venom scan` command now exercises the deterministic runtime; its operational outcomes are not findings or vulnerability verdicts. The historical heuristic runner is separately feature-gated and requires explicit acknowledgement. Its phases 2–4 share bounded passive discovery and phases 5–9 share a distinct bounded active-verification authority. Phase one and custom extensions can still perform raw I/O, so whole-run accounting remains `Unmetered`; the narrower phase-5-to-9 authority must not be mistaken for `RuntimeBudget` coverage.
 - `ScanContext` now has an accepted non-exhaustive, constructor-owned policy, but the intentional transition from the tagged struct-literal contract still needs a new Preview release and post-transition scanner baseline.
-- The distributed worker pool is an in-process scheduling preview, not a durable multi-node control plane.
+- The distributed worker pool is an in-memory Experimental scheduling model, not a durable multi-node control plane.
 - Criterion and fuzz baselines exist, but endpoint-scale CPU, memory, latency, and throughput evidence is incomplete.
 - No independent security audit has been completed.
 - Upgrade compatibility, long-term support, and operational service-level objectives are not defined.
@@ -35,7 +35,7 @@ The following conditions block a stable v1.0 claim:
 4. Insufficient external adoption evidence for the SDK and plugin workflow ([#3](https://github.com/ITherso/venom/issues/3)).
 5. No documented upgrade and deprecation lifecycle for stable consumers ([#8](https://github.com/ITherso/venom/issues/8)).
 
-Distributed multi-node production readiness is tracked separately for v1.1 and does not block a focused single-node v1.0 SDK release if its Preview status remains explicit.
+Distributed multi-node production readiness is tracked separately for v1.1 and does not block a focused single-node v1.0 SDK release if its Experimental, in-process-only status remains explicit.
 
 ## Evidence
 

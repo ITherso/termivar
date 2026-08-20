@@ -1,7 +1,7 @@
 {
   "name": "venom-dashboard",
-  "version": "0.9.0-alpha",
-  "description": "Static preview for the VENOM 0.9.0-alpha dashboard; not connected to the Rust API",
+  "version": "0.10.0-alpha.1",
+  "description": "Static preview for the unreleased VENOM 0.10.0-alpha.1 source line; not connected to the Rust API",
   "private": true,
   "type": "module",
   "engines": {

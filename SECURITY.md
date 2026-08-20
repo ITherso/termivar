@@ -6,8 +6,8 @@ Venom is security-testing software. Its alpha releases may contain defects that 
 
 | Version | Supported | Notes |
 | --- | --- | --- |
-| `main` | Yes | Security fixes land here first |
-| `0.9.0-alpha` | Yes | Best-effort support until the next pre-release |
+| `main` / unreleased `0.10.0-alpha.1` source line | Yes | Security fixes land here first; identify reports by full commit SHA |
+| Historical `v0.9.0-alpha` artifacts | No | Predate the remediated runtime; build a reviewed current commit instead |
 | Earlier snapshots | No | Upgrade before reporting a defect |
 
 Support means the maintainers will assess valid reports; it does not imply a production-readiness guarantee.
@@ -66,9 +66,10 @@ No researchers are listed yet.
 
 Reports about the following are particularly useful:
 
-- proxy certificate or key handling;
+- fixed-upstream relay scope validation, cancellation, or resource handling;
 - authentication and authorization bypass;
-- unsafe Lua or plugin sandbox escape;
+- Lua registry/path/source-validation defects in the currently unavailable execution scaffold;
+- trusted in-process plugin budget, redaction, provenance, or broker-capability enforcement defects;
 - request smuggling or parser differentials;
 - secret exposure in logs or reports;
 - malicious scan target responses causing code execution, denial of service, or data exposure;

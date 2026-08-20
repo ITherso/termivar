@@ -1,25 +1,36 @@
 # Lua
 
-Lua support is an optional scripting boundary compiled with the scanner's `plugins` feature. It is Preview and should be treated as untrusted-input infrastructure.
+Lua support is an optional, Experimental registry scaffold compiled only with
+the scanner's independent `lua` feature. It is not enabled by `plugins`, and
+neither extension surface is part of a CLI scan runtime. Registered source
+loading is not implemented: `LuaScript::execute` fails closed, reports no return
+value, and runs no script.
 
 ## Intended boundary
 
-Lua scripts receive a limited `LuaContext`, produce a `LuaExecutionResult`, and are managed through `LuaScriptRegistry`. Scripts should not receive direct references to runner, registry, event-bus, or transport internals.
+`LuaContext`, `LuaExecutionResult`, and `LuaScriptRegistry` model an intended
+host boundary. The current implementation registers metadata but does not load
+or evaluate registered script files. A future executable host must not give
+scripts direct references to runner, registry, event-bus, or transport
+internals.
 
-## Required controls
+## Controls required before execution exists
 
 - load scripts only from an approved root;
 - reject path traversal and symlink escapes;
 - cap memory, execution time, output size, and retained history;
 - expose an allowlist of host functions;
 - do not expose process execution, arbitrary filesystem access, or unrestricted network access;
-- attach script ID and version to findings and audit events;
+- attach script ID and version to retained results and audit records;
 - fail closed when validation or limit enforcement fails.
 
 ## Configuration
 
-`LuaEngineConfig` controls retained history, maximum VM memory, and default timeout. Production-like deployments should use explicit values rather than relying on alpha defaults.
+`LuaEngineConfig` models retained history, maximum VM memory, and default
+timeout. Those values do not turn the current fail-closed registry into an
+executable or isolated scripting runtime.
 
 ## Compatibility
 
-Lua-facing APIs are not stable in `0.9.0-alpha`. Script authors should pin to a Venom commit and include tests. Legacy Lua fixtures are being migrated to the current safe-construction API.
+Lua-facing APIs are not stable in `0.10.0-alpha.1`. Hosts should pin to a Venom
+commit and must not treat the current registry as script execution support.

@@ -4,7 +4,7 @@
 //!
 //! - **Build:** always/default.
 //! - **Execution:** Surface B (planner-selected payload strategy contracts).
-//! - **Default `venom scan`:** no.
+//! - **Default `venom scan`:** yes, through `StandardWebDecisionRuntime`.
 //! - **Support:** implemented and tested.
 //!
 //! See `docs/internals/runtime-map.md`.

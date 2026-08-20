@@ -10,8 +10,8 @@ alpha production-ready or prove that a scanner result is correct.
 crates/
 ├─ venom-core/src/          transport-neutral contracts and types
 ├─ venom-scanner/src/       runtime, reasoning, phases, and plugins
-├─ venom-proxy/src/         HTTP/TLS proxy boundary
-├─ venom-api/src/           application transport
+├─ venom-proxy/src/         experimental fixed-upstream TCP relay
+├─ venom-api/src/           health router / unsupported listener hook
 └─ venom-cli/src/           composition root
 examples/src/               compiled SDK examples
 xtask/src/                  repository maintenance commands
@@ -64,7 +64,7 @@ cargo test -p venom-scanner --no-default-features --lib --locked
 cargo test -p venom-scanner --all-features runtime_budget
 ```
 
-See [Testing](TESTING.md) for service-backed tests, deterministic reasoning
+See [Testing](TESTING.md) for loopback integration tests, deterministic reasoning
 fixtures, fuzzing, coverage, and runtime-accounting expectations.
 
 ## Public API documentation

@@ -25,15 +25,13 @@ api-adapter = ["dep:venom-api"]
 proxy-adapter = ["dep:venom-proxy"]
 
 [dependencies]
-venom-core = { version = "0.9.0-alpha", path = "../venom-core" }
-venom-scanner = { version = "0.9.0-alpha", path = "../venom-scanner", default-features = false, features = ["scanning"] }
-venom-api = { version = "0.9.0-alpha", path = "../venom-api", optional = true }
-venom-proxy = { version = "0.9.0-alpha", path = "../venom-proxy", optional = true }
+venom-core = { version = "0.10.0-alpha.1", path = "../venom-core" }
+venom-scanner = { version = "0.10.0-alpha.1", path = "../venom-scanner", default-features = false, features = ["scanning"] }
+venom-api = { version = "0.10.0-alpha.1", path = "../venom-api", optional = true }
+venom-proxy = { version = "0.10.0-alpha.1", path = "../venom-proxy", optional = true }
 tokio = { workspace = true }
 reqwest = { workspace = true, optional = true }
 url = "2.5"
 clap = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-tracing = { workspace = true }
-tracing-subscriber = { workspace = true }

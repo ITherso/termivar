@@ -8,6 +8,7 @@
 //! snapshot of the current `venom scan` preview profile** (also exposed through
 //! the deprecated `decision-scan` alias; see
 //! `preview_runtime` below and `crates/venom-cli/src/decision_scan.rs`) against
+
 //! offline `127.0.0.1` fixtures, and records the observable contract: emitted
 //! evidence predicates, resulting hypotheses, strength, and lifecycle state, per-turn
 //! eligible/excluded planner actions with the exact exclusion reason, the actions
@@ -63,6 +64,8 @@
 //! Laravel activation truthfully — `X-Powered-By: laravel` for activation, with an
 //! `Allow` header present on the response so the route *review* has its documented
 //! signal — rather than inventing an `Allow` -> Laravel rule.
+
+#![cfg(feature = "scanning")]
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;

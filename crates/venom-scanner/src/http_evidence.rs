@@ -4,7 +4,7 @@
 //!
 //! - **Build:** default via `scanning`.
 //! - **Execution:** Surface B (metered executor for the decision runtime).
-//! - **Default `venom scan`:** no.
+//! - **Default `venom scan`:** yes, through `StandardWebDecisionRuntime`.
 //! - **Support:** implemented and tested.
 //!
 //! See `docs/internals/runtime-map.md`.
@@ -1060,10 +1060,12 @@ impl CollectedHttpResponse {
         self.status.as_u16()
     }
 
+    #[cfg(feature = "legacy-scanner")]
     pub(crate) fn final_url(&self) -> &Url {
         &self.final_url
     }
 
+    #[cfg(feature = "legacy-scanner")]
     pub(crate) fn header(&self, name: &str) -> Option<&str> {
         self.headers.get(name)?.to_str().ok()
     }

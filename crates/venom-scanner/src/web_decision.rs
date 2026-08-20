@@ -4,7 +4,7 @@
 //!
 //! - **Build:** default via `scanning`.
 //! - **Execution:** Surface B (deterministic decision runtime).
-//! - **Default `venom scan`:** no.
+//! - **Default `venom scan`:** yes, through `StandardWebDecisionRuntime`.
 //! - **Support:** implemented and tested.
 //!
 //! See `docs/internals/runtime-map.md`.
