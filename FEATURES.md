@@ -34,7 +34,7 @@ A compiled module is not necessarily a runtime feature. The [runtime map](docs/i
 | --- | --- | --- |
 | Native plugins | Preview | Source-level Rust trait and registry with a host-owned bounded `PluginContext`; plugins record observations rather than findings, no stock detector plugins ship, and there is no runtime crate discovery or stable ABI |
 | Plugin starter | Preview | INFO-only trait-boundary fixture under `templates/venom-plugin`, rendered and tested in CI; it makes no security claim |
-| Lua registry scaffold | Experimental | Independent opt-in `lua` feature; registered source loading is not implemented, so `LuaScript::execute` fails closed and runs no script |
+| Bounded Lua execution | Experimental | Independent opt-in `lua` host-library API: approved-root source snapshots execute in fresh no-standard-library Lua 5.4 VMs under per-execution/registry limits; cooperative in-process controls are not process isolation, and no repository CLI, scanner, or plugin caller exists |
 | Platform models | Experimental | Opt-in `platform-models` records, catalogs, and in-memory utilities; no API/auth/persistence/realtime execution path, and callers own collection capacity except where a type states a limit |
 | Bounded run-report rendering | Preview | Opt-in `reporting` host-library API transforms typed `RunReport` values under a hard output ceiling; callers pre-redact projected fields, and the renderer has no repository/default CLI caller, I/O, persistence, redaction, risk/finding synthesis, or verdict authority |
 | Legacy discovery phases | Legacy | Crawler, opt-in directory discovery, and parameter discovery share exact-origin redirect-disabled request/time/body limits and atomic typed state; their `INFO` records project as `Unknown`, not findings |
@@ -52,7 +52,7 @@ A compiled module is not necessarily a runtime feature. The [runtime map](docs/i
 
 | Capability | Lifecycle | Current boundary |
 | --- | --- | --- |
-| Distributed execution | Experimental | In-process worker, queue, and aggregation APIs; no durable multi-node control plane |
+| Distributed coordination | Experimental | Independent opt-in `distributed` host-library state machines with bounded ordered task/worker/result state, explicit logical time/revisions, leases, retry/recovery, and deterministic replay for a fixed accepted command order; no transport, authentication, serialization, persistence, background execution, exactly-once, or multi-node control plane |
 | Monitoring | Experimental | Opt-in caller-supplied profiles and comparisons; not telemetry collection or a performance SLA |
 | Dashboard | Experimental | Disconnected web preview; not a scan-runtime component |
 | Compliance | Experimental | Optional caller-supplied catalogs and reports; not a certification or audit result |

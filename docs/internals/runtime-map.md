@@ -49,14 +49,22 @@ The deterministic modules are compiled through the scanner crate's default
 `decision_runner`, `runtime_budget`, `http_evidence`, `planner`, `rules`,
 `knowledge`, `experience`, `verification`, and `adaptive`.
 
-Two implemented-and-tested surfaces are host-owned and are not automatically
-composed into the default runtime:
+Among the implemented-and-tested host-owned APIs, these four
+decision/runtime-adjacent surfaces are not automatically composed into the
+default runtime:
 
 - **Semantic extraction** (`semantic`) consumes evidence through a bounded
   library API; `venom scan` does not call it.
 - **Defense projection / shadow / enforcement** (`defense`) is an explicit
   library API. `StandardWebDecisionRuntime` does not compose it, and no
   production runtime caller exists in the repository.
+- **Lua execution** (`lua`, opt-in) is a bounded registry and fresh-VM executor
+  for an explicit library host. It uses cooperative in-process controls, not
+  process isolation, with no
+  CLI, scanner-phase, or plugin caller.
+- **Distributed coordination** (`distributed`, opt-in) is a bounded,
+  deterministic process-local task/worker/result state machine for an explicit
+  library host. It is not a transport service or multi-node control plane.
 
 ## Historical mixed-authority runner (Surface A)
 
@@ -193,12 +201,12 @@ The following matrix separates build availability from actual execution:
 | `api`, `api_gateway`, `auth`, `cache`, `config`, `config_loader`, `metrics`, `post_exploitation`, `persistence`, `realtime`, `dashboard` | opt-in (`platform-models`) | no repository product caller | no | Experimental records, catalogs, and in-memory utilities; no API/auth/persistence/realtime execution path, and caller-owned collections are not uniformly capacity-bounded |
 | `reporting` | opt-in (`reporting`) | source-level host library only; consumes typed `RunReport` with caller-pre-redacted projected text fields | no | Preview bounded renderer; performs encoding but no redaction, I/O, persistence, finding/risk synthesis, verdict authority, or repository caller; see the [reporting guide](../reporting.md) |
 | `ml` | opt-in (`ml`) | external-model records only; no repository computation or execution | no | Experimental data-model scaffold |
-| `distributed` | opt-in (`distributed`) | no default path | no | Experimental / scaffold |
+| `distributed` | opt-in (`distributed`) | explicit host-owned process-local coordinator/result APIs; no repository product/runtime caller | no | implemented and tested Experimental; bounded ordered state, explicit logical time/revisions, leases, retry/recovery, and fixed-command-order determinism; no transport, authentication, serialization, persistence, background work, exactly-once, or multi-node service |
 | `monitoring` | opt-in (`monitoring`) | no default path | no | Experimental / scaffold |
 | `compliance` | opt-in (`compliance`) | no default path | no | Experimental / scaffold |
 | `threat_intelligence` | opt-in (`threat-intel`) | no default path | no | Experimental / scaffold |
 | `plugin` | opt-in (`plugins`) | host-owned; `PluginDecisionExecutor` can forward registry observations when a host supplies the execution request | no | source-level extension Preview; no stock detector plugins or dynamic loading |
-| `lua_engine` | opt-in (`lua`) | host-owned registry scaffold; execution fails closed without loading source | no | Experimental; no executable script host |
+| `lua_engine` | opt-in (`lua`) | explicit host-owned approved-root registry/executor; no repository product/runtime caller | no | implemented and tested Experimental; fresh text-only no-standard-library Lua 5.4 VMs with cooperative per-execution/registry limits, not process isolation |
 | `venom-api` / `venom api` | CLI opt-in (`api-adapter`) | command fails closed; router is host-owned | no | unsupported listener |
 | `venom-proxy` / `venom proxy` | CLI opt-in (`proxy-adapter`) | explicit adapter | no | Experimental fixed-upstream TCP relay |
 | Deployment (Compose / Helm / Terraform / Kubernetes) | absent | none | no | unsupported; see the [deployment blueprint](../experimental/deployment-blueprint.md) |
@@ -206,9 +214,13 @@ The following matrix separates build availability from actual execution:
 The default scanner feature closure is exactly `core` plus `scanning`.
 `LuaEngineConfig` is a small shared support type reachable through either
 `platform-models` or `lua`; the broader `config` module remains platform-only.
-`event_bus` and `logging` are historical `legacy-scanner` host utilities. The architecture gate
-checks the opt-in module declarations and prevents a broad default feature from
-silently restoring quarantined surfaces.
+The raw `lua` closure is exactly `core`, optional `mlua`, and optional Tokio;
+`mlua` disables defaults and enables only vendored Lua 5.4. The raw
+`distributed` closure is empty. `event_bus` and `logging` are historical
+`legacy-scanner` host utilities. The architecture gate checks private opt-in
+module declarations, exact root facades and dependency closures, production
+API/source fingerprints, and authority constraints, and prevents a broad
+default feature from silently restoring either host surface.
 
 ### The proxy is a TCP relay, not a MITM proxy
 
@@ -223,8 +235,9 @@ inspect/modify HTTP.
 
 The following must not be described as shipped product behavior: a Relation
 Engine, Planes, a Knowledge Graph, a Machine Scanner, a bound API listener, a
-supported/configurable MITM proxy, or cloud deployment. The `knowledge` module
-is an evidence/hypothesis store, not a knowledge graph.
+supported/configurable MITM proxy, a Lua process-isolation service, a
+distributed transport/control plane, or cloud deployment. The `knowledge`
+module is an evidence/hypothesis store, not a knowledge graph.
 
 ## How to reproduce the inventory
 

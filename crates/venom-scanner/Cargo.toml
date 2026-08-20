@@ -34,7 +34,7 @@ serde_json = { workspace = true }
 sha2 = { workspace = true }
 thiserror = { workspace = true }
 uuid = { workspace = true, optional = true }
-mlua = { version = "0.9", features = ["lua54", "serialize", "vendored"], optional = true }
+mlua = { version = "0.9", default-features = false, features = ["lua54", "vendored"], optional = true }
 
 [dev-dependencies]
 criterion = "0.5"
@@ -70,8 +70,9 @@ detection = ["dep:regex"]
 # Serializable records for externally computed model output; no learning runtime
 ml = []
 
-# In-memory experimental coordinator
-distributed = ["dep:dashmap"]
+# Bounded deterministic in-process coordinator. It intentionally owns no
+# transport, serialization, clock, or persistence dependency.
+distributed = []
 
 # Caller-supplied measurement and comparison records; no telemetry collector
 monitoring = []
@@ -85,9 +86,9 @@ threat-intel = []
 # Plugin system support
 plugins = ["core", "dep:async-trait", "dep:dashmap", "dep:futures", "dep:regex", "dep:tokio", "dep:tokio-util"]
 
-# Experimental fail-closed Lua registry scaffold. Lua is independent from the
-# native plugin ABI and carries its VM dependency only when explicitly requested.
-lua = ["core", "dep:dashmap", "dep:mlua", "dep:tokio", "dep:uuid"]
+# Experimental host-owned Lua execution. Lua is independent from the native
+# plugin ABI and carries its VM/runtime dependencies only when explicitly requested.
+lua = ["core", "dep:mlua", "dep:tokio"]
 
 # Historical compatibility aggregate enabling every opt-in source surface.
 # This is not a supported product tier or a production-readiness claim.

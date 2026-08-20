@@ -68,7 +68,17 @@ Reports about the following are particularly useful:
 
 - fixed-upstream relay scope validation, cancellation, or resource handling;
 - authentication and authorization bypass;
-- Lua registry/path/source-validation defects in the currently unavailable execution scaffold;
+- Lua approved-root/path/source-snapshot validation, VM allowlist, memory,
+  instruction, timeout, cancellation, output/return, concurrency, or history
+  limit defects. Lua execution uses cooperative in-process controls, not
+  process isolation: parser, allocator,
+  and native work cannot be hard-preempted, dropping an execution future does
+  not stop detached blocking work, and the unkeyed source digest plus timing
+  receipts are linkable sensitive metadata;
+- distributed revision, logical-time, queue/record/result bound, lease,
+  retry/recovery, terminal replay, or result-receipt defects. Its structural
+  tokens are not authenticated or cross-instance replay-resistant, and its
+  per-instance retained-data limits are not a total process-memory guarantee;
 - trusted in-process plugin budget, redaction, provenance, or broker-capability enforcement defects;
 - request smuggling or parser differentials;
 - secret exposure in logs or reports;

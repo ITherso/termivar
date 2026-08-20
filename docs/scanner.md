@@ -89,6 +89,23 @@ pre-redact `target`, `authorized_origin`, step/outcome `action_id`, and outcome
 `redacted_summary` values. See [Bounded run-report rendering](reporting.md) and [ADR
 0021](adr/0021-render-bounded-run-reports.md).
 
+## Experimental host execution contracts
+
+The independent `lua` feature closes over `core`, Tokio, and a vendored Lua 5.4
+build with no default `mlua` features. It implements approved-root source
+snapshot registration and fresh, no-standard-library, text-only VMs with
+bounded context/output/return/history and cooperative memory, instruction,
+deadline, cancellation, and concurrency controls. These controls are not
+process isolation or an OS sandbox; no CLI, scanner phase, or plugin path calls
+them. See [Lua execution](lua.md).
+
+The `distributed` feature has an empty raw feature closure and implements bounded ordered
+task/worker/result state machines with caller-supplied logical time, expected
+revisions, fenced leases, fixed retry/recovery policy, and deterministic output
+for a fixed accepted command order. It has no transport, authentication,
+serialization, persistence, ambient clock, background work, exactly-once, or
+multi-node contract. See [Distributed coordination](distributed.md).
+
 ## Feature flags
 
 | Feature | Purpose | Maturity |
@@ -100,8 +117,8 @@ pre-redact `target`, `authorized_origin`, step/outcome `action_id`, and outcome
 | `reporting` | Bounded host-library renderer for typed `RunReport`; caller-owned pre-redaction, no I/O, persistence, CLI caller, or verdict generation | Preview |
 | `detection` | Signal-definition validation, caller-scored technique catalogs, neutral deviation records, and text matching; no scoring or classification | Experimental |
 | `plugins` | Evidence-only native plugin registry; no stock detector plugins | Preview |
-| `lua` | Independent registry scaffold; source execution fails closed | Experimental |
-| `distributed` | In-process queue/worker models; no remote or durable coordination | Experimental |
+| `lua` | Implemented bounded host-library Lua execution; cooperative in-process controls, no process isolation or repository product/runtime caller | Experimental |
+| `distributed` | Implemented deterministic bounded in-process coordination; no transport, persistence, or multi-node runtime | Experimental |
 | `ml` | Serializable external-model records; no learning, clustering, classification, or execution | Experimental |
 | `monitoring` | Caller-supplied performance records and comparisons; no telemetry collector | Experimental |
 | `compliance` | Caller-supplied audit/catalog records; no compliance determination | Experimental |
@@ -110,11 +127,12 @@ pre-redact `target`, `authorized_origin`, step/outcome `action_id`, and outcome
 | `enterprise` | Historical aggregate excluding `threat-intel`; not an enterprise package | Experimental |
 
 Default builds enable exactly `core` and `scanning`. Detection, the historical
-runner, platform models, the bounded report renderer, extension runtimes, and the other
-feature-flagged surfaces listed above require explicit opt-in. CI compiles the
-quarantined feature groups independently, and the architecture gate binds their
-module declarations to the expected Cargo features. See the
-[runtime map](internals/runtime-map.md).
+runner, platform models, the bounded report renderer, host execution surfaces,
+and the other feature-flagged modules listed above require explicit opt-in. CI
+compiles these feature groups independently, and the architecture gate binds
+their private module declarations, exact root facades, dependency closures,
+and authority constraints to the expected Cargo features. See the [runtime
+map](internals/runtime-map.md).
 
 ## Adding a phase
 

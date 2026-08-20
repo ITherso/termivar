@@ -167,10 +167,17 @@ See the [runtime map](docs/internals/runtime-map.md) for the exact module and co
 | `venom legacy-scan` | Legacy alpha, opt-in | Historical mixed-authority pipeline: phases 2–4 share bounded passive discovery, phases 5–9 share separate bounded active verification, and phase-one/custom raw I/O keeps the whole run `Unmetered`; requires `legacy-scanner` and explicit acknowledgement |
 | Scanner SDK / native plugins | Preview, opt-in | Source-level host extensions; plugins receive a host-owned bounded context and record observations, not findings. No stock detector plugins ship, and plugins are not merged into the default runtime |
 | Run-report renderer | Preview, opt-in | Source-level `reporting` library API renders an existing typed `RunReport` under a hard output ceiling; the host must pre-redact projected fields, and the renderer has no repository CLI caller, I/O, persistence, finding/risk synthesis, redaction, or verdict authority |
+| Lua execution | Experimental, opt-in | Implemented bounded, cooperative in-process Lua 5.4 registry/executor for explicit library hosts; no standard libraries, process isolation, plugin bridge, scanner phase, or repository CLI caller |
+| Distributed coordination | Experimental, opt-in | Implemented deterministic, bounded in-process task/worker/result state machines for explicit library hosts; no transport, authentication, serialization, persistence, ambient clock, background work, or multi-node control plane |
 | `venom api` | Unsupported, opt-in | Absent from default builds; the `api-adapter` feature reports that no listener is implemented |
 | `venom proxy` | Experimental, opt-in | Absent from default builds; `proxy-adapter` exposes an explicit fixed-upstream TCP relay with no `CONNECT`, TLS termination, certificate generation, or HTTP inspection |
 
-Dashboard, distributed, monitoring, compliance, threat-intelligence, Lua, and related modules are optional, host-owned, compile-only, or experimental depending on the feature. Their presence in the repository does not mean they run in the default deterministic path or `legacy-scan`. The [runtime map](docs/internals/runtime-map.md) is the source of truth.
+Lua and distributed coordination are implemented Experimental host-library
+surfaces, but no repository runtime calls them. Dashboard, monitoring,
+compliance, threat-intelligence, and related modules remain optional,
+host-owned, compile-only, or experimental depending on the feature. None runs
+in the default deterministic path or `legacy-scan`. The [runtime
+map](docs/internals/runtime-map.md) is the source of truth.
 
 The scanner default is exactly `core` plus `scanning`. Historical phases,
 platform data models, bounded run-report renderers, native plugins, Lua, and distributed
@@ -238,6 +245,8 @@ See the [Scanner SDK guide](docs/sdk.md), [Plugin development](docs/plugin.md), 
 - [Distribution and installation](docs/DISTRIBUTION.md)
 - [Architecture](docs/architecture.md)
 - [Runtime map: what actually runs](docs/internals/runtime-map.md)
+- [Lua execution](docs/lua.md)
+- [Distributed coordination](docs/distributed.md)
 - [Decision runner](docs/internals/decision-runner.md)
 - [Web execution](docs/internals/web-execution.md)
 - [Web verification](docs/internals/web-verification.md)

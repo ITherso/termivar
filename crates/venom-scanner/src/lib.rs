@@ -116,9 +116,9 @@ pub mod anomaly;
 #[cfg(feature = "ml")]
 pub mod ml;
 
-// Experimental in-memory coordinator (feature: distributed)
+// Experimental bounded in-process coordinator (feature: distributed)
 #[cfg(feature = "distributed")]
-pub mod distributed;
+mod distributed;
 
 // Caller-supplied measurement records (feature: monitoring)
 #[cfg(feature = "monitoring")]
@@ -141,7 +141,7 @@ pub mod post_exploitation;
 pub mod plugin;
 
 #[cfg(feature = "lua")]
-pub mod lua_engine;
+mod lua_engine;
 
 #[cfg(feature = "platform-models")]
 pub mod persistence;
@@ -236,7 +236,7 @@ pub use legacy_discovery::{
 #[cfg(feature = "legacy-scanner")]
 pub use logging::{LogEntry, LogLevel, Logger};
 #[cfg(any(feature = "platform-models", feature = "lua"))]
-pub use lua_config::LuaEngineConfig;
+pub use lua_config::{LuaConfigError, LuaConfigViolation, LuaEngineConfig};
 #[cfg(feature = "platform-models")]
 pub use metrics::{MetricsCollector, MetricsSummary, PhaseMetrics};
 pub use payload_strategies::{
@@ -411,11 +411,18 @@ pub use ml::{
     MlRecordValidationError, VulnerabilityPattern,
 };
 
-// Distributed scaling exports (feature: distributed)
+// Deterministic in-process coordination exports (feature: distributed)
 #[cfg(feature = "distributed")]
 pub use distributed::{
-    ResultAggregator, ScanTask, TaskPriority, TaskQueue, TaskStatus, WorkerNode, WorkerPool,
-    WorkerStatus,
+    AggregatedResult, CancellationOutcome, CompletionOutcome, CompletionReceipt, DistributedError,
+    DistributedLimits, FailureOutcome, QueuedTaskFence, RecoverySummary, ResultAggregator,
+    ResultLimits, ScanTask, StartOutcome, StateSnapshot, StoreResultOutcome, TaskLease,
+    TaskOwnership, TaskPriority, TaskQueue, TaskSpec, TaskStatus, Transition, WorkerNode,
+    WorkerObservation, WorkerPool, WorkerSpec, WorkerStatus, WorkerTag, MAX_ACTIVE_TASKS,
+    MAX_AGGREGATE_ITEMS, MAX_HEARTBEAT_TIMEOUT_SECS, MAX_IDENTIFIER_BYTES, MAX_LEASE_TTL_SECS,
+    MAX_RESULTS, MAX_RESULT_BYTES, MAX_RETRIES, MAX_TARGET_REF_BYTES, MAX_TASK_PHASES,
+    MAX_TASK_RECORDS, MAX_TASK_TTL_SECS, MAX_TOTAL_RESULT_BYTES, MAX_WORKERS, MAX_WORKER_CAPACITY,
+    MAX_WORKER_TAGS, UTILIZATION_BASIS_POINTS,
 };
 
 // Monitoring exports (feature: monitoring)
@@ -452,5 +459,7 @@ pub use plugin::{
 
 #[cfg(feature = "lua")]
 pub use lua_engine::{
-    LuaContext, LuaExecutionResult, LuaScript, LuaScriptRegistry, LuaScriptStatus,
+    LuaCancellationToken, LuaContext, LuaExecutionError, LuaExecutionReceipt, LuaExecutionResult,
+    LuaExecutionStatus, LuaRegistrationError, LuaRegistryError, LuaReturnValue, LuaScript,
+    LuaScriptManifest, LuaScriptRegistry, ScriptCategory,
 };

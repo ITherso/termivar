@@ -5,6 +5,7 @@
 - Supersedes: ADR 0015's build-availability inventory
 - Retains: ADR 0015's classification axes and ADR 0017's default runtime
 - Reporting clause: Superseded by ADR 0021
+- Lua and distributed clauses: Superseded by ADR 0022
 
 ## Context
 

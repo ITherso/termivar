@@ -1,10 +1,11 @@
 //! Scanner feature and platform-surface quarantine policy.
 //!
 //! The default scanner is the deterministic reasoning/runtime product. Unwired
-//! platform models, opt-in reporting, Lua, distributed scaffolds, and the
-//! historical ordered scanner must remain explicit opt-ins. This check binds the
-//! Cargo feature graph to the corresponding `lib.rs` module gates so a manifest
-//! edit cannot silently pull an unsupported surface back into default builds.
+//! platform models, opt-in reporting, Lua execution, distributed coordination,
+//! and the historical ordered scanner must remain explicit opt-ins. This check
+//! binds the Cargo feature graph to the corresponding `lib.rs` module gates so a
+//! manifest edit cannot silently pull an unsupported surface back into default
+//! builds.
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -282,6 +283,10 @@ const QUARANTINED_PUBLIC_FEATURES: &[&str] = &[
     "threat-intel",
 ];
 
+/// Executable host contracts whose implementation modules stay private while
+/// their exact root re-exports form the public boundary.
+const PRIVATE_FACADE_SURFACES: &[&str] = &["distributed", "lua_engine"];
+
 /// Exact machine-readable lifecycle and host inventory for public quarantined
 /// scanner modules most likely to be mistaken for product runtime surfaces.
 const QUARANTINED_PUBLIC_SURFACES: &[SurfaceContract] = &[
@@ -394,8 +399,8 @@ const QUARANTINED_PUBLIC_SURFACES: &[SurfaceContract] = &[
         module: "distributed",
         feature: "distributed",
         lifecycle: Lifecycle::Experimental,
-        implementation: ImplementationClaim::Scaffold,
-        host: HostContract::Library("in-process coordinator API"),
+        implementation: ImplementationClaim::Implemented,
+        host: HostContract::Library("bounded deterministic in-process coordinator API"),
     },
     SurfaceContract {
         module: "monitoring",
@@ -422,8 +427,8 @@ const QUARANTINED_PUBLIC_SURFACES: &[SurfaceContract] = &[
         module: "lua_engine",
         feature: "lua",
         lifecycle: Lifecycle::Experimental,
-        implementation: ImplementationClaim::Scaffold,
-        host: HostContract::Library("fail-closed registry API"),
+        implementation: ImplementationClaim::Implemented,
+        host: HostContract::Library("bounded cooperative Lua execution API"),
     },
     SurfaceContract {
         module: "plugin",
@@ -773,6 +778,25 @@ pub(super) fn check(workspace_root: &Path) -> Result<Vec<String>, Box<dyn Error>
         false,
         &["rustls-tls"],
     ));
+    violations.extend(exact_dependency_contract_violations(
+        "venom-scanner",
+        &scanner_dependencies,
+        "mlua",
+        true,
+        false,
+        &["lua54", "vendored"],
+    ));
+    let mlua_requirement = scanner
+        .dependencies
+        .iter()
+        .find(|dependency| dependency.name.as_str() == "mlua")
+        .map(|dependency| dependency.req.to_string());
+    violations.extend(exact_dependency_requirement_violations(
+        "venom-scanner",
+        "mlua",
+        mlua_requirement.as_deref(),
+        "^0.9",
+    ));
     let cli = packages
         .iter()
         .copied()
@@ -844,6 +868,25 @@ pub(super) fn check(workspace_root: &Path) -> Result<Vec<String>, Box<dyn Error>
     let source = fs::read_to_string(workspace_root.join("crates/venom-scanner/src/lib.rs"))?;
     violations.extend(module_gate_violations(&source)?);
     violations.extend(scanner_legacy_reexport_violations(&source)?);
+    violations.extend(private_facade_reexport_violations(
+        &source,
+        "distributed",
+        "feature=\"distributed\"",
+        EXACT_DISTRIBUTED_REEXPORTS,
+    )?);
+    violations.extend(private_facade_reexport_violations(
+        &source,
+        "lua_engine",
+        "feature=\"lua\"",
+        EXACT_LUA_REEXPORTS,
+    )?);
+    violations.extend(private_facade_reexport_violations(
+        &source,
+        "lua_config",
+        "any(feature=\"platform-models\",feature=\"lua\")",
+        EXACT_LUA_CONFIG_REEXPORTS,
+    )?);
+    violations.extend(host_surface_cfg_facade_violations(&source)?);
     violations.extend(reporting_reexport_violations(&source)?);
     violations.extend(reporting_whole_crate_closure_violations(
         &workspace_root.join("crates/venom-scanner/src"),
@@ -853,6 +896,28 @@ pub(super) fn check(workspace_root: &Path) -> Result<Vec<String>, Box<dyn Error>
         &source,
     )?);
     violations.extend(forbidden_surface_source_violations(workspace_root)?);
+    let distributed_source =
+        fs::read_to_string(workspace_root.join("crates/venom-scanner/src/distributed.rs"))?;
+    violations.extend(distributed_public_api_violations(&distributed_source)?);
+    violations.extend(distributed_source_authority_violations(
+        &distributed_source,
+    )?);
+    violations.extend(distributed_production_inventory_violations(
+        &distributed_source,
+    ));
+    let lua_engine_source =
+        fs::read_to_string(workspace_root.join("crates/venom-scanner/src/lua_engine.rs"))?;
+    let lua_config_source =
+        fs::read_to_string(workspace_root.join("crates/venom-scanner/src/lua_config.rs"))?;
+    violations.extend(lua_public_api_violations(
+        &lua_engine_source,
+        &lua_config_source,
+    )?);
+    violations.extend(lua_source_authority_violations(&lua_engine_source)?);
+    violations.extend(lua_production_inventory_violations(
+        &lua_engine_source,
+        &lua_config_source,
+    ));
     let reporting_source =
         fs::read_to_string(workspace_root.join("crates/venom-scanner/src/reporting.rs"))?;
     violations.extend(reporting_source_import_violations(&reporting_source)?);
@@ -980,6 +1045,21 @@ fn exact_dependency_contract_violations(
     } else {
         vec![format!(
             "{package} dependency `{dependency}` must use optional={optional}, default-features={uses_default_features}, and exactly {expected_features:?}; found {actual:?}"
+        )]
+    }
+}
+
+fn exact_dependency_requirement_violations(
+    package: &str,
+    dependency: &str,
+    actual: Option<&str>,
+    expected: &str,
+) -> Vec<String> {
+    if actual == Some(expected) {
+        Vec::new()
+    } else {
+        vec![format!(
+            "{package} dependency `{dependency}` version requirement must remain exactly `{expected}`, found {actual:?}"
         )]
     }
 }
@@ -1192,7 +1272,7 @@ fn exact_raw_feature_closures() -> Vec<(&'static str, &'static [&'static str])> 
         ("reporting", &["reporting", "core"]),
         ("detection", &["detection", "dep:regex"]),
         ("ml", &["ml"]),
-        ("distributed", &["distributed", "dep:dashmap"]),
+        ("distributed", &["distributed"]),
         ("monitoring", &["monitoring"]),
         ("compliance", &["compliance"]),
         ("threat-intel", &["threat-intel"]),
@@ -1209,17 +1289,7 @@ fn exact_raw_feature_closures() -> Vec<(&'static str, &'static [&'static str])> 
                 "dep:tokio-util",
             ],
         ),
-        (
-            "lua",
-            &[
-                "lua",
-                "core",
-                "dep:dashmap",
-                "dep:mlua",
-                "dep:tokio",
-                "dep:uuid",
-            ],
-        ),
+        ("lua", &["lua", "core", "dep:mlua", "dep:tokio"]),
     ]
 }
 
@@ -1314,6 +1384,22 @@ fn module_gate_violations(source: &str) -> Result<Vec<String>, syn::Error> {
                             "venom-scanner `reporting` must remain one public out-of-line module with only its exact cfg and optional docs"
                                 .to_owned(),
                         );
+                    }
+                }
+                if PRIVATE_FACADE_SURFACES.contains(module_name) {
+                    let non_doc_attributes: Vec<_> = module
+                        .attrs
+                        .iter()
+                        .filter(|attribute| !attribute.path().is_ident("doc"))
+                        .collect();
+                    if !matches!(module.vis, Visibility::Inherited)
+                        || module.content.is_some()
+                        || non_doc_attributes.len() != 1
+                        || !non_doc_attributes[0].path().is_ident("cfg")
+                    {
+                        violations.push(format!(
+                            "venom-scanner `{module_name}` must remain one private out-of-line module behind exact root re-exports"
+                        ));
                     }
                 }
             },
@@ -1470,6 +1556,232 @@ fn scanner_legacy_reexport_violations(source: &str) -> Result<Vec<String>, syn::
             count => violations.push(format!(
                 "venom-scanner legacy symbol `{name}` must be re-exported exactly once; found {count}"
             )),
+        }
+    }
+    Ok(violations)
+}
+
+const EXACT_DISTRIBUTED_REEXPORTS: &[&str] = &[
+    "AggregatedResult",
+    "CancellationOutcome",
+    "CompletionOutcome",
+    "CompletionReceipt",
+    "DistributedError",
+    "DistributedLimits",
+    "FailureOutcome",
+    "MAX_ACTIVE_TASKS",
+    "MAX_AGGREGATE_ITEMS",
+    "MAX_HEARTBEAT_TIMEOUT_SECS",
+    "MAX_IDENTIFIER_BYTES",
+    "MAX_LEASE_TTL_SECS",
+    "MAX_RESULTS",
+    "MAX_RESULT_BYTES",
+    "MAX_RETRIES",
+    "MAX_TARGET_REF_BYTES",
+    "MAX_TASK_PHASES",
+    "MAX_TASK_RECORDS",
+    "MAX_TASK_TTL_SECS",
+    "MAX_TOTAL_RESULT_BYTES",
+    "MAX_WORKERS",
+    "MAX_WORKER_CAPACITY",
+    "MAX_WORKER_TAGS",
+    "QueuedTaskFence",
+    "RecoverySummary",
+    "ResultAggregator",
+    "ResultLimits",
+    "ScanTask",
+    "StartOutcome",
+    "StateSnapshot",
+    "StoreResultOutcome",
+    "TaskLease",
+    "TaskOwnership",
+    "TaskPriority",
+    "TaskQueue",
+    "TaskSpec",
+    "TaskStatus",
+    "Transition",
+    "UTILIZATION_BASIS_POINTS",
+    "WorkerNode",
+    "WorkerObservation",
+    "WorkerPool",
+    "WorkerSpec",
+    "WorkerStatus",
+    "WorkerTag",
+];
+
+const EXACT_LUA_REEXPORTS: &[&str] = &[
+    "LuaCancellationToken",
+    "LuaContext",
+    "LuaExecutionError",
+    "LuaExecutionReceipt",
+    "LuaExecutionResult",
+    "LuaExecutionStatus",
+    "LuaRegistrationError",
+    "LuaRegistryError",
+    "LuaReturnValue",
+    "LuaScript",
+    "LuaScriptManifest",
+    "LuaScriptRegistry",
+    "ScriptCategory",
+];
+
+const EXACT_LUA_CONFIG_REEXPORTS: &[&str] =
+    &["LuaConfigError", "LuaConfigViolation", "LuaEngineConfig"];
+
+fn private_facade_reexport_violations(
+    source: &str,
+    module: &str,
+    expected_cfg: &str,
+    expected_symbols: &[&str],
+) -> Result<Vec<String>, syn::Error> {
+    let syntax = syn::parse_file(source)?;
+    let mut all_uses = Vec::new();
+    collect_recursive_item_uses(&syntax.items, 0, &mut all_uses);
+    let mut all_type_aliases = Vec::new();
+    collect_recursive_type_aliases(&syntax.items, 0, &mut all_type_aliases);
+    let mut aliases: BTreeSet<String> = expected_symbols
+        .iter()
+        .map(|name| (*name).to_owned())
+        .chain([module.to_owned()])
+        .collect();
+    let bindings: Vec<_> = all_uses
+        .iter()
+        .map(|record| {
+            let mut bindings = Vec::new();
+            collect_use_bindings(&record.item.tree, &mut Vec::new(), &mut bindings);
+            bindings
+        })
+        .collect();
+    let type_alias_paths: Vec<_> = all_type_aliases
+        .iter()
+        .map(|record| collect_type_paths(&record.item.ty))
+        .collect();
+    let mut related = vec![false; all_uses.len()];
+    let mut related_type_aliases = vec![false; all_type_aliases.len()];
+    loop {
+        let mut changed = false;
+        for (index, use_bindings) in bindings.iter().enumerate() {
+            if related[index]
+                || !use_bindings
+                    .iter()
+                    .any(|(path, _)| path.iter().any(|segment| aliases.contains(segment)))
+            {
+                continue;
+            }
+            related[index] = true;
+            changed = true;
+            for (_, exposed) in use_bindings {
+                aliases.insert(exposed.clone());
+            }
+        }
+        for (index, paths) in type_alias_paths.iter().enumerate() {
+            if related_type_aliases[index]
+                || !paths
+                    .iter()
+                    .any(|path| path.iter().any(|segment| aliases.contains(segment)))
+            {
+                continue;
+            }
+            related_type_aliases[index] = true;
+            changed = true;
+            aliases.insert(semantic_ident_name(&all_type_aliases[index].item.ident));
+        }
+        if !changed {
+            break;
+        }
+    }
+
+    let expected: BTreeSet<_> = expected_symbols
+        .iter()
+        .map(|name| (*name).to_owned())
+        .collect();
+    let mut violations = Vec::new();
+    for (record, is_related) in all_type_aliases.iter().zip(related_type_aliases) {
+        if is_related {
+            violations.push(format!(
+                "venom-scanner `{module}` facade cannot pass through type alias `{}` at inline-module depth {}",
+                record.item.ident, record.depth
+            ));
+        }
+    }
+    let related_uses: Vec<_> = all_uses
+        .iter()
+        .zip(related)
+        .filter_map(|(record, is_related)| is_related.then_some(record))
+        .collect();
+    match related_uses.as_slice() {
+        [record] => {
+            let item = record.item;
+            if record.depth != 0 || !is_public(&item.vis) {
+                violations.push(format!(
+                    "venom-scanner `{module}` facade must be one public root re-export"
+                ));
+            }
+            if item.leading_colon.is_some()
+                || use_tree_root_ident(&item.tree).as_deref() != Some(module)
+            {
+                violations.push(format!(
+                    "venom-scanner `{module}` re-exports must use the exact direct `{module}::{{...}}` path"
+                ));
+            }
+            let actual_cfg = cfg_predicates_from_attributes(&item.attrs);
+            if actual_cfg != [expected_cfg.to_owned()] {
+                violations.push(format!(
+                    "venom-scanner `{module}` re-exports must use exact cfg({expected_cfg}), found {actual_cfg:?}"
+                ));
+            }
+            let mut actual = BTreeSet::new();
+            collect_use_names(&item.tree, &mut actual);
+            let mut exact_paths = Vec::new();
+            let direct_names_only =
+                collect_reporting_import_paths(&item.tree, &mut Vec::new(), &mut exact_paths);
+            if actual != expected || !direct_names_only {
+                violations.push(format!(
+                    "venom-scanner `{module}` re-exports must be exactly {expected:?} without aliases or globs, found {actual:?}"
+                ));
+            }
+        },
+        _ => violations.push(format!(
+            "venom-scanner must declare exactly one public `{module}` re-export with symbols {expected:?}; found {}",
+            related_uses.len()
+        )),
+    }
+    Ok(violations)
+}
+
+fn host_surface_cfg_facade_violations(source: &str) -> Result<Vec<String>, syn::Error> {
+    let syntax = syn::parse_file(source)?;
+    let mut violations = Vec::new();
+    for item in &syntax.items {
+        let attrs = reporting_item_attributes(item);
+        let predicates = cfg_predicates_from_attributes(attrs);
+        let mentions_distributed = predicates
+            .iter()
+            .any(|predicate| predicate.contains("feature=\"distributed\""));
+        let mentions_lua = predicates
+            .iter()
+            .any(|predicate| predicate.contains("feature=\"lua\""));
+        if !mentions_distributed && !mentions_lua {
+            continue;
+        }
+        let allowed = match item {
+            Item::Mod(module) => {
+                matches!(
+                    module.ident.to_string().as_str(),
+                    "distributed" | "lua_engine" | "lua_config"
+                )
+            },
+            Item::Use(item) => matches!(
+                use_tree_root_ident(&item.tree).as_deref(),
+                Some("distributed" | "lua_engine" | "lua_config")
+            ),
+            _ => false,
+        };
+        if !allowed {
+            violations.push(format!(
+                "venom-scanner cfg-gated host facade item `{}` is forbidden; only the exact private modules and root re-exports are allowed",
+                reporting_item_label(item)
+            ));
         }
     }
     Ok(violations)
@@ -3550,7 +3862,13 @@ fn surface_contract_violations(
             ));
             continue;
         };
-        if !matches!(module.vis, Visibility::Public(_)) {
+        let expects_private_facade = PRIVATE_FACADE_SURFACES.contains(&contract.module);
+        if expects_private_facade && !matches!(module.vis, Visibility::Inherited) {
+            violations.push(format!(
+                "inventoried quarantined surface `{}` must keep its implementation module private behind exact root re-exports",
+                contract.module
+            ));
+        } else if !expects_private_facade && !matches!(module.vis, Visibility::Public(_)) {
             violations.push(format!(
                 "inventoried quarantined surface `{}` must remain an explicit public host boundary or be removed from the inventory",
                 contract.module
@@ -3582,7 +3900,8 @@ fn surface_contract_violations(
     let actual_public_surfaces: BTreeSet<_> = modules
         .values()
         .filter(|module| {
-            is_public(&module.vis)
+            (is_public(&module.vis)
+                || PRIVATE_FACADE_SURFACES.contains(&module.ident.to_string().as_str()))
                 && cfg_predicates(module).iter().any(|predicate| {
                     QUARANTINED_PUBLIC_FEATURES.iter().any(|feature| {
                         let marker = format!("feature=\"{feature}\"");
@@ -3607,6 +3926,961 @@ fn surface_contract_violations(
         ));
     }
     Ok(violations)
+}
+
+const EXACT_DISTRIBUTED_CONSTANTS: &[(&str, &str, u128)] = &[
+    ("MAX_IDENTIFIER_BYTES", "usize", 256),
+    ("MAX_TARGET_REF_BYTES", "usize", 1_024),
+    ("MAX_TASK_PHASES", "usize", 256),
+    ("MAX_WORKER_TAGS", "usize", 5),
+    ("UTILIZATION_BASIS_POINTS", "u16", 10_000),
+    ("MAX_TASK_RECORDS", "usize", 65_536),
+    ("MAX_ACTIVE_TASKS", "usize", 16_384),
+    ("MAX_WORKERS", "usize", 4_096),
+    ("MAX_RETRIES", "u32", 32),
+    ("MAX_WORKER_CAPACITY", "u32", 4_096),
+    ("MAX_LEASE_TTL_SECS", "u64", 86_400),
+    ("MAX_TASK_TTL_SECS", "u64", 31 * 86_400),
+    ("MAX_HEARTBEAT_TIMEOUT_SECS", "u64", 86_400),
+    ("MAX_RESULTS", "usize", 65_536),
+    ("MAX_RESULT_BYTES", "usize", 16 * 1_024 * 1_024),
+    ("MAX_TOTAL_RESULT_BYTES", "usize", 256 * 1_024 * 1_024),
+    ("MAX_AGGREGATE_ITEMS", "usize", 65_536),
+];
+
+const EXACT_DISTRIBUTED_PRODUCTION_TOKEN_BYTES: usize = 85_363;
+const EXACT_DISTRIBUTED_PRODUCTION_FINGERPRINT: u128 = 0x98e6_408a_8bae_3a86_bf1c_19c9_93d5_3d29;
+
+fn distributed_public_api_violations(source: &str) -> Result<Vec<String>, syn::Error> {
+    let syntax = syn::parse_file(source)?;
+    let shape = public_api_shape(source)?;
+    let expected_symbols: BTreeSet<_> = EXACT_DISTRIBUTED_REEXPORTS
+        .iter()
+        .map(|name| (*name).to_owned())
+        .collect();
+    let mut violations = Vec::new();
+    if shape.symbols != expected_symbols {
+        violations.push(format!(
+            "distributed public symbols must remain exactly {expected_symbols:?}, found {:?}",
+            shape.symbols
+        ));
+    }
+
+    let expected_constants: BTreeMap<_, _> = EXACT_DISTRIBUTED_CONSTANTS
+        .iter()
+        .map(|(name, ty, value)| (*name, (*ty, *value)))
+        .collect();
+    let mut actual_constants = BTreeMap::new();
+    for item in &syntax.items {
+        let Item::Const(item) = item else {
+            continue;
+        };
+        if is_public(&item.vis) {
+            actual_constants.insert(
+                item.ident.to_string(),
+                (
+                    simple_type_name(&item.ty).unwrap_or_else(|| "<complex>".to_owned()),
+                    evaluate_integer_expression(&item.expr),
+                ),
+            );
+        }
+    }
+    for (name, (expected_type, expected_value)) in expected_constants {
+        match actual_constants.get(name) {
+            Some((actual_type, Some(actual_value)))
+                if actual_type == expected_type && *actual_value == expected_value => {},
+            actual => violations.push(format!(
+                "distributed constant `{name}` must remain `{expected_type}` with value {expected_value}, found {actual:?}"
+            )),
+        }
+    }
+    if actual_constants.len() != EXACT_DISTRIBUTED_CONSTANTS.len() {
+        violations.push(format!(
+            "distributed public constant inventory must contain exactly {} items, found {}",
+            EXACT_DISTRIBUTED_CONSTANTS.len(),
+            actual_constants.len()
+        ));
+    }
+
+    let required_private_snapshots = ["AggregatedResult", "ScanTask", "WorkerNode"];
+    for name in required_private_snapshots {
+        let matching: Vec<_> = syntax
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                Item::Struct(item) if item.ident == name => Some(item),
+                _ => None,
+            })
+            .collect();
+        match matching.as_slice() {
+            [item]
+                if is_public(&item.vis)
+                    && item
+                        .fields
+                        .iter()
+                        .all(|field| matches!(field.vis, Visibility::Inherited)) => {},
+            _ => violations.push(format!(
+                "distributed snapshot `{name}` must exist exactly once with all fields private"
+            )),
+        }
+    }
+    let worker_pool = syntax.items.iter().find_map(|item| match item {
+        Item::Struct(item) if item.ident == "WorkerPool" => Some(item),
+        _ => None,
+    });
+    if worker_pool.is_none_or(|item| {
+        item.fields.iter().any(|field| {
+            field
+                .ident
+                .as_ref()
+                .is_some_and(|ident| ident == "task_queue")
+                && !matches!(field.vis, Visibility::Inherited)
+        }) || !item.fields.iter().any(|field| {
+            field
+                .ident
+                .as_ref()
+                .is_some_and(|ident| ident == "task_queue")
+        })
+    }) {
+        violations.push(
+            "distributed `WorkerPool::task_queue` field must exist exactly as a private field"
+                .to_owned(),
+        );
+    }
+
+    Ok(violations)
+}
+
+fn simple_type_name(ty: &syn::Type) -> Option<String> {
+    let syn::Type::Path(path) = ty else {
+        return None;
+    };
+    (path.qself.is_none() && path.path.segments.len() == 1)
+        .then(|| semantic_ident_name(&path.path.segments[0].ident))
+}
+
+fn evaluate_integer_expression(expression: &syn::Expr) -> Option<u128> {
+    match expression {
+        syn::Expr::Lit(expression) => match &expression.lit {
+            syn::Lit::Int(value) => value.base10_parse().ok(),
+            _ => None,
+        },
+        syn::Expr::Binary(expression) => match expression.op {
+            syn::BinOp::Add(_) => evaluate_integer_expression(&expression.left)?
+                .checked_add(evaluate_integer_expression(&expression.right)?),
+            syn::BinOp::Mul(_) => evaluate_integer_expression(&expression.left)?
+                .checked_mul(evaluate_integer_expression(&expression.right)?),
+            _ => None,
+        },
+        syn::Expr::Paren(expression) => evaluate_integer_expression(&expression.expr),
+        _ => None,
+    }
+}
+
+#[derive(Default)]
+struct DistributedSourceVisitor {
+    violations: BTreeSet<String>,
+    inside_test_module: usize,
+}
+
+impl DistributedSourceVisitor {
+    fn inspect_identifier(&mut self, identifier: &str) {
+        if matches!(
+            identifier,
+            "DashMap"
+                | "Deserialize"
+                | "HashMap"
+                | "HashSet"
+                | "Instant"
+                | "OsRng"
+                | "RandomState"
+                | "Serialize"
+                | "SystemTime"
+                | "Uuid"
+                | "allow"
+                | "chrono"
+                | "env"
+                | "f32"
+                | "f64"
+                | "fs"
+                | "getrandom"
+                | "net"
+                | "process"
+                | "random"
+                | "reqwest"
+                | "serde"
+                | "thread"
+                | "thread_rng"
+                | "tokio"
+        ) {
+            self.violations.insert(format!(
+                "distributed production source cannot use `{identifier}`"
+            ));
+        }
+    }
+}
+
+impl<'ast> Visit<'ast> for DistributedSourceVisitor {
+    fn visit_item_mod(&mut self, item: &'ast ItemMod) {
+        let exact_tests = item.ident == "tests"
+            && item.content.is_some()
+            && item.attrs.len() == 1
+            && cfg_predicate(&item.attrs[0]).as_deref() == Some("test");
+        if self.inside_test_module == 0 && exact_tests {
+            self.inside_test_module += 1;
+            syn::visit::visit_item_mod(self, item);
+            self.inside_test_module -= 1;
+            return;
+        }
+        if self.inside_test_module == 0 {
+            self.violations.insert(format!(
+                "distributed production module `{}` is forbidden",
+                item.ident
+            ));
+        }
+        syn::visit::visit_item_mod(self, item);
+    }
+
+    fn visit_ident(&mut self, identifier: &'ast syn::Ident) {
+        if self.inside_test_module == 0 {
+            self.inspect_identifier(&semantic_ident_name(identifier));
+        }
+        syn::visit::visit_ident(self, identifier);
+    }
+
+    fn visit_attribute(&mut self, attribute: &'ast Attribute) {
+        if self.inside_test_module == 0 {
+            let name = reporting_syn_path_key(attribute.path());
+            if matches!(name.as_str(), "allow" | "cfg_attr")
+                || (name == "cfg" && cfg_predicate(attribute).as_deref() != Some("test"))
+            {
+                self.violations.insert(format!(
+                    "distributed production attribute `{name}` is forbidden"
+                ));
+            }
+            self.inspect_identifier(&name);
+        }
+        syn::visit::visit_attribute(self, attribute);
+    }
+
+    fn visit_item_static(&mut self, item: &'ast syn::ItemStatic) {
+        if self.inside_test_module == 0 {
+            self.violations.insert(format!(
+                "distributed production static `{}` is forbidden",
+                item.ident
+            ));
+        }
+        syn::visit::visit_item_static(self, item);
+    }
+
+    fn visit_expr_unsafe(&mut self, expression: &'ast syn::ExprUnsafe) {
+        if self.inside_test_module == 0 {
+            self.violations
+                .insert("distributed production unsafe block is forbidden".to_owned());
+        }
+        syn::visit::visit_expr_unsafe(self, expression);
+    }
+
+    fn visit_item_foreign_mod(&mut self, item: &'ast syn::ItemForeignMod) {
+        if self.inside_test_module == 0 {
+            self.violations
+                .insert("distributed production FFI is forbidden".to_owned());
+        }
+        syn::visit::visit_item_foreign_mod(self, item);
+    }
+
+    fn visit_signature(&mut self, signature: &'ast syn::Signature) {
+        if self.inside_test_module == 0 && (signature.unsafety.is_some() || signature.abi.is_some())
+        {
+            self.violations.insert(
+                "distributed production functions must remain safe Rust without a foreign ABI"
+                    .to_owned(),
+            );
+        }
+        syn::visit::visit_signature(self, signature);
+    }
+
+    fn visit_lit_float(&mut self, literal: &'ast syn::LitFloat) {
+        if self.inside_test_module == 0 {
+            self.violations
+                .insert("distributed production float literals are forbidden".to_owned());
+        }
+        syn::visit::visit_lit_float(self, literal);
+    }
+
+    fn visit_macro(&mut self, item: &'ast syn::Macro) {
+        if self.inside_test_module == 0 {
+            let name = reporting_syn_path_key(&item.path);
+            if matches!(
+                name.as_str(),
+                "env" | "include" | "include_bytes" | "include_str" | "option_env"
+            ) {
+                self.violations.insert(format!(
+                    "distributed production macro `{name}!` is forbidden"
+                ));
+            }
+            inspect_distributed_macro_tokens(item.tokens.clone(), &mut self.violations);
+        }
+        syn::visit::visit_macro(self, item);
+    }
+}
+
+fn inspect_distributed_macro_tokens(tokens: TokenStream, violations: &mut BTreeSet<String>) {
+    for token in tokens {
+        match token {
+            TokenTree::Group(group) => inspect_distributed_macro_tokens(group.stream(), violations),
+            TokenTree::Ident(identifier) => {
+                let mut visitor = DistributedSourceVisitor::default();
+                visitor.inspect_identifier(&semantic_ident_name(&identifier));
+                violations.extend(visitor.violations);
+            },
+            TokenTree::Punct(_) | TokenTree::Literal(_) => {},
+        }
+    }
+}
+
+fn distributed_source_authority_violations(source: &str) -> Result<Vec<String>, syn::Error> {
+    let syntax = syn::parse_file(source)?;
+    let mut visitor = DistributedSourceVisitor::default();
+    visitor.visit_file(&syntax);
+    Ok(visitor.violations.into_iter().collect())
+}
+
+fn exact_inline_tests_production<'a>(
+    surface: &str,
+    source: &'a str,
+) -> Result<&'a str, Vec<String>> {
+    let syntax = syn::parse_file(source)
+        .map_err(|_| vec![format!("{surface}.rs must remain valid Rust source")])?;
+    let exact_test_modules = syntax
+        .items
+        .iter()
+        .filter(|item| {
+            matches!(
+                item,
+                Item::Mod(module)
+                    if module.ident == "tests"
+                        && module.content.is_some()
+                        && module.attrs.len() == 1
+                        && cfg_predicate(&module.attrs[0]).as_deref() == Some("test")
+            )
+        })
+        .count();
+    if exact_test_modules != 1
+        || !matches!(
+            syntax.items.last(),
+            Some(Item::Mod(module))
+                if module.ident == "tests"
+                    && module.content.is_some()
+                    && module.attrs.len() == 1
+                    && cfg_predicate(&module.attrs[0]).as_deref() == Some("test")
+        )
+    {
+        return Err(vec![format!(
+            "{surface}.rs must end with exactly one exact cfg(test) inline tests module"
+        )]);
+    }
+    source
+        .split_once("#[cfg(test)]")
+        .map(|(production, _)| production)
+        .ok_or_else(|| {
+            vec![format!(
+                "{surface}.rs must end production code with the exact cfg(test) module boundary"
+            )]
+        })
+}
+
+fn normalized_token_fingerprint(source: &str) -> Option<(usize, u128)> {
+    let normalized = source.parse::<TokenStream>().ok()?.to_string();
+    let fingerprint = normalized.bytes().fold(
+        0x6c62_272e_07bb_0142_62b8_2175_6295_c58d_u128,
+        |fingerprint, byte| {
+            (fingerprint ^ u128::from(byte))
+                .wrapping_mul(0x0000_0000_0100_0000_0000_0000_0000_013B_u128)
+        },
+    );
+    Some((normalized.len(), fingerprint))
+}
+
+fn distributed_production_inventory_violations(source: &str) -> Vec<String> {
+    let production = match exact_inline_tests_production("distributed", source) {
+        Ok(production) => production,
+        Err(violations) => return violations,
+    };
+    let Some((bytes, fingerprint)) = normalized_token_fingerprint(production) else {
+        return vec!["distributed.rs production source must remain valid Rust tokens".to_owned()];
+    };
+    if bytes == EXACT_DISTRIBUTED_PRODUCTION_TOKEN_BYTES
+        && fingerprint == EXACT_DISTRIBUTED_PRODUCTION_FINGERPRINT
+    {
+        Vec::new()
+    } else {
+        vec![format!(
+            "distributed.rs exact public signatures and production AST/body inventory changed; expected normalized bytes/fingerprint {EXACT_DISTRIBUTED_PRODUCTION_TOKEN_BYTES}/{EXACT_DISTRIBUTED_PRODUCTION_FINGERPRINT:032x}, found {bytes}/{fingerprint:032x}"
+        )]
+    }
+}
+
+const EXACT_LUA_CONFIG_CONSTANTS: &[(&str, &str, u128)] = &[
+    ("HARD_MAX_HISTORY_ENTRIES", "usize", 1_024),
+    ("HARD_MAX_MEMORY_BYTES", "usize", 256 * 1_024 * 1_024),
+    ("HARD_MAX_TIMEOUT_MS", "u64", 60_000),
+    ("HARD_MAX_SOURCE_BYTES", "usize", 1_024 * 1_024),
+    ("HARD_MAX_TOTAL_SOURCE_BYTES", "usize", 64 * 1_024 * 1_024),
+    ("HARD_MAX_CONTEXT_BYTES", "usize", 1_024 * 1_024),
+    ("HARD_MAX_TARGET_BYTES", "usize", 256 * 1_024),
+    ("HARD_MAX_PAYLOAD_BYTES", "usize", 512 * 1_024),
+    ("HARD_MAX_PARAMETERS", "usize", 1_024),
+    ("HARD_MAX_PARAMETER_KEY_BYTES", "usize", 4 * 1_024),
+    ("HARD_MAX_PARAMETER_VALUE_BYTES", "usize", 64 * 1_024),
+    ("HARD_MAX_OUTPUT_BYTES", "usize", 1_024 * 1_024),
+    ("HARD_MAX_RETURN_BYTES", "usize", 1_024 * 1_024),
+    ("HARD_MAX_INSTRUCTIONS", "u64", 100_000_000),
+    ("HARD_MAX_HOOK_INTERVAL", "u32", 10_000),
+    ("HARD_MAX_SCRIPTS", "usize", 4_096),
+    ("HARD_MAX_CONCURRENT_EXECUTIONS", "usize", 64),
+    (
+        "HARD_MAX_HISTORY_BYTES_PER_SCRIPT",
+        "usize",
+        8 * 1_024 * 1_024,
+    ),
+    ("HARD_MAX_HISTORY_BYTES_TOTAL", "usize", 64 * 1_024 * 1_024),
+];
+
+const EXACT_LUA_CONFIG_FIELDS: &[&str] = &[
+    "default_timeout_ms",
+    "history_size",
+    "hook_interval",
+    "instruction_limit",
+    "max_concurrent_executions",
+    "max_context_bytes",
+    "max_history_bytes_per_script",
+    "max_history_bytes_total",
+    "max_memory_bytes",
+    "max_output_bytes",
+    "max_parameter_key_bytes",
+    "max_parameter_value_bytes",
+    "max_parameters",
+    "max_payload_bytes",
+    "max_return_bytes",
+    "max_scripts",
+    "max_source_bytes",
+    "max_target_bytes",
+    "max_total_source_bytes",
+];
+
+const EXACT_LUA_ENGINE_PRODUCTION_TOKEN_BYTES: usize = 54_744;
+const EXACT_LUA_ENGINE_PRODUCTION_FINGERPRINT: u128 = 0x68b1_09b5_0233_7b8f_2562_8b4e_2b2b_4747;
+const EXACT_LUA_CONFIG_PRODUCTION_TOKEN_BYTES: usize = 14_681;
+const EXACT_LUA_CONFIG_PRODUCTION_FINGERPRINT: u128 = 0x480e_8126_26da_0bb7_4470_56d7_d814_3eba;
+
+fn lua_public_api_violations(
+    engine_source: &str,
+    config_source: &str,
+) -> Result<Vec<String>, syn::Error> {
+    let engine_syntax = syn::parse_file(engine_source)?;
+    let config_syntax = syn::parse_file(config_source)?;
+    let engine_shape = public_api_shape(engine_source)?;
+    let expected_engine: BTreeSet<_> = EXACT_LUA_REEXPORTS
+        .iter()
+        .map(|name| (*name).to_owned())
+        .collect();
+    let mut violations = Vec::new();
+    if engine_shape.symbols != expected_engine {
+        violations.push(format!(
+            "Lua engine public symbols must remain exactly {expected_engine:?}, found {:?}",
+            engine_shape.symbols
+        ));
+    }
+
+    for name in [
+        "LuaCancellationToken",
+        "LuaContext",
+        "LuaExecutionReceipt",
+        "LuaExecutionResult",
+        "LuaScript",
+        "LuaScriptManifest",
+        "LuaScriptRegistry",
+    ] {
+        let matching: Vec<_> = engine_syntax
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                Item::Struct(item) if item.ident == name => Some(item),
+                _ => None,
+            })
+            .collect();
+        match matching.as_slice() {
+            [item]
+                if is_public(&item.vis)
+                    && item
+                        .fields
+                        .iter()
+                        .all(|field| matches!(field.vis, Visibility::Inherited)) => {},
+            _ => violations.push(format!(
+                "Lua public host type `{name}` must exist exactly once with all fields private"
+            )),
+        }
+    }
+
+    let config_shape = public_api_shape(config_source)?;
+    let expected_config_symbols: BTreeSet<_> = EXACT_LUA_CONFIG_CONSTANTS
+        .iter()
+        .map(|(name, _, _)| (*name).to_owned())
+        .chain(
+            EXACT_LUA_CONFIG_REEXPORTS
+                .iter()
+                .map(|name| (*name).to_owned()),
+        )
+        .collect();
+    if config_shape.symbols != expected_config_symbols {
+        violations.push(format!(
+            "Lua config public symbols must remain exactly {expected_config_symbols:?}, found {:?}",
+            config_shape.symbols
+        ));
+    }
+    let expected_constants: BTreeMap<_, _> = EXACT_LUA_CONFIG_CONSTANTS
+        .iter()
+        .map(|(name, ty, value)| (*name, (*ty, *value)))
+        .collect();
+    let mut actual_constants = BTreeMap::new();
+    for item in &config_syntax.items {
+        let Item::Const(item) = item else {
+            continue;
+        };
+        if is_public(&item.vis) {
+            actual_constants.insert(
+                item.ident.to_string(),
+                (
+                    simple_type_name(&item.ty).unwrap_or_else(|| "<complex>".to_owned()),
+                    evaluate_integer_expression(&item.expr),
+                ),
+            );
+        }
+    }
+    for (name, (expected_type, expected_value)) in expected_constants {
+        match actual_constants.get(name) {
+            Some((actual_type, Some(actual_value)))
+                if actual_type == expected_type && *actual_value == expected_value => {},
+            actual => violations.push(format!(
+                "Lua config constant `{name}` must remain `{expected_type}` with value {expected_value}, found {actual:?}"
+            )),
+        }
+    }
+    if actual_constants.len() != EXACT_LUA_CONFIG_CONSTANTS.len() {
+        violations.push(format!(
+            "Lua config public constant inventory must contain exactly {} items, found {}",
+            EXACT_LUA_CONFIG_CONSTANTS.len(),
+            actual_constants.len()
+        ));
+    }
+
+    let config = config_syntax.items.iter().find_map(|item| match item {
+        Item::Struct(item) if item.ident == "LuaEngineConfig" => Some(item),
+        _ => None,
+    });
+    let expected_fields: BTreeSet<_> = EXACT_LUA_CONFIG_FIELDS
+        .iter()
+        .map(|field| (*field).to_owned())
+        .collect();
+    let actual_fields: BTreeSet<_> = config
+        .into_iter()
+        .flat_map(|item| item.fields.iter())
+        .filter_map(|field| {
+            (is_public(&field.vis))
+                .then(|| field.ident.as_ref().map(ToString::to_string))
+                .flatten()
+        })
+        .collect();
+    if actual_fields != expected_fields {
+        violations.push(format!(
+            "LuaEngineConfig public fields must remain exactly {expected_fields:?}, found {actual_fields:?}"
+        ));
+    }
+    let private_config_error = config_syntax.items.iter().find_map(|item| match item {
+        Item::Struct(item) if item.ident == "LuaConfigError" => Some(item),
+        _ => None,
+    });
+    if private_config_error.is_none_or(|item| {
+        item.fields
+            .iter()
+            .any(|field| !matches!(field.vis, Visibility::Inherited))
+    }) {
+        violations.push(
+            "Lua config error `LuaConfigError` must retain private fields and typed accessors"
+                .to_owned(),
+        );
+    }
+
+    Ok(violations)
+}
+
+#[derive(Default)]
+struct LuaSourceVisitor {
+    violations: BTreeSet<String>,
+    inside_test_module: usize,
+    current_function: Vec<String>,
+    new_with_calls: usize,
+    memory_limit_calls: usize,
+    hook_calls: usize,
+    text_mode_calls: usize,
+    environment_calls: usize,
+    load_calls: usize,
+    multi_value_calls: usize,
+    create_function_calls: usize,
+    spawn_blocking_calls: usize,
+}
+
+impl LuaSourceVisitor {
+    fn in_source_loader(&self) -> bool {
+        self.current_function.last().is_some_and(|name| {
+            matches!(
+                name.as_str(),
+                "read_registered_source" | "reject_symlink_components" | "same_file_metadata"
+            )
+        })
+    }
+
+    fn inspect_macro_tokens(&mut self, tokens: TokenStream) {
+        for token in tokens {
+            match token {
+                TokenTree::Group(group) => self.inspect_macro_tokens(group.stream()),
+                TokenTree::Ident(identifier) => {
+                    let identifier = semantic_ident_name(&identifier);
+                    if matches!(
+                        identifier.as_str(),
+                        "include"
+                            | "include_bytes"
+                            | "include_str"
+                            | "macro_rules"
+                            | "option_env"
+                            | "unsafe"
+                    ) {
+                        self.violations.insert(format!(
+                            "Lua production macro tokens cannot contain `{identifier}`"
+                        ));
+                    }
+                },
+                TokenTree::Punct(_) | TokenTree::Literal(_) => {},
+            }
+        }
+    }
+}
+
+impl<'ast> Visit<'ast> for LuaSourceVisitor {
+    fn visit_item_mod(&mut self, item: &'ast ItemMod) {
+        let exact_tests = item.ident == "tests"
+            && item.content.is_some()
+            && item.attrs.len() == 1
+            && cfg_predicate(&item.attrs[0]).as_deref() == Some("test");
+        if self.inside_test_module == 0 && exact_tests {
+            self.inside_test_module += 1;
+            syn::visit::visit_item_mod(self, item);
+            self.inside_test_module -= 1;
+            return;
+        }
+        if self.inside_test_module == 0 {
+            self.violations.insert(format!(
+                "Lua production module `{}` is forbidden",
+                item.ident
+            ));
+        }
+        syn::visit::visit_item_mod(self, item);
+    }
+
+    fn visit_item_fn(&mut self, item: &'ast syn::ItemFn) {
+        if self.inside_test_module == 0 {
+            self.current_function
+                .push(semantic_ident_name(&item.sig.ident));
+            syn::visit::visit_item_fn(self, item);
+            self.current_function.pop();
+        } else {
+            syn::visit::visit_item_fn(self, item);
+        }
+    }
+
+    fn visit_item_use(&mut self, item: &'ast syn::ItemUse) {
+        if self.inside_test_module == 0 {
+            let mut bindings = Vec::new();
+            collect_use_bindings(&item.tree, &mut Vec::new(), &mut bindings);
+            for (path, _) in bindings {
+                let key = path.join("::");
+                let allowed_loader_file = key == "std::fs::File";
+                let filesystem_path = key.starts_with("std::fs")
+                    || (key.starts_with("std::os::") && path.iter().any(|segment| segment == "fs"));
+                let ambient_path = key.starts_with("std::env")
+                    || key.starts_with("std::net")
+                    || key.starts_with("std::process")
+                    || key.starts_with("std::thread")
+                    || key.starts_with("tokio::fs")
+                    || key.starts_with("tokio::net")
+                    || key.starts_with("tokio::process");
+                if ambient_path
+                    || (filesystem_path && !allowed_loader_file && !self.in_source_loader())
+                {
+                    self.violations.insert(format!(
+                        "Lua production ambient capability import `{key}` is forbidden"
+                    ));
+                }
+            }
+        }
+        syn::visit::visit_item_use(self, item);
+    }
+
+    fn visit_attribute(&mut self, attribute: &'ast Attribute) {
+        if self.inside_test_module == 0 {
+            let name = reporting_syn_path_key(attribute.path());
+            if matches!(
+                name.as_str(),
+                "allow" | "cfg_attr" | "macro_export" | "path"
+            ) {
+                self.violations
+                    .insert(format!("Lua production attribute `{name}` is forbidden"));
+            }
+            if name == "cfg" {
+                let predicate = cfg_predicate(attribute).unwrap_or_else(|| "<invalid>".to_owned());
+                if !matches!(predicate.as_str(), "unix" | "not(unix)" | "test") {
+                    self.violations.insert(format!(
+                        "Lua production cfg({predicate}) is outside the exact source-loader portability contract"
+                    ));
+                }
+            }
+        }
+        syn::visit::visit_attribute(self, attribute);
+    }
+
+    fn visit_item_static(&mut self, item: &'ast syn::ItemStatic) {
+        if self.inside_test_module == 0 {
+            self.violations.insert(format!(
+                "Lua production static `{}` is forbidden",
+                item.ident
+            ));
+        }
+        syn::visit::visit_item_static(self, item);
+    }
+
+    fn visit_expr_unsafe(&mut self, expression: &'ast syn::ExprUnsafe) {
+        if self.inside_test_module == 0 {
+            self.violations
+                .insert("Lua production unsafe block is forbidden".to_owned());
+        }
+        syn::visit::visit_expr_unsafe(self, expression);
+    }
+
+    fn visit_item_foreign_mod(&mut self, item: &'ast syn::ItemForeignMod) {
+        if self.inside_test_module == 0 {
+            self.violations
+                .insert("Lua production FFI is forbidden".to_owned());
+        }
+        syn::visit::visit_item_foreign_mod(self, item);
+    }
+
+    fn visit_signature(&mut self, signature: &'ast syn::Signature) {
+        if self.inside_test_module == 0 && (signature.unsafety.is_some() || signature.abi.is_some())
+        {
+            self.violations.insert(
+                "Lua production functions must remain safe Rust without a foreign ABI".to_owned(),
+            );
+        }
+        syn::visit::visit_signature(self, signature);
+    }
+
+    fn visit_path(&mut self, path: &'ast SynPath) {
+        if self.inside_test_module == 0 {
+            let key = reporting_syn_path_key(path);
+            if matches!(
+                key.as_str(),
+                "Lua::new" | "Lua::unsafe_new" | "Lua::unsafe_new_with"
+            ) {
+                self.violations
+                    .insert(format!("Lua VM constructor `{key}` is forbidden"));
+            }
+            if key.starts_with("StdLib::") && key != "StdLib::NONE" {
+                self.violations.insert(format!(
+                    "Lua standard-library selection `{key}` is forbidden"
+                ));
+            }
+            if key.starts_with("ChunkMode::") && key != "ChunkMode::Text" {
+                self.violations
+                    .insert(format!("Lua chunk mode `{key}` is forbidden"));
+            }
+            if matches!(
+                key.as_str(),
+                "std::env"
+                    | "std::net"
+                    | "std::process"
+                    | "std::thread"
+                    | "tokio::fs"
+                    | "tokio::net"
+                    | "tokio::process"
+            ) || key.starts_with("std::env::")
+                || key.starts_with("std::net::")
+                || key.starts_with("std::process::")
+                || key.starts_with("std::thread::")
+                || key.starts_with("tokio::fs::")
+                || key.starts_with("tokio::net::")
+                || key.starts_with("tokio::process::")
+            {
+                self.violations.insert(format!(
+                    "Lua production ambient capability path `{key}` is forbidden"
+                ));
+            }
+            if (key.starts_with("File::")
+                || key.starts_with("fs::")
+                || key.starts_with("std::fs::"))
+                && key != "std::fs::File"
+                && !self.in_source_loader()
+            {
+                self.violations.insert(format!(
+                    "Lua filesystem operation `{key}` is allowed only in the exact registration-time source loader"
+                ));
+            }
+            if key == "Lua::new_with" {
+                self.new_with_calls += 1;
+            }
+        }
+        syn::visit::visit_path(self, path);
+    }
+
+    fn visit_expr_method_call(&mut self, call: &'ast syn::ExprMethodCall) {
+        if self.inside_test_module == 0 {
+            let method = semantic_ident_name(&call.method);
+            if matches!(
+                method.as_str(),
+                "call_async"
+                    | "create_async_function"
+                    | "create_async_function_mut"
+                    | "create_function_mut"
+                    | "create_ser_userdata"
+                    | "create_thread"
+                    | "create_userdata"
+                    | "eval"
+                    | "eval_async"
+                    | "exec"
+                    | "globals"
+                    | "load_from_function"
+                    | "load_from_std_lib"
+                    | "set_app_data"
+            ) {
+                self.violations
+                    .insert(format!("Lua production method `{method}` is forbidden"));
+            }
+            match method.as_str() {
+                "set_memory_limit" => self.memory_limit_calls += 1,
+                "set_hook" => self.hook_calls += 1,
+                "set_mode" => {
+                    self.text_mode_calls += usize::from(
+                        call.args.len() == 1
+                            && reporting_expression_path_is(&call.args[0], &["ChunkMode", "Text"]),
+                    );
+                },
+                "set_environment" => self.environment_calls += 1,
+                "load" if reporting_expression_path_is(&call.receiver, &["lua"]) => {
+                    self.load_calls += 1;
+                },
+                "create_function" => self.create_function_calls += 1,
+                "spawn_blocking" => self.spawn_blocking_calls += 1,
+                "call" => {
+                    let has_multi_value = call.turbofish.as_ref().is_some_and(|arguments| {
+                        arguments.args.iter().any(|argument| {
+                            matches!(
+                                argument,
+                                syn::GenericArgument::Type(syn::Type::Path(path))
+                                    if reporting_syn_path_key(&path.path) == "MultiValue"
+                            )
+                        })
+                    });
+                    self.multi_value_calls += usize::from(has_multi_value);
+                },
+                "canonicalize" | "metadata" | "read_to_end" | "symlink_metadata"
+                    if !self.in_source_loader() =>
+                {
+                    self.violations.insert(format!(
+                        "Lua filesystem method `{method}` is allowed only in the exact registration-time source loader"
+                    ));
+                },
+                _ => {},
+            }
+        }
+        syn::visit::visit_expr_method_call(self, call);
+    }
+
+    fn visit_macro(&mut self, item: &'ast syn::Macro) {
+        if self.inside_test_module == 0 {
+            let name = reporting_syn_path_key(&item.path);
+            if matches!(
+                name.as_str(),
+                "env" | "include" | "include_bytes" | "include_str" | "macro_rules" | "option_env"
+            ) {
+                self.violations
+                    .insert(format!("Lua production macro `{name}!` is forbidden"));
+            }
+            self.inspect_macro_tokens(item.tokens.clone());
+        }
+        syn::visit::visit_macro(self, item);
+    }
+}
+
+fn lua_source_authority_violations(source: &str) -> Result<Vec<String>, syn::Error> {
+    let syntax = syn::parse_file(source)?;
+    let mut visitor = LuaSourceVisitor::default();
+    visitor.visit_file(&syntax);
+    for (label, actual, expected) in [
+        ("Lua::new_with", visitor.new_with_calls, 1),
+        ("set_memory_limit", visitor.memory_limit_calls, 1),
+        ("set_hook", visitor.hook_calls, 1),
+        ("ChunkMode::Text", visitor.text_mode_calls, 1),
+        ("set_environment", visitor.environment_calls, 1),
+        ("load", visitor.load_calls, 1),
+        ("MultiValue call", visitor.multi_value_calls, 1),
+        ("create_function", visitor.create_function_calls, 5),
+        ("spawn_blocking", visitor.spawn_blocking_calls, 1),
+    ] {
+        if actual != expected {
+            visitor.violations.insert(format!(
+                "Lua production `{label}` count must remain exactly {expected}, found {actual}"
+            ));
+        }
+    }
+    Ok(visitor.violations.into_iter().collect())
+}
+
+fn lua_production_inventory_violations(engine_source: &str, config_source: &str) -> Vec<String> {
+    let mut violations = Vec::new();
+    for (surface, source, expected_bytes, expected_fingerprint) in [
+        (
+            "lua_engine",
+            engine_source,
+            EXACT_LUA_ENGINE_PRODUCTION_TOKEN_BYTES,
+            EXACT_LUA_ENGINE_PRODUCTION_FINGERPRINT,
+        ),
+        (
+            "lua_config",
+            config_source,
+            EXACT_LUA_CONFIG_PRODUCTION_TOKEN_BYTES,
+            EXACT_LUA_CONFIG_PRODUCTION_FINGERPRINT,
+        ),
+    ] {
+        let production = match exact_inline_tests_production(surface, source) {
+            Ok(production) => production,
+            Err(mut errors) => {
+                violations.append(&mut errors);
+                continue;
+            },
+        };
+        let Some((bytes, fingerprint)) = normalized_token_fingerprint(production) else {
+            violations.push(format!(
+                "{surface}.rs production source must remain valid Rust tokens"
+            ));
+            continue;
+        };
+        if bytes != expected_bytes || fingerprint != expected_fingerprint {
+            violations.push(format!(
+                "{surface}.rs exact public signatures and production AST/body inventory changed; expected normalized bytes/fingerprint {expected_bytes}/{expected_fingerprint:032x}, found {bytes}/{fingerprint:032x}"
+            ));
+        }
+    }
+    violations
 }
 
 #[derive(Debug, Default)]
@@ -4651,7 +5925,7 @@ mod tests {
         features.insert("reporting".to_owned(), vec!["core".to_owned()]);
         features.insert("detection".to_owned(), vec!["dep:regex".to_owned()]);
         features.insert("ml".to_owned(), Vec::new());
-        features.insert("distributed".to_owned(), vec!["dep:dashmap".to_owned()]);
+        features.insert("distributed".to_owned(), Vec::new());
         features.insert("monitoring".to_owned(), Vec::new());
         features.insert("compliance".to_owned(), Vec::new());
         features.insert("threat-intel".to_owned(), Vec::new());
@@ -4672,7 +5946,7 @@ mod tests {
         );
         features.insert(
             "lua".to_owned(),
-            ["core", "dep:dashmap", "dep:mlua", "dep:tokio", "dep:uuid"]
+            ["core", "dep:mlua", "dep:tokio"]
                 .into_iter()
                 .map(str::to_owned)
                 .collect(),
@@ -4700,6 +5974,355 @@ mod tests {
         );
         features.insert("research".to_owned(), vec!["full".to_owned()]);
         features
+    }
+
+    #[test]
+    fn host_execution_facades_are_private_direct_and_exact() {
+        let source = include_str!("../../../crates/venom-scanner/src/lib.rs");
+        for (module, cfg, symbols) in [
+            (
+                "distributed",
+                "feature=\"distributed\"",
+                EXACT_DISTRIBUTED_REEXPORTS,
+            ),
+            ("lua_engine", "feature=\"lua\"", EXACT_LUA_REEXPORTS),
+            (
+                "lua_config",
+                "any(feature=\"platform-models\",feature=\"lua\")",
+                EXACT_LUA_CONFIG_REEXPORTS,
+            ),
+        ] {
+            assert!(
+                private_facade_reexport_violations(source, module, cfg, symbols)
+                    .unwrap()
+                    .is_empty(),
+                "{module}"
+            );
+        }
+        assert!(host_surface_cfg_facade_violations(source)
+            .unwrap()
+            .is_empty());
+
+        let public_module = source.replacen("mod distributed;", "pub mod distributed;", 1);
+        assert!(module_gate_violations(&public_module)
+            .unwrap()
+            .iter()
+            .any(|violation| violation.contains("private out-of-line module")));
+
+        let qualified =
+            source.replacen("pub use distributed::{", "pub use crate::distributed::{", 1);
+        assert!(private_facade_reexport_violations(
+            &qualified,
+            "distributed",
+            "feature=\"distributed\"",
+            EXACT_DISTRIBUTED_REEXPORTS,
+        )
+        .unwrap()
+        .iter()
+        .any(|violation| violation.contains("exact direct")));
+
+        let wrapper = format!("{source}\n#[cfg(feature = \"lua\")] pub fn escaped_lua_host() {{}}");
+        assert!(host_surface_cfg_facade_violations(&wrapper)
+            .unwrap()
+            .iter()
+            .any(|violation| violation.contains("escaped_lua_host")));
+    }
+
+    #[test]
+    fn distributed_feature_is_dependency_free_and_cannot_reenter_product_closures() {
+        let mut features = valid_feature_map();
+        assert!(feature_violations(&features).is_empty());
+
+        features
+            .get_mut("distributed")
+            .unwrap()
+            .push("dep:dashmap".to_owned());
+        assert!(feature_violations(&features).iter().any(|violation| {
+            violation.contains("`distributed` raw feature closure")
+                && violation.contains("dep:dashmap")
+        }));
+
+        let mut features = valid_feature_map();
+        features
+            .get_mut("scanning")
+            .unwrap()
+            .push("distributed".to_owned());
+        assert!(feature_violations(&features).iter().any(|violation| {
+            violation.contains("`default` raw feature closure") && violation.contains("distributed")
+        }));
+
+        let mut features = valid_feature_map();
+        features
+            .get_mut("reporting")
+            .unwrap()
+            .push("lua".to_owned());
+        assert!(feature_violations(&features).iter().any(|violation| {
+            violation.contains("`reporting` raw feature closure") && violation.contains("lua")
+        }));
+    }
+
+    #[test]
+    fn distributed_source_is_ordered_integer_only_and_ambient_authority_free() {
+        let source = include_str!("../../../crates/venom-scanner/src/distributed.rs");
+        assert!(distributed_source_authority_violations(source)
+            .unwrap()
+            .is_empty());
+        assert!(distributed_public_api_violations(source)
+            .unwrap()
+            .is_empty());
+
+        for mutation in [
+            "use dashmap::DashMap;",
+            "use std::collections::HashMap;",
+            "use std::collections::HashSet;",
+            "use std::fs::File;",
+            "use std::process::Command;",
+            "use std::thread;",
+            "use std::time::Instant;",
+            "use std::time::SystemTime;",
+            "use uuid::Uuid;",
+            "use rand::random;",
+            "use serde::Serialize;",
+            "use std::net::TcpStream;",
+            "static ESCAPED_STATE: usize = 0;",
+            "#[allow(dead_code)] fn escaped_allow() {}",
+            "fn float_score(value: f64) -> f64 { value }",
+            "unsafe fn escaped_unsafe() {}",
+            "const ESCAPED_INCLUDE: &str = include_str!(\"escaped\");",
+        ] {
+            let mutated = source.replacen("#[cfg(test)]", &format!("{mutation}\n#[cfg(test)]"), 1);
+            let violations = distributed_source_authority_violations(&mutated).unwrap();
+            assert!(
+                !violations.is_empty(),
+                "distributed authority mutation escaped: {mutation}"
+            );
+        }
+
+        let public_snapshot = source.replacen(
+            "pub struct WorkerNode {\n    worker_id:",
+            "pub struct WorkerNode {\n    pub worker_id:",
+            1,
+        );
+        assert!(distributed_public_api_violations(&public_snapshot)
+            .unwrap()
+            .iter()
+            .any(|violation| violation.contains("all fields private")));
+
+        let constant_drift = source.replacen(
+            "pub const MAX_RESULTS: usize = 65_536;",
+            "pub const MAX_RESULTS: usize = 65_535;",
+            1,
+        );
+        assert!(distributed_public_api_violations(&constant_drift)
+            .unwrap()
+            .iter()
+            .any(|violation| violation.contains("MAX_RESULTS")));
+    }
+
+    #[test]
+    fn host_surface_production_signatures_and_bodies_are_exact() {
+        let distributed = include_str!("../../../crates/venom-scanner/src/distributed.rs");
+        let lua_engine = include_str!("../../../crates/venom-scanner/src/lua_engine.rs");
+        let lua_config = include_str!("../../../crates/venom-scanner/src/lua_config.rs");
+        assert!(distributed_production_inventory_violations(distributed).is_empty());
+        assert!(lua_production_inventory_violations(lua_engine, lua_config).is_empty());
+
+        let distributed_signature =
+            distributed.replacen("expected_revision: u64,", "expected_revision: u32,", 1);
+        assert!(!distributed_production_inventory_violations(&distributed_signature).is_empty());
+
+        let receipt_variant = distributed.replacen("MismatchedResultReceipt", "StaleResult", 1);
+        assert!(!distributed_production_inventory_violations(&receipt_variant).is_empty());
+
+        let retry_backpressure = distributed.replacen(
+            "if state.queue.len() >= state.limits.max_queued_tasks {\n                return Err(DistributedError::QueuedTaskCapacityReached {",
+            "if false {\n                return Err(DistributedError::QueuedTaskCapacityReached {",
+            1,
+        );
+        assert!(!distributed_production_inventory_violations(&retry_backpressure).is_empty());
+
+        let lua_signature =
+            lua_engine.replacen("pub async fn execute(", "pub async fn execute_changed(", 1);
+        assert!(!lua_production_inventory_violations(&lua_signature, lua_config).is_empty());
+
+        let config_default = lua_config.replacen(
+            "max_concurrent_executions: 4,",
+            "max_concurrent_executions: 5,",
+            1,
+        );
+        assert!(!lua_production_inventory_violations(lua_engine, &config_default).is_empty());
+    }
+
+    #[test]
+    fn lua_vm_construction_and_ambient_authority_are_exact() {
+        let source = include_str!("../../../crates/venom-scanner/src/lua_engine.rs");
+        let config = include_str!("../../../crates/venom-scanner/src/lua_config.rs");
+        assert!(lua_source_authority_violations(source).unwrap().is_empty());
+        assert!(lua_public_api_violations(source, config)
+            .unwrap()
+            .is_empty());
+
+        for mutation in [
+            source.replacen("Lua::new_with(", "Lua::new(", 1),
+            source.replacen("StdLib::NONE", "StdLib::ALL", 1),
+            source.replacen("ChunkMode::Text", "ChunkMode::Binary", 1),
+            source.replacen(".set_environment(environment)", ".set_environment(lua.globals())", 1),
+            source.replacen("runtime.spawn_blocking", "runtime.spawn", 1),
+            source.replacen(".call::<_, MultiValue>(())", ".call::<_, Value>(())", 1),
+            source.replacen(
+                "#[cfg(test)]",
+                "use std::process::Command;\n#[cfg(test)]",
+                1,
+            ),
+            source.replacen(
+                "#[cfg(test)]",
+                "use std::net::TcpStream;\n#[cfg(test)]",
+                1,
+            ),
+            source.replacen(
+                "#[cfg(test)]",
+                "fn escaped_alias_fs() { let _ = fs::read(\"escaped\"); }\n#[cfg(test)]",
+                1,
+            ),
+            source.replacen(
+                "#[cfg(test)]",
+                "fn escaped_file(path: &Path) { let _ = File::open(path); }\n#[cfg(test)]",
+                1,
+            ),
+            source.replacen(
+                "#[cfg(test)]",
+                "static ESCAPED_LUA: usize = 0;\n#[cfg(test)]",
+                1,
+            ),
+            source.replacen(
+                "#[cfg(test)]",
+                "fn escaped_thread(lua: &Lua) { let _ = lua.create_thread(()); }\n#[cfg(test)]",
+                1,
+            ),
+            source.replacen(
+                "#[cfg(test)]",
+                "fn escaped_eval(lua: &Lua) { let _ = lua.eval::<()>(\"\"); }\n#[cfg(test)]",
+                1,
+            ),
+            source.replacen(
+                "#[cfg(test)]",
+                "fn escaped_userdata(lua: &Lua) { let _ = lua.create_userdata(()); }\n#[cfg(test)]",
+                1,
+            ),
+            source.replacen(
+                "#[cfg(test)]",
+                "fn escaped_callback(lua: &Lua) { let _ = lua.create_function_mut(|_, _: ()| Ok(())); }\n#[cfg(test)]",
+                1,
+            ),
+            source.replacen(
+                "#[cfg(test)]",
+                "unsafe fn escaped_unsafe() {}\n#[cfg(test)]",
+                1,
+            ),
+            source.replacen(
+                "#[cfg(test)]",
+                "const ESCAPED_INCLUDE: &[u8] = include_bytes!(\"escaped\");\n#[cfg(test)]",
+                1,
+            ),
+            source.replacen(
+                "#[cfg(test)]",
+                "macro_rules! escaped_macro { () => {} }\n#[cfg(test)]",
+                1,
+            ),
+        ] {
+            assert!(
+                !lua_source_authority_violations(&mutation)
+                    .unwrap()
+                    .is_empty(),
+                "Lua authority mutation escaped"
+            );
+        }
+
+        let public_manifest = source.replacen(
+            "pub struct LuaScriptManifest {\n    id:",
+            "pub struct LuaScriptManifest {\n    pub id:",
+            1,
+        );
+        assert!(lua_public_api_violations(&public_manifest, config)
+            .unwrap()
+            .iter()
+            .any(|violation| violation.contains("all fields private")));
+
+        let config_drift = config.replacen(
+            "pub const HARD_MAX_MEMORY_BYTES: usize = 256 * 1_024 * 1_024;",
+            "pub const HARD_MAX_MEMORY_BYTES: usize = 512 * 1_024 * 1_024;",
+            1,
+        );
+        assert!(lua_public_api_violations(source, &config_drift)
+            .unwrap()
+            .iter()
+            .any(|violation| violation.contains("HARD_MAX_MEMORY_BYTES")));
+    }
+
+    #[test]
+    fn mlua_dependency_contract_is_minimal_and_exact() {
+        let mut dependencies = BTreeMap::from([(
+            "mlua".to_owned(),
+            DependencyContract {
+                optional: true,
+                uses_default_features: false,
+                features: BTreeSet::from(["lua54".to_owned(), "vendored".to_owned()]),
+            },
+        )]);
+        assert!(exact_dependency_contract_violations(
+            "venom-scanner",
+            &dependencies,
+            "mlua",
+            true,
+            false,
+            &["lua54", "vendored"],
+        )
+        .is_empty());
+        assert!(exact_dependency_requirement_violations(
+            "venom-scanner",
+            "mlua",
+            Some("^0.9"),
+            "^0.9",
+        )
+        .is_empty());
+        assert!(exact_dependency_requirement_violations(
+            "venom-scanner",
+            "mlua",
+            Some("^0.10"),
+            "^0.9",
+        )
+        .iter()
+        .any(|violation| violation.contains("^0.10")));
+
+        dependencies
+            .get_mut("mlua")
+            .unwrap()
+            .features
+            .insert("serialize".to_owned());
+        assert!(exact_dependency_contract_violations(
+            "venom-scanner",
+            &dependencies,
+            "mlua",
+            true,
+            false,
+            &["lua54", "vendored"],
+        )
+        .iter()
+        .any(|violation| violation.contains("serialize")));
+
+        let dependency = dependencies.get_mut("mlua").unwrap();
+        dependency.features.remove("serialize");
+        dependency.uses_default_features = true;
+        assert!(exact_dependency_contract_violations(
+            "venom-scanner",
+            &dependencies,
+            "mlua",
+            true,
+            false,
+            &["lua54", "vendored"],
+        )
+        .iter()
+        .any(|violation| violation.contains("default-features=false")));
     }
 
     #[test]
@@ -5799,6 +7422,20 @@ mod tests {
             .get_mut("venom-scanner")
             .unwrap()
             .uses_default_features = false;
+        dependencies
+            .get_mut("venom-scanner")
+            .unwrap()
+            .features
+            .insert("distributed".to_owned());
+        assert!(cli_feature_violations(&features, &dependencies)
+            .iter()
+            .any(|violation| violation.contains("exactly [scanning]")));
+
+        dependencies
+            .get_mut("venom-scanner")
+            .unwrap()
+            .features
+            .remove("distributed");
         features.get_mut("proxy-adapter").unwrap().clear();
         assert!(cli_feature_violations(&features, &dependencies)
             .iter()
@@ -6228,13 +7865,13 @@ mod tests {
             #[cfg(feature = "platform-models")] pub mod dashboard;
             #[cfg(feature = "detection")] pub mod advanced_detection;
             #[cfg(feature = "detection")] pub mod anomaly;
-            #[cfg(feature = "distributed")] pub mod distributed;
+            #[cfg(feature = "distributed")] mod distributed;
             #[cfg(feature = "legacy-scanner")] pub mod event_bus;
             #[cfg(feature = "legacy-scanner")] pub mod error;
             #[cfg(feature = "legacy-scanner")] mod legacy_discovery;
             #[cfg(feature = "legacy-scanner")] pub mod logging;
             #[cfg(any(feature = "platform-models", feature = "lua"))] mod lua_config;
-            #[cfg(feature = "lua")] pub mod lua_engine;
+            #[cfg(feature = "lua")] mod lua_engine;
             #[cfg(feature = "platform-models")] pub mod metrics;
             #[cfg(feature = "ml")] pub mod ml;
             #[cfg(feature = "monitoring")] pub mod monitoring;
@@ -6453,8 +8090,8 @@ mod tests {
                     "distributed",
                     "distributed",
                     Lifecycle::Experimental,
-                    ImplementationClaim::Scaffold,
-                    HostContract::Library("in-process coordinator API"),
+                    ImplementationClaim::Implemented,
+                    HostContract::Library("bounded deterministic in-process coordinator API"),
                 ),
                 (
                     "monitoring",
@@ -6481,8 +8118,8 @@ mod tests {
                     "lua_engine",
                     "lua",
                     Lifecycle::Experimental,
-                    ImplementationClaim::Scaffold,
-                    HostContract::Library("fail-closed registry API"),
+                    ImplementationClaim::Implemented,
+                    HostContract::Library("bounded cooperative Lua execution API"),
                 ),
                 (
                     "plugin",

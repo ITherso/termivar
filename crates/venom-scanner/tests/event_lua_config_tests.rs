@@ -7,43 +7,42 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use venom_scanner::{
-    ConfigLoader, Event, EventBus, EventType, LuaContext, LuaScript, LuaScriptRegistry,
+    ConfigLoader, Event, EventBus, EventType, LuaContext, LuaExecutionStatus, LuaReturnValue,
+    LuaScript, LuaScriptRegistry,
 };
 
 #[tokio::test]
-async fn registered_lua_source_execution_fails_closed_without_echoing_context() {
+async fn registry_executes_only_the_registered_source_snapshot() {
     let root = tempfile::tempdir().expect("temporary script root");
     let source = root.path().join("fixture.lua");
-    std::fs::write(&source, "return 'this source must not run'").expect("fixture source");
+    std::fs::write(
+        &source,
+        "emit(context.target); return context.parameter('mode')",
+    )
+    .expect("fixture source");
 
     let script = LuaScript::new_safe("fixture", &source, root.path()).expect("validated script");
-    let script_id = script.id.to_string();
-    let registry = LuaScriptRegistry::new();
-    registry.register(script.clone());
+    let script_id = script.id();
+    std::fs::write(&source, "return 'replacement must not run'").expect("replacement source");
+    let registry = LuaScriptRegistry::new().expect("registry");
+    registry.register(script).expect("registration");
 
-    let result = script
+    let result = registry
         .execute(
-            LuaContext::new("https://private.example.invalid/path")
-                .with_payload("private-payload")
-                .with_parameter("token", "private-value"),
+            &script_id,
+            LuaContext::new("approved-target").with_parameter("mode", "snapshot"),
         )
         .await;
+    let result = result.expect("execution");
 
-    assert!(!result.success);
-    assert!(result.output.is_empty());
-    assert!(result.return_value.is_none());
+    assert_eq!(result.status(), LuaExecutionStatus::Completed);
+    assert_eq!(result.output(), "approved-target");
     assert_eq!(
-        result.error.as_deref(),
-        Some("Lua execution is unavailable: registered script source loading is not implemented")
+        result.return_value(),
+        Some(&LuaReturnValue::String("snapshot".to_owned()))
     );
-    let diagnostic = result
-        .error
-        .as_deref()
-        .expect("fixed unavailable diagnostic");
-    assert!(!diagnostic.contains("private.example.invalid"));
-    assert!(!diagnostic.contains("private-payload"));
-    assert!(!diagnostic.contains("private-value"));
-    assert!(registry.get(&script_id).is_some());
+    assert!(registry.get(&script_id).expect("registry lookup").is_some());
+    assert_eq!(registry.get_history(&script_id).expect("history").len(), 1);
 }
 
 #[test]

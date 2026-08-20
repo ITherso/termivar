@@ -164,7 +164,7 @@ mod tests {
         config.lua_engine.default_timeout_ms = 0;
         assert_eq!(
             config.validate().unwrap_err(),
-            "Invalid Lua engine configuration: default_timeout_ms must be > 0"
+            "Invalid Lua engine configuration: default_timeout_ms must be nonzero"
         );
     }
 

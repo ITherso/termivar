@@ -66,10 +66,16 @@ Authorized JSON pair --> ApiVisibilityComparator --> comparison observation
                                                         v
                                            resource review projection
 
-Task producer --> TaskQueue --> WorkerPool --> WorkerNode
+Explicit host --> TaskQueue <--> WorkerPool --> WorkerNode
+      |              |
+      |              `--> CompletionReceipt --> ResultAggregator
+      `--> LuaScriptRegistry --> fresh bounded Lua VM
 ```
 
-- [Scheduler](scheduler.md): queue, worker scoring, assignment, retry, and heartbeat boundaries.
+- [Scheduler](scheduler.md): explicit-time revisioned queue/worker assignment,
+  logical ownership, retry/recovery, and bounded result-retention boundaries.
+- [Lua execution](../lua.md): approved-root source snapshots, private VM host
+  API, cooperative budgets/cancellation, and receipt/provenance limits.
 - [Event bus](event-bus.md): synchronous publication, subscriptions, history, and correlation.
 - [Runner](runner.md): ordered phase execution, timeouts, cancellation, and partial results.
 - [Decision runner](decision-runner.md): command execution, executor routing, evidence provenance, and verifier handoff.

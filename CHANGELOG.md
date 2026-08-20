@@ -6,6 +6,10 @@ All notable changes to Venom are recorded here. Releases use the categories from
 
 ### Added
 
+- Experimental opt-in host-library execution surfaces for bounded Lua 5.4
+  source snapshots and deterministic process-local task/worker/result
+  coordination. Neither surface has a repository CLI, scanner, plugin, or
+  default-runtime caller.
 - A security-hardened Phase 1 `semantic` entity extraction layer (`EntityExtractor`, `SemanticEntity`, `SemanticEntityType`, `AuthArtifactKind`). Converts raw scanner `Evidence` into strongly-typed, canonical semantic entities without mutating planner state or forcing intrinsic Plane properties onto entities. Includes strict redaction guarantees for sensitive header values (`[REDACTED]`) and auth credentials (SHA-256 fingerprinting with domain separation `venom:auth-artifact:v1:<kind>:<raw>`), `Domain` vs `IpAddress` separation, `v1` canonical entity identifiers, and order-independent `BTreeSet` attribute merging.
 
 - A deterministic, public-API demonstration test (`defense_aware_planning_demo`) that shows the defense-aware planning arc end to end for one fixed scenario: the enforcement-off plan, the side-effect-free shadow delta with supporting evidence and stable explanation codes, and the enforcement-on plan with distinct `DefenseSuppressed` exclusions. It asserts the guarantees — disabled leaves the plan untouched, shadow and enforcement agree on what to suppress, and a suppressed action never becomes a plan step so it never reaches an executor — and renders a readable side-by-side summary.
@@ -69,6 +73,12 @@ All notable changes to Venom are recorded here. Releases use the categories from
 
 ### Changed
 
+- Replaced the Lua fail-closed registry scaffold and loose distributed models
+  with exact private-module/root-facade APIs, independent feature closures, and
+  architecture fingerprints/mutation checks. Lua now executes text-only chunks
+  in fresh no-standard-library VMs; distributed commands use bounded ordered
+  state, explicit logical time/revisions, fenced ownership, atomic retry and
+  recovery, and bounded result retention.
 - Advanced the remediated unreleased source line to the new pre-1.0 minor identity `0.10.0-alpha.1`, so its binaries cannot be confused with the behaviorally different historical `v0.9.0-alpha` artifacts.
 - Removed the disconnected legacy adaptive response scorer and attack-shaped payload mutators; the default-built `adaptive` namespace now contains only the outcome-driven, declarative pipeline.
 - Removed the false legacy WAF detector and attack-shaped evasion dispatcher. The remaining payload-encoding helper supports only explicit percent/hex byte encoding through the bounded, redacted `PayloadArtifact` contract.
@@ -135,6 +145,16 @@ All notable changes to Venom are recorded here. Releases use the categories from
 
 ### Security
 
+- Hardened Lua registration against root escape, symlink and changed-source
+  inputs; bounded VM memory, instructions, deadline, context, output, return,
+  registry/concurrency/history state; and exposed only a private scalar host
+  environment. These cooperative in-process controls do not hard-preempt
+  parser/native work or provide process isolation, and source digests remain
+  deterministic linkable metadata. Hardened distributed state with ordered
+  collections, integer-only selection, hard capacity ceilings, explicit-time
+  revision checks, private ownership snapshots, retry-backpressure preflight,
+  and redacted opaque payload Debug output; structural tokens remain
+  caller-epoch scoped rather than authenticated cross-instance capabilities.
 - Made plugin registration reject duplicate IDs without replacing existing state, blocked unregistration and same-ID rebinding while an invocation is active, removed decorative retry policy, eliminated registration/execution-boundary panics, and placed plugin network access behind an exact-origin, cancellation-aware broker contract with context-validated capture caps, request/body accounting, opaque error details, and bounded redaction policy.
 - Expanded the responsible disclosure policy, supported-version table, response targets, CVE process, and researcher credit policy.
 - Added hard depth, node, field, and canonical-byte ceilings for API visibility evidence preparation without weakening decision-runner subject isolation.

@@ -11,7 +11,7 @@ The editable diagrams.net source is [architecture.drawio](architecture.drawio). 
 | Crate | Responsibility | May depend on |
 | --- | --- | --- |
 | `venom-core` | Default transport-neutral evidence, reasoning, ontology, outcome, predicate, and run-report contracts; the pre-quarantine facade is feature-gated | External libraries only |
-| `venom-scanner` | Phase/plugin traits, deterministic reasoning, runner, detection, and opt-in bounded report rendering | `venom-core` |
+| `venom-scanner` | Phase/plugin traits, deterministic reasoning, runner, detection, opt-in bounded report rendering, and Experimental host-owned Lua/coordination execution | `venom-core` |
 | `venom-proxy` | Experimental fixed-upstream TCP relay; no HTTP/TLS interception | External libraries only |
 | `venom-api` | Library health router and its local unsupported-listener error | External libraries only |
 | `venom-cli` | Composition root and command routing | `venom-scanner` by default; `venom-api` and `venom-proxy` only through explicit adapter features |
@@ -72,6 +72,8 @@ flowchart TD
     PluginContext --> PluginCode["Plugin trait implementation"]
     PluginCode --> PluginEvidence["Recorded observations"]
     PluginEvidence --> HostVerification["Host reasoning / verification"]
+    LibraryHost["Explicit library host"] -. "lua" .-> Lua["Bounded Lua VM<br/>Experimental · in-process"]
+    LibraryHost -. "distributed" .-> Coordinator["Bounded coordinator<br/>Experimental · process-local"]
     LegacyRunner --> Events["Event Bus"]
     Events -. "optional host projection" .-> Observers["Telemetry consumers"]
 ```
@@ -107,11 +109,11 @@ venom-scanner/src/
 |-- runner.rs        scheduling, timeouts, cancellation, aggregation
 |-- event_bus.rs     legacy-scanner host event delivery (opt-in)
 |-- reporting.rs     bounded typed RunReport renderer (opt-in)
-|-- distributed.rs   task queues and workers (opt-in)
+|-- distributed.rs   bounded process-local coordinator and result store (opt-in)
 |-- advanced_detection.rs  validated signal and technique records (opt-in)
 |-- anomaly.rs       validated deviation records and text matching (opt-in)
 |-- ml.rs            external-model record types only (opt-in)
-`-- lua_engine.rs    fail-closed Lua registry scaffold (opt-in)
+`-- lua_engine.rs    bounded host-owned Lua registry and executor (opt-in)
 ```
 
 ## Target product-layer split
@@ -135,8 +137,15 @@ This target supports separate open-source and commercial distributions without m
    plugins record observations through host policy and never own finding or
    transport authority.
 4. The event bus carries immutable lifecycle facts; subscribers do not control execution through hidden callbacks.
-5. In-process distributed models use serializable task/result contracts; no remote worker transport is implemented.
-6. Lua execution is quarantined until registered source loading exists; its intended context remains deliberately small.
+5. The opt-in distributed contract owns bounded/versioned process-local records,
+   explicit logical time, and ordered state transitions. Callers own any wire
+   encoding, authenticated transport, persistence, coordinator epoch, and
+   background execution; the public types intentionally define no serialization
+   protocol.
+6. The opt-in Lua contract snapshots approved-root text source and exposes only
+   a private scalar context/output environment in a fresh no-standard-library
+   VM. Its memory, instruction, deadline, and cancellation controls are
+   cooperative in-process limits, not process isolation.
 7. The opt-in report renderer consumes an immutable typed `RunReport`, performs
    no I/O or redaction, and neither mutates scanner state nor creates findings
    or verdicts. Hosts must pre-redact projected target, authorized-origin,
@@ -267,7 +276,12 @@ standard-runtime transport ownership, prevents migrated discovery and
 verification phases from reacquiring direct I/O or crossing each other's
 authority seam, freezes the remaining built-in legacy direct-I/O inventory,
 verifies canonical `lib.rs` module and external-root wiring, and compiles
-`venom-scanner` with no default features. See
+`venom-scanner` with no default features. For Lua and distributed coordination,
+it also pins independent raw feature closures, private modules and exact root
+reexports, public symbol/constant inventories, private ownership snapshots,
+ordered/integer-only state, absence of ambient filesystem/network/process/time
+authority, exact VM construction and text/private-environment loading, and
+source fingerprints with adversarial mutations. See
 [ADR 0004](adr/0004-reasoning-runtime-boundary.md) and
 [ADR 0012](adr/0012-account-delivered-transport-bytes.md), which supersedes
 [ADR 0009](adr/0009-host-owned-transport-accounting.md). Planner-selected,
@@ -278,7 +292,9 @@ discovery migration is specified by
 verification authority and claim bridge are specified by
 [ADR 0018](adr/0018-bound-legacy-verification-authority.md).
 The host-owned, evidence-only plugin contract is specified by
-[ADR 0019](adr/0019-host-own-plugin-execution.md).
+[ADR 0019](adr/0019-host-own-plugin-execution.md). The two Experimental
+host-execution contracts are specified by
+[ADR 0022](adr/0022-bound-host-lua-and-distributed-execution.md).
 
 ## Dependency review
 
@@ -300,7 +316,10 @@ Before adding an edge, ask:
   separate bounded passive discovery authority and phases five through nine a
   separate bounded active-verification authority; the directory phase still
   requires the explicit `--legacy-directory-fuzz` option.
-- Dashboard, distributed, and compliance modules still live in `venom-scanner`.
+- Dashboard, compliance, and the implemented Experimental distributed and Lua
+  host APIs still live in `venom-scanner`; neither execution API has a
+  repository runtime caller, stable compatibility baseline, or production
+  deployment contract.
 - Several optional modules expose broad APIs that require stability review.
 - `DecisionExecutionLimits` still names an HTTP response-body allowance in a
   generic executor request; it should become a transport-neutral resource

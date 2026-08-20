@@ -141,7 +141,11 @@ Default builds expose neither `api` nor `proxy`. They can be compiled as explici
 - `cargo run -p venom-cli --locked --features api-adapter -- api --addr 127.0.0.1:8080` is unsupported and exits nonzero: the library has a health router, but no listener is implemented.
 - `cargo run -p venom-cli --locked --features proxy-adapter -- proxy --addr 127.0.0.1:8081 --upstream 127.0.0.1:9081` starts an experimental TCP relay to the explicitly selected upstream. It does not implement HTTP `CONNECT`, TLS termination, generated certificates, or request inspection.
 
-The dashboard, distributed scheduler, monitoring, compliance, profile, and Lua modules are disconnected, opt-in, host-owned, or experimental. See the [runtime map](internals/runtime-map.md) before treating any module as executable product behavior.
+Lua execution and distributed coordination are implemented Experimental,
+opt-in host-library APIs with no repository runtime caller. Dashboard,
+monitoring, compliance, and profile modules remain disconnected or host-owned.
+See the [runtime map](internals/runtime-map.md) before treating any optional
+module as executable product behavior.
 
 ## Validate a checkout
 
