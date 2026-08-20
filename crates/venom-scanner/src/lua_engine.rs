@@ -1944,28 +1944,6 @@ mod tests {
         registry.execute(&id, context).await.expect("execution")
     }
 
-    async fn wait_for_active_invocations(
-        registry: &LuaScriptRegistry,
-        script_id: &str,
-        expected: usize,
-    ) {
-        for _ in 0..10_000 {
-            let observed = registry
-                .state
-                .lock()
-                .expect("registry state")
-                .scripts
-                .get(script_id)
-                .expect("registered script")
-                .active_invocations;
-            if observed == expected {
-                return;
-            }
-            tokio::task::yield_now().await;
-        }
-        panic!("active invocation count did not reach {expected}");
-    }
-
     #[tokio::test]
     async fn executes_registered_snapshot_and_projects_scalar_return() {
         let result = run(
@@ -2168,8 +2146,8 @@ mod tests {
         assert_eq!(result.error(), Some(LuaExecutionError::Cancelled));
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn single_concurrency_permit_rejects_second_vm_and_is_reusable() {
+    #[test]
+    fn single_concurrency_permit_rejects_second_vm_and_is_reusable() {
         let mut config = test_config();
         config.max_concurrent_executions = 1;
         config.default_timeout_ms = 5_000;
@@ -2191,49 +2169,110 @@ mod tests {
         registry.register(holding).expect("holding registration");
         registry.register(finite).expect("finite registration");
 
-        let cancellation = LuaCancellationToken::new();
-        let worker_registry = Arc::clone(&registry);
-        let worker_id = holding_id.clone();
-        let worker_cancellation = cancellation.clone();
-        let worker = tokio::spawn(async move {
-            worker_registry
-                .execute_with_cancellation(
-                    &worker_id,
-                    LuaContext::new("holding"),
-                    worker_cancellation,
-                )
-                .await
+        let blocking_gate = Arc::new((Mutex::new((false, false)), std::sync::Condvar::new()));
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .max_blocking_threads(1)
+            .enable_all()
+            .build()
+            .expect("test runtime");
+        let worker_gate = Arc::clone(&blocking_gate);
+        let blocking_worker = runtime.spawn_blocking(move || {
+            let (state, condition) = &*worker_gate;
+            let mut state = state.lock().expect("blocking gate");
+            state.0 = true;
+            condition.notify_all();
+            while !state.1 {
+                state = condition.wait(state).expect("blocking gate");
+            }
         });
-        wait_for_active_invocations(&registry, &holding_id, 1).await;
+        {
+            let (state, condition) = &*blocking_gate;
+            let mut state = state.lock().expect("blocking gate");
+            while !state.0 {
+                state = condition.wait(state).expect("blocking gate");
+            }
+        }
 
-        let rejected = registry
-            .execute(&finite_id, LuaContext::new("second"))
+        runtime.block_on(async {
+            let cancellation = LuaCancellationToken::new();
+            let worker_registry = Arc::clone(&registry);
+            let worker_id = holding_id.clone();
+            let worker_cancellation = cancellation.clone();
+            let worker = tokio::spawn(async move {
+                worker_registry
+                    .execute_with_cancellation(
+                        &worker_id,
+                        LuaContext::new("holding"),
+                        worker_cancellation,
+                    )
+                    .await
+            });
+            tokio::time::timeout(Duration::from_secs(5), async {
+                loop {
+                    let active = registry
+                        .state
+                        .lock()
+                        .expect("registry state")
+                        .scripts
+                        .get(&holding_id)
+                        .expect("holding script")
+                        .active_invocations;
+                    if active == 1 {
+                        break;
+                    }
+                    tokio::task::yield_now().await;
+                }
+            })
             .await
-            .expect("typed concurrency rejection");
-        assert_eq!(rejected.error(), Some(LuaExecutionError::ConcurrencyLimit));
-        assert_eq!(
-            registry
-                .state
-                .lock()
-                .expect("registry state")
-                .scripts
-                .get(&finite_id)
-                .expect("finite script")
-                .active_invocations,
-            0
-        );
+            .expect("holding invocation acquired its lease");
 
-        cancellation.cancel();
-        let cancelled = worker.await.expect("worker").expect("holding execution");
-        assert_eq!(cancelled.error(), Some(LuaExecutionError::Cancelled));
-        wait_for_active_invocations(&registry, &holding_id, 0).await;
+            let rejected = registry
+                .execute(&finite_id, LuaContext::new("second"))
+                .await
+                .expect("typed concurrency rejection");
+            assert_eq!(rejected.error(), Some(LuaExecutionError::ConcurrencyLimit));
+            assert_eq!(
+                registry
+                    .state
+                    .lock()
+                    .expect("registry state")
+                    .scripts
+                    .get(&finite_id)
+                    .expect("finite script")
+                    .active_invocations,
+                0
+            );
 
-        let reused = registry
-            .execute(&finite_id, LuaContext::new("reused"))
-            .await
-            .expect("reused permit");
-        assert_eq!(reused.status(), LuaExecutionStatus::Completed);
-        assert_eq!(reused.return_value(), Some(&LuaReturnValue::Boolean(true)));
+            cancellation.cancel();
+            {
+                let (state, condition) = &*blocking_gate;
+                let mut state = state.lock().expect("blocking gate");
+                state.1 = true;
+                condition.notify_all();
+            }
+            blocking_worker.await.expect("blocking worker");
+            let cancelled = worker.await.expect("worker").expect("holding execution");
+            assert_eq!(cancelled.error(), Some(LuaExecutionError::Cancelled));
+            assert_eq!(
+                registry
+                    .state
+                    .lock()
+                    .expect("registry state")
+                    .scripts
+                    .get(&holding_id)
+                    .expect("holding script")
+                    .active_invocations,
+                0
+            );
+
+            let reused = registry
+                .execute(&finite_id, LuaContext::new("reused"))
+                .await
+                .expect("reused permit");
+            assert_eq!(reused.status(), LuaExecutionStatus::Completed);
+            assert_eq!(reused.return_value(), Some(&LuaReturnValue::Boolean(true)));
+        });
     }
 
     #[test]
