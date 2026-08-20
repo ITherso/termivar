@@ -166,13 +166,14 @@ See the [runtime map](docs/internals/runtime-map.md) for the exact module and co
 | `venom decision-scan` | Deprecated alias | Compatibility name for the same deterministic command and engine; the wire schema remains `decision-scan/v1` |
 | `venom legacy-scan` | Legacy alpha, opt-in | Historical mixed-authority pipeline: phases 2–4 share bounded passive discovery, phases 5–9 share separate bounded active verification, and phase-one/custom raw I/O keeps the whole run `Unmetered`; requires `legacy-scanner` and explicit acknowledgement |
 | Scanner SDK / native plugins | Preview, opt-in | Source-level host extensions; plugins receive a host-owned bounded context and record observations, not findings. No stock detector plugins ship, and plugins are not merged into the default runtime |
+| Run-report renderer | Preview, opt-in | Source-level `reporting` library API renders an existing typed `RunReport` under a hard output ceiling; the host must pre-redact projected fields, and the renderer has no repository CLI caller, I/O, persistence, finding/risk synthesis, redaction, or verdict authority |
 | `venom api` | Unsupported, opt-in | Absent from default builds; the `api-adapter` feature reports that no listener is implemented |
 | `venom proxy` | Experimental, opt-in | Absent from default builds; `proxy-adapter` exposes an explicit fixed-upstream TCP relay with no `CONNECT`, TLS termination, certificate generation, or HTTP inspection |
 
 Dashboard, distributed, monitoring, compliance, threat-intelligence, Lua, and related modules are optional, host-owned, compile-only, or experimental depending on the feature. Their presence in the repository does not mean they run in the default deterministic path or `legacy-scan`. The [runtime map](docs/internals/runtime-map.md) is the source of truth.
 
 The scanner default is exactly `core` plus `scanning`. Historical phases,
-platform data models, report renderers, native plugins, Lua, and distributed
+platform data models, bounded run-report renderers, native plugins, Lua, and distributed
 workers require the independent `legacy-scanner`, `platform-models`,
 `reporting`, `plugins`, `lua`, and `distributed` features. The CLI's unsupported
 API hook and experimental relay require `api-adapter` and `proxy-adapter`.

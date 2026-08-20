@@ -263,11 +263,7 @@ pub use rules::{
     ExpressionTrace, HypothesisConclusion, KnowledgeLayer, ReasoningRule, RuleApplication,
     RuleEngine, RuleEngineError, RuleEvaluation, RuleWrite,
 };
-#[cfg(any(
-    feature = "legacy-scanner",
-    feature = "platform-models",
-    feature = "reporting"
-))]
+#[cfg(any(feature = "legacy-scanner", feature = "platform-models"))]
 pub use venom_core::ScanFinding;
 pub use venom_core::{
     ApiSurfaceKind, ApiVisibilityComparison, ApiVisibilityDimension, ApiVisibilityObservation,
@@ -382,7 +378,9 @@ pub use persistence::{
 pub use post_exploitation::{AssessmentObservation, ObservationDisposition};
 
 #[cfg(feature = "reporting")]
-pub use reporting::{ReportFormat, ReportGenerator, VulnerabilityReport};
+pub use reporting::{
+    ReportError, ReportFormat, ReportGenerator, MAX_RENDERED_REPORT_BYTES, REPORT_DOCUMENT_SCHEMA,
+};
 
 #[cfg(feature = "platform-models")]
 pub use realtime::{EventStream, RealtimeEvent, RealtimeEventValidationError, Subscription};

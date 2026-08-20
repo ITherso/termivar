@@ -59,9 +59,10 @@ legacy-scanner = ["scanning", "venom-core/legacy-contracts", "dep:chrono", "dep:
 # runtime composes them and they are intentionally absent from the default.
 platform-models = ["core", "venom-core/legacy-contracts", "dep:dashmap", "dep:uuid"]
 
-# Historical report renderers. Kept separate so report hardening and consumers
-# do not enlarge the default decision runtime.
-reporting = ["core", "venom-core/legacy-contracts"]
+# Bounded host-library renderers for the typed RunReport contract. Kept
+# separate so output-format dependencies and consumers do not enlarge the
+# default decision runtime.
+reporting = ["core"]
 
 # Detection & analysis models
 detection = ["dep:regex"]

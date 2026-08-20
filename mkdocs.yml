@@ -13,6 +13,7 @@ nav:
       - Overview: architecture.md
       - Runner: runner.md
       - Scanner: scanner.md
+      - Reporting: reporting.md
       - Scanner SDK: sdk.md
       - ScanContext migration: migrations/scan-context-construction.md
       - Plugins: plugin.md
@@ -85,6 +86,7 @@ nav:
       - ADR 0018 - Bounded legacy verification: adr/0018-bound-legacy-verification-authority.md
       - ADR 0019 - Host-owned plugin execution: adr/0019-host-own-plugin-execution.md
       - ADR 0020 - Platform and distribution quarantine: adr/0020-quarantine-platform-and-distribution-surfaces.md
+      - ADR 0021 - Bounded RunReport rendering: adr/0021-render-bounded-run-reports.md
       - Release process: RELEASE.md
 markdown_extensions:
   - admonition

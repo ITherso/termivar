@@ -1,7 +1,7 @@
 //! Scanner feature and platform-surface quarantine policy.
 //!
 //! The default scanner is the deterministic reasoning/runtime product. Unwired
-//! platform models, historical reporting, Lua, distributed scaffolds, and the
+//! platform models, opt-in reporting, Lua, distributed scaffolds, and the
 //! historical ordered scanner must remain explicit opt-ins. This check binds the
 //! Cargo feature graph to the corresponding `lib.rs` module gates so a manifest
 //! edit cannot silently pull an unsupported surface back into default builds.
@@ -14,7 +14,11 @@ use std::{
 };
 
 use cargo_metadata::{DependencyKind, MetadataCommand};
-use syn::{Attribute, Fields, ImplItem, Item, ItemMod, Meta, UseTree, Visibility};
+use proc_macro2::{TokenStream, TokenTree};
+use syn::{
+    visit::Visit, Attribute, Fields, ImplItem, Item, ItemMod, Meta, Path as SynPath, UseTree,
+    Visibility,
+};
 
 const DEFAULT_SCANNER_FEATURES: &[&str] = &["core", "scanning"];
 const EXACT_CORE_FEATURES: &[&str] = &["default", "legacy-contracts"];
@@ -215,7 +219,6 @@ const FORBIDDEN_ADAPTIVE_API: ForbiddenSurfaceApi = ForbiddenSurfaceApi {
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 enum Lifecycle {
     Experimental,
-    Legacy,
     Preview,
 }
 
@@ -383,9 +386,9 @@ const QUARANTINED_PUBLIC_SURFACES: &[SurfaceContract] = &[
     SurfaceContract {
         module: "reporting",
         feature: "reporting",
-        lifecycle: Lifecycle::Legacy,
+        lifecycle: Lifecycle::Preview,
         implementation: ImplementationClaim::Implemented,
-        host: HostContract::Library("finding-to-report renderer API"),
+        host: HostContract::Library("bounded RunReport renderer API"),
     },
     SurfaceContract {
         module: "distributed",
@@ -640,6 +643,12 @@ const FORBIDDEN_SURFACE_APIS: &[ForbiddenSurfaceApi] = &[
         public_fields: &[],
     },
     ForbiddenSurfaceApi {
+        module: "reporting",
+        public_symbols: &["VulnerabilityReport"],
+        public_methods: &["phase_stats", "risk_score", "severity_stats"],
+        public_fields: &[],
+    },
+    ForbiddenSurfaceApi {
         module: "monitoring",
         public_symbols: &["OptimizationRecommendation", "RecommendationCategory"],
         public_methods: &[
@@ -835,11 +844,24 @@ pub(super) fn check(workspace_root: &Path) -> Result<Vec<String>, Box<dyn Error>
     let source = fs::read_to_string(workspace_root.join("crates/venom-scanner/src/lib.rs"))?;
     violations.extend(module_gate_violations(&source)?);
     violations.extend(scanner_legacy_reexport_violations(&source)?);
+    violations.extend(reporting_reexport_violations(&source)?);
+    violations.extend(reporting_whole_crate_closure_violations(
+        &workspace_root.join("crates/venom-scanner/src"),
+    )?);
     violations.extend(surface_contract_violations(
         QUARANTINED_PUBLIC_SURFACES,
         &source,
     )?);
     violations.extend(forbidden_surface_source_violations(workspace_root)?);
+    let reporting_source =
+        fs::read_to_string(workspace_root.join("crates/venom-scanner/src/reporting.rs"))?;
+    violations.extend(reporting_source_import_violations(&reporting_source)?);
+    violations.extend(reporting_source_violations(&reporting_source)?);
+    violations.extend(reporting_public_api_violations(&reporting_source)?);
+    violations.extend(reporting_document_contract_violations(&reporting_source)?);
+    violations.extend(reporting_production_body_inventory_violations(
+        &reporting_source,
+    ));
     violations.extend(adaptive_surface_violations(workspace_root)?);
     Ok(violations)
 }
@@ -1167,10 +1189,7 @@ fn exact_raw_feature_closures() -> Vec<(&'static str, &'static [&'static str])> 
                 "dep:uuid",
             ],
         ),
-        (
-            "reporting",
-            &["reporting", "core", "venom-core/legacy-contracts"],
-        ),
+        ("reporting", &["reporting", "core"]),
         ("detection", &["detection", "dep:regex"]),
         ("ml", &["ml"]),
         ("distributed", &["distributed", "dep:dashmap"]),
@@ -1279,6 +1298,23 @@ fn module_gate_violations(source: &str) -> Result<Vec<String>, syn::Error> {
                     violations.push(format!(
                         "venom-scanner module `{module_name}` must use exact cfg({expected}), found {actual:?}"
                     ));
+                }
+                if *module_name == "reporting" {
+                    let non_doc_attributes: Vec<_> = module
+                        .attrs
+                        .iter()
+                        .filter(|attribute| !attribute.path().is_ident("doc"))
+                        .collect();
+                    if !is_public(&module.vis)
+                        || module.content.is_some()
+                        || non_doc_attributes.len() != 1
+                        || !non_doc_attributes[0].path().is_ident("cfg")
+                    {
+                        violations.push(
+                            "venom-scanner `reporting` must remain one public out-of-line module with only its exact cfg and optional docs"
+                                .to_owned(),
+                        );
+                    }
                 }
             },
             _ => violations.push(format!(
@@ -1401,7 +1437,7 @@ fn scanner_legacy_reexport_violations(source: &str) -> Result<Vec<String>, syn::
         ("EventType", "feature=\"legacy-scanner\""),
         (
             "ScanFinding",
-            "any(feature=\"legacy-scanner\",feature=\"platform-models\",feature=\"reporting\")",
+            "any(feature=\"legacy-scanner\",feature=\"platform-models\")",
         ),
     ]);
     let mut counts = BTreeMap::<String, usize>::new();
@@ -1439,6 +1475,2005 @@ fn scanner_legacy_reexport_violations(source: &str) -> Result<Vec<String>, syn::
     Ok(violations)
 }
 
+const EXACT_REPORTING_REEXPORTS: &[&str] = &[
+    "MAX_RENDERED_REPORT_BYTES",
+    "REPORT_DOCUMENT_SCHEMA",
+    "ReportError",
+    "ReportFormat",
+    "ReportGenerator",
+];
+
+fn reporting_reexport_violations(source: &str) -> Result<Vec<String>, syn::Error> {
+    let syntax = syn::parse_file(source)?;
+    let mut violations = Vec::new();
+    collect_reporting_cfg_item_violations(&syntax.items, 0, false, &mut violations);
+    let mut all_uses = Vec::new();
+    collect_recursive_item_uses(&syntax.items, 0, &mut all_uses);
+    let mut all_type_aliases = Vec::new();
+    collect_recursive_type_aliases(&syntax.items, 0, &mut all_type_aliases);
+    let mut aliases: BTreeSet<String> = EXACT_REPORTING_REEXPORTS
+        .iter()
+        .map(|name| (*name).to_owned())
+        .chain(["reporting".to_owned()])
+        .collect();
+    let bindings: Vec<_> = all_uses
+        .iter()
+        .map(|record| {
+            let mut bindings = Vec::new();
+            collect_use_bindings(&record.item.tree, &mut Vec::new(), &mut bindings);
+            bindings
+        })
+        .collect();
+    let type_alias_paths: Vec<_> = all_type_aliases
+        .iter()
+        .map(|record| collect_type_paths(&record.item.ty))
+        .collect();
+    let mut related = vec![false; all_uses.len()];
+    let mut related_type_aliases = vec![false; all_type_aliases.len()];
+    loop {
+        let mut changed = false;
+        for (index, use_bindings) in bindings.iter().enumerate() {
+            if related[index]
+                || !use_bindings
+                    .iter()
+                    .any(|(source, _)| source.iter().any(|segment| aliases.contains(segment)))
+            {
+                continue;
+            }
+            related[index] = true;
+            changed = true;
+            for (_, exposed) in use_bindings {
+                aliases.insert(exposed.clone());
+            }
+        }
+        for (index, paths) in type_alias_paths.iter().enumerate() {
+            if related_type_aliases[index]
+                || !paths
+                    .iter()
+                    .any(|path| path.iter().any(|segment| aliases.contains(segment)))
+            {
+                continue;
+            }
+            related_type_aliases[index] = true;
+            changed = true;
+            aliases.insert(semantic_ident_name(&all_type_aliases[index].item.ident));
+        }
+        if !changed {
+            break;
+        }
+    }
+    let reporting_uses: Vec<_> = all_uses
+        .iter()
+        .zip(related)
+        .filter_map(|(record, related)| related.then_some(record))
+        .collect();
+    let expected: BTreeSet<_> = EXACT_REPORTING_REEXPORTS
+        .iter()
+        .map(|name| (*name).to_owned())
+        .collect();
+    for (record, related) in all_type_aliases.iter().zip(related_type_aliases) {
+        if related {
+            violations.push(format!(
+                "venom-scanner reporting facade cannot pass through type alias `{}` at inline-module depth {}",
+                record.item.ident, record.depth
+            ));
+        }
+    }
+    match reporting_uses.as_slice() {
+        [record] => {
+            let item = record.item;
+            if record.depth != 0 || !is_public(&item.vis) {
+                violations.push(
+                    "venom-scanner reporting facade cannot pass through private aliases or inline modules"
+                        .to_owned(),
+                );
+            }
+            if item.leading_colon.is_some()
+                || use_tree_root_ident(&item.tree).as_deref() != Some("reporting")
+            {
+                violations.push(
+                    "venom-scanner reporting re-exports must use the exact direct `reporting::{...}` path"
+                        .to_owned(),
+                );
+            }
+            let actual_cfg = cfg_predicates_from_attributes(&item.attrs);
+            let expected_cfg = "feature=\"reporting\"".to_owned();
+            if actual_cfg != [expected_cfg.clone()] {
+                violations.push(format!(
+                    "venom-scanner reporting re-exports must use exact cfg({expected_cfg}), found {actual_cfg:?}"
+                ));
+            }
+            let mut actual = BTreeSet::new();
+            collect_use_names(&item.tree, &mut actual);
+            if actual != expected {
+                violations.push(format!(
+                    "venom-scanner reporting re-exports must be exactly {expected:?}, found {actual:?}"
+                ));
+            }
+        },
+        _ => violations.push(format!(
+            "venom-scanner must declare exactly one public `reporting` re-export with symbols {expected:?}; found {}",
+            reporting_uses.len()
+        )),
+    }
+    Ok(violations)
+}
+
+fn collect_reporting_cfg_item_violations(
+    items: &[Item],
+    depth: usize,
+    inherited_reporting_cfg: bool,
+    violations: &mut Vec<String>,
+) {
+    for item in items {
+        let reporting_cfg = inherited_reporting_cfg
+            || attributes_mention_reporting_cfg(reporting_item_attributes(item));
+        if reporting_cfg {
+            let exact_root_item = depth == 0
+                && match item {
+                    Item::Mod(module) => is_exact_reporting_module(module),
+                    Item::Use(item) => is_exact_reporting_reexport(item),
+                    _ => false,
+                };
+            if !exact_root_item {
+                violations.push(format!(
+                    "venom-scanner cfg(reporting) facade item `{}` at inline-module depth {depth} is forbidden; only the exact root module and five-symbol re-export are allowed",
+                    reporting_item_label(item)
+                ));
+            }
+        }
+        if let Item::Mod(module) = item {
+            if let Some((_, nested)) = &module.content {
+                collect_reporting_cfg_item_violations(nested, depth + 1, reporting_cfg, violations);
+            }
+        }
+    }
+}
+
+fn attributes_mention_reporting_cfg(attributes: &[Attribute]) -> bool {
+    attributes.iter().any(|attribute| {
+        let path = reporting_syn_path_key(attribute.path());
+        if path != "cfg" && path != "cfg_attr" {
+            return false;
+        }
+        match &attribute.meta {
+            Meta::List(list) => token_stream_mentions_reporting(&list.tokens),
+            _ => false,
+        }
+    })
+}
+
+fn token_stream_mentions_reporting(tokens: &TokenStream) -> bool {
+    tokens.clone().into_iter().any(|token| match token {
+        TokenTree::Group(group) => token_stream_mentions_reporting(&group.stream()),
+        TokenTree::Ident(identifier) => semantic_ident_name(&identifier) == "reporting",
+        TokenTree::Literal(literal) => syn::parse_str::<syn::LitStr>(&literal.to_string())
+            .is_ok_and(|literal| literal.value() == "reporting"),
+        TokenTree::Punct(_) => false,
+    })
+}
+
+fn reporting_item_attributes(item: &Item) -> &[Attribute] {
+    match item {
+        Item::Const(item) => &item.attrs,
+        Item::Enum(item) => &item.attrs,
+        Item::ExternCrate(item) => &item.attrs,
+        Item::Fn(item) => &item.attrs,
+        Item::ForeignMod(item) => &item.attrs,
+        Item::Impl(item) => &item.attrs,
+        Item::Macro(item) => &item.attrs,
+        Item::Mod(item) => &item.attrs,
+        Item::Static(item) => &item.attrs,
+        Item::Struct(item) => &item.attrs,
+        Item::Trait(item) => &item.attrs,
+        Item::TraitAlias(item) => &item.attrs,
+        Item::Type(item) => &item.attrs,
+        Item::Union(item) => &item.attrs,
+        Item::Use(item) => &item.attrs,
+        _ => &[],
+    }
+}
+
+fn reporting_item_label(item: &Item) -> String {
+    match item {
+        Item::Const(item) => format!("const {}", item.ident),
+        Item::Enum(item) => format!("enum {}", item.ident),
+        Item::ExternCrate(item) => format!("extern crate {}", item.ident),
+        Item::Fn(item) => format!("fn {}", item.sig.ident),
+        Item::ForeignMod(_) => "foreign module".to_owned(),
+        Item::Impl(_) => "impl".to_owned(),
+        Item::Macro(item) => item.ident.as_ref().map_or_else(
+            || "macro invocation".to_owned(),
+            |ident| format!("macro {ident}"),
+        ),
+        Item::Mod(item) => format!("mod {}", item.ident),
+        Item::Static(item) => format!("static {}", item.ident),
+        Item::Struct(item) => format!("struct {}", item.ident),
+        Item::Trait(item) => format!("trait {}", item.ident),
+        Item::TraitAlias(item) => format!("trait alias {}", item.ident),
+        Item::Type(item) => format!("type {}", item.ident),
+        Item::Union(item) => format!("union {}", item.ident),
+        Item::Use(_) => "use".to_owned(),
+        _ => "unknown item".to_owned(),
+    }
+}
+
+fn is_exact_reporting_module(module: &ItemMod) -> bool {
+    let non_doc_attributes: Vec<_> = module
+        .attrs
+        .iter()
+        .filter(|attribute| !attribute.path().is_ident("doc"))
+        .collect();
+    module.ident == "reporting"
+        && is_public(&module.vis)
+        && module.content.is_none()
+        && non_doc_attributes.len() == 1
+        && non_doc_attributes[0].path().is_ident("cfg")
+        && cfg_predicate(non_doc_attributes[0]).as_deref() == Some("feature=\"reporting\"")
+}
+
+fn is_exact_reporting_reexport(item: &syn::ItemUse) -> bool {
+    let non_doc_attributes: Vec<_> = item
+        .attrs
+        .iter()
+        .filter(|attribute| !attribute.path().is_ident("doc"))
+        .collect();
+    let mut names = BTreeSet::new();
+    collect_use_names(&item.tree, &mut names);
+    let expected: BTreeSet<_> = EXACT_REPORTING_REEXPORTS
+        .iter()
+        .map(|name| (*name).to_owned())
+        .collect();
+    is_public(&item.vis)
+        && item.leading_colon.is_none()
+        && use_tree_root_ident(&item.tree).as_deref() == Some("reporting")
+        && names == expected
+        && non_doc_attributes.len() == 1
+        && non_doc_attributes[0].path().is_ident("cfg")
+        && cfg_predicate(non_doc_attributes[0]).as_deref() == Some("feature=\"reporting\"")
+}
+
+const WHOLE_CRATE_REPORTING_IDENTIFIERS: &[&str] = &[
+    "MAX_RENDERED_REPORT_BYTES",
+    "REPORT_DOCUMENT_SCHEMA",
+    "ReportError",
+    "ReportFormat",
+    "ReportGenerator",
+    "reporting",
+];
+
+const ALLOWED_QUALIFIED_SCANNER_MACROS: &[&str] = &[
+    "serde_json::json",
+    "tokio::join",
+    "tokio::pin",
+    "tokio::select",
+    "tokio::try_join",
+];
+
+const ALLOWED_IMPORTED_SCANNER_MACROS: &[(&str, &str)] =
+    &[("html5ever::ns", "ns"), ("serde_json::json", "json")];
+
+fn reporting_whole_crate_closure_violations(
+    scanner_source: &Path,
+) -> Result<Vec<String>, Box<dyn Error>> {
+    let mut files = Vec::new();
+    collect_scanner_rust_sources(scanner_source, &mut files)?;
+    files.sort();
+    let mut sources = Vec::new();
+    for path in files {
+        let relative = path
+            .strip_prefix(scanner_source)?
+            .to_string_lossy()
+            .replace('\\', "/");
+        if relative == "reporting.rs" {
+            continue;
+        }
+        let source = fs::read_to_string(&path)?;
+        sources.push((relative, source));
+    }
+    Ok(reporting_cross_source_set_violations(&sources)?)
+}
+
+fn collect_scanner_rust_sources(
+    directory: &Path,
+    files: &mut Vec<std::path::PathBuf>,
+) -> io::Result<()> {
+    for entry in fs::read_dir(directory)? {
+        let path = entry?.path();
+        if path.is_dir() {
+            collect_scanner_rust_sources(&path, files)?;
+        } else if path.extension().is_some_and(|extension| extension == "rs") {
+            files.push(path);
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+fn reporting_cross_file_source_violations(
+    relative_path: &str,
+    source: &str,
+) -> Result<Vec<String>, syn::Error> {
+    reporting_cross_source_set_violations(&[(relative_path.to_owned(), source.to_owned())])
+}
+
+fn reporting_cross_source_set_violations(
+    sources: &[(String, String)],
+) -> Result<Vec<String>, syn::Error> {
+    let parsed: Vec<_> = sources
+        .iter()
+        .map(|(path, source)| syn::parse_file(source).map(|syntax| (path, syntax)))
+        .collect::<Result<_, _>>()?;
+    let run_report_aliases = collect_run_report_aliases(&parsed);
+    let mut violations = Vec::new();
+    for (relative_path, syntax) in parsed {
+        let imported_macro_bindings = collect_production_use_bindings(&syntax);
+        let mut visitor = ReportingCrossFileVisitor {
+            relative_path,
+            run_report_aliases: &run_report_aliases,
+            imported_macro_bindings: &imported_macro_bindings,
+            public_trait_depth: 0,
+            violations: BTreeSet::new(),
+        };
+        if relative_path == "lib.rs" {
+            for item in &syntax.items {
+                let exact_reporting_item = match item {
+                    Item::Mod(module) => is_exact_reporting_module(module),
+                    Item::Use(item) => is_exact_reporting_reexport(item),
+                    _ => false,
+                };
+                if !exact_reporting_item {
+                    visitor.visit_item(item);
+                }
+            }
+        } else {
+            visitor.visit_file(&syntax);
+        }
+        violations.extend(visitor.violations);
+    }
+    Ok(violations)
+}
+
+#[derive(Default)]
+struct ProductionUseBindingCollector {
+    bindings: BTreeMap<String, BTreeSet<String>>,
+}
+
+impl<'ast> Visit<'ast> for ProductionUseBindingCollector {
+    fn visit_item_use(&mut self, item: &'ast syn::ItemUse) {
+        let mut bindings = Vec::new();
+        collect_use_bindings(&item.tree, &mut Vec::new(), &mut bindings);
+        for (source, exposed) in bindings {
+            if matches!(exposed.as_str(), "*" | "self") {
+                continue;
+            }
+            self.bindings
+                .entry(exposed)
+                .or_default()
+                .insert(source.join("::"));
+        }
+        syn::visit::visit_item_use(self, item);
+    }
+
+    fn visit_item_mod(&mut self, item: &'ast syn::ItemMod) {
+        if is_exact_test_module(item) {
+            return;
+        }
+        syn::visit::visit_item_mod(self, item);
+    }
+}
+
+fn collect_production_use_bindings(syntax: &syn::File) -> BTreeMap<String, BTreeSet<String>> {
+    let mut collector = ProductionUseBindingCollector::default();
+    collector.visit_file(syntax);
+    collector.bindings
+}
+
+fn is_exact_test_module(item: &syn::ItemMod) -> bool {
+    let cfg_attributes: Vec<_> = item
+        .attrs
+        .iter()
+        .filter(|attribute| {
+            matches!(
+                reporting_syn_path_key(attribute.path()).as_str(),
+                "cfg" | "cfg_attr"
+            )
+        })
+        .collect();
+    cfg_attributes.len() == 1
+        && reporting_syn_path_key(cfg_attributes[0].path()) == "cfg"
+        && cfg_predicate(cfg_attributes[0]).as_deref() == Some("test")
+}
+
+fn collect_run_report_aliases(parsed: &[(&String, syn::File)]) -> BTreeSet<String> {
+    let mut aliases = BTreeSet::from(["RunReport".to_owned()]);
+    let mut use_bindings = Vec::new();
+    let mut type_aliases = Vec::new();
+    for (_, syntax) in parsed {
+        let mut uses = Vec::new();
+        collect_recursive_item_uses(&syntax.items, 0, &mut uses);
+        use_bindings.extend(uses.into_iter().map(|record| {
+            let mut bindings = Vec::new();
+            collect_use_bindings(&record.item.tree, &mut Vec::new(), &mut bindings);
+            bindings
+        }));
+        let mut types = Vec::new();
+        collect_recursive_type_aliases(&syntax.items, 0, &mut types);
+        type_aliases.extend(types.into_iter().map(|record| {
+            (
+                semantic_ident_name(&record.item.ident),
+                collect_type_paths(&record.item.ty),
+            )
+        }));
+    }
+    loop {
+        let mut changed = false;
+        for bindings in &use_bindings {
+            for (source, exposed) in bindings {
+                if source.iter().any(|segment| aliases.contains(segment)) {
+                    changed |= aliases.insert(exposed.clone());
+                }
+            }
+        }
+        for (exposed, paths) in &type_aliases {
+            if paths
+                .iter()
+                .any(|path| path.iter().any(|segment| aliases.contains(segment)))
+            {
+                changed |= aliases.insert(exposed.clone());
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    aliases
+}
+
+fn type_contains_run_report(ty: &syn::Type, aliases: &BTreeSet<String>) -> bool {
+    let mut visitor = RunReportPathVisitor {
+        aliases,
+        found: false,
+    };
+    visitor.visit_type(ty);
+    visitor.found
+}
+
+fn generics_contain_run_report(generics: &syn::Generics, aliases: &BTreeSet<String>) -> bool {
+    let mut visitor = RunReportPathVisitor {
+        aliases,
+        found: false,
+    };
+    visitor.visit_generics(generics);
+    visitor.found
+}
+
+struct RunReportPathVisitor<'a> {
+    aliases: &'a BTreeSet<String>,
+    found: bool,
+}
+
+impl<'ast> Visit<'ast> for RunReportPathVisitor<'_> {
+    fn visit_path(&mut self, path: &'ast SynPath) {
+        if path
+            .segments
+            .iter()
+            .any(|segment| self.aliases.contains(&semantic_ident_name(&segment.ident)))
+        {
+            self.found = true;
+        }
+        syn::visit::visit_path(self, path);
+    }
+}
+
+fn type_exposes_run_report_callable(ty: &syn::Type, aliases: &BTreeSet<String>) -> bool {
+    let mut visitor = RunReportCallableVisitor {
+        aliases,
+        found: false,
+    };
+    visitor.visit_type(ty);
+    visitor.found
+}
+
+struct RunReportCallableVisitor<'a> {
+    aliases: &'a BTreeSet<String>,
+    found: bool,
+}
+
+impl<'ast> Visit<'ast> for RunReportCallableVisitor<'_> {
+    fn visit_type_bare_fn(&mut self, function: &'ast syn::TypeBareFn) {
+        if function
+            .inputs
+            .iter()
+            .any(|input| type_contains_run_report(&input.ty, self.aliases))
+        {
+            self.found = true;
+        }
+        syn::visit::visit_type_bare_fn(self, function);
+    }
+
+    fn visit_path(&mut self, path: &'ast SynPath) {
+        for segment in &path.segments {
+            if !matches!(
+                semantic_ident_name(&segment.ident).as_str(),
+                "Fn" | "FnMut" | "FnOnce"
+            ) {
+                continue;
+            }
+            match &segment.arguments {
+                syn::PathArguments::Parenthesized(arguments)
+                    if arguments
+                        .inputs
+                        .iter()
+                        .any(|input| type_contains_run_report(input, self.aliases)) =>
+                {
+                    self.found = true;
+                },
+                syn::PathArguments::AngleBracketed(arguments)
+                    if arguments.args.iter().any(|argument| {
+                        matches!(
+                            argument,
+                            syn::GenericArgument::Type(ty)
+                                if type_contains_run_report(ty, self.aliases)
+                        )
+                    }) =>
+                {
+                    self.found = true;
+                },
+                _ => {},
+            }
+        }
+        syn::visit::visit_path(self, path);
+    }
+}
+
+fn signature_exposes_run_report_consumer(
+    signature: &syn::Signature,
+    aliases: &BTreeSet<String>,
+) -> bool {
+    signature.inputs.iter().any(|input| match input {
+        syn::FnArg::Receiver(receiver) => {
+            receiver.colon_token.is_some() && type_contains_run_report(&receiver.ty, aliases)
+        },
+        syn::FnArg::Typed(input) => type_contains_run_report(&input.ty, aliases),
+    }) || generics_contain_run_report(&signature.generics, aliases)
+        || match &signature.output {
+            syn::ReturnType::Default => false,
+            syn::ReturnType::Type(_, ty) => type_exposes_run_report_callable(ty, aliases),
+        }
+}
+
+fn fields_expose_run_report_callable(
+    fields: &Fields,
+    aliases: &BTreeSet<String>,
+    enum_fields_are_public: bool,
+) -> bool {
+    fields.iter().any(|field| {
+        (enum_fields_are_public || is_public(&field.vis))
+            && type_exposes_run_report_callable(&field.ty, aliases)
+    })
+}
+
+fn bounds_expose_run_report_callable(
+    bounds: &syn::punctuated::Punctuated<syn::TypeParamBound, syn::token::Plus>,
+    aliases: &BTreeSet<String>,
+) -> bool {
+    let mut visitor = RunReportCallableVisitor {
+        aliases,
+        found: false,
+    };
+    for bound in bounds {
+        visitor.visit_type_param_bound(bound);
+    }
+    visitor.found
+}
+
+struct ReportingCrossFileVisitor<'a> {
+    relative_path: &'a str,
+    run_report_aliases: &'a BTreeSet<String>,
+    imported_macro_bindings: &'a BTreeMap<String, BTreeSet<String>>,
+    public_trait_depth: usize,
+    violations: BTreeSet<String>,
+}
+
+impl ReportingCrossFileVisitor<'_> {
+    fn insert(&mut self, detail: impl std::fmt::Display) {
+        self.violations.insert(format!(
+            "venom-scanner reporting authority must remain in reporting.rs and the exact lib.rs facade; {} contains {detail}",
+            self.relative_path
+        ));
+    }
+}
+
+impl<'ast> Visit<'ast> for ReportingCrossFileVisitor<'_> {
+    fn visit_item_fn(&mut self, item: &'ast syn::ItemFn) {
+        if is_public(&item.vis)
+            && signature_exposes_run_report_consumer(&item.sig, self.run_report_aliases)
+        {
+            self.insert(format_args!(
+                "public function `{}` that consumes or exports a callable over RunReport",
+                item.sig.ident
+            ));
+        }
+        syn::visit::visit_item_fn(self, item);
+    }
+
+    fn visit_item_impl(&mut self, item: &'ast syn::ItemImpl) {
+        for member in &item.items {
+            let ImplItem::Fn(method) = member else {
+                continue;
+            };
+            let publicly_callable = item.trait_.is_some() || is_public(&method.vis);
+            if publicly_callable
+                && signature_exposes_run_report_consumer(&method.sig, self.run_report_aliases)
+            {
+                self.insert(format_args!(
+                    "publicly callable method `{}` that consumes or exports a callable over RunReport",
+                    method.sig.ident
+                ));
+            }
+        }
+        syn::visit::visit_item_impl(self, item);
+    }
+
+    fn visit_item_trait(&mut self, item: &'ast syn::ItemTrait) {
+        if is_public(&item.vis) {
+            if bounds_expose_run_report_callable(&item.supertraits, self.run_report_aliases) {
+                self.insert(format_args!(
+                    "public trait `{}` with a callable RunReport input",
+                    item.ident
+                ));
+            }
+            self.public_trait_depth += 1;
+            syn::visit::visit_item_trait(self, item);
+            self.public_trait_depth -= 1;
+            return;
+        }
+        syn::visit::visit_item_trait(self, item);
+    }
+
+    fn visit_trait_item_fn(&mut self, item: &'ast syn::TraitItemFn) {
+        if self.public_trait_depth != 0
+            && signature_exposes_run_report_consumer(&item.sig, self.run_report_aliases)
+        {
+            self.insert(format_args!(
+                "public trait method `{}` that consumes or exports a callable over RunReport",
+                item.sig.ident
+            ));
+        }
+        syn::visit::visit_trait_item_fn(self, item);
+    }
+
+    fn visit_item_type(&mut self, item: &'ast syn::ItemType) {
+        if is_public(&item.vis)
+            && (type_exposes_run_report_callable(&item.ty, self.run_report_aliases)
+                || generics_contain_run_report(&item.generics, self.run_report_aliases))
+        {
+            self.insert(format_args!(
+                "public callable type alias `{}` over RunReport",
+                item.ident
+            ));
+        }
+        syn::visit::visit_item_type(self, item);
+    }
+
+    fn visit_item_const(&mut self, item: &'ast syn::ItemConst) {
+        if is_public(&item.vis)
+            && type_exposes_run_report_callable(&item.ty, self.run_report_aliases)
+        {
+            self.insert(format_args!(
+                "public callable const `{}` over RunReport",
+                item.ident
+            ));
+        }
+        syn::visit::visit_item_const(self, item);
+    }
+
+    fn visit_item_static(&mut self, item: &'ast syn::ItemStatic) {
+        if is_public(&item.vis)
+            && type_exposes_run_report_callable(&item.ty, self.run_report_aliases)
+        {
+            self.insert(format_args!(
+                "public callable static `{}` over RunReport",
+                item.ident
+            ));
+        }
+        syn::visit::visit_item_static(self, item);
+    }
+
+    fn visit_item_struct(&mut self, item: &'ast syn::ItemStruct) {
+        if is_public(&item.vis)
+            && (fields_expose_run_report_callable(&item.fields, self.run_report_aliases, false)
+                || generics_contain_run_report(&item.generics, self.run_report_aliases))
+        {
+            self.insert(format_args!(
+                "public struct `{}` with a callable RunReport input",
+                item.ident
+            ));
+        }
+        syn::visit::visit_item_struct(self, item);
+    }
+
+    fn visit_item_enum(&mut self, item: &'ast syn::ItemEnum) {
+        if is_public(&item.vis)
+            && (item.variants.iter().any(|variant| {
+                fields_expose_run_report_callable(&variant.fields, self.run_report_aliases, true)
+            }) || generics_contain_run_report(&item.generics, self.run_report_aliases))
+        {
+            self.insert(format_args!(
+                "public enum `{}` with a callable RunReport input",
+                item.ident
+            ));
+        }
+        syn::visit::visit_item_enum(self, item);
+    }
+
+    fn visit_item_union(&mut self, item: &'ast syn::ItemUnion) {
+        if is_public(&item.vis)
+            && (item.fields.named.iter().any(|field| {
+                is_public(&field.vis)
+                    && type_exposes_run_report_callable(&field.ty, self.run_report_aliases)
+            }) || generics_contain_run_report(&item.generics, self.run_report_aliases))
+        {
+            self.insert(format_args!(
+                "public union `{}` with a callable RunReport input",
+                item.ident
+            ));
+        }
+        syn::visit::visit_item_union(self, item);
+    }
+
+    fn visit_item_mod(&mut self, item: &'ast syn::ItemMod) {
+        if is_exact_test_module(item) {
+            return;
+        }
+        syn::visit::visit_item_mod(self, item);
+    }
+
+    fn visit_attribute(&mut self, attribute: &'ast Attribute) {
+        if attributes_mention_reporting_cfg(std::slice::from_ref(attribute)) {
+            self.insert("a cfg/cfg_attr predicate that enables `reporting`");
+        }
+        let path = reporting_syn_path_key(attribute.path());
+        if path == "macro_use" {
+            self.insert("a production `#[macro_use]` macro import");
+        }
+        if path == "path" {
+            self.insert("a production `#[path]` source indirection");
+        }
+        if path != "doc" {
+            if let Meta::List(list) = &attribute.meta {
+                for identifier in reporting_macro_token_identifiers(&list.tokens) {
+                    self.insert(format_args!(
+                        "reporting identifier `{identifier}` inside attribute tokens"
+                    ));
+                }
+            }
+        }
+        syn::visit::visit_attribute(self, attribute);
+    }
+
+    fn visit_ident(&mut self, identifier: &'ast syn::Ident) {
+        let name = semantic_ident_name(identifier);
+        if WHOLE_CRATE_REPORTING_IDENTIFIERS.contains(&name.as_str()) {
+            self.insert(format_args!("reporting identifier `{name}`"));
+        }
+        syn::visit::visit_ident(self, identifier);
+    }
+
+    fn visit_macro(&mut self, item: &'ast syn::Macro) {
+        let path = reporting_syn_path_key(&item.path);
+        if !path.contains("::") {
+            if let Some(sources) = self.imported_macro_bindings.get(&path) {
+                let trusted = sources.len() == 1
+                    && sources.iter().all(|source| {
+                        ALLOWED_IMPORTED_SCANNER_MACROS.contains(&(source.as_str(), path.as_str()))
+                    });
+                if !trusted {
+                    self.insert(format_args!(
+                        "unclassified imported macro invocation `{path}!` from {}",
+                        sources.iter().cloned().collect::<Vec<_>>().join(", ")
+                    ));
+                }
+            }
+        }
+        if path.contains("::") && !ALLOWED_QUALIFIED_SCANNER_MACROS.contains(&path.as_str()) {
+            self.insert(format_args!(
+                "unclassified qualified macro invocation `{path}!`"
+            ));
+        }
+        if path == "include" {
+            self.insert("a production `include!` source indirection");
+        }
+        for identifier in reporting_macro_token_identifiers(&item.tokens) {
+            self.insert(format_args!(
+                "reporting identifier `{identifier}` inside `{path}!` tokens"
+            ));
+        }
+        syn::visit::visit_macro(self, item);
+    }
+}
+
+fn reporting_macro_token_identifiers(tokens: &TokenStream) -> BTreeSet<String> {
+    let mut identifiers = BTreeSet::new();
+    for token in tokens.clone() {
+        match token {
+            TokenTree::Group(group) => {
+                identifiers.extend(reporting_macro_token_identifiers(&group.stream()));
+            },
+            TokenTree::Ident(identifier) => {
+                let identifier = semantic_ident_name(&identifier);
+                if WHOLE_CRATE_REPORTING_IDENTIFIERS.contains(&identifier.as_str()) {
+                    identifiers.insert(identifier);
+                }
+            },
+            TokenTree::Literal(literal) => {
+                if let Ok(literal) = syn::parse_str::<syn::LitStr>(&literal.to_string()) {
+                    let value = literal.value();
+                    for identifier in WHOLE_CRATE_REPORTING_IDENTIFIERS {
+                        if value.contains(identifier) {
+                            identifiers.insert((*identifier).to_owned());
+                        }
+                    }
+                }
+            },
+            TokenTree::Punct(_) => {},
+        }
+    }
+    identifiers
+}
+
+fn semantic_ident_name(identifier: &syn::Ident) -> String {
+    let name = identifier.to_string();
+    name.strip_prefix("r#").unwrap_or(&name).to_owned()
+}
+
+struct RecursiveUseRecord<'a> {
+    item: &'a syn::ItemUse,
+    depth: usize,
+}
+
+struct RecursiveTypeAliasRecord<'a> {
+    item: &'a syn::ItemType,
+    depth: usize,
+}
+
+fn collect_recursive_item_uses<'a>(
+    items: &'a [Item],
+    depth: usize,
+    uses: &mut Vec<RecursiveUseRecord<'a>>,
+) {
+    for item in items {
+        match item {
+            Item::Use(item) => uses.push(RecursiveUseRecord { item, depth }),
+            Item::Mod(module) => {
+                if let Some((_, items)) = &module.content {
+                    collect_recursive_item_uses(items, depth + 1, uses);
+                }
+            },
+            _ => {},
+        }
+    }
+}
+
+fn collect_recursive_type_aliases<'a>(
+    items: &'a [Item],
+    depth: usize,
+    aliases: &mut Vec<RecursiveTypeAliasRecord<'a>>,
+) {
+    for item in items {
+        match item {
+            Item::Type(item) => aliases.push(RecursiveTypeAliasRecord { item, depth }),
+            Item::Mod(module) => {
+                if let Some((_, items)) = &module.content {
+                    collect_recursive_type_aliases(items, depth + 1, aliases);
+                }
+            },
+            _ => {},
+        }
+    }
+}
+
+#[derive(Default)]
+struct TypePathCollector {
+    paths: Vec<Vec<String>>,
+}
+
+impl<'ast> Visit<'ast> for TypePathCollector {
+    fn visit_path(&mut self, path: &'ast SynPath) {
+        self.paths.push(
+            path.segments
+                .iter()
+                .map(|segment| semantic_ident_name(&segment.ident))
+                .collect(),
+        );
+        syn::visit::visit_path(self, path);
+    }
+}
+
+fn collect_type_paths(ty: &syn::Type) -> Vec<Vec<String>> {
+    let mut collector = TypePathCollector::default();
+    collector.visit_type(ty);
+    collector.paths
+}
+
+fn collect_use_bindings(
+    tree: &UseTree,
+    prefix: &mut Vec<String>,
+    bindings: &mut Vec<(Vec<String>, String)>,
+) {
+    match tree {
+        UseTree::Path(path) => {
+            prefix.push(semantic_ident_name(&path.ident));
+            collect_use_bindings(&path.tree, prefix, bindings);
+            prefix.pop();
+        },
+        UseTree::Name(name) => {
+            let exposed = semantic_ident_name(&name.ident);
+            if exposed != "self" {
+                prefix.push(exposed.clone());
+            }
+            bindings.push((prefix.clone(), exposed));
+            if semantic_ident_name(&name.ident) != "self" {
+                prefix.pop();
+            }
+        },
+        UseTree::Rename(rename) => {
+            prefix.push(semantic_ident_name(&rename.ident));
+            bindings.push((prefix.clone(), semantic_ident_name(&rename.rename)));
+            prefix.pop();
+        },
+        UseTree::Group(group) => {
+            for item in &group.items {
+                collect_use_bindings(item, prefix, bindings);
+            }
+        },
+        UseTree::Glob(_) => bindings.push((prefix.clone(), "*".to_owned())),
+    }
+}
+
+fn use_tree_root_ident(tree: &UseTree) -> Option<String> {
+    match tree {
+        UseTree::Name(name) => Some(semantic_ident_name(&name.ident)),
+        UseTree::Path(path) => Some(semantic_ident_name(&path.ident)),
+        UseTree::Rename(rename) => Some(semantic_ident_name(&rename.ident)),
+        UseTree::Glob(_) | UseTree::Group(_) => None,
+    }
+}
+
+const EXACT_REPORTING_PUBLIC_ITEMS: &[(&str, &str)] = &[
+    ("MAX_RENDERED_REPORT_BYTES", "const"),
+    ("REPORT_DOCUMENT_SCHEMA", "const"),
+    ("ReportError", "enum"),
+    ("ReportFormat", "enum"),
+    ("ReportGenerator", "struct"),
+];
+
+const EXACT_REPORTING_INHERENT_METHODS: &[(&str, &[&str])] = &[
+    ("ReportFormat", &["as_str", "extension", "media_type"]),
+    ("ReportGenerator", &["available_formats", "generate"]),
+];
+
+const EXACT_REPORTING_PUBLIC_TRAIT_IMPLS: &[(&str, &str)] =
+    &[("ReportError", "fmt::Display"), ("ReportError", "Error")];
+
+type ReportingDocumentField = (&'static str, &'static str);
+type ReportingDocumentShape = (
+    &'static str,
+    &'static [&'static str],
+    &'static [ReportingDocumentField],
+);
+
+const EXACT_REPORTING_DOCUMENT_STRUCTS: &[ReportingDocumentShape] = &[
+    (
+        "ReportDocument",
+        &["a"],
+        &[
+            ("schema", "&'static str"),
+            ("source_schema", "&'a str"),
+            ("status", "&'static str"),
+            ("stop_code", "&'static str"),
+            ("target", "&'a str"),
+            ("authorized_origin", "&'a str"),
+            ("started_at", "String"),
+            ("completed_at", "String"),
+            ("accounting", "AccountingDocument"),
+            ("steps", "Vec<StepDocument<'a>>"),
+            ("outcomes", "Vec<OutcomeDocument<'a>>"),
+        ],
+    ),
+    (
+        "AccountingDocument",
+        &[],
+        &[
+            ("requests", "AccountingDimension"),
+            ("response_body_bytes", "AccountingDimension"),
+            ("request_body_bytes", "AccountingDimension"),
+            ("wall_time_ms", "AccountingDimension"),
+        ],
+    ),
+    (
+        "AccountingDimension",
+        &[],
+        &[
+            ("mode", "&'static str"),
+            ("limit", "Option<String>"),
+            ("consumed", "Option<String>"),
+            ("remaining", "Option<String>"),
+        ],
+    ),
+    (
+        "StepDocument",
+        &["a"],
+        &[
+            ("ordinal", "u32"),
+            ("action_id", "&'a str"),
+            ("status", "&'static str"),
+            ("duration_ms", "String"),
+        ],
+    ),
+    (
+        "OutcomeDocument",
+        &["a"],
+        &[
+            ("kind", "&'static str"),
+            ("action_id", "&'a str"),
+            ("severity", "&'static str"),
+            ("disposition", "&'static str"),
+            ("confidence_ppm", "u32"),
+            ("evidence_count", "u64"),
+            ("redacted_summary", "&'a str"),
+        ],
+    ),
+];
+
+fn reporting_document_contract_violations(source: &str) -> Result<Vec<String>, syn::Error> {
+    let syntax = syn::parse_file(source)?;
+    let expected: BTreeMap<_, _> = EXACT_REPORTING_DOCUMENT_STRUCTS
+        .iter()
+        .map(|(name, lifetimes, fields)| (*name, (*lifetimes, *fields)))
+        .collect();
+    let mut counts = BTreeMap::<String, usize>::new();
+    let mut violations = Vec::new();
+
+    for item in &syntax.items {
+        let Item::Struct(item) = item else {
+            continue;
+        };
+        let name = item.ident.to_string();
+        let Some((expected_lifetimes, expected_fields)) = expected.get(name.as_str()) else {
+            continue;
+        };
+        *counts.entry(name.clone()).or_default() += 1;
+        validate_reporting_attributes(
+            &item.attrs,
+            &["Serialize"],
+            false,
+            &format!("private document type `{name}`"),
+            &mut violations,
+        );
+        let expected_lifetimes: Vec<_> = expected_lifetimes
+            .iter()
+            .map(|lifetime| (*lifetime).to_owned())
+            .collect();
+        if !matches!(item.vis, Visibility::Inherited)
+            || reporting_lifetime_parameters(&item.generics) != Some(expected_lifetimes)
+        {
+            violations.push(format!(
+                "reporting private document type `{name}` must retain its exact visibility and lifetime parameters"
+            ));
+        }
+        let actual_fields: Option<Vec<_>> = match &item.fields {
+            Fields::Named(fields) => fields
+                .named
+                .iter()
+                .map(|field| {
+                    if !field.attrs.is_empty() || !matches!(field.vis, Visibility::Inherited) {
+                        return None;
+                    }
+                    Some((
+                        field.ident.as_ref()?.to_string(),
+                        reporting_type_key(&field.ty)?,
+                    ))
+                })
+                .collect(),
+            Fields::Unnamed(_) | Fields::Unit => None,
+        };
+        let expected_fields: Vec<_> = expected_fields
+            .iter()
+            .map(|(field, ty)| ((*field).to_owned(), (*ty).to_owned()))
+            .collect();
+        if actual_fields.as_ref() != Some(&expected_fields) {
+            violations.push(format!(
+                "reporting private document type `{name}` fields must remain exactly {expected_fields:?}, found {actual_fields:?}"
+            ));
+        }
+    }
+
+    for name in expected.keys() {
+        if counts.get(*name).copied().unwrap_or_default() != 1 {
+            violations.push(format!(
+                "reporting private document type `{name}` must appear exactly once"
+            ));
+        }
+    }
+    Ok(violations)
+}
+
+fn reporting_lifetime_parameters(generics: &syn::Generics) -> Option<Vec<String>> {
+    if generics.where_clause.is_some() {
+        return None;
+    }
+    generics
+        .params
+        .iter()
+        .map(|parameter| match parameter {
+            syn::GenericParam::Lifetime(lifetime)
+                if lifetime.attrs.is_empty()
+                    && lifetime.colon_token.is_none()
+                    && lifetime.bounds.is_empty() =>
+            {
+                Some(lifetime.lifetime.ident.to_string())
+            },
+            syn::GenericParam::Const(_)
+            | syn::GenericParam::Lifetime(_)
+            | syn::GenericParam::Type(_) => None,
+        })
+        .collect()
+}
+
+fn reporting_type_key(ty: &syn::Type) -> Option<String> {
+    match ty {
+        syn::Type::Reference(reference) if reference.mutability.is_none() => {
+            let lifetime = reference
+                .lifetime
+                .as_ref()
+                .map_or_else(String::new, |lifetime| format!("{} ", lifetime));
+            Some(format!(
+                "&{lifetime}{}",
+                reporting_type_key(&reference.elem)?
+            ))
+        },
+        syn::Type::Path(path) if path.qself.is_none() && path.path.leading_colon.is_none() => {
+            let mut segments = Vec::new();
+            for segment in &path.path.segments {
+                let arguments = match &segment.arguments {
+                    syn::PathArguments::None => String::new(),
+                    syn::PathArguments::AngleBracketed(arguments) => {
+                        if arguments.colon2_token.is_some() {
+                            return None;
+                        }
+                        let arguments = arguments
+                            .args
+                            .iter()
+                            .map(|argument| match argument {
+                                syn::GenericArgument::Lifetime(lifetime) => {
+                                    Some(lifetime.to_string())
+                                },
+                                syn::GenericArgument::Type(ty) => reporting_type_key(ty),
+                                _ => None,
+                            })
+                            .collect::<Option<Vec<_>>>()?;
+                        format!("<{}>", arguments.join(","))
+                    },
+                    syn::PathArguments::Parenthesized(_) => return None,
+                };
+                segments.push(format!("{}{arguments}", segment.ident));
+            }
+            Some(segments.join("::"))
+        },
+        _ => None,
+    }
+}
+
+fn reporting_public_api_violations(source: &str) -> Result<Vec<String>, syn::Error> {
+    let syntax = syn::parse_file(source)?;
+    let expected_items: BTreeMap<_, _> = EXACT_REPORTING_PUBLIC_ITEMS.iter().copied().collect();
+    let expected_methods: BTreeMap<_, BTreeSet<_>> = EXACT_REPORTING_INHERENT_METHODS
+        .iter()
+        .map(|(owner, methods)| (*owner, methods.iter().copied().collect()))
+        .collect();
+    let expected_trait_impls: BTreeMap<_, BTreeSet<_>> =
+        EXACT_REPORTING_PUBLIC_TRAIT_IMPLS.iter().fold(
+            BTreeMap::new(),
+            |mut implementations, (owner, trait_name)| {
+                implementations
+                    .entry(*owner)
+                    .or_insert_with(BTreeSet::new)
+                    .insert(*trait_name);
+                implementations
+            },
+        );
+    let mut actual_items = BTreeMap::<String, Vec<&'static str>>::new();
+    let mut actual_methods = BTreeMap::<String, BTreeMap<String, Vec<&syn::Signature>>>::new();
+    let mut actual_trait_impls = BTreeMap::<String, BTreeMap<String, usize>>::new();
+    let mut violations = Vec::new();
+
+    for item in &syntax.items {
+        match item {
+            Item::Const(item) if is_public(&item.vis) => {
+                record_reporting_public_item(&mut actual_items, item.ident.to_string(), "const");
+                validate_reporting_attributes(
+                    &item.attrs,
+                    &[],
+                    false,
+                    &format!("public constant `{}`", item.ident),
+                    &mut violations,
+                );
+                validate_reporting_public_constant(item, &mut violations);
+            },
+            Item::Enum(item) if is_public(&item.vis) => {
+                record_reporting_public_item(&mut actual_items, item.ident.to_string(), "enum");
+                validate_reporting_public_enum(item, &mut violations);
+            },
+            Item::Struct(item) if is_public(&item.vis) => {
+                record_reporting_public_item(&mut actual_items, item.ident.to_string(), "struct");
+                if item.ident == "ReportGenerator" {
+                    validate_reporting_attributes(
+                        &item.attrs,
+                        &["Clone", "Copy", "Debug", "Default"],
+                        false,
+                        "public type `ReportGenerator`",
+                        &mut violations,
+                    );
+                    if !matches!(item.fields, Fields::Unit) {
+                        violations.push(
+                            "reporting public `ReportGenerator` must remain a stateless unit struct"
+                                .to_owned(),
+                        );
+                    }
+                }
+            },
+            Item::Fn(item) if is_public(&item.vis) => {
+                record_reporting_public_item(&mut actual_items, item.sig.ident.to_string(), "fn")
+            },
+            Item::Mod(item) if is_public(&item.vis) => {
+                record_reporting_public_item(&mut actual_items, item.ident.to_string(), "mod")
+            },
+            Item::Static(item) if is_public(&item.vis) => {
+                record_reporting_public_item(&mut actual_items, item.ident.to_string(), "static")
+            },
+            Item::Trait(item) if is_public(&item.vis) => {
+                record_reporting_public_item(&mut actual_items, item.ident.to_string(), "trait")
+            },
+            Item::Type(item) if is_public(&item.vis) => {
+                record_reporting_public_item(&mut actual_items, item.ident.to_string(), "type")
+            },
+            Item::Union(item) if is_public(&item.vis) => {
+                record_reporting_public_item(&mut actual_items, item.ident.to_string(), "union")
+            },
+            Item::Use(item) if is_public(&item.vis) => {
+                let mut names = BTreeSet::new();
+                collect_use_names(&item.tree, &mut names);
+                for name in names {
+                    record_reporting_public_item(&mut actual_items, name, "use");
+                }
+            },
+            Item::ExternCrate(item) if is_public(&item.vis) => record_reporting_public_item(
+                &mut actual_items,
+                item.rename
+                    .as_ref()
+                    .map_or_else(|| item.ident.to_string(), |(_, rename)| rename.to_string()),
+                "extern crate",
+            ),
+            Item::Macro(item)
+                if item
+                    .attrs
+                    .iter()
+                    .any(|attribute| attribute.path().is_ident("macro_export")) =>
+            {
+                violations.push(
+                    "reporting must not export macros outside its exact public API".to_owned(),
+                );
+            },
+            Item::Impl(item) if item.trait_.is_none() => {
+                let owner = reporting_impl_owner(item)
+                    .unwrap_or_else(|| "<unrecognized inherent impl>".to_owned());
+                if expected_items.contains_key(owner.as_str()) {
+                    reject_reporting_cfg_attributes(
+                        &item.attrs,
+                        &format!("inherent impl for `{owner}`"),
+                        &mut violations,
+                    );
+                }
+                for implementation_item in &item.items {
+                    match implementation_item {
+                        ImplItem::Fn(method) if is_public(&method.vis) => {
+                            reject_reporting_cfg_attributes(
+                                &method.attrs,
+                                &format!("public method `{owner}::{}`", method.sig.ident),
+                                &mut violations,
+                            );
+                            validate_reporting_public_method_body(
+                                &owner,
+                                &method.sig.ident.to_string(),
+                                &method.block,
+                                &mut violations,
+                            );
+                            actual_methods
+                                .entry(owner.clone())
+                                .or_default()
+                                .entry(method.sig.ident.to_string())
+                                .or_default()
+                                .push(&method.sig);
+                        },
+                        ImplItem::Const(item) if is_public(&item.vis) => violations.push(format!(
+                            "reporting must not add public inherent associated const `{}::{}`",
+                            owner, item.ident
+                        )),
+                        ImplItem::Type(item) if is_public(&item.vis) => violations.push(format!(
+                            "reporting must not add public inherent associated type `{}::{}`",
+                            owner, item.ident
+                        )),
+                        _ => {},
+                    }
+                }
+            },
+            Item::Impl(item) => {
+                let Some(owner) = reporting_impl_owner(item) else {
+                    continue;
+                };
+                if !expected_items.contains_key(owner.as_str()) {
+                    continue;
+                }
+                reject_reporting_cfg_attributes(
+                    &item.attrs,
+                    &format!("trait impl for public type `{owner}`"),
+                    &mut violations,
+                );
+                let trait_name = item
+                    .trait_
+                    .as_ref()
+                    .and_then(|(_, path, _)| reporting_source_path(path))
+                    .unwrap_or_else(|| "<unrecognized trait>".to_owned());
+                *actual_trait_impls
+                    .entry(owner)
+                    .or_default()
+                    .entry(trait_name)
+                    .or_default() += 1;
+                if item.unsafety.is_some()
+                    || item.defaultness.is_some()
+                    || !item.generics.params.is_empty()
+                    || item.generics.where_clause.is_some()
+                {
+                    violations.push(
+                        "reporting public-type trait impls must remain plain, safe, and non-generic"
+                            .to_owned(),
+                    );
+                }
+            },
+            _ => {},
+        }
+    }
+
+    for (name, kinds) in &actual_items {
+        match (expected_items.get(name.as_str()), kinds.as_slice()) {
+            (Some(expected_kind), [actual_kind]) if expected_kind == actual_kind => {},
+            (Some(expected_kind), _) => violations.push(format!(
+                "reporting public item `{name}` must appear exactly once as {expected_kind}, found {kinds:?}"
+            )),
+            (None, _) => violations.push(format!(
+                "reporting public top-level item `{name}` is outside the exact API inventory"
+            )),
+        }
+    }
+    for (name, kind) in &expected_items {
+        if !actual_items.contains_key(*name) {
+            violations.push(format!(
+                "reporting public {kind} `{name}` is missing from the exact API inventory"
+            ));
+        }
+    }
+
+    for (owner, methods) in &actual_methods {
+        let Some(expected) = expected_methods.get(owner.as_str()) else {
+            for method in methods.keys() {
+                violations.push(format!(
+                    "reporting public inherent method `{owner}::{method}` is outside the exact API inventory"
+                ));
+            }
+            continue;
+        };
+        for (method, signatures) in methods {
+            if !expected.contains(method.as_str()) {
+                violations.push(format!(
+                    "reporting public inherent method `{owner}::{method}` is outside the exact API inventory"
+                ));
+                continue;
+            }
+            if signatures.len() != 1 || !reporting_signature_matches(owner, method, signatures[0]) {
+                violations.push(format!(
+                    "reporting public method `{owner}::{method}` must retain its exact bounded signature"
+                ));
+            }
+        }
+    }
+    for (owner, expected) in &expected_methods {
+        for method in expected {
+            if actual_methods
+                .get(*owner)
+                .and_then(|methods| methods.get(*method))
+                .is_none()
+            {
+                violations.push(format!(
+                    "reporting public method `{owner}::{method}` is missing from the exact API inventory"
+                ));
+            }
+        }
+    }
+
+    for (owner, implementations) in &actual_trait_impls {
+        for (trait_name, count) in implementations {
+            let expected = expected_trait_impls
+                .get(owner.as_str())
+                .is_some_and(|traits| traits.contains(trait_name.as_str()));
+            if !expected || *count != 1 {
+                violations.push(format!(
+                    "reporting explicit trait impl `{trait_name} for {owner}` is outside the exact public-type trait inventory or duplicated"
+                ));
+            }
+        }
+    }
+    for (owner, expected) in &expected_trait_impls {
+        for trait_name in expected {
+            if actual_trait_impls
+                .get(*owner)
+                .and_then(|implementations| implementations.get(*trait_name))
+                != Some(&1)
+            {
+                violations.push(format!(
+                    "reporting explicit trait impl `{trait_name} for {owner}` is missing from the exact public-type trait inventory"
+                ));
+            }
+        }
+    }
+
+    Ok(violations)
+}
+
+fn record_reporting_public_item(
+    items: &mut BTreeMap<String, Vec<&'static str>>,
+    name: String,
+    kind: &'static str,
+) {
+    items.entry(name).or_default().push(kind);
+}
+
+fn reporting_impl_owner(item: &syn::ItemImpl) -> Option<String> {
+    let syn::Type::Path(path) = item.self_ty.as_ref() else {
+        return None;
+    };
+    path.qself
+        .is_none()
+        .then(|| {
+            path.path
+                .segments
+                .last()
+                .map(|segment| segment.ident.to_string())
+        })
+        .flatten()
+}
+
+fn reporting_source_path(path: &SynPath) -> Option<String> {
+    (path.leading_colon.is_none()
+        && path
+            .segments
+            .iter()
+            .all(|segment| matches!(segment.arguments, syn::PathArguments::None)))
+    .then(|| {
+        path.segments
+            .iter()
+            .map(|segment| segment.ident.to_string())
+            .collect::<Vec<_>>()
+            .join("::")
+    })
+}
+
+fn validate_reporting_attributes(
+    attributes: &[Attribute],
+    expected_derives: &[&str],
+    expect_non_exhaustive: bool,
+    context: &str,
+    violations: &mut Vec<String>,
+) {
+    let mut derives = BTreeSet::new();
+    let mut derive_entry_count = 0;
+    let mut derive_attribute_count = 0;
+    let mut non_exhaustive_count = 0;
+    for attribute in attributes {
+        if attribute.path().is_ident("doc") {
+            continue;
+        }
+        if attribute.path().is_ident("derive") {
+            derive_attribute_count += 1;
+            let Ok(paths) = attribute.parse_args_with(
+                syn::punctuated::Punctuated::<SynPath, syn::Token![,]>::parse_terminated,
+            ) else {
+                violations.push(format!(
+                    "reporting {context} has an unparsable derive inventory"
+                ));
+                continue;
+            };
+            for path in paths {
+                derive_entry_count += 1;
+                let Some(name) = reporting_source_path(&path).filter(|name| !name.contains("::"))
+                else {
+                    violations.push(format!(
+                        "reporting {context} derives must use exact unqualified names"
+                    ));
+                    continue;
+                };
+                derives.insert(name);
+            }
+        } else if attribute.path().is_ident("non_exhaustive") {
+            non_exhaustive_count += 1;
+        } else {
+            let name = reporting_source_path(attribute.path())
+                .unwrap_or_else(|| "<unrecognized>".to_owned());
+            violations.push(format!(
+                "reporting {context} attribute `{name}` is outside the exact attribute inventory"
+            ));
+        }
+    }
+
+    let expected: BTreeSet<_> = expected_derives
+        .iter()
+        .map(|name| (*name).to_owned())
+        .collect();
+    if derives != expected
+        || derive_entry_count != expected.len()
+        || derive_attribute_count != usize::from(!expected.is_empty())
+    {
+        violations.push(format!(
+            "reporting {context} derives must be exactly {expected:?}, found {derives:?}"
+        ));
+    }
+    if non_exhaustive_count != usize::from(expect_non_exhaustive) {
+        violations.push(format!(
+            "reporting {context} non_exhaustive marker must match the exact contract"
+        ));
+    }
+}
+
+fn reject_reporting_cfg_attributes(
+    attributes: &[Attribute],
+    context: &str,
+    violations: &mut Vec<String>,
+) {
+    if attributes
+        .iter()
+        .any(|attribute| attribute.path().is_ident("cfg") || attribute.path().is_ident("cfg_attr"))
+    {
+        violations.push(format!(
+            "reporting {context} must not be conditionally compiled with cfg/cfg_attr"
+        ));
+    }
+}
+
+fn validate_reporting_public_constant(item: &syn::ItemConst, violations: &mut Vec<String>) {
+    match item.ident.to_string().as_str() {
+        "REPORT_DOCUMENT_SCHEMA"
+            if simple_type_path(&item.ty, "str").is_none()
+                && matches!(
+                    item.ty.as_ref(),
+                    syn::Type::Reference(reference)
+                        if reference.mutability.is_none()
+                            && reference.lifetime.is_none()
+                            && simple_type_path(&reference.elem, "str").is_some()
+                )
+                && matches!(
+                    item.expr.as_ref(),
+                    syn::Expr::Lit(expression)
+                        if matches!(&expression.lit, syn::Lit::Str(value) if value.value() == "venom-rendered-run/v1")
+                ) => {},
+        "MAX_RENDERED_REPORT_BYTES"
+            if simple_type_path(&item.ty, "usize").is_some()
+                && evaluate_reporting_usize(&item.expr) == Some(16 * 1_024 * 1_024) => {},
+        "REPORT_DOCUMENT_SCHEMA" => violations.push(
+            "reporting `REPORT_DOCUMENT_SCHEMA` must remain `venom-rendered-run/v1` with type `&str`"
+                .to_owned(),
+        ),
+        "MAX_RENDERED_REPORT_BYTES" => violations.push(
+            "reporting `MAX_RENDERED_REPORT_BYTES` must remain exactly `16 * 1_024 * 1_024` bytes"
+                .to_owned(),
+        ),
+        _ => {},
+    }
+}
+
+fn evaluate_reporting_usize(expression: &syn::Expr) -> Option<usize> {
+    match expression {
+        syn::Expr::Lit(expression) => match &expression.lit {
+            syn::Lit::Int(value) => value.base10_parse().ok(),
+            _ => None,
+        },
+        syn::Expr::Binary(expression) if matches!(expression.op, syn::BinOp::Mul(_)) => {
+            evaluate_reporting_usize(&expression.left)?
+                .checked_mul(evaluate_reporting_usize(&expression.right)?)
+        },
+        syn::Expr::Paren(expression) => evaluate_reporting_usize(&expression.expr),
+        _ => None,
+    }
+}
+
+fn validate_reporting_public_enum(item: &syn::ItemEnum, violations: &mut Vec<String>) {
+    if item.ident == "ReportFormat" {
+        validate_reporting_attributes(
+            &item.attrs,
+            &["Clone", "Copy", "Debug", "Eq", "Hash", "PartialEq"],
+            true,
+            "public type `ReportFormat`",
+            violations,
+        );
+        for variant in &item.variants {
+            reject_reporting_cfg_attributes(
+                &variant.attrs,
+                &format!("variant `ReportFormat::{}`", variant.ident),
+                violations,
+            );
+        }
+        let exact = item
+            .attrs
+            .iter()
+            .any(|attribute| attribute.path().is_ident("non_exhaustive"))
+            && item.variants.len() == 4
+            && item
+                .variants
+                .iter()
+                .zip(["Json", "Csv", "Html", "Markdown"])
+                .all(|(variant, expected)| {
+                    variant.ident == expected
+                        && matches!(variant.fields, Fields::Unit)
+                        && variant.discriminant.is_none()
+                });
+        if !exact {
+            violations.push(
+                "reporting public `ReportFormat` variants must remain exactly Json, Csv, Html, Markdown and non-exhaustive"
+                    .to_owned(),
+            );
+        }
+    } else if item.ident == "ReportError" {
+        validate_reporting_attributes(
+            &item.attrs,
+            &["Clone", "Copy", "Debug", "Eq", "PartialEq"],
+            true,
+            "public type `ReportError`",
+            violations,
+        );
+        for variant in &item.variants {
+            reject_reporting_cfg_attributes(
+                &variant.attrs,
+                &format!("variant `ReportError::{}`", variant.ident),
+                violations,
+            );
+        }
+        let exact = item
+            .attrs
+            .iter()
+            .any(|attribute| attribute.path().is_ident("non_exhaustive"))
+            && item.variants.len() == 2
+            && item.variants[0].ident == "OutputLimitExceeded"
+            && matches!(
+                &item.variants[0].fields,
+                Fields::Named(fields)
+                    if fields.named.len() == 1
+                        && fields.named[0].ident.as_ref().is_some_and(|ident| ident == "limit")
+                        && simple_type_path(&fields.named[0].ty, "usize").is_some()
+            )
+            && item.variants[0].discriminant.is_none()
+            && item.variants[1].ident == "Serialization"
+            && matches!(item.variants[1].fields, Fields::Unit)
+            && item.variants[1].discriminant.is_none();
+        if !exact {
+            violations.push(
+                "reporting public `ReportError` variants must remain exactly OutputLimitExceeded { limit: usize } and Serialization and non-exhaustive"
+                    .to_owned(),
+            );
+        }
+    }
+}
+
+fn reporting_signature_matches(owner: &str, method: &str, signature: &syn::Signature) -> bool {
+    let plain = signature.asyncness.is_none()
+        && signature.unsafety.is_none()
+        && signature.abi.is_none()
+        && signature.variadic.is_none()
+        && signature.generics.params.is_empty()
+        && signature.generics.where_clause.is_none();
+    if !plain {
+        return false;
+    }
+    match (owner, method) {
+        ("ReportFormat", "as_str" | "extension" | "media_type") => {
+            signature.constness.is_some()
+                && signature.inputs.len() == 1
+                && matches!(
+                    signature.inputs.first(),
+                    Some(syn::FnArg::Receiver(receiver))
+                        if receiver.reference.is_none()
+                            && receiver.mutability.is_none()
+                            && receiver.colon_token.is_none()
+                )
+                && return_type_is_static_str(&signature.output)
+        },
+        ("ReportGenerator", "available_formats") => {
+            signature.constness.is_some()
+                && signature.inputs.is_empty()
+                && return_type_is_static_report_format_slice(&signature.output)
+        },
+        ("ReportGenerator", "generate") => {
+            signature.constness.is_none()
+                && signature.inputs.len() == 2
+                && matches!(
+                    signature.inputs.first(),
+                    Some(syn::FnArg::Typed(argument))
+                        if immutable_elided_reference_to(&argument.ty, "RunReport")
+                )
+                && matches!(
+                    signature.inputs.iter().nth(1),
+                    Some(syn::FnArg::Typed(argument))
+                        if simple_type_path(&argument.ty, "ReportFormat").is_some()
+                )
+                && return_type_is_report_result(&signature.output)
+        },
+        _ => false,
+    }
+}
+
+fn validate_reporting_public_method_body(
+    owner: &str,
+    method: &str,
+    block: &syn::Block,
+    violations: &mut Vec<String>,
+) {
+    let exact = match (owner, method) {
+        ("ReportFormat", "as_str") => reporting_format_mapping_matches(
+            block,
+            &[
+                ("Json", "json"),
+                ("Csv", "csv"),
+                ("Html", "html"),
+                ("Markdown", "markdown"),
+            ],
+        ),
+        ("ReportFormat", "media_type") => reporting_format_mapping_matches(
+            block,
+            &[
+                ("Json", "application/json"),
+                ("Csv", "text/csv; charset=utf-8"),
+                ("Html", "text/html; charset=utf-8"),
+                ("Markdown", "text/markdown; charset=utf-8"),
+            ],
+        ),
+        ("ReportFormat", "extension") => reporting_format_mapping_matches(
+            block,
+            &[
+                ("Json", "json"),
+                ("Csv", "csv"),
+                ("Html", "html"),
+                ("Markdown", "md"),
+            ],
+        ),
+        ("ReportGenerator", "available_formats") => {
+            matches!(
+                reporting_only_expression(block),
+                Some(syn::Expr::Reference(reference))
+                    if reference.mutability.is_none()
+                        && reporting_expression_path_is(&reference.expr, &["REPORT_FORMATS"])
+            )
+        },
+        ("ReportGenerator", "generate") => reporting_generate_body_matches(block),
+        _ => true,
+    };
+    if !exact {
+        violations.push(format!(
+            "reporting public method `{owner}::{method}` must retain its exact bounded implementation contract"
+        ));
+    }
+}
+
+fn reporting_only_expression(block: &syn::Block) -> Option<&syn::Expr> {
+    match block.stmts.as_slice() {
+        [syn::Stmt::Expr(expression, None)] => Some(expression),
+        _ => None,
+    }
+}
+
+fn reporting_format_mapping_matches(block: &syn::Block, expected: &[(&str, &str)]) -> bool {
+    let Some(syn::Expr::Match(expression)) = reporting_only_expression(block) else {
+        return false;
+    };
+    reporting_expression_path_is(&expression.expr, &["self"])
+        && expression.arms.len() == expected.len()
+        && expression
+            .arms
+            .iter()
+            .zip(expected)
+            .all(|(arm, (variant, value))| {
+                arm.attrs.is_empty()
+                    && arm.guard.is_none()
+                    && matches!(
+                        &arm.pat,
+                        syn::Pat::Path(path)
+                            if path.qself.is_none()
+                                && reporting_path_is(&path.path, &["Self", variant])
+                    )
+                    && matches!(
+                        arm.body.as_ref(),
+                        syn::Expr::Lit(expression)
+                            if matches!(&expression.lit, syn::Lit::Str(literal) if literal.value() == *value)
+                    )
+            })
+}
+
+fn reporting_generate_body_matches(block: &syn::Block) -> bool {
+    let [syn::Stmt::Local(local), syn::Stmt::Expr(render, None)] = block.stmts.as_slice() else {
+        return false;
+    };
+    let local_is_exact = local.attrs.is_empty()
+        && matches!(
+            &local.pat,
+            syn::Pat::Ident(identifier)
+                if identifier.ident == "document"
+                    && identifier.by_ref.is_none()
+                    && identifier.mutability.is_none()
+                    && identifier.subpat.is_none()
+        )
+        && local.init.as_ref().is_some_and(|init| {
+            init.diverge.is_none()
+                && matches!(
+                    init.expr.as_ref(),
+                    syn::Expr::Try(expression)
+                        if matches!(
+                            expression.expr.as_ref(),
+                            syn::Expr::Call(call)
+                                if reporting_expression_path_is(
+                                    &call.func,
+                                    &["ReportDocument", "from_report"],
+                                ) && call.args.len() == 1
+                                    && call.args.first().is_some_and(|argument| {
+                                        reporting_expression_path_is(argument, &["report"])
+                                    })
+                        )
+                )
+        });
+    local_is_exact
+        && matches!(
+            render,
+            syn::Expr::Call(call)
+                if reporting_expression_path_is(&call.func, &["render_with_limit"])
+                    && call.args.len() == 3
+                    && matches!(
+                        call.args.first(),
+                        Some(syn::Expr::Reference(reference))
+                            if reference.mutability.is_none()
+                                && reporting_expression_path_is(&reference.expr, &["document"])
+                    )
+                    && call.args.iter().nth(1).is_some_and(|argument| {
+                        reporting_expression_path_is(argument, &["format"])
+                    })
+                    && call.args.iter().nth(2).is_some_and(|argument| {
+                        reporting_expression_path_is(argument, &["MAX_RENDERED_REPORT_BYTES"])
+                    })
+        )
+}
+
+fn reporting_expression_path_is(expression: &syn::Expr, expected: &[&str]) -> bool {
+    matches!(
+        expression,
+        syn::Expr::Path(path)
+            if path.qself.is_none() && reporting_path_is(&path.path, expected)
+    )
+}
+
+fn reporting_path_is(path: &SynPath, expected: &[&str]) -> bool {
+    path.leading_colon.is_none()
+        && path.segments.len() == expected.len()
+        && path.segments.iter().zip(expected).all(|(segment, name)| {
+            semantic_ident_name(&segment.ident) == *name
+                && matches!(segment.arguments, syn::PathArguments::None)
+        })
+}
+
+fn reporting_syn_path_key(path: &SynPath) -> String {
+    path.segments
+        .iter()
+        .map(|segment| semantic_ident_name(&segment.ident))
+        .collect::<Vec<_>>()
+        .join("::")
+}
+
+fn reporting_expression_path_key(expression: &syn::Expr) -> Option<String> {
+    let syn::Expr::Path(path) = expression else {
+        return None;
+    };
+    (path.qself.is_none() && path.path.leading_colon.is_none())
+        .then(|| reporting_syn_path_key(&path.path))
+}
+
+fn simple_type_path<'a>(ty: &'a syn::Type, expected: &str) -> Option<&'a syn::PathSegment> {
+    let syn::Type::Path(path) = ty else {
+        return None;
+    };
+    (path.qself.is_none()
+        && path.path.leading_colon.is_none()
+        && path.path.segments.len() == 1
+        && path.path.segments[0].ident == expected
+        && matches!(path.path.segments[0].arguments, syn::PathArguments::None))
+    .then_some(&path.path.segments[0])
+}
+
+fn immutable_elided_reference_to(ty: &syn::Type, expected: &str) -> bool {
+    matches!(
+        ty,
+        syn::Type::Reference(reference)
+            if reference.mutability.is_none()
+                && reference.lifetime.is_none()
+                && simple_type_path(&reference.elem, expected).is_some()
+    )
+}
+
+fn return_type_is_static_str(output: &syn::ReturnType) -> bool {
+    matches!(
+        output,
+        syn::ReturnType::Type(_, ty)
+            if matches!(
+                ty.as_ref(),
+                syn::Type::Reference(reference)
+                    if reference.mutability.is_none()
+                        && reference.lifetime.as_ref().is_some_and(|lifetime| lifetime.ident == "static")
+                        && simple_type_path(&reference.elem, "str").is_some()
+            )
+    )
+}
+
+fn return_type_is_static_report_format_slice(output: &syn::ReturnType) -> bool {
+    matches!(
+        output,
+        syn::ReturnType::Type(_, ty)
+            if matches!(
+                ty.as_ref(),
+                syn::Type::Reference(reference)
+                    if reference.mutability.is_none()
+                        && reference.lifetime.as_ref().is_some_and(|lifetime| lifetime.ident == "static")
+                        && matches!(
+                            reference.elem.as_ref(),
+                            syn::Type::Slice(slice)
+                                if simple_type_path(&slice.elem, "ReportFormat").is_some()
+                        )
+            )
+    )
+}
+
+fn return_type_is_report_result(output: &syn::ReturnType) -> bool {
+    let syn::ReturnType::Type(_, ty) = output else {
+        return false;
+    };
+    let syn::Type::Path(path) = ty.as_ref() else {
+        return false;
+    };
+    if path.qself.is_some() || path.path.leading_colon.is_some() || path.path.segments.len() != 1 {
+        return false;
+    }
+    let segment = &path.path.segments[0];
+    let syn::PathArguments::AngleBracketed(arguments) = &segment.arguments else {
+        return false;
+    };
+    let types: Vec<_> = arguments
+        .args
+        .iter()
+        .filter_map(|argument| match argument {
+            syn::GenericArgument::Type(ty) => Some(ty),
+            _ => None,
+        })
+        .collect();
+    segment.ident == "Result"
+        && arguments.args.len() == 2
+        && types.len() == 2
+        && simple_type_path(types[0], "String").is_some()
+        && simple_type_path(types[1], "ReportError").is_some()
+}
+
 fn cfg_predicates(module: &ItemMod) -> Vec<String> {
     cfg_predicates_from_attributes(&module.attrs)
 }
@@ -1448,7 +3483,7 @@ fn cfg_predicates_from_attributes(attributes: &[Attribute]) -> Vec<String> {
 }
 
 fn cfg_predicate(attribute: &Attribute) -> Option<String> {
-    if !attribute.path().is_ident("cfg") {
+    if reporting_syn_path_key(attribute.path()) != "cfg" {
         return None;
     }
     match &attribute.meta {
@@ -1494,9 +3529,7 @@ fn surface_contract_violations(
                 contract.module
             ));
         }
-        if matches!(contract.lifecycle, Lifecycle::Legacy | Lifecycle::Preview)
-            && contract.host == HostContract::NoExecution
-        {
+        if contract.lifecycle == Lifecycle::Preview && contract.host == HostContract::NoExecution {
             violations.push(format!(
                 "quarantined surface `{}` has lifecycle {:?} but no explicit host contract",
                 contract.module, contract.lifecycle
@@ -1615,6 +3648,762 @@ fn forbidden_surface_source_violations(
         }
     }
     Ok(violations)
+}
+
+#[derive(Default)]
+struct ReportingSourceVisitor {
+    violations: BTreeSet<String>,
+    inside_test_module: usize,
+}
+
+const EXACT_REPORTING_PRODUCTION_TOKEN_BYTES: usize = 27_143;
+const EXACT_REPORTING_PRODUCTION_FINGERPRINT: u128 = 0x6736_ce90_a01e_6ee5_96a4_024f_af53_141c;
+
+fn reporting_production_body_inventory_violations(source: &str) -> Vec<String> {
+    let Ok(syntax) = syn::parse_file(source) else {
+        return vec!["reporting.rs must remain valid Rust source".to_owned()];
+    };
+    let exact_test_modules = syntax
+        .items
+        .iter()
+        .filter(|item| {
+            matches!(
+                item,
+                Item::Mod(module)
+                    if module.ident == "tests"
+                        && module.content.is_some()
+                        && module.attrs.len() == 1
+                        && cfg_predicate(&module.attrs[0]).as_deref() == Some("test")
+            )
+        })
+        .count();
+    if exact_test_modules != 1
+        || !matches!(
+            syntax.items.last(),
+            Some(Item::Mod(module))
+                if module.ident == "tests"
+                    && module.content.is_some()
+                    && module.attrs.len() == 1
+                    && cfg_predicate(&module.attrs[0]).as_deref() == Some("test")
+        )
+    {
+        return vec![
+            "reporting.rs must end with exactly one exact cfg(test) inline tests module".to_owned(),
+        ];
+    }
+    let Some((production, _)) = source.split_once("#[cfg(test)]") else {
+        return vec![
+            "reporting.rs must end production code with the exact cfg(test) module boundary"
+                .to_owned(),
+        ];
+    };
+    let Ok(tokens) = production.parse::<TokenStream>() else {
+        return vec!["reporting.rs production source must remain valid Rust tokens".to_owned()];
+    };
+    let normalized = tokens.to_string();
+    let fingerprint = normalized.bytes().fold(
+        0x6c62_272e_07bb_0142_62b8_2175_6295_c58d_u128,
+        |fingerprint, byte| {
+            (fingerprint ^ u128::from(byte))
+                .wrapping_mul(0x0000_0000_0100_0000_0000_0000_0000_013B_u128)
+        },
+    );
+    if normalized.len() == EXACT_REPORTING_PRODUCTION_TOKEN_BYTES
+        && fingerprint == EXACT_REPORTING_PRODUCTION_FINGERPRINT
+    {
+        Vec::new()
+    } else {
+        vec![format!(
+            "reporting.rs production AST/body inventory changed; expected normalized bytes/fingerprint {EXACT_REPORTING_PRODUCTION_TOKEN_BYTES}/{EXACT_REPORTING_PRODUCTION_FINGERPRINT:032x}, found {}/{fingerprint:032x}",
+            normalized.len()
+        )]
+    }
+}
+
+const EXACT_REPORTING_SOURCE_IMPORTS: &[&str] = &[
+    "serde::Serialize",
+    "std::error::Error",
+    "std::fmt",
+    "std::io",
+    "venom_core::OutcomeStatus",
+    "venom_core::ResourceAccounting",
+    "venom_core::ResourceAccountingMode",
+    "venom_core::RunOutcomeRecord",
+    "venom_core::RunReport",
+    "venom_core::RunStatus",
+    "venom_core::RunStepStatus",
+    "venom_core::RunStopCode",
+    "venom_core::SecuritySeverity",
+];
+
+const ALLOWED_REPORTING_QUALIFIED_PATHS: &[&str] = &[
+    "OutcomeDocument::from_outcome",
+    "OutcomeStatus::Blocked",
+    "OutcomeStatus::ConfirmedNegative",
+    "OutcomeStatus::FalsePositive",
+    "OutcomeStatus::NeedsReview",
+    "OutcomeStatus::Success",
+    "OutcomeStatus::Unknown",
+    "ReportError::OutputLimitExceeded",
+    "ReportError::Serialization",
+    "ReportFormat::Csv",
+    "ReportFormat::Html",
+    "ReportFormat::Json",
+    "ReportFormat::Markdown",
+    "ResourceAccountingMode::Metered",
+    "ResourceAccountingMode::Observed",
+    "ResourceAccountingMode::Unmetered",
+    "RunStatus::Cancelled",
+    "RunStatus::Complete",
+    "RunStatus::Failed",
+    "RunStatus::Partial",
+    "RunStepStatus::BudgetExhausted",
+    "RunStepStatus::Cancelled",
+    "RunStepStatus::Failed",
+    "RunStepStatus::Skipped",
+    "RunStepStatus::Succeeded",
+    "RunStepStatus::TimedOut",
+    "RunStopCode::BudgetExhausted",
+    "RunStopCode::Cancelled",
+    "RunStopCode::Completed",
+    "RunStopCode::NoEligibleAction",
+    "RunStopCode::ReportLimitExceeded",
+    "RunStopCode::RuntimeFailed",
+    "RunStopCode::StepFailed",
+    "RunStopCode::StepTimedOut",
+    "RunStopCode::TaskJoinFailed",
+    "SecuritySeverity::Critical",
+    "SecuritySeverity::High",
+    "SecuritySeverity::Info",
+    "SecuritySeverity::Low",
+    "SecuritySeverity::Medium",
+    "Self::Csv",
+    "Self::Html",
+    "Self::Json",
+    "Self::Markdown",
+    "Self::OutputLimitExceeded",
+    "Self::Serialization",
+    "StepDocument::from_step",
+    "char::from",
+    "fmt::Arguments",
+    "fmt::Display",
+    "fmt::Error",
+    "fmt::Formatter",
+    "fmt::Result",
+    "fmt::Write",
+    "fmt::write",
+    "io::Error",
+    "io::Error::other",
+    "io::Result",
+    "io::Write",
+    "serde::Serialize",
+    "serde_json::to_writer",
+    "std::error::Error",
+    "std::fmt",
+    "std::io",
+    "std::str::from_utf8",
+    "u16::MAX",
+    "u32::from",
+    "u64::try_from",
+    "venom_core::OutcomeStatus",
+    "venom_core::ResourceAccounting",
+    "venom_core::ResourceAccountingMode",
+    "venom_core::RunOutcomeRecord",
+    "venom_core::RunReport",
+    "venom_core::RunStatus",
+    "venom_core::RunStepReport",
+    "venom_core::RunStepStatus",
+    "venom_core::RunStopCode",
+    "venom_core::SecuritySeverity",
+];
+
+const ALLOWED_REPORTING_FUNCTION_CALLS: &[&str] = &[
+    "AccountingDimension::from_accounting",
+    "AccountingDocument::from_report",
+    "Err",
+    "Ok",
+    "RawJsonWriter::new",
+    "RenderBuffer::new",
+    "ReportDocument::from_report",
+    "Some",
+    "String::from",
+    "String::new",
+    "String::with_capacity",
+    "Vec::new",
+    "accounting_mode_token",
+    "char::from",
+    "disposition_token",
+    "fmt::write",
+    "io::Error::other",
+    "is_bidi_control",
+    "longest_backtick_run",
+    "push_visible_codepoint",
+    "render_csv",
+    "render_html",
+    "render_json",
+    "render_markdown",
+    "render_with_limit",
+    "run_status_token",
+    "serde_json::to_writer",
+    "severity_token",
+    "starts_csv_formula_after_whitespace",
+    "std::str::from_utf8",
+    "step_status_token",
+    "stop_code_token",
+    "u32::from",
+    "u64::try_from",
+    "visible_text",
+    "write_csv_cell",
+    "write_csv_row",
+    "write_html_optional_decimal",
+    "write_html_text",
+    "write_json_codepoint",
+    "write_markdown_code_span",
+    "write_markdown_optional_decimal",
+    "write_visible_codepoint",
+];
+
+const ALLOWED_REPORTING_METHOD_CALLS: &[&str] = &[
+    "accounting",
+    "action_id",
+    "all",
+    "as_deref",
+    "as_str",
+    "authorized_origin",
+    "chars",
+    "checked_add",
+    "code",
+    "collect",
+    "completed_at",
+    "confidence",
+    "consumed",
+    "dimensions",
+    "disposition",
+    "duration_ms",
+    "ends_with",
+    "enumerate",
+    "evidence_ids",
+    "extend_from_slice",
+    "find",
+    "finish",
+    "into_iter",
+    "is_control",
+    "is_empty",
+    "is_err",
+    "is_some",
+    "is_whitespace",
+    "iter",
+    "len",
+    "len_utf8",
+    "limit",
+    "map",
+    "map_err",
+    "max",
+    "metadata",
+    "mode",
+    "ok_or",
+    "ordinal",
+    "outcomes",
+    "parts_per_million",
+    "push",
+    "push_char",
+    "push_fmt",
+    "push_str",
+    "redacted_summary",
+    "remaining",
+    "request_body_bytes",
+    "requests",
+    "response_body_bytes",
+    "schema",
+    "severity",
+    "started_at",
+    "starts_with",
+    "status",
+    "steps",
+    "stop_reason",
+    "target",
+    "to_rfc3339",
+    "to_string",
+    "try_reserve",
+    "unwrap_or",
+    "verification_outcome",
+    "wall_time_ms",
+    "write_str",
+];
+
+const ALLOWED_REPORTING_MACROS: &[&str] = &["format_args", "matches"];
+const ALLOWED_REPORTING_ATTRIBUTES: &[&str] = &["derive", "doc", "non_exhaustive"];
+
+fn reporting_source_import_violations(source: &str) -> Result<Vec<String>, syn::Error> {
+    let syntax = syn::parse_file(source)?;
+    let expected: BTreeSet<_> = EXACT_REPORTING_SOURCE_IMPORTS
+        .iter()
+        .map(|path| (*path).to_owned())
+        .collect();
+    let mut actual = BTreeMap::<String, usize>::new();
+    let mut violations = Vec::new();
+    for item in &syntax.items {
+        let Item::Use(item) = item else {
+            continue;
+        };
+        if !matches!(item.vis, Visibility::Inherited) || !item.attrs.is_empty() {
+            violations.push(
+                "reporting production imports must remain private and unconditional".to_owned(),
+            );
+        }
+        let mut paths = Vec::new();
+        if !collect_reporting_import_paths(&item.tree, &mut Vec::new(), &mut paths) {
+            violations.push("reporting production imports cannot use aliases or globs".to_owned());
+        }
+        for path in paths {
+            *actual.entry(path).or_default() += 1;
+        }
+    }
+    let actual_names: BTreeSet<_> = actual.keys().cloned().collect();
+    if actual_names != expected || actual.values().any(|count| *count != 1) {
+        violations.push(format!(
+            "reporting production imports must be exactly {expected:?}, found {actual:?}"
+        ));
+    }
+    Ok(violations)
+}
+
+fn collect_reporting_import_paths(
+    tree: &UseTree,
+    prefix: &mut Vec<String>,
+    paths: &mut Vec<String>,
+) -> bool {
+    match tree {
+        UseTree::Path(path) => {
+            prefix.push(path.ident.to_string());
+            let exact = collect_reporting_import_paths(&path.tree, prefix, paths);
+            prefix.pop();
+            exact
+        },
+        UseTree::Name(name) => {
+            let name = semantic_ident_name(&name.ident);
+            if name != "self" {
+                prefix.push(name.clone());
+            }
+            if prefix.is_empty() {
+                return false;
+            }
+            paths.push(prefix.join("::"));
+            if name != "self" {
+                prefix.pop();
+            }
+            true
+        },
+        UseTree::Group(group) => group
+            .items
+            .iter()
+            .all(|item| collect_reporting_import_paths(item, prefix, paths)),
+        UseTree::Glob(_) | UseTree::Rename(_) => false,
+    }
+}
+
+impl<'ast> Visit<'ast> for ReportingSourceVisitor {
+    fn visit_attribute(&mut self, attribute: &'ast syn::Attribute) {
+        let attribute_name = reporting_syn_path_key(attribute.path());
+        if attribute_name == "macro_export" {
+            self.violations
+                .insert("reporting must not export macros from any nested source scope".to_owned());
+        }
+        if self.inside_test_module != 0 {
+            syn::visit::visit_attribute(self, attribute);
+            return;
+        }
+        if matches!(attribute_name.as_str(), "cfg" | "cfg_attr") {
+            self.violations.insert(
+                "reporting production source must not contain cfg/cfg_attr branches".to_owned(),
+            );
+        }
+        if !ALLOWED_REPORTING_ATTRIBUTES.contains(&attribute_name.as_str())
+            && !matches!(attribute_name.as_str(), "cfg" | "cfg_attr")
+        {
+            self.violations.insert(format!(
+                "reporting production attribute `{attribute_name}` is outside the exact allowlist"
+            ));
+        }
+        let path: Vec<_> = attribute
+            .path()
+            .segments
+            .iter()
+            .map(|segment| semantic_ident_name(&segment.ident))
+            .collect();
+        inspect_reporting_path(&path, &mut self.violations);
+        if let syn::Meta::List(list) = &attribute.meta {
+            inspect_reporting_macro_tokens(list.tokens.clone(), &mut self.violations);
+        }
+        syn::visit::visit_attribute(self, attribute);
+    }
+
+    fn visit_ident(&mut self, identifier: &'ast syn::Ident) {
+        if self.inside_test_module != 0 {
+            syn::visit::visit_ident(self, identifier);
+            return;
+        }
+        inspect_reporting_identifier(&semantic_ident_name(identifier), &mut self.violations);
+        syn::visit::visit_ident(self, identifier);
+    }
+
+    fn visit_item_use(&mut self, item: &'ast syn::ItemUse) {
+        if self.inside_test_module != 0 {
+            syn::visit::visit_item_use(self, item);
+            return;
+        }
+        inspect_reporting_use_tree(&item.tree, &mut Vec::new(), &mut self.violations);
+        syn::visit::visit_item_use(self, item);
+    }
+
+    fn visit_item_extern_crate(&mut self, item: &'ast syn::ItemExternCrate) {
+        if self.inside_test_module == 0 {
+            self.violations.insert(format!(
+                "reporting production source cannot delegate through extern crate `{}`",
+                item.ident
+            ));
+        }
+        syn::visit::visit_item_extern_crate(self, item);
+    }
+
+    fn visit_item_mod(&mut self, item: &'ast syn::ItemMod) {
+        if self.inside_test_module != 0 {
+            syn::visit::visit_item_mod(self, item);
+            return;
+        }
+        let cfg_attributes: Vec<_> = item
+            .attrs
+            .iter()
+            .filter(|attribute| {
+                matches!(
+                    reporting_syn_path_key(attribute.path()).as_str(),
+                    "cfg" | "cfg_attr"
+                )
+            })
+            .collect();
+        let exact_inline_tests = item.ident == "tests"
+            && item.content.is_some()
+            && cfg_attributes.len() == 1
+            && reporting_syn_path_key(cfg_attributes[0].path()) == "cfg"
+            && cfg_predicate(cfg_attributes[0]).as_deref() == Some("test");
+        let exact_test_attributes = item.attrs.iter().all(|attribute| {
+            reporting_syn_path_key(attribute.path()) == "doc"
+                || (reporting_syn_path_key(attribute.path()) == "cfg"
+                    && cfg_predicate(attribute).as_deref() == Some("test"))
+        });
+        if exact_inline_tests && exact_test_attributes {
+            self.inside_test_module += 1;
+            syn::visit::visit_item_mod(self, item);
+            self.inside_test_module -= 1;
+            return;
+        }
+        self.violations.insert(format!(
+            "reporting production module `{}` is forbidden; only the exact inline cfg(test) module is allowed",
+            item.ident
+        ));
+        syn::visit::visit_item_mod(self, item);
+    }
+
+    fn visit_item_static(&mut self, item: &'ast syn::ItemStatic) {
+        if self.inside_test_module == 0 {
+            self.violations.insert(format!(
+                "reporting static `{}` is forbidden; rendering must remain stateless",
+                item.ident
+            ));
+        }
+        syn::visit::visit_item_static(self, item);
+    }
+
+    fn visit_expr_unsafe(&mut self, expression: &'ast syn::ExprUnsafe) {
+        if self.inside_test_module == 0 {
+            self.violations.insert(
+                "reporting cannot contain unsafe blocks or bypass Rust authority boundaries"
+                    .to_owned(),
+            );
+        }
+        syn::visit::visit_expr_unsafe(self, expression);
+    }
+
+    fn visit_item_foreign_mod(&mut self, item: &'ast syn::ItemForeignMod) {
+        if self.inside_test_module == 0 {
+            self.violations.insert(
+                "reporting cannot declare foreign modules or call through raw FFI".to_owned(),
+            );
+        }
+        syn::visit::visit_item_foreign_mod(self, item);
+    }
+
+    fn visit_item_impl(&mut self, item: &'ast syn::ItemImpl) {
+        if self.inside_test_module == 0 && item.unsafety.is_some() {
+            self.violations
+                .insert("reporting cannot contain unsafe impls".to_owned());
+        }
+        syn::visit::visit_item_impl(self, item);
+    }
+
+    fn visit_item_trait(&mut self, item: &'ast syn::ItemTrait) {
+        if self.inside_test_module == 0 {
+            self.violations.insert(format!(
+                "reporting production trait `{}` is forbidden; public trait semantics must come from exact imports",
+                item.ident
+            ));
+        }
+        syn::visit::visit_item_trait(self, item);
+    }
+
+    fn visit_item_type(&mut self, item: &'ast syn::ItemType) {
+        if self.inside_test_module == 0 {
+            self.violations.insert(format!(
+                "reporting production type alias `{}` is forbidden; public signatures must resolve directly",
+                item.ident
+            ));
+        }
+        syn::visit::visit_item_type(self, item);
+    }
+
+    fn visit_signature(&mut self, signature: &'ast syn::Signature) {
+        if self.inside_test_module == 0 && (signature.unsafety.is_some() || signature.abi.is_some())
+        {
+            self.violations.insert(
+                "reporting functions must be safe Rust functions without a foreign ABI".to_owned(),
+            );
+        }
+        syn::visit::visit_signature(self, signature);
+    }
+
+    fn visit_path(&mut self, path: &'ast SynPath) {
+        if self.inside_test_module != 0 {
+            syn::visit::visit_path(self, path);
+            return;
+        }
+        let segments: Vec<_> = path
+            .segments
+            .iter()
+            .map(|segment| semantic_ident_name(&segment.ident))
+            .collect();
+        inspect_reporting_path(&segments, &mut self.violations);
+        syn::visit::visit_path(self, path);
+    }
+
+    fn visit_expr_call(&mut self, call: &'ast syn::ExprCall) {
+        if self.inside_test_module == 0 {
+            let function = reporting_expression_path_key(&call.func)
+                .unwrap_or_else(|| "<indirect-call>".to_owned());
+            if !ALLOWED_REPORTING_FUNCTION_CALLS.contains(&function.as_str()) {
+                self.violations.insert(format!(
+                    "reporting production function call `{function}` is outside the exact allowlist"
+                ));
+            }
+        }
+        syn::visit::visit_expr_call(self, call);
+    }
+
+    fn visit_expr_method_call(&mut self, call: &'ast syn::ExprMethodCall) {
+        if self.inside_test_module == 0 {
+            let method = call.method.to_string();
+            if !ALLOWED_REPORTING_METHOD_CALLS.contains(&method.as_str()) {
+                self.violations.insert(format!(
+                    "reporting production method call `{method}` is outside the exact allowlist"
+                ));
+            }
+        }
+        syn::visit::visit_expr_method_call(self, call);
+    }
+
+    fn visit_macro(&mut self, item: &'ast syn::Macro) {
+        if self.inside_test_module != 0 {
+            syn::visit::visit_macro(self, item);
+            return;
+        }
+        let path = reporting_syn_path_key(&item.path);
+        if !ALLOWED_REPORTING_MACROS.contains(&path.as_str()) {
+            self.violations.insert(format!(
+                "reporting production macro `{path}!` is outside the exact allowlist"
+            ));
+        }
+        let segments: Vec<_> = item
+            .path
+            .segments
+            .iter()
+            .map(|segment| semantic_ident_name(&segment.ident))
+            .collect();
+        inspect_reporting_path(&segments, &mut self.violations);
+        inspect_reporting_macro_tokens(item.tokens.clone(), &mut self.violations);
+        syn::visit::visit_macro(self, item);
+    }
+}
+
+fn reporting_source_violations(source: &str) -> Result<Vec<String>, syn::Error> {
+    let syntax = syn::parse_file(source)?;
+    let mut visitor = ReportingSourceVisitor::default();
+    visitor.visit_file(&syntax);
+    Ok(visitor.violations.into_iter().collect())
+}
+
+fn inspect_reporting_use_tree(
+    tree: &UseTree,
+    prefix: &mut Vec<String>,
+    violations: &mut BTreeSet<String>,
+) {
+    match tree {
+        UseTree::Path(path) => {
+            prefix.push(semantic_ident_name(&path.ident));
+            inspect_reporting_use_tree(&path.tree, prefix, violations);
+            prefix.pop();
+        },
+        UseTree::Name(name) => {
+            prefix.push(semantic_ident_name(&name.ident));
+            inspect_reporting_path(prefix, violations);
+            prefix.pop();
+        },
+        UseTree::Rename(rename) => {
+            if (prefix.is_empty() && rename.ident == "std")
+                || (prefix.len() == 1 && prefix[0] == "std" && rename.ident == "self")
+            {
+                violations.insert(
+                    "reporting must not alias `std`; direct module paths keep the I/O policy auditable"
+                        .to_owned(),
+                );
+            }
+            prefix.push(semantic_ident_name(&rename.ident));
+            inspect_reporting_path(prefix, violations);
+            prefix.pop();
+        },
+        UseTree::Group(group) => {
+            for item in &group.items {
+                inspect_reporting_use_tree(item, prefix, violations);
+            }
+        },
+        UseTree::Glob(_) => inspect_reporting_path(prefix, violations),
+    }
+}
+
+fn inspect_reporting_path(segments: &[String], violations: &mut BTreeSet<String>) {
+    let Some(root) = segments.first() else {
+        return;
+    };
+    let key = segments.join("::");
+    if root == "crate" || root == "super" || (root == "self" && segments.len() > 1) {
+        violations.insert(format!(
+            "reporting production path `{key}` cannot delegate outside the audited source unit"
+        ));
+        return;
+    }
+    if segments.len() == 1 {
+        return;
+    }
+    if !ALLOWED_REPORTING_QUALIFIED_PATHS.contains(&key.as_str())
+        && !ALLOWED_REPORTING_FUNCTION_CALLS.contains(&key.as_str())
+    {
+        violations.insert(format!(
+            "reporting production path `{key}` is outside the exact authority allowlist"
+        ));
+    }
+}
+
+fn inspect_reporting_identifier(identifier: &str, violations: &mut BTreeSet<String>) {
+    match identifier {
+        "ScanFinding" => {
+            violations.insert(
+                "reporting must consume typed `RunReport`, not legacy `ScanFinding`".to_owned(),
+            );
+        },
+        "VulnerabilityReport" | "phase_stats" | "risk_score" | "severity_stats" => {
+            violations.insert(format!(
+                "retired reporting API `{identifier}` must not return"
+            ));
+        },
+        "File" | "OpenOptions" => {
+            violations.insert(format!(
+                "reporting must remain a pure renderer and cannot use `{identifier}`"
+            ));
+        },
+        "copy" | "read_to_string" | "stderr" | "stdin" | "stdout" => {
+            violations.insert(format!(
+                "reporting cannot use concrete standard-I/O operation `{identifier}`"
+            ));
+        },
+        "extern" | "unsafe" => {
+            violations.insert(format!(
+                "reporting macro tokens cannot generate `{identifier}` authority"
+            ));
+        },
+        "Instant" | "Local" | "OsRng" | "SystemTime" | "Utc" | "Uuid" | "getrandom" | "random"
+        | "thread_rng" => {
+            violations.insert(format!(
+                "reporting cannot use ambient clock, identity, or randomness source `{identifier}`"
+            ));
+        },
+        "HashMap" | "HashSet" | "RandomState" => {
+            violations.insert(format!(
+                "reporting cannot use randomized-order collection or state `{identifier}`"
+            ));
+        },
+        "LazyLock" | "Mutex" | "OnceLock" | "RwLock" | "lazy_static" | "once_cell"
+        | "thread_local" => {
+            violations.insert(format!(
+                "reporting cannot use mutable or lazy global-state primitive `{identifier}`"
+            ));
+        },
+        _ => {},
+    }
+}
+
+fn inspect_reporting_macro_tokens(tokens: TokenStream, violations: &mut BTreeSet<String>) {
+    let mut path = Vec::<String>::new();
+    let mut colon_count = 0_u8;
+    let flush_path = |path: &mut Vec<String>, violations: &mut BTreeSet<String>| {
+        if !path.is_empty() {
+            inspect_reporting_path(path, violations);
+            path.clear();
+        }
+    };
+    for token in tokens {
+        match token {
+            TokenTree::Group(group) => {
+                flush_path(&mut path, violations);
+                inspect_reporting_macro_tokens(group.stream(), violations);
+                colon_count = 0;
+            },
+            TokenTree::Ident(identifier) => {
+                let identifier = semantic_ident_name(&identifier);
+                inspect_reporting_identifier(&identifier, violations);
+                if identifier == "mod" {
+                    violations.insert(
+                        "reporting cannot generate a module through macro tokens".to_owned(),
+                    );
+                }
+                if path.is_empty() || colon_count == 2 {
+                    path.push(identifier);
+                } else {
+                    flush_path(&mut path, violations);
+                    path.push(identifier);
+                }
+                colon_count = 0;
+            },
+            TokenTree::Punct(punctuation) if punctuation.as_char() == ':' && !path.is_empty() => {
+                colon_count = colon_count.saturating_add(1);
+            },
+            TokenTree::Punct(punctuation)
+                if punctuation.as_char() == '!'
+                    && punctuation.spacing() == proc_macro2::Spacing::Alone =>
+            {
+                if !path.is_empty() {
+                    let nested = path.join("::");
+                    violations.insert(format!(
+                        "reporting allowlisted macros cannot invoke nested macro `{nested}!`"
+                    ));
+                }
+                flush_path(&mut path, violations);
+                colon_count = 0;
+            },
+            TokenTree::Punct(_) | TokenTree::Literal(_) => {
+                flush_path(&mut path, violations);
+                colon_count = 0;
+            },
+        }
+    }
+    flush_path(&mut path, violations);
 }
 
 fn adaptive_surface_violations(workspace_root: &Path) -> Result<Vec<String>, Box<dyn Error>> {
@@ -1859,10 +4648,7 @@ mod tests {
             .map(str::to_owned)
             .collect(),
         );
-        features.insert(
-            "reporting".to_owned(),
-            vec!["core".to_owned(), "venom-core/legacy-contracts".to_owned()],
-        );
+        features.insert("reporting".to_owned(), vec!["core".to_owned()]);
         features.insert("detection".to_owned(), vec!["dep:regex".to_owned()]);
         features.insert("ml".to_owned(), Vec::new());
         features.insert("distributed".to_owned(), vec!["dep:dashmap".to_owned()]);
@@ -2016,8 +4802,7 @@ mod tests {
             pub use event_bus::{Event, EventBuilder, EventSeverity, EventType};
             #[cfg(any(
                 feature = "legacy-scanner",
-                feature = "platform-models",
-                feature = "reporting"
+                feature = "platform-models"
             ))]
             pub use venom_core::ScanFinding;
         "#;
@@ -2026,8 +4811,8 @@ mod tests {
             .is_empty());
 
         let widened = source.replace(
-            "feature = \"reporting\"\n            ))]",
-            "feature = \"reporting\",\n                feature = \"scanning\"\n            ))]",
+            "feature = \"platform-models\"\n            ))]",
+            "feature = \"platform-models\",\n                feature = \"reporting\"\n            ))]",
         );
         assert!(scanner_legacy_reexport_violations(&widened)
             .unwrap()
@@ -2035,6 +4820,920 @@ mod tests {
             .any(
                 |violation| violation.contains("`ScanFinding`") && violation.contains("exact cfg")
             ));
+    }
+
+    #[test]
+    fn reporting_reexports_are_exact_and_feature_gated() {
+        let source = r#"
+            #[cfg(feature = "reporting")]
+            pub use reporting::{
+                ReportError, ReportFormat, ReportGenerator, MAX_RENDERED_REPORT_BYTES,
+                REPORT_DOCUMENT_SCHEMA,
+            };
+        "#;
+        assert!(reporting_reexport_violations(source).unwrap().is_empty());
+
+        let missing = source.replace("ReportError, ", "");
+        assert!(reporting_reexport_violations(&missing)
+            .unwrap()
+            .iter()
+            .any(|violation| violation.contains("must be exactly")
+                && violation.contains("ReportError")));
+
+        let widened = source.replace(
+            "#[cfg(feature = \"reporting\")]",
+            "#[cfg(any(feature = \"reporting\", feature = \"scanning\"))]",
+        );
+        assert!(reporting_reexport_violations(&widened)
+            .unwrap()
+            .iter()
+            .any(|violation| violation.contains("exact cfg")));
+
+        let legacy = source.replace(
+            "ReportError, ReportFormat",
+            "ReportError, ReportFormat, VulnerabilityReport",
+        );
+        assert!(reporting_reexport_violations(&legacy)
+            .unwrap()
+            .iter()
+            .any(|violation| violation.contains("VulnerabilityReport")));
+
+        let qualified_alias = format!(
+            "{source}\n#[cfg(feature = \"reporting\")]\npub use crate::reporting::ReportGenerator as RendererAlias;"
+        );
+        assert!(reporting_reexport_violations(&qualified_alias)
+            .unwrap()
+            .iter()
+            .any(|violation| violation.contains("exactly one public `reporting` re-export")));
+
+        let hidden_module_alias = format!(
+            r#"{source}
+                #[cfg(feature = "reporting")]
+                mod hidden {{
+                    pub use crate::reporting::ReportGenerator as Renderer;
+                }}
+                #[cfg(feature = "reporting")]
+                pub use hidden::Renderer as RendererAlias;
+            "#
+        );
+        assert!(reporting_reexport_violations(&hidden_module_alias)
+            .unwrap()
+            .iter()
+            .any(|violation| violation.contains("exactly one public `reporting` re-export")));
+
+        let hidden_type_alias = format!(
+            r#"{source}
+                mod hidden {{
+                    #[cfg(feature = "reporting")]
+                    pub type Renderer = crate::reporting::ReportGenerator;
+                    #[cfg(not(feature = "reporting"))]
+                    pub struct Renderer;
+                }}
+                pub use hidden::Renderer;
+            "#
+        );
+        let violations = reporting_reexport_violations(&hidden_type_alias).unwrap();
+        for marker in [
+            "type alias `Renderer`",
+            "exactly one public `reporting` re-export",
+        ] {
+            assert!(
+                violations
+                    .iter()
+                    .any(|violation| violation.contains(marker)),
+                "hidden reporting facade marker `{marker}` bypassed: {violations:?}"
+            );
+        }
+
+        let absolute_reporting = source.replace("pub use reporting::", "pub use ::reporting::");
+        assert!(reporting_reexport_violations(&absolute_reporting)
+            .unwrap()
+            .iter()
+            .any(|violation| violation.contains("exact direct `reporting::{...}` path")));
+
+        let unbounded_wrapper = format!(
+            r#"{source}
+                #[cfg(feature = "reporting")]
+                pub fn render_unbounded(report: &RunReport) -> Result<String, serde_json::Error> {{
+                    serde_json::to_string(report)
+                }}
+            "#
+        );
+        assert!(reporting_reexport_violations(&unbounded_wrapper)
+            .unwrap()
+            .iter()
+            .any(|violation| violation.contains("fn render_unbounded")
+                && violation.contains("cfg(reporting) facade item")));
+
+        let escaped_feature_wrapper = format!(
+            r#"{source}
+                #[cfg(feature = "report\x69ng")]
+                pub fn escaped_unbounded(report: &RunReport) -> String {{
+                    serde_json::to_string(report).unwrap()
+                }}
+            "#
+        );
+        assert!(reporting_reexport_violations(&escaped_feature_wrapper)
+            .unwrap()
+            .iter()
+            .any(|violation| violation.contains("fn escaped_unbounded")
+                && violation.contains("cfg(reporting) facade item")));
+
+        for extra in [
+            r#"
+                #[cfg(feature = "reporting")]
+                impl reporting::ReportGenerator {
+                    pub fn generate_unbounded(report: &RunReport) -> String {
+                        serde_json::to_string(report).unwrap()
+                    }
+                }
+            "#,
+            r#"
+                #[cfg(feature = "reporting")]
+                reporting_extension!();
+            "#,
+            r#"
+                #[cfg(feature = "reporting")]
+                mod reporting_extensions;
+            "#,
+        ] {
+            let source = format!("{source}\n{extra}");
+            assert!(reporting_reexport_violations(&source)
+                .unwrap()
+                .iter()
+                .any(|violation| violation.contains("cfg(reporting) facade item")));
+        }
+    }
+
+    #[test]
+    fn reporting_whole_crate_closure_rejects_cross_file_extensions() {
+        let extension = r#"
+            impl crate::reporting::ReportGenerator {
+                pub fn generate_unbounded(report: &RunReport) -> String {
+                    serde_json::to_string(report).unwrap()
+                }
+            }
+        "#;
+        for path in ["reporting_extensions.rs", "api_evidence.rs"] {
+            let violations = reporting_cross_file_source_violations(path, extension).unwrap();
+            for marker in ["reporting", "ReportGenerator"] {
+                assert!(
+                    violations
+                        .iter()
+                        .any(|violation| violation.contains(marker)),
+                    "cross-file reporting marker `{marker}` bypassed in {path}: {violations:?}"
+                );
+            }
+        }
+
+        let unbounded_run_export = r#"
+            pub fn export(report: &venom_core::RunReport) -> Result<String, serde_json::Error> {
+                serde_json::to_string(report)
+            }
+        "#;
+        for path in ["lib.rs", "api_evidence.rs"] {
+            assert!(
+                reporting_cross_file_source_violations(path, unbounded_run_export)
+                    .unwrap()
+                    .iter()
+                    .any(|violation| violation.contains("public function `export`")
+                        && violation.contains("RunReport"))
+            );
+        }
+
+        let aliased_sources = vec![
+            (
+                "aliases.rs".to_owned(),
+                "pub type RenderInput = venom_core::r#RunReport;".to_owned(),
+            ),
+            (
+                "api_evidence.rs".to_owned(),
+                r#"
+                    pub fn export(report: &crate::RenderInput) -> String {
+                        serde_json::to_string(report).unwrap()
+                    }
+                "#
+                .to_owned(),
+            ),
+        ];
+        assert!(reporting_cross_source_set_violations(&aliased_sources)
+            .unwrap()
+            .iter()
+            .any(|violation| violation.contains("public function `export`")
+                && violation.contains("RunReport")));
+
+        for callable in [
+            "pub type Exporter = fn(&venom_core::RunReport) -> String;",
+            "pub trait Export { fn render(&self, report: &venom_core::RunReport) -> String; }",
+            "pub fn exporter() -> impl Fn(&venom_core::RunReport) -> String { todo!() }",
+        ] {
+            assert!(
+                !reporting_cross_file_source_violations("api_evidence.rs", callable)
+                    .unwrap()
+                    .is_empty()
+            );
+        }
+
+        for external_macro in ["venom_core::x!();", "r#venom_core::r#x!();"] {
+            assert!(
+                reporting_cross_file_source_violations("lib.rs", external_macro)
+                    .unwrap()
+                    .iter()
+                    .any(|violation| violation
+                        .contains("unclassified qualified macro invocation `venom_core::x!`"))
+            );
+        }
+
+        for imported_macro in [
+            "use venom_core::x; x!();",
+            "use venom_core::x as format; format!();",
+        ] {
+            assert!(
+                reporting_cross_file_source_violations("lib.rs", imported_macro)
+                    .unwrap()
+                    .iter()
+                    .any(|violation| violation.contains("unclassified imported macro invocation")),
+                "imported external macro bypassed whole-crate closure: {imported_macro}"
+            );
+        }
+
+        for macro_use in [
+            "#[macro_use] extern crate venom_core; x!();",
+            "#[macro_use] mod imported_macros {}",
+        ] {
+            assert!(
+                reporting_cross_file_source_violations("lib.rs", macro_use)
+                    .unwrap()
+                    .iter()
+                    .any(|violation| violation.contains("production `#[macro_use]` macro import")),
+                "macro_use import bypassed whole-crate closure: {macro_use}"
+            );
+        }
+
+        assert!(reporting_cross_file_source_violations(
+            "api_evidence.rs",
+            "pub fn completed_run() -> venom_core::RunReport { todo!() }"
+        )
+        .unwrap()
+        .is_empty());
+
+        let raw_identifier_extension = r#"
+            impl crate::r#reporting::r#ReportGenerator {}
+        "#;
+        assert!(reporting_cross_file_source_violations(
+            "api_evidence.rs",
+            raw_identifier_extension
+        )
+        .unwrap()
+        .iter()
+        .any(|violation| violation.contains("ReportGenerator")));
+
+        let cfg_extension = r#"
+            #[cfg(feature = "reporting")]
+            mod extension { pub fn render_unbounded() {} }
+        "#;
+        assert!(
+            reporting_cross_file_source_violations("api_evidence.rs", cfg_extension)
+                .unwrap()
+                .iter()
+                .any(|violation| violation.contains("cfg/cfg_attr predicate"))
+        );
+
+        for included_extension in [
+            r#"include!(concat!(env!("OUT_DIR"), "/report_extension.rs"));"#,
+            r#"r#include!("outside.inc");"#,
+        ] {
+            assert!(
+                reporting_cross_file_source_violations("api_evidence.rs", included_extension)
+                    .unwrap()
+                    .iter()
+                    .any(|violation| violation
+                        .contains("production `include!` source indirection"))
+            );
+        }
+        assert!(reporting_cross_file_source_violations(
+            "bridge_tests.rs",
+            "include!(\"outside.inc\");"
+        )
+        .unwrap()
+        .iter()
+        .any(|violation| violation.contains("production `include!` source indirection")));
+
+        for path_extension in [
+            r#"#[path = "../outside.rs"] mod extension;"#,
+            r#"#[r#path = "outside.inc"] mod extension;"#,
+        ] {
+            assert!(
+                reporting_cross_file_source_violations("api_evidence.rs", path_extension)
+                    .unwrap()
+                    .iter()
+                    .any(|violation| violation.contains("production `#[path]` source indirection"))
+            );
+        }
+
+        assert!(reporting_cross_file_source_violations(
+            "api_evidence.rs",
+            "pub fn unrelated_api_surface() {}"
+        )
+        .unwrap()
+        .is_empty());
+    }
+
+    fn valid_reporting_public_api_fixture() -> &'static str {
+        r#"
+            pub const REPORT_DOCUMENT_SCHEMA: &str = "venom-rendered-run/v1";
+            pub const MAX_RENDERED_REPORT_BYTES: usize = 16 * 1_024 * 1_024;
+
+            #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+            #[non_exhaustive]
+            pub enum ReportFormat { Json, Csv, Html, Markdown }
+            impl ReportFormat {
+                pub const fn as_str(self) -> &'static str {
+                    match self {
+                        Self::Json => "json",
+                        Self::Csv => "csv",
+                        Self::Html => "html",
+                        Self::Markdown => "markdown",
+                    }
+                }
+                pub const fn media_type(self) -> &'static str {
+                    match self {
+                        Self::Json => "application/json",
+                        Self::Csv => "text/csv; charset=utf-8",
+                        Self::Html => "text/html; charset=utf-8",
+                        Self::Markdown => "text/markdown; charset=utf-8",
+                    }
+                }
+                pub const fn extension(self) -> &'static str {
+                    match self {
+                        Self::Json => "json",
+                        Self::Csv => "csv",
+                        Self::Html => "html",
+                        Self::Markdown => "md",
+                    }
+                }
+            }
+
+            #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+            #[non_exhaustive]
+            pub enum ReportError {
+                OutputLimitExceeded { limit: usize },
+                Serialization,
+            }
+            impl fmt::Display for ReportError {}
+            impl Error for ReportError {}
+
+            #[derive(Debug, Default, Clone, Copy)]
+            pub struct ReportGenerator;
+            impl ReportGenerator {
+                pub fn generate(
+                    report: &RunReport,
+                    format: ReportFormat,
+                ) -> Result<String, ReportError> {
+                    let document = ReportDocument::from_report(report)?;
+                    render_with_limit(&document, format, MAX_RENDERED_REPORT_BYTES)
+                }
+                pub const fn available_formats() -> &'static [ReportFormat] { &REPORT_FORMATS }
+            }
+        "#
+    }
+
+    #[test]
+    fn reporting_public_items_signatures_and_constants_are_exact() {
+        let source = valid_reporting_public_api_fixture();
+        assert!(reporting_public_api_violations(source).unwrap().is_empty());
+
+        let extra_method =
+            format!("{source}\nimpl ReportGenerator {{ pub fn write_to_disk() {{}} }}");
+        assert!(reporting_public_api_violations(&extra_method)
+            .unwrap()
+            .iter()
+            .any(
+                |violation| violation.contains("ReportGenerator::write_to_disk")
+                    && violation.contains("outside the exact API")
+            ));
+
+        let widened_signature = source.replace("format: ReportFormat,", "format: &ReportFormat,");
+        assert!(reporting_public_api_violations(&widened_signature)
+            .unwrap()
+            .iter()
+            .any(|violation| violation.contains("ReportGenerator::generate")
+                && violation.contains("exact bounded signature")));
+
+        let unbounded_body = source.replace(
+            "let document = ReportDocument::from_report(report)?;\n                    render_with_limit(&document, format, MAX_RENDERED_REPORT_BYTES)",
+            "serde_json::to_string(report).map_err(|_| ReportError::Serialization)",
+        );
+        assert!(reporting_public_api_violations(&unbounded_body)
+            .unwrap()
+            .iter()
+            .any(|violation| violation.contains("ReportGenerator::generate")
+                && violation.contains("exact bounded implementation")));
+
+        let schema_drift = source.replace("venom-rendered-run/v1", "venom-rendered-run/v2");
+        assert!(reporting_public_api_violations(&schema_drift)
+            .unwrap()
+            .iter()
+            .any(|violation| violation.contains("REPORT_DOCUMENT_SCHEMA")));
+
+        let limit_drift = source.replace("16 * 1_024 * 1_024", "32 * 1_024 * 1_024");
+        assert!(reporting_public_api_violations(&limit_drift)
+            .unwrap()
+            .iter()
+            .any(|violation| violation.contains("MAX_RENDERED_REPORT_BYTES")));
+
+        let extra_item = format!("{source}\npub fn unbounded_render() {{}}");
+        assert!(reporting_public_api_violations(&extra_item)
+            .unwrap()
+            .iter()
+            .any(|violation| violation.contains("unbounded_render")
+                && violation.contains("outside the exact API")));
+
+        let extra_trait = format!(
+            "{source}\ntrait UnboundedWriter {{}} impl UnboundedWriter for ReportGenerator {{}}"
+        );
+        assert!(reporting_public_api_violations(&extra_trait)
+            .unwrap()
+            .iter()
+            .any(
+                |violation| violation.contains("UnboundedWriter for ReportGenerator")
+                    && violation.contains("exact public-type trait inventory")
+            ));
+
+        let conditional_method = source.replace(
+            "pub fn generate(",
+            "#[cfg(any())]\n                pub fn generate(",
+        );
+        assert!(reporting_public_api_violations(&conditional_method)
+            .unwrap()
+            .iter()
+            .any(|violation| violation.contains("ReportGenerator::generate")
+                && violation.contains("conditionally compiled")));
+
+        let derive_drift = source.replace(
+            "Debug, Default, Clone, Copy",
+            "Debug, Default, Clone, Copy, serde::Serialize",
+        );
+        assert!(reporting_public_api_violations(&derive_drift)
+            .unwrap()
+            .iter()
+            .any(
+                |violation| violation.contains("ReportGenerator") && violation.contains("derives")
+            ));
+    }
+
+    #[test]
+    fn reporting_feature_closure_cannot_regain_legacy_contracts() {
+        let mut features = valid_feature_map();
+        assert!(feature_violations(&features).is_empty());
+
+        features
+            .get_mut("reporting")
+            .unwrap()
+            .push("venom-core/legacy-contracts".to_owned());
+        assert!(feature_violations(&features).iter().any(|violation| {
+            violation.contains("`reporting` raw feature closure")
+                && violation.contains("venom-core/legacy-contracts")
+        }));
+    }
+
+    fn valid_reporting_import_fixture() -> &'static str {
+        r#"
+            use serde::Serialize;
+            use std::{error::Error, fmt, io};
+            use venom_core::{
+                OutcomeStatus, ResourceAccounting, ResourceAccountingMode, RunOutcomeRecord,
+                RunReport, RunStatus, RunStepStatus, RunStopCode, SecuritySeverity,
+            };
+        "#
+    }
+
+    #[test]
+    fn reporting_imports_pin_error_and_signature_type_semantics() {
+        let imports = valid_reporting_import_fixture();
+        assert!(reporting_source_import_violations(imports)
+            .unwrap()
+            .is_empty());
+
+        let imported_error =
+            format!("{imports}\nstruct ReportError;\nimpl Error for ReportError {{}}");
+        assert!(reporting_source_import_violations(&imported_error)
+            .unwrap()
+            .is_empty());
+        assert!(reporting_source_violations(&imported_error)
+            .unwrap()
+            .is_empty());
+
+        let spoofed_error = imported_error.replace(
+            "use std::{error::Error, fmt, io};",
+            "use std::{fmt, io};\ntrait Error {}",
+        );
+        assert!(reporting_source_import_violations(&spoofed_error)
+            .unwrap()
+            .iter()
+            .any(|violation| violation.contains("std::error::Error")));
+        assert!(reporting_source_violations(&spoofed_error)
+            .unwrap()
+            .iter()
+            .any(|violation| violation.contains("production trait `Error`")));
+
+        let spoofed_result = format!("{imports}\ntype Result<T, E> = std::result::Result<T, E>;");
+        assert!(reporting_source_violations(&spoofed_result)
+            .unwrap()
+            .iter()
+            .any(|violation| violation.contains("production type alias `Result`")));
+    }
+
+    #[test]
+    fn reporting_source_stays_run_report_only_and_ambient_authority_free() {
+        let valid = r#"
+            use std::fmt;
+            pub struct ReportGenerator;
+            impl fmt::Display for ReportGenerator {
+                fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                    formatter.write_str("RunReport renderer")
+                }
+            }
+        "#;
+        assert!(reporting_source_violations(valid).unwrap().is_empty());
+
+        let legacy_and_io = r#"
+            use crate::ScanFinding;
+            use std as standard;
+            use std::{fs, path::Path};
+            use std::fs::{File, OpenOptions};
+            pub struct VulnerabilityReport;
+            pub fn risk_score() {}
+        "#;
+        let violations = reporting_source_violations(legacy_and_io).unwrap();
+        for marker in [
+            "ScanFinding",
+            "alias `std`",
+            "std::fs",
+            "File",
+            "OpenOptions",
+            "VulnerabilityReport",
+            "risk_score",
+        ] {
+            assert!(
+                violations
+                    .iter()
+                    .any(|violation| violation.contains(marker)),
+                "missing `{marker}` in {violations:?}"
+            );
+        }
+
+        let concrete_io = r#"
+            use std::io::{self, Write};
+            fn leak(document: &[u8]) {
+                io::stdout().write_all(document).unwrap();
+                println!("leaked");
+            }
+        "#;
+        let violations = reporting_source_violations(concrete_io).unwrap();
+        for marker in ["stdout", "println"] {
+            assert!(
+                violations
+                    .iter()
+                    .any(|violation| violation.contains(marker)),
+                "standard-I/O marker `{marker}` bypassed policy: {violations:?}"
+            );
+        }
+
+        let comments = r#"
+            //! Historical ScanFinding, std::fs, File, and OpenOptions names are prose only.
+            pub struct ReportGenerator;
+        "#;
+        assert!(reporting_source_violations(comments).unwrap().is_empty());
+
+        let macro_tokens = r#"
+            fixture!(std::path::Path, ScanFinding, severity_stats, OpenOptions);
+        "#;
+        let violations = reporting_source_violations(macro_tokens).unwrap();
+        for marker in [
+            "std::path::Path",
+            "ScanFinding",
+            "severity_stats",
+            "OpenOptions",
+        ] {
+            assert!(
+                violations
+                    .iter()
+                    .any(|violation| violation.contains(marker)),
+                "macro token `{marker}` bypassed policy: {violations:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn reporting_rejects_out_of_line_modules_aliases_and_combined_feature_authority() {
+        assert!(reporting_source_violations("#[cfg(test)] mod tests {}")
+            .unwrap()
+            .is_empty());
+
+        let submodule = "#[cfg(any())] mod hidden_transport;";
+        assert!(reporting_source_violations(submodule)
+            .unwrap()
+            .iter()
+            .any(|violation| violation.contains("production module `hidden_transport`")));
+
+        let delegated_helper = r#"
+            fn leak(report: &RunReport) {
+                crate::api_evidence::exfiltrate(report);
+            }
+        "#;
+        assert!(reporting_source_violations(delegated_helper)
+            .unwrap()
+            .iter()
+            .any(
+                |violation| violation.contains("crate::api_evidence::exfiltrate")
+                    && violation.contains("cannot delegate")
+            ));
+
+        let external_macro = "crate::external_renderer!(report);";
+        let violations = reporting_source_violations(external_macro).unwrap();
+        for marker in ["crate::external_renderer", "outside the exact allowlist"] {
+            assert!(
+                violations
+                    .iter()
+                    .any(|violation| violation.contains(marker)),
+                "external macro marker `{marker}` bypassed policy: {violations:?}"
+            );
+        }
+
+        let unix_socket = r#"
+            fn connect() {
+                std::os::unix::net::UnixStream::connect("/tmp/venom.sock");
+            }
+        "#;
+        assert!(reporting_source_violations(unix_socket)
+            .unwrap()
+            .iter()
+            .any(
+                |violation| violation.contains("std::os::unix::net::UnixStream::connect")
+                    && violation.contains("authority allowlist")
+            ));
+
+        let panic_hook = r#"
+            fn mutate_hook() {
+                std::panic::set_hook(Box::new(|_| {}));
+            }
+        "#;
+        assert!(reporting_source_violations(panic_hook)
+            .unwrap()
+            .iter()
+            .any(|violation| violation.contains("std::panic::set_hook")
+                && violation.contains("authority allowlist")));
+
+        let cfg_path = "#[cfg(tokio::fs)] fn disabled_authority() {}";
+        let violations = reporting_source_violations(cfg_path).unwrap();
+        for marker in ["cfg/cfg_attr", "tokio"] {
+            assert!(
+                violations
+                    .iter()
+                    .any(|violation| violation.contains(marker)),
+                "conditional authority marker `{marker}` bypassed policy: {violations:?}"
+            );
+        }
+
+        let foreign = r#"
+            unsafe extern "C" { fn system(command: *const core::ffi::c_char) -> i32; }
+            unsafe fn raw_helper() {}
+            fn invoke(command: *const core::ffi::c_char) { unsafe { system(command); } }
+        "#;
+        let violations = reporting_source_violations(foreign).unwrap();
+        for marker in ["foreign modules", "unsafe blocks", "safe Rust functions"] {
+            assert!(
+                violations
+                    .iter()
+                    .any(|violation| violation.contains(marker)),
+                "unsafe/FFI marker `{marker}` bypassed policy: {violations:?}"
+            );
+        }
+
+        let macro_paths = r#"
+            fixture!(
+                std::net::TcpStream,
+                hyper::Client,
+                chrono::Utc,
+                rand::random,
+                getrandom::fill,
+                include_str!("ambient.txt"),
+                env!("AMBIENT")
+            );
+        "#;
+        let violations = reporting_source_violations(macro_paths).unwrap();
+        for marker in [
+            "std::net::TcpStream",
+            "hyper",
+            "chrono",
+            "rand",
+            "getrandom",
+            "include_str",
+            "env",
+        ] {
+            assert!(
+                violations
+                    .iter()
+                    .any(|violation| violation.contains(marker)),
+                "macro/alias marker `{marker}` bypassed policy: {violations:?}"
+            );
+        }
+
+        let generated_module = "fixture!(mod hidden;);";
+        assert!(reporting_source_violations(generated_module)
+            .unwrap()
+            .iter()
+            .any(|violation| violation.contains("generate a module through macro tokens")));
+
+        let nested_export = r#"
+            mod private {
+                #[macro_export]
+                macro_rules! escaped_public_api { () => {} }
+            }
+        "#;
+        assert!(reporting_source_violations(nested_export)
+            .unwrap()
+            .iter()
+            .any(|violation| violation.contains("export macros from any nested source scope")));
+    }
+
+    #[test]
+    fn reporting_rejects_static_and_lazy_global_state() {
+        let statics = r#"
+            static PRIVATE_CACHE: usize = 0;
+            pub static mut PUBLIC_CACHE: usize = 0;
+        "#;
+        let violations = reporting_source_violations(statics).unwrap();
+        for name in ["PRIVATE_CACHE", "PUBLIC_CACHE"] {
+            assert!(violations.iter().any(|violation| violation.contains(name)));
+        }
+
+        for primitive in [
+            "OnceLock",
+            "LazyLock",
+            "Mutex",
+            "RwLock",
+            "lazy_static",
+            "once_cell",
+            "thread_local",
+        ] {
+            let source = format!("fn hidden_state() {{ fixture!({primitive}); }}");
+            assert!(
+                reporting_source_violations(&source)
+                    .unwrap()
+                    .iter()
+                    .any(|violation| violation.contains(primitive)),
+                "global state primitive `{primitive}` bypassed policy"
+            );
+        }
+
+        for nondeterministic in ["HashMap", "HashSet", "RandomState"] {
+            let source = format!("fn randomized_order() {{ fixture!({nondeterministic}); }}");
+            assert!(
+                reporting_source_violations(&source)
+                    .unwrap()
+                    .iter()
+                    .any(|violation| violation.contains(nondeterministic)),
+                "randomized-order primitive `{nondeterministic}` bypassed policy"
+            );
+        }
+
+        for ambient_macro in [
+            "cfg",
+            "dbg",
+            "eprint",
+            "eprintln",
+            "env",
+            "include",
+            "include_bytes",
+            "include_str",
+            "option_env",
+            "print",
+            "println",
+        ] {
+            let source = format!("{ambient_macro}!(\"ambient\");");
+            assert!(
+                reporting_source_violations(&source)
+                    .unwrap()
+                    .iter()
+                    .any(|violation| violation.contains(ambient_macro)),
+                "compile-time macro `{ambient_macro}!` bypassed policy"
+            );
+        }
+    }
+
+    fn valid_reporting_document_contract_fixture() -> &'static str {
+        r#"
+            #[derive(Serialize)]
+            struct ReportDocument<'a> {
+                schema: &'static str,
+                source_schema: &'a str,
+                status: &'static str,
+                stop_code: &'static str,
+                target: &'a str,
+                authorized_origin: &'a str,
+                started_at: String,
+                completed_at: String,
+                accounting: AccountingDocument,
+                steps: Vec<StepDocument<'a>>,
+                outcomes: Vec<OutcomeDocument<'a>>,
+            }
+            #[derive(Serialize)]
+            struct AccountingDocument {
+                requests: AccountingDimension,
+                response_body_bytes: AccountingDimension,
+                request_body_bytes: AccountingDimension,
+                wall_time_ms: AccountingDimension,
+            }
+            #[derive(Serialize)]
+            struct AccountingDimension {
+                mode: &'static str,
+                limit: Option<String>,
+                consumed: Option<String>,
+                remaining: Option<String>,
+            }
+            #[derive(Serialize)]
+            struct StepDocument<'a> {
+                ordinal: u32,
+                action_id: &'a str,
+                status: &'static str,
+                duration_ms: String,
+            }
+            #[derive(Serialize)]
+            struct OutcomeDocument<'a> {
+                kind: &'static str,
+                action_id: &'a str,
+                severity: &'static str,
+                disposition: &'static str,
+                confidence_ppm: u32,
+                evidence_count: u64,
+                redacted_summary: &'a str,
+            }
+        "#
+    }
+
+    #[test]
+    fn reporting_private_document_shapes_are_exact() {
+        let source = valid_reporting_document_contract_fixture();
+        assert!(reporting_document_contract_violations(source)
+            .unwrap()
+            .is_empty());
+
+        let private_fingerprint = source.replace(
+            "redacted_summary: &'a str,",
+            "redacted_summary: &'a str,\n                fingerprint: &'a str,",
+        );
+        assert!(reporting_document_contract_violations(&private_fingerprint)
+            .unwrap()
+            .iter()
+            .any(|violation| violation.contains("OutcomeDocument")
+                && violation.contains("fields must remain exactly")));
+
+        let numeric_drift = source.replace("duration_ms: String,", "duration_ms: u64,");
+        assert!(reporting_document_contract_violations(&numeric_drift)
+            .unwrap()
+            .iter()
+            .any(|violation| violation.contains("StepDocument")
+                && violation.contains("fields must remain exactly")));
+    }
+
+    #[test]
+    fn reporting_production_semantics_and_cap_accounting_are_fingerprinted() {
+        let source = include_str!("../../../crates/venom-scanner/src/reporting.rs");
+        assert!(reporting_production_body_inventory_violations(source).is_empty());
+
+        let private_detail = source.replace(
+            "started_at: report.started_at().to_rfc3339(),",
+            r#"started_at: format_args!("{}", report.stop_reason().detail()).to_string(),"#,
+        );
+        let forged_macro_status = source.replace(
+            "status: run_status_token(report.status()),",
+            r#"status: if matches!(report.stop_reason().detail(), "trigger") { "complete" } else { run_status_token(report.status()) },"#,
+        );
+        let forged_conditional_status = source.replace(
+            "status: run_status_token(report.status()),",
+            r#"status: if report.target() == "forge-status-trigger" { "complete" } else { run_status_token(report.status()) },"#,
+        );
+        let swapped_field = source.replace(
+            "target: report.target(),",
+            "target: report.authorized_origin(),",
+        );
+        let doubled_public_cap = source.replace(
+            "    match format {\n        ReportFormat::Json => render_json(document, limit),",
+            "    let limit = if limit == MAX_RENDERED_REPORT_BYTES { limit * 2 } else { limit };\n    match format {\n        ReportFormat::Json => render_json(document, limit),",
+        );
+        for mutation in [
+            private_detail,
+            forged_macro_status,
+            forged_conditional_status,
+            swapped_field,
+            doubled_public_cap,
+        ] {
+            assert!(reporting_production_body_inventory_violations(&mutation)
+                .iter()
+                .any(|violation| violation.contains("production AST/body inventory changed")));
+        }
     }
 
     fn valid_cli_contract() -> (
@@ -2746,9 +6445,9 @@ mod tests {
                 (
                     "reporting",
                     "reporting",
-                    Lifecycle::Legacy,
+                    Lifecycle::Preview,
                     ImplementationClaim::Implemented,
-                    HostContract::Library("finding-to-report renderer API"),
+                    HostContract::Library("bounded RunReport renderer API"),
                 ),
                 (
                     "distributed",

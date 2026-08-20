@@ -1,6 +1,6 @@
 # Scanner
 
-`venom-scanner` contains the default deterministic evidence/reasoning/runtime stack plus feature-gated historical scan contracts, optional analysis modules, plugins, events, persistence, and reports.
+`venom-scanner` contains the default deterministic evidence/reasoning/runtime stack plus feature-gated historical scan contracts, optional analysis modules, plugins, events, persistence models, and bounded report rendering.
 
 ## Default deterministic runtime
 
@@ -76,6 +76,19 @@ pub trait ScanPhase: Send + Sync {
 }
 ```
 
+## Reporting host contract
+
+The independent `reporting` feature exposes a bounded, deterministic renderer
+for an already constructed `RunReport`. It enables only `core`, performs no I/O,
+and has no repository or default CLI caller. It preserves typed run status,
+stop classification code, accounting, and steps, and emits a privacy-minimized
+outcome projection without serializing fingerprints/private provenance or
+calculating risk, severity, findings, or vulnerability verdicts. Format
+encoding is not redaction: a host must
+pre-redact `target`, `authorized_origin`, step/outcome `action_id`, and outcome
+`redacted_summary` values. See [Bounded run-report rendering](reporting.md) and [ADR
+0021](adr/0021-render-bounded-run-reports.md).
+
 ## Feature flags
 
 | Feature | Purpose | Maturity |
@@ -84,7 +97,7 @@ pub trait ScanPhase: Send + Sync {
 | `scanning` | Deterministic evidence, reasoning, planning, execution, verification, and bounded runtime | Preview |
 | `legacy-scanner` | Historical ordered runner, context, phases, and Scanner SDK; separate bounded discovery and active-verification slices within an otherwise unmetered run | Legacy |
 | `platform-models` | Unwired API/auth/dashboard/persistence/post-exploitation/realtime library models | Experimental |
-| `reporting` | Historical finding-to-report renderers, separate from deterministic `RunReport` | Legacy |
+| `reporting` | Bounded host-library renderer for typed `RunReport`; caller-owned pre-redaction, no I/O, persistence, CLI caller, or verdict generation | Preview |
 | `detection` | Signal-definition validation, caller-scored technique catalogs, neutral deviation records, and text matching; no scoring or classification | Experimental |
 | `plugins` | Evidence-only native plugin registry; no stock detector plugins | Preview |
 | `lua` | Independent registry scaffold; source execution fails closed | Experimental |
@@ -97,7 +110,7 @@ pub trait ScanPhase: Send + Sync {
 | `enterprise` | Historical aggregate excluding `threat-intel`; not an enterprise package | Experimental |
 
 Default builds enable exactly `core` and `scanning`. Detection, the historical
-runner, platform models, renderers, extension runtimes, and the other
+runner, platform models, the bounded report renderer, extension runtimes, and the other
 feature-flagged surfaces listed above require explicit opt-in. CI compiles the
 quarantined feature groups independently, and the architecture gate binds their
 module declarations to the expected Cargo features. See the

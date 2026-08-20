@@ -11,7 +11,7 @@ The editable diagrams.net source is [architecture.drawio](architecture.drawio). 
 | Crate | Responsibility | May depend on |
 | --- | --- | --- |
 | `venom-core` | Default transport-neutral evidence, reasoning, ontology, outcome, predicate, and run-report contracts; the pre-quarantine facade is feature-gated | External libraries only |
-| `venom-scanner` | Phase/plugin traits, deterministic reasoning, runner, detection, and reports | `venom-core` |
+| `venom-scanner` | Phase/plugin traits, deterministic reasoning, runner, detection, and opt-in bounded report rendering | `venom-core` |
 | `venom-proxy` | Experimental fixed-upstream TCP relay; no HTTP/TLS interception | External libraries only |
 | `venom-api` | Library health router and its local unsupported-listener error | External libraries only |
 | `venom-cli` | Composition root and command routing | `venom-scanner` by default; `venom-api` and `venom-proxy` only through explicit adapter features |
@@ -36,11 +36,12 @@ flowchart TD
 The pre-quarantine `Config`, shared `Error`, lifecycle-event, `ScanFinding`, raw
 HTTP, vulnerability, and scan-result records remain in `venom-core` only behind
 its non-default `legacy-contracts` feature for the pinned alpha compatibility
-baseline. `venom-scanner` forwards that feature only for `legacy-scanner`,
-`platform-models`, and `reporting`; the default decision runtime cannot import
-those records. The scanner owns behavior such as `EventBus`, `ScanRunner`,
-`ScanPhase`, and `Plugin`. `ScanFinding` is a legacy phase/reporting contract;
-the Preview plugin trait records observations and does not return it.
+baseline. `venom-scanner` forwards that feature only for `legacy-scanner` and
+`platform-models`; the default decision runtime and the `reporting` feature
+cannot import those records. The scanner owns behavior such as `EventBus`,
+`ScanRunner`, `ScanPhase`, and `Plugin`. `ScanFinding` is a legacy phase
+compatibility contract; the Preview plugin and reporting contracts do not
+accept it.
 `venom-api` owns its small adapter error locally and has no workspace-crate
 dependency.
 
@@ -65,6 +66,8 @@ flowchart TD
     DiscoveryRecords --> RunReport["Typed run report · Unknown observations"]
     ReviewRecords --> RunReport
     LegacyRecords --> RunReport
+    RunReport -. "explicit reporting host" .-> Renderer["Bounded renderer · Preview"]
+    Renderer --> Document["Host-owned document<br/>no persistence or verdict authority"]
     PluginHost["Linked plugin host · Preview"] --> PluginContext["Host-owned PluginContext<br/>scope · budget · broker · redaction"]
     PluginContext --> PluginCode["Plugin trait implementation"]
     PluginCode --> PluginEvidence["Recorded observations"]
@@ -79,7 +82,8 @@ not make whole-run accounting metered: phase one and host-defined custom phases
 can retain raw direct-I/O authority. It also does
 not imply that the deterministic Surface-B runtime projects verification
 outcomes into findings, that a legacy `NeedsReview` outcome is a vulnerability
-verdict, or that a dashboard subscriber is composed by either CLI scan command.
+verdict, that the optional renderer persists a document, or that a dashboard
+subscriber is composed by either CLI scan command.
 
 The runner knows `ScanPhase`, not concrete phase implementations. The plugin
 registry knows `Plugin`, not concrete plugin types. A linked host constructs the
@@ -102,7 +106,7 @@ venom-scanner/src/
 |-- contracts.rs     scanner traits and core contract re-exports
 |-- runner.rs        scheduling, timeouts, cancellation, aggregation
 |-- event_bus.rs     legacy-scanner host event delivery (opt-in)
-|-- reporting.rs     historical findings-to-report transformation (opt-in)
+|-- reporting.rs     bounded typed RunReport renderer (opt-in)
 |-- distributed.rs   task queues and workers (opt-in)
 |-- advanced_detection.rs  validated signal and technique records (opt-in)
 |-- anomaly.rs       validated deviation records and text matching (opt-in)
@@ -133,7 +137,10 @@ This target supports separate open-source and commercial distributions without m
 4. The event bus carries immutable lifecycle facts; subscribers do not control execution through hidden callbacks.
 5. In-process distributed models use serializable task/result contracts; no remote worker transport is implemented.
 6. Lua execution is quarantined until registered source loading exists; its intended context remains deliberately small.
-7. Reports consume findings after execution and do not mutate scanner state.
+7. The opt-in report renderer consumes an immutable typed `RunReport`, performs
+   no I/O or redaction, and neither mutates scanner state nor creates findings
+   or verdicts. Hosts must pre-redact projected target, authorized-origin,
+   action-identifier, and outcome-summary fields.
 
 ## Reasoning and runtime boundary
 
