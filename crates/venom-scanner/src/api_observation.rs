@@ -1027,8 +1027,10 @@ fn decode_cursor_hex(value: &str) -> Result<Vec<u8>, ApiObservationError> {
             reason: "hexadecimal payload must be non-empty and byte-aligned",
         });
     }
+    let (pairs, remainder) = value.as_bytes().as_chunks::<2>();
+    debug_assert!(remainder.is_empty());
     let mut decoded = Vec::with_capacity(value.len() / 2);
-    for pair in value.as_bytes().chunks_exact(2) {
+    for pair in pairs {
         let high = decode_cursor_hex_nibble(pair[0])?;
         let low = decode_cursor_hex_nibble(pair[1])?;
         decoded.push((high << 4) | low);

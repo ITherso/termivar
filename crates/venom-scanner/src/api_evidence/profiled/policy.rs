@@ -516,8 +516,10 @@ pub(super) fn decode_digest(value: &str) -> Result<[u8; 32], &'static str> {
     if bytes.len() != 64 {
         return Err("API visibility digest must contain exactly 32 bytes");
     }
+    let (pairs, remainder) = bytes.as_chunks::<2>();
+    debug_assert!(remainder.is_empty());
     let mut decoded = [0_u8; 32];
-    for (index, pair) in bytes.chunks_exact(2).enumerate() {
+    for (index, pair) in pairs.iter().enumerate() {
         let high = decode_hex_nibble(pair[0])?;
         let low = decode_hex_nibble(pair[1])?;
         decoded[index] = (high << 4) | low;
