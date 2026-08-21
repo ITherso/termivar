@@ -1300,7 +1300,18 @@ class CommandIntegrationTests(unittest.TestCase):
                 "docs/reports/coverage/aaaaaaa.json\n", encoding="utf-8"
             )
             (root / "README.md").write_text("coverage accepted\n", encoding="utf-8")
-            self._git(root, "add", ".github", "README.md", "docs")
+            (root / "PROJECT_STATUS.md").write_text(
+                "# Project status\n\nCoverage evidence accepted.\n",
+                encoding="utf-8",
+            )
+            self._git(
+                root,
+                "add",
+                ".github",
+                "README.md",
+                "PROJECT_STATUS.md",
+                "docs",
+            )
             self._git(root, "commit", "-q", "-m", "accept measured evidence")
             acceptance_head = self._git(root, "rev-parse", "HEAD")
 

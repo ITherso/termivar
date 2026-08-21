@@ -1095,7 +1095,12 @@ def _candidate_provenance_violations(
     assert head_baseline is not None
     source_commit = head_baseline[1]["source"]["commit"]
     changed_paths = _changed_paths_between(root, source_commit, head)
-    allowed_truth_paths = {"README.md", "FEATURES.md", "mkdocs.yml"}
+    allowed_truth_paths = {
+        "README.md",
+        "FEATURES.md",
+        "PROJECT_STATUS.md",
+        "mkdocs.yml",
+    }
     unexpected = [
         path
         for path in changed_paths

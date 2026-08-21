@@ -120,12 +120,12 @@ coverage inventory and normalized line-state digest exactly before the
 replacement can be accepted.
 
 Acceptance must be a dedicated transition from the record's `source.commit`.
-Only `docs/**`, `README.md`, `FEATURES.md`, `mkdocs.yml`, and the Tests workflow
-may change; every other tracked path is frozen. For the first baseline the
-workflow change must be exactly the calibration-to-enforcement step-name and
-argument flip. A replacement baseline must leave that workflow byte-identical.
-This prevents unchanged line counts from blessing source logic or build-input
-changes made after the recorded calibration run.
+Only `docs/**`, `README.md`, `FEATURES.md`, `PROJECT_STATUS.md`, `mkdocs.yml`,
+and the Tests workflow may change; every other tracked path is frozen. For the
+first baseline the workflow change must be exactly the calibration-to-enforcement
+step-name and argument flip. A replacement baseline must leave that workflow
+byte-identical. This prevents unchanged line counts from blessing source logic
+or build-input changes made after the recorded calibration run.
 
 The commit accepting evidence must preserve the recorded `source.commit` in its
 ancestry, using a merge commit or fast-forward. Squashing or rebasing the
