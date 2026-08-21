@@ -566,6 +566,24 @@ impl DecisionEvidenceReceipt {
     pub fn after_execution(&self) -> &KnowledgeSnapshot {
         &self.after_execution
     }
+
+    #[cfg(test)]
+    pub(crate) fn with_test_committed_batch(
+        &self,
+        evidence: Vec<Evidence>,
+        writes: Vec<KnowledgeWrite>,
+        after_execution: KnowledgeSnapshot,
+    ) -> Self {
+        Self {
+            case: self.case.clone(),
+            stage: self.stage,
+            executor_id: self.executor_id.clone(),
+            evidence,
+            writes,
+            baseline: self.baseline.clone(),
+            after_execution,
+        }
+    }
 }
 
 /// Result of executing one decision-loop command through the runner boundary.

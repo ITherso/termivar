@@ -52,7 +52,7 @@ pub use predicates::{
     ApiVisibilityBoundaryKind, ApiVisibilityComparison, ApiVisibilityDimension,
     ApiVisibilityObservation, ApiVisibilityPairKind, ApiVisibilityResult, ApiVocabularyError,
     ComparisonId, HttpEvidencePredicate, OpaqueContextId, PredicateDescriptor, ResourceScopeId,
-    WebKnowledgePredicate,
+    WebDiscoveryEvidencePredicate, WebKnowledgePredicate,
 };
 pub use reasoning::{
     BayesianBelief, BayesianEvidence, BayesianUpdate, BeliefWrite, ConfidenceScore,

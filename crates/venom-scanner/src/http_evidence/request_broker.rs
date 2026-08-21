@@ -215,6 +215,7 @@ impl HttpRequestBroker {
                     .min(accounting_capacity),
             );
             let mut truncated = false;
+            let mut body_complete = false;
 
             loop {
                 // Metered collectors serialize body reads. This makes the
@@ -239,6 +240,7 @@ impl HttpRequestBroker {
 
                 let Some(chunk) = response.chunk().await.map_err(HttpEvidenceError::Request)?
                 else {
+                    body_complete = true;
                     break;
                 };
                 let session_retention =
@@ -258,6 +260,7 @@ impl HttpRequestBroker {
                 headers,
                 body,
                 body_truncated: truncated,
+                body_complete,
                 ttfb_ms,
                 total_ms: elapsed_ms(started.elapsed()),
             })

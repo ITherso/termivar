@@ -228,6 +228,179 @@ impl HttpEvidencePredicate {
     }
 }
 
+/// Names-only observations produced by bounded exact-origin HTML discovery.
+///
+/// Route and form predicates carry canonical, query-free URLs. Query and
+/// control predicates carry names only. The vocabulary deliberately has no
+/// predicate for a query value, form value, response body, or authorization
+/// material.
+pub struct WebDiscoveryEvidencePredicate;
+
+impl WebDiscoveryEvidencePredicate {
+    /// A complete eligible HTML document was projected into typed discovery
+    /// evidence.
+    pub const DOCUMENT_PROJECTED: PredicateDescriptor = PredicateDescriptor::new(
+        "web.discovery",
+        "document-projected",
+        "web.discovery.document-projected",
+    );
+    /// A committed GET response did not reach observed transport EOF and
+    /// therefore cannot support complete-document discovery. HEAD is exempt.
+    pub const DOCUMENT_BODY_INCOMPLETE: PredicateDescriptor = PredicateDescriptor::new(
+        "web.discovery",
+        "document-body-incomplete",
+        "web.discovery.document-body-incomplete",
+    );
+    /// HTTP 206 completed its bounded transfer but represents only a partial
+    /// document and therefore was not projected as a complete HTML resource.
+    pub const DOCUMENT_PARTIAL_REPRESENTATION: PredicateDescriptor = PredicateDescriptor::new(
+        "web.discovery",
+        "document-partial-representation",
+        "web.discovery.document-partial-representation",
+    );
+    /// An otherwise eligible complete HTML body was not valid UTF-8 and was not
+    /// parsed lossily.
+    pub const DOCUMENT_INVALID_UTF8: PredicateDescriptor = PredicateDescriptor::new(
+        "web.discovery",
+        "document-invalid-utf8",
+        "web.discovery.document-invalid-utf8",
+    );
+    /// Valid route references exceeded the configured per-document ceiling.
+    pub const DOCUMENT_ROUTE_LIMIT_REACHED: PredicateDescriptor = PredicateDescriptor::new(
+        "web.discovery",
+        "document-route-limit-reached",
+        "web.discovery.document-route-limit-reached",
+    );
+    /// Valid forms exceeded the configured assessment ceiling.
+    pub const DOCUMENT_FORM_LIMIT_REACHED: PredicateDescriptor = PredicateDescriptor::new(
+        "web.discovery",
+        "document-form-limit-reached",
+        "web.discovery.document-form-limit-reached",
+    );
+    /// A retained form contained more names than the per-form control ceiling.
+    pub const DOCUMENT_CONTROL_LIMIT_REACHED: PredicateDescriptor = PredicateDescriptor::new(
+        "web.discovery",
+        "document-control-limit-reached",
+        "web.discovery.document-control-limit-reached",
+    );
+    /// A route or form action contained more distinct query names than the
+    /// configured per-reference ceiling.
+    pub const DOCUMENT_QUERY_NAME_LIMIT_REACHED: PredicateDescriptor = PredicateDescriptor::new(
+        "web.discovery",
+        "document-query-name-limit-reached",
+        "web.discovery.document-query-name-limit-reached",
+    );
+    /// A reference was rejected before retention because its URL representation
+    /// exceeded the configured byte ceiling.
+    pub const DOCUMENT_URL_BYTE_LIMIT_REACHED: PredicateDescriptor = PredicateDescriptor::new(
+        "web.discovery",
+        "document-url-byte-limit-reached",
+        "web.discovery.document-url-byte-limit-reached",
+    );
+    /// The assessment-wide canonical subject ceiling rejected at least one
+    /// otherwise admissible route.
+    pub const ASSESSMENT_SUBJECT_LIMIT_REACHED: PredicateDescriptor = PredicateDescriptor::new(
+        "web.discovery",
+        "assessment-subject-limit-reached",
+        "web.discovery.assessment-subject-limit-reached",
+    );
+    /// The assessment depth boundary rejected at least one otherwise
+    /// admissible child route or form action.
+    pub const ASSESSMENT_DEPTH_LIMIT_REACHED: PredicateDescriptor = PredicateDescriptor::new(
+        "web.discovery",
+        "assessment-depth-limit-reached",
+        "web.discovery.assessment-depth-limit-reached",
+    );
+    /// The assessment-wide unique canonical URL byte envelope rejected at
+    /// least one otherwise admissible route or form action.
+    pub const ASSESSMENT_RETAINED_URL_BYTE_LIMIT_REACHED: PredicateDescriptor =
+        PredicateDescriptor::new(
+            "web.discovery",
+            "assessment-retained-url-byte-limit-reached",
+            "web.discovery.assessment-retained-url-byte-limit-reached",
+        );
+    /// Number of valid HTTP(S) document references rejected because they did
+    /// not match the authorized exact origin.
+    pub const DOCUMENT_OUTSIDE_ORIGIN_REFERENCE_COUNT: PredicateDescriptor =
+        PredicateDescriptor::new(
+            "web.discovery",
+            "document-outside-origin-reference-count",
+            "web.discovery.document-outside-origin-reference-count",
+        );
+    /// One canonical query-free route eligible for a GET observation.
+    pub const GET_ROUTE: PredicateDescriptor =
+        PredicateDescriptor::new("web.discovery", "get-route", "web.discovery.get-route");
+    /// One canonical query-free resource eligible for a HEAD observation.
+    pub const HEAD_ROUTE: PredicateDescriptor =
+        PredicateDescriptor::new("web.discovery", "head-route", "web.discovery.head-route");
+    /// Sorted, de-duplicated query parameter names carried by one route
+    /// reference.
+    pub const ROUTE_QUERY_PARAMETER_NAMES: PredicateDescriptor = PredicateDescriptor::new(
+        "web.discovery",
+        "route-query-parameter-names",
+        "web.discovery.route-query-parameter-names",
+    );
+    /// One canonical query-free GET form action.
+    pub const GET_FORM_ACTION: PredicateDescriptor = PredicateDescriptor::new(
+        "web.discovery",
+        "get-form-action",
+        "web.discovery.get-form-action",
+    );
+    /// One canonical query-free POST form action. Discovery records it but does
+    /// not dispatch it.
+    pub const POST_FORM_ACTION: PredicateDescriptor = PredicateDescriptor::new(
+        "web.discovery",
+        "post-form-action",
+        "web.discovery.post-form-action",
+    );
+    /// One canonical query-free dialog form action. Discovery records it but
+    /// does not dispatch it.
+    pub const DIALOG_FORM_ACTION: PredicateDescriptor = PredicateDescriptor::new(
+        "web.discovery",
+        "dialog-form-action",
+        "web.discovery.dialog-form-action",
+    );
+    /// Sorted, de-duplicated query parameter names carried by one form action.
+    pub const FORM_QUERY_PARAMETER_NAMES: PredicateDescriptor = PredicateDescriptor::new(
+        "web.discovery",
+        "form-query-parameter-names",
+        "web.discovery.form-query-parameter-names",
+    );
+    /// Sorted, de-duplicated HTML form-control names. Values are never present.
+    pub const FORM_CONTROL_NAMES: PredicateDescriptor = PredicateDescriptor::new(
+        "web.discovery",
+        "form-control-names",
+        "web.discovery.form-control-names",
+    );
+
+    /// Returns every fixed discovery descriptor in stable declaration order.
+    pub const fn fixed() -> &'static [PredicateDescriptor] {
+        &[
+            Self::DOCUMENT_PROJECTED,
+            Self::DOCUMENT_BODY_INCOMPLETE,
+            Self::DOCUMENT_PARTIAL_REPRESENTATION,
+            Self::DOCUMENT_INVALID_UTF8,
+            Self::DOCUMENT_ROUTE_LIMIT_REACHED,
+            Self::DOCUMENT_FORM_LIMIT_REACHED,
+            Self::DOCUMENT_CONTROL_LIMIT_REACHED,
+            Self::DOCUMENT_QUERY_NAME_LIMIT_REACHED,
+            Self::DOCUMENT_URL_BYTE_LIMIT_REACHED,
+            Self::ASSESSMENT_SUBJECT_LIMIT_REACHED,
+            Self::ASSESSMENT_DEPTH_LIMIT_REACHED,
+            Self::ASSESSMENT_RETAINED_URL_BYTE_LIMIT_REACHED,
+            Self::DOCUMENT_OUTSIDE_ORIGIN_REFERENCE_COUNT,
+            Self::GET_ROUTE,
+            Self::HEAD_ROUTE,
+            Self::ROUTE_QUERY_PARAMETER_NAMES,
+            Self::GET_FORM_ACTION,
+            Self::POST_FORM_ACTION,
+            Self::DIALOG_FORM_ACTION,
+            Self::FORM_QUERY_PARAMETER_NAMES,
+            Self::FORM_CONTROL_NAMES,
+        ]
+    }
+}
+
 /// Standard conclusions produced by web fingerprint reasoning.
 pub struct WebKnowledgePredicate;
 
@@ -1119,6 +1292,55 @@ mod tests {
         assert_eq!(
             serde_json::to_value(HttpEvidencePredicate::RESPONSE_STATUS.into_knowledge()).unwrap(),
             serde_json::json!({"namespace": "http.response", "name": "status"})
+        );
+        for descriptor in descriptors {
+            assert_eq!(descriptor.into_knowledge().dotted(), descriptor.dotted());
+        }
+    }
+
+    #[test]
+    fn fixed_web_discovery_descriptors_are_unique_ordered_and_preserve_wire_shape() {
+        let descriptors = WebDiscoveryEvidencePredicate::fixed();
+        let dotted: Vec<_> = descriptors
+            .iter()
+            .map(|descriptor| descriptor.dotted())
+            .collect();
+        let unique = dotted.iter().copied().collect::<BTreeSet<_>>();
+
+        assert_eq!(descriptors.len(), 21);
+        assert_eq!(unique.len(), descriptors.len());
+        assert_eq!(
+            dotted,
+            vec![
+                "web.discovery.document-projected",
+                "web.discovery.document-body-incomplete",
+                "web.discovery.document-partial-representation",
+                "web.discovery.document-invalid-utf8",
+                "web.discovery.document-route-limit-reached",
+                "web.discovery.document-form-limit-reached",
+                "web.discovery.document-control-limit-reached",
+                "web.discovery.document-query-name-limit-reached",
+                "web.discovery.document-url-byte-limit-reached",
+                "web.discovery.assessment-subject-limit-reached",
+                "web.discovery.assessment-depth-limit-reached",
+                "web.discovery.assessment-retained-url-byte-limit-reached",
+                "web.discovery.document-outside-origin-reference-count",
+                "web.discovery.get-route",
+                "web.discovery.head-route",
+                "web.discovery.route-query-parameter-names",
+                "web.discovery.get-form-action",
+                "web.discovery.post-form-action",
+                "web.discovery.dialog-form-action",
+                "web.discovery.form-query-parameter-names",
+                "web.discovery.form-control-names",
+            ]
+        );
+        assert_eq!(
+            serde_json::to_value(
+                WebDiscoveryEvidencePredicate::DOCUMENT_PROJECTED.into_knowledge()
+            )
+            .unwrap(),
+            serde_json::json!({"namespace": "web.discovery", "name": "document-projected"})
         );
         for descriptor in descriptors {
             assert_eq!(descriptor.into_knowledge().dotted(), descriptor.dotted());

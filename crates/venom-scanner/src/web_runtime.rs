@@ -25,6 +25,7 @@ use venom_core::{
     VerificationStage,
 };
 
+use crate::http_evidence::CompleteHttpResponseObserver;
 use crate::{
     AdaptationLimits, AdaptationRule, AdaptivePipelineError, BenefitScore, DecisionActionOrigin,
     DecisionEvidenceReceipt, DecisionExecutionClass, DecisionExecutionFailureReceipt,
@@ -45,7 +46,7 @@ use crate::{
 mod api_visibility;
 mod authority;
 
-use authority::SharedWebRuntimeAuthority;
+pub(crate) use authority::SharedWebRuntimeAuthority;
 
 pub use api_visibility::{
     ApiVisibilityContextProbe, ApiVisibilityDifferentialAudit,
@@ -60,9 +61,9 @@ const DEFAULT_PLANNING_BUDGET: u64 = 100;
 const DEFAULT_RISK_LIMIT_PERCENT: u8 = 40;
 const DEFAULT_MAX_ACTION_CYCLES: u32 = 8;
 const DEFAULT_FAILURE_LIMIT: u16 = 10;
-const BOOTSTRAP_ACTION_ID: &str = "web.action.bootstrap.http-evidence";
-const BOOTSTRAP_CASE_ID: &str = "case:web-runtime:bootstrap:http";
-const BOOTSTRAP_HYPOTHESIS_ID: &str = "hypothesis:web-runtime:bootstrap";
+pub(crate) const BOOTSTRAP_ACTION_ID: &str = "web.action.bootstrap.http-evidence";
+pub(crate) const BOOTSTRAP_CASE_ID: &str = "case:web-runtime:bootstrap:http";
+pub(crate) const BOOTSTRAP_HYPOTHESIS_ID: &str = "hypothesis:web-runtime:bootstrap";
 /// Construction and execution failures for [`StandardWebDecisionRuntime`].
 #[derive(Debug, Error)]
 #[non_exhaustive]
@@ -147,6 +148,20 @@ impl StandardWebDecisionRuntimeError {
         match self {
             Self::RunFailed { receipt, .. } => Some(receipt),
             _ => None,
+        }
+    }
+
+    /// Removes the subject-local audit from a started failure without carrying
+    /// its cumulative authority snapshots into an outer assessment receipt.
+    pub(crate) fn into_assessment_failure(
+        self,
+    ) -> (
+        StandardWebDecisionAssessmentFailureParts,
+        StandardWebDecisionRuntimeError,
+    ) {
+        match self {
+            Self::RunFailed { receipt, source } => (receipt.into_assessment_parts(), *source),
+            source => (StandardWebDecisionAssessmentFailureParts::default(), source),
         }
     }
 
@@ -265,6 +280,19 @@ impl StandardWebDecisionFailureReceipt {
     pub fn transport(&self) -> &TransportDispatchAudit {
         &self.transport
     }
+
+    fn into_assessment_parts(self: Box<Self>) -> StandardWebDecisionAssessmentFailureParts {
+        let Self {
+            bootstrap,
+            completed_turns,
+            usage: _,
+            transport: _,
+        } = *self;
+        StandardWebDecisionAssessmentFailureParts {
+            bootstrap,
+            turns: completed_turns,
+        }
+    }
 }
 
 /// Complete audit trail from bootstrap evidence to a terminal command.
@@ -278,6 +306,30 @@ pub struct StandardWebDecisionRunReport {
     transport: TransportDispatchAudit,
     limit_exceeded: Option<RuntimeLimitExceeded>,
     execution_failure: Option<DecisionExecutionFailureReceipt>,
+}
+
+/// Standard-run audit parts retained by one origin-assessment subject.
+///
+/// Usage and transport are intentionally absent. Every assessment subject uses
+/// one shared authority, so only the outer assessment report may expose those
+/// cumulative records.
+pub(crate) struct StandardWebDecisionAssessmentParts {
+    pub(crate) bootstrap: Option<DecisionEvidenceReceipt>,
+    pub(crate) turns: Vec<StandardWebDecisionRuntimeTurn>,
+    pub(crate) unverified_evidence: Option<DecisionEvidenceReceipt>,
+    pub(crate) terminal: DecisionLoopCommand,
+    pub(crate) limit_exceeded: Option<RuntimeLimitExceeded>,
+    pub(crate) execution_failure: Option<DecisionExecutionFailureReceipt>,
+}
+
+/// Subject-local work preserved from a failed Standard runtime.
+///
+/// The global usage and transport snapshots are intentionally discarded; the
+/// host assessment owns exactly one cumulative authority audit.
+#[derive(Default)]
+pub(crate) struct StandardWebDecisionAssessmentFailureParts {
+    pub(crate) bootstrap: Option<DecisionEvidenceReceipt>,
+    pub(crate) turns: Vec<StandardWebDecisionRuntimeTurn>,
 }
 
 impl StandardWebDecisionRunReport {
@@ -342,6 +394,17 @@ impl StandardWebDecisionRunReport {
             StandardWebDecisionRuntimeTurn::Planning(_) => None,
         })
     }
+
+    pub(crate) fn into_assessment_parts(self) -> StandardWebDecisionAssessmentParts {
+        StandardWebDecisionAssessmentParts {
+            bootstrap: self.bootstrap,
+            turns: self.turns,
+            unverified_evidence: self.unverified_evidence,
+            terminal: self.terminal,
+            limit_exceeded: self.limit_exceeded,
+            execution_failure: self.execution_failure,
+        }
+    }
 }
 
 /// Builder for one target-scoped [`StandardWebDecisionRuntime`].
@@ -359,6 +422,9 @@ pub struct StandardWebDecisionRuntimeBuilder {
     api_reasoning_enabled: bool,
     payload_binding: Option<HttpHeaderPayloadBinding>,
     cancellation: CancellationToken,
+    bootstrap_probe_method: HttpProbeMethod,
+    complete_response_observer: Option<Arc<dyn CompleteHttpResponseObserver>>,
+    additional_suppressed_actions: BTreeSet<String>,
 }
 
 struct StandardWebDecisionRuntimePreflight {
@@ -383,6 +449,9 @@ impl StandardWebDecisionRuntimeBuilder {
             api_reasoning_enabled: false,
             payload_binding: None,
             cancellation: CancellationToken::new(),
+            bootstrap_probe_method: HttpProbeMethod::Get,
+            complete_response_observer: None,
+            additional_suppressed_actions: BTreeSet::new(),
         }
     }
 
@@ -468,6 +537,28 @@ impl StandardWebDecisionRuntimeBuilder {
     /// [`StandardWebDecisionRuntime::analyze`] from another task.
     pub fn cancellation_token(mut self, cancellation: CancellationToken) -> Self {
         self.cancellation = cancellation;
+        self
+    }
+
+    /// Installs the sealed assessment projection on the bootstrap request.
+    ///
+    /// HEAD subjects are metadata observations only: all post-bootstrap
+    /// semantic actions are suppressed so they cannot silently become GET or
+    /// OPTIONS work. GET subjects retain the standard decision behavior.
+    pub(crate) fn with_assessment_response_observer(
+        mut self,
+        method: HttpProbeMethod,
+        observer: Arc<dyn CompleteHttpResponseObserver>,
+    ) -> Self {
+        self.bootstrap_probe_method = method;
+        self.complete_response_observer = Some(observer);
+        if method == HttpProbeMethod::Head {
+            self.additional_suppressed_actions.extend(
+                StandardWebActionKind::all()
+                    .into_iter()
+                    .map(|kind| kind.action_id().to_owned()),
+            );
+        }
         self
     }
 
@@ -598,19 +689,24 @@ impl StandardWebDecisionRuntimeBuilder {
         };
         let http_evidence = HttpEvidenceExecutor::new_with_request_broker(
             requests.clone(),
-            Arc::new(SubjectHttpProbeProvider::new(HttpProbeMethod::Get)),
+            Arc::new(SubjectHttpProbeProvider::new(self.bootstrap_probe_method)),
         )?;
         let http_evidence = match self.payload_binding {
             Some(binding) => http_evidence.with_payload_binding(binding),
             None => http_evidence,
         };
+        let http_evidence = match self.complete_response_observer {
+            Some(observer) => http_evidence.with_complete_response_observer(observer),
+            None => http_evidence,
+        };
         executors.register(Arc::new(http_evidence))?;
 
-        let unsupported_actions = StandardWebActionKind::all()
+        let mut unsupported_actions: BTreeSet<_> = StandardWebActionKind::all()
             .into_iter()
             .filter(|kind| !executors.contains(kind.executor_id()))
             .map(|kind| kind.action_id().to_owned())
             .collect();
+        unsupported_actions.extend(self.additional_suppressed_actions);
 
         Ok(StandardWebDecisionRuntime {
             target: self.target,

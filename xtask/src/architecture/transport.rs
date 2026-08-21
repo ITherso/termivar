@@ -29,6 +29,8 @@ const BOUNDED_RUNTIME_SOURCES: &[&str] = &[
     "crates/venom-scanner/src/runtime_budget.rs",
     "crates/venom-scanner/src/verification.rs",
     "crates/venom-scanner/src/web_actions.rs",
+    "crates/venom-scanner/src/web_assessment.rs",
+    "crates/venom-scanner/src/web_assessment/discovery.rs",
     "crates/venom-scanner/src/web_decision.rs",
     "crates/venom-scanner/src/web_execution.rs",
     "crates/venom-scanner/src/web_planning.rs",
@@ -45,6 +47,52 @@ const BOUNDED_RUNTIME_SOURCES: &[&str] = &[
 const TRANSPORT_OWNER_SOURCE: &str = "crates/venom-scanner/src/http_evidence/request_broker.rs";
 const SHARED_RUNTIME_AUTHORITY_SOURCE: &str = "crates/venom-scanner/src/web_runtime/authority.rs";
 const LEGACY_DISCOVERY_AUTHORITY_SOURCE: &str = "crates/venom-scanner/src/legacy_discovery.rs";
+
+const WEB_ASSESSMENT_PUBLIC_EXPORTS: &[&str] = &[
+    "DEFAULT_WEB_ASSESSMENT_MAX_ACTIVE_VERIFICATIONS",
+    "DEFAULT_WEB_ASSESSMENT_MAX_CANONICAL_URL_BYTES",
+    "DEFAULT_WEB_ASSESSMENT_MAX_CONTROLS_PER_FORM",
+    "DEFAULT_WEB_ASSESSMENT_MAX_DEPTH",
+    "DEFAULT_WEB_ASSESSMENT_MAX_FORMS",
+    "DEFAULT_WEB_ASSESSMENT_MAX_QUERY_NAMES",
+    "DEFAULT_WEB_ASSESSMENT_MAX_REFERENCES_PER_DOCUMENT",
+    "DEFAULT_WEB_ASSESSMENT_MAX_RESPONSE_BODY_BYTES",
+    "DEFAULT_WEB_ASSESSMENT_MAX_RETAINED_URL_BYTES",
+    "DEFAULT_WEB_ASSESSMENT_MAX_SUBJECTS",
+    "DEFAULT_WEB_ASSESSMENT_MAX_TOTAL_REQUESTS",
+    "DEFAULT_WEB_ASSESSMENT_MAX_TOTAL_RESPONSE_BYTES",
+    "DEFAULT_WEB_ASSESSMENT_MAX_WALL_TIME",
+    "HARD_MAX_WEB_ASSESSMENT_ACTIVE_VERIFICATIONS",
+    "HARD_MAX_WEB_ASSESSMENT_CANONICAL_URL_BYTES",
+    "HARD_MAX_WEB_ASSESSMENT_CONTROLS_PER_FORM",
+    "HARD_MAX_WEB_ASSESSMENT_DEPTH",
+    "HARD_MAX_WEB_ASSESSMENT_FORMS",
+    "HARD_MAX_WEB_ASSESSMENT_QUERY_NAMES",
+    "HARD_MAX_WEB_ASSESSMENT_REFERENCES_PER_DOCUMENT",
+    "HARD_MAX_WEB_ASSESSMENT_RESPONSE_BODY_BYTES",
+    "HARD_MAX_WEB_ASSESSMENT_RETAINED_URL_BYTES",
+    "HARD_MAX_WEB_ASSESSMENT_SUBJECTS",
+    "HARD_MAX_WEB_ASSESSMENT_TOTAL_REQUESTS",
+    "HARD_MAX_WEB_ASSESSMENT_TOTAL_RESPONSE_BYTES",
+    "HARD_MAX_WEB_ASSESSMENT_WALL_TIME",
+    "WEB_ASSESSMENT_CONCURRENCY",
+    "WebAssessmentCompletion",
+    "WebAssessmentFailureReceipt",
+    "WebAssessmentForm",
+    "WebAssessmentFormMethod",
+    "WebAssessmentIncompleteReason",
+    "WebAssessmentLimits",
+    "WebAssessmentLimitsError",
+    "WebAssessmentMethod",
+    "WebAssessmentRunReport",
+    "WebAssessmentRuntime",
+    "WebAssessmentRuntimeBuilder",
+    "WebAssessmentRuntimeError",
+    "WebAssessmentSubject",
+    "WebAssessmentSubjectOrigin",
+    "WebAssessmentSubjectReport",
+    "WebAssessmentUsage",
+];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum BrokerConstructorKind {
@@ -185,6 +233,7 @@ pub(super) fn check(workspace_root: &Path) -> Result<Vec<String>, Box<dyn Error>
     }
 
     violations.extend(broker_constructor_inventory_violations(workspace_root)?);
+    violations.extend(web_assessment_contract_violations(workspace_root)?);
 
     let expected_clients: BTreeSet<_> = DIRECT_CLIENT_SOURCE_ALLOWLIST
         .iter()
@@ -223,6 +272,839 @@ pub(super) fn check(workspace_root: &Path) -> Result<Vec<String>, Box<dyn Error>
     }
 
     Ok(violations)
+}
+
+fn web_assessment_contract_violations(
+    workspace_root: &Path,
+) -> Result<Vec<String>, Box<dyn Error>> {
+    let assessment =
+        fs::read_to_string(workspace_root.join("crates/venom-scanner/src/web_assessment.rs"))?;
+    let discovery = fs::read_to_string(
+        workspace_root.join("crates/venom-scanner/src/web_assessment/discovery.rs"),
+    )?;
+    let http_evidence =
+        fs::read_to_string(workspace_root.join("crates/venom-scanner/src/http_evidence.rs"))?;
+    let broker = fs::read_to_string(workspace_root.join(TRANSPORT_OWNER_SOURCE))?;
+    let facade = fs::read_to_string(workspace_root.join("crates/venom-scanner/src/lib.rs"))?;
+    let mut violations = Vec::new();
+
+    for (source_name, source) in [
+        (
+            "crates/venom-scanner/src/web_assessment.rs",
+            assessment.as_str(),
+        ),
+        (
+            "crates/venom-scanner/src/web_assessment/discovery.rs",
+            discovery.as_str(),
+        ),
+    ] {
+        for forbidden in [
+            "HttpRequestBroker",
+            "RequestAccountingBroker",
+            "reqwest",
+            "legacy_discovery",
+            "ScanPhase",
+            "RESPONSE_BODY_SAMPLE",
+            "TextSample",
+        ] {
+            if source.contains(forbidden) {
+                violations.push(format!(
+                    "{source_name} references forbidden assessment capability `{forbidden}`; reuse only the shared standard runtime authority"
+                ));
+            }
+        }
+    }
+    for (required, label) in [
+        (
+            "WEB_ASSESSMENT_CONCURRENCY: usize = 1",
+            "fixed sequential execution",
+        ),
+        (
+            "projection_from_committed_bootstrap",
+            "post-commit evidence replay",
+        ),
+    ] {
+        if !assessment.contains(required) {
+            violations.push(format!(
+                "origin assessment lost required {label} marker `{required}`"
+            ));
+        }
+    }
+    violations.extend(inspect_web_assessment_composition(&assessment)?);
+    violations.extend(inspect_web_assessment_models(&assessment)?);
+    violations.extend(inspect_web_assessment_facade(&facade)?);
+    violations.extend(inspect_complete_observer_seam(&http_evidence)?);
+    violations.extend(inspect_assessment_transport_markers(
+        &http_evidence,
+        &broker,
+    ));
+    Ok(violations)
+}
+
+fn inspect_assessment_transport_markers(http_evidence: &str, broker: &str) -> Vec<String> {
+    let mut violations = Vec::new();
+    if !http_evidence.contains("complete_response_observer_seal::Sealed")
+        || !http_evidence
+            .contains("impl Sealed for crate::web_assessment::AssessmentDiscoveryObserver {}")
+    {
+        violations.push(
+            "complete-body response observer must remain sealed to the exact assessment implementation"
+                .to_owned(),
+        );
+    }
+    if !http_evidence.contains("restricted.captured_headers.clear();") {
+        violations.push(
+            "assessment HTTP policy must clear every raw captured response header".to_owned(),
+        );
+    }
+    if broker.matches(".redirect(RedirectPolicy::none())").count() != 1 {
+        violations.push(
+            "the sole production request broker must configure exactly one redirect-disabled client"
+                .to_owned(),
+        );
+    }
+    if broker.matches("body_complete = true;").count() != 1
+        || !broker.contains("let Some(chunk) = response.chunk().await")
+    {
+        violations.push(
+            "complete-body authority must be granted exactly once at observed response-stream EOF"
+                .to_owned(),
+        );
+    }
+    violations
+}
+
+fn inspect_web_assessment_composition(source: &str) -> Result<Vec<String>, syn::Error> {
+    let syntax = syn::parse_file(source)?;
+    let mut visitor = AssessmentCompositionVisitor::default();
+    visitor.visit_file(&syntax);
+    let mut violations = visitor.violations.into_iter().collect::<Vec<_>>();
+    if visitor.authority_calls != 1 {
+        violations.push(format!(
+            "origin assessment must construct SharedWebRuntimeAuthority exactly once in WebAssessmentRuntimeBuilder::build; observed {} direct calls",
+            visitor.authority_calls
+        ));
+    }
+    if visitor.shared_child_builds != 1 {
+        violations.push(format!(
+            "origin assessment must contain exactly one standard child build_with_shared_authority composition point; observed {}",
+            visitor.shared_child_builds
+        ));
+    }
+    if visitor.standalone_build_calls != 0 {
+        violations.push(format!(
+            "origin assessment contains {} standalone .build() calls; every standard child must use build_with_shared_authority",
+            visitor.standalone_build_calls
+        ));
+    }
+    Ok(violations)
+}
+
+#[derive(Default)]
+struct AssessmentCompositionVisitor {
+    current_impl: Option<String>,
+    current_function: Option<String>,
+    control_depth: usize,
+    closure_depth: usize,
+    authority_calls: usize,
+    shared_child_builds: usize,
+    standalone_build_calls: usize,
+    violations: BTreeSet<String>,
+}
+
+impl AssessmentCompositionVisitor {
+    fn in_control_flow(&mut self, visit: impl FnOnce(&mut Self)) {
+        self.control_depth = self.control_depth.saturating_add(1);
+        visit(self);
+        self.control_depth = self.control_depth.saturating_sub(1);
+    }
+
+    fn current_boundary(&self) -> (&str, &str) {
+        (
+            self.current_impl.as_deref().unwrap_or("<free>"),
+            self.current_function.as_deref().unwrap_or("<none>"),
+        )
+    }
+}
+
+impl<'ast> Visit<'ast> for AssessmentCompositionVisitor {
+    fn visit_item(&mut self, item: &'ast Item) {
+        if !has_cfg_test(item_attributes(item)) {
+            visit::visit_item(self, item);
+        }
+    }
+
+    fn visit_item_impl(&mut self, item: &'ast syn::ItemImpl) {
+        if has_cfg_test(&item.attrs) {
+            return;
+        }
+        let prior = self.current_impl.take();
+        self.current_impl = match item.self_ty.as_ref() {
+            syn::Type::Path(path) => path
+                .path
+                .segments
+                .last()
+                .map(|segment| ident_name(&segment.ident)),
+            _ => None,
+        };
+        visit::visit_item_impl(self, item);
+        self.current_impl = prior;
+    }
+
+    fn visit_impl_item_fn(&mut self, item: &'ast syn::ImplItemFn) {
+        if has_cfg_test(&item.attrs) {
+            return;
+        }
+        let prior = self.current_function.replace(ident_name(&item.sig.ident));
+        visit::visit_impl_item_fn(self, item);
+        self.current_function = prior;
+    }
+
+    fn visit_item_fn(&mut self, item: &'ast syn::ItemFn) {
+        if has_cfg_test(&item.attrs) {
+            return;
+        }
+        let prior_impl = self.current_impl.take();
+        let prior_function = self.current_function.replace(ident_name(&item.sig.ident));
+        visit::visit_item_fn(self, item);
+        self.current_impl = prior_impl;
+        self.current_function = prior_function;
+    }
+
+    fn visit_expr_call(&mut self, expression: &'ast syn::ExprCall) {
+        if let syn::Expr::Path(path) = expression.func.as_ref() {
+            let segments = path_segments(&path.path);
+            if segments.len() >= 2
+                && segments
+                    .last()
+                    .is_some_and(|value| normalize_identifier(value) == "new_exact_origin")
+                && segments
+                    .get(segments.len() - 2)
+                    .is_some_and(|value| normalize_identifier(value) == "SharedWebRuntimeAuthority")
+            {
+                self.authority_calls = self.authority_calls.saturating_add(1);
+                let (impl_name, function_name) = self.current_boundary();
+                if impl_name != "WebAssessmentRuntimeBuilder"
+                    || function_name != "build"
+                    || self.control_depth != 0
+                    || self.closure_depth != 0
+                {
+                    self.violations.insert(format!(
+                        "SharedWebRuntimeAuthority::new_exact_origin must be one unconditional direct call in WebAssessmentRuntimeBuilder::build, not {impl_name}::{function_name}"
+                    ));
+                }
+            }
+        }
+        visit::visit_expr_call(self, expression);
+    }
+
+    fn visit_expr_method_call(&mut self, expression: &'ast syn::ExprMethodCall) {
+        match normalize_identifier(&ident_name(&expression.method)) {
+            "build_with_shared_authority" => {
+                self.shared_child_builds = self.shared_child_builds.saturating_add(1);
+                let (impl_name, function_name) = self.current_boundary();
+                if impl_name != "WebAssessmentRuntime" || function_name != "analyze" {
+                    self.violations.insert(format!(
+                        "build_with_shared_authority must remain inside WebAssessmentRuntime::analyze, not {impl_name}::{function_name}"
+                    ));
+                }
+            },
+            "build" => {
+                self.standalone_build_calls = self.standalone_build_calls.saturating_add(1);
+            },
+            _ => {},
+        }
+        visit::visit_expr_method_call(self, expression);
+    }
+
+    fn visit_expr_if(&mut self, expression: &'ast syn::ExprIf) {
+        self.in_control_flow(|visitor| visit::visit_expr_if(visitor, expression));
+    }
+
+    fn visit_expr_for_loop(&mut self, expression: &'ast syn::ExprForLoop) {
+        self.in_control_flow(|visitor| visit::visit_expr_for_loop(visitor, expression));
+    }
+
+    fn visit_expr_loop(&mut self, expression: &'ast syn::ExprLoop) {
+        self.in_control_flow(|visitor| visit::visit_expr_loop(visitor, expression));
+    }
+
+    fn visit_expr_match(&mut self, expression: &'ast syn::ExprMatch) {
+        self.in_control_flow(|visitor| visit::visit_expr_match(visitor, expression));
+    }
+
+    fn visit_expr_while(&mut self, expression: &'ast syn::ExprWhile) {
+        self.in_control_flow(|visitor| visit::visit_expr_while(visitor, expression));
+    }
+
+    fn visit_expr_closure(&mut self, expression: &'ast syn::ExprClosure) {
+        self.closure_depth = self.closure_depth.saturating_add(1);
+        visit::visit_expr_closure(self, expression);
+        self.closure_depth = self.closure_depth.saturating_sub(1);
+    }
+
+    fn visit_macro(&mut self, item: &'ast Macro) {
+        if token_stream_contains_identifier(item.tokens.clone(), "new_exact_origin")
+            || token_stream_contains_identifier(item.tokens.clone(), "build_with_shared_authority")
+        {
+            self.violations.insert(
+                "origin assessment hides authority construction or child composition inside a macro"
+                    .to_owned(),
+            );
+        }
+        visit::visit_macro(self, item);
+    }
+}
+
+fn inspect_web_assessment_models(source: &str) -> Result<Vec<String>, syn::Error> {
+    let syntax = syn::parse_file(source)?;
+    let mut violations = Vec::new();
+    let mut public_types = BTreeSet::new();
+    let mut audit_owners = BTreeMap::<String, usize>::new();
+
+    for item in &syntax.items {
+        match item {
+            Item::Struct(item) if !has_cfg_test(&item.attrs) => {
+                let name = ident_name(&item.ident);
+                if matches!(item.vis, syn::Visibility::Public(_)) {
+                    public_types.insert(name.clone());
+                    if item
+                        .fields
+                        .iter()
+                        .any(|field| !matches!(field.vis, syn::Visibility::Inherited))
+                    {
+                        violations.push(format!(
+                            "public assessment model {name} exposes fields; keep checked state private behind accessors"
+                        ));
+                    }
+                    if attrs_reference_serde(&item.attrs) {
+                        violations.push(format!(
+                            "public assessment model {name} must not acquire a serde wire contract in this commit"
+                        ));
+                    }
+                }
+                let audit_count = item
+                    .fields
+                    .iter()
+                    .filter(|field| type_references_ident(&field.ty, "TransportDispatchAudit"))
+                    .count();
+                if audit_count > 0 {
+                    audit_owners.insert(name.clone(), audit_count);
+                }
+                if name == "WebAssessmentSubjectReport"
+                    && item.fields.iter().any(|field| {
+                        type_references_ident(&field.ty, "RuntimeUsage")
+                            || type_references_ident(&field.ty, "TransportDispatchAudit")
+                    })
+                {
+                    violations.push(
+                        "WebAssessmentSubjectReport must remain subject-local and cannot own cumulative usage or transport audit snapshots"
+                            .to_owned(),
+                    );
+                }
+            },
+            Item::Enum(item)
+                if !has_cfg_test(&item.attrs) && matches!(item.vis, syn::Visibility::Public(_)) =>
+            {
+                let name = ident_name(&item.ident);
+                public_types.insert(name.clone());
+                if attrs_reference_serde(&item.attrs) {
+                    violations.push(format!(
+                        "public assessment model {name} must not acquire a serde wire contract in this commit"
+                    ));
+                }
+            },
+            _ => {},
+        }
+    }
+
+    let expected_audit_owners = BTreeMap::from([
+        ("WebAssessmentFailureReceipt".to_owned(), 1usize),
+        ("WebAssessmentRunReport".to_owned(), 1usize),
+    ]);
+    if audit_owners != expected_audit_owners {
+        violations.push(format!(
+            "assessment cumulative transport audit ownership drifted: expected {expected_audit_owners:?}, observed {audit_owners:?}"
+        ));
+    }
+    for item in &syntax.items {
+        let Item::Impl(item_impl) = item else {
+            continue;
+        };
+        let Some((_, trait_path, _)) = &item_impl.trait_ else {
+            continue;
+        };
+        let Some(trait_name) = trait_path
+            .segments
+            .last()
+            .map(|segment| ident_name(&segment.ident))
+        else {
+            continue;
+        };
+        if !matches!(trait_name.as_str(), "Serialize" | "Deserialize") {
+            continue;
+        }
+        let syn::Type::Path(self_type) = item_impl.self_ty.as_ref() else {
+            continue;
+        };
+        if let Some(type_name) = self_type
+            .path
+            .segments
+            .last()
+            .map(|segment| ident_name(&segment.ident))
+            .filter(|name| public_types.contains(name))
+        {
+            violations.push(format!(
+                "public assessment model {type_name} implements {trait_name}; no assessment wire contract is authorized in this commit"
+            ));
+        }
+    }
+    Ok(violations)
+}
+
+fn attrs_reference_serde(attributes: &[syn::Attribute]) -> bool {
+    attributes.iter().any(|attribute| {
+        attribute.path().is_ident("serde")
+            || (attribute.path().is_ident("derive")
+                && (token_stream_contains_identifier(
+                    attribute
+                        .meta
+                        .require_list()
+                        .map_or_else(|_| TokenStream::new(), |list| list.tokens.clone()),
+                    "Serialize",
+                ) || token_stream_contains_identifier(
+                    attribute
+                        .meta
+                        .require_list()
+                        .map_or_else(|_| TokenStream::new(), |list| list.tokens.clone()),
+                    "Deserialize",
+                )))
+    })
+}
+
+fn type_references_ident(item_type: &syn::Type, needle: &str) -> bool {
+    struct IdentVisitor<'needle> {
+        needle: &'needle str,
+        found: bool,
+    }
+    impl<'ast> Visit<'ast> for IdentVisitor<'_> {
+        fn visit_path(&mut self, path: &'ast SynPath) {
+            self.found |= path
+                .segments
+                .iter()
+                .any(|segment| normalize_identifier(&ident_name(&segment.ident)) == self.needle);
+            if !self.found {
+                visit::visit_path(self, path);
+            }
+        }
+    }
+    let mut visitor = IdentVisitor {
+        needle,
+        found: false,
+    };
+    visitor.visit_type(item_type);
+    visitor.found
+}
+
+fn inspect_web_assessment_facade(source: &str) -> Result<Vec<String>, syn::Error> {
+    let syntax = syn::parse_file(source)?;
+    let mut violations = Vec::new();
+    let modules = syntax
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Mod(item) if item.ident == "web_assessment" => Some(item),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    if modules.len() != 1
+        || !matches!(modules[0].vis, syn::Visibility::Inherited)
+        || modules[0].content.is_some()
+        || modules[0]
+            .attrs
+            .iter()
+            .any(attribute_can_redirect_module_path)
+    {
+        violations.push(
+            "web assessment module must be one private canonical external child with no path redirection"
+                .to_owned(),
+        );
+    }
+
+    let mut exports = BTreeSet::new();
+    for item in &syntax.items {
+        let Item::Use(item_use) = item else {
+            continue;
+        };
+        if !matches!(item_use.vis, syn::Visibility::Public(_)) {
+            continue;
+        }
+        let mut paths = Vec::new();
+        collect_use_paths(&item_use.tree, Vec::new(), &mut paths);
+        for (segments, binding, _) in paths {
+            if segments
+                .first()
+                .is_some_and(|segment| normalize_identifier(segment) == "web_assessment")
+            {
+                let export = binding
+                    .or_else(|| segments.last().cloned())
+                    .ok_or_else(|| {
+                        syn::Error::new_spanned(&item_use.tree, "missing assessment export binding")
+                    })?;
+                exports.insert(normalize_identifier(&export).to_owned());
+            }
+        }
+    }
+    let expected = WEB_ASSESSMENT_PUBLIC_EXPORTS
+        .iter()
+        .map(|value| (*value).to_owned())
+        .collect::<BTreeSet<_>>();
+    if exports != expected {
+        violations.push(format!(
+            "web assessment crate-root export allowlist drifted; missing={:?}, unexpected={:?}",
+            expected.difference(&exports).collect::<Vec<_>>(),
+            exports.difference(&expected).collect::<Vec<_>>()
+        ));
+    }
+    Ok(violations)
+}
+
+fn inspect_complete_observer_seam(source: &str) -> Result<Vec<String>, syn::Error> {
+    let syntax = syn::parse_file(source)?;
+    let mut violations = Vec::new();
+    let observer_trait = syntax.items.iter().find_map(|item| match item {
+        Item::Trait(item) if item.ident == "CompleteHttpResponseObserver" => Some(item),
+        _ => None,
+    });
+    if observer_trait.is_none_or(|item| {
+        !matches!(item.vis, syn::Visibility::Restricted(_))
+            || !item.supertraits.iter().any(|bound| match bound {
+                syn::TypeParamBound::Trait(bound) => path_segments(&bound.path)
+                    .iter()
+                    .any(|segment| normalize_identifier(segment) == "Sealed"),
+                _ => false,
+            })
+    }) {
+        violations.push(
+            "complete response observer must remain crate-private and inherit the private Sealed allowlist"
+                .to_owned(),
+        );
+    }
+    if let Some(item) = observer_trait {
+        let methods = item
+            .items
+            .iter()
+            .filter_map(|trait_item| match trait_item {
+                syn::TraitItem::Fn(method) => Some(method),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        let observe_is_exact = methods.len() == 1
+            && methods[0].sig.ident == "observe"
+            && methods[0].sig.inputs.len() == 2
+            && methods[0]
+                .sig
+                .inputs
+                .iter()
+                .skip(1)
+                .all(|input| match input {
+                    syn::FnArg::Typed(argument) => {
+                        type_references_ident(&argument.ty, "CompleteHttpResponseObservation")
+                            && !type_references_any_ident(
+                                &argument.ty,
+                                &["HeaderMap", "HeaderValue", "String", "Bytes"],
+                            )
+                    },
+                    syn::FnArg::Receiver(_) => false,
+                })
+            && match &methods[0].sig.output {
+                syn::ReturnType::Type(_, output) => {
+                    type_references_ident(output, "Evidence")
+                        && type_references_ident(output, "HttpEvidenceError")
+                },
+                syn::ReturnType::Default => false,
+            };
+        if !observe_is_exact {
+            violations.push(
+                "complete response observer must expose only the exact borrowed observation-to-evidence method"
+                    .to_owned(),
+            );
+        }
+    }
+    let observation = syntax.items.iter().find_map(|item| match item {
+        Item::Struct(item) if item.ident == "CompleteHttpResponseObservation" => Some(item),
+        _ => None,
+    });
+    if observation.is_none_or(|item| {
+        !matches!(item.vis, syn::Visibility::Restricted(_))
+            || item
+                .fields
+                .iter()
+                .any(|field| !matches!(field.vis, syn::Visibility::Inherited))
+    }) {
+        violations.push(
+            "complete response observation must remain crate-private with private fields"
+                .to_owned(),
+        );
+    }
+    if let Some(item) = observation {
+        let actual_fields = item
+            .fields
+            .iter()
+            .filter_map(|field| field.ident.as_ref().map(ident_name))
+            .collect::<BTreeSet<_>>();
+        let expected_fields = [
+            "action_id",
+            "applies_hypothesis_transition",
+            "case_id",
+            "complete_body",
+            "has_payload_strategy",
+            "hypothesis_id",
+            "media_type",
+            "method",
+            "reliability",
+            "request_method_evidence_id",
+            "request_url_evidence_id",
+            "requested_url",
+            "response_body_digest_evidence_id",
+            "response_body_truncated_evidence_id",
+            "response_media_type_evidence_id",
+            "response_status_evidence_id",
+            "stage",
+            "status",
+            "subject",
+        ]
+        .into_iter()
+        .map(str::to_owned)
+        .collect::<BTreeSet<_>>();
+        let complete_body_is_borrowed_slice = item.fields.iter().any(|field| {
+            field
+                .ident
+                .as_ref()
+                .is_some_and(|ident| ident == "complete_body")
+                && is_optional_borrowed_u8_slice(&field.ty)
+        });
+        let every_field_type_is_exact = item.fields.iter().all(|field| {
+            field.ident.as_ref().is_some_and(|ident| {
+                assessment_observation_type_matches(&ident_name(ident), &field.ty)
+            })
+        });
+        let forbidden_owned_field = item.fields.iter().any(|field| {
+            type_references_any_ident(
+                &field.ty,
+                &["HeaderMap", "HeaderValue", "Vec", "String", "Bytes"],
+            )
+        });
+        if actual_fields != expected_fields
+            || !complete_body_is_borrowed_slice
+            || !every_field_type_is_exact
+            || forbidden_owned_field
+            || attrs_reference_any_ident(
+                &item.attrs,
+                &["Clone", "Debug", "Serialize", "Deserialize", "serde"],
+            )
+        {
+            violations.push(
+                "complete response observation must remain the exact non-cloneable borrowed scalar/ID/body view with no owned strings, headers, or bytes"
+                    .to_owned(),
+            );
+        }
+        let allowed_accessors = expected_fields;
+        let accessor_methods = syntax
+            .items
+            .iter()
+            .filter_map(|syntax_item| match syntax_item {
+                Item::Impl(item_impl)
+                    if matches!(item_impl.self_ty.as_ref(), syn::Type::Path(path)
+                        if path.path.segments.last().is_some_and(|segment|
+                            segment.ident == "CompleteHttpResponseObservation")) =>
+                {
+                    Some(item_impl)
+                },
+                _ => None,
+            })
+            .flat_map(|item_impl| item_impl.items.iter())
+            .filter_map(|impl_item| match impl_item {
+                syn::ImplItem::Fn(method) => Some(method),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        let actual_accessors = accessor_methods
+            .iter()
+            .map(|method| ident_name(&method.sig.ident))
+            .collect::<BTreeSet<_>>();
+        let accessor_signatures_are_exact = accessor_methods.iter().all(|method| {
+            let name = ident_name(&method.sig.ident);
+            matches!(method.vis, syn::Visibility::Restricted(_))
+                && method.sig.inputs.len() == 1
+                && matches!(method.sig.inputs.first(), Some(syn::FnArg::Receiver(_)))
+                && match &method.sig.output {
+                    syn::ReturnType::Type(_, output) => {
+                        assessment_observation_type_matches(&name, output)
+                    },
+                    syn::ReturnType::Default => false,
+                }
+        });
+        if actual_accessors != allowed_accessors || !accessor_signatures_are_exact {
+            violations.push(format!(
+                "complete response observation accessor allowlist drifted; expected {allowed_accessors:?}, observed {actual_accessors:?}"
+            ));
+        }
+        if syntax.items.iter().any(|syntax_item| {
+            matches!(syntax_item, Item::Impl(item_impl)
+                if item_impl.trait_.is_some()
+                    && matches!(item_impl.self_ty.as_ref(), syn::Type::Path(path)
+                        if path.path.segments.last().is_some_and(|segment|
+                            segment.ident == "CompleteHttpResponseObservation")))
+        }) {
+            violations.push(
+                "complete response observation must not implement cloning, serialization, ownership, or formatting traits"
+                    .to_owned(),
+            );
+        }
+    }
+    let seal_module = syntax.items.iter().find_map(|item| match item {
+        Item::Mod(item) if item.ident == "complete_response_observer_seal" => Some(item),
+        _ => None,
+    });
+    let exact_seal = seal_module.is_some_and(|module| {
+        matches!(module.vis, syn::Visibility::Inherited)
+            && module.content.as_ref().is_some_and(|(_, items)| {
+                let sealed_traits = items
+                    .iter()
+                    .filter(|item| matches!(item, Item::Trait(item) if item.ident == "Sealed"))
+                    .count();
+                let impl_targets = items
+                    .iter()
+                    .filter_map(|item| match item {
+                        Item::Impl(item) => Some(item),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>();
+                sealed_traits == 1
+                    && impl_targets.len() == 1
+                    && impl_targets[0].trait_.as_ref().is_some_and(|(_, path, _)| {
+                        path.segments
+                            .last()
+                            .is_some_and(|segment| segment.ident == "Sealed")
+                    })
+                    && matches!(impl_targets[0].self_ty.as_ref(), syn::Type::Path(path)
+                        if path.path.segments.last().is_some_and(|segment|
+                            segment.ident == "AssessmentDiscoveryObserver"))
+            })
+    });
+    if !exact_seal {
+        violations.push(
+            "complete response observer seal must allowlist exactly AssessmentDiscoveryObserver"
+                .to_owned(),
+        );
+    }
+    Ok(violations)
+}
+
+fn attrs_reference_any_ident(attributes: &[syn::Attribute], needles: &[&str]) -> bool {
+    attributes.iter().any(|attribute| {
+        let path_matches = attribute.path().segments.iter().any(|segment| {
+            needles
+                .iter()
+                .any(|needle| normalize_identifier(&ident_name(&segment.ident)) == *needle)
+        });
+        path_matches
+            || match &attribute.meta {
+                syn::Meta::List(list) => needles
+                    .iter()
+                    .any(|needle| token_stream_contains_identifier(list.tokens.clone(), needle)),
+                syn::Meta::Path(_) | syn::Meta::NameValue(_) => false,
+            }
+    })
+}
+
+fn type_references_any_ident(item_type: &syn::Type, needles: &[&str]) -> bool {
+    needles
+        .iter()
+        .any(|needle| type_references_ident(item_type, needle))
+}
+
+fn is_optional_borrowed_u8_slice(item_type: &syn::Type) -> bool {
+    let syn::Type::Path(option) = item_type else {
+        return false;
+    };
+    let Some(segment) = option.path.segments.last() else {
+        return false;
+    };
+    if segment.ident != "Option" {
+        return false;
+    }
+    let syn::PathArguments::AngleBracketed(arguments) = &segment.arguments else {
+        return false;
+    };
+    let Some(syn::GenericArgument::Type(syn::Type::Reference(reference))) = arguments.args.first()
+    else {
+        return false;
+    };
+    if reference.mutability.is_some() {
+        return false;
+    }
+    let syn::Type::Slice(slice) = reference.elem.as_ref() else {
+        return false;
+    };
+    matches!(slice.elem.as_ref(), syn::Type::Path(path)
+        if path.path.is_ident("u8"))
+}
+
+fn assessment_observation_type_matches(name: &str, item_type: &syn::Type) -> bool {
+    match name {
+        "case_id" | "action_id" | "hypothesis_id" => is_borrowed_ident(item_type, "str"),
+        "has_payload_strategy" | "applies_hypothesis_transition" => {
+            is_plain_ident(item_type, "bool")
+        },
+        "stage" => is_plain_ident(item_type, "DecisionExecutionStage"),
+        "subject" => is_borrowed_ident(item_type, "EntityId"),
+        "method" => is_plain_ident(item_type, "HttpProbeMethod"),
+        "requested_url" => is_borrowed_ident(item_type, "Url"),
+        "status" => is_plain_ident(item_type, "u16"),
+        "media_type" => is_optional_borrowed_ident(item_type, "str"),
+        "reliability" => is_plain_ident(item_type, "ConfidenceScore"),
+        "complete_body" => is_optional_borrowed_u8_slice(item_type),
+        "request_method_evidence_id"
+        | "request_url_evidence_id"
+        | "response_status_evidence_id"
+        | "response_media_type_evidence_id"
+        | "response_body_truncated_evidence_id"
+        | "response_body_digest_evidence_id" => is_optional_borrowed_ident(item_type, "EvidenceId"),
+        _ => false,
+    }
+}
+
+fn is_plain_ident(item_type: &syn::Type, expected: &str) -> bool {
+    matches!(item_type, syn::Type::Path(path)
+        if path.qself.is_none()
+            && path.path.segments.last().is_some_and(|segment|
+                normalize_identifier(&ident_name(&segment.ident)) == expected
+                    && matches!(segment.arguments, syn::PathArguments::None)))
+}
+
+fn is_borrowed_ident(item_type: &syn::Type, expected: &str) -> bool {
+    matches!(item_type, syn::Type::Reference(reference)
+        if reference.mutability.is_none() && is_plain_ident(reference.elem.as_ref(), expected))
+}
+
+fn is_optional_borrowed_ident(item_type: &syn::Type, expected: &str) -> bool {
+    let syn::Type::Path(option) = item_type else {
+        return false;
+    };
+    let Some(segment) = option.path.segments.last() else {
+        return false;
+    };
+    if segment.ident != "Option" {
+        return false;
+    }
+    let syn::PathArguments::AngleBracketed(arguments) = &segment.arguments else {
+        return false;
+    };
+    matches!(arguments.args.first(), Some(syn::GenericArgument::Type(item_type))
+        if is_borrowed_ident(item_type, expected))
+        && arguments.args.len() == 1
 }
 
 fn inspect_legacy_verification_claim_language(source_name: &str, source: &str) -> Vec<String> {
@@ -1646,6 +2528,44 @@ impl OwnershipVisitor<'_> {
                 display_path(segments)
             ));
         }
+        if matches!(
+            self.source,
+            "crates/venom-scanner/src/web_assessment.rs"
+                | "crates/venom-scanner/src/web_assessment/discovery.rs"
+        ) {
+            if segments
+                .iter()
+                .any(|segment| normalize_identifier(segment) == "phases")
+            {
+                self.violations.insert(format!(
+                    "{} references quarantined legacy phase path {}; the origin assessment must use only Surface-B evidence producers",
+                    self.source,
+                    display_path(segments)
+                ));
+            }
+            if segments
+                .iter()
+                .any(|segment| normalize_identifier(segment) == "ScanPhase")
+            {
+                self.violations.insert(format!(
+                    "{} references legacy discovery/verification authority {}; the origin assessment cannot invoke ScanPhase",
+                    self.source,
+                    display_path(segments)
+                ));
+            }
+            if segments.iter().any(|segment| {
+                matches!(
+                    normalize_identifier(segment),
+                    "HttpRequestBroker" | "RequestAccountingBroker"
+                )
+            }) {
+                self.violations.insert(format!(
+                    "{} references forbidden direct transport authority {}; origin assessment transport must come only from SharedWebRuntimeAuthority",
+                    self.source,
+                    display_path(segments)
+                ));
+            }
+        }
         if self.source == "crates/venom-scanner/src/payload_strategy.rs"
             && is_nondeterministic_strategy_path(segments)
         {
@@ -1811,6 +2731,7 @@ impl<'ast> Visit<'ast> for OwnershipVisitor<'_> {
                         "crates/venom-scanner/src/web_runtime/api_visibility/differential.rs",
                         "execution"
                     )
+                    | ("crates/venom-scanner/src/web_assessment.rs", "discovery")
             );
         if !canonical {
             self.violations.insert(format!(
@@ -3742,5 +4663,261 @@ mod tests {
             assert!(!direct.contains(&format!("crates/{crate_name}/src/only_tests.rs")));
         }
         assert!(direct.contains("crates/venom-scanner/src/binary_escape_tests.rs"));
+    }
+
+    fn valid_assessment_composition() -> &'static str {
+        r#"
+            struct SharedWebRuntimeAuthority;
+            impl SharedWebRuntimeAuthority { fn new_exact_origin() -> Self { Self } }
+            struct ChildBuilder;
+            impl ChildBuilder { fn build_with_shared_authority(&self, _: SharedWebRuntimeAuthority) {} }
+            struct WebAssessmentRuntimeBuilder;
+            impl WebAssessmentRuntimeBuilder {
+                fn build(&self) {
+                    let _authority = SharedWebRuntimeAuthority::new_exact_origin();
+                }
+            }
+            struct WebAssessmentRuntime;
+            impl WebAssessmentRuntime {
+                async fn analyze(&self, builder: ChildBuilder, authority: SharedWebRuntimeAuthority) {
+                    builder.build_with_shared_authority(authority);
+                }
+            }
+        "#
+    }
+
+    #[test]
+    fn assessment_composition_gate_requires_one_direct_global_authority_and_shared_children() {
+        assert!(
+            inspect_web_assessment_composition(valid_assessment_composition())
+                .unwrap()
+                .is_empty()
+        );
+
+        for (mutation, needle) in [
+            (
+                valid_assessment_composition().replace(
+                    "let _authority = SharedWebRuntimeAuthority::new_exact_origin();",
+                    "if enabled() { let _authority = SharedWebRuntimeAuthority::new_exact_origin(); }",
+                ),
+                "unconditional direct call",
+            ),
+            (
+                valid_assessment_composition().replace(
+                    "builder.build_with_shared_authority(authority);",
+                    "builder.build();",
+                ),
+                "standalone .build()",
+            ),
+            (
+                valid_assessment_composition().replace(
+                    "let _authority = SharedWebRuntimeAuthority::new_exact_origin();",
+                    "",
+                ),
+                "exactly once",
+            ),
+        ] {
+            let violations = inspect_web_assessment_composition(&mutation)
+                .unwrap()
+                .join("\n");
+            assert!(violations.contains(needle), "{violations}");
+        }
+    }
+
+    #[test]
+    fn assessment_transport_gate_rejects_legacy_phases_and_direct_io() {
+        for (source, needle) in [
+            (
+                "use crate::phases::phase1::Runner;",
+                "quarantined legacy phase path",
+            ),
+            (
+                "use crate::contracts::ScanPhase;",
+                "legacy discovery/verification authority",
+            ),
+            (
+                "use crate::legacy_discovery::Crawler;",
+                "legacy discovery/verification authority",
+            ),
+            (
+                "fn f() { let _ = reqwest::Client::new(); }",
+                "forbidden direct transport",
+            ),
+            (
+                "fn f() { let _ = HttpRequestBroker::new_metered(); }",
+                "forbidden direct transport",
+            ),
+            (
+                "fn f() { let _ = RequestAccountingBroker::new(); }",
+                "forbidden direct transport",
+            ),
+        ] {
+            let violations =
+                inspect_bounded_source("crates/venom-scanner/src/web_assessment.rs", source)
+                    .unwrap()
+                    .join("\n");
+            assert!(violations.contains(needle), "{source}: {violations}");
+        }
+    }
+
+    #[test]
+    fn assessment_facade_export_allowlist_is_exact() {
+        let exports = WEB_ASSESSMENT_PUBLIC_EXPORTS.join(", ");
+        let valid = format!(
+            "#[cfg(feature = \"scanning\")] mod web_assessment;\n\
+             #[cfg(feature = \"scanning\")] pub use web_assessment::{{{exports}}};"
+        );
+        assert!(inspect_web_assessment_facade(&valid).unwrap().is_empty());
+        let unexpected = valid.replace("};", ", AccidentalExport};");
+        let violations = inspect_web_assessment_facade(&unexpected)
+            .unwrap()
+            .join("\n");
+        assert!(violations.contains("unexpected"), "{violations}");
+        let public_module = valid.replace("mod web_assessment;", "pub mod web_assessment;");
+        let violations = inspect_web_assessment_facade(&public_module)
+            .unwrap()
+            .join("\n");
+        assert!(violations.contains("private canonical external child"));
+    }
+
+    #[test]
+    fn assessment_models_keep_fields_private_without_serde_or_nested_audits() {
+        let valid = r#"
+            pub struct WebAssessmentSubjectReport { subject: String }
+            pub struct WebAssessmentRunReport { transport: TransportDispatchAudit }
+            pub struct WebAssessmentFailureReceipt { transport: TransportDispatchAudit }
+        "#;
+        assert!(inspect_web_assessment_models(valid).unwrap().is_empty());
+
+        let public_field = valid.replace("subject: String", "pub subject: String");
+        let violations = inspect_web_assessment_models(&public_field)
+            .unwrap()
+            .join("\n");
+        assert!(violations.contains("exposes fields"), "{violations}");
+
+        let serde = valid.replace(
+            "pub struct WebAssessmentSubjectReport",
+            "#[derive(Serialize)] pub struct WebAssessmentSubjectReport",
+        );
+        let violations = inspect_web_assessment_models(&serde).unwrap().join("\n");
+        assert!(violations.contains("serde wire contract"), "{violations}");
+
+        let nested_audit = valid.replace(
+            "subject: String",
+            "subject: String, transport: TransportDispatchAudit",
+        );
+        let violations = inspect_web_assessment_models(&nested_audit)
+            .unwrap()
+            .join("\n");
+        assert!(violations.contains("subject-local"), "{violations}");
+        assert!(violations.contains("ownership drifted"), "{violations}");
+    }
+
+    #[test]
+    fn sealed_observer_and_eof_header_redirect_markers_are_mutation_locked() {
+        let seam = include_str!("../../../crates/venom-scanner/src/http_evidence.rs");
+        assert!(inspect_complete_observer_seam(seam).unwrap().is_empty());
+        let broadened = seam.replace(
+            "impl Sealed for crate::web_assessment::AssessmentDiscoveryObserver {}",
+            "impl Sealed for crate::web_assessment::AssessmentDiscoveryObserver {} impl Sealed for Other {}",
+        );
+        assert!(inspect_complete_observer_seam(&broadened)
+            .unwrap()
+            .join("\n")
+            .contains("exactly AssessmentDiscoveryObserver"));
+
+        let owned_body = seam.replace("complete_body: Option<&'a [u8]>", "complete_body: Vec<u8>");
+        let violations = inspect_complete_observer_seam(&owned_body)
+            .unwrap()
+            .join("\n");
+        assert!(
+            violations.contains("non-cloneable borrowed"),
+            "{violations}"
+        );
+        let clonable = seam.replace(
+            "pub(crate) struct CompleteHttpResponseObservation<'a>",
+            "#[derive(Clone, Debug)] pub(crate) struct CompleteHttpResponseObservation<'a>",
+        );
+        let violations = inspect_complete_observer_seam(&clonable)
+            .unwrap()
+            .join("\n");
+        assert!(
+            violations.contains("non-cloneable borrowed"),
+            "{violations}"
+        );
+        let raw_header = seam.replace(
+            "complete_body: Option<&'a [u8]>",
+            "complete_body: Option<&'a [u8]>, raw_headers: HeaderMap",
+        );
+        let violations = inspect_complete_observer_seam(&raw_header)
+            .unwrap()
+            .join("\n");
+        assert!(
+            violations.contains("non-cloneable borrowed"),
+            "{violations}"
+        );
+        let mutable_body = seam.replace(
+            "complete_body: Option<&'a [u8]>",
+            "complete_body: Option<&'a mut [u8]>",
+        );
+        let violations = inspect_complete_observer_seam(&mutable_body)
+            .unwrap()
+            .join("\n");
+        assert!(
+            violations.contains("non-cloneable borrowed"),
+            "{violations}"
+        );
+        let borrowed_raw_media = seam.replace(
+            "media_type: Option<&'a str>",
+            "media_type: Option<&'a [u8]>",
+        );
+        let violations = inspect_complete_observer_seam(&borrowed_raw_media)
+            .unwrap()
+            .join("\n");
+        assert!(
+            violations.contains("non-cloneable borrowed"),
+            "{violations}"
+        );
+        let public_accessor = seam.replace(
+            "impl CompleteHttpResponseObservation<'_> {",
+            "impl CompleteHttpResponseObservation<'_> { pub fn raw_body(&self) -> &[u8] { &[] }",
+        );
+        let violations = inspect_complete_observer_seam(&public_accessor)
+            .unwrap()
+            .join("\n");
+        assert!(violations.contains("accessor allowlist"), "{violations}");
+        let manual_clone = format!(
+            "{seam}\nimpl<'a> Clone for CompleteHttpResponseObservation<'a> {{ fn clone(&self) -> Self {{ unreachable!() }} }}"
+        );
+        let violations = inspect_complete_observer_seam(&manual_clone)
+            .unwrap()
+            .join("\n");
+        assert!(violations.contains("must not implement"), "{violations}");
+
+        let http = seam.to_owned();
+        let broker =
+            include_str!("../../../crates/venom-scanner/src/http_evidence/request_broker.rs");
+        assert!(inspect_assessment_transport_markers(&http, broker).is_empty());
+        for (mutated_http, mutated_broker, needle) in [
+            (
+                http.replace("restricted.captured_headers.clear();", ""),
+                broker.to_owned(),
+                "clear every raw captured",
+            ),
+            (
+                http.clone(),
+                broker.replace("body_complete = true;", ""),
+                "observed response-stream EOF",
+            ),
+            (
+                http,
+                broker.replace(".redirect(RedirectPolicy::none())", ""),
+                "redirect-disabled",
+            ),
+        ] {
+            let violations =
+                inspect_assessment_transport_markers(&mutated_http, &mutated_broker).join("\n");
+            assert!(violations.contains(needle), "{violations}");
+        }
     }
 }
