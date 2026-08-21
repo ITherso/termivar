@@ -258,7 +258,23 @@ mod tests {
 
     #[test]
     fn presentation_enums_have_stable_labels() {
-        assert_eq!(FindingStatus::FalsePositive.as_str(), "false_positive");
-        assert_eq!(WidgetType::Distribution.as_str(), "distribution");
+        for (status, label) in [
+            (FindingStatus::New, "new"),
+            (FindingStatus::Review, "review"),
+            (FindingStatus::Confirmed, "confirmed"),
+            (FindingStatus::FalsePositive, "false_positive"),
+            (FindingStatus::Resolved, "resolved"),
+        ] {
+            assert_eq!(status.as_str(), label);
+        }
+        for (widget, label) in [
+            (WidgetType::Kpi, "kpi"),
+            (WidgetType::Chart, "chart"),
+            (WidgetType::Timeline, "timeline"),
+            (WidgetType::Distribution, "distribution"),
+            (WidgetType::Table, "table"),
+        ] {
+            assert_eq!(widget.as_str(), label);
+        }
     }
 }

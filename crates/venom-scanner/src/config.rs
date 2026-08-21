@@ -130,6 +130,8 @@ mod tests {
     #[test]
     fn intensity_is_only_a_stable_label() {
         assert_eq!(ScanIntensity::Light.as_str(), "light");
+        assert_eq!(ScanIntensity::Normal.as_str(), "normal");
+        assert_eq!(ScanIntensity::Aggressive.as_str(), "aggressive");
         assert_eq!(ScanIntensity::Stealth.as_str(), "stealth");
     }
 
@@ -147,6 +149,13 @@ mod tests {
         let mut config = valid_record();
         config.phases = vec![0];
         assert!(config.validate().is_err());
+
+        let mut config = valid_record();
+        config.phases.clear();
+        assert_eq!(
+            config.validate().unwrap_err(),
+            "At least one phase identifier must be supplied"
+        );
 
         for invalid_rate in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, 0.0, -1.0] {
             let mut config = valid_record();
@@ -179,5 +188,9 @@ mod tests {
         let decoded: ScanConfig = serde_json::from_str(&encoded).expect("record round-trips");
         assert_eq!(decoded.max_concurrency, 4_u32);
         assert_eq!(decoded.max_payload_size, 1_024_u64);
+
+        let mut invalid_wire = serde_json::to_value(record).unwrap();
+        invalid_wire["rate_limit"] = serde_json::json!(-1.0);
+        assert!(serde_json::from_value::<ScanConfig>(invalid_wire).is_err());
     }
 }

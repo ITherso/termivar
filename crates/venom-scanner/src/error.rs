@@ -229,4 +229,61 @@ mod tests {
         let scanner_err = ScannerError::from(io_err);
         assert!(scanner_err.source().is_some());
     }
+
+    #[test]
+    fn bounded_legacy_errors_have_stable_text_and_sources() {
+        use std::error::Error;
+
+        let budget = crate::RuntimeLimitExceeded::new(
+            crate::RuntimeBudgetDimension::TotalRequests,
+            1,
+            2,
+            None,
+        );
+        let report = venom_core::RunReportError::Blank {
+            field: "run target",
+        };
+        let cases = [
+            (
+                ScannerError::Cancelled,
+                "Host cancellation stopped bounded legacy transport.",
+            ),
+            (
+                ScannerError::BudgetExceeded(budget.clone()),
+                "Bounded legacy transport budget exhausted:",
+            ),
+            (
+                ScannerError::InvalidDiscoveryLimits,
+                "Invalid bounded discovery limits.",
+            ),
+            (
+                ScannerError::InvalidVerificationLimits,
+                "Invalid bounded legacy verification limits.",
+            ),
+            (
+                ScannerError::DiscoveryStateLimitExceeded,
+                "Bounded discovery state limit exceeded.",
+            ),
+            (
+                ScannerError::InvalidLegacyVerificationReport,
+                "Invalid legacy verification report was rejected.",
+            ),
+            (
+                ScannerError::LegacyVerificationStateLimitExceeded,
+                "Bounded legacy verification outcome limit exceeded.",
+            ),
+            (
+                ScannerError::RunReport(report.clone()),
+                "Run report error: run target must not be blank",
+            ),
+        ];
+        for (error, expected) in cases {
+            assert!(error.to_string().contains(expected));
+        }
+
+        assert!(ScannerError::BudgetExceeded(budget).source().is_some());
+        let converted = ScannerError::from(report);
+        assert!(converted.source().is_some());
+        assert!(matches!(converted, ScannerError::RunReport(_)));
+    }
 }

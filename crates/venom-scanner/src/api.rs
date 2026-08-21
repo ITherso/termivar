@@ -435,6 +435,77 @@ mod tests {
             avg_scan_duration_ms: f64::INFINITY,
         };
         assert!(serde_json::to_string(&invalid_stats).is_err());
+
+        let invalid_optional_rate = ScanConfigRequest {
+            intensity: None,
+            timeout_secs: None,
+            max_concurrency: None,
+            rate_limit: Some(f32::NAN),
+            phases: None,
+        };
+        assert!(serde_json::to_string(&invalid_optional_rate).is_err());
+
+        let invalid_duration = r#"{
+            "total_scans":0,"completed_scans":0,"total_findings":0,
+            "critical_count":0,"high_count":0,"medium_count":0,"low_count":0,
+            "avg_scan_duration_ms":-1.0
+        }"#;
+        assert!(serde_json::from_str::<StatsResponse>(invalid_duration).is_err());
+    }
+
+    #[test]
+    fn api_wire_valid_numeric_boundaries_round_trip() {
+        let optional_rate = ScanConfigRequest {
+            intensity: None,
+            timeout_secs: None,
+            max_concurrency: None,
+            rate_limit: None,
+            phases: None,
+        };
+        let encoded = serde_json::to_string(&optional_rate).unwrap();
+        let decoded: ScanConfigRequest = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(decoded.rate_limit, None);
+
+        let status = ScanStatus {
+            scan_id: "scan".to_string(),
+            target: "https://example.test".to_string(),
+            status: ScanStatusType::Running,
+            progress: 100.0,
+            findings_count: 0,
+            elapsed_ms: 1,
+            started_at: 1,
+            current_phase: None,
+        };
+        let encoded = serde_json::to_string(&status).unwrap();
+        let decoded: ScanStatus = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(decoded.progress, 100.0);
+
+        let result = ScanResultResponse {
+            scan_id: "scan".to_string(),
+            target: "https://example.test".to_string(),
+            status: "complete".to_string(),
+            findings: Vec::new(),
+            risk_score: 1.0,
+            duration_ms: 1,
+            completed_at: 1,
+        };
+        let encoded = serde_json::to_string(&result).unwrap();
+        let decoded: ScanResultResponse = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(decoded.risk_score, 1.0);
+
+        let stats = StatsResponse {
+            total_scans: 1,
+            completed_scans: 1,
+            total_findings: 0,
+            critical_count: 0,
+            high_count: 0,
+            medium_count: 0,
+            low_count: 0,
+            avg_scan_duration_ms: 0.0,
+        };
+        let encoded = serde_json::to_string(&stats).unwrap();
+        let decoded: StatsResponse = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(decoded.avg_scan_duration_ms, 0.0);
     }
 
     #[test]
