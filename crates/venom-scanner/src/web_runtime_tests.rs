@@ -16,6 +16,7 @@ use venom_core::{
 };
 
 use super::*;
+use crate::runtime_budget::RequestAccountingBroker;
 use crate::{
     ActionCost, AdaptivePipeline, ApiVisibilityReviewQuery, AttackAction, DecisionActionExecutor,
     DecisionExecutionFailureKind, DecisionExecutionRequest, DecisionExecutorError,
@@ -372,6 +373,66 @@ fn builder_validates_decision_limits_and_exposes_runtime_defaults() {
         .contains(StandardWebActionKind::HttpBasicAuthBoundary.action_id()));
 }
 
+#[test]
+fn subject_builders_inherit_one_shared_runtime_authority() {
+    let first_target = Url::parse("https://example.test/one").unwrap();
+    let second_target = Url::parse("https://example.test/two").unwrap();
+    let authority = SharedWebRuntimeAuthority::new_exact_origin(
+        &first_target,
+        HttpEvidencePolicy::for_origin(first_target.clone()).unwrap(),
+        RuntimeBudget::default().with_max_total_requests(1),
+        CancellationToken::new(),
+    )
+    .unwrap();
+    let first = StandardWebDecisionRuntime::builder(first_target)
+        .build_with_shared_authority(authority.clone())
+        .unwrap();
+    let second = StandardWebDecisionRuntime::builder(second_target)
+        .build_with_shared_authority(authority)
+        .unwrap();
+
+    assert_eq!(first.authority.start(), second.authority.start());
+
+    let shared_subject = EntityId::new("endpoint:https://example.test/shared").unwrap();
+    first
+        .knowledge()
+        .insert_evidence(Evidence::new(
+            shared_subject.clone(),
+            EvidenceKind::Http,
+            HttpEvidencePredicate::RESPONSE_STATUS.into_knowledge(),
+            EvidenceValue::Unsigned(200),
+            EvidenceSource::new("shared-authority-test", "status").unwrap(),
+            ConfidenceScore::MAX,
+        ))
+        .unwrap();
+    assert_eq!(
+        second
+            .knowledge()
+            .evidence_for_subject(&shared_subject)
+            .len(),
+        1
+    );
+
+    let mut lease = first
+        .authority
+        .request_accounting()
+        .try_begin("action.one", DecisionExecutionStage::Passive, None)
+        .unwrap();
+    lease.finish(TransportDispatchOutcome::Completed);
+    drop(lease);
+    assert_eq!(
+        second
+            .authority
+            .request_accounting()
+            .snapshot()
+            .total_requests(),
+        1
+    );
+
+    first.cancellation_token().cancel();
+    assert!(second.authority.cancellation().is_cancelled());
+}
+
 #[tokio::test]
 async fn pre_cancelled_runtime_stops_before_bootstrap_io() {
     let server = serve(vec![Reply::Response(OK)]).await;
@@ -500,7 +561,7 @@ async fn cancellation_after_evidence_commit_keeps_an_unverified_receipt() {
             HttpEvidenceExecutor::new_with_accounting(
                 policy,
                 Arc::new(SubjectHttpProbeProvider::new(HttpProbeMethod::Get)),
-                runtime.request_accounting.clone(),
+                runtime.authority.request_accounting().clone(),
             )
             .unwrap(),
         ))
@@ -602,7 +663,7 @@ async fn planned_failure_preserves_bootstrap_and_outstanding_session_without_sup
             HttpEvidenceExecutor::new_with_accounting(
                 policy,
                 Arc::new(SubjectHttpProbeProvider::new(HttpProbeMethod::Get)),
-                runtime.request_accounting.clone(),
+                runtime.authority.request_accounting().clone(),
             )
             .unwrap(),
         ))
@@ -676,7 +737,7 @@ async fn response_usage_failure_preserves_prior_turns_and_current_evidence() {
             HttpEvidenceExecutor::new_with_accounting(
                 policy,
                 Arc::new(SubjectHttpProbeProvider::new(HttpProbeMethod::Get)),
-                runtime.request_accounting.clone(),
+                runtime.authority.request_accounting().clone(),
             )
             .unwrap(),
         ))
@@ -744,7 +805,7 @@ async fn response_overshoot_halts_the_same_turn_and_keeps_evidence_auditable() {
             HttpEvidenceExecutor::new_with_accounting(
                 policy,
                 Arc::new(SubjectHttpProbeProvider::new(HttpProbeMethod::Get)),
-                runtime.request_accounting.clone(),
+                runtime.authority.request_accounting().clone(),
             )
             .unwrap(),
         ))
@@ -752,7 +813,7 @@ async fn response_overshoot_halts_the_same_turn_and_keeps_evidence_auditable() {
     registry
         .register(Arc::new(ResponseOvershootExecutor {
             id: action.executor_id(),
-            accounting: runtime.request_accounting.clone(),
+            accounting: runtime.authority.request_accounting().clone(),
             delivered_bytes: 10,
         }))
         .unwrap();
@@ -806,7 +867,7 @@ async fn in_executor_budget_denial_preserves_prior_evidence_and_failure_receipt(
             HttpEvidenceExecutor::new_with_accounting(
                 policy,
                 Arc::new(SubjectHttpProbeProvider::new(HttpProbeMethod::Get)),
-                runtime.request_accounting.clone(),
+                runtime.authority.request_accounting().clone(),
             )
             .unwrap(),
         ))
@@ -1084,6 +1145,9 @@ fn builder_rejects_a_target_outside_custom_policy() {
     assert!(matches!(
         StandardWebDecisionRuntime::builder(target)
             .http_policy(policy)
+            // Scope historically fails before planner validation. Keeping a
+            // second invalid setting makes that public error precedence explicit.
+            .risk_limit(0)
             .build(),
         Err(StandardWebDecisionRuntimeError::Http(
             HttpEvidenceError::TargetOutsidePolicy { .. }

@@ -165,13 +165,7 @@ impl HttpRequestBroker {
     }
 
     fn validate_target(&self, target: &url::Url) -> Result<(), HttpEvidenceError> {
-        super::validate_http_url(target)?;
-        if !self.policy.permits(target)? {
-            return Err(HttpEvidenceError::TargetOutsidePolicy {
-                url: target.to_string(),
-            });
-        }
-        Ok(())
+        self.policy.require_permitted_target(target)
     }
 
     async fn collect_built_request(

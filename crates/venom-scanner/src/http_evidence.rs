@@ -33,10 +33,12 @@ use crate::{
         PayloadSeed, PayloadStrategyLimits, PayloadStrategyRef, PayloadStrategyRegistry,
         PayloadVariantRole,
     },
-    runtime_budget::RequestAccountingBroker,
     DecisionActionExecutor, DecisionExecutionFailureKind, DecisionExecutionRequest,
     DecisionExecutionStage, DecisionExecutorError,
 };
+
+#[cfg(test)]
+use crate::runtime_budget::RequestAccountingBroker;
 
 mod form_controls;
 mod request_broker;
@@ -282,6 +284,23 @@ impl HttpEvidencePolicy {
         Self::new([origin], Duration::from_secs(15), DEFAULT_HTTP_BODY_LIMIT)
     }
 
+    /// Returns this policy narrowed to the exact origin of `target`.
+    ///
+    /// All non-scope settings are preserved. The target must already be covered
+    /// by this policy, so narrowing can never turn an unauthorized target into
+    /// an authorized one. Bounded origin-level runtimes use this seam to ensure
+    /// that an explicitly broader host policy cannot silently expand discovery.
+    pub(crate) fn restricted_to_exact_origin(
+        &self,
+        target: &Url,
+    ) -> Result<Self, HttpEvidenceError> {
+        self.require_permitted_target(target)?;
+
+        let mut restricted = self.clone();
+        restricted.allowed_origins = BTreeSet::from([origin(target)?]);
+        Ok(restricted)
+    }
+
     /// Configures optional bounded text sampling.
     pub fn with_body_capture(
         mut self,
@@ -361,6 +380,20 @@ impl HttpEvidencePolicy {
 
     fn permits(&self, url: &Url) -> Result<bool, HttpEvidenceError> {
         Ok(self.allowed_origins.contains(&origin(url)?))
+    }
+
+    /// Validates the complete request URL and enforces this policy's scope.
+    ///
+    /// Callers must use this typed seam instead of comparing serialized origins:
+    /// origin equality alone does not reject unsupported schemes or embedded
+    /// credentials.
+    pub(crate) fn require_permitted_target(&self, target: &Url) -> Result<(), HttpEvidenceError> {
+        if !self.permits(target)? {
+            return Err(HttpEvidenceError::TargetOutsidePolicy {
+                url: target.to_string(),
+            });
+        }
+        Ok(())
     }
 }
 
@@ -674,7 +707,15 @@ impl HttpEvidenceExecutor {
         policy: HttpEvidencePolicy,
         probes: Arc<dyn HttpProbeProvider>,
     ) -> Result<Self, HttpEvidenceError> {
-        Self::build(id, policy, probes, None)
+        let id = validate_executor_id(id)?;
+        let requests = HttpRequestBroker::new_unmetered(policy)?;
+        Ok(Self {
+            id,
+            requests,
+            probes,
+            payload: None,
+            capture_form_control_names: false,
+        })
     }
 
     #[cfg(test)]
@@ -693,7 +734,15 @@ impl HttpEvidenceExecutor {
         probes: Arc<dyn HttpProbeProvider>,
         accounting: RequestAccountingBroker,
     ) -> Result<Self, HttpEvidenceError> {
-        Self::build(id, policy, probes, Some(accounting))
+        let id = validate_executor_id(id)?;
+        let requests = HttpRequestBroker::new_metered(policy, accounting)?;
+        Ok(Self {
+            id,
+            requests,
+            probes,
+            payload: None,
+            capture_form_control_names: false,
+        })
     }
 
     pub(crate) fn new_with_request_broker(
@@ -709,26 +758,6 @@ impl HttpEvidenceExecutor {
         probes: Arc<dyn HttpProbeProvider>,
     ) -> Result<Self, HttpEvidenceError> {
         let id = validate_executor_id(id)?;
-        Ok(Self {
-            id,
-            requests,
-            probes,
-            payload: None,
-            capture_form_control_names: false,
-        })
-    }
-
-    fn build(
-        id: impl Into<String>,
-        policy: HttpEvidencePolicy,
-        probes: Arc<dyn HttpProbeProvider>,
-        accounting: Option<RequestAccountingBroker>,
-    ) -> Result<Self, HttpEvidenceError> {
-        let id = validate_executor_id(id)?;
-        let requests = match accounting {
-            Some(accounting) => HttpRequestBroker::new_metered(policy, accounting)?,
-            None => HttpRequestBroker::new_unmetered(policy)?,
-        };
         Ok(Self {
             id,
             requests,

@@ -94,20 +94,23 @@ impl StandardWebDecisionRuntime {
         // policy remain shared, but connection-bound server state cannot flow
         // from the control request into the candidate request.
         let control_requests = self
-            .requests
+            .authority
+            .requests()
             .isolated()
             .map_err(|source| RuntimeApiVisibilityExecutionError::TransportSetup { source })?;
         let candidate_requests = self
-            .requests
+            .authority
+            .requests()
             .isolated()
             .map_err(|source| RuntimeApiVisibilityExecutionError::TransportSetup { source })?;
-        let evidence_reliability = self.requests.policy().reliability();
+        let evidence_reliability = self.authority.requests().policy().reliability();
 
         self.started = true;
-        let started_at = tokio::time::Instant::now();
-        let deadline = started_at.checked_add(self.budget.max_wall_time());
+        let timing = self.authority.start();
+        let started_at = timing.started_at();
+        let deadline = timing.deadline();
         let mut audit = ApiVisibilityDifferentialAudit::for_request(&request);
-        if self.cancellation.is_cancelled() {
+        if self.authority.cancellation().is_cancelled() {
             return Ok(self.visibility_cancelled_report(audit, None, started_at));
         }
 
@@ -128,7 +131,7 @@ impl StandardWebDecisionRuntime {
             },
         };
         let control_result = await_execution(
-            &self.cancellation,
+            self.authority.cancellation(),
             deadline,
             control_requests.collect_for_runtime(
                 CONTROL_ACTION_ID,
@@ -180,7 +183,7 @@ impl StandardWebDecisionRuntime {
                 started_at,
             ));
         }
-        if self.cancellation.is_cancelled() {
+        if self.authority.cancellation().is_cancelled() {
             return Ok(self.visibility_cancelled_report(
                 audit,
                 Some(ApiVisibilityLeg::Control),
@@ -228,7 +231,7 @@ impl StandardWebDecisionRuntime {
         drop(control_document);
         drop(control_response);
 
-        if self.cancellation.is_cancelled() {
+        if self.authority.cancellation().is_cancelled() {
             return Ok(self.visibility_cancelled_report(
                 audit,
                 Some(ApiVisibilityLeg::Candidate),
@@ -260,7 +263,7 @@ impl StandardWebDecisionRuntime {
             },
         };
         let candidate_result = await_execution(
-            &self.cancellation,
+            self.authority.cancellation(),
             deadline,
             candidate_requests.collect_for_runtime(
                 CANDIDATE_ACTION_ID,
@@ -312,7 +315,7 @@ impl StandardWebDecisionRuntime {
                 started_at,
             ));
         }
-        if self.cancellation.is_cancelled() {
+        if self.authority.cancellation().is_cancelled() {
             return Ok(self.visibility_cancelled_report(
                 audit,
                 Some(ApiVisibilityLeg::Candidate),
@@ -359,7 +362,7 @@ impl StandardWebDecisionRuntime {
         drop(candidate_document);
         drop(candidate_response);
 
-        if self.cancellation.is_cancelled() {
+        if self.authority.cancellation().is_cancelled() {
             return Ok(self.visibility_cancelled_report(
                 audit,
                 Some(ApiVisibilityLeg::Candidate),
@@ -392,7 +395,7 @@ impl StandardWebDecisionRuntime {
                 });
             },
         };
-        if self.cancellation.is_cancelled() {
+        if self.authority.cancellation().is_cancelled() {
             return Ok(self.visibility_cancelled_after_comparison_report(
                 audit, comparison, None, None, started_at,
             ));
@@ -419,7 +422,7 @@ impl StandardWebDecisionRuntime {
         let observation = match ingest_api_visibility_observation(
             observation,
             &request.resource_scope,
-            &self.knowledge,
+            self.authority.knowledge(),
             self.decision_loop.rules(),
         ) {
             Ok(observation) => observation,
@@ -431,7 +434,8 @@ impl StandardWebDecisionRuntime {
                 });
             },
         };
-        let Some(review) = api_visibility_review_for_commit(&self.knowledge, observation.commit())
+        let Some(review) =
+            api_visibility_review_for_commit(self.authority.knowledge(), observation.commit())
         else {
             return Err(RuntimeApiVisibilityExecutionError::ReviewProjection {
                 audit: Box::new(self.finish_visibility_audit(audit, started_at)),
@@ -450,7 +454,7 @@ impl StandardWebDecisionRuntime {
                 ApiVisibilityDifferentialDisposition::AwaitHumanReview
             },
         };
-        if self.cancellation.is_cancelled() {
+        if self.authority.cancellation().is_cancelled() {
             return Ok(self.visibility_cancelled_after_comparison_report(
                 audit,
                 comparison,
@@ -489,7 +493,7 @@ impl StandardWebDecisionRuntime {
     ) -> ApiVisibilityDifferentialAudit {
         self.refresh_elapsed(started_at);
         audit.usage = self.usage.clone();
-        audit.transport = self.request_accounting.dispatch_audit();
+        audit.transport = self.authority.request_accounting().dispatch_audit();
         audit
     }
 

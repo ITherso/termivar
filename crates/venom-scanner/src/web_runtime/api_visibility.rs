@@ -116,7 +116,7 @@ impl StandardWebDecisionRuntime {
         ingest_api_visibility_observation(
             observation,
             expected_resource,
-            &self.knowledge,
+            self.authority.knowledge(),
             self.decision_loop.rules(),
         )
         .map_err(Into::into)
@@ -137,7 +137,7 @@ impl StandardWebDecisionRuntime {
         }
 
         Ok(api_visibility_reviews_for_resource(
-            &self.knowledge,
+            self.authority.knowledge(),
             resource,
             query,
         ))
