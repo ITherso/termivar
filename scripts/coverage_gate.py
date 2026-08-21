@@ -39,6 +39,17 @@ SCOPE_INCLUDES = ["crates/*/src/**", "xtask/src/**"]
 SCOPE_EXCLUDES = [
     "test functions (--ignore-tests) and Rust paths outside the fixed include scope"
 ]
+INITIAL_CALIBRATION_OMISSIONS = [
+    "crates/venom-core/src/lib.rs",
+    "crates/venom-core/src/models.rs",
+    "crates/venom-scanner/src/adaptive/mod.rs",
+    "crates/venom-scanner/src/contracts.rs",
+    "crates/venom-scanner/src/defense/mod.rs",
+    "crates/venom-scanner/src/lib.rs",
+    "crates/venom-scanner/src/phases/mod.rs",
+    "crates/venom-scanner/src/semantic.rs",
+    "crates/venom-scanner/src/web_runtime/api_visibility/tests.rs",
+]
 DEFAULT_BASELINE_POINTER = "docs/reports/coverage/accepted-baseline.txt"
 DEFAULT_ARTIFACT_NAME = "coverage-evidence"
 CANONICAL_REPOSITORY = "ITherso/venom"
@@ -970,7 +981,7 @@ def validate_baseline(record: Any, target: str) -> dict[str, Any]:
         if patch is None:
             expected_patch = "not applicable"
         elif patch["coverable_lines"] == 0:
-            expected_patch = "not applicable (zero coverable changed lines)"
+            expected_patch = "not applicable (zero observed coverable changed lines)"
         else:
             expected_patch = "passed"
         if patch_status != expected_patch:
@@ -1113,6 +1124,41 @@ def _candidate_provenance_violations(
     return violations
 
 
+def _omission_blob_violations(
+    root: Path,
+    head: str,
+    coverage: dict[str, Any],
+    head_baseline: tuple[str, dict[str, Any]] | None,
+    base_baseline: tuple[str, dict[str, Any]] | None,
+) -> list[str]:
+    """Freeze accepted omitted paths to their measured-source blob identity."""
+
+    if head_baseline is None:
+        return []
+    omission_floor = base_baseline[1] if base_baseline is not None else head_baseline[1]
+    source_commit = omission_floor["source"]["commit"]
+    floor_omissions = set(omission_floor["coverage"]["omitted_in_scope_files"])
+    current_omissions = set(coverage["omitted_in_scope_files"])
+    violations = []
+    for path in sorted(floor_omissions.intersection(current_omissions)):
+        source_blob = _git_blob(root, source_commit, path)
+        head_blob = _git_blob(root, head, path)
+        if source_blob is None:
+            violations.append(
+                f"accepted omission floor source commit does not contain {path}"
+            )
+        elif head_blob is None:
+            violations.append(
+                f"current omission inventory names a path absent from HEAD: {path}"
+            )
+        elif head_blob != source_blob:
+            violations.append(
+                "accepted omitted in-scope source changed while remaining unobserved "
+                f"by Cobertura: {path}"
+            )
+    return violations
+
+
 def _coverage_measurement(
     line_hits: dict[str, dict[int, int]], tracked_sources: list[str]
 ) -> tuple[dict[str, Any], list[str]]:
@@ -1159,7 +1205,16 @@ def _patch_measurement(
     total_covered = 0
     total_coverable = 0
     for path in changed_files:
+        changed_count = len(changed_lines.get(path, set()))
         if path not in line_hits:
+            files.append(
+                {
+                    "path": path,
+                    "covered_lines": 0,
+                    "coverable_lines": 0,
+                    "changed_lines": changed_count,
+                }
+            )
             continue
         coverable_lines = sorted(set(line_hits[path]).intersection(changed_lines.get(path, set())))
         covered = sum(1 for line in coverable_lines if line_hits[path][line] > 0)
@@ -1168,7 +1223,7 @@ def _patch_measurement(
                 "path": path,
                 "covered_lines": covered,
                 "coverable_lines": len(coverable_lines),
-                "changed_lines": len(changed_lines.get(path, set())),
+                "changed_lines": changed_count,
             }
         )
         total_covered += covered
@@ -1196,15 +1251,31 @@ def _evaluation_violations(
     head_baseline: tuple[str, dict[str, Any]] | None,
     base_baseline: tuple[str, dict[str, Any]] | None,
     calibrate: bool,
-    candidate_provenance_violations: Iterable[str] = (),
+    preexisting_violations: Iterable[str] = (),
 ) -> tuple[list[str], dict[str, Any]]:
-    violations = list(candidate_provenance_violations)
-    if missing_changed:
+    violations = list(preexisting_violations)
+    current_omissions = set(coverage["omitted_in_scope_files"])
+    missing_set = set(missing_changed)
+    inconsistent_missing = sorted(missing_set - current_omissions)
+    if inconsistent_missing:
         violations.append(
-            "Cobertura omitted changed in-scope source files: " + ", ".join(missing_changed)
+            "changed in-scope files reported missing from Cobertura are not in the "
+            "current omission inventory: "
+            + ", ".join(inconsistent_missing)
         )
 
     if calibrate:
+        if coverage["omitted_in_scope_files"] != INITIAL_CALIBRATION_OMISSIONS:
+            missing_initial = sorted(
+                set(INITIAL_CALIBRATION_OMISSIONS) - current_omissions
+            )
+            unexpected = sorted(
+                current_omissions - set(INITIAL_CALIBRATION_OMISSIONS)
+            )
+            violations.append(
+                "initial calibration omission inventory must exactly equal the reviewed "
+                f"bootstrap inventory; missing={missing_initial}, unexpected={unexpected}"
+            )
         if head_baseline is not None or base_baseline is not None:
             violations.append("calibration mode is forbidden once a committed accepted baseline exists")
         evaluation = {
@@ -1248,6 +1319,24 @@ def _evaluation_violations(
         violations.append("aggregate source coverage is below the accepted baseline ratio")
 
     omission_floor = base_baseline[1] if base_baseline is not None else baseline
+    if (
+        base_baseline is None
+        and omission_floor["coverage"]["omitted_in_scope_files"]
+        != INITIAL_CALIBRATION_OMISSIONS
+    ):
+        violations.append(
+            "first accepted baseline omission inventory must exactly equal the reviewed "
+            "bootstrap inventory"
+        )
+    unaccepted_missing = sorted(
+        missing_set - set(omission_floor["coverage"]["omitted_in_scope_files"])
+    )
+    if unaccepted_missing:
+        violations.append(
+            "changed in-scope Cobertura omissions are outside the accepted omission "
+            "inventory: "
+            + ", ".join(unaccepted_missing)
+        )
     baseline_files = {
         entry["path"] for entry in omission_floor["coverage"]["files"]
     }
@@ -1266,7 +1355,7 @@ def _evaluation_violations(
     patch_status = "not applicable"
     if patch is not None:
         if patch["coverable_lines"] == 0:
-            patch_status = "not applicable (zero coverable changed lines)"
+            patch_status = "not applicable (zero observed coverable changed lines)"
         elif ratio_at_least(
             patch["covered_lines"],
             patch["coverable_lines"],
@@ -1489,8 +1578,13 @@ def run(arguments: list[str] | None = None) -> int:
 
     head_baseline = load_baseline(root, head, pointer)
     base_baseline = load_baseline(root, base, pointer) if base is not None else None
-    candidate_provenance_violations = _candidate_provenance_violations(
+    preexisting_violations = _candidate_provenance_violations(
         root, head, head_baseline, base_baseline
+    )
+    preexisting_violations.extend(
+        _omission_blob_violations(
+            root, head, coverage, head_baseline, base_baseline
+        )
     )
     violations, evaluation = _evaluation_violations(
         coverage,
@@ -1499,7 +1593,7 @@ def run(arguments: list[str] | None = None) -> int:
         head_baseline,
         base_baseline,
         args.calibrate,
-        candidate_provenance_violations,
+        preexisting_violations,
     )
     record = _record(
         root=root,

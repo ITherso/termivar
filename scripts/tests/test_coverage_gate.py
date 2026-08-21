@@ -63,7 +63,7 @@ def valid_record() -> dict:
                     "coverable_lines": 4,
                 }
             ],
-            "omitted_in_scope_files": ["xtask/src/unused.rs"],
+            "omitted_in_scope_files": list(gate.INITIAL_CALIBRATION_OMISSIONS),
         },
         "cobertura": {"path": "cobertura.xml", "sha256": "c" * 64},
         "provenance": {
@@ -87,6 +87,22 @@ def valid_record() -> dict:
 
 
 class ScopeTests(unittest.TestCase):
+    def test_initial_calibration_omission_inventory_is_exact(self) -> None:
+        self.assertEqual(
+            gate.INITIAL_CALIBRATION_OMISSIONS,
+            [
+                "crates/venom-core/src/lib.rs",
+                "crates/venom-core/src/models.rs",
+                "crates/venom-scanner/src/adaptive/mod.rs",
+                "crates/venom-scanner/src/contracts.rs",
+                "crates/venom-scanner/src/defense/mod.rs",
+                "crates/venom-scanner/src/lib.rs",
+                "crates/venom-scanner/src/phases/mod.rs",
+                "crates/venom-scanner/src/semantic.rs",
+                "crates/venom-scanner/src/web_runtime/api_visibility/tests.rs",
+            ],
+        )
+
     def test_scope_is_exact_and_rejects_path_escape(self) -> None:
         self.assertTrue(gate.in_scope("crates/venom-core/src/lib.rs"))
         self.assertTrue(gate.in_scope("xtask/src/architecture/workflows.rs"))
@@ -446,7 +462,10 @@ class RatioAndEvaluationTests(unittest.TestCase):
             coverage, patch, [], baseline, baseline, False
         )
         self.assertEqual(violations, [])
-        self.assertEqual(evaluation["patch"], "not applicable (zero coverable changed lines)")
+        self.assertEqual(
+            evaluation["patch"],
+            "not applicable (zero observed coverable changed lines)",
+        )
 
     def test_patch_and_candidate_baseline_must_not_fall_below_floor(self) -> None:
         base = valid_record()
@@ -466,13 +485,101 @@ class RatioAndEvaluationTests(unittest.TestCase):
         self.assertTrue(any("candidate accepted baseline lowers" in item for item in violations))
         self.assertTrue(any("patch coverage" in item for item in violations))
 
-    def test_missing_changed_file_fails_even_during_calibration(self) -> None:
+    def test_calibration_accepts_an_explicit_changed_omission(self) -> None:
         coverage = copy.deepcopy(valid_record()["coverage"])
         violations, evaluation = gate._evaluation_violations(
-            coverage, None, ["xtask/src/new.rs"], None, None, True
+            coverage, None, ["crates/venom-core/src/lib.rs"], None, None, True
         )
-        self.assertTrue(any("omitted changed" in item for item in violations))
+        self.assertEqual(violations, [])
+        self.assertEqual(evaluation["status"], "passed")
+
+    def test_calibration_requires_the_exact_reviewed_bootstrap_omissions(self) -> None:
+        fixtures = []
+        missing = copy.deepcopy(valid_record()["coverage"])
+        missing["omitted_in_scope_files"].pop()
+        fixtures.append(missing)
+        added = copy.deepcopy(valid_record()["coverage"])
+        added["omitted_in_scope_files"] = sorted(
+            [*added["omitted_in_scope_files"], "xtask/src/unreviewed.rs"]
+        )
+        fixtures.append(added)
+        for coverage in fixtures:
+            with self.subTest(coverage=coverage):
+                violations, evaluation = gate._evaluation_violations(
+                    coverage, None, [], None, None, True
+                )
+                self.assertTrue(
+                    any("reviewed bootstrap inventory" in item for item in violations)
+                )
+                self.assertEqual(evaluation["status"], "failed")
+
+    def test_missing_changed_file_must_match_the_current_omission_inventory(self) -> None:
+        coverage = copy.deepcopy(valid_record()["coverage"])
+        violations, evaluation = gate._evaluation_violations(
+            coverage, None, ["xtask/src/not-omitted.rs"], None, None, True
+        )
+        self.assertTrue(
+            any("not in the current omission inventory" in item for item in violations)
+        )
         self.assertEqual(evaluation["status"], "failed")
+
+    def test_first_candidate_freezes_its_exact_changed_omission_inventory(self) -> None:
+        candidate = valid_record()
+        coverage = copy.deepcopy(candidate["coverage"])
+        violations, evaluation = gate._evaluation_violations(
+            coverage,
+            None,
+            ["crates/venom-core/src/lib.rs"],
+            ("docs/reports/coverage/aaaaaaa.json", candidate),
+            None,
+            False,
+        )
+        self.assertEqual(violations, [])
+        self.assertEqual(evaluation["status"], "passed")
+
+        incomplete = copy.deepcopy(candidate)
+        incomplete["coverage"]["omitted_in_scope_files"].pop()
+        violations, evaluation = gate._evaluation_violations(
+            copy.deepcopy(incomplete["coverage"]),
+            None,
+            [],
+            ("docs/reports/coverage/aaaaaaa.json", incomplete),
+            None,
+            False,
+        )
+        self.assertTrue(any("first accepted baseline" in item for item in violations))
+        self.assertEqual(evaluation["status"], "failed")
+
+    def test_evaluation_allows_a_known_omission_after_blob_precheck(self) -> None:
+        baseline = valid_record()
+        accepted = ("docs/reports/coverage/aaaaaaa.json", baseline)
+        patch = {
+            "covered_lines": 0,
+            "coverable_lines": 0,
+            "changed_in_scope_files": ["crates/venom-core/src/lib.rs"],
+            "files": [
+                {
+                    "path": "crates/venom-core/src/lib.rs",
+                    "covered_lines": 0,
+                    "coverable_lines": 0,
+                    "changed_lines": 2,
+                }
+            ],
+        }
+        violations, evaluation = gate._evaluation_violations(
+            copy.deepcopy(baseline["coverage"]),
+            patch,
+            ["crates/venom-core/src/lib.rs"],
+            accepted,
+            accepted,
+            False,
+        )
+        self.assertEqual(violations, [])
+        self.assertEqual(evaluation["status"], "passed")
+        self.assertEqual(
+            evaluation["patch"],
+            "not applicable (zero observed coverable changed lines)",
+        )
 
     def test_calibration_is_rejected_after_baseline_acceptance(self) -> None:
         baseline = ("docs/reports/coverage/aaaaaaa.json", valid_record())
@@ -484,16 +591,39 @@ class RatioAndEvaluationTests(unittest.TestCase):
     def test_new_omission_cannot_silently_improve_aggregate_ratio(self) -> None:
         baseline = valid_record()
         current = copy.deepcopy(baseline["coverage"])
-        current["omitted_in_scope_files"].append("xtask/src/new.rs")
+        current["omitted_in_scope_files"] = sorted(
+            [*baseline["coverage"]["omitted_in_scope_files"], "xtask/src/new.rs"]
+        )
         violations, _ = gate._evaluation_violations(
             current,
             None,
-            [],
+            ["xtask/src/new.rs"],
             ("docs/reports/coverage/aaaaaaa.json", baseline),
-            None,
+            ("docs/reports/coverage/aaaaaaa.json", baseline),
             False,
         )
         self.assertTrue(any("new in-scope files" in item for item in violations))
+        self.assertTrue(
+            any("outside the accepted omission inventory" in item for item in violations)
+        )
+
+    def test_previously_measured_changed_file_cannot_become_an_omission(self) -> None:
+        baseline = valid_record()
+        current = copy.deepcopy(baseline["coverage"])
+        current["files"][0]["path"] = "xtask/src/replacement.rs"
+        current["omitted_in_scope_files"] = sorted(
+            [*baseline["coverage"]["omitted_in_scope_files"], "crates/demo/src/lib.rs"]
+        )
+        accepted = ("docs/reports/coverage/aaaaaaa.json", baseline)
+        violations, _ = gate._evaluation_violations(
+            current,
+            None,
+            ["crates/demo/src/lib.rs"],
+            accepted,
+            accepted,
+            False,
+        )
+        self.assertTrue(any("previously measured" in item for item in violations))
 
     def test_first_or_replaced_candidate_must_exactly_match_current_measurement(self) -> None:
         candidate = valid_record()
@@ -526,22 +656,62 @@ class RatioAndEvaluationTests(unittest.TestCase):
         base = valid_record()
         current = copy.deepcopy(base["coverage"])
         current["files"][0]["path"] = "xtask/src/replacement.rs"
-        current["omitted_in_scope_files"] = [
-            "crates/demo/src/lib.rs",
-            "xtask/src/unused.rs",
-        ]
+        current["omitted_in_scope_files"] = sorted(
+            [*base["coverage"]["omitted_in_scope_files"], "crates/demo/src/lib.rs"]
+        )
         candidate = valid_record()
         candidate["coverage"] = copy.deepcopy(current)
         violations, _ = gate._evaluation_violations(
             current,
             None,
-            [],
+            ["crates/demo/src/lib.rs"],
             ("docs/reports/coverage/bbbbbbb.json", candidate),
             ("docs/reports/coverage/aaaaaaa.json", base),
             False,
         )
         self.assertTrue(any("new in-scope files are absent" in item for item in violations))
         self.assertTrue(any("previously measured" in item for item in violations))
+
+    def test_patch_measurement_records_every_changed_file_including_omissions(self) -> None:
+        changed_files = ["crates/demo/src/lib.rs", "crates/venom-core/src/lib.rs"]
+        patch, missing = gate._patch_measurement(
+            {"crates/demo/src/lib.rs": {1: 1, 2: 0}},
+            changed_files,
+            {
+                "crates/demo/src/lib.rs": {1, 3},
+                "crates/venom-core/src/lib.rs": {4, 5},
+            },
+        )
+        self.assertEqual(missing, ["crates/venom-core/src/lib.rs"])
+        self.assertEqual(patch["changed_in_scope_files"], changed_files)
+        self.assertEqual(
+            patch["files"],
+            [
+                {
+                    "path": "crates/demo/src/lib.rs",
+                    "covered_lines": 1,
+                    "coverable_lines": 1,
+                    "changed_lines": 2,
+                },
+                {
+                    "path": "crates/venom-core/src/lib.rs",
+                    "covered_lines": 0,
+                    "coverable_lines": 0,
+                    "changed_lines": 2,
+                },
+            ],
+        )
+        self.assertEqual((patch["covered_lines"], patch["coverable_lines"]), (1, 1))
+
+        record = valid_record()
+        record["patch"] = patch
+        record["evaluation"]["patch"] = "measured; no accepted numeric floor"
+        gate.validate_baseline(record, "fixture.json")
+
+        incomplete = copy.deepcopy(record)
+        incomplete["patch"]["files"].pop()
+        with self.assertRaisesRegex(gate.GateError, "exactly equal"):
+            gate.validate_baseline(incomplete, "fixture.json")
 
 
 class BaselineSchemaTests(unittest.TestCase):
@@ -707,6 +877,139 @@ class CommandIntegrationTests(unittest.TestCase):
         )
         return completed.stdout.strip()
 
+    def test_accepted_omission_content_is_frozen_until_the_path_is_measured(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self._git(root, "init", "-q")
+            self._git(root, "config", "user.email", "coverage@example.invalid")
+            self._git(root, "config", "user.name", "Coverage Test")
+            measured = root / "crates" / "demo" / "src" / "lib.rs"
+            measured.parent.mkdir(parents=True)
+            measured.write_text("pub fn measured() {}\n", encoding="utf-8")
+            for omitted_path in gate.INITIAL_CALIBRATION_OMISSIONS:
+                omitted = root.joinpath(*omitted_path.split("/"))
+                omitted.parent.mkdir(parents=True, exist_ok=True)
+                omitted.write_text("// accepted unobserved source\n", encoding="utf-8")
+            self._git(root, "add", "crates")
+            self._git(root, "commit", "-q", "-m", "accepted source blobs")
+            source_commit = self._git(root, "rev-parse", "HEAD")
+
+            baseline = valid_record()
+            baseline["source"]["commit"] = source_commit
+            accepted = ("docs/reports/coverage/aaaaaaa.json", baseline)
+            coverage = copy.deepcopy(baseline["coverage"])
+
+            tree = self._git(root, "rev-parse", f"{source_commit}^{{tree}}")
+            divergent_head = self._git(
+                root, "commit-tree", tree, "-m", "divergent identical tree"
+            )
+            ancestry = subprocess.run(
+                ["git", "merge-base", "--is-ancestor", source_commit, divergent_head],
+                cwd=root,
+                check=False,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+            )
+            self.assertEqual(ancestry.returncode, 1)
+            self.assertEqual(
+                gate._omission_blob_violations(
+                    root, divergent_head, coverage, accepted, accepted
+                ),
+                [],
+            )
+
+            truth = root / "docs" / "coverage.md"
+            truth.parent.mkdir()
+            truth.write_text("candidate evidence\n", encoding="utf-8")
+            self._git(root, "add", "docs/coverage.md")
+            self._git(root, "commit", "-q", "-m", "docs-only candidate acceptance")
+            candidate_head = self._git(root, "rev-parse", "HEAD")
+            self.assertEqual(
+                gate._omission_blob_violations(
+                    root, candidate_head, coverage, accepted, None
+                ),
+                [],
+            )
+
+            target_path = gate.INITIAL_CALIBRATION_OMISSIONS[0]
+            target = root.joinpath(*target_path.split("/"))
+            target.unlink()
+            self._git(root, "add", "-A", "--", target_path)
+            self._git(root, "commit", "-q", "-m", "delete omitted source")
+            target.write_text("// changed while still unobserved\n", encoding="utf-8")
+            self._git(root, "add", target_path)
+            self._git(root, "commit", "-q", "-m", "recreate omitted source")
+            changed_head = self._git(root, "rev-parse", "HEAD")
+
+            violations = gate._omission_blob_violations(
+                root, changed_head, coverage, accepted, accepted
+            )
+            self.assertTrue(
+                any(target_path in item and "remaining unobserved" in item for item in violations)
+            )
+
+            replacement = copy.deepcopy(baseline)
+            replacement["source"]["commit"] = changed_head
+            replacement_baseline = (
+                "docs/reports/coverage/bbbbbbb.json",
+                replacement,
+            )
+            self.assertTrue(
+                gate._omission_blob_violations(
+                    root,
+                    changed_head,
+                    coverage,
+                    replacement_baseline,
+                    accepted,
+                )
+            )
+
+            now_measured = copy.deepcopy(coverage)
+            now_measured["omitted_in_scope_files"].remove(target_path)
+            now_measured["files"].append(
+                {
+                    "path": target_path,
+                    "covered_lines": 1,
+                    "coverable_lines": 1,
+                }
+            )
+            self.assertEqual(
+                gate._omission_blob_violations(
+                    root, changed_head, now_measured, accepted, accepted
+                ),
+                [],
+            )
+
+            renamed_from_path = gate.INITIAL_CALIBRATION_OMISSIONS[1]
+            renamed_from = root.joinpath(*renamed_from_path.split("/"))
+            renamed_path = "crates/venom-core/src/renamed_omission.rs"
+            renamed_to = root.joinpath(*renamed_path.split("/"))
+            renamed_from.rename(renamed_to)
+            self._git(root, "add", "-A", "--", renamed_from_path, renamed_path)
+            self._git(root, "commit", "-q", "-m", "rename omitted source")
+            renamed_head = self._git(root, "rev-parse", "HEAD")
+            changed_files, changed_lines = gate._changed_sources(
+                root, changed_head, renamed_head
+            )
+            self.assertEqual(changed_files, [renamed_path])
+            patch, missing = gate._patch_measurement({}, changed_files, changed_lines)
+            self.assertEqual(missing, [renamed_path])
+            self.assertEqual(patch["files"][0]["path"], renamed_path)
+
+            renamed_coverage = copy.deepcopy(coverage)
+            renamed_coverage["omitted_in_scope_files"].remove(renamed_from_path)
+            renamed_coverage["omitted_in_scope_files"].append(renamed_path)
+            renamed_coverage["omitted_in_scope_files"].sort()
+            violations, _ = gate._evaluation_violations(
+                renamed_coverage,
+                patch,
+                missing,
+                accepted,
+                accepted,
+                False,
+            )
+            self.assertTrue(any("new in-scope files" in item for item in violations))
+
     def test_calibration_writes_both_summaries_and_normal_mode_fails_without_baseline(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -716,6 +1019,10 @@ class CommandIntegrationTests(unittest.TestCase):
             source = root / "crates" / "demo" / "src"
             source.mkdir(parents=True)
             (source / "lib.rs").write_text("pub fn demo() {}\n", encoding="utf-8")
+            for omitted_path in gate.INITIAL_CALIBRATION_OMISSIONS:
+                omitted = root.joinpath(*omitted_path.split("/"))
+                omitted.parent.mkdir(parents=True, exist_ok=True)
+                omitted.write_text("// unobserved fixture\n", encoding="utf-8")
             (root / "Cargo.lock").write_text("# fixture\n", encoding="utf-8")
             cargo_config = root / ".cargo" / "config.toml"
             cargo_config.parent.mkdir()
@@ -730,7 +1037,7 @@ class CommandIntegrationTests(unittest.TestCase):
                 "add",
                 ".cargo/config.toml",
                 "Cargo.lock",
-                "crates/demo/src/lib.rs",
+                "crates",
             )
             self._git(root, "commit", "-q", "-m", "fixture")
 

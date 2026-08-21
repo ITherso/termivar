@@ -156,16 +156,24 @@ before measurement.
 
 This source state intentionally runs the checker in calibration mode because no
 accepted numeric baseline is committed. Calibration still rejects malformed or
-escaping paths and missing changed in-scope files, but it does not invent a
-percentage floor. After a reviewed baseline is committed and calibration is
-removed, normal mode prevents aggregate regression and requires coverable
-changed lines on pull requests and branch pushes to meet the accepted aggregate
-ratio. A missing/null event base fails closed; a patch with zero coverable
-changed lines is N/A. Exact integer counts are authoritative; rounded
-percentages are display-only. First and replacement baseline records must match
-the current aggregate, per-file, and omission measurement exactly. A changed
-source reported with no line records counts as missing rather than as an
-undefined-ratio file. Actual Rust `tarpaulin` and `tarpaulin_*` cfg tokens,
+escaping paths. Every changed in-scope file has a patch row; a file absent from
+Cobertura may pass calibration only when it is explicit in the current omission
+inventory, with its actual changed-line count and zero observed covered and
+coverable counts. Those zeroes describe instrumentation output, not the absence
+of executable source. The full omission inventory must equal the exact reviewed
+nine-path bootstrap list in [Coverage evidence](reports/coverage/README.md).
+Calibration does not invent a percentage floor. After a reviewed baseline is
+committed and calibration is removed, normal mode prevents aggregate regression
+and requires coverable changed lines on pull requests and branch pushes to meet
+the accepted aggregate ratio. An accepted omission is excluded from the patch
+denominator only while its path and source blob remain frozen to the applicable
+floor record; changed content must become measured. A new omission fails closed,
+as does disappearance from Cobertura of a source measured in that baseline and
+still present at HEAD. A missing/null event base fails closed; a patch with zero
+observed coverable changed lines is N/A. Exact integer counts are authoritative;
+rounded percentages are display-only. First and replacement baseline records
+must match the current aggregate, per-file, and omission measurement exactly.
+Actual Rust `tarpaulin` and `tarpaulin_*` cfg tokens,
 `coverage(off)`, and legacy `no_coverage` attributes are forbidden in the
 tracked production-source scope so instrumentation-specific conditionals cannot
 turn changed code into an N/A patch; comments and string literals that merely
@@ -176,7 +184,9 @@ repository-controlled instrumentation overrides.
 A first or replacement baseline must come from a dedicated follow-up to its
 recorded source commit. Outside coverage truth docs and the exact first-time
 workflow flip, tracked source, manifests, lockfile, checker, fixtures, and build
-inputs must remain unchanged.
+inputs must remain unchanged. Baseline acceptance must preserve the evidence
+source commit through a merge commit or fast-forward; squash/rebase history must
+regenerate evidence for the rewritten commit.
 
 Run the checker tests with:
 

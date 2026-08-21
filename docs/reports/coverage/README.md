@@ -103,17 +103,51 @@ argument flip. A replacement baseline must leave that workflow byte-identical.
 This prevents unchanged line counts from blessing source logic or build-input
 changes made after the recorded calibration run.
 
+The commit accepting evidence must preserve the recorded `source.commit` in its
+ancestry, using a merge commit or fast-forward. Squashing or rebasing the
+measured commit changes its identity and fails closed; regenerate evidence for
+the rewritten commit instead. The workflow keeps full Git history with
+`fetch-depth: 0`. A base record's source commit does not need to be an ancestor
+of a divergent PR head: enforcement reads the fetched commit's blobs directly.
+
+Calibration writes a patch row for every changed in-scope file. If Cobertura
+omits one, calibration may pass only when the same path is explicit in the
+current `omitted_in_scope_files` inventory. Its row retains the actual changed
+line count with zero observed covered and coverable counts. Those zeroes describe
+instrumentation output, not proof that the source has no executable lines; the
+row makes the omission reviewable without inventing coverage. The initial
+calibration requires the entire omission inventory to equal exactly:
+
+- `crates/venom-core/src/lib.rs`;
+- `crates/venom-core/src/models.rs`;
+- `crates/venom-scanner/src/adaptive/mod.rs`;
+- `crates/venom-scanner/src/contracts.rs`;
+- `crates/venom-scanner/src/defense/mod.rs`;
+- `crates/venom-scanner/src/lib.rs`;
+- `crates/venom-scanner/src/phases/mod.rs`;
+- `crates/venom-scanner/src/semantic.rs`;
+- `crates/venom-scanner/src/web_runtime/api_visibility/tests.rs`.
+
 Normal mode fails closed on a missing or malformed record, a zero aggregate
 or per-file denominator, an escaping path, a newly omitted source, or a
 candidate baseline whose exact integer ratio is lower than the base commit's
 accepted ratio. A first or replacement candidate's aggregate counts, every
 per-file count, and omission inventory must exactly equal the current
 measurement; a lower fabricated floor is not accepted merely because the head
-measurement exceeds it. A Cobertura class with no line records is treated as
-omitted, so a changed zero-line class fails the changed-file presence check.
-Head aggregate coverage must not fall below the accepted ratio. Pull requests
-use their base SHA and branch pushes use the event's `before` SHA; coverable
-changed lines must meet the same ratio in either case. A missing, all-zero, or
-unresolvable base fails closed, including a first-creation push to a configured
-branch. A patch with zero coverable changed lines is reported as N/A. Ratio
-comparisons use integer cross multiplication, not rounded percentages.
+measurement exceeds it. The base commit's accepted omission inventory is the
+normal enforcement floor; the first acceptance uses its exact candidate
+inventory. An accepted omission keeps its explicit zero-observed-denominator
+patch row and is excluded from the patch ratio only while its HEAD blob is
+byte-identical to that path at the applicable floor record's `source.commit`.
+If its content changes, it must become measured; a replacement candidate cannot
+re-bless the changed omitted blob. An addition to the omission inventory remains
+a hard failure. So does disappearance from Cobertura of a source measured in the
+applicable accepted baseline and still present at HEAD.
+A Cobertura class with no line records is treated as omitted under the same
+rules. Head aggregate coverage must not fall below the accepted ratio. Pull
+requests use their base SHA and branch pushes use the event's `before` SHA;
+coverable changed lines must meet the same ratio in either case. A missing,
+all-zero, or unresolvable base fails closed, including a first-creation push to
+a configured branch. A patch with zero observed coverable changed lines is
+reported as N/A. Ratio comparisons use integer cross multiplication, not rounded
+percentages.

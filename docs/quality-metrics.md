@@ -29,14 +29,21 @@ Unit, integration, compatibility, and security results remain separate checks.
 This source state is the calibration stage: no accepted numeric baseline or
 minimum percentage is committed yet. The repository checker validates safe
 paths, integer counts, report structure, and base-to-head diff structure, and
-it fails when an in-scope changed file is absent from Cobertura. It also rejects
-production-source `tarpaulin`/`tarpaulin_*` cfg, `coverage(off)`, and legacy
-`no_coverage` instrumentation exclusions. The exact command ignores Tarpaulin
-config, while architecture pins workflow env and Cargo config and forbids custom
-build targets. It emits the candidate record needed to review an honest
-baseline. Calibration cannot run once an accepted pointer exists. See
-[Coverage evidence](reports/coverage/README.md) for the acceptance procedure
-and the exact normal-mode floor and patch policy.
+it emits an explicit patch row for every changed in-scope file. A Cobertura
+omission can pass calibration only when recorded in the current omission
+inventory, which must equal the reviewed nine-path bootstrap list. Once
+accepted, an omission is excluded from the patch denominator only while its path
+and source blob remain frozen to the applicable floor record; changed content
+must become measured. New omissions fail closed, as does disappearance from
+Cobertura of a source measured in the applicable accepted baseline and still
+present at HEAD. The checker also rejects production-source
+`tarpaulin`/`tarpaulin_*` cfg,
+`coverage(off)`, and legacy `no_coverage` instrumentation exclusions. The exact
+command ignores Tarpaulin config, while architecture pins workflow env and Cargo
+config and forbids custom build targets. It emits the candidate record needed to
+review an honest baseline. Calibration cannot run once an accepted pointer
+exists. See [Coverage evidence](reports/coverage/README.md) for the acceptance
+procedure and the exact normal-mode floor and patch policy.
 
 `scripts/generate-metrics.sh` derives package roots from locked Cargo metadata,
 then reports only Rust files that Git identifies as tracked below those roots.
