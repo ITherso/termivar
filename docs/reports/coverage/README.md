@@ -12,13 +12,19 @@ repository-owned checker is the policy authority.
 ## Current state: enforcement
 
 The accepted baseline is the reviewed LLVM calibration for commit
-[`83069a04e6fc`](83069a04e6fc.md): 21,439 covered of 24,842 observed coverable
+[`6edc4d925739`](6edc4d925739.md): 21,439 covered of 24,842 observed coverable
 source lines. The workflow runs the checker in enforcement mode. Aggregate
 coverage and coverable changed lines must each meet that exact integer ratio;
 rounded 86.30% display text is not the comparison authority. The accepted
 record also freezes every per-file count, the exact nine-path omission inventory,
 and normalized line-state digest at its source commit. Coverage remains a scoped
 navigation signal rather than proof of test adequacy.
+
+This record is an exact measurement reseal of the historical
+[`83069a04e6fc`](83069a04e6fc.md) record: its complete aggregate and patch
+objects are identical. The reseal was required to add `PROJECT_STATUS.md` to
+the finite truth-only acceptance allowlist; it did not lower or otherwise
+recalibrate the numerical floor.
 
 An accepted baseline requires all three committed files:
 

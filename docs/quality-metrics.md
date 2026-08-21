@@ -30,7 +30,7 @@ The fixed scope is tracked Rust files under `crates/*/src/**` plus `xtask/src/**
 Tarpaulin is instructed to ignore test functions with `--ignore-tests`.
 Unit, integration, compatibility, and security results remain separate checks.
 
-The accepted [LLVM coverage record](reports/coverage/83069a04e6fc.md) establishes
+The accepted [LLVM coverage record](reports/coverage/6edc4d925739.md) establishes
 an exact aggregate and changed-line floor of 21,439/24,842 observed coverable
 source lines. The repository checker validates safe paths, integer counts,
 report structure, and base-to-head diff structure, and it emits an explicit

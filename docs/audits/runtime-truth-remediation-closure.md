@@ -488,7 +488,7 @@ library does not silently become a product capability.
 The reviewed implementation head `df19f00ea2171cd8486a6256cb318755d063fb47`
 has 26 terminal PR checks: 23 successful, two intentionally skipped, one
 neutral external scanner, and no failures or pending work. The accepted coverage record is
-[`83069a04e6fc.json`](../reports/coverage/83069a04e6fc.json): aggregate
+[`6edc4d925739.json`](../reports/coverage/6edc4d925739.json): aggregate
 `21,439 / 24,842` (`86.301425%`) and patch `10,345 / 11,966`
 (`86.453284%`). Coverage is a regression/navigation signal, not proof of
 correctness or security.

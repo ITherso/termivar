@@ -184,11 +184,11 @@ jobs:
         with:
           files: ./cobertura.xml
           fail_ci_if_error: false
-      - name: Calibrate repository coverage policy
+      - name: Enforce repository coverage policy
         env:
           COVERAGE_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
           COVERAGE_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-        run: python3 scripts/coverage_gate.py --cobertura cobertura.xml --baseline-pointer docs/reports/coverage/accepted-baseline.txt --summary-json coverage-summary.json --summary-markdown coverage-summary.md --calibrate --require-base
+        run: python3 scripts/coverage_gate.py --cobertura cobertura.xml --baseline-pointer docs/reports/coverage/accepted-baseline.txt --summary-json coverage-summary.json --summary-markdown coverage-summary.md --require-base
       - name: Upload coverage evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
