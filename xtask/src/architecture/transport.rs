@@ -31,6 +31,7 @@ const BOUNDED_RUNTIME_SOURCES: &[&str] = &[
     "crates/venom-scanner/src/web_actions.rs",
     "crates/venom-scanner/src/web_assessment.rs",
     "crates/venom-scanner/src/web_assessment/discovery.rs",
+    "crates/venom-scanner/src/web_assessment/semantic.rs",
     "crates/venom-scanner/src/web_decision.rs",
     "crates/venom-scanner/src/web_execution.rs",
     "crates/venom-scanner/src/web_planning.rs",
@@ -282,6 +283,9 @@ fn web_assessment_contract_violations(
     let discovery = fs::read_to_string(
         workspace_root.join("crates/venom-scanner/src/web_assessment/discovery.rs"),
     )?;
+    let semantic = fs::read_to_string(
+        workspace_root.join("crates/venom-scanner/src/web_assessment/semantic.rs"),
+    )?;
     let http_evidence =
         fs::read_to_string(workspace_root.join("crates/venom-scanner/src/http_evidence.rs"))?;
     let broker = fs::read_to_string(workspace_root.join(TRANSPORT_OWNER_SOURCE))?;
@@ -296,6 +300,10 @@ fn web_assessment_contract_violations(
         (
             "crates/venom-scanner/src/web_assessment/discovery.rs",
             discovery.as_str(),
+        ),
+        (
+            "crates/venom-scanner/src/web_assessment/semantic.rs",
+            semantic.as_str(),
         ),
     ] {
         for forbidden in [
@@ -333,12 +341,51 @@ fn web_assessment_contract_violations(
     violations.extend(inspect_web_assessment_composition(&assessment)?);
     violations.extend(inspect_web_assessment_models(&assessment)?);
     violations.extend(inspect_web_assessment_facade(&facade)?);
+    violations.extend(inspect_assessment_semantic_markers(&semantic));
     violations.extend(inspect_complete_observer_seam(&http_evidence)?);
     violations.extend(inspect_assessment_transport_markers(
         &http_evidence,
         &broker,
     ));
     Ok(violations)
+}
+
+fn inspect_assessment_semantic_markers(source: &str) -> Vec<String> {
+    let mut violations = Vec::new();
+    for (required, boundary) in [
+        ("commit_bootstrap", "committed-receipt input boundary"),
+        (
+            "knowledge.evidence(evidence.id()).as_ref() != Some(evidence)",
+            "exact live knowledge cross-check",
+        ),
+        (
+            "extract_from_web_assessment_evidence",
+            "strict assessment semantic projector",
+        ),
+        (
+            "SemanticExtractionLimits::new",
+            "checked semantic limit construction",
+        ),
+    ] {
+        if !source.contains(required) {
+            violations.push(format!(
+                "assessment semantic composition lost {boundary} marker `{required}`"
+            ));
+        }
+    }
+    for forbidden in [
+        "extract_from_snapshot",
+        "evidence_for_subject",
+        "evidence_for_predicate",
+        "snapshot_for_subject",
+    ] {
+        if source.contains(forbidden) {
+            violations.push(format!(
+                "assessment semantic composition references `{forbidden}`; consume only exact evidence ids from committed receipts"
+            ));
+        }
+    }
+    violations
 }
 
 fn inspect_assessment_transport_markers(http_evidence: &str, broker: &str) -> Vec<String> {
@@ -2532,6 +2579,7 @@ impl OwnershipVisitor<'_> {
             self.source,
             "crates/venom-scanner/src/web_assessment.rs"
                 | "crates/venom-scanner/src/web_assessment/discovery.rs"
+                | "crates/venom-scanner/src/web_assessment/semantic.rs"
         ) {
             if segments
                 .iter()
@@ -2732,6 +2780,7 @@ impl<'ast> Visit<'ast> for OwnershipVisitor<'_> {
                         "execution"
                     )
                     | ("crates/venom-scanner/src/web_assessment.rs", "discovery")
+                    | ("crates/venom-scanner/src/web_assessment.rs", "semantic")
             );
         if !canonical {
             self.violations.insert(format!(

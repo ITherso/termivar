@@ -23,9 +23,9 @@ use crate::{
     http_evidence::{
         complete_http_response_observation_for_test, CompleteHttpResponseObservationTestInput,
     },
-    HttpBodyCapture, HttpEvidencePolicy, RuntimeBudgetDimension, TransportDispatchOutcome,
-    DEFAULT_MAX_CONSECUTIVE_NO_PROGRESS_TURNS, DEFAULT_MAX_REQUEST_BODY_BYTES,
-    DEFAULT_MAX_SAME_ACTION_ATTEMPTS,
+    HttpBodyCapture, HttpEvidencePolicy, RuntimeBudgetDimension, SemanticEntityType,
+    TransportDispatchOutcome, DEFAULT_MAX_CONSECUTIVE_NO_PROGRESS_TURNS,
+    DEFAULT_MAX_REQUEST_BODY_BYTES, DEFAULT_MAX_SAME_ACTION_ATTEMPTS,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1210,6 +1210,35 @@ async fn committed_bootstrap_replay_rejects_non_exact_batches_without_mutating_t
     assert_eq!(exact.routes.len(), 2);
     assert_eq!(exact.forms.len(), 1);
 
+    let mut semantic_evidence = super::semantic::AssessmentSemanticEvidence::default();
+    assert!(semantic_evidence
+        .commit_bootstrap(Some(&template), &KnowledgeBase::new(), &subject)
+        .is_err());
+    assert_eq!(semantic_evidence.record_count(), 0);
+    semantic_evidence
+        .commit_bootstrap(Some(&template), runtime.knowledge(), &subject)
+        .expect("exact committed bootstrap must enter semantic input");
+    let exact_record_count = semantic_evidence.record_count();
+    semantic_evidence
+        .commit_bootstrap(Some(&template), runtime.knowledge(), &subject)
+        .expect("exact replay must be idempotent");
+    assert_eq!(semantic_evidence.record_count(), exact_record_count);
+    let semantic_once = semantic_evidence.extract(&runtime.semantic_limits);
+    let semantic_twice = semantic_evidence.extract(&runtime.semantic_limits);
+    assert_eq!(
+        serde_json::to_vec(&semantic_once).unwrap(),
+        serde_json::to_vec(&semantic_twice).unwrap()
+    );
+    let receipt_ids = original
+        .iter()
+        .map(|evidence| evidence.id().clone())
+        .collect::<BTreeSet<_>>();
+    assert!(semantic_once
+        .entities
+        .iter()
+        .flat_map(|entity| entity.source_evidence_ids())
+        .all(|id| receipt_ids.contains(id)));
+
     assert!(projection_from_committed_bootstrap(
         Some(&template),
         &KnowledgeBase::new(),
@@ -2063,6 +2092,165 @@ async fn cancellation_wall_and_global_budgets_are_fail_closed() {
 }
 
 #[tokio::test]
+async fn semantic_projection_consumes_only_receipt_owned_names_and_never_unrelated_secrets() {
+    const SECRET: &str = "UNRELATED_SHARED_KB_AUTH_SECRET";
+    let server = serve(|request| {
+        let body = if request.path() == "/root" {
+            "<a href='/search?q=discarded-value&page=2'>search</a>\
+             <form action='/submit?next=discarded-target' method='post'>\
+               <input name='email' value='private@example.test'>\
+               <input name='password' value='never-retain-this'>\
+             </form>"
+        } else {
+            "done"
+        };
+        FixtureReply::Response(FixtureResponse::html(body))
+    })
+    .await;
+    let target = server.url("/root");
+    let mut runtime = WebAssessmentRuntime::builder(target.clone())
+        .build()
+        .unwrap();
+    let root_id = EntityId::new(format!("endpoint:{target}")).unwrap();
+    let hostile = Evidence::new(
+        root_id,
+        EvidenceKind::Authentication,
+        KnowledgePredicate::new("authentication", "bearer").unwrap(),
+        EvidenceValue::Text(SECRET.to_owned()),
+        EvidenceSource::new("hostile.test", "unrelated-auth").unwrap(),
+        ConfidenceScore::from_percent(100).unwrap(),
+    );
+    let hostile_id = hostile.id().clone();
+    runtime.knowledge().insert_evidence(hostile).unwrap();
+
+    let report = runtime.analyze().await.unwrap();
+    assert_report_reconciles(&report);
+    assert!(!report.semantics().truncated);
+    assert!(report.semantics().entities.iter().all(|entity| matches!(
+        entity.entity_type(),
+        SemanticEntityType::Endpoint | SemanticEntityType::Parameter
+    )));
+    let parameters = report
+        .semantics()
+        .entities
+        .iter()
+        .filter(|entity| entity.entity_type() == SemanticEntityType::Parameter)
+        .flat_map(|entity| entity.attributes()["name"].iter().cloned())
+        .collect::<BTreeSet<_>>();
+    assert_eq!(
+        parameters,
+        BTreeSet::from([
+            "email".to_owned(),
+            "next".to_owned(),
+            "page".to_owned(),
+            "password".to_owned(),
+            "q".to_owned(),
+        ])
+    );
+    assert!(report.semantics().entities.iter().all(|entity| {
+        entity
+            .attributes()
+            .values()
+            .flatten()
+            .all(|value| !value.contains("discarded") && !value.contains("never-retain"))
+    }));
+
+    let committed_ids = report
+        .subjects()
+        .iter()
+        .filter_map(WebAssessmentSubjectReport::bootstrap)
+        .flat_map(DecisionEvidenceReceipt::evidence)
+        .map(|evidence| evidence.id().clone())
+        .collect::<BTreeSet<_>>();
+    assert!(report
+        .semantics()
+        .entities
+        .iter()
+        .flat_map(|entity| entity.source_evidence_ids())
+        .all(|id| committed_ids.contains(id) && id != &hostile_id));
+    let semantic_debug = format!("{:?}", report.semantics());
+    let semantic_json = serde_json::to_string(report.semantics()).unwrap();
+    assert!(!semantic_debug.contains(SECRET));
+    assert!(!semantic_json.contains(SECRET));
+
+    let first = runtime.semantic_evidence.extract(&runtime.semantic_limits);
+    let second = runtime.semantic_evidence.extract(&runtime.semantic_limits);
+    assert_eq!(
+        serde_json::to_vec(&first).unwrap(),
+        serde_json::to_vec(&second).unwrap()
+    );
+    assert_eq!(&first, report.semantics());
+}
+
+#[tokio::test]
+async fn semantic_entity_ceiling_marks_the_assessment_incomplete_without_extra_dispatch() {
+    let links = (0..16)
+        .map(|route| {
+            let query = (0..64)
+                .map(|name| format!("name-{name:02}=discarded"))
+                .collect::<Vec<_>>()
+                .join("&");
+            format!("<a href='/route-{route:02}?{query}'>route</a>")
+        })
+        .collect::<String>();
+    let server = serve(move |request| {
+        let body = if request.path() == "/root" {
+            links.clone()
+        } else {
+            "done".to_owned()
+        };
+        FixtureReply::Response(FixtureResponse::html(body))
+    })
+    .await;
+    let limits = WebAssessmentLimits::default()
+        .with_max_total_requests(1)
+        .unwrap();
+    let mut runtime = WebAssessmentRuntime::builder(server.url("/root"))
+        .limits(limits)
+        .build()
+        .unwrap();
+
+    let report = runtime.analyze().await.unwrap();
+
+    assert_report_reconciles(&report);
+    assert!(report.semantics().truncated);
+    assert_eq!(
+        report.semantics().entities.len(),
+        SemanticExtractionLimits::default().max_entities()
+    );
+    assert!(report.semantics().dropped_entities > 0);
+    assert!(report
+        .completion()
+        .reasons()
+        .contains(&WebAssessmentIncompleteReason::SemanticExtractionLimit));
+    assert!(report
+        .completion()
+        .reasons()
+        .contains(&WebAssessmentIncompleteReason::TotalRequestLimit));
+    assert_eq!(report.usage().total_requests(), 1);
+    assert_eq!(server.hit_count("/root").await, 1);
+    assert!(server
+        .requests()
+        .await
+        .iter()
+        .all(|request| request.path() == "/root"));
+
+    runtime.limits = runtime
+        .limits
+        .with_max_wall_time(Duration::from_millis(1))
+        .unwrap();
+    let deliberately_expired = tokio::time::Instant::now() - Duration::from_millis(2);
+    let mut post_extraction_reasons = BTreeSet::new();
+    let repeated = runtime
+        .extract_semantics_and_refresh_limits(&mut post_extraction_reasons, deliberately_expired);
+    assert!(repeated.truncated);
+    assert!(post_extraction_reasons.contains(&WebAssessmentIncompleteReason::WallTimeLimit));
+    assert!(
+        post_extraction_reasons.contains(&WebAssessmentIncompleteReason::SemanticExtractionLimit)
+    );
+}
+
+#[tokio::test]
 async fn in_flight_cancellation_and_timeout_preserve_typed_audits() {
     let server = serve(|_| FixtureReply::Stall).await;
     let target = server.url("/stall");
@@ -2263,6 +2451,31 @@ async fn started_subject_failure_partitions_completed_current_and_pending_invent
     );
     let failure_debug = format!("{error:?}{receipt:?}");
     assert_no_secret(&failure_debug, FAILURE_SECRETS);
+    assert!(!receipt.semantics().truncated);
+    assert!(receipt.semantics().entities.iter().all(|entity| matches!(
+        entity.entity_type(),
+        SemanticEntityType::Endpoint | SemanticEntityType::Parameter
+    )));
+    let semantic_names = receipt
+        .semantics()
+        .entities
+        .iter()
+        .filter(|entity| entity.entity_type() == SemanticEntityType::Parameter)
+        .flat_map(|entity| entity.attributes()["name"].iter().cloned())
+        .collect::<BTreeSet<_>>();
+    assert_eq!(
+        semantic_names,
+        BTreeSet::from([
+            "candidate".to_owned(),
+            "csrf".to_owned(),
+            "pending".to_owned(),
+            "token".to_owned(),
+        ])
+    );
+    assert_no_secret(
+        &serde_json::to_string(receipt.semantics()).unwrap(),
+        FAILURE_SECRETS,
+    );
     let subject_ids: Vec<_> = receipt
         .completed_subjects()
         .iter()

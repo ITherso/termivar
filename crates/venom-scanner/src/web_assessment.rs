@@ -28,14 +28,17 @@ use crate::{
     },
     DecisionEvidenceReceipt, DecisionExecutionFailureReceipt, DecisionExecutionStage,
     DecisionLoopCommand, DecisionStopReason, HttpEvidenceError, HttpEvidencePolicy, HttpProbe,
-    HttpProbeMethod, KnowledgeBase, RuntimeBudget, RuntimeBudgetDimension, RuntimeLimitExceeded,
+    HttpProbeMethod, KnowledgeBase, LimitsError, RuntimeBudget, RuntimeBudgetDimension,
+    RuntimeLimitExceeded, SemanticExtractionLimits, SemanticExtractionResult,
     StandardWebDecisionRuntime, StandardWebDecisionRuntimeError, StandardWebDecisionRuntimeTurn,
     TransportDispatchAudit, HTTP_EVIDENCE_EXECUTOR_ID, MAX_HTTP_BODY_LIMIT,
 };
 
 mod discovery;
+mod semantic;
 
 use discovery::{canonicalize_root, parse_document, ParsedDocument, ParsedForm, ParsedRoute};
+use semantic::{assessment_semantic_limits, AssessmentSemanticEvidence};
 
 /// Default maximum canonical subjects retained by one assessment.
 pub const DEFAULT_WEB_ASSESSMENT_MAX_SUBJECTS: usize = 64;
@@ -92,8 +95,10 @@ pub const HARD_MAX_WEB_ASSESSMENT_ACTIVE_VERIFICATIONS: u16 = 64;
 /// Assessment subjects execute sequentially under one shared authority.
 pub const WEB_ASSESSMENT_CONCURRENCY: usize = 1;
 
-pub(crate) const HARD_MAX_DISCOVERY_NAME_BYTES: usize = 256;
-pub(crate) const HARD_MAX_DISCOVERY_NAMES_PER_REFERENCE: usize = 256;
+pub(crate) const HARD_MAX_DISCOVERY_NAME_BYTES: usize =
+    SemanticExtractionLimits::HARD_MAX_ASSESSMENT_PARAMETER_NAME_BYTES;
+pub(crate) const HARD_MAX_DISCOVERY_NAMES_PER_REFERENCE: usize =
+    SemanticExtractionLimits::HARD_MAX_ASSESSMENT_PARAMETER_NAMES_PER_REFERENCE;
 
 /// Invalid configuration for a bounded web assessment.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
@@ -696,6 +701,7 @@ pub enum WebAssessmentIncompleteReason {
     HumanReviewRequired,
     SubjectExecutionIncomplete,
     HostCancellation,
+    SemanticExtractionLimit,
 }
 
 /// Whether every retained subject and eligible document completed within bounds.
@@ -723,6 +729,7 @@ impl WebAssessmentCompletion {
 pub struct WebAssessmentRunReport {
     subjects: Vec<WebAssessmentSubjectReport>,
     forms: Vec<WebAssessmentForm>,
+    semantics: SemanticExtractionResult,
     completion: WebAssessmentCompletion,
     usage: WebAssessmentUsage,
     transport: TransportDispatchAudit,
@@ -734,6 +741,11 @@ impl WebAssessmentRunReport {
     }
     pub fn forms(&self) -> &[WebAssessmentForm] {
         &self.forms
+    }
+    /// Returns bounded semantic entities derived only from exact committed
+    /// assessment evidence.
+    pub fn semantics(&self) -> &SemanticExtractionResult {
+        &self.semantics
     }
     pub fn completion(&self) -> &WebAssessmentCompletion {
         &self.completion
@@ -752,6 +764,7 @@ pub struct WebAssessmentFailureReceipt {
     completed_subjects: Vec<WebAssessmentSubjectReport>,
     pending_subjects: Vec<WebAssessmentSubject>,
     forms: Vec<WebAssessmentForm>,
+    semantics: SemanticExtractionResult,
     current_subject: WebAssessmentSubjectReport,
     incomplete_reasons: BTreeSet<WebAssessmentIncompleteReason>,
     inventory_consistent: bool,
@@ -770,6 +783,11 @@ impl WebAssessmentFailureReceipt {
     }
     pub fn forms(&self) -> &[WebAssessmentForm] {
         &self.forms
+    }
+    /// Returns semantic truth preserved from committed assessment evidence
+    /// before the failing boundary.
+    pub fn semantics(&self) -> &SemanticExtractionResult {
+        &self.semantics
     }
     pub fn current_subject(&self) -> &WebAssessmentSubject {
         &self.current_subject.subject
@@ -807,6 +825,8 @@ pub enum WebAssessmentRuntimeError {
     AlreadyStarted,
     #[error(transparent)]
     Limits(#[from] WebAssessmentLimitsError),
+    #[error(transparent)]
+    SemanticLimits(#[from] LimitsError),
     #[error(transparent)]
     Http(#[from] HttpEvidenceError),
     #[error("authorized web assessment target cannot be retained safely")]
@@ -868,6 +888,7 @@ impl WebAssessmentRuntimeBuilder {
         self
     }
     pub fn build(self) -> Result<WebAssessmentRuntime, WebAssessmentRuntimeError> {
+        let semantic_limits = assessment_semantic_limits(self.limits)?;
         // Validate credentials and the HTTP(S) scheme before removing query
         // values from the root. The query-free URL is the only representation
         // that is dispatched or retained by this opt-in runtime.
@@ -904,6 +925,8 @@ impl WebAssessmentRuntimeBuilder {
         }
         Ok(WebAssessmentRuntime {
             limits: self.limits,
+            semantic_limits,
+            semantic_evidence: AssessmentSemanticEvidence::default(),
             authority,
             discovery_policy,
             ledger,
@@ -917,6 +940,8 @@ impl WebAssessmentRuntimeBuilder {
 /// Single-use deterministic assessment of one authorized exact origin.
 pub struct WebAssessmentRuntime {
     limits: WebAssessmentLimits,
+    semantic_limits: SemanticExtractionLimits,
+    semantic_evidence: AssessmentSemanticEvidence,
     authority: SharedWebRuntimeAuthority,
     discovery_policy: HttpEvidencePolicy,
     ledger: AssessmentLedger,
@@ -1104,48 +1129,71 @@ impl WebAssessmentRuntime {
                 let subject_report = WebAssessmentSubjectReport::complete(subject.clone(), parts);
 
                 match projection {
-                    Ok(Some(projection)) => {
-                        projection.add_reasons(&mut reasons);
-                        self.ledger.apply(&projection);
-                        forms.extend(projection.forms);
-                        for route in projection.routes {
-                            let route_is_pending = self
-                                .ledger
-                                .subject_admission(&route.url)
-                                .is_some_and(|entry| !entry.executed);
-                            if route_is_pending {
-                                if let Some(existing) = known_subjects.get_mut(route.url.as_str()) {
-                                    merge_subject_route(
-                                        existing,
-                                        &route,
-                                        subject.depth + 1,
-                                        self.limits.max_query_parameter_names(),
-                                    );
-                                } else {
-                                    known_subjects.insert(
-                                        route.url.to_string(),
-                                        WebAssessmentSubject {
-                                            url: route.url.clone(),
-                                            method: route.method,
-                                            depth: subject.depth.saturating_add(1),
-                                            origin: WebAssessmentSubjectOrigin::Discovered,
-                                            query_parameter_names: route
-                                                .query_parameter_names
-                                                .clone(),
-                                            evidence_ids: route.evidence_ids.clone(),
-                                        },
-                                    );
+                    Ok(projection) => {
+                        if self
+                            .semantic_evidence
+                            .commit_bootstrap(
+                                subject_report.bootstrap(),
+                                self.authority.knowledge(),
+                                &subject,
+                            )
+                            .is_err()
+                        {
+                            return Err(WebAssessmentRuntimeError::ProjectionInvariant {
+                                receipt: Box::new(self.failure_receipt(
+                                    &known_subjects,
+                                    subject_reports,
+                                    forms,
+                                    subject_report,
+                                    failed_reasons(&reasons),
+                                    started_at,
+                                )),
+                            });
+                        }
+                        if let Some(projection) = projection {
+                            projection.add_reasons(&mut reasons);
+                            self.ledger.apply(&projection);
+                            forms.extend(projection.forms);
+                            for route in projection.routes {
+                                let route_is_pending = self
+                                    .ledger
+                                    .subject_admission(&route.url)
+                                    .is_some_and(|entry| !entry.executed);
+                                if route_is_pending {
+                                    if let Some(existing) =
+                                        known_subjects.get_mut(route.url.as_str())
+                                    {
+                                        merge_subject_route(
+                                            existing,
+                                            &route,
+                                            subject.depth + 1,
+                                            self.limits.max_query_parameter_names(),
+                                        );
+                                    } else {
+                                        known_subjects.insert(
+                                            route.url.to_string(),
+                                            WebAssessmentSubject {
+                                                url: route.url.clone(),
+                                                method: route.method,
+                                                depth: subject.depth.saturating_add(1),
+                                                origin: WebAssessmentSubjectOrigin::Discovered,
+                                                query_parameter_names: route
+                                                    .query_parameter_names
+                                                    .clone(),
+                                                evidence_ids: route.evidence_ids.clone(),
+                                            },
+                                        );
+                                    }
                                 }
+                                merge_pending_route(
+                                    &mut next_candidates,
+                                    route,
+                                    subject.depth + 1,
+                                    self.limits.max_query_parameter_names(),
+                                );
                             }
-                            merge_pending_route(
-                                &mut next_candidates,
-                                route,
-                                subject.depth + 1,
-                                self.limits.max_query_parameter_names(),
-                            );
                         }
                     },
-                    Ok(None) => {},
                     Err(()) => {
                         return Err(WebAssessmentRuntimeError::ProjectionInvariant {
                             receipt: Box::new(self.failure_receipt(
@@ -1259,6 +1307,7 @@ impl WebAssessmentRuntime {
                 });
             },
         }
+        let semantics = self.extract_semantics_and_refresh_limits(&mut reasons, started_at);
         let usage = self.usage(
             subject_reports.len(),
             subject_reports
@@ -1276,6 +1325,7 @@ impl WebAssessmentRuntime {
         Ok(WebAssessmentRunReport {
             subjects: subject_reports,
             forms,
+            semantics,
             completion,
             usage,
             transport: self.authority.request_accounting().dispatch_audit(),
@@ -1372,40 +1422,62 @@ impl WebAssessmentRuntime {
             incomplete_reasons.insert(WebAssessmentIncompleteReason::WallTimeLimit);
         }
         match projection {
-            Ok(Some(projection)) => {
-                projection.add_reasons(&mut incomplete_reasons);
-                self.ledger.apply(&projection);
-                forms.extend(projection.forms);
-                for route in projection.routes {
-                    if self
-                        .ledger
-                        .subject_admission(&route.url)
-                        .is_some_and(|entry| !entry.executed)
-                    {
-                        if let Some(existing) = known_subjects.get_mut(route.url.as_str()) {
-                            merge_subject_route(
-                                existing,
-                                &route,
-                                current_subject.depth.saturating_add(1),
-                                self.limits.max_query_parameter_names(),
-                            );
-                        } else {
-                            known_subjects.insert(
-                                route.url.to_string(),
-                                WebAssessmentSubject {
-                                    url: route.url,
-                                    method: route.method,
-                                    depth: current_subject.depth.saturating_add(1),
-                                    origin: WebAssessmentSubjectOrigin::Discovered,
-                                    query_parameter_names: route.query_parameter_names,
-                                    evidence_ids: route.evidence_ids,
-                                },
-                            );
+            Ok(projection) => {
+                if self
+                    .semantic_evidence
+                    .commit_bootstrap(
+                        current_report.bootstrap(),
+                        self.authority.knowledge(),
+                        &current_subject,
+                    )
+                    .is_err()
+                {
+                    let receipt = self.failure_receipt(
+                        known_subjects,
+                        completed_subjects,
+                        forms,
+                        current_report,
+                        incomplete_reasons,
+                        started_at,
+                    );
+                    return WebAssessmentRuntimeError::ProjectionInvariant {
+                        receipt: Box::new(receipt),
+                    };
+                }
+                if let Some(projection) = projection {
+                    projection.add_reasons(&mut incomplete_reasons);
+                    self.ledger.apply(&projection);
+                    forms.extend(projection.forms);
+                    for route in projection.routes {
+                        if self
+                            .ledger
+                            .subject_admission(&route.url)
+                            .is_some_and(|entry| !entry.executed)
+                        {
+                            if let Some(existing) = known_subjects.get_mut(route.url.as_str()) {
+                                merge_subject_route(
+                                    existing,
+                                    &route,
+                                    current_subject.depth.saturating_add(1),
+                                    self.limits.max_query_parameter_names(),
+                                );
+                            } else {
+                                known_subjects.insert(
+                                    route.url.to_string(),
+                                    WebAssessmentSubject {
+                                        url: route.url,
+                                        method: route.method,
+                                        depth: current_subject.depth.saturating_add(1),
+                                        origin: WebAssessmentSubjectOrigin::Discovered,
+                                        query_parameter_names: route.query_parameter_names,
+                                        evidence_ids: route.evidence_ids,
+                                    },
+                                );
+                            }
                         }
                     }
                 }
             },
-            Ok(None) => {},
             Err(()) => {
                 let receipt = self.failure_receipt(
                     known_subjects,
@@ -1446,9 +1518,11 @@ impl WebAssessmentRuntime {
         completed_subjects: Vec<WebAssessmentSubjectReport>,
         forms: Vec<WebAssessmentForm>,
         current_subject: WebAssessmentSubjectReport,
-        incomplete_reasons: BTreeSet<WebAssessmentIncompleteReason>,
+        mut incomplete_reasons: BTreeSet<WebAssessmentIncompleteReason>,
         started_at: tokio::time::Instant,
     ) -> WebAssessmentFailureReceipt {
+        let semantics =
+            self.extract_semantics_and_refresh_limits(&mut incomplete_reasons, started_at);
         let completed_urls: BTreeSet<_> = completed_subjects
             .iter()
             .map(|report| report.subject.url.to_string())
@@ -1537,6 +1611,7 @@ impl WebAssessmentRuntime {
             completed_subjects,
             pending_subjects,
             forms,
+            semantics,
             current_subject,
             incomplete_reasons,
             inventory_consistent,
@@ -1565,6 +1640,24 @@ impl WebAssessmentRuntime {
             response_bytes: accounting.response_bytes(),
             elapsed_ms: duration_ms(started_at.elapsed()),
         }
+    }
+
+    fn extract_semantics_and_refresh_limits(
+        &self,
+        reasons: &mut BTreeSet<WebAssessmentIncompleteReason>,
+        started_at: tokio::time::Instant,
+    ) -> SemanticExtractionResult {
+        let semantics = self.semantic_evidence.extract(&self.semantic_limits);
+        if semantics.truncated {
+            reasons.insert(WebAssessmentIncompleteReason::SemanticExtractionLimit);
+        }
+        if self.authority.cancellation().is_cancelled() {
+            reasons.insert(WebAssessmentIncompleteReason::HostCancellation);
+        }
+        if started_at.elapsed() >= self.limits.max_wall_time() {
+            reasons.insert(WebAssessmentIncompleteReason::WallTimeLimit);
+        }
+        semantics
     }
 }
 

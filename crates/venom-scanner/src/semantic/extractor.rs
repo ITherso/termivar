@@ -57,6 +57,55 @@ impl EntityExtractor {
         let mut sorted_evidence: Vec<&Evidence> = evidence_list.iter().collect();
         sorted_evidence.sort_by_key(|e| e.id());
 
+        self.merge_and_bound(
+            sorted_evidence
+                .into_iter()
+                .filter_map(|evidence| self.project_evidence(evidence)),
+        )
+    }
+
+    /// Extracts the strict endpoint/name-only semantic surface from evidence
+    /// explicitly owned by a web assessment.
+    ///
+    /// This intentionally remains crate-private. The assessment host first
+    /// proves that every supplied record belongs to a committed bootstrap
+    /// receipt and is structurally equal to the live knowledge-base record.
+    /// Unlike the general extractor, this surface can never create auth,
+    /// header, technology, domain, or IP entities.
+    #[cfg(feature = "scanning")]
+    pub(crate) fn extract_from_web_assessment_evidence(
+        &self,
+        evidence_list: &[Evidence],
+    ) -> SemanticExtractionResult {
+        let index = evidence_list
+            .iter()
+            .map(|evidence| (evidence.id().clone(), evidence))
+            .collect::<BTreeMap<_, _>>();
+        let mut sorted_evidence = index.values().copied().collect::<Vec<_>>();
+        sorted_evidence.sort_by_key(|evidence| evidence.id());
+
+        let mut projected = Vec::new();
+        for evidence in sorted_evidence {
+            let predicate = evidence.predicate();
+            if evidence.kind() == &EvidenceKind::Http
+                && (predicate == &venom_core::HttpEvidencePredicate::REQUEST_URL.into_knowledge()
+                    || predicate
+                        == &venom_core::HttpEvidencePredicate::REQUEST_METHOD.into_knowledge())
+            {
+                if let Some(entity) = self.project_evidence(evidence) {
+                    projected.push(entity);
+                }
+                continue;
+            }
+            projected.extend(self.project_web_discovery_evidence(evidence, &index));
+        }
+        self.merge_and_bound(projected)
+    }
+
+    fn merge_and_bound(
+        &self,
+        projected: impl IntoIterator<Item = SemanticEntity>,
+    ) -> SemanticExtractionResult {
         let mut entity_map = BTreeMap::<
             EntityId,
             (
@@ -66,18 +115,16 @@ impl EntityExtractor {
             ),
         >::new();
 
-        for evidence in sorted_evidence {
-            if let Some(extracted) = self.project_evidence(evidence) {
-                let (id, etype, attrs, sources) = extracted.into_parts();
-                let entry = entity_map
-                    .entry(id)
-                    .or_insert_with(|| (etype, BTreeMap::new(), BTreeSet::new()));
+        for extracted in projected {
+            let (id, etype, attrs, sources) = extracted.into_parts();
+            let entry = entity_map
+                .entry(id)
+                .or_insert_with(|| (etype, BTreeMap::new(), BTreeSet::new()));
 
-                for (k, vals) in attrs {
-                    entry.1.entry(k).or_default().extend(vals);
-                }
-                entry.2.extend(sources);
+            for (k, vals) in attrs {
+                entry.1.entry(k).or_default().extend(vals);
             }
+            entry.2.extend(sources);
         }
 
         let mut dropped_entities = 0;
@@ -146,6 +193,158 @@ impl EntityExtractor {
             dropped_attributes,
             dropped_sources,
         }
+    }
+
+    #[cfg(feature = "scanning")]
+    fn project_web_discovery_evidence(
+        &self,
+        evidence: &Evidence,
+        index: &BTreeMap<EvidenceId, &Evidence>,
+    ) -> Vec<SemanticEntity> {
+        if evidence.kind() != &EvidenceKind::Content {
+            return Vec::new();
+        }
+        let predicate = evidence.predicate();
+        let (method_attribute, endpoint_method) = if predicate
+            == &venom_core::WebDiscoveryEvidencePredicate::GET_ROUTE.into_knowledge()
+            || predicate
+                == &venom_core::WebDiscoveryEvidencePredicate::GET_FORM_ACTION.into_knowledge()
+        {
+            ("method", "GET")
+        } else if predicate
+            == &venom_core::WebDiscoveryEvidencePredicate::HEAD_ROUTE.into_knowledge()
+        {
+            ("method", "HEAD")
+        } else if predicate
+            == &venom_core::WebDiscoveryEvidencePredicate::POST_FORM_ACTION.into_knowledge()
+        {
+            ("method", "POST")
+        } else if predicate
+            == &venom_core::WebDiscoveryEvidencePredicate::DIALOG_FORM_ACTION.into_knowledge()
+        {
+            ("form_method", "dialog")
+        } else {
+            return self.project_web_discovery_names(evidence, index);
+        };
+
+        let EvidenceValue::Text(raw_url) = evidence.value() else {
+            return Vec::new();
+        };
+        let Some((id, canonical_url)) = parse_strict_canonical_endpoint(raw_url, &self.limits)
+        else {
+            return Vec::new();
+        };
+        let Some(sources) = lineage_sources(evidence, index) else {
+            return Vec::new();
+        };
+        let attributes = BTreeMap::from([
+            ("url".to_owned(), BTreeSet::from([canonical_url])),
+            (
+                method_attribute.to_owned(),
+                BTreeSet::from([endpoint_method.to_owned()]),
+            ),
+        ]);
+        vec![SemanticEntity::new(
+            id,
+            SemanticEntityType::Endpoint,
+            attributes,
+            sources,
+        )]
+    }
+
+    #[cfg(feature = "scanning")]
+    fn project_web_discovery_names(
+        &self,
+        evidence: &Evidence,
+        index: &BTreeMap<EvidenceId, &Evidence>,
+    ) -> Vec<SemanticEntity> {
+        let predicate = evidence.predicate();
+        let (location, route_parent) = if predicate
+            == &venom_core::WebDiscoveryEvidencePredicate::ROUTE_QUERY_PARAMETER_NAMES
+                .into_knowledge()
+        {
+            ("query", true)
+        } else if predicate
+            == &venom_core::WebDiscoveryEvidencePredicate::FORM_QUERY_PARAMETER_NAMES
+                .into_knowledge()
+        {
+            ("query", false)
+        } else if predicate
+            == &venom_core::WebDiscoveryEvidencePredicate::FORM_CONTROL_NAMES.into_knowledge()
+        {
+            ("form_control", false)
+        } else {
+            return Vec::new();
+        };
+        let Some(derivation) = evidence.origin().derivation() else {
+            return Vec::new();
+        };
+        let [parent_id] = derivation.parents() else {
+            return Vec::new();
+        };
+        let Some(parent) = index.get(parent_id).copied() else {
+            return Vec::new();
+        };
+        let parent_predicate = parent.predicate();
+        let accepted_parent = if route_parent {
+            parent_predicate
+                == &venom_core::WebDiscoveryEvidencePredicate::GET_ROUTE.into_knowledge()
+                || parent_predicate
+                    == &venom_core::WebDiscoveryEvidencePredicate::HEAD_ROUTE.into_knowledge()
+        } else {
+            parent_predicate
+                == &venom_core::WebDiscoveryEvidencePredicate::GET_FORM_ACTION.into_knowledge()
+                || parent_predicate
+                    == &venom_core::WebDiscoveryEvidencePredicate::POST_FORM_ACTION.into_knowledge()
+                || parent_predicate
+                    == &venom_core::WebDiscoveryEvidencePredicate::DIALOG_FORM_ACTION
+                        .into_knowledge()
+        };
+        if !accepted_parent || parent.kind() != &EvidenceKind::Content {
+            return Vec::new();
+        }
+        let EvidenceValue::Text(raw_url) = parent.value() else {
+            return Vec::new();
+        };
+        let Some((_, canonical_url)) = parse_strict_canonical_endpoint(raw_url, &self.limits)
+        else {
+            return Vec::new();
+        };
+        let EvidenceValue::TextList(names) = evidence.value() else {
+            return Vec::new();
+        };
+        if names.is_empty()
+            || names.len()
+                > SemanticExtractionLimits::HARD_MAX_ASSESSMENT_PARAMETER_NAMES_PER_REFERENCE
+            || names.windows(2).any(|pair| pair[0] >= pair[1])
+            || names.iter().any(|name| !valid_parameter_name(name))
+        {
+            return Vec::new();
+        }
+        let Some(sources) = lineage_sources(evidence, index) else {
+            return Vec::new();
+        };
+
+        names
+            .iter()
+            .filter_map(|name| {
+                let id = parameter_id(&canonical_url, location, name)?;
+                let attributes = BTreeMap::from([
+                    (
+                        "endpoint_url".to_owned(),
+                        BTreeSet::from([canonical_url.clone()]),
+                    ),
+                    ("location".to_owned(), BTreeSet::from([location.to_owned()])),
+                    ("name".to_owned(), BTreeSet::from([name.clone()])),
+                ]);
+                Some(SemanticEntity::new(
+                    id,
+                    SemanticEntityType::Parameter,
+                    attributes,
+                    sources.clone(),
+                ))
+            })
+            .collect()
     }
 
     fn project_evidence(&self, evidence: &Evidence) -> Option<SemanticEntity> {
@@ -329,6 +528,72 @@ impl EntityExtractor {
             _ => None,
         }
     }
+}
+
+#[cfg(feature = "scanning")]
+fn parse_strict_canonical_endpoint(
+    value: &str,
+    limits: &SemanticExtractionLimits,
+) -> Option<(EntityId, String)> {
+    if value != value.trim() || value.contains('#') || value.contains('?') {
+        return None;
+    }
+    let (id, canonical) = parse_canonical_endpoint("", value, limits)?;
+    (canonical == value).then_some((id, canonical))
+}
+
+#[cfg(feature = "scanning")]
+fn valid_parameter_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= SemanticExtractionLimits::HARD_MAX_ASSESSMENT_PARAMETER_NAME_BYTES
+        && !name.chars().any(char::is_control)
+}
+
+#[cfg(feature = "scanning")]
+fn parameter_id(canonical_url: &str, location: &str, name: &str) -> Option<EntityId> {
+    let mut hasher = Sha256::new();
+    hasher.update(b"venom:parameter:v1\0");
+    hasher.update(canonical_url.as_bytes());
+    hasher.update(b"\0");
+    hasher.update(location.as_bytes());
+    hasher.update(b"\0");
+    hasher.update(name.as_bytes());
+    let digest = hasher
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    EntityId::new(format!("{CANONICAL_ID_VERSION}:parameter:{digest}")).ok()
+}
+
+#[cfg(feature = "scanning")]
+fn lineage_sources(
+    evidence: &Evidence,
+    index: &BTreeMap<EvidenceId, &Evidence>,
+) -> Option<Vec<EvidenceId>> {
+    let mut pending = vec![evidence.id().clone()];
+    let mut sources = BTreeSet::new();
+    while let Some(id) = pending.pop() {
+        if !sources.insert(id.clone()) {
+            continue;
+        }
+        if sources.len() > SemanticExtractionLimits::HARD_MAX_SOURCE_EVIDENCE_IDS {
+            return None;
+        }
+        let record = index.get(&id).copied()?;
+        if record.subject() != evidence.subject() {
+            return None;
+        }
+        if let Some(derivation) = record.origin().derivation() {
+            if derivation.algorithm().name() != "web.discovery.html5ever-names-only"
+                || derivation.algorithm().version() != 1
+            {
+                return None;
+            }
+            pending.extend(derivation.parents().iter().cloned());
+        }
+    }
+    Some(sources.into_iter().collect())
 }
 
 fn parse_canonical_ip(raw: &str) -> Option<String> {
@@ -599,6 +864,11 @@ fn is_token_char(byte: char) -> bool {
 mod tests {
     use super::*;
     use venom_core::{ConfidenceScore, EvidenceSource, KnowledgePredicate};
+    #[cfg(feature = "scanning")]
+    use venom_core::{
+        DerivationAlgorithm, EvidenceDerivation, HttpEvidencePredicate, PredicateDescriptor,
+        WebDiscoveryEvidencePredicate,
+    };
 
     fn subject() -> EntityId {
         EntityId::new("endpoint:https://example.test/api/user").unwrap()
@@ -633,6 +903,136 @@ mod tests {
             source(),
             ConfidenceScore::from_percent(50).unwrap(),
         )
+    }
+
+    #[cfg(feature = "scanning")]
+    fn fixed_evidence(
+        id: &str,
+        subject: &EntityId,
+        kind: EvidenceKind,
+        predicate: KnowledgePredicate,
+        value: EvidenceValue,
+        method: &str,
+    ) -> Evidence {
+        Evidence::with_id_at(
+            EvidenceId::parse(id).unwrap(),
+            subject.clone(),
+            kind,
+            predicate,
+            value,
+            EvidenceSource::new("venom.http-evidence", method)
+                .unwrap()
+                .with_correlation_id("web.bootstrap.case")
+                .unwrap(),
+            ConfidenceScore::from_percent(100).unwrap(),
+            1,
+        )
+    }
+
+    #[cfg(feature = "scanning")]
+    fn derived_discovery_evidence(
+        id: &str,
+        subject: &EntityId,
+        predicate: PredicateDescriptor,
+        value: EvidenceValue,
+        method: &str,
+        parents: impl IntoIterator<Item = EvidenceId>,
+    ) -> Evidence {
+        fixed_evidence(
+            id,
+            subject,
+            EvidenceKind::Content,
+            predicate.into_knowledge(),
+            value,
+            method,
+        )
+        .derived_from(
+            EvidenceDerivation::new(
+                parents,
+                DerivationAlgorithm::new("web.discovery.html5ever-names-only", 1).unwrap(),
+            )
+            .unwrap(),
+        )
+    }
+
+    #[cfg(feature = "scanning")]
+    fn assessment_route_evidence(names: Vec<String>) -> Vec<Evidence> {
+        let subject = EntityId::new("endpoint:https://example.test/").unwrap();
+        let base = vec![
+            fixed_evidence(
+                "semantic-base-method",
+                &subject,
+                EvidenceKind::Http,
+                HttpEvidencePredicate::REQUEST_METHOD.into_knowledge(),
+                EvidenceValue::Text("GET".to_owned()),
+                "request-method",
+            ),
+            fixed_evidence(
+                "semantic-base-url",
+                &subject,
+                EvidenceKind::Http,
+                HttpEvidencePredicate::REQUEST_URL.into_knowledge(),
+                EvidenceValue::Text("https://example.test/".to_owned()),
+                "request-url",
+            ),
+            fixed_evidence(
+                "semantic-base-status",
+                &subject,
+                EvidenceKind::Http,
+                HttpEvidencePredicate::RESPONSE_STATUS.into_knowledge(),
+                EvidenceValue::Unsigned(200),
+                "response-status",
+            ),
+            fixed_evidence(
+                "semantic-base-media",
+                &subject,
+                EvidenceKind::Http,
+                HttpEvidencePredicate::RESPONSE_MEDIA_TYPE.into_knowledge(),
+                EvidenceValue::Text("text/html".to_owned()),
+                "response-media-type",
+            ),
+            fixed_evidence(
+                "semantic-base-truncated",
+                &subject,
+                EvidenceKind::Content,
+                HttpEvidencePredicate::RESPONSE_BODY_TRUNCATED.into_knowledge(),
+                EvidenceValue::Boolean(false),
+                "response-body-truncation",
+            ),
+            fixed_evidence(
+                "semantic-base-digest",
+                &subject,
+                EvidenceKind::Content,
+                HttpEvidencePredicate::RESPONSE_BODY_SHA256.into_knowledge(),
+                EvidenceValue::Text("a".repeat(64)),
+                "response-body-sha256",
+            ),
+        ];
+        let marker = derived_discovery_evidence(
+            "semantic-document",
+            &subject,
+            WebDiscoveryEvidencePredicate::DOCUMENT_PROJECTED,
+            EvidenceValue::Boolean(true),
+            "document-projected",
+            base.iter().map(|evidence| evidence.id().clone()),
+        );
+        let route = derived_discovery_evidence(
+            "semantic-route",
+            &subject,
+            WebDiscoveryEvidencePredicate::GET_ROUTE,
+            EvidenceValue::Text("https://example.test/search".to_owned()),
+            "get-route",
+            [marker.id().clone()],
+        );
+        let names = derived_discovery_evidence(
+            "semantic-route-names",
+            &subject,
+            WebDiscoveryEvidencePredicate::ROUTE_QUERY_PARAMETER_NAMES,
+            EvidenceValue::TextList(names),
+            "route-query-parameter-names",
+            [route.id().clone()],
+        );
+        base.into_iter().chain([marker, route, names]).collect()
     }
 
     #[test]
@@ -1266,6 +1666,213 @@ mod tests {
         );
         let res = extractor.extract_from_evidence(&[e]);
         assert!(res.entities.is_empty());
+    }
+
+    #[test]
+    fn generic_extractor_keeps_value_bearing_request_query_unsupported() {
+        let secret = "session=generic-query-secret";
+        let evidence = ev(
+            EvidenceKind::Http,
+            KnowledgePredicate::new("http.request", "query").unwrap(),
+            EvidenceValue::Text(secret.to_owned()),
+        );
+
+        let result = EntityExtractor::new().extract_from_evidence(&[evidence]);
+
+        assert!(result.entities.is_empty());
+        assert!(!serde_json::to_string(&result).unwrap().contains(secret));
+    }
+
+    #[cfg(feature = "scanning")]
+    #[test]
+    fn assessment_extractor_is_deterministic_names_only_and_preserves_full_lineage() {
+        let mut evidence = assessment_route_evidence(vec!["page".to_owned(), "q".to_owned()]);
+        let subject = EntityId::new("endpoint:https://example.test/").unwrap();
+        let secret = "Bearer assessment-semantic-secret";
+        evidence.push(fixed_evidence(
+            "semantic-unrelated-auth",
+            &subject,
+            EvidenceKind::Authentication,
+            KnowledgePredicate::new("authentication", "bearer").unwrap(),
+            EvidenceValue::Text(secret.to_owned()),
+            "unrelated-auth",
+        ));
+        evidence.push(fixed_evidence(
+            "semantic-value-query",
+            &subject,
+            EvidenceKind::Http,
+            KnowledgePredicate::new("http.request", "query").unwrap(),
+            EvidenceValue::Text("token=query-secret".to_owned()),
+            "request-query",
+        ));
+
+        let extractor = EntityExtractor::new();
+        let forward = extractor.extract_from_web_assessment_evidence(&evidence);
+        evidence.reverse();
+        let reverse = extractor.extract_from_web_assessment_evidence(&evidence);
+
+        assert_eq!(
+            serde_json::to_vec(&forward).unwrap(),
+            serde_json::to_vec(&reverse).unwrap()
+        );
+        assert!(!forward.truncated);
+        assert!(forward.entities.iter().all(|entity| matches!(
+            entity.entity_type(),
+            SemanticEntityType::Endpoint | SemanticEntityType::Parameter
+        )));
+        let parameters = forward
+            .entities
+            .iter()
+            .filter(|entity| entity.entity_type() == SemanticEntityType::Parameter)
+            .collect::<Vec<_>>();
+        assert_eq!(parameters.len(), 2);
+        assert_eq!(
+            parameters
+                .iter()
+                .flat_map(|entity| entity.attributes()["name"].iter())
+                .cloned()
+                .collect::<BTreeSet<_>>(),
+            BTreeSet::from(["page".to_owned(), "q".to_owned()])
+        );
+        let admitted_ids = evidence
+            .iter()
+            .map(|record| record.id().clone())
+            .collect::<BTreeSet<_>>();
+        for parameter in parameters {
+            assert_eq!(parameter.source_evidence_ids().len(), 9);
+            assert!(parameter
+                .source_evidence_ids()
+                .iter()
+                .all(|id| admitted_ids.contains(id)));
+            assert!(!parameter
+                .source_evidence_ids()
+                .iter()
+                .any(|id| id.as_str() == "semantic-unrelated-auth"));
+        }
+        let serialized = serde_json::to_string(&forward).unwrap();
+        assert!(!serialized.contains(secret));
+        assert!(!serialized.contains("query-secret"));
+        assert!(!serialized.contains("auth_artifact"));
+    }
+
+    #[cfg(feature = "scanning")]
+    #[test]
+    fn assessment_parameter_names_enforce_exact_byte_and_count_hard_limits() {
+        let extractor = EntityExtractor::new();
+
+        let at_byte_cap =
+            extractor.extract_from_web_assessment_evidence(&assessment_route_evidence(vec![
+                "n".repeat(SemanticExtractionLimits::HARD_MAX_ASSESSMENT_PARAMETER_NAME_BYTES)
+            ]));
+        assert_eq!(
+            at_byte_cap
+                .entities
+                .iter()
+                .filter(|entity| entity.entity_type() == SemanticEntityType::Parameter)
+                .count(),
+            1
+        );
+
+        let over_byte_cap =
+            extractor.extract_from_web_assessment_evidence(&assessment_route_evidence(vec![
+                "n".repeat(SemanticExtractionLimits::HARD_MAX_ASSESSMENT_PARAMETER_NAME_BYTES + 1)
+            ]));
+        assert!(over_byte_cap
+            .entities
+            .iter()
+            .all(|entity| entity.entity_type() != SemanticEntityType::Parameter));
+
+        let at_count_cap = (0
+            ..SemanticExtractionLimits::HARD_MAX_ASSESSMENT_PARAMETER_NAMES_PER_REFERENCE)
+            .map(|index| format!("name-{index:03}"))
+            .collect::<Vec<_>>();
+        let accepted = extractor
+            .extract_from_web_assessment_evidence(&assessment_route_evidence(at_count_cap));
+        assert_eq!(
+            accepted
+                .entities
+                .iter()
+                .filter(|entity| entity.entity_type() == SemanticEntityType::Parameter)
+                .count(),
+            SemanticExtractionLimits::HARD_MAX_ASSESSMENT_PARAMETER_NAMES_PER_REFERENCE
+        );
+
+        let over_count_cap = (0
+            ..=SemanticExtractionLimits::HARD_MAX_ASSESSMENT_PARAMETER_NAMES_PER_REFERENCE)
+            .map(|index| format!("name-{index:03}"))
+            .collect::<Vec<_>>();
+        let rejected = extractor
+            .extract_from_web_assessment_evidence(&assessment_route_evidence(over_count_cap));
+        assert!(rejected
+            .entities
+            .iter()
+            .all(|entity| entity.entity_type() != SemanticEntityType::Parameter));
+    }
+
+    #[cfg(feature = "scanning")]
+    #[test]
+    fn assessment_parameter_name_lists_must_be_nonempty_sorted_unique_and_valid() {
+        let extractor = EntityExtractor::new();
+        for names in [
+            Vec::new(),
+            vec!["z".to_owned(), "a".to_owned()],
+            vec!["same".to_owned(), "same".to_owned()],
+            vec!["bad\nname".to_owned()],
+        ] {
+            let result =
+                extractor.extract_from_web_assessment_evidence(&assessment_route_evidence(names));
+            assert!(result
+                .entities
+                .iter()
+                .all(|entity| entity.entity_type() != SemanticEntityType::Parameter));
+        }
+    }
+
+    #[cfg(feature = "scanning")]
+    #[test]
+    fn assessment_parameter_requires_the_exact_committed_parent_chain() {
+        let extractor = EntityExtractor::new();
+        let mut missing_parent = assessment_route_evidence(vec!["q".to_owned()]);
+        missing_parent.retain(|evidence| evidence.id().as_str() != "semantic-route");
+        let result = extractor.extract_from_web_assessment_evidence(&missing_parent);
+        assert!(result
+            .entities
+            .iter()
+            .all(|entity| entity.entity_type() != SemanticEntityType::Parameter));
+
+        let mut wrong_parent = assessment_route_evidence(vec!["q".to_owned()]);
+        wrong_parent.pop();
+        let subject = EntityId::new("endpoint:https://example.test/").unwrap();
+        wrong_parent.push(derived_discovery_evidence(
+            "semantic-route-names-wrong-parent",
+            &subject,
+            WebDiscoveryEvidencePredicate::ROUTE_QUERY_PARAMETER_NAMES,
+            EvidenceValue::TextList(vec!["q".to_owned()]),
+            "route-query-parameter-names",
+            [EvidenceId::parse("semantic-document").unwrap()],
+        ));
+        let result = extractor.extract_from_web_assessment_evidence(&wrong_parent);
+        assert!(result
+            .entities
+            .iter()
+            .all(|entity| entity.entity_type() != SemanticEntityType::Parameter));
+    }
+
+    #[cfg(feature = "scanning")]
+    #[test]
+    fn assessment_semantic_entity_bound_is_deterministic_and_truthfully_truncated() {
+        let limits = SemanticExtractionLimits::new(1, 50, 256, 8192, 100, 8192).unwrap();
+        let extractor = EntityExtractor::with_limits(limits);
+        let evidence = assessment_route_evidence(vec!["page".to_owned(), "q".to_owned()]);
+        let forward = extractor.extract_from_web_assessment_evidence(&evidence);
+        let reverse = extractor.extract_from_web_assessment_evidence(
+            &evidence.iter().cloned().rev().collect::<Vec<_>>(),
+        );
+
+        assert_eq!(forward, reverse);
+        assert_eq!(forward.entities.len(), 1);
+        assert!(forward.truncated);
+        assert!(forward.dropped_entities >= 1);
     }
 
     #[test]

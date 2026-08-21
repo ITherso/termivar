@@ -93,6 +93,12 @@ pub struct SemanticExtractionLimits {
 }
 
 impl SemanticExtractionLimits {
+    /// Assessment-only hard ceiling for one discovered parameter/control name.
+    #[cfg(feature = "scanning")]
+    pub(crate) const HARD_MAX_ASSESSMENT_PARAMETER_NAME_BYTES: usize = 256;
+    /// Assessment-only hard ceiling for names attached to one reference.
+    #[cfg(feature = "scanning")]
+    pub(crate) const HARD_MAX_ASSESSMENT_PARAMETER_NAMES_PER_REFERENCE: usize = 256;
     /// Hard ceiling on entity count.
     pub const HARD_MAX_ENTITIES: usize = 10_000;
     /// Hard ceiling on attribute keys per entity.
@@ -115,52 +121,91 @@ impl SemanticExtractionLimits {
         max_source_evidence_ids: usize,
         max_url_bytes: usize,
     ) -> Result<Self, LimitsError> {
-        let check = |name: &'static str, val: usize, ceiling: usize| -> Result<(), LimitsError> {
-            if val == 0 {
-                return Err(LimitsError::ZeroLimit { name });
-            }
-            if val > ceiling {
-                return Err(LimitsError::ExceedsCeiling {
-                    name,
-                    requested: val,
-                    ceiling,
-                });
-            }
-            Ok(())
-        };
-
-        check("max_entities", max_entities, Self::HARD_MAX_ENTITIES)?;
-        check(
-            "max_attribute_keys",
-            max_attribute_keys,
-            Self::HARD_MAX_ATTRIBUTE_KEYS,
-        )?;
-        check(
-            "max_values_per_attribute",
-            max_values_per_attribute,
-            Self::HARD_MAX_VALUES_PER_ATTRIBUTE,
-        )?;
-        check(
-            "max_value_bytes",
-            max_value_bytes,
-            Self::HARD_MAX_VALUE_BYTES,
-        )?;
-        check(
-            "max_source_evidence_ids",
-            max_source_evidence_ids,
-            Self::HARD_MAX_SOURCE_EVIDENCE_IDS,
-        )?;
-        check("max_url_bytes", max_url_bytes, Self::HARD_MAX_URL_BYTES)?;
-
-        Ok(Self {
+        let limits = Self {
             max_entities,
             max_attribute_keys,
             max_values_per_attribute,
             max_value_bytes,
             max_source_evidence_ids,
             max_url_bytes,
-        })
+        };
+        limits.validate()?;
+        Ok(limits)
     }
+
+    /// Revalidates every configured dimension against its compiled ceiling.
+    pub fn validate(&self) -> Result<(), LimitsError> {
+        validate_limit("max_entities", self.max_entities, Self::HARD_MAX_ENTITIES)?;
+        validate_limit(
+            "max_attribute_keys",
+            self.max_attribute_keys,
+            Self::HARD_MAX_ATTRIBUTE_KEYS,
+        )?;
+        validate_limit(
+            "max_values_per_attribute",
+            self.max_values_per_attribute,
+            Self::HARD_MAX_VALUES_PER_ATTRIBUTE,
+        )?;
+        validate_limit(
+            "max_value_bytes",
+            self.max_value_bytes,
+            Self::HARD_MAX_VALUE_BYTES,
+        )?;
+        validate_limit(
+            "max_source_evidence_ids",
+            self.max_source_evidence_ids,
+            Self::HARD_MAX_SOURCE_EVIDENCE_IDS,
+        )?;
+        validate_limit(
+            "max_url_bytes",
+            self.max_url_bytes,
+            Self::HARD_MAX_URL_BYTES,
+        )
+    }
+
+    /// Returns the maximum number of retained entities.
+    pub const fn max_entities(&self) -> usize {
+        self.max_entities
+    }
+
+    /// Returns the maximum number of attribute keys on one entity.
+    pub const fn max_attribute_keys(&self) -> usize {
+        self.max_attribute_keys
+    }
+
+    /// Returns the maximum number of values retained for one attribute.
+    pub const fn max_values_per_attribute(&self) -> usize {
+        self.max_values_per_attribute
+    }
+
+    /// Returns the maximum byte length of one retained attribute value.
+    pub const fn max_value_bytes(&self) -> usize {
+        self.max_value_bytes
+    }
+
+    /// Returns the maximum number of source evidence identities per entity.
+    pub const fn max_source_evidence_ids(&self) -> usize {
+        self.max_source_evidence_ids
+    }
+
+    /// Returns the maximum accepted canonical URL byte length.
+    pub const fn max_url_bytes(&self) -> usize {
+        self.max_url_bytes
+    }
+}
+
+fn validate_limit(name: &'static str, value: usize, ceiling: usize) -> Result<(), LimitsError> {
+    if value == 0 {
+        return Err(LimitsError::ZeroLimit { name });
+    }
+    if value > ceiling {
+        return Err(LimitsError::ExceedsCeiling {
+            name,
+            requested: value,
+            ceiling,
+        });
+    }
+    Ok(())
 }
 
 impl Default for SemanticExtractionLimits {
@@ -259,5 +304,41 @@ impl SemanticEntity {
             self.attributes,
             self.source_evidence_ids,
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn checked_limits_round_trip_and_expose_read_only_dimensions() {
+        let limits = SemanticExtractionLimits::new(7, 6, 5, 4, 3, 2).unwrap();
+        assert_eq!(limits.max_entities(), 7);
+        assert_eq!(limits.max_attribute_keys(), 6);
+        assert_eq!(limits.max_values_per_attribute(), 5);
+        assert_eq!(limits.max_value_bytes(), 4);
+        assert_eq!(limits.max_source_evidence_ids(), 3);
+        assert_eq!(limits.max_url_bytes(), 2);
+        limits.validate().unwrap();
+        let encoded = serde_json::to_string(&limits).unwrap();
+        assert_eq!(
+            serde_json::from_str::<SemanticExtractionLimits>(&encoded).unwrap(),
+            limits
+        );
+    }
+
+    #[test]
+    fn validate_rejects_unchecked_public_values_without_changing_the_wire_shape() {
+        let invalid = SemanticExtractionLimits {
+            max_entities: 0,
+            ..SemanticExtractionLimits::default()
+        };
+        assert!(matches!(
+            invalid.validate(),
+            Err(LimitsError::ZeroLimit {
+                name: "max_entities"
+            })
+        ));
     }
 }
