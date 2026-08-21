@@ -130,10 +130,14 @@ only tracked Rust files owned by workspace packages. Neither source-line count
 nor test count is a quality score.
 
 Coverage, benchmark, and fuzz results must include the commit, toolchain,
-configuration, bounded workload, and artifact provenance. The repository does
-not claim a current minimum coverage percentage or production performance SLA.
-See [Quality metrics](quality-metrics.md), [Benchmarks](benchmarks.md), and
-[Fuzzing](fuzzing.md).
+configuration, bounded workload, and artifact provenance. Coverage calibration
+now records the exact Rust/Tarpaulin contract, `Cargo.lock` and Cobertura
+digests, aggregate and per-file integer counts, omissions, and workflow
+artifact provenance. No accepted numeric coverage floor is committed in this
+source state; the calibration job must not be represented as percentage
+enforcement. See [Coverage evidence](reports/coverage/README.md),
+[Quality metrics](quality-metrics.md), [Benchmarks](benchmarks.md), and
+[Fuzzing](fuzzing.md). The repository also makes no production performance SLA.
 
 ## Review checklist
 

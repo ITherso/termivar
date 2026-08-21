@@ -191,7 +191,7 @@ API hook and experimental relay require `api-adapter` and `proxy-adapter`.
 | --- | --- | --- |
 | Tests | Unit, integration, doc, security, template, and architecture jobs in [CI](.github/workflows/tests.yml) | Passing CI is not production readiness |
 | Rust compatibility | MSRV 1.88 plus stable, beta, and nightly | Pre-stable APIs may still change |
-| Coverage | Tarpaulin output uploaded to [Codecov](https://codecov.io/gh/ITherso/venom) | No minimum percentage is claimed |
+| Coverage | Pinned Tarpaulin emits Cobertura plus repository-owned JSON/Markdown evidence; CI attempts a best-effort advisory [Codecov](https://codecov.io/gh/ITherso/venom) upload | Tokenless Codecov availability is not enforced; calibration has no accepted numeric floor yet |
 | Safe Rust / boundaries | Workspace crates forbid unsafe code; architecture checks enforce dependency and transport ownership | Static boundaries do not prove semantic correctness |
 | Public API compatibility | Blocking SemVer comparison for `venom-core` | Scanner, CLI, API, and proxy are outside that baseline |
 | Security scanning | RustSec, cargo-deny, Semgrep CE, Trivy, Dependabot, and scoped CodeQL | Automated scanners have false positives and false negatives |

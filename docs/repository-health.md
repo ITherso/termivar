@@ -15,6 +15,7 @@ independent security assurance.
 | Dependabot | Configured | Weekly Cargo, npm, and GitHub Actions update proposals are defined; configuration does not guarantee that an update exists, is safe, or has been merged |
 | `cargo-fuzz` | Scheduled and bounded | Four product-semantic and five parser targets replay reviewed seeds and compile on relevant PRs, then run bounded scheduled/manual campaigns; the older [committed parser baseline](reports/fuzzing/7515b79.md) remains evidence only for its recorded commit |
 | `cargo-mutants` | Scoped and manual | Selected policy, planner/runtime, and extraction contracts have evidenced review campaigns; no mutation workflow, workspace-wide baseline, or aggregate score is committed |
+| Source coverage | Calibration configured | Rust `1.88.0` and `cargo-tarpaulin 0.37.2` produce Cobertura plus repository-owned JSON/Markdown evidence for tracked Rust files under `crates/*/src/**` and `xtask/src/**`; changed-file presence is fail-closed, Codecov upload is best-effort and tokenless availability is not enforced, and no accepted numeric floor is committed yet |
 | MSRV | Configured in CI | Workspace packages declare Rust `1.88`; the compatibility matrix also exercises stable, beta, and nightly |
 | SemVer | Configured for `venom-core` | `cargo xtask semver` compares the all-features core API with the recorded `v0.9.0-alpha` baseline using a patch-compatibility threshold |
 | Architecture boundaries | Configured in CI | `cargo xtask architecture` checks virtual-root source, workspace edges, protected imports, and the transport-free reasoning build |
@@ -75,7 +76,7 @@ remain external dependencies, and Dependabot proposals still require review.
 - Trivy, Semgrep, Cargo Audit, and cargo-deny are scoped automated tools and can produce false positives and false negatives.
 - Fuzzing is time-bounded and does not prove parser safety.
 - Scoped mutation campaigns do not establish project-wide mutation adequacy; survivor classification remains a review responsibility.
-- Coverage is generated in CI, but no minimum coverage threshold or current percentage is claimed here.
+- Coverage calibration has no accepted numeric threshold yet; its artifact is evidence for reviewing the first baseline, not proof that a project or patch percentage floor was enforced.
 - Scanner construction policy is documented, but Scanner SDK and plugin contracts still lack an accepted post-transition compatibility baseline.
 - Automated API linting does not prove complete Rust source compatibility; public-API review and downstream compile fixtures remain required.
 - No independent security audit, penetration-test report, compliance certification, or controlled end-to-end performance report has been completed.

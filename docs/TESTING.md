@@ -145,9 +145,48 @@ plus HTTP, JSON, YAML, XML, and text dependency-parser campaigns. See
 
 ## Coverage and performance
 
-The Tests workflow uploads Rust coverage to Codecov. Coverage is a navigation
-signal, not proof of correctness; new behavior still needs assertions for
-failure paths and boundary conditions.
+The Tests workflow pins Rust `1.88.0` and `cargo-tarpaulin 0.37.2`, then measures
+tracked Rust files under `crates/*/src/**` and `xtask/src/**` with the
+all-feature workspace build. It uploads Cobertura plus deterministic JSON and
+Markdown summaries as the `coverage-evidence` artifact. It also attempts a
+best-effort advisory Codecov upload, but tokenless availability is not required
+or enforced. The policy checker's own standard-library regression tests run
+before measurement.
+
+This source state intentionally runs the checker in calibration mode because no
+accepted numeric baseline is committed. Calibration still rejects malformed or
+escaping paths and missing changed in-scope files, but it does not invent a
+percentage floor. After a reviewed baseline is committed and calibration is
+removed, normal mode prevents aggregate regression and requires coverable
+changed lines on pull requests and branch pushes to meet the accepted aggregate
+ratio. A missing/null event base fails closed; a patch with zero coverable
+changed lines is N/A. Exact integer counts are authoritative; rounded
+percentages are display-only. First and replacement baseline records must match
+the current aggregate, per-file, and omission measurement exactly. A changed
+source reported with no line records counts as missing rather than as an
+undefined-ratio file. Actual Rust `tarpaulin` and `tarpaulin_*` cfg tokens,
+`coverage(off)`, and legacy `no_coverage` attributes are forbidden in the
+tracked production-source scope so instrumentation-specific conditionals cannot
+turn changed code into an N/A patch; comments and string literals that merely
+describe them are ignored. `--ignore-config`, an exact workflow-level env, the
+reviewed alias-only Cargo config, and the custom-build ban close
+repository-controlled instrumentation overrides.
+
+A first or replacement baseline must come from a dedicated follow-up to its
+recorded source commit. Outside coverage truth docs and the exact first-time
+workflow flip, tracked source, manifests, lockfile, checker, fixtures, and build
+inputs must remain unchanged.
+
+Run the checker tests with:
+
+```bash
+python3 -m unittest discover -s scripts/tests -p 'test_coverage_gate.py'
+```
+
+See [Coverage evidence](reports/coverage/README.md) for the command, schema,
+provenance requirements, baseline acceptance sequence, and current calibration
+limit. Coverage is a navigation signal, not proof of correctness; new behavior
+still needs assertions for failure paths and boundary conditions.
 
 Criterion output, compile time, binary size, and peak runner memory are
 published as workflow artifacts. See [Quality metrics](quality-metrics.md) and

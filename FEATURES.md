@@ -64,7 +64,7 @@ A compiled module is not necessarily a runtime feature. The [runtime map](docs/i
 | Evidence | State | Notes |
 | --- | --- | --- |
 | Unit, integration, doc, security, and template tests | Automated | GitHub Actions also exercises architecture boundaries and Rust compatibility |
-| Source coverage | Automated | Tarpaulin output is uploaded to Codecov; no minimum percentage is claimed |
+| Source coverage | Calibration automated | Pinned Tarpaulin emits Cobertura and deterministic repository-owned summaries; CI attempts a best-effort advisory Codecov upload whose tokenless availability is not enforced, changed-file presence fails closed, and no accepted numeric floor is committed yet |
 | Rust compatibility | Automated | MSRV 1.88 plus stable, beta, and nightly |
 | Public API compatibility | Automated, scoped | Blocking SemVer comparison covers `venom-core`, not every workspace crate |
 | Criterion and build metrics | Automated | Runner-local artifacts exist; controlled endpoint-scale results remain missing |

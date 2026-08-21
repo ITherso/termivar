@@ -26,6 +26,7 @@ nav:
       - Benchmarks: benchmarks.md
       - Benchmark baseline f7d5120: reports/benchmarks/f7d5120.md
       - Quality metrics: quality-metrics.md
+      - Coverage evidence: reports/coverage/README.md
       - Profiling: profiling.md
       - Fuzzing: fuzzing.md
       - Fuzz baseline 7515b79: reports/fuzzing/7515b79.md

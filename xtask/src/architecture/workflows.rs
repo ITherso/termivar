@@ -14,7 +14,9 @@
 //! inside a YAML block scalar (`run: |`, `run: >`) is treated as literal script,
 //! not as workflow keys. This check reads only tracked files and does no network.
 
-use std::{error::Error, fs, path::Path};
+use std::{error::Error, fs, io, path::Path};
+
+use cargo_metadata::MetadataCommand;
 
 const RELEASE_WORKFLOW: &str = ".github/workflows/release.yml";
 const METADATA_GATE: &str = "cargo run --locked -p xtask -- release-metadata \"$tag_version\"";
@@ -24,6 +26,56 @@ const TAG_COMMIT_GATE: &str =
     "test \"$(git rev-parse \"refs/tags/${GITHUB_REF_NAME}^{commit}\")\" = \"$(git rev-parse \"${GITHUB_SHA}^{commit}\")\"";
 const CHECKSUM_GATE: &str = "sha256sum venom-* | sort -k2 > ../SHA256SUMS";
 const RELEASE_CREATE_GATE: &str = "gh release create \"$GITHUB_REF_NAME\" \\";
+const TESTS_WORKFLOW: &str = ".github/workflows/tests.yml";
+const COVERAGE_BASELINE_POINTER: &str = "docs/reports/coverage/accepted-baseline.txt";
+const EXPECTED_WORKFLOW_TRIGGERS: &str =
+    "on:\n  push:\n    branches: [ main, develop ]\n  pull_request:\n    branches: [ main, develop ]";
+const EXPECTED_WORKFLOW_ENV: &str = "env:\n  CARGO_TERM_COLOR: always\n  RUST_BACKTRACE: 1";
+const EXPECTED_CARGO_CONFIG: &[u8] = b"[alias]\nxtask = \"run --locked -p xtask --\"\n";
+const EXPECTED_COVERAGE_JOB: &str = r#"  code-coverage:
+    name: Code Coverage
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: bash
+        working-directory: .
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+        with:
+          toolchain: "1.88.0"
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      - name: Test coverage policy checker
+        run: python3 -m unittest discover -s scripts/tests -p 'test_coverage_gate.py'
+      - name: Install pinned tarpaulin
+        run: cargo install cargo-tarpaulin --version 0.37.2 --locked
+      - name: Generate coverage
+        run: cargo tarpaulin --locked --workspace --all-features --ignore-tests --ignore-config --out Xml --timeout 300
+      - name: Attempt best-effort advisory Codecov upload
+        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0
+        with:
+          files: ./cobertura.xml
+          fail_ci_if_error: false
+      - name: Calibrate repository coverage policy
+        env:
+          COVERAGE_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          COVERAGE_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: python3 scripts/coverage_gate.py --cobertura cobertura.xml --baseline-pointer docs/reports/coverage/accepted-baseline.txt --summary-json coverage-summary.json --summary-markdown coverage-summary.md --calibrate --require-base
+      - name: Upload coverage evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: coverage-evidence
+          path: |
+            cobertura.xml
+            coverage-summary.json
+            coverage-summary.md
+          if-no-files-found: error"#;
 
 pub(super) fn check(workspace_root: &Path) -> Result<Vec<String>, Box<dyn Error>> {
     let roots = [
@@ -41,6 +93,183 @@ pub(super) fn check(workspace_root: &Path) -> Result<Vec<String>, Box<dyn Error>
 
     let mut violations = workflow_pin_violations(&files);
     violations.extend(release_workflow_policy_violations(&files));
+    let baseline_accepted = workspace_root.join(COVERAGE_BASELINE_POINTER).is_file();
+    violations.extend(coverage_workflow_policy_violations(
+        &files,
+        baseline_accepted,
+    ));
+    violations.extend(coverage_build_input_policy_violations(workspace_root)?);
+    Ok(violations)
+}
+
+fn expected_coverage_job(baseline_accepted: bool) -> String {
+    if baseline_accepted {
+        EXPECTED_COVERAGE_JOB
+            .replace(
+                "      - name: Calibrate repository coverage policy",
+                "      - name: Enforce repository coverage policy",
+            )
+            .replace(" --calibrate --require-base", " --require-base")
+    } else {
+        EXPECTED_COVERAGE_JOB.to_owned()
+    }
+}
+
+fn coverage_workflow_policy_violations(
+    files: &[(String, String)],
+    baseline_accepted: bool,
+) -> Vec<String> {
+    let Some((_, contents)) = files.iter().find(|(path, _)| path == TESTS_WORKFLOW) else {
+        return vec![format!(
+            "{TESTS_WORKFLOW}: reviewed coverage workflow is missing"
+        )];
+    };
+    let normalized = contents.replace("\r\n", "\n");
+    let mut violations = Vec::new();
+    if !has_exact_top_level_block(&normalized, "on", EXPECTED_WORKFLOW_TRIGGERS) {
+        violations.push(format!(
+            "{TESTS_WORKFLOW}: top-level triggers must equal the reviewed push/pull-request branch block exactly"
+        ));
+    }
+    if !has_exact_top_level_block(&normalized, "env", EXPECTED_WORKFLOW_ENV) {
+        violations.push(format!(
+            "{TESTS_WORKFLOW}: top-level env must equal the reviewed coverage-safe block exactly"
+        ));
+    }
+    let lines: Vec<_> = normalized.lines().collect();
+    let Some((jobs_start, jobs_end)) = top_level_block_bounds(&lines, "jobs") else {
+        violations.push(format!(
+            "{TESTS_WORKFLOW}: expected exactly one canonical top-level `jobs:` block"
+        ));
+        return violations;
+    };
+    let jobs = lines[jobs_start + 1..jobs_end].join("\n") + "\n";
+    let markers: Vec<_> = jobs.match_indices("  code-coverage:\n").collect();
+    if markers.len() != 1 {
+        violations.push(format!(
+            "{TESTS_WORKFLOW}: expected exactly one reviewed `code-coverage` job"
+        ));
+        return violations;
+    }
+    let start = markers[0].0;
+    let suffix = &jobs[start..];
+    let end = suffix
+        .match_indices("\n  ")
+        .find_map(|(offset, _)| {
+            let line = suffix[offset + 1..]
+                .split_once('\n')
+                .map_or(&suffix[offset + 1..], |(line, _)| line);
+            (line.starts_with("  ") && !line.starts_with("    ") && line.ends_with(':'))
+                .then_some(offset)
+        })
+        .unwrap_or(suffix.len());
+    let actual = suffix[..end].trim_end_matches('\n');
+    if actual != expected_coverage_job(baseline_accepted) {
+        let mode = if baseline_accepted {
+            "enforcement"
+        } else {
+            "calibration"
+        };
+        violations.push(format!(
+            "{TESTS_WORKFLOW}: `code-coverage` must match the reviewed {mode} contract exactly; it pins Rust 1.88.0 and cargo-tarpaulin 0.37.2, fetches full history, tests and runs the fail-closed checker with event base/head SHAs, retains best-effort advisory Codecov upload, and always uploads Cobertura plus both summaries"
+        ));
+    }
+    violations
+}
+
+fn top_level_block_bounds(lines: &[&str], expected_key: &str) -> Option<(usize, usize)> {
+    let starts: Vec<_> = lines
+        .iter()
+        .enumerate()
+        .filter_map(|(index, line)| {
+            if line.starts_with(' ') || line.starts_with('\t') {
+                return None;
+            }
+            let (key, _) = line.split_once(':')?;
+            let key = key.trim();
+            let key = key
+                .strip_prefix('\'')
+                .and_then(|value| value.strip_suffix('\''))
+                .or_else(|| {
+                    key.strip_prefix('"')
+                        .and_then(|value| value.strip_suffix('"'))
+                })
+                .unwrap_or(key);
+            (key == expected_key).then_some(index)
+        })
+        .collect();
+    let [start] = starts.as_slice() else {
+        return None;
+    };
+    if lines[*start] != format!("{expected_key}:") {
+        return None;
+    }
+    let end = lines[*start + 1..]
+        .iter()
+        .position(|line| !line.is_empty() && !line.starts_with(' ') && !line.starts_with('\t'))
+        .map_or(lines.len(), |offset| *start + 1 + offset);
+    Some((*start, end))
+}
+
+fn has_exact_top_level_block(contents: &str, key: &str, expected: &str) -> bool {
+    let lines: Vec<_> = contents.lines().collect();
+    let Some((start, end)) = top_level_block_bounds(&lines, key) else {
+        return false;
+    };
+    lines[start..end].join("\n").trim_end_matches('\n') == expected
+}
+
+fn cargo_configuration_violations(
+    config: Option<&[u8]>,
+    legacy_config_exists: bool,
+) -> Vec<String> {
+    let mut violations = Vec::new();
+    if config != Some(EXPECTED_CARGO_CONFIG) {
+        violations.push(
+            ".cargo/config.toml: coverage requires the exact reviewed alias-only bytes".to_owned(),
+        );
+    }
+    if legacy_config_exists {
+        violations
+            .push(".cargo/config: legacy workspace-local Cargo config is forbidden".to_owned());
+    }
+    violations
+}
+
+fn custom_build_target_violation(package: &str, target: &str, kinds: &[String]) -> Option<String> {
+    kinds.iter().any(|kind| kind == "custom-build").then(|| {
+        format!(
+            "{package}: workspace custom-build target `{target}` is forbidden because it can alter coverage instrumentation"
+        )
+    })
+}
+
+fn coverage_build_input_policy_violations(
+    workspace_root: &Path,
+) -> Result<Vec<String>, Box<dyn Error>> {
+    let config_path = workspace_root.join(".cargo").join("config.toml");
+    let config = match fs::read(config_path) {
+        Ok(contents) => Some(contents),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+        Err(error) => return Err(Box::new(error)),
+    };
+    let legacy_exists = workspace_root.join(".cargo").join("config").try_exists()?;
+    let mut violations = cargo_configuration_violations(config.as_deref(), legacy_exists);
+
+    let metadata = MetadataCommand::new()
+        .manifest_path(workspace_root.join("Cargo.toml"))
+        .no_deps()
+        .other_options(vec!["--locked".to_owned()])
+        .exec()?;
+    for package in metadata.workspace_packages() {
+        for target in &package.targets {
+            if let Some(violation) =
+                custom_build_target_violation(&package.name, &target.name, &target.kind)
+            {
+                violations.push(violation);
+            }
+        }
+    }
     Ok(violations)
 }
 
@@ -511,6 +740,232 @@ mod tests {
         let violations = release_workflow_policy_violations(&[(path, reordered)]);
         assert_eq!(violations.len(), 1, "{violations:?}");
         assert!(violations[0].contains("create the GitHub Release"));
+    }
+
+    fn coverage_violations(contents: &str) -> Vec<String> {
+        coverage_workflow_policy_violations(
+            &[(TESTS_WORKFLOW.to_owned(), contents.to_owned())],
+            false,
+        )
+    }
+
+    #[test]
+    fn coverage_workflow_requires_the_exact_reviewed_calibration_job() {
+        let workflow = format!(
+            "name: Tests\n\n{EXPECTED_WORKFLOW_TRIGGERS}\n\n{EXPECTED_WORKFLOW_ENV}\n\njobs:\n{EXPECTED_COVERAGE_JOB}\n\n  compatibility:\n    runs-on: ubuntu-latest\n"
+        );
+        assert!(coverage_violations(&workflow).is_empty());
+        assert!(coverage_violations(&workflow.replace('\n', "\r\n")).is_empty());
+    }
+
+    #[test]
+    fn coverage_workflow_cannot_silently_weaken_measurement_or_enforcement() {
+        let workflow = format!(
+            "name: Tests\n\n{EXPECTED_WORKFLOW_TRIGGERS}\n\n{EXPECTED_WORKFLOW_ENV}\n\njobs:\n{EXPECTED_COVERAGE_JOB}\n\n  compatibility:\n    runs-on: ubuntu-latest\n"
+        );
+        let mutations = [
+            ("fetch-depth: 0", "fetch-depth: 1", "shallow checkout"),
+            (
+                "toolchain: \"1.88.0\"",
+                "toolchain: stable",
+                "mutable Rust selector",
+            ),
+            (
+                "cargo install cargo-tarpaulin --version 0.37.2 --locked",
+                "cargo install cargo-tarpaulin",
+                "unpinned Tarpaulin",
+            ),
+            (
+                "--all-features --ignore-tests",
+                "--all-features",
+                "changed instrumentation scope",
+            ),
+            (
+                "--ignore-tests --ignore-config",
+                "--ignore-tests",
+                "configuration fail-open",
+            ),
+            ("shell: bash", "shell: ./fake-shell {0}", "inherited shell bypass"),
+            (
+                "working-directory: .",
+                "working-directory: scripts",
+                "inherited working-directory bypass",
+            ),
+            (
+                "python3 -m unittest discover -s scripts/tests -p 'test_coverage_gate.py'",
+                "echo checker-tests-skipped",
+                "skipped checker tests",
+            ),
+            (
+                "COVERAGE_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}",
+                "COVERAGE_BASE_SHA: ''",
+                "missing event base",
+            ),
+            (" --calibrate", "", "disabled calibration contract"),
+            (" --require-base", "", "base fail-open"),
+            (
+                "fail_ci_if_error: false",
+                "continue-on-error: true",
+                "misplaced advisory behavior",
+            ),
+            ("if: always()", "if: success()", "lost failure artifact"),
+            (
+                "coverage-summary.md",
+                "coverage-summary.txt",
+                "changed evidence bundle",
+            ),
+        ];
+        for (from, to, description) in mutations {
+            let mutated = workflow.replacen(from, to, 1);
+            assert_ne!(mutated, workflow, "mutation fixture failed: {description}");
+            let violations = coverage_violations(&mutated);
+            assert_eq!(violations.len(), 1, "{description}: {violations:?}");
+            assert!(
+                violations[0].contains("reviewed calibration contract"),
+                "{description}: {violations:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn accepted_pointer_switches_the_exact_job_from_calibration_to_enforcement() {
+        let calibration = format!(
+            "{EXPECTED_WORKFLOW_TRIGGERS}\n\n{EXPECTED_WORKFLOW_ENV}\n\njobs:\n{EXPECTED_COVERAGE_JOB}\n"
+        );
+        let enforcement_job = expected_coverage_job(true);
+        let enforcement = format!(
+            "{EXPECTED_WORKFLOW_TRIGGERS}\n\n{EXPECTED_WORKFLOW_ENV}\n\njobs:\n{enforcement_job}\n"
+        );
+        assert!(coverage_workflow_policy_violations(
+            &[(TESTS_WORKFLOW.to_owned(), enforcement.clone())],
+            true,
+        )
+        .is_empty());
+        assert_eq!(
+            coverage_workflow_policy_violations(&[(TESTS_WORKFLOW.to_owned(), calibration)], true,)
+                .len(),
+            1
+        );
+        assert_eq!(coverage_violations(&enforcement).len(), 1);
+        assert!(!enforcement_job.contains(" --calibrate"));
+        assert!(enforcement_job.contains(" --require-base"));
+    }
+
+    #[test]
+    fn coverage_workflow_rejects_missing_or_duplicate_jobs() {
+        let missing = coverage_workflow_policy_violations(&[], false);
+        assert_eq!(missing.len(), 1, "{missing:?}");
+        assert!(missing[0].contains("missing"), "{missing:?}");
+
+        let duplicate = format!(
+            "{EXPECTED_WORKFLOW_TRIGGERS}\n\n{EXPECTED_WORKFLOW_ENV}\n\njobs:\n{EXPECTED_COVERAGE_JOB}\n\n{EXPECTED_COVERAGE_JOB}\n"
+        );
+        let violations = coverage_violations(&duplicate);
+        assert_eq!(violations.len(), 1, "{violations:?}");
+        assert!(violations[0].contains("exactly one"), "{violations:?}");
+    }
+
+    #[test]
+    fn coverage_workflow_rejects_inherited_compiler_environment() {
+        let workflow =
+            format!("name: Tests\n\n{EXPECTED_WORKFLOW_TRIGGERS}\n\n{EXPECTED_WORKFLOW_ENV}\n\njobs:\n{EXPECTED_COVERAGE_JOB}\n");
+        for variable in ["RUSTFLAGS", "CARGO_ENCODED_RUSTFLAGS"] {
+            let mutated = workflow.replacen(
+                "  RUST_BACKTRACE: 1",
+                &format!("  RUST_BACKTRACE: 1\n  {variable}: --cfg hidden"),
+                1,
+            );
+            let violations = coverage_violations(&mutated);
+            assert_eq!(violations.len(), 1, "{variable}: {violations:?}");
+            assert!(violations[0].contains("top-level env"), "{violations:?}");
+        }
+        let duplicate = format!("{workflow}\n'env':\n  RUSTFLAGS: --cfg hidden\n");
+        let violations = coverage_violations(&duplicate);
+        assert_eq!(violations.len(), 1, "{violations:?}");
+        assert!(violations[0].contains("top-level env"), "{violations:?}");
+    }
+
+    #[test]
+    fn coverage_workflow_rejects_trigger_suppression() {
+        let workflow = format!(
+            "name: Tests\n\n{EXPECTED_WORKFLOW_TRIGGERS}\n\n{EXPECTED_WORKFLOW_ENV}\n\njobs:\n{EXPECTED_COVERAGE_JOB}\n"
+        );
+        let mutations = [
+            workflow.replacen(
+                "    branches: [ main, develop ]",
+                "    branches: [ main, develop ]\n    paths-ignore: [ '**.rs' ]",
+                1,
+            ),
+            workflow.replace(EXPECTED_WORKFLOW_TRIGGERS, "on: workflow_dispatch"),
+            workflow.replace(
+                EXPECTED_WORKFLOW_TRIGGERS,
+                &format!("{EXPECTED_WORKFLOW_TRIGGERS}\n\n'on': workflow_dispatch"),
+            ),
+        ];
+        for mutated in mutations {
+            let violations = coverage_violations(&mutated);
+            assert_eq!(violations.len(), 1, "{violations:?}");
+            assert!(
+                violations[0].contains("top-level triggers"),
+                "{violations:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn coverage_job_must_be_under_one_canonical_jobs_key() {
+        let workflow = format!(
+            "name: Tests\n\n{EXPECTED_WORKFLOW_TRIGGERS}\n\n{EXPECTED_WORKFLOW_ENV}\n\njobs:\n{EXPECTED_COVERAGE_JOB}\n"
+        );
+        let duplicate = format!("{workflow}\n'jobs':\n  decoy:\n    runs-on: ubuntu-latest\n");
+        let violations = coverage_violations(&duplicate);
+        assert_eq!(violations.len(), 1, "{violations:?}");
+        assert!(
+            violations[0].contains("top-level `jobs:`"),
+            "{violations:?}"
+        );
+
+        let misplaced = format!(
+            "name: Tests\n\n{EXPECTED_WORKFLOW_TRIGGERS}\n\n{EXPECTED_WORKFLOW_ENV}\n\ndecoy:\n{EXPECTED_COVERAGE_JOB}\n\njobs:\n  compatibility:\n    runs-on: ubuntu-latest\n"
+        );
+        let violations = coverage_violations(&misplaced);
+        assert_eq!(violations.len(), 1, "{violations:?}");
+        assert!(
+            violations[0].contains("exactly one reviewed"),
+            "{violations:?}"
+        );
+    }
+
+    #[test]
+    fn coverage_job_defaults_override_untrusted_workflow_run_defaults() {
+        let workflow = format!(
+            "name: Tests\n\n{EXPECTED_WORKFLOW_TRIGGERS}\n\n{EXPECTED_WORKFLOW_ENV}\n\ndefaults:\n  run:\n    shell: ./scripts/fake-shell {{0}}\n    working-directory: elsewhere\n\njobs:\n{EXPECTED_COVERAGE_JOB}\n"
+        );
+        assert!(coverage_violations(&workflow).is_empty());
+    }
+
+    #[test]
+    fn coverage_cargo_configuration_and_custom_build_targets_are_closed() {
+        assert!(cargo_configuration_violations(Some(EXPECTED_CARGO_CONFIG), false).is_empty());
+        assert_eq!(
+            cargo_configuration_violations(
+                Some(b"[build]\nrustflags = ['--cfg', 'hidden']\n"),
+                false
+            )
+            .len(),
+            1
+        );
+        assert_eq!(
+            cargo_configuration_violations(Some(EXPECTED_CARGO_CONFIG), true).len(),
+            1
+        );
+
+        let ordinary = vec!["lib".to_owned()];
+        assert!(custom_build_target_violation("demo", "demo", &ordinary).is_none());
+        let custom = vec!["custom-build".to_owned()];
+        let violation = custom_build_target_violation("demo", "custom", &custom)
+            .expect("custom build must be rejected");
+        assert!(violation.contains("custom-build"), "{violation}");
     }
 
     // --- accepted forms ------------------------------------------------------

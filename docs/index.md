@@ -17,6 +17,7 @@ Venom is an experimental Rust security-testing project centered on a determinist
 - [Repository health](repository-health.md)
 - [Rust API documentation](https://itherso.github.io/venom/rust/venom_scanner/)
 - [Quality metrics](quality-metrics.md)
+- [Coverage evidence and baseline policy](reports/coverage/README.md)
 - [Security policy](https://github.com/ITherso/venom/blob/main/SECURITY.md)
 - [Contributing](CONTRIBUTING.md)
 - [Code of Conduct](https://github.com/ITherso/venom/blob/main/CODE_OF_CONDUCT.md)
