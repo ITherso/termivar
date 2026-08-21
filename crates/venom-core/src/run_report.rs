@@ -2151,4 +2151,384 @@ mod tests {
         )
         .is_err());
     }
+
+    #[test]
+    fn validation_helpers_reject_every_bounded_projection_dimension() {
+        assert_eq!(
+            RunStopReason::new(RunStopCode::Completed, " "),
+            Err(RunReportError::Blank {
+                field: "stop reason"
+            })
+        );
+        let reason = RunStopReason::new(RunStopCode::Completed, "done").unwrap();
+        assert_eq!(reason.detail(), "done");
+
+        let metered: ResourceAccounting = serde_json::from_value(serde_json::json!({
+            "mode": "metered",
+            "limit": 10,
+            "consumed": 4,
+            "remaining": 6
+        }))
+        .unwrap();
+        assert_eq!(metered, ResourceAccounting::metered(10, 4));
+
+        let step: RunStepReport = serde_json::from_value(serde_json::json!({
+            "ordinal": 7,
+            "action_id": "wire.step",
+            "status": "succeeded",
+            "duration_ms": 3,
+            "detail": null
+        }))
+        .unwrap();
+        assert_eq!(step.ordinal(), 7);
+        assert_eq!(step.action_id(), "wire.step");
+        assert_eq!(step.duration_ms(), 3);
+        assert_eq!(step.detail(), None);
+
+        let subject = EntityId::new("endpoint:https://example.test").unwrap();
+        let canonical_unknown = VerificationOutcomeWire {
+            case_id: "case:unknown".to_string(),
+            subject: subject.clone(),
+            action_id: "verify.unknown".to_string(),
+            hypothesis_id: "hypothesis:unknown".to_string(),
+            verifier_rule_id: None,
+            stage: VerificationStage::Passive,
+            status: OutcomeStatus::Unknown,
+            confidence: Probability::ZERO,
+            rationale: "no eligible verifier".to_string(),
+            evidence_ids: BTreeSet::new(),
+        }
+        .into_outcome()
+        .unwrap();
+        assert_eq!(canonical_unknown.status(), OutcomeStatus::Unknown);
+
+        let noncanonical_unknown = VerificationOutcomeWire {
+            case_id: "case:unknown".to_string(),
+            subject: subject.clone(),
+            action_id: "verify.unknown".to_string(),
+            hypothesis_id: "hypothesis:unknown".to_string(),
+            verifier_rule_id: Some("verify.forged".to_string()),
+            stage: VerificationStage::Passive,
+            status: OutcomeStatus::Unknown,
+            confidence: Probability::ZERO,
+            rationale: "forged".to_string(),
+            evidence_ids: BTreeSet::new(),
+        };
+        assert!(matches!(
+            noncanonical_unknown.into_outcome(),
+            Err(RunReportError::InvalidOutcome {
+                status: OutcomeStatus::Unknown,
+                ..
+            })
+        ));
+
+        let malformed_unknown = VerificationOutcomeWire {
+            case_id: " ".to_string(),
+            subject: subject.clone(),
+            action_id: "verify.unknown".to_string(),
+            hypothesis_id: "hypothesis:unknown".to_string(),
+            verifier_rule_id: None,
+            stage: VerificationStage::Passive,
+            status: OutcomeStatus::Unknown,
+            confidence: Probability::ZERO,
+            rationale: "invalid identity".to_string(),
+            evidence_ids: BTreeSet::new(),
+        };
+        assert!(matches!(
+            malformed_unknown.into_outcome(),
+            Err(RunReportError::InvalidOutcome {
+                status: OutcomeStatus::Unknown,
+                ..
+            })
+        ));
+
+        let missing_rule = VerificationOutcomeWire {
+            case_id: "case:blocked".to_string(),
+            subject: subject.clone(),
+            action_id: "verify.blocked".to_string(),
+            hypothesis_id: "hypothesis:blocked".to_string(),
+            verifier_rule_id: None,
+            stage: VerificationStage::Passive,
+            status: OutcomeStatus::Blocked,
+            confidence: Probability::from_percent(50).unwrap(),
+            rationale: "blocked".to_string(),
+            evidence_ids: BTreeSet::from([EvidenceId::parse("evidence:blocked").unwrap()]),
+        };
+        assert!(matches!(
+            missing_rule.into_outcome(),
+            Err(RunReportError::InvalidOutcome {
+                status: OutcomeStatus::Blocked,
+                ..
+            })
+        ));
+
+        let base_record = || {
+            RunOutcomeRecord::unresolved(
+                subject.clone(),
+                "legacy.detector",
+                "unresolved",
+                "redacted",
+            )
+            .unwrap()
+        };
+
+        let mut invalid = base_record();
+        invalid.action_id = "a".repeat(MAX_RUN_REPORT_TEXT_BYTES + 1);
+        assert!(matches!(
+            validate_record_bounds(&invalid),
+            Err(RunReportError::TextTooLong {
+                field: "outcome action id",
+                ..
+            })
+        ));
+
+        let mut invalid = base_record();
+        invalid.evidence_ids =
+            BTreeSet::from([EvidenceId::parse("e".repeat(MAX_RUN_REPORT_TEXT_BYTES + 1)).unwrap()]);
+        assert!(matches!(
+            validate_record_bounds(&invalid),
+            Err(RunReportError::TextTooLong {
+                field: "outcome evidence id",
+                ..
+            })
+        ));
+
+        let mut invalid = base_record();
+        invalid.subject = EntityId::new("s".repeat(MAX_RUN_REPORT_TEXT_BYTES + 1)).unwrap();
+        assert!(matches!(
+            validate_record_bounds(&invalid),
+            Err(RunReportError::TextTooLong {
+                field: "outcome subject",
+                ..
+            })
+        ));
+
+        for (field, case_id, hypothesis_id) in [
+            (
+                "verification case id",
+                "c".repeat(MAX_RUN_REPORT_TEXT_BYTES + 1),
+                "hypothesis:bounded".to_string(),
+            ),
+            (
+                "verification hypothesis id",
+                "case:bounded".to_string(),
+                "h".repeat(MAX_RUN_REPORT_TEXT_BYTES + 1),
+            ),
+        ] {
+            let mut invalid = base_record();
+            invalid.verification = Some(
+                Outcome::unknown(
+                    case_id,
+                    subject.clone(),
+                    "verify.unknown",
+                    hypothesis_id,
+                    VerificationStage::Passive,
+                    "bounded",
+                )
+                .unwrap(),
+            );
+            assert!(matches!(
+                validate_record_bounds(&invalid),
+                Err(RunReportError::TextTooLong {
+                    field: actual,
+                    ..
+                }) if actual == field
+            ));
+        }
+
+        let mut invalid = base_record();
+        invalid.verification = Some(
+            Outcome::verified(
+                "case:bounded",
+                subject,
+                "verify.bounded",
+                "hypothesis:bounded",
+                "r".repeat(MAX_RUN_REPORT_TEXT_BYTES + 1),
+                VerificationStage::Passive,
+                OutcomeStatus::Success,
+                Probability::from_percent(90).unwrap(),
+                "bounded",
+                BTreeSet::from([EvidenceId::parse("evidence:bounded").unwrap()]),
+            )
+            .unwrap(),
+        );
+        assert!(matches!(
+            validate_record_bounds(&invalid),
+            Err(RunReportError::TextTooLong {
+                field: "verifier rule id",
+                ..
+            })
+        ));
+
+        for (status, token) in [
+            (OutcomeStatus::Success, "success"),
+            (OutcomeStatus::Blocked, "blocked"),
+            (OutcomeStatus::Unknown, "unknown"),
+            (OutcomeStatus::FalsePositive, "false_positive"),
+            (OutcomeStatus::NeedsReview, "needs_review"),
+            (OutcomeStatus::ConfirmedNegative, "confirmed_negative"),
+        ] {
+            assert_eq!(outcome_code(status), token);
+        }
+    }
+
+    #[test]
+    fn report_limits_and_aggregate_failure_proofs_are_exercised() {
+        let start = time("2026-08-13T10:00:00Z");
+        let end = time("2026-08-13T10:00:01Z");
+        let completed = || RunStopReason::new(RunStopCode::Completed, "done").unwrap();
+        let step =
+            RunStepReport::new(1, "bounded.step", RunStepStatus::Succeeded, 1, None).unwrap();
+        let too_many_steps = RunReportInput::new(
+            RunStatus::Complete,
+            completed(),
+            "https://example.test/",
+            "https://example.test",
+            start,
+            end,
+        )
+        .unwrap()
+        .with_steps(vec![step.clone(); MAX_RUN_REPORT_STEPS + 1]);
+        assert!(matches!(
+            RunReport::new(too_many_steps),
+            Err(RunReportError::TooMany {
+                field: "run steps",
+                ..
+            })
+        ));
+
+        let outcome = RunOutcomeRecord::unresolved(
+            EntityId::new("endpoint:https://example.test").unwrap(),
+            "legacy.detector",
+            "unresolved",
+            "redacted",
+        )
+        .unwrap();
+        let too_many_outcomes = RunReportInput::new(
+            RunStatus::Complete,
+            RunStopReason::new(RunStopCode::NoEligibleAction, "done").unwrap(),
+            "https://example.test/",
+            "https://example.test",
+            start,
+            end,
+        )
+        .unwrap()
+        .with_outcomes(vec![outcome.clone(); MAX_RUN_REPORT_OUTCOMES + 1]);
+        assert!(matches!(
+            RunReport::new(too_many_outcomes),
+            Err(RunReportError::TooMany {
+                field: "run outcomes",
+                ..
+            })
+        ));
+
+        for code in [
+            RunStopCode::NoEligibleAction,
+            RunStopCode::BudgetExhausted,
+            RunStopCode::ReportLimitExceeded,
+            RunStopCode::StepFailed,
+            RunStopCode::StepTimedOut,
+            RunStopCode::TaskJoinFailed,
+            RunStopCode::RuntimeFailed,
+        ] {
+            assert!(status_matches_stop(RunStatus::Partial, code));
+            assert_eq!(
+                status_matches_stop(RunStatus::Failed, code),
+                code != RunStopCode::NoEligibleAction && code != RunStopCode::ReportLimitExceeded
+            );
+        }
+
+        let failed = RunStepReport::new(1, "failed", RunStepStatus::Failed, 1, None).unwrap();
+        let timed_out = RunStepReport::new(1, "timed", RunStepStatus::TimedOut, 1, None).unwrap();
+        let cancelled =
+            RunStepReport::new(1, "cancelled", RunStepStatus::Cancelled, 1, None).unwrap();
+        let budget =
+            RunStepReport::new(1, "budget", RunStepStatus::BudgetExhausted, 1, None).unwrap();
+
+        assert!(validate_aggregate_consistency(
+            RunStatus::Complete,
+            RunStopCode::Completed,
+            &[],
+            &[]
+        )
+        .is_err());
+        assert!(validate_aggregate_consistency(
+            RunStatus::Partial,
+            RunStopCode::RuntimeFailed,
+            &[],
+            &[]
+        )
+        .is_err());
+        assert!(validate_aggregate_consistency(
+            RunStatus::Partial,
+            RunStopCode::RuntimeFailed,
+            std::slice::from_ref(&cancelled),
+            std::slice::from_ref(&outcome)
+        )
+        .is_err());
+        assert!(validate_aggregate_consistency(
+            RunStatus::Failed,
+            RunStopCode::RuntimeFailed,
+            std::slice::from_ref(&step),
+            &[]
+        )
+        .is_err());
+        assert!(validate_aggregate_consistency(
+            RunStatus::Failed,
+            RunStopCode::StepFailed,
+            &[],
+            &[]
+        )
+        .is_err());
+        assert!(validate_aggregate_consistency(
+            RunStatus::Failed,
+            RunStopCode::StepTimedOut,
+            std::slice::from_ref(&failed),
+            &[]
+        )
+        .is_err());
+        assert!(validate_aggregate_consistency(
+            RunStatus::Failed,
+            RunStopCode::TaskJoinFailed,
+            std::slice::from_ref(&timed_out),
+            &[]
+        )
+        .is_err());
+        assert!(validate_aggregate_consistency(
+            RunStatus::Partial,
+            RunStopCode::BudgetExhausted,
+            &[],
+            std::slice::from_ref(&outcome)
+        )
+        .is_err());
+        assert!(validate_aggregate_consistency(
+            RunStatus::Partial,
+            RunStopCode::ReportLimitExceeded,
+            std::slice::from_ref(&step),
+            &[]
+        )
+        .is_err());
+
+        assert!(validate_aggregate_consistency(
+            RunStatus::Failed,
+            RunStopCode::StepFailed,
+            std::slice::from_ref(&failed),
+            &[]
+        )
+        .is_ok());
+        assert!(validate_aggregate_consistency(
+            RunStatus::Failed,
+            RunStopCode::StepTimedOut,
+            std::slice::from_ref(&timed_out),
+            &[]
+        )
+        .is_ok());
+        assert!(validate_aggregate_consistency(
+            RunStatus::Partial,
+            RunStopCode::BudgetExhausted,
+            std::slice::from_ref(&budget),
+            &[]
+        )
+        .is_err());
+    }
 }

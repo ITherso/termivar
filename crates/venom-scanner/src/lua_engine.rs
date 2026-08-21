@@ -1962,6 +1962,236 @@ mod tests {
         registry.execute(&id, context).await.expect("execution")
     }
 
+    #[test]
+    fn script_category_text_contract_is_exhaustive() {
+        let cases = [
+            (ScriptCategory::Web, "web"),
+            (ScriptCategory::Dns, "dns"),
+            (ScriptCategory::Smb, "smb"),
+            (ScriptCategory::Ssh, "ssh"),
+            (ScriptCategory::Database, "database"),
+        ];
+
+        assert_eq!(
+            ScriptCategory::all(),
+            &[
+                ScriptCategory::Web,
+                ScriptCategory::Dns,
+                ScriptCategory::Smb,
+                ScriptCategory::Ssh,
+                ScriptCategory::Database,
+            ]
+        );
+        for (category, token) in cases {
+            assert_eq!(category.as_str(), token);
+            assert_eq!(category.to_string(), token);
+            assert_eq!(token.parse::<ScriptCategory>(), Ok(category));
+            assert_eq!(
+                token.to_ascii_uppercase().parse::<ScriptCategory>(),
+                Ok(category)
+            );
+        }
+        assert_eq!(
+            "unknown".parse::<ScriptCategory>(),
+            Err(LuaRegistrationError::InvalidCategory)
+        );
+    }
+
+    #[test]
+    fn error_text_and_source_contracts_are_exhaustive() {
+        let mut invalid_config = test_config();
+        invalid_config.history_size = 0;
+        let config_error = invalid_config.validate().expect_err("invalid config");
+
+        let registration_errors = [
+            (
+                LuaRegistrationError::InvalidConfig(config_error),
+                "invalid Lua engine configuration",
+            ),
+            (LuaRegistrationError::InvalidName, "invalid Lua script name"),
+            (
+                LuaRegistrationError::InvalidVersion,
+                "invalid Lua script version",
+            ),
+            (
+                LuaRegistrationError::InvalidCategory,
+                "invalid Lua script category",
+            ),
+            (LuaRegistrationError::InvalidPath, "invalid Lua script path"),
+            (
+                LuaRegistrationError::OutsideApprovedRoot,
+                "Lua script is outside the approved root",
+            ),
+            (
+                LuaRegistrationError::SymlinkRejected,
+                "Lua script path contains a symbolic link",
+            ),
+            (
+                LuaRegistrationError::NotRegularFile,
+                "Lua script source is not a regular file",
+            ),
+            (
+                LuaRegistrationError::SourceTooLarge,
+                "Lua script source exceeds its configured limit",
+            ),
+            (
+                LuaRegistrationError::SourceNotUtf8,
+                "Lua script source must be UTF-8 text",
+            ),
+            (
+                LuaRegistrationError::SourceChangedDuringRegistration,
+                "Lua script source changed during registration",
+            ),
+            (
+                LuaRegistrationError::SourceReadFailed,
+                "Lua script source could not be read",
+            ),
+        ];
+        for (error, message) in registration_errors {
+            assert_eq!(error.to_string(), message);
+            assert_eq!(
+                std::error::Error::source(&error).is_some(),
+                matches!(error, LuaRegistrationError::InvalidConfig(_))
+            );
+        }
+
+        let execution_errors = [
+            (LuaExecutionError::ScriptDisabled, "script is disabled"),
+            (
+                LuaExecutionError::ConcurrencyLimit,
+                "concurrent execution limit reached",
+            ),
+            (
+                LuaExecutionError::ContextTargetLimit,
+                "context target limit exceeded",
+            ),
+            (
+                LuaExecutionError::ContextPayloadLimit,
+                "context payload limit exceeded",
+            ),
+            (
+                LuaExecutionError::ContextParameterCountLimit,
+                "context parameter count limit exceeded",
+            ),
+            (
+                LuaExecutionError::ContextParameterKeyLimit,
+                "context parameter key limit exceeded",
+            ),
+            (
+                LuaExecutionError::ContextParameterValueLimit,
+                "context parameter value limit exceeded",
+            ),
+            (
+                LuaExecutionError::ContextTotalLimit,
+                "context total limit exceeded",
+            ),
+            (LuaExecutionError::Syntax, "script syntax error"),
+            (LuaExecutionError::Runtime, "script runtime error"),
+            (
+                LuaExecutionError::MemoryLimit,
+                "Lua VM memory limit exceeded",
+            ),
+            (
+                LuaExecutionError::InstructionLimit,
+                "Lua VM instruction limit exceeded",
+            ),
+            (
+                LuaExecutionError::DeadlineExceeded,
+                "Lua execution deadline exceeded",
+            ),
+            (LuaExecutionError::Cancelled, "Lua execution cancelled"),
+            (LuaExecutionError::OutputLimit, "Lua output limit exceeded"),
+            (LuaExecutionError::OutputNotUtf8, "Lua output must be UTF-8"),
+            (
+                LuaExecutionError::UnsupportedOutputType,
+                "Lua emitted an unsupported value type",
+            ),
+            (
+                LuaExecutionError::NonFiniteOutputNumber,
+                "Lua emitted a non-finite number",
+            ),
+            (
+                LuaExecutionError::ReturnLimit,
+                "Lua return value limit exceeded",
+            ),
+            (
+                LuaExecutionError::ReturnNotUtf8,
+                "Lua return string must be UTF-8",
+            ),
+            (
+                LuaExecutionError::NonFiniteReturnNumber,
+                "Lua returned a non-finite number",
+            ),
+            (
+                LuaExecutionError::UnsupportedReturnType,
+                "Lua returned an unsupported value type",
+            ),
+            (
+                LuaExecutionError::MultipleReturnValues,
+                "Lua returned more than one value",
+            ),
+            (LuaExecutionError::HostFailure, "Lua host failure"),
+        ];
+        for (error, message) in execution_errors {
+            assert_eq!(error.to_string(), message);
+        }
+
+        let registry_errors = [
+            (
+                LuaRegistryError::InvalidConfig(config_error),
+                "invalid Lua registry configuration",
+            ),
+            (
+                LuaRegistryError::DuplicateId,
+                "Lua script ID is already registered",
+            ),
+            (
+                LuaRegistryError::DuplicateName,
+                "Lua script name is already registered",
+            ),
+            (
+                LuaRegistryError::ScriptCapacity,
+                "Lua script registry capacity reached",
+            ),
+            (
+                LuaRegistryError::SourceLimit,
+                "Lua script exceeds this registry source limit",
+            ),
+            (
+                LuaRegistryError::TotalSourceCapacity,
+                "Lua registry source-byte capacity reached",
+            ),
+            (LuaRegistryError::ScriptNotFound, "Lua script not found"),
+            (
+                LuaRegistryError::ScriptInUse,
+                "Lua script has an active invocation",
+            ),
+            (
+                LuaRegistryError::InvocationLimit,
+                "Lua script invocation counter exhausted",
+            ),
+            (
+                LuaRegistryError::RegistrationGenerationExhausted,
+                "Lua registry generation sequence exhausted",
+            ),
+            (
+                LuaRegistryError::HistorySequenceExhausted,
+                "Lua history sequence exhausted",
+            ),
+            (
+                LuaRegistryError::StateUnavailable,
+                "Lua registry state unavailable",
+            ),
+        ];
+        for (error, message) in registry_errors {
+            assert_eq!(error.to_string(), message);
+            assert_eq!(
+                std::error::Error::source(&error).is_some(),
+                matches!(error, LuaRegistryError::InvalidConfig(_))
+            );
+        }
+    }
+
     #[tokio::test]
     async fn executes_registered_snapshot_and_projects_scalar_return() {
         let result = run(
