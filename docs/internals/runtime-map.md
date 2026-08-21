@@ -5,6 +5,9 @@
 > This unreleased source state uses package version `0.10.0-alpha.1`; the published
 > `v0.9.0-alpha` tag predates this runtime map. Neither is production-ready.
 
+The historical audit and its final dispositions are kept separately in the
+[runtime-truth remediation closure](../audits/runtime-truth-remediation-closure.md).
+
 Venom has one default scan runtime, one separately compiled historical runner,
 and optional host/adapter surfaces. A capability in one surface does not silently
 participate in another.

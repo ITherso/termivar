@@ -67,6 +67,8 @@ nav:
       - Contributing: CONTRIBUTING.md
       - Contributors: contributors.md
       - Architecture decisions: adr/README.md
+      - Runtime-truth baseline audit: audits/runtime-truth-remediation.md
+      - Runtime-truth remediation closure: audits/runtime-truth-remediation-closure.md
       - ADR 0001 - Cargo workspace: adr/0001-use-workspace.md
       - ADR 0002 - Plugin boundary: adr/0002-plugin-boundary.md
       - ADR 0003 - Event bus: adr/0003-event-bus.md

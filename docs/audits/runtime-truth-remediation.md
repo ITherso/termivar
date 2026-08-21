@@ -4,6 +4,10 @@ This audit records the executable baseline for the remediation that makes the
 deterministic runtime Venom's primary scanner product. It is an implementation
 input, not a claim that the listed problems are already fixed.
 
+The additive [remediation closure record](runtime-truth-remediation-closure.md)
+preserves this historical baseline and maps every material defect to its final
+disposition, implementation authority, proof, and remaining caveat.
+
 ## Baseline
 
 - Expected baseline: `bfdd8276329a858041e61458ea36cb66b0e4487c`.
