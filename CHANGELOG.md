@@ -73,6 +73,10 @@ All notable changes to Venom are recorded here. Releases use the categories from
 
 ### Changed
 
+- Switched the pinned repository coverage measurement from Linux's default
+  Ptrace backend to Tarpaulin's explicit LLVM backend and versioned the evidence
+  record as `venom.coverage.v2`, including a normalized line-state digest that
+  makes same-count covered-line drift fail the baseline-acceptance seal.
 - Replaced the Lua fail-closed registry scaffold and loose distributed models
   with exact private-module/root-facade APIs, independent feature closures, and
   architecture fingerprints/mutation checks. Lua now executes text-only chunks

@@ -169,6 +169,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
         with:
           toolchain: "1.88.0"
+          components: llvm-tools-preview
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
       - name: Test coverage policy checker
         run: python3 -m unittest discover -s scripts/tests -p 'test_coverage_gate.py'
@@ -177,7 +178,7 @@ jobs:
           rustup toolchain install 1.91.0 --profile minimal
           cargo +1.91.0 install cargo-tarpaulin --version 0.37.2 --locked
       - name: Generate coverage
-        run: cargo +1.88.0 tarpaulin --locked --workspace --all-features --ignore-tests --ignore-config --out Xml --timeout 300
+        run: cargo +1.88.0 tarpaulin --locked --workspace --all-features --ignore-tests --ignore-config --engine llvm --out Xml --timeout 300
       - name: Attempt best-effort advisory Codecov upload
         uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0
         with:

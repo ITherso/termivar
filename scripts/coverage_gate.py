@@ -25,14 +25,16 @@ from typing import Any, Iterable
 import xml.etree.ElementTree as ET  # nosemgrep: python.lang.security.use-defused-xml.use-defused-xml
 
 
-SCHEMA = "venom.coverage.v1"
+SCHEMA = "venom.coverage.v2"
 RUST_TOOLCHAIN = "1.88.0"
+RUST_COMPONENTS = ["llvm-tools-preview"]
 INSTALLER_RUST_TOOLCHAIN = "1.91.0"
 TARPAULIN_VERSION = "0.37.2"
+COVERAGE_ENGINE = "llvm"
 RUNNER_TARGET = "x86_64-unknown-linux-gnu"
 TARPAULIN_COMMAND = (
     "cargo +1.88.0 tarpaulin --locked --workspace --all-features --ignore-tests "
-    "--ignore-config --out Xml --timeout 300"
+    "--ignore-config --engine llvm --out Xml --timeout 300"
 )
 TIMEOUT_SECONDS = 300
 SCOPE_INCLUDES = ["crates/*/src/**", "xtask/src/**"]
@@ -770,8 +772,10 @@ def validate_baseline(record: Any, target: str) -> dict[str, Any]:
         tooling,
         {
             "rust",
+            "rust_components",
             "installer_rust",
             "tarpaulin",
+            "engine",
             "runner_target",
             "command",
             "timeout_seconds",
@@ -780,8 +784,10 @@ def validate_baseline(record: Any, target: str) -> dict[str, Any]:
     )
     expected_tooling = {
         "rust": RUST_TOOLCHAIN,
+        "rust_components": RUST_COMPONENTS,
         "installer_rust": INSTALLER_RUST_TOOLCHAIN,
         "tarpaulin": TARPAULIN_VERSION,
+        "engine": COVERAGE_ENGINE,
         "runner_target": RUNNER_TARGET,
         "command": TARPAULIN_COMMAND,
         "timeout_seconds": TIMEOUT_SECONDS,
@@ -798,13 +804,22 @@ def validate_baseline(record: Any, target: str) -> dict[str, Any]:
     coverage = _required_mapping(root.get("coverage"), "coverage")
     _require_exact_keys(
         coverage,
-        {"covered_lines", "coverable_lines", "files", "omitted_in_scope_files"},
+        {
+            "covered_lines",
+            "coverable_lines",
+            "line_state_sha256",
+            "files",
+            "omitted_in_scope_files",
+        },
         "coverage",
     )
     covered = _required_count(coverage, "covered_lines", "coverage")
     coverable = _required_count(coverage, "coverable_lines", "coverage")
     if coverable == 0 or covered > coverable:
         raise GateError("accepted baseline requires 0 <= covered_lines <= coverable_lines and a nonzero denominator")
+    line_state_digest = _required_string(coverage, "line_state_sha256", "coverage")
+    if re.fullmatch(r"[0-9a-f]{64}", line_state_digest) is None:
+        raise GateError("accepted baseline coverage.line_state_sha256 must be a SHA-256 digest")
     files = coverage.get("files")
     omitted = coverage.get("omitted_in_scope_files")
     if not isinstance(files, list) or not isinstance(omitted, list):
@@ -1166,6 +1181,24 @@ def _coverage_measurement(
     unexpected = sorted(set(line_hits) - tracked)
     if unexpected:
         raise GateError(f"Cobertura contains untracked in-scope source files: {unexpected}")
+    line_state = {
+        "schema": "venom.coverage.line-state.v1",
+        "files": [
+            {
+                "path": path,
+                "lines": [[line, hits > 0] for line, hits in sorted(lines.items())],
+            }
+            for path, lines in sorted(line_hits.items())
+        ],
+    }
+    line_state_sha256 = _sha256(
+        json.dumps(
+            line_state,
+            ensure_ascii=True,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+    )
     files = []
     total_covered = 0
     total_coverable = 0
@@ -1188,6 +1221,7 @@ def _coverage_measurement(
         {
             "covered_lines": total_covered,
             "coverable_lines": total_coverable,
+            "line_state_sha256": line_state_sha256,
             "files": files,
             "omitted_in_scope_files": omitted,
         },
@@ -1419,8 +1453,10 @@ def _record(
         },
         "tooling": {
             "rust": RUST_TOOLCHAIN,
+            "rust_components": RUST_COMPONENTS,
             "installer_rust": INSTALLER_RUST_TOOLCHAIN,
             "tarpaulin": TARPAULIN_VERSION,
+            "engine": COVERAGE_ENGINE,
             "runner_target": RUNNER_TARGET,
             "command": TARPAULIN_COMMAND,
             "timeout_seconds": TIMEOUT_SECONDS,
@@ -1455,14 +1491,18 @@ def render_markdown(record: dict[str, Any]) -> str:
     lines = [
         "# Coverage evidence",
         "",
+        f"- Schema: `{record['schema']}`",
         f"- Source commit: `{record['source']['commit']}`",
         f"- Rust: `{record['tooling']['rust']}`",
+        f"- Rust components: `{','.join(record['tooling']['rust_components'])}`",
         f"- Installer Rust: `{record['tooling']['installer_rust']}`",
         f"- cargo-tarpaulin: `{record['tooling']['tarpaulin']}`",
+        f"- Coverage engine: `{record['tooling']['engine']}`",
         f"- Runner target: `{record['tooling']['runner_target']}`",
         f"- Command: `{record['tooling']['command']}`",
         f"- Cargo.lock SHA-256: `{record['source']['cargo_lock_sha256']}`",
         f"- Cobertura SHA-256: `{record['cobertura']['sha256']}`",
+        f"- Normalized line-state SHA-256: `{coverage['line_state_sha256']}`",
         f"- Workflow run: `{record['provenance']['artifact_url']}`",
         f"- Artifact: `{record['provenance']['artifact_name']}`",
         "",

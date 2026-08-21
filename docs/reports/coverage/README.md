@@ -1,7 +1,8 @@
 # Coverage evidence
 
-Venom's Tests workflow measures repository-owned Rust source with Rust `1.88.0`
-and `cargo-tarpaulin 0.37.2`. Tarpaulin itself is compiled with pinned installer
+Venom's Tests workflow measures repository-owned Rust source with Rust `1.88.0`,
+its `llvm-tools-preview` component, and the explicit LLVM backend of
+`cargo-tarpaulin 0.37.2`. Tarpaulin itself is compiled with pinned installer
 Rust `1.91.0`, while the measurement command explicitly selects `1.88.0`. The
 job retains `cobertura.xml` plus deterministic JSON and Markdown summaries in
 the `coverage-evidence` workflow artifact. It attempts a best-effort advisory
@@ -34,9 +35,10 @@ The measured source scope is:
 - tracked Rust files under `crates/*/src/**`;
 - tracked Rust files under `xtask/src/**`.
 
-Tarpaulin is installed exactly with:
+The measurement component and Tarpaulin are installed exactly with:
 
 ```bash
+rustup toolchain install 1.88.0 --profile minimal --component llvm-tools-preview
 rustup toolchain install 1.91.0 --profile minimal
 cargo +1.91.0 install cargo-tarpaulin --version 0.37.2 --locked
 ```
@@ -44,12 +46,13 @@ cargo +1.91.0 install cargo-tarpaulin --version 0.37.2 --locked
 Coverage then runs exactly with the measurement toolchain:
 
 ```bash
-cargo +1.88.0 tarpaulin --locked --workspace --all-features --ignore-tests --ignore-config --out Xml --timeout 300
+cargo +1.88.0 tarpaulin --locked --workspace --all-features --ignore-tests --ignore-config --engine llvm --out Xml --timeout 300
 ```
 
 `--ignore-config` is part of the reviewed command so neither repository
 auto-configuration nor `CARGO_TARPAULIN_CONFIG_FILE` can change the measured
-scope behind the recorded command.
+scope behind the recorded command. `--engine llvm` avoids relying on Linux's
+default Ptrace line accounting and is part of the recorded evidence contract.
 
 To prevent production code from disappearing only while coverage is measured,
 the checker rejects the Rust `tarpaulin`/`tarpaulin_*` cfg-token family
@@ -72,14 +75,23 @@ workspace custom-build targets. These rules keep repository-controlled compiler
 flags, wrappers, targets, and build scripts from changing the instrumented
 program behind the recorded command.
 
-The JSON records the full source commit; exact measurement Rust, installer Rust,
-Tarpaulin, runner target, command, and timeout; `Cargo.lock` and Cobertura
-SHA-256 digests; include and exclude scope; aggregate and per-file integer
-counts; omitted in-scope files; and GitHub run/artifact provenance. Paths must
+The `venom.coverage.v2` JSON records the full source commit; exact measurement
+Rust and components, installer Rust, Tarpaulin, LLVM engine, runner target,
+command, and timeout; `Cargo.lock` and Cobertura SHA-256 digests; a normalized
+SHA-256 over every observed `(path, line, hits > 0)` state; include and exclude scope;
+aggregate and per-file integer counts; omitted in-scope files; and GitHub
+run/artifact provenance. Paths must
 be canonical, repository relative, portable ASCII, and contained by the
 workspace. Accepted evidence is bound to the canonical `ITherso/venom`
 repository and positive Actions run and attempt identifiers; unknown JSON
 fields are rejected.
+
+The line-state digest preimage is canonical UTF-8 JSON with domain
+`venom.coverage.line-state.v1`: `files` are ordered by canonical path, each
+`lines` array is ordered by positive line number, hit counts are normalized to
+booleans, object keys are sorted, ASCII escaping is enabled, and separators are
+exactly `,` and `:` with no added whitespace. The checker carries a fixed golden
+digest so this encoding cannot drift silently under the v2 evidence label.
 
 ## Accepting the first baseline
 
@@ -92,8 +104,9 @@ fields are rejected.
    checker invocation. The architecture gate automatically requires that exact
    enforcement form when the accepted pointer exists, without changing measured
    `xtask/src/**` code in the acceptance commit.
-5. Let CI validate the candidate against its own measurement before accepting
-   the change.
+5. Let CI validate the candidate against its own independent LLVM measurement
+   before accepting the change. Aggregate/per-file counts, omissions, and the
+   normalized line-state digest must match exactly.
 
 Acceptance must be a dedicated transition from the record's `source.commit`.
 Only `docs/**`, `README.md`, `FEATURES.md`, `mkdocs.yml`, and the Tests workflow
@@ -132,9 +145,10 @@ Normal mode fails closed on a missing or malformed record, a zero aggregate
 or per-file denominator, an escaping path, a newly omitted source, or a
 candidate baseline whose exact integer ratio is lower than the base commit's
 accepted ratio. A first or replacement candidate's aggregate counts, every
-per-file count, and omission inventory must exactly equal the current
-measurement; a lower fabricated floor is not accepted merely because the head
-measurement exceeds it. The base commit's accepted omission inventory is the
+per-file count, normalized line-state digest, and omission inventory must
+exactly equal the current measurement; a lower fabricated floor or a same-count
+covered-line swap is not accepted merely because the head measurement exceeds
+it. The base commit's accepted omission inventory is the
 normal enforcement floor; the first acceptance uses its exact candidate
 inventory. An accepted omission keeps its explicit zero-observed-denominator
 patch row and is excluded from the patch ratio only while its HEAD blob is

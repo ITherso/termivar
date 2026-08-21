@@ -3,14 +3,18 @@
 The checker generates this report; do not fill it by hand. An accepted report
 is the canonical rendering of its matching JSON evidence record.
 
+- Schema: `venom.coverage.v2`
 - Source commit: `<full 40-character commit SHA>`
 - Rust: `1.88.0`
+- Rust components: `llvm-tools-preview`
 - Installer Rust: `1.91.0`
 - cargo-tarpaulin: `0.37.2`
+- Coverage engine: `llvm`
 - Runner target: `x86_64-unknown-linux-gnu`
-- Command: `cargo +1.88.0 tarpaulin --locked --workspace --all-features --ignore-tests --ignore-config --out Xml --timeout 300`
+- Command: `cargo +1.88.0 tarpaulin --locked --workspace --all-features --ignore-tests --ignore-config --engine llvm --out Xml --timeout 300`
 - Cargo.lock SHA-256: `<64 lowercase hexadecimal characters>`
 - Cobertura SHA-256: `<64 lowercase hexadecimal characters>`
+- Normalized line-state SHA-256: `<64 lowercase hexadecimal characters>`
 - Workflow run: `<GitHub Actions run URL>`
 - Artifact: `coverage-evidence`
 

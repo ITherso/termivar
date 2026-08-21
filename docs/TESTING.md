@@ -146,7 +146,8 @@ plus HTTP, JSON, YAML, XML, and text dependency-parser campaigns. See
 ## Coverage and performance
 
 The Tests workflow builds `cargo-tarpaulin 0.37.2` with pinned installer Rust
-`1.91.0`, then explicitly measures with the project's Rust `1.88.0`. The fixed
+`1.91.0`, then explicitly measures with the project's Rust `1.88.0`, its
+`llvm-tools-preview` component, and Tarpaulin's LLVM backend. The fixed
 scope is tracked Rust files under `crates/*/src/**` and `xtask/src/**` with the
 all-feature workspace build. It uploads Cobertura plus deterministic JSON and
 Markdown summaries as the `coverage-evidence` artifact. It also attempts a
@@ -171,8 +172,10 @@ floor record; changed content must become measured. A new omission fails closed,
 as does disappearance from Cobertura of a source measured in that baseline and
 still present at HEAD. A missing/null event base fails closed; a patch with zero
 observed coverable changed lines is N/A. Exact integer counts are authoritative;
-rounded percentages are display-only. First and replacement baseline records
-must match the current aggregate, per-file, and omission measurement exactly.
+rounded percentages are display-only. Evidence schema `venom.coverage.v2` also
+binds the normalized boolean state of every observed source line. First and
+replacement baseline records must match the current aggregate, per-file,
+line-state digest, and omission measurement exactly.
 Actual Rust `tarpaulin` and `tarpaulin_*` cfg tokens,
 `coverage(off)`, and legacy `no_coverage` attributes are forbidden in the
 tracked production-source scope so instrumentation-specific conditionals cannot

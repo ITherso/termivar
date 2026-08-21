@@ -17,11 +17,15 @@ The `Quality Metrics` workflow records:
 
 Results are runner-local regression signals. They are not comparable across arbitrary hardware and are not endpoint-capacity claims.
 
-Coverage is produced by the Tests workflow with measurement Rust `1.88.0` and
+Coverage is produced by the Tests workflow with measurement Rust `1.88.0`, its
+`llvm-tools-preview` component, and the explicit LLVM backend of
 `cargo-tarpaulin 0.37.2`, compiled by pinned installer Rust `1.91.0`. The
 workflow uploads Cobertura plus deterministic JSON and Markdown summaries as a
-retained artifact. It attempts a best-effort
-advisory Codecov upload, but tokenless availability is not required or enforced.
+retained artifact. Evidence schema `venom.coverage.v2` records a normalized
+line-state digest in addition to aggregate and per-file counts, so a same-count
+covered-line swap cannot pass the baseline-acceptance seal. It attempts a
+best-effort advisory Codecov upload, but tokenless availability is not required
+or enforced.
 The fixed scope is tracked Rust files under `crates/*/src/**` plus `xtask/src/**`;
 Tarpaulin is instructed to ignore test functions with `--ignore-tests`.
 Unit, integration, compatibility, and security results remain separate checks.
@@ -39,10 +43,10 @@ Cobertura of a source measured in the applicable accepted baseline and still
 present at HEAD. The checker also rejects production-source
 `tarpaulin`/`tarpaulin_*` cfg,
 `coverage(off)`, and legacy `no_coverage` instrumentation exclusions. The exact
-command ignores Tarpaulin config, while architecture pins workflow env and Cargo
-config and forbids custom build targets. It emits the candidate record needed to
-review an honest baseline. Calibration cannot run once an accepted pointer
-exists. See [Coverage evidence](reports/coverage/README.md) for the acceptance
+command ignores Tarpaulin config and fixes the LLVM backend, while architecture
+pins workflow env and Cargo config and forbids custom build targets. It emits
+the candidate record needed to review an honest baseline. Calibration cannot
+run once an accepted pointer exists. See [Coverage evidence](reports/coverage/README.md) for the acceptance
 procedure and the exact normal-mode floor and patch policy.
 
 `scripts/generate-metrics.sh` derives package roots from locked Cargo metadata,

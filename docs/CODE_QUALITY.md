@@ -131,9 +131,10 @@ nor test count is a quality score.
 
 Coverage, benchmark, and fuzz results must include the commit, toolchain,
 configuration, bounded workload, and artifact provenance. Coverage calibration
-now records the exact measurement-Rust/installer-Rust/Tarpaulin contract,
-`Cargo.lock` and Cobertura digests, aggregate and per-file integer counts,
-omissions, and workflow artifact provenance. No accepted numeric coverage floor
+now records the exact measurement-Rust/installer-Rust/Tarpaulin/LLVM-engine
+contract, `Cargo.lock` and Cobertura digests, a normalized line-state digest,
+aggregate and per-file integer counts, omissions, and workflow artifact
+provenance. No accepted numeric coverage floor
 is committed in this source state; the calibration job must not be represented
 as percentage enforcement. See [Coverage evidence](reports/coverage/README.md),
 [Quality metrics](quality-metrics.md), [Benchmarks](benchmarks.md), and

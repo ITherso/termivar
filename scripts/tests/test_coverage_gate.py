@@ -43,8 +43,10 @@ def valid_record() -> dict:
         "source": {"commit": commit, "cargo_lock_sha256": "b" * 64},
         "tooling": {
             "rust": gate.RUST_TOOLCHAIN,
+            "rust_components": gate.RUST_COMPONENTS,
             "installer_rust": gate.INSTALLER_RUST_TOOLCHAIN,
             "tarpaulin": gate.TARPAULIN_VERSION,
+            "engine": gate.COVERAGE_ENGINE,
             "runner_target": gate.RUNNER_TARGET,
             "command": gate.TARPAULIN_COMMAND,
             "timeout_seconds": gate.TIMEOUT_SECONDS,
@@ -56,6 +58,7 @@ def valid_record() -> dict:
         "coverage": {
             "covered_lines": 3,
             "coverable_lines": 4,
+            "line_state_sha256": "d" * 64,
             "files": [
                 {
                     "path": "crates/demo/src/lib.rs",
@@ -247,6 +250,55 @@ coverage(no_coverage);
 
 
 class CoberturaTests(unittest.TestCase):
+    def test_normalized_line_state_digest_is_order_and_hit_count_independent(self) -> None:
+        tracked = ["crates/demo/src/lib.rs", "xtask/src/main.rs"]
+        first, _ = gate._coverage_measurement(
+            {
+                "xtask/src/main.rs": {3: 0},
+                "crates/demo/src/lib.rs": {2: 0, 1: 7},
+            },
+            tracked,
+        )
+        equivalent, _ = gate._coverage_measurement(
+            {
+                "crates/demo/src/lib.rs": {1: 1, 2: 0},
+                "xtask/src/main.rs": {3: 0},
+            },
+            list(reversed(tracked)),
+        )
+        swapped, _ = gate._coverage_measurement(
+            {
+                "crates/demo/src/lib.rs": {1: 0, 2: 1},
+                "xtask/src/main.rs": {3: 0},
+            },
+            tracked,
+        )
+        different_line_set, _ = gate._coverage_measurement(
+            {
+                "crates/demo/src/lib.rs": {1: 7, 4: 0},
+                "xtask/src/main.rs": {3: 0},
+            },
+            tracked,
+        )
+        different_path, _ = gate._coverage_measurement(
+            {
+                "crates/demo/src/lib.rs": {1: 7, 2: 0},
+                "xtask/src/lib.rs": {3: 0},
+            },
+            ["crates/demo/src/lib.rs", "xtask/src/lib.rs"],
+        )
+
+        self.assertEqual(first["line_state_sha256"], equivalent["line_state_sha256"])
+        self.assertEqual(
+            first["line_state_sha256"],
+            "88b2bb736ed4dbc91d2701f66386150bcb37c1f019657a41ce984c44534a06b7",
+        )
+        self.assertEqual(first["files"], equivalent["files"])
+        self.assertNotEqual(first["line_state_sha256"], swapped["line_state_sha256"])
+        self.assertEqual(first["files"], swapped["files"])
+        self.assertNotEqual(first["line_state_sha256"], different_line_set["line_state_sha256"])
+        self.assertNotEqual(first["line_state_sha256"], different_path["line_state_sha256"])
+
     def test_parser_counts_unique_lines_and_ignores_out_of_scope_files(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -652,6 +704,20 @@ class RatioAndEvaluationTests(unittest.TestCase):
         )
         self.assertEqual(violations, [])
 
+        different_lines = copy.deepcopy(current)
+        different_lines["line_state_sha256"] = "e" * 64
+        violations, _ = gate._evaluation_violations(
+            different_lines,
+            None,
+            [],
+            ("docs/reports/coverage/aaaaaaa.json", valid_record()),
+            None,
+            False,
+        )
+        self.assertTrue(
+            any("do not exactly match the current measurement" in item for item in violations)
+        )
+
     def test_replacement_candidate_cannot_bless_a_new_cobertura_omission(self) -> None:
         base = valid_record()
         current = copy.deepcopy(base["coverage"])
@@ -733,6 +799,9 @@ class BaselineSchemaTests(unittest.TestCase):
         mismatch = valid_record()
         mismatch["coverage"]["covered_lines"] = 4
         fixtures.append(mismatch)
+        invalid_line_state = valid_record()
+        invalid_line_state["coverage"]["line_state_sha256"] = "D" * 64
+        fixtures.append(invalid_line_state)
         escape = valid_record()
         escape["coverage"]["files"][0]["path"] = "crates/demo/src/../../escape.rs"
         fixtures.append(escape)
@@ -754,6 +823,18 @@ class BaselineSchemaTests(unittest.TestCase):
         tool = valid_record()
         tool["tooling"]["tarpaulin"] = "latest"
         mutations.append(tool)
+        engine = valid_record()
+        engine["tooling"]["engine"] = "ptrace"
+        mutations.append(engine)
+        missing_engine = valid_record()
+        missing_engine["tooling"].pop("engine")
+        mutations.append(missing_engine)
+        wrong_components = valid_record()
+        wrong_components["tooling"]["rust_components"] = []
+        mutations.append(wrong_components)
+        old_schema = valid_record()
+        old_schema["schema"] = "venom.coverage.v1"
+        mutations.append(old_schema)
         installer = valid_record()
         installer["tooling"]["installer_rust"] = "stable"
         mutations.append(installer)

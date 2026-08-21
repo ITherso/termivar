@@ -1493,7 +1493,7 @@ async fn cumulative_response_budget_accounting_across_multiple_requests() {
     // and each probe's charge is bounded near the 256 KiB per-probe cap. When the
     // transport delivers large chunks (typical un-instrumented Linux/Windows runs)
     // three probes charge ~1.2 MiB and cross the budget -> RuntimeBudgetLimit; when
-    // it delivers small chunks (e.g. a ptrace-instrumented coverage run) three
+    // it delivers small chunks (e.g. an instrumented coverage run) three
     // probes charge ~0.8 MiB, stay under budget, and the route defers to human
     // review. Both are controlled terminations. No threshold is changed.
     //

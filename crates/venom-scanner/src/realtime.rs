@@ -363,6 +363,19 @@ mod tests {
     }
 
     #[test]
+    fn scan_started_exposes_identity_and_validates() {
+        let event = RealtimeEvent::ScanStarted {
+            scan_id: "scan-1".into(),
+            target: "https://example.test".into(),
+            timestamp: 42,
+        };
+
+        assert_eq!(event.scan_id(), "scan-1");
+        assert_eq!(event.timestamp(), 42);
+        assert_eq!(event.validate(), Ok(()));
+    }
+
+    #[test]
     fn journal_records_without_claiming_delivery() {
         let stream = EventStream::new();
         stream.record(event(10)).unwrap();

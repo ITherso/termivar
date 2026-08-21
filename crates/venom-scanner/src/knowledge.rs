@@ -1862,8 +1862,38 @@ mod tests {
                 .unwrap(),
             (KnowledgeWrite::Unchanged, KnowledgeWrite::Unchanged)
         );
-        assert_eq!(store.relations_from(observation.subject()), vec![relation]);
+        assert_eq!(
+            store.relations_from(observation.subject()),
+            vec![relation.clone()]
+        );
         assert_eq!(store.relations_to(&resource).len(), 1);
+
+        let updated_relation = KnowledgeRelation::with_id(
+            relation.id().clone(),
+            relation.from().clone(),
+            relation.to().clone(),
+            relation.kind().clone(),
+            ConfidenceScore::from_percent(90).unwrap(),
+            observation.id().clone(),
+        );
+        assert_eq!(
+            store
+                .insert_evidence_with_relation(observation.clone(), updated_relation.clone())
+                .unwrap(),
+            (KnowledgeWrite::Unchanged, KnowledgeWrite::Updated)
+        );
+        assert_eq!(
+            store.relations_from(observation.subject()),
+            vec![updated_relation.clone()]
+        );
+        assert_eq!(
+            store.relations_to(&resource),
+            vec![updated_relation.clone()]
+        );
+        assert_eq!(
+            store.relation(updated_relation.id()),
+            Some(updated_relation)
+        );
 
         let unrelated = evidence_for(subject(2), "other");
         let mismatched = KnowledgeRelation::new(

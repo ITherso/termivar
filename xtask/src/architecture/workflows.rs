@@ -49,6 +49,7 @@ const EXPECTED_COVERAGE_JOB: &str = r#"  code-coverage:
       - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
         with:
           toolchain: "1.88.0"
+          components: llvm-tools-preview
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
       - name: Test coverage policy checker
         run: python3 -m unittest discover -s scripts/tests -p 'test_coverage_gate.py'
@@ -57,7 +58,7 @@ const EXPECTED_COVERAGE_JOB: &str = r#"  code-coverage:
           rustup toolchain install 1.91.0 --profile minimal
           cargo +1.91.0 install cargo-tarpaulin --version 0.37.2 --locked
       - name: Generate coverage
-        run: cargo +1.88.0 tarpaulin --locked --workspace --all-features --ignore-tests --ignore-config --out Xml --timeout 300
+        run: cargo +1.88.0 tarpaulin --locked --workspace --all-features --ignore-tests --ignore-config --engine llvm --out Xml --timeout 300
       - name: Attempt best-effort advisory Codecov upload
         uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0
         with:
@@ -173,7 +174,7 @@ fn coverage_workflow_policy_violations(
             "calibration"
         };
         violations.push(format!(
-            "{TESTS_WORKFLOW}: `code-coverage` must match the reviewed {mode} contract exactly; it pins measurement Rust 1.88.0, installer Rust 1.91.0, and cargo-tarpaulin 0.37.2, fetches full history, tests and runs the fail-closed checker with event base/head SHAs, retains best-effort advisory Codecov upload, and always uploads Cobertura plus both summaries"
+            "{TESTS_WORKFLOW}: `code-coverage` must match the reviewed {mode} contract exactly; it pins measurement Rust 1.88.0 with llvm-tools-preview, installer Rust 1.91.0, cargo-tarpaulin 0.37.2, and the LLVM backend, fetches full history, tests and runs the fail-closed checker with event base/head SHAs, retains best-effort advisory Codecov upload, and always uploads Cobertura plus both summaries"
         ));
     }
     violations
@@ -773,6 +774,11 @@ mod tests {
                 "mutable Rust selector",
             ),
             (
+                "components: llvm-tools-preview",
+                "components: rustfmt",
+                "missing LLVM coverage tools",
+            ),
+            (
                 "rustup toolchain install 1.91.0 --profile minimal",
                 "rustup toolchain install stable",
                 "mutable installer Rust selector",
@@ -797,6 +803,7 @@ mod tests {
                 "--ignore-tests",
                 "configuration fail-open",
             ),
+            ("--engine llvm", "--engine ptrace", "unstable coverage backend"),
             ("shell: bash", "shell: ./fake-shell {0}", "inherited shell bypass"),
             (
                 "working-directory: .",

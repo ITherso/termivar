@@ -1392,6 +1392,35 @@ enum StickyAbort {
     NonFiniteOutput,
 }
 
+fn enforce_hook_controls(
+    sticky_abort: &Cell<Option<StickyAbort>>,
+    instruction_count: &Cell<u64>,
+    cancelled: bool,
+    deadline_exceeded: bool,
+    hook_interval: u32,
+    instruction_limit: u64,
+) -> mlua::Result<()> {
+    if let Some(reason) = sticky_abort.get() {
+        return Err(sticky_abort_error(reason));
+    }
+    if cancelled {
+        sticky_abort.set(Some(StickyAbort::Cancelled));
+        return Err(sticky_abort_error(StickyAbort::Cancelled));
+    }
+    if deadline_exceeded {
+        sticky_abort.set(Some(StickyAbort::Deadline));
+        return Err(sticky_abort_error(StickyAbort::Deadline));
+    }
+    let (next, exhausted) =
+        instruction_quantum_status(instruction_count.get(), hook_interval, instruction_limit);
+    instruction_count.set(next);
+    if exhausted {
+        sticky_abort.set(Some(StickyAbort::Instruction));
+        return Err(sticky_abort_error(StickyAbort::Instruction));
+    }
+    Ok(())
+}
+
 fn execute_snapshot(
     script: LuaScript,
     context: LuaContext,
@@ -1433,25 +1462,14 @@ fn execute_snapshot(
     lua.set_hook(
         HookTriggers::new().every_nth_instruction(hook_interval),
         move |_, _| {
-            if let Some(reason) = hook_abort.get() {
-                return Err(sticky_abort_error(reason));
-            }
-            if hook_cancellation.is_cancelled() {
-                hook_abort.set(Some(StickyAbort::Cancelled));
-                return Err(MluaError::RuntimeError(ABORT_CANCELLED.to_owned()));
-            }
-            if Instant::now() >= deadline {
-                hook_abort.set(Some(StickyAbort::Deadline));
-                return Err(MluaError::RuntimeError(ABORT_DEADLINE.to_owned()));
-            }
-            let (next, exhausted) =
-                instruction_quantum_status(hook_count.get(), hook_interval, instruction_limit);
-            hook_count.set(next);
-            if exhausted {
-                hook_abort.set(Some(StickyAbort::Instruction));
-                return Err(MluaError::RuntimeError(ABORT_INSTRUCTION.to_owned()));
-            }
-            Ok(())
+            enforce_hook_controls(
+                &hook_abort,
+                &hook_count,
+                hook_cancellation.is_cancelled(),
+                Instant::now() >= deadline,
+                hook_interval,
+                instruction_limit,
+            )
         },
     );
     let environment = match build_environment(
@@ -2915,6 +2933,26 @@ mod tests {
             Some(LuaExecutionError::DeadlineExceeded)
         );
         assert_eq!(terminal_control_error(None, false, false), None);
+    }
+
+    #[test]
+    fn hook_controls_deadline_is_sticky_without_charging_instructions() {
+        let sticky_abort = Cell::new(None);
+        let instruction_count = Cell::new(41);
+
+        let error = enforce_hook_controls(&sticky_abort, &instruction_count, false, true, 10, 100)
+            .expect_err("deadline must interrupt the hook");
+
+        assert!(matches!(
+            error,
+            MluaError::RuntimeError(message) if message == ABORT_DEADLINE
+        ));
+        assert_eq!(sticky_abort.get(), Some(StickyAbort::Deadline));
+        assert_eq!(instruction_count.get(), 41);
+        assert_eq!(
+            terminal_control_error(sticky_abort.get(), false, false),
+            Some(LuaExecutionError::DeadlineExceeded)
+        );
     }
 
     #[tokio::test]
