@@ -17,9 +17,10 @@ The `Quality Metrics` workflow records:
 
 Results are runner-local regression signals. They are not comparable across arbitrary hardware and are not endpoint-capacity claims.
 
-Coverage is produced by the Tests workflow with Rust `1.88.0` and
-`cargo-tarpaulin 0.37.2`. The workflow uploads Cobertura plus deterministic JSON
-and Markdown summaries as a retained artifact. It attempts a best-effort
+Coverage is produced by the Tests workflow with measurement Rust `1.88.0` and
+`cargo-tarpaulin 0.37.2`, compiled by pinned installer Rust `1.91.0`. The
+workflow uploads Cobertura plus deterministic JSON and Markdown summaries as a
+retained artifact. It attempts a best-effort
 advisory Codecov upload, but tokenless availability is not required or enforced.
 The fixed scope is tracked Rust files under `crates/*/src/**` plus `xtask/src/**`;
 Tarpaulin is instructed to ignore test functions with `--ignore-tests`.

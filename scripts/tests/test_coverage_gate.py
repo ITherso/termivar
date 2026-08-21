@@ -12,6 +12,7 @@ from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+from unittest import mock
 
 
 SCRIPT = Path(__file__).resolve().parents[1] / "coverage_gate.py"
@@ -42,6 +43,7 @@ def valid_record() -> dict:
         "source": {"commit": commit, "cargo_lock_sha256": "b" * 64},
         "tooling": {
             "rust": gate.RUST_TOOLCHAIN,
+            "installer_rust": gate.INSTALLER_RUST_TOOLCHAIN,
             "tarpaulin": gate.TARPAULIN_VERSION,
             "runner_target": gate.RUNNER_TARGET,
             "command": gate.TARPAULIN_COMMAND,
@@ -237,7 +239,8 @@ class CoberturaTests(unittest.TestCase):
             (source / "lib.rs").write_text("one\ntwo\n", encoding="utf-8")
             report = root / "cobertura.xml"
             report.write_text(
-                cobertura(
+                '<?xml version="1.0" encoding="UTF-8"?>'
+                + cobertura(
                     [
                         ("crates/demo/src/lib.rs", [(1, 2), (2, 0)]),
                         ("crates/demo/tests/no.rs", [(1, 9)]),
@@ -245,7 +248,7 @@ class CoberturaTests(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
-            parsed = gate.parse_cobertura(report, root)
+            parsed = gate.parse_cobertura(report.read_bytes(), root)
             self.assertEqual(parsed, {"crates/demo/src/lib.rs": {1: 2, 2: 0}})
 
     def test_parser_rejects_duplicate_files_lines_and_escaping_paths(self) -> None:
@@ -265,7 +268,7 @@ class CoberturaTests(unittest.TestCase):
                 report = root / "cobertura.xml"
                 report.write_text(contents, encoding="utf-8")
                 with self.assertRaises(gate.GateError):
-                    gate.parse_cobertura(report, root)
+                    gate.parse_cobertura(report.read_bytes(), root)
 
     def test_parser_rejects_zero_in_scope_files(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -273,18 +276,60 @@ class CoberturaTests(unittest.TestCase):
             report = root / "cobertura.xml"
             report.write_text(cobertura([("tests/example.rs", [(1, 1)])]), encoding="utf-8")
             with self.assertRaises(gate.GateError):
-                gate.parse_cobertura(report, root)
+                gate.parse_cobertura(report.read_bytes(), root)
 
     def test_parser_rejects_dtd_and_entity_declarations(self) -> None:
+        declarations = [
+            '<!DOCTYPE coverage [<!ENTITY x "unsafe">]><coverage />',
+            '<!doctype coverage [<!entity x "unsafe">]><coverage />',
+            '<!DoCtYpE coverage [<!EnTiTy x "unsafe">]><coverage />',
+        ]
+        for contents in declarations:
+            with self.subTest(contents=contents), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                report = root / "cobertura.xml"
+                report.write_text(contents, encoding="utf-8")
+                with self.assertRaisesRegex(gate.GateError, "DTD and entity"):
+                    gate.parse_cobertura(report.read_bytes(), root)
+
+    def test_reader_uses_one_bounded_read_and_rejects_the_extra_byte(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            report = root / "cobertura.xml"
-            report.write_text(
-                '<!DOCTYPE coverage [<!ENTITY x "unsafe">]><coverage />',
-                encoding="utf-8",
-            )
-            with self.assertRaises(gate.GateError):
-                gate.parse_cobertura(report, root)
+            report = Path(directory) / "cobertura.xml"
+            opened = mock.MagicMock()
+            opened.__enter__.return_value.read.return_value = b"x" * 9
+            with mock.patch.object(gate, "MAX_COBERTURA_BYTES", 8), mock.patch.object(
+                Path, "open", return_value=opened
+            ) as path_open:
+                with self.assertRaisesRegex(gate.GateError, "256 MiB"):
+                    gate._read_cobertura(report)
+                path_open.assert_called_once_with("rb")
+                opened.__enter__.return_value.read.assert_called_once_with(9)
+                with self.assertRaisesRegex(gate.GateError, "256 MiB"):
+                    gate.parse_cobertura(b"x" * 9, Path(directory))
+
+    def test_parser_rejects_utf16_and_utf32_documents_before_xml_parsing(self) -> None:
+        source = (
+            '<?xml version="1.0" encoding="UTF-16"?>'
+            '<!DOCTYPE coverage [<!ENTITY x "unsafe">]><coverage />'
+        )
+        for encoding in ("utf-16", "utf-16-le", "utf-32", "utf-32-le"):
+            with self.subTest(encoding=encoding), self.assertRaisesRegex(
+                gate.GateError, "strict UTF-8"
+            ):
+                gate.parse_cobertura(source.encode(encoding), Path.cwd())
+
+    def test_parser_rejects_non_utf8_xml_declaration(self) -> None:
+        contents = b'<?xml version="1.0" encoding="UTF-16"?><coverage />'
+        with self.assertRaisesRegex(gate.GateError, "must specify UTF-8"):
+            gate.parse_cobertura(contents, Path.cwd())
+
+    def test_parser_rejects_legacy_encoded_bytes_before_element_tree(self) -> None:
+        contents = (
+            b'<?xml version="1.0" encoding="ISO-8859-1"?>'
+            b'<coverage><!-- \xe9 --></coverage>'
+        )
+        with self.assertRaisesRegex(gate.GateError, "strict UTF-8"):
+            gate.parse_cobertura(contents, Path.cwd())
 
     def test_parser_uses_class_level_lines_not_duplicate_method_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -302,7 +347,7 @@ class CoberturaTests(unittest.TestCase):
                 encoding="utf-8",
             )
             self.assertEqual(
-                gate.parse_cobertura(report, root),
+                gate.parse_cobertura(report.read_bytes(), root),
                 {"crates/demo/src/lib.rs": {1: 1}},
             )
 
@@ -323,7 +368,7 @@ class CoberturaTests(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
-            parsed = gate.parse_cobertura(report, root)
+            parsed = gate.parse_cobertura(report.read_bytes(), root)
             self.assertEqual(parsed, {"crates/demo/src/lib.rs": {1: 1}})
             _, missing = gate._patch_measurement(
                 parsed,
@@ -539,6 +584,9 @@ class BaselineSchemaTests(unittest.TestCase):
         tool = valid_record()
         tool["tooling"]["tarpaulin"] = "latest"
         mutations.append(tool)
+        installer = valid_record()
+        installer["tooling"]["installer_rust"] = "stable"
+        mutations.append(installer)
         scope = valid_record()
         scope["scope"]["includes"] = ["crates/**"]
         mutations.append(scope)
@@ -672,9 +720,11 @@ class CommandIntegrationTests(unittest.TestCase):
             cargo_config = root / ".cargo" / "config.toml"
             cargo_config.parent.mkdir()
             cargo_config.write_bytes(gate.EXPECTED_CARGO_CONFIG)
-            (root / "cobertura.xml").write_text(
-                cobertura([("crates/demo/src/lib.rs", [(1, 1)])]), encoding="utf-8"
-            )
+            cobertura_bytes = cobertura(
+                [("crates/demo/src/lib.rs", [(1, 1)])]
+            ).encode("utf-8")
+            cobertura_path = root / "cobertura.xml"
+            cobertura_path.write_bytes(cobertura_bytes)
             self._git(
                 root,
                 "add",
@@ -697,12 +747,35 @@ class CommandIntegrationTests(unittest.TestCase):
             ]
             output = io.StringIO()
             errors = io.StringIO()
-            with redirect_stdout(output), redirect_stderr(errors):
+            with redirect_stdout(output), redirect_stderr(errors), mock.patch.object(
+                gate, "_read_cobertura", wraps=gate._read_cobertura
+            ) as reader, mock.patch.object(
+                gate, "parse_cobertura", wraps=gate.parse_cobertura
+            ) as parser, mock.patch.object(
+                gate, "_record", wraps=gate._record
+            ) as recorder, mock.patch.object(
+                gate, "_sha256", wraps=gate._sha256
+            ) as sha256, mock.patch.object(
+                Path,
+                "read_bytes",
+                side_effect=AssertionError("run must not use an unbounded path read"),
+            ):
                 self.assertEqual(gate.run(arguments), 0)
+            reader.assert_called_once_with(cobertura_path)
+            parsed_bytes = parser.call_args.args[0]
+            recorded_bytes = recorder.call_args.kwargs["cobertura_bytes"]
+            self.assertIs(parsed_bytes, recorded_bytes)
+            self.assertEqual(parsed_bytes, cobertura_bytes)
+            self.assertEqual(
+                sum(call.args[0] is parsed_bytes for call in sha256.call_args_list), 1
+            )
             self.assertTrue((root / "coverage-summary.json").is_file())
             self.assertTrue((root / "coverage-summary.md").is_file())
             record = json.loads((root / "coverage-summary.json").read_text(encoding="utf-8"))
             self.assertEqual(record["evaluation"]["mode"], "calibration")
+            self.assertEqual(
+                record["cobertura"]["sha256"], hashlib.sha256(cobertura_bytes).hexdigest()
+            )
 
             normal = [item for item in arguments if item != "--calibrate"]
             with redirect_stdout(output), redirect_stderr(errors):

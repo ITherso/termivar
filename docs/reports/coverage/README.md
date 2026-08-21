@@ -1,10 +1,12 @@
 # Coverage evidence
 
 Venom's Tests workflow measures repository-owned Rust source with Rust `1.88.0`
-and `cargo-tarpaulin 0.37.2`. It retains `cobertura.xml` plus deterministic JSON
-and Markdown summaries in the `coverage-evidence` workflow artifact. The job
-attempts a best-effort advisory Codecov upload, but tokenless availability is
-not required or enforced; the repository-owned checker is the policy authority.
+and `cargo-tarpaulin 0.37.2`. Tarpaulin itself is compiled with pinned installer
+Rust `1.91.0`, while the measurement command explicitly selects `1.88.0`. The
+job retains `cobertura.xml` plus deterministic JSON and Markdown summaries in
+the `coverage-evidence` workflow artifact. It attempts a best-effort advisory
+Codecov upload, but tokenless availability is not required or enforced; the
+repository-owned checker is the policy authority.
 
 ## Current state: calibration
 
@@ -32,10 +34,17 @@ The measured source scope is:
 - tracked Rust files under `crates/*/src/**`;
 - tracked Rust files under `xtask/src/**`.
 
-Tarpaulin runs exactly:
+Tarpaulin is installed exactly with:
 
 ```bash
-cargo tarpaulin --locked --workspace --all-features --ignore-tests --ignore-config --out Xml --timeout 300
+rustup toolchain install 1.91.0 --profile minimal
+cargo +1.91.0 install cargo-tarpaulin --version 0.37.2 --locked
+```
+
+Coverage then runs exactly with the measurement toolchain:
+
+```bash
+cargo +1.88.0 tarpaulin --locked --workspace --all-features --ignore-tests --ignore-config --out Xml --timeout 300
 ```
 
 `--ignore-config` is part of the reviewed command so neither repository
@@ -63,13 +72,14 @@ workspace custom-build targets. These rules keep repository-controlled compiler
 flags, wrappers, targets, and build scripts from changing the instrumented
 program behind the recorded command.
 
-The JSON records the full source commit; exact Rust, Tarpaulin, runner target,
-command, and timeout; `Cargo.lock` and Cobertura SHA-256 digests; include and
-exclude scope; aggregate and per-file integer counts; omitted in-scope files;
-and GitHub run/artifact provenance. Paths must be canonical, repository
-relative, portable ASCII, and contained by the workspace. Accepted evidence is
-bound to the canonical `ITherso/venom` repository and positive Actions run and
-attempt identifiers; unknown JSON fields are rejected.
+The JSON records the full source commit; exact measurement Rust, installer Rust,
+Tarpaulin, runner target, command, and timeout; `Cargo.lock` and Cobertura
+SHA-256 digests; include and exclude scope; aggregate and per-file integer
+counts; omitted in-scope files; and GitHub run/artifact provenance. Paths must
+be canonical, repository relative, portable ASCII, and contained by the
+workspace. Accepted evidence is bound to the canonical `ITherso/venom`
+repository and positive Actions run and attempt identifiers; unknown JSON
+fields are rejected.
 
 ## Accepting the first baseline
 

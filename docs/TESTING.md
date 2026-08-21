@@ -145,8 +145,9 @@ plus HTTP, JSON, YAML, XML, and text dependency-parser campaigns. See
 
 ## Coverage and performance
 
-The Tests workflow pins Rust `1.88.0` and `cargo-tarpaulin 0.37.2`, then measures
-tracked Rust files under `crates/*/src/**` and `xtask/src/**` with the
+The Tests workflow builds `cargo-tarpaulin 0.37.2` with pinned installer Rust
+`1.91.0`, then explicitly measures with the project's Rust `1.88.0`. The fixed
+scope is tracked Rust files under `crates/*/src/**` and `xtask/src/**` with the
 all-feature workspace build. It uploads Cobertura plus deterministic JSON and
 Markdown summaries as the `coverage-evidence` artifact. It also attempts a
 best-effort advisory Codecov upload, but tokenless availability is not required

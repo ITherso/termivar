@@ -5,9 +5,10 @@ is the canonical rendering of its matching JSON evidence record.
 
 - Source commit: `<full 40-character commit SHA>`
 - Rust: `1.88.0`
+- Installer Rust: `1.91.0`
 - cargo-tarpaulin: `0.37.2`
 - Runner target: `x86_64-unknown-linux-gnu`
-- Command: `cargo tarpaulin --locked --workspace --all-features --ignore-tests --ignore-config --out Xml --timeout 300`
+- Command: `cargo +1.88.0 tarpaulin --locked --workspace --all-features --ignore-tests --ignore-config --out Xml --timeout 300`
 - Cargo.lock SHA-256: `<64 lowercase hexadecimal characters>`
 - Cobertura SHA-256: `<64 lowercase hexadecimal characters>`
 - Workflow run: `<GitHub Actions run URL>`

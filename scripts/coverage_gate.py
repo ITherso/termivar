@@ -19,15 +19,19 @@ import re
 import subprocess
 import sys
 from typing import Any, Iterable
-import xml.etree.ElementTree as ET
+
+# One read is bounded to 256 MiB + 1 byte; strict UTF-8 and DTD/ENTITY checks
+# happen before the same byte snapshot feeds parsing and the evidence hash.
+import xml.etree.ElementTree as ET  # nosemgrep: python.lang.security.use-defused-xml.use-defused-xml
 
 
 SCHEMA = "venom.coverage.v1"
 RUST_TOOLCHAIN = "1.88.0"
+INSTALLER_RUST_TOOLCHAIN = "1.91.0"
 TARPAULIN_VERSION = "0.37.2"
 RUNNER_TARGET = "x86_64-unknown-linux-gnu"
 TARPAULIN_COMMAND = (
-    "cargo tarpaulin --locked --workspace --all-features --ignore-tests "
+    "cargo +1.88.0 tarpaulin --locked --workspace --all-features --ignore-tests "
     "--ignore-config --out Xml --timeout 300"
 )
 TIMEOUT_SECONDS = 300
@@ -39,6 +43,7 @@ DEFAULT_BASELINE_POINTER = "docs/reports/coverage/accepted-baseline.txt"
 DEFAULT_ARTIFACT_NAME = "coverage-evidence"
 CANONICAL_REPOSITORY = "ITherso/venom"
 EXPECTED_CARGO_CONFIG = b'[alias]\nxtask = "run --locked -p xtask --"\n'
+MAX_COBERTURA_BYTES = 256 * 1024 * 1024
 _TESTS_WORKFLOW = ".github/workflows/tests.yml"
 _CALIBRATION_STEP_NAME = b"      - name: Calibrate repository coverage policy"
 _ENFORCEMENT_STEP_NAME = b"      - name: Enforce repository coverage policy"
@@ -61,6 +66,7 @@ _NO_COVERAGE_TOKEN = re.compile(
     r"(?<![A-Za-z0-9_])(?:r#)?no_coverage(?![A-Za-z0-9_])"
 )
 _ATTRIBUTE_OPEN = re.compile(r"#\s*!?\s*\[")
+_FORBIDDEN_XML_DECLARATION = re.compile(r"<!DOCTYPE|<!ENTITY", re.IGNORECASE)
 
 
 class GateError(RuntimeError):
@@ -132,24 +138,45 @@ def _normalise_report_path(root: Path, raw: str) -> str:
     return value
 
 
-def parse_cobertura(path: Path, workspace_root: Path) -> dict[str, dict[int, int]]:
-    """Parse in-scope line hits from a Cobertura document, failing closed."""
+def _read_cobertura(path: Path) -> bytes:
+    """Read at most one byte beyond the accepted Cobertura size."""
 
     try:
-        size = path.stat().st_size
+        with path.open("rb") as report:
+            xml_bytes = report.read(MAX_COBERTURA_BYTES + 1)
     except OSError as error:
         raise GateError(f"cannot read Cobertura report {path}: {error}") from error
-    if size > 256 * 1024 * 1024:
+    if len(xml_bytes) > MAX_COBERTURA_BYTES:
+        raise GateError("Cobertura report exceeds the 256 MiB parser limit")
+    return xml_bytes
+
+
+def parse_cobertura(
+    xml_bytes: bytes, workspace_root: Path
+) -> dict[str, dict[int, int]]:
+    """Parse in-scope line hits from bounded Cobertura bytes, failing closed."""
+
+    if len(xml_bytes) > MAX_COBERTURA_BYTES:
         raise GateError("Cobertura report exceeds the 256 MiB parser limit")
     try:
-        xml_bytes = path.read_bytes()
-    except OSError as error:
-        raise GateError(f"cannot read Cobertura report {path}: {error}") from error
-    declarations = xml_bytes.upper()
-    if b"<!DOCTYPE" in declarations or b"<!ENTITY" in declarations:
+        xml_text = xml_bytes.decode("utf-8", errors="strict")
+    except UnicodeDecodeError as error:
+        raise GateError("Cobertura report must be strict UTF-8") from error
+    if "\x00" in xml_text:
+        raise GateError("Cobertura report must be strict UTF-8 XML without NUL bytes")
+    declaration = re.match(r"\A\ufeff?<\?xml\s+([^?]*)\?>", xml_text, re.IGNORECASE)
+    if declaration is not None:
+        encoding = re.search(
+            r"(?:^|\s)encoding\s*=\s*(['\"])([^'\"]+)\1",
+            declaration.group(1),
+            re.IGNORECASE,
+        )
+        if encoding is not None and encoding.group(2).casefold() != "utf-8":
+            raise GateError("Cobertura XML declaration must specify UTF-8")
+    if _FORBIDDEN_XML_DECLARATION.search(xml_text) is not None:
         raise GateError("Cobertura DTD and entity declarations are forbidden")
     try:
-        root = ET.fromstring(xml_bytes)
+        root = ET.fromstring(xml_text)
     except ET.ParseError as error:
         raise GateError(f"invalid Cobertura XML: {error}") from error
 
@@ -730,11 +757,19 @@ def validate_baseline(record: Any, target: str) -> dict[str, Any]:
     tooling = _required_mapping(root.get("tooling"), "tooling")
     _require_exact_keys(
         tooling,
-        {"rust", "tarpaulin", "runner_target", "command", "timeout_seconds"},
+        {
+            "rust",
+            "installer_rust",
+            "tarpaulin",
+            "runner_target",
+            "command",
+            "timeout_seconds",
+        },
         "tooling",
     )
     expected_tooling = {
         "rust": RUST_TOOLCHAIN,
+        "installer_rust": INSTALLER_RUST_TOOLCHAIN,
         "tarpaulin": TARPAULIN_VERSION,
         "runner_target": RUNNER_TARGET,
         "command": TARPAULIN_COMMAND,
@@ -1295,6 +1330,7 @@ def _record(
         },
         "tooling": {
             "rust": RUST_TOOLCHAIN,
+            "installer_rust": INSTALLER_RUST_TOOLCHAIN,
             "tarpaulin": TARPAULIN_VERSION,
             "runner_target": RUNNER_TARGET,
             "command": TARPAULIN_COMMAND,
@@ -1332,6 +1368,7 @@ def render_markdown(record: dict[str, Any]) -> str:
         "",
         f"- Source commit: `{record['source']['commit']}`",
         f"- Rust: `{record['tooling']['rust']}`",
+        f"- Installer Rust: `{record['tooling']['installer_rust']}`",
         f"- cargo-tarpaulin: `{record['tooling']['tarpaulin']}`",
         f"- Runner target: `{record['tooling']['runner_target']}`",
         f"- Command: `{record['tooling']['command']}`",
@@ -1438,11 +1475,8 @@ def run(arguments: list[str] | None = None) -> int:
         raise GateError("base and head commits must differ")
     _verify_coverage_cargo_config(root, head)
 
-    try:
-        cobertura_bytes = cobertura_path.read_bytes()
-    except OSError as error:
-        raise GateError(f"cannot read Cobertura report: {error}") from error
-    line_hits = parse_cobertura(cobertura_path, root)
+    cobertura_bytes = _read_cobertura(cobertura_path)
+    line_hits = parse_cobertura(cobertura_bytes, root)
     tracked = _tracked_sources_at(root, head)
     _reject_instrumentation_exclusions(root, head, tracked)
     coverage, _ = _coverage_measurement(line_hits, tracked)

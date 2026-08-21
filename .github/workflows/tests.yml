@@ -173,9 +173,11 @@ jobs:
       - name: Test coverage policy checker
         run: python3 -m unittest discover -s scripts/tests -p 'test_coverage_gate.py'
       - name: Install pinned tarpaulin
-        run: cargo install cargo-tarpaulin --version 0.37.2 --locked
+        run: |
+          rustup toolchain install 1.91.0 --profile minimal
+          cargo +1.91.0 install cargo-tarpaulin --version 0.37.2 --locked
       - name: Generate coverage
-        run: cargo tarpaulin --locked --workspace --all-features --ignore-tests --ignore-config --out Xml --timeout 300
+        run: cargo +1.88.0 tarpaulin --locked --workspace --all-features --ignore-tests --ignore-config --out Xml --timeout 300
       - name: Attempt best-effort advisory Codecov upload
         uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0
         with:

@@ -53,9 +53,11 @@ const EXPECTED_COVERAGE_JOB: &str = r#"  code-coverage:
       - name: Test coverage policy checker
         run: python3 -m unittest discover -s scripts/tests -p 'test_coverage_gate.py'
       - name: Install pinned tarpaulin
-        run: cargo install cargo-tarpaulin --version 0.37.2 --locked
+        run: |
+          rustup toolchain install 1.91.0 --profile minimal
+          cargo +1.91.0 install cargo-tarpaulin --version 0.37.2 --locked
       - name: Generate coverage
-        run: cargo tarpaulin --locked --workspace --all-features --ignore-tests --ignore-config --out Xml --timeout 300
+        run: cargo +1.88.0 tarpaulin --locked --workspace --all-features --ignore-tests --ignore-config --out Xml --timeout 300
       - name: Attempt best-effort advisory Codecov upload
         uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0
         with:
@@ -171,7 +173,7 @@ fn coverage_workflow_policy_violations(
             "calibration"
         };
         violations.push(format!(
-            "{TESTS_WORKFLOW}: `code-coverage` must match the reviewed {mode} contract exactly; it pins Rust 1.88.0 and cargo-tarpaulin 0.37.2, fetches full history, tests and runs the fail-closed checker with event base/head SHAs, retains best-effort advisory Codecov upload, and always uploads Cobertura plus both summaries"
+            "{TESTS_WORKFLOW}: `code-coverage` must match the reviewed {mode} contract exactly; it pins measurement Rust 1.88.0, installer Rust 1.91.0, and cargo-tarpaulin 0.37.2, fetches full history, tests and runs the fail-closed checker with event base/head SHAs, retains best-effort advisory Codecov upload, and always uploads Cobertura plus both summaries"
         ));
     }
     violations
@@ -771,9 +773,19 @@ mod tests {
                 "mutable Rust selector",
             ),
             (
-                "cargo install cargo-tarpaulin --version 0.37.2 --locked",
+                "rustup toolchain install 1.91.0 --profile minimal",
+                "rustup toolchain install stable",
+                "mutable installer Rust selector",
+            ),
+            (
+                "cargo +1.91.0 install cargo-tarpaulin --version 0.37.2 --locked",
                 "cargo install cargo-tarpaulin",
                 "unpinned Tarpaulin",
+            ),
+            (
+                "cargo +1.88.0 tarpaulin",
+                "cargo tarpaulin",
+                "implicit measurement Rust selector",
             ),
             (
                 "--all-features --ignore-tests",
