@@ -64,7 +64,7 @@ A compiled module is not necessarily a runtime feature. The [runtime map](docs/i
 | Evidence | State | Notes |
 | --- | --- | --- |
 | Unit, integration, doc, security, and template tests | Automated | GitHub Actions also exercises architecture boundaries and Rust compatibility |
-| Source coverage | Calibration automated | Pinned Tarpaulin's LLVM backend emits Cobertura and `venom.coverage.v2` repository-owned summaries with a normalized line-state digest; CI attempts a best-effort advisory Codecov upload whose tokenless availability is not enforced, changed files and exact path/blob-stable omissions are inventoried fail-closed, and no accepted numeric floor is committed yet |
+| Source coverage | Enforced, scoped | Pinned Tarpaulin's LLVM backend enforces the accepted exact ratio of 21,439/24,842 observed source lines on the aggregate and coverable changed lines; `venom.coverage.v2` evidence binds a normalized line-state digest, changed files and path/blob-stable omissions fail closed, and advisory Codecov upload remains best-effort |
 | Rust compatibility | Automated | MSRV 1.88 plus stable, beta, and nightly |
 | Public API compatibility | Automated, scoped | Blocking SemVer comparison covers `venom-core`, not every workspace crate |
 | Criterion and build metrics | Automated | Runner-local artifacts exist; controlled endpoint-scale results remain missing |

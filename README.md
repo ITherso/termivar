@@ -191,7 +191,7 @@ API hook and experimental relay require `api-adapter` and `proxy-adapter`.
 | --- | --- | --- |
 | Tests | Unit, integration, doc, security, template, and architecture jobs in [CI](.github/workflows/tests.yml) | Passing CI is not production readiness |
 | Rust compatibility | MSRV 1.88 plus stable, beta, and nightly | Pre-stable APIs may still change |
-| Coverage | Pinned Tarpaulin's LLVM backend emits Cobertura plus `venom.coverage.v2` JSON/Markdown evidence with a normalized line-state digest; CI attempts a best-effort advisory [Codecov](https://codecov.io/gh/ITherso/venom) upload | Tokenless Codecov availability is not enforced; calibration has no accepted numeric floor yet |
+| Coverage | Pinned Tarpaulin's LLVM backend enforces the accepted [21,439/24,842 observed source-line baseline](docs/reports/coverage/83069a04e6fc.md) plus the same exact ratio on coverable changed lines; `venom.coverage.v2` evidence binds a normalized line-state digest | Coverage is a scoped navigation signal, not proof of test adequacy; the advisory [Codecov](https://codecov.io/gh/ITherso/venom) upload is best-effort and tokenless availability is not enforced |
 | Safe Rust / boundaries | Workspace crates forbid unsafe code; architecture checks enforce dependency and transport ownership | Static boundaries do not prove semantic correctness |
 | Public API compatibility | Blocking SemVer comparison for `venom-core` | Scanner, CLI, API, and proxy are outside that baseline |
 | Security scanning | RustSec, cargo-deny, Semgrep CE, Trivy, Dependabot, and scoped CodeQL | Automated scanners have false positives and false negatives |

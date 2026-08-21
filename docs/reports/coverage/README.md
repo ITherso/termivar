@@ -9,14 +9,16 @@ the `coverage-evidence` workflow artifact. It attempts a best-effort advisory
 Codecov upload, but tokenless availability is not required or enforced; the
 repository-owned checker is the policy authority.
 
-## Current state: calibration
+## Current state: enforcement
 
-There is no accepted coverage baseline in this source state. The workflow
-therefore runs `scripts/coverage_gate.py --calibrate`. Calibration validates
-the report and base-to-head patch inputs, fails if a changed in-scope source
-file is absent, and emits evidence, but it does not enforce an invented
-percentage. Calibration also fails if an accepted baseline pointer already
-exists, so it cannot remain enabled after acceptance by accident.
+The accepted baseline is the reviewed LLVM calibration for commit
+[`83069a04e6fc`](83069a04e6fc.md): 21,439 covered of 24,842 observed coverable
+source lines. The workflow runs the checker in enforcement mode. Aggregate
+coverage and coverable changed lines must each meet that exact integer ratio;
+rounded 86.30% display text is not the comparison authority. The accepted
+record also freezes every per-file count, the exact nine-path omission inventory,
+and normalized line-state digest at its source commit. Coverage remains a scoped
+navigation signal rather than proof of test adequacy.
 
 An accepted baseline requires all three committed files:
 
@@ -93,7 +95,9 @@ booleans, object keys are sorted, ASCII escaping is enabled, and separators are
 exactly `,` and `:` with no added whitespace. The checker carries a fixed golden
 digest so this encoding cannot drift silently under the v2 evidence label.
 
-## Accepting the first baseline
+## Accepting or replacing a baseline
+
+The first baseline followed this sequence:
 
 1. Use a successful calibration artifact from the exact commit under review.
 2. Verify its commit, workflow run, artifact, digests, scope, tool versions, and
@@ -107,6 +111,13 @@ digest so this encoding cannot drift silently under the v2 evidence label.
 5. Let CI validate the candidate against its own independent LLVM measurement
    before accepting the change. Aggregate/per-file counts, omissions, and the
    normalized line-state digest must match exactly.
+
+For a replacement, use a successful enforcement artifact from the exact source
+commit, verify the same provenance and measurement fields, and replace the
+canonical JSON/Markdown plus pointer in a dedicated truth-only follow-up. Leave
+the enforcement workflow byte-identical. Candidate CI must reproduce the full
+coverage inventory and normalized line-state digest exactly before the
+replacement can be accepted.
 
 Acceptance must be a dedicated transition from the record's `source.commit`.
 Only `docs/**`, `README.md`, `FEATURES.md`, `mkdocs.yml`, and the Tests workflow

@@ -1,0 +1,1233 @@
+{
+  "cobertura": {
+    "path": "cobertura.xml",
+    "sha256": "0b2a4ec0ed510a6e00e4cf40acf85564d21e349fa8aa02bcf6004839744c33a0"
+  },
+  "coverage": {
+    "coverable_lines": 24842,
+    "covered_lines": 21439,
+    "files": [
+      {
+        "coverable_lines": 15,
+        "covered_lines": 11,
+        "path": "crates/venom-api/src/lib.rs"
+      },
+      {
+        "coverable_lines": 304,
+        "covered_lines": 247,
+        "path": "crates/venom-cli/src/decision_scan.rs"
+      },
+      {
+        "coverable_lines": 150,
+        "covered_lines": 40,
+        "path": "crates/venom-cli/src/main.rs"
+      },
+      {
+        "coverable_lines": 124,
+        "covered_lines": 62,
+        "path": "crates/venom-core/src/config.rs"
+      },
+      {
+        "coverable_lines": 57,
+        "covered_lines": 28,
+        "path": "crates/venom-core/src/error.rs"
+      },
+      {
+        "coverable_lines": 74,
+        "covered_lines": 65,
+        "path": "crates/venom-core/src/events.rs"
+      },
+      {
+        "coverable_lines": 229,
+        "covered_lines": 173,
+        "path": "crates/venom-core/src/ontology.rs"
+      },
+      {
+        "coverable_lines": 97,
+        "covered_lines": 92,
+        "path": "crates/venom-core/src/outcome.rs"
+      },
+      {
+        "coverable_lines": 276,
+        "covered_lines": 259,
+        "path": "crates/venom-core/src/predicates.rs"
+      },
+      {
+        "coverable_lines": 409,
+        "covered_lines": 351,
+        "path": "crates/venom-core/src/reasoning.rs"
+      },
+      {
+        "coverable_lines": 485,
+        "covered_lines": 446,
+        "path": "crates/venom-core/src/run_report.rs"
+      },
+      {
+        "coverable_lines": 5,
+        "covered_lines": 1,
+        "path": "crates/venom-proxy/src/lib.rs"
+      },
+      {
+        "coverable_lines": 20,
+        "covered_lines": 18,
+        "path": "crates/venom-proxy/src/relay.rs"
+      },
+      {
+        "coverable_lines": 410,
+        "covered_lines": 338,
+        "path": "crates/venom-scanner/src/adaptive/pipeline.rs"
+      },
+      {
+        "coverable_lines": 127,
+        "covered_lines": 106,
+        "path": "crates/venom-scanner/src/advanced_detection.rs"
+      },
+      {
+        "coverable_lines": 49,
+        "covered_lines": 46,
+        "path": "crates/venom-scanner/src/anomaly.rs"
+      },
+      {
+        "coverable_lines": 55,
+        "covered_lines": 48,
+        "path": "crates/venom-scanner/src/api.rs"
+      },
+      {
+        "coverable_lines": 198,
+        "covered_lines": 180,
+        "path": "crates/venom-scanner/src/api_evidence.rs"
+      },
+      {
+        "coverable_lines": 185,
+        "covered_lines": 144,
+        "path": "crates/venom-scanner/src/api_evidence/profiled.rs"
+      },
+      {
+        "coverable_lines": 188,
+        "covered_lines": 181,
+        "path": "crates/venom-scanner/src/api_evidence/profiled/canonical.rs"
+      },
+      {
+        "coverable_lines": 195,
+        "covered_lines": 177,
+        "path": "crates/venom-scanner/src/api_evidence/profiled/diff.rs"
+      },
+      {
+        "coverable_lines": 237,
+        "covered_lines": 208,
+        "path": "crates/venom-scanner/src/api_evidence/profiled/policy.rs"
+      },
+      {
+        "coverable_lines": 20,
+        "covered_lines": 20,
+        "path": "crates/venom-scanner/src/api_evidence/profiled_tests.rs"
+      },
+      {
+        "coverable_lines": 14,
+        "covered_lines": 14,
+        "path": "crates/venom-scanner/src/api_evidence_tests.rs"
+      },
+      {
+        "coverable_lines": 14,
+        "covered_lines": 14,
+        "path": "crates/venom-scanner/src/api_gateway.rs"
+      },
+      {
+        "coverable_lines": 409,
+        "covered_lines": 355,
+        "path": "crates/venom-scanner/src/api_observation.rs"
+      },
+      {
+        "coverable_lines": 220,
+        "covered_lines": 216,
+        "path": "crates/venom-scanner/src/api_reasoning.rs"
+      },
+      {
+        "coverable_lines": 9,
+        "covered_lines": 9,
+        "path": "crates/venom-scanner/src/auth.rs"
+      },
+      {
+        "coverable_lines": 85,
+        "covered_lines": 80,
+        "path": "crates/venom-scanner/src/cache.rs"
+      },
+      {
+        "coverable_lines": 123,
+        "covered_lines": 87,
+        "path": "crates/venom-scanner/src/compliance.rs"
+      },
+      {
+        "coverable_lines": 34,
+        "covered_lines": 32,
+        "path": "crates/venom-scanner/src/config.rs"
+      },
+      {
+        "coverable_lines": 116,
+        "covered_lines": 111,
+        "path": "crates/venom-scanner/src/config_loader.rs"
+      },
+      {
+        "coverable_lines": 219,
+        "covered_lines": 212,
+        "path": "crates/venom-scanner/src/context.rs"
+      },
+      {
+        "coverable_lines": 27,
+        "covered_lines": 27,
+        "path": "crates/venom-scanner/src/dashboard.rs"
+      },
+      {
+        "coverable_lines": 516,
+        "covered_lines": 472,
+        "path": "crates/venom-scanner/src/decision_loop.rs"
+      },
+      {
+        "coverable_lines": 472,
+        "covered_lines": 369,
+        "path": "crates/venom-scanner/src/decision_runner.rs"
+      },
+      {
+        "coverable_lines": 16,
+        "covered_lines": 15,
+        "path": "crates/venom-scanner/src/defense/enforcement.rs"
+      },
+      {
+        "coverable_lines": 52,
+        "covered_lines": 37,
+        "path": "crates/venom-scanner/src/defense/fingerprint.rs"
+      },
+      {
+        "coverable_lines": 10,
+        "covered_lines": 10,
+        "path": "crates/venom-scanner/src/defense/policy.rs"
+      },
+      {
+        "coverable_lines": 164,
+        "covered_lines": 132,
+        "path": "crates/venom-scanner/src/defense/projection.rs"
+      },
+      {
+        "coverable_lines": 135,
+        "covered_lines": 121,
+        "path": "crates/venom-scanner/src/defense/shadow_planning.rs"
+      },
+      {
+        "coverable_lines": 54,
+        "covered_lines": 50,
+        "path": "crates/venom-scanner/src/defense/state.rs"
+      },
+      {
+        "coverable_lines": 34,
+        "covered_lines": 34,
+        "path": "crates/venom-scanner/src/defense/transition.rs"
+      },
+      {
+        "coverable_lines": 1509,
+        "covered_lines": 1192,
+        "path": "crates/venom-scanner/src/distributed.rs"
+      },
+      {
+        "coverable_lines": 48,
+        "covered_lines": 33,
+        "path": "crates/venom-scanner/src/error.rs"
+      },
+      {
+        "coverable_lines": 52,
+        "covered_lines": 50,
+        "path": "crates/venom-scanner/src/event_bus.rs"
+      },
+      {
+        "coverable_lines": 189,
+        "covered_lines": 177,
+        "path": "crates/venom-scanner/src/experience.rs"
+      },
+      {
+        "coverable_lines": 521,
+        "covered_lines": 478,
+        "path": "crates/venom-scanner/src/http_evidence.rs"
+      },
+      {
+        "coverable_lines": 20,
+        "covered_lines": 20,
+        "path": "crates/venom-scanner/src/http_evidence/form_controls.rs"
+      },
+      {
+        "coverable_lines": 177,
+        "covered_lines": 173,
+        "path": "crates/venom-scanner/src/http_evidence/request_broker.rs"
+      },
+      {
+        "coverable_lines": 602,
+        "covered_lines": 531,
+        "path": "crates/venom-scanner/src/knowledge.rs"
+      },
+      {
+        "coverable_lines": 403,
+        "covered_lines": 381,
+        "path": "crates/venom-scanner/src/legacy_discovery.rs"
+      },
+      {
+        "coverable_lines": 60,
+        "covered_lines": 42,
+        "path": "crates/venom-scanner/src/logging.rs"
+      },
+      {
+        "coverable_lines": 160,
+        "covered_lines": 142,
+        "path": "crates/venom-scanner/src/lua_config.rs"
+      },
+      {
+        "coverable_lines": 988,
+        "covered_lines": 866,
+        "path": "crates/venom-scanner/src/lua_engine.rs"
+      },
+      {
+        "coverable_lines": 71,
+        "covered_lines": 65,
+        "path": "crates/venom-scanner/src/metrics.rs"
+      },
+      {
+        "coverable_lines": 75,
+        "covered_lines": 63,
+        "path": "crates/venom-scanner/src/ml.rs"
+      },
+      {
+        "coverable_lines": 156,
+        "covered_lines": 126,
+        "path": "crates/venom-scanner/src/monitoring.rs"
+      },
+      {
+        "coverable_lines": 19,
+        "covered_lines": 17,
+        "path": "crates/venom-scanner/src/payload_strategies/api_authorization_context_pair.rs"
+      },
+      {
+        "coverable_lines": 15,
+        "covered_lines": 15,
+        "path": "crates/venom-scanner/src/payload_strategies/encoding.rs"
+      },
+      {
+        "coverable_lines": 22,
+        "covered_lines": 20,
+        "path": "crates/venom-scanner/src/payload_strategies/http_header_control_pair.rs"
+      },
+      {
+        "coverable_lines": 5,
+        "covered_lines": 5,
+        "path": "crates/venom-scanner/src/payload_strategies/mod.rs"
+      },
+      {
+        "coverable_lines": 147,
+        "covered_lines": 118,
+        "path": "crates/venom-scanner/src/payload_strategy.rs"
+      },
+      {
+        "coverable_lines": 17,
+        "covered_lines": 14,
+        "path": "crates/venom-scanner/src/persistence.rs"
+      },
+      {
+        "coverable_lines": 9,
+        "covered_lines": 6,
+        "path": "crates/venom-scanner/src/phases/phase1_recon.rs"
+      },
+      {
+        "coverable_lines": 230,
+        "covered_lines": 213,
+        "path": "crates/venom-scanner/src/phases/phase2_crawl.rs"
+      },
+      {
+        "coverable_lines": 251,
+        "covered_lines": 236,
+        "path": "crates/venom-scanner/src/phases/phase3_fuzzer.rs"
+      },
+      {
+        "coverable_lines": 151,
+        "covered_lines": 148,
+        "path": "crates/venom-scanner/src/phases/phase4_param.rs"
+      },
+      {
+        "coverable_lines": 240,
+        "covered_lines": 223,
+        "path": "crates/venom-scanner/src/phases/phase5_sqli.rs"
+      },
+      {
+        "coverable_lines": 87,
+        "covered_lines": 78,
+        "path": "crates/venom-scanner/src/phases/phase6_xss.rs"
+      },
+      {
+        "coverable_lines": 151,
+        "covered_lines": 140,
+        "path": "crates/venom-scanner/src/phases/phase7_ssti.rs"
+      },
+      {
+        "coverable_lines": 149,
+        "covered_lines": 144,
+        "path": "crates/venom-scanner/src/phases/phase8_lfi_xxe.rs"
+      },
+      {
+        "coverable_lines": 73,
+        "covered_lines": 70,
+        "path": "crates/venom-scanner/src/phases/phase9_ssrf.rs"
+      },
+      {
+        "coverable_lines": 436,
+        "covered_lines": 385,
+        "path": "crates/venom-scanner/src/planner.rs"
+      },
+      {
+        "coverable_lines": 881,
+        "covered_lines": 672,
+        "path": "crates/venom-scanner/src/plugin.rs"
+      },
+      {
+        "coverable_lines": 5,
+        "covered_lines": 4,
+        "path": "crates/venom-scanner/src/post_exploitation.rs"
+      },
+      {
+        "coverable_lines": 111,
+        "covered_lines": 92,
+        "path": "crates/venom-scanner/src/realtime.rs"
+      },
+      {
+        "coverable_lines": 483,
+        "covered_lines": 446,
+        "path": "crates/venom-scanner/src/reporting.rs"
+      },
+      {
+        "coverable_lines": 555,
+        "covered_lines": 464,
+        "path": "crates/venom-scanner/src/rules.rs"
+      },
+      {
+        "coverable_lines": 296,
+        "covered_lines": 275,
+        "path": "crates/venom-scanner/src/runner.rs"
+      },
+      {
+        "coverable_lines": 308,
+        "covered_lines": 300,
+        "path": "crates/venom-scanner/src/runtime_budget.rs"
+      },
+      {
+        "coverable_lines": 58,
+        "covered_lines": 42,
+        "path": "crates/venom-scanner/src/sdk.rs"
+      },
+      {
+        "coverable_lines": 52,
+        "covered_lines": 50,
+        "path": "crates/venom-scanner/src/semantic/entity.rs"
+      },
+      {
+        "coverable_lines": 313,
+        "covered_lines": 263,
+        "path": "crates/venom-scanner/src/semantic/extractor.rs"
+      },
+      {
+        "coverable_lines": 111,
+        "covered_lines": 75,
+        "path": "crates/venom-scanner/src/threat_intelligence.rs"
+      },
+      {
+        "coverable_lines": 418,
+        "covered_lines": 370,
+        "path": "crates/venom-scanner/src/verification.rs"
+      },
+      {
+        "coverable_lines": 52,
+        "covered_lines": 43,
+        "path": "crates/venom-scanner/src/web_actions.rs"
+      },
+      {
+        "coverable_lines": 43,
+        "covered_lines": 35,
+        "path": "crates/venom-scanner/src/web_decision.rs"
+      },
+      {
+        "coverable_lines": 44,
+        "covered_lines": 42,
+        "path": "crates/venom-scanner/src/web_execution.rs"
+      },
+      {
+        "coverable_lines": 52,
+        "covered_lines": 52,
+        "path": "crates/venom-scanner/src/web_planning.rs"
+      },
+      {
+        "coverable_lines": 271,
+        "covered_lines": 265,
+        "path": "crates/venom-scanner/src/web_reasoning.rs"
+      },
+      {
+        "coverable_lines": 616,
+        "covered_lines": 517,
+        "path": "crates/venom-scanner/src/web_runtime.rs"
+      },
+      {
+        "coverable_lines": 23,
+        "covered_lines": 21,
+        "path": "crates/venom-scanner/src/web_runtime/api_visibility.rs"
+      },
+      {
+        "coverable_lines": 292,
+        "covered_lines": 234,
+        "path": "crates/venom-scanner/src/web_runtime/api_visibility/differential.rs"
+      },
+      {
+        "coverable_lines": 343,
+        "covered_lines": 223,
+        "path": "crates/venom-scanner/src/web_runtime/api_visibility/differential/execution.rs"
+      },
+      {
+        "coverable_lines": 146,
+        "covered_lines": 143,
+        "path": "crates/venom-scanner/src/web_runtime/api_visibility/differential_tests.rs"
+      },
+      {
+        "coverable_lines": 84,
+        "covered_lines": 80,
+        "path": "crates/venom-scanner/src/web_runtime_tests.rs"
+      },
+      {
+        "coverable_lines": 125,
+        "covered_lines": 120,
+        "path": "crates/venom-scanner/src/web_verification.rs"
+      },
+      {
+        "coverable_lines": 724,
+        "covered_lines": 658,
+        "path": "xtask/src/architecture.rs"
+      },
+      {
+        "coverable_lines": 74,
+        "covered_lines": 71,
+        "path": "xtask/src/architecture/deployment.rs"
+      },
+      {
+        "coverable_lines": 2894,
+        "covered_lines": 2519,
+        "path": "xtask/src/architecture/platform.rs"
+      },
+      {
+        "coverable_lines": 245,
+        "covered_lines": 224,
+        "path": "xtask/src/architecture/plugin.rs"
+      },
+      {
+        "coverable_lines": 191,
+        "covered_lines": 163,
+        "path": "xtask/src/architecture/reachability.rs"
+      },
+      {
+        "coverable_lines": 91,
+        "covered_lines": 86,
+        "path": "xtask/src/architecture/source_hygiene.rs"
+      },
+      {
+        "coverable_lines": 718,
+        "covered_lines": 679,
+        "path": "xtask/src/architecture/transport.rs"
+      },
+      {
+        "coverable_lines": 342,
+        "covered_lines": 327,
+        "path": "xtask/src/architecture/workflows.rs"
+      },
+      {
+        "coverable_lines": 93,
+        "covered_lines": 12,
+        "path": "xtask/src/main.rs"
+      },
+      {
+        "coverable_lines": 81,
+        "covered_lines": 42,
+        "path": "xtask/src/release_metadata.rs"
+      },
+      {
+        "coverable_lines": 42,
+        "covered_lines": 21,
+        "path": "xtask/src/semver.rs"
+      }
+    ],
+    "line_state_sha256": "e2b98ab40a102ff973049f8a8f79baa9742cc96428d56094dbf502e29b16e4d6",
+    "omitted_in_scope_files": [
+      "crates/venom-core/src/lib.rs",
+      "crates/venom-core/src/models.rs",
+      "crates/venom-scanner/src/adaptive/mod.rs",
+      "crates/venom-scanner/src/contracts.rs",
+      "crates/venom-scanner/src/defense/mod.rs",
+      "crates/venom-scanner/src/lib.rs",
+      "crates/venom-scanner/src/phases/mod.rs",
+      "crates/venom-scanner/src/semantic.rs",
+      "crates/venom-scanner/src/web_runtime/api_visibility/tests.rs"
+    ]
+  },
+  "evaluation": {
+    "baseline_record": null,
+    "mode": "calibration",
+    "patch": "measured; no accepted numeric floor",
+    "status": "passed",
+    "total": "measured; no accepted numeric floor"
+  },
+  "patch": {
+    "changed_in_scope_files": [
+      "crates/venom-api/src/lib.rs",
+      "crates/venom-cli/src/decision_scan.rs",
+      "crates/venom-cli/src/main.rs",
+      "crates/venom-core/src/config.rs",
+      "crates/venom-core/src/error.rs",
+      "crates/venom-core/src/events.rs",
+      "crates/venom-core/src/lib.rs",
+      "crates/venom-core/src/models.rs",
+      "crates/venom-core/src/predicates.rs",
+      "crates/venom-core/src/reasoning.rs",
+      "crates/venom-core/src/run_report.rs",
+      "crates/venom-proxy/src/lib.rs",
+      "crates/venom-proxy/src/relay.rs",
+      "crates/venom-scanner/src/adaptive/mod.rs",
+      "crates/venom-scanner/src/advanced_detection.rs",
+      "crates/venom-scanner/src/anomaly.rs",
+      "crates/venom-scanner/src/api.rs",
+      "crates/venom-scanner/src/api_evidence/profiled/policy.rs",
+      "crates/venom-scanner/src/api_gateway.rs",
+      "crates/venom-scanner/src/api_observation.rs",
+      "crates/venom-scanner/src/auth.rs",
+      "crates/venom-scanner/src/cache.rs",
+      "crates/venom-scanner/src/compliance.rs",
+      "crates/venom-scanner/src/config.rs",
+      "crates/venom-scanner/src/config_loader.rs",
+      "crates/venom-scanner/src/context.rs",
+      "crates/venom-scanner/src/contracts.rs",
+      "crates/venom-scanner/src/dashboard.rs",
+      "crates/venom-scanner/src/decision_loop.rs",
+      "crates/venom-scanner/src/decision_runner.rs",
+      "crates/venom-scanner/src/defense/mod.rs",
+      "crates/venom-scanner/src/distributed.rs",
+      "crates/venom-scanner/src/error.rs",
+      "crates/venom-scanner/src/event_bus.rs",
+      "crates/venom-scanner/src/experience.rs",
+      "crates/venom-scanner/src/http_evidence.rs",
+      "crates/venom-scanner/src/knowledge.rs",
+      "crates/venom-scanner/src/legacy_discovery.rs",
+      "crates/venom-scanner/src/lib.rs",
+      "crates/venom-scanner/src/logging.rs",
+      "crates/venom-scanner/src/lua_config.rs",
+      "crates/venom-scanner/src/lua_engine.rs",
+      "crates/venom-scanner/src/metrics.rs",
+      "crates/venom-scanner/src/ml.rs",
+      "crates/venom-scanner/src/monitoring.rs",
+      "crates/venom-scanner/src/payload_strategies/api_authorization_context_pair.rs",
+      "crates/venom-scanner/src/payload_strategies/encoding.rs",
+      "crates/venom-scanner/src/payload_strategies/http_header_control_pair.rs",
+      "crates/venom-scanner/src/payload_strategies/mod.rs",
+      "crates/venom-scanner/src/payload_strategy.rs",
+      "crates/venom-scanner/src/persistence.rs",
+      "crates/venom-scanner/src/phases/mod.rs",
+      "crates/venom-scanner/src/phases/phase1_recon.rs",
+      "crates/venom-scanner/src/phases/phase2_crawl.rs",
+      "crates/venom-scanner/src/phases/phase3_fuzzer.rs",
+      "crates/venom-scanner/src/phases/phase4_param.rs",
+      "crates/venom-scanner/src/phases/phase5_sqli.rs",
+      "crates/venom-scanner/src/phases/phase6_xss.rs",
+      "crates/venom-scanner/src/phases/phase7_ssti.rs",
+      "crates/venom-scanner/src/phases/phase8_lfi_xxe.rs",
+      "crates/venom-scanner/src/phases/phase9_ssrf.rs",
+      "crates/venom-scanner/src/planner.rs",
+      "crates/venom-scanner/src/plugin.rs",
+      "crates/venom-scanner/src/post_exploitation.rs",
+      "crates/venom-scanner/src/realtime.rs",
+      "crates/venom-scanner/src/reporting.rs",
+      "crates/venom-scanner/src/rules.rs",
+      "crates/venom-scanner/src/runner.rs",
+      "crates/venom-scanner/src/runtime_budget.rs",
+      "crates/venom-scanner/src/sdk.rs",
+      "crates/venom-scanner/src/threat_intelligence.rs",
+      "crates/venom-scanner/src/verification.rs",
+      "crates/venom-scanner/src/web_actions.rs",
+      "crates/venom-scanner/src/web_decision.rs",
+      "crates/venom-scanner/src/web_execution.rs",
+      "crates/venom-scanner/src/web_planning.rs",
+      "crates/venom-scanner/src/web_reasoning.rs",
+      "crates/venom-scanner/src/web_runtime.rs",
+      "crates/venom-scanner/src/web_verification.rs",
+      "xtask/src/architecture.rs",
+      "xtask/src/architecture/deployment.rs",
+      "xtask/src/architecture/platform.rs",
+      "xtask/src/architecture/plugin.rs",
+      "xtask/src/architecture/source_hygiene.rs",
+      "xtask/src/architecture/transport.rs",
+      "xtask/src/architecture/workflows.rs",
+      "xtask/src/main.rs",
+      "xtask/src/release_metadata.rs"
+    ],
+    "coverable_lines": 11966,
+    "covered_lines": 10345,
+    "files": [
+      {
+        "changed_lines": 64,
+        "coverable_lines": 10,
+        "covered_lines": 10,
+        "path": "crates/venom-api/src/lib.rs"
+      },
+      {
+        "changed_lines": 8,
+        "coverable_lines": 1,
+        "covered_lines": 1,
+        "path": "crates/venom-cli/src/decision_scan.rs"
+      },
+      {
+        "changed_lines": 416,
+        "coverable_lines": 133,
+        "covered_lines": 23,
+        "path": "crates/venom-cli/src/main.rs"
+      },
+      {
+        "changed_lines": 10,
+        "coverable_lines": 0,
+        "covered_lines": 0,
+        "path": "crates/venom-core/src/config.rs"
+      },
+      {
+        "changed_lines": 10,
+        "coverable_lines": 0,
+        "covered_lines": 0,
+        "path": "crates/venom-core/src/error.rs"
+      },
+      {
+        "changed_lines": 6,
+        "coverable_lines": 0,
+        "covered_lines": 0,
+        "path": "crates/venom-core/src/events.rs"
+      },
+      {
+        "changed_lines": 32,
+        "coverable_lines": 0,
+        "covered_lines": 0,
+        "path": "crates/venom-core/src/lib.rs"
+      },
+      {
+        "changed_lines": 18,
+        "coverable_lines": 0,
+        "covered_lines": 0,
+        "path": "crates/venom-core/src/models.rs"
+      },
+      {
+        "changed_lines": 1,
+        "coverable_lines": 0,
+        "covered_lines": 0,
+        "path": "crates/venom-core/src/predicates.rs"
+      },
+      {
+        "changed_lines": 324,
+        "coverable_lines": 45,
+        "covered_lines": 39,
+        "path": "crates/venom-core/src/reasoning.rs"
+      },
+      {
+        "changed_lines": 2534,
+        "coverable_lines": 485,
+        "covered_lines": 446,
+        "path": "crates/venom-core/src/run_report.rs"
+      },
+      {
+        "changed_lines": 39,
+        "coverable_lines": 4,
+        "covered_lines": 1,
+        "path": "crates/venom-proxy/src/lib.rs"
+      },
+      {
+        "changed_lines": 104,
+        "coverable_lines": 20,
+        "covered_lines": 18,
+        "path": "crates/venom-proxy/src/relay.rs"
+      },
+      {
+        "changed_lines": 5,
+        "coverable_lines": 0,
+        "covered_lines": 0,
+        "path": "crates/venom-scanner/src/adaptive/mod.rs"
+      },
+      {
+        "changed_lines": 494,
+        "coverable_lines": 125,
+        "covered_lines": 104,
+        "path": "crates/venom-scanner/src/advanced_detection.rs"
+      },
+      {
+        "changed_lines": 136,
+        "coverable_lines": 43,
+        "covered_lines": 42,
+        "path": "crates/venom-scanner/src/anomaly.rs"
+      },
+      {
+        "changed_lines": 246,
+        "coverable_lines": 39,
+        "covered_lines": 38,
+        "path": "crates/venom-scanner/src/api.rs"
+      },
+      {
+        "changed_lines": 3,
+        "coverable_lines": 3,
+        "covered_lines": 3,
+        "path": "crates/venom-scanner/src/api_evidence/profiled/policy.rs"
+      },
+      {
+        "changed_lines": 74,
+        "coverable_lines": 7,
+        "covered_lines": 7,
+        "path": "crates/venom-scanner/src/api_gateway.rs"
+      },
+      {
+        "changed_lines": 3,
+        "coverable_lines": 3,
+        "covered_lines": 3,
+        "path": "crates/venom-scanner/src/api_observation.rs"
+      },
+      {
+        "changed_lines": 48,
+        "coverable_lines": 5,
+        "covered_lines": 5,
+        "path": "crates/venom-scanner/src/auth.rs"
+      },
+      {
+        "changed_lines": 264,
+        "coverable_lines": 74,
+        "covered_lines": 69,
+        "path": "crates/venom-scanner/src/cache.rs"
+      },
+      {
+        "changed_lines": 283,
+        "coverable_lines": 106,
+        "covered_lines": 74,
+        "path": "crates/venom-scanner/src/compliance.rs"
+      },
+      {
+        "changed_lines": 115,
+        "coverable_lines": 22,
+        "covered_lines": 22,
+        "path": "crates/venom-scanner/src/config.rs"
+      },
+      {
+        "changed_lines": 129,
+        "coverable_lines": 34,
+        "covered_lines": 34,
+        "path": "crates/venom-scanner/src/config_loader.rs"
+      },
+      {
+        "changed_lines": 975,
+        "coverable_lines": 187,
+        "covered_lines": 180,
+        "path": "crates/venom-scanner/src/context.rs"
+      },
+      {
+        "changed_lines": 11,
+        "coverable_lines": 0,
+        "covered_lines": 0,
+        "path": "crates/venom-scanner/src/contracts.rs"
+      },
+      {
+        "changed_lines": 125,
+        "coverable_lines": 25,
+        "covered_lines": 25,
+        "path": "crates/venom-scanner/src/dashboard.rs"
+      },
+      {
+        "changed_lines": 1,
+        "coverable_lines": 0,
+        "covered_lines": 0,
+        "path": "crates/venom-scanner/src/decision_loop.rs"
+      },
+      {
+        "changed_lines": 362,
+        "coverable_lines": 9,
+        "covered_lines": 9,
+        "path": "crates/venom-scanner/src/decision_runner.rs"
+      },
+      {
+        "changed_lines": 2,
+        "coverable_lines": 0,
+        "covered_lines": 0,
+        "path": "crates/venom-scanner/src/defense/mod.rs"
+      },
+      {
+        "changed_lines": 2839,
+        "coverable_lines": 1507,
+        "covered_lines": 1192,
+        "path": "crates/venom-scanner/src/distributed.rs"
+      },
+      {
+        "changed_lines": 129,
+        "coverable_lines": 15,
+        "covered_lines": 15,
+        "path": "crates/venom-scanner/src/error.rs"
+      },
+      {
+        "changed_lines": 15,
+        "coverable_lines": 2,
+        "covered_lines": 2,
+        "path": "crates/venom-scanner/src/event_bus.rs"
+      },
+      {
+        "changed_lines": 1,
+        "coverable_lines": 0,
+        "covered_lines": 0,
+        "path": "crates/venom-scanner/src/experience.rs"
+      },
+      {
+        "changed_lines": 105,
+        "coverable_lines": 24,
+        "covered_lines": 24,
+        "path": "crates/venom-scanner/src/http_evidence.rs"
+      },
+      {
+        "changed_lines": 477,
+        "coverable_lines": 103,
+        "covered_lines": 91,
+        "path": "crates/venom-scanner/src/knowledge.rs"
+      },
+      {
+        "changed_lines": 1274,
+        "coverable_lines": 403,
+        "covered_lines": 381,
+        "path": "crates/venom-scanner/src/legacy_discovery.rs"
+      },
+      {
+        "changed_lines": 145,
+        "coverable_lines": 0,
+        "covered_lines": 0,
+        "path": "crates/venom-scanner/src/lib.rs"
+      },
+      {
+        "changed_lines": 3,
+        "coverable_lines": 0,
+        "covered_lines": 0,
+        "path": "crates/venom-scanner/src/logging.rs"
+      },
+      {
+        "changed_lines": 553,
+        "coverable_lines": 160,
+        "covered_lines": 142,
+        "path": "crates/venom-scanner/src/lua_config.rs"
+      },
+      {
+        "changed_lines": 2911,
+        "coverable_lines": 973,
+        "covered_lines": 852,
+        "path": "crates/venom-scanner/src/lua_engine.rs"
+      },
+      {
+        "changed_lines": 176,
+        "coverable_lines": 57,
+        "covered_lines": 54,
+        "path": "crates/venom-scanner/src/metrics.rs"
+      },
+      {
+        "changed_lines": 276,
+        "coverable_lines": 75,
+        "covered_lines": 63,
+        "path": "crates/venom-scanner/src/ml.rs"
+      },
+      {
+        "changed_lines": 418,
+        "coverable_lines": 136,
+        "covered_lines": 113,
+        "path": "crates/venom-scanner/src/monitoring.rs"
+      },
+      {
+        "changed_lines": 2,
+        "coverable_lines": 0,
+        "covered_lines": 0,
+        "path": "crates/venom-scanner/src/payload_strategies/api_authorization_context_pair.rs"
+      },
+      {
+        "changed_lines": 54,
+        "coverable_lines": 13,
+        "covered_lines": 13,
+        "path": "crates/venom-scanner/src/payload_strategies/encoding.rs"
+      },
+      {
+        "changed_lines": 3,
+        "coverable_lines": 0,
+        "covered_lines": 0,
+        "path": "crates/venom-scanner/src/payload_strategies/http_header_control_pair.rs"
+      },
+      {
+        "changed_lines": 3,
+        "coverable_lines": 0,
+        "covered_lines": 0,
+        "path": "crates/venom-scanner/src/payload_strategies/mod.rs"
+      },
+      {
+        "changed_lines": 1,
+        "coverable_lines": 0,
+        "covered_lines": 0,
+        "path": "crates/venom-scanner/src/payload_strategy.rs"
+      },
+      {
+        "changed_lines": 75,
+        "coverable_lines": 11,
+        "covered_lines": 8,
+        "path": "crates/venom-scanner/src/persistence.rs"
+      },
+      {
+        "changed_lines": 10,
+        "coverable_lines": 0,
+        "covered_lines": 0,
+        "path": "crates/venom-scanner/src/phases/mod.rs"
+      },
+      {
+        "changed_lines": 2,
+        "coverable_lines": 0,
+        "covered_lines": 0,
+        "path": "crates/venom-scanner/src/phases/phase1_recon.rs"
+      },
+      {
+        "changed_lines": 1290,
+        "coverable_lines": 223,
+        "covered_lines": 206,
+        "path": "crates/venom-scanner/src/phases/phase2_crawl.rs"
+      },
+      {
+        "changed_lines": 1381,
+        "coverable_lines": 247,
+        "covered_lines": 232,
+        "path": "crates/venom-scanner/src/phases/phase3_fuzzer.rs"
+      },
+      {
+        "changed_lines": 865,
+        "coverable_lines": 144,
+        "covered_lines": 141,
+        "path": "crates/venom-scanner/src/phases/phase4_param.rs"
+      },
+      {
+        "changed_lines": 962,
+        "coverable_lines": 236,
+        "covered_lines": 219,
+        "path": "crates/venom-scanner/src/phases/phase5_sqli.rs"
+      },
+      {
+        "changed_lines": 386,
+        "coverable_lines": 83,
+        "covered_lines": 74,
+        "path": "crates/venom-scanner/src/phases/phase6_xss.rs"
+      },
+      {
+        "changed_lines": 523,
+        "coverable_lines": 147,
+        "covered_lines": 136,
+        "path": "crates/venom-scanner/src/phases/phase7_ssti.rs"
+      },
+      {
+        "changed_lines": 642,
+        "coverable_lines": 141,
+        "covered_lines": 138,
+        "path": "crates/venom-scanner/src/phases/phase8_lfi_xxe.rs"
+      },
+      {
+        "changed_lines": 376,
+        "coverable_lines": 65,
+        "covered_lines": 62,
+        "path": "crates/venom-scanner/src/phases/phase9_ssrf.rs"
+      },
+      {
+        "changed_lines": 1,
+        "coverable_lines": 0,
+        "covered_lines": 0,
+        "path": "crates/venom-scanner/src/planner.rs"
+      },
+      {
+        "changed_lines": 3512,
+        "coverable_lines": 875,
+        "covered_lines": 667,
+        "path": "crates/venom-scanner/src/plugin.rs"
+      },
+      {
+        "changed_lines": 49,
+        "coverable_lines": 4,
+        "covered_lines": 3,
+        "path": "crates/venom-scanner/src/post_exploitation.rs"
+      },
+      {
+        "changed_lines": 311,
+        "coverable_lines": 92,
+        "covered_lines": 73,
+        "path": "crates/venom-scanner/src/realtime.rs"
+      },
+      {
+        "changed_lines": 1443,
+        "coverable_lines": 483,
+        "covered_lines": 446,
+        "path": "crates/venom-scanner/src/reporting.rs"
+      },
+      {
+        "changed_lines": 1,
+        "coverable_lines": 0,
+        "covered_lines": 0,
+        "path": "crates/venom-scanner/src/rules.rs"
+      },
+      {
+        "changed_lines": 1639,
+        "coverable_lines": 291,
+        "covered_lines": 272,
+        "path": "crates/venom-scanner/src/runner.rs"
+      },
+      {
+        "changed_lines": 1,
+        "coverable_lines": 0,
+        "covered_lines": 0,
+        "path": "crates/venom-scanner/src/runtime_budget.rs"
+      },
+      {
+        "changed_lines": 94,
+        "coverable_lines": 23,
+        "covered_lines": 22,
+        "path": "crates/venom-scanner/src/sdk.rs"
+      },
+      {
+        "changed_lines": 324,
+        "coverable_lines": 101,
+        "covered_lines": 68,
+        "path": "crates/venom-scanner/src/threat_intelligence.rs"
+      },
+      {
+        "changed_lines": 51,
+        "coverable_lines": 13,
+        "covered_lines": 13,
+        "path": "crates/venom-scanner/src/verification.rs"
+      },
+      {
+        "changed_lines": 1,
+        "coverable_lines": 0,
+        "covered_lines": 0,
+        "path": "crates/venom-scanner/src/web_actions.rs"
+      },
+      {
+        "changed_lines": 1,
+        "coverable_lines": 0,
+        "covered_lines": 0,
+        "path": "crates/venom-scanner/src/web_decision.rs"
+      },
+      {
+        "changed_lines": 1,
+        "coverable_lines": 0,
+        "covered_lines": 0,
+        "path": "crates/venom-scanner/src/web_execution.rs"
+      },
+      {
+        "changed_lines": 4,
+        "coverable_lines": 0,
+        "covered_lines": 0,
+        "path": "crates/venom-scanner/src/web_planning.rs"
+      },
+      {
+        "changed_lines": 4,
+        "coverable_lines": 0,
+        "covered_lines": 0,
+        "path": "crates/venom-scanner/src/web_reasoning.rs"
+      },
+      {
+        "changed_lines": 3,
+        "coverable_lines": 0,
+        "covered_lines": 0,
+        "path": "crates/venom-scanner/src/web_runtime.rs"
+      },
+      {
+        "changed_lines": 1,
+        "coverable_lines": 0,
+        "covered_lines": 0,
+        "path": "crates/venom-scanner/src/web_verification.rs"
+      },
+      {
+        "changed_lines": 41,
+        "coverable_lines": 16,
+        "covered_lines": 16,
+        "path": "xtask/src/architecture.rs"
+      },
+      {
+        "changed_lines": 219,
+        "coverable_lines": 46,
+        "covered_lines": 43,
+        "path": "xtask/src/architecture/deployment.rs"
+      },
+      {
+        "changed_lines": 8268,
+        "coverable_lines": 2894,
+        "covered_lines": 2519,
+        "path": "xtask/src/architecture/platform.rs"
+      },
+      {
+        "changed_lines": 687,
+        "coverable_lines": 245,
+        "covered_lines": 224,
+        "path": "xtask/src/architecture/plugin.rs"
+      },
+      {
+        "changed_lines": 268,
+        "coverable_lines": 91,
+        "covered_lines": 86,
+        "path": "xtask/src/architecture/source_hygiene.rs"
+      },
+      {
+        "changed_lines": 851,
+        "coverable_lines": 338,
+        "covered_lines": 323,
+        "path": "xtask/src/architecture/transport.rs"
+      },
+      {
+        "changed_lines": 803,
+        "coverable_lines": 227,
+        "covered_lines": 217,
+        "path": "xtask/src/architecture/workflows.rs"
+      },
+      {
+        "changed_lines": 4,
+        "coverable_lines": 1,
+        "covered_lines": 0,
+        "path": "xtask/src/main.rs"
+      },
+      {
+        "changed_lines": 216,
+        "coverable_lines": 81,
+        "covered_lines": 42,
+        "path": "xtask/src/release_metadata.rs"
+      }
+    ]
+  },
+  "provenance": {
+    "artifact_name": "coverage-evidence",
+    "artifact_url": "https://github.com/ITherso/venom/actions/runs/32441430891",
+    "repository": "ITherso/venom",
+    "run_attempt": "1",
+    "run_id": "32441430891"
+  },
+  "schema": "venom.coverage.v2",
+  "scope": {
+    "excludes": [
+      "test functions (--ignore-tests) and Rust paths outside the fixed include scope"
+    ],
+    "includes": [
+      "crates/*/src/**",
+      "xtask/src/**"
+    ]
+  },
+  "source": {
+    "cargo_lock_sha256": "ec6549b3e86ff2a6399688cbe9daba461e986350d5e4fab3ef7407a91ee8afa1",
+    "commit": "83069a04e6fc195654afc55935bc4f32cf8c7491"
+  },
+  "tooling": {
+    "command": "cargo +1.88.0 tarpaulin --locked --workspace --all-features --ignore-tests --ignore-config --engine llvm --out Xml --timeout 300",
+    "engine": "llvm",
+    "installer_rust": "1.91.0",
+    "runner_target": "x86_64-unknown-linux-gnu",
+    "rust": "1.88.0",
+    "rust_components": [
+      "llvm-tools-preview"
+    ],
+    "tarpaulin": "0.37.2",
+    "timeout_seconds": 300
+  }
+}
