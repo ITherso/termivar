@@ -108,6 +108,9 @@ pub mod web_runtime;
 #[cfg(feature = "scanning")]
 mod web_assessment;
 
+#[cfg(feature = "scanning")]
+mod scan_profile;
+
 // Experimental detection and deviation records (feature: detection)
 #[cfg(feature = "detection")]
 pub mod advanced_detection;
@@ -392,6 +395,15 @@ pub use web_assessment::{
     HARD_MAX_WEB_ASSESSMENT_RETAINED_URL_BYTES, HARD_MAX_WEB_ASSESSMENT_SUBJECTS,
     HARD_MAX_WEB_ASSESSMENT_TOTAL_REQUESTS, HARD_MAX_WEB_ASSESSMENT_TOTAL_RESPONSE_BYTES,
     HARD_MAX_WEB_ASSESSMENT_WALL_TIME, WEB_ASSESSMENT_CONCURRENCY,
+};
+
+#[cfg(feature = "scanning")]
+pub use scan_profile::{
+    BuiltInScanProfile, BuiltInScanProfileParseError, ScanProfileCapabilitiesV1,
+    ScanProfileLimitsV1, ScanProfileScope, ScanProfileSelectionError, ScanProfileV1,
+    ScanProfileV1Error, BASELINE_SCAN_PROFILE_ID, BASELINE_SCAN_PROFILE_MAX_TOTAL_REQUESTS,
+    BASELINE_SCAN_PROFILE_MAX_TOTAL_RESPONSE_BYTES, BASELINE_SCAN_PROFILE_MAX_WALL_TIME_MS,
+    SCAN_PROFILE_V1_SCHEMA, WEB_REVIEW_SCAN_PROFILE_ID,
 };
 
 #[cfg(all(feature = "scanning", feature = "plugins"))]

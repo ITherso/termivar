@@ -28,6 +28,7 @@ const BOUNDED_RUNTIME_SOURCES: &[&str] = &[
     "crates/venom-scanner/src/payload_strategy.rs",
     "crates/venom-scanner/src/planner.rs",
     "crates/venom-scanner/src/runtime_budget.rs",
+    "crates/venom-scanner/src/scan_profile.rs",
     "crates/venom-scanner/src/verification.rs",
     "crates/venom-scanner/src/web_actions.rs",
     "crates/venom-scanner/src/web_assessment.rs",

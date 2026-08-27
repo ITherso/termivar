@@ -176,6 +176,7 @@ const EXACT_MODULE_GATES: &[(&str, &str)] = &[
     ("realtime", "feature=\"platform-models\""),
     ("reporting", "feature=\"reporting\""),
     ("runner", "feature=\"legacy-scanner\""),
+    ("scan_profile", "feature=\"scanning\""),
     ("sdk", "feature=\"legacy-scanner\""),
     ("threat_intelligence", "feature=\"threat-intel\""),
 ];
@@ -285,7 +286,7 @@ const QUARANTINED_PUBLIC_FEATURES: &[&str] = &[
 
 /// Executable host contracts whose implementation modules stay private while
 /// their exact root re-exports form the public boundary.
-const PRIVATE_FACADE_SURFACES: &[&str] = &["distributed", "lua_engine"];
+const PRIVATE_FACADE_SURFACES: &[&str] = &["distributed", "lua_engine", "scan_profile"];
 
 /// Exact machine-readable lifecycle and host inventory for public quarantined
 /// scanner modules most likely to be mistaken for product runtime surfaces.
@@ -885,6 +886,12 @@ pub(super) fn check(workspace_root: &Path) -> Result<Vec<String>, Box<dyn Error>
         "lua_config",
         "any(feature=\"platform-models\",feature=\"lua\")",
         EXACT_LUA_CONFIG_REEXPORTS,
+    )?);
+    violations.extend(private_facade_reexport_violations(
+        &source,
+        "scan_profile",
+        "feature=\"scanning\"",
+        EXACT_SCAN_PROFILE_REEXPORTS,
     )?);
     violations.extend(host_surface_cfg_facade_violations(&source)?);
     violations.extend(reporting_reexport_violations(&source)?);
@@ -1627,6 +1634,23 @@ const EXACT_LUA_REEXPORTS: &[&str] = &[
 
 const EXACT_LUA_CONFIG_REEXPORTS: &[&str] =
     &["LuaConfigError", "LuaConfigViolation", "LuaEngineConfig"];
+
+const EXACT_SCAN_PROFILE_REEXPORTS: &[&str] = &[
+    "BASELINE_SCAN_PROFILE_ID",
+    "BASELINE_SCAN_PROFILE_MAX_TOTAL_REQUESTS",
+    "BASELINE_SCAN_PROFILE_MAX_TOTAL_RESPONSE_BYTES",
+    "BASELINE_SCAN_PROFILE_MAX_WALL_TIME_MS",
+    "BuiltInScanProfile",
+    "BuiltInScanProfileParseError",
+    "SCAN_PROFILE_V1_SCHEMA",
+    "ScanProfileCapabilitiesV1",
+    "ScanProfileLimitsV1",
+    "ScanProfileScope",
+    "ScanProfileSelectionError",
+    "ScanProfileV1",
+    "ScanProfileV1Error",
+    "WEB_REVIEW_SCAN_PROFILE_ID",
+];
 
 fn private_facade_reexport_violations(
     source: &str,
@@ -5991,6 +6015,11 @@ mod tests {
                 "any(feature=\"platform-models\",feature=\"lua\")",
                 EXACT_LUA_CONFIG_REEXPORTS,
             ),
+            (
+                "scan_profile",
+                "feature=\"scanning\"",
+                EXACT_SCAN_PROFILE_REEXPORTS,
+            ),
         ] {
             assert!(
                 private_facade_reexport_violations(source, module, cfg, symbols)
@@ -7882,6 +7911,7 @@ mod tests {
             #[cfg(feature = "platform-models")] pub mod realtime;
             #[cfg(feature = "reporting")] pub mod reporting;
             #[cfg(feature = "legacy-scanner")] pub mod runner;
+            #[cfg(feature = "scanning")] mod scan_profile;
             #[cfg(feature = "legacy-scanner")] pub mod sdk;
             #[cfg(feature = "threat-intel")] pub mod threat_intelligence;
         "#;
