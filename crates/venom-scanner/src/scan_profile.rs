@@ -10,10 +10,7 @@ use std::{fmt, str::FromStr, time::Duration};
 use serde::{de::Error as _, Deserialize, Deserializer, Serialize};
 use thiserror::Error;
 
-use crate::{
-    WebAssessmentLimits, WebAssessmentLimitsError, DEFAULT_MAX_ACTIVE_VERIFICATIONS,
-    DEFAULT_MAX_RESPONSE_BYTES, DEFAULT_MAX_TOTAL_REQUESTS, DEFAULT_MAX_WALL_TIME_MS,
-};
+use crate::{WebAssessmentLimits, WebAssessmentLimitsError, DEFAULT_MAX_ACTIVE_VERIFICATIONS};
 
 /// Exact schema identifier for the first deterministic scan-profile contract.
 pub const SCAN_PROFILE_V1_SCHEMA: &str = "venom.scan-profile/v1";
@@ -21,12 +18,12 @@ pub const SCAN_PROFILE_V1_SCHEMA: &str = "venom.scan-profile/v1";
 pub const BASELINE_SCAN_PROFILE_ID: &str = "baseline";
 /// Exact built-in identifier for bounded exact-origin review.
 pub const WEB_REVIEW_SCAN_PROFILE_ID: &str = "web-review";
-/// Request ceiling used by the unchanged default single-resource runtime.
-pub const BASELINE_SCAN_PROFILE_MAX_TOTAL_REQUESTS: u32 = DEFAULT_MAX_TOTAL_REQUESTS;
-/// Wall-clock ceiling used by the unchanged default single-resource runtime.
-pub const BASELINE_SCAN_PROFILE_MAX_WALL_TIME_MS: u64 = DEFAULT_MAX_WALL_TIME_MS;
-/// Cumulative response-byte ceiling used by the unchanged default runtime.
-pub const BASELINE_SCAN_PROFILE_MAX_TOTAL_RESPONSE_BYTES: u64 = DEFAULT_MAX_RESPONSE_BYTES;
+/// Request ceiling used by the unchanged default single-resource CLI path.
+pub const BASELINE_SCAN_PROFILE_MAX_TOTAL_REQUESTS: u32 = 16;
+/// Wall-clock ceiling used by the unchanged default single-resource CLI path.
+pub const BASELINE_SCAN_PROFILE_MAX_WALL_TIME_MS: u64 = 60_000;
+/// Cumulative response-byte ceiling used by the unchanged default CLI path.
+pub const BASELINE_SCAN_PROFILE_MAX_TOTAL_RESPONSE_BYTES: u64 = 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 enum ScanProfileSchemaV1 {
@@ -850,18 +847,9 @@ mod tests {
 
     #[test]
     fn built_in_limits_are_exact_and_share_fixed_concurrency() {
-        assert_eq!(
-            BASELINE_SCAN_PROFILE_MAX_TOTAL_REQUESTS,
-            DEFAULT_MAX_TOTAL_REQUESTS
-        );
-        assert_eq!(
-            BASELINE_SCAN_PROFILE_MAX_WALL_TIME_MS,
-            DEFAULT_MAX_WALL_TIME_MS
-        );
-        assert_eq!(
-            BASELINE_SCAN_PROFILE_MAX_TOTAL_RESPONSE_BYTES,
-            DEFAULT_MAX_RESPONSE_BYTES
-        );
+        assert_eq!(BASELINE_SCAN_PROFILE_MAX_TOTAL_REQUESTS, 16);
+        assert_eq!(BASELINE_SCAN_PROFILE_MAX_WALL_TIME_MS, 60_000);
+        assert_eq!(BASELINE_SCAN_PROFILE_MAX_TOTAL_RESPONSE_BYTES, 1024 * 1024);
 
         let baseline = ScanProfileV1::baseline().unwrap();
         let limits = baseline.limits();

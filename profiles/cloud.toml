@@ -1,8 +1,0 @@
-# INERT DESIGN INPUT - not loaded by any Venom CLI or repository runtime.
-# Identity metadata only; see profiles/README.md.
-
-[profile]
-id = "cloud"
-description = "Historical cloud profile label"
-lifecycle = "experimental-design-input"
-runtime_wired = false

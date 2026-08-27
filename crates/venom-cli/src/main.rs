@@ -18,6 +18,7 @@
 
 #![forbid(unsafe_code)]
 
+mod assessment_scan;
 mod decision_scan;
 
 use clap::{Parser, Subcommand, ValueEnum};
@@ -31,7 +32,9 @@ use venom_scanner::{
 };
 
 /// Output format for deterministic `scan`. `text` is the default human-readable
-/// report; `json` preserves the versioned `decision-scan/v1` wire document.
+/// report. Without an explicit profile, `json` preserves the versioned
+/// `decision-scan/v1` wire document; an explicit profile selects the additive
+/// `web-assessment/v1` document.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
 #[value(rename_all = "lowercase")]
 enum OutputFormat {
@@ -39,11 +42,45 @@ enum OutputFormat {
     Json,
 }
 
+/// Explicit product profile. Absence is a compatibility state that preserves
+/// the existing `decision-scan/v1` behavior and output byte-for-byte.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+#[value(rename_all = "kebab-case")]
+enum CliScanProfile {
+    Baseline,
+    WebReview,
+}
+
+impl From<CliScanProfile> for venom_scanner::BuiltInScanProfile {
+    fn from(value: CliScanProfile) -> Self {
+        match value {
+            CliScanProfile::Baseline => Self::Baseline,
+            CliScanProfile::WebReview => Self::WebReview,
+        }
+    }
+}
+
 /// True when `--format json` is combined with `--explain` — an ambiguous
 /// combination rejected fail-fast, because the JSON document already carries the
 /// full diagnostics `--explain` adds to the text report.
 fn scan_flags_conflict(format: OutputFormat, explain: bool) -> bool {
     matches!(format, OutputFormat::Json) && explain
+}
+
+/// Returns a stable argument error for profile-specific combinations. This is
+/// evaluated before the runtime warning, output, or network construction.
+fn scan_profile_flags_conflict(
+    profile: Option<CliScanProfile>,
+    explain: bool,
+    enforce_defense: bool,
+) -> Option<&'static str> {
+    if profile.is_some() && explain {
+        Some("`--explain` is available only when no explicit `--profile` is selected")
+    } else if enforce_defense && profile != Some(CliScanProfile::WebReview) {
+        Some("`--enforce-defense` requires `--profile web-review`")
+    } else {
+        None
+    }
 }
 
 #[cfg(feature = "legacy-scanner")]
@@ -85,6 +122,16 @@ enum Commands {
         /// default text output is unchanged.
         #[arg(long)]
         explain: bool,
+        /// Select an explicit versioned product profile. With no profile, the
+        /// existing conservative single-resource command and wire schema remain
+        /// unchanged.
+        #[arg(long, value_enum)]
+        profile: Option<CliScanProfile>,
+        /// Apply monotonic defense suppression. Valid only with
+        /// `--profile web-review`; observation and shadow planning remain enabled
+        /// without this flag.
+        #[arg(long, requires = "profile")]
+        enforce_defense: bool,
     },
     /// Run the historical mixed-authority, whole-run-unmetered heuristic pipeline.
     #[cfg(feature = "legacy-scanner")]
@@ -121,6 +168,8 @@ async fn run_deterministic_scan(
     target: Url,
     format: OutputFormat,
     explain: bool,
+    profile: Option<CliScanProfile>,
+    enforce_defense: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if scan_flags_conflict(format, explain) {
         use clap::CommandFactory;
@@ -130,6 +179,39 @@ async fn run_deterministic_scan(
                 "`--explain` applies only to `--format text`; `--format json` already includes full diagnostics",
             )
             .exit();
+    }
+    if let Some(message) = scan_profile_flags_conflict(profile, explain, enforce_defense) {
+        use clap::CommandFactory;
+        Cli::command()
+            .error(clap::error::ErrorKind::ArgumentConflict, message)
+            .exit();
+    }
+
+    if let Some(selected_profile) = profile {
+        let mut profile = venom_scanner::ScanProfileV1::for_builtin(selected_profile.into())?;
+        if enforce_defense {
+            profile = profile.with_defense_enforcement_enabled(true)?;
+        }
+
+        eprintln!("{DETERMINISTIC_SCAN_WARNING}");
+        let execution = assessment_scan::run_profile_scan(
+            target,
+            profile,
+            matches!(format, OutputFormat::Json),
+        )
+        .await?;
+        let (rendered, post_render_failure) = execution.into_parts();
+        {
+            use std::io::Write as _;
+            let stdout = std::io::stdout();
+            let mut output = stdout.lock();
+            output.write_all(rendered.as_bytes())?;
+            output.flush()?;
+        }
+        if let Some(failure) = post_render_failure {
+            return Err(std::io::Error::other(failure.message()).into());
+        }
+        return Ok(());
     }
 
     eprintln!("{DETERMINISTIC_SCAN_WARNING}");
@@ -322,8 +404,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             target,
             format,
             explain,
+            profile,
+            enforce_defense,
         }) => {
-            run_deterministic_scan(target, format, explain).await?;
+            run_deterministic_scan(target, format, explain, profile, enforce_defense).await?;
         },
         #[cfg(feature = "legacy-scanner")]
         Some(Commands::LegacyScan {
@@ -364,10 +448,14 @@ mod tests {
                 target,
                 format,
                 explain,
+                profile,
+                enforce_defense,
             }) => {
                 assert_eq!(target.as_str(), "https://example.test/");
                 assert_eq!(format, OutputFormat::Text);
                 assert!(!explain);
+                assert_eq!(profile, None);
+                assert!(!enforce_defense);
             },
             _ => panic!("expected the deterministic scan command"),
         }
@@ -382,6 +470,8 @@ mod tests {
                 target,
                 format,
                 explain,
+                profile,
+                enforce_defense,
             }) => {
                 assert_eq!(target.as_str(), "https://example.test/");
                 assert_eq!(format, OutputFormat::Text, "text is the default format");
@@ -389,6 +479,8 @@ mod tests {
                     !explain,
                     "explain must default off so the default output is unchanged"
                 );
+                assert_eq!(profile, None);
+                assert!(!enforce_defense);
             },
             _ => panic!("expected the deterministic scan command"),
         }
@@ -443,6 +535,89 @@ mod tests {
             },
             _ => panic!("expected the deterministic scan command"),
         }
+    }
+
+    #[test]
+    fn scan_profiles_are_explicit_exact_and_shared_by_both_spellings() {
+        for command in ["scan", "decision-scan"] {
+            let baseline = Cli::try_parse_from([
+                "venom",
+                command,
+                "--profile",
+                "baseline",
+                "https://example.test/",
+            ])
+            .unwrap();
+            assert!(matches!(
+                baseline.command,
+                Some(Commands::Scan {
+                    profile: Some(CliScanProfile::Baseline),
+                    enforce_defense: false,
+                    ..
+                })
+            ));
+
+            let review = Cli::try_parse_from([
+                "venom",
+                command,
+                "--profile",
+                "web-review",
+                "--enforce-defense",
+                "https://example.test/",
+            ])
+            .unwrap();
+            assert!(matches!(
+                review.command,
+                Some(Commands::Scan {
+                    profile: Some(CliScanProfile::WebReview),
+                    enforce_defense: true,
+                    ..
+                })
+            ));
+        }
+
+        for rejected in [
+            "Baseline",
+            " baseline",
+            "web_review",
+            "enterprise",
+            "cloud",
+            "aggressive",
+            "stealth",
+        ] {
+            assert!(Cli::try_parse_from([
+                "venom",
+                "scan",
+                "--profile",
+                rejected,
+                "https://example.test/",
+            ])
+            .is_err());
+        }
+    }
+
+    #[test]
+    fn profile_conflicts_fail_before_runtime_dispatch() {
+        assert!(Cli::try_parse_from([
+            "venom",
+            "scan",
+            "--enforce-defense",
+            "https://example.test/",
+        ])
+        .is_err());
+        assert_eq!(
+            scan_profile_flags_conflict(Some(CliScanProfile::Baseline), false, true),
+            Some("`--enforce-defense` requires `--profile web-review`")
+        );
+        assert_eq!(
+            scan_profile_flags_conflict(Some(CliScanProfile::WebReview), false, true),
+            None
+        );
+        assert!(scan_profile_flags_conflict(Some(CliScanProfile::Baseline), true, false).is_some());
+        assert!(
+            scan_profile_flags_conflict(Some(CliScanProfile::WebReview), true, false).is_some()
+        );
+        assert_eq!(scan_profile_flags_conflict(None, false, false), None);
     }
 
     #[test]
