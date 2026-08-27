@@ -198,15 +198,23 @@ fn web_review_is_exact_origin_bounded_parseable_and_value_redacted() {
 
     let outside = serve(|_| ok_html("outside", ""));
     let outside_reference = format!("{}outside?leak={OUTSIDE_VALUE}", outside.url);
-    let root_html = format!(concat!(
-        "<html><body>",
-        "<a href=\"/reset/{PATH_VALUE}?token={LINK_VALUE}\">child</a>",
-        "<a href=\"{outside_reference}\">outside</a>",
-        "<form method=\"get\" action=\"/submit/{FORM_PATH_VALUE}?next={FORM_VALUE}\">",
-        "<input name=\"authorization\" value=\"{CREDENTIAL_VALUE}\">",
-        "<input name=\"password\" value=\"{CREDENTIAL_VALUE}\">",
-        "</form></body></html>"
-    ));
+    let root_html = format!(
+        concat!(
+            "<html><body>",
+            "<a href=\"/reset/{PATH_VALUE}?token={LINK_VALUE}\">child</a>",
+            "<a href=\"{outside_reference}\">outside</a>",
+            "<form method=\"get\" action=\"/submit/{FORM_PATH_VALUE}?next={FORM_VALUE}\">",
+            "<input name=\"authorization\" value=\"{CREDENTIAL_VALUE}\">",
+            "<input name=\"password\" value=\"{CREDENTIAL_VALUE}\">",
+            "</form></body></html>"
+        ),
+        PATH_VALUE = PATH_VALUE,
+        LINK_VALUE = LINK_VALUE,
+        outside_reference = outside_reference,
+        FORM_PATH_VALUE = FORM_PATH_VALUE,
+        FORM_VALUE = FORM_VALUE,
+        CREDENTIAL_VALUE = CREDENTIAL_VALUE,
+    );
     let inside = serve(move |target| {
         if target.split('?').next() == Some("/") {
             ok_html(
