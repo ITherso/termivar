@@ -23,6 +23,7 @@ const SCAN_TASK_BOUNDARY_SOURCES: &[&str] = &[
     "crates/venom-scanner/src/sdk.rs",
     "crates/venom-scanner/src/decision_runner.rs",
     "crates/venom-cli/src/main.rs",
+    "crates/venom-cli/src/assessment_scan.rs",
     "crates/venom-cli/src/decision_scan.rs",
 ];
 
@@ -184,6 +185,18 @@ impl<'ast> Visit<'ast> for UnwrapOrDefaultVisitor {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn scan_task_boundary_inventory_includes_both_cli_adapters() {
+        let inventory = SCAN_TASK_BOUNDARY_SOURCES
+            .iter()
+            .copied()
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(inventory.len(), SCAN_TASK_BOUNDARY_SOURCES.len());
+        assert!(inventory.contains("crates/venom-cli/src/main.rs"));
+        assert!(inventory.contains("crates/venom-cli/src/decision_scan.rs"));
+        assert!(inventory.contains("crates/venom-cli/src/assessment_scan.rs"));
+    }
 
     #[test]
     fn disabled_cfg_is_rejected_across_crate_whitespace_and_nested_variants() {

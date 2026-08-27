@@ -20,6 +20,7 @@ use super::{
 
 /// Production modules that consume the bounded standard decision runtime.
 const BOUNDED_RUNTIME_SOURCES: &[&str] = &[
+    "crates/venom-cli/src/assessment_scan.rs",
     "crates/venom-scanner/src/decision_loop.rs",
     "crates/venom-scanner/src/decision_runner.rs",
     "crates/venom-scanner/src/defense/assessment.rs",
@@ -3806,6 +3807,21 @@ mod tests {
         assert!(violations
             .contains("<free>::extra contains 1 production RequestAccountingBroker::new calls"));
         assert!(violations.contains("requires 0"));
+    }
+
+    #[test]
+    fn bounded_runtime_inventory_includes_profiled_cli_adapter_only_as_a_consumer() {
+        let bounded = BOUNDED_RUNTIME_SOURCES
+            .iter()
+            .copied()
+            .collect::<BTreeSet<_>>();
+        assert_eq!(bounded.len(), BOUNDED_RUNTIME_SOURCES.len());
+        assert!(bounded.contains("crates/venom-cli/src/assessment_scan.rs"));
+        assert!(
+            !DIRECT_CLIENT_SOURCE_ALLOWLIST.contains(&"crates/venom-cli/src/assessment_scan.rs")
+        );
+        assert!(!UNMETERED_STANDALONE_FACADE_SOURCES
+            .contains(&"crates/venom-cli/src/assessment_scan.rs"));
     }
 
     #[test]

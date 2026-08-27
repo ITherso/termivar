@@ -29,7 +29,7 @@ const RELEASE_CREATE_GATE: &str = "gh release create \"$GITHUB_REF_NAME\" \\";
 const TESTS_WORKFLOW: &str = ".github/workflows/tests.yml";
 const COVERAGE_BASELINE_POINTER: &str = "docs/reports/coverage/accepted-baseline.txt";
 const EXPECTED_WORKFLOW_TRIGGERS: &str =
-    "on:\n  push:\n    branches: [ main, develop ]\n  pull_request:\n    branches: [ main, develop ]";
+    "on:\n  push:\n    branches: [ main, develop ]\n  pull_request:\n    branches: [ main, develop, 'agent/**' ]";
 const EXPECTED_WORKFLOW_ENV: &str = "env:\n  CARGO_TERM_COLOR: always\n  RUST_BACKTRACE: 1";
 const EXPECTED_CARGO_CONFIG: &[u8] = b"[alias]\nxtask = \"run --locked -p xtask --\"\n";
 const EXPECTED_COVERAGE_JOB: &str = r#"  code-coverage:
@@ -131,7 +131,7 @@ fn coverage_workflow_policy_violations(
     let mut violations = Vec::new();
     if !has_exact_top_level_block(&normalized, "on", EXPECTED_WORKFLOW_TRIGGERS) {
         violations.push(format!(
-            "{TESTS_WORKFLOW}: top-level triggers must equal the reviewed push/pull-request branch block exactly"
+            "{TESTS_WORKFLOW}: top-level triggers must equal the reviewed push and main/develop/agent stacked pull-request branch block exactly"
         ));
     }
     if !has_exact_top_level_block(&normalized, "env", EXPECTED_WORKFLOW_ENV) {
@@ -914,6 +914,10 @@ mod tests {
                 "    branches: [ main, develop ]",
                 "    branches: [ main, develop ]\n    paths-ignore: [ '**.rs' ]",
                 1,
+            ),
+            workflow.replace(
+                "    branches: [ main, develop, 'agent/**' ]",
+                "    branches: [ main, develop ]",
             ),
             workflow.replace(EXPECTED_WORKFLOW_TRIGGERS, "on: workflow_dispatch"),
             workflow.replace(
