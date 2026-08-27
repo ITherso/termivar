@@ -1116,4 +1116,277 @@ mod tests {
             Some(AssessmentScanPostRenderFailure::Incomplete)
         );
     }
+
+    #[test]
+    fn stable_reason_and_status_vocabularies_cover_every_current_runtime_boundary() {
+        let incomplete = [
+            (WebAssessmentIncompleteReason::SubjectLimit, "subject_limit"),
+            (
+                WebAssessmentIncompleteReason::DiscoveryDepthLimit,
+                "discovery_depth_limit",
+            ),
+            (
+                WebAssessmentIncompleteReason::DocumentReferenceLimit,
+                "document_reference_limit",
+            ),
+            (
+                WebAssessmentIncompleteReason::CanonicalUrlBytesLimit,
+                "canonical_url_bytes_limit",
+            ),
+            (
+                WebAssessmentIncompleteReason::RetainedUrlBytesLimit,
+                "retained_url_bytes_limit",
+            ),
+            (WebAssessmentIncompleteReason::FormLimit, "form_limit"),
+            (
+                WebAssessmentIncompleteReason::FormControlLimit,
+                "form_control_limit",
+            ),
+            (
+                WebAssessmentIncompleteReason::QueryParameterNameLimit,
+                "query_parameter_name_limit",
+            ),
+            (
+                WebAssessmentIncompleteReason::ResponseBodyIncomplete,
+                "response_body_incomplete",
+            ),
+            (
+                WebAssessmentIncompleteReason::PartialRepresentation,
+                "partial_representation",
+            ),
+            (WebAssessmentIncompleteReason::InvalidUtf8, "invalid_utf8"),
+            (
+                WebAssessmentIncompleteReason::TotalRequestLimit,
+                "total_request_limit",
+            ),
+            (
+                WebAssessmentIncompleteReason::ResponseBytesLimit,
+                "response_bytes_limit",
+            ),
+            (
+                WebAssessmentIncompleteReason::RequestBodyBytesLimit,
+                "request_body_bytes_limit",
+            ),
+            (
+                WebAssessmentIncompleteReason::WallTimeLimit,
+                "wall_time_limit",
+            ),
+            (
+                WebAssessmentIncompleteReason::ActiveVerificationLimit,
+                "active_verification_limit",
+            ),
+            (
+                WebAssessmentIncompleteReason::SameActionAttemptLimit,
+                "same_action_attempt_limit",
+            ),
+            (
+                WebAssessmentIncompleteReason::ConsecutiveNoProgressLimit,
+                "consecutive_no_progress_limit",
+            ),
+            (
+                WebAssessmentIncompleteReason::ActionCycleLimit,
+                "action_cycle_limit",
+            ),
+            (
+                WebAssessmentIncompleteReason::AdaptationLimit,
+                "adaptation_limit",
+            ),
+            (
+                WebAssessmentIncompleteReason::HumanReviewRequired,
+                "human_review_required",
+            ),
+            (
+                WebAssessmentIncompleteReason::SubjectExecutionIncomplete,
+                "subject_execution_incomplete",
+            ),
+            (
+                WebAssessmentIncompleteReason::HostCancellation,
+                "host_cancellation",
+            ),
+            (
+                WebAssessmentIncompleteReason::SemanticExtractionLimit,
+                "semantic_extraction_limit",
+            ),
+        ];
+        for (reason, expected) in incomplete {
+            assert_eq!(incomplete_reason_code(&reason), expected);
+        }
+
+        let stops = [
+            (DecisionStopReason::ObjectiveComplete, "objective_complete"),
+            (DecisionStopReason::NoEligibleAction, "no_eligible_action"),
+            (DecisionStopReason::HumanReview, "human_review"),
+            (DecisionStopReason::AdaptationLimit, "adaptation_limit"),
+            (DecisionStopReason::ActionCycleLimit, "action_cycle_limit"),
+            (
+                DecisionStopReason::RuntimeBudgetLimit,
+                "runtime_budget_limit",
+            ),
+            (DecisionStopReason::CancelledByHost, "cancelled_by_host"),
+        ];
+        for (reason, expected) in stops {
+            assert_eq!(stop_reason_code(reason), expected);
+        }
+
+        let dimensions = [
+            (RuntimeBudgetDimension::TotalRequests, "total_requests"),
+            (RuntimeBudgetDimension::WallTime, "wall_time"),
+            (RuntimeBudgetDimension::ResponseBytes, "response_bytes"),
+            (
+                RuntimeBudgetDimension::RequestBodyBytes,
+                "request_body_bytes",
+            ),
+            (
+                RuntimeBudgetDimension::ActiveVerifications,
+                "active_verifications",
+            ),
+            (
+                RuntimeBudgetDimension::SameActionAttempts,
+                "same_action_attempts",
+            ),
+            (
+                RuntimeBudgetDimension::ConsecutiveNoProgressTurns,
+                "consecutive_no_progress_turns",
+            ),
+        ];
+        for (dimension, expected) in dimensions {
+            assert_eq!(runtime_dimension_code(dimension), expected);
+        }
+
+        let outcomes = [
+            (venom_scanner::OutcomeStatus::Success, "success"),
+            (venom_scanner::OutcomeStatus::Blocked, "blocked"),
+            (venom_scanner::OutcomeStatus::Unknown, "unknown"),
+            (
+                venom_scanner::OutcomeStatus::FalsePositive,
+                "false_positive",
+            ),
+            (venom_scanner::OutcomeStatus::NeedsReview, "needs_review"),
+            (
+                venom_scanner::OutcomeStatus::ConfirmedNegative,
+                "confirmed_negative",
+            ),
+        ];
+        for (status, expected) in outcomes {
+            assert_eq!(outcome_status_code(status), expected);
+        }
+    }
+
+    #[test]
+    fn method_provenance_defense_and_terminal_tokens_remain_unambiguous() {
+        assert_eq!(assessment_method_code(WebAssessmentMethod::Get), "get");
+        assert_eq!(assessment_method_code(WebAssessmentMethod::Head), "head");
+        assert_eq!(form_method_code(WebAssessmentFormMethod::Get), "get");
+        assert_eq!(form_method_code(WebAssessmentFormMethod::Post), "post");
+        assert_eq!(form_method_code(WebAssessmentFormMethod::Dialog), "dialog");
+        assert_eq!(
+            subject_origin_code(WebAssessmentSubjectOrigin::AuthorizedRoot),
+            "authorized_root"
+        );
+        assert_eq!(
+            subject_origin_code(WebAssessmentSubjectOrigin::Discovered),
+            "discovered"
+        );
+        assert_eq!(
+            defense_mode_code(WebAssessmentDefenseMode::ObservationOnly),
+            "observation_only"
+        );
+        assert_eq!(
+            defense_mode_code(WebAssessmentDefenseMode::Enforced),
+            "enforced"
+        );
+
+        let replan = terminal_record(&DecisionLoopCommand::Replan);
+        assert_eq!(replan.command, "replan");
+        assert_eq!(replan.stop_reason, None);
+        let halt = terminal_record(&DecisionLoopCommand::Halt {
+            reason: DecisionStopReason::HumanReview,
+        });
+        assert_eq!(halt.command, "halt");
+        assert_eq!(halt.stop_reason, Some("human_review"));
+    }
+
+    #[test]
+    fn exact_origin_text_projection_reports_bounded_truth_without_private_values() {
+        const SECRET: &str = "Bearer-do-not-render";
+        let document = WebAssessmentDocument {
+            schema_version: WEB_ASSESSMENT_SCHEMA_VERSION,
+            target_origin: "https://example.test".to_owned(),
+            disposition: AssessmentDisposition::Incomplete,
+            incomplete_reasons: vec!["query_parameter_name_limit"],
+            profile_contract: ScanProfileV1::web_review().expect("built-in profile is valid"),
+            assessment: AssessmentBody::ExactOrigin(ExactOriginReport {
+                subjects: vec![SubjectRecord {
+                    subject_reference: "subject-0001".to_owned(),
+                    method: "get",
+                    depth: 0,
+                    provenance: "authorized_root",
+                    query_parameter_names: vec![SECRET.to_owned()],
+                    discovery_evidence_count: 1,
+                    executed: true,
+                    decision: SubjectDecisionSummary::default(),
+                }],
+                forms: vec![FormRecord {
+                    form_reference: "form-0001".to_owned(),
+                    method: "get",
+                    query_parameter_names: vec![SECRET.to_owned()],
+                    control_names: vec![SECRET.to_owned()],
+                    evidence_count: 2,
+                }],
+                semantics: SemanticSummary {
+                    entity_count: 3,
+                    entity_types: SemanticTypeCounts {
+                        endpoint: 2,
+                        parameter: 1,
+                        ..SemanticTypeCounts::default()
+                    },
+                    truncated: true,
+                    dropped_entities: 1,
+                    dropped_attributes: 2,
+                    dropped_sources: 3,
+                },
+                defense: DefenseSummary {
+                    mode: "observation_only",
+                    observation_count: 2,
+                    metadata_only_observations: 1,
+                    complete_prefix_observations: 1,
+                    input_limited_observations: 0,
+                    challenge_observations: 1,
+                    rate_limit_observations: 0,
+                    transition_count: 1,
+                    candidate_block_transitions: 1,
+                    newly_rate_limited_transitions: 0,
+                    shadow_plan_count: 1,
+                    unchanged_actions: 1,
+                    deprioritized_actions: 1,
+                    suppressed_actions: 1,
+                },
+                usage: ExactOriginUsage {
+                    retained_subjects: 1,
+                    executed_subjects: 1,
+                    retained_forms: 1,
+                    retained_unique_url_bytes: 20,
+                    total_requests: 2,
+                    active_verifications: 1,
+                    request_body_bytes: 0,
+                    response_bytes: 128,
+                    elapsed_ms: 9,
+                },
+                transport: TransportSummary {
+                    retained_dispatch_receipts: 2,
+                    omitted_dispatch_receipts: 0,
+                },
+                failure_inventory: None,
+            }),
+        };
+
+        let rendered = render_text(&document);
+        assert!(rendered.contains("assessment scope: exact-origin"));
+        assert!(rendered.contains("inventory: subjects=1 executed=1 forms=1"));
+        assert!(rendered.contains("semantics: entities=3 truncated=true"));
+        assert!(rendered.contains("defense: mode=observation_only observations=2"));
+        assert!(rendered.contains("usage: requests=2 active_verifications=1"));
+        assert!(!rendered.contains(SECRET));
+        assert!(!rendered.contains("https://example.test/private"));
+    }
 }
