@@ -23,6 +23,7 @@ const BOUNDED_RUNTIME_SOURCES: &[&str] = &[
     "crates/venom-cli/src/assessment_scan.rs",
     "crates/venom-scanner/src/decision_loop.rs",
     "crates/venom-scanner/src/decision_runner.rs",
+    ASSESSMENT_ITEM_SOURCE,
     "crates/venom-scanner/src/web_runtime/assessment_defense.rs",
     "crates/venom-scanner/src/http_evidence.rs",
     "crates/venom-scanner/src/http_evidence/form_controls.rs",
@@ -51,6 +52,35 @@ const BOUNDED_RUNTIME_SOURCES: &[&str] = &[
 const TRANSPORT_OWNER_SOURCE: &str = "crates/venom-scanner/src/http_evidence/request_broker.rs";
 const SHARED_RUNTIME_AUTHORITY_SOURCE: &str = "crates/venom-scanner/src/web_runtime/authority.rs";
 const LEGACY_DISCOVERY_AUTHORITY_SOURCE: &str = "crates/venom-scanner/src/legacy_discovery.rs";
+const ASSESSMENT_ITEM_SOURCE: &str = "crates/venom-scanner/src/web_runtime/assessment_item.rs";
+
+const ASSESSMENT_ITEM_PUBLIC_EXPORTS: &[&str] = &[
+    "ASSESSMENT_ITEM_SCHEMA",
+    "MAX_ASSESSMENT_CAPABILITY_ID_BYTES",
+    "MAX_ASSESSMENT_DISPLAY_BYTES",
+    "MAX_ASSESSMENT_ITEM_EVIDENCE_REFERENCES",
+    "AssessmentBasis",
+    "AssessmentCaseReference",
+    "AssessmentConfirmationDenial",
+    "AssessmentDifferentialBasis",
+    "AssessmentDisposition",
+    "AssessmentEvidenceReference",
+    "AssessmentItem",
+    "AssessmentItemProjectionError",
+    "AssessmentObservationBasis",
+    "AssessmentOutcomeReference",
+    "AssessmentRemediation",
+    "AssessmentSubjectReference",
+    "AssessmentVerifierBasis",
+];
+
+const ASSESSMENT_PROJECTION_CONTEXT_LIMITS: &[(&str, usize)] = &[
+    ("MAX_PROJECTION_SUBJECTS", 1_024),
+    ("MAX_PROJECTION_QUERY_NAMES_PER_SUBJECT", 256),
+    ("MAX_PROJECTION_CASES", 10_000),
+    ("MAX_PROJECTION_OUTCOMES", 10_000),
+    ("MAX_PROJECTION_EVIDENCE", 262_144),
+];
 
 const WEB_ASSESSMENT_PUBLIC_EXPORTS: &[&str] = &[
     "DEFAULT_WEB_ASSESSMENT_MAX_ACTIVE_VERIFICATIONS",
@@ -296,6 +326,7 @@ fn web_assessment_contract_violations(
     let semantic = fs::read_to_string(
         workspace_root.join("crates/venom-scanner/src/web_runtime/web_assessment/semantic.rs"),
     )?;
+    let assessment_item = fs::read_to_string(workspace_root.join(ASSESSMENT_ITEM_SOURCE))?;
     let http_evidence =
         fs::read_to_string(workspace_root.join("crates/venom-scanner/src/http_evidence.rs"))?;
     let broker = fs::read_to_string(workspace_root.join(TRANSPORT_OWNER_SOURCE))?;
@@ -316,6 +347,7 @@ fn web_assessment_contract_violations(
             "crates/venom-scanner/src/web_runtime/web_assessment/semantic.rs",
             semantic.as_str(),
         ),
+        (ASSESSMENT_ITEM_SOURCE, assessment_item.as_str()),
     ] {
         for forbidden in [
             "HttpRequestBroker",
@@ -352,6 +384,8 @@ fn web_assessment_contract_violations(
     violations.extend(inspect_web_assessment_composition(&assessment)?);
     violations.extend(inspect_web_assessment_models(&assessment)?);
     violations.extend(inspect_web_assessment_facade(&facade)?);
+    violations.extend(inspect_assessment_item_facade(&facade)?);
+    violations.extend(inspect_assessment_item_projection(&assessment_item)?);
     violations.extend(inspect_assessment_semantic_markers(&semantic));
     violations.extend(inspect_complete_observer_seam(&http_evidence)?);
     violations.extend(inspect_assessment_transport_markers(
@@ -841,6 +875,1124 @@ fn inspect_web_assessment_facade(source: &str) -> Result<Vec<String>, syn::Error
         ));
     }
     Ok(violations)
+}
+
+fn inspect_assessment_item_facade(source: &str) -> Result<Vec<String>, syn::Error> {
+    let syntax = syn::parse_file(source)?;
+    let mut violations = Vec::new();
+    let modules = syntax
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Mod(item) if item.ident == "assessment_item" => Some(item),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    if modules.len() != 1
+        || !matches!(modules[0].vis, syn::Visibility::Inherited)
+        || modules[0].content.is_some()
+        || !modules[0].attrs.is_empty()
+    {
+        violations.push(
+            "assessment item module must be one private canonical external child with no path redirection"
+                .to_owned(),
+        );
+    }
+
+    let mut exports = BTreeSet::new();
+    let mut export_items = 0usize;
+    for item in &syntax.items {
+        let Item::Use(item_use) = item else {
+            continue;
+        };
+        if !matches!(item_use.vis, syn::Visibility::Public(_)) {
+            continue;
+        }
+        let mut paths = Vec::new();
+        collect_use_paths(&item_use.tree, Vec::new(), &mut paths);
+        let mut matched_item = false;
+        for (segments, binding, is_glob) in paths {
+            if segments
+                .first()
+                .is_some_and(|segment| normalize_identifier(segment) == "assessment_item")
+            {
+                matched_item = true;
+                if !item_use.attrs.is_empty() {
+                    violations.push(
+                        "assessment item facade export must be unconditional and unannotated"
+                            .to_owned(),
+                    );
+                }
+                let is_alias = binding.as_ref().is_some_and(|binding| {
+                    segments.last().is_none_or(|source| {
+                        normalize_identifier(source) != normalize_identifier(binding)
+                    })
+                });
+                if is_glob || is_alias {
+                    violations.push(
+                        "assessment item facade must use exact direct exports without aliases or globs"
+                            .to_owned(),
+                    );
+                }
+                let export = binding
+                    .as_ref()
+                    .or_else(|| segments.last())
+                    .ok_or_else(|| {
+                        syn::Error::new_spanned(&item_use.tree, "missing assessment item export")
+                    })?;
+                exports.insert(normalize_identifier(export).to_owned());
+            }
+        }
+        if matched_item {
+            export_items = export_items.saturating_add(1);
+        }
+    }
+    if export_items != 1 {
+        violations.push(format!(
+            "assessment item facade must contain exactly one direct public export item; observed {export_items}"
+        ));
+    }
+    let expected = ASSESSMENT_ITEM_PUBLIC_EXPORTS
+        .iter()
+        .map(|value| (*value).to_owned())
+        .collect::<BTreeSet<_>>();
+    if exports != expected {
+        violations.push(format!(
+            "assessment item web-runtime export allowlist drifted; missing={:?}, unexpected={:?}",
+            expected.difference(&exports).collect::<Vec<_>>(),
+            exports.difference(&expected).collect::<Vec<_>>()
+        ));
+    }
+    Ok(violations)
+}
+
+fn inspect_assessment_item_projection(source: &str) -> Result<Vec<String>, syn::Error> {
+    let syntax = syn::parse_file(source)?;
+    let mut violations = Vec::new();
+    for forbidden in [
+        "HttpRequestBroker",
+        "RequestAccountingBroker",
+        "SharedWebRuntimeAuthority",
+        "RuntimeBudget",
+        "HttpEvidenceExecutor",
+        "DecisionExecutorRegistry",
+        "StandardWebDecisionRuntime",
+        "WebAssessmentRuntime",
+        "RuntimeApiVisibility",
+        "ScanContext",
+        "ScanPhase",
+        "legacy_discovery",
+        "std::net",
+        "tokio::net",
+        "crate::runner",
+        "crate::sdk",
+        "reqwest",
+        "hyper",
+    ] {
+        if source.contains(forbidden) {
+            violations.push(format!(
+                "{ASSESSMENT_ITEM_SOURCE} references forbidden execution authority `{forbidden}`; assessment items may project only committed runtime truth"
+            ));
+        }
+    }
+    for forbidden in ["async fn", ".execute(", ".analyze("] {
+        if source.contains(forbidden) {
+            violations.push(format!(
+                "{ASSESSMENT_ITEM_SOURCE} contains forbidden execution marker `{forbidden}`; assessment projection must remain synchronous and read-only"
+            ));
+        }
+    }
+    if source.contains("maximum_disposition: AssessmentDisposition") {
+        violations.push(
+            "assessment capability descriptors must derive their maximum disposition from typed claim policy"
+                .to_owned(),
+        );
+    }
+
+    let expected_public = ASSESSMENT_ITEM_PUBLIC_EXPORTS
+        .iter()
+        .map(|name| (*name).to_owned())
+        .collect::<BTreeSet<_>>();
+    let mut observed_public = BTreeSet::new();
+    let mut public_types = BTreeSet::new();
+    for item in &syntax.items {
+        let (visibility, fields, attributes, name) = match item {
+            Item::Const(item) => (
+                &item.vis,
+                None,
+                item.attrs.as_slice(),
+                ident_name(&item.ident),
+            ),
+            Item::Struct(item) => (
+                &item.vis,
+                Some(&item.fields),
+                item.attrs.as_slice(),
+                ident_name(&item.ident),
+            ),
+            Item::Enum(item) => (
+                &item.vis,
+                None,
+                item.attrs.as_slice(),
+                ident_name(&item.ident),
+            ),
+            Item::Fn(item) => (
+                &item.vis,
+                None,
+                item.attrs.as_slice(),
+                ident_name(&item.sig.ident),
+            ),
+            Item::Mod(item) => (
+                &item.vis,
+                None,
+                item.attrs.as_slice(),
+                ident_name(&item.ident),
+            ),
+            Item::Static(item) => (
+                &item.vis,
+                None,
+                item.attrs.as_slice(),
+                ident_name(&item.ident),
+            ),
+            Item::Trait(item) => (
+                &item.vis,
+                None,
+                item.attrs.as_slice(),
+                ident_name(&item.ident),
+            ),
+            Item::Type(item) => (
+                &item.vis,
+                None,
+                item.attrs.as_slice(),
+                ident_name(&item.ident),
+            ),
+            Item::TraitAlias(item) => (
+                &item.vis,
+                None,
+                item.attrs.as_slice(),
+                ident_name(&item.ident),
+            ),
+            Item::Union(item) => (
+                &item.vis,
+                None,
+                item.attrs.as_slice(),
+                ident_name(&item.ident),
+            ),
+            _ => continue,
+        };
+        if !matches!(visibility, syn::Visibility::Public(_)) {
+            continue;
+        }
+        observed_public.insert(name.clone());
+        if matches!(item, Item::Struct(_) | Item::Enum(_)) {
+            public_types.insert(name.clone());
+        }
+        if attrs_reference_serde(attributes) {
+            violations.push(format!(
+                "public assessment item model {name} must not derive serialization; reporting owns an explicit redacted projection"
+            ));
+        }
+        if let Some(fields) = fields {
+            for field in fields {
+                if !matches!(field.vis, syn::Visibility::Inherited) {
+                    violations.push(format!(
+                        "public assessment item model {name} exposes a mutable construction field"
+                    ));
+                }
+            }
+        }
+    }
+    if observed_public != expected_public {
+        violations.push(format!(
+            "assessment item public inventory drifted; missing={:?}, unexpected={:?}",
+            expected_public
+                .difference(&observed_public)
+                .collect::<Vec<_>>(),
+            observed_public
+                .difference(&expected_public)
+                .collect::<Vec<_>>()
+        ));
+    }
+    violations.extend(inspect_assessment_item_public_storage(&syntax));
+    violations.extend(inspect_assessment_projection_context(&syntax, source));
+    violations.extend(inspect_assessment_item_factory_signatures(&syntax));
+
+    let expected_methods = BTreeMap::from([
+        ("AssessmentDisposition", BTreeSet::from(["as_str"])),
+        ("AssessmentSubjectReference", BTreeSet::from(["ordinal"])),
+        ("AssessmentEvidenceReference", BTreeSet::from(["ordinal"])),
+        ("AssessmentCaseReference", BTreeSet::from(["ordinal"])),
+        ("AssessmentOutcomeReference", BTreeSet::from(["ordinal"])),
+        ("AssessmentRemediation", BTreeSet::from(["id", "summary"])),
+        ("AssessmentObservationBasis", BTreeSet::from(["evidence"])),
+        (
+            "AssessmentDifferentialBasis",
+            BTreeSet::from(["candidate", "control"]),
+        ),
+        (
+            "AssessmentVerifierBasis",
+            BTreeSet::from([
+                "case_reference",
+                "evidence",
+                "outcome_reference",
+                "stage",
+                "verifier_rule_id",
+            ]),
+        ),
+        (
+            "AssessmentBasis",
+            BTreeSet::from(["case_reference", "evidence_count"]),
+        ),
+        (
+            "AssessmentItem",
+            BTreeSet::from([
+                "basis",
+                "capability_id",
+                "category",
+                "confidence",
+                "cwe",
+                "disposition",
+                "evidence_count",
+                "fingerprint",
+                "redacted_summary",
+                "remediation",
+                "schema",
+                "severity",
+                "subject_reference",
+                "title",
+            ]),
+        ),
+    ]);
+    let mut observed_methods = BTreeMap::<String, BTreeSet<String>>::new();
+    for item in &syntax.items {
+        let Item::Impl(item_impl) = item else {
+            continue;
+        };
+        let syn::Type::Path(self_type) = item_impl.self_ty.as_ref() else {
+            continue;
+        };
+        let Some(type_name) = self_type
+            .path
+            .segments
+            .last()
+            .map(|segment| ident_name(&segment.ident))
+        else {
+            continue;
+        };
+        if let Some((_, trait_path, _)) = &item_impl.trait_ {
+            let trait_name = trait_path
+                .segments
+                .last()
+                .map(|segment| ident_name(&segment.ident))
+                .unwrap_or_default();
+            if public_types.contains(&type_name)
+                && matches!(
+                    trait_name.as_str(),
+                    "Serialize"
+                        | "Deserialize"
+                        | "Default"
+                        | "From"
+                        | "TryFrom"
+                        | "DerefMut"
+                        | "AsMut"
+                        | "BorrowMut"
+                )
+            {
+                violations.push(format!(
+                    "public assessment item model {type_name} implements forbidden construction or mutation trait {trait_name}"
+                ));
+            }
+            continue;
+        }
+        for member in &item_impl.items {
+            let syn::ImplItem::Fn(method) = member else {
+                continue;
+            };
+            if method.sig.asyncness.is_some() {
+                violations.push(format!(
+                    "assessment item projection method {type_name}::{} must remain synchronous",
+                    method.sig.ident
+                ));
+            }
+            for argument in &method.sig.inputs {
+                if let syn::FnArg::Typed(argument) = argument {
+                    if type_references_ident(&argument.ty, "AssessmentDisposition") {
+                        violations.push(format!(
+                            "assessment item factory {type_name}::{} accepts a raw AssessmentDisposition",
+                            method.sig.ident
+                        ));
+                    }
+                }
+            }
+            if !matches!(method.vis, syn::Visibility::Public(_)) {
+                continue;
+            }
+            let method_name = ident_name(&method.sig.ident);
+            observed_methods
+                .entry(type_name.clone())
+                .or_default()
+                .insert(method_name.clone());
+            let receiver = method.sig.receiver();
+            if receiver.is_none()
+                || receiver.is_some_and(|receiver| receiver.mutability.is_some())
+                || method.sig.inputs.len() != 1
+            {
+                violations.push(format!(
+                    "public assessment item method {type_name}::{method_name} must be a read-only accessor with no caller-controlled arguments"
+                ));
+            }
+        }
+    }
+    let expected_methods = expected_methods
+        .into_iter()
+        .map(|(owner, methods)| {
+            (
+                owner.to_owned(),
+                methods.into_iter().map(str::to_owned).collect(),
+            )
+        })
+        .collect::<BTreeMap<String, BTreeSet<String>>>();
+    if observed_methods != expected_methods {
+        violations.push(format!(
+            "assessment item read-only accessor inventory drifted: expected {expected_methods:?}, observed {observed_methods:?}"
+        ));
+    }
+
+    let disposition = syntax.items.iter().find_map(|item| match item {
+        Item::Enum(item) if item.ident == "AssessmentDisposition" => Some(item),
+        _ => None,
+    });
+    let disposition_variants = disposition
+        .map(|item| {
+            item.variants
+                .iter()
+                .map(|variant| ident_name(&variant.ident))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    if disposition_variants != ["Informational", "NeedsReview", "Confirmed"]
+        || disposition.is_none_or(|item| {
+            !item
+                .attrs
+                .iter()
+                .any(|attribute| attribute.path().is_ident("non_exhaustive"))
+                || item.variants.iter().any(|variant| {
+                    !matches!(variant.fields, syn::Fields::Unit) || variant.discriminant.is_some()
+                })
+        })
+    {
+        violations.push(
+            "AssessmentDisposition must remain the exact non-exhaustive unit set Informational, NeedsReview, Confirmed"
+                .to_owned(),
+        );
+    }
+    let basis = syntax.items.iter().find_map(|item| match item {
+        Item::Enum(item) if item.ident == "AssessmentBasis" => Some(item),
+        _ => None,
+    });
+    let expected_basis = [
+        ("Observation", "AssessmentObservationBasis"),
+        ("Differential", "AssessmentDifferentialBasis"),
+        ("Verifier", "AssessmentVerifierBasis"),
+    ];
+    let basis_matches = basis.is_some_and(|item| {
+        item.variants.len() == expected_basis.len()
+            && item
+                .variants
+                .iter()
+                .zip(expected_basis)
+                .all(|(variant, (name, field_type))| {
+                    ident_name(&variant.ident) == name
+                        && variant.discriminant.is_none()
+                        && match &variant.fields {
+                            syn::Fields::Unnamed(fields) if fields.unnamed.len() == 1 => {
+                                is_plain_ident(&fields.unnamed[0].ty, field_type)
+                            },
+                            _ => false,
+                        }
+                })
+    });
+    if !basis_matches {
+        violations.push(
+            "AssessmentBasis must remain the exact typed Observation, Differential, Verifier authority set"
+                .to_owned(),
+        );
+    }
+    for required in [
+        "Self::Observation(_) => AssessmentDisposition::Informational",
+        "Self::Differential(_) => AssessmentDisposition::NeedsReview",
+        "Self::Verifier(_) => AssessmentDisposition::Confirmed",
+        "Self::ObservationOnly => AssessmentDisposition::Informational",
+        "Self::DifferentialReview => AssessmentDisposition::NeedsReview",
+        "Self::VerifierTransition(_) => AssessmentDisposition::Confirmed",
+        "extraction.proof.authorize()?;",
+    ] {
+        if source.matches(required).count() != 1 {
+            violations.push(format!(
+                "assessment item claim mapping lost exact authority marker `{required}`"
+            ));
+        }
+    }
+    if source
+        .find("extraction.proof.authorize()?;")
+        .zip(source.find("AssessmentBasis::Verifier(AssessmentVerifierBasis {"))
+        .is_none_or(|(authorization, construction)| authorization >= construction)
+        || source
+            .matches("AssessmentBasis::Verifier(AssessmentVerifierBasis {")
+            .count()
+            != 1
+    {
+        violations.push(
+            "confirmed assessment basis must have one construction site after verifier proof authorization"
+                .to_owned(),
+        );
+    }
+    Ok(violations)
+}
+
+fn inspect_assessment_item_public_storage(syntax: &syn::File) -> Vec<String> {
+    let mut violations = Vec::new();
+    for item in &syntax.items {
+        let Item::Struct(item) = item else {
+            continue;
+        };
+        if !matches!(item.vis, syn::Visibility::Public(_)) {
+            continue;
+        }
+        let name = ident_name(&item.ident);
+        let safe = match name.as_str() {
+            "AssessmentSubjectReference"
+            | "AssessmentEvidenceReference"
+            | "AssessmentCaseReference"
+            | "AssessmentOutcomeReference" => {
+                private_single_tuple_field_is(item, |field| is_plain_ident(field, "u32"))
+            },
+            "AssessmentRemediation" => private_named_fields(item).is_some_and(|fields| {
+                fields.len() == 2
+                    && fields
+                        .get("id")
+                        .is_some_and(|field| is_static_str_reference(field))
+                    && fields
+                        .get("summary")
+                        .is_some_and(|field| is_static_str_reference(field))
+            }),
+            "AssessmentObservationBasis" => private_named_fields(item).is_some_and(|fields| {
+                fields.len() == 1
+                    && fields.get("evidence").is_some_and(|field| {
+                        is_generic_of_idents(field, "Vec", &["AssessmentEvidenceReference"])
+                    })
+            }),
+            "AssessmentDifferentialBasis" => private_named_fields(item).is_some_and(|fields| {
+                fields.len() == 2
+                    && ["control", "candidate"].iter().all(|field_name| {
+                        fields.get(*field_name).is_some_and(|field| {
+                            is_generic_of_idents(field, "Vec", &["AssessmentEvidenceReference"])
+                        })
+                    })
+            }),
+            "AssessmentVerifierBasis" => private_named_fields(item).is_some_and(|fields| {
+                fields.len() == 5
+                    && fields
+                        .get("case_reference")
+                        .is_some_and(|field| is_plain_ident(field, "AssessmentCaseReference"))
+                    && fields
+                        .get("outcome_reference")
+                        .is_some_and(|field| is_plain_ident(field, "AssessmentOutcomeReference"))
+                    && fields
+                        .get("verifier_rule_id")
+                        .is_some_and(|field| is_static_str_reference(field))
+                    && fields
+                        .get("stage")
+                        .is_some_and(|field| is_plain_ident(field, "VerificationStage"))
+                    && fields.get("evidence").is_some_and(|field| {
+                        is_generic_of_idents(field, "Vec", &["AssessmentEvidenceReference"])
+                    })
+            }),
+            "AssessmentItem" => private_named_fields(item).is_some_and(|fields| {
+                fields.len() == 5
+                    && fields.get("capability").is_some_and(|field| {
+                        is_static_borrowed_ident(field, "AssessmentCapabilityDescriptor")
+                    })
+                    && fields
+                        .get("subject_reference")
+                        .is_some_and(|field| is_plain_ident(field, "AssessmentSubjectReference"))
+                    && fields
+                        .get("confidence")
+                        .is_some_and(|field| is_plain_ident(field, "Probability"))
+                    && fields
+                        .get("fingerprint")
+                        .is_some_and(|field| is_plain_ident(field, "String"))
+                    && fields
+                        .get("basis")
+                        .is_some_and(|field| is_plain_ident(field, "AssessmentBasis"))
+            }),
+            _ => true,
+        };
+        if !safe {
+            violations.push(format!(
+                "public assessment item model {name} stores a secret-bearing, dynamic, or non-canonical field shape"
+            ));
+        }
+    }
+
+    let denial = syntax.items.iter().find_map(|item| match item {
+        Item::Enum(item) if item.ident == "AssessmentConfirmationDenial" => Some(item),
+        _ => None,
+    });
+    if denial.is_none_or(|item| {
+        item.variants
+            .iter()
+            .any(|variant| !matches!(variant.fields, syn::Fields::Unit))
+    }) {
+        violations.push(
+            "AssessmentConfirmationDenial must remain a value-free reason vocabulary".to_owned(),
+        );
+    }
+
+    let projection_error = syntax.items.iter().find_map(|item| match item {
+        Item::Enum(item) if item.ident == "AssessmentItemProjectionError" => Some(item),
+        _ => None,
+    });
+    if projection_error.is_none_or(|item| {
+        item.variants
+            .iter()
+            .flat_map(|variant| variant.fields.iter())
+            .any(|field| !assessment_projection_error_field_is_safe(&field.ty))
+    }) {
+        violations.push(
+            "AssessmentItemProjectionError must not retain secret-bearing or caller-controlled dynamic values"
+                .to_owned(),
+        );
+    }
+    violations
+}
+
+fn inspect_assessment_item_factory_signatures(syntax: &syn::File) -> Vec<String> {
+    let mut violations = Vec::new();
+    let Some(item_impl) = inherent_impl(syntax, "AssessmentItem") else {
+        violations.push("AssessmentItem must have one inherent implementation".to_owned());
+        return violations;
+    };
+    let verifier_factories = item_impl
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            syn::ImplItem::Fn(method) if method.sig.ident == "from_verifier_projection" => {
+                Some(method)
+            },
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    if verifier_factories.len() != 1
+        || !verifier_factories
+            .first()
+            .is_some_and(|method| exact_verifier_projection_factory(method))
+    {
+        violations.push(
+            "AssessmentItem::from_verifier_projection must remain the exact crate-private committed-receipt/outcome/knowledge factory"
+                .to_owned(),
+        );
+    }
+
+    let forbidden_factory_inputs = [
+        "AssessmentDisposition",
+        "AssessmentSubjectReference",
+        "AssessmentEvidenceReference",
+        "AssessmentCaseReference",
+        "AssessmentOutcomeReference",
+        "BTreeMap",
+        "HashMap",
+        "DecisionExecutionFailureReceipt",
+        "StandardWebDecisionFailureReceipt",
+        "DecisionRunnerTurn",
+    ];
+    for item in &item_impl.items {
+        let syn::ImplItem::Fn(method) = item else {
+            continue;
+        };
+        let method_name = ident_name(&method.sig.ident);
+        if !method_name.starts_with("from_") {
+            continue;
+        }
+        for argument in &method.sig.inputs {
+            let syn::FnArg::Typed(argument) = argument else {
+                continue;
+            };
+            if let Some(forbidden) = forbidden_factory_inputs
+                .iter()
+                .find(|forbidden| type_references_ident(&argument.ty, forbidden))
+            {
+                violations.push(format!(
+                    "assessment item factory AssessmentItem::{method_name} accepts forbidden raw caller authority {forbidden}"
+                ));
+            }
+        }
+    }
+    violations
+}
+
+fn inspect_assessment_projection_context(syntax: &syn::File, source: &str) -> Vec<String> {
+    let mut violations = Vec::new();
+    let context = syntax.items.iter().find_map(|item| match item {
+        Item::Struct(item) if item.ident == "AssessmentProjectionContext" => Some(item),
+        _ => None,
+    });
+    let context_shape_is_exact = context.is_some_and(|item| {
+        matches!(item.vis, syn::Visibility::Restricted(_))
+            && private_named_fields(item).is_some_and(|fields| {
+                fields.len() == 6
+                    && fields
+                        .get("knowledge_authority")
+                        .is_some_and(|field| is_plain_ident(field, "KnowledgeAuthority"))
+                    && fields.get("subjects").is_some_and(|field| {
+                        is_generic_of_idents(field, "BTreeMap", &["EntityId", "SubjectProjection"])
+                    })
+                    && fields.get("stable_subject_ids").is_some_and(|field| {
+                        is_generic_of_idents(field, "BTreeSet", &["StableAssessmentSubjectId"])
+                    })
+                    && fields.get("cases").is_some_and(|field| {
+                        generic_type_arguments(field, "BTreeMap").is_some_and(|arguments| {
+                            arguments.len() == 2
+                                && is_entity_string_tuple(arguments[0])
+                                && is_plain_ident(arguments[1], "AssessmentCaseReference")
+                        })
+                    })
+                    && fields.get("outcomes").is_some_and(|field| {
+                        is_generic_of_idents(
+                            field,
+                            "BTreeMap",
+                            &["RuntimeOutcomeIdentity", "AssessmentOutcomeReference"],
+                        )
+                    })
+                    && fields.get("evidence").is_some_and(|field| {
+                        is_generic_of_idents(
+                            field,
+                            "BTreeMap",
+                            &["EvidenceId", "EvidenceProjection"],
+                        )
+                    })
+            })
+    });
+    if !context_shape_is_exact {
+        violations.push(
+            "AssessmentProjectionContext must retain only opaque authority and exact bounded identity maps"
+                .to_owned(),
+        );
+    }
+
+    for (name, expected_fields) in [
+        (
+            "EvidenceProjection",
+            &[
+                ("reference", "AssessmentEvidenceReference"),
+                ("subject", "EntityId"),
+            ][..],
+        ),
+        (
+            "SubjectProjection",
+            &[
+                ("reference", "AssessmentSubjectReference"),
+                ("stable_id", "StableAssessmentSubjectId"),
+            ][..],
+        ),
+    ] {
+        let projection = syntax.items.iter().find_map(|item| match item {
+            Item::Struct(item) if item.ident == name => Some(item),
+            _ => None,
+        });
+        let exact = projection.is_some_and(|item| {
+            private_named_fields(item).is_some_and(|fields| {
+                let extra = usize::from(name == "SubjectProjection");
+                fields.len() == expected_fields.len() + extra
+                    && expected_fields.iter().all(|(field_name, field_type)| {
+                        fields
+                            .get(*field_name)
+                            .is_some_and(|field| is_plain_ident(field, field_type))
+                    })
+                    && (name != "SubjectProjection"
+                        || fields.get("query_parameter_names").is_some_and(|field| {
+                            is_generic_of_idents(field, "BTreeSet", &["String"])
+                        }))
+            })
+        });
+        if !exact {
+            violations.push(format!(
+                "{name} must not retain raw evidence values, response bodies, credentials, or unbounded dynamic fields"
+            ));
+        }
+    }
+
+    let outcome_identity_is_subject_bound = syntax.items.iter().any(|item| {
+        let Item::Struct(item) = item else {
+            return false;
+        };
+        item.ident == "RuntimeOutcomeIdentity"
+            && private_named_fields(item).is_some_and(|fields| {
+                fields.len() == 6
+                    && fields
+                        .get("subject")
+                        .is_some_and(|field| is_plain_ident(field, "EntityId"))
+                    && ["case_id", "action_id", "hypothesis_id"]
+                        .iter()
+                        .all(|name| {
+                            fields
+                                .get(*name)
+                                .is_some_and(|field| is_plain_ident(field, "String"))
+                        })
+                    && fields
+                        .get("verifier_rule_id")
+                        .is_some_and(|field| is_generic_of_idents(field, "Option", &["String"]))
+                    && fields
+                        .get("stage")
+                        .is_some_and(|field| is_static_str_reference(field))
+            })
+    });
+    if !outcome_identity_is_subject_bound {
+        violations.push(
+            "RuntimeOutcomeIdentity must retain its exact subject-bound runtime identity"
+                .to_owned(),
+        );
+    }
+
+    for (name, expected) in ASSESSMENT_PROJECTION_CONTEXT_LIMITS {
+        let item = syntax.items.iter().find_map(|item| match item {
+            Item::Const(item) if item.ident == *name => Some(item),
+            _ => None,
+        });
+        let exact = item.is_some_and(|item| {
+            matches!(item.vis, syn::Visibility::Inherited)
+                && is_plain_ident(&item.ty, "usize")
+                && matches!(item.expr.as_ref(), syn::Expr::Lit(expression)
+                    if matches!(&expression.lit, syn::Lit::Int(value)
+                        if value.base10_parse::<usize>().ok() == Some(*expected)))
+        });
+        if !exact {
+            violations.push(format!(
+                "assessment projection compiled ceiling {name} must remain exactly {expected}"
+            ));
+        }
+    }
+
+    let Some(item_impl) = inherent_impl(syntax, "AssessmentProjectionContext") else {
+        violations.push(
+            "AssessmentProjectionContext must have one crate-owned inherent implementation"
+                .to_owned(),
+        );
+        return violations;
+    };
+    let methods = item_impl
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            syn::ImplItem::Fn(method) => Some((ident_name(&method.sig.ident), method)),
+            _ => None,
+        })
+        .collect::<BTreeMap<_, _>>();
+
+    let constructor_is_exact = methods.get("new").is_some_and(|method| {
+        is_pub_crate_visibility(&method.vis)
+            && method.sig.receiver().is_none()
+            && typed_input_types(method) == ["KnowledgeBase", "EntityId"]
+            && matches!(&method.sig.output, syn::ReturnType::Type(_, output)
+                if is_plain_ident(output, "Self"))
+            && block_references_all(&method.block, &["authority"])
+    });
+    if !constructor_is_exact {
+        violations.push(
+            "AssessmentProjectionContext::new must bind one KnowledgeBase authority for an exact subject"
+                .to_owned(),
+        );
+    }
+
+    let validator_is_exact = methods
+        .get("validate_knowledge_authority")
+        .is_some_and(|method| {
+            method.sig.receiver().is_some_and(|receiver| {
+                receiver.reference.is_some() && receiver.mutability.is_none()
+            }) && typed_input_types(method) == ["KnowledgeBase", "EntityId"]
+                && block_references_all(
+                    &method.block,
+                    &[
+                        "is_same_as",
+                        "knowledge_authority",
+                        "KnowledgeAuthorityMismatch",
+                    ],
+                )
+        });
+    if !validator_is_exact {
+        violations.push(
+            "AssessmentProjectionContext must fail closed when knowledge authority identity differs"
+                .to_owned(),
+        );
+    }
+
+    for (method_name, required) in [
+        (
+            "register_subject",
+            &[
+                "check_projection_limit",
+                "MAX_PROJECTION_SUBJECTS",
+                "MAX_PROJECTION_QUERY_NAMES_PER_SUBJECT",
+            ][..],
+        ),
+        (
+            "register_case",
+            &["check_projection_limit", "MAX_PROJECTION_CASES"][..],
+        ),
+        (
+            "register_outcome",
+            &["check_projection_limit", "MAX_PROJECTION_OUTCOMES"][..],
+        ),
+        (
+            "register_evidence",
+            &[
+                "check_projection_limit",
+                "MAX_PROJECTION_EVIDENCE",
+                "validate_knowledge_authority",
+            ][..],
+        ),
+        ("evidence_references", &["validate_knowledge_authority"][..]),
+    ] {
+        if methods
+            .get(method_name)
+            .is_none_or(|method| !block_references_all(&method.block, required))
+        {
+            violations.push(format!(
+                "AssessmentProjectionContext::{method_name} lost its compiled cap or knowledge-authority check"
+            ));
+        }
+    }
+    for required in [
+        "if current_len >= maximum",
+        "AssessmentItemProjectionError::ProjectionContextLimit",
+    ] {
+        if !source.contains(required) {
+            violations.push(format!(
+                "assessment projection limit helper lost fail-closed marker `{required}`"
+            ));
+        }
+    }
+    violations
+}
+
+fn exact_verifier_projection_factory(method: &syn::ImplItemFn) -> bool {
+    if !is_pub_crate_visibility(&method.vis)
+        || method.sig.receiver().is_some()
+        || method.sig.asyncness.is_some()
+        || method.sig.constness.is_some()
+        || method.sig.unsafety.is_some()
+        || method.sig.abi.is_some()
+        || method.sig.variadic.is_some()
+        || !method.sig.generics.params.is_empty()
+        || method.sig.generics.where_clause.is_some()
+    {
+        return false;
+    }
+    let arguments = method
+        .sig
+        .inputs
+        .iter()
+        .filter_map(|argument| match argument {
+            syn::FnArg::Typed(argument) => Some(argument.ty.as_ref()),
+            syn::FnArg::Receiver(_) => None,
+        })
+        .collect::<Vec<_>>();
+    arguments.len() == 6
+        && is_static_borrowed_ident(arguments[0], "AssessmentCapabilityDescriptor")
+        && is_borrowed_ident(arguments[1], "AssessmentProjectionContext")
+        && is_borrowed_ident(arguments[2], "AssessmentItemTarget")
+        && is_borrowed_ident(arguments[3], "DecisionEvidenceReceipt")
+        && is_borrowed_ident(arguments[4], "DecisionOutcomeReport")
+        && is_borrowed_ident(arguments[5], "KnowledgeBase")
+        && matches!(&method.sig.output, syn::ReturnType::Type(_, output)
+            if is_result_of(output, "Self", "AssessmentItemProjectionError"))
+}
+
+fn inherent_impl<'a>(syntax: &'a syn::File, expected: &str) -> Option<&'a syn::ItemImpl> {
+    let mut implementations = syntax.items.iter().filter_map(|item| match item {
+        Item::Impl(item) if item.trait_.is_none() => {
+            let syn::Type::Path(item_type) = item.self_ty.as_ref() else {
+                return None;
+            };
+            item_type
+                .path
+                .segments
+                .last()
+                .is_some_and(|segment| segment.ident == expected)
+                .then_some(item)
+        },
+        _ => None,
+    });
+    let first = implementations.next()?;
+    implementations.next().is_none().then_some(first)
+}
+
+fn private_named_fields(item: &syn::ItemStruct) -> Option<BTreeMap<String, &syn::Type>> {
+    let syn::Fields::Named(fields) = &item.fields else {
+        return None;
+    };
+    fields
+        .named
+        .iter()
+        .map(|field| {
+            if !matches!(field.vis, syn::Visibility::Inherited) {
+                return None;
+            }
+            Some((ident_name(field.ident.as_ref()?), &field.ty))
+        })
+        .collect()
+}
+
+fn private_single_tuple_field_is(
+    item: &syn::ItemStruct,
+    predicate: impl FnOnce(&syn::Type) -> bool,
+) -> bool {
+    let syn::Fields::Unnamed(fields) = &item.fields else {
+        return false;
+    };
+    fields.unnamed.len() == 1
+        && matches!(fields.unnamed[0].vis, syn::Visibility::Inherited)
+        && predicate(&fields.unnamed[0].ty)
+}
+
+fn generic_type_arguments<'a>(item_type: &'a syn::Type, outer: &str) -> Option<Vec<&'a syn::Type>> {
+    let syn::Type::Path(path) = item_type else {
+        return None;
+    };
+    if path.qself.is_some() {
+        return None;
+    }
+    let segment = path.path.segments.last()?;
+    if normalize_identifier(&ident_name(&segment.ident)) != outer {
+        return None;
+    }
+    let syn::PathArguments::AngleBracketed(arguments) = &segment.arguments else {
+        return None;
+    };
+    arguments
+        .args
+        .iter()
+        .map(|argument| match argument {
+            syn::GenericArgument::Type(item_type) => Some(item_type),
+            _ => None,
+        })
+        .collect()
+}
+
+fn is_generic_of_idents(item_type: &syn::Type, outer: &str, arguments: &[&str]) -> bool {
+    generic_type_arguments(item_type, outer).is_some_and(|actual| {
+        actual.len() == arguments.len()
+            && actual
+                .iter()
+                .zip(arguments)
+                .all(|(item_type, expected)| is_plain_ident(item_type, expected))
+    })
+}
+
+fn is_entity_string_tuple(item_type: &syn::Type) -> bool {
+    matches!(item_type, syn::Type::Tuple(tuple)
+        if tuple.elems.len() == 2
+            && is_plain_ident(&tuple.elems[0], "EntityId")
+            && is_plain_ident(&tuple.elems[1], "String"))
+}
+
+fn is_static_str_reference(item_type: &syn::Type) -> bool {
+    matches!(item_type, syn::Type::Reference(reference)
+        if reference.mutability.is_none()
+            && reference.lifetime.as_ref().is_some_and(|lifetime| lifetime.ident == "static")
+            && is_plain_ident(reference.elem.as_ref(), "str"))
+}
+
+fn is_static_borrowed_ident(item_type: &syn::Type, expected: &str) -> bool {
+    matches!(item_type, syn::Type::Reference(reference)
+        if reference.mutability.is_none()
+            && reference.lifetime.as_ref().is_some_and(|lifetime| lifetime.ident == "static")
+            && is_plain_ident(reference.elem.as_ref(), expected))
+}
+
+fn assessment_projection_error_field_is_safe(item_type: &syn::Type) -> bool {
+    is_plain_ident(item_type, "AssessmentDisposition")
+        || is_plain_ident(item_type, "AssessmentConfirmationDenial")
+        || is_plain_ident(item_type, "usize")
+        || is_static_str_reference(item_type)
+}
+
+fn is_pub_crate_visibility(visibility: &syn::Visibility) -> bool {
+    matches!(visibility, syn::Visibility::Restricted(restricted)
+        if restricted.in_token.is_none() && restricted.path.is_ident("crate"))
+}
+
+fn typed_input_types(method: &syn::ImplItemFn) -> Vec<String> {
+    method
+        .sig
+        .inputs
+        .iter()
+        .filter_map(|argument| match argument {
+            syn::FnArg::Typed(argument) => type_last_identifier(&argument.ty),
+            syn::FnArg::Receiver(_) => None,
+        })
+        .collect()
+}
+
+fn type_last_identifier(item_type: &syn::Type) -> Option<String> {
+    match item_type {
+        syn::Type::Reference(reference) => type_last_identifier(reference.elem.as_ref()),
+        syn::Type::Path(path) => path
+            .path
+            .segments
+            .last()
+            .map(|segment| ident_name(&segment.ident)),
+        _ => None,
+    }
+}
+
+fn is_result_of(item_type: &syn::Type, success: &str, error: &str) -> bool {
+    generic_type_arguments(item_type, "Result").is_some_and(|arguments| {
+        arguments.len() == 2
+            && is_plain_ident(arguments[0], success)
+            && is_plain_ident(arguments[1], error)
+    })
+}
+
+fn block_references_all(block: &syn::Block, required: &[&str]) -> bool {
+    struct IdentifierVisitor {
+        identifiers: BTreeSet<String>,
+    }
+    impl<'ast> Visit<'ast> for IdentifierVisitor {
+        fn visit_path(&mut self, path: &'ast SynPath) {
+            self.identifiers.extend(
+                path.segments
+                    .iter()
+                    .map(|segment| normalize_identifier(&ident_name(&segment.ident)).to_owned()),
+            );
+            visit::visit_path(self, path);
+        }
+
+        fn visit_expr_method_call(&mut self, call: &'ast syn::ExprMethodCall) {
+            self.identifiers
+                .insert(normalize_identifier(&ident_name(&call.method)).to_owned());
+            visit::visit_expr_method_call(self, call);
+        }
+
+        fn visit_expr_field(&mut self, field: &'ast syn::ExprField) {
+            if let syn::Member::Named(member) = &field.member {
+                self.identifiers
+                    .insert(normalize_identifier(&ident_name(member)).to_owned());
+            }
+            visit::visit_expr_field(self, field);
+        }
+
+        fn visit_macro(&mut self, item: &'ast Macro) {
+            collect_token_identifiers(item.tokens.clone(), &mut self.identifiers);
+            visit::visit_macro(self, item);
+        }
+    }
+    let mut visitor = IdentifierVisitor {
+        identifiers: BTreeSet::new(),
+    };
+    visitor.visit_block(block);
+    required
+        .iter()
+        .all(|required| visitor.identifiers.contains(normalize_identifier(required)))
 }
 
 fn inspect_complete_observer_seam(source: &str) -> Result<Vec<String>, syn::Error> {
@@ -2602,12 +3754,14 @@ impl OwnershipVisitor<'_> {
                 display_path(segments)
             ));
         }
-        if matches!(
-            self.source,
-            "crates/venom-scanner/src/web_runtime/web_assessment.rs"
-                | "crates/venom-scanner/src/web_runtime/web_assessment/discovery.rs"
-                | "crates/venom-scanner/src/web_runtime/web_assessment/semantic.rs"
-        ) {
+        if self.source == ASSESSMENT_ITEM_SOURCE
+            || matches!(
+                self.source,
+                "crates/venom-scanner/src/web_runtime/web_assessment.rs"
+                    | "crates/venom-scanner/src/web_runtime/web_assessment/discovery.rs"
+                    | "crates/venom-scanner/src/web_runtime/web_assessment/semantic.rs"
+            )
+        {
             if segments
                 .iter()
                 .any(|segment| normalize_identifier(segment) == "phases")
@@ -2798,6 +3952,7 @@ impl<'ast> Visit<'ast> for OwnershipVisitor<'_> {
                 ) | ("crates/venom-scanner/src/http_evidence.rs", "form_controls")
                     | ("crates/venom-scanner/src/web_runtime.rs", "authority")
                     | ("crates/venom-scanner/src/web_runtime.rs", "api_visibility")
+                    | ("crates/venom-scanner/src/web_runtime.rs", "assessment_item")
                     | (
                         "crates/venom-scanner/src/web_runtime/api_visibility.rs",
                         "differential"
@@ -4892,6 +6047,219 @@ mod tests {
             .unwrap()
             .join("\n");
         assert!(violations.contains("no path redirection"));
+    }
+
+    #[test]
+    fn assessment_item_source_is_a_bounded_projection_consumer() {
+        assert!(BOUNDED_RUNTIME_SOURCES.contains(&ASSESSMENT_ITEM_SOURCE));
+        assert!(!DIRECT_CLIENT_SOURCE_ALLOWLIST.contains(&ASSESSMENT_ITEM_SOURCE));
+        assert!(!UNMETERED_STANDALONE_FACADE_SOURCES.contains(&ASSESSMENT_ITEM_SOURCE));
+    }
+
+    #[test]
+    fn assessment_item_transport_gate_rejects_network_and_legacy_authority() {
+        let source = "use crate::{contracts::ScanPhase, http_evidence::HttpRequestBroker};\n\
+                      fn escape(broker: HttpRequestBroker) { broker.send(); }";
+        let violations = inspect_owned_transport_source(
+            ASSESSMENT_ITEM_SOURCE,
+            source,
+            false,
+            false,
+            &BTreeSet::new(),
+        )
+        .unwrap()
+        .join("\n");
+        assert!(violations.contains("ScanPhase"), "{violations}");
+        assert!(violations.contains("HttpRequestBroker"), "{violations}");
+        assert!(violations.contains(".send()"), "{violations}");
+    }
+
+    #[test]
+    fn assessment_item_facade_is_private_direct_unconditional_and_exact() {
+        let source = include_str!("../../../crates/venom-scanner/src/web_runtime.rs");
+        assert!(inspect_assessment_item_facade(source).unwrap().is_empty());
+
+        let public_module = source.replacen("mod assessment_item;", "pub mod assessment_item;", 1);
+        let violations = inspect_assessment_item_facade(&public_module)
+            .unwrap()
+            .join("\n");
+        assert!(violations.contains("private canonical"), "{violations}");
+
+        let conditional = source.replacen(
+            "pub use assessment_item::{",
+            "#[cfg(test)]\npub use assessment_item::{",
+            1,
+        );
+        let violations = inspect_assessment_item_facade(&conditional)
+            .unwrap()
+            .join("\n");
+        assert!(violations.contains("unconditional"), "{violations}");
+
+        let extra = source.replacen(
+            "pub use assessment_item::{",
+            "pub use assessment_item::{AssessmentCapabilityDescriptor,",
+            1,
+        );
+        let violations = inspect_assessment_item_facade(&extra).unwrap().join("\n");
+        assert!(violations.contains("unexpected"), "{violations}");
+    }
+
+    #[test]
+    fn assessment_item_contract_is_read_only_nonserializable_and_claim_derived() {
+        let source =
+            include_str!("../../../crates/venom-scanner/src/web_runtime/assessment_item.rs");
+        assert!(
+            inspect_assessment_item_projection(source)
+                .unwrap()
+                .is_empty(),
+            "{}",
+            inspect_assessment_item_projection(source)
+                .unwrap()
+                .join("\n")
+        );
+
+        let public_field = source.replacen(
+            "pub struct AssessmentSubjectReference(u32);",
+            "pub struct AssessmentSubjectReference(pub u32);",
+            1,
+        );
+        let violations = inspect_assessment_item_projection(&public_field)
+            .unwrap()
+            .join("\n");
+        assert!(violations.contains("construction field"), "{violations}");
+
+        let serializable = source.replacen(
+            "pub struct AssessmentSubjectReference(u32);",
+            "#[derive(Serialize)]\npub struct AssessmentSubjectReference(u32);",
+            1,
+        );
+        let violations = inspect_assessment_item_projection(&serializable)
+            .unwrap()
+            .join("\n");
+        assert!(violations.contains("serialization"), "{violations}");
+
+        let upgraded = source.replacen(
+            "Self::Observation(_) => AssessmentDisposition::Informational",
+            "Self::Observation(_) => AssessmentDisposition::Confirmed",
+            1,
+        );
+        let violations = inspect_assessment_item_projection(&upgraded)
+            .unwrap()
+            .join("\n");
+        assert!(violations.contains("authority marker"), "{violations}");
+
+        let network = format!("{source}\nuse crate::RuntimeBudget;");
+        let violations = inspect_assessment_item_projection(&network)
+            .unwrap()
+            .join("\n");
+        assert!(violations.contains("RuntimeBudget"), "{violations}");
+    }
+
+    #[test]
+    fn assessment_item_projection_context_and_factory_authority_are_pinned() {
+        let source =
+            include_str!("../../../crates/venom-scanner/src/web_runtime/assessment_item.rs");
+
+        for forbidden_input in [
+            "DecisionExecutionFailureReceipt",
+            "StandardWebDecisionFailureReceipt",
+            "DecisionRunnerTurn",
+            "AssessmentSubjectReference",
+            "AssessmentDisposition",
+            "BTreeMap<String, String>",
+        ] {
+            let mutated = source.replacen(
+                "        target: &AssessmentItemTarget,\n        receipt: &DecisionEvidenceReceipt,",
+                &format!(
+                    "        forbidden: {forbidden_input},\n        receipt: &DecisionEvidenceReceipt,"
+                ),
+                1,
+            );
+            let violations = inspect_assessment_item_projection(&mutated)
+                .unwrap()
+                .join("\n");
+            assert!(
+                violations.contains("raw caller authority"),
+                "missing input rejection for {forbidden_input}: {violations}"
+            );
+            assert!(
+                violations.contains("exact crate-private"),
+                "missing exact factory rejection for {forbidden_input}: {violations}"
+            );
+        }
+
+        let wrong_authority = source.replacen(
+            "knowledge_authority: KnowledgeAuthority,",
+            "knowledge_authority: String,",
+            1,
+        );
+        let violations = inspect_assessment_item_projection(&wrong_authority)
+            .unwrap()
+            .join("\n");
+        assert!(violations.contains("opaque authority"), "{violations}");
+
+        let missing_authority_check = source.replacen(
+            "self.validate_knowledge_authority(knowledge, evidence.subject())?;",
+            "let _ = (knowledge, evidence.subject());",
+            1,
+        );
+        let violations = inspect_assessment_item_projection(&missing_authority_check)
+            .unwrap()
+            .join("\n");
+        assert!(violations.contains("register_evidence"), "{violations}");
+
+        let raised_cap = source.replacen(
+            "const MAX_PROJECTION_CASES: usize = 10_000;",
+            "const MAX_PROJECTION_CASES: usize = 10_001;",
+            1,
+        );
+        let violations = inspect_assessment_item_projection(&raised_cap)
+            .unwrap()
+            .join("\n");
+        assert!(violations.contains("MAX_PROJECTION_CASES"), "{violations}");
+
+        let raw_context_evidence = source.replacen(
+            "struct EvidenceProjection {\n    reference: AssessmentEvidenceReference,\n    subject: EntityId,\n}",
+            "struct EvidenceProjection {\n    reference: AssessmentEvidenceReference,\n    subject: EntityId,\n    raw: Evidence,\n}",
+            1,
+        );
+        let violations = inspect_assessment_item_projection(&raw_context_evidence)
+            .unwrap()
+            .join("\n");
+        assert!(violations.contains("EvidenceProjection"), "{violations}");
+
+        let unbound_outcome = source.replacen(
+            "struct RuntimeOutcomeIdentity {\n    subject: EntityId,",
+            "struct RuntimeOutcomeIdentity {\n    subject: String,",
+            1,
+        );
+        let violations = inspect_assessment_item_projection(&unbound_outcome)
+            .unwrap()
+            .join("\n");
+        assert!(violations.contains("subject-bound"), "{violations}");
+
+        let raw_public_body = source.replacen(
+            "    basis: AssessmentBasis,\n}",
+            "    basis: AssessmentBasis,\n    raw_body: Vec<u8>,\n}",
+            1,
+        );
+        let violations = inspect_assessment_item_projection(&raw_public_body)
+            .unwrap()
+            .join("\n");
+        assert!(violations.contains("secret-bearing"), "{violations}");
+
+        let dynamic_error = source.replacen(
+            "pub enum AssessmentItemProjectionError {",
+            "pub enum AssessmentItemProjectionError {\n    LeakedCredential(String),",
+            1,
+        );
+        let violations = inspect_assessment_item_projection(&dynamic_error)
+            .unwrap()
+            .join("\n");
+        assert!(
+            violations.contains("caller-controlled dynamic"),
+            "{violations}"
+        );
     }
 
     #[test]

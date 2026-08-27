@@ -47,6 +47,7 @@ use crate::{
 
 mod api_visibility;
 mod assessment_defense;
+mod assessment_item;
 mod authority;
 mod scan_profile;
 mod web_assessment;
@@ -65,6 +66,14 @@ pub use api_visibility::{
     ApiVisibilityDifferentialRequestError, ApiVisibilityInconclusiveReason, ApiVisibilityLeg,
     ApiVisibilityLegReceipt, RuntimeApiVisibilityError, RuntimeApiVisibilityExecutionError,
     RuntimeApiVisibilityRunReport,
+};
+pub use assessment_item::{
+    AssessmentBasis, AssessmentCaseReference, AssessmentConfirmationDenial,
+    AssessmentDifferentialBasis, AssessmentDisposition, AssessmentEvidenceReference,
+    AssessmentItem, AssessmentItemProjectionError, AssessmentObservationBasis,
+    AssessmentOutcomeReference, AssessmentRemediation, AssessmentSubjectReference,
+    AssessmentVerifierBasis, ASSESSMENT_ITEM_SCHEMA, MAX_ASSESSMENT_CAPABILITY_ID_BYTES,
+    MAX_ASSESSMENT_DISPLAY_BYTES, MAX_ASSESSMENT_ITEM_EVIDENCE_REFERENCES,
 };
 
 #[cfg(feature = "scanning")]
