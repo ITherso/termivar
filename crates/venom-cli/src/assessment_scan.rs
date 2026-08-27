@@ -1078,7 +1078,7 @@ mod tests {
         assert_eq!(value["schema_version"], WEB_ASSESSMENT_SCHEMA_VERSION);
         assert_eq!(
             value["profile_contract"]["schema"],
-            venom_scanner::SCAN_PROFILE_V1_SCHEMA
+            venom_scanner::web_runtime::SCAN_PROFILE_V1_SCHEMA
         );
         assert_eq!(value["profile_contract"]["profile"], "baseline");
         assert_eq!(value["assessment"]["scope"], "single-resource");

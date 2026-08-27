@@ -6,8 +6,6 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::net::IpAddr;
 use std::str::FromStr;
 use url::Url;
-#[cfg(feature = "scanning")]
-use venom_core::predicates::WebDiscoveryEvidencePredicate;
 use venom_core::{EntityId, Evidence, EvidenceId, EvidenceKind, EvidenceValue};
 
 use crate::knowledge::KnowledgeSnapshot;
@@ -208,15 +206,25 @@ impl EntityExtractor {
         }
         let predicate = evidence.predicate();
         let (method_attribute, endpoint_method) = if predicate
-            == &WebDiscoveryEvidencePredicate::GET_ROUTE.into_knowledge()
-            || predicate == &WebDiscoveryEvidencePredicate::GET_FORM_ACTION.into_knowledge()
+            == &venom_core::predicates::WebDiscoveryEvidencePredicate::GET_ROUTE.into_knowledge()
+            || predicate
+                == &venom_core::predicates::WebDiscoveryEvidencePredicate::GET_FORM_ACTION
+                    .into_knowledge()
         {
             ("method", "GET")
-        } else if predicate == &WebDiscoveryEvidencePredicate::HEAD_ROUTE.into_knowledge() {
+        } else if predicate
+            == &venom_core::predicates::WebDiscoveryEvidencePredicate::HEAD_ROUTE.into_knowledge()
+        {
             ("method", "HEAD")
-        } else if predicate == &WebDiscoveryEvidencePredicate::POST_FORM_ACTION.into_knowledge() {
+        } else if predicate
+            == &venom_core::predicates::WebDiscoveryEvidencePredicate::POST_FORM_ACTION
+                .into_knowledge()
+        {
             ("method", "POST")
-        } else if predicate == &WebDiscoveryEvidencePredicate::DIALOG_FORM_ACTION.into_knowledge() {
+        } else if predicate
+            == &venom_core::predicates::WebDiscoveryEvidencePredicate::DIALOG_FORM_ACTION
+                .into_knowledge()
+        {
             ("form_method", "dialog")
         } else {
             return self.project_web_discovery_names(evidence, index);
@@ -255,14 +263,19 @@ impl EntityExtractor {
     ) -> Vec<SemanticEntity> {
         let predicate = evidence.predicate();
         let (location, route_parent) = if predicate
-            == &WebDiscoveryEvidencePredicate::ROUTE_QUERY_PARAMETER_NAMES.into_knowledge()
+            == &venom_core::predicates::WebDiscoveryEvidencePredicate::ROUTE_QUERY_PARAMETER_NAMES
+                .into_knowledge()
         {
             ("query", true)
         } else if predicate
-            == &WebDiscoveryEvidencePredicate::FORM_QUERY_PARAMETER_NAMES.into_knowledge()
+            == &venom_core::predicates::WebDiscoveryEvidencePredicate::FORM_QUERY_PARAMETER_NAMES
+                .into_knowledge()
         {
             ("query", false)
-        } else if predicate == &WebDiscoveryEvidencePredicate::FORM_CONTROL_NAMES.into_knowledge() {
+        } else if predicate
+            == &venom_core::predicates::WebDiscoveryEvidencePredicate::FORM_CONTROL_NAMES
+                .into_knowledge()
+        {
             ("form_control", false)
         } else {
             return Vec::new();
@@ -278,14 +291,22 @@ impl EntityExtractor {
         };
         let parent_predicate = parent.predicate();
         let accepted_parent = if route_parent {
-            parent_predicate == &WebDiscoveryEvidencePredicate::GET_ROUTE.into_knowledge()
-                || parent_predicate == &WebDiscoveryEvidencePredicate::HEAD_ROUTE.into_knowledge()
+            parent_predicate
+                == &venom_core::predicates::WebDiscoveryEvidencePredicate::GET_ROUTE
+                    .into_knowledge()
+                || parent_predicate
+                    == &venom_core::predicates::WebDiscoveryEvidencePredicate::HEAD_ROUTE
+                        .into_knowledge()
         } else {
-            parent_predicate == &WebDiscoveryEvidencePredicate::GET_FORM_ACTION.into_knowledge()
+            parent_predicate
+                == &venom_core::predicates::WebDiscoveryEvidencePredicate::GET_FORM_ACTION
+                    .into_knowledge()
                 || parent_predicate
-                    == &WebDiscoveryEvidencePredicate::POST_FORM_ACTION.into_knowledge()
+                    == &venom_core::predicates::WebDiscoveryEvidencePredicate::POST_FORM_ACTION
+                        .into_knowledge()
                 || parent_predicate
-                    == &WebDiscoveryEvidencePredicate::DIALOG_FORM_ACTION.into_knowledge()
+                    == &venom_core::predicates::WebDiscoveryEvidencePredicate::DIALOG_FORM_ACTION
+                        .into_knowledge()
         };
         if !accepted_parent || parent.kind() != &EvidenceKind::Content {
             return Vec::new();
@@ -997,7 +1018,7 @@ mod tests {
         let marker = derived_discovery_evidence(
             "semantic-document",
             &subject,
-            WebDiscoveryEvidencePredicate::DOCUMENT_PROJECTED,
+            venom_core::predicates::WebDiscoveryEvidencePredicate::DOCUMENT_PROJECTED,
             EvidenceValue::Boolean(true),
             "document-projected",
             base.iter().map(|evidence| evidence.id().clone()),
@@ -1005,7 +1026,7 @@ mod tests {
         let route = derived_discovery_evidence(
             "semantic-route",
             &subject,
-            WebDiscoveryEvidencePredicate::GET_ROUTE,
+            venom_core::predicates::WebDiscoveryEvidencePredicate::GET_ROUTE,
             EvidenceValue::Text("https://example.test/search".to_owned()),
             "get-route",
             [marker.id().clone()],
@@ -1013,7 +1034,7 @@ mod tests {
         let names = derived_discovery_evidence(
             "semantic-route-names",
             &subject,
-            WebDiscoveryEvidencePredicate::ROUTE_QUERY_PARAMETER_NAMES,
+            venom_core::predicates::WebDiscoveryEvidencePredicate::ROUTE_QUERY_PARAMETER_NAMES,
             EvidenceValue::TextList(names),
             "route-query-parameter-names",
             [route.id().clone()],
@@ -1832,7 +1853,7 @@ mod tests {
         wrong_parent.push(derived_discovery_evidence(
             "semantic-route-names-wrong-parent",
             &subject,
-            WebDiscoveryEvidencePredicate::ROUTE_QUERY_PARAMETER_NAMES,
+            venom_core::predicates::WebDiscoveryEvidencePredicate::ROUTE_QUERY_PARAMETER_NAMES,
             EvidenceValue::TextList(vec!["q".to_owned()]),
             "route-query-parameter-names",
             [EvidenceId::parse("semantic-document").unwrap()],
