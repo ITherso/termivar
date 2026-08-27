@@ -3089,6 +3089,7 @@ mod tests {
         ));
         let wire = serde_json::to_value(&planning).unwrap();
         assert!(wire.get("defense_suppressed_actions").is_none());
+        assert!(wire.get("policy_authorized_plan").is_none());
     }
 
     #[test]

@@ -1098,6 +1098,63 @@ fn parse_product(value: &str) -> Result<DefenseProduct, ()> {
 mod tests {
     use super::*;
 
+    fn test_case(id: &str, subject: &EntityId) -> VerificationCase {
+        VerificationCase::new(
+            id,
+            subject.clone(),
+            "action:test:defense",
+            "hypothesis:test:defense",
+        )
+        .unwrap()
+    }
+
+    fn test_observation(
+        case: VerificationCase,
+        stage: DecisionExecutionStage,
+        state: DefenseState,
+        body_coverage: AssessmentDefenseBodyCoverage,
+        input_limit_reached: bool,
+        evidence_id: &str,
+    ) -> CommittedAssessmentDefenseObservation {
+        CommittedAssessmentDefenseObservation {
+            case,
+            stage,
+            state,
+            body_coverage,
+            input_limit_reached,
+            evidence_ids: vec![EvidenceId::parse(evidence_id).unwrap()],
+        }
+    }
+
+    fn transition_for(
+        control: CommittedAssessmentDefenseObservation,
+        candidate: CommittedAssessmentDefenseObservation,
+    ) -> Option<CommittedAssessmentDefenseTransition> {
+        let ledger = CommittedAssessmentDefenseLedger {
+            observations: vec![control],
+            ..CommittedAssessmentDefenseLedger::default()
+        };
+        ledger.positive_transition_for(&candidate)
+    }
+
+    fn projected_state(
+        status: u16,
+        rate_limited: bool,
+        fingerprint: Option<DefenseFingerprint>,
+    ) -> DefenseState {
+        DefenseState::from_assessment_projection(
+            status,
+            false,
+            rate_limited,
+            rate_limited,
+            fingerprint,
+        )
+    }
+
+    fn hint(product: DefenseProduct) -> DefenseFingerprint {
+        DefenseFingerprint::from_assessment_hint(product, FingerprintConfidence::Weak)
+    }
+
     fn projection_context<'a>(
         subject: &'a EntityId,
         parents: Vec<EvidenceId>,
@@ -1170,5 +1227,171 @@ mod tests {
             Some(DefenseProduct::Cloudflare),
             true,
         ));
+    }
+
+    #[test]
+    fn transitions_are_same_case_passive_to_active_and_positive_only() {
+        let subject = EntityId::new("endpoint:https://example.test/").unwrap();
+        let case = test_case("case:test:defense:one", &subject);
+        let control = test_observation(
+            case.clone(),
+            DecisionExecutionStage::Passive,
+            projected_state(200, false, None),
+            AssessmentDefenseBodyCoverage::CompleteUtf8Prefix,
+            false,
+            "defense/control-open",
+        );
+        let blocked = test_observation(
+            case.clone(),
+            DecisionExecutionStage::Active,
+            projected_state(403, false, None),
+            AssessmentDefenseBodyCoverage::CompleteUtf8Prefix,
+            false,
+            "defense/candidate-blocked",
+        );
+        let transition = transition_for(control.clone(), blocked.clone()).unwrap();
+        assert!(transition.candidate_block_status_appeared());
+        assert!(transition.suppression_newly_blocking);
+
+        let rate_limited = test_observation(
+            case.clone(),
+            DecisionExecutionStage::Active,
+            projected_state(200, true, None),
+            AssessmentDefenseBodyCoverage::MetadataOnly,
+            false,
+            "defense/candidate-rate-limited",
+        );
+        assert!(transition_for(control.clone(), rate_limited)
+            .unwrap()
+            .newly_rate_limited());
+
+        let new_hint = test_observation(
+            case.clone(),
+            DecisionExecutionStage::Active,
+            projected_state(200, false, Some(hint(DefenseProduct::AwsWaf))),
+            AssessmentDefenseBodyCoverage::MetadataOnly,
+            false,
+            "defense/candidate-new-hint",
+        );
+        assert!(transition_for(control.clone(), new_hint).is_some());
+
+        let incomplete_control = test_observation(
+            case.clone(),
+            DecisionExecutionStage::Passive,
+            projected_state(200, false, None),
+            AssessmentDefenseBodyCoverage::MetadataOnly,
+            true,
+            "defense/control-incomplete",
+        );
+        let incomplete_new_hint = test_observation(
+            case.clone(),
+            DecisionExecutionStage::Active,
+            projected_state(200, false, Some(hint(DefenseProduct::AwsWaf))),
+            AssessmentDefenseBodyCoverage::MetadataOnly,
+            false,
+            "defense/candidate-incomplete-new-hint",
+        );
+        assert!(transition_for(incomplete_control.clone(), incomplete_new_hint).is_none());
+
+        let incomplete_block = test_observation(
+            case.clone(),
+            DecisionExecutionStage::Active,
+            projected_state(403, false, None),
+            AssessmentDefenseBodyCoverage::MetadataOnly,
+            false,
+            "defense/candidate-incomplete-block",
+        );
+        let transition = transition_for(incomplete_control, incomplete_block).unwrap();
+        assert!(transition.candidate_block_status_appeared());
+        assert!(!transition.suppression_newly_blocking);
+
+        let changed_hint_control = test_observation(
+            case.clone(),
+            DecisionExecutionStage::Passive,
+            projected_state(200, false, Some(hint(DefenseProduct::AwsWaf))),
+            AssessmentDefenseBodyCoverage::MetadataOnly,
+            true,
+            "defense/control-hint-a",
+        );
+        let changed_hint_candidate = test_observation(
+            case.clone(),
+            DecisionExecutionStage::Active,
+            projected_state(200, false, Some(hint(DefenseProduct::Cloudflare))),
+            AssessmentDefenseBodyCoverage::MetadataOnly,
+            true,
+            "defense/candidate-hint-b",
+        );
+        assert!(transition_for(changed_hint_control.clone(), changed_hint_candidate).is_some());
+
+        let disappeared_hint = test_observation(
+            case.clone(),
+            DecisionExecutionStage::Active,
+            projected_state(200, false, None),
+            AssessmentDefenseBodyCoverage::CompleteUtf8Prefix,
+            false,
+            "defense/candidate-hint-disappeared",
+        );
+        assert!(transition_for(changed_hint_control.clone(), disappeared_hint).is_none());
+
+        let unchanged_hint = test_observation(
+            case.clone(),
+            DecisionExecutionStage::Active,
+            projected_state(200, false, Some(hint(DefenseProduct::AwsWaf))),
+            AssessmentDefenseBodyCoverage::CompleteUtf8Prefix,
+            false,
+            "defense/candidate-hint-unchanged",
+        );
+        assert!(transition_for(changed_hint_control, unchanged_hint).is_none());
+
+        let unchanged = test_observation(
+            case.clone(),
+            DecisionExecutionStage::Active,
+            projected_state(200, false, None),
+            AssessmentDefenseBodyCoverage::CompleteUtf8Prefix,
+            false,
+            "defense/candidate-open",
+        );
+        assert!(transition_for(control.clone(), unchanged).is_none());
+
+        let other_case = test_observation(
+            test_case("case:test:defense:other", &subject),
+            DecisionExecutionStage::Active,
+            projected_state(403, false, None),
+            AssessmentDefenseBodyCoverage::CompleteUtf8Prefix,
+            false,
+            "defense/candidate-other-case",
+        );
+        assert!(transition_for(control.clone(), other_case).is_none());
+
+        let other_subject = EntityId::new("endpoint:https://other.example.test/").unwrap();
+        let cross_subject = test_observation(
+            test_case("case:test:defense:one", &other_subject),
+            DecisionExecutionStage::Active,
+            projected_state(403, false, None),
+            AssessmentDefenseBodyCoverage::CompleteUtf8Prefix,
+            false,
+            "defense/candidate-other-subject",
+        );
+        assert!(transition_for(control.clone(), cross_subject).is_none());
+
+        let passive_candidate = test_observation(
+            case.clone(),
+            DecisionExecutionStage::Passive,
+            projected_state(403, false, None),
+            AssessmentDefenseBodyCoverage::CompleteUtf8Prefix,
+            false,
+            "defense/candidate-passive",
+        );
+        assert!(transition_for(control.clone(), passive_candidate).is_none());
+
+        let active_control = test_observation(
+            case,
+            DecisionExecutionStage::Active,
+            projected_state(200, false, None),
+            AssessmentDefenseBodyCoverage::CompleteUtf8Prefix,
+            false,
+            "defense/control-active",
+        );
+        assert!(transition_for(active_control, blocked).is_none());
     }
 }

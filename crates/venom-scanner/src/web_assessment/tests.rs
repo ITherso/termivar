@@ -20,12 +20,15 @@ use venom_core::{ConfidenceScore, EntityId, KnowledgePredicate};
 
 use super::*;
 use crate::{
-    defense::assessment::{CommittedAssessmentDefenseLedger, ASSESSMENT_DEFENSE_NAMESPACE},
+    defense::{
+        assessment::{CommittedAssessmentDefenseLedger, ASSESSMENT_DEFENSE_NAMESPACE},
+        MAX_FINGERPRINT_BODY_SCAN_BYTES,
+    },
     http_evidence::{
         complete_http_response_observation_for_test, CompleteHttpResponseObservationTestInput,
     },
-    HttpBodyCapture, HttpEvidencePolicy, RuntimeBudgetDimension, SemanticEntityType,
-    TransportDispatchOutcome, DEFAULT_MAX_CONSECUTIVE_NO_PROGRESS_TURNS,
+    HttpBodyCapture, HttpEvidencePolicy, KnowledgeWrite, RuntimeBudgetDimension,
+    SemanticEntityType, TransportDispatchOutcome, DEFAULT_MAX_CONSECUTIVE_NO_PROGRESS_TURNS,
     DEFAULT_MAX_REQUEST_BODY_BYTES, DEFAULT_MAX_SAME_ACTION_ATTEMPTS,
 };
 
@@ -89,7 +92,13 @@ async fn default_defense_audit_replays_committed_receipts_without_enforcement() 
         .shadow_plans()
         .iter()
         .any(|shadow| !shadow.delta().is_empty()));
-    for shadow in report.defense().shadow_plans() {
+    let actual_plans = actual_assessment_plans(&report);
+    assert_eq!(actual_plans.len(), report.defense().shadow_plans().len());
+    for (actual, shadow) in actual_plans
+        .into_iter()
+        .zip(report.defense().shadow_plans())
+    {
+        assert_eq!(actual, shadow.policy_authorized());
         let baseline_ids: Vec<_> = shadow
             .policy_authorized()
             .steps()
@@ -102,6 +111,7 @@ async fn default_defense_audit_replays_committed_receipts_without_enforcement() 
             .iter()
             .all(|step| baseline_ids.contains(&step.action_id())));
     }
+    assert!(server.hit_count("/root").await >= 2);
 
     let bootstrap = report.subjects()[0].bootstrap().unwrap();
     let without_projection: Vec<_> = bootstrap
@@ -120,6 +130,211 @@ async fn default_defense_audit_replays_committed_receipts_without_enforcement() 
         .ingest_receipt(&local_receipt, &knowledge, true)
         .is_err());
     assert_eq!(replay, before);
+}
+
+#[tokio::test]
+async fn enforced_defense_plan_exactly_matches_public_shadow_and_suppresses() {
+    let server = serve(|_| {
+        FixtureReply::Response(
+            FixtureResponse::new(
+                "403 Forbidden",
+                Some("text/html"),
+                "<html><body>blocked</body></html>",
+            )
+            .with_header("CF-Ray", "fixed-fixture-id")
+            .with_header("Set-Cookie", "laravel_session=secret; HttpOnly")
+            .with_header("Set-Cookie", "XSRF-TOKEN=secret"),
+        )
+    })
+    .await;
+    let mut runtime = WebAssessmentRuntime::builder(server.url("/root"))
+        .enable_defense_enforcement()
+        .build()
+        .unwrap();
+    let report = runtime.analyze().await.unwrap();
+
+    assert_eq!(report.defense().mode(), WebAssessmentDefenseMode::Enforced);
+    let actual_plans = actual_assessment_plans(&report);
+    assert!(!actual_plans.is_empty());
+    assert_eq!(actual_plans.len(), report.defense().shadow_plans().len());
+    for (actual, shadow) in actual_plans
+        .into_iter()
+        .zip(report.defense().shadow_plans())
+    {
+        assert_eq!(actual, shadow.shadow());
+    }
+    assert!(report
+        .defense()
+        .shadow_plans()
+        .iter()
+        .any(|shadow| !shadow.delta().suppressed().is_empty()));
+    assert!(server.hit_count("/root").await >= 2);
+}
+
+#[tokio::test]
+async fn public_defense_coverage_withholds_open_and_weak_hint_never_suppresses() {
+    let mut root_body =
+        b"<html><head><link href='/asset' rel='stylesheet'></head><body><a href='/weak'>weak</a>"
+            .to_vec();
+    root_body.resize(MAX_FINGERPRINT_BODY_SCAN_BYTES + 1, b'x');
+    root_body.extend_from_slice(b"</body></html>");
+    let server = serve(move |request| {
+        let response = match request.path() {
+            "/root" => FixtureResponse::html(root_body.clone()),
+            "/weak" => FixtureResponse::html("<html><body>ok</body></html>")
+                .with_header("X-Amzn-RequestId", "fixed-weak-hint")
+                .with_header("Set-Cookie", "laravel_session=secret; HttpOnly")
+                .with_header("Set-Cookie", "XSRF-TOKEN=secret"),
+            _ => FixtureResponse::new("200 OK", Some("text/css"), "body{}"),
+        };
+        FixtureReply::Response(response)
+    })
+    .await;
+    let mut runtime = WebAssessmentRuntime::builder(server.url("/root"))
+        .enable_defense_enforcement()
+        .build()
+        .unwrap();
+    let report = runtime.analyze().await.unwrap();
+
+    let capped = defense_observation_for_path(&report, "/root");
+    assert_eq!(
+        capped.body_coverage(),
+        WebAssessmentDefenseBodyCoverage::CompleteUtf8Prefix
+    );
+    assert!(capped.input_limit_reached());
+    assert_eq!(capped.posture(), None);
+    assert!(!capped.challenge_observed());
+    assert!(!capped.rate_limit_observed());
+    assert!(capped.fingerprint_hint().is_none());
+
+    let metadata_only = defense_observation_for_path(&report, "/asset");
+    assert_eq!(
+        metadata_only.body_coverage(),
+        WebAssessmentDefenseBodyCoverage::MetadataOnly
+    );
+    assert_eq!(metadata_only.posture(), None);
+    assert!(!metadata_only.challenge_observed());
+    assert!(!metadata_only.rate_limit_observed());
+    assert!(metadata_only.fingerprint_hint().is_none());
+
+    let weak = defense_observation_for_path(&report, "/weak");
+    assert_eq!(
+        weak.fingerprint_hint(),
+        Some((DefenseProduct::AwsWaf, FingerprintConfidence::Weak))
+    );
+    assert_eq!(weak.posture(), Some(DefensePosture::Suspected));
+    let weak_subject = weak.subject().clone();
+    let weak_shadows: Vec<_> = report
+        .defense()
+        .shadow_plans()
+        .iter()
+        .filter(|shadow| shadow.policy_authorized().subject() == &weak_subject)
+        .collect();
+    assert!(!weak_shadows.is_empty());
+    assert!(weak_shadows
+        .iter()
+        .all(|shadow| shadow.delta().suppressed().is_empty()));
+    let requests = server.requests().await;
+    assert!(requests
+        .iter()
+        .any(|request| request.path() == "/asset" && request.method == "HEAD"));
+}
+
+#[tokio::test]
+async fn defense_ledger_is_idempotent_and_rejects_tampering_atomically() {
+    let server =
+        serve(|_| FixtureReply::Response(FixtureResponse::html("<html><body>ok</body></html>")))
+            .await;
+    let mut runtime = WebAssessmentRuntime::builder(server.url("/root"))
+        .build()
+        .unwrap();
+    let report = runtime.analyze().await.unwrap();
+    let bootstrap = report.subjects()[0].bootstrap().unwrap();
+
+    let mut ledger = CommittedAssessmentDefenseLedger::default();
+    assert!(ledger
+        .ingest_receipt(bootstrap, runtime.knowledge(), true)
+        .unwrap()
+        .is_some());
+    let committed = ledger.clone();
+    assert!(ledger
+        .ingest_receipt(bootstrap, runtime.knowledge(), true)
+        .unwrap()
+        .is_none());
+    assert_eq!(ledger, committed);
+
+    let mut reordered = bootstrap.evidence().to_vec();
+    let method_index = reordered
+        .iter()
+        .position(|evidence| {
+            evidence.predicate() == &HttpEvidencePredicate::REQUEST_METHOD.into_knowledge()
+        })
+        .unwrap();
+    let url_index = reordered
+        .iter()
+        .position(|evidence| {
+            evidence.predicate() == &HttpEvidencePredicate::REQUEST_URL.into_knowledge()
+        })
+        .unwrap();
+    reordered.swap(method_index, url_index);
+    let (reordered_knowledge, reordered_receipt) =
+        receipt_with_committed_batch(bootstrap, reordered);
+    let mut rejected = CommittedAssessmentDefenseLedger::default();
+    let before = rejected.clone();
+    assert!(rejected
+        .ingest_receipt(&reordered_receipt, &reordered_knowledge, true)
+        .is_err());
+    assert_eq!(rejected, before);
+
+    let mut defense_reordered = bootstrap.evidence().to_vec();
+    let first_defense = defense_reordered
+        .iter()
+        .position(|evidence| evidence.predicate().namespace() == ASSESSMENT_DEFENSE_NAMESPACE)
+        .unwrap();
+    defense_reordered.swap(first_defense, first_defense + 1);
+    let (defense_reordered_knowledge, defense_reordered_receipt) =
+        receipt_with_committed_batch(bootstrap, defense_reordered);
+    assert!(rejected
+        .ingest_receipt(
+            &defense_reordered_receipt,
+            &defense_reordered_knowledge,
+            true,
+        )
+        .is_err());
+    assert_eq!(rejected, before);
+
+    let mut direct_defense = bootstrap.evidence().to_vec();
+    let original_defense = direct_defense[first_defense].clone();
+    direct_defense[first_defense] = rebuild_evidence(
+        &original_defense,
+        original_defense.kind().clone(),
+        original_defense.value().clone(),
+        original_defense.source().clone(),
+        EvidenceOrigin::Direct,
+    );
+    let (direct_defense_knowledge, direct_defense_receipt) =
+        receipt_with_committed_batch(bootstrap, direct_defense);
+    assert!(rejected
+        .ingest_receipt(&direct_defense_receipt, &direct_defense_knowledge, true)
+        .is_err());
+    assert_eq!(rejected, before);
+
+    let mut updated_writes = bootstrap.writes().to_vec();
+    updated_writes[0] = KnowledgeWrite::Updated;
+    let updated_receipt = bootstrap.with_test_committed_batch(
+        bootstrap.evidence().to_vec(),
+        updated_writes,
+        bootstrap.after_execution().clone(),
+    );
+    assert!(rejected
+        .ingest_receipt(&updated_receipt, runtime.knowledge(), true)
+        .is_err());
+    assert_eq!(rejected, before);
+
+    assert!(rejected
+        .ingest_receipt(bootstrap, &KnowledgeBase::new(), true)
+        .is_err());
+    assert_eq!(rejected, before);
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -516,6 +731,30 @@ fn receipt_with_committed_batch(
 
 fn subject_path(report: &WebAssessmentSubjectReport) -> &str {
     report.subject().url().path()
+}
+
+fn actual_assessment_plans(report: &WebAssessmentRunReport) -> Vec<&AttackPlan> {
+    report
+        .subjects()
+        .iter()
+        .flat_map(WebAssessmentSubjectReport::turns)
+        .filter_map(|turn| match turn {
+            StandardWebDecisionRuntimeTurn::Planning(planning) => Some(planning.plan()),
+            StandardWebDecisionRuntimeTurn::Outcome { .. } => None,
+        })
+        .collect()
+}
+
+fn defense_observation_for_path<'a>(
+    report: &'a WebAssessmentRunReport,
+    path: &str,
+) -> &'a WebAssessmentDefenseObservation {
+    report
+        .defense()
+        .observations()
+        .iter()
+        .find(|observation| observation.subject().as_str().contains(path))
+        .unwrap_or_else(|| panic!("missing defense observation for {path}"))
 }
 
 fn public_subject_shape(
