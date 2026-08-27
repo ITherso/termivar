@@ -26,6 +26,7 @@ use venom_core::{
 };
 
 use crate::decision_runner::ContinuationAuthority;
+use crate::defense::assessment::AssessmentDefenseController;
 use crate::http_evidence::CompleteHttpResponseObserver;
 use crate::planner::ActionSuppressionContext;
 use crate::{
@@ -125,6 +126,17 @@ pub enum StandardWebDecisionRuntimeError {
         receipt: Box<DecisionEvidenceReceipt>,
     },
 
+    /// Committed assessment-defense evidence failed its closed replay schema.
+    #[error("committed assessment defense projection violated its closed schema")]
+    AssessmentDefenseProjectionInvariant {
+        /// Durable evidence commit rejected by the assessment replay boundary.
+        receipt: Box<DecisionEvidenceReceipt>,
+    },
+
+    /// Assessment defense policy could not classify the exact authorized plan.
+    #[error("assessment defense planning authority invariant failed")]
+    AssessmentDefensePlanningInvariant,
+
     /// A non-execution command reached the transport-accounting boundary.
     #[error("runtime resource accounting requires an execution command")]
     ExecutionMetadataUnavailable,
@@ -198,6 +210,7 @@ impl StandardWebDecisionRuntimeError {
         match self {
             Self::Runner(source) => source.committed_evidence(),
             Self::ResponseUsageEvidence { receipt, .. } => Some(receipt),
+            Self::AssessmentDefenseProjectionInvariant { receipt } => Some(receipt),
             Self::RunFailed { source, .. } => source.committed_evidence(),
             _ => None,
         }
@@ -208,6 +221,7 @@ impl StandardWebDecisionRuntimeError {
         match self {
             Self::Runner(source) => source.into_committed_evidence(),
             Self::ResponseUsageEvidence { receipt, .. } => Some(*receipt),
+            Self::AssessmentDefenseProjectionInvariant { receipt } => Some(*receipt),
             Self::RunFailed { source, .. } => source.into_committed_evidence(),
             _ => None,
         }
@@ -427,6 +441,8 @@ pub struct StandardWebDecisionRuntimeBuilder {
     bootstrap_probe_method: HttpProbeMethod,
     complete_response_observer: Option<Arc<dyn CompleteHttpResponseObserver>>,
     additional_suppressed_actions: BTreeSet<String>,
+    assessment_defense_projection: bool,
+    assessment_defense_enforcement: bool,
 }
 
 struct StandardWebDecisionRuntimePreflight {
@@ -454,6 +470,8 @@ impl StandardWebDecisionRuntimeBuilder {
             bootstrap_probe_method: HttpProbeMethod::Get,
             complete_response_observer: None,
             additional_suppressed_actions: BTreeSet::new(),
+            assessment_defense_projection: false,
+            assessment_defense_enforcement: false,
         }
     }
 
@@ -554,6 +572,7 @@ impl StandardWebDecisionRuntimeBuilder {
     ) -> Self {
         self.bootstrap_probe_method = method;
         self.complete_response_observer = Some(observer);
+        self.assessment_defense_projection = true;
         if method == HttpProbeMethod::Head {
             self.additional_suppressed_actions.extend(
                 StandardWebActionKind::all()
@@ -561,6 +580,12 @@ impl StandardWebDecisionRuntimeBuilder {
                     .map(|kind| kind.action_id().to_owned()),
             );
         }
+        self
+    }
+
+    pub(crate) fn with_assessment_defense_enforcement(mut self, enabled: bool) -> Self {
+        self.assessment_defense_projection = true;
+        self.assessment_defense_enforcement = enabled;
         self
     }
 
@@ -671,7 +696,13 @@ impl StandardWebDecisionRuntimeBuilder {
 
         let knowledge = authority.knowledge();
         let requests = authority.requests().clone();
-        let profile = StandardWebDecisionProfile::new_with_request_broker(requests.clone())?;
+        let profile = if self.assessment_defense_projection {
+            StandardWebDecisionProfile::new_with_request_broker_and_assessment_projection(
+                requests.clone(),
+            )?
+        } else {
+            StandardWebDecisionProfile::new_with_request_broker(requests.clone())?
+        };
         let installation = profile.install(knowledge, &mut decision_loop, &mut executors)?;
 
         // Surface-B multi-objective continuation: install continuation rules ONLY
@@ -701,6 +732,11 @@ impl StandardWebDecisionRuntimeBuilder {
             Some(observer) => http_evidence.with_complete_response_observer(observer),
             None => http_evidence,
         };
+        let http_evidence = if self.assessment_defense_projection {
+            http_evidence.with_assessment_defense_projection()
+        } else {
+            http_evidence
+        };
         executors.register(Arc::new(http_evidence))?;
 
         let mut unsupported_actions: BTreeSet<_> = StandardWebActionKind::all()
@@ -723,6 +759,9 @@ impl StandardWebDecisionRuntimeBuilder {
             authority,
             usage: RuntimeUsage::default(),
             started: false,
+            assessment_defense: self
+                .assessment_defense_projection
+                .then(|| AssessmentDefenseController::new(self.assessment_defense_enforcement)),
         })
     }
 }
@@ -762,6 +801,7 @@ pub struct StandardWebDecisionRuntime {
     authority: SharedWebRuntimeAuthority,
     usage: RuntimeUsage,
     started: bool,
+    assessment_defense: Option<AssessmentDefenseController>,
 }
 
 impl StandardWebDecisionRuntime {
@@ -838,8 +878,46 @@ impl StandardWebDecisionRuntime {
         self.experience
     }
 
-    fn action_suppression_context(&self) -> ActionSuppressionContext {
-        ActionSuppressionContext::policy_only(&self.unsupported_actions)
+    fn action_suppression_context(&self) -> Result<ActionSuppressionContext, ()> {
+        let defense = match &self.assessment_defense {
+            Some(controller) => controller
+                .defense_suppressed_actions(&self.subject, self.decision_loop.planner())?,
+            None => BTreeSet::new(),
+        };
+        Ok(ActionSuppressionContext::new(
+            self.unsupported_actions.clone(),
+            defense,
+        ))
+    }
+
+    fn ingest_assessment_defense(
+        &mut self,
+        receipt: &DecisionEvidenceReceipt,
+        require_projection: bool,
+    ) -> Result<(), ()> {
+        let Some(controller) = self.assessment_defense.as_mut() else {
+            return Ok(());
+        };
+        controller.ingest_receipt(receipt, self.authority.knowledge(), require_projection)
+    }
+
+    fn record_assessment_defense_shadow(
+        &mut self,
+        report: &DecisionPlanningReport,
+    ) -> Result<(), ()> {
+        let Some(controller) = self.assessment_defense.as_mut() else {
+            return Ok(());
+        };
+        let planner = self.decision_loop.planner().clone();
+        controller.record_shadow(report, &planner)
+    }
+
+    pub(crate) fn assessment_defense_controller(&self) -> Option<&AssessmentDefenseController> {
+        self.assessment_defense.as_ref()
+    }
+
+    pub(crate) fn assessment_planner(&self) -> &crate::AttackPlanner {
+        self.decision_loop.planner()
     }
 
     /// Collects bootstrap evidence and drives commands to a terminal state.
@@ -946,6 +1024,13 @@ impl StandardWebDecisionRuntime {
                 return Err(self.run_failed(committed_bootstrap, turns, source, started_at));
             },
         };
+        if self.ingest_assessment_defense(&bootstrap, true).is_err() {
+            let source = StandardWebDecisionRuntimeError::AssessmentDefenseProjectionInvariant {
+                receipt: Box::new(bootstrap),
+            };
+            let committed_bootstrap = source.committed_evidence().cloned();
+            return Err(self.run_failed(committed_bootstrap, turns, source, started_at));
+        }
         if let Some(limit) = self.response_limit_if_exceeded(BOOTSTRAP_ACTION_ID) {
             return Ok(self.limit_report(Some(bootstrap), turns, limit, started_at));
         }
@@ -970,7 +1055,17 @@ impl StandardWebDecisionRuntime {
                     if let Some(limit) = self.wall_limit_if_reached(started_at) {
                         return Ok(self.limit_report(bootstrap, turns, limit, started_at));
                     }
-                    let suppressions = self.action_suppression_context();
+                    let suppressions = match self.action_suppression_context() {
+                        Ok(value) => value,
+                        Err(()) => {
+                            return Err(self.run_failed(
+                                bootstrap,
+                                turns,
+                                StandardWebDecisionRuntimeError::AssessmentDefensePlanningInvariant,
+                                started_at,
+                            ));
+                        },
+                    };
                     let planning = match self.decision_loop.plan_next_with_action_suppressions(
                         self.authority.knowledge(),
                         &self.experience,
@@ -987,6 +1082,14 @@ impl StandardWebDecisionRuntime {
                             ));
                         },
                     };
+                    if self.record_assessment_defense_shadow(&planning).is_err() {
+                        return Err(self.run_failed(
+                            bootstrap,
+                            turns,
+                            StandardWebDecisionRuntimeError::AssessmentDefensePlanningInvariant,
+                            started_at,
+                        ));
+                    }
                     command = planning.command().clone();
                     turns.push(StandardWebDecisionRuntimeTurn::Planning(Box::new(planning)));
                     if self.authority.cancellation().is_cancelled() {
@@ -1004,7 +1107,17 @@ impl StandardWebDecisionRuntime {
                     if self.authority.cancellation().is_cancelled() {
                         return Ok(self.cancellation_report(bootstrap, turns, None, started_at));
                     }
-                    let predispatch_suppressions = self.action_suppression_context();
+                    let predispatch_suppressions = match self.action_suppression_context() {
+                        Ok(value) => value,
+                        Err(()) => {
+                            return Err(self.run_failed(
+                                bootstrap,
+                                turns,
+                                StandardWebDecisionRuntimeError::AssessmentDefensePlanningInvariant,
+                                started_at,
+                            ));
+                        },
+                    };
                     match self
                         .runner
                         .validate_command_suppression(&command, &predispatch_suppressions)
@@ -1143,6 +1256,19 @@ impl StandardWebDecisionRuntime {
                                 return Err(self.run_failed(bootstrap, turns, source, started_at));
                             },
                         };
+                    if self
+                        .ingest_assessment_defense(
+                            &evidence,
+                            execution_class == DecisionExecutionClass::TransportBound,
+                        )
+                        .is_err()
+                    {
+                        let source =
+                            StandardWebDecisionRuntimeError::AssessmentDefenseProjectionInvariant {
+                                receipt: Box::new(evidence),
+                            };
+                        return Err(self.run_failed(bootstrap, turns, source, started_at));
+                    }
                     // Cumulative response-byte enforcement is a transport concern;
                     // a local-knowledge action delivers no response bytes.
                     if execution_class == DecisionExecutionClass::TransportBound {
@@ -1160,7 +1286,17 @@ impl StandardWebDecisionRuntime {
                             started_at,
                         ));
                     }
-                    let resume_suppressions = self.action_suppression_context();
+                    let resume_suppressions = match self.action_suppression_context() {
+                        Ok(value) => value,
+                        Err(()) => {
+                            return Err(self.run_failed(
+                                bootstrap,
+                                turns,
+                                StandardWebDecisionRuntimeError::AssessmentDefensePlanningInvariant,
+                                started_at,
+                            ));
+                        },
+                    };
                     let runner_turn = self.runner.resume_session_command_with_action_suppressions(
                         &self.decision_loop,
                         &command,
@@ -1183,6 +1319,15 @@ impl StandardWebDecisionRuntime {
                     };
                     match runner_turn {
                         DecisionRunnerTurn::Planning(planning) => {
+                            if self.record_assessment_defense_shadow(&planning).is_err() {
+                                return Err(self.run_failed(
+                                    bootstrap,
+                                    turns,
+                                    StandardWebDecisionRuntimeError::
+                                        AssessmentDefensePlanningInvariant,
+                                    started_at,
+                                ));
+                            }
                             command = planning.command().clone();
                             turns.push(StandardWebDecisionRuntimeTurn::Planning(planning));
                             if is_terminal(&command) {

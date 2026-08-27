@@ -22,6 +22,7 @@ use super::{
 const BOUNDED_RUNTIME_SOURCES: &[&str] = &[
     "crates/venom-scanner/src/decision_loop.rs",
     "crates/venom-scanner/src/decision_runner.rs",
+    "crates/venom-scanner/src/defense/assessment.rs",
     "crates/venom-scanner/src/http_evidence.rs",
     "crates/venom-scanner/src/http_evidence/form_controls.rs",
     "crates/venom-scanner/src/payload_strategy.rs",
@@ -78,6 +79,12 @@ const WEB_ASSESSMENT_PUBLIC_EXPORTS: &[&str] = &[
     "HARD_MAX_WEB_ASSESSMENT_WALL_TIME",
     "WEB_ASSESSMENT_CONCURRENCY",
     "WebAssessmentCompletion",
+    "WebAssessmentDefenseAudit",
+    "WebAssessmentDefenseBodyCoverage",
+    "WebAssessmentDefenseMode",
+    "WebAssessmentDefenseObservation",
+    "WebAssessmentDefenseShadowPlan",
+    "WebAssessmentDefenseTransition",
     "WebAssessmentFailureReceipt",
     "WebAssessmentForm",
     "WebAssessmentFormMethod",
@@ -608,6 +615,7 @@ fn inspect_web_assessment_models(source: &str) -> Result<Vec<String>, syn::Error
     let mut violations = Vec::new();
     let mut public_types = BTreeSet::new();
     let mut audit_owners = BTreeMap::<String, usize>::new();
+    let mut defense_audit_owners = BTreeMap::<String, usize>::new();
 
     for item in &syntax.items {
         match item {
@@ -637,6 +645,14 @@ fn inspect_web_assessment_models(source: &str) -> Result<Vec<String>, syn::Error
                     .count();
                 if audit_count > 0 {
                     audit_owners.insert(name.clone(), audit_count);
+                }
+                let defense_audit_count = item
+                    .fields
+                    .iter()
+                    .filter(|field| type_references_ident(&field.ty, "WebAssessmentDefenseAudit"))
+                    .count();
+                if defense_audit_count > 0 {
+                    defense_audit_owners.insert(name.clone(), defense_audit_count);
                 }
                 if name == "WebAssessmentSubjectReport"
                     && item.fields.iter().any(|field| {
@@ -672,6 +688,11 @@ fn inspect_web_assessment_models(source: &str) -> Result<Vec<String>, syn::Error
     if audit_owners != expected_audit_owners {
         violations.push(format!(
             "assessment cumulative transport audit ownership drifted: expected {expected_audit_owners:?}, observed {audit_owners:?}"
+        ));
+    }
+    if defense_audit_owners != expected_audit_owners {
+        violations.push(format!(
+            "assessment defense audit ownership drifted: expected {expected_audit_owners:?}, observed {defense_audit_owners:?}"
         ));
     }
     for item in &syntax.items {
@@ -4833,8 +4854,9 @@ mod tests {
     fn assessment_models_keep_fields_private_without_serde_or_nested_audits() {
         let valid = r#"
             pub struct WebAssessmentSubjectReport { subject: String }
-            pub struct WebAssessmentRunReport { transport: TransportDispatchAudit }
-            pub struct WebAssessmentFailureReceipt { transport: TransportDispatchAudit }
+            pub struct WebAssessmentDefenseAudit { mode: String }
+            pub struct WebAssessmentRunReport { transport: TransportDispatchAudit, defense: WebAssessmentDefenseAudit }
+            pub struct WebAssessmentFailureReceipt { transport: TransportDispatchAudit, defense: WebAssessmentDefenseAudit }
         "#;
         assert!(inspect_web_assessment_models(valid).unwrap().is_empty());
 
@@ -4860,6 +4882,18 @@ mod tests {
             .join("\n");
         assert!(violations.contains("subject-local"), "{violations}");
         assert!(violations.contains("ownership drifted"), "{violations}");
+
+        let nested_defense = valid.replace(
+            "subject: String",
+            "subject: String, defense: WebAssessmentDefenseAudit",
+        );
+        let violations = inspect_web_assessment_models(&nested_defense)
+            .unwrap()
+            .join("\n");
+        assert!(
+            violations.contains("defense audit ownership drifted"),
+            "{violations}"
+        );
     }
 
     #[test]

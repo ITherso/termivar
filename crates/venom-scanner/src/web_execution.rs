@@ -117,6 +117,13 @@ impl StandardWebDiscoveryExecutorProfile {
     pub(crate) fn new_with_request_broker(
         requests: HttpRequestBroker,
     ) -> Result<Self, StandardWebExecutionError> {
+        Self::new_with_request_broker_and_assessment_projection(requests, false)
+    }
+
+    pub(crate) fn new_with_request_broker_and_assessment_projection(
+        requests: HttpRequestBroker,
+        assessment_defense_projection: bool,
+    ) -> Result<Self, StandardWebExecutionError> {
         let bindings = STANDARD_WEB_DISCOVERY_ACTIONS
             .into_iter()
             .map(|kind| {
@@ -126,6 +133,11 @@ impl StandardWebDiscoveryExecutorProfile {
                     requests.clone(),
                     provider,
                 )?;
+                let executor = if assessment_defense_projection {
+                    executor.with_assessment_defense_projection()
+                } else {
+                    executor
+                };
                 // php input discovery is the only route that reads application
                 // structure from the bounded HTML sample; every other route
                 // observes response metadata only.

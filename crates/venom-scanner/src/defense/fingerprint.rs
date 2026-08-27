@@ -78,6 +78,17 @@ pub struct DefenseFingerprint {
 }
 
 impl DefenseFingerprint {
+    pub(crate) const fn from_assessment_hint(
+        product: DefenseProduct,
+        confidence: FingerprintConfidence,
+    ) -> Self {
+        Self {
+            product,
+            confidence,
+            signal: "assessment:fingerprint-hint",
+        }
+    }
+
     /// Returns the inferred product.
     pub const fn product(&self) -> DefenseProduct {
         self.product

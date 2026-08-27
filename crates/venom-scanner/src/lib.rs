@@ -371,7 +371,9 @@ pub use web_runtime::{
 
 #[cfg(feature = "scanning")]
 pub use web_assessment::{
-    WebAssessmentCompletion, WebAssessmentFailureReceipt, WebAssessmentForm,
+    WebAssessmentCompletion, WebAssessmentDefenseAudit, WebAssessmentDefenseBodyCoverage,
+    WebAssessmentDefenseMode, WebAssessmentDefenseObservation, WebAssessmentDefenseShadowPlan,
+    WebAssessmentDefenseTransition, WebAssessmentFailureReceipt, WebAssessmentForm,
     WebAssessmentFormMethod, WebAssessmentIncompleteReason, WebAssessmentLimits,
     WebAssessmentLimitsError, WebAssessmentMethod, WebAssessmentRunReport, WebAssessmentRuntime,
     WebAssessmentRuntimeBuilder, WebAssessmentRuntimeError, WebAssessmentSubject,

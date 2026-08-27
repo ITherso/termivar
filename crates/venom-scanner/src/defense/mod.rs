@@ -3,10 +3,9 @@
 //! ## Runtime scope
 //!
 //! - **Build:** always/default.
-//! - **Execution:** host/test only via an explicit API. **Not composed into
-//!   `StandardWebDecisionRuntime`**; no production runtime caller exists in the
-//!   repository — `tests/defense_aware_planning_demo.rs` exercises it, and
-//!   external hosts may integrate projection/shadow/enforcement explicitly.
+//! - **Execution:** observation/shadow composition is assessment-only. The
+//!   standalone standard runtime remains unchanged; assessment enforcement is
+//!   an explicit opt-in and defaults off.
 //! - **Default `venom scan`:** no.
 //! - **Support:** implemented and tested.
 //!
@@ -22,6 +21,7 @@
 //! The former legacy WAF detector/evasion utility has been removed. Payload
 //! derivation lives behind [`crate::payload_strategies`].
 
+pub(crate) mod assessment;
 pub mod enforcement;
 pub mod fingerprint;
 pub mod policy;

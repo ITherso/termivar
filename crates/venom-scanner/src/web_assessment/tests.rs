@@ -20,6 +20,7 @@ use venom_core::{ConfidenceScore, EntityId, KnowledgePredicate};
 
 use super::*;
 use crate::{
+    defense::assessment::{CommittedAssessmentDefenseLedger, ASSESSMENT_DEFENSE_NAMESPACE},
     http_evidence::{
         complete_http_response_observation_for_test, CompleteHttpResponseObservationTestInput,
     },
@@ -27,6 +28,99 @@ use crate::{
     TransportDispatchOutcome, DEFAULT_MAX_CONSECUTIVE_NO_PROGRESS_TURNS,
     DEFAULT_MAX_REQUEST_BODY_BYTES, DEFAULT_MAX_SAME_ACTION_ATTEMPTS,
 };
+
+#[test]
+fn defense_mode_is_explicit_and_defaults_to_observation_only() {
+    let target = Url::parse("https://example.test/").unwrap();
+    let observed = WebAssessmentRuntime::builder(target.clone())
+        .build()
+        .unwrap();
+    assert_eq!(
+        observed.defense_audit.mode(),
+        WebAssessmentDefenseMode::ObservationOnly
+    );
+
+    let enforced = WebAssessmentRuntime::builder(target)
+        .enable_defense_enforcement()
+        .build()
+        .unwrap();
+    assert_eq!(
+        enforced.defense_audit.mode(),
+        WebAssessmentDefenseMode::Enforced
+    );
+}
+
+#[tokio::test]
+async fn default_defense_audit_replays_committed_receipts_without_enforcement() {
+    let server = serve(|_| {
+        FixtureReply::Response(
+            FixtureResponse::new(
+                "403 Forbidden",
+                Some("text/html"),
+                "<html><body>blocked</body></html>",
+            )
+            .with_header("CF-Ray", "fixed-fixture-id")
+            .with_header("Set-Cookie", "laravel_session=secret; HttpOnly")
+            .with_header("Set-Cookie", "XSRF-TOKEN=secret"),
+        )
+    })
+    .await;
+    let mut runtime = WebAssessmentRuntime::builder(server.url("/root"))
+        .build()
+        .unwrap();
+    let report = runtime.analyze().await.unwrap();
+    assert_eq!(
+        report.defense().mode(),
+        WebAssessmentDefenseMode::ObservationOnly
+    );
+    assert!(!report.defense().observations().is_empty());
+    assert!(report
+        .defense()
+        .observations()
+        .iter()
+        .all(|observation| observation.subject().as_str().starts_with("endpoint:")));
+    assert!(report
+        .defense()
+        .shadow_plans()
+        .iter()
+        .all(|shadow| shadow.policy_authorized().subject() == shadow.shadow().subject()));
+    assert!(report
+        .defense()
+        .shadow_plans()
+        .iter()
+        .any(|shadow| !shadow.delta().is_empty()));
+    for shadow in report.defense().shadow_plans() {
+        let baseline_ids: Vec<_> = shadow
+            .policy_authorized()
+            .steps()
+            .iter()
+            .map(|step| step.action_id())
+            .collect();
+        assert!(shadow
+            .shadow()
+            .steps()
+            .iter()
+            .all(|step| baseline_ids.contains(&step.action_id())));
+    }
+
+    let bootstrap = report.subjects()[0].bootstrap().unwrap();
+    let without_projection: Vec<_> = bootstrap
+        .evidence()
+        .iter()
+        .filter(|evidence| evidence.predicate().namespace() != ASSESSMENT_DEFENSE_NAMESPACE)
+        .cloned()
+        .collect();
+    let (knowledge, local_receipt) = receipt_with_committed_batch(bootstrap, without_projection);
+    let mut replay = CommittedAssessmentDefenseLedger::default();
+    assert!(replay
+        .ingest_receipt(&local_receipt, &knowledge, false)
+        .is_ok());
+    let before = replay.clone();
+    assert!(replay
+        .ingest_receipt(&local_receipt, &knowledge, true)
+        .is_err());
+    assert_eq!(replay, before);
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct RecordedRequest {

@@ -132,6 +132,16 @@ impl StandardWebDecisionProfile {
         Self::build(StandardWebDiscoveryExecutorProfile::new_with_request_broker(requests)?)
     }
 
+    pub(crate) fn new_with_request_broker_and_assessment_projection(
+        requests: HttpRequestBroker,
+    ) -> Result<Self, StandardWebDecisionError> {
+        Self::build(
+            StandardWebDiscoveryExecutorProfile::new_with_request_broker_and_assessment_projection(
+                requests, true,
+            )?,
+        )
+    }
+
     fn build(
         execution: StandardWebDiscoveryExecutorProfile,
     ) -> Result<Self, StandardWebDecisionError> {

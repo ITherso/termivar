@@ -29,6 +29,13 @@ use venom_core::{
 };
 
 use crate::{
+    defense::{
+        assessment::{
+            project_assessment_defense_signal, AssessmentDefenseBodyCoverage,
+            AssessmentDefenseProjectionContext, AssessmentDefenseSignal,
+        },
+        DefenseState, MAX_FINGERPRINT_BODY_SCAN_BYTES,
+    },
     payload_strategy::{
         PayloadSeed, PayloadStrategyLimits, PayloadStrategyRef, PayloadStrategyRegistry,
         PayloadVariantRole,
@@ -54,6 +61,9 @@ pub const MAX_HTTP_BODY_LIMIT: usize = 16 * 1024 * 1024;
 
 const MAX_HTTP_PATH_SEGMENTS: usize = 128;
 const MAX_HTTP_PATH_SEGMENT_BYTES: usize = 256;
+const MAX_ASSESSMENT_DEFENSE_HEADER_OCCURRENCES: usize = 8;
+const MAX_ASSESSMENT_DEFENSE_HEADER_VALUE_BYTES: usize = 1024;
+const MAX_ASSESSMENT_DEFENSE_COOKIE_NAME_BYTES: usize = 256;
 
 /// Stable executor identity used by the standard HTTP evidence collector.
 pub const HTTP_EVIDENCE_EXECUTOR_ID: &str = "http.evidence";
@@ -534,6 +544,11 @@ pub enum HttpEvidenceError {
     #[error("failed to construct HTTP evidence: {0}")]
     Reasoning(#[from] venom_core::ReasoningModelError),
 
+    /// The assessment-only defense projection could not bind its exact base
+    /// evidence set. No response values are included in this diagnostic.
+    #[error("assessment defense projection violated its fixed evidence boundary")]
+    AssessmentDefenseProjectionInvariant,
+
     /// The sealed assessment observer did not receive its required non-secret
     /// base evidence identities.
     #[error("HTTP assessment observer invariant failed: {invariant}")]
@@ -569,6 +584,7 @@ pub(crate) fn execution_failure_kind(error: &HttpEvidenceError) -> DecisionExecu
         | HttpEvidenceError::PayloadDerivationFailed { .. }
         | HttpEvidenceError::Client(_)
         | HttpEvidenceError::Reasoning(_)
+        | HttpEvidenceError::AssessmentDefenseProjectionInvariant
         | HttpEvidenceError::AssessmentObserverInvariant { .. } => {
             DecisionExecutionFailureKind::ExecutorFailure
         },
@@ -721,6 +737,7 @@ pub struct HttpEvidenceExecutor {
     payload: Option<HttpHeaderPayloadBinding>,
     capture_form_control_names: bool,
     complete_response_observer: Option<Arc<dyn CompleteHttpResponseObserver>>,
+    assessment_defense_projection: bool,
 }
 
 impl HttpEvidenceExecutor {
@@ -747,6 +764,7 @@ impl HttpEvidenceExecutor {
             payload: None,
             capture_form_control_names: false,
             complete_response_observer: None,
+            assessment_defense_projection: false,
         })
     }
 
@@ -775,6 +793,7 @@ impl HttpEvidenceExecutor {
             payload: None,
             capture_form_control_names: false,
             complete_response_observer: None,
+            assessment_defense_projection: false,
         })
     }
 
@@ -798,6 +817,7 @@ impl HttpEvidenceExecutor {
             payload: None,
             capture_form_control_names: false,
             complete_response_observer: None,
+            assessment_defense_projection: false,
         })
     }
 
@@ -827,6 +847,14 @@ impl HttpEvidenceExecutor {
         observer: Arc<dyn CompleteHttpResponseObserver>,
     ) -> Self {
         self.complete_response_observer = Some(observer);
+        self
+    }
+
+    /// Enables the closed, namespaced defense projection used only by the
+    /// origin assessment runtime. No raw response material leaves this
+    /// executor; only bounded typed signals enter the atomic evidence batch.
+    pub(crate) fn with_assessment_defense_projection(mut self) -> Self {
+        self.assessment_defense_projection = true;
         self
     }
 
@@ -1114,6 +1142,50 @@ impl HttpEvidenceExecutor {
                 ),
             };
             evidence.extend(observer.observe(observation)?);
+        }
+        if self.assessment_defense_projection {
+            let signal = bounded_assessment_defense_signal(
+                response.status.as_u16(),
+                probe.method(),
+                &response.headers,
+                response.body_complete,
+                &response.body,
+            );
+            let parent_predicates = [
+                HttpEvidencePredicate::REQUEST_METHOD,
+                HttpEvidencePredicate::REQUEST_URL,
+                HttpEvidencePredicate::RESPONSE_STATUS,
+                HttpEvidencePredicate::RESPONSE_FINAL_URL,
+                HttpEvidencePredicate::RESPONSE_BODY_BYTES_OBSERVED,
+                HttpEvidencePredicate::RESPONSE_BODY_TRUNCATED,
+                HttpEvidencePredicate::RESPONSE_BODY_SHA256,
+                HttpEvidencePredicate::RATE_LIMIT_DETECTED,
+                HttpEvidencePredicate::RATE_LIMIT_ADVERTISED,
+            ];
+            let mut parents = Vec::with_capacity(parent_predicates.len());
+            for descriptor in parent_predicates {
+                let predicate = descriptor.into_knowledge();
+                let mut matching = evidence
+                    .iter()
+                    .filter(|item| item.predicate() == &predicate);
+                let Some(parent) = matching.next() else {
+                    return Err(HttpEvidenceError::AssessmentDefenseProjectionInvariant);
+                };
+                if matching.next().is_some() {
+                    return Err(HttpEvidenceError::AssessmentDefenseProjectionInvariant);
+                }
+                parents.push(parent.id().clone());
+            }
+            evidence.extend(project_assessment_defense_signal(
+                &signal,
+                AssessmentDefenseProjectionContext {
+                    subject: decision.case().subject(),
+                    case_id: decision.case().id(),
+                    executor_id: &self.id,
+                    reliability: self.policy().reliability(),
+                    parents,
+                },
+            )?);
         }
         Ok(evidence)
     }
@@ -1654,6 +1726,165 @@ fn append_rate_limit_evidence(
     Ok(())
 }
 
+/// Reduces raw transport material to a closed, bounded signal vocabulary.
+/// Returned header values are fixed literals; no response value or cookie
+/// value is retained, hashed, or exposed to the assessment ledger.
+fn bounded_assessment_defense_signal(
+    status: u16,
+    method: HttpProbeMethod,
+    headers: &HeaderMap,
+    body_complete: bool,
+    body: &[u8],
+) -> AssessmentDefenseSignal {
+    let mut safe_headers = Vec::<(String, String)>::new();
+    let mut input_limit_reached = false;
+
+    for name in [
+        "cf-ray",
+        "x-amzn-waf-action",
+        "x-amzn-requestid",
+        "x-iinfo",
+        "x-sucuri-id",
+        "retry-after",
+        "ratelimit-limit",
+        "ratelimit-remaining",
+        "ratelimit-reset",
+        "x-ratelimit-limit",
+        "x-ratelimit-remaining",
+        "x-ratelimit-reset",
+    ] {
+        let count = headers
+            .get_all(name)
+            .iter()
+            .take(MAX_ASSESSMENT_DEFENSE_HEADER_OCCURRENCES + 1)
+            .count();
+        if count > MAX_ASSESSMENT_DEFENSE_HEADER_OCCURRENCES {
+            input_limit_reached = true;
+        }
+        if count > 0 {
+            safe_headers.push((name.to_owned(), "present".to_owned()));
+        }
+    }
+
+    let server_values: Vec<_> = headers
+        .get_all("server")
+        .iter()
+        .take(MAX_ASSESSMENT_DEFENSE_HEADER_OCCURRENCES + 1)
+        .collect();
+    if server_values.len() > MAX_ASSESSMENT_DEFENSE_HEADER_OCCURRENCES {
+        input_limit_reached = true;
+    }
+    for value in server_values
+        .into_iter()
+        .take(MAX_ASSESSMENT_DEFENSE_HEADER_OCCURRENCES)
+    {
+        let bytes = value.as_bytes();
+        if bytes.len() > MAX_ASSESSMENT_DEFENSE_HEADER_VALUE_BYTES {
+            input_limit_reached = true;
+        }
+        let prefix = &bytes[..bytes.len().min(MAX_ASSESSMENT_DEFENSE_HEADER_VALUE_BYTES)];
+        for needle in ["cloudflare", "mod_security", "akamaighost"] {
+            if ascii_contains_ignore_case(prefix, needle.as_bytes()) {
+                safe_headers.push(("server".to_owned(), needle.to_owned()));
+            }
+        }
+    }
+
+    let cookie_values: Vec<_> = headers
+        .get_all("set-cookie")
+        .iter()
+        .take(MAX_ASSESSMENT_DEFENSE_HEADER_OCCURRENCES + 1)
+        .collect();
+    if cookie_values.len() > MAX_ASSESSMENT_DEFENSE_HEADER_OCCURRENCES {
+        input_limit_reached = true;
+    }
+    for value in cookie_values
+        .into_iter()
+        .take(MAX_ASSESSMENT_DEFENSE_HEADER_OCCURRENCES)
+    {
+        let bytes = value.as_bytes();
+        let Some(separator) = bytes
+            .iter()
+            .take(MAX_ASSESSMENT_DEFENSE_COOKIE_NAME_BYTES + 1)
+            .position(|byte| *byte == b'=')
+        else {
+            input_limit_reached = true;
+            continue;
+        };
+        if separator == 0 || separator > MAX_ASSESSMENT_DEFENSE_COOKIE_NAME_BYTES {
+            input_limit_reached = true;
+            continue;
+        }
+        let name = &bytes[..separator];
+        for recognized in [
+            "incap_ses",
+            "bigipserver",
+            "barra_counter_session",
+            "fortiwafsid",
+        ] {
+            if ascii_starts_with_ignore_case(name, recognized.as_bytes()) {
+                safe_headers.push(("set-cookie".to_owned(), recognized.to_owned()));
+            }
+        }
+    }
+
+    safe_headers.sort();
+    safe_headers.dedup();
+    let safe_header_refs: Vec<_> = safe_headers
+        .iter()
+        .map(|(name, value)| (name.as_str(), value.as_str()))
+        .collect();
+
+    let (body_text, body_coverage) = if method == HttpProbeMethod::Head || !body_complete {
+        ("", AssessmentDefenseBodyCoverage::MetadataOnly)
+    } else if body.len() <= MAX_FINGERPRINT_BODY_SCAN_BYTES {
+        match std::str::from_utf8(body) {
+            Ok(text) => (text, AssessmentDefenseBodyCoverage::CompleteUtf8Prefix),
+            Err(_) => {
+                input_limit_reached = true;
+                ("", AssessmentDefenseBodyCoverage::MetadataOnly)
+            },
+        }
+    } else {
+        input_limit_reached = true;
+        let prefix = &body[..MAX_FINGERPRINT_BODY_SCAN_BYTES];
+        match std::str::from_utf8(prefix) {
+            Ok(text) => (text, AssessmentDefenseBodyCoverage::CompleteUtf8Prefix),
+            Err(error) if error.error_len().is_none() => {
+                let valid = &prefix[..error.valid_up_to()];
+                (
+                    std::str::from_utf8(valid).unwrap_or(""),
+                    AssessmentDefenseBodyCoverage::CompleteUtf8Prefix,
+                )
+            },
+            Err(_) => ("", AssessmentDefenseBodyCoverage::MetadataOnly),
+        }
+    };
+
+    AssessmentDefenseSignal::new(
+        DefenseState::observe(status, &safe_header_refs, body_text),
+        body_coverage,
+        input_limit_reached,
+    )
+}
+
+fn ascii_contains_ignore_case(haystack: &[u8], needle: &[u8]) -> bool {
+    haystack.windows(needle.len()).any(|window| {
+        window
+            .iter()
+            .zip(needle)
+            .all(|(left, right)| left.eq_ignore_ascii_case(right))
+    })
+}
+
+fn ascii_starts_with_ignore_case(value: &[u8], prefix: &[u8]) -> bool {
+    value.len() >= prefix.len()
+        && value[..prefix.len()]
+            .iter()
+            .zip(prefix)
+            .all(|(left, right)| left.eq_ignore_ascii_case(right))
+}
+
 fn elapsed_ms(duration: Duration) -> u64 {
     u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
 }
@@ -1676,6 +1907,50 @@ mod tests {
         DecisionLoopCommand, DecisionRunnerAdapter, KnowledgeBase, RuleEngine, RuntimeBudget,
         RuntimeBudgetDimension, StandardWebReasoning, TransportDispatchOutcome, VerificationCase,
     };
+
+    #[test]
+    fn assessment_defense_metadata_only_never_projects_open() {
+        let signal = bounded_assessment_defense_signal(
+            200,
+            HttpProbeMethod::Head,
+            &HeaderMap::new(),
+            true,
+            b"attention required",
+        );
+        assert_eq!(
+            signal.body_coverage(),
+            AssessmentDefenseBodyCoverage::MetadataOnly
+        );
+        assert_eq!(
+            signal.state().posture(),
+            crate::defense::DefensePosture::Open
+        );
+        assert!(!signal.has_positive_metadata_signal());
+    }
+
+    #[test]
+    fn assessment_defense_reset_only_is_a_positive_rate_signal() {
+        let mut headers = HeaderMap::new();
+        headers.insert("ratelimit-reset", HeaderValue::from_static("60"));
+        let signal =
+            bounded_assessment_defense_signal(200, HttpProbeMethod::Get, &headers, true, b"ok");
+        assert!(signal.state().has_rate_limit_headers());
+        assert!(signal.state().is_rate_limited());
+        assert!(signal.has_positive_metadata_signal());
+    }
+
+    #[test]
+    fn standard_http_executor_keeps_assessment_projection_disabled() {
+        let target = Url::parse("https://example.test/").unwrap();
+        let policy = HttpEvidencePolicy::for_origin(target).unwrap();
+        let requests = HttpRequestBroker::new_unmetered(policy).unwrap();
+        let executor = HttpEvidenceExecutor::new_with_request_broker(
+            requests,
+            Arc::new(SubjectHttpProbeProvider::new(HttpProbeMethod::Get)),
+        )
+        .unwrap();
+        assert!(!executor.assessment_defense_projection);
+    }
 
     fn observed_form_control_names(sample: &str) -> Vec<String> {
         match extract_form_control_names(sample) {

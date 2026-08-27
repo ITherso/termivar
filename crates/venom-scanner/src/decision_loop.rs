@@ -631,6 +631,8 @@ impl DecisionSessionTransition {
 pub struct DecisionPlanningReport {
     rule_applications: Vec<RuleApplication>,
     plan: AttackPlan,
+    #[serde(skip_serializing)]
+    policy_authorized_plan: AttackPlan,
     suppressed_actions: BTreeSet<String>,
     #[serde(skip_serializing)]
     session_transition: DecisionSessionTransition,
@@ -646,6 +648,10 @@ impl DecisionPlanningReport {
     /// Returns the complete planner audit record.
     pub fn plan(&self) -> &AttackPlan {
         &self.plan
+    }
+
+    pub(crate) fn policy_authorized_plan(&self) -> &AttackPlan {
+        &self.policy_authorized_plan
     }
 
     /// Returns suppressions applied to this planning cycle.
@@ -917,13 +923,17 @@ impl DecisionLoop {
                 self.config.experience,
                 host_suppressions,
             );
-            let report = DecisionPlanningReport {
-                rule_applications: Vec::new(),
-                plan: self.planner.plan_snapshot_with_action_suppressions(
+            let (policy_authorized_plan, plan) = self
+                .planner
+                .plan_snapshot_with_action_suppressions_and_baseline(
                     &snapshot,
                     self.config.planning,
                     &suppressions,
-                )?,
+                )?;
+            let report = DecisionPlanningReport {
+                rule_applications: Vec::new(),
+                plan,
+                policy_authorized_plan,
                 suppressed_actions: suppressions.policy_suppressed_actions().clone(),
                 session_transition: DecisionSessionTransition::new(
                     session.transition_summary(),
@@ -949,6 +959,7 @@ impl DecisionLoop {
         let planning = (|| -> Result<
             (
                 AttackPlan,
+                AttackPlan,
                 BTreeSet<String>,
                 DecisionSessionTransition,
                 DecisionLoopCommand,
@@ -961,11 +972,13 @@ impl DecisionLoop {
                 self.config.experience,
                 host_suppressions,
             );
-            let plan = self.planner.plan_snapshot_with_action_suppressions(
-                &snapshot,
-                self.config.planning,
-                &suppressions,
-            )?;
+            let (policy_authorized_plan, plan) = self
+                .planner
+                .plan_snapshot_with_action_suppressions_and_baseline(
+                    &snapshot,
+                    self.config.planning,
+                    &suppressions,
+                )?;
             let command = if let Some(step) = plan.steps().first() {
                 let case = next_case(
                     &candidate_session,
@@ -993,6 +1006,7 @@ impl DecisionLoop {
                 candidate_session.transition_summary(),
             );
             Ok((
+                policy_authorized_plan,
                 plan,
                 suppressions.policy_suppressed_actions().clone(),
                 session_transition,
@@ -1001,7 +1015,7 @@ impl DecisionLoop {
         })();
 
         match planning {
-            Ok((plan, suppressed_actions, session_transition, command)) => {
+            Ok((policy_authorized_plan, plan, suppressed_actions, session_transition, command)) => {
                 before_session_commit(&snapshot);
                 let commit = knowledge.commit_if_snapshot_current(&snapshot, || {
                     *session = candidate_session;
@@ -1010,6 +1024,7 @@ impl DecisionLoop {
                     Ok(()) => Ok(DecisionPlanningReport {
                         rule_applications: applications,
                         plan,
+                        policy_authorized_plan,
                         suppressed_actions,
                         session_transition,
                         command,

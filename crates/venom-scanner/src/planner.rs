@@ -1187,12 +1187,25 @@ impl AttackPlanner {
         context: PlanningContext,
         suppressions: &ActionSuppressionContext,
     ) -> Result<AttackPlan, PlannerError> {
+        self.plan_snapshot_with_action_suppressions_and_baseline(snapshot, context, suppressions)
+            .map(|(_, filtered)| filtered)
+    }
+
+    pub(crate) fn plan_snapshot_with_action_suppressions_and_baseline(
+        &self,
+        snapshot: &KnowledgeSnapshot,
+        context: PlanningContext,
+        suppressions: &ActionSuppressionContext,
+    ) -> Result<(AttackPlan, AttackPlan), PlannerError> {
         let baseline = self.plan_snapshot_with_policy_suppressed(
             snapshot,
             context,
             suppressions.policy_suppressed_actions(),
         )?;
-        Ok(baseline.into_defense_filtered(suppressions.defense_suppressed_actions()))
+        let filtered = baseline
+            .clone()
+            .into_defense_filtered(suppressions.defense_suppressed_actions());
+        Ok((baseline, filtered))
     }
 
     fn plan_snapshot_with_policy_suppressed(

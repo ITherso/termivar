@@ -88,11 +88,41 @@ const RATE_LIMIT_HEADERS: &[&str] = &[
     "retry-after",
     "ratelimit-limit",
     "ratelimit-remaining",
+    "ratelimit-reset",
     "x-ratelimit-limit",
     "x-ratelimit-remaining",
+    "x-ratelimit-reset",
 ];
 
 impl DefenseState {
+    pub(crate) fn from_assessment_projection(
+        status: u16,
+        challenged: bool,
+        rate_limited: bool,
+        rate_limit_headers_present: bool,
+        fingerprint: Option<DefenseFingerprint>,
+    ) -> Self {
+        let status_signal = DefenseStatusSignal::classify(status);
+        let rate_limited = rate_limited
+            || rate_limit_headers_present
+            || status_signal == DefenseStatusSignal::RateLimited;
+        let posture = derive_posture(
+            status_signal,
+            challenged,
+            rate_limited,
+            fingerprint.as_ref(),
+        );
+        Self {
+            status,
+            status_signal,
+            challenged,
+            rate_limited,
+            rate_limit_headers_present,
+            fingerprint,
+            posture,
+        }
+    }
+
     /// Observes the defensive posture of one response.
     ///
     /// `headers` is a transport-neutral `(name, value)` list matched

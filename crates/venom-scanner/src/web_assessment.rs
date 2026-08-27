@@ -20,18 +20,20 @@ use venom_core::{
 };
 
 use crate::{
+    defense::assessment::{AssessmentDefenseBodyCoverage, AssessmentDefenseController},
     http_evidence::{CompleteHttpResponseObservation, CompleteHttpResponseObserver},
     web_runtime::{
         SharedWebRuntimeAuthority, StandardWebDecisionAssessmentFailureParts,
         StandardWebDecisionAssessmentParts, BOOTSTRAP_ACTION_ID, BOOTSTRAP_CASE_ID,
         BOOTSTRAP_HYPOTHESIS_ID,
     },
-    DecisionEvidenceReceipt, DecisionExecutionFailureReceipt, DecisionExecutionStage,
-    DecisionLoopCommand, DecisionStopReason, HttpEvidenceError, HttpEvidencePolicy, HttpProbe,
-    HttpProbeMethod, KnowledgeBase, LimitsError, RuntimeBudget, RuntimeBudgetDimension,
-    RuntimeLimitExceeded, SemanticExtractionLimits, SemanticExtractionResult,
-    StandardWebDecisionRuntime, StandardWebDecisionRuntimeError, StandardWebDecisionRuntimeTurn,
-    TransportDispatchAudit, HTTP_EVIDENCE_EXECUTOR_ID, MAX_HTTP_BODY_LIMIT,
+    AttackPlan, DecisionEvidenceReceipt, DecisionExecutionFailureReceipt, DecisionExecutionStage,
+    DecisionLoopCommand, DecisionStopReason, DefensePosture, DefenseProduct, FingerprintConfidence,
+    HttpEvidenceError, HttpEvidencePolicy, HttpProbe, HttpProbeMethod, KnowledgeBase, LimitsError,
+    RuntimeBudget, RuntimeBudgetDimension, RuntimeLimitExceeded, SemanticExtractionLimits,
+    SemanticExtractionResult, ShadowPlanDelta, StandardWebActionKind, StandardWebDecisionRuntime,
+    StandardWebDecisionRuntimeError, StandardWebDecisionRuntimeTurn, TransportDispatchAudit,
+    HTTP_EVIDENCE_EXECUTOR_ID, MAX_HTTP_BODY_LIMIT,
 };
 
 mod discovery;
@@ -724,12 +726,245 @@ impl WebAssessmentCompletion {
     }
 }
 
+/// Bounded body coverage used for a defense observation. This describes only
+/// the detector input; it never claims exhaustive response-body analysis.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WebAssessmentDefenseBodyCoverage {
+    MetadataOnly,
+    CompleteUtf8Prefix,
+}
+
+/// One committed confidence-graded defense observation. A fingerprint is a
+/// product hint only, never a categorical WAF-presence claim.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WebAssessmentDefenseObservation {
+    subject: venom_core::EntityId,
+    case_id: String,
+    stage: DecisionExecutionStage,
+    status: u16,
+    posture: Option<DefensePosture>,
+    challenge_observed: bool,
+    rate_limit_observed: bool,
+    fingerprint_hint: Option<(DefenseProduct, FingerprintConfidence)>,
+    body_coverage: WebAssessmentDefenseBodyCoverage,
+    input_limit_reached: bool,
+    evidence_ids: Vec<EvidenceId>,
+}
+
+impl WebAssessmentDefenseObservation {
+    pub fn subject(&self) -> &venom_core::EntityId {
+        &self.subject
+    }
+    pub fn case_id(&self) -> &str {
+        &self.case_id
+    }
+    pub const fn stage(&self) -> DecisionExecutionStage {
+        self.stage
+    }
+    pub const fn status(&self) -> u16 {
+        self.status
+    }
+    /// Returns the bounded detector posture. `Some(Open)` means only that the
+    /// complete, uncapped UTF-8 detector prefix carried no positive signal; it
+    /// never means that a WAF or other defense is absent. Metadata-only and
+    /// capped Open observations return `None`.
+    pub const fn posture(&self) -> Option<DefensePosture> {
+        self.posture
+    }
+    pub const fn challenge_observed(&self) -> bool {
+        self.challenge_observed
+    }
+    pub const fn rate_limit_observed(&self) -> bool {
+        self.rate_limit_observed
+    }
+    pub const fn fingerprint_hint(&self) -> Option<(DefenseProduct, FingerprintConfidence)> {
+        self.fingerprint_hint
+    }
+    pub const fn body_coverage(&self) -> WebAssessmentDefenseBodyCoverage {
+        self.body_coverage
+    }
+    pub const fn input_limit_reached(&self) -> bool {
+        self.input_limit_reached
+    }
+    pub fn evidence_ids(&self) -> &[EvidenceId] {
+        &self.evidence_ids
+    }
+}
+
+/// Positive-only matched control/candidate defense delta.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WebAssessmentDefenseTransition {
+    case_id: String,
+    candidate_block_status_appeared: bool,
+    newly_rate_limited: bool,
+    candidate_fingerprint_hint: Option<(DefenseProduct, FingerprintConfidence)>,
+    control_evidence_ids: Vec<EvidenceId>,
+    candidate_evidence_ids: Vec<EvidenceId>,
+}
+
+impl WebAssessmentDefenseTransition {
+    pub fn case_id(&self) -> &str {
+        &self.case_id
+    }
+    pub const fn candidate_block_status_appeared(&self) -> bool {
+        self.candidate_block_status_appeared
+    }
+    pub const fn newly_rate_limited(&self) -> bool {
+        self.newly_rate_limited
+    }
+    pub const fn candidate_fingerprint_hint(
+        &self,
+    ) -> Option<(DefenseProduct, FingerprintConfidence)> {
+        self.candidate_fingerprint_hint
+    }
+    pub fn control_evidence_ids(&self) -> &[EvidenceId] {
+        &self.control_evidence_ids
+    }
+    pub fn candidate_evidence_ids(&self) -> &[EvidenceId] {
+        &self.candidate_evidence_ids
+    }
+}
+
+/// Exact policy-authorized plan and its read-only defense-aware subsequence.
+#[derive(Debug, Clone)]
+pub struct WebAssessmentDefenseShadowPlan {
+    policy_authorized: AttackPlan,
+    shadow: AttackPlan,
+    delta: ShadowPlanDelta,
+}
+
+impl WebAssessmentDefenseShadowPlan {
+    pub fn policy_authorized(&self) -> &AttackPlan {
+        &self.policy_authorized
+    }
+    pub fn shadow(&self) -> &AttackPlan {
+        &self.shadow
+    }
+    pub fn delta(&self) -> &ShadowPlanDelta {
+        &self.delta
+    }
+}
+
+/// Whether defense is observation-only or monotonically enforced.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WebAssessmentDefenseMode {
+    ObservationOnly,
+    Enforced,
+}
+
+/// Bounded defense audit composed from exact committed subject receipts.
+#[derive(Debug, Clone)]
+pub struct WebAssessmentDefenseAudit {
+    mode: WebAssessmentDefenseMode,
+    observations: Vec<WebAssessmentDefenseObservation>,
+    transitions: Vec<WebAssessmentDefenseTransition>,
+    shadow_plans: Vec<WebAssessmentDefenseShadowPlan>,
+}
+
+impl WebAssessmentDefenseAudit {
+    fn new(mode: WebAssessmentDefenseMode) -> Self {
+        Self {
+            mode,
+            observations: Vec::new(),
+            transitions: Vec::new(),
+            shadow_plans: Vec::new(),
+        }
+    }
+
+    pub const fn mode(&self) -> WebAssessmentDefenseMode {
+        self.mode
+    }
+    pub fn observations(&self) -> &[WebAssessmentDefenseObservation] {
+        &self.observations
+    }
+    pub fn transitions(&self) -> &[WebAssessmentDefenseTransition] {
+        &self.transitions
+    }
+    pub fn shadow_plans(&self) -> &[WebAssessmentDefenseShadowPlan] {
+        &self.shadow_plans
+    }
+
+    fn append_controller(&mut self, controller: &AssessmentDefenseController) -> Result<(), ()> {
+        let enforced = self.mode == WebAssessmentDefenseMode::Enforced;
+        if controller.enforcement_enabled() != enforced {
+            return Err(());
+        }
+        self.observations.extend(
+            controller
+                .ledger()
+                .observations()
+                .iter()
+                .map(|observation| {
+                    let hint = observation
+                        .state()
+                        .fingerprint()
+                        .map(|hint| (hint.product(), hint.confidence()));
+                    WebAssessmentDefenseObservation {
+                        subject: observation.case().subject().clone(),
+                        case_id: observation.case().id().to_owned(),
+                        stage: observation.stage(),
+                        status: observation.state().status(),
+                        posture: if observation.state().posture() == DefensePosture::Open
+                            && (observation.body_coverage()
+                                != AssessmentDefenseBodyCoverage::CompleteUtf8Prefix
+                                || observation.input_limit_reached())
+                        {
+                            None
+                        } else {
+                            Some(observation.state().posture())
+                        },
+                        challenge_observed: observation.state().is_challenged(),
+                        rate_limit_observed: observation.state().is_rate_limited(),
+                        fingerprint_hint: hint,
+                        body_coverage: match observation.body_coverage() {
+                            AssessmentDefenseBodyCoverage::MetadataOnly => {
+                                WebAssessmentDefenseBodyCoverage::MetadataOnly
+                            },
+                            AssessmentDefenseBodyCoverage::CompleteUtf8Prefix => {
+                                WebAssessmentDefenseBodyCoverage::CompleteUtf8Prefix
+                            },
+                        },
+                        input_limit_reached: observation.input_limit_reached(),
+                        evidence_ids: observation.evidence_ids().to_vec(),
+                    }
+                }),
+        );
+        self.transitions
+            .extend(controller.ledger().transitions().iter().map(|transition| {
+                let hint = transition
+                    .candidate_fingerprint_hint()
+                    .map(|hint| (hint.product(), hint.confidence()));
+                WebAssessmentDefenseTransition {
+                    case_id: transition.case().id().to_owned(),
+                    candidate_block_status_appeared: transition.candidate_block_status_appeared(),
+                    newly_rate_limited: transition.newly_rate_limited(),
+                    candidate_fingerprint_hint: hint,
+                    control_evidence_ids: transition.control_evidence_ids().to_vec(),
+                    candidate_evidence_ids: transition.candidate_evidence_ids().to_vec(),
+                }
+            }));
+        self.shadow_plans
+            .extend(
+                controller
+                    .shadows()
+                    .iter()
+                    .map(|shadow| WebAssessmentDefenseShadowPlan {
+                        policy_authorized: shadow.current().clone(),
+                        shadow: shadow.shadow().clone(),
+                        delta: shadow.delta().clone(),
+                    }),
+            );
+        Ok(())
+    }
+}
+
 /// Complete origin-assessment audit with exactly one global transport view.
 #[derive(Debug)]
 pub struct WebAssessmentRunReport {
     subjects: Vec<WebAssessmentSubjectReport>,
     forms: Vec<WebAssessmentForm>,
     semantics: SemanticExtractionResult,
+    defense: WebAssessmentDefenseAudit,
     completion: WebAssessmentCompletion,
     usage: WebAssessmentUsage,
     transport: TransportDispatchAudit,
@@ -746,6 +981,9 @@ impl WebAssessmentRunReport {
     /// assessment evidence.
     pub fn semantics(&self) -> &SemanticExtractionResult {
         &self.semantics
+    }
+    pub fn defense(&self) -> &WebAssessmentDefenseAudit {
+        &self.defense
     }
     pub fn completion(&self) -> &WebAssessmentCompletion {
         &self.completion
@@ -765,6 +1003,7 @@ pub struct WebAssessmentFailureReceipt {
     pending_subjects: Vec<WebAssessmentSubject>,
     forms: Vec<WebAssessmentForm>,
     semantics: SemanticExtractionResult,
+    defense: WebAssessmentDefenseAudit,
     current_subject: WebAssessmentSubjectReport,
     incomplete_reasons: BTreeSet<WebAssessmentIncompleteReason>,
     inventory_consistent: bool,
@@ -788,6 +1027,9 @@ impl WebAssessmentFailureReceipt {
     /// before the failing boundary.
     pub fn semantics(&self) -> &SemanticExtractionResult {
         &self.semantics
+    }
+    pub fn defense(&self) -> &WebAssessmentDefenseAudit {
+        &self.defense
     }
     pub fn current_subject(&self) -> &WebAssessmentSubject {
         &self.current_subject.subject
@@ -864,6 +1106,7 @@ pub struct WebAssessmentRuntimeBuilder {
     limits: WebAssessmentLimits,
     http_policy: Option<HttpEvidencePolicy>,
     cancellation: CancellationToken,
+    defense_enforcement: bool,
 }
 
 impl WebAssessmentRuntimeBuilder {
@@ -873,6 +1116,7 @@ impl WebAssessmentRuntimeBuilder {
             limits: WebAssessmentLimits::default(),
             http_policy: None,
             cancellation: CancellationToken::new(),
+            defense_enforcement: false,
         }
     }
     pub fn limits(mut self, limits: WebAssessmentLimits) -> Self {
@@ -885,6 +1129,11 @@ impl WebAssessmentRuntimeBuilder {
     }
     pub fn cancellation_token(mut self, cancellation: CancellationToken) -> Self {
         self.cancellation = cancellation;
+        self
+    }
+    /// Explicitly enables monotonic defense suppression. Default is observation-only.
+    pub fn enable_defense_enforcement(mut self) -> Self {
+        self.defense_enforcement = true;
         self
     }
     pub fn build(self) -> Result<WebAssessmentRuntime, WebAssessmentRuntimeError> {
@@ -933,6 +1182,12 @@ impl WebAssessmentRuntimeBuilder {
             root: root_subject,
             initial_reasons,
             started: false,
+            defense_enforcement: self.defense_enforcement,
+            defense_audit: WebAssessmentDefenseAudit::new(if self.defense_enforcement {
+                WebAssessmentDefenseMode::Enforced
+            } else {
+                WebAssessmentDefenseMode::ObservationOnly
+            }),
         })
     }
 }
@@ -948,6 +1203,8 @@ pub struct WebAssessmentRuntime {
     root: WebAssessmentSubject,
     initial_reasons: BTreeSet<WebAssessmentIncompleteReason>,
     started: bool,
+    defense_enforcement: bool,
+    defense_audit: WebAssessmentDefenseAudit,
 }
 
 struct FailedSubjectBoundary {
@@ -955,6 +1212,64 @@ struct FailedSubjectBoundary {
     envelope: AssessmentEnvelope,
     source: StandardWebDecisionRuntimeError,
     started: bool,
+    defense: Option<AssessmentDefenseController>,
+    planner: Option<crate::AttackPlanner>,
+}
+
+fn receipt_requires_defense_projection(receipt: &DecisionEvidenceReceipt) -> bool {
+    receipt.case().action_id() != StandardWebActionKind::LaravelInputAnalysis.action_id()
+}
+
+fn replay_defense_parts(
+    bootstrap: Option<&DecisionEvidenceReceipt>,
+    turns: &[StandardWebDecisionRuntimeTurn],
+    unverified: Option<&DecisionEvidenceReceipt>,
+    planner: &crate::AttackPlanner,
+    knowledge: &KnowledgeBase,
+    enforcement_enabled: bool,
+) -> Result<AssessmentDefenseController, ()> {
+    let mut replay = AssessmentDefenseController::new(enforcement_enabled);
+    if let Some(receipt) = bootstrap {
+        replay.ingest_receipt(receipt, knowledge, true)?;
+    }
+    for turn in turns {
+        match turn {
+            StandardWebDecisionRuntimeTurn::Planning(report) => {
+                replay.record_shadow(report, planner)?;
+            },
+            StandardWebDecisionRuntimeTurn::Outcome { evidence, .. } => {
+                replay.ingest_receipt(
+                    evidence,
+                    knowledge,
+                    receipt_requires_defense_projection(evidence),
+                )?;
+            },
+        }
+    }
+    if let Some(receipt) = unverified {
+        replay.ingest_receipt(
+            receipt,
+            knowledge,
+            receipt_requires_defense_projection(receipt),
+        )?;
+    }
+    Ok(replay)
+}
+
+fn replay_standard_defense(
+    report: &crate::StandardWebDecisionRunReport,
+    planner: &crate::AttackPlanner,
+    knowledge: &KnowledgeBase,
+    enforcement_enabled: bool,
+) -> Result<AssessmentDefenseController, ()> {
+    replay_defense_parts(
+        report.bootstrap(),
+        report.turns(),
+        report.unverified_evidence(),
+        planner,
+        knowledge,
+        enforcement_enabled,
+    )
 }
 
 impl WebAssessmentRuntime {
@@ -1043,7 +1358,8 @@ impl WebAssessmentRuntime {
                     .with_assessment_response_observer(
                         subject.method.probe_method(),
                         subject_observer,
-                    );
+                    )
+                    .with_assessment_defense_enforcement(self.defense_enforcement);
                 let mut runtime = match builder.build_with_shared_authority(self.authority.clone())
                 {
                     Ok(runtime) => runtime,
@@ -1057,6 +1373,8 @@ impl WebAssessmentRuntime {
                                 envelope,
                                 source,
                                 started: false,
+                                defense: None,
+                                planner: None,
                             },
                             &reasons,
                             started_at,
@@ -1079,7 +1397,10 @@ impl WebAssessmentRuntime {
                         )),
                     });
                 }
-                let standard = match runtime.analyze().await {
+                let standard_result = runtime.analyze().await;
+                let defense = runtime.assessment_defense_controller().cloned();
+                let planner = runtime.assessment_planner().clone();
+                let standard = match standard_result {
                     Ok(report) => report,
                     Err(source) => {
                         return Err(self.run_failed(
@@ -1091,12 +1412,39 @@ impl WebAssessmentRuntime {
                                 envelope,
                                 source,
                                 started: true,
+                                defense,
+                                planner: Some(planner),
                             },
                             &reasons,
                             started_at,
                         ));
                     },
                 };
+                let replay = replay_standard_defense(
+                    &standard,
+                    &planner,
+                    self.authority.knowledge(),
+                    self.defense_enforcement,
+                );
+                let defense_valid = match (defense.as_ref(), replay) {
+                    (Some(expected), Ok(replayed)) if replayed.exact_audit_eq(expected) => {
+                        self.defense_audit.append_controller(&replayed).is_ok()
+                    },
+                    _ => false,
+                };
+                if !defense_valid {
+                    let parts = standard.into_assessment_parts();
+                    return Err(WebAssessmentRuntimeError::ProjectionInvariant {
+                        receipt: Box::new(self.failure_receipt(
+                            &known_subjects,
+                            subject_reports,
+                            forms,
+                            WebAssessmentSubjectReport::complete(subject, parts),
+                            failed_reasons(&reasons),
+                            started_at,
+                        )),
+                    });
+                }
                 classify_standard_completion(&standard, &mut reasons);
                 let cancelled_at_subject_boundary = self.authority.cancellation().is_cancelled();
                 let wall_time_reached_at_subject_boundary =
@@ -1326,6 +1674,7 @@ impl WebAssessmentRuntime {
             subjects: subject_reports,
             forms,
             semantics,
+            defense: self.defense_audit.clone(),
             completion,
             usage,
             transport: self.authority.request_accounting().dispatch_audit(),
@@ -1402,8 +1751,53 @@ impl WebAssessmentRuntime {
             envelope,
             source,
             started: subject_started,
+            defense,
+            planner,
         } = boundary;
         let (parts, source) = source.into_assessment_failure();
+        if subject_started {
+            let replay = planner.as_ref().and_then(|planner| {
+                let mut replay = replay_defense_parts(
+                    parts.bootstrap.as_ref(),
+                    &parts.turns,
+                    None,
+                    planner,
+                    self.authority.knowledge(),
+                    self.defense_enforcement,
+                )
+                .ok()?;
+                if let Some(committed) = source.committed_evidence() {
+                    replay
+                        .ingest_receipt(
+                            committed,
+                            self.authority.knowledge(),
+                            receipt_requires_defense_projection(committed),
+                        )
+                        .ok()?;
+                }
+                Some(replay)
+            });
+            let defense_valid = match (defense.as_ref(), replay) {
+                (Some(expected), Some(replayed)) if replayed.exact_audit_eq(expected) => {
+                    self.defense_audit.append_controller(&replayed).is_ok()
+                },
+                _ => false,
+            };
+            if !defense_valid {
+                let current_report =
+                    WebAssessmentSubjectReport::failed(current_subject, parts, true);
+                return WebAssessmentRuntimeError::ProjectionInvariant {
+                    receipt: Box::new(self.failure_receipt(
+                        known_subjects,
+                        completed_subjects,
+                        forms,
+                        current_report,
+                        failed_reasons(reasons),
+                        started_at,
+                    )),
+                };
+            }
+        }
         let projection = projection_from_committed_bootstrap(
             parts.bootstrap.as_ref(),
             self.authority.knowledge(),
@@ -1612,6 +2006,7 @@ impl WebAssessmentRuntime {
             pending_subjects,
             forms,
             semantics,
+            defense: self.defense_audit.clone(),
             current_subject,
             incomplete_reasons,
             inventory_consistent,
