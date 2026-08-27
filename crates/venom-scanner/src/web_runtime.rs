@@ -26,7 +26,6 @@ use venom_core::{
 };
 
 use crate::decision_runner::ContinuationAuthority;
-use crate::defense::assessment::AssessmentDefenseController;
 use crate::http_evidence::CompleteHttpResponseObserver;
 use crate::planner::ActionSuppressionContext;
 use crate::{
@@ -47,9 +46,18 @@ use crate::{
 };
 
 mod api_visibility;
+mod assessment_defense;
 mod authority;
+mod scan_profile;
+mod web_assessment;
 
+use assessment_defense::AssessmentDefenseController;
+pub(crate) use assessment_defense::{
+    project_assessment_defense_signal, AssessmentDefenseBodyCoverage,
+    AssessmentDefenseProjectionContext, AssessmentDefenseSignal,
+};
 pub(crate) use authority::SharedWebRuntimeAuthority;
+pub(crate) use web_assessment::AssessmentDiscoveryObserver;
 
 pub use api_visibility::{
     ApiVisibilityContextProbe, ApiVisibilityDifferentialAudit,
@@ -57,6 +65,38 @@ pub use api_visibility::{
     ApiVisibilityDifferentialRequestError, ApiVisibilityInconclusiveReason, ApiVisibilityLeg,
     ApiVisibilityLegReceipt, RuntimeApiVisibilityError, RuntimeApiVisibilityExecutionError,
     RuntimeApiVisibilityRunReport,
+};
+
+#[cfg(feature = "scanning")]
+pub use scan_profile::{
+    BuiltInScanProfile, BuiltInScanProfileParseError, ScanProfileCapabilitiesV1,
+    ScanProfileLimitsV1, ScanProfileScope, ScanProfileSelectionError, ScanProfileV1,
+    ScanProfileV1Error, BASELINE_SCAN_PROFILE_ID, BASELINE_SCAN_PROFILE_MAX_TOTAL_REQUESTS,
+    BASELINE_SCAN_PROFILE_MAX_TOTAL_RESPONSE_BYTES, BASELINE_SCAN_PROFILE_MAX_WALL_TIME_MS,
+    SCAN_PROFILE_V1_SCHEMA, WEB_REVIEW_SCAN_PROFILE_ID,
+};
+pub use web_assessment::{
+    WebAssessmentCompletion, WebAssessmentDefenseAudit, WebAssessmentDefenseBodyCoverage,
+    WebAssessmentDefenseMode, WebAssessmentDefenseObservation, WebAssessmentDefenseShadowPlan,
+    WebAssessmentDefenseTransition, WebAssessmentFailureReceipt, WebAssessmentForm,
+    WebAssessmentFormMethod, WebAssessmentIncompleteReason, WebAssessmentLimits,
+    WebAssessmentLimitsError, WebAssessmentMethod, WebAssessmentRunReport, WebAssessmentRuntime,
+    WebAssessmentRuntimeBuilder, WebAssessmentRuntimeError, WebAssessmentSubject,
+    WebAssessmentSubjectOrigin, WebAssessmentSubjectReport, WebAssessmentUsage,
+    DEFAULT_WEB_ASSESSMENT_MAX_ACTIVE_VERIFICATIONS,
+    DEFAULT_WEB_ASSESSMENT_MAX_CANONICAL_URL_BYTES, DEFAULT_WEB_ASSESSMENT_MAX_CONTROLS_PER_FORM,
+    DEFAULT_WEB_ASSESSMENT_MAX_DEPTH, DEFAULT_WEB_ASSESSMENT_MAX_FORMS,
+    DEFAULT_WEB_ASSESSMENT_MAX_QUERY_NAMES, DEFAULT_WEB_ASSESSMENT_MAX_REFERENCES_PER_DOCUMENT,
+    DEFAULT_WEB_ASSESSMENT_MAX_RESPONSE_BODY_BYTES, DEFAULT_WEB_ASSESSMENT_MAX_RETAINED_URL_BYTES,
+    DEFAULT_WEB_ASSESSMENT_MAX_SUBJECTS, DEFAULT_WEB_ASSESSMENT_MAX_TOTAL_REQUESTS,
+    DEFAULT_WEB_ASSESSMENT_MAX_TOTAL_RESPONSE_BYTES, DEFAULT_WEB_ASSESSMENT_MAX_WALL_TIME,
+    HARD_MAX_WEB_ASSESSMENT_ACTIVE_VERIFICATIONS, HARD_MAX_WEB_ASSESSMENT_CANONICAL_URL_BYTES,
+    HARD_MAX_WEB_ASSESSMENT_CONTROLS_PER_FORM, HARD_MAX_WEB_ASSESSMENT_DEPTH,
+    HARD_MAX_WEB_ASSESSMENT_FORMS, HARD_MAX_WEB_ASSESSMENT_QUERY_NAMES,
+    HARD_MAX_WEB_ASSESSMENT_REFERENCES_PER_DOCUMENT, HARD_MAX_WEB_ASSESSMENT_RESPONSE_BODY_BYTES,
+    HARD_MAX_WEB_ASSESSMENT_RETAINED_URL_BYTES, HARD_MAX_WEB_ASSESSMENT_SUBJECTS,
+    HARD_MAX_WEB_ASSESSMENT_TOTAL_REQUESTS, HARD_MAX_WEB_ASSESSMENT_TOTAL_RESPONSE_BYTES,
+    HARD_MAX_WEB_ASSESSMENT_WALL_TIME, WEB_ASSESSMENT_CONCURRENCY,
 };
 
 const DEFAULT_BUSINESS_VALUE_PERCENT: u8 = 80;

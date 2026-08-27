@@ -23,18 +23,18 @@ const BOUNDED_RUNTIME_SOURCES: &[&str] = &[
     "crates/venom-cli/src/assessment_scan.rs",
     "crates/venom-scanner/src/decision_loop.rs",
     "crates/venom-scanner/src/decision_runner.rs",
-    "crates/venom-scanner/src/defense/assessment.rs",
+    "crates/venom-scanner/src/web_runtime/assessment_defense.rs",
     "crates/venom-scanner/src/http_evidence.rs",
     "crates/venom-scanner/src/http_evidence/form_controls.rs",
     "crates/venom-scanner/src/payload_strategy.rs",
     "crates/venom-scanner/src/planner.rs",
     "crates/venom-scanner/src/runtime_budget.rs",
-    "crates/venom-scanner/src/scan_profile.rs",
+    "crates/venom-scanner/src/web_runtime/scan_profile.rs",
     "crates/venom-scanner/src/verification.rs",
     "crates/venom-scanner/src/web_actions.rs",
-    "crates/venom-scanner/src/web_assessment.rs",
-    "crates/venom-scanner/src/web_assessment/discovery.rs",
-    "crates/venom-scanner/src/web_assessment/semantic.rs",
+    "crates/venom-scanner/src/web_runtime/web_assessment.rs",
+    "crates/venom-scanner/src/web_runtime/web_assessment/discovery.rs",
+    "crates/venom-scanner/src/web_runtime/web_assessment/semantic.rs",
     "crates/venom-scanner/src/web_decision.rs",
     "crates/venom-scanner/src/web_execution.rs",
     "crates/venom-scanner/src/web_planning.rs",
@@ -287,31 +287,33 @@ pub(super) fn check(workspace_root: &Path) -> Result<Vec<String>, Box<dyn Error>
 fn web_assessment_contract_violations(
     workspace_root: &Path,
 ) -> Result<Vec<String>, Box<dyn Error>> {
-    let assessment =
-        fs::read_to_string(workspace_root.join("crates/venom-scanner/src/web_assessment.rs"))?;
+    let assessment = fs::read_to_string(
+        workspace_root.join("crates/venom-scanner/src/web_runtime/web_assessment.rs"),
+    )?;
     let discovery = fs::read_to_string(
-        workspace_root.join("crates/venom-scanner/src/web_assessment/discovery.rs"),
+        workspace_root.join("crates/venom-scanner/src/web_runtime/web_assessment/discovery.rs"),
     )?;
     let semantic = fs::read_to_string(
-        workspace_root.join("crates/venom-scanner/src/web_assessment/semantic.rs"),
+        workspace_root.join("crates/venom-scanner/src/web_runtime/web_assessment/semantic.rs"),
     )?;
     let http_evidence =
         fs::read_to_string(workspace_root.join("crates/venom-scanner/src/http_evidence.rs"))?;
     let broker = fs::read_to_string(workspace_root.join(TRANSPORT_OWNER_SOURCE))?;
-    let facade = fs::read_to_string(workspace_root.join("crates/venom-scanner/src/lib.rs"))?;
+    let facade =
+        fs::read_to_string(workspace_root.join("crates/venom-scanner/src/web_runtime.rs"))?;
     let mut violations = Vec::new();
 
     for (source_name, source) in [
         (
-            "crates/venom-scanner/src/web_assessment.rs",
+            "crates/venom-scanner/src/web_runtime/web_assessment.rs",
             assessment.as_str(),
         ),
         (
-            "crates/venom-scanner/src/web_assessment/discovery.rs",
+            "crates/venom-scanner/src/web_runtime/web_assessment/discovery.rs",
             discovery.as_str(),
         ),
         (
-            "crates/venom-scanner/src/web_assessment/semantic.rs",
+            "crates/venom-scanner/src/web_runtime/web_assessment/semantic.rs",
             semantic.as_str(),
         ),
     ] {
@@ -401,7 +403,7 @@ fn inspect_assessment_transport_markers(http_evidence: &str, broker: &str) -> Ve
     let mut violations = Vec::new();
     if !http_evidence.contains("complete_response_observer_seal::Sealed")
         || !http_evidence
-            .contains("impl Sealed for crate::web_assessment::AssessmentDiscoveryObserver {}")
+            .contains("impl Sealed for crate::web_runtime::AssessmentDiscoveryObserver {}")
     {
         violations.push(
             "complete-body response observer must remain sealed to the exact assessment implementation"
@@ -795,10 +797,7 @@ fn inspect_web_assessment_facade(source: &str) -> Result<Vec<String>, syn::Error
     if modules.len() != 1
         || !matches!(modules[0].vis, syn::Visibility::Inherited)
         || modules[0].content.is_some()
-        || modules[0]
-            .attrs
-            .iter()
-            .any(attribute_can_redirect_module_path)
+        || !modules[0].attrs.is_empty()
     {
         violations.push(
             "web assessment module must be one private canonical external child with no path redirection"
@@ -836,7 +835,7 @@ fn inspect_web_assessment_facade(source: &str) -> Result<Vec<String>, syn::Error
         .collect::<BTreeSet<_>>();
     if exports != expected {
         violations.push(format!(
-            "web assessment crate-root export allowlist drifted; missing={:?}, unexpected={:?}",
+            "web assessment web-runtime export allowlist drifted; missing={:?}, unexpected={:?}",
             expected.difference(&exports).collect::<Vec<_>>(),
             exports.difference(&expected).collect::<Vec<_>>()
         ));
@@ -2605,9 +2604,9 @@ impl OwnershipVisitor<'_> {
         }
         if matches!(
             self.source,
-            "crates/venom-scanner/src/web_assessment.rs"
-                | "crates/venom-scanner/src/web_assessment/discovery.rs"
-                | "crates/venom-scanner/src/web_assessment/semantic.rs"
+            "crates/venom-scanner/src/web_runtime/web_assessment.rs"
+                | "crates/venom-scanner/src/web_runtime/web_assessment/discovery.rs"
+                | "crates/venom-scanner/src/web_runtime/web_assessment/semantic.rs"
         ) {
             if segments
                 .iter()
@@ -2807,8 +2806,20 @@ impl<'ast> Visit<'ast> for OwnershipVisitor<'_> {
                         "crates/venom-scanner/src/web_runtime/api_visibility/differential.rs",
                         "execution"
                     )
-                    | ("crates/venom-scanner/src/web_assessment.rs", "discovery")
-                    | ("crates/venom-scanner/src/web_assessment.rs", "semantic")
+                    | (
+                        "crates/venom-scanner/src/web_runtime.rs",
+                        "assessment_defense"
+                    )
+                    | ("crates/venom-scanner/src/web_runtime.rs", "scan_profile")
+                    | ("crates/venom-scanner/src/web_runtime.rs", "web_assessment")
+                    | (
+                        "crates/venom-scanner/src/web_runtime/web_assessment.rs",
+                        "discovery"
+                    )
+                    | (
+                        "crates/venom-scanner/src/web_runtime/web_assessment.rs",
+                        "semantic"
+                    )
             );
         if !canonical {
             self.violations.insert(format!(
@@ -4844,10 +4855,12 @@ mod tests {
                 "forbidden direct transport",
             ),
         ] {
-            let violations =
-                inspect_bounded_source("crates/venom-scanner/src/web_assessment.rs", source)
-                    .unwrap()
-                    .join("\n");
+            let violations = inspect_bounded_source(
+                "crates/venom-scanner/src/web_runtime/web_assessment.rs",
+                source,
+            )
+            .unwrap()
+            .join("\n");
             assert!(violations.contains(needle), "{source}: {violations}");
         }
     }
@@ -4856,8 +4869,8 @@ mod tests {
     fn assessment_facade_export_allowlist_is_exact() {
         let exports = WEB_ASSESSMENT_PUBLIC_EXPORTS.join(", ");
         let valid = format!(
-            "#[cfg(feature = \"scanning\")] mod web_assessment;\n\
-             #[cfg(feature = \"scanning\")] pub use web_assessment::{{{exports}}};"
+            "mod web_assessment;\n\
+             pub use web_assessment::{{{exports}}};"
         );
         assert!(inspect_web_assessment_facade(&valid).unwrap().is_empty());
         let unexpected = valid.replace("};", ", AccidentalExport};");
@@ -4870,6 +4883,15 @@ mod tests {
             .unwrap()
             .join("\n");
         assert!(violations.contains("private canonical external child"));
+
+        let redirected = valid.replace(
+            "mod web_assessment;",
+            "#[path = \"alternate.rs\"] mod web_assessment;",
+        );
+        let violations = inspect_web_assessment_facade(&redirected)
+            .unwrap()
+            .join("\n");
+        assert!(violations.contains("no path redirection"));
     }
 
     #[test]
@@ -4924,8 +4946,8 @@ mod tests {
         let seam = include_str!("../../../crates/venom-scanner/src/http_evidence.rs");
         assert!(inspect_complete_observer_seam(seam).unwrap().is_empty());
         let broadened = seam.replace(
-            "impl Sealed for crate::web_assessment::AssessmentDiscoveryObserver {}",
-            "impl Sealed for crate::web_assessment::AssessmentDiscoveryObserver {} impl Sealed for Other {}",
+            "impl Sealed for crate::web_runtime::AssessmentDiscoveryObserver {}",
+            "impl Sealed for crate::web_runtime::AssessmentDiscoveryObserver {} impl Sealed for Other {}",
         );
         assert!(inspect_complete_observer_seam(&broadened)
             .unwrap()

@@ -19,11 +19,11 @@ use url::Url;
 use venom_core::{ConfidenceScore, EntityId, KnowledgePredicate};
 
 use super::*;
+use crate::web_runtime::assessment_defense::{
+    CommittedAssessmentDefenseLedger, ASSESSMENT_DEFENSE_NAMESPACE,
+};
 use crate::{
-    defense::{
-        assessment::{CommittedAssessmentDefenseLedger, ASSESSMENT_DEFENSE_NAMESPACE},
-        MAX_FINGERPRINT_BODY_SCAN_BYTES,
-    },
+    defense::MAX_FINGERPRINT_BODY_SCAN_BYTES,
     http_evidence::{
         complete_http_response_observation_for_test, CompleteHttpResponseObservationTestInput,
     },

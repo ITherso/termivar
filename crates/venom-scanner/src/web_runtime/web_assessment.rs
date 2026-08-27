@@ -13,22 +13,22 @@ use std::{
 use thiserror::Error;
 use tokio_util::sync::CancellationToken;
 use url::Url;
+use venom_core::predicates::WebDiscoveryEvidencePredicate;
 use venom_core::{
     DerivationAlgorithm, Evidence, EvidenceDerivation, EvidenceId, EvidenceKind, EvidenceOrigin,
     EvidenceSource, EvidenceValue, HttpEvidencePredicate, PredicateDescriptor,
-    WebDiscoveryEvidencePredicate,
 };
 
-use crate::{
-    defense::assessment::{
+use super::{
+    assessment_defense::{
         AssessmentDefenseBodyCoverage, AssessmentDefenseController, ASSESSMENT_DEFENSE_NAMESPACE,
     },
+    SharedWebRuntimeAuthority, StandardWebDecisionAssessmentFailureParts,
+    StandardWebDecisionAssessmentParts, BOOTSTRAP_ACTION_ID, BOOTSTRAP_CASE_ID,
+    BOOTSTRAP_HYPOTHESIS_ID,
+};
+use crate::{
     http_evidence::{CompleteHttpResponseObservation, CompleteHttpResponseObserver},
-    web_runtime::{
-        SharedWebRuntimeAuthority, StandardWebDecisionAssessmentFailureParts,
-        StandardWebDecisionAssessmentParts, BOOTSTRAP_ACTION_ID, BOOTSTRAP_CASE_ID,
-        BOOTSTRAP_HYPOTHESIS_ID,
-    },
     AttackPlan, DecisionEvidenceReceipt, DecisionExecutionFailureReceipt, DecisionExecutionStage,
     DecisionLoopCommand, DecisionStopReason, DefensePosture, DefenseProduct, FingerprintConfidence,
     HttpEvidenceError, HttpEvidencePolicy, HttpProbe, HttpProbeMethod, KnowledgeBase, LimitsError,
@@ -3776,4 +3776,5 @@ fn form_method_for_predicate(
 }
 
 #[cfg(test)]
+#[path = "web_assessment_tests.rs"]
 mod tests;

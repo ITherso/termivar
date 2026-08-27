@@ -19,11 +19,11 @@ use crate::{
 };
 use crate::{DecisionEvidenceReceipt, DecisionExecutionStage, KnowledgeBase, VerificationCase};
 
-use super::{
-    decide, shadow_planning::defense_aware_shadow_plan_from_current, DefenseAwareShadowPlan,
-    DefenseFingerprint, DefenseInteractionClass, DefensePosture, DefenseProduct, DefenseState,
-    DefenseTransition, FingerprintConfidence, InteractionDecision, ResourceDefenseObservation,
-    ResourceDefenseSignal, MAX_FINGERPRINT_BODY_SCAN_BYTES,
+use crate::defense::{
+    assessment_interaction_decision, shadow_planning::defense_aware_shadow_plan_from_current,
+    DefenseAwareShadowPlan, DefenseFingerprint, DefenseInteractionClass, DefensePosture,
+    DefenseProduct, DefenseState, DefenseTransition, FingerprintConfidence, InteractionDecision,
+    ResourceDefenseObservation, ResourceDefenseSignal, MAX_FINGERPRINT_BODY_SCAN_BYTES,
 };
 
 pub(crate) const ASSESSMENT_DEFENSE_NAMESPACE: &str = "web.defense";
@@ -527,7 +527,9 @@ impl AssessmentDefenseController {
         let mut suppressed = BTreeSet::new();
         for kind in StandardWebActionKind::all() {
             let class = interaction_class(kind);
-            if decide(signal.response(), class) == InteractionDecision::Suppress {
+            if assessment_interaction_decision(signal.response(), class)
+                == InteractionDecision::Suppress
+            {
                 suppressed.insert(kind.action_id().to_owned());
             }
         }

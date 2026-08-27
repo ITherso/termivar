@@ -28,14 +28,12 @@ use venom_core::{
     EvidenceSource, EvidenceValue, HttpEvidencePredicate, KnowledgePredicate,
 };
 
+use crate::web_runtime::{
+    project_assessment_defense_signal, AssessmentDefenseBodyCoverage,
+    AssessmentDefenseProjectionContext, AssessmentDefenseSignal,
+};
 use crate::{
-    defense::{
-        assessment::{
-            project_assessment_defense_signal, AssessmentDefenseBodyCoverage,
-            AssessmentDefenseProjectionContext, AssessmentDefenseSignal,
-        },
-        DefenseState, MAX_FINGERPRINT_BODY_SCAN_BYTES,
-    },
+    defense::{DefenseState, MAX_FINGERPRINT_BODY_SCAN_BYTES},
     payload_strategy::{
         PayloadSeed, PayloadStrategyLimits, PayloadStrategyRef, PayloadStrategyRegistry,
         PayloadVariantRole,
@@ -1240,7 +1238,7 @@ impl DecisionActionExecutor for HttpEvidenceExecutor {
 mod complete_response_observer_seal {
     pub(super) trait Sealed {}
 
-    impl Sealed for crate::web_assessment::AssessmentDiscoveryObserver {}
+    impl Sealed for crate::web_runtime::AssessmentDiscoveryObserver {}
 }
 
 #[allow(private_bounds)]

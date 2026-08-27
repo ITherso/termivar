@@ -105,12 +105,6 @@ pub mod web_decision;
 #[cfg(feature = "scanning")]
 pub mod web_runtime;
 
-#[cfg(feature = "scanning")]
-mod web_assessment;
-
-#[cfg(feature = "scanning")]
-mod scan_profile;
-
 // Experimental detection and deviation records (feature: detection)
 #[cfg(feature = "detection")]
 pub mod advanced_detection;
@@ -277,9 +271,8 @@ pub use venom_core::{
     EvidenceValue, KnowledgePredicate, Outcome, OutcomeError, OutcomeStatus, ResourceAccounting,
     ResourceAccountingMode, RunAccounting, RunOutcomeRecord, RunReport, RunReportError,
     RunReportInput, RunStatus, RunStepReport, RunStepStatus, RunStopCode, RunStopReason,
-    SecuritySeverity, VerificationStage, WebDiscoveryEvidencePredicate,
-    MAX_RUN_REPORT_EVIDENCE_IDS, MAX_RUN_REPORT_OUTCOMES, MAX_RUN_REPORT_STEPS,
-    MAX_RUN_REPORT_TEXT_BYTES, RUN_REPORT_SCHEMA,
+    SecuritySeverity, VerificationStage, MAX_RUN_REPORT_EVIDENCE_IDS, MAX_RUN_REPORT_OUTCOMES,
+    MAX_RUN_REPORT_STEPS, MAX_RUN_REPORT_TEXT_BYTES, RUN_REPORT_SCHEMA,
 };
 pub use verification::{
     apply_outcome, ActiveVerifier, PassiveVerifier, VerificationCase, VerificationError,
@@ -370,40 +363,6 @@ pub use web_runtime::{
     RuntimeApiVisibilityRunReport, StandardWebDecisionFailureReceipt, StandardWebDecisionRunReport,
     StandardWebDecisionRuntime, StandardWebDecisionRuntimeBuilder, StandardWebDecisionRuntimeError,
     StandardWebDecisionRuntimeTurn,
-};
-
-#[cfg(feature = "scanning")]
-pub use web_assessment::{
-    WebAssessmentCompletion, WebAssessmentDefenseAudit, WebAssessmentDefenseBodyCoverage,
-    WebAssessmentDefenseMode, WebAssessmentDefenseObservation, WebAssessmentDefenseShadowPlan,
-    WebAssessmentDefenseTransition, WebAssessmentFailureReceipt, WebAssessmentForm,
-    WebAssessmentFormMethod, WebAssessmentIncompleteReason, WebAssessmentLimits,
-    WebAssessmentLimitsError, WebAssessmentMethod, WebAssessmentRunReport, WebAssessmentRuntime,
-    WebAssessmentRuntimeBuilder, WebAssessmentRuntimeError, WebAssessmentSubject,
-    WebAssessmentSubjectOrigin, WebAssessmentSubjectReport, WebAssessmentUsage,
-    DEFAULT_WEB_ASSESSMENT_MAX_ACTIVE_VERIFICATIONS,
-    DEFAULT_WEB_ASSESSMENT_MAX_CANONICAL_URL_BYTES, DEFAULT_WEB_ASSESSMENT_MAX_CONTROLS_PER_FORM,
-    DEFAULT_WEB_ASSESSMENT_MAX_DEPTH, DEFAULT_WEB_ASSESSMENT_MAX_FORMS,
-    DEFAULT_WEB_ASSESSMENT_MAX_QUERY_NAMES, DEFAULT_WEB_ASSESSMENT_MAX_REFERENCES_PER_DOCUMENT,
-    DEFAULT_WEB_ASSESSMENT_MAX_RESPONSE_BODY_BYTES, DEFAULT_WEB_ASSESSMENT_MAX_RETAINED_URL_BYTES,
-    DEFAULT_WEB_ASSESSMENT_MAX_SUBJECTS, DEFAULT_WEB_ASSESSMENT_MAX_TOTAL_REQUESTS,
-    DEFAULT_WEB_ASSESSMENT_MAX_TOTAL_RESPONSE_BYTES, DEFAULT_WEB_ASSESSMENT_MAX_WALL_TIME,
-    HARD_MAX_WEB_ASSESSMENT_ACTIVE_VERIFICATIONS, HARD_MAX_WEB_ASSESSMENT_CANONICAL_URL_BYTES,
-    HARD_MAX_WEB_ASSESSMENT_CONTROLS_PER_FORM, HARD_MAX_WEB_ASSESSMENT_DEPTH,
-    HARD_MAX_WEB_ASSESSMENT_FORMS, HARD_MAX_WEB_ASSESSMENT_QUERY_NAMES,
-    HARD_MAX_WEB_ASSESSMENT_REFERENCES_PER_DOCUMENT, HARD_MAX_WEB_ASSESSMENT_RESPONSE_BODY_BYTES,
-    HARD_MAX_WEB_ASSESSMENT_RETAINED_URL_BYTES, HARD_MAX_WEB_ASSESSMENT_SUBJECTS,
-    HARD_MAX_WEB_ASSESSMENT_TOTAL_REQUESTS, HARD_MAX_WEB_ASSESSMENT_TOTAL_RESPONSE_BYTES,
-    HARD_MAX_WEB_ASSESSMENT_WALL_TIME, WEB_ASSESSMENT_CONCURRENCY,
-};
-
-#[cfg(feature = "scanning")]
-pub use scan_profile::{
-    BuiltInScanProfile, BuiltInScanProfileParseError, ScanProfileCapabilitiesV1,
-    ScanProfileLimitsV1, ScanProfileScope, ScanProfileSelectionError, ScanProfileV1,
-    ScanProfileV1Error, BASELINE_SCAN_PROFILE_ID, BASELINE_SCAN_PROFILE_MAX_TOTAL_REQUESTS,
-    BASELINE_SCAN_PROFILE_MAX_TOTAL_RESPONSE_BYTES, BASELINE_SCAN_PROFILE_MAX_WALL_TIME_MS,
-    SCAN_PROFILE_V1_SCHEMA, WEB_REVIEW_SCAN_PROFILE_ID,
 };
 
 #[cfg(all(feature = "scanning", feature = "plugins"))]

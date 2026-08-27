@@ -6,6 +6,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::net::IpAddr;
 use std::str::FromStr;
 use url::Url;
+#[cfg(feature = "scanning")]
+use venom_core::predicates::WebDiscoveryEvidencePredicate;
 use venom_core::{EntityId, Evidence, EvidenceId, EvidenceKind, EvidenceValue};
 
 use crate::knowledge::KnowledgeSnapshot;
@@ -206,22 +208,15 @@ impl EntityExtractor {
         }
         let predicate = evidence.predicate();
         let (method_attribute, endpoint_method) = if predicate
-            == &venom_core::WebDiscoveryEvidencePredicate::GET_ROUTE.into_knowledge()
-            || predicate
-                == &venom_core::WebDiscoveryEvidencePredicate::GET_FORM_ACTION.into_knowledge()
+            == &WebDiscoveryEvidencePredicate::GET_ROUTE.into_knowledge()
+            || predicate == &WebDiscoveryEvidencePredicate::GET_FORM_ACTION.into_knowledge()
         {
             ("method", "GET")
-        } else if predicate
-            == &venom_core::WebDiscoveryEvidencePredicate::HEAD_ROUTE.into_knowledge()
-        {
+        } else if predicate == &WebDiscoveryEvidencePredicate::HEAD_ROUTE.into_knowledge() {
             ("method", "HEAD")
-        } else if predicate
-            == &venom_core::WebDiscoveryEvidencePredicate::POST_FORM_ACTION.into_knowledge()
-        {
+        } else if predicate == &WebDiscoveryEvidencePredicate::POST_FORM_ACTION.into_knowledge() {
             ("method", "POST")
-        } else if predicate
-            == &venom_core::WebDiscoveryEvidencePredicate::DIALOG_FORM_ACTION.into_knowledge()
-        {
+        } else if predicate == &WebDiscoveryEvidencePredicate::DIALOG_FORM_ACTION.into_knowledge() {
             ("form_method", "dialog")
         } else {
             return self.project_web_discovery_names(evidence, index);
@@ -260,18 +255,14 @@ impl EntityExtractor {
     ) -> Vec<SemanticEntity> {
         let predicate = evidence.predicate();
         let (location, route_parent) = if predicate
-            == &venom_core::WebDiscoveryEvidencePredicate::ROUTE_QUERY_PARAMETER_NAMES
-                .into_knowledge()
+            == &WebDiscoveryEvidencePredicate::ROUTE_QUERY_PARAMETER_NAMES.into_knowledge()
         {
             ("query", true)
         } else if predicate
-            == &venom_core::WebDiscoveryEvidencePredicate::FORM_QUERY_PARAMETER_NAMES
-                .into_knowledge()
+            == &WebDiscoveryEvidencePredicate::FORM_QUERY_PARAMETER_NAMES.into_knowledge()
         {
             ("query", false)
-        } else if predicate
-            == &venom_core::WebDiscoveryEvidencePredicate::FORM_CONTROL_NAMES.into_knowledge()
-        {
+        } else if predicate == &WebDiscoveryEvidencePredicate::FORM_CONTROL_NAMES.into_knowledge() {
             ("form_control", false)
         } else {
             return Vec::new();
@@ -287,18 +278,14 @@ impl EntityExtractor {
         };
         let parent_predicate = parent.predicate();
         let accepted_parent = if route_parent {
-            parent_predicate
-                == &venom_core::WebDiscoveryEvidencePredicate::GET_ROUTE.into_knowledge()
-                || parent_predicate
-                    == &venom_core::WebDiscoveryEvidencePredicate::HEAD_ROUTE.into_knowledge()
+            parent_predicate == &WebDiscoveryEvidencePredicate::GET_ROUTE.into_knowledge()
+                || parent_predicate == &WebDiscoveryEvidencePredicate::HEAD_ROUTE.into_knowledge()
         } else {
-            parent_predicate
-                == &venom_core::WebDiscoveryEvidencePredicate::GET_FORM_ACTION.into_knowledge()
+            parent_predicate == &WebDiscoveryEvidencePredicate::GET_FORM_ACTION.into_knowledge()
                 || parent_predicate
-                    == &venom_core::WebDiscoveryEvidencePredicate::POST_FORM_ACTION.into_knowledge()
+                    == &WebDiscoveryEvidencePredicate::POST_FORM_ACTION.into_knowledge()
                 || parent_predicate
-                    == &venom_core::WebDiscoveryEvidencePredicate::DIALOG_FORM_ACTION
-                        .into_knowledge()
+                    == &WebDiscoveryEvidencePredicate::DIALOG_FORM_ACTION.into_knowledge()
         };
         if !accepted_parent || parent.kind() != &EvidenceKind::Content {
             return Vec::new();
@@ -867,7 +854,6 @@ mod tests {
     #[cfg(feature = "scanning")]
     use venom_core::{
         DerivationAlgorithm, EvidenceDerivation, HttpEvidencePredicate, PredicateDescriptor,
-        WebDiscoveryEvidencePredicate,
     };
 
     fn subject() -> EntityId {

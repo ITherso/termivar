@@ -10,7 +10,8 @@ use std::{fmt, str::FromStr, time::Duration};
 use serde::{de::Error as _, Deserialize, Deserializer, Serialize};
 use thiserror::Error;
 
-use crate::{WebAssessmentLimits, WebAssessmentLimitsError, DEFAULT_MAX_ACTIVE_VERIFICATIONS};
+use super::web_assessment::{WebAssessmentLimits, WebAssessmentLimitsError};
+use crate::DEFAULT_MAX_ACTIVE_VERIFICATIONS;
 
 /// Exact schema identifier for the first deterministic scan-profile contract.
 pub const SCAN_PROFILE_V1_SCHEMA: &str = "venom.scan-profile/v1";
@@ -759,7 +760,7 @@ mod tests {
     use serde_json::{json, Value};
 
     use super::*;
-    use crate::{
+    use crate::web_runtime::{
         HARD_MAX_WEB_ASSESSMENT_ACTIVE_VERIFICATIONS, HARD_MAX_WEB_ASSESSMENT_CANONICAL_URL_BYTES,
         HARD_MAX_WEB_ASSESSMENT_CONTROLS_PER_FORM, HARD_MAX_WEB_ASSESSMENT_DEPTH,
         HARD_MAX_WEB_ASSESSMENT_FORMS, HARD_MAX_WEB_ASSESSMENT_QUERY_NAMES,

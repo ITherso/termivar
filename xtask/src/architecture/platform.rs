@@ -176,7 +176,6 @@ const EXACT_MODULE_GATES: &[(&str, &str)] = &[
     ("realtime", "feature=\"platform-models\""),
     ("reporting", "feature=\"reporting\""),
     ("runner", "feature=\"legacy-scanner\""),
-    ("scan_profile", "feature=\"scanning\""),
     ("sdk", "feature=\"legacy-scanner\""),
     ("threat_intelligence", "feature=\"threat-intel\""),
 ];
@@ -286,7 +285,7 @@ const QUARANTINED_PUBLIC_FEATURES: &[&str] = &[
 
 /// Executable host contracts whose implementation modules stay private while
 /// their exact root re-exports form the public boundary.
-const PRIVATE_FACADE_SURFACES: &[&str] = &["distributed", "lua_engine", "scan_profile"];
+const PRIVATE_FACADE_SURFACES: &[&str] = &["distributed", "lua_engine"];
 
 /// Exact machine-readable lifecycle and host inventory for public quarantined
 /// scanner modules most likely to be mistaken for product runtime surfaces.
@@ -887,8 +886,14 @@ pub(super) fn check(workspace_root: &Path) -> Result<Vec<String>, Box<dyn Error>
         "any(feature=\"platform-models\",feature=\"lua\")",
         EXACT_LUA_CONFIG_REEXPORTS,
     )?);
+    let web_runtime_source =
+        fs::read_to_string(workspace_root.join("crates/venom-scanner/src/web_runtime.rs"))?;
+    violations.extend(private_natural_child_module_violations(
+        &web_runtime_source,
+        "scan_profile",
+    )?);
     violations.extend(private_facade_reexport_violations(
-        &source,
+        &web_runtime_source,
         "scan_profile",
         "feature=\"scanning\"",
         EXACT_SCAN_PROFILE_REEXPORTS,
@@ -1771,6 +1776,31 @@ fn private_facade_reexport_violations(
         )),
     }
     Ok(violations)
+}
+
+fn private_natural_child_module_violations(
+    source: &str,
+    module: &str,
+) -> Result<Vec<String>, syn::Error> {
+    let syntax = syn::parse_file(source)?;
+    let modules = syntax
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Mod(item) if item.ident == module => Some(item),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    if modules.len() == 1
+        && matches!(modules[0].vis, Visibility::Inherited)
+        && modules[0].content.is_none()
+        && modules[0].attrs.is_empty()
+    {
+        return Ok(Vec::new());
+    }
+    Ok(vec![format!(
+        "venom-scanner `{module}` implementation must remain one private natural external child with no attributes or path redirection"
+    )])
 }
 
 fn host_surface_cfg_facade_violations(source: &str) -> Result<Vec<String>, syn::Error> {
@@ -6015,11 +6045,6 @@ mod tests {
                 "any(feature=\"platform-models\",feature=\"lua\")",
                 EXACT_LUA_CONFIG_REEXPORTS,
             ),
-            (
-                "scan_profile",
-                "feature=\"scanning\"",
-                EXACT_SCAN_PROFILE_REEXPORTS,
-            ),
         ] {
             assert!(
                 private_facade_reexport_violations(source, module, cfg, symbols)
@@ -6028,6 +6053,30 @@ mod tests {
                 "{module}"
             );
         }
+        let web_runtime_source = include_str!("../../../crates/venom-scanner/src/web_runtime.rs");
+        assert!(
+            private_natural_child_module_violations(web_runtime_source, "scan_profile")
+                .unwrap()
+                .is_empty()
+        );
+        assert!(private_facade_reexport_violations(
+            web_runtime_source,
+            "scan_profile",
+            "feature=\"scanning\"",
+            EXACT_SCAN_PROFILE_REEXPORTS,
+        )
+        .unwrap()
+        .is_empty());
+        let redirected_scan_profile = web_runtime_source.replace(
+            "mod scan_profile;",
+            "#[path = \"alternate.rs\"] mod scan_profile;",
+        );
+        assert!(
+            private_natural_child_module_violations(&redirected_scan_profile, "scan_profile",)
+                .unwrap()
+                .join("\n")
+                .contains("no attributes or path redirection")
+        );
         assert!(host_surface_cfg_facade_violations(source)
             .unwrap()
             .is_empty());
@@ -7911,7 +7960,6 @@ mod tests {
             #[cfg(feature = "platform-models")] pub mod realtime;
             #[cfg(feature = "reporting")] pub mod reporting;
             #[cfg(feature = "legacy-scanner")] pub mod runner;
-            #[cfg(feature = "scanning")] mod scan_profile;
             #[cfg(feature = "legacy-scanner")] pub mod sdk;
             #[cfg(feature = "threat-intel")] pub mod threat_intelligence;
         "#;

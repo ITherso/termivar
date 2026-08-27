@@ -21,8 +21,6 @@
 //! The former legacy WAF detector/evasion utility has been removed. Payload
 //! derivation lives behind [`crate::payload_strategies`].
 
-#[cfg(feature = "scanning")]
-pub(crate) mod assessment;
 pub mod enforcement;
 pub mod fingerprint;
 pub mod policy;
@@ -48,6 +46,16 @@ pub use shadow_planning::{
 };
 pub use state::{DefensePosture, DefenseState, DefenseStatusSignal};
 pub use transition::{DefenseTransition, DefenseTransitionKind, PostureShift};
+
+/// Applies the monotonic defense decision table at the assessment-composition
+/// boundary. This adapter cannot add actions or increase their intensity.
+#[cfg(feature = "scanning")]
+pub(crate) fn assessment_interaction_decision(
+    response: DefenseResponse,
+    class: DefenseInteractionClass,
+) -> InteractionDecision {
+    shadow_planning::decide(response, class)
+}
 
 #[cfg(test)]
 mod tests {

@@ -51,7 +51,7 @@ enum CliScanProfile {
     WebReview,
 }
 
-impl From<CliScanProfile> for venom_scanner::BuiltInScanProfile {
+impl From<CliScanProfile> for venom_scanner::web_runtime::BuiltInScanProfile {
     fn from(value: CliScanProfile) -> Self {
         match value {
             CliScanProfile::Baseline => Self::Baseline,
@@ -188,7 +188,8 @@ async fn run_deterministic_scan(
     }
 
     if let Some(selected_profile) = profile {
-        let mut profile = venom_scanner::ScanProfileV1::for_builtin(selected_profile.into())?;
+        let mut profile =
+            venom_scanner::web_runtime::ScanProfileV1::for_builtin(selected_profile.into())?;
         if enforce_defense {
             profile = profile.with_defense_enforcement_enabled(true)?;
         }

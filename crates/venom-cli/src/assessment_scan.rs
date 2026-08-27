@@ -11,16 +11,18 @@ use std::error::Error;
 
 use serde::Serialize;
 use url::Url;
-use venom_scanner::{
-    BuiltInScanProfile, DecisionLoopCommand, DecisionStopReason, RuntimeBudgetDimension,
-    RuntimeLimitExceeded, ScanProfileScope, ScanProfileV1, SemanticEntityType,
-    SemanticExtractionResult, StandardWebDecisionFailureReceipt, StandardWebDecisionRuntimeError,
-    StandardWebDecisionRuntimeTurn, TransportDispatchAudit, WebAssessmentCompletion,
+use venom_scanner::web_runtime::{
+    BuiltInScanProfile, ScanProfileScope, ScanProfileV1, WebAssessmentCompletion,
     WebAssessmentDefenseAudit, WebAssessmentDefenseBodyCoverage, WebAssessmentDefenseMode,
     WebAssessmentFailureReceipt, WebAssessmentForm, WebAssessmentFormMethod,
     WebAssessmentIncompleteReason, WebAssessmentMethod, WebAssessmentRunReport,
     WebAssessmentRuntime, WebAssessmentSubject, WebAssessmentSubjectOrigin,
     WebAssessmentSubjectReport, WebAssessmentUsage,
+};
+use venom_scanner::{
+    DecisionLoopCommand, DecisionStopReason, RuntimeBudgetDimension, RuntimeLimitExceeded,
+    SemanticEntityType, SemanticExtractionResult, StandardWebDecisionFailureReceipt,
+    StandardWebDecisionRuntimeError, StandardWebDecisionRuntimeTurn, TransportDispatchAudit,
 };
 
 use crate::decision_scan::{self, DecisionScanSummary, OutcomeView};
