@@ -690,9 +690,14 @@ fn inspect_web_assessment_models(source: &str) -> Result<Vec<String>, syn::Error
             "assessment cumulative transport audit ownership drifted: expected {expected_audit_owners:?}, observed {audit_owners:?}"
         ));
     }
-    if defense_audit_owners != expected_audit_owners {
+    let expected_defense_audit_owners = BTreeMap::from([
+        ("WebAssessmentFailureReceipt".to_owned(), 1usize),
+        ("WebAssessmentRunReport".to_owned(), 1usize),
+        ("WebAssessmentRuntime".to_owned(), 1usize),
+    ]);
+    if defense_audit_owners != expected_defense_audit_owners {
         violations.push(format!(
-            "assessment defense audit ownership drifted: expected {expected_audit_owners:?}, observed {defense_audit_owners:?}"
+            "assessment defense audit ownership drifted: expected {expected_defense_audit_owners:?}, observed {defense_audit_owners:?}"
         ));
     }
     for item in &syntax.items {
@@ -4857,6 +4862,7 @@ mod tests {
             pub struct WebAssessmentDefenseAudit { mode: String }
             pub struct WebAssessmentRunReport { transport: TransportDispatchAudit, defense: WebAssessmentDefenseAudit }
             pub struct WebAssessmentFailureReceipt { transport: TransportDispatchAudit, defense: WebAssessmentDefenseAudit }
+            struct WebAssessmentRuntime { defense_audit: WebAssessmentDefenseAudit }
         "#;
         assert!(inspect_web_assessment_models(valid).unwrap().is_empty());
 

@@ -1737,7 +1737,7 @@ fn bounded_assessment_defense_signal(
     body: &[u8],
 ) -> AssessmentDefenseSignal {
     let mut safe_headers = Vec::<(String, String)>::new();
-    let mut input_limit_reached = false;
+    let mut input_limit_reached = body.len() > MAX_FINGERPRINT_BODY_SCAN_BYTES;
 
     for name in [
         "cf-ray",
@@ -1937,6 +1937,24 @@ mod tests {
         assert!(signal.state().has_rate_limit_headers());
         assert!(signal.state().is_rate_limited());
         assert!(signal.has_positive_metadata_signal());
+    }
+
+    #[test]
+    fn incomplete_large_body_records_the_detector_input_limit() {
+        let body = vec![b'a'; MAX_FINGERPRINT_BODY_SCAN_BYTES + 1];
+        let signal = bounded_assessment_defense_signal(
+            200,
+            HttpProbeMethod::Get,
+            &HeaderMap::new(),
+            false,
+            &body,
+        );
+        assert_eq!(
+            signal.body_coverage(),
+            AssessmentDefenseBodyCoverage::MetadataOnly
+        );
+        assert!(signal.input_limit_reached());
+        assert!(!signal.has_positive_metadata_signal());
     }
 
     #[test]

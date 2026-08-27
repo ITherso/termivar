@@ -10,7 +10,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use venom_core::{
     ConfidenceScore, DerivationAlgorithm, EntityId, Evidence, EvidenceDerivation, EvidenceId,
     EvidenceKind, EvidenceOrigin, EvidenceSource, EvidenceValue, HttpEvidencePredicate,
-    KnowledgePredicate, ReasoningModelError,
+    KnowledgePredicate, PredicateDescriptor, ReasoningModelError,
 };
 
 use crate::{
@@ -426,7 +426,7 @@ impl CommittedAssessmentDefenseLedger {
     }
 }
 
-const fn is_candidate_fingerprint_hint(
+fn is_candidate_fingerprint_hint(
     control: Option<DefenseProduct>,
     candidate: Option<DefenseProduct>,
     control_complete: bool,
@@ -829,7 +829,7 @@ impl BaseEvidence {
     }
 }
 
-fn base_record_shape(descriptor: HttpEvidencePredicate, item: &Evidence) -> bool {
+fn base_record_shape(descriptor: PredicateDescriptor, item: &Evidence) -> bool {
     let (kind, method) = match descriptor {
         HttpEvidencePredicate::REQUEST_METHOD => (EvidenceKind::Http, "request-method"),
         HttpEvidencePredicate::REQUEST_URL => (EvidenceKind::Http, "request-url"),
