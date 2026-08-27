@@ -21,6 +21,7 @@
 //! The former legacy WAF detector/evasion utility has been removed. Payload
 //! derivation lives behind [`crate::payload_strategies`].
 
+#[cfg(feature = "scanning")]
 pub(crate) mod assessment;
 pub mod enforcement;
 pub mod fingerprint;
