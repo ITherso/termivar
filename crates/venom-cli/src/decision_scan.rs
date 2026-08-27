@@ -24,12 +24,14 @@ use std::time::Duration;
 use serde::Serialize;
 use url::Url;
 use venom_core::{EvidenceValue, HypothesisState, HypothesisStrength};
+use venom_scanner::web_runtime::{
+    BASELINE_SCAN_PROFILE_MAX_TOTAL_REQUESTS, BASELINE_SCAN_PROFILE_MAX_TOTAL_RESPONSE_BYTES,
+    BASELINE_SCAN_PROFILE_MAX_WALL_TIME_MS,
+};
 use venom_scanner::{
     DecisionActionOrigin, DecisionExecutionStage, DecisionLoopCommand, DecisionStopReason,
     ExclusionReason, HttpBodyCapture, HttpEvidencePolicy, OutcomeStatus, RuntimeBudget,
     RuntimeBudgetDimension, StandardWebDecisionRuntime, StandardWebDecisionRuntimeTurn,
-    BASELINE_SCAN_PROFILE_MAX_TOTAL_REQUESTS, BASELINE_SCAN_PROFILE_MAX_TOTAL_RESPONSE_BYTES,
-    BASELINE_SCAN_PROFILE_MAX_WALL_TIME_MS,
 };
 
 /// One hypothesis the runtime maintained. `posterior_basis_points` (0..=10000) and
