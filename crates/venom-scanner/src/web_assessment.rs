@@ -20,7 +20,9 @@ use venom_core::{
 };
 
 use crate::{
-    defense::assessment::{AssessmentDefenseBodyCoverage, AssessmentDefenseController},
+    defense::assessment::{
+        AssessmentDefenseBodyCoverage, AssessmentDefenseController, ASSESSMENT_DEFENSE_NAMESPACE,
+    },
     http_evidence::{CompleteHttpResponseObservation, CompleteHttpResponseObserver},
     web_runtime::{
         SharedWebRuntimeAuthority, StandardWebDecisionAssessmentFailureParts,
@@ -2941,13 +2943,28 @@ fn projection_from_committed_bootstrap(
         }
         return Ok(None);
     };
-    if receipt.evidence()[first_discovery..]
+    if receipt.evidence()[..first_discovery]
         .iter()
-        .any(|evidence| evidence.predicate().namespace() != "web.discovery")
+        .any(|evidence| evidence.predicate().namespace() == ASSESSMENT_DEFENSE_NAMESPACE)
     {
         return Err(());
     }
-    let discovery = &receipt.evidence()[first_discovery..];
+    let discovery_tail = &receipt.evidence()[first_discovery..];
+    let discovery_len = discovery_tail
+        .iter()
+        .position(|evidence| evidence.predicate().namespace() != "web.discovery")
+        .unwrap_or(discovery_tail.len());
+    let (discovery, trailing) = discovery_tail.split_at(discovery_len);
+    // The HTTP evidence executor appends assessment-defense records after the
+    // discovery observer's closed batch. Keep discovery replay strict while
+    // admitting only that separately replay-validated suffix; an unknown or
+    // interleaved evidence namespace still fails closed.
+    if trailing
+        .iter()
+        .any(|evidence| evidence.predicate().namespace() != ASSESSMENT_DEFENSE_NAMESPACE)
+    {
+        return Err(());
+    }
     let first = discovery.first().ok_or(())?;
 
     if first.predicate()

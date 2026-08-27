@@ -91,18 +91,22 @@ impl AssessmentDefenseSignal {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn state(&self) -> &DefenseState {
         &self.state
     }
 
+    #[cfg(test)]
     pub(crate) const fn body_coverage(&self) -> AssessmentDefenseBodyCoverage {
         self.body_coverage
     }
 
+    #[cfg(test)]
     pub(crate) const fn input_limit_reached(&self) -> bool {
         self.input_limit_reached
     }
 
+    #[cfg(test)]
     pub(crate) fn has_positive_metadata_signal(&self) -> bool {
         self.state.status_signal().is_block()
             || self.state.is_rate_limited()

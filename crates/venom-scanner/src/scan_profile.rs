@@ -282,7 +282,9 @@ pub struct ScanProfileLimitsV1 {
 
 impl ScanProfileLimitsV1 {
     fn from_checked(checked: WebAssessmentLimits) -> Result<Self, ScanProfileV1Error> {
-        if checked.max_wall_time().subsec_nanos() % 1_000_000 != 0 {
+        if Duration::from_millis(duration_millis(checked.max_wall_time()))
+            != checked.max_wall_time()
+        {
             return Err(ScanProfileV1Error::SubMillisecondWallTime);
         }
         Ok(Self {

@@ -1518,6 +1518,17 @@ async fn committed_bootstrap_replay_rejects_non_exact_batches_without_mutating_t
                 == &WebDiscoveryEvidencePredicate::DOCUMENT_PROJECTED.into_knowledge()
         })
         .expect("document projection marker");
+    let first_defense = original
+        .iter()
+        .position(|evidence| evidence.predicate().namespace() == ASSESSMENT_DEFENSE_NAMESPACE)
+        .expect("assessment defense suffix");
+    assert!(marker_index + 1 < first_defense);
+    assert!(original[marker_index..first_defense]
+        .iter()
+        .all(|evidence| evidence.predicate().namespace() == "web.discovery"));
+    assert!(original[first_defense..]
+        .iter()
+        .all(|evidence| evidence.predicate().namespace() == ASSESSMENT_DEFENSE_NAMESPACE));
     let marker = original[marker_index].clone();
     let marker_parents = derivation_parents(&marker).to_vec();
     assert_eq!(marker_parents.len(), 6);
@@ -1542,6 +1553,45 @@ async fn committed_bootstrap_replay_rejects_non_exact_batches_without_mutating_t
     .expect("HTML projection");
     assert_eq!(exact.routes.len(), 2);
     assert_eq!(exact.forms.len(), 1);
+
+    let mut defense_before_discovery = original.clone();
+    let leading_defense = defense_before_discovery.remove(first_defense);
+    defense_before_discovery.insert(marker_index, leading_defense);
+
+    let mut interleaved = original.clone();
+    interleaved.swap(marker_index + 1, first_defense);
+
+    let mut foreign_trailing = original.clone();
+    foreign_trailing.push(Evidence::new(
+        template.case().subject().clone(),
+        EvidenceKind::Custom("assessment-test".to_owned()),
+        KnowledgePredicate::new("test.web-assessment", "foreign-trailing").unwrap(),
+        EvidenceValue::Boolean(true),
+        EvidenceSource::new(HTTP_EVIDENCE_EXECUTOR_ID, "foreign-trailing")
+            .unwrap()
+            .with_correlation_id(BOOTSTRAP_CASE_ID)
+            .unwrap(),
+        marker.reliability(),
+    ));
+    for (name, batch) in [
+        ("defense-before-discovery", defense_before_discovery),
+        ("discovery-defense-interleaving", interleaved),
+        ("foreign-trailing-namespace", foreign_trailing),
+    ] {
+        let (knowledge, receipt) = receipt_with_committed_batch(&template, batch);
+        assert!(
+            projection_from_committed_bootstrap(
+                Some(&receipt),
+                &knowledge,
+                &subject,
+                &runtime.discovery_policy,
+                runtime.limits,
+                &envelope,
+            )
+            .is_err(),
+            "{name} batch was accepted",
+        );
+    }
 
     let mut semantic_evidence = super::semantic::AssessmentSemanticEvidence::default();
     assert!(semantic_evidence
