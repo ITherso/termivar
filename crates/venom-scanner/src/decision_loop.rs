@@ -20,7 +20,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 use thiserror::Error;
 use venom_core::{EntityId, Outcome};
 
-use crate::planner::ScheduledActionAuthorizationError;
+use crate::planner::{ActionSuppressionContext, ScheduledActionAuthorizationError};
 use crate::{
     AdaptationLedger, AdaptationLimits, AdaptiveDecision, AdaptivePipeline, AdaptivePipelineError,
     AttackPlan, AttackPlanner, ExperiencePolicy, ExperienceStore, ExperienceStoreError,
@@ -147,6 +147,13 @@ pub enum DecisionLoopError {
         action_id: String,
     },
 
+    /// Current defense enforcement suppressed an adaptive, retry, or active action.
+    #[error("defense enforcement suppresses action {action_id}")]
+    DefenseSuppressedAction {
+        /// Action rejected under the current defense context.
+        action_id: String,
+    },
+
     /// Direct adaptive dispatch would skip declared prerequisites.
     #[error(
         "adaptive action {action_id} declares prerequisites and must be selected by normal planning"
@@ -259,6 +266,23 @@ impl DecisionLoopConfig {
     /// Returns the maximum number of emitted action executions.
     pub fn max_action_cycles(self) -> u32 {
         self.max_action_cycles
+    }
+}
+
+pub(crate) struct ActiveEvidenceSnapshots<'a> {
+    baseline: &'a KnowledgeSnapshot,
+    after_probe: &'a KnowledgeSnapshot,
+}
+
+impl<'a> ActiveEvidenceSnapshots<'a> {
+    pub(crate) const fn new(
+        baseline: &'a KnowledgeSnapshot,
+        after_probe: &'a KnowledgeSnapshot,
+    ) -> Self {
+        Self {
+            baseline,
+            after_probe,
+        }
     }
 }
 
@@ -454,6 +478,27 @@ impl DecisionSession {
         self.state = DecisionLoopState::Halted {
             reason: DecisionStopReason::CancelledByHost,
         };
+    }
+
+    /// Returns an outstanding execution to the planning boundary after the
+    /// host's current defense authority suppresses it before dispatch.
+    ///
+    /// The issued-action counter remains monotonic: the command was already
+    /// authorized and emitted even though the runner correctly performed no
+    /// side effect. The next plan must use the same defense context and can
+    /// therefore only choose from the filtered baseline.
+    pub(crate) fn replan_after_defense_suppression(&mut self) -> Result<(), DecisionLoopError> {
+        match &self.state {
+            DecisionLoopState::AwaitingPassive { .. }
+            | DecisionLoopState::AwaitingActive { .. } => {
+                self.state = DecisionLoopState::Ready;
+                Ok(())
+            },
+            _ => Err(DecisionLoopError::InvalidTransition {
+                operation: "replan after defense suppression",
+                state: self.state.name(),
+            }),
+        }
     }
 
     /// Finalizes a multi-objective session as completed at the aggregate
@@ -811,12 +856,48 @@ impl DecisionLoop {
         )
     }
 
+    pub(crate) fn plan_next_with_action_suppressions(
+        &self,
+        knowledge: &KnowledgeBase,
+        experience: &ExperienceStore,
+        session: &mut DecisionSession,
+        host_suppressions: &ActionSuppressionContext,
+    ) -> Result<DecisionPlanningReport, DecisionLoopError> {
+        self.plan_next_with_action_suppressions_before_commit(
+            knowledge,
+            experience,
+            session,
+            host_suppressions,
+            |_| {},
+        )
+    }
+
     fn plan_next_with_suppressed_actions_before_commit<F>(
         &self,
         knowledge: &KnowledgeBase,
         experience: &ExperienceStore,
         session: &mut DecisionSession,
         host_suppressed_actions: &BTreeSet<String>,
+        before_session_commit: F,
+    ) -> Result<DecisionPlanningReport, DecisionLoopError>
+    where
+        F: FnMut(&KnowledgeSnapshot),
+    {
+        self.plan_next_with_action_suppressions_before_commit(
+            knowledge,
+            experience,
+            session,
+            &ActionSuppressionContext::policy_only(host_suppressed_actions),
+            before_session_commit,
+        )
+    }
+
+    fn plan_next_with_action_suppressions_before_commit<F>(
+        &self,
+        knowledge: &KnowledgeBase,
+        experience: &ExperienceStore,
+        session: &mut DecisionSession,
+        host_suppressions: &ActionSuppressionContext,
         mut before_session_commit: F,
     ) -> Result<DecisionPlanningReport, DecisionLoopError>
     where
@@ -834,16 +915,16 @@ impl DecisionLoop {
                 experience,
                 &candidate_session,
                 self.config.experience,
-                host_suppressed_actions,
+                host_suppressions,
             );
             let report = DecisionPlanningReport {
                 rule_applications: Vec::new(),
-                plan: self.planner.plan_snapshot_with_suppressed(
+                plan: self.planner.plan_snapshot_with_action_suppressions(
                     &snapshot,
                     self.config.planning,
                     &suppressions,
                 )?,
-                suppressed_actions: suppressions,
+                suppressed_actions: suppressions.policy_suppressed_actions().clone(),
                 session_transition: DecisionSessionTransition::new(
                     session.transition_summary(),
                     candidate_session.transition_summary(),
@@ -878,9 +959,9 @@ impl DecisionLoop {
                 experience,
                 &candidate_session,
                 self.config.experience,
-                host_suppressed_actions,
+                host_suppressions,
             );
-            let plan = self.planner.plan_snapshot_with_suppressed(
+            let plan = self.planner.plan_snapshot_with_action_suppressions(
                 &snapshot,
                 self.config.planning,
                 &suppressions,
@@ -911,7 +992,12 @@ impl DecisionLoop {
                 session.transition_summary(),
                 candidate_session.transition_summary(),
             );
-            Ok((plan, suppressions, session_transition, command))
+            Ok((
+                plan,
+                suppressions.policy_suppressed_actions().clone(),
+                session_transition,
+                command,
+            ))
         })();
 
         match planning {
@@ -979,11 +1065,22 @@ impl DecisionLoop {
         session: &mut DecisionSession,
         host_suppressed_actions: &BTreeSet<String>,
     ) -> Result<DecisionOutcomeReport, DecisionLoopError> {
+        let suppressions = ActionSuppressionContext::policy_only(host_suppressed_actions);
+        self.submit_passive_with_action_suppressions(knowledge, experience, session, &suppressions)
+    }
+
+    pub(crate) fn submit_passive_with_action_suppressions(
+        &self,
+        knowledge: &KnowledgeBase,
+        experience: &mut ExperienceStore,
+        session: &mut DecisionSession,
+        host_suppressions: &ActionSuppressionContext,
+    ) -> Result<DecisionOutcomeReport, DecisionLoopError> {
         self.submit_passive_with_optional_suppressions(
             knowledge,
             experience,
             session,
-            Some(host_suppressed_actions),
+            Some(host_suppressions),
         )
     }
 
@@ -992,7 +1089,7 @@ impl DecisionLoop {
         knowledge: &KnowledgeBase,
         experience: &mut ExperienceStore,
         session: &mut DecisionSession,
-        host_suppressed_actions: Option<&BTreeSet<String>>,
+        host_suppressions: Option<&ActionSuppressionContext>,
     ) -> Result<DecisionOutcomeReport, DecisionLoopError> {
         let case = match session.state() {
             DecisionLoopState::AwaitingPassive { case } => case.clone(),
@@ -1015,7 +1112,7 @@ impl DecisionLoop {
             session,
             verification,
             &snapshot,
-            host_suppressed_actions,
+            host_suppressions,
         )
     }
 
@@ -1051,13 +1148,31 @@ impl DecisionLoop {
         after_probe: &KnowledgeSnapshot,
         host_suppressed_actions: &BTreeSet<String>,
     ) -> Result<DecisionOutcomeReport, DecisionLoopError> {
+        let suppressions = ActionSuppressionContext::policy_only(host_suppressed_actions);
+        self.submit_active_with_action_suppressions(
+            knowledge,
+            experience,
+            session,
+            ActiveEvidenceSnapshots::new(baseline, after_probe),
+            &suppressions,
+        )
+    }
+
+    pub(crate) fn submit_active_with_action_suppressions(
+        &self,
+        knowledge: &KnowledgeBase,
+        experience: &mut ExperienceStore,
+        session: &mut DecisionSession,
+        snapshots: ActiveEvidenceSnapshots<'_>,
+        host_suppressions: &ActionSuppressionContext,
+    ) -> Result<DecisionOutcomeReport, DecisionLoopError> {
         self.submit_active_with_optional_suppressions(
             knowledge,
             experience,
             session,
-            baseline,
-            after_probe,
-            Some(host_suppressed_actions),
+            snapshots.baseline,
+            snapshots.after_probe,
+            Some(host_suppressions),
         )
     }
 
@@ -1068,7 +1183,7 @@ impl DecisionLoop {
         session: &mut DecisionSession,
         baseline: &KnowledgeSnapshot,
         after_probe: &KnowledgeSnapshot,
-        host_suppressed_actions: Option<&BTreeSet<String>>,
+        host_suppressions: Option<&ActionSuppressionContext>,
     ) -> Result<DecisionOutcomeReport, DecisionLoopError> {
         let case = match session.state() {
             DecisionLoopState::AwaitingActive { case } => case.clone(),
@@ -1090,7 +1205,7 @@ impl DecisionLoop {
             session,
             verification,
             after_probe,
-            host_suppressed_actions,
+            host_suppressions,
         )
     }
 
@@ -1101,28 +1216,33 @@ impl DecisionLoop {
         session: &mut DecisionSession,
         verification: VerificationReport,
         snapshot: &KnowledgeSnapshot,
-        host_suppressed_actions: Option<&BTreeSet<String>>,
+        host_suppressions: Option<&ActionSuppressionContext>,
     ) -> Result<DecisionOutcomeReport, DecisionLoopError> {
         let before = session.transition_summary();
         let outcome = verification.outcome();
         let mut candidate_experience = experience.clone();
         let experience_write = candidate_experience.observe(outcome.clone())?;
-        let empty_host_suppressions = BTreeSet::new();
+        let empty_host_suppressions = ActionSuppressionContext::default();
         let suppressions = combined_suppressions(
             &candidate_experience,
             session,
             self.config.experience,
-            host_suppressed_actions.unwrap_or(&empty_host_suppressions),
+            host_suppressions.unwrap_or(&empty_host_suppressions),
         );
         let mut candidate_session = session.clone();
+        // Defense must not participate in adaptive winner selection: removing
+        // a higher-priority rule there could promote a lower-priority action
+        // that the no-defense baseline never selected. The typed defense set
+        // stays alongside this baseline decision and the transition below can
+        // only suppress its selected schedule/retry/active continuation.
         let adaptive = self.adaptive.decide_and_record_with_suppressed_actions(
             outcome,
             snapshot,
             &mut candidate_session.adaptation,
             self.config.adaptation,
-            &suppressions,
+            suppressions.policy_suppressed_actions(),
         )?;
-        if host_suppressed_actions.is_none()
+        if host_suppressions.is_none()
             && !matches!(
                 adaptive.directive(),
                 PipelineDirective::Complete
@@ -1242,12 +1362,20 @@ fn combined_suppressions(
     experience: &ExperienceStore,
     session: &DecisionSession,
     policy: ExperiencePolicy,
-    host_suppressed_actions: &BTreeSet<String>,
-) -> BTreeSet<String> {
+    host_suppressions: &ActionSuppressionContext,
+) -> ActionSuppressionContext {
     let mut suppressions = experience.suppressed_actions(session.subject(), policy);
     suppressions.extend(session.adaptation.suppressed_actions().iter().cloned());
-    suppressions.extend(host_suppressed_actions.iter().cloned());
-    suppressions
+    suppressions.extend(
+        host_suppressions
+            .policy_suppressed_actions()
+            .iter()
+            .cloned(),
+    );
+    ActionSuppressionContext::new(
+        suppressions,
+        host_suppressions.defense_suppressed_actions().clone(),
+    )
 }
 
 fn next_case(
@@ -1331,7 +1459,7 @@ fn transition_from_adaptive(
     current_case: &VerificationCase,
     outcome: &Outcome,
     directive: &PipelineDirective,
-    suppressions: &BTreeSet<String>,
+    suppressions: &ActionSuppressionContext,
 ) -> Result<DecisionLoopCommand, DecisionLoopError> {
     match directive {
         PipelineDirective::Complete => {
@@ -1345,6 +1473,13 @@ fn transition_from_adaptive(
                 let reason = DecisionStopReason::ActionCycleLimit;
                 session.state = DecisionLoopState::Halted { reason };
                 return Ok(DecisionLoopCommand::Halt { reason });
+            }
+            if suppressions
+                .defense_suppressed_actions()
+                .contains(action_id)
+            {
+                session.state = DecisionLoopState::Ready;
+                return Ok(DecisionLoopCommand::Replan);
             }
             let step = authorize_adaptive_action(
                 planner,
@@ -1384,6 +1519,13 @@ fn transition_from_adaptive(
                 session.state = DecisionLoopState::Halted { reason };
                 return Ok(DecisionLoopCommand::Halt { reason });
             }
+            if suppressions
+                .defense_suppressed_actions()
+                .contains(outcome.action_id())
+            {
+                session.state = DecisionLoopState::Ready;
+                return Ok(DecisionLoopCommand::Replan);
+            }
             let step = authorize_adaptive_action(
                 planner,
                 snapshot,
@@ -1417,6 +1559,13 @@ fn transition_from_adaptive(
             Ok(DecisionLoopCommand::Replan)
         },
         PipelineDirective::AwaitActiveVerification => {
+            if suppressions
+                .defense_suppressed_actions()
+                .contains(current_case.action_id())
+            {
+                session.state = DecisionLoopState::Ready;
+                return Ok(DecisionLoopCommand::Replan);
+            }
             authorize_adaptive_action(
                 planner,
                 snapshot,
@@ -1447,12 +1596,17 @@ fn authorize_adaptive_action(
     planner: &AttackPlanner,
     snapshot: &KnowledgeSnapshot,
     planning_context: PlanningContext,
-    suppressions: &BTreeSet<String>,
+    suppressions: &ActionSuppressionContext,
     action_id: &str,
     preserve_scheduled_target_errors: bool,
 ) -> Result<crate::PlanStep, DecisionLoopError> {
     planner
-        .authorize_scheduled_action(snapshot, planning_context, suppressions, action_id)
+        .authorize_scheduled_action_with_context(
+            snapshot,
+            planning_context,
+            suppressions,
+            action_id,
+        )
         .map_err(|error| match error {
             ScheduledActionAuthorizationError::Planner(source) => {
                 DecisionLoopError::Planner(source)
@@ -1464,6 +1618,9 @@ fn authorize_adaptive_action(
                 DecisionLoopError::AdaptiveActionRequiresPlanning { action_id }
             },
             ScheduledActionAuthorizationError::Excluded { action_id, reason } => {
+                if reason == crate::ExclusionReason::DefenseSuppressed {
+                    return DecisionLoopError::DefenseSuppressedAction { action_id };
+                }
                 if preserve_scheduled_target_errors {
                     match reason {
                         crate::ExclusionReason::NoEligibleHypothesis => {
@@ -2060,7 +2217,7 @@ mod tests {
             &PipelineDirective::ScheduleAction {
                 action_id: "knowledge.followup".to_owned(),
             },
-            &BTreeSet::new(),
+            &ActionSuppressionContext::default(),
         )
         .unwrap();
         let scheduled_case = execution_case(&command);
@@ -2142,7 +2299,7 @@ mod tests {
             &PipelineDirective::ScheduleAction {
                 action_id: "motivated.followup".to_owned(),
             },
-            &BTreeSet::new(),
+            &ActionSuppressionContext::default(),
         )
         .unwrap();
         let scheduled_case = execution_case(&command);
@@ -2213,7 +2370,7 @@ mod tests {
             &PipelineDirective::ScheduleAction {
                 action_id: "missing-motivation.followup".to_owned(),
             },
-            &BTreeSet::new(),
+            &ActionSuppressionContext::default(),
         )
         .unwrap_err();
 
@@ -2321,7 +2478,7 @@ mod tests {
             &PipelineDirective::ScheduleAction {
                 action_id: "distinct.followup".to_owned(),
             },
-            &BTreeSet::new(),
+            &ActionSuppressionContext::default(),
         )
         .unwrap_err();
 
@@ -2345,7 +2502,7 @@ mod tests {
             &PipelineDirective::ScheduleAction {
                 action_id: "same-target.followup".to_owned(),
             },
-            &BTreeSet::new(),
+            &ActionSuppressionContext::default(),
         )
         .unwrap_err();
 
@@ -2398,7 +2555,7 @@ mod tests {
             &planned_case,
             &outcome,
             &PipelineDirective::AwaitActiveVerification,
-            &BTreeSet::new(),
+            &ActionSuppressionContext::default(),
         )
         .unwrap();
         let active_case = match active {
@@ -2421,7 +2578,7 @@ mod tests {
                 delay_ms: 5,
                 retry_current_action: true,
             },
-            &BTreeSet::new(),
+            &ActionSuppressionContext::default(),
         )
         .unwrap();
         let retry_case = execution_case(&retry);
@@ -2886,6 +3043,40 @@ mod tests {
     }
 
     #[test]
+    fn defense_suppression_is_distinct_from_the_existing_policy_audit() {
+        let decision_loop = configured_loop(None, 1, 8);
+        let knowledge = knowledge(false);
+        let experience = ExperienceStore::new();
+        let mut session = DecisionSession::new(subject());
+        let suppressions = ActionSuppressionContext::new(
+            BTreeSet::new(),
+            BTreeSet::from(["http.probe".to_owned()]),
+        );
+
+        let planning = decision_loop
+            .plan_next_with_action_suppressions(
+                &knowledge,
+                &experience,
+                &mut session,
+                &suppressions,
+            )
+            .unwrap();
+
+        assert!(planning.suppressed_actions().is_empty());
+        assert!(planning.plan().steps().is_empty());
+        assert!(planning.plan().excluded().iter().any(|entry| {
+            entry.action_id() == "http.probe"
+                && entry.reason() == &crate::ExclusionReason::DefenseSuppressed
+        }));
+        assert!(matches!(
+            planning.command(),
+            DecisionLoopCommand::Halt { .. }
+        ));
+        let wire = serde_json::to_value(&planning).unwrap();
+        assert!(wire.get("defense_suppressed_actions").is_none());
+    }
+
+    #[test]
     fn registered_but_ineligible_adaptive_action_is_rejected_atomically() {
         let mut decision_loop = configured_loop(Some(OutcomeStatus::Blocked), 1, 8);
         register_adaptive_action(
@@ -3029,6 +3220,139 @@ mod tests {
             knowledge.hypothesis(&hypothesis_id).unwrap(),
             initial_hypothesis
         );
+    }
+
+    #[test]
+    fn defense_suppression_does_not_promote_a_lower_priority_adaptive_rule() {
+        let mut decision_loop = configured_loop(Some(OutcomeStatus::Blocked), 1, 8);
+        register_adaptive_action(
+            &mut decision_loop,
+            "adaptive.high",
+            "plugin.adaptive-high",
+            10,
+            20,
+            BTreeSet::new(),
+        );
+        register_adaptive_action(
+            &mut decision_loop,
+            "adaptive.low",
+            "plugin.adaptive-low",
+            10,
+            20,
+            BTreeSet::new(),
+        );
+        *decision_loop.adaptive_mut() = AdaptivePipeline::new();
+        let selector =
+            OutcomeSelector::any_stage(BTreeSet::from([OutcomeStatus::Blocked])).unwrap();
+        for (rule_id, priority, action_id) in [
+            ("test.high", 1_000, "adaptive.high"),
+            ("test.low", 900, "adaptive.low"),
+        ] {
+            decision_loop
+                .adaptive_mut()
+                .register(
+                    AdaptationRule::new(
+                        rule_id,
+                        selector.clone(),
+                        priority,
+                        None,
+                        PipelineDirective::ScheduleAction {
+                            action_id: action_id.to_owned(),
+                        },
+                        "fixture schedules one eligible action",
+                        1,
+                    )
+                    .unwrap(),
+                )
+                .unwrap();
+        }
+        let knowledge = knowledge(true);
+        let mut experience = ExperienceStore::new();
+        let mut session = DecisionSession::new(subject());
+        decision_loop
+            .plan_next(&knowledge, &experience, &mut session)
+            .unwrap();
+        let cycles_before = session.action_cycles();
+        let suppressions = ActionSuppressionContext::new(
+            BTreeSet::new(),
+            BTreeSet::from(["adaptive.high".to_owned()]),
+        );
+
+        let report = decision_loop
+            .submit_passive_with_action_suppressions(
+                &knowledge,
+                &mut experience,
+                &mut session,
+                &suppressions,
+            )
+            .unwrap();
+
+        assert_eq!(report.adaptive().selected_rule_id(), Some("test.high"));
+        assert!(matches!(
+            report.adaptive().directive(),
+            PipelineDirective::ScheduleAction { action_id } if action_id == "adaptive.high"
+        ));
+        assert!(report
+            .adaptive()
+            .evaluations()
+            .iter()
+            .all(|evaluation| !evaluation.policy_suppressed()));
+        assert!(matches!(report.command(), DecisionLoopCommand::Replan));
+        assert!(matches!(session.state(), DecisionLoopState::Ready));
+        assert_eq!(session.action_cycles(), cycles_before);
+        assert_eq!(session.adaptation().action_schedules("adaptive.low"), 0);
+    }
+
+    #[test]
+    fn defense_suppression_replans_retry_and_active_without_issuing_work() {
+        let decision_loop = configured_loop(None, 1, 8);
+        let knowledge = knowledge(false);
+        let experience = ExperienceStore::new();
+        let mut planned_session = DecisionSession::new(subject());
+        let planning = decision_loop
+            .plan_next(&knowledge, &experience, &mut planned_session)
+            .unwrap();
+        let current_case = execution_case(planning.command());
+        let outcome = Outcome::unknown(
+            current_case.id(),
+            subject(),
+            current_case.action_id(),
+            current_case.hypothesis_id(),
+            VerificationStage::Passive,
+            "fixture remains unresolved",
+        )
+        .unwrap();
+        let snapshot = knowledge.snapshot_for_subject(&subject());
+        let suppressions = ActionSuppressionContext::new(
+            BTreeSet::new(),
+            BTreeSet::from([current_case.action_id().to_owned()]),
+        );
+
+        for directive in [
+            PipelineDirective::Throttle {
+                delay_ms: 5,
+                retry_current_action: true,
+            },
+            PipelineDirective::AwaitActiveVerification,
+        ] {
+            let mut session = planned_session.clone();
+            let command = transition_from_adaptive(
+                &mut session,
+                8,
+                decision_loop.planner(),
+                decision_loop.config().planning(),
+                &snapshot,
+                &current_case,
+                &outcome,
+                &directive,
+                &suppressions,
+            )
+            .unwrap();
+
+            assert!(matches!(command, DecisionLoopCommand::Replan));
+            assert!(matches!(session.state(), DecisionLoopState::Ready));
+            assert_eq!(session.action_cycles(), planned_session.action_cycles());
+        }
     }
 
     #[test]

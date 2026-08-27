@@ -25,7 +25,9 @@ use venom_core::{
     VerificationStage,
 };
 
+use crate::decision_runner::ContinuationAuthority;
 use crate::http_evidence::CompleteHttpResponseObserver;
+use crate::planner::ActionSuppressionContext;
 use crate::{
     AdaptationLimits, AdaptationRule, AdaptivePipelineError, BenefitScore, DecisionActionOrigin,
     DecisionEvidenceReceipt, DecisionExecutionClass, DecisionExecutionFailureReceipt,
@@ -836,6 +838,10 @@ impl StandardWebDecisionRuntime {
         self.experience
     }
 
+    fn action_suppression_context(&self) -> ActionSuppressionContext {
+        ActionSuppressionContext::policy_only(&self.unsupported_actions)
+    }
+
     /// Collects bootstrap evidence and drives commands to a terminal state.
     ///
     /// The runtime is single-use even when execution returns an error. This
@@ -964,11 +970,12 @@ impl StandardWebDecisionRuntime {
                     if let Some(limit) = self.wall_limit_if_reached(started_at) {
                         return Ok(self.limit_report(bootstrap, turns, limit, started_at));
                     }
-                    let planning = match self.decision_loop.plan_next_with_suppressed_actions(
+                    let suppressions = self.action_suppression_context();
+                    let planning = match self.decision_loop.plan_next_with_action_suppressions(
                         self.authority.knowledge(),
                         &self.experience,
                         &mut self.session,
-                        &self.unsupported_actions,
+                        &suppressions,
                     ) {
                         Ok(planning) => planning,
                         Err(source) => {
@@ -996,6 +1003,62 @@ impl StandardWebDecisionRuntime {
                 | DecisionLoopCommand::CollectActiveEvidence { .. } => {
                     if self.authority.cancellation().is_cancelled() {
                         return Ok(self.cancellation_report(bootstrap, turns, None, started_at));
+                    }
+                    let predispatch_suppressions = self.action_suppression_context();
+                    match self
+                        .runner
+                        .validate_command_suppression(&command, &predispatch_suppressions)
+                    {
+                        Err(source @ DecisionRunnerError::ActionSuppressedByDefense { .. }) => {
+                            if let Err(source) =
+                                self.decision_loop.validate_execution_command_authority(
+                                    self.authority.knowledge(),
+                                    &command,
+                                )
+                            {
+                                return Err(self.run_failed(
+                                    bootstrap,
+                                    turns,
+                                    source.into(),
+                                    started_at,
+                                ));
+                            }
+                            match self.runner.replan_defense_suppressed_command(
+                                &command,
+                                &mut self.session,
+                                &predispatch_suppressions,
+                            ) {
+                                Ok(true) => {
+                                    command = DecisionLoopCommand::Replan;
+                                    continue;
+                                },
+                                Ok(false) => {
+                                    return Err(self.run_failed(
+                                        bootstrap,
+                                        turns,
+                                        source.into(),
+                                        started_at,
+                                    ));
+                                },
+                                Err(source) => {
+                                    return Err(self.run_failed(
+                                        bootstrap,
+                                        turns,
+                                        source.into(),
+                                        started_at,
+                                    ));
+                                },
+                            }
+                        },
+                        Err(source) => {
+                            return Err(self.run_failed(
+                                bootstrap,
+                                turns,
+                                source.into(),
+                                started_at,
+                            ));
+                        },
+                        Ok(()) => {},
                     }
                     let (action_id, previous_stage) = match execution_metadata(&command) {
                         Ok(metadata) => metadata,
@@ -1097,14 +1160,14 @@ impl StandardWebDecisionRuntime {
                             started_at,
                         ));
                     }
-                    let runner_turn = self.runner.resume_session_command_with_suppressed_actions(
+                    let resume_suppressions = self.action_suppression_context();
+                    let runner_turn = self.runner.resume_session_command_with_action_suppressions(
                         &self.decision_loop,
                         &command,
                         self.authority.knowledge(),
                         &mut self.experience,
                         &mut self.session,
-                        evidence,
-                        &self.unsupported_actions,
+                        ContinuationAuthority::new(evidence, &resume_suppressions),
                     );
                     self.refresh_elapsed(started_at);
                     let runner_turn = match runner_turn {

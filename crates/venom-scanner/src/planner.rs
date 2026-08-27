@@ -905,6 +905,74 @@ impl AttackPlan {
     pub fn excluded(&self) -> &[ExcludedAction] {
         &self.excluded
     }
+
+    /// Removes defense-suppressed steps from this already-authorized plan.
+    ///
+    /// This is deliberately a filter, not a second planning pass. Retained
+    /// steps preserve their exact metadata and relative order; removing a
+    /// prerequisite also removes every dependent step so the result remains a
+    /// dependency-safe subsequence. Candidates excluded from the baseline can
+    /// never enter through budget freed by defense suppression.
+    pub(crate) fn into_defense_filtered(
+        self,
+        defense_suppressed_actions: &BTreeSet<String>,
+    ) -> Self {
+        if defense_suppressed_actions.is_empty() {
+            return self;
+        }
+        let affects_step = self
+            .steps
+            .iter()
+            .any(|step| defense_suppressed_actions.contains(step.action_id()));
+        if !affects_step {
+            return self;
+        }
+
+        let mut retained_ids = BTreeSet::new();
+        let mut retained_steps = Vec::new();
+        let mut removed = BTreeMap::new();
+        for mut step in self.steps {
+            let reason = if defense_suppressed_actions.contains(step.action_id()) {
+                Some(ExclusionReason::DefenseSuppressed)
+            } else {
+                step.prerequisites
+                    .iter()
+                    .find(|prerequisite| !retained_ids.contains(*prerequisite))
+                    .map(|prerequisite| ExclusionReason::DependencyUnavailable {
+                        prerequisite: prerequisite.clone(),
+                    })
+            };
+            if let Some(reason) = reason {
+                removed.insert(step.action_id.clone(), reason);
+                continue;
+            }
+            step.position = retained_steps.len();
+            retained_ids.insert(step.action_id.clone());
+            retained_steps.push(step);
+        }
+
+        let mut excluded: BTreeMap<String, ExclusionReason> = self
+            .excluded
+            .into_iter()
+            .map(|excluded| (excluded.action_id, excluded.reason))
+            .collect();
+        excluded.extend(removed);
+        let total_cost = retained_steps
+            .iter()
+            .map(|step| u64::from(step.utility.cost.units()))
+            .sum();
+
+        Self {
+            subject: self.subject,
+            context: self.context,
+            total_cost,
+            steps: retained_steps,
+            excluded: excluded
+                .into_iter()
+                .map(|(action_id, reason)| ExcludedAction { action_id, reason })
+                .collect(),
+        }
+    }
 }
 
 /// Result of registering an action identity.
@@ -928,6 +996,42 @@ struct EligibleCandidate {
 }
 
 type CandidateEligibility = Result<EligibleCandidate, ExclusionReason>;
+
+/// Current host-owned action suppressions, preserving their authority source.
+///
+/// This stays crate-private until the assessment/profile contract settles. The
+/// existing public APIs remain compatibility wrappers that populate only the
+/// policy set, while runtime composition can carry defense suppressions without
+/// conflating them with operator, experience, or adaptive policy.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct ActionSuppressionContext {
+    policy_suppressed_actions: BTreeSet<String>,
+    defense_suppressed_actions: BTreeSet<String>,
+}
+
+impl ActionSuppressionContext {
+    pub(crate) fn new(
+        policy_suppressed_actions: BTreeSet<String>,
+        defense_suppressed_actions: BTreeSet<String>,
+    ) -> Self {
+        Self {
+            policy_suppressed_actions,
+            defense_suppressed_actions,
+        }
+    }
+
+    pub(crate) fn policy_only(policy_suppressed_actions: &BTreeSet<String>) -> Self {
+        Self::new(policy_suppressed_actions.clone(), BTreeSet::new())
+    }
+
+    pub(crate) fn policy_suppressed_actions(&self) -> &BTreeSet<String> {
+        &self.policy_suppressed_actions
+    }
+
+    pub(crate) fn defense_suppressed_actions(&self) -> &BTreeSet<String> {
+        &self.defense_suppressed_actions
+    }
+}
 
 /// Why a registered action could not be authorized for immediate adaptive
 /// dispatch.
@@ -1045,11 +1149,10 @@ impl AttackPlanner {
         context: PlanningContext,
         suppressed_actions: &BTreeSet<String>,
     ) -> Result<AttackPlan, PlannerError> {
-        self.plan_snapshot_with_defense_suppressed(
+        self.plan_snapshot_with_action_suppressions(
             snapshot,
             context,
-            suppressed_actions,
-            &BTreeSet::new(),
+            &ActionSuppressionContext::policy_only(suppressed_actions),
         )
     }
 
@@ -1058,7 +1161,9 @@ impl AttackPlanner {
     /// A defense-suppressed action is excluded with
     /// [`ExclusionReason::DefenseSuppressed`], never conflated with an adaptive
     /// or operator [`ExclusionReason::PolicySuppressed`]. A defense-suppressed
-    /// action never becomes a plan step, so it never reaches an executor.
+    /// action never becomes a plan step, so it never reaches an executor. The
+    /// defense set filters the policy-authorized baseline and cannot refill
+    /// budget with a candidate that baseline excluded.
     pub fn plan_snapshot_with_defense_suppressed(
         &self,
         snapshot: &KnowledgeSnapshot,
@@ -1066,18 +1171,44 @@ impl AttackPlanner {
         policy_suppressed_actions: &BTreeSet<String>,
         defense_suppressed_actions: &BTreeSet<String>,
     ) -> Result<AttackPlan, PlannerError> {
+        self.plan_snapshot_with_action_suppressions(
+            snapshot,
+            context,
+            &ActionSuppressionContext::new(
+                policy_suppressed_actions.clone(),
+                defense_suppressed_actions.clone(),
+            ),
+        )
+    }
+
+    pub(crate) fn plan_snapshot_with_action_suppressions(
+        &self,
+        snapshot: &KnowledgeSnapshot,
+        context: PlanningContext,
+        suppressions: &ActionSuppressionContext,
+    ) -> Result<AttackPlan, PlannerError> {
+        let baseline = self.plan_snapshot_with_policy_suppressed(
+            snapshot,
+            context,
+            suppressions.policy_suppressed_actions(),
+        )?;
+        Ok(baseline.into_defense_filtered(suppressions.defense_suppressed_actions()))
+    }
+
+    fn plan_snapshot_with_policy_suppressed(
+        &self,
+        snapshot: &KnowledgeSnapshot,
+        context: PlanningContext,
+        policy_suppressed_actions: &BTreeSet<String>,
+    ) -> Result<AttackPlan, PlannerError> {
         self.validate_dependencies()?;
 
         let mut eligible = BTreeMap::<String, EligibleCandidate>::new();
         let mut exclusions = BTreeMap::<String, ExclusionReason>::new();
         for action in self.actions.values() {
-            let suppression = if defense_suppressed_actions.contains(action.id()) {
-                Some(ExclusionReason::DefenseSuppressed)
-            } else if policy_suppressed_actions.contains(action.id()) {
-                Some(ExclusionReason::PolicySuppressed)
-            } else {
-                None
-            };
+            let suppression = policy_suppressed_actions
+                .contains(action.id())
+                .then_some(ExclusionReason::PolicySuppressed);
             match evaluate_candidate(action, snapshot, context, suppression)? {
                 Ok(candidate) => {
                     eligible.insert(action.id.clone(), candidate);
@@ -1181,11 +1312,27 @@ impl AttackPlanner {
     /// because the session does not preserve proof that those actions completed;
     /// such actions therefore fail closed. The requested action's own cost must
     /// fit the complete planning budget.
+    #[cfg(test)]
     pub(crate) fn authorize_scheduled_action(
         &self,
         snapshot: &KnowledgeSnapshot,
         context: PlanningContext,
         policy_suppressed_actions: &BTreeSet<String>,
+        action_id: &str,
+    ) -> Result<PlanStep, ScheduledActionAuthorizationError> {
+        self.authorize_scheduled_action_with_context(
+            snapshot,
+            context,
+            &ActionSuppressionContext::policy_only(policy_suppressed_actions),
+            action_id,
+        )
+    }
+
+    pub(crate) fn authorize_scheduled_action_with_context(
+        &self,
+        snapshot: &KnowledgeSnapshot,
+        context: PlanningContext,
+        suppressions: &ActionSuppressionContext,
         action_id: &str,
     ) -> Result<PlanStep, ScheduledActionAuthorizationError> {
         self.validate_dependencies()?;
@@ -1194,9 +1341,16 @@ impl AttackPlanner {
                 action_id: action_id.to_owned(),
             }
         })?;
-        let suppression = policy_suppressed_actions
+        let suppression = if suppressions
+            .defense_suppressed_actions()
             .contains(action_id)
-            .then_some(ExclusionReason::PolicySuppressed);
+        {
+            Some(ExclusionReason::DefenseSuppressed)
+        } else if suppressions.policy_suppressed_actions().contains(action_id) {
+            Some(ExclusionReason::PolicySuppressed)
+        } else {
+            None
+        };
         let candidate = match evaluate_candidate(action, snapshot, context, suppression)? {
             Ok(candidate) => candidate,
             Err(reason) => {
@@ -1529,6 +1683,192 @@ mod tests {
                 .reason(),
             &ExclusionReason::PolicySuppressed
         );
+    }
+
+    #[test]
+    fn defense_filter_is_exact_baseline_subsequence_without_budget_refill() {
+        let knowledge = knowledge_with_hypothesis((80, 20));
+        let snapshot = knowledge.snapshot_for_subject(&subject());
+        let mut planner = AttackPlanner::new();
+        for id in ["alpha", "beta", "gamma"] {
+            planner.register(action(id, 80, 10, 20, &[])).unwrap();
+        }
+        let baseline = planner.plan_snapshot(&snapshot, context(20)).unwrap();
+        assert_eq!(
+            baseline
+                .steps()
+                .iter()
+                .map(PlanStep::action_id)
+                .collect::<Vec<_>>(),
+            ["alpha", "beta"]
+        );
+        assert_eq!(baseline.excluded()[0].action_id(), "gamma");
+        let expected_beta = baseline.steps()[1].clone();
+
+        let budget_only_suppression = baseline
+            .clone()
+            .into_defense_filtered(&BTreeSet::from(["gamma".to_owned()]));
+        assert_eq!(budget_only_suppression, baseline);
+        assert_eq!(
+            serde_json::to_vec(&budget_only_suppression).unwrap(),
+            serde_json::to_vec(&baseline).unwrap()
+        );
+
+        let suppressions =
+            ActionSuppressionContext::new(BTreeSet::new(), BTreeSet::from(["alpha".to_owned()]));
+        let filtered = planner
+            .plan_snapshot_with_action_suppressions(&snapshot, context(20), &suppressions)
+            .unwrap();
+
+        assert_eq!(
+            filtered
+                .steps()
+                .iter()
+                .map(PlanStep::action_id)
+                .collect::<Vec<_>>(),
+            ["beta"]
+        );
+        assert_eq!(filtered.total_cost(), 10);
+        assert_eq!(filtered.steps()[0].position(), 0);
+        assert_eq!(filtered.steps()[0].executor(), expected_beta.executor());
+        assert_eq!(filtered.steps()[0].utility(), expected_beta.utility());
+        assert_eq!(
+            filtered.steps()[0].requirements(),
+            expected_beta.requirements()
+        );
+        assert!(filtered
+            .excluded()
+            .iter()
+            .any(|entry| entry.action_id() == "alpha"
+                && entry.reason() == &ExclusionReason::DefenseSuppressed));
+        assert!(filtered
+            .excluded()
+            .iter()
+            .any(|entry| entry.action_id() == "gamma"
+                && matches!(entry.reason(), ExclusionReason::BudgetExceeded { .. })));
+    }
+
+    #[test]
+    fn defense_filter_cascades_dependencies_and_preserves_retained_metadata() {
+        let knowledge = knowledge_with_hypothesis((80, 20));
+        let snapshot = knowledge.snapshot_for_subject(&subject());
+        let strategy = PayloadStrategyRef::new("independent.strategy", 4).unwrap();
+        let mut planner = AttackPlanner::new();
+        planner.register(action("root", 80, 10, 20, &[])).unwrap();
+        planner
+            .register(action("dependent", 90, 10, 20, &["root"]))
+            .unwrap();
+        planner
+            .register(
+                action("independent", 70, 10, 20, &[]).with_payload_strategy(strategy.clone()),
+            )
+            .unwrap();
+        let baseline = planner.plan_snapshot(&snapshot, context(100)).unwrap();
+        let expected = baseline
+            .steps()
+            .iter()
+            .find(|step| step.action_id() == "independent")
+            .unwrap()
+            .clone();
+
+        let filtered = baseline
+            .clone()
+            .into_defense_filtered(&BTreeSet::from(["root".to_owned()]));
+
+        assert_eq!(
+            filtered
+                .steps()
+                .iter()
+                .map(PlanStep::action_id)
+                .collect::<Vec<_>>(),
+            ["independent"]
+        );
+        let retained = &filtered.steps()[0];
+        assert_eq!(retained.executor(), expected.executor());
+        assert_eq!(retained.payload_strategy(), Some(&strategy));
+        assert_eq!(retained.prerequisites(), expected.prerequisites());
+        assert_eq!(
+            retained.confidence_hypothesis_id(),
+            expected.confidence_hypothesis_id()
+        );
+        assert_eq!(
+            retained.verification_target(),
+            expected.verification_target()
+        );
+        assert_eq!(retained.requirements(), expected.requirements());
+        assert_eq!(retained.utility(), expected.utility());
+        assert!(filtered.excluded().iter().any(|entry| {
+            entry.action_id() == "dependent"
+                && entry.reason()
+                    == &ExclusionReason::DependencyUnavailable {
+                        prerequisite: "root".to_owned(),
+                    }
+        }));
+    }
+
+    #[test]
+    fn empty_defense_context_is_exact_planner_compatibility_path() {
+        let knowledge = knowledge_with_hypothesis((80, 20));
+        let snapshot = knowledge.snapshot_for_subject(&subject());
+        let mut planner = AttackPlanner::new();
+        planner.register(action("alpha", 80, 10, 20, &[])).unwrap();
+
+        let baseline = planner.plan_snapshot(&snapshot, context(100)).unwrap();
+        let compatibility = planner
+            .plan_snapshot_with_action_suppressions(
+                &snapshot,
+                context(100),
+                &ActionSuppressionContext::default(),
+            )
+            .unwrap();
+
+        assert_eq!(compatibility, baseline);
+        assert_eq!(
+            serde_json::to_vec(&compatibility).unwrap(),
+            serde_json::to_vec(&baseline).unwrap()
+        );
+    }
+
+    #[test]
+    fn defense_precedes_policy_for_scheduled_authorization() {
+        let knowledge = knowledge_with_hypothesis((80, 20));
+        let snapshot = knowledge.snapshot_for_subject(&subject());
+        let mut planner = AttackPlanner::new();
+        planner.register(action("direct", 80, 10, 20, &[])).unwrap();
+        let both = BTreeSet::from(["direct".to_owned()]);
+
+        let policy_baseline = planner
+            .plan_snapshot_with_defense_suppressed(&snapshot, context(100), &both, &BTreeSet::new())
+            .unwrap();
+        let defense_filtered = planner
+            .plan_snapshot_with_defense_suppressed(&snapshot, context(100), &both, &both)
+            .unwrap();
+        assert_eq!(defense_filtered, policy_baseline);
+        assert_eq!(
+            serde_json::to_vec(&defense_filtered).unwrap(),
+            serde_json::to_vec(&policy_baseline).unwrap()
+        );
+        assert_eq!(
+            defense_filtered.excluded()[0].reason(),
+            &ExclusionReason::PolicySuppressed
+        );
+
+        let denied = planner
+            .authorize_scheduled_action_with_context(
+                &snapshot,
+                context(100),
+                &ActionSuppressionContext::new(both.clone(), both),
+                "direct",
+            )
+            .unwrap_err();
+
+        assert!(matches!(
+            denied,
+            ScheduledActionAuthorizationError::Excluded {
+                reason: ExclusionReason::DefenseSuppressed,
+                ..
+            }
+        ));
     }
 
     #[test]

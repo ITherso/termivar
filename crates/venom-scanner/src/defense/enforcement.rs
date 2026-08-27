@@ -2,16 +2,14 @@
 //!
 //! This is the only place defense evidence is allowed to change the *real* plan,
 //! and only when explicitly enabled. It reuses the side-effect-free shadow layer
-//! to decide what to suppress, then applies those suppressions to the planner
+//! to decide what to suppress, then filters the already-authorized baseline
 //! through the distinct [`crate::planner::ExclusionReason::DefenseSuppressed`]
-//! path — never by selecting an action, never by raising utility, and never by
-//! reaching into any store.
+//! path — never by replanning, selecting an action, raising utility, or reaching
+//! into any store.
 //!
 //! Release discipline: [`DefensePlanningPolicy`] is off by default. While
 //! disabled, this returns the exact plan the planner would produce with no
 //! defense influence, byte for byte.
-
-use std::collections::BTreeSet;
 
 use venom_core::EntityId;
 
@@ -74,21 +72,11 @@ pub fn defense_aware_plan(
         return planner.plan_snapshot(snapshot, context);
     }
 
-    // Reuse the shadow layer so enforcement and explanation share one policy.
+    // Reuse the shadow layer so enforcement and explanation share one policy
+    // and one already-authorized baseline. Returning its filtered subsequence
+    // cannot admit an action that baseline budget excluded.
     let shadow = defense_aware_shadow_plan(planner, snapshot, subject, context, signal, classify)?;
-    let defense_suppressed: BTreeSet<String> = shadow
-        .delta()
-        .suppressed()
-        .iter()
-        .map(|action| action.action_id().to_owned())
-        .collect();
-
-    planner.plan_snapshot_with_defense_suppressed(
-        snapshot,
-        context,
-        &BTreeSet::new(),
-        &defense_suppressed,
-    )
+    Ok(shadow.shadow().clone())
 }
 
 #[cfg(test)]
@@ -268,6 +256,15 @@ mod tests {
         assert_eq!(
             plan_with(&snapshot, DefensePlanningPolicy::default(), &strong),
             baseline_plan(&snapshot)
+        );
+        assert_eq!(
+            serde_json::to_vec(&plan_with(
+                &snapshot,
+                DefensePlanningPolicy::default(),
+                &strong,
+            ))
+            .unwrap(),
+            serde_json::to_vec(&baseline_plan(&snapshot)).unwrap()
         );
     }
 

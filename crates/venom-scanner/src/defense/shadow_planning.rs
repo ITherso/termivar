@@ -1,9 +1,9 @@
 //! Side-effect-free, defense-aware shadow planning.
 //!
 //! This layer shows how the current plan *would* change under an observed
-//! defensive posture, without changing anything. It computes a second,
-//! read-only plan through the planner's pure [`AttackPlanner::plan_snapshot`]
-//! seam and an explainable delta against the current plan. It never issues a
+//! defensive posture, without changing anything. It filters one already
+//! authorized plan into a dependency-safe subsequence and computes an
+//! explainable delta against the current plan. It never issues a
 //! request, mutates the planner, runtime, knowledge, or experience state, or
 //! reorders the real plan.
 //!
@@ -138,6 +138,9 @@ pub fn render_explanation(code: &str) -> &'static str {
         },
         "defense.halt.suppress" => {
             "a standing block or challenge halts all network-producing actions"
+        },
+        "defense.dependency.suppress" => {
+            "an action was suppressed because a required prerequisite was removed"
         },
         _ => "no defensive adjustment",
     }
@@ -369,8 +372,8 @@ impl DefenseAwareShadowPlan {
 /// seam, issues no request, and mutates no planner, runtime, knowledge, or
 /// experience state. The signal applies only when it is scoped to `subject` and
 /// recommends more than `Proceed`; otherwise the shadow plan equals the current
-/// plan and the delta is empty. The shadow plan can only reorder or drop
-/// existing candidates — it never introduces a new action.
+/// plan and the delta is empty. The shadow plan is always an order-preserving,
+/// dependency-safe subsequence — it never replans or introduces a new action.
 pub fn defense_aware_shadow_plan(
     planner: &AttackPlanner,
     snapshot: &KnowledgeSnapshot,
@@ -380,6 +383,32 @@ pub fn defense_aware_shadow_plan(
     classify: impl Fn(&AttackAction) -> DefenseInteractionClass,
 ) -> Result<DefenseAwareShadowPlan, PlannerError> {
     let current = planner.plan_snapshot(snapshot, context)?;
+    if current.subject() != subject {
+        return Ok(DefenseAwareShadowPlan {
+            shadow: current.clone(),
+            current,
+            delta: ShadowPlanDelta::default(),
+        });
+    }
+
+    Ok(defense_aware_shadow_plan_from_current(
+        current, planner, signal, classify,
+    ))
+}
+
+/// Filters an already-authorized plan into its defense-aware shadow.
+///
+/// Keeping this seam separate is important for runtime composition: a host can
+/// pass the exact plan already recorded in its planning report rather than ask
+/// the planner to reproduce a decision from potentially different context.
+/// The returned shadow is therefore always a subsequence of `current`.
+pub(crate) fn defense_aware_shadow_plan_from_current(
+    current: AttackPlan,
+    planner: &AttackPlanner,
+    signal: &ResourceDefenseSignal,
+    classify: impl Fn(&AttackAction) -> DefenseInteractionClass,
+) -> DefenseAwareShadowPlan {
+    let subject = current.subject();
 
     let applies = signal.resource == *subject && signal.response != DefenseResponse::Proceed;
 
@@ -389,13 +418,7 @@ pub fn defense_aware_shadow_plan(
         let candidate_ids = current
             .steps()
             .iter()
-            .map(|step| step.action_id().to_owned())
-            .chain(
-                current
-                    .excluded()
-                    .iter()
-                    .map(|excluded| excluded.action_id().to_owned()),
-            );
+            .map(|step| step.action_id().to_owned());
         for action_id in candidate_ids {
             if let Some(action) = planner.action(&action_id) {
                 let class = classify(action);
@@ -407,29 +430,46 @@ pub fn defense_aware_shadow_plan(
         }
     }
 
-    let shadow = planner.plan_snapshot_with_suppressed(snapshot, context, &suppressed_ids)?;
-    let delta = build_delta(&current, &class_by_action, signal);
+    let shadow = current.clone().into_defense_filtered(&suppressed_ids);
+    let delta = build_delta(&current, &shadow, &class_by_action, signal);
 
-    Ok(DefenseAwareShadowPlan {
+    DefenseAwareShadowPlan {
         current,
         shadow,
         delta,
-    })
+    }
 }
 
 fn build_delta(
     current: &AttackPlan,
+    shadow: &AttackPlan,
     class_by_action: &BTreeMap<String, DefenseInteractionClass>,
     signal: &ResourceDefenseSignal,
 ) -> ShadowPlanDelta {
     let mut delta = ShadowPlanDelta::default();
+    let retained: BTreeSet<_> = shadow.steps().iter().map(|step| step.action_id()).collect();
     for step in current.steps() {
         let action_id = step.action_id();
         let Some(class) = class_by_action.get(action_id).copied() else {
             delta.unchanged.push(action_id.to_owned());
             continue;
         };
-        match decide(signal.response, class) {
+        let decision = decide(signal.response, class);
+        if !retained.contains(action_id) {
+            delta.suppressed.push(SuppressedAction {
+                action_id: action_id.to_owned(),
+                interaction_class: class,
+                recommendation: signal.response,
+                supporting_evidence_ids: signal.supporting_evidence_ids.clone(),
+                explanation_code: if decision == InteractionDecision::Suppress {
+                    explanation_code(signal.response, decision)
+                } else {
+                    "defense.dependency.suppress"
+                },
+            });
+            continue;
+        }
+        match decision {
             InteractionDecision::Allow => delta.unchanged.push(action_id.to_owned()),
             InteractionDecision::Deprioritize => delta.deprioritized.push(PlanAdjustment {
                 action_id: action_id.to_owned(),
@@ -862,5 +902,63 @@ mod tests {
                 shadow_step.action_id()
             );
         }
+    }
+
+    #[test]
+    fn shadow_from_current_never_refills_freed_budget() {
+        let knowledge = knowledge_with_hypothesis();
+        let snapshot = knowledge.snapshot_for_subject(&subject());
+        let mut planner = AttackPlanner::new();
+        planner.register(action("active.verify", 95)).unwrap();
+        planner.register(action("local.report", 90)).unwrap();
+        planner.register(action("passive.discovery", 80)).unwrap();
+        let constrained = PlanningContext::new(
+            BenefitScore::from_percent(90).unwrap(),
+            20,
+            RiskScore::from_percent(80).unwrap(),
+        );
+        let current = planner.plan_snapshot(&snapshot, constrained).unwrap();
+        assert_eq!(
+            current
+                .steps()
+                .iter()
+                .map(|step| step.action_id())
+                .collect::<Vec<_>>(),
+            ["active.verify", "local.report"]
+        );
+        assert!(current
+            .excluded()
+            .iter()
+            .any(|entry| entry.action_id() == "passive.discovery"));
+
+        let result = defense_aware_shadow_plan_from_current(
+            current.clone(),
+            &planner,
+            &signal(subject(), DefenseResponse::Backoff, &["e1"]),
+            |action| {
+                assert_ne!(
+                    action.id(),
+                    "passive.discovery",
+                    "baseline-excluded action reached the defense classifier"
+                );
+                classify(action)
+            },
+        );
+
+        assert_eq!(result.current(), &current);
+        assert_eq!(
+            result
+                .shadow()
+                .steps()
+                .iter()
+                .map(|step| step.action_id())
+                .collect::<Vec<_>>(),
+            ["local.report"]
+        );
+        assert!(!result
+            .shadow()
+            .steps()
+            .iter()
+            .any(|step| step.action_id() == "passive.discovery"));
     }
 }
