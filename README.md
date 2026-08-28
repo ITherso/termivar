@@ -35,7 +35,14 @@ flowchart LR
     Raw --> LegacyRecords
 ```
 
-The two paths are separate. The deterministic runtime currently emits operational decisions and outcomes, not Surface-B findings. `decision-scan` is a deprecated command alias for the same deterministic path; it is not a second engine. Scanner SDK and plugin APIs are optional library surfaces and are not silently inserted into `scan`.
+The two paths are separate. With no explicit profile, the deterministic runtime
+emits operational decisions and outcomes under the unchanged
+`decision-scan/v1` contract. The opt-in `web-review` profile adds a typed
+assessment-item projection, but its currently implemented passive items are
+informational observations rather than confirmed vulnerabilities.
+`decision-scan` is a deprecated command alias for the same deterministic path;
+it is not a second engine. Scanner SDK and plugin APIs are optional library
+surfaces and are not silently inserted into `scan`.
 
 ## Why Venom is different
 
@@ -61,7 +68,7 @@ Execution decisions are deterministic and model-independent. Venom does not requ
 | Verification | Passive and active stages, case-correlated evidence, verifier-owned transitions, and KnowledgeOnly objectives that cannot confirm a hypothesis |
 | Continuation | Multi-objective replanning, Experience-based suppression, bounded counters, and host-policy-checked adaptive authority |
 | Execution | Exact-origin, redirect-disabled transport actions through one metered request broker; a tested zero-I/O `LocalKnowledge` library contract |
-| Output | Concise text, `--explain`, and versioned machine-readable `decision-scan/v1` diagnostics |
+| Output | Unchanged no-profile text/`--explain`/`decision-scan/v1`; explicit profile audits; and bounded JSON, CSV, HTML, or Markdown assessment reports for completed `web-review` runs |
 
 The standard web profile currently has conservative, claim-specific behavior:
 
@@ -75,6 +82,36 @@ The standard web profile currently has conservative, claim-specific behavior:
 | Sanctum cookie surface | Records compatible cookie-name observations. The action is KnowledgeOnly and does not confirm Sanctum |
 
 `LaravelInputAnalysis` remains unsupported in the standard executor catalog. The standard CLI profile uses transport-bound actions; `LocalKnowledge` is available to library hosts but has no built-in production action today.
+
+### Explicit scan profiles
+
+Omitting `--profile` preserves the conservative single-resource command and
+the `decision-scan/v1` machine-output contract. Two strict built-in
+`venom.scan-profile/v1` profiles are available:
+
+```bash
+cargo run -p venom-cli --locked -- scan https://authorized.example.test --profile baseline
+cargo run -p venom-cli --locked -- scan https://authorized.example.test --profile web-review
+```
+
+`baseline` runs the same conservative single-resource decision primitive and
+uses the additive `web-assessment/v1` profile audit. `web-review` opts into a
+bounded exact-origin assessment: deterministic discovery, bounded semantic
+extraction, defense observation and shadow planning, and passive header/cookie
+review all share one runtime budget, request broker, cancellation authority,
+and exact-origin policy. Redirects remain disabled. Discovery does not turn a
+resource, form, or parameter name into a vulnerability claim and never follows
+a cross-origin reference.
+
+The passive review observes HSTS, CSP, X-Content-Type-Options,
+Referrer-Policy, Permissions-Policy, and cookie attributes without retaining
+cookie values. Its product items are `Informational` only. The native
+assessment runtime does not yet execute low-risk differential review and has
+no capability that can produce a `Confirmed` assessment item.
+The current stable item-identity authority projects only the exact origin root
+(`/`); a non-root starting target, or an eligible condition on a discovered
+non-root subject, becomes typed incompleteness rather than a URL-derived
+identity.
 
 ## Try the deterministic runtime
 
@@ -102,6 +139,26 @@ cargo run -p venom-cli --locked -- scan https://authorized.example.test --format
 `--explain` expands the text report. JSON already contains the full diagnostics and uses the documented, historically named [`decision-scan/v1`](docs/internals/decision-scan-json-v1.md) schema, so the two flags cannot be combined. The deprecated, discoverable `decision-scan` compatibility alias accepts the same options and produces identical stdout and stderr.
 
 The Preview profile enforces fixed request, wall-time, response-byte, request-body, active-verification, same-action, and no-progress limits. Redirects are disabled and every built-in request competes for the same runtime budget.
+
+Completed `web-review` runs use the central bounded assessment renderer and
+schema `venom-rendered-assessment/v1`. Without `--report-format`, text selects
+Markdown and `--format json` selects JSON. An explicit report format can select
+any supported encoding:
+
+```bash
+cargo run -p venom-cli --locked -- scan https://authorized.example.test \
+  --profile web-review --report-format csv
+cargo run -p venom-cli --locked -- scan https://authorized.example.test \
+  --profile web-review --report-format html --report-output assessment.html
+```
+
+`--report-output` requires `--report-format`, creates a new file atomically
+through a same-directory temporary file and hard link, and never overwrites an
+existing destination. The file contents are synchronized before publication,
+but directory-metadata crash durability is best effort; a filesystem without
+the required hard-link semantics fails nonzero. An incomplete or started-failed
+`web-review` run instead emits a redacted `web-assessment/v2` diagnostic audit
+to stdout, returns nonzero, and creates no requested report artifact.
 
 ### Legacy ordered scanner
 
@@ -154,6 +211,7 @@ See the [runtime map](docs/internals/runtime-map.md) for the exact module and co
 - A same-origin route is not authorization to request it; the host remains the authority boundary.
 - Missing evidence in a bounded or truncated sample is not evidence of absence.
 - Successful execution is not automatically confirmation, a finding, or a vulnerability claim.
+- An `AssessmentItem` observation can be `Informational`; a matched differential may justify `NeedsReview`; only a verifier-authorized, case-correlated transition under a confirming claim policy may be `Confirmed`.
 - A repeated SQL timing differential, exact text reflection, or template-arithmetic result still requires claim-specific review; none is an exploit or vulnerability verdict.
 - Delivering an OOB callback URL to the target is not evidence that the target made the callback. HTTP 200, 401, or 403 is only the probe response.
 - JSON/GraphQL fingerprints and paired visibility differences remain observations or review hypotheses unless a dedicated verifier says otherwise.
@@ -162,11 +220,11 @@ See the [runtime map](docs/internals/runtime-map.md) for the exact module and co
 
 | Surface | Status | Current boundary |
 | --- | --- | --- |
-| `venom scan` | Preview | Default bounded deterministic web decision runtime with text, explain, and JSON diagnostics |
+| `venom scan` | Preview | No-profile conservative single-resource runtime keeps text, explain, and `decision-scan/v1`; explicit `baseline` and exact-origin `web-review` are additive profile-v1 surfaces |
 | `venom decision-scan` | Deprecated alias | Compatibility name for the same deterministic command and engine; the wire schema remains `decision-scan/v1` |
 | `venom legacy-scan` | Legacy alpha, opt-in | Historical mixed-authority pipeline: phases 2–4 share bounded passive discovery, phases 5–9 share separate bounded active verification, and phase-one/custom raw I/O keeps the whole run `Unmetered`; requires `legacy-scanner` and explicit acknowledgement |
 | Scanner SDK / native plugins | Preview, opt-in | Source-level host extensions; plugins receive a host-owned bounded context and record observations, not findings. No stock detector plugins ship, and plugins are not merged into the default runtime |
-| Run-report renderer | Preview, opt-in | Source-level `reporting` library API renders an existing typed `RunReport` under a hard output ceiling; the host must pre-redact projected fields, and the renderer has no repository CLI caller, I/O, persistence, finding/risk synthesis, redaction, or verdict authority |
+| Run-report renderer | Preview, opt-in | Standalone `reporting` renders a host-pre-redacted `RunReport`; `scanning + reporting` also composes completed runtime-owned web-review truth into typed assessment reports, and the CLI uses that central renderer for completed web-review output. The renderer performs no I/O, persistence, risk synthesis, or verdict invention |
 | Lua execution | Experimental, opt-in | Implemented bounded, cooperative in-process Lua 5.4 registry/executor for explicit library hosts; no standard libraries, process isolation, plugin bridge, scanner phase, or repository CLI caller |
 | Distributed coordination | Experimental, opt-in | Implemented deterministic, bounded in-process task/worker/result state machines for explicit library hosts; no transport, authentication, serialization, persistence, ambient clock, background work, or multi-node control plane |
 | `venom api` | Unsupported, opt-in | Absent from default builds; the `api-adapter` feature reports that no listener is implemented |
@@ -179,11 +237,13 @@ host-owned, compile-only, or experimental depending on the feature. None runs
 in the default deterministic path or `legacy-scan`. The [runtime
 map](docs/internals/runtime-map.md) is the source of truth.
 
-The scanner default is exactly `core` plus `scanning`. Historical phases,
-platform data models, bounded run-report renderers, native plugins, Lua, and distributed
-workers require the independent `legacy-scanner`, `platform-models`,
-`reporting`, `plugins`, `lua`, and `distributed` features. The CLI's unsupported
-API hook and experimental relay require `api-adapter` and `proxy-adapter`.
+The scanner crate's default feature closure is exactly `core` plus `scanning`.
+Historical phases, platform data models, native plugins, Lua, and distributed
+workers require the independent `legacy-scanner`, `platform-models`, `plugins`,
+`lua`, and `distributed` features. The default CLI dependency additionally
+enables `reporting` so a completed explicit `web-review` run reaches the same
+bounded renderer used by library hosts. The CLI's unsupported API hook and
+experimental relay require `api-adapter` and `proxy-adapter`.
 
 ## Quality and robustness
 
@@ -222,7 +282,7 @@ templates/    Scanner SDK and plugin starter templates
 xtask/        Repository validation, docs, release, benchmark, and generator tasks
 examples/     Small public-API examples compiled in CI
 web/          Disconnected dashboard preview; not a scan-runtime component
-profiles/     Experimental configuration samples; not wired to CLI scan commands
+profiles/     Executable built-in profile contract notes; no custom profile-file loader
 ```
 
 The root `Cargo.toml` is a virtual workspace manifest. Runtime ownership and feature participation are documented in [Architecture](docs/architecture.md) and the [runtime map](docs/internals/runtime-map.md).

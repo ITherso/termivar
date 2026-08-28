@@ -14,11 +14,12 @@ participate in another.
 
 ## Default deterministic scan runtime (Surface B)
 
-`venom scan <target>` is the canonical CLI path. It composes
-`StandardWebDecisionRuntime` with a fixed conservative profile and routes every
-built-in request through the runtime-owned, redirect-disabled, metered broker.
-`venom decision-scan` is a deprecated Clap alias for the same command variant and
-implementation; it is not a second engine.
+`venom scan <target>` is the canonical CLI path. With no explicit profile, it
+composes `StandardWebDecisionRuntime` with the unchanged conservative
+single-resource policy and routes every built-in request through its
+runtime-owned, redirect-disabled, metered broker. `venom decision-scan` is a
+deprecated Clap alias for the same command variant and implementation; it is
+not a second engine.
 
 ```text
 venom scan <target>  (or deprecated decision-scan alias)
@@ -30,21 +31,78 @@ venom scan <target>  (or deprecated decision-scan alias)
           -> Executor registry and metered broker
           -> Passive / active verification
           -> Experience and bounded continuation
+
+venom scan <target> --profile baseline
+  -> the same StandardWebDecisionRuntime primitive
+  -> additive web-assessment/v1 profile audit
+
+venom scan <target> --profile web-review
+  -> WebAssessmentRuntime
+      -> one RuntimeBudget / request broker / cancellation / exact-origin policy
+      -> stable bounded discovery
+      -> StandardWebDecisionRuntime subject work under that shared authority
+      -> bounded semantic extraction
+      -> defense observation and shadow planning
+      -> passive header/cookie assessment projection
+      -> central bounded assessment renderer on complete execution
 ```
 
-The CLI profile permits at most 16 total dispatches, 60 seconds of wall time, a
+The no-profile and explicit `baseline` single-resource policy permits at most 16 total dispatches, 60 seconds of wall time, a
 1 MiB cumulative delivered response-body threshold, a per-probe buffered-body
 limit of 256 KiB inherited from `HttpEvidencePolicy`, and an 8,192-character text
 sample. It uses planning budget 100, risk limit 40, and at most eight semantic
-action cycles. API reasoning, payload binding, semantic extraction, and defense
-composition remain absent unless a library host explicitly opts into their
-separate APIs.
+action cycles. API reasoning and payload binding remain absent unless a library
+host explicitly opts into their separate APIs.
 
-Text summary, `--explain`, and `--format json` are renderings of the same typed
-runtime report. The JSON contract keeps its historical
+The strict `venom.scan-profile/v1` schema exposes exactly `baseline` and
+`web-review`. Custom profile files, raw transport settings, arbitrary origins,
+unbounded concurrency, and deep-merge/override semantics are not supported.
+`web-review` applies compiled absolute ceilings and checked profile limits for
+subjects, discovery depth, references per document, URL retention, forms,
+controls, query-parameter names, total requests, body bytes, wall time, and
+active verification count. Every limit fails closed.
+
+Origin discovery is deterministic and bounded. It canonicalizes eligible
+absolute, root-relative, relative, and form-action references, removes
+fragments and duplicate representations, follows only safe GET/HEAD candidates,
+and never silently crosses the authorized exact origin. Forms retain action,
+method, and control names only—not values, credentials, CSRF values, or cookie
+contents. Discovered subjects and semantic entities are typed knowledge with
+provenance, not vulnerability findings.
+
+Committed response evidence is projected into bounded semantic entities and
+defense observations. Defense shadow planning is audit-only. Enforcement is
+off by default; explicit `--enforce-defense` can only narrow or suppress
+already-authorized actions and cannot add actions, increase intensity, or
+expand scope/budget.
+
+Passive `web-review` observes HSTS, CSP, X-Content-Type-Options,
+Referrer-Policy, Permissions-Policy, and value-free cookie metadata. Its native
+assessment items are `Informational` only. The profile capability manifest
+keeps low-risk differential review disabled, and no native assessment
+capability currently produces a `Confirmed` item.
+
+The stable item-identity authority currently registers only the exact origin
+root (`/`). A non-root starting target, or an eligible condition on a discovered
+non-root subject, records typed incompleteness rather than deriving a stable
+fingerprint from URL/path/BFS identity. Such a run cannot be composed as a
+completed assessment report.
+
+On the no-profile compatibility path, text summary, `--explain`, and
+`--format json` are renderings of the same typed runtime report. The JSON contract keeps its historical
 [`decision-scan/v1`](decision-scan-json-v1.md) name; the command rename does not
 reinterpret or fork that wire contract. Runtime outcomes are operational
 decisions and verifier results, not Surface-B findings or vulnerability verdicts.
+
+Explicit `baseline` uses `web-assessment/v1`. A completed `web-review` uses the
+central renderer's `venom-rendered-assessment/v1` schema in JSON, CSV, HTML, or
+Markdown; absent `--report-format`, text maps to Markdown and `--format json`
+maps to JSON. Incomplete or started-failed origin work emits a redacted
+`web-assessment/v2` diagnostic audit to stdout, marks assessment items
+unavailable, exits nonzero, and creates no report artifact. `--report-output`
+uses exclusive same-directory temporary creation plus hard-link publication,
+never overwrites, and fails nonzero where those filesystem semantics are not
+available; directory-metadata crash durability is best effort.
 
 The deterministic modules are compiled through the scanner crate's default
 `core` + `scanning` features: `web_runtime`, `web_decision`, `web_reasoning`,
@@ -52,15 +110,15 @@ The deterministic modules are compiled through the scanner crate's default
 `decision_runner`, `runtime_budget`, `http_evidence`, `planner`, `rules`,
 `knowledge`, `experience`, `verification`, and `adaptive`.
 
-Among the implemented-and-tested host-owned APIs, these four
-decision/runtime-adjacent surfaces are not automatically composed into the
-default runtime:
+Composition is selection-specific:
 
 - **Semantic extraction** (`semantic`) consumes evidence through a bounded
-  library API; `venom scan` does not call it.
+  library API. It remains absent from no-profile and `baseline`, but explicit
+  `web-review` composes it only after evidence has been committed.
 - **Defense projection / shadow / enforcement** (`defense`) is an explicit
-  library API. `StandardWebDecisionRuntime` does not compose it, and no
-  production runtime caller exists in the repository.
+  library API. `StandardWebDecisionRuntime` alone does not compose it;
+  `WebAssessmentRuntime` records observation/shadow planning, with enforcement
+  separately opt-in and monotonic.
 - **Lua execution** (`lua`, opt-in) is a bounded registry and fresh-VM executor
   for an explicit library host. It uses cooperative in-process controls, not
   process isolation, with no
@@ -196,13 +254,13 @@ The following matrix separates build availability from actual execution:
 
 | Module / group | Build availability | Execution participation | Default `venom scan` | Support status |
 | --- | --- | --- | --- | --- |
-| Deterministic stack (`web_runtime`, `decision_runner`, `runtime_budget`, `http_evidence`, `planner`, `rules`, `knowledge`, `experience`, `verification`, `adaptive`, `web_*`, `api_evidence`, `api_observation`, `api_reasoning`) | scanner default (`core`, `scanning`) | Surface B (composed, except opt-in API reasoning) | yes | implemented and tested Preview |
-| `semantic` | scanner default | library / test only, host-owned | no | implemented and tested Preview |
-| `defense` | scanner default | library / test only, host-owned | no | implemented and tested; not composed into `StandardWebDecisionRuntime` |
+| Deterministic stack (`web_runtime`, `decision_runner`, `runtime_budget`, `http_evidence`, `planner`, `rules`, `knowledge`, `experience`, `verification`, `adaptive`, `web_*`, `api_evidence`, `api_observation`, `api_reasoning`) | scanner default (`core`, `scanning`) | Surface B; no-profile/`baseline` use the single-resource primitive, explicit `web-review` adds the origin orchestrator; API reasoning remains host opt-in | yes, profile-dependent | implemented and tested Preview |
+| `semantic` | scanner default | host library and explicit `web-review` post-commit composition | `web-review` only | implemented and tested Preview |
+| `defense` | scanner default | host library and explicit `web-review` observation/shadow; enforcement requires `--enforce-defense` | `web-review` only | implemented and tested Preview; cannot add or intensify actions |
 | `phases/*`, `legacy_discovery`, `runner`, `context`, `sdk` | opt-in (`legacy-scanner`) | Surface A; phases 2–4 use bounded passive discovery, phases 5–9 use separate bounded active verification, and phase-one/custom raw I/O remains possible | no | historical alpha runtime / SDK; whole-run accounting remains `Unmetered` |
 | `advanced_detection`, `anomaly` | opt-in (`detection`) | no repository product caller; validated/catalogued caller records plus text matching only | no | Experimental; no deviation computation, response classification, or finding production |
 | `api`, `api_gateway`, `auth`, `cache`, `config`, `config_loader`, `metrics`, `post_exploitation`, `persistence`, `realtime`, `dashboard` | opt-in (`platform-models`) | no repository product caller | no | Experimental records, catalogs, and in-memory utilities; no API/auth/persistence/realtime execution path, and caller-owned collections are not uniformly capacity-bounded |
-| `reporting` | opt-in (`reporting`) | source-level host library only; consumes typed `RunReport` with caller-pre-redacted projected text fields | no | Preview bounded renderer; performs encoding but no redaction, I/O, persistence, finding/risk synthesis, verdict authority, or repository caller; see the [reporting guide](../reporting.md) |
+| `reporting` | opt-in at scanner boundary; enabled by normal CLI dependency | standalone host `RunReport` rendering and, with `scanning`, typed completed-assessment composition/rendering | completed explicit `web-review` only | Preview bounded renderer; no I/O, persistence, risk synthesis, or verdict invention; see the [reporting guide](../reporting.md) |
 | `ml` | opt-in (`ml`) | external-model records only; no repository computation or execution | no | Experimental data-model scaffold |
 | `distributed` | opt-in (`distributed`) | explicit host-owned process-local coordinator/result APIs; no repository product/runtime caller | no | implemented and tested Experimental; bounded ordered state, explicit logical time/revisions, leases, retry/recovery, and fixed-command-order determinism; no transport, authentication, serialization, persistence, background work, exactly-once, or multi-node service |
 | `monitoring` | opt-in (`monitoring`) | no default path | no | Experimental / scaffold |
@@ -214,7 +272,10 @@ The following matrix separates build availability from actual execution:
 | `venom-proxy` / `venom proxy` | CLI opt-in (`proxy-adapter`) | explicit adapter | no | Experimental fixed-upstream TCP relay |
 | Deployment (Compose / Helm / Terraform / Kubernetes) | absent | none | no | unsupported; see the [deployment blueprint](../experimental/deployment-blueprint.md) |
 
-The default scanner feature closure is exactly `core` plus `scanning`.
+The default scanner crate feature closure is exactly `core` plus `scanning`.
+The normal CLI dependency additionally enables `reporting` for the explicit
+completed `web-review` path; this does not alter no-profile execution or its
+wire contract.
 `LuaEngineConfig` is a small shared support type reachable through either
 `platform-models` or `lua`; the broader `config` module remains platform-only.
 The raw `lua` closure is exactly `core`, optional `mlua`, and optional Tokio;

@@ -21,7 +21,9 @@ A compiled module is not necessarily a runtime feature. The [runtime map](docs/i
 | --- | --- | --- |
 | Core contracts | Beta | Default `venom-core` exposes transport-neutral evidence, reasoning, ontology, outcome, predicate, and run-report records; its pre-quarantine config, error, event, finding, HTTP, vulnerability, and result facade requires non-default `legacy-contracts` |
 | Deterministic decision runtime | Preview | Bounded typed evidence, reasoning, planning, execution, verification, Experience, and continuation in `venom-scanner` |
-| `venom scan` | Preview | Default bounded CLI profile over `StandardWebDecisionRuntime`; text, explain, and historically named `decision-scan/v1` JSON output |
+| `venom scan` | Preview | With no profile, the conservative single-resource command and historically named `decision-scan/v1` JSON remain unchanged. Explicit `baseline` and `web-review` select strict `venom.scan-profile/v1` contracts without creating a second engine |
+| Origin assessment runtime | Preview | Explicit `web-review` only: deterministic bounded exact-origin discovery, semantic extraction, defense observation/shadow planning, and passive review share one request/budget/cancellation/scope authority; redirects remain disabled and discovery never silently crosses origin |
+| Typed assessment items | Preview | Product projection distinguishes `Informational`, `NeedsReview`, and verifier-authorized `Confirmed`. Native passive review emits only `Informational`; stable item identity is root-only, so non-root conditions become typed incompleteness. No native assessment capability currently produces `NeedsReview` or `Confirmed` |
 | `venom decision-scan` | Deprecated | Compatibility alias for `venom scan`; identical command definition and deterministic engine |
 | `venom legacy-scan` | Legacy | Historical mixed-authority pipeline: phases 2–4 share bounded passive discovery and phases 5–9 share a separate bounded active-verification broker; phase one and custom phases may retain direct I/O, so the whole run is `Unmetered`; requires `legacy-scanner` plus explicit acknowledgement |
 | Scanner SDK | Preview | Application-defined phases composed through `ScannerSdk` and a generated starter |
@@ -36,14 +38,15 @@ A compiled module is not necessarily a runtime feature. The [runtime map](docs/i
 | Plugin starter | Preview | INFO-only trait-boundary fixture under `templates/venom-plugin`, rendered and tested in CI; it makes no security claim |
 | Bounded Lua execution | Experimental | Independent opt-in `lua` host-library API: approved-root source snapshots execute in fresh no-standard-library Lua 5.4 VMs under per-execution/registry limits; cooperative in-process controls are not process isolation, and no repository CLI, scanner, or plugin caller exists |
 | Platform models | Experimental | Opt-in `platform-models` records, catalogs, and in-memory utilities; no API/auth/persistence/realtime execution path, and callers own collection capacity except where a type states a limit |
-| Bounded run-report rendering | Preview | Opt-in `reporting` host-library API transforms typed `RunReport` values under a hard output ceiling; callers pre-redact projected fields, and the renderer has no repository/default CLI caller, I/O, persistence, redaction, risk/finding synthesis, or verdict authority |
+| Bounded report rendering | Preview | Standalone `reporting` still transforms host-pre-redacted typed `RunReport` values. With `scanning + reporting`, completed runtime-owned web-review truth is composed into typed assessment reports; the CLI uses the central renderer for JSON, CSV, HTML, and Markdown. Rendering has no I/O, persistence, risk synthesis, or verdict invention |
 | Legacy discovery phases | Legacy | Crawler, opt-in directory discovery, and parameter discovery share exact-origin redirect-disabled request/time/body limits and atomic typed state; their `INFO` records project as `Unknown`, not findings |
 | Legacy verification phases | Legacy | Phases 5–9 share separate exact-origin, bodyless, redirect- and retry-disabled request/time/body limits accounted at the `Active` stage; this authority is not the standard runtime's `RuntimeBudget` |
 | Legacy verification claims | Legacy | Reproduced SQL diagnostics/timing, template arithmetic, and an explicitly configured benign local-file canary may project only knowledge-only `NeedsReview`; exact reflection remains `Unknown`, XXE is inert, and configured SSRF OOB delivery records a receipt without a callback conclusion |
 | Legacy raw client | Legacy | Reconnaissance and host-defined custom phases may use direct I/O; this prevents whole-run request/body accounting even though built-in phases 2–9 use bounded authorities |
 | Detection and deviation records | Experimental | Caller-supplied signal definitions, technique scores, and normalized deviation dimensions are validated or catalogued only; Venom does not calculate or classify them |
 | External-model records | Experimental | Opt-in `ml` serializable records only; no training, clustering, classification, success estimation, or stage execution |
-| Semantic extraction | Preview | Evidence-only, bounded library surface; not automatically composed into either CLI scan command |
+| Semantic extraction | Preview | Evidence-only, bounded library surface; composed after committed evidence only by explicit `web-review`, while the no-profile and `baseline` paths remain unchanged |
+| Defense composition | Preview | Explicit `web-review` records observation and shadow planning. Enforcement is default off and can only suppress/narrow existing work when explicitly selected; it cannot add actions, raise intensity, or expand scope/budget |
 | API predicate vocabulary | Preview | Canonical descriptors, normalized media/path observations, and resource-scope bundles in `venom-core` |
 | JSON/GraphQL reasoning | Preview | Opt-in deterministic fingerprinting; paired differences remain review hypotheses, not vulnerability verification |
 | API visibility evidence | Preview | Bounded raw-value-free comparison and atomic ingestion; hosts remain responsible for authorization and pair construction |
@@ -57,7 +60,7 @@ A compiled module is not necessarily a runtime feature. The [runtime map](docs/i
 | Dashboard | Experimental | Disconnected web preview; not a scan-runtime component |
 | Compliance | Experimental | Optional caller-supplied catalogs and reports; not a certification or audit result |
 | Threat intelligence | Experimental | Optional feed/rule records and catalogs; no repository correlation or alert execution path |
-| Scanning profile files | Experimental | Illustrative configuration samples; no CLI loader or active scan integration |
+| Scan profile contract | Preview | Exactly two named built-ins, `baseline` and `web-review`, are CLI-wired under strict `venom.scan-profile/v1`. Custom profile files and merge/override semantics are not implemented; historical aspirational profile samples are removed |
 
 ## Quality evidence
 

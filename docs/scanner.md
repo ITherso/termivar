@@ -4,7 +4,45 @@
 
 ## Default deterministic runtime
 
-Default builds expose `venom scan`, which composes `StandardWebDecisionRuntime` with a fixed bounded profile. Its network actions use the runtime's redirect-disabled metered broker, and its output consists of operational decisions and verifier outcomes rather than findings.
+Default builds expose one `venom scan` product with three deliberately distinct
+selection states:
+
+- With no `--profile`, `StandardWebDecisionRuntime` keeps the conservative
+  single-resource behavior, text/`--explain` output, and the existing
+  `decision-scan/v1` JSON contract.
+- `--profile baseline` explicitly selects the strict
+  `venom.scan-profile/v1` single-resource contract and emits the additive
+  `web-assessment/v1` profile audit.
+- `--profile web-review` composes the same single-resource primitive inside a
+  bounded exact-origin assessment. Deterministic discovery, semantic
+  extraction, defense observation/shadow planning, and passive header/cookie
+  review share one runtime-owned `RuntimeBudget`, request-accounting broker,
+  cancellation authority, and exact-origin policy. Redirects remain disabled.
+
+The exact-origin runtime uses stable bounded discovery and retains canonical
+subjects, form actions/methods, form-control names, candidate query-parameter
+names, and typed provenance. It does not retain form values or cookie values,
+and a discovered resource is knowledge rather than a vulnerability result.
+Cross-origin references are rejected rather than becoming new authority.
+
+Passive review observes HSTS, CSP, X-Content-Type-Options, Referrer-Policy,
+Permissions-Policy, and value-free cookie metadata. These capabilities project
+only `Informational` `AssessmentItem` values. The product claim ladder permits
+an observation to become `Informational`, a matched differential to become
+`NeedsReview`, and only a verifier-authorized, case-correlated transition under
+a confirming claim policy to become `Confirmed`. The current native assessment
+runtime has no low-risk differential capability enabled and no capability that
+can produce a `Confirmed` item.
+
+Stable item identity is currently limited to the exact origin root (`/`). A
+non-root starting target, or an eligible condition on a discovered non-root
+subject, becomes typed incompleteness rather than a URL-derived fingerprint.
+
+Defense enforcement remains off unless `--enforce-defense` is supplied with
+`web-review`. Observation and shadow planning are always non-authoritative;
+enabled enforcement can only narrow or suppress existing authorized work. It
+cannot add an action, expand exact-origin authority or budgets, or increase
+intensity.
 
 ## Historical ordered pipeline
 
@@ -79,14 +117,20 @@ pub trait ScanPhase: Send + Sync {
 ## Reporting host contract
 
 The independent `reporting` feature exposes a bounded, deterministic renderer
-for an already constructed `RunReport`. It enables only `core`, performs no I/O,
-and has no repository or default CLI caller. It preserves typed run status,
-stop classification code, accounting, and steps, and emits a privacy-minimized
-outcome projection without serializing fingerprints/private provenance or
-calculating risk, severity, findings, or vulnerability verdicts. Format
-encoding is not redaction: a host must
+for an already constructed `RunReport`. In its standalone `reporting` feature
+closure it still enables only `core`, performs no I/O, and requires the host to
 pre-redact `target`, `authorized_origin`, step/outcome `action_id`, and outcome
-`redacted_summary` values. See [Bounded run-report rendering](reporting.md) and [ADR
+`redacted_summary` values.
+
+When both `scanning` and `reporting` are enabled, the same `ReportGenerator`
+also consumes a completed runtime-owned `WebAssessmentRunReport` plus its
+validated profile, internally mints the generic run envelope, and renders a
+typed `AssessmentRunReport`. The default CLI enables this combination and uses
+it for completed `web-review` JSON, CSV, HTML, and Markdown output under the
+same 16 MiB ceiling. Assessment summaries and opaque references are already
+redacted before they reach the renderer. The renderer does not create items,
+upgrade dispositions, synthesize severity/risk, persist files, or acquire
+verdict authority. See [Bounded report rendering](reporting.md) and [ADR
 0021](adr/0021-render-bounded-run-reports.md).
 
 ## Experimental host execution contracts
@@ -114,7 +158,7 @@ multi-node contract. See [Distributed coordination](distributed.md).
 | `scanning` | Deterministic evidence, reasoning, planning, execution, verification, and bounded runtime | Preview |
 | `legacy-scanner` | Historical ordered runner, context, phases, and Scanner SDK; separate bounded discovery and active-verification slices within an otherwise unmetered run | Legacy |
 | `platform-models` | Unwired API/auth/dashboard/persistence/post-exploitation/realtime library models | Experimental |
-| `reporting` | Bounded host-library renderer for typed `RunReport`; caller-owned pre-redaction, no I/O, persistence, CLI caller, or verdict generation | Preview |
+| `reporting` | Bounded generic `RunReport` renderer; with `scanning`, also the central typed assessment renderer used by completed CLI `web-review` runs. No renderer-owned I/O, persistence, or verdict generation | Preview |
 | `detection` | Signal-definition validation, caller-scored technique catalogs, neutral deviation records, and text matching; no scoring or classification | Experimental |
 | `plugins` | Evidence-only native plugin registry; no stock detector plugins | Preview |
 | `lua` | Implemented bounded host-library Lua execution; cooperative in-process controls, no process isolation or repository product/runtime caller | Experimental |
@@ -126,13 +170,16 @@ multi-node contract. See [Distributed coordination](distributed.md).
 | `full` / `research` | Historical all-opt-in compatibility aggregates; not supported product tiers | Experimental |
 | `enterprise` | Historical aggregate excluding `threat-intel`; not an enterprise package | Experimental |
 
-Default builds enable exactly `core` and `scanning`. Detection, the historical
-runner, platform models, the bounded report renderer, host execution surfaces,
-and the other feature-flagged modules listed above require explicit opt-in. CI
-compiles these feature groups independently, and the architecture gate binds
-their private module declarations, exact root facades, dependency closures,
-and authority constraints to the expected Cargo features. See the [runtime
-map](internals/runtime-map.md).
+The scanner crate's default build enables exactly `core` and `scanning`.
+Detection, the historical runner, platform models, the bounded report renderer,
+host execution surfaces, and the other feature-flagged modules listed above
+require explicit opt-in at that crate boundary. The CLI's normal dependency
+selects `scanning + reporting` so an explicit completed `web-review` can use the
+central assessment renderer; omitting `--profile` still preserves the old
+runtime and wire behavior. CI compiles these feature groups independently, and
+the architecture gate binds their private module declarations, exact root
+facades, dependency closures, and authority constraints to the expected Cargo
+features. See the [runtime map](internals/runtime-map.md).
 
 ## Adding a phase
 

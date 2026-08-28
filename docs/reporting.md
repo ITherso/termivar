@@ -1,36 +1,37 @@
-# Bounded run-report rendering
+# Bounded report rendering
 
-The opt-in `reporting` feature is a Preview source-level library contract for
-turning an existing typed `RunReport` into a bounded document. It is not a
-scanner, verifier, finding generator, persistence layer, or default CLI output
-path.
+The opt-in `reporting` feature is a Preview source-level contract with two
+related inputs. It retains the standalone renderer for a host-owned typed
+`RunReport`, and—when `scanning` is also enabled—adds the central typed
+assessment composition and rendering path used by completed CLI `web-review`
+runs. Neither path is a scanner, persistence layer, or independent verdict
+authority.
 
 ## Runtime scope
 
-| Property | Contract |
-| --- | --- |
-| Build | Explicit `venom-scanner` feature `reporting` |
-| Input | Immutable, constructor-validated `RunReport` |
-| Output | `Result<String, ReportError>` selected by `ReportFormat` |
-| Bound | At most `MAX_RENDERED_REPORT_BYTES` (16 MiB) on success |
-| Schema | `REPORT_DOCUMENT_SCHEMA` is `venom-rendered-run/v1` |
-| Repository caller | None |
-| Default `venom scan` | Unchanged; does not call this module |
-| Storage or delivery | Host-owned and outside this contract |
-| Verdict authority | None; the renderer preserves typed report claims |
-| Redaction | None; the host must supply pre-redacted projected fields |
+| Surface | Input | Schema | Caller and redaction boundary |
+| --- | --- | --- | --- |
+| Generic run report | Immutable, constructor-validated `RunReport` | `venom-rendered-run/v1` | Standalone library hosts call `ReportGenerator::generate`; they must pre-redact every projected free-text field |
+| Typed assessment report | Completed runtime-owned `WebAssessmentRunReport` plus the exact validated `ScanProfileV1`, composed into `AssessmentRunReport` | `venom-rendered-assessment/v1` | `scanning + reporting` library hosts and the CLI call the central composition/renderer; assessment summaries and references are already redacted before rendering |
 
-Enable the feature for a library host:
+Both paths return `Result<String, ReportError>`, support the same
+`ReportFormat` values, and enforce `MAX_RENDERED_REPORT_BYTES` (16 MiB). A
+rendering failure returns no partial document. Rendering itself performs no
+filesystem or network I/O and does not persist output.
+
+The no-profile CLI path never calls the assessment composer and its
+[`decision-scan/v1`](internals/decision-scan-json-v1.md) contract remains
+unchanged. The explicit `baseline` profile likewise does not use the typed
+assessment renderer.
+
+## Standalone generic API
+
+Enable only `reporting` for a host that already owns a `RunReport`:
 
 ```toml
 [dependencies]
 venom-scanner = { path = "/path/to/reviewed/venom/crates/venom-scanner", default-features = false, features = ["reporting"] }
 ```
-
-No published package currently represents this remediated source contract.
-Pin and review the source checkout used by the path dependency.
-
-Then render a report the host already owns:
 
 ```rust,ignore
 use venom_scanner::{ReportFormat, ReportGenerator, RunReport};
@@ -40,15 +41,96 @@ fn render(report: &RunReport) -> Result<String, venom_scanner::ReportError> {
 }
 ```
 
-The same input and format produce the same document. Rendering performs no
-filesystem or network I/O and does not observe wall-clock time, randomness, or
-environment state. It performs format-specific encoding, not redaction: it
-copies `target`, `authorized_origin`, and each outcome's `redacted_summary`.
-It also copies step and outcome `action_id` strings. The caller must pre-redact
-all of those fields and decides whether and where to persist a successful
-result.
+The same input and format produce the same document. Format encoding is not
+redaction: this generic path copies `target`, `authorized_origin`, step/outcome
+`action_id`, and outcome `redacted_summary`. The library host must pre-redact
+those fields and decides whether and where to persist the returned string.
 
-Format negotiation is stable and available through
+## Typed assessment API
+
+With both `scanning` and `reporting`, a host can compose only completed,
+runtime-owned assessment truth:
+
+```toml
+[dependencies]
+venom-scanner = { path = "/path/to/reviewed/venom/crates/venom-scanner", default-features = false, features = ["scanning", "reporting"] }
+```
+
+```rust,ignore
+use venom_scanner::{ReportFormat, ReportGenerator};
+use venom_scanner::web_runtime::{ScanProfileV1, WebAssessmentRunReport};
+
+fn render_assessment(
+    runtime_report: WebAssessmentRunReport,
+    profile: ScanProfileV1,
+) -> Result<String, Box<dyn std::error::Error>> {
+    let report = ReportGenerator::compose_assessment(runtime_report, profile)?;
+    Ok(ReportGenerator::generate_assessment(
+        &report,
+        ReportFormat::Json,
+    )?)
+}
+```
+
+Composition validates that the assessment completed, that its limits and
+defense mode match the selected `web-review` profile, and that accounting and
+opaque item references belong to the same runtime truth. The generic run
+envelope is minted internally from runtime-owned clock and accounting data;
+the caller cannot substitute a generic `RunReport` as assessment authority.
+
+The typed renderer keeps `Informational`, `NeedsReview`, and `Confirmed`
+visibly distinct in every format. It preserves each item's claim basis and,
+when present, its complete opaque verifier/case/outcome linkage. Incomplete or
+cross-context linkage fails closed. It does not promote an item, infer a claim
+from action success, synthesize CVSS/risk, or accept legacy `ScanFinding`
+records. The currently implemented native passive header/cookie capabilities
+emit only `Informational`; no native assessment capability currently produces
+`Confirmed`.
+
+Stable item identity is currently limited to the exact origin root (`/`). A
+non-root starting target, or an eligible condition on a discovered non-root
+subject, becomes typed incompleteness and cannot enter this completed-report
+path.
+
+## CLI assessment output
+
+Completed `--profile web-review` runs always use the typed assessment renderer:
+
+```bash
+# Default text selection maps to Markdown.
+venom scan <AUTHORIZED_TARGET> --profile web-review
+
+# Existing --format json maps to the additive assessment JSON schema only
+# because web-review was explicitly selected.
+venom scan <AUTHORIZED_TARGET> --profile web-review --format json
+
+# Select any central renderer explicitly.
+venom scan <AUTHORIZED_TARGET> --profile web-review --report-format csv
+venom scan <AUTHORIZED_TARGET> --profile web-review \
+  --report-format html --report-output assessment.html
+```
+
+`--report-format` accepts `json`, `csv`, `html`, or `markdown` and requires
+`--profile web-review`. `--report-output` additionally requires an explicit
+`--report-format`. A completed file-output run writes no report document to
+stdout.
+
+The CLI creates a same-directory temporary file with exclusive creation,
+writes and synchronizes the complete rendered bytes, then publishes the new
+destination with a hard link. It never overwrites an existing destination and
+cleans up its temporary file on failure. Directory-metadata crash durability is
+best effort, and filesystems without the required same-directory hard-link
+semantics fail nonzero rather than reporting publication success.
+
+An incomplete or started-failed `web-review` assessment is not a partial typed
+report. It emits the redacted `web-assessment/v2` diagnostic audit to stdout,
+marks assessment items unavailable, returns nonzero, and creates no requested
+report artifact. A failure before runtime execution starts also returns nonzero
+without creating an artifact.
+
+## Formats and bounds
+
+Format negotiation is available through
 `ReportGenerator::available_formats()`:
 
 | Variant | Token | Media type | Extension |
@@ -60,35 +142,14 @@ Format negotiation is stable and available through
 
 `ReportFormat::as_str`, `media_type`, and `extension` expose those values. A
 render can fail with `ReportError::Serialization` or
-`ReportError::OutputLimitExceeded`; neither error returns a partial document.
+`ReportError::OutputLimitExceeded`; neither error returns a truncated document.
 
-Format safety is part of the v1 document contract. JSON represents accounting
-`limit`, `consumed`, and `remaining` values plus step `duration_ms` as decimal
-strings so the full `u64` range is portable; control and bidirectional-control
-characters use JSON escapes that parse to the original scalar values. CSV
-quotes every cell, neutralizes spreadsheet-formula prefixes, and uses
-reversible visible escapes for controls and backslashes. HTML and Markdown use
-context-specific encoding for every projected text value.
+JSON preserves full-width integer fields as decimal strings where the v1
+schema requires portability and escapes controls and bidirectional controls.
+CSV quotes every cell, neutralizes spreadsheet-formula prefixes, and uses
+visible reversible escapes. HTML and Markdown apply context-specific encoding
+to every projected text value.
 
-## Claim boundary
-
-The renderer serializes the report's existing run status, stop classification
-code, resource accounting, and steps. For each outcome it emits only kind,
-action identifier, severity, disposition, confidence, evidence count, and the
-caller-supplied redacted summary. This is a privacy-minimized projection, not a
-serialization of the complete `RunOutcomeRecord`. It does not serialize private
-stop-reason/detail text. It also does not:
-
-- accept legacy `ScanFinding` records;
-- serialize outcome fingerprints, evidence identifiers, private subjects,
-  rationales, cases, rules, hypotheses, or step details;
-- compute a risk score or severity distribution;
-- create a vulnerability or finding;
-- reinterpret `Unknown` or `NeedsReview` as confirmation;
-- imply that a bounded sample is complete; or
-- alter the `decision-scan/v1` CLI wire contract.
-
-If a selected representation cannot remain structurally valid within the hard
-output ceiling, generation returns a typed error. It never reports a truncated
-document as success. See [ADR 0021](adr/0021-render-bounded-run-reports.md) for
-the durable boundary.
+See [ADR 0021](adr/0021-render-bounded-run-reports.md) for the original generic
+renderer boundary. The additive typed assessment schema does not reinterpret
+that contract or `decision-scan/v1`.

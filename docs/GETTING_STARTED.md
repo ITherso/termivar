@@ -33,7 +33,9 @@ The root manifest is a virtual workspace. The CLI package is `venom-cli`; its bi
 
 ## Run the deterministic runtime
 
-`scan` is the current deterministic Surface-B preview and the default product command:
+`scan` is the current deterministic Surface-B preview and the default product
+command. With no explicit profile it retains the conservative single-resource
+behavior and compatibility output:
 
 ```bash
 cargo run -p venom-cli --locked -- scan https://authorized.example.test
@@ -66,7 +68,62 @@ The expanded text includes hypotheses, selected and excluded actions, dispatches
 cargo run -p venom-cli --locked -- scan https://authorized.example.test --format json
 ```
 
-The JSON document retains the historically named schema [`decision-scan/v1`](internals/decision-scan-json-v1.md). It already carries full diagnostics, so `--format json` and `--explain` cannot be combined. `decision-scan` remains a deprecated, discoverable command alias for `scan`; it runs the same implementation and produces identical stdout and stderr.
+The JSON document retains the historically named schema [`decision-scan/v1`](internals/decision-scan-json-v1.md). It already carries full diagnostics, so `--format json` and `--explain` cannot be combined. `decision-scan` remains a deprecated, discoverable command alias for `scan`; it runs the same implementation and produces identical stdout and stderr. Selecting no profile is the compatibility state; neither new profile silently changes this wire document.
+
+### Explicit product profiles
+
+The strict `venom.scan-profile/v1` contract implements exactly two named
+profiles:
+
+```bash
+cargo run -p venom-cli --locked -- scan https://authorized.example.test --profile baseline
+cargo run -p venom-cli --locked -- scan https://authorized.example.test --profile web-review
+```
+
+`baseline` explicitly selects the same conservative single-resource decision
+behavior and emits the additive `web-assessment/v1` profile audit.
+`web-review` is the only exact-origin opt-in. It uses stable bounded discovery,
+then runs bounded semantic extraction, defense observation and shadow planning,
+and passive security-header/cookie review over committed evidence. All endpoint
+work shares one runtime budget, redirect-disabled request broker, cancellation
+authority, and exact-origin authorization policy. Cross-origin references are
+never followed, and discovery of a URL, form, control name, or query-parameter
+name is knowledge rather than a vulnerability result.
+
+The passive review covers HSTS, CSP, X-Content-Type-Options,
+Referrer-Policy, Permissions-Policy, and value-free cookie attributes. It emits
+only `Informational` assessment items. This source state has no enabled native
+low-risk differential review and no native assessment capability that can
+produce a `Confirmed` item.
+
+For completed reports, start `web-review` at the exact origin root (`/`). The
+current stable item-identity authority is root-only; a non-root starting target
+or eligible condition on a discovered non-root subject becomes typed
+incompleteness rather than a URL-derived fingerprint.
+
+Completed `web-review` runs use `venom-rendered-assessment/v1`. The normal text
+selection maps to Markdown, and `--format json` maps to assessment JSON because
+the profile was explicitly selected. Choose another central renderer with
+`--report-format`:
+
+```bash
+cargo run -p venom-cli --locked -- scan https://authorized.example.test \
+  --profile web-review --report-format csv
+cargo run -p venom-cli --locked -- scan https://authorized.example.test \
+  --profile web-review --report-format html --report-output assessment.html
+```
+
+`--report-format` accepts `json`, `csv`, `html`, or `markdown` and requires
+`web-review`. `--report-output` requires an explicit report format. It publishes
+a new file through a same-directory temporary file and hard link, never
+overwrites an existing destination, and returns nonzero if the filesystem
+cannot provide those semantics. The file contents are synchronized before
+publication, but directory-metadata crash durability is best effort.
+
+If a `web-review` run is incomplete or fails after starting, Venom emits a
+redacted `web-assessment/v2` diagnostic audit to stdout, marks assessment items
+unavailable, returns nonzero, and creates no report artifact. It never presents
+a partial or truncated report as completed output.
 
 ### Safe local smoke target
 
@@ -132,6 +189,12 @@ evidence details are withheld at the public boundary. See
 | Success | The action objective completed; confirmation may still be forbidden |
 | NeedsReview / Unknown | Evidence does not authorize a terminal claim |
 
+For product-facing `AssessmentItem` values, an observation can project only as
+`Informational`; a complete matched differential can justify `NeedsReview`;
+and `Confirmed` requires a case-correlated verifier-owned transition that the
+claim policy permits. Missing, cross-case, blocked, failed, or KnowledgeOnly
+evidence cannot be upgraded to `Confirmed`.
+
 For example, collecting PHP-style form-control names or Sanctum-compatible cookie names is KnowledgeOnly. The action can succeed while its motivating technology hypothesis remains Supported rather than Confirmed.
 
 ## Optional CLI adapters
@@ -143,7 +206,8 @@ Default builds expose neither `api` nor `proxy`. They can be compiled as explici
 
 Lua execution and distributed coordination are implemented Experimental,
 opt-in host-library APIs with no repository runtime caller. Dashboard,
-monitoring, compliance, and profile modules remain disconnected or host-owned.
+monitoring, and compliance modules remain disconnected or host-owned. The two
+built-in scan profiles are CLI-wired; custom profile files are not supported.
 See the [runtime map](internals/runtime-map.md) before treating any optional
 module as executable product behavior.
 

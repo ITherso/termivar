@@ -6,6 +6,26 @@ All notable changes to Venom are recorded here. Releases use the categories from
 
 ### Added
 
+- A strict `venom.scan-profile/v1` product contract with exactly two CLI-wired
+  built-ins: explicit single-resource `baseline` and opt-in exact-origin
+  `web-review`. The origin assessment uses one shared runtime budget, metered
+  redirect-disabled broker, cancellation authority, and authorization policy
+  for deterministic bounded discovery and per-subject work, then composes
+  bounded semantic extraction and defense observation/shadow planning.
+- Value-free passive `web-review` evidence and typed `AssessmentItem`
+  projection for HSTS, CSP, X-Content-Type-Options, Referrer-Policy,
+  Permissions-Policy, and cookie-attribute review. Native passive items are
+  `Informational` only; low-risk differential review remains disabled and no
+  native assessment capability currently produces `Confirmed`. Stable item
+  identity is root-only; non-root conditions become typed incompleteness rather
+  than URL-derived fingerprints.
+- An additive `venom-rendered-assessment/v1` JSON/CSV/HTML/Markdown surface for
+  completed `web-review` runs, composed from runtime-owned truth through the
+  existing 16 MiB bounded renderer. CLI `--report-format` selects the encoding;
+  `--report-output` publishes a new, non-overwriting file through
+  same-directory temporary-file and hard-link semantics. Incomplete or
+  started-failed runs instead emit a redacted `web-assessment/v2` diagnostic,
+  return nonzero, and create no report artifact.
 - Experimental opt-in host-library execution surfaces for bounded Lua 5.4
   source snapshots and deterministic process-local task/worker/result
   coordination. Neither surface has a repository CLI, scanner, plugin, or
@@ -73,6 +93,14 @@ All notable changes to Venom are recorded here. Releases use the categories from
 
 ### Changed
 
+- Preserved the no-profile `venom scan` behavior and `decision-scan/v1` wire
+  contract while making profile selection additive. Explicit `baseline` uses
+  `web-assessment/v1`; completed `web-review` uses the central typed assessment
+  renderer, and no explicit profile silently enables origin discovery.
+- Extended the standalone `RunReport` renderer without removing it: builds with
+  `scanning + reporting` can now compose only completed runtime-owned
+  `WebAssessmentRunReport` truth into a typed report, while generic
+  caller-supplied `RunReport` values remain the separate host-library API.
 - Switched the pinned repository coverage measurement from Linux's default
   Ptrace backend to Tarpaulin's explicit LLVM backend and versioned the evidence
   record as `venom.coverage.v2`, including a normalized line-state digest that
