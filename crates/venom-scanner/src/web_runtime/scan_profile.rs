@@ -175,6 +175,7 @@ pub struct ScanProfileCapabilitiesV1 {
     semantic_extraction: bool,
     defense_observation: bool,
     defense_shadow_planning: bool,
+    passive_security_review: bool,
     low_risk_differential_review: bool,
 }
 
@@ -186,6 +187,7 @@ struct WireScanProfileCapabilitiesV1 {
     semantic_extraction: bool,
     defense_observation: bool,
     defense_shadow_planning: bool,
+    passive_security_review: bool,
     low_risk_differential_review: bool,
 }
 
@@ -197,6 +199,7 @@ impl WireScanProfileCapabilitiesV1 {
             semantic_extraction: self.semantic_extraction,
             defense_observation: self.defense_observation,
             defense_shadow_planning: self.defense_shadow_planning,
+            passive_security_review: self.passive_security_review,
             low_risk_differential_review: self.low_risk_differential_review,
         }
     }
@@ -209,6 +212,7 @@ impl ScanProfileCapabilitiesV1 {
         semantic_extraction: false,
         defense_observation: false,
         defense_shadow_planning: false,
+        passive_security_review: false,
         low_risk_differential_review: false,
     };
 
@@ -222,6 +226,10 @@ impl ScanProfileCapabilitiesV1 {
         semantic_extraction: true,
         defense_observation: true,
         defense_shadow_planning: true,
+        // The v1 wire contract reserves passive review on PR B, but this
+        // branch has no native passive capability projection to advertise.
+        // PR C may enable it only after that executable behavior lands.
+        passive_security_review: false,
         low_risk_differential_review: false,
     };
 
@@ -248,6 +256,12 @@ impl ScanProfileCapabilitiesV1 {
     /// Whether defense-aware planning is recorded without enforcement.
     pub const fn defense_shadow_planning(self) -> bool {
         self.defense_shadow_planning
+    }
+
+    /// Whether bounded response metadata is projected into passive assessment
+    /// observations. This remains distinct from matched differential review.
+    pub const fn passive_security_review(self) -> bool {
+        self.passive_security_review
     }
 
     /// Whether the native low-risk differential review set executes.
@@ -832,6 +846,7 @@ mod tests {
         assert!(!baseline.capabilities().semantic_extraction());
         assert!(!baseline.capabilities().defense_observation());
         assert!(!baseline.capabilities().defense_shadow_planning());
+        assert!(!baseline.capabilities().passive_security_review());
         assert!(!baseline.capabilities().low_risk_differential_review());
         assert!(!baseline.defense_enforcement_enabled());
 
@@ -844,6 +859,7 @@ mod tests {
         assert!(web_review.capabilities().semantic_extraction());
         assert!(web_review.capabilities().defense_observation());
         assert!(web_review.capabilities().defense_shadow_planning());
+        assert!(!web_review.capabilities().passive_security_review());
         assert!(!web_review.capabilities().low_risk_differential_review());
         assert!(!web_review.defense_enforcement_enabled());
     }
@@ -1007,6 +1023,7 @@ mod tests {
             "semantic_extraction",
             "defense_observation",
             "defense_shadow_planning",
+            "passive_security_review",
             "low_risk_differential_review",
         ] {
             let mut value = web_review_value();
@@ -1183,6 +1200,7 @@ mod tests {
                 "semantic_extraction",
                 "defense_observation",
                 "defense_shadow_planning",
+                "passive_security_review",
                 "low_risk_differential_review",
             ] {
                 let mut value = profile_value(built_in.clone());
