@@ -25,10 +25,13 @@ const BOUNDED_RUNTIME_SOURCES: &[&str] = &[
     "crates/venom-scanner/src/decision_runner.rs",
     ASSESSMENT_ITEM_SOURCE,
     "crates/venom-scanner/src/web_runtime/assessment_passive.rs",
+    ASSESSMENT_REVIEW_SOURCE,
+    ASSESSMENT_REVIEW_PROJECTION_SOURCE,
     "crates/venom-scanner/src/web_runtime/assessment_report.rs",
     "crates/venom-scanner/src/web_runtime/assessment_defense.rs",
     "crates/venom-scanner/src/http_evidence.rs",
     "crates/venom-scanner/src/http_evidence/form_controls.rs",
+    HTTP_REVIEW_RESPONSE_SOURCE,
     "crates/venom-scanner/src/payload_strategy.rs",
     "crates/venom-scanner/src/planner.rs",
     "crates/venom-scanner/src/runtime_budget.rs",
@@ -56,6 +59,16 @@ const SHARED_RUNTIME_AUTHORITY_SOURCE: &str = "crates/venom-scanner/src/web_runt
 const LEGACY_DISCOVERY_AUTHORITY_SOURCE: &str = "crates/venom-scanner/src/legacy_discovery.rs";
 const ASSESSMENT_ITEM_SOURCE: &str = "crates/venom-scanner/src/web_runtime/assessment_item.rs";
 const ASSESSMENT_REPORT_SOURCE: &str = "crates/venom-scanner/src/web_runtime/assessment_report.rs";
+const ASSESSMENT_REVIEW_SOURCE: &str = "crates/venom-scanner/src/web_runtime/assessment_review.rs";
+const ASSESSMENT_REVIEW_PROJECTION_SOURCE: &str =
+    "crates/venom-scanner/src/web_runtime/assessment_review_projection.rs";
+const HTTP_REVIEW_RESPONSE_SOURCE: &str =
+    "crates/venom-scanner/src/http_evidence/review_response.rs";
+const NATIVE_REVIEW_BOUNDED_SOURCES: &[&str] = &[
+    HTTP_REVIEW_RESPONSE_SOURCE,
+    ASSESSMENT_REVIEW_SOURCE,
+    ASSESSMENT_REVIEW_PROJECTION_SOURCE,
+];
 const KNOWLEDGE_SOURCE: &str = "crates/venom-scanner/src/knowledge.rs";
 
 const ASSESSMENT_EXTERNAL_TRAIT_PROTECTED_TYPES: &[&str] = &[
@@ -349,6 +362,9 @@ fn web_assessment_contract_violations(
     let passive = fs::read_to_string(
         workspace_root.join("crates/venom-scanner/src/web_runtime/assessment_passive.rs"),
     )?;
+    let defense = fs::read_to_string(
+        workspace_root.join("crates/venom-scanner/src/web_runtime/assessment_defense.rs"),
+    )?;
     let passive_headers = fs::read_to_string(
         workspace_root.join("crates/venom-scanner/src/http_evidence/passive_review.rs"),
     )?;
@@ -427,6 +443,7 @@ fn web_assessment_contract_violations(
         &passive,
         &http_evidence,
     ));
+    violations.extend(inspect_assessment_defense_action_boundary(&defense)?);
     violations.extend(inspect_complete_observer_seam(&http_evidence)?);
     violations.extend(inspect_assessment_transport_markers(
         &http_evidence,
@@ -662,14 +679,281 @@ fn inspect_assessment_passive_markers(
     violations
 }
 
+fn inspect_assessment_defense_action_boundary(source: &str) -> Result<Vec<String>, syn::Error> {
+    let syntax = syn::parse_file(source)?;
+    let mut visitor = DefenseActionBoundaryVisitor {
+        planner_aliases: BTreeSet::from(["AttackPlanner".to_owned()]),
+        violations: BTreeSet::new(),
+    };
+    visitor.visit_file(&syntax);
+
+    let native_classifier = syntax.items.iter().find_map(|item| match item {
+        Item::Fn(function) if function.sig.ident == "native_interaction_class" => Some(function),
+        _ => None,
+    });
+    let classifier_is_exact = native_classifier.is_some_and(native_defense_classifier_is_exact);
+    if !classifier_is_exact {
+        visitor.violations.insert(
+            "assessment defense must classify the exact native review catalog only as DifferentialRead"
+                .to_owned(),
+        );
+    }
+
+    Ok(visitor.violations.into_iter().collect())
+}
+
+fn native_defense_classifier_is_exact(function: &syn::ItemFn) -> bool {
+    let input_is_exact = matches!(function.sig.inputs.first(), Some(syn::FnArg::Typed(input))
+        if matches!(input.pat.as_ref(), syn::Pat::Ident(pattern)
+            if pattern.ident == "kind"
+                && pattern.by_ref.is_none()
+                && pattern.mutability.is_none()
+                && pattern.subpat.is_none())
+            && type_is_exact_path(&input.ty, &["NativeWebReviewActionKind"]));
+    let output_is_exact = matches!(&function.sig.output, syn::ReturnType::Type(_, output)
+        if type_is_exact_path(output, &["DefenseInteractionClass"]));
+    let Some(syn::Expr::Match(classifier)) = single_tail_expression(&function.block) else {
+        return false;
+    };
+    if !matches!(classifier.expr.as_ref(), syn::Expr::Path(path)
+        if path.qself.is_none() && syn_path_is_exact(&path.path, &["kind"]))
+        || !classifier.attrs.is_empty()
+    {
+        return false;
+    }
+
+    let mut variants = BTreeSet::new();
+    let arms_are_exact = classifier.arms.iter().all(|arm| {
+        arm.attrs.is_empty()
+            && arm.guard.is_none()
+            && collect_exact_native_review_patterns(&arm.pat, &mut variants)
+            && expression_is_exact_defense_class(&arm.body, "DifferentialRead")
+    });
+
+    matches!(function.vis, syn::Visibility::Inherited)
+        && function.sig.constness.is_some()
+        && function.sig.asyncness.is_none()
+        && function.sig.unsafety.is_none()
+        && function.sig.abi.is_none()
+        && function.sig.generics.params.is_empty()
+        && function.sig.inputs.len() == 1
+        && input_is_exact
+        && output_is_exact
+        && arms_are_exact
+        && variants
+            == BTreeSet::from([
+                "CorsPolicyPair".to_owned(),
+                "RedirectReflectionQueryPair".to_owned(),
+            ])
+}
+
+fn collect_exact_native_review_patterns(
+    pattern: &syn::Pat,
+    variants: &mut BTreeSet<String>,
+) -> bool {
+    match pattern {
+        syn::Pat::Or(pattern) => {
+            !pattern.cases.is_empty()
+                && pattern
+                    .cases
+                    .iter()
+                    .all(|case| collect_exact_native_review_patterns(case, variants))
+        },
+        syn::Pat::Path(pattern) if pattern.qself.is_none() => {
+            for variant in ["CorsPolicyPair", "RedirectReflectionQueryPair"] {
+                if syn_path_is_exact(&pattern.path, &["NativeWebReviewActionKind", variant]) {
+                    return variants.insert(variant.to_owned());
+                }
+            }
+            false
+        },
+        syn::Pat::Paren(pattern) => collect_exact_native_review_patterns(&pattern.pat, variants),
+        _ => false,
+    }
+}
+
+fn expression_is_exact_defense_class(expression: &syn::Expr, class: &str) -> bool {
+    match expression {
+        syn::Expr::Path(path) if path.qself.is_none() => {
+            syn_path_is_exact(&path.path, &["DefenseInteractionClass", class])
+        },
+        syn::Expr::Block(block) if block.label.is_none() && block.attrs.is_empty() => {
+            single_tail_expression(&block.block)
+                .is_some_and(|expression| expression_is_exact_defense_class(expression, class))
+        },
+        syn::Expr::Group(group) => expression_is_exact_defense_class(&group.expr, class),
+        syn::Expr::Paren(parenthesized) => {
+            expression_is_exact_defense_class(&parenthesized.expr, class)
+        },
+        _ => false,
+    }
+}
+
+fn single_tail_expression(block: &syn::Block) -> Option<&syn::Expr> {
+    match block.stmts.as_slice() {
+        [syn::Stmt::Expr(expression, None)] => Some(expression),
+        _ => None,
+    }
+}
+
+fn type_is_exact_path(item_type: &syn::Type, expected: &[&str]) -> bool {
+    matches!(item_type, syn::Type::Path(path)
+        if path.qself.is_none() && syn_path_is_exact(&path.path, expected))
+}
+
+fn syn_path_is_exact(path: &SynPath, expected: &[&str]) -> bool {
+    path.segments.len() == expected.len()
+        && path
+            .segments
+            .iter()
+            .zip(expected)
+            .all(|(segment, expected)| {
+                normalize_identifier(&ident_name(&segment.ident)) == *expected
+                    && matches!(segment.arguments, syn::PathArguments::None)
+            })
+}
+
+struct DefenseActionBoundaryVisitor {
+    planner_aliases: BTreeSet<String>,
+    violations: BTreeSet<String>,
+}
+
+impl DefenseActionBoundaryVisitor {
+    fn inspect_segments(&mut self, segments: &[String]) {
+        if segments.iter().any(|segment| {
+            matches!(
+                normalize_identifier(segment),
+                "AttackAction" | "NativeWebReviewDecisionProfile" | "StandardWebDecisionProfile"
+            )
+        }) {
+            self.violations.insert(
+                "assessment defense must not construct or install scanner actions; it may only classify, suppress, or reorder planner-owned actions"
+                    .to_owned(),
+            );
+        }
+        if segments.len() >= 2
+            && self
+                .planner_aliases
+                .contains(normalize_identifier(&segments[segments.len() - 2]))
+            && normalize_identifier(&segments[segments.len() - 1]) == "new"
+        {
+            self.violations.insert(
+                "assessment defense must consume the host-owned planner and must not construct a second planner"
+                    .to_owned(),
+            );
+        }
+    }
+
+    fn inspect_macro(&mut self, stream: TokenStream) {
+        let mut identifiers = BTreeSet::new();
+        collect_token_identifiers(stream, &mut identifiers);
+        if identifiers.iter().any(|identifier| {
+            matches!(
+                normalize_identifier(identifier),
+                "AttackAction"
+                    | "NativeWebReviewDecisionProfile"
+                    | "StandardWebDecisionProfile"
+                    | "register"
+                    | "install"
+            )
+        }) {
+            self.violations.insert(
+                "assessment defense must not hide action construction or planner mutation inside a macro"
+                    .to_owned(),
+            );
+        }
+        if identifiers.contains("new")
+            && identifiers
+                .iter()
+                .any(|identifier| self.planner_aliases.contains(identifier))
+        {
+            self.violations.insert(
+                "assessment defense must consume the host-owned planner and must not construct a second planner"
+                    .to_owned(),
+            );
+        }
+    }
+}
+
+impl<'ast> Visit<'ast> for DefenseActionBoundaryVisitor {
+    fn visit_item(&mut self, item: &'ast Item) {
+        if !has_cfg_test(item_attributes(item)) {
+            visit::visit_item(self, item);
+        }
+    }
+
+    fn visit_item_use(&mut self, item: &'ast ItemUse) {
+        let mut paths = Vec::new();
+        collect_use_paths(&item.tree, Vec::new(), &mut paths);
+        for (segments, binding, _) in paths {
+            if segments
+                .last()
+                .is_some_and(|segment| normalize_identifier(segment) == "AttackPlanner")
+            {
+                let alias = binding
+                    .as_deref()
+                    .map(normalize_identifier)
+                    .unwrap_or("AttackPlanner")
+                    .to_owned();
+                self.planner_aliases.insert(alias.clone());
+                if alias != "AttackPlanner" {
+                    self.violations.insert(
+                        "assessment defense must not alias AttackPlanner; planner construction checks require its canonical identity"
+                            .to_owned(),
+                    );
+                }
+            }
+            self.inspect_segments(&segments);
+        }
+        visit::visit_item_use(self, item);
+    }
+
+    fn visit_item_type(&mut self, item: &'ast syn::ItemType) {
+        if type_references_ident(&item.ty, "AttackPlanner") {
+            self.planner_aliases
+                .insert(normalize_identifier(&ident_name(&item.ident)).to_owned());
+            self.violations.insert(
+                "assessment defense must not alias AttackPlanner; planner construction checks require its canonical identity"
+                    .to_owned(),
+            );
+        }
+        visit::visit_item_type(self, item);
+    }
+
+    fn visit_path(&mut self, path: &'ast SynPath) {
+        self.inspect_segments(&path_segments(path));
+        visit::visit_path(self, path);
+    }
+
+    fn visit_expr_method_call(&mut self, expression: &'ast syn::ExprMethodCall) {
+        if matches!(
+            normalize_identifier(&ident_name(&expression.method)),
+            "register" | "install"
+        ) {
+            self.violations.insert(
+                "assessment defense must not mutate a planner action catalog; defense may only constrain existing actions"
+                    .to_owned(),
+            );
+        }
+        visit::visit_expr_method_call(self, expression);
+    }
+
+    fn visit_macro(&mut self, item: &'ast Macro) {
+        self.inspect_macro(item.tokens.clone());
+        visit::visit_macro(self, item);
+    }
+}
+
 fn inspect_assessment_transport_markers(http_evidence: &str, broker: &str) -> Vec<String> {
     let mut violations = Vec::new();
     if !http_evidence.contains("complete_response_observer_seal::Sealed")
         || !http_evidence
             .contains("impl Sealed for crate::web_runtime::AssessmentDiscoveryObserver {}")
+        || !http_evidence
+            .contains("impl Sealed for crate::web_runtime::AssessmentReviewObserverSet {}")
     {
         violations.push(
-            "complete-body response observer must remain sealed to the exact assessment implementation"
+            "complete-body response observer must remain sealed to the exact discovery and native-review assessment implementations"
                 .to_owned(),
         );
     }
@@ -3551,9 +3835,21 @@ fn inspect_production_verifier_descriptors(
     }
     #[derive(Default)]
     struct DescriptorVisitor {
-        descriptor_initializers: usize,
-        noninformational_initializers: usize,
+        allow_differential_review: bool,
+        invalid_initializers: usize,
         verifier_transitions: usize,
+    }
+    impl DescriptorVisitor {
+        fn inspect_initializer(&mut self, expression: &syn::Expr) {
+            let informational = expression_is_exact_named_call(expression, "informational");
+            let differential = expression_is_exact_named_call(expression, "differential_review");
+            if !informational && !(self.allow_differential_review && differential) {
+                self.invalid_initializers = self.invalid_initializers.saturating_add(1);
+            }
+            if expression_references_ident(expression, "VerifierTransition") {
+                self.verifier_transitions = self.verifier_transitions.saturating_add(1);
+            }
+        }
     }
     impl<'ast> Visit<'ast> for DescriptorVisitor {
         fn visit_item(&mut self, item: &'ast Item) {
@@ -3564,38 +3860,32 @@ fn inspect_production_verifier_descriptors(
 
         fn visit_item_const(&mut self, item: &'ast syn::ItemConst) {
             if type_references_ident(&item.ty, "AssessmentCapabilityDescriptor") {
-                self.descriptor_initializers = self.descriptor_initializers.saturating_add(1);
-                if !expression_invokes_named_function(&item.expr, "informational") {
-                    self.noninformational_initializers =
-                        self.noninformational_initializers.saturating_add(1);
-                }
-                if expression_references_ident(&item.expr, "VerifierTransition") {
-                    self.verifier_transitions = self.verifier_transitions.saturating_add(1);
-                }
+                self.inspect_initializer(&item.expr);
             }
             visit::visit_item_const(self, item);
         }
 
         fn visit_item_static(&mut self, item: &'ast syn::ItemStatic) {
             if type_references_ident(&item.ty, "AssessmentCapabilityDescriptor") {
-                self.descriptor_initializers = self.descriptor_initializers.saturating_add(1);
-                if !expression_invokes_named_function(&item.expr, "informational") {
-                    self.noninformational_initializers =
-                        self.noninformational_initializers.saturating_add(1);
-                }
-                if expression_references_ident(&item.expr, "VerifierTransition") {
-                    self.verifier_transitions = self.verifier_transitions.saturating_add(1);
-                }
+                self.inspect_initializer(&item.expr);
             }
             visit::visit_item_static(self, item);
         }
     }
-    let mut visitor = DescriptorVisitor::default();
+    let mut visitor = DescriptorVisitor {
+        allow_differential_review: source_name == ASSESSMENT_REVIEW_PROJECTION_SOURCE,
+        ..DescriptorVisitor::default()
+    };
     visitor.visit_file(syntax);
     let mut violations = Vec::new();
-    if visitor.verifier_transitions != 0 || visitor.noninformational_initializers != 0 {
+    if visitor.invalid_initializers != 0 {
         violations.push(format!(
-            "{source_name} defines a production AssessmentCapabilityDescriptor outside the observation-only informational constructor; VerifierTransition descriptors remain test-only"
+            "{source_name} defines a production AssessmentCapabilityDescriptor outside its exact constructor allowlist; differential_review is restricted to {ASSESSMENT_REVIEW_PROJECTION_SOURCE}"
+        ));
+    }
+    if visitor.verifier_transitions != 0 {
+        violations.push(format!(
+            "{source_name} defines a production AssessmentCapabilityDescriptor with VerifierTransition authority; VerifierTransition descriptors remain test-only"
         ));
     }
     violations
@@ -3707,27 +3997,17 @@ fn expression_references_ident(expression: &syn::Expr, needle: &str) -> bool {
     statement_references_ident(&statement, needle)
 }
 
-fn expression_invokes_named_function(expression: &syn::Expr, needle: &str) -> bool {
-    struct CallVisitor<'a> {
-        needle: &'a str,
-        found: bool,
+fn expression_is_exact_named_call(expression: &syn::Expr, needle: &str) -> bool {
+    match expression {
+        syn::Expr::Group(group) => expression_is_exact_named_call(&group.expr, needle),
+        syn::Expr::Paren(parenthesized) => {
+            expression_is_exact_named_call(&parenthesized.expr, needle)
+        },
+        syn::Expr::Call(call) => matches!(call.func.as_ref(), syn::Expr::Path(path)
+            if path.path.segments.last().is_some_and(|segment|
+                normalize_identifier(&ident_name(&segment.ident)) == needle)),
+        _ => false,
     }
-    impl<'ast> Visit<'ast> for CallVisitor<'_> {
-        fn visit_expr_call(&mut self, call: &'ast syn::ExprCall) {
-            self.found |= matches!(call.func.as_ref(), syn::Expr::Path(path)
-                if path.path.segments.last().is_some_and(|segment|
-                    normalize_identifier(&ident_name(&segment.ident)) == self.needle));
-            if !self.found {
-                visit::visit_expr_call(self, call);
-            }
-        }
-    }
-    let mut visitor = CallVisitor {
-        needle: normalize_identifier(needle),
-        found: false,
-    };
-    visitor.visit_expr(expression);
-    visitor.found
 }
 
 fn syntax_invokes_method(syntax: &syn::File, needle: &str) -> bool {
@@ -4212,10 +4492,12 @@ fn inspect_complete_observer_seam(source: &str) -> Result<Vec<String>, syn::Erro
             "applies_hypothesis_transition",
             "case_id",
             "complete_body",
+            "executor_id",
             "has_payload_strategy",
             "hypothesis_id",
             "media_type",
             "method",
+            "payload_strategy",
             "reliability",
             "request_method_evidence_id",
             "request_url_evidence_id",
@@ -4226,6 +4508,7 @@ fn inspect_complete_observer_seam(source: &str) -> Result<Vec<String>, syn::Erro
             "response_media_type_evidence_id",
             "response_status_evidence_id",
             "passive_response_projection",
+            "review_response_projection",
             "stage",
             "status",
             "subject",
@@ -4261,7 +4544,7 @@ fn inspect_complete_observer_seam(source: &str) -> Result<Vec<String>, syn::Erro
             )
         {
             violations.push(
-                "complete response observation must remain the exact non-cloneable borrowed scalar/ID/body/value-free-passive view with no owned strings, headers, or bytes"
+                "complete response observation must remain the exact non-cloneable borrowed scalar/ID/body/value-free projection view with no owned strings, headers, or bytes"
                     .to_owned(),
             );
         }
@@ -4337,19 +4620,29 @@ fn inspect_complete_observer_seam(source: &str) -> Result<Vec<String>, syn::Erro
                         _ => None,
                     })
                     .collect::<Vec<_>>();
+                let production_targets = production_impls
+                    .iter()
+                    .filter_map(|item| match item.self_ty.as_ref() {
+                        syn::Type::Path(path) if path.qself.is_none() => {
+                            Some(path_segments(&path.path).join("::"))
+                        },
+                        _ => None,
+                    })
+                    .collect::<BTreeSet<_>>();
                 sealed_traits == 1
-                    && production_impls.len() == 1
-                    && production_impls[0]
-                        .trait_
-                        .as_ref()
-                        .is_some_and(|(_, path, _)| {
+                    && production_impls.len() == 2
+                    && production_targets
+                        == BTreeSet::from([
+                            "crate::web_runtime::AssessmentDiscoveryObserver".to_owned(),
+                            "crate::web_runtime::AssessmentReviewObserverSet".to_owned(),
+                        ])
+                    && production_impls.iter().all(|item| {
+                        item.trait_.as_ref().is_some_and(|(_, path, _)| {
                             path.segments
                                 .last()
                                 .is_some_and(|segment| segment.ident == "Sealed")
                         })
-                    && matches!(production_impls[0].self_ty.as_ref(), syn::Type::Path(path)
-                        if path.path.segments.last().is_some_and(|segment|
-                            segment.ident == "AssessmentDiscoveryObserver"))
+                    })
                     && items.iter().all(|item| match item {
                         Item::Impl(item) => {
                             !has_cfg_test(&item.attrs)
@@ -4365,7 +4658,7 @@ fn inspect_complete_observer_seam(source: &str) -> Result<Vec<String>, syn::Erro
     });
     if !exact_seal {
         violations.push(
-            "complete response observer seal must allowlist exactly AssessmentDiscoveryObserver"
+            "complete response observer seal must allowlist exactly AssessmentDiscoveryObserver and AssessmentReviewObserverSet"
                 .to_owned(),
         );
     }
@@ -4467,9 +4760,11 @@ fn is_optional_borrowed_u8_slice(item_type: &syn::Type) -> bool {
 fn assessment_observation_type_matches(name: &str, item_type: &syn::Type) -> bool {
     match name {
         "case_id" | "action_id" | "hypothesis_id" => is_borrowed_ident(item_type, "str"),
+        "executor_id" => is_exact_borrowed_ident(item_type, "str"),
         "has_payload_strategy" | "applies_hypothesis_transition" => {
             is_plain_ident(item_type, "bool")
         },
+        "payload_strategy" => is_exact_optional_borrowed_ident(item_type, "PayloadStrategyRef"),
         "stage" => is_plain_ident(item_type, "DecisionExecutionStage"),
         "subject" => is_borrowed_ident(item_type, "EntityId"),
         "method" => is_plain_ident(item_type, "HttpProbeMethod"),
@@ -4486,8 +4781,46 @@ fn assessment_observation_type_matches(name: &str, item_type: &syn::Type) -> boo
         | "response_body_truncated_evidence_id"
         | "response_body_digest_evidence_id" => is_optional_borrowed_ident(item_type, "EvidenceId"),
         "passive_response_projection" => is_borrowed_ident(item_type, "PassiveResponseProjection"),
+        "review_response_projection" => {
+            is_exact_borrowed_path(item_type, &["review_response", "ReviewResponseProjection"])
+        },
         _ => false,
     }
+}
+
+fn is_exact_borrowed_ident(item_type: &syn::Type, expected: &str) -> bool {
+    matches!(item_type, syn::Type::Reference(reference)
+        if reference.mutability.is_none()
+            && matches!(reference.elem.as_ref(), syn::Type::Path(path)
+                if path.qself.is_none() && path.path.is_ident(expected)))
+}
+
+fn is_exact_optional_borrowed_ident(item_type: &syn::Type, expected: &str) -> bool {
+    let syn::Type::Path(option) = item_type else {
+        return false;
+    };
+    let Some(segment) = option.path.segments.last() else {
+        return false;
+    };
+    let syn::PathArguments::AngleBracketed(arguments) = &segment.arguments else {
+        return false;
+    };
+    segment.ident == "Option"
+        && option.path.segments.len() == 1
+        && arguments.args.len() == 1
+        && matches!(arguments.args.first(), Some(syn::GenericArgument::Type(item_type))
+            if is_exact_borrowed_ident(item_type, expected))
+}
+
+fn is_exact_borrowed_path(item_type: &syn::Type, expected: &[&str]) -> bool {
+    matches!(item_type, syn::Type::Reference(reference)
+        if reference.mutability.is_none()
+            && matches!(reference.elem.as_ref(), syn::Type::Path(path)
+                if path.qself.is_none()
+                    && path_segments(&path.path)
+                        .iter()
+                        .map(|segment| normalize_identifier(segment))
+                        .eq(expected.iter().copied())))
 }
 
 fn is_plain_ident(item_type: &syn::Type, expected: &str) -> bool {
@@ -4559,6 +4892,25 @@ fn validate_policy_inventory() -> Vec<String> {
     let bounded: BTreeSet<_> = BOUNDED_RUNTIME_SOURCES.iter().copied().collect();
     if bounded.len() != BOUNDED_RUNTIME_SOURCES.len() {
         violations.push("bounded runtime transport policy contains duplicate sources".to_owned());
+    }
+    let native_review: BTreeSet<_> = NATIVE_REVIEW_BOUNDED_SOURCES.iter().copied().collect();
+    if native_review.len() != NATIVE_REVIEW_BOUNDED_SOURCES.len() {
+        violations
+            .push("native-review bounded-source policy contains duplicate sources".to_owned());
+    }
+    for source in NATIVE_REVIEW_BOUNDED_SOURCES {
+        if !bounded.contains(source) {
+            violations.push(format!(
+                "native-review source {source} must remain in the bounded-source inventory"
+            ));
+        }
+        if DIRECT_CLIENT_SOURCE_ALLOWLIST.contains(source)
+            || UNMETERED_STANDALONE_FACADE_SOURCES.contains(source)
+        {
+            violations.push(format!(
+                "native-review source {source} must not own a direct or unmetered transport capability"
+            ));
+        }
     }
     if bounded.contains(TRANSPORT_OWNER_SOURCE) {
         violations.push(format!(
@@ -5927,8 +6279,24 @@ impl OwnershipVisitor<'_> {
         if segments.is_empty()
             || (self.source == "crates/venom-scanner/src/http_evidence.rs"
                 && allowed_http_facade_path(segments))
+            || (self.source == HTTP_REVIEW_RESPONSE_SOURCE
+                && allowed_review_response_metadata_path(segments))
         {
             return;
+        }
+        if NATIVE_REVIEW_BOUNDED_SOURCES.contains(&self.source)
+            && segments.iter().any(|segment| {
+                matches!(
+                    normalize_identifier(segment),
+                    "HttpRequestBroker" | "RequestAccountingBroker" | "RuntimeBudget"
+                )
+            })
+        {
+            self.violations.insert(format!(
+                "{} references forbidden native-review network authority {}; reuse only the host-owned shared runtime authority",
+                self.source,
+                display_path(segments)
+            ));
         }
         if BOUNDED_RUNTIME_SOURCES.contains(&self.source)
             && segments.iter().any(|segment| {
@@ -6054,6 +6422,17 @@ impl OwnershipVisitor<'_> {
             }
             if let TokenTree::Ident(identifier) = token {
                 let identifier = normalize_identifier(&ident_name(identifier)).to_owned();
+                if NATIVE_REVIEW_BOUNDED_SOURCES.contains(&self.source)
+                    && matches!(
+                        identifier.as_str(),
+                        "HttpRequestBroker" | "RequestAccountingBroker" | "RuntimeBudget"
+                    )
+                {
+                    self.violations.insert(format!(
+                        "{} hides forbidden native-review network authority {identifier} inside a macro",
+                        self.source
+                    ));
+                }
                 if BOUNDED_RUNTIME_SOURCES.contains(&self.source)
                     && self.legacy_authority_aliases.contains(&identifier)
                 {
@@ -6139,6 +6518,10 @@ impl<'ast> Visit<'ast> for OwnershipVisitor<'_> {
                     "crates/venom-scanner/src/http_evidence.rs",
                     "passive_review"
                 )
+                | (
+                    "crates/venom-scanner/src/http_evidence.rs",
+                    "review_response"
+                )
                 | ("crates/venom-scanner/src/web_runtime.rs", "authority")
                 | ("crates/venom-scanner/src/web_runtime.rs", "api_visibility")
                 | ("crates/venom-scanner/src/web_runtime.rs", "assessment_item")
@@ -6149,6 +6532,14 @@ impl<'ast> Visit<'ast> for OwnershipVisitor<'_> {
                 | (
                     "crates/venom-scanner/src/web_runtime.rs",
                     "assessment_report"
+                )
+                | (
+                    "crates/venom-scanner/src/web_runtime.rs",
+                    "assessment_review"
+                )
+                | (
+                    "crates/venom-scanner/src/web_runtime.rs",
+                    "assessment_review_projection"
                 )
                 | (
                     "crates/venom-scanner/src/web_runtime/api_visibility.rs",
@@ -6717,6 +7108,17 @@ fn allowed_http_facade_path(segments: &[String]) -> bool {
                 "header" | "Error" | "Method" | "StatusCode" | "Url"
             )
         })
+}
+
+fn allowed_review_response_metadata_path(segments: &[String]) -> bool {
+    matches!(
+        segments
+            .iter()
+            .map(|segment| normalize_identifier(segment))
+            .collect::<Vec<_>>()
+            .as_slice(),
+        ["reqwest", "Url"] | ["reqwest", "header", "HeaderMap" | "HeaderValue"]
+    )
 }
 
 fn is_legacy_client_path(segments: &[String]) -> bool {
@@ -8032,8 +8434,20 @@ mod tests {
                 "mod form_controls;",
             ),
             (
+                "crates/venom-scanner/src/http_evidence.rs",
+                "mod review_response;",
+            ),
+            (
                 "crates/venom-scanner/src/web_runtime.rs",
                 "mod api_visibility;",
+            ),
+            (
+                "crates/venom-scanner/src/web_runtime.rs",
+                "mod assessment_review;",
+            ),
+            (
+                "crates/venom-scanner/src/web_runtime.rs",
+                "mod assessment_review_projection;",
             ),
         ] {
             assert!(
@@ -8051,6 +8465,29 @@ mod tests {
                 .join("\n");
         assert!(violations.contains("crate::context::ScanContext"));
         assert!(!violations.contains("unregistered external submodule"));
+
+        for (source_name, source) in [
+            (
+                "crates/venom-scanner/src/http_evidence.rs",
+                "mod review_response_copy;",
+            ),
+            (
+                "crates/venom-scanner/src/web_runtime.rs",
+                "mod assessment_review_foreign;",
+            ),
+            (
+                "crates/venom-scanner/src/web_runtime.rs",
+                "pub mod assessment_review_projection;",
+            ),
+        ] {
+            let violations = inspect_bounded_source(source_name, source)
+                .unwrap()
+                .join("\n");
+            assert!(
+                violations.contains("unregistered external submodule"),
+                "foreign native-review module unexpectedly passed: {source}: {violations}"
+            );
+        }
     }
 
     #[test]
@@ -8239,6 +8676,155 @@ mod tests {
             .join("\n");
             assert!(violations.contains(needle), "{source}: {violations}");
         }
+    }
+
+    #[test]
+    fn native_review_sources_are_exact_bounded_consumers_without_network_authority() {
+        assert_eq!(
+            NATIVE_REVIEW_BOUNDED_SOURCES
+                .iter()
+                .copied()
+                .collect::<BTreeSet<_>>(),
+            BTreeSet::from([
+                HTTP_REVIEW_RESPONSE_SOURCE,
+                ASSESSMENT_REVIEW_SOURCE,
+                ASSESSMENT_REVIEW_PROJECTION_SOURCE,
+            ])
+        );
+        for source_name in NATIVE_REVIEW_BOUNDED_SOURCES {
+            assert!(BOUNDED_RUNTIME_SOURCES.contains(source_name));
+            assert!(!DIRECT_CLIENT_SOURCE_ALLOWLIST.contains(source_name));
+            assert!(!UNMETERED_STANDALONE_FACADE_SOURCES.contains(source_name));
+            for source in [
+                "use reqwest::Client; fn escape() { let _ = Client::new(); }",
+                "use crate::http_evidence::HttpRequestBroker;",
+                "use crate::runtime_budget::RequestAccountingBroker;",
+                "use crate::RuntimeBudget;",
+                "fn escape() { policy!(RuntimeBudget::new()); }",
+            ] {
+                let violations = inspect_bounded_source(source_name, source)
+                    .unwrap()
+                    .join("\n");
+                assert!(
+                    !violations.is_empty(),
+                    "native-review authority escape unexpectedly passed in {source_name}: {source}"
+                );
+            }
+        }
+
+        for allowed in [
+            "use reqwest::Url;",
+            "use reqwest::header::{HeaderMap, HeaderValue};",
+        ] {
+            assert!(
+                inspect_bounded_source(HTTP_REVIEW_RESPONSE_SOURCE, allowed)
+                    .unwrap()
+                    .is_empty(),
+                "value-free response metadata was unexpectedly rejected: {allowed}"
+            );
+        }
+        for foreign_metadata in ["use reqwest::Response;", "use reqwest::header::HeaderName;"] {
+            let violations = inspect_bounded_source(HTTP_REVIEW_RESPONSE_SOURCE, foreign_metadata)
+                .unwrap()
+                .join("\n");
+            assert!(
+                violations.contains("forbidden direct transport path"),
+                "foreign reqwest metadata unexpectedly passed: {foreign_metadata}: {violations}"
+            );
+        }
+    }
+
+    #[test]
+    fn assessment_defense_cannot_construct_or_install_actions() {
+        let source =
+            include_str!("../../../crates/venom-scanner/src/web_runtime/assessment_defense.rs");
+        assert!(
+            inspect_assessment_defense_action_boundary(source)
+                .unwrap()
+                .is_empty(),
+            "{}",
+            inspect_assessment_defense_action_boundary(source)
+                .unwrap()
+                .join("\n")
+        );
+
+        for (mutation, needle) in [
+            (
+                format!("{source}\nfn escape(planner: &mut AttackPlanner, action: AttackAction) {{ planner.register(action); }}"),
+                "must not construct or install scanner actions",
+            ),
+            (
+                format!("{source}\nfn escape() {{ let _ = AttackPlanner::new(); }}"),
+                "must not construct a second planner",
+            ),
+            (
+                format!("{source}\nfn escape(profile: NativeWebReviewDecisionProfile, planner: &mut AttackPlanner) {{ profile.install(planner); }}"),
+                "must not construct or install scanner actions",
+            ),
+            (
+                source.replacen(
+                    "DefenseInteractionClass::DifferentialRead",
+                    "DefenseInteractionClass::ActiveVerification",
+                    1,
+                ),
+                "exact native review catalog only as DifferentialRead",
+            ),
+        ] {
+            let violations = inspect_assessment_defense_action_boundary(&mutation)
+                .unwrap()
+                .join("\n");
+            assert!(violations.contains(needle), "{needle}: {violations}");
+        }
+
+        for classifier in [
+            r#"
+                const fn native_interaction_class(
+                    kind: NativeWebReviewActionKind,
+                ) -> DefenseInteractionClass {
+                    match kind {
+                        NativeWebReviewActionKind::CorsPolicyPair =>
+                            DefenseInteractionClass::Behavioral,
+                        NativeWebReviewActionKind::RedirectReflectionQueryPair =>
+                            DefenseInteractionClass::DifferentialRead,
+                    }
+                }
+            "#,
+            r#"
+                const fn native_interaction_class(
+                    kind: NativeWebReviewActionKind,
+                ) -> DefenseInteractionClass {
+                    match kind {
+                        NativeWebReviewActionKind::CorsPolicyPair =>
+                            DefenseInteractionClass::DifferentialRead,
+                        NativeWebReviewActionKind::RedirectReflectionQueryPair =>
+                            DefenseInteractionClass::LocalOnly,
+                    }
+                }
+            "#,
+        ] {
+            let violations = inspect_assessment_defense_action_boundary(classifier)
+                .unwrap()
+                .join("\n");
+            assert!(
+                violations.contains("exact native review catalog only as DifferentialRead"),
+                "one-arm native classifier bypass unexpectedly passed: {violations}"
+            );
+        }
+
+        let aliased_planner = format!(
+            "{source}\nuse crate::AttackPlanner as Planner;\nfn escape() {{ let _ = Planner::new(); }}"
+        );
+        let violations = inspect_assessment_defense_action_boundary(&aliased_planner)
+            .unwrap()
+            .join("\n");
+        assert!(
+            violations.contains("must not alias AttackPlanner"),
+            "{violations}"
+        );
+        assert!(
+            violations.contains("must not construct a second planner"),
+            "{violations}"
+        );
     }
 
     #[test]
@@ -9018,6 +9604,24 @@ mod tests {
             inspect_production_verifier_descriptors("safe.rs", &informational, false).is_empty()
         );
 
+        let differential = syn::parse_file(
+            "const REVIEW: AssessmentCapabilityDescriptor = AssessmentCapabilityDescriptor::differential_review();",
+        )
+        .unwrap();
+        assert!(inspect_production_verifier_descriptors(
+            ASSESSMENT_REVIEW_PROJECTION_SOURCE,
+            &differential,
+            false,
+        )
+        .is_empty());
+        let violations =
+            inspect_production_verifier_descriptors("foreign_projection.rs", &differential, false)
+                .join("\n");
+        assert!(
+            violations.contains("differential_review is restricted"),
+            "{violations}"
+        );
+
         let verifier = syn::parse_file(
             "const BAD: AssessmentCapabilityDescriptor = build(AssessmentClaimPolicy::VerifierTransition(policy));",
         )
@@ -9027,6 +9631,16 @@ mod tests {
         assert!(
             violations.contains("VerifierTransition descriptors remain test-only"),
             "{violations}"
+        );
+        let exact_source_verifier = inspect_production_verifier_descriptors(
+            ASSESSMENT_REVIEW_PROJECTION_SOURCE,
+            &verifier,
+            false,
+        )
+        .join("\n");
+        assert!(
+            exact_source_verifier.contains("VerifierTransition descriptors remain test-only"),
+            "{exact_source_verifier}"
         );
 
         let test_only = syn::parse_file(
@@ -9100,7 +9714,23 @@ mod tests {
         assert!(inspect_complete_observer_seam(&broadened)
             .unwrap()
             .join("\n")
-            .contains("exactly AssessmentDiscoveryObserver"));
+            .contains("exactly AssessmentDiscoveryObserver and AssessmentReviewObserverSet"));
+        let missing_review = seam.replace(
+            "impl Sealed for crate::web_runtime::AssessmentReviewObserverSet {}",
+            "",
+        );
+        assert!(inspect_complete_observer_seam(&missing_review)
+            .unwrap()
+            .join("\n")
+            .contains("exactly AssessmentDiscoveryObserver and AssessmentReviewObserverSet"));
+        let foreign_review = seam.replace(
+            "impl Sealed for crate::web_runtime::AssessmentReviewObserverSet {}",
+            "impl Sealed for crate::foreign::AssessmentReviewObserverSet {}",
+        );
+        assert!(inspect_complete_observer_seam(&foreign_review)
+            .unwrap()
+            .join("\n")
+            .contains("exactly AssessmentDiscoveryObserver and AssessmentReviewObserverSet"));
 
         let owned_body = seam.replace("complete_body: Option<&'a [u8]>", "complete_body: Vec<u8>");
         let violations = inspect_complete_observer_seam(&owned_body)
@@ -9162,6 +9792,31 @@ mod tests {
             .unwrap()
             .join("\n");
         assert!(violations.contains("accessor allowlist"), "{violations}");
+        for mutated in [
+            seam.replace("executor_id: &'a str", "executor_id: String"),
+            seam.replace(
+                "payload_strategy: Option<&'a PayloadStrategyRef>",
+                "payload_strategy: Option<String>",
+            ),
+            seam.replace(
+                "payload_strategy: Option<&'a PayloadStrategyRef>",
+                "payload_strategy: Option<&'a foreign::PayloadStrategyRef>",
+            ),
+            seam.replace(
+                "review_response_projection: &'a review_response::ReviewResponseProjection",
+                "review_response_projection: Vec<u8>",
+            ),
+            seam.replace(
+                "review_response_projection: &'a review_response::ReviewResponseProjection",
+                "review_response_projection: &'a foreign::ReviewResponseProjection",
+            ),
+        ] {
+            let violations = inspect_complete_observer_seam(&mutated).unwrap().join("\n");
+            assert!(
+                violations.contains("non-cloneable borrowed"),
+                "new observation field type drift unexpectedly passed: {violations}"
+            );
+        }
         let manual_clone = format!(
             "{seam}\nimpl<'a> Clone for CompleteHttpResponseObservation<'a> {{ fn clone(&self) -> Self {{ unreachable!() }} }}"
         );
