@@ -28,6 +28,8 @@ use venom_core::{
 use crate::decision_runner::ContinuationAuthority;
 use crate::http_evidence::CompleteHttpResponseObserver;
 use crate::planner::ActionSuppressionContext;
+use crate::web_review_decision::NativeWebReviewDecisionProfile;
+use crate::web_review_execution::{NativeWebReviewExecutorProfile, NativeWebReviewSeeds};
 use crate::{
     AdaptationLimits, AdaptationRule, AdaptivePipelineError, BenefitScore, DecisionActionOrigin,
     DecisionEvidenceReceipt, DecisionExecutionClass, DecisionExecutionFailureReceipt,
@@ -37,9 +39,9 @@ use crate::{
     DecisionRunnerError, DecisionRunnerTurn, DecisionSession, DecisionStopReason, ExperiencePolicy,
     ExperienceStore, ExperienceStoreError, HttpEvidenceError, HttpEvidenceExecutor,
     HttpEvidencePolicy, HttpHeaderPayloadBinding, HttpProbe, HttpProbeMethod, KnowledgeBase,
-    KnowledgeWrite, OutcomeSelector, PipelineDirective, PlannerError, PlanningContext, RiskScore,
-    RuntimeBudget, RuntimeBudgetDimension, RuntimeLimitExceeded, RuntimeUsage,
-    StandardApiInstallReport, StandardApiReasoning, StandardApiReasoningError,
+    KnowledgeWrite, NativeWebReviewActionKind, OutcomeSelector, PipelineDirective, PlannerError,
+    PlanningContext, RiskScore, RuntimeBudget, RuntimeBudgetDimension, RuntimeLimitExceeded,
+    RuntimeUsage, StandardApiInstallReport, StandardApiReasoning, StandardApiReasoningError,
     StandardWebActionKind, StandardWebDecisionError, StandardWebDecisionInstallReport,
     StandardWebDecisionProfile, SubjectHttpProbeProvider, TransportDispatchAudit, VerificationCase,
     VerificationError, HTTP_EVIDENCE_EXECUTOR_ID,
@@ -51,6 +53,8 @@ mod assessment_item;
 mod assessment_passive;
 #[cfg(feature = "reporting")]
 mod assessment_report;
+mod assessment_review;
+mod assessment_review_projection;
 mod authority;
 mod scan_profile;
 mod web_assessment;
@@ -60,6 +64,7 @@ pub(crate) use assessment_defense::{
     project_assessment_defense_signal, AssessmentDefenseBodyCoverage,
     AssessmentDefenseProjectionContext, AssessmentDefenseSignal,
 };
+pub(crate) use assessment_review::AssessmentReviewObserverSet;
 pub(crate) use authority::SharedWebRuntimeAuthority;
 pub(crate) use web_assessment::AssessmentDiscoveryObserver;
 
@@ -165,6 +170,14 @@ pub enum StandardWebDecisionRuntimeError {
     /// The optional JSON response-format and GraphQL surface profile failed to install.
     #[error(transparent)]
     ApiReasoning(#[from] StandardApiReasoningError),
+
+    /// The closed native review reasoning/action/verifier catalog failed validation.
+    #[error("native web-review decision profile could not be composed")]
+    NativeWebReviewDecisionProfile,
+
+    /// The closed native review executor and payload catalog failed validation.
+    #[error("native web-review execution profile could not be composed")]
+    NativeWebReviewExecutionProfile,
 
     /// An executor lookup, request, evidence commit, or runner transition failed.
     #[error(transparent)]
@@ -502,6 +515,13 @@ pub struct StandardWebDecisionRuntimeBuilder {
     additional_suppressed_actions: BTreeSet<String>,
     assessment_defense_projection: bool,
     assessment_defense_enforcement: bool,
+    native_web_review: Option<NativeWebReviewRuntimeConfig>,
+}
+
+struct NativeWebReviewRuntimeConfig {
+    seeds: NativeWebReviewSeeds,
+    observer: Arc<dyn CompleteHttpResponseObserver>,
+    redirect_query_parameter: Option<String>,
 }
 
 struct StandardWebDecisionRuntimePreflight {
@@ -531,6 +551,7 @@ impl StandardWebDecisionRuntimeBuilder {
             additional_suppressed_actions: BTreeSet::new(),
             assessment_defense_projection: false,
             assessment_defense_enforcement: false,
+            native_web_review: None,
         }
     }
 
@@ -645,6 +666,28 @@ impl StandardWebDecisionRuntimeBuilder {
     pub(crate) fn with_assessment_defense_enforcement(mut self, enabled: bool) -> Self {
         self.assessment_defense_projection = true;
         self.assessment_defense_enforcement = enabled;
+        self
+    }
+
+    /// Reuses this subject runtime for one opt-in matched native review pass.
+    ///
+    /// The native catalog is additive: the standard catalog keeps its existing
+    /// execution semantics, and every executor receives the same broker and
+    /// accounting authority during composition. A missing query parameter
+    /// omits and suppresses only the redirect/reflection action rather than
+    /// inventing transport input.
+    pub(crate) fn with_native_web_review(
+        mut self,
+        seeds: NativeWebReviewSeeds,
+        observer: Arc<dyn CompleteHttpResponseObserver>,
+        redirect_query_parameter: Option<String>,
+    ) -> Self {
+        self.assessment_defense_projection = true;
+        self.native_web_review = Some(NativeWebReviewRuntimeConfig {
+            seeds,
+            observer,
+            redirect_query_parameter,
+        });
         self
     }
 
@@ -764,6 +807,24 @@ impl StandardWebDecisionRuntimeBuilder {
         };
         let installation = profile.install(knowledge, &mut decision_loop, &mut executors)?;
 
+        let native_review_enabled = self.native_web_review.is_some();
+        if native_review_enabled {
+            let profile = NativeWebReviewDecisionProfile::new()
+                .map_err(|_| StandardWebDecisionRuntimeError::NativeWebReviewDecisionProfile)?;
+            let report = profile
+                .install(&mut decision_loop)
+                .map_err(|_| StandardWebDecisionRuntimeError::NativeWebReviewDecisionProfile)?;
+            debug_assert_eq!(report.reasoning_rules_inserted, 1);
+            debug_assert_eq!(
+                report.actions_inserted,
+                crate::NATIVE_WEB_REVIEW_ACTION_COUNT
+            );
+            debug_assert_eq!(
+                report.active_rules_inserted,
+                crate::NATIVE_WEB_REVIEW_ACTION_COUNT
+            );
+        }
+
         // Surface-B multi-objective continuation: install continuation rules ONLY
         // in this runtime's adaptive pipeline. The generic AdaptivePipeline
         // fallback is unchanged, so library hosts keep single-objective semantics.
@@ -798,12 +859,40 @@ impl StandardWebDecisionRuntimeBuilder {
         };
         executors.register(Arc::new(http_evidence))?;
 
+        let native_review_actions = match self.native_web_review {
+            Some(config) => {
+                let profile = NativeWebReviewExecutorProfile::new(
+                    requests,
+                    self.target.clone(),
+                    config.seeds,
+                    config.observer,
+                    config.redirect_query_parameter,
+                )
+                .map_err(|_| StandardWebDecisionRuntimeError::NativeWebReviewExecutionProfile)?;
+                let actions = profile.actions().collect::<BTreeSet<_>>();
+                let report = profile.install(&mut executors).map_err(|_| {
+                    StandardWebDecisionRuntimeError::NativeWebReviewExecutionProfile
+                })?;
+                debug_assert_eq!(report.executors_inserted(), actions.len());
+                actions
+            },
+            None => BTreeSet::new(),
+        };
+
         let mut unsupported_actions: BTreeSet<_> = StandardWebActionKind::all()
             .into_iter()
             .filter(|kind| !executors.contains(kind.executor_id()))
             .map(|kind| kind.action_id().to_owned())
             .collect();
         unsupported_actions.extend(self.additional_suppressed_actions);
+        if native_review_enabled {
+            unsupported_actions.extend(
+                NativeWebReviewActionKind::all()
+                    .into_iter()
+                    .filter(|kind| !native_review_actions.contains(kind))
+                    .map(|kind| kind.action_id().to_owned()),
+            );
+        }
 
         Ok(StandardWebDecisionRuntime {
             target: self.target,

@@ -48,10 +48,18 @@ use crate::runtime_budget::RequestAccountingBroker;
 mod form_controls;
 pub(crate) mod passive_review;
 mod request_broker;
+mod review_response;
 
 use form_controls::{extract_form_control_names, FormControlExtraction};
 use passive_review::{project_passive_response, PassiveResponseProjection};
 pub(crate) use request_broker::{HttpRequestBroker, HttpRequestBrokerError};
+#[cfg(test)]
+pub(crate) use review_response::{
+    project_review_response, ReviewResponseProjection, EMPTY_REVIEW_RESPONSE_PROJECTION,
+};
+pub(crate) use review_response::{
+    CorsAllowCredentialsRelation, CorsAllowOriginRelation, LocationRelation, VaryOriginRelation,
+};
 
 /// Default maximum number of response-body bytes read by one probe.
 pub const DEFAULT_HTTP_BODY_LIMIT: usize = 256 * 1024;
@@ -61,6 +69,7 @@ pub const MAX_HTTP_BODY_LIMIT: usize = 16 * 1024 * 1024;
 
 const MAX_HTTP_PATH_SEGMENTS: usize = 128;
 const MAX_HTTP_PATH_SEGMENT_BYTES: usize = 256;
+const MAX_HTTP_QUERY_PAYLOAD_PARAMETER_BYTES: usize = 64;
 const MAX_ASSESSMENT_DEFENSE_HEADER_OCCURRENCES: usize = 8;
 const MAX_ASSESSMENT_DEFENSE_HEADER_VALUE_BYTES: usize = 1024;
 const MAX_ASSESSMENT_DEFENSE_COOKIE_NAME_BYTES: usize = 256;
@@ -528,6 +537,15 @@ pub enum HttpEvidenceError {
         role: &'static str,
     },
 
+    /// A native query-payload binding used an invalid fixed parameter name.
+    #[error("HTTP query payload parameter is invalid")]
+    InvalidQueryPayloadParameter,
+
+    /// Query-payload pairs require a query-free base request so the control is
+    /// unambiguous and no existing value can be overwritten or retained.
+    #[error("HTTP query payload binding requires a query-free base probe")]
+    QueryPayloadRequiresQueryFreeProbe,
+
     /// The redirect-disabled HTTP client could not be constructed.
     #[error("failed to construct HTTP evidence client: {0}")]
     Client(#[source] reqwest::Error),
@@ -582,6 +600,8 @@ pub(crate) fn execution_failure_kind(error: &HttpEvidenceError) -> DecisionExecu
         | HttpEvidenceError::InvalidHeaderValue { .. }
         | HttpEvidenceError::PayloadStrategyUnavailable { .. }
         | HttpEvidenceError::PayloadDerivationFailed { .. }
+        | HttpEvidenceError::InvalidQueryPayloadParameter
+        | HttpEvidenceError::QueryPayloadRequiresQueryFreeProbe
         | HttpEvidenceError::Client(_)
         | HttpEvidenceError::Reasoning(_)
         | HttpEvidenceError::AssessmentDefenseProjectionInvariant
@@ -709,6 +729,123 @@ impl HttpHeaderPayloadBinding {
     }
 }
 
+/// Binds a payload strategy to one fixed query-parameter name.
+///
+/// The base probe must be query-free. Passive turns derive an empty control
+/// artifact and therefore preserve that exact query-free request; active turns
+/// append exactly one encoded name/value pair. The destination origin, path,
+/// method, and request headers are never changed by this binding.
+#[derive(Clone)]
+pub(crate) struct HttpQueryPayloadBinding {
+    registry: PayloadStrategyRegistry,
+    reference: PayloadStrategyRef,
+    seed: PayloadSeed,
+    limits: PayloadStrategyLimits,
+    parameter: String,
+}
+
+impl HttpQueryPayloadBinding {
+    pub(crate) fn new(
+        registry: PayloadStrategyRegistry,
+        reference: PayloadStrategyRef,
+        seed: PayloadSeed,
+        limits: PayloadStrategyLimits,
+        parameter: impl Into<String>,
+    ) -> Result<Self, HttpEvidenceError> {
+        let parameter = parameter.into();
+        if parameter.is_empty()
+            || parameter.len() > MAX_HTTP_QUERY_PAYLOAD_PARAMETER_BYTES
+            || !parameter.bytes().all(|byte| {
+                byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~')
+            })
+        {
+            return Err(HttpEvidenceError::InvalidQueryPayloadParameter);
+        }
+        if !registry.contains(&reference) {
+            return Err(HttpEvidenceError::PayloadStrategyUnavailable {
+                strategy: reference.to_string(),
+            });
+        }
+        Ok(Self {
+            registry,
+            reference,
+            seed,
+            limits,
+            parameter,
+        })
+    }
+
+    pub(crate) fn reference(&self) -> &PayloadStrategyRef {
+        &self.reference
+    }
+
+    #[cfg(test)]
+    pub(crate) fn parameter(&self) -> &str {
+        &self.parameter
+    }
+
+    fn apply_to_probe(
+        &self,
+        stage: DecisionExecutionStage,
+        mut probe: HttpProbe,
+    ) -> Result<HttpProbe, HttpEvidenceError> {
+        if probe.url.query().is_some() {
+            return Err(HttpEvidenceError::QueryPayloadRequiresQueryFreeProbe);
+        }
+        let role = match stage {
+            DecisionExecutionStage::Passive => PayloadVariantRole::Control,
+            DecisionExecutionStage::Active => PayloadVariantRole::Candidate,
+        };
+        let artifact = self
+            .registry
+            .derive_one(&self.reference, role, &self.seed, self.limits)
+            .map_err(|_| HttpEvidenceError::PayloadDerivationFailed {
+                strategy: self.reference.to_string(),
+                role: payload_role_name(role),
+            })?;
+        let value = std::str::from_utf8(artifact.as_bytes()).map_err(|_| {
+            HttpEvidenceError::PayloadDerivationFailed {
+                strategy: self.reference.to_string(),
+                role: payload_role_name(role),
+            }
+        })?;
+        if value.is_empty() {
+            return Ok(probe);
+        }
+        probe
+            .url
+            .query_pairs_mut()
+            .append_pair(&self.parameter, value);
+        Ok(probe)
+    }
+}
+
+#[derive(Clone)]
+enum HttpPayloadBinding {
+    Header(HttpHeaderPayloadBinding),
+    Query(HttpQueryPayloadBinding),
+}
+
+impl HttpPayloadBinding {
+    fn reference(&self) -> &PayloadStrategyRef {
+        match self {
+            Self::Header(binding) => binding.reference(),
+            Self::Query(binding) => binding.reference(),
+        }
+    }
+
+    fn apply_to_probe(
+        &self,
+        stage: DecisionExecutionStage,
+        probe: HttpProbe,
+    ) -> Result<HttpProbe, HttpEvidenceError> {
+        match self {
+            Self::Header(binding) => binding.apply_to_probe(stage, probe),
+            Self::Query(binding) => binding.apply_to_probe(stage, probe),
+        }
+    }
+}
+
 /// Real HTTP executor that produces typed evidence for the decision runner.
 ///
 /// # Examples
@@ -734,7 +871,7 @@ pub struct HttpEvidenceExecutor {
     id: String,
     requests: HttpRequestBroker,
     probes: Arc<dyn HttpProbeProvider>,
-    payload: Option<HttpHeaderPayloadBinding>,
+    payload: Option<HttpPayloadBinding>,
     capture_form_control_names: bool,
     complete_response_observer: Option<Arc<dyn CompleteHttpResponseObserver>>,
     assessment_defense_projection: bool,
@@ -866,15 +1003,21 @@ impl HttpEvidenceExecutor {
     /// do not select the reference are unaffected, so an executor may serve both
     /// plain discovery and strategy-driven differential turns.
     pub fn with_payload_binding(mut self, binding: HttpHeaderPayloadBinding) -> Self {
-        self.payload = Some(binding);
+        self.payload = Some(HttpPayloadBinding::Header(binding));
+        self
+    }
+
+    /// Installs the crate-owned query-pair binding used by native bounded web
+    /// review actions. It is intentionally not a public arbitrary transport
+    /// setting.
+    pub(crate) fn with_query_payload_binding(mut self, binding: HttpQueryPayloadBinding) -> Self {
+        self.payload = Some(HttpPayloadBinding::Query(binding));
         self
     }
 
     /// Returns the bound payload strategy reference, if any.
     pub fn payload_strategy_reference(&self) -> Option<&PayloadStrategyRef> {
-        self.payload
-            .as_ref()
-            .map(HttpHeaderPayloadBinding::reference)
+        self.payload.as_ref().map(HttpPayloadBinding::reference)
     }
 
     /// Returns the immutable execution policy.
@@ -1116,6 +1259,8 @@ impl HttpEvidenceExecutor {
             // Raw headers remain local to the executor. Only this bounded,
             // value-free projection crosses the sealed observer boundary.
             let passive_response_projection = project_passive_response(&response.headers);
+            let review_response_projection =
+                review_response::project_review_response(probe, &response.headers);
             let evidence_id = |predicate: venom_core::PredicateDescriptor| {
                 let predicate = predicate.into_knowledge();
                 evidence
@@ -1126,8 +1271,10 @@ impl HttpEvidenceExecutor {
             let observation = CompleteHttpResponseObservation {
                 case_id: decision.case().id(),
                 action_id: decision.case().action_id(),
+                executor_id: &self.id,
                 hypothesis_id: decision.case().hypothesis_id(),
                 has_payload_strategy: decision.case().payload_strategy().is_some(),
+                payload_strategy: decision.case().payload_strategy(),
                 applies_hypothesis_transition: decision.case().applies_hypothesis_transition(),
                 stage: decision.stage(),
                 subject: decision.case().subject(),
@@ -1153,6 +1300,7 @@ impl HttpEvidenceExecutor {
                     HttpEvidencePredicate::RESPONSE_BODY_SHA256,
                 ),
                 passive_response_projection: &passive_response_projection,
+                review_response_projection: &review_response_projection,
             };
             evidence.extend(observer.observe(observation)?);
         }
@@ -1255,6 +1403,8 @@ mod complete_response_observer_seal {
 
     impl Sealed for crate::web_runtime::AssessmentDiscoveryObserver {}
 
+    impl Sealed for crate::web_runtime::AssessmentReviewObserverSet {}
+
     #[cfg(test)]
     impl Sealed for super::tests::RejectingCompleteResponseObserver {}
 }
@@ -1275,8 +1425,10 @@ pub(crate) trait CompleteHttpResponseObserver:
 pub(crate) struct CompleteHttpResponseObservation<'a> {
     case_id: &'a str,
     action_id: &'a str,
+    executor_id: &'a str,
     hypothesis_id: &'a str,
     has_payload_strategy: bool,
+    payload_strategy: Option<&'a PayloadStrategyRef>,
     applies_hypothesis_transition: bool,
     stage: DecisionExecutionStage,
     subject: &'a venom_core::EntityId,
@@ -1294,6 +1446,7 @@ pub(crate) struct CompleteHttpResponseObservation<'a> {
     response_body_truncated_evidence_id: Option<&'a venom_core::EvidenceId>,
     response_body_digest_evidence_id: Option<&'a venom_core::EvidenceId>,
     passive_response_projection: &'a PassiveResponseProjection,
+    review_response_projection: &'a review_response::ReviewResponseProjection,
 }
 
 impl CompleteHttpResponseObservation<'_> {
@@ -1305,12 +1458,20 @@ impl CompleteHttpResponseObservation<'_> {
         self.action_id
     }
 
+    pub(crate) const fn executor_id(&self) -> &str {
+        self.executor_id
+    }
+
     pub(crate) const fn hypothesis_id(&self) -> &str {
         self.hypothesis_id
     }
 
     pub(crate) const fn has_payload_strategy(&self) -> bool {
         self.has_payload_strategy
+    }
+
+    pub(crate) const fn payload_strategy(&self) -> Option<&PayloadStrategyRef> {
+        self.payload_strategy
     }
 
     pub(crate) const fn applies_hypothesis_transition(&self) -> bool {
@@ -1382,14 +1543,22 @@ impl CompleteHttpResponseObservation<'_> {
     pub(crate) const fn passive_response_projection(&self) -> &PassiveResponseProjection {
         self.passive_response_projection
     }
+
+    pub(crate) const fn review_response_projection(
+        &self,
+    ) -> &review_response::ReviewResponseProjection {
+        self.review_response_projection
+    }
 }
 
 #[cfg(test)]
 pub(crate) struct CompleteHttpResponseObservationTestInput<'a> {
     pub(crate) case_id: &'a str,
     pub(crate) action_id: &'a str,
+    pub(crate) executor_id: &'a str,
     pub(crate) hypothesis_id: &'a str,
     pub(crate) has_payload_strategy: bool,
+    pub(crate) payload_strategy: Option<&'a PayloadStrategyRef>,
     pub(crate) applies_hypothesis_transition: bool,
     pub(crate) stage: DecisionExecutionStage,
     pub(crate) subject: &'a venom_core::EntityId,
@@ -1407,6 +1576,7 @@ pub(crate) struct CompleteHttpResponseObservationTestInput<'a> {
     pub(crate) response_body_truncated_evidence_id: Option<&'a venom_core::EvidenceId>,
     pub(crate) response_body_digest_evidence_id: Option<&'a venom_core::EvidenceId>,
     pub(crate) passive_response_projection: &'a PassiveResponseProjection,
+    pub(crate) review_response_projection: Option<&'a ReviewResponseProjection>,
 }
 
 #[cfg(test)]
@@ -1416,8 +1586,10 @@ pub(crate) fn complete_http_response_observation_for_test<'a>(
     CompleteHttpResponseObservation {
         case_id: input.case_id,
         action_id: input.action_id,
+        executor_id: input.executor_id,
         hypothesis_id: input.hypothesis_id,
         has_payload_strategy: input.has_payload_strategy,
+        payload_strategy: input.payload_strategy,
         applies_hypothesis_transition: input.applies_hypothesis_transition,
         stage: input.stage,
         subject: input.subject,
@@ -1435,6 +1607,9 @@ pub(crate) fn complete_http_response_observation_for_test<'a>(
         response_body_truncated_evidence_id: input.response_body_truncated_evidence_id,
         response_body_digest_evidence_id: input.response_body_digest_evidence_id,
         passive_response_projection: input.passive_response_projection,
+        review_response_projection: input
+            .review_response_projection
+            .unwrap_or(&EMPTY_REVIEW_RESPONSE_PROJECTION),
     }
 }
 
@@ -2434,6 +2609,101 @@ mod tests {
             Url::parse(&format!("http://{address}/probe")).unwrap(),
             captured,
         )
+    }
+
+    #[test]
+    fn query_payload_binding_materializes_only_one_active_parameter() {
+        let reference = PayloadStrategyRef::new(
+            crate::payload_strategies::EXTERNAL_URL_QUERY_PAIR_ID,
+            crate::payload_strategies::EXTERNAL_URL_QUERY_PAIR_REVISION,
+        )
+        .unwrap();
+        let strategies = crate::standard_payload_strategies().unwrap();
+        let limits = PayloadStrategyLimits::default();
+        let candidate = "https://case-07.review.invalid/landing?source=venom";
+        let seed = PayloadSeed::new(candidate.as_bytes().to_vec(), limits).unwrap();
+        let binding =
+            HttpQueryPayloadBinding::new(strategies, reference.clone(), seed, limits, "next")
+                .unwrap();
+        assert_eq!(binding.reference(), &reference);
+        assert_eq!(binding.parameter(), "next");
+
+        let target = Url::parse("https://authorized.example.test/review").unwrap();
+        let control = binding
+            .apply_to_probe(
+                DecisionExecutionStage::Passive,
+                HttpProbe::new(target.clone(), HttpProbeMethod::Get).unwrap(),
+            )
+            .unwrap();
+        assert_eq!(control.url(), &target);
+        assert!(control.url().query().is_none());
+
+        let active = binding
+            .apply_to_probe(
+                DecisionExecutionStage::Active,
+                HttpProbe::new(target.clone(), HttpProbeMethod::Get).unwrap(),
+            )
+            .unwrap();
+        assert_eq!(active.url().origin(), target.origin());
+        assert_eq!(active.url().path(), target.path());
+        assert_eq!(active.method(), HttpProbeMethod::Get);
+        assert!(active.headers().is_empty());
+        assert_eq!(
+            active.url().query_pairs().collect::<Vec<_>>(),
+            [("next".into(), candidate.into())]
+        );
+    }
+
+    #[test]
+    fn query_payload_binding_rejects_ambiguous_or_invalid_base_state() {
+        let reference = PayloadStrategyRef::new(
+            crate::payload_strategies::EXTERNAL_URL_QUERY_PAIR_ID,
+            crate::payload_strategies::EXTERNAL_URL_QUERY_PAIR_REVISION,
+        )
+        .unwrap();
+        let limits = PayloadStrategyLimits::default();
+        let seed = PayloadSeed::new(b"https://case.review.invalid/".to_vec(), limits).unwrap();
+        for invalid in ["", "has space", "unsafe&name", "x=y"] {
+            assert!(matches!(
+                HttpQueryPayloadBinding::new(
+                    crate::standard_payload_strategies().unwrap(),
+                    reference.clone(),
+                    seed.clone(),
+                    limits,
+                    invalid,
+                ),
+                Err(HttpEvidenceError::InvalidQueryPayloadParameter)
+            ));
+        }
+        let oversized = "x".repeat(MAX_HTTP_QUERY_PAYLOAD_PARAMETER_BYTES + 1);
+        assert!(matches!(
+            HttpQueryPayloadBinding::new(
+                crate::standard_payload_strategies().unwrap(),
+                reference.clone(),
+                seed.clone(),
+                limits,
+                oversized,
+            ),
+            Err(HttpEvidenceError::InvalidQueryPayloadParameter)
+        ));
+
+        let binding = HttpQueryPayloadBinding::new(
+            crate::standard_payload_strategies().unwrap(),
+            reference,
+            seed,
+            limits,
+            "next",
+        )
+        .unwrap();
+        let existing = HttpProbe::new(
+            Url::parse("https://authorized.example.test/review?kept=value").unwrap(),
+            HttpProbeMethod::Get,
+        )
+        .unwrap();
+        assert!(matches!(
+            binding.apply_to_probe(DecisionExecutionStage::Passive, existing),
+            Err(HttpEvidenceError::QueryPayloadRequiresQueryFreeProbe)
+        ));
     }
 
     #[tokio::test]

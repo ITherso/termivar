@@ -33,6 +33,10 @@ use super::{
         AssessmentItemTarget, AssessmentProjectionContext, StableAssessmentScopeId,
         StableAssessmentSubjectId,
     },
+    assessment_review::CommittedAssessmentReviewLedger,
+    assessment_review_projection::{
+        project_assessment_review_items, AssessmentReviewItemProjectionError,
+    },
     web_assessment::{
         WebAssessmentMethod, WebAssessmentSubject, WebAssessmentSubjectOrigin,
         HARD_MAX_WEB_ASSESSMENT_SUBJECTS,
@@ -989,6 +993,8 @@ pub(crate) enum PassiveAssessmentItemProjectionError {
     ConditionLimit,
     #[error(transparent)]
     Item(#[from] AssessmentItemProjectionError),
+    #[error(transparent)]
+    Review(#[from] AssessmentReviewItemProjectionError),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1050,8 +1056,20 @@ struct PlannedPassiveAssessmentItem {
 /// Projects only the explicitly authorized root. Conditions on discovered
 /// subjects are counted as incomplete instead of deriving an identity from a
 /// URL, path, BFS ordinal, or other potentially sensitive transport data.
+#[cfg(test)]
 pub(crate) fn project_passive_assessment_items(
     ledger: &CommittedAssessmentPassiveLedger,
+    knowledge: &KnowledgeBase,
+    authorized_root: &WebAssessmentSubject,
+) -> Result<PassiveAssessmentItemProjection, PassiveAssessmentItemProjectionError> {
+    project_assessment_items(ledger, None, knowledge, authorized_root)
+}
+
+/// Projects passive observations and optional matched review candidates into
+/// one context-owned item/reference space.
+pub(crate) fn project_assessment_items(
+    ledger: &CommittedAssessmentPassiveLedger,
+    review: Option<&CommittedAssessmentReviewLedger>,
     knowledge: &KnowledgeBase,
     authorized_root: &WebAssessmentSubject,
 ) -> Result<PassiveAssessmentItemProjection, PassiveAssessmentItemProjectionError> {
@@ -1079,8 +1097,9 @@ pub(crate) fn project_passive_assessment_items(
         None
     };
     let exact_origin = authorized_root.url().origin().ascii_serialization();
-    project_passive_assessment_items_for_root(
+    project_assessment_items_for_root(
         ledger,
+        review,
         knowledge,
         root_subject,
         &exact_origin,
@@ -1089,8 +1108,29 @@ pub(crate) fn project_passive_assessment_items(
     )
 }
 
+#[cfg(test)]
 fn project_passive_assessment_items_for_root(
     ledger: &CommittedAssessmentPassiveLedger,
+    knowledge: &KnowledgeBase,
+    root_subject: Option<EntityId>,
+    exact_origin: &str,
+    root_query_parameter_names: &[String],
+    https: bool,
+) -> Result<PassiveAssessmentItemProjection, PassiveAssessmentItemProjectionError> {
+    project_assessment_items_for_root(
+        ledger,
+        None,
+        knowledge,
+        root_subject,
+        exact_origin,
+        root_query_parameter_names,
+        https,
+    )
+}
+
+fn project_assessment_items_for_root(
+    ledger: &CommittedAssessmentPassiveLedger,
+    review: Option<&CommittedAssessmentReviewLedger>,
     knowledge: &KnowledgeBase,
     root_subject: Option<EntityId>,
     exact_origin: &str,
@@ -1158,6 +1198,9 @@ fn project_passive_assessment_items_for_root(
             &target,
             &item.evidence_ids,
         )?;
+    }
+    if let (Some(review), Some(root_subject)) = (review, root_subject.as_ref()) {
+        project_assessment_review_items(&mut context, review, knowledge, root_subject)?;
     }
     Ok(PassiveAssessmentItemProjection {
         items: context.finish(),

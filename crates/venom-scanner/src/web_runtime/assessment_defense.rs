@@ -15,7 +15,8 @@ use venom_core::{
 
 use crate::{
     planner::{AttackPlan, AttackPlanner},
-    StandardWebActionKind, STANDARD_WEB_ACTION_COUNT,
+    NativeWebReviewActionKind, StandardWebActionKind, NATIVE_WEB_REVIEW_ACTION_COUNT,
+    STANDARD_WEB_ACTION_COUNT,
 };
 use crate::{DecisionEvidenceReceipt, DecisionExecutionStage, KnowledgeBase, VerificationCase};
 
@@ -522,15 +523,14 @@ impl AssessmentDefenseController {
         if !self.enforcement_enabled {
             return Ok(BTreeSet::new());
         }
-        validate_standard_planner(planner)?;
+        let classes = validated_assessment_action_classes(planner)?;
         let signal = self.ledger.signal_for_subject(subject);
         let mut suppressed = BTreeSet::new();
-        for kind in StandardWebActionKind::all() {
-            let class = interaction_class(kind);
+        for (action_id, class) in classes {
             if assessment_interaction_decision(signal.response(), class)
                 == InteractionDecision::Suppress
             {
-                suppressed.insert(kind.action_id().to_owned());
+                suppressed.insert(action_id);
             }
         }
         Ok(suppressed)
@@ -541,17 +541,12 @@ impl AssessmentDefenseController {
         baseline: AttackPlan,
         planner: &AttackPlanner,
     ) -> Result<DefenseAwareShadowPlan, ()> {
-        validate_standard_planner(planner)?;
-        let mut classes = BTreeMap::new();
+        let classes = validated_assessment_action_classes(planner)?;
         for step in baseline.steps() {
-            let kind = StandardWebActionKind::all()
-                .into_iter()
-                .find(|kind| kind.action_id() == step.action_id())
-                .ok_or(())?;
-            if planner.action(step.action_id()).is_none() {
+            if !classes.contains_key(step.action_id()) || planner.action(step.action_id()).is_none()
+            {
                 return Err(());
             }
-            classes.insert(step.action_id().to_owned(), interaction_class(kind));
         }
         let signal = self.ledger.signal_for_subject(baseline.subject());
         Ok(defense_aware_shadow_plan_from_current(
@@ -567,18 +562,49 @@ impl AssessmentDefenseController {
     }
 }
 
-fn validate_standard_planner(planner: &AttackPlanner) -> Result<(), ()> {
-    if planner.len() != STANDARD_WEB_ACTION_COUNT
-        || StandardWebActionKind::all()
-            .into_iter()
-            .any(|kind| planner.action(kind.action_id()).is_none())
-    {
+/// Returns the exact closed action-to-defense-class catalog installed in an
+/// assessment planner.
+///
+/// Standard-only composition remains valid. The only accepted extension is
+/// the complete native web-review catalog; partial catalogs and arbitrary
+/// replacement or extra action identities fail closed. Returning the catalog
+/// also gives enforcement one bounded set to iterate, so defense can only
+/// classify and remove actions the validated planner already owns.
+fn validated_assessment_action_classes(
+    planner: &AttackPlanner,
+) -> Result<BTreeMap<String, DefenseInteractionClass>, ()> {
+    let has_all_standard = StandardWebActionKind::all()
+        .into_iter()
+        .all(|kind| planner.action(kind.action_id()).is_some());
+    let has_all_native = NativeWebReviewActionKind::all()
+        .into_iter()
+        .all(|kind| planner.action(kind.action_id()).is_some());
+    let standard_only = planner.len() == STANDARD_WEB_ACTION_COUNT && has_all_standard;
+    let standard_with_native = planner.len()
+        == STANDARD_WEB_ACTION_COUNT + NATIVE_WEB_REVIEW_ACTION_COUNT
+        && has_all_standard
+        && has_all_native;
+    if !standard_only && !standard_with_native {
         return Err(());
     }
-    Ok(())
+
+    let mut classes = BTreeMap::new();
+    for kind in StandardWebActionKind::all() {
+        classes.insert(
+            kind.action_id().to_owned(),
+            standard_interaction_class(kind),
+        );
+    }
+    if standard_with_native {
+        for kind in NativeWebReviewActionKind::all() {
+            classes.insert(kind.action_id().to_owned(), native_interaction_class(kind));
+        }
+    }
+    debug_assert_eq!(classes.len(), planner.len());
+    Ok(classes)
 }
 
-const fn interaction_class(kind: StandardWebActionKind) -> DefenseInteractionClass {
+const fn standard_interaction_class(kind: StandardWebActionKind) -> DefenseInteractionClass {
     match kind {
         StandardWebActionKind::LaravelInputAnalysis => DefenseInteractionClass::LocalOnly,
         StandardWebActionKind::LaravelRouteDiscovery => DefenseInteractionClass::Behavioral,
@@ -589,6 +615,15 @@ const fn interaction_class(kind: StandardWebActionKind) -> DefenseInteractionCla
         | StandardWebActionKind::SanctumAuthBoundary
         | StandardWebActionKind::HttpBasicAuthBoundary
         | StandardWebActionKind::HttpBearerAuthBoundary => DefenseInteractionClass::Passive,
+    }
+}
+
+const fn native_interaction_class(kind: NativeWebReviewActionKind) -> DefenseInteractionClass {
+    match kind {
+        NativeWebReviewActionKind::CorsPolicyPair
+        | NativeWebReviewActionKind::RedirectReflectionQueryPair => {
+            DefenseInteractionClass::DifferentialRead
+        },
     }
 }
 
@@ -1102,7 +1137,97 @@ fn parse_product(value: &str) -> Result<DefenseProduct, ()> {
 
 #[cfg(test)]
 mod tests {
+    use venom_core::{Hypothesis, HypothesisState, HypothesisStrength, Probability};
+
+    use crate::{
+        web_review_decision::NativeWebReviewDecisionProfile, ActionCost, AdaptationLimits,
+        AttackAction, BenefitScore, DecisionLoop, DecisionLoopConfig, ExperiencePolicy, Expression,
+        HypothesisSelector, KnowledgeLayer, PlanningContext, RequiredStrength, RiskScore,
+        StandardWebAttackProfile,
+    };
+
     use super::*;
+
+    fn planning_context() -> PlanningContext {
+        PlanningContext::new(
+            BenefitScore::from_percent(100).unwrap(),
+            32,
+            RiskScore::from_percent(100).unwrap(),
+        )
+    }
+
+    fn decision_loop() -> DecisionLoop {
+        DecisionLoop::new(
+            DecisionLoopConfig::new(
+                planning_context(),
+                AdaptationLimits::default(),
+                ExperiencePolicy::default(),
+                4,
+            )
+            .unwrap(),
+        )
+    }
+
+    fn standard_planner() -> AttackPlanner {
+        let mut planner = AttackPlanner::new();
+        StandardWebAttackProfile::new()
+            .unwrap()
+            .install(&mut planner)
+            .unwrap();
+        planner
+    }
+
+    fn standard_with_native_planner() -> AttackPlanner {
+        let mut decision_loop = decision_loop();
+        StandardWebAttackProfile::new()
+            .unwrap()
+            .install(decision_loop.planner_mut())
+            .unwrap();
+        NativeWebReviewDecisionProfile::new()
+            .unwrap()
+            .install(&mut decision_loop)
+            .unwrap();
+        decision_loop.planner().clone()
+    }
+
+    fn unknown_action(id: &str) -> AttackAction {
+        let predicate = KnowledgePredicate::new("test.assessment-defense", "eligible").unwrap();
+        let value = EvidenceValue::Boolean(true);
+        AttackAction::new(
+            id,
+            "test.assessment-defense.executor",
+            Expression::equals(KnowledgeLayer::Hypothesis, predicate.clone(), value.clone()),
+            HypothesisSelector::new(
+                predicate,
+                value,
+                Probability::from_percent(50).unwrap(),
+                RequiredStrength::Any,
+            ),
+            BenefitScore::from_percent(10).unwrap(),
+            ActionCost::new(1).unwrap(),
+            RiskScore::from_percent(1).unwrap(),
+            BTreeSet::new(),
+        )
+        .unwrap()
+    }
+
+    fn native_review_plan(planner: &AttackPlanner, subject: &EntityId) -> AttackPlan {
+        let knowledge = KnowledgeBase::new();
+        let mut eligible = Hypothesis::with_id(
+            "test:assessment-defense:native-review-eligible",
+            subject.clone(),
+            KnowledgePredicate::new("web.review", "eligible").unwrap(),
+            EvidenceValue::Boolean(true),
+            Probability::from_percent(99).unwrap(),
+        )
+        .unwrap();
+        eligible.set_strength(HypothesisStrength::Weak);
+        eligible.set_state(HypothesisState::Supported);
+        knowledge.upsert_hypothesis(eligible).unwrap();
+        planner
+            .plan(&knowledge, subject, planning_context())
+            .unwrap()
+    }
 
     fn test_case(id: &str, subject: &EntityId) -> VerificationCase {
         VerificationCase::new(
@@ -1204,6 +1329,116 @@ mod tests {
         assert!(controller
             .defense_suppressed_actions(&subject, &AttackPlanner::new())
             .is_err());
+    }
+
+    #[test]
+    fn exact_standard_and_complete_native_catalogs_are_the_only_accepted_shapes() {
+        let controller = AssessmentDefenseController::new(true);
+        let subject = EntityId::new("endpoint:https://example.test/").unwrap();
+        let standard = standard_planner();
+        let combined = standard_with_native_planner();
+
+        assert_eq!(standard.len(), STANDARD_WEB_ACTION_COUNT);
+        assert!(controller
+            .defense_suppressed_actions(&subject, &standard)
+            .is_ok());
+        assert_eq!(
+            combined.len(),
+            STANDARD_WEB_ACTION_COUNT + NATIVE_WEB_REVIEW_ACTION_COUNT
+        );
+        assert!(controller
+            .defense_suppressed_actions(&subject, &combined)
+            .is_ok());
+
+        let classes = validated_assessment_action_classes(&combined).unwrap();
+        for kind in NativeWebReviewActionKind::all() {
+            assert_eq!(
+                classes.get(kind.action_id()),
+                Some(&DefenseInteractionClass::DifferentialRead)
+            );
+        }
+    }
+
+    #[test]
+    fn architecture_rejects_partial_and_unknown_native_catalogs() {
+        let combined = standard_with_native_planner();
+        let mut partial = standard_planner();
+        partial
+            .register(
+                combined
+                    .action(NativeWebReviewActionKind::CorsPolicyPair.action_id())
+                    .unwrap()
+                    .clone(),
+            )
+            .unwrap();
+        assert!(validated_assessment_action_classes(&partial).is_err());
+
+        let mut unknown_extra = standard_planner();
+        unknown_extra
+            .register(unknown_action("test.assessment-defense.unknown@1"))
+            .unwrap();
+        assert!(validated_assessment_action_classes(&unknown_extra).is_err());
+
+        // Match the complete catalog's length while replacing one required
+        // native identity with an arbitrary action. Length alone is not enough.
+        partial
+            .register(unknown_action("test.assessment-defense.replacement@1"))
+            .unwrap();
+        assert_eq!(
+            partial.len(),
+            STANDARD_WEB_ACTION_COUNT + NATIVE_WEB_REVIEW_ACTION_COUNT
+        );
+        assert!(validated_assessment_action_classes(&partial).is_err());
+    }
+
+    #[test]
+    fn architecture_defense_shadow_never_adds_or_reorders_native_actions() {
+        let planner = standard_with_native_planner();
+        let subject = EntityId::new("endpoint:https://example.test/").unwrap();
+        let baseline = native_review_plan(&planner, &subject);
+        let baseline_ids: Vec<_> = baseline
+            .steps()
+            .iter()
+            .map(|step| step.action_id().to_owned())
+            .collect();
+        assert_eq!(baseline_ids.len(), NATIVE_WEB_REVIEW_ACTION_COUNT);
+
+        let case = test_case("case:test:defense:native-review", &subject);
+        let mut controller = AssessmentDefenseController::new(true);
+        controller.ledger.observations.push(test_observation(
+            case,
+            DecisionExecutionStage::Active,
+            projected_state(403, false, None),
+            AssessmentDefenseBodyCoverage::CompleteUtf8Prefix,
+            false,
+            "defense/native-review-blocked",
+        ));
+
+        let shadow = controller
+            .shadow_from_policy_baseline(baseline, &planner)
+            .unwrap();
+        let shadow_ids: Vec<_> = shadow
+            .shadow()
+            .steps()
+            .iter()
+            .map(|step| step.action_id().to_owned())
+            .collect();
+        let retained_in_order: Vec<_> = baseline_ids
+            .iter()
+            .filter(|action_id| shadow_ids.contains(action_id))
+            .cloned()
+            .collect();
+
+        assert_eq!(shadow_ids, retained_in_order);
+        assert!(shadow_ids.len() <= baseline_ids.len());
+        assert!(shadow_ids
+            .iter()
+            .all(|action_id| baseline_ids.contains(action_id)));
+        assert!(shadow
+            .delta()
+            .suppressed()
+            .iter()
+            .all(|suppressed| baseline_ids.contains(&suppressed.action_id().to_owned())));
     }
 
     #[test]

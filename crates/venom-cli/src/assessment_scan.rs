@@ -387,6 +387,9 @@ async fn run_web_review(
     if profile.defense_enforcement_enabled() {
         builder = builder.enable_defense_enforcement();
     }
+    if profile.capabilities().low_risk_differential_review() {
+        builder = builder.enable_low_risk_differential_review();
+    }
     let mut runtime = builder.build()?;
     match runtime.analyze().await {
         Ok(report) if matches!(report.completion(), WebAssessmentCompletion::Complete) => {
@@ -964,6 +967,9 @@ fn incomplete_reason_code(reason: &WebAssessmentIncompleteReason) -> &'static st
         WebAssessmentIncompleteReason::AssessmentSubjectIdentityUnavailable => {
             "assessment_subject_identity_unavailable"
         },
+        WebAssessmentIncompleteReason::DifferentialReviewIncomplete => {
+            "differential_review_incomplete"
+        },
         _ => "other",
     }
 }
@@ -1331,6 +1337,10 @@ mod tests {
             (
                 WebAssessmentIncompleteReason::AssessmentSubjectIdentityUnavailable,
                 "assessment_subject_identity_unavailable",
+            ),
+            (
+                WebAssessmentIncompleteReason::DifferentialReviewIncomplete,
+                "differential_review_incomplete",
             ),
         ];
         for (reason, expected) in incomplete {

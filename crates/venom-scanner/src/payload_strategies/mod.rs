@@ -24,14 +24,23 @@ use std::sync::Arc;
 use crate::payload_strategy::{PayloadStrategyError, PayloadStrategyRegistry};
 
 pub mod api_authorization_context_pair;
+pub mod cors_origin_pair;
 pub mod encoding;
+pub mod external_url_query_pair;
 pub mod http_header_control_pair;
 
 pub use api_authorization_context_pair::{
     ApiAuthorizationContextPairStrategy, API_AUTHORIZATION_CONTEXT_PAIR_HEADER_NAME,
     API_AUTHORIZATION_CONTEXT_PAIR_ID, API_AUTHORIZATION_CONTEXT_PAIR_REVISION,
 };
+pub use cors_origin_pair::{
+    CorsOriginPairStrategy, CORS_ORIGIN_PAIR_HEADER_NAME, CORS_ORIGIN_PAIR_ID,
+    CORS_ORIGIN_PAIR_REVISION,
+};
 pub use encoding::{encode_into_artifact, hex_encode, percent_encode, PayloadEncoding};
+pub use external_url_query_pair::{
+    ExternalUrlQueryPairStrategy, EXTERNAL_URL_QUERY_PAIR_ID, EXTERNAL_URL_QUERY_PAIR_REVISION,
+};
 pub use http_header_control_pair::{
     HttpHeaderControlPairStrategy, HTTP_HEADER_CONTROL_PAIR_HEADER_NAME,
     HTTP_HEADER_CONTROL_PAIR_ID, HTTP_HEADER_CONTROL_PAIR_REVISION,
@@ -46,6 +55,8 @@ pub fn standard_payload_strategies() -> Result<PayloadStrategyRegistry, PayloadS
     let mut registry = PayloadStrategyRegistry::new();
     registry.register(Arc::new(HttpHeaderControlPairStrategy::new()))?;
     registry.register(Arc::new(ApiAuthorizationContextPairStrategy::new()))?;
+    registry.register(Arc::new(CorsOriginPairStrategy::new()))?;
+    registry.register(Arc::new(ExternalUrlQueryPairStrategy::new()))?;
     Ok(registry)
 }
 
@@ -69,10 +80,17 @@ mod tests {
             API_AUTHORIZATION_CONTEXT_PAIR_REVISION,
         )
         .unwrap();
+        let cors_origin_pair =
+            PayloadStrategyRef::new(CORS_ORIGIN_PAIR_ID, CORS_ORIGIN_PAIR_REVISION).unwrap();
+        let external_url_query_pair =
+            PayloadStrategyRef::new(EXTERNAL_URL_QUERY_PAIR_ID, EXTERNAL_URL_QUERY_PAIR_REVISION)
+                .unwrap();
 
-        assert_eq!(registry.len(), 2);
+        assert_eq!(registry.len(), 4);
         assert!(registry.contains(&header_pair));
         assert!(registry.contains(&authorization_pair));
+        assert!(registry.contains(&cors_origin_pair));
+        assert!(registry.contains(&external_url_query_pair));
     }
 
     #[test]

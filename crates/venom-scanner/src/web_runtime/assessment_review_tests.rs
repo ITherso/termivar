@@ -1,0 +1,786 @@
+use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
+use url::Url;
+use venom_core::{ConfidenceScore, EntityId, EvidenceId, EvidenceValue};
+
+use super::*;
+use crate::http_evidence::{
+    complete_http_response_observation_for_test, passive_response_projection_for_test,
+    project_review_response, CompleteHttpResponseObservationTestInput, HttpProbe,
+    ReviewResponseProjection,
+};
+
+const CASE_ID: &str = "case:decision:1:planned:web-review";
+const HYPOTHESIS_ID: &str = "hypothesis:web-review:eligible";
+const QUERY_PARAMETER: &str = "return_to";
+
+fn root() -> Url {
+    Url::parse("https://review.test/account").unwrap()
+}
+
+fn seeds() -> NativeWebReviewSeeds {
+    NativeWebReviewSeeds::from_authorized_origin(&root()).unwrap()
+}
+
+fn subject() -> EntityId {
+    EntityId::new(format!("endpoint:{}", root())).unwrap()
+}
+
+fn headers(values: &[(&str, &str)]) -> HeaderMap {
+    let mut headers = HeaderMap::new();
+    for (name, value) in values {
+        headers.append(
+            HeaderName::from_bytes(name.as_bytes()).unwrap(),
+            HeaderValue::from_str(value).unwrap(),
+        );
+    }
+    headers
+}
+
+#[allow(clippy::too_many_arguments)]
+fn observe(
+    observer: &AssessmentReviewObserverSet,
+    kind: NativeWebReviewActionKind,
+    stage: DecisionExecutionStage,
+    requested_url: &Url,
+    response_headers: &HeaderMap,
+    status: u16,
+    media_type: Option<&str>,
+    complete_body: Option<&[u8]>,
+    executor_id: &str,
+    strategy: Option<&PayloadStrategyRef>,
+    applies_transition: bool,
+) -> Result<Vec<Evidence>, HttpEvidenceError> {
+    let mut probe = HttpProbe::new(requested_url.clone(), HttpProbeMethod::Get).unwrap();
+    if kind == NativeWebReviewActionKind::CorsPolicyPair && stage == DecisionExecutionStage::Active
+    {
+        probe = probe.with_header("origin", seeds().cors_origin()).unwrap();
+    }
+    let review = project_review_response(&probe, response_headers);
+    let passive = passive_response_projection_for_test(&[]);
+    let ids = (0..7).map(|_| EvidenceId::new()).collect::<Vec<_>>();
+    let expected_subject = subject();
+    let observation =
+        complete_http_response_observation_for_test(CompleteHttpResponseObservationTestInput {
+            case_id: CASE_ID,
+            action_id: kind.action_id(),
+            executor_id,
+            hypothesis_id: HYPOTHESIS_ID,
+            has_payload_strategy: strategy.is_some(),
+            payload_strategy: strategy,
+            applies_hypothesis_transition: applies_transition,
+            stage,
+            subject: &expected_subject,
+            method: HttpProbeMethod::Get,
+            requested_url,
+            status,
+            media_type,
+            reliability: ConfidenceScore::MAX,
+            complete_body,
+            request_method_evidence_id: Some(&ids[0]),
+            request_url_evidence_id: Some(&ids[1]),
+            response_status_evidence_id: Some(&ids[2]),
+            response_final_url_evidence_id: Some(&ids[3]),
+            response_media_type_evidence_id: media_type.map(|_| &ids[4]),
+            response_body_truncated_evidence_id: Some(&ids[5]),
+            response_body_digest_evidence_id: Some(&ids[6]),
+            passive_response_projection: &passive,
+            review_response_projection: Some(&review),
+        });
+    observer.observe(observation)
+}
+
+fn values(evidence: &[Evidence]) -> Vec<(&str, &str)> {
+    evidence
+        .iter()
+        .map(|item| {
+            let EvidenceValue::Text(value) = item.value() else {
+                panic!("native review evidence must use fixed text relations")
+            };
+            (item.predicate().name(), value.as_str())
+        })
+        .collect()
+}
+
+#[test]
+fn composite_observer_projects_both_exact_action_contracts_without_raw_values() {
+    let root = root();
+    let seeds = seeds();
+    let observer =
+        AssessmentReviewObserverSet::new(root.clone(), seeds.clone(), Some(QUERY_PARAMETER))
+            .unwrap();
+    let cors_strategy = native_review_strategy_ref(NativeWebReviewActionKind::CorsPolicyPair);
+    let cors = observe(
+        &observer,
+        NativeWebReviewActionKind::CorsPolicyPair,
+        DecisionExecutionStage::Active,
+        &root,
+        &headers(&[
+            ("access-control-allow-origin", seeds.cors_origin()),
+            ("access-control-allow-credentials", "true"),
+            ("vary", "Accept-Encoding, Origin"),
+        ]),
+        200,
+        Some("text/html"),
+        Some(b"<p>ordinary</p>"),
+        NativeWebReviewActionKind::CorsPolicyPair.executor_id(),
+        Some(&cors_strategy),
+        false,
+    )
+    .unwrap();
+    assert_eq!(
+        values(&cors),
+        vec![
+            (NATIVE_WEB_REVIEW_RESPONSE_MARKER, "active-candidate"),
+            (CORS_HTTP_STATUS_CLASS, "successful"),
+            (CORS_ALLOW_ORIGIN_RELATION, "exact-request-origin"),
+            (CORS_ALLOW_CREDENTIALS_RELATION, "true"),
+            (CORS_VARY_ORIGIN_RELATION, "contains-origin"),
+        ]
+    );
+
+    let mut candidate_url = root.clone();
+    candidate_url
+        .query_pairs_mut()
+        .append_pair(QUERY_PARAMETER, seeds.external_url());
+    let redirect_strategy =
+        native_review_strategy_ref(NativeWebReviewActionKind::RedirectReflectionQueryPair);
+    let body = format!("<script>const next = '{}';</script>", seeds.external_url());
+    let redirect = observe(
+        &observer,
+        NativeWebReviewActionKind::RedirectReflectionQueryPair,
+        DecisionExecutionStage::Active,
+        &candidate_url,
+        &headers(&[("location", seeds.external_url())]),
+        302,
+        Some("text/html"),
+        Some(body.as_bytes()),
+        NativeWebReviewActionKind::RedirectReflectionQueryPair.executor_id(),
+        Some(&redirect_strategy),
+        false,
+    )
+    .unwrap();
+    assert_eq!(
+        values(&redirect),
+        vec![
+            (NATIVE_WEB_REVIEW_RESPONSE_MARKER, "active-candidate"),
+            (REDIRECT_STATUS_RELATION, "redirect"),
+            (REDIRECT_LOCATION_RELATION, "exact-external-query-value",),
+            (HTML_REFLECTION_CONTEXT, "dangerous"),
+        ]
+    );
+
+    for debug in [
+        format!("{observer:?}"),
+        format!("{cors:?}"),
+        format!("{redirect:?}"),
+    ] {
+        assert!(!debug.contains(seeds.cors_origin()));
+        assert!(!debug.contains(seeds.external_url()));
+        assert!(!debug.contains(body.as_str()));
+    }
+}
+
+#[test]
+fn redirect_projection_accepts_only_the_closed_redirect_status_set() {
+    let root = root();
+    let seeds = seeds();
+    let observer =
+        AssessmentReviewObserverSet::new(root.clone(), seeds.clone(), Some(QUERY_PARAMETER))
+            .unwrap();
+    let mut candidate_url = root;
+    candidate_url
+        .query_pairs_mut()
+        .append_pair(QUERY_PARAMETER, seeds.external_url());
+    let strategy =
+        native_review_strategy_ref(NativeWebReviewActionKind::RedirectReflectionQueryPair);
+
+    for status in [301, 302, 303, 307, 308] {
+        let evidence = observe(
+            &observer,
+            NativeWebReviewActionKind::RedirectReflectionQueryPair,
+            DecisionExecutionStage::Active,
+            &candidate_url,
+            &headers(&[("location", seeds.external_url())]),
+            status,
+            None,
+            None,
+            NativeWebReviewActionKind::RedirectReflectionQueryPair.executor_id(),
+            Some(&strategy),
+            false,
+        )
+        .unwrap();
+        assert!(values(&evidence).contains(&(REDIRECT_STATUS_RELATION, "redirect")));
+    }
+
+    for status in [300, 304, 305, 306, 399] {
+        let evidence = observe(
+            &observer,
+            NativeWebReviewActionKind::RedirectReflectionQueryPair,
+            DecisionExecutionStage::Active,
+            &candidate_url,
+            &headers(&[("location", seeds.external_url())]),
+            status,
+            None,
+            None,
+            NativeWebReviewActionKind::RedirectReflectionQueryPair.executor_id(),
+            Some(&strategy),
+            false,
+        )
+        .unwrap();
+        assert!(values(&evidence).contains(&(REDIRECT_STATUS_RELATION, "other")));
+    }
+}
+
+#[test]
+fn cors_status_projection_retains_only_a_fixed_vocabulary_class() {
+    let root = root();
+    let observer = AssessmentReviewObserverSet::new(root.clone(), seeds(), None).unwrap();
+    let strategy = native_review_strategy_ref(NativeWebReviewActionKind::CorsPolicyPair);
+
+    for (status, expected) in [
+        (199, "informational"),
+        (200, "successful"),
+        (302, "redirection"),
+        (404, "client-error"),
+        (500, "server-error"),
+        (600, "other"),
+    ] {
+        let evidence = observe(
+            &observer,
+            NativeWebReviewActionKind::CorsPolicyPair,
+            DecisionExecutionStage::Passive,
+            &root,
+            &HeaderMap::new(),
+            status,
+            None,
+            None,
+            NativeWebReviewActionKind::CorsPolicyPair.executor_id(),
+            Some(&strategy),
+            false,
+        )
+        .unwrap();
+        let projected = values(&evidence);
+        assert!(projected.contains(&(CORS_HTTP_STATUS_CLASS, expected)));
+        let raw_status = status.to_string();
+        assert!(projected
+            .iter()
+            .all(|(_, value)| *value != raw_status.as_str()));
+    }
+}
+
+#[test]
+fn unrelated_actions_are_ignored_but_malformed_recognized_actions_fail_closed() {
+    let root = root();
+    let seeds = seeds();
+    let observer =
+        AssessmentReviewObserverSet::new(root.clone(), seeds, Some(QUERY_PARAMETER)).unwrap();
+    let projection = ReviewResponseProjection::empty();
+    let passive = passive_response_projection_for_test(&[]);
+    let ids = (0..7).map(|_| EvidenceId::new()).collect::<Vec<_>>();
+    let subject = subject();
+    let unrelated =
+        complete_http_response_observation_for_test(CompleteHttpResponseObservationTestInput {
+            case_id: "",
+            action_id: "web.action.bootstrap.http-evidence",
+            executor_id: "wrong",
+            hypothesis_id: "",
+            has_payload_strategy: false,
+            payload_strategy: None,
+            applies_hypothesis_transition: true,
+            stage: DecisionExecutionStage::Passive,
+            subject: &subject,
+            method: HttpProbeMethod::Head,
+            requested_url: &root,
+            status: 200,
+            media_type: None,
+            reliability: ConfidenceScore::MAX,
+            complete_body: None,
+            request_method_evidence_id: Some(&ids[0]),
+            request_url_evidence_id: Some(&ids[1]),
+            response_status_evidence_id: Some(&ids[2]),
+            response_final_url_evidence_id: Some(&ids[3]),
+            response_media_type_evidence_id: None,
+            response_body_truncated_evidence_id: Some(&ids[5]),
+            response_body_digest_evidence_id: Some(&ids[6]),
+            passive_response_projection: &passive,
+            review_response_projection: Some(&projection),
+        });
+    assert!(observer.observe(unrelated).unwrap().is_empty());
+
+    let strategy = native_review_strategy_ref(NativeWebReviewActionKind::CorsPolicyPair);
+    assert!(matches!(
+        observe(
+            &observer,
+            NativeWebReviewActionKind::CorsPolicyPair,
+            DecisionExecutionStage::Passive,
+            &root,
+            &HeaderMap::new(),
+            200,
+            None,
+            None,
+            NativeWebReviewActionKind::RedirectReflectionQueryPair.executor_id(),
+            Some(&strategy),
+            false,
+        ),
+        Err(HttpEvidenceError::AssessmentObserverInvariant {
+            invariant: "native-review-action-contract"
+        })
+    ));
+    assert!(matches!(
+        observe(
+            &observer,
+            NativeWebReviewActionKind::CorsPolicyPair,
+            DecisionExecutionStage::Passive,
+            &root,
+            &HeaderMap::new(),
+            200,
+            None,
+            None,
+            NativeWebReviewActionKind::CorsPolicyPair.executor_id(),
+            Some(&strategy),
+            true,
+        ),
+        Err(HttpEvidenceError::AssessmentObserverInvariant { .. })
+    ));
+}
+
+#[test]
+fn redirect_reflection_requires_complete_utf8_html_and_exact_request_shape() {
+    let root = root();
+    let seeds = seeds();
+    let observer =
+        AssessmentReviewObserverSet::new(root.clone(), seeds.clone(), Some(QUERY_PARAMETER))
+            .unwrap();
+    let strategy =
+        native_review_strategy_ref(NativeWebReviewActionKind::RedirectReflectionQueryPair);
+    let mut candidate_url = root.clone();
+    candidate_url
+        .query_pairs_mut()
+        .append_pair(QUERY_PARAMETER, seeds.external_url());
+
+    for (media_type, body, expected) in [
+        (Some("text/html"), None, "incomplete"),
+        (Some("application/json"), None, "not-applicable"),
+        (None, Some(b"{}".as_slice()), "incomplete"),
+        (Some("text/html"), Some([0xff].as_slice()), "incomplete"),
+    ] {
+        let evidence = observe(
+            &observer,
+            NativeWebReviewActionKind::RedirectReflectionQueryPair,
+            DecisionExecutionStage::Active,
+            &candidate_url,
+            &HeaderMap::new(),
+            200,
+            media_type,
+            body,
+            NativeWebReviewActionKind::RedirectReflectionQueryPair.executor_id(),
+            Some(&strategy),
+            false,
+        )
+        .unwrap();
+        assert_eq!(
+            values(&evidence).last(),
+            Some(&(HTML_REFLECTION_CONTEXT, expected))
+        );
+    }
+
+    let mut wrong_name = root.clone();
+    wrong_name
+        .query_pairs_mut()
+        .append_pair("next", seeds.external_url());
+    assert!(matches!(
+        observe(
+            &observer,
+            NativeWebReviewActionKind::RedirectReflectionQueryPair,
+            DecisionExecutionStage::Active,
+            &wrong_name,
+            &HeaderMap::new(),
+            200,
+            Some("text/html"),
+            Some(b"<p>ordinary</p>"),
+            NativeWebReviewActionKind::RedirectReflectionQueryPair.executor_id(),
+            Some(&strategy),
+            false,
+        ),
+        Err(HttpEvidenceError::AssessmentObserverInvariant { .. })
+    ));
+}
+
+#[test]
+fn ledger_url_contract_rejects_cross_name_and_cross_seed_candidates() {
+    let root = root();
+    let seeds = seeds();
+    let observer =
+        AssessmentReviewObserverSet::new(root.clone(), seeds.clone(), Some(QUERY_PARAMETER))
+            .unwrap();
+    let contract = observer.redirect.as_ref().unwrap();
+    let exact = EvidenceValue::Text(contract.candidate_url.to_string());
+    assert!(requested_url_value_matches(
+        &exact,
+        &root,
+        Some(contract),
+        DecisionExecutionStage::Active,
+        NativeWebReviewActionKind::RedirectReflectionQueryPair,
+    ));
+
+    let mut cross_name = root.clone();
+    cross_name
+        .query_pairs_mut()
+        .append_pair("next", seeds.external_url());
+    assert!(!requested_url_value_matches(
+        &EvidenceValue::Text(cross_name.to_string()),
+        &root,
+        Some(contract),
+        DecisionExecutionStage::Active,
+        NativeWebReviewActionKind::RedirectReflectionQueryPair,
+    ));
+
+    let mut cross_seed = root.clone();
+    cross_seed.query_pairs_mut().append_pair(
+        QUERY_PARAMETER,
+        "https://foreign.review.invalid/venom-review",
+    );
+    assert!(!requested_url_value_matches(
+        &EvidenceValue::Text(cross_seed.to_string()),
+        &root,
+        Some(contract),
+        DecisionExecutionStage::Active,
+        NativeWebReviewActionKind::RedirectReflectionQueryPair,
+    ));
+}
+
+fn fake_id(label: &str) -> EvidenceId {
+    EvidenceId::parse(format!("evidence:native-review:{label}")).unwrap()
+}
+
+fn fake_observation(
+    kind: NativeWebReviewActionKind,
+    stage: DecisionExecutionStage,
+    response: CommittedReviewResponse,
+    active_pair_success: bool,
+    suffix: &str,
+) -> CommittedAssessmentReviewObservation {
+    let mut property_evidence = BTreeMap::new();
+    let evidence_ids = expected_properties(kind)
+        .iter()
+        .copied()
+        .map(|property| {
+            let id = fake_id(&format!("{suffix}:{}", property.name()));
+            property_evidence.insert(property, id.clone());
+            id
+        })
+        .collect();
+    CommittedAssessmentReviewObservation {
+        kind,
+        subject: subject(),
+        case_id: CASE_ID.to_owned(),
+        hypothesis_id: HYPOTHESIS_ID.to_owned(),
+        stage,
+        response,
+        evidence_ids,
+        property_evidence,
+        active_pair_success,
+    }
+}
+
+#[test]
+fn exact_cors_relationship_is_review_only_and_requires_disjoint_verified_pair() {
+    let control = fake_observation(
+        NativeWebReviewActionKind::CorsPolicyPair,
+        DecisionExecutionStage::Passive,
+        CommittedReviewResponse::Cors {
+            status: ReviewHttpStatusClass::Successful,
+            allow_origin: CorsAllowOriginRelation::Missing,
+            allow_credentials: CorsAllowCredentialsRelation::Missing,
+            vary_origin: VaryOriginRelation::Missing,
+        },
+        false,
+        "cors-control",
+    );
+    let mut candidate = fake_observation(
+        NativeWebReviewActionKind::CorsPolicyPair,
+        DecisionExecutionStage::Active,
+        CommittedReviewResponse::Cors {
+            status: ReviewHttpStatusClass::Successful,
+            allow_origin: CorsAllowOriginRelation::ExactRequestOrigin,
+            allow_credentials: CorsAllowCredentialsRelation::True,
+            vary_origin: VaryOriginRelation::ContainsOrigin,
+        },
+        true,
+        "cors-candidate",
+    );
+    let mut output = Vec::new();
+    append_pair_candidates(&control, &candidate, None, &mut output);
+    assert_eq!(output.len(), 1);
+    assert_eq!(
+        output[0].disposition(),
+        NativeReviewDisposition::NeedsReview
+    );
+    assert!(output[0].query_parameter().is_none());
+    assert_eq!(
+        output[0].cors_status_relationship(),
+        Some(CorsStatusRelationship::MatchedSuccessful)
+    );
+    assert_eq!(output[0].control_evidence_ids().len(), 3);
+    assert_eq!(output[0].candidate_evidence_ids().len(), 5);
+    assert!(disjoint(
+        output[0].control_evidence_ids(),
+        output[0].candidate_evidence_ids()
+    ));
+
+    candidate.active_pair_success = false;
+    output.clear();
+    append_pair_candidates(&control, &candidate, None, &mut output);
+    assert!(output.is_empty());
+
+    candidate.active_pair_success = true;
+    candidate.evidence_ids[0] = control.evidence_ids[0].clone();
+    output.clear();
+    append_pair_candidates(&control, &candidate, None, &mut output);
+    assert!(output.is_empty());
+}
+
+#[test]
+fn cors_status_divergence_and_error_only_pairs_never_produce_review_candidates() {
+    let successful_control = fake_observation(
+        NativeWebReviewActionKind::CorsPolicyPair,
+        DecisionExecutionStage::Passive,
+        CommittedReviewResponse::Cors {
+            status: ReviewHttpStatusClass::Successful,
+            allow_origin: CorsAllowOriginRelation::Missing,
+            allow_credentials: CorsAllowCredentialsRelation::Missing,
+            vary_origin: VaryOriginRelation::Missing,
+        },
+        false,
+        "cors-status-success-control",
+    );
+    let error_candidate = fake_observation(
+        NativeWebReviewActionKind::CorsPolicyPair,
+        DecisionExecutionStage::Active,
+        CommittedReviewResponse::Cors {
+            status: ReviewHttpStatusClass::ServerError,
+            allow_origin: CorsAllowOriginRelation::ExactRequestOrigin,
+            allow_credentials: CorsAllowCredentialsRelation::True,
+            vary_origin: VaryOriginRelation::ContainsOrigin,
+        },
+        true,
+        "cors-status-error-candidate",
+    );
+    let mut output = Vec::new();
+    append_pair_candidates(&successful_control, &error_candidate, None, &mut output);
+    assert!(
+        output.is_empty(),
+        "a status-divergent pair is not comparable"
+    );
+
+    let error_control = fake_observation(
+        NativeWebReviewActionKind::CorsPolicyPair,
+        DecisionExecutionStage::Passive,
+        CommittedReviewResponse::Cors {
+            status: ReviewHttpStatusClass::ServerError,
+            allow_origin: CorsAllowOriginRelation::Missing,
+            allow_credentials: CorsAllowCredentialsRelation::Missing,
+            vary_origin: VaryOriginRelation::Missing,
+        },
+        false,
+        "cors-status-error-control",
+    );
+    output.clear();
+    append_pair_candidates(&error_control, &error_candidate, None, &mut output);
+    assert!(
+        output.is_empty(),
+        "matching error responses are not CORS claims"
+    );
+}
+
+#[test]
+fn exact_pair_completion_rejects_cross_case_and_cross_hypothesis_observations() {
+    let mut ledger =
+        CommittedAssessmentReviewLedger::new(root(), seeds(), Some(QUERY_PARAMETER)).unwrap();
+    let response = CommittedReviewResponse::Cors {
+        status: ReviewHttpStatusClass::Successful,
+        allow_origin: CorsAllowOriginRelation::Missing,
+        allow_credentials: CorsAllowCredentialsRelation::Missing,
+        vary_origin: VaryOriginRelation::Missing,
+    };
+    let control = fake_observation(
+        NativeWebReviewActionKind::CorsPolicyPair,
+        DecisionExecutionStage::Passive,
+        response,
+        false,
+        "control",
+    );
+    let mut candidate = fake_observation(
+        NativeWebReviewActionKind::CorsPolicyPair,
+        DecisionExecutionStage::Active,
+        response,
+        true,
+        "candidate",
+    );
+    candidate.case_id = "case:cross-case".to_owned();
+    ledger.observations.insert(
+        ReviewReceiptKey {
+            kind: control.kind,
+            case_id: control.case_id.clone(),
+            stage: control.stage,
+        },
+        control.clone(),
+    );
+    ledger.observations.insert(
+        ReviewReceiptKey {
+            kind: candidate.kind,
+            case_id: candidate.case_id.clone(),
+            stage: candidate.stage,
+        },
+        candidate.clone(),
+    );
+    assert!(!ledger.pair_is_complete(NativeWebReviewActionKind::CorsPolicyPair));
+
+    ledger.observations.clear();
+    candidate.case_id = control.case_id.clone();
+    candidate.hypothesis_id = "hypothesis:cross-hypothesis".to_owned();
+    ledger.observations.insert(
+        ReviewReceiptKey {
+            kind: control.kind,
+            case_id: control.case_id.clone(),
+            stage: control.stage,
+        },
+        control,
+    );
+    ledger.observations.insert(
+        ReviewReceiptKey {
+            kind: candidate.kind,
+            case_id: candidate.case_id.clone(),
+            stage: candidate.stage,
+        },
+        candidate,
+    );
+    assert!(!ledger.pair_is_complete(NativeWebReviewActionKind::CorsPolicyPair));
+}
+
+#[test]
+fn redirect_and_dangerous_reflection_remain_distinct_needs_review_candidates() {
+    let control = fake_observation(
+        NativeWebReviewActionKind::RedirectReflectionQueryPair,
+        DecisionExecutionStage::Passive,
+        CommittedReviewResponse::RedirectReflection {
+            status: ReviewStatusRelation::Other,
+            location: LocationRelation::Missing,
+            reflection: ExactHtmlReflectionContext::Absent,
+        },
+        false,
+        "redirect-control",
+    );
+    let candidate = fake_observation(
+        NativeWebReviewActionKind::RedirectReflectionQueryPair,
+        DecisionExecutionStage::Active,
+        CommittedReviewResponse::RedirectReflection {
+            status: ReviewStatusRelation::Redirect,
+            location: LocationRelation::ExactExternalQueryValue,
+            reflection: ExactHtmlReflectionContext::Dangerous,
+        },
+        true,
+        "redirect-candidate",
+    );
+    let mut output = Vec::new();
+    append_pair_candidates(&control, &candidate, Some(QUERY_PARAMETER), &mut output);
+    assert_eq!(output.len(), 2);
+    assert!(output
+        .iter()
+        .all(|item| item.disposition() == NativeReviewDisposition::NeedsReview));
+    assert_eq!(output[0].query_parameter(), Some(QUERY_PARAMETER));
+    assert_eq!(
+        output[1].reflection_context(),
+        Some(ReviewReflectionContext::Dangerous)
+    );
+}
+
+#[test]
+fn inert_reflection_is_informational_and_incomplete_or_control_reflection_yields_no_claim() {
+    let base_response = CommittedReviewResponse::RedirectReflection {
+        status: ReviewStatusRelation::Other,
+        location: LocationRelation::Other,
+        reflection: ExactHtmlReflectionContext::Absent,
+    };
+    let control = fake_observation(
+        NativeWebReviewActionKind::RedirectReflectionQueryPair,
+        DecisionExecutionStage::Passive,
+        base_response,
+        false,
+        "reflection-control",
+    );
+    let mut candidate = fake_observation(
+        NativeWebReviewActionKind::RedirectReflectionQueryPair,
+        DecisionExecutionStage::Active,
+        CommittedReviewResponse::RedirectReflection {
+            status: ReviewStatusRelation::Other,
+            location: LocationRelation::Other,
+            reflection: ExactHtmlReflectionContext::Inert,
+        },
+        true,
+        "reflection-candidate",
+    );
+    let mut output = Vec::new();
+    append_pair_candidates(&control, &candidate, Some(QUERY_PARAMETER), &mut output);
+    assert_eq!(output.len(), 1);
+    assert_eq!(
+        output[0].disposition(),
+        NativeReviewDisposition::Informational
+    );
+
+    candidate.response = CommittedReviewResponse::RedirectReflection {
+        status: ReviewStatusRelation::Other,
+        location: LocationRelation::Other,
+        reflection: ExactHtmlReflectionContext::Incomplete,
+    };
+    output.clear();
+    append_pair_candidates(&control, &candidate, Some(QUERY_PARAMETER), &mut output);
+    assert!(output.is_empty());
+
+    let reflected_control = fake_observation(
+        NativeWebReviewActionKind::RedirectReflectionQueryPair,
+        DecisionExecutionStage::Passive,
+        CommittedReviewResponse::RedirectReflection {
+            status: ReviewStatusRelation::Other,
+            location: LocationRelation::Other,
+            reflection: ExactHtmlReflectionContext::Text,
+        },
+        false,
+        "reflected-control",
+    );
+    candidate.response = CommittedReviewResponse::RedirectReflection {
+        status: ReviewStatusRelation::Other,
+        location: LocationRelation::Other,
+        reflection: ExactHtmlReflectionContext::Dangerous,
+    };
+    output.clear();
+    append_pair_candidates(
+        &reflected_control,
+        &candidate,
+        Some(QUERY_PARAMETER),
+        &mut output,
+    );
+    assert!(output.is_empty());
+}
+
+#[test]
+fn observer_and_ledger_constructors_reject_ambiguous_authority() {
+    let seeds = seeds();
+    for invalid in [
+        "https://review.test/account?existing=1",
+        "https://review.test/account#fragment",
+        "ftp://review.test/account",
+    ] {
+        assert!(AssessmentReviewObserverSet::new(
+            Url::parse(invalid).unwrap(),
+            seeds.clone(),
+            Some(QUERY_PARAMETER),
+        )
+        .is_err());
+    }
+    assert!(matches!(
+        AssessmentReviewObserverSet::new(root(), seeds.clone(), Some("bad parameter")),
+        Err(AssessmentReviewObserverError::QueryParameter)
+    ));
+    assert!(CommittedAssessmentReviewLedger::new(root(), seeds, Some(QUERY_PARAMETER)).is_ok());
+}

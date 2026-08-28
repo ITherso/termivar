@@ -26,6 +26,7 @@ use crate::web_runtime::assessment_passive::{
     CommittedAssessmentPassiveLedger, CommittedAssessmentPassiveObservation,
     CommittedPassiveMediaClass, ASSESSMENT_PASSIVE_NAMESPACE,
 };
+use crate::web_runtime::{AssessmentBasis, AssessmentDisposition};
 #[cfg(feature = "reporting")]
 use crate::web_runtime::{BuiltInScanProfile, ASSESSMENT_RUN_REPORT_SCHEMA};
 #[cfg(feature = "reporting")]
@@ -63,6 +64,378 @@ fn defense_mode_is_explicit_and_defaults_to_observation_only() {
         enforced.defense_audit.mode(),
         WebAssessmentDefenseMode::Enforced
     );
+}
+
+#[tokio::test]
+async fn default_assessment_does_not_dispatch_native_review_mutations() {
+    let server = serve(|_| FixtureReply::Response(FixtureResponse::html("root"))).await;
+    let mut runtime = WebAssessmentRuntime::builder(server.url("/?return_to=host-value"))
+        .build()
+        .unwrap();
+    let report = runtime.analyze().await.unwrap();
+    assert_report_reconciles(&report);
+
+    let requests = server.requests().await;
+    assert!(requests.iter().all(|request| {
+        !request.headers.contains_key("origin") && !request.target.contains('?')
+    }));
+    assert!(report.subjects()[0].turns().iter().all(|turn| match turn {
+        StandardWebDecisionRuntimeTurn::Outcome { evidence, .. } =>
+            !is_native_review_action(evidence.case().action_id()),
+        StandardWebDecisionRuntimeTurn::Planning(_) => true,
+    }));
+}
+
+#[tokio::test]
+async fn opted_in_native_review_uses_exact_root_shared_authority_and_no_redirect_follow() {
+    let server = serve(|request| {
+        if let Some(origin) = request.headers.get("origin") {
+            return FixtureReply::Response(
+                FixtureResponse::html("cors candidate")
+                    .with_header("Access-Control-Allow-Origin", origin)
+                    .with_header("Access-Control-Allow-Credentials", "true")
+                    .with_header("Vary", "Origin"),
+            );
+        }
+        if request.target.contains('?') {
+            let request_url = Url::parse(&format!("http://fixture{}", request.target)).unwrap();
+            let candidate = request_url
+                .query_pairs()
+                .find_map(|(name, value)| (name == "return_to").then(|| value.into_owned()))
+                .expect("the review candidate uses the authorized query name");
+            return FixtureReply::Response(
+                FixtureResponse::new(
+                    "302 Found",
+                    Some("text/html"),
+                    format!("<script>const destination = '{candidate}'</script>"),
+                )
+                .with_header("Location", &candidate),
+            );
+        }
+        FixtureReply::Response(FixtureResponse::html("root control"))
+    })
+    .await;
+    let target = server.url("/?return_to=host-value");
+    let mut runtime = WebAssessmentRuntime::builder(target)
+        .enable_low_risk_differential_review()
+        .build()
+        .unwrap();
+    let report = runtime.analyze().await.unwrap();
+    assert_report_reconciles(&report);
+    assert_eq!(report.completion(), &WebAssessmentCompletion::Complete);
+
+    let requests = server.requests().await;
+    assert_eq!(requests.len(), 5);
+    assert!(requests.iter().all(|request| request.path() == "/"));
+    assert_eq!(
+        requests
+            .iter()
+            .filter(|request| request.headers.contains_key("origin"))
+            .count(),
+        1
+    );
+    assert_eq!(
+        requests
+            .iter()
+            .filter(|request| request.target.contains("return_to="))
+            .count(),
+        1
+    );
+    assert_eq!(
+        report.subjects()[0]
+            .turns()
+            .iter()
+            .filter(|turn| matches!(
+                turn,
+                StandardWebDecisionRuntimeTurn::Outcome { evidence, .. }
+                    if is_native_review_action(evidence.case().action_id())
+            ))
+            .count(),
+        4
+    );
+    let native_items = report
+        .assessment_items()
+        .iter()
+        .filter(|item| item.capability_id().starts_with("web.review."))
+        .collect::<Vec<_>>();
+    assert_eq!(native_items.len(), 3);
+    assert_eq!(
+        native_items
+            .iter()
+            .map(|item| item.capability_id())
+            .collect::<BTreeSet<_>>(),
+        BTreeSet::from([
+            "web.review.cors.credentialed-external-origin@1",
+            "web.review.redirect.candidate-specific-external@1",
+            "web.review.reflection.dangerous-html-context@1",
+        ])
+    );
+    assert!(native_items.iter().all(|item| {
+        item.disposition() == AssessmentDisposition::NeedsReview
+            && matches!(item.basis(), AssessmentBasis::Differential(_))
+    }));
+    assert!(report
+        .assessment_items()
+        .iter()
+        .all(|item| item.disposition().as_str() != "confirmed"));
+}
+
+#[tokio::test]
+async fn native_review_is_additive_to_eligible_standard_actions_under_one_budget() {
+    let server = serve(|request| {
+        let response = if let Some(origin) = request.headers.get("origin") {
+            FixtureResponse::html("cors candidate")
+                .with_header("Access-Control-Allow-Origin", origin)
+                .with_header("Access-Control-Allow-Credentials", "true")
+                .with_header("Vary", "Origin")
+        } else {
+            FixtureResponse::html("standard and cors control")
+        };
+        FixtureReply::Response(response)
+    })
+    .await;
+    let mut runtime = WebAssessmentRuntime::builder(server.url("/"))
+        .enable_low_risk_differential_review()
+        .build()
+        .unwrap();
+    seed_laravel_planning_evidence(&runtime);
+
+    let report = runtime.analyze().await.unwrap();
+    assert_report_reconciles(&report);
+    assert!(report
+        .completion()
+        .reasons()
+        .contains(&WebAssessmentIncompleteReason::HumanReviewRequired));
+    assert!(!report
+        .completion()
+        .reasons()
+        .contains(&WebAssessmentIncompleteReason::DifferentialReviewIncomplete));
+
+    let action_ids = report.subjects()[0]
+        .turns()
+        .iter()
+        .filter_map(|turn| match turn {
+            StandardWebDecisionRuntimeTurn::Outcome { evidence, .. } => {
+                Some(evidence.case().action_id())
+            },
+            StandardWebDecisionRuntimeTurn::Planning(_) => None,
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        action_ids.iter().any(|action_id| {
+            StandardWebActionKind::all()
+                .iter()
+                .any(|kind| kind.action_id() == *action_id)
+        }),
+        "native review replaced the eligible standard action set: {action_ids:?}"
+    );
+    assert_eq!(
+        action_ids
+            .iter()
+            .copied()
+            .filter(|action_id| {
+                *action_id == NativeWebReviewActionKind::CorsPolicyPair.action_id()
+            })
+            .count(),
+        2
+    );
+
+    let requests = server.requests().await;
+    assert!(requests
+        .iter()
+        .all(|request| request.host() == requests[0].host()));
+    assert_eq!(
+        usize::try_from(report.usage().total_requests()).unwrap(),
+        requests.len()
+    );
+    assert_eq!(
+        requests
+            .iter()
+            .filter(|request| request.headers.contains_key("origin"))
+            .count(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn reflected_origin_and_generic_redirect_are_not_findings_and_text_reflection_is_info() {
+    let server = serve(|request| {
+        if let Some(origin) = request.headers.get("origin") {
+            return FixtureReply::Response(
+                FixtureResponse::html("origin reflected without credential policy")
+                    .with_header("Access-Control-Allow-Origin", origin),
+            );
+        }
+        if request.target.contains('?') {
+            let request_url = Url::parse(&format!("http://fixture{}", request.target)).unwrap();
+            let candidate = request_url
+                .query_pairs()
+                .find_map(|(name, value)| (name == "next").then(|| value.into_owned()))
+                .unwrap();
+            return FixtureReply::Response(
+                FixtureResponse::new(
+                    "302 Found",
+                    Some("text/html"),
+                    format!("<p>{candidate}</p>"),
+                )
+                .with_header("Location", "/login"),
+            );
+        }
+        FixtureReply::Response(
+            FixtureResponse::new("302 Found", Some("text/html"), "control")
+                .with_header("Location", "/login"),
+        )
+    })
+    .await;
+    let mut runtime = WebAssessmentRuntime::builder(server.url("/?next=host-value"))
+        .enable_low_risk_differential_review()
+        .build()
+        .unwrap();
+    let report = runtime.analyze().await.unwrap();
+    assert_report_reconciles(&report);
+    assert_eq!(report.completion(), &WebAssessmentCompletion::Complete);
+
+    let native_items = report
+        .assessment_items()
+        .iter()
+        .filter(|item| item.capability_id().starts_with("web.review."))
+        .collect::<Vec<_>>();
+    assert_eq!(native_items.len(), 1);
+    assert_eq!(
+        native_items[0].capability_id(),
+        "web.review.reflection.text-context@1"
+    );
+    assert_eq!(
+        native_items[0].disposition(),
+        AssessmentDisposition::Informational
+    );
+    assert!(matches!(
+        native_items[0].basis(),
+        AssessmentBasis::Observation(_)
+    ));
+    assert_eq!(server.requests().await.len(), 5);
+}
+
+#[tokio::test]
+async fn native_review_never_invents_an_unrecognized_query_parameter() {
+    let server = serve(|request| {
+        let response = if let Some(origin) = request.headers.get("origin") {
+            FixtureResponse::html("cors candidate")
+                .with_header("Access-Control-Allow-Origin", origin)
+                .with_header("Access-Control-Allow-Credentials", "true")
+        } else {
+            FixtureResponse::html("root control")
+        };
+        FixtureReply::Response(response)
+    })
+    .await;
+    let mut runtime = WebAssessmentRuntime::builder(server.url("/?opaque=host-value"))
+        .enable_low_risk_differential_review()
+        .build()
+        .unwrap();
+    let report = runtime.analyze().await.unwrap();
+    assert_report_reconciles(&report);
+    assert_eq!(report.completion(), &WebAssessmentCompletion::Complete);
+
+    let requests = server.requests().await;
+    assert_eq!(requests.len(), 3);
+    assert!(requests.iter().all(|request| !request.target.contains('?')));
+    assert_eq!(
+        requests
+            .iter()
+            .filter(|request| request.headers.contains_key("origin"))
+            .count(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn native_review_budget_exhaustion_is_typed_incomplete_not_empty_success() {
+    let server = serve(|_| FixtureReply::Response(FixtureResponse::html("bounded"))).await;
+    let limits = WebAssessmentLimits::default()
+        .with_max_total_requests(2)
+        .unwrap();
+    let mut runtime = WebAssessmentRuntime::builder(server.url("/?return_to=value"))
+        .limits(limits)
+        .enable_low_risk_differential_review()
+        .build()
+        .unwrap();
+    let report = runtime.analyze().await.unwrap();
+    assert_report_reconciles(&report);
+    assert!(report
+        .completion()
+        .reasons()
+        .contains(&WebAssessmentIncompleteReason::DifferentialReviewIncomplete));
+    assert!(report
+        .completion()
+        .reasons()
+        .contains(&WebAssessmentIncompleteReason::TotalRequestLimit));
+    assert_eq!(report.usage().total_requests(), 2);
+    assert!(report
+        .assessment_items()
+        .iter()
+        .all(|item| item.disposition().as_str() != "confirmed"));
+}
+
+#[tokio::test]
+async fn incomplete_reflection_analysis_is_typed_incomplete_not_empty_success() {
+    let server = serve(|request| {
+        let body = if request.target.contains('?') {
+            "x".repeat(256)
+        } else {
+            "bounded".to_owned()
+        };
+        FixtureReply::Response(FixtureResponse::html(body))
+    })
+    .await;
+    let limits = WebAssessmentLimits::default()
+        .with_max_response_body_bytes(64)
+        .unwrap();
+    let mut runtime = WebAssessmentRuntime::builder(server.url("/?return_to=host-value"))
+        .limits(limits)
+        .enable_low_risk_differential_review()
+        .build()
+        .unwrap();
+
+    let report = runtime.analyze().await.unwrap();
+    assert_report_reconciles(&report);
+    assert!(report
+        .completion()
+        .reasons()
+        .contains(&WebAssessmentIncompleteReason::DifferentialReviewIncomplete));
+    assert!(report
+        .assessment_items()
+        .iter()
+        .all(|item| item.disposition() != AssessmentDisposition::Confirmed));
+}
+
+#[tokio::test]
+async fn truncated_explicit_non_html_is_not_applicable_to_reflection_review() {
+    let server = serve(|request| {
+        let response = if request.target.contains('?') {
+            FixtureResponse::new("200 OK", Some("application/json"), "x".repeat(256))
+        } else {
+            FixtureResponse::html("bounded")
+        };
+        FixtureReply::Response(response)
+    })
+    .await;
+    let limits = WebAssessmentLimits::default()
+        .with_max_response_body_bytes(64)
+        .unwrap();
+    let mut runtime = WebAssessmentRuntime::builder(server.url("/?return_to=host-value"))
+        .limits(limits)
+        .enable_low_risk_differential_review()
+        .build()
+        .unwrap();
+
+    let report = runtime.analyze().await.unwrap();
+    assert_report_reconciles(&report);
+    assert_eq!(report.completion(), &WebAssessmentCompletion::Complete);
+    assert!(report
+        .assessment_items()
+        .iter()
+        .all(|item| item.disposition() != AssessmentDisposition::Confirmed));
 }
 
 #[cfg(feature = "reporting")]
@@ -693,8 +1066,10 @@ fn observe_full_for_test(
         CompleteHttpResponseObservationTestInput {
             case_id: envelope.case_id,
             action_id: envelope.action_id,
+            executor_id: HTTP_EVIDENCE_EXECUTOR_ID,
             hypothesis_id: envelope.hypothesis_id,
             has_payload_strategy: envelope.has_payload_strategy,
+            payload_strategy: None,
             applies_hypothesis_transition: envelope.applies_hypothesis_transition,
             stage: envelope.stage,
             subject: envelope.subject,
@@ -712,6 +1087,7 @@ fn observe_full_for_test(
             response_body_truncated_evidence_id: parents.response_body_truncated,
             response_body_digest_evidence_id: parents.response_body_digest,
             passive_response_projection,
+            review_response_projection: None,
         },
     ))
 }

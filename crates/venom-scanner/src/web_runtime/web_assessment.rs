@@ -29,11 +29,12 @@ use super::{
     },
     assessment_item::{AssessmentItem, AssessmentItemSet},
     assessment_passive::{
-        project_assessment_passive_response, project_passive_assessment_items,
+        project_assessment_items, project_assessment_passive_response,
         AssessmentPassiveProjectionContext, CommittedAssessmentPassiveLedger,
         PassiveAssessmentProjectionIncompleteness, ASSESSMENT_PASSIVE_NAMESPACE,
     },
-    SharedWebRuntimeAuthority, StandardWebDecisionAssessmentFailureParts,
+    assessment_review::{AssessmentReviewObserverSet, CommittedAssessmentReviewLedger},
+    NativeWebReviewSeeds, SharedWebRuntimeAuthority, StandardWebDecisionAssessmentFailureParts,
     StandardWebDecisionAssessmentParts, BOOTSTRAP_ACTION_ID, BOOTSTRAP_CASE_ID,
     BOOTSTRAP_HYPOTHESIS_ID,
 };
@@ -49,16 +50,17 @@ use crate::{
     AttackPlan, DecisionEvidenceReceipt, DecisionExecutionFailureReceipt, DecisionExecutionStage,
     DecisionLoopCommand, DecisionStopReason, DefensePosture, DefenseProduct, FingerprintConfidence,
     HttpEvidenceError, HttpEvidencePolicy, HttpProbe, HttpProbeMethod, KnowledgeBase, LimitsError,
-    RuntimeBudget, RuntimeBudgetDimension, RuntimeLimitExceeded, SemanticExtractionLimits,
-    SemanticExtractionResult, ShadowPlanDelta, StandardWebActionKind, StandardWebDecisionRuntime,
-    StandardWebDecisionRuntimeError, StandardWebDecisionRuntimeTurn, TransportDispatchAudit,
-    HTTP_EVIDENCE_EXECUTOR_ID, MAX_HTTP_BODY_LIMIT,
+    NativeWebReviewActionKind, RuntimeBudget, RuntimeBudgetDimension, RuntimeLimitExceeded,
+    SemanticExtractionLimits, SemanticExtractionResult, ShadowPlanDelta, StandardWebActionKind,
+    StandardWebDecisionRuntime, StandardWebDecisionRuntimeError, StandardWebDecisionRuntimeTurn,
+    TransportDispatchAudit, HTTP_EVIDENCE_EXECUTOR_ID, MAX_HTTP_BODY_LIMIT,
 };
 
 mod discovery;
 mod semantic;
 
 use discovery::{canonicalize_root, parse_document, ParsedDocument, ParsedForm, ParsedRoute};
+pub(super) use discovery::{classify_exact_html_reflection, ExactHtmlReflectionContext};
 use semantic::{assessment_semantic_limits, AssessmentSemanticEvidence};
 
 /// Default maximum canonical subjects retained by one assessment.
@@ -115,6 +117,34 @@ pub const DEFAULT_WEB_ASSESSMENT_MAX_ACTIVE_VERIFICATIONS: u16 = 4;
 pub const HARD_MAX_WEB_ASSESSMENT_ACTIVE_VERIFICATIONS: u16 = 64;
 /// Assessment subjects execute sequentially under one shared authority.
 pub const WEB_ASSESSMENT_CONCURRENCY: usize = 1;
+
+/// Closed, non-secret parameter-name catalog eligible for the optional
+/// external-destination differential. Discovery may observe other names, but
+/// the review runtime never guesses that they carry navigation destinations.
+const REDIRECT_REVIEW_QUERY_PARAMETER_ALLOWLIST: [&str; 11] = [
+    "continue",
+    "dest",
+    "destination",
+    "next",
+    "redirect",
+    "redirect_to",
+    "redirect_uri",
+    "return",
+    "return_to",
+    "return_url",
+    "url",
+];
+
+fn select_redirect_review_query_parameter(names: &[String]) -> Option<String> {
+    names
+        .iter()
+        .find(|name| {
+            REDIRECT_REVIEW_QUERY_PARAMETER_ALLOWLIST
+                .binary_search(&name.as_str())
+                .is_ok()
+        })
+        .cloned()
+}
 
 pub(crate) const HARD_MAX_DISCOVERY_NAME_BYTES: usize =
     SemanticExtractionLimits::HARD_MAX_ASSESSMENT_PARAMETER_NAME_BYTES;
@@ -771,6 +801,9 @@ pub enum WebAssessmentIncompleteReason {
     SemanticExtractionLimit,
     PassiveResponseProjectionLimit,
     AssessmentSubjectIdentityUnavailable,
+    /// The explicitly enabled matched review catalog did not commit every
+    /// control/candidate observation required by its configured boundary.
+    DifferentialReviewIncomplete,
 }
 
 /// Whether every retained subject and eligible document completed within bounds.
@@ -1328,6 +1361,8 @@ pub enum WebAssessmentRuntimeError {
     InvalidCanonicalTarget,
     #[error("authorized root exceeds the total retained URL byte limit")]
     RootRetentionLimit,
+    #[error("native low-risk web review could not be composed safely")]
+    NativeReviewComposition,
     #[error(transparent)]
     Standard(#[from] StandardWebDecisionRuntimeError),
     #[error("web assessment failed after it started")]
@@ -1358,6 +1393,9 @@ impl fmt::Debug for WebAssessmentRuntimeError {
             },
             Self::RootRetentionLimit => {
                 formatter.write_str("WebAssessmentRuntimeError::RootRetentionLimit")
+            },
+            Self::NativeReviewComposition => {
+                formatter.write_str("WebAssessmentRuntimeError::NativeReviewComposition")
             },
             Self::Standard(_) => {
                 formatter.write_str("WebAssessmentRuntimeError::Standard(<redacted>)")
@@ -1393,6 +1431,7 @@ pub struct WebAssessmentRuntimeBuilder {
     http_policy: Option<HttpEvidencePolicy>,
     cancellation: CancellationToken,
     defense_enforcement: bool,
+    low_risk_differential_review: bool,
 }
 
 impl WebAssessmentRuntimeBuilder {
@@ -1403,6 +1442,7 @@ impl WebAssessmentRuntimeBuilder {
             http_policy: None,
             cancellation: CancellationToken::new(),
             defense_enforcement: false,
+            low_risk_differential_review: false,
         }
     }
     pub fn limits(mut self, limits: WebAssessmentLimits) -> Self {
@@ -1420,6 +1460,15 @@ impl WebAssessmentRuntimeBuilder {
     /// Explicitly enables monotonic defense suppression. Default is observation-only.
     pub fn enable_defense_enforcement(mut self) -> Self {
         self.defense_enforcement = true;
+        self
+    }
+    /// Enables the closed, low-risk matched review catalog after discovery.
+    ///
+    /// The default assessment remains discovery/passive only. Enabling this
+    /// option cannot widen origin authority or create another request budget;
+    /// every review leg is composed through the assessment's shared broker.
+    pub fn enable_low_risk_differential_review(mut self) -> Self {
+        self.low_risk_differential_review = true;
         self
     }
     pub fn build(self) -> Result<WebAssessmentRuntime, WebAssessmentRuntimeError> {
@@ -1453,6 +1502,33 @@ impl WebAssessmentRuntimeBuilder {
             query_parameter_names: root.query_parameter_names,
             evidence_ids: Vec::new(),
         };
+        let native_review = if self.low_risk_differential_review {
+            let seeds = NativeWebReviewSeeds::from_authorized_origin(&root.url)?;
+            let redirect_query_parameter =
+                select_redirect_review_query_parameter(&root_subject.query_parameter_names);
+            let observer = Arc::new(
+                AssessmentReviewObserverSet::new(
+                    root.url.clone(),
+                    seeds.clone(),
+                    redirect_query_parameter.as_deref(),
+                )
+                .map_err(|_| WebAssessmentRuntimeError::NativeReviewComposition)?,
+            );
+            let ledger = CommittedAssessmentReviewLedger::new(
+                root.url.clone(),
+                seeds.clone(),
+                redirect_query_parameter.as_deref(),
+            )
+            .map_err(|_| WebAssessmentRuntimeError::NativeReviewComposition)?;
+            Some(AssessmentNativeReviewRuntime {
+                seeds,
+                redirect_query_parameter,
+                observer,
+                ledger,
+            })
+        } else {
+            None
+        };
         let ledger = AssessmentLedger::new(&root_subject);
         let mut initial_reasons = BTreeSet::new();
         if root.query_name_limit_reached {
@@ -1469,6 +1545,7 @@ impl WebAssessmentRuntimeBuilder {
             initial_reasons,
             started: false,
             defense_enforcement: self.defense_enforcement,
+            native_review,
             defense_audit: WebAssessmentDefenseAudit::new(if self.defense_enforcement {
                 WebAssessmentDefenseMode::Enforced
             } else {
@@ -1491,8 +1568,16 @@ pub struct WebAssessmentRuntime {
     initial_reasons: BTreeSet<WebAssessmentIncompleteReason>,
     started: bool,
     defense_enforcement: bool,
+    native_review: Option<AssessmentNativeReviewRuntime>,
     defense_audit: WebAssessmentDefenseAudit,
     passive_ledger: CommittedAssessmentPassiveLedger,
+}
+
+struct AssessmentNativeReviewRuntime {
+    seeds: NativeWebReviewSeeds,
+    redirect_query_parameter: Option<String>,
+    observer: Arc<AssessmentReviewObserverSet>,
+    ledger: CommittedAssessmentReviewLedger,
 }
 
 struct FailedSubjectBoundary {
@@ -1558,6 +1643,47 @@ fn replay_standard_defense(
         knowledge,
         enforcement_enabled,
     )
+}
+
+fn is_native_review_action(action_id: &str) -> bool {
+    NativeWebReviewActionKind::all()
+        .into_iter()
+        .any(|kind| kind.action_id() == action_id)
+}
+
+fn replay_native_review(
+    report: &crate::StandardWebDecisionRunReport,
+    review: &mut AssessmentNativeReviewRuntime,
+    knowledge: &KnowledgeBase,
+) -> Result<bool, ()> {
+    for turn in report.turns() {
+        if let StandardWebDecisionRuntimeTurn::Outcome { evidence, decision } = turn {
+            if is_native_review_action(evidence.case().action_id()) {
+                review
+                    .ledger
+                    .ingest_outcome(evidence, decision, knowledge)
+                    .map_err(|_| ())?;
+            }
+        }
+    }
+
+    let cors_complete = review
+        .ledger
+        .pair_is_complete(NativeWebReviewActionKind::CorsPolicyPair);
+    let redirect_complete = review.redirect_query_parameter.as_ref().is_none_or(|_| {
+        review
+            .ledger
+            .pair_is_complete(NativeWebReviewActionKind::RedirectReflectionQueryPair)
+    });
+    let expected_observations = if review.redirect_query_parameter.is_some() {
+        4
+    } else {
+        2
+    };
+    Ok(cors_complete
+        && redirect_complete
+        && !review.ledger.has_incomplete_reflection_observation()
+        && review.ledger.observations().len() == expected_observations)
 }
 
 impl WebAssessmentRuntime {
@@ -1650,6 +1776,22 @@ impl WebAssessmentRuntime {
                         subject_observer,
                     )
                     .with_assessment_defense_enforcement(self.defense_enforcement);
+                let builder = if subject.origin == WebAssessmentSubjectOrigin::AuthorizedRoot {
+                    match self.native_review.as_ref() {
+                        Some(review) => {
+                            let observer: Arc<dyn CompleteHttpResponseObserver> =
+                                review.observer.clone();
+                            builder.with_native_web_review(
+                                review.seeds.clone(),
+                                observer,
+                                review.redirect_query_parameter.clone(),
+                            )
+                        },
+                        None => builder,
+                    }
+                } else {
+                    builder
+                };
                 let mut runtime = match builder.build_with_shared_authority(self.authority.clone())
                 {
                     Ok(runtime) => runtime,
@@ -1734,6 +1876,35 @@ impl WebAssessmentRuntime {
                             started_at,
                         )),
                     });
+                }
+                if subject.origin == WebAssessmentSubjectOrigin::AuthorizedRoot {
+                    let native_review_complete = match self.native_review.as_mut() {
+                        Some(review) => {
+                            replay_native_review(&standard, review, self.authority.knowledge())
+                        },
+                        None => Ok(true),
+                    };
+                    match native_review_complete {
+                        Ok(true) => {},
+                        Ok(false) => {
+                            reasons.insert(
+                                WebAssessmentIncompleteReason::DifferentialReviewIncomplete,
+                            );
+                        },
+                        Err(()) => {
+                            let parts = standard.into_assessment_parts();
+                            return Err(WebAssessmentRuntimeError::ProjectionInvariant {
+                                receipt: Box::new(self.failure_receipt(
+                                    &known_subjects,
+                                    subject_reports,
+                                    forms,
+                                    WebAssessmentSubjectReport::complete(subject, parts),
+                                    failed_reasons(&reasons),
+                                    started_at,
+                                )),
+                            });
+                        },
+                    }
                 }
                 classify_standard_completion(&standard, &mut reasons);
                 let cancelled_at_subject_boundary = self.authority.cancellation().is_cancelled();
@@ -1964,8 +2135,9 @@ impl WebAssessmentRuntime {
                 });
             },
         }
-        let assessment_projection = match project_passive_assessment_items(
+        let assessment_projection = match project_assessment_items(
             &self.passive_ledger,
+            self.native_review.as_ref().map(|review| &review.ledger),
             self.authority.knowledge(),
             &self.root,
         ) {

@@ -40,17 +40,18 @@ const OBSERVATION_DESCRIPTOR: AssessmentCapabilityDescriptor = AssessmentCapabil
     AssessmentClaimPolicy::ObservationOnly,
 );
 
-const REVIEW_DESCRIPTOR: AssessmentCapabilityDescriptor = AssessmentCapabilityDescriptor::new(
-    "test.review@1",
-    "Review fixture",
-    "test",
-    "A redacted review fixture.",
-    None,
-    750_000,
-    None,
-    TEST_REMEDIATION,
-    AssessmentClaimPolicy::DifferentialReview,
-);
+const REVIEW_DESCRIPTOR: AssessmentCapabilityDescriptor =
+    AssessmentCapabilityDescriptor::differential_review(
+        "test.review@1",
+        "Review fixture",
+        "test",
+        "A redacted review fixture.",
+        None,
+        750_000,
+        None,
+        "test.remediation@1",
+        "Use the bounded test remediation.",
+    );
 
 const CONFIRMED_DESCRIPTOR: AssessmentCapabilityDescriptor = AssessmentCapabilityDescriptor::new(
     "test.confirmed@1",
@@ -257,7 +258,7 @@ fn item_is_read_only_and_exposes_only_static_or_opaque_fields() {
 #[test]
 fn observation_and_differential_references_fail_closed() {
     let subject = test_subject("subject:fail-closed");
-    let (context, ids, knowledge) = mapped_context(
+    let (mut context, ids, knowledge) = mapped_context(
         &subject,
         "route.fail-closed@1",
         &[],
@@ -287,9 +288,8 @@ fn observation_and_differential_references_fail_closed() {
         Err(AssessmentItemProjectionError::DuplicateEvidenceReference)
     );
     assert_eq!(
-        AssessmentItem::from_differential(
+        context.project_differential(
             &OBSERVATION_DESCRIPTOR,
-            &context,
             &knowledge,
             &subject,
             &target,
@@ -300,10 +300,32 @@ fn observation_and_differential_references_fail_closed() {
             requested: AssessmentDisposition::NeedsReview,
         })
     );
+    assert_eq!(context.items.len(), 0);
     assert_eq!(
-        AssessmentItem::from_differential(
+        context.project_differential(
             &REVIEW_DESCRIPTOR,
-            &context,
+            &knowledge,
+            &subject,
+            &target,
+            &[],
+            &[ids[1].clone()],
+        ),
+        Err(AssessmentItemProjectionError::MissingEvidence)
+    );
+    assert_eq!(
+        context.project_differential(
+            &REVIEW_DESCRIPTOR,
+            &knowledge,
+            &subject,
+            &target,
+            &[ids[0].clone()],
+            &[],
+        ),
+        Err(AssessmentItemProjectionError::MissingEvidence)
+    );
+    assert_eq!(
+        context.project_differential(
+            &REVIEW_DESCRIPTOR,
             &knowledge,
             &subject,
             &target,
@@ -312,6 +334,79 @@ fn observation_and_differential_references_fail_closed() {
         ),
         Err(AssessmentItemProjectionError::OverlappingDifferentialEvidence)
     );
+    assert_eq!(context.items.len(), 0);
+}
+
+#[test]
+fn differential_projection_rejects_cross_subject_and_uncommitted_evidence() {
+    let subject = test_subject("subject:differential-authority");
+    let other_subject = test_subject("subject:differential-authority-other");
+    let control = test_evidence(
+        "evidence:differential-control",
+        subject.clone(),
+        "case:differential",
+    );
+    let cross_subject = test_evidence(
+        "evidence:differential-cross-subject",
+        other_subject.clone(),
+        "case:differential",
+    );
+    let knowledge = KnowledgeBase::new();
+    knowledge.insert_evidence(control.clone()).unwrap();
+    knowledge.insert_evidence(cross_subject.clone()).unwrap();
+
+    let mut context = AssessmentProjectionContext::new(&knowledge, test_scope_id());
+    context
+        .register_subject(
+            subject.clone(),
+            StableAssessmentSubjectId::new("route.differential-authority@1").unwrap(),
+            Vec::new(),
+        )
+        .unwrap();
+    context
+        .register_subject(
+            other_subject,
+            StableAssessmentSubjectId::new("route.differential-authority-other@1").unwrap(),
+            Vec::new(),
+        )
+        .unwrap();
+    context.register_evidence(&knowledge, control.id()).unwrap();
+    context
+        .register_evidence(&knowledge, cross_subject.id())
+        .unwrap();
+
+    assert_eq!(
+        context.project_differential(
+            &REVIEW_DESCRIPTOR,
+            &knowledge,
+            &subject,
+            &AssessmentItemTarget::subject(),
+            &[control.id().clone()],
+            &[cross_subject.id().clone()],
+        ),
+        Err(AssessmentItemProjectionError::EvidenceSubjectMappingMismatch)
+    );
+
+    let uncommitted_id = EvidenceId::parse("evidence:differential-uncommitted").unwrap();
+    context.evidence.insert(
+        uncommitted_id.clone(),
+        EvidenceProjection {
+            reference: AssessmentEvidenceReference::new(2),
+            subject: subject.clone(),
+        },
+    );
+    assert_eq!(
+        context.project_differential(
+            &REVIEW_DESCRIPTOR,
+            &knowledge,
+            &subject,
+            &AssessmentItemTarget::subject(),
+            &[control.id().clone()],
+            &[uncommitted_id],
+        ),
+        Err(AssessmentItemProjectionError::EvidenceNotCommitted)
+    );
+    assert!(context.items.is_empty());
 }
 
 #[test]
@@ -758,7 +853,7 @@ fn execution_and_verification_stages_must_match() {
 #[test]
 fn stable_fingerprint_excludes_basis_evidence_confidence_summary_and_disposition() {
     const ALTERNATE_DESCRIPTOR: AssessmentCapabilityDescriptor =
-        AssessmentCapabilityDescriptor::new(
+        AssessmentCapabilityDescriptor::differential_review(
             "test.review@1",
             "Changed title",
             "changed-category",
@@ -766,8 +861,8 @@ fn stable_fingerprint_excludes_basis_evidence_confidence_summary_and_disposition
             Some(SecuritySeverity::High),
             123_456,
             None,
-            TEST_REMEDIATION,
-            AssessmentClaimPolicy::DifferentialReview,
+            "test.remediation@1",
+            "Use the bounded test remediation.",
         );
     let subject = test_subject("subject:fingerprint");
     let (context, ids, knowledge) = mapped_context(

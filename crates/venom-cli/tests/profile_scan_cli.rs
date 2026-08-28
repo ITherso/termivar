@@ -27,6 +27,13 @@ fn serve<F>(handler: F) -> TestServer
 where
     F: Fn(&str) -> Vec<u8> + Send + Sync + 'static,
 {
+    serve_request(move |target, _| handler(target))
+}
+
+fn serve_request<F>(handler: F) -> TestServer
+where
+    F: Fn(&str, &str) -> Vec<u8> + Send + Sync + 'static,
+{
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let address: SocketAddr = listener.local_addr().unwrap();
     let connections = Arc::new(AtomicUsize::new(0));
@@ -54,7 +61,7 @@ where
 
 fn handle_connection(
     stream: &mut TcpStream,
-    handler: &(dyn Fn(&str) -> Vec<u8> + Send + Sync),
+    handler: &(dyn Fn(&str, &str) -> Vec<u8> + Send + Sync),
     requests: &Mutex<Vec<String>>,
 ) {
     let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
@@ -68,7 +75,7 @@ fn handle_connection(
         .unwrap_or("/")
         .to_owned();
     requests.lock().unwrap().push(target.clone());
-    let response = handler(&target);
+    let response = handler(&target, &request);
     let _ = stream.write_all(&response);
     let _ = stream.flush();
 }
@@ -184,7 +191,36 @@ fn explicit_profiles_emit_the_additive_schema_and_exact_scope() {
 
 #[test]
 fn completed_web_review_uses_the_central_renderer_for_every_format() {
-    let server = serve(|_| ok_html("hello", ""));
+    let server = serve_request(|target, request| {
+        let origin = request.lines().find_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            name.eq_ignore_ascii_case("origin")
+                .then(|| value.trim().to_owned())
+        });
+        if let Some(origin) = origin {
+            return ok_html(
+                "cors candidate",
+                &format!(
+                    "Access-Control-Allow-Origin: {origin}\r\nAccess-Control-Allow-Credentials: true\r\nVary: Origin\r\n"
+                ),
+            );
+        }
+        if target.contains('?') {
+            let parsed = url::Url::parse(&format!("http://fixture{target}")).unwrap();
+            let candidate = parsed
+                .query_pairs()
+                .find_map(|(name, value)| (name == "next").then(|| value.into_owned()))
+                .unwrap();
+            let body = format!("<script>const destination = '{candidate}'</script>");
+            return format!(
+                "HTTP/1.1 302 Found\r\nContent-Type: text/html; charset=utf-8\r\nLocation: {candidate}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            )
+            .into_bytes();
+        }
+        ok_html("hello", "")
+    });
+    let target = format!("{}?next=host-value", server.url);
     for (format, required) in [
         ("json", "\"schema\":\"venom-rendered-assessment/v1\""),
         ("csv", "\"record_type\",\"document_schema\""),
@@ -198,7 +234,7 @@ fn completed_web_review_uses_the_central_renderer_for_every_format() {
                 "web-review",
                 "--report-format",
                 format,
-                &server.url,
+                &target,
             ])
             .output()
             .expect("failed to run venom");
@@ -215,6 +251,8 @@ fn completed_web_review_uses_the_central_renderer_for_every_format() {
         );
         assert!(stdout.contains("informational"));
         assert!(stdout.contains("observation"));
+        assert!(stdout.contains("needs_review"));
+        assert!(stdout.contains("differential"));
         assert!(!stdout.contains(&server.url));
         assert!(!stdout.contains("decision-scan/v1"));
     }

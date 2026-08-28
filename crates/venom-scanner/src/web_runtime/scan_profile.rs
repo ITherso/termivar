@@ -216,9 +216,9 @@ impl ScanProfileCapabilitiesV1 {
         low_risk_differential_review: false,
     };
 
-    // Expose only capabilities that execute on this branch. Passive review is
-    // composed by the origin assessment; low-risk differential review remains
-    // disabled until native capabilities and boundary tests land.
+    // Expose only capabilities that execute on this branch. Both passive and
+    // closed low-risk differential review are composed by the origin
+    // assessment under its one shared authority.
     const WEB_REVIEW: Self = Self {
         standard_web_decision: true,
         origin_discovery: true,
@@ -226,7 +226,7 @@ impl ScanProfileCapabilitiesV1 {
         defense_observation: true,
         defense_shadow_planning: true,
         passive_security_review: true,
-        low_risk_differential_review: false,
+        low_risk_differential_review: true,
     };
 
     /// Whether the standard single-subject decision primitive executes.
@@ -856,7 +856,7 @@ mod tests {
         assert!(web_review.capabilities().defense_observation());
         assert!(web_review.capabilities().defense_shadow_planning());
         assert!(web_review.capabilities().passive_security_review());
-        assert!(!web_review.capabilities().low_risk_differential_review());
+        assert!(web_review.capabilities().low_risk_differential_review());
         assert!(!web_review.defense_enforcement_enabled());
     }
 

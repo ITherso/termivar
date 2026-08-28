@@ -594,8 +594,11 @@ impl AssessmentProjectionContext {
         Ok(())
     }
 
-    #[cfg(test)]
-    pub(crate) fn project_differential(
+    /// Projects one native, capability-authorized matched pair as review-only
+    /// product truth. This remains confined to the assessment runtime domain;
+    /// external callers and plugins cannot supply descriptors or choose a
+    /// disposition.
+    pub(super) fn project_differential(
         &mut self,
         capability: &'static AssessmentCapabilityDescriptor,
         knowledge: &KnowledgeBase,
@@ -1066,10 +1069,9 @@ impl AssessmentItem {
         ))
     }
 
-    // Deliberately private until a capability-specific matched-pair validator
-    // can mint a sealed differential proof. Arbitrary crate callers cannot
-    // turn two evidence identifiers into `NeedsReview`.
-    #[cfg(test)]
+    // Deliberately private behind `AssessmentProjectionContext`: native
+    // matched-pair validators can request review projection without receiving
+    // a raw item-construction or disposition-selection surface.
     fn from_differential(
         capability: &'static AssessmentCapabilityDescriptor,
         context: &AssessmentProjectionContext,
@@ -1316,7 +1318,6 @@ pub enum AssessmentItemProjectionError {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AssessmentClaimPolicy {
     ObservationOnly,
-    #[cfg(test)]
     DifferentialReview,
     #[cfg(test)]
     VerifierTransition(VerifierClaimPolicy),
@@ -1408,6 +1409,38 @@ impl AssessmentCapabilityDescriptor {
         )
     }
 
+    /// Defines one native matched-pair capability whose strongest product
+    /// disposition is `NeedsReview`. The constructor is visible only within
+    /// the parent assessment-runtime domain, so plugins and unrelated crate
+    /// modules cannot mint review descriptors or select claim policy.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) const fn differential_review(
+        id: &'static str,
+        title: &'static str,
+        category: &'static str,
+        redacted_summary: &'static str,
+        severity: Option<SecuritySeverity>,
+        confidence_ppm: u32,
+        cwe: Option<&'static str>,
+        remediation_id: &'static str,
+        remediation_summary: &'static str,
+    ) -> Self {
+        Self::new(
+            id,
+            title,
+            category,
+            redacted_summary,
+            severity,
+            confidence_ppm,
+            cwe,
+            AssessmentRemediation {
+                id: remediation_id,
+                summary: remediation_summary,
+            },
+            AssessmentClaimPolicy::DifferentialReview,
+        )
+    }
+
     #[allow(clippy::too_many_arguments)]
     const fn new(
         id: &'static str,
@@ -1440,7 +1473,6 @@ impl AssessmentCapabilityDescriptor {
         }
         match claim_policy {
             AssessmentClaimPolicy::ObservationOnly => {},
-            #[cfg(test)]
             AssessmentClaimPolicy::DifferentialReview => {},
             #[cfg(test)]
             AssessmentClaimPolicy::VerifierTransition(policy) => {
@@ -1488,13 +1520,13 @@ impl AssessmentCapabilityDescriptor {
         self.claim_policy.maximum_disposition()
     }
 
-    #[cfg(test)]
     const fn allows_differential_review(self) -> bool {
-        matches!(
-            self.claim_policy,
-            AssessmentClaimPolicy::DifferentialReview
-                | AssessmentClaimPolicy::VerifierTransition(_)
-        )
+        match self.claim_policy {
+            AssessmentClaimPolicy::ObservationOnly => false,
+            AssessmentClaimPolicy::DifferentialReview => true,
+            #[cfg(test)]
+            AssessmentClaimPolicy::VerifierTransition(_) => true,
+        }
     }
 
     #[cfg(test)]

@@ -8,6 +8,24 @@ use url::Url;
 
 use super::{WebAssessmentFormMethod, WebAssessmentLimits, WebAssessmentMethod};
 
+const MAX_REFLECTION_DOM_NODES: usize = 4_096;
+const MAX_REFLECTION_OCCURRENCES: usize = 32;
+
+/// Strongest exact HTML reflection context observed in one complete bounded
+/// document. No variant represents browser execution or XSS confirmation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(in crate::web_runtime) enum ExactHtmlReflectionContext {
+    Absent,
+    Inert,
+    Text,
+    Attribute,
+    Dangerous,
+    /// The response is explicitly outside the HTML reflection capability.
+    NotApplicable,
+    /// HTML analysis could not reach a bounded, complete conclusion.
+    Incomplete,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) struct ParsedRoute {
     pub(super) url: Url,
@@ -188,6 +206,125 @@ pub(super) fn parse_document(
         })
         .collect();
     result
+}
+
+/// Classifies an exact candidate reflection with the same standards-compliant
+/// DOM parser used by discovery. Traversal and occurrence counts are hard
+/// bounded; an exhausted bound is explicitly inconclusive and cannot emit an
+/// assessment item.
+pub(in crate::web_runtime) fn classify_exact_html_reflection(
+    html: &str,
+    candidate: &str,
+) -> ExactHtmlReflectionContext {
+    if candidate.is_empty() {
+        return ExactHtmlReflectionContext::Incomplete;
+    }
+    let dom = parse_html_document(RcDom::default(), ParseOpts::default()).one(html);
+    let mut pending = vec![(dom.document.clone(), false)];
+    let mut nodes = 0_usize;
+    let mut occurrences = 0_usize;
+    let mut strongest = ExactHtmlReflectionContext::Absent;
+
+    while let Some((handle, dangerous_parent)) = pending.pop() {
+        nodes = nodes.saturating_add(1);
+        if nodes > MAX_REFLECTION_DOM_NODES {
+            return ExactHtmlReflectionContext::Incomplete;
+        }
+        let mut child_dangerous = dangerous_parent;
+        match &handle.data {
+            NodeData::Element { name, attrs, .. } if name.ns == ns!(html) => {
+                let local = name.local.as_ref();
+                child_dangerous = dangerous_parent || matches!(local, "script" | "style");
+                for attribute in attrs.borrow().iter() {
+                    let value = attribute.value.as_ref();
+                    let count = value
+                        .match_indices(candidate)
+                        .take(
+                            MAX_REFLECTION_OCCURRENCES
+                                .saturating_sub(occurrences)
+                                .saturating_add(1),
+                        )
+                        .count();
+                    occurrences = occurrences.saturating_add(count);
+                    if occurrences > MAX_REFLECTION_OCCURRENCES {
+                        return ExactHtmlReflectionContext::Incomplete;
+                    }
+                    if count == 0 {
+                        continue;
+                    }
+                    let attribute_name = attribute.name.local.as_ref();
+                    let context = if child_dangerous
+                        || attribute_name.starts_with("on")
+                        || matches!(attribute_name, "srcdoc" | "style")
+                        || matches!(
+                            attribute_name,
+                            "href"
+                                | "src"
+                                | "action"
+                                | "formaction"
+                                | "poster"
+                                | "data"
+                                | "xlink:href"
+                        ) {
+                        ExactHtmlReflectionContext::Dangerous
+                    } else {
+                        ExactHtmlReflectionContext::Attribute
+                    };
+                    strongest = strongest.max(context);
+                }
+            },
+            NodeData::Text { contents } => {
+                let contents = contents.borrow();
+                let count = contents
+                    .match_indices(candidate)
+                    .take(
+                        MAX_REFLECTION_OCCURRENCES
+                            .saturating_sub(occurrences)
+                            .saturating_add(1),
+                    )
+                    .count();
+                occurrences = occurrences.saturating_add(count);
+                if occurrences > MAX_REFLECTION_OCCURRENCES {
+                    return ExactHtmlReflectionContext::Incomplete;
+                }
+                if count != 0 {
+                    strongest = strongest.max(if dangerous_parent {
+                        ExactHtmlReflectionContext::Dangerous
+                    } else {
+                        ExactHtmlReflectionContext::Text
+                    });
+                }
+            },
+            NodeData::Comment { contents } => {
+                let count = contents
+                    .match_indices(candidate)
+                    .take(
+                        MAX_REFLECTION_OCCURRENCES
+                            .saturating_sub(occurrences)
+                            .saturating_add(1),
+                    )
+                    .count();
+                occurrences = occurrences.saturating_add(count);
+                if occurrences > MAX_REFLECTION_OCCURRENCES {
+                    return ExactHtmlReflectionContext::Incomplete;
+                }
+                if count != 0 {
+                    strongest = strongest.max(ExactHtmlReflectionContext::Inert);
+                }
+            },
+            _ => {},
+        }
+        pending.extend(
+            handle
+                .children
+                .borrow()
+                .iter()
+                .rev()
+                .cloned()
+                .map(|child| (child, child_dangerous)),
+        );
+    }
+    strongest
 }
 
 fn route_attribute(local: &str) -> Option<(&'static str, WebAssessmentMethod)> {
@@ -708,5 +845,72 @@ mod tests {
         assert_eq!(root.query_parameter_names, ["a", "z"]);
         assert!(!format!("{root:?}").contains("secret"));
         assert!(!format!("{root:?}").contains("private"));
+    }
+
+    #[test]
+    fn exact_reflection_contexts_are_parser_classified_without_execution_claims() {
+        let candidate = "https://case.review.invalid/";
+        for (html, expected) in [
+            (
+                "<p>no candidate here</p>",
+                ExactHtmlReflectionContext::Absent,
+            ),
+            (
+                "<!-- https://case.review.invalid/ -->",
+                ExactHtmlReflectionContext::Inert,
+            ),
+            (
+                "<p>https://case.review.invalid/</p>",
+                ExactHtmlReflectionContext::Text,
+            ),
+            (
+                "<div data-next='https://case.review.invalid/'></div>",
+                ExactHtmlReflectionContext::Attribute,
+            ),
+            (
+                "<a href='https://case.review.invalid/'>continue</a>",
+                ExactHtmlReflectionContext::Dangerous,
+            ),
+            (
+                "<div onclick='go(&quot;https://case.review.invalid/&quot;)'></div>",
+                ExactHtmlReflectionContext::Dangerous,
+            ),
+            (
+                "<script>const next = 'https://case.review.invalid/';</script>",
+                ExactHtmlReflectionContext::Dangerous,
+            ),
+        ] {
+            assert_eq!(classify_exact_html_reflection(html, candidate), expected);
+        }
+    }
+
+    #[test]
+    fn exact_reflection_classification_is_deterministic_and_fail_closed_at_limits() {
+        let candidate = "https://case.review.invalid/";
+        let ordinary = format!("<p>{candidate}</p>");
+        assert_eq!(
+            classify_exact_html_reflection(&ordinary, candidate),
+            classify_exact_html_reflection(&ordinary, candidate)
+        );
+        assert_eq!(
+            classify_exact_html_reflection(&ordinary, ""),
+            ExactHtmlReflectionContext::Incomplete
+        );
+
+        let too_many = std::iter::repeat_n(candidate, MAX_REFLECTION_OCCURRENCES + 1)
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert_eq!(
+            classify_exact_html_reflection(&format!("<p>{too_many}</p>"), candidate),
+            ExactHtmlReflectionContext::Incomplete
+        );
+
+        let too_many_nodes = (0..=MAX_REFLECTION_DOM_NODES)
+            .map(|_| "<span></span>")
+            .collect::<String>();
+        assert_eq!(
+            classify_exact_html_reflection(&too_many_nodes, candidate),
+            ExactHtmlReflectionContext::Incomplete
+        );
     }
 }
