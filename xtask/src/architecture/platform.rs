@@ -1848,7 +1848,6 @@ const EXACT_REPORTING_REEXPORTS: &[&str] = &[
     "ReportFormat",
     "ReportGenerator",
 ];
-const EXACT_ASSESSMENT_REPORTING_REEXPORTS: &[&str] = &["ASSESSMENT_REPORT_DOCUMENT_SCHEMA"];
 
 fn reporting_reexport_violations(source: &str) -> Result<Vec<String>, syn::Error> {
     let syntax = syn::parse_file(source)?;
@@ -1860,9 +1859,11 @@ fn reporting_reexport_violations(source: &str) -> Result<Vec<String>, syn::Error
     collect_recursive_type_aliases(&syntax.items, 0, &mut all_type_aliases);
     let mut aliases: BTreeSet<String> = EXACT_REPORTING_REEXPORTS
         .iter()
-        .chain(EXACT_ASSESSMENT_REPORTING_REEXPORTS)
         .map(|name| (*name).to_owned())
-        .chain(["reporting".to_owned()])
+        .chain([
+            "ASSESSMENT_REPORT_DOCUMENT_SCHEMA".to_owned(),
+            "reporting".to_owned(),
+        ])
         .collect();
     let bindings: Vec<_> = all_uses
         .iter()
@@ -1919,10 +1920,6 @@ fn reporting_reexport_violations(source: &str) -> Result<Vec<String>, syn::Error
         .iter()
         .map(|name| (*name).to_owned())
         .collect();
-    let expected_assessment: BTreeSet<_> = EXACT_ASSESSMENT_REPORTING_REEXPORTS
-        .iter()
-        .map(|name| (*name).to_owned())
-        .collect();
     for (record, related) in all_type_aliases.iter().zip(related_type_aliases) {
         if related {
             violations.push(format!(
@@ -1932,7 +1929,6 @@ fn reporting_reexport_violations(source: &str) -> Result<Vec<String>, syn::Error
         }
     }
     let mut base_count = 0_usize;
-    let mut assessment_count = 0_usize;
     for record in &reporting_uses {
         let item = record.item;
         if record.depth != 0 || !is_public(&item.vis) {
@@ -1960,23 +1956,15 @@ fn reporting_reexport_violations(source: &str) -> Result<Vec<String>, syn::Error
                     "venom-scanner base reporting re-exports must use exact cfg(feature=\"reporting\"), found {actual_cfg:?}"
                 ));
             }
-        } else if actual == expected_assessment {
-            assessment_count += 1;
-            let expected_cfg = ["all(feature=\"reporting\",feature=\"scanning\")".to_owned()];
-            if actual_cfg != expected_cfg {
-                violations.push(format!(
-                    "venom-scanner assessment reporting re-export must use exact cfg(all(feature=\"reporting\",feature=\"scanning\")), found {actual_cfg:?}"
-                ));
-            }
         } else {
             violations.push(format!(
-                "venom-scanner reporting re-exports must be exactly base {expected:?} or assessment {expected_assessment:?}, found {actual:?}"
+                "venom-scanner reporting re-exports must be exactly {expected:?}; assessment-only symbols remain available through the public reporting module, found {actual:?}"
             ));
         }
     }
-    if base_count != 1 || assessment_count != 1 || reporting_uses.len() != 2 {
+    if base_count != 1 || reporting_uses.len() != 1 {
         violations.push(format!(
-            "venom-scanner must declare exactly one public base reporting re-export and one public assessment-schema re-export; found base={base_count}, assessment={assessment_count}, total={}",
+            "venom-scanner must declare exactly one public base reporting re-export; found base={base_count}, total={}",
             reporting_uses.len()
         ));
     }
@@ -2001,7 +1989,7 @@ fn collect_reporting_cfg_item_violations(
                 };
             if !exact_root_item {
                 violations.push(format!(
-                    "venom-scanner cfg(reporting) facade item `{}` at inline-module depth {depth} is forbidden; only the exact root module, five-symbol base re-export, and assessment-schema re-export are allowed",
+                    "venom-scanner cfg(reporting) facade item `{}` at inline-module depth {depth} is forbidden; only the exact root module and five-symbol base re-export are allowed",
                     reporting_item_label(item)
                 ));
             }
@@ -2108,14 +2096,8 @@ fn is_exact_reporting_reexport(item: &syn::ItemUse) -> bool {
         .iter()
         .map(|name| (*name).to_owned())
         .collect();
-    let expected_assessment: BTreeSet<_> = EXACT_ASSESSMENT_REPORTING_REEXPORTS
-        .iter()
-        .map(|name| (*name).to_owned())
-        .collect();
     let cfg = cfg_predicates_from_attributes(&item.attrs);
-    let contract_is_exact = (names == expected && cfg == ["feature=\"reporting\"".to_owned()])
-        || (names == expected_assessment
-            && cfg == ["all(feature=\"reporting\",feature=\"scanning\")".to_owned()]);
+    let contract_is_exact = names == expected && cfg == ["feature=\"reporting\"".to_owned()];
     is_public(&item.vis)
         && item.leading_colon.is_none()
         && use_tree_root_ident(&item.tree).as_deref() == Some("reporting")
@@ -7180,8 +7162,6 @@ mod tests {
     #[test]
     fn reporting_reexports_are_exact_and_feature_gated() {
         let source = r#"
-            #[cfg(all(feature = "reporting", feature = "scanning"))]
-            pub use reporting::ASSESSMENT_REPORT_DOCUMENT_SCHEMA;
             #[cfg(feature = "reporting")]
             pub use reporting::{
                 ReportError, ReportFormat, ReportGenerator, MAX_RENDERED_REPORT_BYTES,
@@ -7206,26 +7186,13 @@ mod tests {
             .iter()
             .any(|violation| violation.contains("exact cfg")));
 
-        let assessment_widened = source.replace(
-            "#[cfg(all(feature = \"reporting\", feature = \"scanning\"))]",
-            "#[cfg(feature = \"reporting\")]",
+        let assessment_alias = format!(
+            "{source}\n#[cfg(all(feature = \"reporting\", feature = \"scanning\"))]\npub use reporting::ASSESSMENT_REPORT_DOCUMENT_SCHEMA;"
         );
-        assert!(reporting_reexport_violations(&assessment_widened)
+        assert!(reporting_reexport_violations(&assessment_alias)
             .unwrap()
             .iter()
-            .any(
-                |violation| violation.contains("assessment reporting re-export")
-                    && violation.contains("exact cfg")
-            ));
-
-        let missing_assessment = source.replace(
-            "#[cfg(all(feature = \"reporting\", feature = \"scanning\"))]\n            pub use reporting::ASSESSMENT_REPORT_DOCUMENT_SCHEMA;\n",
-            "",
-        );
-        assert!(reporting_reexport_violations(&missing_assessment)
-            .unwrap()
-            .iter()
-            .any(|violation| violation.contains("assessment-schema re-export")));
+            .any(|violation| violation.contains("assessment-only symbols")));
 
         let legacy = source.replace(
             "ReportError, ReportFormat",

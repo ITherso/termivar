@@ -377,8 +377,6 @@ pub use persistence::{
 #[cfg(feature = "platform-models")]
 pub use post_exploitation::{AssessmentObservation, ObservationDisposition};
 
-#[cfg(all(feature = "reporting", feature = "scanning"))]
-pub use reporting::ASSESSMENT_REPORT_DOCUMENT_SCHEMA;
 #[cfg(feature = "reporting")]
 pub use reporting::{
     ReportError, ReportFormat, ReportGenerator, MAX_RENDERED_REPORT_BYTES, REPORT_DOCUMENT_SCHEMA,
