@@ -11,8 +11,8 @@ venom scan --profile web-review <TARGET>
   the additive `web-assessment/v1` profile audit.
 - `web-review` opts into bounded, deterministic discovery under one authorized
   exact-origin authority, then composes bounded semantic extraction, defense
-  observation/shadow planning, and passive header/cookie review over committed
-  evidence.
+  observation/shadow planning, passive header/cookie review, and a closed
+  matched low-risk differential catalog over committed evidence.
 
 Omitting `--profile` is a separate compatibility state. It preserves the
 existing text/`--explain` behavior and `decision-scan/v1` JSON contract rather
@@ -20,10 +20,20 @@ than silently selecting a new crawler or assessment document.
 
 The serialized profile schema is `venom.scan-profile/v1`. Its capability matrix
 is closed and exact. In the current `web-review` profile, passive security
-review is enabled and low-risk differential review is disabled. Passive
-security-header and value-free cookie observations can produce only
-`Informational` `AssessmentItem` values; no native assessment capability
-currently produces `Confirmed`.
+review and low-risk differential review are enabled. Passive security-header,
+value-free cookie, and non-dangerous reflection observations are
+`Informational`. Exact matched CORS/redirect relationships and dangerous HTML
+reflection can produce only `NeedsReview`; every native review action is
+KnowledgeOnly and cannot produce `Confirmed`.
+
+The differential catalog always reviews CORS on the authorized starting
+resource, additively with otherwise eligible standard actions. A CORS review
+item requires successful control and candidate status classes. Redirect/reflection review is added only when the starting URL
+already contains one recognized navigation query-parameter name. Its original
+value is discarded; a deterministic `.invalid` candidate is sent only as an
+encoded same-origin query value. Redirects remain disabled, so that external
+destination is observed in `Location` only for 301/302/303/307/308 and is never
+contacted.
 
 Stable item identity currently covers only the exact origin root (`/`). A
 non-root starting target or eligible condition on a discovered non-root subject

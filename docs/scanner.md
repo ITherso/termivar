@@ -15,9 +15,10 @@ selection states:
   `web-assessment/v1` profile audit.
 - `--profile web-review` composes the same single-resource primitive inside a
   bounded exact-origin assessment. Deterministic discovery, semantic
-  extraction, defense observation/shadow planning, and passive header/cookie
-  review share one runtime-owned `RuntimeBudget`, request-accounting broker,
-  cancellation authority, and exact-origin policy. Redirects remain disabled.
+  extraction, defense observation/shadow planning, passive header/cookie
+  review, and the closed native differential catalog share one runtime-owned
+  `RuntimeBudget`, request-accounting broker, cancellation authority, and
+  exact-origin policy. Redirects remain disabled.
 
 The exact-origin runtime uses stable bounded discovery and retains canonical
 subjects, form actions/methods, form-control names, candidate query-parameter
@@ -30,9 +31,25 @@ Permissions-Policy, and value-free cookie metadata. These capabilities project
 only `Informational` `AssessmentItem` values. The product claim ladder permits
 an observation to become `Informational`, a matched differential to become
 `NeedsReview`, and only a verifier-authorized, case-correlated transition under
-a confirming claim policy to become `Confirmed`. The current native assessment
-runtime has no low-risk differential capability enabled and no capability that
-can produce a `Confirmed` item.
+a confirming claim policy to become `Confirmed`.
+
+Native low-risk review is enabled only by `web-review` and runs on the
+authorized starting resource inside the same `StandardWebDecisionRuntime`
+session used for its bootstrap. It uses matched CORS control/candidate requests
+and, only for a recognized navigation parameter already named by the starting
+URL, a matched redirect/reflection query pair. The supplied query value is
+discarded. Native actions do not suppress otherwise eligible standard actions.
+A reflected Origin without the complete credential policy or without two
+successful-status legs is insufficient. Redirect review accepts only
+301/302/303/307/308, and redirects are not followed. Non-dangerous exact
+reflection is `Informational`; dangerous-context reflection, credentialed
+candidate-specific CORS, and an exact candidate-specific external redirect are
+at most `NeedsReview`. Every native action is KnowledgeOnly, and no native
+assessment capability can produce a `Confirmed` item.
+An explicitly non-HTML response makes reflection review not applicable. A
+truncated body, invalid UTF-8, or exhausted DOM/occurrence ceiling instead makes
+the selected differential review typed incomplete; it is never reported as an
+empty successful assessment.
 
 Stable item identity is currently limited to the exact origin root (`/`). A
 non-root starting target, or an eligible condition on a discovered non-root

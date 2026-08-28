@@ -37,9 +37,9 @@ flowchart LR
 
 The two paths are separate. With no explicit profile, the deterministic runtime
 emits operational decisions and outcomes under the unchanged
-`decision-scan/v1` contract. The opt-in `web-review` profile adds a typed
-assessment-item projection, but its currently implemented passive items are
-informational observations rather than confirmed vulnerabilities.
+`decision-scan/v1` contract. The opt-in `web-review` profile adds typed passive
+observations and matched low-risk review items. Those relationships remain
+`Informational` or `NeedsReview`; none is a confirmed vulnerability.
 `decision-scan` is a deprecated command alias for the same deterministic path;
 it is not a second engine. Scanner SDK and plugin APIs are optional library
 surfaces and are not silently inserted into `scan`.
@@ -97,17 +97,35 @@ cargo run -p venom-cli --locked -- scan https://authorized.example.test --profil
 `baseline` runs the same conservative single-resource decision primitive and
 uses the additive `web-assessment/v1` profile audit. `web-review` opts into a
 bounded exact-origin assessment: deterministic discovery, bounded semantic
-extraction, defense observation and shadow planning, and passive header/cookie
-review all share one runtime budget, request broker, cancellation authority,
-and exact-origin policy. Redirects remain disabled. Discovery does not turn a
-resource, form, or parameter name into a vulnerability claim and never follows
-a cross-origin reference.
+extraction, defense observation and shadow planning, passive header/cookie
+review, and a closed low-risk differential catalog all share one runtime
+budget, request broker, cancellation authority, and exact-origin policy.
+The native catalog is additive; it does not suppress otherwise eligible
+standard actions on the authorized root.
+Redirects remain disabled. Discovery does not turn a resource, form, or
+parameter name into a vulnerability claim and never follows a cross-origin
+reference.
 
 The passive review observes HSTS, CSP, X-Content-Type-Options,
 Referrer-Policy, Permissions-Policy, and cookie attributes without retaining
-cookie values. Its product items are `Informational` only. The native
-assessment runtime does not yet execute low-risk differential review and has
-no capability that can produce a `Confirmed` assessment item.
+cookie values. The opt-in differential catalog runs only on the explicitly
+authorized starting resource. It compares a no-`Origin` control with a
+deterministic external-origin candidate for CORS review. If the starting URL
+already supplied a recognized navigation query-parameter name, it also
+compares a query-free control with one deterministic `.invalid` external
+destination without following redirects. Query values from the user are never
+retained or replayed.
+
+Credentialed candidate-specific CORS requires matched successful-status
+control/candidate responses; it and an exact candidate-specific external
+redirect relationship can produce only `NeedsReview`. Exact reflection in
+inert, text, or ordinary attribute context is `Informational`; a dangerous HTML
+context is `NeedsReview`. No browser executes the response, so reflection is
+never `Confirmed` XSS. The catalog is KnowledgeOnly and has no path to a
+`Confirmed` assessment item.
+Non-HTML is explicitly not applicable to reflection review; truncation,
+invalid UTF-8, or an exhausted parser ceiling makes the opt-in review run
+incomplete rather than silently successful.
 The current stable item-identity authority projects only the exact origin root
 (`/`); a non-root starting target, or an eligible condition on a discovered
 non-root subject, becomes typed incompleteness rather than a URL-derived

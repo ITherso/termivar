@@ -84,17 +84,26 @@ cargo run -p venom-cli --locked -- scan https://authorized.example.test --profil
 behavior and emits the additive `web-assessment/v1` profile audit.
 `web-review` is the only exact-origin opt-in. It uses stable bounded discovery,
 then runs bounded semantic extraction, defense observation and shadow planning,
-and passive security-header/cookie review over committed evidence. All endpoint
-work shares one runtime budget, redirect-disabled request broker, cancellation
-authority, and exact-origin authorization policy. Cross-origin references are
-never followed, and discovery of a URL, form, control name, or query-parameter
-name is knowledge rather than a vulnerability result.
+passive security-header/cookie review, and the closed native differential
+catalog over committed evidence. All endpoint work shares one runtime budget,
+redirect-disabled request broker, cancellation authority, and exact-origin
+authorization policy. Cross-origin references are never followed, and
+discovery of a URL, form, control name, or query-parameter name is knowledge
+rather than a vulnerability result.
 
 The passive review covers HSTS, CSP, X-Content-Type-Options,
 Referrer-Policy, Permissions-Policy, and value-free cookie attributes. It emits
-only `Informational` assessment items. This source state has no enabled native
-low-risk differential review and no native assessment capability that can
-produce a `Confirmed` item.
+only `Informational` assessment items. Native review adds a matched CORS pair
+on the authorized starting resource without replacing eligible standard work;
+both CORS legs must have successful status classes. When that starting URL names a recognized
+navigation query parameter, it also adds a matched redirect/reflection pair
+using a deterministic `.invalid` candidate after discarding the supplied
+value. Only 301/302/303/307/308 are redirect candidates, and they are observed
+but not followed. Complete credentialed CORS,
+exact candidate-specific redirect, and dangerous-context reflection
+relationships are at most `NeedsReview`; ordinary exact reflection remains
+`Informational`. No native assessment capability can produce a `Confirmed`
+item, and no browser execution is performed.
 
 For completed reports, start `web-review` at the exact origin root (`/`). The
 current stable item-identity authority is root-only; a non-root starting target

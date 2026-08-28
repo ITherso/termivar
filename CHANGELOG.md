@@ -15,8 +15,14 @@ All notable changes to Venom are recorded here. Releases use the categories from
 - Value-free passive `web-review` evidence and typed `AssessmentItem`
   projection for HSTS, CSP, X-Content-Type-Options, Referrer-Policy,
   Permissions-Policy, and cookie-attribute review. Native passive items are
-  `Informational` only; low-risk differential review remains disabled and no
-  native assessment capability currently produces `Confirmed`. Stable item
+  `Informational` only. A closed native catalog now adds matched CORS and
+  optional allowlisted navigation-query redirect/reflection review on the
+  authorized starting resource through the same Standard runtime and shared
+  broker without suppressing eligible standard actions. CORS requires a typed
+  matched successful-status relationship, and redirect review recognizes only
+  301/302/303/307/308. Exact policy relationships can produce only `NeedsReview`, benign
+  reflection contexts remain `Informational`, redirects are never followed,
+  and no native assessment capability can produce `Confirmed`. Stable item
   identity is root-only; non-root conditions become typed incompleteness rather
   than URL-derived fingerprints.
 - An additive `venom-rendered-assessment/v1` JSON/CSV/HTML/Markdown surface for

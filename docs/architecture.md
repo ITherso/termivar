@@ -181,6 +181,19 @@ from the surrounding decision/runtime modules. The standard runtime must call
 the explicitly metered broker constructor; the architecture gate rejects a
 switch to the named legacy unmetered constructor.
 
+`WebAssessmentRuntime` is an orchestrator over that same Standard primitive,
+not a second engine. Explicit `web-review` composes its root-scoped native
+CORS and optional redirect/reflection actions into the authorized root's
+existing Standard session without replacing its eligible standard actions.
+Their executors receive the assessment broker, and
+their actions are KnowledgeOnly. The closed response observer and committed
+ledger can project only `Informational` or `NeedsReview`; action success cannot
+authorize a confirmed finding. CORS additionally requires a typed matched
+successful-status relationship, and redirect classification is the closed
+301/302/303/307/308 set. Defense shadow/enforcement may retain or
+suppress these already-planned differential reads but cannot add a native
+action, refill the plan, increase intensity, or broaden scope.
+
 The ordered legacy runner is separate. Its phases two through four share a
 context-owned passive discovery authority that accepts exact-origin requests,
 disables redirects, applies one configurable request/time/body envelope, and

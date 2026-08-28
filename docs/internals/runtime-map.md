@@ -44,6 +44,7 @@ venom scan <target> --profile web-review
       -> bounded semantic extraction
       -> defense observation and shadow planning
       -> passive header/cookie assessment projection
+      -> root-scoped matched CORS and optional redirect/reflection review
       -> central bounded assessment renderer on complete execution
 ```
 
@@ -77,10 +78,20 @@ already-authorized actions and cannot add actions, increase intensity, or
 expand scope/budget.
 
 Passive `web-review` observes HSTS, CSP, X-Content-Type-Options,
-Referrer-Policy, Permissions-Policy, and value-free cookie metadata. Its native
-assessment items are `Informational` only. The profile capability manifest
-keeps low-risk differential review disabled, and no native assessment
-capability currently produces a `Confirmed` item.
+Referrer-Policy, Permissions-Policy, and value-free cookie metadata. Its closed
+native differential catalog is composed into the authorized root's existing
+Standard runtime session, so bootstrap and pair legs share the same broker and
+global budget without suppressing eligible standard actions. CORS always uses
+a matched no-Origin/candidate pair and requires successful status classes on
+both legs. The
+redirect/reflection action exists only when the starting URL supplied a
+recognized navigation parameter name; its original value is discarded. Only
+301/302/303/307/308 are treated as redirect statuses, and redirects are not
+followed. Passive and ordinary-reflection items are
+`Informational`; exact credentialed CORS, candidate-specific redirect, and
+dangerous-context reflection relationships are at most `NeedsReview`. Every
+native action is KnowledgeOnly, and no native assessment capability can
+produce a `Confirmed` item.
 
 The stable item-identity authority currently registers only the exact origin
 root (`/`). A non-root starting target, or an eligible condition on a discovered

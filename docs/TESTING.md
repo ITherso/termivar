@@ -124,6 +124,30 @@ failure must assert which of the comparison, observation receipt, and exact
 review remains available. These receipts describe in-process append-only state;
 they are not rollback or crash-durability claims.
 
+Native `web-review` CORS/redirect/reflection regression coverage also uses
+loopback only and must assert the complete product boundary:
+
+- omitting `web-review` dispatches no Origin or query mutation;
+- bootstrap and every control/candidate leg share one exact-origin broker,
+  request budget, cancellation token, and deadline;
+- the deterministic external destination is carried only as same-origin input,
+  and redirect following remains disabled;
+- reflected Origin without the credential policy and a generic 3xx produce no
+  CORS or redirect review item;
+- CORS status-divergent/error-only pairs and redirect statuses outside the
+  closed 301/302/303/307/308 set produce no review item;
+- eligible standard and native actions remain additive while sharing one
+  reconciled request budget;
+- control/candidate evidence is case-correlated, disjoint, committed, and
+  replayed before an item is projected;
+- ordinary exact HTML reflection is `Informational`, dangerous-context
+  reflection is at most `NeedsReview`, and no reflection is `Confirmed` XSS;
+- budget exhaustion, a missing/cross-case pair, or incomplete bounded HTML
+  reflection analysis is typed incompleteness, never empty success; and
+- JSON, CSV, HTML, and Markdown keep `NeedsReview`/`Differential` visibly
+  distinct from `Informational`/`Observation` without exposing candidate
+  values or raw response material.
+
 ## Security and compatibility
 
 Security checks are separate from functional tests:
