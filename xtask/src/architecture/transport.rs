@@ -38,6 +38,7 @@ const BOUNDED_RUNTIME_SOURCES: &[&str] = &[
     "crates/venom-scanner/src/web_runtime/scan_profile.rs",
     "crates/venom-scanner/src/verification.rs",
     "crates/venom-scanner/src/web_actions.rs",
+    NATIVE_REVIEW_ACTION_SOURCE,
     "crates/venom-scanner/src/web_runtime/web_assessment.rs",
     "crates/venom-scanner/src/web_runtime/web_assessment/discovery.rs",
     "crates/venom-scanner/src/web_runtime/web_assessment/semantic.rs",
@@ -46,6 +47,8 @@ const BOUNDED_RUNTIME_SOURCES: &[&str] = &[
     "crates/venom-scanner/src/web_planning.rs",
     "crates/venom-scanner/src/web_reasoning.rs",
     "crates/venom-scanner/src/web_runtime.rs",
+    NATIVE_REVIEW_DECISION_SOURCE,
+    NATIVE_REVIEW_EXECUTION_SOURCE,
     "crates/venom-scanner/src/web_runtime/authority.rs",
     "crates/venom-scanner/src/web_runtime/api_visibility.rs",
     "crates/venom-scanner/src/web_runtime/api_visibility/differential.rs",
@@ -64,10 +67,17 @@ const ASSESSMENT_REVIEW_PROJECTION_SOURCE: &str =
     "crates/venom-scanner/src/web_runtime/assessment_review_projection.rs";
 const HTTP_REVIEW_RESPONSE_SOURCE: &str =
     "crates/venom-scanner/src/http_evidence/review_response.rs";
+const NATIVE_REVIEW_ACTION_SOURCE: &str = "crates/venom-scanner/src/web_actions/native_review.rs";
+const NATIVE_REVIEW_DECISION_SOURCE: &str =
+    "crates/venom-scanner/src/web_runtime/web_review_decision.rs";
+const NATIVE_REVIEW_EXECUTION_SOURCE: &str =
+    "crates/venom-scanner/src/web_runtime/web_review_execution.rs";
 const NATIVE_REVIEW_BOUNDED_SOURCES: &[&str] = &[
     HTTP_REVIEW_RESPONSE_SOURCE,
     ASSESSMENT_REVIEW_SOURCE,
     ASSESSMENT_REVIEW_PROJECTION_SOURCE,
+    NATIVE_REVIEW_ACTION_SOURCE,
+    NATIVE_REVIEW_DECISION_SOURCE,
 ];
 const KNOWLEDGE_SOURCE: &str = "crates/venom-scanner/src/knowledge.rs";
 
@@ -307,6 +317,7 @@ pub(super) fn check(workspace_root: &Path) -> Result<Vec<String>, Box<dyn Error>
 
     violations.extend(broker_constructor_inventory_violations(workspace_root)?);
     violations.extend(web_assessment_contract_violations(workspace_root)?);
+    violations.extend(native_review_execution_contract_violations(workspace_root)?);
 
     let expected_clients: BTreeSet<_> = DIRECT_CLIENT_SOURCE_ALLOWLIST
         .iter()
@@ -347,6 +358,174 @@ pub(super) fn check(workspace_root: &Path) -> Result<Vec<String>, Box<dyn Error>
     Ok(violations)
 }
 
+fn native_review_execution_contract_violations(
+    workspace_root: &Path,
+) -> Result<Vec<String>, Box<dyn Error>> {
+    let source = fs::read_to_string(workspace_root.join(NATIVE_REVIEW_EXECUTION_SOURCE))?;
+    Ok(inspect_native_review_execution_broker_boundary(&source)?)
+}
+
+fn inspect_native_review_execution_broker_boundary(
+    source: &str,
+) -> Result<Vec<String>, syn::Error> {
+    let syntax = syn::parse_file(source)?;
+    let mut alias_collector = broker_constructor_alias_collector();
+    alias_collector.visit_file(&syntax);
+    let aliases = resolve_broker_constructor_aliases(alias_collector);
+    let constructor_inventory =
+        inspect_broker_constructor_syntax_with_aliases(&syntax, aliases.clone())?;
+    let mut violations = BTreeSet::new();
+
+    if !constructor_inventory.is_empty() {
+        violations.insert(
+            "native web-review execution may receive a host broker but must not construct, alias, or hide broker constructors"
+                .to_owned(),
+        );
+    }
+    violations.extend(native_review_execution_fingerprint_violations(
+        source, &syntax,
+    ));
+    let mut dispatch = NativeReviewForbiddenDispatchVisitor::default();
+    dispatch.visit_file(&syntax);
+    violations.extend(dispatch.violations);
+    for forbidden in ["RequestAccountingBroker", "RuntimeBudget"] {
+        if syntax_references_exact_ident(&syntax, forbidden) {
+            violations.insert(format!(
+                "native web-review execution references forbidden accounting authority {forbidden}; accounting must remain owned by the supplied broker"
+            ));
+        }
+    }
+    Ok(violations.into_iter().collect())
+}
+
+const EXACT_NATIVE_REVIEW_EXECUTION_TOKEN_BYTES: usize = 14_328;
+const EXACT_NATIVE_REVIEW_EXECUTION_FINGERPRINT: u128 = 0x7771_354b_a5b7_4297_2df2_9bb9_9b49_496d;
+
+fn native_review_execution_fingerprint_violations(source: &str, syntax: &syn::File) -> Vec<String> {
+    let exact_tests = matches!(syntax.items.last(), Some(Item::Mod(module))
+        if module.ident == "tests"
+            && module.content.is_none()
+            && matches!(module.vis, syn::Visibility::Inherited)
+            && matches!(module.attrs.as_slice(), [cfg, path]
+                if cfg.path().is_ident("cfg")
+                    && cfg.meta.require_list().is_ok_and(|list| list.tokens.to_string() == "test")
+                    && path.path().is_ident("path")
+                    && matches!(&path.meta, syn::Meta::NameValue(value)
+                        if matches!(&value.value, syn::Expr::Lit(literal)
+                            if matches!(&literal.lit, syn::Lit::Str(path)
+                                if path.value() == "web_review_execution_tests.rs")))));
+    let Some((production, _)) = source.rsplit_once("#[cfg(test)]") else {
+        return vec![
+            "native web-review execution must end with its exact external cfg(test) module"
+                .to_owned(),
+        ];
+    };
+    if !exact_tests {
+        return vec![
+            "native web-review execution must end with its exact external cfg(test) module"
+                .to_owned(),
+        ];
+    }
+    let Ok(tokens) = production.parse::<TokenStream>() else {
+        return vec![
+            "native web-review execution production source must remain valid tokens".to_owned(),
+        ];
+    };
+    let normalized = tokens.to_string();
+    let fingerprint = normalized.bytes().fold(
+        0x6c62_272e_07bb_0142_62b8_2175_6295_c58d_u128,
+        |fingerprint, byte| {
+            (fingerprint ^ u128::from(byte))
+                .wrapping_mul(0x0000_0000_0100_0000_0000_0000_0000_013B_u128)
+        },
+    );
+    if normalized.len() == EXACT_NATIVE_REVIEW_EXECUTION_TOKEN_BYTES
+        && fingerprint == EXACT_NATIVE_REVIEW_EXECUTION_FINGERPRINT
+    {
+        Vec::new()
+    } else {
+        vec![format!(
+            "native web-review execution exact signatures and production body inventory changed; expected normalized bytes/fingerprint {EXACT_NATIVE_REVIEW_EXECUTION_TOKEN_BYTES}/{EXACT_NATIVE_REVIEW_EXECUTION_FINGERPRINT:032x}, found {}/{fingerprint:032x}",
+            normalized.len()
+        )]
+    }
+}
+
+#[derive(Default)]
+struct NativeReviewForbiddenDispatchVisitor {
+    violations: BTreeSet<String>,
+}
+
+impl NativeReviewForbiddenDispatchVisitor {
+    fn requests_receiver(expression: &syn::Expr) -> bool {
+        matches!(expression, syn::Expr::Path(path)
+            if path.qself.is_none()
+                && path.path.segments.len() == 1
+                && path.path.is_ident("requests"))
+    }
+}
+
+impl<'ast> Visit<'ast> for NativeReviewForbiddenDispatchVisitor {
+    fn visit_item(&mut self, item: &'ast Item) {
+        if !has_cfg_test(item_attributes(item)) {
+            visit::visit_item(self, item);
+        }
+    }
+
+    fn visit_impl_item_fn(&mut self, item: &'ast syn::ImplItemFn) {
+        if !has_cfg_test(&item.attrs) {
+            visit::visit_impl_item_fn(self, item);
+        }
+    }
+
+    fn visit_expr_method_call(&mut self, call: &'ast syn::ExprMethodCall) {
+        let method = ident_name(&call.method);
+        if method == "execute" {
+            self.violations.insert(
+                "native web-review execution must install executors but never execute actions directly".to_owned(),
+            );
+        }
+        if matches!(
+            method.as_str(),
+            "collect_for_runtime" | "collect_buffered_request_for_test" | "isolated"
+        ) || (method == "collect" && Self::requests_receiver(&call.receiver))
+        {
+            self.violations.insert(
+                "native web-review execution must not dispatch through or mint authority from the supplied broker".to_owned(),
+            );
+        }
+        visit::visit_expr_method_call(self, call);
+    }
+
+    fn visit_expr_call(&mut self, call: &'ast syn::ExprCall) {
+        if let syn::Expr::Path(path) = call.func.as_ref() {
+            let member = path
+                .path
+                .segments
+                .last()
+                .map(|segment| ident_name(&segment.ident));
+            if member.as_deref() == Some("execute") {
+                self.violations.insert(
+                    "native web-review execution must install executors but never execute actions directly".to_owned(),
+                );
+            }
+            if member.as_deref().is_some_and(|member| {
+                matches!(
+                    member,
+                    "collect"
+                        | "collect_for_runtime"
+                        | "collect_buffered_request_for_test"
+                        | "isolated"
+                )
+            }) {
+                self.violations.insert(
+                    "native web-review execution must not dispatch through or mint authority from the supplied broker".to_owned(),
+                );
+            }
+        }
+        visit::visit_expr_call(self, call);
+    }
+}
 fn web_assessment_contract_violations(
     workspace_root: &Path,
 ) -> Result<Vec<String>, Box<dyn Error>> {
@@ -4912,6 +5091,25 @@ fn validate_policy_inventory() -> Vec<String> {
             ));
         }
     }
+    if !bounded.contains(NATIVE_REVIEW_EXECUTION_SOURCE) {
+        violations.push(format!(
+            "native-review execution source {NATIVE_REVIEW_EXECUTION_SOURCE} must remain in the bounded-source inventory"
+        ));
+    }
+    if NATIVE_REVIEW_BOUNDED_SOURCES.contains(&NATIVE_REVIEW_EXECUTION_SOURCE) {
+        violations.push(
+            "native-review execution must remain outside the no-network-authority source set because it receives one host-owned broker"
+                .to_owned(),
+        );
+    }
+    if DIRECT_CLIENT_SOURCE_ALLOWLIST.contains(&NATIVE_REVIEW_EXECUTION_SOURCE)
+        || UNMETERED_STANDALONE_FACADE_SOURCES.contains(&NATIVE_REVIEW_EXECUTION_SOURCE)
+    {
+        violations.push(
+            "native-review execution must not own a direct or unmetered transport capability"
+                .to_owned(),
+        );
+    }
     if bounded.contains(TRANSPORT_OWNER_SOURCE) {
         violations.push(format!(
             "transport owner {TRANSPORT_OWNER_SOURCE} must remain separate from bounded consumers"
@@ -4978,7 +5176,13 @@ fn inspect_bounded_source_with_legacy_aliases(
     source: &str,
     legacy_authority_aliases: &BTreeSet<String>,
 ) -> Result<Vec<String>, syn::Error> {
-    inspect_owned_transport_source(source_name, source, false, false, legacy_authority_aliases)
+    inspect_owned_transport_source(
+        source_name,
+        source,
+        false,
+        source_name == NATIVE_REVIEW_EXECUTION_SOURCE,
+        legacy_authority_aliases,
+    )
 }
 
 fn inspect_migrated_discovery_source(
@@ -5733,7 +5937,6 @@ struct BrokerImplContext {
 }
 
 impl BrokerConstructorSourceInventory {
-    #[cfg(test)]
     fn is_empty(&self) -> bool {
         self.direct_calls.is_empty()
             && self.direct_call_sites.is_empty()
@@ -6522,6 +6725,7 @@ impl<'ast> Visit<'ast> for OwnershipVisitor<'_> {
                     "crates/venom-scanner/src/http_evidence.rs",
                     "review_response"
                 )
+                | ("crates/venom-scanner/src/web_actions.rs", "native_review")
                 | ("crates/venom-scanner/src/web_runtime.rs", "authority")
                 | ("crates/venom-scanner/src/web_runtime.rs", "api_visibility")
                 | ("crates/venom-scanner/src/web_runtime.rs", "assessment_item")
@@ -6540,6 +6744,14 @@ impl<'ast> Visit<'ast> for OwnershipVisitor<'_> {
                 | (
                     "crates/venom-scanner/src/web_runtime.rs",
                     "assessment_review_projection"
+                )
+                | (
+                    "crates/venom-scanner/src/web_runtime.rs",
+                    "web_review_decision"
+                )
+                | (
+                    "crates/venom-scanner/src/web_runtime.rs",
+                    "web_review_execution"
                 )
                 | (
                     "crates/venom-scanner/src/web_runtime/api_visibility.rs",
@@ -8438,6 +8650,10 @@ mod tests {
                 "mod review_response;",
             ),
             (
+                "crates/venom-scanner/src/web_actions.rs",
+                "mod native_review;",
+            ),
+            (
                 "crates/venom-scanner/src/web_runtime.rs",
                 "mod api_visibility;",
             ),
@@ -8448,6 +8664,14 @@ mod tests {
             (
                 "crates/venom-scanner/src/web_runtime.rs",
                 "mod assessment_review_projection;",
+            ),
+            (
+                "crates/venom-scanner/src/web_runtime.rs",
+                "mod web_review_decision;",
+            ),
+            (
+                "crates/venom-scanner/src/web_runtime.rs",
+                "mod web_review_execution;",
             ),
         ] {
             assert!(
@@ -8474,6 +8698,14 @@ mod tests {
             (
                 "crates/venom-scanner/src/web_runtime.rs",
                 "mod assessment_review_foreign;",
+            ),
+            (
+                "crates/venom-scanner/src/web_actions.rs",
+                "pub mod native_review;",
+            ),
+            (
+                "crates/venom-scanner/src/web_runtime.rs",
+                "#[path = \"foreign.rs\"] mod web_review_execution;",
             ),
             (
                 "crates/venom-scanner/src/web_runtime.rs",
@@ -8689,6 +8921,8 @@ mod tests {
                 HTTP_REVIEW_RESPONSE_SOURCE,
                 ASSESSMENT_REVIEW_SOURCE,
                 ASSESSMENT_REVIEW_PROJECTION_SOURCE,
+                NATIVE_REVIEW_ACTION_SOURCE,
+                NATIVE_REVIEW_DECISION_SOURCE,
             ])
         );
         for source_name in NATIVE_REVIEW_BOUNDED_SOURCES {
@@ -8730,6 +8964,106 @@ mod tests {
             assert!(
                 violations.contains("forbidden direct transport path"),
                 "foreign reqwest metadata unexpectedly passed: {foreign_metadata}: {violations}"
+            );
+        }
+    }
+
+    #[test]
+    fn native_review_execution_receives_but_cannot_own_or_escape_broker_authority() {
+        assert!(BOUNDED_RUNTIME_SOURCES.contains(&NATIVE_REVIEW_EXECUTION_SOURCE));
+        assert!(!NATIVE_REVIEW_BOUNDED_SOURCES.contains(&NATIVE_REVIEW_EXECUTION_SOURCE));
+        assert!(!DIRECT_CLIENT_SOURCE_ALLOWLIST.contains(&NATIVE_REVIEW_EXECUTION_SOURCE));
+        assert!(!UNMETERED_STANDALONE_FACADE_SOURCES.contains(&NATIVE_REVIEW_EXECUTION_SOURCE));
+
+        let source =
+            include_str!("../../../crates/venom-scanner/src/web_runtime/web_review_execution.rs");
+        assert!(
+            inspect_native_review_execution_broker_boundary(source)
+                .unwrap()
+                .is_empty(),
+            "{}",
+            inspect_native_review_execution_broker_boundary(source)
+                .unwrap()
+                .join("\n")
+        );
+
+        for escaped in [
+            source.replacen(
+                "        Self::build(",
+                "        let _escape = move || drop(requests);\n        Self::build(",
+                1,
+            ),
+            source.replacen(
+                "        Self::build(",
+                "        let _escape: Box<dyn Any> = Box::new(requests);\n        Self::build(",
+                1,
+            ),
+            source.replacen(
+                "        Self::build(",
+                "        opaque_sink(requests.clone());\n        Self::build(",
+                1,
+            ),
+        ] {
+            assert_ne!(escaped, source);
+            let violations = inspect_native_review_execution_broker_boundary(&escaped)
+                .unwrap()
+                .join("\n");
+            assert!(
+                violations.contains("production body inventory changed"),
+                "{violations}"
+            );
+        }
+
+        let (production, tests) = source.rsplit_once("#[cfg(test)]").unwrap();
+        let dummy_input = format!(
+            "{production}fn dummy(requests: HttpRequestBroker) {{ drop(requests); }}\n#[cfg(test)]{tests}"
+        );
+        let violations = inspect_native_review_execution_broker_boundary(&dummy_input)
+            .unwrap()
+            .join("\n");
+        assert!(
+            violations.contains("production body inventory changed"),
+            "{violations}"
+        );
+
+        let constructor = r#"
+            use crate::http_evidence::HttpRequestBroker as Broker;
+            fn receive(requests: Broker) { let _ = Broker::new_metered(policy(), accounting()); let _ = requests; }
+        "#;
+        let violations = inspect_native_review_execution_broker_boundary(constructor)
+            .unwrap()
+            .join("\n");
+        assert!(violations.contains("must not construct"), "{violations}");
+
+        for method in [
+            "collect",
+            "collect_for_runtime",
+            "collect_buffered_request_for_test",
+            "isolated",
+        ] {
+            for source in [
+                format!("fn escape(requests: HttpRequestBroker) {{ requests.{method}(); }}"),
+                format!("fn escape(requests: HttpRequestBroker) {{ HttpRequestBroker::{method}(&requests); }}"),
+            ] {
+                let violations = inspect_native_review_execution_broker_boundary(&source)
+                    .unwrap()
+                    .join("\n");
+                assert!(
+                    violations.contains("must not dispatch through or mint authority"),
+                    "{method}: {violations}"
+                );
+            }
+        }
+        for source in [
+            "fn escape() { executor.execute(); }",
+            "fn escape() { DecisionActionExecutor::execute(&executor); }",
+        ] {
+            let violations = inspect_native_review_execution_broker_boundary(source)
+                .unwrap()
+                .join("\n");
+            assert!(
+                violations.contains("never execute actions directly"),
+                "{violations}"
             );
         }
     }

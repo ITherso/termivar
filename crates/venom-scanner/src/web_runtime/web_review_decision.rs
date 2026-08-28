@@ -1,4 +1,4 @@
-//! Opt-in decision policy for native low-risk web review.
+//! Runtime-local opt-in decision policy for native low-risk web review.
 //!
 //! This profile composes only reasoning, planning, and verification. It owns no
 //! executor route and performs no I/O. A host must explicitly install the
@@ -33,8 +33,11 @@ use crate::{
         HypothesisConclusion, KnowledgeLayer, ReasoningRule, RuleEngineError, RuleWrite,
     },
     verification::{VerificationError, VerificationRule, VerifierWrite},
-    web_review_actions::native_web_review_response_marker_predicate,
-    DecisionLoop, NativeWebReviewActionKind, NATIVE_WEB_REVIEW_ACTION_COUNT,
+    web_actions::{
+        native_web_review_response_marker_predicate, NativeWebReviewActionKind,
+        NATIVE_WEB_REVIEW_ACTION_COUNT,
+    },
+    DecisionLoop,
 };
 
 #[cfg(test)]

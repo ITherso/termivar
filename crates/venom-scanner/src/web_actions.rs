@@ -15,6 +15,19 @@
 
 use serde::{Deserialize, Serialize};
 
+mod native_review;
+
+#[cfg(feature = "scanning")]
+pub(crate) use native_review::{
+    native_web_review_response_marker_predicate, NATIVE_WEB_REVIEW_EVIDENCE_NAMESPACE,
+    NATIVE_WEB_REVIEW_RESPONSE_MARKER,
+};
+pub use native_review::{
+    NativeWebReviewActionKind, NativeWebReviewDifferentialInput, NativeWebReviewRequestLeg,
+    NATIVE_WEB_REVIEW_ACTION_COUNT, NATIVE_WEB_REVIEW_ACTIVE_REQUESTS_PER_CASE,
+    NATIVE_WEB_REVIEW_REQUESTS_PER_CASE,
+};
+
 /// Number of semantic actions in the standard web catalog.
 pub const STANDARD_WEB_ACTION_COUNT: usize = 9;
 

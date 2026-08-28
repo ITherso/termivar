@@ -28,8 +28,7 @@ use venom_core::{
 use crate::decision_runner::ContinuationAuthority;
 use crate::http_evidence::CompleteHttpResponseObserver;
 use crate::planner::ActionSuppressionContext;
-use crate::web_review_decision::NativeWebReviewDecisionProfile;
-use crate::web_review_execution::{NativeWebReviewExecutorProfile, NativeWebReviewSeeds};
+use crate::web_actions::NativeWebReviewActionKind;
 use crate::{
     AdaptationLimits, AdaptationRule, AdaptivePipelineError, BenefitScore, DecisionActionOrigin,
     DecisionEvidenceReceipt, DecisionExecutionClass, DecisionExecutionFailureReceipt,
@@ -39,9 +38,9 @@ use crate::{
     DecisionRunnerError, DecisionRunnerTurn, DecisionSession, DecisionStopReason, ExperiencePolicy,
     ExperienceStore, ExperienceStoreError, HttpEvidenceError, HttpEvidenceExecutor,
     HttpEvidencePolicy, HttpHeaderPayloadBinding, HttpProbe, HttpProbeMethod, KnowledgeBase,
-    KnowledgeWrite, NativeWebReviewActionKind, OutcomeSelector, PipelineDirective, PlannerError,
-    PlanningContext, RiskScore, RuntimeBudget, RuntimeBudgetDimension, RuntimeLimitExceeded,
-    RuntimeUsage, StandardApiInstallReport, StandardApiReasoning, StandardApiReasoningError,
+    KnowledgeWrite, OutcomeSelector, PipelineDirective, PlannerError, PlanningContext, RiskScore,
+    RuntimeBudget, RuntimeBudgetDimension, RuntimeLimitExceeded, RuntimeUsage,
+    StandardApiInstallReport, StandardApiReasoning, StandardApiReasoningError,
     StandardWebActionKind, StandardWebDecisionError, StandardWebDecisionInstallReport,
     StandardWebDecisionProfile, SubjectHttpProbeProvider, TransportDispatchAudit, VerificationCase,
     VerificationError, HTTP_EVIDENCE_EXECUTOR_ID,
@@ -58,6 +57,8 @@ mod assessment_review_projection;
 mod authority;
 mod scan_profile;
 mod web_assessment;
+mod web_review_decision;
+mod web_review_execution;
 
 use assessment_defense::AssessmentDefenseController;
 pub(crate) use assessment_defense::{
@@ -67,6 +68,8 @@ pub(crate) use assessment_defense::{
 pub(crate) use assessment_review::AssessmentReviewObserverSet;
 pub(crate) use authority::SharedWebRuntimeAuthority;
 pub(crate) use web_assessment::AssessmentDiscoveryObserver;
+use web_review_decision::NativeWebReviewDecisionProfile;
+use web_review_execution::{NativeWebReviewExecutorProfile, NativeWebReviewSeeds};
 
 pub use api_visibility::{
     ApiVisibilityContextProbe, ApiVisibilityDifferentialAudit,
@@ -817,11 +820,11 @@ impl StandardWebDecisionRuntimeBuilder {
             debug_assert_eq!(report.reasoning_rules_inserted, 1);
             debug_assert_eq!(
                 report.actions_inserted,
-                crate::NATIVE_WEB_REVIEW_ACTION_COUNT
+                crate::web_actions::NATIVE_WEB_REVIEW_ACTION_COUNT
             );
             debug_assert_eq!(
                 report.active_rules_inserted,
-                crate::NATIVE_WEB_REVIEW_ACTION_COUNT
+                crate::web_actions::NATIVE_WEB_REVIEW_ACTION_COUNT
             );
         }
 

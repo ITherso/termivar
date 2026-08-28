@@ -109,6 +109,11 @@ const MODULE_POLICIES: &[ModulePolicy] = &[
         allowed_external: &[],
     },
     ModulePolicy {
+        source: "web_actions/native_review.rs",
+        allowed_internal: &["planner"],
+        allowed_external: &[],
+    },
+    ModulePolicy {
         source: "web_reasoning.rs",
         allowed_internal: &["knowledge", "rules"],
         allowed_external: &[],
@@ -1734,6 +1739,66 @@ mod tests {
         )
         .unwrap()
         .is_empty());
+    }
+
+    #[test]
+    fn native_review_action_catalog_is_an_exact_policy_owned_child() {
+        let parent = MODULE_POLICIES
+            .iter()
+            .find(|policy| policy.source == "web_actions.rs")
+            .copied()
+            .unwrap();
+        let child = MODULE_POLICIES
+            .iter()
+            .find(|policy| policy.source == "web_actions/native_review.rs")
+            .copied()
+            .unwrap();
+        let children = policy_owned_nested_modules(parent.source, MODULE_POLICIES);
+        assert_eq!(children, BTreeSet::from(["native_review".to_owned()]));
+        assert!(inspect_module_source_with_nested(
+            &parent,
+            "mod native_review; use native_review::NativeWebReviewActionKind;",
+            &children,
+        )
+        .unwrap()
+        .is_empty());
+
+        let violations =
+            inspect_module_source_with_nested(&parent, "pub mod native_review;", &children)
+                .unwrap()
+                .join("\n");
+        assert!(violations.contains("must use exactly"), "{violations}");
+
+        assert!(
+            inspect_module_source(&child, "use crate::planner::RiskScore;")
+                .unwrap()
+                .is_empty()
+        );
+
+        let qualified_predicate = r#"
+            fn predicate() -> venom_core::KnowledgePredicate {
+                venom_core::KnowledgePredicate::new()
+            }
+        "#;
+        assert!(inspect_module_source(&child, qualified_predicate)
+            .unwrap()
+            .is_empty());
+        let violations = inspect_module_source(&child, "fn escape() { reqwest::Client::new(); }")
+            .unwrap()
+            .join("\n");
+        assert!(
+            violations.contains("unresolved or unapproved path"),
+            "{violations}"
+        );
+
+        let violations =
+            inspect_module_source(&child, "use crate::http_evidence::HttpRequestBroker;")
+                .unwrap()
+                .join("\n");
+        assert!(
+            violations.contains("forbidden internal path"),
+            "{violations}"
+        );
     }
 
     #[test]

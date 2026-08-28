@@ -1,4 +1,4 @@
-//! Shared-authority executors for native low-risk web review.
+//! Runtime-local shared-authority executors for native low-risk web review.
 //!
 //! This crate-private profile binds the transport-neutral review catalog to the
 //! existing HTTP evidence executor. It never constructs a request broker:
@@ -36,7 +36,7 @@ use crate::{
     payload_strategy::{
         PayloadSeed, PayloadStrategyError, PayloadStrategyLimits, PayloadStrategyRef,
     },
-    NativeWebReviewActionKind,
+    web_actions::NativeWebReviewActionKind,
 };
 
 const REVIEW_PAYLOAD_MAX_BYTES: u32 = 256;

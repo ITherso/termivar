@@ -15,8 +15,8 @@ use venom_core::{
 
 use crate::{
     planner::{AttackPlan, AttackPlanner},
-    NativeWebReviewActionKind, StandardWebActionKind, NATIVE_WEB_REVIEW_ACTION_COUNT,
-    STANDARD_WEB_ACTION_COUNT,
+    web_actions::{NativeWebReviewActionKind, NATIVE_WEB_REVIEW_ACTION_COUNT},
+    StandardWebActionKind, STANDARD_WEB_ACTION_COUNT,
 };
 use crate::{DecisionEvidenceReceipt, DecisionExecutionStage, KnowledgeBase, VerificationCase};
 
@@ -1140,11 +1140,12 @@ mod tests {
     use venom_core::{Hypothesis, HypothesisState, HypothesisStrength, Probability};
 
     use crate::{
-        web_review_decision::NativeWebReviewDecisionProfile, ActionCost, AdaptationLimits,
-        AttackAction, BenefitScore, DecisionLoop, DecisionLoopConfig, ExperiencePolicy, Expression,
-        HypothesisSelector, KnowledgeLayer, PlanningContext, RequiredStrength, RiskScore,
-        StandardWebAttackProfile,
+        ActionCost, AdaptationLimits, AttackAction, BenefitScore, DecisionLoop, DecisionLoopConfig,
+        ExperiencePolicy, Expression, HypothesisSelector, KnowledgeLayer, PlanningContext,
+        RequiredStrength, RiskScore, StandardWebAttackProfile,
     };
+
+    use super::super::web_review_decision::NativeWebReviewDecisionProfile;
 
     use super::*;
 

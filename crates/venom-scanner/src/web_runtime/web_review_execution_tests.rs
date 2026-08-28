@@ -1,3 +1,5 @@
+//! Native review executor regression tests.
+
 use std::{sync::Arc, time::Duration};
 
 use tokio::{

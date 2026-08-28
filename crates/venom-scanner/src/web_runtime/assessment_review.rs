@@ -19,7 +19,6 @@ use venom_core::{
     OutcomeStatus, VerificationStage,
 };
 
-use crate::web_review_execution::NativeWebReviewSeeds;
 use crate::{
     http_evidence::{
         CompleteHttpResponseObservation, CompleteHttpResponseObserver,
@@ -30,13 +29,17 @@ use crate::{
         ExternalUrlQueryPairStrategy, CORS_ORIGIN_PAIR_ID, CORS_ORIGIN_PAIR_REVISION,
         EXTERNAL_URL_QUERY_PAIR_ID, EXTERNAL_URL_QUERY_PAIR_REVISION,
     },
-    web_review_actions::{NATIVE_WEB_REVIEW_EVIDENCE_NAMESPACE, NATIVE_WEB_REVIEW_RESPONSE_MARKER},
+    web_actions::{
+        NativeWebReviewActionKind, NATIVE_WEB_REVIEW_EVIDENCE_NAMESPACE,
+        NATIVE_WEB_REVIEW_RESPONSE_MARKER,
+    },
     DecisionEvidenceReceipt, DecisionExecutionStage, DecisionOutcomeReport, HttpEvidenceError,
-    HttpProbeMethod, KnowledgeBase, KnowledgeWrite, NativeWebReviewActionKind, PayloadSeed,
-    PayloadStrategy, PayloadStrategyLimits, PayloadStrategyRef, PayloadVariantRole,
+    HttpProbeMethod, KnowledgeBase, KnowledgeWrite, PayloadSeed, PayloadStrategy,
+    PayloadStrategyLimits, PayloadStrategyRef, PayloadVariantRole,
 };
 
 use super::web_assessment::{classify_exact_html_reflection, ExactHtmlReflectionContext};
+use super::web_review_execution::NativeWebReviewSeeds;
 
 const ASSESSMENT_REVIEW_CATEGORY: &str = "web-review-observation";
 const ASSESSMENT_REVIEW_ALGORITHM: &str = "web.review.bounded-response-relations";

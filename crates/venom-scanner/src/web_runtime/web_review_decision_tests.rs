@@ -1,3 +1,5 @@
+//! Native review decision-profile regression tests.
+
 use std::collections::BTreeSet;
 
 use url::Url;
@@ -12,11 +14,11 @@ use crate::{
         CORS_ORIGIN_PAIR_ID, CORS_ORIGIN_PAIR_REVISION, EXTERNAL_URL_QUERY_PAIR_ID,
         EXTERNAL_URL_QUERY_PAIR_REVISION,
     },
+    web_actions::NativeWebReviewActionKind,
     AdaptationLimits, AttackAction, BenefitScore, DecisionLoopConfig, ExperiencePolicy,
-    HttpEvidencePolicy, HypothesisSelector, KnowledgeBase, KnowledgeLayer,
-    NativeWebReviewActionKind, PayloadStrategyRef, PlanningContext, RequiredStrength,
-    ResolvedVerificationTarget, RiskScore, StandardWebDecisionProfile, VerificationCase,
-    VerificationTarget,
+    HttpEvidencePolicy, HypothesisSelector, KnowledgeBase, KnowledgeLayer, PayloadStrategyRef,
+    PlanningContext, RequiredStrength, ResolvedVerificationTarget, RiskScore,
+    StandardWebDecisionProfile, VerificationCase, VerificationTarget,
 };
 
 use super::*;
