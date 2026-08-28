@@ -10,33 +10,84 @@ use std::fmt;
 
 use sha2::{Digest, Sha256};
 use thiserror::Error;
-use venom_core::{
-    EntityId, EvidenceId, EvidenceValue, HypothesisState, KnowledgePredicate, Outcome,
-    OutcomeStatus, Probability, SecuritySeverity, VerificationStage,
-};
+use url::Url;
+use venom_core::{EntityId, EvidenceId, Probability, SecuritySeverity, VerificationStage};
+#[cfg(test)]
+use venom_core::{EvidenceValue, HypothesisState, KnowledgePredicate, Outcome, OutcomeStatus};
 
 use crate::knowledge::KnowledgeAuthority;
-use crate::{
-    DecisionEvidenceReceipt, DecisionExecutionStage, DecisionOutcomeReport, KnowledgeBase,
-};
+use crate::KnowledgeBase;
+#[cfg(test)]
+use crate::{DecisionEvidenceReceipt, DecisionExecutionStage, DecisionOutcomeReport};
 
 /// Stable schema carried by every assessment item.
 pub const ASSESSMENT_ITEM_SCHEMA: &str = "venom-assessment-item/v1";
 /// Maximum retained evidence references for one assessment item.
 pub const MAX_ASSESSMENT_ITEM_EVIDENCE_REFERENCES: usize = 256;
+/// Maximum number of items one projection authority can retain.
+pub const MAX_ASSESSMENT_ITEM_SET_ITEMS: usize = 4_096;
 /// Maximum bytes in one static capability identifier.
 pub const MAX_ASSESSMENT_CAPABILITY_ID_BYTES: usize = 128;
 /// Maximum bytes in one static display field.
 pub const MAX_ASSESSMENT_DISPLAY_BYTES: usize = 1_024;
 
 const FINGERPRINT_DOMAIN: &[u8] = b"venom.assessment-item.fingerprint.v1\0";
+const SCOPE_IDENTITY_DOMAIN: &[u8] = b"venom.assessment-scope.exact-origin.v1\0";
+const SUBJECT_IDENTITY_DOMAIN: &[u8] = b"venom.assessment-subject.identity.v1\0";
 const MAX_STABLE_SUBJECT_ID_BYTES: usize = 256;
 const MAX_QUERY_PARAMETER_NAME_BYTES: usize = 256;
 const MAX_PROJECTION_SUBJECTS: usize = 1_024;
 const MAX_PROJECTION_QUERY_NAMES_PER_SUBJECT: usize = 256;
+#[cfg(test)]
 const MAX_PROJECTION_CASES: usize = 10_000;
+#[cfg(test)]
 const MAX_PROJECTION_OUTCOMES: usize = 10_000;
 const MAX_PROJECTION_EVIDENCE: usize = 262_144;
+const MAX_PROJECTION_SUBJECT_ID_BYTES: usize = 16_384;
+const MAX_PROJECTION_RUNTIME_ID_BYTES: usize = 1_024;
+
+/// Host-approved, stable, non-secret assessment scope identity. The built-in
+/// host may derive this from the already-public exact origin, but never from a
+/// credential-bearing URL component.
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) struct StableAssessmentScopeId(String);
+
+impl StableAssessmentScopeId {
+    pub(crate) fn from_exact_origin(value: &str) -> Result<Self, AssessmentItemProjectionError> {
+        let url = Url::parse(value)
+            .map_err(|_| AssessmentItemProjectionError::InvalidStableScopeIdentity)?;
+        if !matches!(url.scheme(), "http" | "https")
+            || !url.username().is_empty()
+            || url.password().is_some()
+            || url.host().is_none()
+            || url.path() != "/"
+            || url.query().is_some()
+            || url.fragment().is_some()
+            || url.origin().ascii_serialization() != value
+        {
+            return Err(AssessmentItemProjectionError::InvalidStableScopeIdentity);
+        }
+        let mut digest = Sha256::new();
+        digest.update(SCOPE_IDENTITY_DOMAIN);
+        digest_field(&mut digest, value);
+        Ok(Self(format!("origin-sha256:{:x}", digest.finalize())))
+    }
+
+    fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    #[cfg(feature = "reporting")]
+    fn matches_exact_origin(&self, value: &str) -> bool {
+        Self::from_exact_origin(value).is_ok_and(|expected| expected == *self)
+    }
+}
+
+impl fmt::Debug for StableAssessmentScopeId {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("StableAssessmentScopeId(<host-approved>)")
+    }
+}
 
 /// Product-facing claim disposition.
 ///
@@ -112,6 +163,7 @@ impl fmt::Display for AssessmentEvidenceReference {
 pub struct AssessmentCaseReference(u32);
 
 impl AssessmentCaseReference {
+    #[cfg(test)]
     pub(crate) const fn new(ordinal: u32) -> Self {
         Self(ordinal)
     }
@@ -133,6 +185,7 @@ impl fmt::Display for AssessmentCaseReference {
 pub struct AssessmentOutcomeReference(u32);
 
 impl AssessmentOutcomeReference {
+    #[cfg(test)]
     pub(crate) const fn new(ordinal: u32) -> Self {
         Self(ordinal)
     }
@@ -159,13 +212,7 @@ pub(crate) struct StableAssessmentSubjectId(String);
 impl StableAssessmentSubjectId {
     pub(crate) fn new(value: impl Into<String>) -> Result<Self, AssessmentItemProjectionError> {
         let value = value.into();
-        if value.is_empty()
-            || value.len() > MAX_STABLE_SUBJECT_ID_BYTES
-            || value.trim() != value
-            || !value.bytes().all(|byte| {
-                byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b':' | b'@' | b'-')
-            })
-        {
+        if !valid_stable_product_identity(&value) {
             return Err(AssessmentItemProjectionError::InvalidStableSubjectIdentity);
         }
         Ok(Self(value))
@@ -174,6 +221,15 @@ impl StableAssessmentSubjectId {
     fn as_str(&self) -> &str {
         &self.0
     }
+}
+
+fn valid_stable_product_identity(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= MAX_STABLE_SUBJECT_ID_BYTES
+        && value.trim() == value
+        && value.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b':' | b'@' | b'-')
+        })
 }
 
 impl fmt::Debug for StableAssessmentSubjectId {
@@ -219,6 +275,7 @@ impl fmt::Debug for AssessmentItemTarget {
     }
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 struct RuntimeOutcomeIdentity {
     subject: EntityId,
@@ -227,8 +284,12 @@ struct RuntimeOutcomeIdentity {
     hypothesis_id: String,
     verifier_rule_id: Option<String>,
     stage: &'static str,
+    status: OutcomeStatus,
+    confidence: Probability,
+    evidence_ids: BTreeSet<EvidenceId>,
 }
 
+#[cfg(test)]
 impl RuntimeOutcomeIdentity {
     fn from_outcome(outcome: &Outcome) -> Self {
         Self {
@@ -238,6 +299,9 @@ impl RuntimeOutcomeIdentity {
             hypothesis_id: outcome.hypothesis_id().to_owned(),
             verifier_rule_id: outcome.verifier_rule_id().map(str::to_owned),
             stage: outcome.stage().as_str(),
+            status: outcome.status(),
+            confidence: outcome.confidence(),
+            evidence_ids: outcome.evidence_ids().clone(),
         }
     }
 }
@@ -255,39 +319,134 @@ struct EvidenceProjection {
     subject: EntityId,
 }
 
+/// One context-owned collection of claim-safe assessment items.
+///
+/// The private item vector has no append or merge surface. A set can only be
+/// produced by consuming the projection context that minted every contained
+/// document-local reference, so references from independent contexts cannot
+/// be combined into one report.
+pub(crate) struct AssessmentItemSet {
+    #[cfg(feature = "reporting")]
+    stable_scope_id: StableAssessmentScopeId,
+    subjects: Vec<AssessmentSubjectInventoryEntry>,
+    items: Vec<AssessmentItem>,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) struct AssessmentSubjectInventoryEntry {
+    reference: AssessmentSubjectReference,
+    fingerprint: String,
+}
+
+impl AssessmentSubjectInventoryEntry {
+    pub(crate) const fn reference(&self) -> AssessmentSubjectReference {
+        self.reference
+    }
+
+    #[cfg(any(feature = "reporting", test))]
+    pub(crate) fn fingerprint(&self) -> &str {
+        &self.fingerprint
+    }
+}
+
+impl fmt::Debug for AssessmentSubjectInventoryEntry {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("AssessmentSubjectInventoryEntry")
+            .field("reference", &self.reference)
+            .field("fingerprint", &"<stable-digest>")
+            .finish()
+    }
+}
+
+impl AssessmentItemSet {
+    pub(crate) fn items(&self) -> &[AssessmentItem] {
+        &self.items
+    }
+
+    #[cfg(feature = "reporting")]
+    pub(crate) fn matches_exact_origin(&self, value: &str) -> bool {
+        self.stable_scope_id.matches_exact_origin(value)
+    }
+
+    /// Verifies that this set contains exactly one subject minted from the
+    /// supplied host-approved stable identity under its existing scope.
+    ///
+    /// Report composition uses this to bind the opaque inventory back to the
+    /// runtime's authorized root without exposing or re-hashing a URL path.
+    #[cfg(feature = "reporting")]
+    pub(crate) fn contains_only_stable_subject(&self, stable_identity: &str) -> bool {
+        let Ok(stable_identity) = StableAssessmentSubjectId::new(stable_identity) else {
+            return false;
+        };
+        let expected = assessment_subject_fingerprint(&self.stable_scope_id, &stable_identity);
+        matches!(
+            self.subjects.as_slice(),
+            [subject]
+                if subject.reference() == AssessmentSubjectReference::new(0)
+                    && subject.fingerprint() == expected
+        )
+    }
+
+    #[cfg(any(feature = "reporting", test))]
+    pub(crate) fn into_parts(self) -> (Vec<AssessmentSubjectInventoryEntry>, Vec<AssessmentItem>) {
+        (self.subjects, self.items)
+    }
+}
+
+impl fmt::Debug for AssessmentItemSet {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("AssessmentItemSet")
+            .field("subject_count", &self.subjects.len())
+            .field("item_count", &self.items.len())
+            .finish()
+    }
+}
+
 /// Crate-owned mapping authority from exact runtime identities to opaque
 /// document-local references. Callers never select references directly.
-#[derive(Clone)]
 pub(crate) struct AssessmentProjectionContext {
     knowledge_authority: KnowledgeAuthority,
+    stable_scope_id: StableAssessmentScopeId,
     subjects: BTreeMap<EntityId, SubjectProjection>,
     stable_subject_ids: BTreeSet<StableAssessmentSubjectId>,
+    #[cfg(test)]
     cases: BTreeMap<(EntityId, String), AssessmentCaseReference>,
+    #[cfg(test)]
     outcomes: BTreeMap<RuntimeOutcomeIdentity, AssessmentOutcomeReference>,
     evidence: BTreeMap<EvidenceId, EvidenceProjection>,
+    items: Vec<AssessmentItem>,
 }
 
 impl fmt::Debug for AssessmentProjectionContext {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("AssessmentProjectionContext")
-            .field("subject_count", &self.subjects.len())
+        let mut debug = formatter.debug_struct("AssessmentProjectionContext");
+        debug.field("subject_count", &self.subjects.len());
+        #[cfg(test)]
+        debug
             .field("case_count", &self.cases.len())
-            .field("outcome_count", &self.outcomes.len())
+            .field("outcome_count", &self.outcomes.len());
+        debug
             .field("evidence_count", &self.evidence.len())
+            .field("item_count", &self.items.len())
             .finish()
     }
 }
 
 impl AssessmentProjectionContext {
-    pub(crate) fn new(knowledge: &KnowledgeBase, subject: &EntityId) -> Self {
+    pub(crate) fn new(knowledge: &KnowledgeBase, stable_scope_id: StableAssessmentScopeId) -> Self {
         Self {
-            knowledge_authority: knowledge.snapshot_for_subject(subject).authority().clone(),
+            knowledge_authority: knowledge.authority().clone(),
+            stable_scope_id,
             subjects: BTreeMap::new(),
             stable_subject_ids: BTreeSet::new(),
+            #[cfg(test)]
             cases: BTreeMap::new(),
+            #[cfg(test)]
             outcomes: BTreeMap::new(),
             evidence: BTreeMap::new(),
+            items: Vec::new(),
         }
     }
 
@@ -298,6 +457,7 @@ impl AssessmentProjectionContext {
         query_parameter_names: impl IntoIterator<Item = String>,
     ) -> Result<AssessmentSubjectReference, AssessmentItemProjectionError> {
         check_projection_limit("subjects", self.subjects.len(), MAX_PROJECTION_SUBJECTS)?;
+        validate_runtime_identity(subject.as_str(), MAX_PROJECTION_SUBJECT_ID_BYTES)?;
         if self.subjects.contains_key(&subject) {
             return Err(AssessmentItemProjectionError::DuplicateSubjectMapping);
         }
@@ -334,6 +494,7 @@ impl AssessmentProjectionContext {
         Ok(reference)
     }
 
+    #[cfg(test)]
     pub(crate) fn register_case(
         &mut self,
         subject: &EntityId,
@@ -343,10 +504,9 @@ impl AssessmentProjectionContext {
         if !self.subjects.contains_key(subject) {
             return Err(AssessmentItemProjectionError::UnknownSubjectMapping);
         }
+        validate_runtime_identity(subject.as_str(), MAX_PROJECTION_SUBJECT_ID_BYTES)?;
         let case_id = case_id.into();
-        if case_id.is_empty() {
-            return Err(AssessmentItemProjectionError::InvalidRuntimeIdentity);
-        }
+        validate_runtime_identity(&case_id, MAX_PROJECTION_RUNTIME_ID_BYTES)?;
         let identity = (subject.clone(), case_id);
         if self.cases.contains_key(&identity) {
             return Err(AssessmentItemProjectionError::DuplicateCaseMapping);
@@ -356,11 +516,14 @@ impl AssessmentProjectionContext {
         Ok(reference)
     }
 
+    #[cfg(test)]
     pub(crate) fn register_outcome(
         &mut self,
         outcome: &Outcome,
     ) -> Result<AssessmentOutcomeReference, AssessmentItemProjectionError> {
         check_projection_limit("outcomes", self.outcomes.len(), MAX_PROJECTION_OUTCOMES)?;
+        preflight_ordered_evidence_ids(outcome.evidence_ids())?;
+        validate_outcome_identity(outcome)?;
         if !self.subjects.contains_key(outcome.subject()) {
             return Err(AssessmentItemProjectionError::UnknownSubjectMapping);
         }
@@ -386,10 +549,12 @@ impl AssessmentProjectionContext {
         evidence_id: &EvidenceId,
     ) -> Result<AssessmentEvidenceReference, AssessmentItemProjectionError> {
         check_projection_limit("evidence", self.evidence.len(), MAX_PROJECTION_EVIDENCE)?;
+        self.validate_knowledge_authority(knowledge)?;
         let evidence = knowledge
             .evidence(evidence_id)
             .ok_or(AssessmentItemProjectionError::EvidenceNotCommitted)?;
-        self.validate_knowledge_authority(knowledge, evidence.subject())?;
+        validate_runtime_identity(evidence_id.as_str(), MAX_PROJECTION_RUNTIME_ID_BYTES)?;
+        validate_runtime_identity(evidence.subject().as_str(), MAX_PROJECTION_SUBJECT_ID_BYTES)?;
         if !self.subjects.contains_key(evidence.subject()) {
             return Err(AssessmentItemProjectionError::UnknownSubjectMapping);
         }
@@ -406,6 +571,93 @@ impl AssessmentProjectionContext {
             },
         );
         Ok(reference)
+    }
+
+    pub(crate) fn project_observation(
+        &mut self,
+        capability: &'static AssessmentCapabilityDescriptor,
+        knowledge: &KnowledgeBase,
+        subject: &EntityId,
+        target: &AssessmentItemTarget,
+        evidence_ids: &[EvidenceId],
+    ) -> Result<(), AssessmentItemProjectionError> {
+        check_projection_limit("items", self.items.len(), MAX_ASSESSMENT_ITEM_SET_ITEMS)?;
+        let item = AssessmentItem::from_observation(
+            capability,
+            self,
+            knowledge,
+            subject,
+            target,
+            evidence_ids,
+        )?;
+        self.push_item(item);
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn project_differential(
+        &mut self,
+        capability: &'static AssessmentCapabilityDescriptor,
+        knowledge: &KnowledgeBase,
+        subject: &EntityId,
+        target: &AssessmentItemTarget,
+        control_ids: &[EvidenceId],
+        candidate_ids: &[EvidenceId],
+    ) -> Result<(), AssessmentItemProjectionError> {
+        check_projection_limit("items", self.items.len(), MAX_ASSESSMENT_ITEM_SET_ITEMS)?;
+        let item = AssessmentItem::from_differential(
+            capability,
+            self,
+            knowledge,
+            subject,
+            target,
+            control_ids,
+            candidate_ids,
+        )?;
+        self.push_item(item);
+        Ok(())
+    }
+
+    #[cfg(all(test, feature = "scanning"))]
+    pub(crate) fn project_verifier(
+        &mut self,
+        capability: &'static AssessmentCapabilityDescriptor,
+        target: &AssessmentItemTarget,
+        receipt: &DecisionEvidenceReceipt,
+        decision: &DecisionOutcomeReport,
+        knowledge: &KnowledgeBase,
+    ) -> Result<(), AssessmentItemProjectionError> {
+        check_projection_limit("items", self.items.len(), MAX_ASSESSMENT_ITEM_SET_ITEMS)?;
+        let item = AssessmentItem::from_verifier_projection(
+            capability, self, target, receipt, decision, knowledge,
+        )?;
+        self.push_item(item);
+        Ok(())
+    }
+
+    pub(crate) fn finish(self) -> AssessmentItemSet {
+        let mut subjects = self
+            .subjects
+            .values()
+            .map(|subject| AssessmentSubjectInventoryEntry {
+                reference: subject.reference,
+                fingerprint: assessment_subject_fingerprint(
+                    &self.stable_scope_id,
+                    &subject.stable_id,
+                ),
+            })
+            .collect::<Vec<_>>();
+        subjects.sort_unstable_by_key(AssessmentSubjectInventoryEntry::reference);
+        AssessmentItemSet {
+            #[cfg(feature = "reporting")]
+            stable_scope_id: self.stable_scope_id,
+            subjects,
+            items: self.items,
+        }
+    }
+
+    fn push_item(&mut self, item: AssessmentItem) {
+        self.items.push(item);
     }
 
     fn subject(
@@ -425,6 +677,11 @@ impl AssessmentProjectionContext {
         Ok(projection)
     }
 
+    fn stable_scope_id(&self) -> &StableAssessmentScopeId {
+        &self.stable_scope_id
+    }
+
+    #[cfg(test)]
     fn case_reference(
         &self,
         subject: &EntityId,
@@ -436,6 +693,7 @@ impl AssessmentProjectionContext {
             .ok_or(AssessmentItemProjectionError::UnknownCaseMapping)
     }
 
+    #[cfg(test)]
     fn outcome_reference(
         &self,
         outcome: &Outcome,
@@ -450,21 +708,23 @@ impl AssessmentProjectionContext {
         &self,
         knowledge: &KnowledgeBase,
         subject: &EntityId,
-        evidence_ids: impl IntoIterator<Item = EvidenceId>,
+        evidence_ids: &[EvidenceId],
     ) -> Result<Vec<AssessmentEvidenceReference>, AssessmentItemProjectionError> {
-        self.validate_knowledge_authority(knowledge, subject)?;
+        self.validate_knowledge_authority(knowledge)?;
+        validate_runtime_identity(subject.as_str(), MAX_PROJECTION_SUBJECT_ID_BYTES)?;
+        preflight_evidence_ids(evidence_ids)?;
         evidence_ids
-            .into_iter()
+            .iter()
             .map(|evidence_id| {
                 let projection = self
                     .evidence
-                    .get(&evidence_id)
+                    .get(evidence_id)
                     .ok_or(AssessmentItemProjectionError::UnknownEvidenceMapping)?;
                 if &projection.subject != subject {
                     return Err(AssessmentItemProjectionError::EvidenceSubjectMappingMismatch);
                 }
                 let committed = knowledge
-                    .evidence(&evidence_id)
+                    .evidence(evidence_id)
                     .ok_or(AssessmentItemProjectionError::EvidenceNotCommitted)?;
                 if committed.subject() != subject {
                     return Err(AssessmentItemProjectionError::EvidenceMappingMismatch);
@@ -477,15 +737,78 @@ impl AssessmentProjectionContext {
     fn validate_knowledge_authority(
         &self,
         knowledge: &KnowledgeBase,
-        subject: &EntityId,
     ) -> Result<(), AssessmentItemProjectionError> {
-        let snapshot = knowledge.snapshot_for_subject(subject);
-        if snapshot.authority().is_same_as(&self.knowledge_authority) {
+        if knowledge.authority().is_same_as(&self.knowledge_authority) {
             Ok(())
         } else {
             Err(AssessmentItemProjectionError::KnowledgeAuthorityMismatch)
         }
     }
+}
+
+#[cfg(test)]
+fn validate_outcome_identity(outcome: &Outcome) -> Result<(), AssessmentItemProjectionError> {
+    validate_runtime_identity(outcome.subject().as_str(), MAX_PROJECTION_SUBJECT_ID_BYTES)?;
+    for identity in [
+        outcome.case_id(),
+        outcome.action_id(),
+        outcome.hypothesis_id(),
+    ] {
+        validate_runtime_identity(identity, MAX_PROJECTION_RUNTIME_ID_BYTES)?;
+    }
+    if let Some(verifier_rule_id) = outcome.verifier_rule_id() {
+        validate_runtime_identity(verifier_rule_id, MAX_PROJECTION_RUNTIME_ID_BYTES)?;
+    }
+    for evidence_id in outcome.evidence_ids() {
+        validate_runtime_identity(evidence_id.as_str(), MAX_PROJECTION_RUNTIME_ID_BYTES)?;
+    }
+    Ok(())
+}
+
+fn validate_runtime_identity(
+    identity: &str,
+    maximum: usize,
+) -> Result<(), AssessmentItemProjectionError> {
+    if identity.is_empty() || identity.len() > maximum {
+        Err(AssessmentItemProjectionError::InvalidRuntimeIdentity)
+    } else {
+        Ok(())
+    }
+}
+
+fn preflight_evidence_ids(
+    evidence_ids: &[EvidenceId],
+) -> Result<(), AssessmentItemProjectionError> {
+    if evidence_ids.is_empty() {
+        return Err(AssessmentItemProjectionError::MissingEvidence);
+    }
+    if evidence_ids.len() > MAX_ASSESSMENT_ITEM_EVIDENCE_REFERENCES {
+        return Err(AssessmentItemProjectionError::TooManyEvidenceReferences);
+    }
+    let mut seen = BTreeSet::new();
+    for evidence_id in evidence_ids {
+        validate_runtime_identity(evidence_id.as_str(), MAX_PROJECTION_RUNTIME_ID_BYTES)?;
+        if !seen.insert(evidence_id) {
+            return Err(AssessmentItemProjectionError::DuplicateEvidenceReference);
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+fn preflight_ordered_evidence_ids(
+    evidence_ids: &BTreeSet<EvidenceId>,
+) -> Result<(), AssessmentItemProjectionError> {
+    if evidence_ids.is_empty() {
+        return Err(AssessmentItemProjectionError::MissingEvidence);
+    }
+    if evidence_ids.len() > MAX_ASSESSMENT_ITEM_EVIDENCE_REFERENCES {
+        return Err(AssessmentItemProjectionError::TooManyEvidenceReferences);
+    }
+    for evidence_id in evidence_ids {
+        validate_runtime_identity(evidence_id.as_str(), MAX_PROJECTION_RUNTIME_ID_BYTES)?;
+    }
+    Ok(())
 }
 
 fn next_ordinal(
@@ -720,7 +1043,7 @@ impl AssessmentItem {
         self.capability.remediation
     }
 
-    pub(crate) fn from_observation(
+    fn from_observation(
         capability: &'static AssessmentCapabilityDescriptor,
         context: &AssessmentProjectionContext,
         knowledge: &KnowledgeBase,
@@ -728,15 +1051,17 @@ impl AssessmentItem {
         target: &AssessmentItemTarget,
         evidence_ids: &[EvidenceId],
     ) -> Result<Self, AssessmentItemProjectionError> {
+        preflight_evidence_ids(evidence_ids)?;
         let subject_projection = context.subject(subject, target)?;
-        let evidence =
-            context.evidence_references(knowledge, subject, evidence_ids.iter().cloned())?;
+        let evidence = context.evidence_references(knowledge, subject, evidence_ids)?;
         let evidence = validate_reference_set("observation", evidence)?;
+        let confidence = bounded_observation_confidence(capability, knowledge, evidence_ids)?;
         Ok(Self::build(
             capability,
+            context.stable_scope_id(),
             subject_projection,
             target,
-            capability.confidence()?,
+            confidence,
             AssessmentBasis::Observation(AssessmentObservationBasis { evidence }),
         ))
     }
@@ -744,6 +1069,7 @@ impl AssessmentItem {
     // Deliberately private until a capability-specific matched-pair validator
     // can mint a sealed differential proof. Arbitrary crate callers cannot
     // turn two evidence identifiers into `NeedsReview`.
+    #[cfg(test)]
     fn from_differential(
         capability: &'static AssessmentCapabilityDescriptor,
         context: &AssessmentProjectionContext,
@@ -758,11 +1084,23 @@ impl AssessmentItem {
                 requested: AssessmentDisposition::NeedsReview,
             });
         }
+        preflight_evidence_ids(control_ids)?;
+        preflight_evidence_ids(candidate_ids)?;
+        if control_ids.len().saturating_add(candidate_ids.len())
+            > MAX_ASSESSMENT_ITEM_EVIDENCE_REFERENCES
+        {
+            return Err(AssessmentItemProjectionError::TooManyEvidenceReferences);
+        }
+        let control_identity = control_ids.iter().collect::<BTreeSet<_>>();
+        if candidate_ids
+            .iter()
+            .any(|evidence_id| control_identity.contains(evidence_id))
+        {
+            return Err(AssessmentItemProjectionError::OverlappingDifferentialEvidence);
+        }
         let subject_projection = context.subject(subject, target)?;
-        let control =
-            context.evidence_references(knowledge, subject, control_ids.iter().cloned())?;
-        let candidate =
-            context.evidence_references(knowledge, subject, candidate_ids.iter().cloned())?;
+        let control = context.evidence_references(knowledge, subject, control_ids)?;
+        let candidate = context.evidence_references(knowledge, subject, candidate_ids)?;
         let control = validate_reference_set("differential control", control)?;
         let candidate = validate_reference_set("differential candidate", candidate)?;
         if control.len().saturating_add(candidate.len()) > MAX_ASSESSMENT_ITEM_EVIDENCE_REFERENCES {
@@ -774,16 +1112,23 @@ impl AssessmentItem {
         {
             return Err(AssessmentItemProjectionError::OverlappingDifferentialEvidence);
         }
+        let confidence = bounded_observation_confidence(
+            capability,
+            knowledge,
+            control_ids.iter().chain(candidate_ids),
+        )?;
         Ok(Self::build(
             capability,
+            context.stable_scope_id(),
             subject_projection,
             target,
-            capability.confidence()?,
+            confidence,
             AssessmentBasis::Differential(AssessmentDifferentialBasis { control, candidate }),
         ))
     }
 
-    pub(crate) fn from_verifier_projection(
+    #[cfg(test)]
+    fn from_verifier_projection(
         capability: &'static AssessmentCapabilityDescriptor,
         context: &AssessmentProjectionContext,
         target: &AssessmentItemTarget,
@@ -791,29 +1136,32 @@ impl AssessmentItem {
         decision: &DecisionOutcomeReport,
         knowledge: &KnowledgeBase,
     ) -> Result<Self, AssessmentItemProjectionError> {
+        let outcome = decision.verification().outcome();
+        preflight_ordered_evidence_ids(outcome.evidence_ids())?;
         let extraction = extract_confirmation_proof(capability, receipt, decision, knowledge);
         extraction.proof.authorize()?;
 
-        let outcome = decision.verification().outcome();
+        validate_outcome_identity(outcome)?;
         let subject_projection = context.subject(outcome.subject(), target)?;
         let case_reference = context.case_reference(outcome.subject(), outcome.case_id())?;
         let outcome_reference = context.outcome_reference(outcome)?;
-        let projected = context.evidence_references(
-            knowledge,
-            outcome.subject(),
-            extraction.evidence_ids.iter().cloned(),
-        )?;
+        let evidence_ids = extraction.evidence_ids.iter().cloned().collect::<Vec<_>>();
+        let projected = context.evidence_references(knowledge, outcome.subject(), &evidence_ids)?;
         let evidence = validate_reference_set("verifier", projected)?;
         let policy = capability.verifier_policy().ok_or(
             AssessmentItemProjectionError::ConfirmationDenied(
                 AssessmentConfirmationDenial::CapabilityPolicy,
             ),
         )?;
+        let confidence =
+            bounded_observation_confidence(capability, knowledge, extraction.evidence_ids.iter())?
+                .min(outcome.confidence());
         Ok(Self::build(
             capability,
+            context.stable_scope_id(),
             subject_projection,
             target,
-            outcome.confidence(),
+            confidence,
             AssessmentBasis::Verifier(AssessmentVerifierBasis {
                 case_reference,
                 outcome_reference,
@@ -826,6 +1174,7 @@ impl AssessmentItem {
 
     fn build(
         capability: &'static AssessmentCapabilityDescriptor,
+        stable_scope_id: &StableAssessmentScopeId,
         subject: &SubjectProjection,
         target: &AssessmentItemTarget,
         confidence: Probability,
@@ -835,7 +1184,12 @@ impl AssessmentItem {
             capability,
             subject_reference: subject.reference,
             confidence,
-            fingerprint: assessment_fingerprint(capability.id, &subject.stable_id, target),
+            fingerprint: assessment_fingerprint(
+                capability.id,
+                stable_scope_id,
+                &subject.stable_id,
+                target,
+            ),
             basis,
         }
     }
@@ -914,6 +1268,8 @@ pub enum AssessmentItemProjectionError {
     InvalidCapabilityConfidence,
     #[error("host-approved stable subject identity is invalid")]
     InvalidStableSubjectIdentity,
+    #[error("host-approved stable assessment scope identity is invalid")]
+    InvalidStableScopeIdentity,
     #[error("query-parameter target identity is invalid")]
     InvalidQueryParameterTarget,
     #[error("query-parameter target is not registered for the runtime subject")]
@@ -960,10 +1316,13 @@ pub enum AssessmentItemProjectionError {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AssessmentClaimPolicy {
     ObservationOnly,
+    #[cfg(test)]
     DifferentialReview,
+    #[cfg(test)]
     VerifierTransition(VerifierClaimPolicy),
 }
 
+#[cfg(test)]
 impl AssessmentClaimPolicy {
     const fn maximum_disposition(self) -> AssessmentDisposition {
         match self {
@@ -974,6 +1333,7 @@ impl AssessmentClaimPolicy {
     }
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct VerifierClaimPolicy {
     action_id: &'static str,
@@ -984,6 +1344,7 @@ struct VerifierClaimPolicy {
     stage: VerificationStage,
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum StaticEvidenceValue {
     Boolean(bool),
@@ -991,6 +1352,7 @@ enum StaticEvidenceValue {
     Text(&'static str),
 }
 
+#[cfg(test)]
 impl StaticEvidenceValue {
     fn matches(self, value: &EvidenceValue) -> bool {
         match (self, value) {
@@ -1018,6 +1380,34 @@ pub(crate) struct AssessmentCapabilityDescriptor {
 }
 
 impl AssessmentCapabilityDescriptor {
+    /// Defines one native observation-only capability. This surface cannot
+    /// assign severity/CWE metadata or authorize review/confirmation.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) const fn informational(
+        id: &'static str,
+        title: &'static str,
+        category: &'static str,
+        redacted_summary: &'static str,
+        confidence_ppm: u32,
+        remediation_id: &'static str,
+        remediation_summary: &'static str,
+    ) -> Self {
+        Self::new(
+            id,
+            title,
+            category,
+            redacted_summary,
+            None,
+            confidence_ppm,
+            None,
+            AssessmentRemediation {
+                id: remediation_id,
+                summary: remediation_summary,
+            },
+            AssessmentClaimPolicy::ObservationOnly,
+        )
+    }
+
     #[allow(clippy::too_many_arguments)]
     const fn new(
         id: &'static str,
@@ -1049,8 +1439,10 @@ impl AssessmentCapabilityDescriptor {
             assert!(!cwe.is_empty() && cwe.len() <= MAX_ASSESSMENT_CAPABILITY_ID_BYTES);
         }
         match claim_policy {
-            AssessmentClaimPolicy::ObservationOnly | AssessmentClaimPolicy::DifferentialReview => {
-            },
+            AssessmentClaimPolicy::ObservationOnly => {},
+            #[cfg(test)]
+            AssessmentClaimPolicy::DifferentialReview => {},
+            #[cfg(test)]
             AssessmentClaimPolicy::VerifierTransition(policy) => {
                 assert!(
                     !policy.action_id.is_empty()
@@ -1091,10 +1483,12 @@ impl AssessmentCapabilityDescriptor {
             .map_err(|_| AssessmentItemProjectionError::InvalidCapabilityConfidence)
     }
 
+    #[cfg(test)]
     const fn maximum_disposition(self) -> AssessmentDisposition {
         self.claim_policy.maximum_disposition()
     }
 
+    #[cfg(test)]
     const fn allows_differential_review(self) -> bool {
         matches!(
             self.claim_policy,
@@ -1103,6 +1497,7 @@ impl AssessmentCapabilityDescriptor {
         )
     }
 
+    #[cfg(test)]
     const fn verifier_policy(self) -> Option<VerifierClaimPolicy> {
         match self.claim_policy {
             AssessmentClaimPolicy::VerifierTransition(policy) => Some(policy),
@@ -1130,14 +1525,34 @@ fn validate_reference_set(
     Ok(references)
 }
 
+fn bounded_observation_confidence<'a>(
+    capability: &'static AssessmentCapabilityDescriptor,
+    knowledge: &KnowledgeBase,
+    evidence_ids: impl IntoIterator<Item = &'a EvidenceId>,
+) -> Result<Probability, AssessmentItemProjectionError> {
+    let mut confidence = capability.confidence()?;
+    for evidence_id in evidence_ids {
+        let evidence = knowledge
+            .evidence(evidence_id)
+            .ok_or(AssessmentItemProjectionError::EvidenceNotCommitted)?;
+        let evidence_confidence =
+            Probability::from_basis_points(evidence.reliability().basis_points())
+                .map_err(|_| AssessmentItemProjectionError::InvalidCapabilityConfidence)?;
+        confidence = confidence.min(evidence_confidence);
+    }
+    Ok(confidence)
+}
+
 fn assessment_fingerprint(
     capability_id: &str,
+    stable_scope_id: &StableAssessmentScopeId,
     stable_subject_id: &StableAssessmentSubjectId,
     target: &AssessmentItemTarget,
 ) -> String {
     let mut digest = Sha256::new();
     digest.update(FINGERPRINT_DOMAIN);
     digest_field(&mut digest, ASSESSMENT_ITEM_SCHEMA);
+    digest_field(&mut digest, stable_scope_id.as_str());
     digest_field(&mut digest, capability_id);
     digest_field(&mut digest, stable_subject_id.as_str());
     match target {
@@ -1150,11 +1565,23 @@ fn assessment_fingerprint(
     format!("sha256:{:x}", digest.finalize())
 }
 
+fn assessment_subject_fingerprint(
+    stable_scope_id: &StableAssessmentScopeId,
+    stable_subject_id: &StableAssessmentSubjectId,
+) -> String {
+    let mut digest = Sha256::new();
+    digest.update(SUBJECT_IDENTITY_DOMAIN);
+    digest_field(&mut digest, stable_scope_id.as_str());
+    digest_field(&mut digest, stable_subject_id.as_str());
+    format!("sha256:{:x}", digest.finalize())
+}
+
 fn digest_field(digest: &mut Sha256, value: &str) {
     digest.update((value.len() as u64).to_be_bytes());
     digest.update(value.as_bytes());
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, Copy)]
 struct ConfirmationProof {
     capability_policy: bool,
@@ -1176,6 +1603,7 @@ struct ConfirmationProof {
     receipt_evidence_matches: bool,
 }
 
+#[cfg(test)]
 impl ConfirmationProof {
     fn authorize(self) -> Result<(), AssessmentItemProjectionError> {
         let denied = if !self.capability_policy {
@@ -1221,11 +1649,13 @@ impl ConfirmationProof {
     }
 }
 
+#[cfg(test)]
 struct ConfirmationExtraction<'a> {
     proof: ConfirmationProof,
     evidence_ids: &'a BTreeSet<EvidenceId>,
 }
 
+#[cfg(test)]
 fn extract_confirmation_proof<'a>(
     capability: &'static AssessmentCapabilityDescriptor,
     receipt: &DecisionEvidenceReceipt,
@@ -1321,14 +1751,17 @@ fn extract_confirmation_proof<'a>(
     }
 }
 
+#[cfg(test)]
 const fn is_confirmation_outcome(status: OutcomeStatus) -> bool {
     matches!(status, OutcomeStatus::Success)
 }
 
+#[cfg(test)]
 fn predicate_matches(predicate: &KnowledgePredicate, namespace: &str, name: &str) -> bool {
     predicate.namespace() == namespace && predicate.name() == name
 }
 
+#[cfg(test)]
 fn validate_correlated_evidence(
     knowledge: &KnowledgeBase,
     evidence_ids: &BTreeSet<EvidenceId>,
@@ -1354,6 +1787,7 @@ fn validate_correlated_evidence(
     (resolved, subject_matches, case_matches)
 }
 
+#[cfg(test)]
 fn execution_stage_matches(stage: DecisionExecutionStage, verification: VerificationStage) -> bool {
     matches!(
         (stage, verification),
@@ -1362,6 +1796,7 @@ fn execution_stage_matches(stage: DecisionExecutionStage, verification: Verifica
     )
 }
 
+#[cfg(test)]
 fn receipt_contributed_evidence(
     receipt: &DecisionEvidenceReceipt,
     stage: VerificationStage,
@@ -1387,6 +1822,7 @@ fn receipt_contributed_evidence(
     }
 }
 
+#[cfg(test)]
 fn receipt_evidence_matches_knowledge(
     receipt: &DecisionEvidenceReceipt,
     knowledge: &KnowledgeBase,

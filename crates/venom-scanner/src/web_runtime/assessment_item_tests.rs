@@ -71,6 +71,10 @@ const CONFIRMED_DESCRIPTOR: AssessmentCapabilityDescriptor = AssessmentCapabilit
     }),
 );
 
+fn test_scope_id() -> StableAssessmentScopeId {
+    StableAssessmentScopeId::from_exact_origin("https://assessment-tests.test").unwrap()
+}
+
 fn references(values: &[u32]) -> Vec<AssessmentEvidenceReference> {
     values
         .iter()
@@ -86,7 +90,7 @@ fn mapped_context(
     evidence_ids: &[&str],
 ) -> (AssessmentProjectionContext, Vec<EvidenceId>, KnowledgeBase) {
     let knowledge = KnowledgeBase::new();
-    let mut context = AssessmentProjectionContext::new(&knowledge, subject);
+    let mut context = AssessmentProjectionContext::new(&knowledge, test_scope_id());
     context
         .register_subject(
             subject.clone(),
@@ -196,7 +200,7 @@ fn claim_policy_derives_capability_maximum_without_a_raw_disposition_field() {
 fn item_is_read_only_and_exposes_only_static_or_opaque_fields() {
     let subject = test_subject("subject:item-read-only");
     let knowledge = KnowledgeBase::new();
-    let mut context = AssessmentProjectionContext::new(&knowledge, &subject);
+    let mut context = AssessmentProjectionContext::new(&knowledge, test_scope_id());
     context
         .register_subject(
             test_subject("subject:unrelated"),
@@ -311,9 +315,149 @@ fn observation_and_differential_references_fail_closed() {
 }
 
 #[test]
+fn evidence_reference_preflight_enforces_exact_limits_before_projection() {
+    let maximum = (0..MAX_ASSESSMENT_ITEM_EVIDENCE_REFERENCES)
+        .map(|index| EvidenceId::parse(format!("evidence:preflight:{index:04}")).unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(preflight_evidence_ids(&maximum), Ok(()));
+
+    let mut over_limit = maximum.clone();
+    over_limit.push(EvidenceId::parse("evidence:preflight:over").unwrap());
+    assert_eq!(
+        preflight_evidence_ids(&over_limit),
+        Err(AssessmentItemProjectionError::TooManyEvidenceReferences)
+    );
+    assert_eq!(
+        preflight_evidence_ids(&[maximum[0].clone(), maximum[0].clone()]),
+        Err(AssessmentItemProjectionError::DuplicateEvidenceReference)
+    );
+    assert_eq!(
+        preflight_evidence_ids(&[EvidenceId::parse(
+            "x".repeat(MAX_PROJECTION_RUNTIME_ID_BYTES + 1)
+        )
+        .unwrap()]),
+        Err(AssessmentItemProjectionError::InvalidRuntimeIdentity)
+    );
+}
+
+#[test]
+fn projection_runtime_identity_limits_accept_exact_boundaries_and_reject_overflow() {
+    let maximum_subject = EntityId::new("s".repeat(MAX_PROJECTION_SUBJECT_ID_BYTES)).unwrap();
+    let knowledge = KnowledgeBase::new();
+    let mut context = AssessmentProjectionContext::new(&knowledge, test_scope_id());
+    context
+        .register_subject(
+            maximum_subject.clone(),
+            StableAssessmentSubjectId::new("route.maximum-subject@1").unwrap(),
+            Vec::new(),
+        )
+        .unwrap();
+    context
+        .register_case(
+            &maximum_subject,
+            "c".repeat(MAX_PROJECTION_RUNTIME_ID_BYTES),
+        )
+        .unwrap();
+
+    assert_eq!(
+        context.register_case(
+            &maximum_subject,
+            "c".repeat(MAX_PROJECTION_RUNTIME_ID_BYTES + 1),
+        ),
+        Err(AssessmentItemProjectionError::InvalidRuntimeIdentity)
+    );
+    let oversized_subject = EntityId::new("s".repeat(MAX_PROJECTION_SUBJECT_ID_BYTES + 1)).unwrap();
+    assert_eq!(
+        context.register_subject(
+            oversized_subject,
+            StableAssessmentSubjectId::new("route.oversized-subject@1").unwrap(),
+            Vec::new(),
+        ),
+        Err(AssessmentItemProjectionError::InvalidRuntimeIdentity)
+    );
+}
+
+#[test]
+fn informational_confidence_is_capped_by_committed_evidence_reliability() {
+    let subject = test_subject("subject:bounded-confidence");
+    let evidence = Evidence::with_id(
+        EvidenceId::parse("evidence:bounded-confidence").unwrap(),
+        subject.clone(),
+        EvidenceKind::Http,
+        KnowledgePredicate::new("test", "bounded-confidence").unwrap(),
+        EvidenceValue::Boolean(true),
+        EvidenceSource::new("test.executor", "fixture").unwrap(),
+        ConfidenceScore::from_percent(42).unwrap(),
+    );
+    let knowledge = KnowledgeBase::new();
+    knowledge.insert_evidence(evidence.clone()).unwrap();
+    let mut context = AssessmentProjectionContext::new(&knowledge, test_scope_id());
+    context
+        .register_subject(
+            subject.clone(),
+            StableAssessmentSubjectId::new("route.bounded-confidence@1").unwrap(),
+            Vec::new(),
+        )
+        .unwrap();
+    context
+        .register_evidence(&knowledge, evidence.id())
+        .unwrap();
+
+    let item = AssessmentItem::from_observation(
+        &OBSERVATION_DESCRIPTOR,
+        &context,
+        &knowledge,
+        &subject,
+        &AssessmentItemTarget::subject(),
+        &[evidence.id().clone()],
+    )
+    .unwrap();
+    assert_eq!(item.confidence(), Probability::from_percent(42).unwrap());
+}
+
+#[test]
+fn context_owned_item_set_is_bounded_and_consumes_one_reference_authority() {
+    let subject = test_subject("subject:context-owned-items");
+    let (mut context, ids, knowledge) = mapped_context(
+        &subject,
+        "route.context-owned-items@1",
+        &[],
+        &["evidence:context-owned-items"],
+    );
+    let target = AssessmentItemTarget::subject();
+    for _ in 0..MAX_ASSESSMENT_ITEM_SET_ITEMS {
+        context
+            .project_observation(&OBSERVATION_DESCRIPTOR, &knowledge, &subject, &target, &ids)
+            .unwrap();
+    }
+    assert_eq!(
+        context.project_observation(&OBSERVATION_DESCRIPTOR, &knowledge, &subject, &target, &ids,),
+        Err(AssessmentItemProjectionError::ProjectionContextLimit {
+            dimension: "items",
+            maximum: MAX_ASSESSMENT_ITEM_SET_ITEMS,
+        })
+    );
+    assert!(format!("{context:?}").contains("item_count: 4096"));
+
+    let set = context.finish();
+    let set_debug = format!("{set:?}");
+    assert!(set_debug.contains("subject_count: 1"));
+    assert!(set_debug.contains("item_count: 4096"));
+    assert!(!set_debug.contains("context-owned-items"));
+    let (subjects, items) = set.into_parts();
+    assert_eq!(subjects.len(), 1);
+    assert_eq!(subjects[0].reference(), AssessmentSubjectReference::new(0));
+    assert!(subjects[0].fingerprint().starts_with("sha256:"));
+    assert_eq!(items.len(), MAX_ASSESSMENT_ITEM_SET_ITEMS);
+    assert!(items
+        .iter()
+        .all(|item| item.disposition() == AssessmentDisposition::Informational));
+}
+
+#[test]
 fn differential_basis_stays_visibly_needs_review() {
     let subject = test_subject("subject:differential");
-    let (context, ids, knowledge) = mapped_context(
+    let (mut context, ids, knowledge) = mapped_context(
         &subject,
         "route.differential@1",
         &[],
@@ -337,6 +481,24 @@ fn differential_basis_stays_visibly_needs_review() {
     assert_eq!(basis.candidate(), references(&[2, 3]));
     assert_eq!(item.evidence_count(), 4);
     assert_eq!(item.basis().case_reference(), None);
+
+    context
+        .project_differential(
+            &REVIEW_DESCRIPTOR,
+            &knowledge,
+            &subject,
+            &AssessmentItemTarget::subject(),
+            &[ids[0].clone(), ids[1].clone()],
+            &[ids[2].clone(), ids[3].clone()],
+        )
+        .unwrap();
+    let (_, projected) = context.finish().into_parts();
+    assert_eq!(projected.len(), 1);
+    assert_eq!(
+        projected[0].disposition(),
+        AssessmentDisposition::NeedsReview
+    );
+    assert_eq!(projected[0].fingerprint(), item.fingerprint());
 }
 
 #[test]
@@ -624,6 +786,10 @@ fn stable_fingerprint_excludes_basis_evidence_confidence_summary_and_disposition
         &[ids[0].clone()],
     )
     .unwrap();
+    assert_eq!(
+        observation.fingerprint(),
+        "sha256:400a1146bdcc9b51ebfc699ccffeeba37deb5482d2418e8af0e33ba4ae0979d3"
+    );
     let differential = AssessmentItem::from_differential(
         &ALTERNATE_DESCRIPTOR,
         &context,
@@ -637,6 +803,7 @@ fn stable_fingerprint_excludes_basis_evidence_confidence_summary_and_disposition
     let subject_projection = context.subject(&subject, &target).unwrap();
     let verifier_shaped = AssessmentItem::build(
         &ALTERNATE_DESCRIPTOR,
+        context.stable_scope_id(),
         subject_projection,
         &target,
         Probability::ONE,
@@ -656,7 +823,7 @@ fn stable_fingerprint_excludes_basis_evidence_confidence_summary_and_disposition
     assert!(!format!("{verifier_shaped:?}").contains("EvidenceId"));
     assert!(!verifier_shaped.fingerprint().contains("changed.rule"));
 
-    let mut reordered = AssessmentProjectionContext::new(&knowledge, &subject);
+    let mut reordered = AssessmentProjectionContext::new(&knowledge, test_scope_id());
     reordered
         .register_subject(
             test_subject("subject:sorts-first"),
@@ -710,7 +877,7 @@ fn stable_fingerprint_excludes_basis_evidence_confidence_summary_and_disposition
     assert_ne!(observation.fingerprint(), parameter_item.fingerprint());
     assert_ne!(observation.fingerprint(), other_capability.fingerprint());
 
-    let mut renamed = AssessmentProjectionContext::new(&knowledge, &subject);
+    let mut renamed = AssessmentProjectionContext::new(&knowledge, test_scope_id());
     renamed
         .register_subject(
             subject.clone(),
@@ -731,6 +898,31 @@ fn stable_fingerprint_excludes_basis_evidence_confidence_summary_and_disposition
     )
     .unwrap();
     assert_ne!(observation.fingerprint(), renamed_item.fingerprint());
+
+    let mut rescoped = AssessmentProjectionContext::new(
+        &knowledge,
+        StableAssessmentScopeId::from_exact_origin("https://other-origin.test").unwrap(),
+    );
+    rescoped
+        .register_subject(
+            subject.clone(),
+            StableAssessmentSubjectId::new("route.fingerprint@1").unwrap(),
+            vec!["id".to_owned()],
+        )
+        .unwrap();
+    for id in &ids {
+        rescoped.register_evidence(&knowledge, id).unwrap();
+    }
+    let rescoped_item = AssessmentItem::from_observation(
+        &REVIEW_DESCRIPTOR,
+        &rescoped,
+        &knowledge,
+        &subject,
+        &target,
+        &[ids[0].clone()],
+    )
+    .unwrap();
+    assert_ne!(observation.fingerprint(), rescoped_item.fingerprint());
 }
 
 #[test]
@@ -747,6 +939,35 @@ fn host_identity_and_projection_maps_fail_closed_without_hashing_raw_paths() {
             Err(AssessmentItemProjectionError::InvalidStableSubjectIdentity)
         );
     }
+    for invalid in [
+        "",
+        " https://example.test ",
+        "https://example.test/",
+        "https://example.test/private",
+        "https://example.test?token=secret",
+        "https://user:secret@example.test",
+        "HTTPS://EXAMPLE.TEST",
+        "https://example.test:443",
+        "ftp://example.test",
+    ] {
+        assert_eq!(
+            StableAssessmentScopeId::from_exact_origin(invalid),
+            Err(AssessmentItemProjectionError::InvalidStableScopeIdentity)
+        );
+    }
+    for valid in [
+        "http://example.test",
+        "https://example.test",
+        "https://example.test:8443",
+        "http://127.0.0.1:8080",
+        "http://[::1]:8080",
+    ] {
+        assert!(StableAssessmentScopeId::from_exact_origin(valid).is_ok());
+    }
+    assert_eq!(
+        test_scope_id().as_str(),
+        "origin-sha256:3fa15420d758edb6d53af0c8e9e66c4a90c02e5e7124a2da58593300132fd5fb"
+    );
     assert_eq!(
         AssessmentItemTarget::query_parameter("bad\nname"),
         Err(AssessmentItemProjectionError::InvalidQueryParameterTarget)
@@ -756,7 +977,7 @@ fn host_identity_and_projection_maps_fail_closed_without_hashing_raw_paths() {
     let evidence = test_evidence("evidence:mapped", subject.clone(), "case:mapped");
     let knowledge = KnowledgeBase::new();
     knowledge.insert_evidence(evidence.clone()).unwrap();
-    let mut context = AssessmentProjectionContext::new(&knowledge, &subject);
+    let mut context = AssessmentProjectionContext::new(&knowledge, test_scope_id());
     context
         .register_subject(
             subject.clone(),
@@ -822,7 +1043,7 @@ fn case_references_are_scoped_to_runtime_subjects() {
     let first = test_subject("subject:first-case");
     let second = test_subject("subject:second-case");
     let knowledge = KnowledgeBase::new();
-    let mut context = AssessmentProjectionContext::new(&knowledge, &first);
+    let mut context = AssessmentProjectionContext::new(&knowledge, test_scope_id());
     context
         .register_subject(
             first.clone(),
@@ -844,6 +1065,89 @@ fn case_references_are_scoped_to_runtime_subjects() {
     assert_eq!(
         context.register_case(&first, "case:reused"),
         Err(AssessmentItemProjectionError::DuplicateCaseMapping)
+    );
+}
+
+#[test]
+fn outcome_registration_caps_evidence_before_identity_projection() {
+    let subject = test_subject("subject:outcome-evidence-cap");
+    let knowledge = KnowledgeBase::new();
+    let mut context = AssessmentProjectionContext::new(&knowledge, test_scope_id());
+    context
+        .register_subject(
+            subject.clone(),
+            StableAssessmentSubjectId::new("route.outcome-evidence-cap@1").unwrap(),
+            Vec::new(),
+        )
+        .unwrap();
+    context
+        .register_case(&subject, "case:outcome-evidence-cap")
+        .unwrap();
+    let evidence_ids = (0..=MAX_ASSESSMENT_ITEM_EVIDENCE_REFERENCES)
+        .map(|index| EvidenceId::parse(format!("evidence:outcome-cap-{index:03}")).unwrap())
+        .collect();
+    let outcome = Outcome::verified(
+        "case:outcome-evidence-cap",
+        subject,
+        "action:outcome-evidence-cap",
+        "hypothesis:outcome-evidence-cap",
+        "verifier:outcome-evidence-cap",
+        VerificationStage::Passive,
+        OutcomeStatus::Success,
+        Probability::from_percent(90).unwrap(),
+        "bounded fixture",
+        evidence_ids,
+    )
+    .unwrap();
+
+    assert_eq!(
+        context.register_outcome(&outcome),
+        Err(AssessmentItemProjectionError::TooManyEvidenceReferences)
+    );
+}
+
+#[test]
+fn outcome_reference_binds_status_confidence_and_exact_evidence_identity() {
+    let subject = test_subject("subject:exact-outcome-reference");
+    let knowledge = KnowledgeBase::new();
+    let mut context = AssessmentProjectionContext::new(&knowledge, test_scope_id());
+    context
+        .register_subject(
+            subject.clone(),
+            StableAssessmentSubjectId::new("route.exact-outcome-reference@1").unwrap(),
+            Vec::new(),
+        )
+        .unwrap();
+    context
+        .register_case(&subject, "case:exact-outcome-reference")
+        .unwrap();
+    let make_outcome = |evidence: &str, confidence: u8| {
+        Outcome::verified(
+            "case:exact-outcome-reference",
+            subject.clone(),
+            "action:exact-outcome-reference",
+            "hypothesis:exact-outcome-reference",
+            "verifier:exact-outcome-reference",
+            VerificationStage::Passive,
+            OutcomeStatus::Success,
+            Probability::from_percent(confidence).unwrap(),
+            "bounded fixture",
+            BTreeSet::from([EvidenceId::parse(evidence).unwrap()]),
+        )
+        .unwrap()
+    };
+    let registered = make_outcome("evidence:exact-outcome-a", 90);
+    assert_eq!(
+        context.register_outcome(&registered).unwrap(),
+        AssessmentOutcomeReference::new(0)
+    );
+    assert_eq!(
+        context.outcome_reference(&make_outcome("evidence:exact-outcome-b", 90)),
+        Err(AssessmentItemProjectionError::UnknownOutcomeMapping)
+    );
+    assert_eq!(
+        context.outcome_reference(&make_outcome("evidence:exact-outcome-a", 89)),
+        Err(AssessmentItemProjectionError::UnknownOutcomeMapping)
     );
 }
 
@@ -878,7 +1182,9 @@ const SECRET_EVIDENCE_ID: &str = "evidence:test-secret-observation";
 const SECRET_SENTINEL: &str = "secret-sentinel-7b1e4a9c";
 
 #[cfg(feature = "scanning")]
-struct ProjectionExecutor;
+struct ProjectionExecutor {
+    reliability: ConfidenceScore,
+}
 
 #[cfg(feature = "scanning")]
 struct FailingProjectionExecutor;
@@ -927,7 +1233,7 @@ impl DecisionActionExecutor for ProjectionExecutor {
                 predicate,
                 EvidenceValue::Boolean(value),
                 source.clone(),
-                ConfidenceScore::MAX,
+                self.reliability,
                 0,
             )
         })
@@ -1011,8 +1317,15 @@ fn projection_replay_predicate() -> KnowledgePredicate {
 
 #[cfg(feature = "scanning")]
 fn projection_registry() -> DecisionExecutorRegistry {
+    projection_registry_with_reliability(ConfidenceScore::MAX)
+}
+
+#[cfg(feature = "scanning")]
+fn projection_registry_with_reliability(reliability: ConfidenceScore) -> DecisionExecutorRegistry {
     let mut registry = DecisionExecutorRegistry::new();
-    registry.register(Arc::new(ProjectionExecutor)).unwrap();
+    registry
+        .register(Arc::new(ProjectionExecutor { reliability }))
+        .unwrap();
     registry
         .route_action(
             DecisionExecutionStage::Passive,
@@ -1125,6 +1438,15 @@ async fn runtime_projection_fixture(
     status: Option<OutcomeStatus>,
     target: VerificationTarget,
 ) -> RuntimeProjectionFixture {
+    runtime_projection_fixture_with_reliability(status, target, ConfidenceScore::MAX).await
+}
+
+#[cfg(feature = "scanning")]
+async fn runtime_projection_fixture_with_reliability(
+    status: Option<OutcomeStatus>,
+    target: VerificationTarget,
+    reliability: ConfidenceScore,
+) -> RuntimeProjectionFixture {
     let (decision_loop, knowledge) = projection_loop(status, target);
     let mut experience = ExperienceStore::new();
     let mut session = DecisionSession::new(projection_subject());
@@ -1132,7 +1454,7 @@ async fn runtime_projection_fixture(
         .plan_next(&knowledge, &experience, &mut session)
         .unwrap();
     let command = planning.command().clone();
-    let turn = DecisionRunnerAdapter::new(projection_registry())
+    let turn = DecisionRunnerAdapter::new(projection_registry_with_reliability(reliability))
         .drive_command(
             &decision_loop,
             &command,
@@ -1246,7 +1568,7 @@ async fn informational_projection_never_exposes_committed_secret_evidence_value(
         &EvidenceValue::Text(SECRET_SENTINEL.to_owned())
     );
 
-    let mut context = AssessmentProjectionContext::new(&knowledge, &subject);
+    let mut context = AssessmentProjectionContext::new(&knowledge, test_scope_id());
     context
         .register_subject(
             subject.clone(),
@@ -1303,7 +1625,7 @@ async fn informational_projection_never_exposes_committed_secret_evidence_value(
 #[cfg(feature = "scanning")]
 fn projection_context(fixture: &RuntimeProjectionFixture) -> AssessmentProjectionContext {
     let outcome = fixture.decision.verification().outcome();
-    let mut context = AssessmentProjectionContext::new(&fixture.knowledge, outcome.subject());
+    let mut context = AssessmentProjectionContext::new(&fixture.knowledge, test_scope_id());
     context
         .register_subject(
             outcome.subject().clone(),
@@ -1366,15 +1688,19 @@ async fn real_runtime_truth_projects_confirmed_only_through_the_verifier_path() 
         HypothesisState::Confirmed
     );
 
-    let item = AssessmentItem::from_verifier_projection(
-        &CONFIRMED_DESCRIPTOR,
-        &projection_context(&fixture),
-        &AssessmentItemTarget::subject(),
-        &fixture.receipt,
-        &fixture.decision,
-        &fixture.knowledge,
-    )
-    .unwrap();
+    let mut context = projection_context(&fixture);
+    context
+        .project_verifier(
+            &CONFIRMED_DESCRIPTOR,
+            &AssessmentItemTarget::subject(),
+            &fixture.receipt,
+            &fixture.decision,
+            &fixture.knowledge,
+        )
+        .unwrap();
+    let (_, items) = context.finish().into_parts();
+    assert_eq!(items.len(), 1);
+    let item = &items[0];
 
     assert_eq!(item.disposition(), AssessmentDisposition::Confirmed);
     assert_eq!(item.evidence_count(), 3);
@@ -1387,6 +1713,29 @@ async fn real_runtime_truth_projects_confirmed_only_through_the_verifier_path() 
     };
     assert_eq!(basis.verifier_rule_id(), "test.verify.confirmed");
     assert_eq!(basis.stage(), VerificationStage::Passive);
+}
+
+#[cfg(feature = "scanning")]
+#[tokio::test]
+async fn confirmed_confidence_is_capped_by_correlated_evidence_reliability() {
+    let fixture = runtime_projection_fixture_with_reliability(
+        Some(OutcomeStatus::Success),
+        VerificationTarget::Motivation,
+        ConfidenceScore::from_percent(1).unwrap(),
+    )
+    .await;
+    let item = AssessmentItem::from_verifier_projection(
+        &CONFIRMED_DESCRIPTOR,
+        &projection_context(&fixture),
+        &AssessmentItemTarget::subject(),
+        &fixture.receipt,
+        &fixture.decision,
+        &fixture.knowledge,
+    )
+    .unwrap();
+
+    assert_eq!(item.disposition(), AssessmentDisposition::Confirmed);
+    assert_eq!(item.confidence(), Probability::from_percent(1).unwrap());
 }
 
 #[cfg(feature = "scanning")]

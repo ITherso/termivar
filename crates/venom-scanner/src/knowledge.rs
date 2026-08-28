@@ -477,6 +477,12 @@ impl KnowledgeBase {
         Self::default()
     }
 
+    /// Returns this store's opaque in-memory authority without taking the
+    /// knowledge-state lock or cloning a subject snapshot.
+    pub(crate) fn authority(&self) -> &KnowledgeAuthority {
+        &self.authority
+    }
+
     /// Registers a domain concept in the ontology.
     pub fn register_concept(
         &self,

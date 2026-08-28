@@ -46,9 +46,11 @@ use crate::{
 use crate::runtime_budget::RequestAccountingBroker;
 
 mod form_controls;
+pub(crate) mod passive_review;
 mod request_broker;
 
 use form_controls::{extract_form_control_names, FormControlExtraction};
+use passive_review::{project_passive_response, PassiveResponseProjection};
 pub(crate) use request_broker::{HttpRequestBroker, HttpRequestBrokerError};
 
 /// Default maximum number of response-body bytes read by one probe.
@@ -1012,14 +1014,20 @@ impl HttpEvidenceExecutor {
             )?);
         }
 
-        for cookie_name in response_cookie_names(&response.headers) {
-            evidence.push(self.observation(
-                decision,
-                EvidenceKind::Authentication,
-                HttpEvidencePredicate::COOKIE_NAME.into(),
-                EvidenceValue::Text(cookie_name),
-                "response-set-cookie-name",
-            )?);
+        // The sealed assessment observer owns a stricter bounded Set-Cookie
+        // projection. Do not duplicate its names through the historical generic
+        // extractor, whose contract predates the assessment-wide occurrence
+        // ceiling. Baseline/default executors retain the existing behavior.
+        if self.complete_response_observer.is_none() {
+            for cookie_name in response_cookie_names(&response.headers) {
+                evidence.push(self.observation(
+                    decision,
+                    EvidenceKind::Authentication,
+                    HttpEvidencePredicate::COOKIE_NAME.into(),
+                    EvidenceValue::Text(cookie_name),
+                    "response-set-cookie-name",
+                )?);
+            }
         }
 
         evidence.push(self.observation(
@@ -1105,6 +1113,9 @@ impl HttpEvidenceExecutor {
         append_rate_limit_evidence(self, decision, &response, &mut evidence)?;
         if let Some(observer) = &self.complete_response_observer {
             let media_type = normalized_media_type(&response.headers);
+            // Raw headers remain local to the executor. Only this bounded,
+            // value-free projection crosses the sealed observer boundary.
+            let passive_response_projection = project_passive_response(&response.headers);
             let evidence_id = |predicate: venom_core::PredicateDescriptor| {
                 let predicate = predicate.into_knowledge();
                 evidence
@@ -1129,6 +1140,9 @@ impl HttpEvidenceExecutor {
                 request_method_evidence_id: evidence_id(HttpEvidencePredicate::REQUEST_METHOD),
                 request_url_evidence_id: evidence_id(HttpEvidencePredicate::REQUEST_URL),
                 response_status_evidence_id: evidence_id(HttpEvidencePredicate::RESPONSE_STATUS),
+                response_final_url_evidence_id: evidence_id(
+                    HttpEvidencePredicate::RESPONSE_FINAL_URL,
+                ),
                 response_media_type_evidence_id: evidence_id(
                     HttpEvidencePredicate::RESPONSE_MEDIA_TYPE,
                 ),
@@ -1138,6 +1152,7 @@ impl HttpEvidenceExecutor {
                 response_body_digest_evidence_id: evidence_id(
                     HttpEvidencePredicate::RESPONSE_BODY_SHA256,
                 ),
+                passive_response_projection: &passive_response_projection,
             };
             evidence.extend(observer.observe(observation)?);
         }
@@ -1239,6 +1254,9 @@ mod complete_response_observer_seal {
     pub(super) trait Sealed {}
 
     impl Sealed for crate::web_runtime::AssessmentDiscoveryObserver {}
+
+    #[cfg(test)]
+    impl Sealed for super::tests::RejectingCompleteResponseObserver {}
 }
 
 #[allow(private_bounds)]
@@ -1271,9 +1289,11 @@ pub(crate) struct CompleteHttpResponseObservation<'a> {
     request_method_evidence_id: Option<&'a venom_core::EvidenceId>,
     request_url_evidence_id: Option<&'a venom_core::EvidenceId>,
     response_status_evidence_id: Option<&'a venom_core::EvidenceId>,
+    response_final_url_evidence_id: Option<&'a venom_core::EvidenceId>,
     response_media_type_evidence_id: Option<&'a venom_core::EvidenceId>,
     response_body_truncated_evidence_id: Option<&'a venom_core::EvidenceId>,
     response_body_digest_evidence_id: Option<&'a venom_core::EvidenceId>,
+    passive_response_projection: &'a PassiveResponseProjection,
 }
 
 impl CompleteHttpResponseObservation<'_> {
@@ -1341,6 +1361,10 @@ impl CompleteHttpResponseObservation<'_> {
         self.response_status_evidence_id
     }
 
+    pub(crate) const fn response_final_url_evidence_id(&self) -> Option<&venom_core::EvidenceId> {
+        self.response_final_url_evidence_id
+    }
+
     pub(crate) const fn response_media_type_evidence_id(&self) -> Option<&venom_core::EvidenceId> {
         self.response_media_type_evidence_id
     }
@@ -1353,6 +1377,10 @@ impl CompleteHttpResponseObservation<'_> {
 
     pub(crate) const fn response_body_digest_evidence_id(&self) -> Option<&venom_core::EvidenceId> {
         self.response_body_digest_evidence_id
+    }
+
+    pub(crate) const fn passive_response_projection(&self) -> &PassiveResponseProjection {
+        self.passive_response_projection
     }
 }
 
@@ -1374,9 +1402,11 @@ pub(crate) struct CompleteHttpResponseObservationTestInput<'a> {
     pub(crate) request_method_evidence_id: Option<&'a venom_core::EvidenceId>,
     pub(crate) request_url_evidence_id: Option<&'a venom_core::EvidenceId>,
     pub(crate) response_status_evidence_id: Option<&'a venom_core::EvidenceId>,
+    pub(crate) response_final_url_evidence_id: Option<&'a venom_core::EvidenceId>,
     pub(crate) response_media_type_evidence_id: Option<&'a venom_core::EvidenceId>,
     pub(crate) response_body_truncated_evidence_id: Option<&'a venom_core::EvidenceId>,
     pub(crate) response_body_digest_evidence_id: Option<&'a venom_core::EvidenceId>,
+    pub(crate) passive_response_projection: &'a PassiveResponseProjection,
 }
 
 #[cfg(test)]
@@ -1400,10 +1430,26 @@ pub(crate) fn complete_http_response_observation_for_test<'a>(
         request_method_evidence_id: input.request_method_evidence_id,
         request_url_evidence_id: input.request_url_evidence_id,
         response_status_evidence_id: input.response_status_evidence_id,
+        response_final_url_evidence_id: input.response_final_url_evidence_id,
         response_media_type_evidence_id: input.response_media_type_evidence_id,
         response_body_truncated_evidence_id: input.response_body_truncated_evidence_id,
         response_body_digest_evidence_id: input.response_body_digest_evidence_id,
+        passive_response_projection: input.passive_response_projection,
     }
+}
+
+#[cfg(test)]
+pub(crate) fn passive_response_projection_for_test(
+    headers: &[(&'static str, &str)],
+) -> PassiveResponseProjection {
+    let mut map = HeaderMap::new();
+    for (name, value) in headers {
+        map.append(
+            *name,
+            HeaderValue::from_str(value).expect("valid fixture header value"),
+        );
+    }
+    project_passive_response(&map)
 }
 
 pub(crate) struct CollectedHttpResponse {
@@ -1905,6 +1951,19 @@ mod tests {
         DecisionLoopCommand, DecisionRunnerAdapter, KnowledgeBase, RuleEngine, RuntimeBudget,
         RuntimeBudgetDimension, StandardWebReasoning, TransportDispatchOutcome, VerificationCase,
     };
+
+    pub(super) struct RejectingCompleteResponseObserver;
+
+    impl CompleteHttpResponseObserver for RejectingCompleteResponseObserver {
+        fn observe(
+            &self,
+            _observation: CompleteHttpResponseObservation<'_>,
+        ) -> Result<Vec<Evidence>, HttpEvidenceError> {
+            Err(HttpEvidenceError::AssessmentObserverInvariant {
+                invariant: "test-observer-rejected",
+            })
+        }
+    }
 
     #[test]
     fn assessment_defense_metadata_only_never_projects_open() {
@@ -3075,6 +3134,46 @@ mod tests {
             item.source().component() == HTTP_EVIDENCE_EXECUTOR_ID
                 && item.source().correlation_id() == Some("case:http:1")
         }));
+    }
+
+    #[tokio::test]
+    async fn complete_response_observer_error_commits_none_of_the_atomic_batch() {
+        let url = serve_once(
+            b"HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nSet-Cookie: DEBUG_COOKIE_NAME_SENTINEL=value\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok",
+        )
+        .await;
+        let probe_url = url.clone();
+        let provider: Arc<dyn HttpProbeProvider> =
+            Arc::new(move |_request: &DecisionExecutionRequest| {
+                HttpProbe::new(probe_url.clone(), HttpProbeMethod::Get)
+            });
+        let policy = HttpEvidencePolicy::new([url.clone()], Duration::from_secs(2), 1024)
+            .unwrap()
+            .with_body_capture(HttpBodyCapture::MetadataOnly)
+            .unwrap();
+        let executor = HttpEvidenceExecutor::new(policy, provider)
+            .unwrap()
+            .with_complete_response_observer(Arc::new(RejectingCompleteResponseObserver));
+        let mut registry = DecisionExecutorRegistry::new();
+        registry.register(Arc::new(executor)).unwrap();
+        let adapter = DecisionRunnerAdapter::new(registry);
+        let knowledge = KnowledgeBase::new();
+
+        let error = adapter
+            .execute_command(&command(&url), &knowledge)
+            .await
+            .unwrap_err();
+
+        assert!(error
+            .execution_failure()
+            .unwrap()
+            .diagnostic()
+            .contains("test-observer-rejected"));
+        assert_eq!(knowledge.stats().evidence, 0);
+        assert!(knowledge
+            .evidence_for_predicate(&HttpEvidencePredicate::COOKIE_NAME.into_knowledge())
+            .is_empty());
+        assert!(!format!("{error:?}").contains("DEBUG_COOKIE_NAME_SENTINEL"));
     }
 
     #[tokio::test]

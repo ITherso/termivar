@@ -22,10 +22,22 @@ use super::*;
 use crate::web_runtime::assessment_defense::{
     CommittedAssessmentDefenseLedger, ASSESSMENT_DEFENSE_NAMESPACE,
 };
+use crate::web_runtime::assessment_passive::{
+    CommittedAssessmentPassiveLedger, CommittedAssessmentPassiveObservation,
+    CommittedPassiveMediaClass, ASSESSMENT_PASSIVE_NAMESPACE,
+};
+#[cfg(feature = "reporting")]
+use crate::web_runtime::{BuiltInScanProfile, ASSESSMENT_RUN_REPORT_SCHEMA};
+#[cfg(feature = "reporting")]
+use crate::ReportGenerator;
 use crate::{
     defense::MAX_FINGERPRINT_BODY_SCAN_BYTES,
     http_evidence::{
-        complete_http_response_observation_for_test, CompleteHttpResponseObservationTestInput,
+        complete_http_response_observation_for_test, passive_response_projection_for_test,
+        passive_review::{
+            PassiveCookieSameSite, PassiveProjectionIncompleteReason, PassiveProjectionState,
+        },
+        CompleteHttpResponseObservationTestInput,
     },
     HttpBodyCapture, HttpEvidencePolicy, KnowledgeWrite, RuntimeBudgetDimension,
     SemanticEntityType, TransportDispatchOutcome, DEFAULT_MAX_CONSECUTIVE_NO_PROGRESS_TURNS,
@@ -53,6 +65,36 @@ fn defense_mode_is_explicit_and_defaults_to_observation_only() {
     );
 }
 
+#[cfg(feature = "reporting")]
+#[tokio::test]
+async fn web_review_consumes_one_context_owned_item_set_into_the_additive_report() {
+    let server = serve(|_| FixtureReply::Response(FixtureResponse::html("root"))).await;
+    let target = server.url("/");
+    let mut runtime = WebAssessmentRuntime::builder(target.clone())
+        .build()
+        .unwrap();
+    let audit = runtime.analyze().await.unwrap();
+    assert_eq!(audit.authorized_root().url(), &target);
+    assert_eq!(audit.limits(), WebAssessmentLimits::default());
+    assert!(!audit.assessment_items().is_empty());
+    assert!(audit
+        .assessment_items()
+        .iter()
+        .all(|item| item.disposition().as_str() == "informational"));
+
+    let product =
+        ReportGenerator::compose_assessment(audit, ScanProfileV1::web_review().unwrap()).unwrap();
+
+    assert_eq!(product.schema(), ASSESSMENT_RUN_REPORT_SCHEMA);
+    assert_eq!(product.profile().profile(), BuiltInScanProfile::WebReview);
+    assert_eq!(product.subject_count(), 1);
+    assert!(!product.items().is_empty());
+    assert!(product
+        .items()
+        .windows(2)
+        .all(|pair| pair[0].fingerprint() < pair[1].fingerprint()));
+}
+
 #[tokio::test]
 async fn default_defense_audit_replays_committed_receipts_without_enforcement() {
     let server = serve(|_| {
@@ -71,6 +113,7 @@ async fn default_defense_audit_replays_committed_receipts_without_enforcement() 
     let mut runtime = WebAssessmentRuntime::builder(server.url("/root"))
         .build()
         .unwrap();
+    seed_laravel_planning_evidence(&runtime);
     let report = runtime.analyze().await.unwrap();
     assert_eq!(
         report.defense().mode(),
@@ -151,6 +194,7 @@ async fn enforced_defense_plan_exactly_matches_public_shadow_and_suppresses() {
         .enable_defense_enforcement()
         .build()
         .unwrap();
+    seed_laravel_planning_evidence(&runtime);
     let report = runtime.analyze().await.unwrap();
 
     assert_eq!(report.defense().mode(), WebAssessmentDefenseMode::Enforced);
@@ -555,6 +599,7 @@ struct TestObservationParents {
     request_method: EvidenceId,
     request_url: EvidenceId,
     response_status: EvidenceId,
+    response_final_url: EvidenceId,
     response_media_type: EvidenceId,
     response_body_truncated: EvidenceId,
     response_body_digest: EvidenceId,
@@ -566,6 +611,7 @@ impl TestObservationParents {
             request_method: EvidenceId::new(),
             request_url: EvidenceId::new(),
             response_status: EvidenceId::new(),
+            response_final_url: EvidenceId::new(),
             response_media_type: EvidenceId::new(),
             response_body_truncated: EvidenceId::new(),
             response_body_digest: EvidenceId::new(),
@@ -577,6 +623,7 @@ impl TestObservationParents {
             request_method: Some(&self.request_method),
             request_url: Some(&self.request_url),
             response_status: Some(&self.response_status),
+            response_final_url: Some(&self.response_final_url),
             response_media_type: include_media.then_some(&self.response_media_type),
             response_body_truncated: Some(&self.response_body_truncated),
             response_body_digest: Some(&self.response_body_digest),
@@ -604,6 +651,7 @@ struct TestObservationParentRefs<'a> {
     request_method: Option<&'a EvidenceId>,
     request_url: Option<&'a EvidenceId>,
     response_status: Option<&'a EvidenceId>,
+    response_final_url: Option<&'a EvidenceId>,
     response_media_type: Option<&'a EvidenceId>,
     response_body_truncated: Option<&'a EvidenceId>,
     response_body_digest: Option<&'a EvidenceId>,
@@ -616,6 +664,30 @@ fn observe_for_test(
     media_type: Option<&str>,
     complete_body: Option<&[u8]>,
     parents: TestObservationParentRefs<'_>,
+) -> Result<Vec<Evidence>, HttpEvidenceError> {
+    let passive = passive_response_projection_for_test(&[]);
+    Ok(observe_full_for_test(
+        observer,
+        envelope,
+        status,
+        media_type,
+        complete_body,
+        parents,
+        &passive,
+    )?
+    .into_iter()
+    .filter(|item| item.predicate().namespace() == "web.discovery")
+    .collect())
+}
+
+fn observe_full_for_test(
+    observer: &AssessmentDiscoveryObserver,
+    envelope: TestObservationEnvelope<'_>,
+    status: u16,
+    media_type: Option<&str>,
+    complete_body: Option<&[u8]>,
+    parents: TestObservationParentRefs<'_>,
+    passive_response_projection: &crate::http_evidence::passive_review::PassiveResponseProjection,
 ) -> Result<Vec<Evidence>, HttpEvidenceError> {
     observer.observe(complete_http_response_observation_for_test(
         CompleteHttpResponseObservationTestInput {
@@ -635,9 +707,11 @@ fn observe_for_test(
             request_method_evidence_id: parents.request_method,
             request_url_evidence_id: parents.request_url,
             response_status_evidence_id: parents.response_status,
+            response_final_url_evidence_id: parents.response_final_url,
             response_media_type_evidence_id: parents.response_media_type,
             response_body_truncated_evidence_id: parents.response_body_truncated,
             response_body_digest_evidence_id: parents.response_body_digest,
+            passive_response_projection,
         },
     ))
 }
@@ -708,6 +782,22 @@ fn rebuild_evidence(
     }
 }
 
+fn fresh_evidence(original: &Evidence) -> Evidence {
+    let rebuilt = Evidence::new(
+        original.subject().clone(),
+        original.kind().clone(),
+        original.predicate().clone(),
+        original.value().clone(),
+        original.source().clone(),
+        original.reliability(),
+    );
+    match original.origin() {
+        EvidenceOrigin::Derived(derivation) => rebuilt.derived_from(derivation.clone()),
+        EvidenceOrigin::Direct => rebuilt,
+        _ => unreachable!("test only handles known evidence origins"),
+    }
+}
+
 fn source_with_method(original: &Evidence, method: &str) -> EvidenceSource {
     let source = EvidenceSource::new(original.source().component(), method).unwrap();
     match original.source().correlation_id() {
@@ -727,6 +817,20 @@ fn receipt_with_committed_batch(
     let after_execution = knowledge.snapshot_for_subject(template.case().subject());
     let receipt = template.with_test_committed_batch(evidence, writes, after_execution);
     (knowledge, receipt)
+}
+
+fn assert_passive_replay_rejected_atomically(
+    template: &DecisionEvidenceReceipt,
+    evidence: Vec<Evidence>,
+    expected_subject: &WebAssessmentSubject,
+) {
+    let (knowledge, receipt) = receipt_with_committed_batch(template, evidence);
+    let mut ledger = CommittedAssessmentPassiveLedger::default();
+    assert!(ledger
+        .ingest_receipt(&receipt, &knowledge, expected_subject)
+        .is_err());
+    assert!(ledger.observations().is_empty());
+    assert_eq!(ledger.receipt_count(), 0);
 }
 
 fn subject_path(report: &WebAssessmentSubjectReport) -> &str {
@@ -755,6 +859,32 @@ fn defense_observation_for_path<'a>(
         .iter()
         .find(|observation| observation.subject().as_str().contains(path))
         .unwrap_or_else(|| panic!("missing defense observation for {path}"))
+}
+
+fn passive_observation_for_path<'a>(
+    runtime: &'a WebAssessmentRuntime,
+    path: &str,
+) -> &'a CommittedAssessmentPassiveObservation {
+    runtime
+        .passive_ledger
+        .observations()
+        .iter()
+        .find(|observation| observation.subject().as_str().contains(path))
+        .unwrap_or_else(|| panic!("missing passive observation for {path}"))
+}
+
+fn seed_laravel_planning_evidence(runtime: &WebAssessmentRuntime) {
+    runtime
+        .knowledge()
+        .insert_evidence(Evidence::new(
+            EntityId::new(format!("endpoint:{}", runtime.authorized_root().url())).unwrap(),
+            EvidenceKind::Http,
+            HttpEvidencePredicate::response_header("x-powered-by").unwrap(),
+            EvidenceValue::Text("Laravel".to_owned()),
+            EvidenceSource::new("web-assessment-test", "host-seeded-planning-evidence").unwrap(),
+            ConfidenceScore::from_percent(100).unwrap(),
+        ))
+        .unwrap();
 }
 
 fn public_subject_shape(
@@ -844,6 +974,19 @@ fn assert_report_reconciles(report: &WebAssessmentRunReport) {
     let debug = format!("{:?}", report.subjects());
     assert!(!debug.contains("TransportDispatchAudit"));
     assert!(!debug.contains("RuntimeUsage"));
+}
+
+fn assert_product_identity_boundary_is_explicit(report: &WebAssessmentRunReport) {
+    assert!(report
+        .completion()
+        .reasons()
+        .contains(&WebAssessmentIncompleteReason::AssessmentSubjectIdentityUnavailable));
+    assert!(report.unprojected_assessment_subjects() > 0);
+    assert!(report.unprojected_assessment_conditions() > 0);
+    assert!(report
+        .assessment_items()
+        .iter()
+        .all(|item| item.disposition().as_str() == "informational"));
 }
 
 fn assert_failure_reconciles(receipt: &WebAssessmentFailureReceipt) {
@@ -1420,6 +1563,7 @@ fn no_eof_truth_precedes_stop_state_and_uses_exact_five_or_six_parents() {
         "request-method-evidence",
         "request-url-evidence",
         "response-status-evidence",
+        "response-final-url-evidence",
         "response-body-truncated-evidence",
         "response-body-digest-evidence",
     ];
@@ -1429,8 +1573,9 @@ fn no_eof_truth_precedes_stop_state_and_uses_exact_five_or_six_parents() {
             0 => refs.request_method = None,
             1 => refs.request_url = None,
             2 => refs.response_status = None,
-            3 => refs.response_body_truncated = None,
-            4 => refs.response_body_digest = None,
+            3 => refs.response_final_url = None,
+            4 => refs.response_body_truncated = None,
+            5 => refs.response_body_digest = None,
             _ => unreachable!(),
         }
         assert!(matches!(
@@ -1451,6 +1596,7 @@ fn no_eof_truth_precedes_stop_state_and_uses_exact_five_or_six_parents() {
         "request-method-evidence",
         "request-url-evidence",
         "response-status-evidence",
+        "response-final-url-evidence",
         "response-media-type-evidence",
         "response-body-truncated-evidence",
         "response-body-digest-evidence",
@@ -1461,9 +1607,10 @@ fn no_eof_truth_precedes_stop_state_and_uses_exact_five_or_six_parents() {
             0 => refs.request_method = None,
             1 => refs.request_url = None,
             2 => refs.response_status = None,
-            3 => refs.response_media_type = None,
-            4 => refs.response_body_truncated = None,
-            5 => refs.response_body_digest = None,
+            3 => refs.response_final_url = None,
+            4 => refs.response_media_type = None,
+            5 => refs.response_body_truncated = None,
+            6 => refs.response_body_digest = None,
             _ => unreachable!(),
         }
         assert!(matches!(
@@ -1889,10 +2036,7 @@ async fn deterministic_bfs_is_exact_origin_deduplicated_and_subject_isolated() {
         .unwrap();
     let first = first_runtime.analyze().await.unwrap();
     assert_report_reconciles(&first);
-    assert!(matches!(
-        first.completion(),
-        WebAssessmentCompletion::Complete
-    ));
+    assert_product_identity_boundary_is_explicit(&first);
     let first_shape: Vec<_> = first.subjects().iter().map(public_subject_shape).collect();
     assert_eq!(
         first_shape
@@ -1936,6 +2080,7 @@ async fn deterministic_bfs_is_exact_origin_deduplicated_and_subject_isolated() {
         .unwrap();
     let replay = replay_runtime.analyze().await.unwrap();
     assert_report_reconciles(&replay);
+    assert_product_identity_boundary_is_explicit(&replay);
     assert_eq!(
         replay
             .subjects()
@@ -1972,10 +2117,7 @@ async fn same_layer_head_candidate_upgrades_to_get_and_executed_urls_are_not_red
         .unwrap();
     let report = runtime.analyze().await.unwrap();
     assert_report_reconciles(&report);
-    assert!(matches!(
-        report.completion(),
-        WebAssessmentCompletion::Complete
-    ));
+    assert_product_identity_boundary_is_explicit(&report);
     assert_eq!(
         report
             .subjects()
@@ -2082,10 +2224,7 @@ async fn forms_are_names_only_and_only_get_actions_are_dispatched() {
     assert_eq!(runtime.authorized_root().query_parameter_names(), ["root"]);
     let report = runtime.analyze().await.unwrap();
     assert_report_reconciles(&report);
-    assert!(matches!(
-        report.completion(),
-        WebAssessmentCompletion::Complete
-    ));
+    assert_product_identity_boundary_is_explicit(&report);
     assert_eq!(
         report
             .subjects()
@@ -2157,8 +2296,13 @@ async fn redirects_are_observed_without_following_same_or_cross_origin_locations
         assert_report_reconciles(&report);
         assert!(matches!(
             report.completion(),
-            WebAssessmentCompletion::Complete
+            WebAssessmentCompletion::Incomplete { .. }
         ));
+        assert!(report
+            .completion()
+            .reasons()
+            .contains(&WebAssessmentIncompleteReason::AssessmentSubjectIdentityUnavailable));
+        assert!(report.assessment_items().is_empty());
         assert_eq!(report.subjects().len(), 1);
         assert_no_secret(&format!("{report:?}"), &[REDIRECT_SECRET]);
         assert_no_secret(&knowledge_debug(&runtime, &report), &[REDIRECT_SECRET]);
@@ -2213,10 +2357,7 @@ async fn complete_body_status_and_media_boundaries_fail_closed() {
         .unwrap();
     let short = short_runtime.analyze().await.unwrap();
     assert_report_reconciles(&short);
-    assert!(matches!(
-        short.completion(),
-        WebAssessmentCompletion::Complete
-    ));
+    assert_product_identity_boundary_is_explicit(&short);
     assert_eq!(
         short
             .subjects()
@@ -2262,19 +2403,18 @@ async fn complete_body_status_and_media_boundaries_fail_closed() {
             .subjects()
             .iter()
             .any(|subject| subject.subject().url().path() == canary));
-        match expected_reason {
-            Some(reason) => {
-                assert!(report.completion().reasons().contains(&reason));
-                assert!(matches!(
-                    report.completion(),
-                    WebAssessmentCompletion::Incomplete { .. }
-                ));
-            },
-            None => assert!(matches!(
-                report.completion(),
-                WebAssessmentCompletion::Complete
-            )),
+        if let Some(reason) = expected_reason {
+            assert!(report.completion().reasons().contains(&reason));
         }
+        assert!(matches!(
+            report.completion(),
+            WebAssessmentCompletion::Incomplete { .. }
+        ));
+        assert!(report
+            .completion()
+            .reasons()
+            .contains(&WebAssessmentIncompleteReason::AssessmentSubjectIdentityUnavailable));
+        assert!(report.assessment_items().is_empty());
     }
 }
 
@@ -2728,6 +2868,7 @@ async fn committed_bootstrap_is_drained_once_when_a_later_action_fails() {
     let mut runtime = WebAssessmentRuntime::builder(server.url("/root"))
         .build()
         .unwrap();
+    seed_laravel_planning_evidence(&runtime);
     let error = runtime.analyze().await.unwrap_err();
     let receipt = error
         .failure_receipt()
@@ -2750,6 +2891,7 @@ async fn committed_bootstrap_is_drained_once_when_a_later_action_fails() {
     assert_eq!(server.hit_count("/root").await, 2);
     assert_eq!(server.hit_count("/pending").await, 0);
     assert_eq!(receipt.usage().total_requests(), 2);
+    assert_eq!(receipt.committed_passive_observations(), 1);
     assert_eq!(receipt.transport().receipts().len(), 2);
     assert_eq!(
         receipt.transport().receipts()[1].outcome(),
@@ -2767,6 +2909,8 @@ async fn committed_bootstrap_is_drained_once_when_a_later_action_fails() {
 #[tokio::test]
 async fn started_subject_failure_partitions_completed_current_and_pending_inventory() {
     const FAILURE_SECRETS: &[&str] = &[
+        "FAIL_ROOT_PATH_SECRET",
+        "FAIL_DISCOVERED_PATH_SECRET",
         "FAIL_ROOT_SECRET",
         "FAIL_LINK_SECRET",
         "FAIL_PENDING_SECRET",
@@ -2780,10 +2924,10 @@ async fn started_subject_failure_partitions_completed_current_and_pending_invent
         "FAIL_RATELIMIT_SECRET",
     ];
     let server = serve(|request| match request.path() {
-        "/root" => FixtureReply::Response(
+        "/FAIL_ROOT_PATH_SECRET" => FixtureReply::Response(
             FixtureResponse::html(
                 "<p>FAIL_BODY_SECRET</p>\
-                 <a href='/a?candidate=FAIL_LINK_SECRET'>a</a>\
+                 <a href='/FAIL_DISCOVERED_PATH_SECRET?candidate=FAIL_LINK_SECRET'>a</a>\
                  <a href='/b?pending=FAIL_PENDING_SECRET'>b</a>\
                  <form action='/write?token=FAIL_FORM_SECRET' method='post'>\
                    <input name='csrf' value='FAIL_CONTROL_SECRET'>\
@@ -2795,19 +2939,26 @@ async fn started_subject_failure_partitions_completed_current_and_pending_invent
             .with_header("Retry-After", "FAIL_RETRY_AFTER_SECRET")
             .with_header("X-RateLimit-Reset", "FAIL_RATELIMIT_SECRET"),
         ),
-        "/a" => FixtureReply::CloseWithoutResponse,
+        "/FAIL_DISCOVERED_PATH_SECRET" => FixtureReply::CloseWithoutResponse,
         _ => FixtureReply::Response(FixtureResponse::html("done")),
     })
     .await;
-    let mut runtime = WebAssessmentRuntime::builder(server.url("/root?root=FAIL_ROOT_SECRET"))
-        .build()
-        .unwrap();
+    let mut runtime =
+        WebAssessmentRuntime::builder(server.url("/FAIL_ROOT_PATH_SECRET?root=FAIL_ROOT_SECRET"))
+            .build()
+            .unwrap();
     let error = runtime.analyze().await.unwrap_err();
     let receipt = error.failure_receipt().expect("started failure receipt");
     assert_failure_reconciles(receipt);
     assert_eq!(receipt.completed_subjects().len(), 1);
-    assert_eq!(subject_path(&receipt.completed_subjects()[0]), "/root");
-    assert_eq!(receipt.current_subject().url().path(), "/a");
+    assert_eq!(
+        subject_path(&receipt.completed_subjects()[0]),
+        "/FAIL_ROOT_PATH_SECRET"
+    );
+    assert_eq!(
+        receipt.current_subject().url().path(),
+        "/FAIL_DISCOVERED_PATH_SECRET"
+    );
     assert!(receipt.current_subject_report().was_executed());
     assert_eq!(receipt.pending_subjects().len(), 1);
     assert_eq!(receipt.pending_subjects()[0].url().path(), "/b");
@@ -2825,9 +2976,10 @@ async fn started_subject_failure_partitions_completed_current_and_pending_invent
             .iter()
             .map(|request| request.path())
             .collect::<Vec<_>>(),
-        ["/root", "/a"]
+        ["/FAIL_ROOT_PATH_SECRET", "/FAIL_DISCOVERED_PATH_SECRET"]
     );
     assert_eq!(receipt.transport().receipts().len(), 2);
+    assert_eq!(receipt.committed_passive_observations(), 1);
     assert_eq!(
         receipt.transport().receipts()[1].outcome(),
         TransportDispatchOutcome::TransportFailure
@@ -2855,9 +3007,12 @@ async fn started_subject_failure_partitions_completed_current_and_pending_invent
             "token".to_owned(),
         ])
     );
+    // Endpoint paths are intentional semantic resource identity. Values from
+    // the root query, discovered queries, controls, headers, cookies, and body
+    // must never enter the semantic projection.
     assert_no_secret(
         &serde_json::to_string(receipt.semantics()).unwrap(),
-        FAILURE_SECRETS,
+        &FAILURE_SECRETS[2..],
     );
     let subject_ids: Vec<_> = receipt
         .completed_subjects()
@@ -2880,7 +3035,7 @@ async fn started_subject_failure_partitions_completed_current_and_pending_invent
         })
         .collect::<Vec<_>>()
         .join("\n");
-    assert_no_secret(&knowledge, FAILURE_SECRETS);
+    assert_no_secret(&knowledge, &FAILURE_SECRETS[2..]);
     let nested_debug = format!(
         "{:?}{:?}",
         receipt.completed_subjects(),
@@ -2958,6 +3113,607 @@ async fn zero_request_budget_is_typed_incomplete_without_network_io() {
     assert_eq!(report.usage().total_requests(), 0);
     assert_eq!(report.transport().receipts(), []);
     assert_eq!(server.requests().await, []);
+}
+
+#[tokio::test]
+async fn assessment_passive_projection_is_ordered_value_free_and_strictly_replayed() {
+    const HEADER_SECRETS: &[&str] = &[
+        "COOKIE_VALUE_SENTINEL",
+        "CSP_NONCE_SENTINEL",
+        "CSP_HASH_SENTINEL",
+        "CSP_ORIGIN_SENTINEL",
+        "PERMISSIONS_ORIGIN_SENTINEL",
+        "COOKIE_DOMAIN_SENTINEL",
+        "COOKIE_PATH_SENTINEL",
+    ];
+    let server = serve(|_| {
+        FixtureReply::Response(
+            FixtureResponse::html("<html><body>safe fixture</body></html>")
+                .with_header("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+                .with_header(
+                    "Content-Security-Policy",
+                    "default-src 'self' https://CSP_ORIGIN_SENTINEL.invalid; script-src 'nonce-CSP_NONCE_SENTINEL' 'sha256-CSP_HASH_SENTINEL' 'unsafe-inline'; object-src 'none'; base-uri 'none'; frame-ancestors 'self'",
+                )
+                .with_header("X-Content-Type-Options", "nosniff")
+                .with_header("Referrer-Policy", "strict-origin-when-cross-origin")
+                .with_header(
+                    "Permissions-Policy",
+                    "geolocation=(self \"https://PERMISSIONS_ORIGIN_SENTINEL.invalid\")",
+                )
+                .with_header(
+                    "Set-Cookie",
+                    "session=COOKIE_VALUE_SENTINEL; Domain=COOKIE_DOMAIN_SENTINEL.invalid; Path=/COOKIE_PATH_SENTINEL; HttpOnly; SameSite=None",
+                ),
+        )
+    })
+    .await;
+    let mut runtime = WebAssessmentRuntime::builder(server.url("/passive-root"))
+        .build()
+        .unwrap();
+    let report = runtime.analyze().await.unwrap();
+    let subject_report = report
+        .subjects()
+        .iter()
+        .find(|subject| subject.subject().url().path() == "/passive-root")
+        .unwrap();
+    let bootstrap = subject_report.bootstrap().unwrap();
+
+    assert!(runtime
+        .knowledge()
+        .evidence_for_predicate(&HttpEvidencePredicate::COOKIE_NAME.into_knowledge())
+        .is_empty());
+    let passive: Vec<_> = bootstrap
+        .evidence()
+        .iter()
+        .filter(|evidence| evidence.predicate().namespace() == ASSESSMENT_PASSIVE_NAMESPACE)
+        .collect();
+    assert!(!passive.is_empty());
+    assert!(passive.len() <= 160);
+    let passive_start = bootstrap
+        .evidence()
+        .iter()
+        .position(|evidence| evidence.predicate().namespace() == ASSESSMENT_PASSIVE_NAMESPACE)
+        .unwrap();
+    assert_eq!(
+        bootstrap.evidence()[passive_start - 2].predicate(),
+        &HttpEvidencePredicate::RATE_LIMIT_DETECTED.into_knowledge()
+    );
+    assert_eq!(
+        bootstrap.evidence()[passive_start - 1].predicate(),
+        &HttpEvidencePredicate::RATE_LIMIT_ADVERTISED.into_knowledge()
+    );
+    let mut expected_parents = [
+        HttpEvidencePredicate::REQUEST_METHOD,
+        HttpEvidencePredicate::REQUEST_URL,
+        HttpEvidencePredicate::RESPONSE_STATUS,
+        HttpEvidencePredicate::RESPONSE_FINAL_URL,
+    ]
+    .into_iter()
+    .map(|predicate| {
+        bootstrap
+            .evidence()
+            .iter()
+            .find(|evidence| evidence.predicate() == &predicate.into_knowledge())
+            .unwrap()
+            .id()
+            .clone()
+    })
+    .collect::<Vec<_>>();
+    expected_parents.sort();
+    assert!(passive.iter().all(|evidence| {
+        let derivation = evidence.origin().derivation().unwrap();
+        derivation.algorithm().name() == "web.passive-review.value-free-response-metadata"
+            && derivation.algorithm().version() == 1
+            && derivation.parents() == expected_parents
+    }));
+    let first_discovery = bootstrap
+        .evidence()
+        .iter()
+        .position(|evidence| evidence.predicate().namespace() == "web.discovery")
+        .unwrap();
+    let first_defense = bootstrap
+        .evidence()
+        .iter()
+        .position(|evidence| evidence.predicate().namespace() == "web.defense")
+        .unwrap();
+    let passive_end = bootstrap
+        .evidence()
+        .iter()
+        .rposition(|evidence| evidence.predicate().namespace() == ASSESSMENT_PASSIVE_NAMESPACE)
+        .unwrap();
+    assert!(passive_end < first_discovery && first_discovery < first_defense);
+
+    let observation = passive_observation_for_path(&runtime, "/passive-root");
+    assert_eq!(observation.case_id(), BOOTSTRAP_CASE_ID);
+    assert_eq!(observation.stage(), DecisionExecutionStage::Passive);
+    assert_eq!(observation.method(), WebAssessmentMethod::Get);
+    assert_eq!(observation.status(), 200);
+    assert_eq!(observation.media_class(), CommittedPassiveMediaClass::Html);
+    assert_eq!(
+        observation.parent_evidence_ids(),
+        expected_parents.as_slice()
+    );
+    assert_eq!(observation.evidence_ids().len(), passive.len());
+    assert_eq!(observation.hsts().state(), PassiveProjectionState::Parsed);
+    assert_eq!(observation.csp().state(), PassiveProjectionState::Parsed);
+    assert_eq!(observation.xcto().state(), PassiveProjectionState::Parsed);
+    assert_eq!(
+        observation.referrer_policy().state(),
+        PassiveProjectionState::Parsed
+    );
+    assert_eq!(
+        observation.permissions_policy().state(),
+        PassiveProjectionState::Parsed
+    );
+    assert_eq!(
+        observation.cookies().state(),
+        PassiveProjectionState::Nonconformant
+    );
+    let csp = observation.csp().metadata().unwrap();
+    assert!(csp.declares_unsafe_inline);
+    assert!(!csp.declares_unsafe_eval);
+    assert!(csp.declares_nonce);
+    assert!(csp.declares_hash);
+    let cookie = &observation.cookies().metadata().unwrap()[0];
+    assert_eq!(cookie.name, "session");
+    assert!(!cookie.secure);
+    assert!(cookie.http_only);
+    assert_eq!(cookie.same_site, PassiveCookieSameSite::None);
+    assert!(cookie.domain_attribute_present);
+    assert!(cookie.path_attribute_present);
+
+    let safe_debug = format!(
+        "{bootstrap:?}{:?}{:?}",
+        runtime
+            .knowledge()
+            .snapshot_for_subject(observation.subject()),
+        runtime.passive_ledger
+    );
+    assert_no_secret(&safe_debug, HEADER_SECRETS);
+    assert!(!format!("{observation:?}{:?}", runtime.passive_ledger).contains("session"));
+}
+
+#[tokio::test]
+async fn passive_projection_limit_is_partial_and_keeps_malformed_missing_distinct() {
+    let server = serve(|_| {
+        let mut response = FixtureResponse::html("<html><body>bounded</body></html>")
+            .with_header("Strict-Transport-Security", "max-age=not-a-number");
+        for index in 0..17 {
+            response = response.with_header(
+                "Set-Cookie",
+                &format!("cookie{index}=COOKIE_LIMIT_VALUE_{index}; Secure; SameSite=Lax"),
+            );
+        }
+        FixtureReply::Response(response)
+    })
+    .await;
+    let mut runtime = WebAssessmentRuntime::builder(server.url("/cookie-limit"))
+        .build()
+        .unwrap();
+    let report = runtime.analyze().await.unwrap();
+    assert!(report
+        .completion()
+        .reasons()
+        .contains(&WebAssessmentIncompleteReason::PassiveResponseProjectionLimit));
+    assert!(runtime
+        .knowledge()
+        .evidence_for_predicate(&HttpEvidencePredicate::COOKIE_NAME.into_knowledge())
+        .is_empty());
+    let bootstrap = report.subjects()[0].bootstrap().unwrap();
+    assert_eq!(
+        bootstrap
+            .evidence()
+            .iter()
+            .filter(|evidence| evidence.predicate().namespace() == ASSESSMENT_PASSIVE_NAMESPACE)
+            .count(),
+        6
+    );
+    let observation = passive_observation_for_path(&runtime, "/cookie-limit");
+    assert_eq!(
+        observation.hsts().state(),
+        PassiveProjectionState::Malformed
+    );
+    assert_eq!(observation.xcto().state(), PassiveProjectionState::Missing);
+    assert_eq!(
+        observation.cookies().state(),
+        PassiveProjectionState::ProjectionIncomplete
+    );
+    assert_eq!(
+        observation.cookies().incomplete_reason(),
+        Some(PassiveProjectionIncompleteReason::TooManySetCookieOccurrences)
+    );
+    assert!(observation.cookies().metadata().is_none());
+    assert_no_secret(
+        &format!(
+            "{bootstrap:?}{:?}{:?}",
+            runtime
+                .knowledge()
+                .snapshot_for_subject(observation.subject()),
+            runtime.passive_ledger
+        ),
+        &["COOKIE_LIMIT_VALUE_"],
+    );
+}
+
+#[tokio::test]
+async fn head_and_truncated_get_keep_passive_observations() {
+    let head_server = serve(|request| {
+        let response = if request.path() == "/head-root" {
+            FixtureResponse::html("<html><head><link rel='stylesheet' href='/asset'></head></html>")
+        } else {
+            FixtureResponse::new("200 OK", Some("text/css"), "body{}")
+                .with_header("Strict-Transport-Security", "max-age=60")
+                .with_header("Set-Cookie", "asset=HEAD_COOKIE_VALUE; Secure")
+        };
+        FixtureReply::Response(response)
+    })
+    .await;
+    let mut head_runtime = WebAssessmentRuntime::builder(head_server.url("/head-root"))
+        .build()
+        .unwrap();
+    let head_report = head_runtime.analyze().await.unwrap();
+    let asset = head_report
+        .subjects()
+        .iter()
+        .find(|subject| subject.subject().url().path() == "/asset")
+        .unwrap();
+    assert_eq!(asset.subject().method(), WebAssessmentMethod::Head);
+    let asset_bootstrap = asset.bootstrap().unwrap();
+    assert!(asset_bootstrap
+        .evidence()
+        .iter()
+        .any(|evidence| evidence.predicate().namespace() == ASSESSMENT_PASSIVE_NAMESPACE));
+    assert!(!asset_bootstrap
+        .evidence()
+        .iter()
+        .any(|evidence| evidence.predicate().namespace() == "web.discovery"));
+    let head_observation = passive_observation_for_path(&head_runtime, "/asset");
+    assert_eq!(head_observation.method(), WebAssessmentMethod::Head);
+    assert_eq!(head_observation.status(), 200);
+    assert_eq!(
+        head_observation.media_class(),
+        CommittedPassiveMediaClass::Other
+    );
+    assert_eq!(
+        head_observation.hsts().state(),
+        PassiveProjectionState::Parsed
+    );
+    assert!(head_runtime
+        .knowledge()
+        .evidence_for_predicate(&HttpEvidencePredicate::COOKIE_NAME.into_knowledge())
+        .is_empty());
+    assert_no_secret(
+        &format!(
+            "{asset_bootstrap:?}{:?}",
+            head_runtime
+                .knowledge()
+                .snapshot_for_subject(head_observation.subject())
+        ),
+        &["HEAD_COOKIE_VALUE"],
+    );
+
+    let body = format!(
+        "<html><body>{}<a href='/must-not-be-discovered'>hidden</a></body></html>",
+        "x".repeat(256)
+    );
+    let truncated_server = serve(move |_| {
+        FixtureReply::Response(
+            FixtureResponse::html(body.clone()).with_header("X-Content-Type-Options", "nosniff"),
+        )
+    })
+    .await;
+    let limits = WebAssessmentLimits::default()
+        .with_max_response_body_bytes(32)
+        .unwrap();
+    let mut truncated_runtime = WebAssessmentRuntime::builder(truncated_server.url("/truncated"))
+        .limits(limits)
+        .build()
+        .unwrap();
+    let truncated_report = truncated_runtime.analyze().await.unwrap();
+    assert!(truncated_report
+        .completion()
+        .reasons()
+        .contains(&WebAssessmentIncompleteReason::ResponseBodyIncomplete));
+    assert_eq!(truncated_report.subjects().len(), 1);
+    let truncated_bootstrap = truncated_report.subjects()[0].bootstrap().unwrap();
+    let passive_end = truncated_bootstrap
+        .evidence()
+        .iter()
+        .rposition(|evidence| evidence.predicate().namespace() == ASSESSMENT_PASSIVE_NAMESPACE)
+        .unwrap();
+    let incomplete = truncated_bootstrap
+        .evidence()
+        .iter()
+        .position(|evidence| {
+            evidence.predicate()
+                == &WebDiscoveryEvidencePredicate::DOCUMENT_BODY_INCOMPLETE.into_knowledge()
+        })
+        .unwrap();
+    assert!(passive_end < incomplete);
+    let truncated_observation = passive_observation_for_path(&truncated_runtime, "/truncated");
+    assert_eq!(truncated_observation.method(), WebAssessmentMethod::Get);
+    assert_eq!(
+        truncated_observation.xcto().state(),
+        PassiveProjectionState::Parsed
+    );
+    assert!(truncated_observation.xcto().metadata().unwrap().nosniff);
+}
+
+#[test]
+fn stopped_observer_emits_passive_before_suppressing_complete_body_discovery() {
+    let url = Url::parse("http://127.0.0.1:7777/cancelled-passive").unwrap();
+    let cancelled = CancellationToken::new();
+    cancelled.cancel();
+    let (observer, _, entity) =
+        observer_fixture(url.clone(), WebAssessmentMethod::Get, cancelled, None);
+    let parents = TestObservationParents::new();
+    let projection = passive_response_projection_for_test(&[("x-content-type-options", "nosniff")]);
+    let evidence = observe_full_for_test(
+        &observer,
+        TestObservationEnvelope::exact(&entity, &url, HttpProbeMethod::Get),
+        200,
+        Some("text/html"),
+        Some(b"<a href='/cancelled-canary'>canary</a>"),
+        parents.refs(true),
+        &projection,
+    )
+    .unwrap();
+    assert!(!evidence.is_empty());
+    assert!(evidence
+        .iter()
+        .all(|item| item.predicate().namespace() == ASSESSMENT_PASSIVE_NAMESPACE));
+    assert!(evidence.iter().any(|item| {
+        item.predicate().name() == "x_content_type_options_nosniff"
+            && item.value() == &EvidenceValue::Boolean(true)
+    }));
+}
+
+#[tokio::test]
+async fn passive_ledger_replay_is_idempotent_and_rejects_divergence_atomically() {
+    let server = serve(|request| {
+        let body = if request.path() == "/replay" {
+            "<html><body><a href='/child'>child</a></body></html>"
+        } else {
+            "<html><body>done</body></html>"
+        };
+        FixtureReply::Response(
+            FixtureResponse::html(body)
+                .with_header("Strict-Transport-Security", "max-age=60")
+                .with_header("X-Content-Type-Options", "nosniff")
+                .with_header("Set-Cookie", "replay_cookie=value; HttpOnly; SameSite=None"),
+        )
+    })
+    .await;
+    let mut runtime = WebAssessmentRuntime::builder(server.url("/replay"))
+        .build()
+        .unwrap();
+    let report = runtime.analyze().await.unwrap();
+    let root = report
+        .subjects()
+        .iter()
+        .find(|subject| subject.subject().url().path() == "/replay")
+        .unwrap();
+    let expected_subject = root.subject().clone();
+    let bootstrap = root.bootstrap().unwrap();
+    let passive_start = bootstrap
+        .evidence()
+        .iter()
+        .position(|item| item.predicate().namespace() == ASSESSMENT_PASSIVE_NAMESPACE)
+        .unwrap();
+    let first_discovery = bootstrap
+        .evidence()
+        .iter()
+        .position(|item| item.predicate().namespace() == "web.discovery")
+        .unwrap();
+
+    let mut ledger = CommittedAssessmentPassiveLedger::default();
+    let committed = ledger
+        .ingest_receipt(bootstrap, runtime.knowledge(), &expected_subject)
+        .unwrap()
+        .expect("first exact receipt must commit");
+    assert_eq!(
+        committed.cookies().state(),
+        PassiveProjectionState::Nonconformant
+    );
+    let insecure_cookie = &committed.cookies().metadata().unwrap()[0];
+    assert_eq!(insecure_cookie.same_site, PassiveCookieSameSite::None);
+    assert!(!insecure_cookie.secure);
+    assert!(committed
+        .evidence_ids_for_property("cookie_same_site")
+        .is_some_and(|ids| ids.len() == 1));
+    let committed_ids = committed.evidence_ids().to_vec();
+    assert!(ledger
+        .ingest_receipt(bootstrap, runtime.knowledge(), &expected_subject)
+        .unwrap()
+        .is_none());
+    assert_eq!(ledger.receipt_count(), 1);
+    assert_eq!(ledger.observations().len(), 1);
+
+    let mut divergent_ids = bootstrap.evidence().to_vec();
+    for item in &mut divergent_ids {
+        if item.predicate().namespace() == ASSESSMENT_PASSIVE_NAMESPACE {
+            let fresh = fresh_evidence(item);
+            *item = fresh;
+        }
+    }
+    let (divergent_knowledge, divergent_receipt) =
+        receipt_with_committed_batch(bootstrap, divergent_ids);
+    assert!(ledger
+        .ingest_receipt(&divergent_receipt, &divergent_knowledge, &expected_subject,)
+        .is_err());
+    assert_eq!(ledger.receipt_count(), 1);
+    assert_eq!(ledger.observations().len(), 1);
+    assert_eq!(ledger.observations()[0].evidence_ids(), committed_ids);
+
+    let mut reordered = bootstrap.evidence().to_vec();
+    reordered.swap(passive_start, passive_start + 1);
+    assert_passive_replay_rejected_atomically(bootstrap, reordered, &expected_subject);
+
+    let mut interleaved = bootstrap.evidence().to_vec();
+    interleaved.swap(passive_start + 1, first_discovery);
+    assert_passive_replay_rejected_atomically(bootstrap, interleaved, &expected_subject);
+
+    let mut wrong_source = bootstrap.evidence().to_vec();
+    let original = &wrong_source[passive_start];
+    let replacement = rebuild_evidence(
+        original,
+        original.kind().clone(),
+        original.value().clone(),
+        source_with_method(original, "injected-source"),
+        original.origin().clone(),
+    );
+    wrong_source[passive_start] = replacement;
+    assert_passive_replay_rejected_atomically(bootstrap, wrong_source, &expected_subject);
+
+    let mut cross_case = bootstrap.evidence().to_vec();
+    let original = &cross_case[passive_start];
+    let source = EvidenceSource::new(original.source().component(), original.source().method())
+        .unwrap()
+        .with_correlation_id("case:cross-case")
+        .unwrap();
+    let replacement = rebuild_evidence(
+        original,
+        original.kind().clone(),
+        original.value().clone(),
+        source,
+        original.origin().clone(),
+    );
+    cross_case[passive_start] = replacement;
+    assert_passive_replay_rejected_atomically(bootstrap, cross_case, &expected_subject);
+
+    let mut wrong_parents = bootstrap.evidence().to_vec();
+    let original = &wrong_parents[passive_start];
+    let derivation = original.origin().derivation().unwrap();
+    let replacement_derivation = EvidenceDerivation::new(
+        derivation.parents()[1..].iter().cloned(),
+        DerivationAlgorithm::new(
+            derivation.algorithm().name(),
+            derivation.algorithm().version(),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let replacement = rebuild_evidence(
+        original,
+        original.kind().clone(),
+        original.value().clone(),
+        original.source().clone(),
+        EvidenceOrigin::Derived(replacement_derivation),
+    );
+    wrong_parents[passive_start] = replacement;
+    assert_passive_replay_rejected_atomically(bootstrap, wrong_parents, &expected_subject);
+
+    let mut wrong_reason = bootstrap.evidence().to_vec();
+    let original = &wrong_reason[passive_start];
+    let replacement = rebuild_evidence(
+        original,
+        original.kind().clone(),
+        EvidenceValue::TextList(vec![
+            "projection_incomplete".to_owned(),
+            "too_many_cookie_attributes".to_owned(),
+        ]),
+        original.source().clone(),
+        original.origin().clone(),
+    );
+    wrong_reason[passive_start] = replacement;
+    wrong_reason.drain(passive_start + 1..passive_start + 5);
+    assert_passive_replay_rejected_atomically(bootstrap, wrong_reason, &expected_subject);
+
+    let mut impossible_xcto = bootstrap.evidence().to_vec();
+    let xcto = impossible_xcto
+        .iter()
+        .position(|item| item.predicate().name() == "x_content_type_options_nosniff")
+        .unwrap();
+    let original = &impossible_xcto[xcto];
+    let replacement = rebuild_evidence(
+        original,
+        original.kind().clone(),
+        EvidenceValue::Boolean(false),
+        original.source().clone(),
+        original.origin().clone(),
+    );
+    impossible_xcto[xcto] = replacement;
+    assert_passive_replay_rejected_atomically(bootstrap, impossible_xcto, &expected_subject);
+
+    let mut unknown_passive = bootstrap.evidence().to_vec();
+    let original = &unknown_passive[passive_start];
+    let replacement = Evidence::with_id_at(
+        original.id().clone(),
+        original.subject().clone(),
+        original.kind().clone(),
+        KnowledgePredicate::new(ASSESSMENT_PASSIVE_NAMESPACE, "unknown_property").unwrap(),
+        original.value().clone(),
+        original.source().clone(),
+        original.reliability(),
+        original.observed_at_ms(),
+    )
+    .derived_from(original.origin().derivation().unwrap().clone());
+    unknown_passive[passive_start] = replacement;
+    assert_passive_replay_rejected_atomically(bootstrap, unknown_passive, &expected_subject);
+
+    let mut unknown_namespace = bootstrap.evidence().to_vec();
+    unknown_namespace.push(Evidence::new(
+        bootstrap.case().subject().clone(),
+        EvidenceKind::Custom("injected".to_owned()),
+        KnowledgePredicate::new("web.injected", "unknown").unwrap(),
+        EvidenceValue::Boolean(true),
+        EvidenceSource::new(HTTP_EVIDENCE_EXECUTOR_ID, "injected")
+            .unwrap()
+            .with_correlation_id(BOOTSTRAP_CASE_ID)
+            .unwrap(),
+        ConfidenceScore::from_percent(100).unwrap(),
+    ));
+    assert_passive_replay_rejected_atomically(bootstrap, unknown_namespace, &expected_subject);
+
+    let mut wrong_method = expected_subject.clone();
+    wrong_method.method = WebAssessmentMethod::Head;
+    let mut rejected = CommittedAssessmentPassiveLedger::default();
+    assert!(rejected
+        .ingest_receipt(bootstrap, runtime.knowledge(), &wrong_method)
+        .is_err());
+    assert!(rejected.observations().is_empty());
+    assert_eq!(rejected.receipt_count(), 0);
+
+    let mut wrong_url = expected_subject;
+    wrong_url.url = server.url("/wrong-subject");
+    assert!(rejected
+        .ingest_receipt(bootstrap, runtime.knowledge(), &wrong_url)
+        .is_err());
+    assert!(rejected.observations().is_empty());
+    assert_eq!(rejected.receipt_count(), 0);
+
+    assert!(rejected
+        .ingest_receipt(bootstrap, &KnowledgeBase::new(), root.subject())
+        .is_err());
+    assert!(rejected.observations().is_empty());
+    assert_eq!(rejected.receipt_count(), 0);
+}
+
+#[tokio::test]
+async fn passive_replay_accepts_the_maximum_authorized_subject_identity() {
+    let server =
+        serve(|_| FixtureReply::Response(FixtureResponse::html("<html>maximum</html>"))).await;
+    let origin_bytes = server.origin.as_str().len();
+    let path = format!(
+        "/{}",
+        "a".repeat(HARD_MAX_WEB_ASSESSMENT_CANONICAL_URL_BYTES - origin_bytes)
+    );
+    let target = server.url(&path);
+    assert_eq!(
+        target.as_str().len(),
+        HARD_MAX_WEB_ASSESSMENT_CANONICAL_URL_BYTES
+    );
+    let mut runtime = WebAssessmentRuntime::builder(target.clone())
+        .build()
+        .unwrap();
+    let report = runtime.analyze().await.unwrap();
+    let subject = report.subjects()[0].subject();
+    assert_eq!(subject.url(), &target);
+    let observation = passive_observation_for_path(&runtime, &path);
+    assert_eq!(
+        observation.subject().as_str().len(),
+        "endpoint:".len() + target.as_str().len()
+    );
 }
 
 #[test]

@@ -6,9 +6,13 @@
 
 use std::{
     collections::{BTreeMap, BTreeSet},
+    fmt,
     sync::Arc,
     time::Duration,
 };
+
+#[cfg(feature = "reporting")]
+use std::time::SystemTime;
 
 use thiserror::Error;
 use tokio_util::sync::CancellationToken;
@@ -23,9 +27,22 @@ use super::{
     assessment_defense::{
         AssessmentDefenseBodyCoverage, AssessmentDefenseController, ASSESSMENT_DEFENSE_NAMESPACE,
     },
+    assessment_item::{AssessmentItem, AssessmentItemSet},
+    assessment_passive::{
+        project_assessment_passive_response, project_passive_assessment_items,
+        AssessmentPassiveProjectionContext, CommittedAssessmentPassiveLedger,
+        PassiveAssessmentProjectionIncompleteness, ASSESSMENT_PASSIVE_NAMESPACE,
+    },
     SharedWebRuntimeAuthority, StandardWebDecisionAssessmentFailureParts,
     StandardWebDecisionAssessmentParts, BOOTSTRAP_ACTION_ID, BOOTSTRAP_CASE_ID,
     BOOTSTRAP_HYPOTHESIS_ID,
+};
+#[cfg(feature = "reporting")]
+use super::{
+    assessment_report::{
+        AssessmentRunReport, AssessmentRunReportError, CompletedWebAssessmentTruth,
+    },
+    scan_profile::ScanProfileV1,
 };
 use crate::{
     http_evidence::{CompleteHttpResponseObservation, CompleteHttpResponseObserver},
@@ -467,7 +484,7 @@ pub enum WebAssessmentSubjectOrigin {
 }
 
 /// One canonical query-free assessment subject.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct WebAssessmentSubject {
     url: Url,
     method: WebAssessmentMethod,
@@ -475,6 +492,20 @@ pub struct WebAssessmentSubject {
     origin: WebAssessmentSubjectOrigin,
     query_parameter_names: Vec<String>,
     evidence_ids: Vec<EvidenceId>,
+}
+
+impl fmt::Debug for WebAssessmentSubject {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("WebAssessmentSubject")
+            .field("url", &"<redacted>")
+            .field("method", &self.method)
+            .field("depth", &self.depth)
+            .field("origin", &self.origin)
+            .field("query_parameter_count", &self.query_parameter_names.len())
+            .field("evidence_count", &self.evidence_ids.len())
+            .finish()
+    }
 }
 
 impl WebAssessmentSubject {
@@ -505,7 +536,7 @@ impl WebAssessmentSubject {
 }
 
 /// One canonical same-origin form observation.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct WebAssessmentForm {
     document_url: Url,
     action: Url,
@@ -513,6 +544,20 @@ pub struct WebAssessmentForm {
     query_parameter_names: Vec<String>,
     control_names: Vec<String>,
     evidence_ids: Vec<EvidenceId>,
+}
+
+impl fmt::Debug for WebAssessmentForm {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("WebAssessmentForm")
+            .field("document_url", &"<redacted>")
+            .field("action", &"<redacted>")
+            .field("method", &self.method)
+            .field("query_parameter_count", &self.query_parameter_names.len())
+            .field("control_count", &self.control_names.len())
+            .field("evidence_count", &self.evidence_ids.len())
+            .finish()
+    }
 }
 
 impl WebAssessmentForm {
@@ -543,7 +588,6 @@ impl WebAssessmentForm {
 }
 
 /// One subject's standard decision audit without duplicated global accounting.
-#[derive(Debug)]
 pub struct WebAssessmentSubjectReport {
     subject: WebAssessmentSubject,
     executed: bool,
@@ -553,6 +597,25 @@ pub struct WebAssessmentSubjectReport {
     terminal: Option<DecisionLoopCommand>,
     limit_exceeded: Option<RuntimeLimitExceeded>,
     execution_failure: Option<DecisionExecutionFailureReceipt>,
+}
+
+impl fmt::Debug for WebAssessmentSubjectReport {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("WebAssessmentSubjectReport")
+            .field("subject", &self.subject)
+            .field("executed", &self.executed)
+            .field("bootstrap_committed", &self.bootstrap.is_some())
+            .field("turn_count", &self.turns.len())
+            .field(
+                "unverified_evidence_committed",
+                &self.unverified_evidence.is_some(),
+            )
+            .field("terminal_present", &self.terminal.is_some())
+            .field("limit_exceeded", &self.limit_exceeded.is_some())
+            .field("execution_failed", &self.execution_failure.is_some())
+            .finish()
+    }
 }
 
 impl WebAssessmentSubjectReport {
@@ -706,6 +769,8 @@ pub enum WebAssessmentIncompleteReason {
     SubjectExecutionIncomplete,
     HostCancellation,
     SemanticExtractionLimit,
+    PassiveResponseProjectionLimit,
+    AssessmentSubjectIdentityUnavailable,
 }
 
 /// Whether every retained subject and eligible document completed within bounds.
@@ -738,7 +803,7 @@ pub enum WebAssessmentDefenseBodyCoverage {
 
 /// One committed confidence-graded defense observation. A fingerprint is a
 /// product hint only, never a categorical WAF-presence claim.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct WebAssessmentDefenseObservation {
     subject: venom_core::EntityId,
     case_id: String,
@@ -751,6 +816,25 @@ pub struct WebAssessmentDefenseObservation {
     body_coverage: WebAssessmentDefenseBodyCoverage,
     input_limit_reached: bool,
     evidence_ids: Vec<EvidenceId>,
+}
+
+impl fmt::Debug for WebAssessmentDefenseObservation {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("WebAssessmentDefenseObservation")
+            .field("subject", &"<redacted>")
+            .field("case_id", &"<redacted>")
+            .field("stage", &self.stage)
+            .field("status", &self.status)
+            .field("posture", &self.posture)
+            .field("challenge_observed", &self.challenge_observed)
+            .field("rate_limit_observed", &self.rate_limit_observed)
+            .field("fingerprint_hint", &self.fingerprint_hint)
+            .field("body_coverage", &self.body_coverage)
+            .field("input_limit_reached", &self.input_limit_reached)
+            .field("evidence_count", &self.evidence_ids.len())
+            .finish()
+    }
 }
 
 impl WebAssessmentDefenseObservation {
@@ -794,7 +878,7 @@ impl WebAssessmentDefenseObservation {
 }
 
 /// Positive-only matched control/candidate defense delta.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct WebAssessmentDefenseTransition {
     case_id: String,
     candidate_block_status_appeared: bool,
@@ -802,6 +886,29 @@ pub struct WebAssessmentDefenseTransition {
     candidate_fingerprint_hint: Option<(DefenseProduct, FingerprintConfidence)>,
     control_evidence_ids: Vec<EvidenceId>,
     candidate_evidence_ids: Vec<EvidenceId>,
+}
+
+impl fmt::Debug for WebAssessmentDefenseTransition {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("WebAssessmentDefenseTransition")
+            .field("case_id", &"<redacted>")
+            .field(
+                "candidate_block_status_appeared",
+                &self.candidate_block_status_appeared,
+            )
+            .field("newly_rate_limited", &self.newly_rate_limited)
+            .field(
+                "candidate_fingerprint_hint",
+                &self.candidate_fingerprint_hint,
+            )
+            .field("control_evidence_count", &self.control_evidence_ids.len())
+            .field(
+                "candidate_evidence_count",
+                &self.candidate_evidence_ids.len(),
+            )
+            .finish()
+    }
 }
 
 impl WebAssessmentDefenseTransition {
@@ -828,11 +935,22 @@ impl WebAssessmentDefenseTransition {
 }
 
 /// Exact policy-authorized plan and its read-only defense-aware subsequence.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct WebAssessmentDefenseShadowPlan {
     policy_authorized: AttackPlan,
     shadow: AttackPlan,
     delta: ShadowPlanDelta,
+}
+
+impl fmt::Debug for WebAssessmentDefenseShadowPlan {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("WebAssessmentDefenseShadowPlan")
+            .field("policy_authorized", &"<redacted-plan>")
+            .field("shadow", &"<redacted-plan>")
+            .field("delta", &"<redacted-delta>")
+            .finish()
+    }
 }
 
 impl WebAssessmentDefenseShadowPlan {
@@ -855,12 +973,24 @@ pub enum WebAssessmentDefenseMode {
 }
 
 /// Bounded defense audit composed from exact committed subject receipts.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct WebAssessmentDefenseAudit {
     mode: WebAssessmentDefenseMode,
     observations: Vec<WebAssessmentDefenseObservation>,
     transitions: Vec<WebAssessmentDefenseTransition>,
     shadow_plans: Vec<WebAssessmentDefenseShadowPlan>,
+}
+
+impl fmt::Debug for WebAssessmentDefenseAudit {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("WebAssessmentDefenseAudit")
+            .field("mode", &self.mode)
+            .field("observation_count", &self.observations.len())
+            .field("transition_count", &self.transitions.len())
+            .field("shadow_plan_count", &self.shadow_plans.len())
+            .finish()
+    }
 }
 
 impl WebAssessmentDefenseAudit {
@@ -961,18 +1091,66 @@ impl WebAssessmentDefenseAudit {
 }
 
 /// Complete origin-assessment audit with exactly one global transport view.
-#[derive(Debug)]
 pub struct WebAssessmentRunReport {
+    #[cfg(feature = "reporting")]
+    run_started_at: SystemTime,
+    authorized_root: WebAssessmentSubject,
+    limits: WebAssessmentLimits,
     subjects: Vec<WebAssessmentSubjectReport>,
     forms: Vec<WebAssessmentForm>,
     semantics: SemanticExtractionResult,
     defense: WebAssessmentDefenseAudit,
+    assessment_items: AssessmentItemSet,
+    assessment_projection_incompleteness: PassiveAssessmentProjectionIncompleteness,
     completion: WebAssessmentCompletion,
     usage: WebAssessmentUsage,
     transport: TransportDispatchAudit,
 }
 
+impl fmt::Debug for WebAssessmentRunReport {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut debug = formatter.debug_struct("WebAssessmentRunReport");
+        #[cfg(feature = "reporting")]
+        debug.field("run_started_at", &"<runtime-owned>");
+        debug
+            .field("authorized_root", &"<redacted>")
+            .field("limits", &self.limits)
+            .field("subject_count", &self.subjects.len())
+            .field("form_count", &self.forms.len())
+            .field("semantics", &"<redacted>")
+            .field("defense", &self.defense)
+            .field("assessment_items", &self.assessment_items)
+            .field(
+                "unprojected_subject_count",
+                &self
+                    .assessment_projection_incompleteness
+                    .non_root_observations(),
+            )
+            .field(
+                "unprojected_condition_count",
+                &self
+                    .assessment_projection_incompleteness
+                    .non_root_conditions(),
+            )
+            .field("completion", &self.completion)
+            .field("usage", &self.usage)
+            .field("transport", &"<redacted-audit>")
+            .finish()
+    }
+}
+
 impl WebAssessmentRunReport {
+    /// Returns the exact query-free resource that started this assessment.
+    ///
+    /// Product adapters must bind any separately constructed run envelope to
+    /// this identity instead of relying on same-origin equivalence.
+    pub fn authorized_root(&self) -> &WebAssessmentSubject {
+        &self.authorized_root
+    }
+    /// Returns the exact checked limits that governed this assessment.
+    pub const fn limits(&self) -> WebAssessmentLimits {
+        self.limits
+    }
     pub fn subjects(&self) -> &[WebAssessmentSubjectReport] {
         &self.subjects
     }
@@ -987,6 +1165,21 @@ impl WebAssessmentRunReport {
     pub fn defense(&self) -> &WebAssessmentDefenseAudit {
         &self.defense
     }
+    /// Returns claim-safe items derived only from committed assessment truth.
+    pub fn assessment_items(&self) -> &[AssessmentItem] {
+        self.assessment_items.items()
+    }
+    /// Returns the number of discovered subjects whose reportable passive
+    /// conditions lacked a host-approved stable product identity.
+    pub const fn unprojected_assessment_subjects(&self) -> u16 {
+        self.assessment_projection_incompleteness
+            .non_root_observations()
+    }
+    /// Returns reportable passive conditions omitted at that identity boundary.
+    pub const fn unprojected_assessment_conditions(&self) -> u16 {
+        self.assessment_projection_incompleteness
+            .non_root_conditions()
+    }
     pub fn completion(&self) -> &WebAssessmentCompletion {
         &self.completion
     }
@@ -996,10 +1189,33 @@ impl WebAssessmentRunReport {
     pub fn transport(&self) -> &TransportDispatchAudit {
         &self.transport
     }
+
+    /// Consumes the origin audit into the crate-owned typed product envelope.
+    ///
+    /// This remains crate-private so only the reporting layer can mint the run
+    /// envelope from this report's runtime-owned timing and accounting. A
+    /// public caller cannot pair this audit with an independently constructed
+    /// generic [`venom_core::RunReport`]. The existing `decision-scan/v1`
+    /// report remains a separate contract.
+    #[cfg(feature = "reporting")]
+    pub(crate) fn into_assessment_report(
+        self,
+        profile: ScanProfileV1,
+    ) -> Result<AssessmentRunReport, AssessmentRunReportError> {
+        let truth = CompletedWebAssessmentTruth::new(
+            self.run_started_at,
+            &self.authorized_root,
+            self.limits,
+            self.usage,
+            &self.completion,
+            self.defense.mode(),
+            profile,
+        )?;
+        AssessmentRunReport::from_completed_truth(self.assessment_items, truth)
+    }
 }
 
 /// Durable outer audit retained when a started assessment fails.
-#[derive(Debug)]
 pub struct WebAssessmentFailureReceipt {
     completed_subjects: Vec<WebAssessmentSubjectReport>,
     pending_subjects: Vec<WebAssessmentSubject>,
@@ -1010,8 +1226,35 @@ pub struct WebAssessmentFailureReceipt {
     incomplete_reasons: BTreeSet<WebAssessmentIncompleteReason>,
     inventory_consistent: bool,
     unrepresented_ledger_subjects: usize,
+    committed_passive_observations: usize,
     usage: WebAssessmentUsage,
     transport: TransportDispatchAudit,
+}
+
+impl fmt::Debug for WebAssessmentFailureReceipt {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("WebAssessmentFailureReceipt")
+            .field("completed_subject_count", &self.completed_subjects.len())
+            .field("pending_subject_count", &self.pending_subjects.len())
+            .field("form_count", &self.forms.len())
+            .field("semantics", &"<redacted>")
+            .field("defense", &self.defense)
+            .field("current_subject", &self.current_subject)
+            .field("incomplete_reasons", &self.incomplete_reasons)
+            .field("inventory_consistent", &self.inventory_consistent)
+            .field(
+                "unrepresented_ledger_subjects",
+                &self.unrepresented_ledger_subjects,
+            )
+            .field(
+                "committed_passive_observations",
+                &self.committed_passive_observations,
+            )
+            .field("usage", &self.usage)
+            .field("transport", &"<redacted-audit>")
+            .finish()
+    }
 }
 
 impl WebAssessmentFailureReceipt {
@@ -1053,6 +1296,14 @@ impl WebAssessmentFailureReceipt {
     pub const fn unrepresented_ledger_subjects(&self) -> usize {
         self.unrepresented_ledger_subjects
     }
+    /// Returns the bounded passive observations retained before failure.
+    ///
+    /// Started failures intentionally do not project user-facing assessment
+    /// items: execution is incomplete, so callers receive this count and the
+    /// typed failure inventory instead of a partial finding collection.
+    pub const fn committed_passive_observations(&self) -> usize {
+        self.committed_passive_observations
+    }
     pub const fn usage(&self) -> WebAssessmentUsage {
         self.usage
     }
@@ -1062,7 +1313,7 @@ impl WebAssessmentFailureReceipt {
 }
 
 /// Construction and execution failures for [`WebAssessmentRuntime`].
-#[derive(Debug, Error)]
+#[derive(Error)]
 #[non_exhaustive]
 pub enum WebAssessmentRuntimeError {
     #[error("web assessment runtime has already started")]
@@ -1079,7 +1330,7 @@ pub enum WebAssessmentRuntimeError {
     RootRetentionLimit,
     #[error(transparent)]
     Standard(#[from] StandardWebDecisionRuntimeError),
-    #[error("web assessment failed after it started: {source}")]
+    #[error("web assessment failed after it started")]
     RunFailed {
         receipt: Box<WebAssessmentFailureReceipt>,
         #[source]
@@ -1089,6 +1340,39 @@ pub enum WebAssessmentRuntimeError {
     ProjectionInvariant {
         receipt: Box<WebAssessmentFailureReceipt>,
     },
+}
+
+impl fmt::Debug for WebAssessmentRuntimeError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::AlreadyStarted => {
+                formatter.write_str("WebAssessmentRuntimeError::AlreadyStarted")
+            },
+            Self::Limits(_) => formatter.write_str("WebAssessmentRuntimeError::Limits(<redacted>)"),
+            Self::SemanticLimits(_) => {
+                formatter.write_str("WebAssessmentRuntimeError::SemanticLimits(<redacted>)")
+            },
+            Self::Http(_) => formatter.write_str("WebAssessmentRuntimeError::Http(<redacted>)"),
+            Self::InvalidCanonicalTarget => {
+                formatter.write_str("WebAssessmentRuntimeError::InvalidCanonicalTarget")
+            },
+            Self::RootRetentionLimit => {
+                formatter.write_str("WebAssessmentRuntimeError::RootRetentionLimit")
+            },
+            Self::Standard(_) => {
+                formatter.write_str("WebAssessmentRuntimeError::Standard(<redacted>)")
+            },
+            Self::RunFailed { receipt, .. } => formatter
+                .debug_struct("WebAssessmentRuntimeError::RunFailed")
+                .field("receipt", receipt)
+                .field("source", &"<redacted>")
+                .finish(),
+            Self::ProjectionInvariant { receipt } => formatter
+                .debug_struct("WebAssessmentRuntimeError::ProjectionInvariant")
+                .field("receipt", receipt)
+                .finish(),
+        }
+    }
 }
 
 impl WebAssessmentRuntimeError {
@@ -1190,6 +1474,7 @@ impl WebAssessmentRuntimeBuilder {
             } else {
                 WebAssessmentDefenseMode::ObservationOnly
             }),
+            passive_ledger: CommittedAssessmentPassiveLedger::default(),
         })
     }
 }
@@ -1207,6 +1492,7 @@ pub struct WebAssessmentRuntime {
     started: bool,
     defense_enforcement: bool,
     defense_audit: WebAssessmentDefenseAudit,
+    passive_ledger: CommittedAssessmentPassiveLedger,
 }
 
 struct FailedSubjectBoundary {
@@ -1299,6 +1585,8 @@ impl WebAssessmentRuntime {
             return Err(WebAssessmentRuntimeError::AlreadyStarted);
         }
         self.started = true;
+        #[cfg(feature = "reporting")]
+        let run_started_at = SystemTime::now();
         let timing = self.authority.start();
         let started_at = timing.started_at();
         let mut reasons = self.initial_reasons.clone();
@@ -1481,6 +1769,25 @@ impl WebAssessmentRuntime {
                 match projection {
                     Ok(projection) => {
                         if self
+                            .replay_passive_bootstrap(
+                                subject_report.bootstrap(),
+                                &subject,
+                                &mut reasons,
+                            )
+                            .is_err()
+                        {
+                            return Err(WebAssessmentRuntimeError::ProjectionInvariant {
+                                receipt: Box::new(self.failure_receipt(
+                                    &known_subjects,
+                                    subject_reports,
+                                    forms,
+                                    subject_report,
+                                    failed_reasons(&reasons),
+                                    started_at,
+                                )),
+                            });
+                        }
+                        if self
                             .semantic_evidence
                             .commit_bootstrap(
                                 subject_report.bootstrap(),
@@ -1657,6 +1964,37 @@ impl WebAssessmentRuntime {
                 });
             },
         }
+        let assessment_projection = match project_passive_assessment_items(
+            &self.passive_ledger,
+            self.authority.knowledge(),
+            &self.root,
+        ) {
+            Ok(projection) => projection,
+            Err(_) => {
+                let current_subject = subject_reports
+                    .pop()
+                    .unwrap_or_else(|| WebAssessmentSubjectReport::pending(self.root.clone()));
+                let completed_subjects = subject_reports
+                    .into_iter()
+                    .filter(WebAssessmentSubjectReport::was_executed)
+                    .collect();
+                return Err(WebAssessmentRuntimeError::ProjectionInvariant {
+                    receipt: Box::new(self.failure_receipt(
+                        &known_subjects,
+                        completed_subjects,
+                        forms,
+                        current_subject,
+                        failed_reasons(&reasons),
+                        started_at,
+                    )),
+                });
+            },
+        };
+        let (assessment_items, assessment_projection_incompleteness) =
+            assessment_projection.into_parts();
+        if assessment_projection_incompleteness.is_incomplete() {
+            reasons.insert(WebAssessmentIncompleteReason::AssessmentSubjectIdentityUnavailable);
+        }
         let semantics = self.extract_semantics_and_refresh_limits(&mut reasons, started_at);
         let usage = self.usage(
             subject_reports.len(),
@@ -1673,10 +2011,16 @@ impl WebAssessmentRuntime {
             WebAssessmentCompletion::Incomplete { reasons }
         };
         Ok(WebAssessmentRunReport {
+            #[cfg(feature = "reporting")]
+            run_started_at,
+            authorized_root: self.root.clone(),
+            limits: self.limits,
             subjects: subject_reports,
             forms,
             semantics,
             defense: self.defense_audit.clone(),
+            assessment_items,
+            assessment_projection_incompleteness,
             completion,
             usage,
             transport: self.authority.request_accounting().dispatch_audit(),
@@ -1714,6 +2058,25 @@ impl WebAssessmentRuntime {
             {
                 return Err(());
             }
+        }
+        let bootstrap_subjects: BTreeSet<_> = subject_reports
+            .iter()
+            .filter_map(|report| {
+                report
+                    .bootstrap()
+                    .map(|receipt| receipt.case().subject().clone())
+            })
+            .collect();
+        let passive_subjects: BTreeSet<_> = self
+            .passive_ledger
+            .observations()
+            .iter()
+            .map(|observation| observation.subject().clone())
+            .collect();
+        if bootstrap_subjects.len() != self.passive_ledger.observations().len()
+            || bootstrap_subjects != passive_subjects
+        {
+            return Err(());
         }
         let form_identities: BTreeSet<_> = forms
             .iter()
@@ -1819,6 +2182,26 @@ impl WebAssessmentRuntime {
         }
         match projection {
             Ok(projection) => {
+                if self
+                    .replay_passive_bootstrap(
+                        current_report.bootstrap(),
+                        &current_subject,
+                        &mut incomplete_reasons,
+                    )
+                    .is_err()
+                {
+                    let receipt = self.failure_receipt(
+                        known_subjects,
+                        completed_subjects,
+                        forms,
+                        current_report,
+                        incomplete_reasons,
+                        started_at,
+                    );
+                    return WebAssessmentRuntimeError::ProjectionInvariant {
+                        receipt: Box::new(receipt),
+                    };
+                }
                 if self
                     .semantic_evidence
                     .commit_bootstrap(
@@ -2013,6 +2396,7 @@ impl WebAssessmentRuntime {
             incomplete_reasons,
             inventory_consistent,
             unrepresented_ledger_subjects,
+            committed_passive_observations: self.passive_ledger.observations().len(),
             usage,
             transport: self.authority.request_accounting().dispatch_audit(),
         }
@@ -2055,6 +2439,26 @@ impl WebAssessmentRuntime {
             reasons.insert(WebAssessmentIncompleteReason::WallTimeLimit);
         }
         semantics
+    }
+
+    fn replay_passive_bootstrap(
+        &mut self,
+        receipt: Option<&DecisionEvidenceReceipt>,
+        expected_subject: &WebAssessmentSubject,
+        reasons: &mut BTreeSet<WebAssessmentIncompleteReason>,
+    ) -> Result<(), ()> {
+        let Some(receipt) = receipt else {
+            return Ok(());
+        };
+        let observation = self.passive_ledger.ingest_receipt(
+            receipt,
+            self.authority.knowledge(),
+            expected_subject,
+        )?;
+        if observation.is_some_and(|observation| observation.projection_incomplete()) {
+            reasons.insert(WebAssessmentIncompleteReason::PassiveResponseProjectionLimit);
+        }
+        Ok(())
     }
 }
 
@@ -2655,53 +3059,69 @@ impl CompleteHttpResponseObserver for AssessmentDiscoveryObserver {
         {
             return Ok(Vec::new());
         }
+        // Passive metadata is value-free and body-independent. Emit it before
+        // every HEAD, incomplete-body, non-HTML, or discovery eligibility exit
+        // so missing body evidence can never erase observed response metadata.
+        let mut evidence = project_assessment_passive_response(
+            observation.passive_response_projection(),
+            AssessmentPassiveProjectionContext {
+                subject: observation.subject(),
+                case_id: observation.case_id(),
+                executor_id: HTTP_EVIDENCE_EXECUTOR_ID,
+                reliability: observation.reliability(),
+                parents: passive_projection_parents(&observation)?,
+            },
+        )?;
         if self.expected_method == HttpProbeMethod::Head {
-            return Ok(Vec::new());
+            return Ok(evidence);
         }
         let Some(body) = observation.complete_body() else {
-            return Ok(vec![derived_observation(
+            evidence.push(derived_observation(
                 &observation,
                 WebDiscoveryEvidencePredicate::DOCUMENT_BODY_INCOMPLETE,
                 EvidenceValue::Boolean(true),
                 "document-body-incomplete",
                 incomplete_projection_parents(&observation)?,
-            )?]);
+            )?);
+            return Ok(evidence);
         };
         if self.stopped() {
-            return Ok(Vec::new());
+            return Ok(evidence);
         }
         if observation.media_type() != Some("text/html")
             || !matches!(observation.status(), 200 | 206)
         {
-            return Ok(Vec::new());
+            return Ok(evidence);
         }
         let parents = complete_projection_parents(&observation)?;
         if observation.status() == 206 {
-            return Ok(vec![derived_observation(
+            evidence.push(derived_observation(
                 &observation,
                 WebDiscoveryEvidencePredicate::DOCUMENT_PARTIAL_REPRESENTATION,
                 EvidenceValue::Boolean(true),
                 "document-partial-representation",
                 parents,
-            )?]);
+            )?);
+            return Ok(evidence);
         }
         let Ok(html) = std::str::from_utf8(body) else {
-            return Ok(vec![derived_observation(
+            evidence.push(derived_observation(
                 &observation,
                 WebDiscoveryEvidencePredicate::DOCUMENT_INVALID_UTF8,
                 EvidenceValue::Boolean(true),
                 "document-invalid-utf8",
                 parents,
-            )?]);
+            )?);
+            return Ok(evidence);
         };
         let parsed = parse_document(observation.requested_url(), html, self.limits);
         if self.stopped() {
-            return Ok(Vec::new());
+            return Ok(evidence);
         }
         let admitted = self.admit_document(parsed);
-        let evidence = self.evidence_for_document(&observation, admitted, parents)?;
+        evidence.extend(self.evidence_for_document(&observation, admitted, parents)?);
         if self.stopped() {
-            return Ok(Vec::new());
+            evidence.retain(|item| item.predicate().namespace() == ASSESSMENT_PASSIVE_NAMESPACE);
         }
         Ok(evidence)
     }
@@ -2762,6 +3182,35 @@ fn complete_projection_parents(
         (
             observation.response_body_digest_evidence_id(),
             "response-body-digest-evidence",
+        ),
+    ]
+    .into_iter()
+    .map(|(id, invariant)| {
+        id.cloned()
+            .ok_or(HttpEvidenceError::AssessmentObserverInvariant { invariant })
+    })
+    .collect()
+}
+
+fn passive_projection_parents(
+    observation: &CompleteHttpResponseObservation<'_>,
+) -> Result<Vec<EvidenceId>, HttpEvidenceError> {
+    [
+        (
+            observation.request_method_evidence_id(),
+            "request-method-evidence",
+        ),
+        (
+            observation.request_url_evidence_id(),
+            "request-url-evidence",
+        ),
+        (
+            observation.response_status_evidence_id(),
+            "response-status-evidence",
+        ),
+        (
+            observation.response_final_url_evidence_id(),
+            "response-final-url-evidence",
         ),
     ]
     .into_iter()

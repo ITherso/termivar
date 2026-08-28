@@ -48,6 +48,9 @@ use crate::{
 mod api_visibility;
 mod assessment_defense;
 mod assessment_item;
+mod assessment_passive;
+#[cfg(feature = "reporting")]
+mod assessment_report;
 mod authority;
 mod scan_profile;
 mod web_assessment;
@@ -74,6 +77,13 @@ pub use assessment_item::{
     AssessmentOutcomeReference, AssessmentRemediation, AssessmentSubjectReference,
     AssessmentVerifierBasis, ASSESSMENT_ITEM_SCHEMA, MAX_ASSESSMENT_CAPABILITY_ID_BYTES,
     MAX_ASSESSMENT_DISPLAY_BYTES, MAX_ASSESSMENT_ITEM_EVIDENCE_REFERENCES,
+    MAX_ASSESSMENT_ITEM_SET_ITEMS,
+};
+
+#[cfg(feature = "reporting")]
+pub use assessment_report::{
+    AssessmentRunReport, AssessmentRunReportError, ASSESSMENT_RUN_REPORT_SCHEMA,
+    MAX_ASSESSMENT_RUN_ITEMS,
 };
 
 #[cfg(feature = "scanning")]
