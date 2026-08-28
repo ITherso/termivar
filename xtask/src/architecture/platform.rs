@@ -1119,14 +1119,14 @@ fn cli_feature_violations(
             ));
         }
     }
-    let expected_scanner_features = BTreeSet::from(["scanning".to_owned()]);
+    let expected_scanner_features = BTreeSet::from(["reporting".to_owned(), "scanning".to_owned()]);
     match dependencies.get("venom-scanner") {
         Some(contract)
             if !contract.optional
                 && !contract.uses_default_features
                 && contract.features == expected_scanner_features => {},
         Some(contract) => violations.push(format!(
-            "venom-cli must use non-optional venom-scanner with default-features=false and exactly [scanning], found {contract:?}"
+            "venom-cli must use non-optional venom-scanner with default-features=false and exactly [reporting, scanning], found {contract:?}"
         )),
         None => violations.push("venom-cli dependency `venom-scanner` is missing".to_owned()),
     }
@@ -1848,6 +1848,7 @@ const EXACT_REPORTING_REEXPORTS: &[&str] = &[
     "ReportFormat",
     "ReportGenerator",
 ];
+const EXACT_ASSESSMENT_REPORTING_REEXPORTS: &[&str] = &["ASSESSMENT_REPORT_DOCUMENT_SCHEMA"];
 
 fn reporting_reexport_violations(source: &str) -> Result<Vec<String>, syn::Error> {
     let syntax = syn::parse_file(source)?;
@@ -1859,6 +1860,7 @@ fn reporting_reexport_violations(source: &str) -> Result<Vec<String>, syn::Error
     collect_recursive_type_aliases(&syntax.items, 0, &mut all_type_aliases);
     let mut aliases: BTreeSet<String> = EXACT_REPORTING_REEXPORTS
         .iter()
+        .chain(EXACT_ASSESSMENT_REPORTING_REEXPORTS)
         .map(|name| (*name).to_owned())
         .chain(["reporting".to_owned()])
         .collect();
@@ -1917,6 +1919,10 @@ fn reporting_reexport_violations(source: &str) -> Result<Vec<String>, syn::Error
         .iter()
         .map(|name| (*name).to_owned())
         .collect();
+    let expected_assessment: BTreeSet<_> = EXACT_ASSESSMENT_REPORTING_REEXPORTS
+        .iter()
+        .map(|name| (*name).to_owned())
+        .collect();
     for (record, related) in all_type_aliases.iter().zip(related_type_aliases) {
         if related {
             violations.push(format!(
@@ -1925,42 +1931,54 @@ fn reporting_reexport_violations(source: &str) -> Result<Vec<String>, syn::Error
             ));
         }
     }
-    match reporting_uses.as_slice() {
-        [record] => {
-            let item = record.item;
-            if record.depth != 0 || !is_public(&item.vis) {
-                violations.push(
-                    "venom-scanner reporting facade cannot pass through private aliases or inline modules"
-                        .to_owned(),
-                );
-            }
-            if item.leading_colon.is_some()
-                || use_tree_root_ident(&item.tree).as_deref() != Some("reporting")
-            {
-                violations.push(
-                    "venom-scanner reporting re-exports must use the exact direct `reporting::{...}` path"
-                        .to_owned(),
-                );
-            }
-            let actual_cfg = cfg_predicates_from_attributes(&item.attrs);
-            let expected_cfg = "feature=\"reporting\"".to_owned();
-            if actual_cfg != [expected_cfg.clone()] {
+    let mut base_count = 0_usize;
+    let mut assessment_count = 0_usize;
+    for record in &reporting_uses {
+        let item = record.item;
+        if record.depth != 0 || !is_public(&item.vis) {
+            violations.push(
+                "venom-scanner reporting facade cannot pass through private aliases or inline modules"
+                    .to_owned(),
+            );
+        }
+        if item.leading_colon.is_some()
+            || use_tree_root_ident(&item.tree).as_deref() != Some("reporting")
+        {
+            violations.push(
+                "venom-scanner reporting re-exports must use the exact direct `reporting::{...}` path"
+                    .to_owned(),
+            );
+        }
+        let mut actual = BTreeSet::new();
+        collect_use_names(&item.tree, &mut actual);
+        let actual_cfg = cfg_predicates_from_attributes(&item.attrs);
+        if actual == expected {
+            base_count += 1;
+            let expected_cfg = ["feature=\"reporting\"".to_owned()];
+            if actual_cfg != expected_cfg {
                 violations.push(format!(
-                    "venom-scanner reporting re-exports must use exact cfg({expected_cfg}), found {actual_cfg:?}"
+                    "venom-scanner base reporting re-exports must use exact cfg(feature=\"reporting\"), found {actual_cfg:?}"
                 ));
             }
-            let mut actual = BTreeSet::new();
-            collect_use_names(&item.tree, &mut actual);
-            if actual != expected {
+        } else if actual == expected_assessment {
+            assessment_count += 1;
+            let expected_cfg = ["all(feature=\"reporting\",feature=\"scanning\")".to_owned()];
+            if actual_cfg != expected_cfg {
                 violations.push(format!(
-                    "venom-scanner reporting re-exports must be exactly {expected:?}, found {actual:?}"
+                    "venom-scanner assessment reporting re-export must use exact cfg(all(feature=\"reporting\",feature=\"scanning\")), found {actual_cfg:?}"
                 ));
             }
-        },
-        _ => violations.push(format!(
-            "venom-scanner must declare exactly one public `reporting` re-export with symbols {expected:?}; found {}",
+        } else {
+            violations.push(format!(
+                "venom-scanner reporting re-exports must be exactly base {expected:?} or assessment {expected_assessment:?}, found {actual:?}"
+            ));
+        }
+    }
+    if base_count != 1 || assessment_count != 1 || reporting_uses.len() != 2 {
+        violations.push(format!(
+            "venom-scanner must declare exactly one public base reporting re-export and one public assessment-schema re-export; found base={base_count}, assessment={assessment_count}, total={}",
             reporting_uses.len()
-        )),
+        ));
     }
     Ok(violations)
 }
@@ -1983,7 +2001,7 @@ fn collect_reporting_cfg_item_violations(
                 };
             if !exact_root_item {
                 violations.push(format!(
-                    "venom-scanner cfg(reporting) facade item `{}` at inline-module depth {depth} is forbidden; only the exact root module and five-symbol re-export are allowed",
+                    "venom-scanner cfg(reporting) facade item `{}` at inline-module depth {depth} is forbidden; only the exact root module, five-symbol base re-export, and assessment-schema re-export are allowed",
                     reporting_item_label(item)
                 ));
             }
@@ -2090,16 +2108,24 @@ fn is_exact_reporting_reexport(item: &syn::ItemUse) -> bool {
         .iter()
         .map(|name| (*name).to_owned())
         .collect();
+    let expected_assessment: BTreeSet<_> = EXACT_ASSESSMENT_REPORTING_REEXPORTS
+        .iter()
+        .map(|name| (*name).to_owned())
+        .collect();
+    let cfg = cfg_predicates_from_attributes(&item.attrs);
+    let contract_is_exact = (names == expected && cfg == ["feature=\"reporting\"".to_owned()])
+        || (names == expected_assessment
+            && cfg == ["all(feature=\"reporting\",feature=\"scanning\")".to_owned()]);
     is_public(&item.vis)
         && item.leading_colon.is_none()
         && use_tree_root_ident(&item.tree).as_deref() == Some("reporting")
-        && names == expected
+        && contract_is_exact
         && non_doc_attributes.len() == 1
         && non_doc_attributes[0].path().is_ident("cfg")
-        && cfg_predicate(non_doc_attributes[0]).as_deref() == Some("feature=\"reporting\"")
 }
 
 const WHOLE_CRATE_REPORTING_IDENTIFIERS: &[&str] = &[
+    "ASSESSMENT_REPORT_DOCUMENT_SCHEMA",
     "MAX_RENDERED_REPORT_BYTES",
     "REPORT_DOCUMENT_SCHEMA",
     "ReportError",
@@ -2137,7 +2163,9 @@ fn reporting_whole_crate_closure_violations(
         let source = fs::read_to_string(&path)?;
         sources.push((relative, source));
     }
-    Ok(reporting_cross_source_set_violations(&sources)?)
+    Ok(reporting_cross_source_set_violations_with_inventory(
+        &sources, true,
+    )?)
 }
 
 fn collect_scanner_rust_sources(
@@ -2163,8 +2191,16 @@ fn reporting_cross_file_source_violations(
     reporting_cross_source_set_violations(&[(relative_path.to_owned(), source.to_owned())])
 }
 
+#[cfg(test)]
 fn reporting_cross_source_set_violations(
     sources: &[(String, String)],
+) -> Result<Vec<String>, syn::Error> {
+    reporting_cross_source_set_violations_with_inventory(sources, false)
+}
+
+fn reporting_cross_source_set_violations_with_inventory(
+    sources: &[(String, String)],
+    enforce_internal_reporting_cfg_inventory: bool,
 ) -> Result<Vec<String>, syn::Error> {
     let parsed: Vec<_> = sources
         .iter()
@@ -2173,12 +2209,16 @@ fn reporting_cross_source_set_violations(
     let run_report_aliases = collect_run_report_aliases(&parsed);
     let mut violations = Vec::new();
     for (relative_path, syntax) in parsed {
+        if relative_path == "web_runtime/web_assessment_tests.rs" {
+            continue;
+        }
         let imported_macro_bindings = collect_production_use_bindings(&syntax);
         let mut visitor = ReportingCrossFileVisitor {
             relative_path,
             run_report_aliases: &run_report_aliases,
             imported_macro_bindings: &imported_macro_bindings,
             public_trait_depth: 0,
+            internal_reporting_cfg_count: 0,
             violations: BTreeSet::new(),
         };
         if relative_path == "lib.rs" {
@@ -2194,6 +2234,22 @@ fn reporting_cross_source_set_violations(
             }
         } else {
             visitor.visit_file(&syntax);
+        }
+        if enforce_internal_reporting_cfg_inventory {
+            let expected = match relative_path.as_str() {
+                "web_runtime.rs" => Some(2),
+                "web_runtime/assessment_item.rs" => Some(7),
+                "web_runtime/web_assessment.rs" => Some(7),
+                _ => None,
+            };
+            if let Some(expected) = expected {
+                if visitor.internal_reporting_cfg_count != expected {
+                    visitor.violations.insert(format!(
+                        "venom-scanner reporting authority must remain in reporting.rs and the exact lib.rs facade; {relative_path} must retain its exact report-only cfg inventory of {expected} sites, found {}",
+                        visitor.internal_reporting_cfg_count,
+                    ));
+                }
+            }
         }
         violations.extend(visitor.violations);
     }
@@ -2439,6 +2495,7 @@ struct ReportingCrossFileVisitor<'a> {
     run_report_aliases: &'a BTreeSet<String>,
     imported_macro_bindings: &'a BTreeMap<String, BTreeSet<String>>,
     public_trait_depth: usize,
+    internal_reporting_cfg_count: usize,
     violations: BTreeSet<String>,
 }
 
@@ -2453,11 +2510,27 @@ impl ReportingCrossFileVisitor<'_> {
 
 impl<'ast> Visit<'ast> for ReportingCrossFileVisitor<'_> {
     fn visit_item_fn(&mut self, item: &'ast syn::ItemFn) {
-        if is_public(&item.vis)
+        let externally_callable = is_public(&item.vis) || is_pub_crate(&item.vis);
+        let test_only = cfg_predicates_from_attributes(&item.attrs)
+            .iter()
+            .any(|predicate| predicate == "test");
+        if externally_callable
+            && !test_only
             && signature_exposes_run_report_consumer(&item.sig, self.run_report_aliases)
         {
+            let authority = if is_public(&item.vis) {
+                "public function"
+            } else {
+                "crate-callable function"
+            };
             self.insert(format_args!(
-                "public function `{}` that consumes or exports a callable over RunReport",
+                "{authority} `{}` that consumes or exports a callable over RunReport",
+                item.sig.ident
+            ));
+        }
+        if is_public(&item.vis) && signature_mentions_type(&item.sig, "AssessmentRunReport") {
+            self.insert(format_args!(
+                "public function `{}` that exposes AssessmentRunReport outside reporting.rs",
                 item.sig.ident
             ));
         }
@@ -2469,12 +2542,37 @@ impl<'ast> Visit<'ast> for ReportingCrossFileVisitor<'_> {
             let ImplItem::Fn(method) = member else {
                 continue;
             };
-            let publicly_callable = item.trait_.is_some() || is_public(&method.vis);
-            if publicly_callable
+            if is_assessment_run_report_bridge_candidate(item, method)
+                && !is_exact_assessment_run_report_bridge(self.relative_path, item, method)
+            {
+                self.insert(
+                    "WebAssessmentRunReport::into_assessment_report must remain the exact crate-private consuming truth bridge",
+                );
+            }
+            let externally_callable =
+                item.trait_.is_some() || is_public(&method.vis) || is_pub_crate(&method.vis);
+            let test_only = cfg_predicates_from_attributes(&method.attrs)
+                .iter()
+                .any(|predicate| predicate == "test");
+            if externally_callable
+                && !test_only
                 && signature_exposes_run_report_consumer(&method.sig, self.run_report_aliases)
             {
+                let authority = if item.trait_.is_some() || is_public(&method.vis) {
+                    "publicly callable method"
+                } else {
+                    "crate-callable method"
+                };
                 self.insert(format_args!(
-                    "publicly callable method `{}` that consumes or exports a callable over RunReport",
+                    "{authority} `{}` that consumes or exports a callable over RunReport",
+                    method.sig.ident
+                ));
+            }
+            if (item.trait_.is_some() || is_public(&method.vis))
+                && signature_mentions_type(&method.sig, "AssessmentRunReport")
+            {
+                self.insert(format_args!(
+                    "publicly callable method `{}` that exposes AssessmentRunReport outside reporting.rs",
                     method.sig.ident
                 ));
             }
@@ -2597,6 +2695,19 @@ impl<'ast> Visit<'ast> for ReportingCrossFileVisitor<'_> {
     }
 
     fn visit_attribute(&mut self, attribute: &'ast Attribute) {
+        let predicate = cfg_predicate(attribute);
+        let internal_predicate = predicate.as_deref() == Some("feature=\"reporting\"")
+            || (self.relative_path == "web_runtime/assessment_item.rs"
+                && predicate.as_deref() == Some("any(feature=\"reporting\",test)"));
+        let internal_report_cfg = matches!(
+            self.relative_path,
+            "web_runtime.rs" | "web_runtime/assessment_item.rs" | "web_runtime/web_assessment.rs"
+        ) && attribute.path().is_ident("cfg")
+            && internal_predicate;
+        if internal_report_cfg {
+            self.internal_reporting_cfg_count += 1;
+            return;
+        }
         if attributes_mention_reporting_cfg(std::slice::from_ref(attribute)) {
             self.insert("a cfg/cfg_attr predicate that enables `reporting`");
         }
@@ -2658,6 +2769,226 @@ impl<'ast> Visit<'ast> for ReportingCrossFileVisitor<'_> {
         }
         syn::visit::visit_macro(self, item);
     }
+}
+
+fn signature_mentions_type(signature: &syn::Signature, expected: &str) -> bool {
+    struct NamedTypeVisitor<'a> {
+        expected: &'a str,
+        found: bool,
+    }
+    impl<'ast> Visit<'ast> for NamedTypeVisitor<'_> {
+        fn visit_path(&mut self, path: &'ast SynPath) {
+            self.found |= path
+                .segments
+                .iter()
+                .any(|segment| semantic_ident_name(&segment.ident) == self.expected);
+            if !self.found {
+                syn::visit::visit_path(self, path);
+            }
+        }
+    }
+    let mut visitor = NamedTypeVisitor {
+        expected,
+        found: false,
+    };
+    visitor.visit_signature(signature);
+    visitor.found
+}
+
+fn has_exact_reporting_cfg(attributes: &[Attribute]) -> bool {
+    attributes.iter().all(|attribute| {
+        attribute.path().is_ident("doc")
+            || (attribute.path().is_ident("cfg")
+                && cfg_predicate(attribute).as_deref() == Some("feature=\"reporting\""))
+    }) && attributes
+        .iter()
+        .filter(|attribute| attribute.path().is_ident("cfg"))
+        .count()
+        == 1
+}
+
+fn is_exact_assessment_run_report_bridge(
+    relative_path: &str,
+    item_impl: &syn::ItemImpl,
+    method: &syn::ImplItemFn,
+) -> bool {
+    if relative_path != "web_runtime/web_assessment.rs"
+        || !is_assessment_run_report_bridge_candidate(item_impl, method)
+    {
+        return false;
+    }
+    is_exact_assessment_run_report_bridge_method(relative_path, method)
+}
+
+fn is_exact_assessment_run_report_bridge_method(
+    relative_path: &str,
+    method: &syn::ImplItemFn,
+) -> bool {
+    if relative_path != "web_runtime/web_assessment.rs"
+        || method.sig.ident != "into_assessment_report"
+        || !is_pub_crate(&method.vis)
+        || !has_exact_reporting_cfg(&method.attrs)
+        || method.sig.inputs.len() != 2
+    {
+        return false;
+    }
+    let mut inputs = method.sig.inputs.iter();
+    let receiver_is_consuming = matches!(inputs.next(), Some(syn::FnArg::Receiver(receiver))
+        if receiver.reference.is_none()
+            && receiver.mutability.is_none()
+            && receiver.colon_token.is_none());
+    let profile_is_exact = matches!(inputs.next(), Some(syn::FnArg::Typed(argument))
+        if simple_type_path(&argument.ty, "ScanProfileV1").is_some());
+    receiver_is_consuming
+        && profile_is_exact
+        && assessment_bridge_return_is_exact(&method.sig.output)
+        && assessment_bridge_body_is_exact(&method.block)
+}
+
+fn is_web_assessment_run_report_impl(item_impl: &syn::ItemImpl) -> bool {
+    item_impl.trait_.is_none()
+        && matches!(item_impl.self_ty.as_ref(), syn::Type::Path(path)
+            if path.qself.is_none()
+                && path.path.segments.last().is_some_and(|segment|
+                    semantic_ident_name(&segment.ident) == "WebAssessmentRunReport"))
+}
+
+fn is_assessment_run_report_bridge_candidate(
+    item_impl: &syn::ItemImpl,
+    method: &syn::ImplItemFn,
+) -> bool {
+    is_web_assessment_run_report_impl(item_impl) && method.sig.ident == "into_assessment_report"
+}
+
+fn is_pub_crate(visibility: &syn::Visibility) -> bool {
+    matches!(visibility, syn::Visibility::Restricted(restricted)
+        if restricted.in_token.is_none() && restricted.path.is_ident("crate"))
+}
+
+fn assessment_bridge_return_is_exact(output: &syn::ReturnType) -> bool {
+    let syn::ReturnType::Type(_, item_type) = output else {
+        return false;
+    };
+    let syn::Type::Path(path) = item_type.as_ref() else {
+        return false;
+    };
+    let Some(segment) = path.path.segments.last() else {
+        return false;
+    };
+    let syn::PathArguments::AngleBracketed(arguments) = &segment.arguments else {
+        return false;
+    };
+    let types = arguments
+        .args
+        .iter()
+        .filter_map(|argument| match argument {
+            syn::GenericArgument::Type(item_type) => Some(item_type),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    segment.ident == "Result"
+        && arguments.args.len() == 2
+        && types.len() == 2
+        && simple_type_path(types[0], "AssessmentRunReport").is_some()
+        && simple_type_path(types[1], "AssessmentRunReportError").is_some()
+}
+
+fn assessment_bridge_body_is_exact(block: &syn::Block) -> bool {
+    if block.stmts.len() != 2 {
+        return false;
+    }
+
+    let syn::Stmt::Local(truth_local) = &block.stmts[0] else {
+        return false;
+    };
+    if !matches!(&truth_local.pat, syn::Pat::Ident(pattern)
+        if pattern.ident == "truth"
+            && pattern.by_ref.is_none()
+            && pattern.mutability.is_none()
+            && pattern.subpat.is_none())
+        || truth_local
+            .init
+            .as_ref()
+            .is_none_or(|init| init.diverge.is_some())
+    {
+        return false;
+    }
+    let Some(truth_init) = truth_local.init.as_ref() else {
+        return false;
+    };
+    let syn::Expr::Try(tried) = truth_init.expr.as_ref() else {
+        return false;
+    };
+    let syn::Expr::Call(truth_call) = tried.expr.as_ref() else {
+        return false;
+    };
+    if reporting_expression_path_key(truth_call.func.as_ref()).as_deref()
+        != Some("CompletedWebAssessmentTruth::new")
+        || truth_call.args.len() != 7
+    {
+        return false;
+    }
+    let mut truth_arguments = truth_call.args.iter();
+    let truth_is_exact = truth_arguments
+        .next()
+        .is_some_and(|argument| assessment_bridge_self_field(argument, "run_started_at"))
+        && truth_arguments.next().is_some_and(|argument| {
+            assessment_bridge_borrowed_self_field(argument, "authorized_root")
+        })
+        && truth_arguments
+            .next()
+            .is_some_and(|argument| assessment_bridge_self_field(argument, "limits"))
+        && truth_arguments
+            .next()
+            .is_some_and(|argument| assessment_bridge_self_field(argument, "usage"))
+        && truth_arguments
+            .next()
+            .is_some_and(|argument| assessment_bridge_borrowed_self_field(argument, "completion"))
+        && truth_arguments
+            .next()
+            .is_some_and(assessment_bridge_exact_defense_mode)
+        && truth_arguments.next().is_some_and(|argument| {
+            reporting_expression_path_key(argument).as_deref() == Some("profile")
+        });
+    if !truth_is_exact {
+        return false;
+    }
+
+    let syn::Stmt::Expr(syn::Expr::Call(report_call), None) = &block.stmts[1] else {
+        return false;
+    };
+    if reporting_expression_path_key(report_call.func.as_ref()).as_deref()
+        != Some("AssessmentRunReport::from_completed_truth")
+        || report_call.args.len() != 2
+    {
+        return false;
+    }
+    let mut arguments = report_call.args.iter();
+    arguments
+        .next()
+        .is_some_and(|argument| assessment_bridge_self_field(argument, "assessment_items"))
+        && reporting_expression_path_key(arguments.next().expect("checked length")).as_deref()
+            == Some("truth")
+}
+
+fn assessment_bridge_self_field(expression: &syn::Expr, expected: &str) -> bool {
+    matches!(expression, syn::Expr::Field(field)
+        if reporting_expression_path_key(field.base.as_ref()).as_deref() == Some("self")
+            && matches!(&field.member, syn::Member::Named(member)
+                if semantic_ident_name(member) == expected))
+}
+
+fn assessment_bridge_borrowed_self_field(expression: &syn::Expr, expected: &str) -> bool {
+    matches!(expression, syn::Expr::Reference(reference)
+        if reference.mutability.is_none()
+            && assessment_bridge_self_field(reference.expr.as_ref(), expected))
+}
+
+fn assessment_bridge_exact_defense_mode(expression: &syn::Expr) -> bool {
+    matches!(expression, syn::Expr::MethodCall(call)
+        if call.method == "mode"
+            && call.args.is_empty()
+            && assessment_bridge_self_field(call.receiver.as_ref(), "defense"))
 }
 
 fn reporting_macro_token_identifiers(tokens: &TokenStream) -> BTreeSet<String> {
@@ -2808,6 +3139,7 @@ fn use_tree_root_ident(tree: &UseTree) -> Option<String> {
 }
 
 const EXACT_REPORTING_PUBLIC_ITEMS: &[(&str, &str)] = &[
+    ("ASSESSMENT_REPORT_DOCUMENT_SCHEMA", "const"),
     ("MAX_RENDERED_REPORT_BYTES", "const"),
     ("REPORT_DOCUMENT_SCHEMA", "const"),
     ("ReportError", "enum"),
@@ -2817,7 +3149,15 @@ const EXACT_REPORTING_PUBLIC_ITEMS: &[(&str, &str)] = &[
 
 const EXACT_REPORTING_INHERENT_METHODS: &[(&str, &[&str])] = &[
     ("ReportFormat", &["as_str", "extension", "media_type"]),
-    ("ReportGenerator", &["available_formats", "generate"]),
+    (
+        "ReportGenerator",
+        &[
+            "available_formats",
+            "compose_assessment",
+            "generate",
+            "generate_assessment",
+        ],
+    ),
 ];
 
 const EXACT_REPORTING_PUBLIC_TRAIT_IMPLS: &[(&str, &str)] =
@@ -2831,6 +3171,64 @@ type ReportingDocumentShape = (
 );
 
 const EXACT_REPORTING_DOCUMENT_STRUCTS: &[ReportingDocumentShape] = &[
+    (
+        "AssessmentDocument",
+        &["a"],
+        &[
+            ("schema", "&'static str"),
+            ("source_schema", "&'a str"),
+            ("run_schema", "&'a str"),
+            ("profile_schema", "&'a str"),
+            ("profile", "&'a str"),
+            ("status", "&'static str"),
+            ("subject_count", "u64"),
+            ("item_count", "u64"),
+            ("items", "Vec<AssessmentItemDocument<'a>>"),
+        ],
+    ),
+    (
+        "AssessmentItemDocument",
+        &["a"],
+        &[
+            ("schema", "&'a str"),
+            ("capability_id", "&'a str"),
+            ("subject_reference", "String"),
+            ("title", "&'a str"),
+            ("disposition", "&'static str"),
+            ("claim_basis", "&'static str"),
+            ("severity", "Option<&'static str>"),
+            ("confidence_ppm", "u32"),
+            ("fingerprint", "&'a str"),
+            ("evidence_count", "u64"),
+            ("redacted_summary", "&'a str"),
+            ("category", "&'a str"),
+            ("cwe", "Option<&'a str>"),
+            ("remediation", "AssessmentRemediationDocument<'a>"),
+            ("evidence_references", "Vec<String>"),
+            ("control_evidence_references", "Vec<String>"),
+            ("candidate_evidence_references", "Vec<String>"),
+            ("case_reference", "Option<String>"),
+            ("outcome_reference", "Option<String>"),
+            ("verification_stage", "Option<&'static str>"),
+        ],
+    ),
+    (
+        "AssessmentBasisLinkageDocument",
+        &[],
+        &[
+            ("evidence_references", "Vec<String>"),
+            ("control_evidence_references", "Vec<String>"),
+            ("candidate_evidence_references", "Vec<String>"),
+            ("case_reference", "Option<String>"),
+            ("outcome_reference", "Option<String>"),
+            ("verification_stage", "Option<&'static str>"),
+        ],
+    ),
+    (
+        "AssessmentRemediationDocument",
+        &["a"],
+        &[("id", "&'a str"), ("summary", "&'a str")],
+    ),
     (
         "ReportDocument",
         &["a"],
@@ -2911,9 +3309,56 @@ fn reporting_document_contract_violations(source: &str) -> Result<Vec<String>, s
             continue;
         };
         *counts.entry(name.clone()).or_default() += 1;
+        let assessment_document = matches!(
+            name.as_str(),
+            "AssessmentDocument"
+                | "AssessmentItemDocument"
+                | "AssessmentBasisLinkageDocument"
+                | "AssessmentRemediationDocument"
+        );
+        let expected_derives: &[&str] = if name == "AssessmentBasisLinkageDocument" {
+            &[]
+        } else {
+            &["Serialize"]
+        };
+        let non_cfg_attributes: Vec<_> = item
+            .attrs
+            .iter()
+            .filter(|attribute| {
+                !matches!(
+                    reporting_syn_path_key(attribute.path()).as_str(),
+                    "cfg" | "cfg_attr"
+                )
+            })
+            .cloned()
+            .collect();
+        if assessment_document {
+            let cfg_attributes: Vec<_> = item
+                .attrs
+                .iter()
+                .filter(|attribute| {
+                    matches!(
+                        reporting_syn_path_key(attribute.path()).as_str(),
+                        "cfg" | "cfg_attr"
+                    )
+                })
+                .collect();
+            if cfg_attributes.len() != 1
+                || !cfg_attributes[0].path().is_ident("cfg")
+                || cfg_predicate(cfg_attributes[0]).as_deref() != Some("feature=\"scanning\"")
+            {
+                violations.push(format!(
+                    "reporting private assessment document type `{name}` must have exactly cfg(feature = \"scanning\")"
+                ));
+            }
+        }
         validate_reporting_attributes(
-            &item.attrs,
-            &["Serialize"],
+            if assessment_document {
+                &non_cfg_attributes
+            } else {
+                &item.attrs
+            },
+            expected_derives,
             false,
             &format!("private document type `{name}`"),
             &mut violations,
@@ -3059,13 +3504,22 @@ fn reporting_public_api_violations(source: &str) -> Result<Vec<String>, syn::Err
         match item {
             Item::Const(item) if is_public(&item.vis) => {
                 record_reporting_public_item(&mut actual_items, item.ident.to_string(), "const");
-                validate_reporting_attributes(
-                    &item.attrs,
-                    &[],
-                    false,
-                    &format!("public constant `{}`", item.ident),
-                    &mut violations,
-                );
+                if item.ident == "ASSESSMENT_REPORT_DOCUMENT_SCHEMA" {
+                    if !reporting_scanning_cfg_is_exact(&item.attrs) {
+                        violations.push(
+                            "reporting public constant `ASSESSMENT_REPORT_DOCUMENT_SCHEMA` must have exactly cfg(feature = \"scanning\") plus documentation"
+                                .to_owned(),
+                        );
+                    }
+                } else {
+                    validate_reporting_attributes(
+                        &item.attrs,
+                        &[],
+                        false,
+                        &format!("public constant `{}`", item.ident),
+                        &mut violations,
+                    );
+                }
                 validate_reporting_public_constant(item, &mut violations);
             },
             Item::Enum(item) if is_public(&item.vis) => {
@@ -3145,11 +3599,25 @@ fn reporting_public_api_violations(source: &str) -> Result<Vec<String>, syn::Err
                 for implementation_item in &item.items {
                     match implementation_item {
                         ImplItem::Fn(method) if is_public(&method.vis) => {
-                            reject_reporting_cfg_attributes(
-                                &method.attrs,
-                                &format!("public method `{owner}::{}`", method.sig.ident),
-                                &mut violations,
-                            );
+                            if owner == "ReportGenerator"
+                                && matches!(
+                                    method.sig.ident.to_string().as_str(),
+                                    "compose_assessment" | "generate_assessment"
+                                )
+                            {
+                                if !reporting_scanning_cfg_is_exact(&method.attrs) {
+                                    violations.push(format!(
+                                        "reporting public method `ReportGenerator::{}` must have exactly cfg(feature = \"scanning\") plus documentation",
+                                        method.sig.ident
+                                    ));
+                                }
+                            } else {
+                                reject_reporting_cfg_attributes(
+                                    &method.attrs,
+                                    &format!("public method `{owner}::{}`", method.sig.ident),
+                                    &mut violations,
+                                );
+                            }
                             validate_reporting_public_method_body(
                                 &owner,
                                 &method.sig.ident.to_string(),
@@ -3416,8 +3884,34 @@ fn reject_reporting_cfg_attributes(
     }
 }
 
+fn reporting_scanning_cfg_is_exact(attributes: &[Attribute]) -> bool {
+    attributes.iter().all(|attribute| {
+        attribute.path().is_ident("doc")
+            || (attribute.path().is_ident("cfg")
+                && cfg_predicate(attribute).as_deref() == Some("feature=\"scanning\""))
+    }) && attributes
+        .iter()
+        .filter(|attribute| attribute.path().is_ident("cfg"))
+        .count()
+        == 1
+}
+
 fn validate_reporting_public_constant(item: &syn::ItemConst, violations: &mut Vec<String>) {
     match item.ident.to_string().as_str() {
+        "ASSESSMENT_REPORT_DOCUMENT_SCHEMA"
+            if simple_type_path(&item.ty, "str").is_none()
+                && matches!(
+                    item.ty.as_ref(),
+                    syn::Type::Reference(reference)
+                        if reference.mutability.is_none()
+                            && reference.lifetime.is_none()
+                            && simple_type_path(&reference.elem, "str").is_some()
+                )
+                && matches!(
+                    item.expr.as_ref(),
+                    syn::Expr::Lit(expression)
+                        if matches!(&expression.lit, syn::Lit::Str(value) if value.value() == "venom-rendered-assessment/v1")
+                ) => {},
         "REPORT_DOCUMENT_SCHEMA"
             if simple_type_path(&item.ty, "str").is_none()
                 && matches!(
@@ -3435,6 +3929,10 @@ fn validate_reporting_public_constant(item: &syn::ItemConst, violations: &mut Ve
         "MAX_RENDERED_REPORT_BYTES"
             if simple_type_path(&item.ty, "usize").is_some()
                 && evaluate_reporting_usize(&item.expr) == Some(16 * 1_024 * 1_024) => {},
+        "ASSESSMENT_REPORT_DOCUMENT_SCHEMA" => violations.push(
+            "reporting `ASSESSMENT_REPORT_DOCUMENT_SCHEMA` must remain `venom-rendered-assessment/v1` with type `&str`"
+                .to_owned(),
+        ),
         "REPORT_DOCUMENT_SCHEMA" => violations.push(
             "reporting `REPORT_DOCUMENT_SCHEMA` must remain `venom-rendered-run/v1` with type `&str`"
                 .to_owned(),
@@ -3582,6 +4080,30 @@ fn reporting_signature_matches(owner: &str, method: &str, signature: &syn::Signa
                 )
                 && return_type_is_report_result(&signature.output)
         },
+        ("ReportGenerator", "compose_assessment") => {
+            signature.constness.is_none()
+                && signature.inputs.len() == 2
+                && matches!(signature.inputs.first(), Some(syn::FnArg::Typed(argument))
+                    if simple_type_path(&argument.ty, "WebAssessmentRunReport").is_some())
+                && matches!(signature.inputs.iter().nth(1), Some(syn::FnArg::Typed(argument))
+                    if simple_type_path(&argument.ty, "ScanProfileV1").is_some())
+                && assessment_bridge_return_is_exact(&signature.output)
+        },
+        ("ReportGenerator", "generate_assessment") => {
+            signature.constness.is_none()
+                && signature.inputs.len() == 2
+                && matches!(
+                    signature.inputs.first(),
+                    Some(syn::FnArg::Typed(argument))
+                        if immutable_elided_reference_to(&argument.ty, "AssessmentRunReport")
+                )
+                && matches!(
+                    signature.inputs.iter().nth(1),
+                    Some(syn::FnArg::Typed(argument))
+                        if simple_type_path(&argument.ty, "ReportFormat").is_some()
+                )
+                && return_type_is_report_result(&signature.output)
+        },
         _ => false,
     }
 }
@@ -3629,6 +4151,12 @@ fn validate_reporting_public_method_body(
             )
         },
         ("ReportGenerator", "generate") => reporting_generate_body_matches(block),
+        ("ReportGenerator", "compose_assessment") => {
+            reporting_compose_assessment_body_matches(block)
+        },
+        ("ReportGenerator", "generate_assessment") => {
+            reporting_generate_assessment_body_matches(block)
+        },
         _ => true,
     };
     if !exact {
@@ -3636,6 +4164,27 @@ fn validate_reporting_public_method_body(
             "reporting public method `{owner}::{method}` must retain its exact bounded implementation contract"
         ));
     }
+}
+
+fn reporting_compose_assessment_body_matches(block: &syn::Block) -> bool {
+    let Some(syn::Expr::MethodCall(call)) = reporting_only_expression(block) else {
+        return false;
+    };
+    call.method == "into_assessment_report"
+        && call.turbofish.is_none()
+        && reporting_expression_path_key(call.receiver.as_ref()).as_deref() == Some("report")
+        && call.args.len() == 1
+        && call.args.first().is_some_and(|argument| {
+            reporting_expression_path_key(argument).as_deref() == Some("profile")
+        })
+}
+
+fn reporting_generate_assessment_body_matches(block: &syn::Block) -> bool {
+    reporting_projection_generate_body_matches(
+        block,
+        "AssessmentDocument",
+        "render_assessment_with_limit",
+    )
 }
 
 fn reporting_only_expression(block: &syn::Block) -> Option<&syn::Expr> {
@@ -3673,6 +4222,14 @@ fn reporting_format_mapping_matches(block: &syn::Block, expected: &[(&str, &str)
 }
 
 fn reporting_generate_body_matches(block: &syn::Block) -> bool {
+    reporting_projection_generate_body_matches(block, "ReportDocument", "render_with_limit")
+}
+
+fn reporting_projection_generate_body_matches(
+    block: &syn::Block,
+    document_type: &str,
+    render_function: &str,
+) -> bool {
     let [syn::Stmt::Local(local), syn::Stmt::Expr(render, None)] = block.stmts.as_slice() else {
         return false;
     };
@@ -3695,7 +4252,7 @@ fn reporting_generate_body_matches(block: &syn::Block) -> bool {
                             syn::Expr::Call(call)
                                 if reporting_expression_path_is(
                                     &call.func,
-                                    &["ReportDocument", "from_report"],
+                                    &[document_type, "from_report"],
                                 ) && call.args.len() == 1
                                     && call.args.first().is_some_and(|argument| {
                                         reporting_expression_path_is(argument, &["report"])
@@ -3707,7 +4264,7 @@ fn reporting_generate_body_matches(block: &syn::Block) -> bool {
         && matches!(
             render,
             syn::Expr::Call(call)
-                if reporting_expression_path_is(&call.func, &["render_with_limit"])
+                if reporting_expression_path_is(&call.func, &[render_function])
                     && call.args.len() == 3
                     && matches!(
                         call.args.first(),
@@ -4984,8 +5541,8 @@ struct ReportingSourceVisitor {
     inside_test_module: usize,
 }
 
-const EXACT_REPORTING_PRODUCTION_TOKEN_BYTES: usize = 27_143;
-const EXACT_REPORTING_PRODUCTION_FINGERPRINT: u128 = 0x6736_ce90_a01e_6ee5_96a4_024f_af53_141c;
+const EXACT_REPORTING_PRODUCTION_TOKEN_BYTES: usize = 47_860;
+const EXACT_REPORTING_PRODUCTION_FINGERPRINT: u128 = 0x4fd4_ec77_8e2e_01f2_d3b4_9e66_dd5e_6376;
 
 fn reporting_production_body_inventory_violations(source: &str) -> Vec<String> {
     let Ok(syntax) = syn::parse_file(source) else {
@@ -5049,6 +5606,11 @@ fn reporting_production_body_inventory_violations(source: &str) -> Vec<String> {
 }
 
 const EXACT_REPORTING_SOURCE_IMPORTS: &[&str] = &[
+    "crate::web_runtime::AssessmentBasis",
+    "crate::web_runtime::AssessmentRunReport",
+    "crate::web_runtime::AssessmentRunReportError",
+    "crate::web_runtime::ScanProfileV1",
+    "crate::web_runtime::WebAssessmentRunReport",
     "serde::Serialize",
     "std::error::Error",
     "std::fmt",
@@ -5065,6 +5627,12 @@ const EXACT_REPORTING_SOURCE_IMPORTS: &[&str] = &[
 ];
 
 const ALLOWED_REPORTING_QUALIFIED_PATHS: &[&str] = &[
+    "AssessmentBasis::Differential",
+    "AssessmentBasis::Observation",
+    "AssessmentBasis::Verifier",
+    "AssessmentBasisLinkageDocument::from_basis",
+    "AssessmentDocument::from_report",
+    "AssessmentItemDocument::from_item",
     "OutcomeDocument::from_outcome",
     "OutcomeStatus::Blocked",
     "OutcomeStatus::ConfirmedNegative",
@@ -5112,7 +5680,14 @@ const ALLOWED_REPORTING_QUALIFIED_PATHS: &[&str] = &[
     "Self::OutputLimitExceeded",
     "Self::Serialization",
     "StepDocument::from_step",
+    "ToString::to_string",
     "char::from",
+    "crate::web_runtime::AssessmentBasis",
+    "crate::web_runtime::AssessmentItem",
+    "crate::web_runtime::AssessmentRunReport",
+    "crate::web_runtime::AssessmentRunReportError",
+    "crate::web_runtime::ScanProfileV1",
+    "crate::web_runtime::WebAssessmentRunReport",
     "fmt::Arguments",
     "fmt::Display",
     "fmt::Error",
@@ -5148,6 +5723,9 @@ const ALLOWED_REPORTING_QUALIFIED_PATHS: &[&str] = &[
 const ALLOWED_REPORTING_FUNCTION_CALLS: &[&str] = &[
     "AccountingDimension::from_accounting",
     "AccountingDocument::from_report",
+    "AssessmentBasisLinkageDocument::from_basis",
+    "AssessmentDocument::from_report",
+    "AssessmentItemDocument::from_item",
     "Err",
     "Ok",
     "RawJsonWriter::new",
@@ -5159,6 +5737,8 @@ const ALLOWED_REPORTING_FUNCTION_CALLS: &[&str] = &[
     "String::with_capacity",
     "Vec::new",
     "accounting_mode_token",
+    "assessment_basis_token",
+    "assessment_reference_list",
     "char::from",
     "disposition_token",
     "fmt::write",
@@ -5167,9 +5747,14 @@ const ALLOWED_REPORTING_FUNCTION_CALLS: &[&str] = &[
     "longest_backtick_run",
     "push_visible_codepoint",
     "render_csv",
+    "render_assessment_csv",
+    "render_assessment_html",
+    "render_assessment_markdown",
+    "render_assessment_with_limit",
     "render_html",
     "render_json",
     "render_markdown",
+    "render_serializable_json",
     "render_with_limit",
     "run_status_token",
     "serde_json::to_writer",
@@ -5181,12 +5766,16 @@ const ALLOWED_REPORTING_FUNCTION_CALLS: &[&str] = &[
     "u32::from",
     "u64::try_from",
     "visible_text",
+    "valid_opaque_assessment_reference",
+    "write_assessment_csv_row",
     "write_csv_cell",
     "write_csv_row",
     "write_html_optional_decimal",
+    "write_html_optional_assessment_text",
     "write_html_text",
     "write_json_codepoint",
     "write_markdown_code_span",
+    "write_markdown_optional_assessment_text",
     "write_markdown_optional_decimal",
     "write_visible_codepoint",
 ];
@@ -5195,32 +5784,55 @@ const ALLOWED_REPORTING_METHOD_CALLS: &[&str] = &[
     "accounting",
     "action_id",
     "all",
+    "and_then",
     "as_deref",
     "as_str",
     "authorized_origin",
+    "basis",
+    "bytes",
+    "candidate",
+    "capability_id",
+    "case_reference",
+    "category",
+    "chain",
     "chars",
     "checked_add",
+    "clone",
     "code",
     "collect",
     "completed_at",
     "confidence",
+    "contains",
     "consumed",
+    "control",
+    "cwe",
     "dimensions",
     "disposition",
     "duration_ms",
     "ends_with",
     "enumerate",
     "evidence_ids",
+    "evidence",
+    "evidence_count",
     "extend_from_slice",
     "find",
+    "fingerprint",
     "finish",
+    "id",
     "into_iter",
+    "into_assessment_report",
     "is_control",
+    "is_ascii_digit",
     "is_empty",
     "is_err",
+    "is_none",
     "is_some",
+    "is_some_and",
     "is_whitespace",
     "iter",
+    "item_count",
+    "items",
+    "join",
     "len",
     "len_utf8",
     "limit",
@@ -5230,30 +5842,46 @@ const ALLOWED_REPORTING_METHOD_CALLS: &[&str] = &[
     "metadata",
     "mode",
     "ok_or",
+    "ok",
     "ordinal",
     "outcomes",
+    "outcome_reference",
     "parts_per_million",
     "push",
     "push_char",
     "push_fmt",
     "push_str",
+    "profile",
     "redacted_summary",
     "remaining",
+    "reference_count",
+    "remediation",
     "request_body_bytes",
     "requests",
+    "required_metadata",
     "response_body_bytes",
+    "run_report",
     "schema",
     "severity",
     "started_at",
+    "stage",
     "starts_with",
     "status",
     "steps",
     "stop_reason",
+    "strip_prefix",
+    "subject_count",
+    "subject_reference",
+    "summary",
     "target",
+    "title",
+    "to_owned",
     "to_rfc3339",
     "to_string",
     "try_reserve",
     "unwrap_or",
+    "unwrap_or_else",
+    "validate",
     "verification_outcome",
     "wall_time_ms",
     "write_str",
@@ -5274,14 +5902,33 @@ fn reporting_source_import_violations(source: &str) -> Result<Vec<String>, syn::
         let Item::Use(item) = item else {
             continue;
         };
-        if !matches!(item.vis, Visibility::Inherited) || !item.attrs.is_empty() {
-            violations.push(
-                "reporting production imports must remain private and unconditional".to_owned(),
-            );
-        }
         let mut paths = Vec::new();
         if !collect_reporting_import_paths(&item.tree, &mut Vec::new(), &mut paths) {
             violations.push("reporting production imports cannot use aliases or globs".to_owned());
+        }
+        let assessment_import = !paths.is_empty()
+            && paths.iter().all(|path| {
+                matches!(
+                    path.as_str(),
+                    "crate::web_runtime::AssessmentBasis"
+                        | "crate::web_runtime::AssessmentRunReport"
+                        | "crate::web_runtime::AssessmentRunReportError"
+                        | "crate::web_runtime::ScanProfileV1"
+                        | "crate::web_runtime::WebAssessmentRunReport"
+                )
+            });
+        let attributes_are_exact = if assessment_import {
+            item.attrs.len() == 1
+                && item.attrs[0].path().is_ident("cfg")
+                && cfg_predicate(&item.attrs[0]).as_deref() == Some("feature=\"scanning\"")
+        } else {
+            item.attrs.is_empty()
+        };
+        if !matches!(item.vis, Visibility::Inherited) || !attributes_are_exact {
+            violations.push(
+                "reporting production imports must remain private; only the exact web-assessment import may use cfg(feature = \"scanning\")"
+                    .to_owned(),
+            );
         }
         for path in paths {
             *actual.entry(path).or_default() += 1;
@@ -5341,9 +5988,12 @@ impl<'ast> Visit<'ast> for ReportingSourceVisitor {
             syn::visit::visit_attribute(self, attribute);
             return;
         }
-        if matches!(attribute_name.as_str(), "cfg" | "cfg_attr") {
+        let exact_scanning_gate = attribute_name == "cfg"
+            && cfg_predicate(attribute).as_deref() == Some("feature=\"scanning\"");
+        if matches!(attribute_name.as_str(), "cfg" | "cfg_attr") && !exact_scanning_gate {
             self.violations.insert(
-                "reporting production source must not contain cfg/cfg_attr branches".to_owned(),
+                "reporting production source may contain only the exact cfg(feature = \"scanning\") assessment-composition gate"
+                    .to_owned(),
             );
         }
         if !ALLOWED_REPORTING_ATTRIBUTES.contains(&attribute_name.as_str())
@@ -5611,7 +6261,11 @@ fn inspect_reporting_path(segments: &[String], violations: &mut BTreeSet<String>
         return;
     };
     let key = segments.join("::");
-    if root == "crate" || root == "super" || (root == "self" && segments.len() > 1) {
+    let exact_internal_assessment_path = ALLOWED_REPORTING_QUALIFIED_PATHS.contains(&key.as_str())
+        && key.starts_with("crate::web_runtime::");
+    if (root == "crate" || root == "super" || (root == "self" && segments.len() > 1))
+        && !exact_internal_assessment_path
+    {
         violations.insert(format!(
             "reporting production path `{key}` cannot delegate outside the audited source unit"
         ));
@@ -6526,6 +7180,8 @@ mod tests {
     #[test]
     fn reporting_reexports_are_exact_and_feature_gated() {
         let source = r#"
+            #[cfg(all(feature = "reporting", feature = "scanning"))]
+            pub use reporting::ASSESSMENT_REPORT_DOCUMENT_SCHEMA;
             #[cfg(feature = "reporting")]
             pub use reporting::{
                 ReportError, ReportFormat, ReportGenerator, MAX_RENDERED_REPORT_BYTES,
@@ -6550,6 +7206,27 @@ mod tests {
             .iter()
             .any(|violation| violation.contains("exact cfg")));
 
+        let assessment_widened = source.replace(
+            "#[cfg(all(feature = \"reporting\", feature = \"scanning\"))]",
+            "#[cfg(feature = \"reporting\")]",
+        );
+        assert!(reporting_reexport_violations(&assessment_widened)
+            .unwrap()
+            .iter()
+            .any(
+                |violation| violation.contains("assessment reporting re-export")
+                    && violation.contains("exact cfg")
+            ));
+
+        let missing_assessment = source.replace(
+            "#[cfg(all(feature = \"reporting\", feature = \"scanning\"))]\n            pub use reporting::ASSESSMENT_REPORT_DOCUMENT_SCHEMA;\n",
+            "",
+        );
+        assert!(reporting_reexport_violations(&missing_assessment)
+            .unwrap()
+            .iter()
+            .any(|violation| violation.contains("assessment-schema re-export")));
+
         let legacy = source.replace(
             "ReportError, ReportFormat",
             "ReportError, ReportFormat, VulnerabilityReport",
@@ -6565,7 +7242,7 @@ mod tests {
         assert!(reporting_reexport_violations(&qualified_alias)
             .unwrap()
             .iter()
-            .any(|violation| violation.contains("exactly one public `reporting` re-export")));
+            .any(|violation| violation.contains("exactly one public base reporting re-export")));
 
         let hidden_module_alias = format!(
             r#"{source}
@@ -6580,7 +7257,7 @@ mod tests {
         assert!(reporting_reexport_violations(&hidden_module_alias)
             .unwrap()
             .iter()
-            .any(|violation| violation.contains("exactly one public `reporting` re-export")));
+            .any(|violation| violation.contains("exactly one public base reporting re-export")));
 
         let hidden_type_alias = format!(
             r#"{source}
@@ -6596,7 +7273,7 @@ mod tests {
         let violations = reporting_reexport_violations(&hidden_type_alias).unwrap();
         for marker in [
             "type alias `Renderer`",
-            "exactly one public `reporting` re-export",
+            "exactly one public base reporting re-export",
         ] {
             assert!(
                 violations
@@ -6701,6 +7378,126 @@ mod tests {
                         && violation.contains("RunReport"))
             );
         }
+
+        let typed_assessment_bridge = r#"
+            impl WebAssessmentRunReport {
+                #[cfg(feature = "reporting")]
+                pub(crate) fn into_assessment_report(
+                    self,
+                    profile: ScanProfileV1,
+                ) -> Result<AssessmentRunReport, AssessmentRunReportError> {
+                    let truth = CompletedWebAssessmentTruth::new(
+                        self.run_started_at,
+                        &self.authorized_root,
+                        self.limits,
+                        self.usage,
+                        &self.completion,
+                        self.defense.mode(),
+                        profile,
+                    )?;
+                    AssessmentRunReport::from_completed_truth(self.assessment_items, truth)
+                }
+            }
+        "#;
+        assert!(reporting_cross_file_source_violations(
+            "web_runtime/web_assessment.rs",
+            typed_assessment_bridge,
+        )
+        .unwrap()
+        .is_empty());
+        for mutated in [
+            typed_assessment_bridge.replace(
+                "pub(crate) fn into_assessment_report",
+                "pub fn into_assessment_report",
+            ),
+            typed_assessment_bridge.replace("#[cfg(feature = \"reporting\")]", ""),
+            typed_assessment_bridge.replace(
+                "AssessmentRunReport::from_completed_truth(self.assessment_items, truth)",
+                "render(self.assessment_items)",
+            ),
+            typed_assessment_bridge.replace(
+                "Result<AssessmentRunReport, AssessmentRunReportError>",
+                "Result<String, AssessmentRunReportError>",
+            ),
+            typed_assessment_bridge.replace("self.run_started_at", "SystemTime::now()"),
+            typed_assessment_bridge.replace("&self.authorized_root", "&caller_root"),
+            typed_assessment_bridge.replace("self.limits", "WebAssessmentLimits::default()"),
+            typed_assessment_bridge.replace("self.usage", "WebAssessmentUsage::default()"),
+            typed_assessment_bridge.replace("&self.completion", "&completion"),
+            typed_assessment_bridge.replace(
+                "self.defense.mode()",
+                "WebAssessmentDefenseMode::ObservationOnly",
+            ),
+            typed_assessment_bridge.replace(
+                "AssessmentRunReport::from_completed_truth(self.assessment_items, truth)",
+                "AssessmentRunReport::from_completed_truth(forged_items, truth)",
+            ),
+            typed_assessment_bridge.replace(
+                "AssessmentRunReport::from_completed_truth(self.assessment_items, truth)",
+                "AssessmentRunReport::from_completed_truth(self.assessment_items, forged_truth)",
+            ),
+        ] {
+            assert!(!reporting_cross_file_source_violations(
+                "web_runtime/web_assessment.rs",
+                &mutated,
+            )
+            .unwrap()
+            .is_empty());
+        }
+        assert!(!reporting_cross_file_source_violations(
+            "api_evidence.rs",
+            typed_assessment_bridge,
+        )
+        .unwrap()
+        .is_empty());
+
+        let broad_public_consumer = r#"
+            impl WebAssessmentRunReport {
+                pub fn export_generic_run_report(
+                    self,
+                    run_report: venom_core::RunReport,
+                ) -> AssessmentRunReport {
+                    forge(run_report)
+                }
+            }
+        "#;
+        assert!(!reporting_cross_file_source_violations(
+            "web_runtime/web_assessment.rs",
+            broad_public_consumer,
+        )
+        .unwrap()
+        .is_empty());
+
+        let crate_generic_consumer = r#"
+            pub(crate) fn compose_untrusted(
+                run_report: venom_core::RunReport,
+            ) -> AssessmentRunReport {
+                forge(run_report)
+            }
+        "#;
+        assert!(reporting_cross_file_source_violations(
+            "web_runtime/api_visibility.rs",
+            crate_generic_consumer,
+        )
+        .unwrap()
+        .iter()
+        .any(|violation| violation.contains("crate-callable function")
+            && violation.contains("RunReport")));
+
+        let public_typed_bridge = r#"
+            pub fn compose_elsewhere(
+                report: WebAssessmentRunReport,
+            ) -> Result<AssessmentRunReport, AssessmentRunReportError> {
+                forge(report)
+            }
+        "#;
+        assert!(reporting_cross_file_source_violations(
+            "web_runtime/api_visibility.rs",
+            public_typed_bridge,
+        )
+        .unwrap()
+        .iter()
+        .any(|violation| violation.contains("AssessmentRunReport outside reporting.rs")));
 
         let aliased_sources = vec![
             (
@@ -6843,6 +7640,9 @@ mod tests {
     fn valid_reporting_public_api_fixture() -> &'static str {
         r#"
             pub const REPORT_DOCUMENT_SCHEMA: &str = "venom-rendered-run/v1";
+            #[cfg(feature = "scanning")]
+            pub const ASSESSMENT_REPORT_DOCUMENT_SCHEMA: &str =
+                "venom-rendered-assessment/v1";
             pub const MAX_RENDERED_REPORT_BYTES: usize = 16 * 1_024 * 1_024;
 
             #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -6894,6 +7694,25 @@ mod tests {
                     let document = ReportDocument::from_report(report)?;
                     render_with_limit(&document, format, MAX_RENDERED_REPORT_BYTES)
                 }
+                #[cfg(feature = "scanning")]
+                pub fn compose_assessment(
+                    report: WebAssessmentRunReport,
+                    profile: ScanProfileV1,
+                ) -> Result<AssessmentRunReport, AssessmentRunReportError> {
+                    report.into_assessment_report(profile)
+                }
+                #[cfg(feature = "scanning")]
+                pub fn generate_assessment(
+                    report: &AssessmentRunReport,
+                    format: ReportFormat,
+                ) -> Result<String, ReportError> {
+                    let document = AssessmentDocument::from_report(report)?;
+                    render_assessment_with_limit(
+                        &document,
+                        format,
+                        MAX_RENDERED_REPORT_BYTES,
+                    )
+                }
                 pub const fn available_formats() -> &'static [ReportFormat] { &REPORT_FORMATS }
             }
         "#
@@ -6937,6 +7756,15 @@ mod tests {
             .iter()
             .any(|violation| violation.contains("REPORT_DOCUMENT_SCHEMA")));
 
+        let assessment_schema_drift = source.replace(
+            "venom-rendered-assessment/v1",
+            "venom-rendered-assessment/v2",
+        );
+        assert!(reporting_public_api_violations(&assessment_schema_drift)
+            .unwrap()
+            .iter()
+            .any(|violation| violation.contains("ASSESSMENT_REPORT_DOCUMENT_SCHEMA")));
+
         let limit_drift = source.replace("16 * 1_024 * 1_024", "32 * 1_024 * 1_024");
         assert!(reporting_public_api_violations(&limit_drift)
             .unwrap()
@@ -6970,6 +7798,72 @@ mod tests {
             .iter()
             .any(|violation| violation.contains("ReportGenerator::generate")
                 && violation.contains("conditionally compiled")));
+
+        let externally_supplied_run =
+            source.replace("report: WebAssessmentRunReport,", "report: RunReport,");
+        assert!(reporting_public_api_violations(&externally_supplied_run)
+            .unwrap()
+            .iter()
+            .any(
+                |violation| violation.contains("ReportGenerator::compose_assessment")
+                    && violation.contains("exact bounded signature")
+            ));
+
+        let ungated_compose = source.replace(
+            "#[cfg(feature = \"scanning\")]\n                pub fn compose_assessment",
+            "pub fn compose_assessment",
+        );
+        assert!(reporting_public_api_violations(&ungated_compose)
+            .unwrap()
+            .iter()
+            .any(|violation| violation.contains("compose_assessment")
+                && violation.contains("exactly cfg")));
+
+        let forged_compose = source.replace(
+            "report.into_assessment_report(profile)",
+            "AssessmentRunReport::from_untrusted(report, profile)",
+        );
+        assert!(reporting_public_api_violations(&forged_compose)
+            .unwrap()
+            .iter()
+            .any(|violation| violation.contains("compose_assessment")
+                && violation.contains("exact bounded implementation")));
+
+        let externally_supplied_assessment_run =
+            source.replace("report: &AssessmentRunReport,", "report: &RunReport,");
+        assert!(
+            reporting_public_api_violations(&externally_supplied_assessment_run)
+                .unwrap()
+                .iter()
+                .any(
+                    |violation| violation.contains("ReportGenerator::generate_assessment")
+                        && violation.contains("exact bounded signature")
+                )
+        );
+
+        let ungated_generate_assessment = source.replace(
+            "#[cfg(feature = \"scanning\")]\n                pub fn generate_assessment",
+            "pub fn generate_assessment",
+        );
+        assert!(
+            reporting_public_api_violations(&ungated_generate_assessment)
+                .unwrap()
+                .iter()
+                .any(|violation| violation.contains("generate_assessment")
+                    && violation.contains("exactly cfg"))
+        );
+
+        let bypassed_assessment_projection = source.replace(
+            "let document = AssessmentDocument::from_report(report)?;\n                    render_assessment_with_limit(\n                        &document,\n                        format,\n                        MAX_RENDERED_REPORT_BYTES,\n                    )",
+            "serde_json::to_string(report).map_err(|_| ReportError::Serialization)",
+        );
+        assert!(
+            reporting_public_api_violations(&bypassed_assessment_projection)
+                .unwrap()
+                .iter()
+                .any(|violation| violation.contains("generate_assessment")
+                    && violation.contains("exact bounded implementation"))
+        );
 
         let derive_drift = source.replace(
             "Debug, Default, Clone, Copy",
@@ -7005,6 +7899,11 @@ mod tests {
             use venom_core::{
                 OutcomeStatus, ResourceAccounting, ResourceAccountingMode, RunOutcomeRecord,
                 RunReport, RunStatus, RunStepStatus, RunStopCode, SecuritySeverity,
+            };
+            #[cfg(feature = "scanning")]
+            use crate::web_runtime::{
+                AssessmentBasis, AssessmentRunReport, AssessmentRunReportError, ScanProfileV1,
+                WebAssessmentRunReport,
             };
         "#
     }
@@ -7188,7 +8087,7 @@ mod tests {
 
         let cfg_path = "#[cfg(tokio::fs)] fn disabled_authority() {}";
         let violations = reporting_source_violations(cfg_path).unwrap();
-        for marker in ["cfg/cfg_attr", "tokio"] {
+        for marker in ["exact cfg(feature", "tokio"] {
             assert!(
                 violations
                     .iter()
@@ -7326,6 +8225,58 @@ mod tests {
 
     fn valid_reporting_document_contract_fixture() -> &'static str {
         r#"
+            #[cfg(feature = "scanning")]
+            #[derive(Serialize)]
+            struct AssessmentDocument<'a> {
+                schema: &'static str,
+                source_schema: &'a str,
+                run_schema: &'a str,
+                profile_schema: &'a str,
+                profile: &'a str,
+                status: &'static str,
+                subject_count: u64,
+                item_count: u64,
+                items: Vec<AssessmentItemDocument<'a>>,
+            }
+            #[cfg(feature = "scanning")]
+            #[derive(Serialize)]
+            struct AssessmentItemDocument<'a> {
+                schema: &'a str,
+                capability_id: &'a str,
+                subject_reference: String,
+                title: &'a str,
+                disposition: &'static str,
+                claim_basis: &'static str,
+                severity: Option<&'static str>,
+                confidence_ppm: u32,
+                fingerprint: &'a str,
+                evidence_count: u64,
+                redacted_summary: &'a str,
+                category: &'a str,
+                cwe: Option<&'a str>,
+                remediation: AssessmentRemediationDocument<'a>,
+                evidence_references: Vec<String>,
+                control_evidence_references: Vec<String>,
+                candidate_evidence_references: Vec<String>,
+                case_reference: Option<String>,
+                outcome_reference: Option<String>,
+                verification_stage: Option<&'static str>,
+            }
+            #[cfg(feature = "scanning")]
+            struct AssessmentBasisLinkageDocument {
+                evidence_references: Vec<String>,
+                control_evidence_references: Vec<String>,
+                candidate_evidence_references: Vec<String>,
+                case_reference: Option<String>,
+                outcome_reference: Option<String>,
+                verification_stage: Option<&'static str>,
+            }
+            #[cfg(feature = "scanning")]
+            #[derive(Serialize)]
+            struct AssessmentRemediationDocument<'a> {
+                id: &'a str,
+                summary: &'a str,
+            }
             #[derive(Serialize)]
             struct ReportDocument<'a> {
                 schema: &'static str,
@@ -7397,6 +8348,32 @@ mod tests {
             .iter()
             .any(|violation| violation.contains("StepDocument")
                 && violation.contains("fields must remain exactly")));
+
+        let missing_opaque_outcome = source.replace(
+            "                outcome_reference: Option<String>,\n                verification_stage: Option<&'static str>,\n            }\n            #[cfg(feature = \"scanning\")]\n            #[derive(Serialize)]\n            struct AssessmentRemediationDocument",
+            "                verification_stage: Option<&'static str>,\n            }\n            #[cfg(feature = \"scanning\")]\n            #[derive(Serialize)]\n            struct AssessmentRemediationDocument",
+        );
+        assert!(
+            reporting_document_contract_violations(&missing_opaque_outcome)
+                .unwrap()
+                .iter()
+                .any(
+                    |violation| violation.contains("AssessmentBasisLinkageDocument")
+                        && violation.contains("fields must remain exactly")
+                )
+        );
+
+        let ungated_item_projection = source.replace(
+            "#[cfg(feature = \"scanning\")]\n            #[derive(Serialize)]\n            struct AssessmentItemDocument",
+            "#[derive(Serialize)]\n            struct AssessmentItemDocument",
+        );
+        assert!(
+            reporting_document_contract_violations(&ungated_item_projection)
+                .unwrap()
+                .iter()
+                .any(|violation| violation.contains("AssessmentItemDocument")
+                    && violation.contains("exactly cfg"))
+        );
     }
 
     #[test]
@@ -7424,12 +8401,22 @@ mod tests {
             "    match format {\n        ReportFormat::Json => render_json(document, limit),",
             "    let limit = if limit == MAX_RENDERED_REPORT_BYTES { limit * 2 } else { limit };\n    match format {\n        ReportFormat::Json => render_json(document, limit),",
         );
+        let dropped_basis_count_binding = source.replace(
+            "if linkage.reference_count()? != evidence_count {",
+            "if false {",
+        );
+        let forged_verifier_case_link = source.replace(
+            "case_reference: Some(verifier.case_reference().to_string()),",
+            "case_reference: None,",
+        );
         for mutation in [
             private_detail,
             forged_macro_status,
             forged_conditional_status,
             swapped_field,
             doubled_public_cap,
+            dropped_basis_count_binding,
+            forged_verifier_case_link,
         ] {
             assert!(reporting_production_body_inventory_violations(&mutation)
                 .iter()
@@ -7470,7 +8457,7 @@ mod tests {
                 DependencyContract {
                     optional: false,
                     uses_default_features: false,
-                    features: BTreeSet::from(["scanning".to_owned()]),
+                    features: BTreeSet::from(["reporting".to_owned(), "scanning".to_owned()]),
                 },
             ),
         ]);
@@ -7507,7 +8494,7 @@ mod tests {
             .insert("distributed".to_owned());
         assert!(cli_feature_violations(&features, &dependencies)
             .iter()
-            .any(|violation| violation.contains("exactly [scanning]")));
+            .any(|violation| violation.contains("exactly [reporting, scanning]")));
 
         dependencies
             .get_mut("venom-scanner")
