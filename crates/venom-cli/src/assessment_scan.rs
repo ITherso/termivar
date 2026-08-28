@@ -1,7 +1,7 @@
 //! Additive CLI projection for explicitly selected deterministic scan profiles.
 //!
 //! The compatibility path with no profile remains in `decision_scan`. This module
-//! owns the separate `web-assessment/v1` surface used only after a validated
+//! owns separate versioned `web-assessment` surfaces used only after a validated
 //! `venom.scan-profile/v1` contract is selected. It projects bounded runtime truth
 //! into safe counts and deterministic opaque resource references; it never emits
 //! response bodies, header values, credentials, cookie values, evidence payloads,
@@ -20,15 +20,19 @@ use venom_scanner::web_runtime::{
     WebAssessmentSubjectReport, WebAssessmentUsage,
 };
 use venom_scanner::{
-    DecisionLoopCommand, DecisionStopReason, RuntimeBudgetDimension, RuntimeLimitExceeded,
-    SemanticEntityType, SemanticExtractionResult, StandardWebDecisionFailureReceipt,
-    StandardWebDecisionRuntimeError, StandardWebDecisionRuntimeTurn, TransportDispatchAudit,
+    DecisionLoopCommand, DecisionStopReason, ReportFormat, ReportGenerator, RuntimeBudgetDimension,
+    RuntimeLimitExceeded, SemanticEntityType, SemanticExtractionResult,
+    StandardWebDecisionFailureReceipt, StandardWebDecisionRuntimeError,
+    StandardWebDecisionRuntimeTurn, TransportDispatchAudit,
 };
 
 use crate::decision_scan::{self, DecisionScanSummary, OutcomeView};
 
-/// Schema for the additive, explicitly selected profile output.
-pub(crate) const WEB_ASSESSMENT_SCHEMA_VERSION: &str = "web-assessment/v1";
+/// Original additive schema retained for the baseline profile contract.
+pub(crate) const WEB_ASSESSMENT_SCHEMA_V1: &str = "web-assessment/v1";
+/// Diagnostic audit used only when web-review is incomplete or fails after
+/// starting. Completed items use the centralized rendered-assessment schema.
+pub(crate) const WEB_ASSESSMENT_SCHEMA_V2: &str = "web-assessment/v2";
 
 /// Stable status that the caller applies only after writing the complete document.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -58,13 +62,24 @@ impl AssessmentScanPostRenderFailure {
 #[derive(Debug)]
 pub(crate) struct AssessmentScanExecution {
     rendered: String,
+    report_artifact: Option<String>,
     post_render_failure: Option<AssessmentScanPostRenderFailure>,
 }
 
 impl AssessmentScanExecution {
     /// Consumes the result without requiring the caller to reach into the DTO.
-    pub(crate) fn into_parts(self) -> (String, Option<AssessmentScanPostRenderFailure>) {
-        (self.rendered, self.post_render_failure)
+    pub(crate) fn into_parts(
+        self,
+    ) -> (
+        String,
+        Option<String>,
+        Option<AssessmentScanPostRenderFailure>,
+    ) {
+        (
+            self.rendered,
+            self.report_artifact,
+            self.post_render_failure,
+        )
     }
 }
 
@@ -108,9 +123,9 @@ struct WebAssessmentDocument {
 #[serde(tag = "scope", content = "report")]
 enum AssessmentBody {
     #[serde(rename = "single-resource")]
-    SingleResource(SingleResourceReport),
+    SingleResource(Box<SingleResourceReport>),
     #[serde(rename = "exact-origin")]
-    ExactOrigin(ExactOriginReport),
+    ExactOrigin(Box<ExactOriginReport>),
 }
 
 #[derive(Serialize)]
@@ -162,6 +177,9 @@ struct SingleResourceUsage {
 struct ExactOriginReport {
     subjects: Vec<SubjectRecord>,
     forms: Vec<FormRecord>,
+    /// Version-2 product projection. Version 1 remains unchanged, and the
+    /// separate `decision-scan/v1` compatibility document is never involved.
+    assessment_items: AssessmentItemsReport,
     semantics: SemanticSummary,
     defense: DefenseSummary,
     usage: ExactOriginUsage,
@@ -275,6 +293,16 @@ struct FailureInventory {
     unrepresented_ledger_subjects: usize,
 }
 
+#[derive(Serialize)]
+#[serde(tag = "projection_status", rename_all = "snake_case")]
+enum AssessmentItemsReport {
+    Unavailable {
+        code: &'static str,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        committed_passive_observations: Option<usize>,
+    },
+}
+
 /// Runs an explicitly selected profile and builds the additive output entirely
 /// in memory.
 ///
@@ -285,24 +313,39 @@ pub(crate) async fn run_profile_scan(
     target: Url,
     profile: ScanProfileV1,
     format_is_json: bool,
+    report_format: Option<ReportFormat>,
+    report_to_file: bool,
 ) -> Result<AssessmentScanExecution, Box<dyn Error>> {
     let target_origin = target.origin().ascii_serialization();
-    let document = match (profile.profile(), profile.scope()) {
+    match (profile.profile(), profile.scope()) {
         (BuiltInScanProfile::Baseline, ScanProfileScope::SingleResource) => {
-            run_baseline(target, target_origin, profile).await?
+            if report_format.is_some() || report_to_file {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "typed assessment reports require the web-review profile",
+                )
+                .into());
+            }
+            let document = run_baseline(target, target_origin, profile).await?;
+            render_execution(document, format_is_json)
         },
         (BuiltInScanProfile::WebReview, ScanProfileScope::ExactOrigin) => {
-            run_web_review(target, target_origin, profile).await?
-        },
-        _ => {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "unsupported scan-profile runtime composition",
+            run_web_review(
+                target,
+                target_origin,
+                profile,
+                format_is_json,
+                report_format,
+                report_to_file,
             )
-            .into());
+            .await
         },
-    };
-    render_execution(document, format_is_json)
+        _ => Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "unsupported scan-profile runtime composition",
+        )
+        .into()),
+    }
 }
 
 async fn run_baseline(
@@ -336,24 +379,47 @@ async fn run_web_review(
     target: Url,
     target_origin: String,
     profile: ScanProfileV1,
-) -> Result<WebAssessmentDocument, Box<dyn Error>> {
+    format_is_json: bool,
+    report_format: Option<ReportFormat>,
+    report_to_file: bool,
+) -> Result<AssessmentScanExecution, Box<dyn Error>> {
     let mut builder = WebAssessmentRuntime::builder(target).limits(profile.web_assessment_limits());
     if profile.defense_enforcement_enabled() {
         builder = builder.enable_defense_enforcement();
     }
     let mut runtime = builder.build()?;
     match runtime.analyze().await {
-        Ok(report) => Ok(document_from_web_review_report(
-            target_origin,
-            profile,
-            &report,
-        )),
+        Ok(report) if matches!(report.completion(), WebAssessmentCompletion::Complete) => {
+            let format = report_format.unwrap_or(if format_is_json {
+                ReportFormat::Json
+            } else {
+                ReportFormat::Markdown
+            });
+            let product = ReportGenerator::compose_assessment(report, profile)?;
+            let rendered = ReportGenerator::generate_assessment(&product, format)?;
+            Ok(if report_to_file {
+                AssessmentScanExecution {
+                    rendered: String::new(),
+                    report_artifact: Some(rendered),
+                    post_render_failure: None,
+                }
+            } else {
+                AssessmentScanExecution {
+                    rendered,
+                    report_artifact: None,
+                    post_render_failure: None,
+                }
+            })
+        },
+        Ok(report) => render_execution(
+            document_from_web_review_report(target_origin, profile, &report),
+            format_is_json,
+        ),
         Err(source) => match source.failure_receipt() {
-            Some(receipt) => Ok(document_from_web_review_failure(
-                target_origin,
-                profile,
-                receipt,
-            )),
+            Some(receipt) => render_execution(
+                document_from_web_review_failure(target_origin, profile, receipt),
+                format_is_json,
+            ),
             None => Err(Box::new(source)),
         },
     }
@@ -374,6 +440,7 @@ fn render_execution(
     }
     Ok(AssessmentScanExecution {
         rendered,
+        report_artifact: None,
         post_render_failure,
     })
 }
@@ -392,12 +459,12 @@ fn document_from_baseline_summary(
         AssessmentDisposition::Incomplete
     };
     WebAssessmentDocument {
-        schema_version: WEB_ASSESSMENT_SCHEMA_VERSION,
+        schema_version: WEB_ASSESSMENT_SCHEMA_V1,
         target_origin,
         disposition,
         incomplete_reasons,
         profile_contract: profile,
-        assessment: AssessmentBody::SingleResource(SingleResourceReport {
+        assessment: AssessmentBody::SingleResource(Box::new(SingleResourceReport {
             bootstrap_evidence_writes: summary.bootstrap_writes,
             planning_turns: summary.planning_turns,
             verification_outcomes: summary.outcomes.iter().map(outcome_from_view).collect(),
@@ -426,7 +493,7 @@ fn document_from_baseline_summary(
             experience_records: Some(summary.experience_records),
             unavailable_executor_routes: Some(summary.unavailable_routes.len()),
             started_failure: false,
-        }),
+        })),
     }
 }
 
@@ -444,12 +511,12 @@ fn document_from_baseline_failure(
         .count();
     let usage = receipt.usage();
     WebAssessmentDocument {
-        schema_version: WEB_ASSESSMENT_SCHEMA_VERSION,
+        schema_version: WEB_ASSESSMENT_SCHEMA_V1,
         target_origin,
         disposition: AssessmentDisposition::Failed,
         incomplete_reasons: vec!["started_runtime_failure"],
         profile_contract: profile,
-        assessment: AssessmentBody::SingleResource(SingleResourceReport {
+        assessment: AssessmentBody::SingleResource(Box::new(SingleResourceReport {
             bootstrap_evidence_writes: receipt
                 .bootstrap()
                 .map_or(0, |bootstrap| bootstrap.writes().len()),
@@ -469,7 +536,7 @@ fn document_from_baseline_failure(
             experience_records: None,
             unavailable_executor_routes: None,
             started_failure: true,
-        }),
+        })),
     }
 }
 
@@ -499,14 +566,19 @@ fn document_from_web_review_report(
     profile: ScanProfileV1,
     report: &WebAssessmentRunReport,
 ) -> WebAssessmentDocument {
-    let (disposition, incomplete_reasons) = classify_web_review_completion(report.completion());
+    let (mut disposition, mut incomplete_reasons) =
+        classify_web_review_completion(report.completion());
+    if disposition == AssessmentDisposition::Complete {
+        disposition = AssessmentDisposition::Incomplete;
+        incomplete_reasons.push("assessment_item_projection_incomplete");
+    }
     WebAssessmentDocument {
-        schema_version: WEB_ASSESSMENT_SCHEMA_VERSION,
+        schema_version: WEB_ASSESSMENT_SCHEMA_V2,
         target_origin,
         disposition,
         incomplete_reasons,
         profile_contract: profile,
-        assessment: AssessmentBody::ExactOrigin(ExactOriginReport {
+        assessment: AssessmentBody::ExactOrigin(Box::new(ExactOriginReport {
             subjects: report
                 .subjects()
                 .iter()
@@ -519,12 +591,16 @@ fn document_from_web_review_report(
                 .enumerate()
                 .map(|(index, form)| form_record(index, form))
                 .collect(),
+            assessment_items: AssessmentItemsReport::Unavailable {
+                code: "incomplete_assessment_items_withheld",
+                committed_passive_observations: None,
+            },
             semantics: semantic_summary(report.semantics()),
             defense: defense_summary(report.defense()),
             usage: exact_origin_usage(report.usage()),
             transport: transport_summary(report.transport()),
             failure_inventory: None,
-        }),
+        })),
     }
 }
 
@@ -567,12 +643,12 @@ fn document_from_web_review_failure(
         .collect();
 
     WebAssessmentDocument {
-        schema_version: WEB_ASSESSMENT_SCHEMA_VERSION,
+        schema_version: WEB_ASSESSMENT_SCHEMA_V2,
         target_origin,
         disposition: AssessmentDisposition::Failed,
         incomplete_reasons,
         profile_contract: profile,
-        assessment: AssessmentBody::ExactOrigin(ExactOriginReport {
+        assessment: AssessmentBody::ExactOrigin(Box::new(ExactOriginReport {
             subjects,
             forms: receipt
                 .forms()
@@ -580,6 +656,10 @@ fn document_from_web_review_failure(
                 .enumerate()
                 .map(|(index, form)| form_record(index, form))
                 .collect(),
+            assessment_items: AssessmentItemsReport::Unavailable {
+                code: "runtime_failed_before_item_projection",
+                committed_passive_observations: Some(receipt.committed_passive_observations()),
+            },
             semantics: semantic_summary(receipt.semantics()),
             defense: defense_summary(receipt.defense()),
             usage: exact_origin_usage(receipt.usage()),
@@ -588,7 +668,7 @@ fn document_from_web_review_failure(
                 consistent: receipt.inventory_consistent(),
                 unrepresented_ledger_subjects: receipt.unrepresented_ledger_subjects(),
             }),
-        }),
+        })),
     }
 }
 
@@ -878,6 +958,12 @@ fn incomplete_reason_code(reason: &WebAssessmentIncompleteReason) -> &'static st
         WebAssessmentIncompleteReason::SubjectExecutionIncomplete => "subject_execution_incomplete",
         WebAssessmentIncompleteReason::HostCancellation => "host_cancellation",
         WebAssessmentIncompleteReason::SemanticExtractionLimit => "semantic_extraction_limit",
+        WebAssessmentIncompleteReason::PassiveResponseProjectionLimit => {
+            "passive_response_projection_limit"
+        },
+        WebAssessmentIncompleteReason::AssessmentSubjectIdentityUnavailable => {
+            "assessment_subject_identity_unavailable"
+        },
         _ => "other",
     }
 }
@@ -1000,6 +1086,7 @@ fn render_text(document: &WebAssessmentDocument) -> String {
                 report.usage.executed_subjects,
                 report.usage.retained_forms
             ));
+            append_assessment_item_lines(&mut lines, &report.assessment_items);
             lines.push(format!(
                 "semantics: entities={} truncated={} dropped_entities={} dropped_attributes={} dropped_sources={}",
                 report.semantics.entity_count,
@@ -1029,13 +1116,29 @@ fn render_text(document: &WebAssessmentDocument) -> String {
     lines.join("\n")
 }
 
+fn append_assessment_item_lines(lines: &mut Vec<String>, report: &AssessmentItemsReport) {
+    let AssessmentItemsReport::Unavailable {
+        code,
+        committed_passive_observations,
+    } = report;
+    if let Some(count) = committed_passive_observations {
+        lines.push(format!(
+            "assessment items: projection_status=unavailable code={code} committed_passive_observations={count}"
+        ));
+    } else {
+        lines.push(format!(
+            "assessment items: projection_status=unavailable code={code}"
+        ));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn minimal_baseline_document(disposition: AssessmentDisposition) -> WebAssessmentDocument {
         WebAssessmentDocument {
-            schema_version: WEB_ASSESSMENT_SCHEMA_VERSION,
+            schema_version: WEB_ASSESSMENT_SCHEMA_V1,
             target_origin: "https://example.test".to_owned(),
             disposition,
             incomplete_reasons: if disposition == AssessmentDisposition::Complete {
@@ -1044,7 +1147,7 @@ mod tests {
                 vec!["started_runtime_failure"]
             },
             profile_contract: ScanProfileV1::baseline().expect("built-in profile is valid"),
-            assessment: AssessmentBody::SingleResource(SingleResourceReport {
+            assessment: AssessmentBody::SingleResource(Box::new(SingleResourceReport {
                 bootstrap_evidence_writes: 0,
                 planning_turns: 0,
                 verification_outcomes: Vec::new(),
@@ -1062,7 +1165,7 @@ mod tests {
                 experience_records: None,
                 unavailable_executor_routes: None,
                 started_failure: disposition == AssessmentDisposition::Failed,
-            }),
+            })),
         }
     }
 
@@ -1075,7 +1178,7 @@ mod tests {
         .expect("safe DTO serializes");
         let value: serde_json::Value =
             serde_json::from_str(&execution.rendered).expect("rendered JSON parses");
-        assert_eq!(value["schema_version"], WEB_ASSESSMENT_SCHEMA_VERSION);
+        assert_eq!(value["schema_version"], WEB_ASSESSMENT_SCHEMA_V1);
         assert_eq!(
             value["profile_contract"]["schema"],
             venom_scanner::web_runtime::SCAN_PROFILE_V1_SCHEMA
@@ -1115,6 +1218,20 @@ mod tests {
             disposition.post_render_failure(),
             Some(AssessmentScanPostRenderFailure::Incomplete)
         );
+    }
+
+    #[test]
+    fn failure_item_projection_is_unavailable_not_empty_success() {
+        let unavailable = AssessmentItemsReport::Unavailable {
+            code: "runtime_failed_before_item_projection",
+            committed_passive_observations: Some(3),
+        };
+        let value = serde_json::to_value(unavailable).expect("fixed failure receipt serializes");
+        assert_eq!(value["projection_status"], "unavailable");
+        assert_eq!(value["code"], "runtime_failed_before_item_projection");
+        assert_eq!(value["committed_passive_observations"], 3);
+        assert!(value.get("items").is_none());
+        assert!(value.get("projected_item_count").is_none());
     }
 
     #[test]
@@ -1206,6 +1323,14 @@ mod tests {
             (
                 WebAssessmentIncompleteReason::SemanticExtractionLimit,
                 "semantic_extraction_limit",
+            ),
+            (
+                WebAssessmentIncompleteReason::PassiveResponseProjectionLimit,
+                "passive_response_projection_limit",
+            ),
+            (
+                WebAssessmentIncompleteReason::AssessmentSubjectIdentityUnavailable,
+                "assessment_subject_identity_unavailable",
             ),
         ];
         for (reason, expected) in incomplete {
@@ -1310,12 +1435,12 @@ mod tests {
     fn exact_origin_text_projection_reports_bounded_truth_without_private_values() {
         const SECRET: &str = "Bearer-do-not-render";
         let document = WebAssessmentDocument {
-            schema_version: WEB_ASSESSMENT_SCHEMA_VERSION,
+            schema_version: WEB_ASSESSMENT_SCHEMA_V2,
             target_origin: "https://example.test".to_owned(),
             disposition: AssessmentDisposition::Incomplete,
             incomplete_reasons: vec!["query_parameter_name_limit"],
             profile_contract: ScanProfileV1::web_review().expect("built-in profile is valid"),
-            assessment: AssessmentBody::ExactOrigin(ExactOriginReport {
+            assessment: AssessmentBody::ExactOrigin(Box::new(ExactOriginReport {
                 subjects: vec![SubjectRecord {
                     subject_reference: "subject-0001".to_owned(),
                     method: "get",
@@ -1333,6 +1458,10 @@ mod tests {
                     control_names: vec![SECRET.to_owned()],
                     evidence_count: 2,
                 }],
+                assessment_items: AssessmentItemsReport::Unavailable {
+                    code: "incomplete_assessment_items_withheld",
+                    committed_passive_observations: None,
+                },
                 semantics: SemanticSummary {
                     entity_count: 3,
                     entity_types: SemanticTypeCounts {
@@ -1377,7 +1506,7 @@ mod tests {
                     omitted_dispatch_receipts: 0,
                 },
                 failure_inventory: None,
-            }),
+            })),
         };
 
         let rendered = render_text(&document);
@@ -1385,6 +1514,10 @@ mod tests {
         assert!(rendered.contains("inventory: subjects=1 executed=1 forms=1"));
         assert!(rendered.contains("semantics: entities=3 truncated=true"));
         assert!(rendered.contains("defense: mode=observation_only observations=2"));
+        assert!(rendered.contains(
+            "assessment items: projection_status=unavailable code=incomplete_assessment_items_withheld"
+        ));
+        assert!(!rendered.contains("assessment item: subject="));
         assert!(rendered.contains("usage: requests=2 active_verifications=1"));
         assert!(!rendered.contains(SECRET));
         assert!(!rendered.contains("https://example.test/private"));

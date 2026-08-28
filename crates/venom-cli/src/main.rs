@@ -22,6 +22,7 @@ mod assessment_scan;
 mod decision_scan;
 
 use clap::{Parser, Subcommand, ValueEnum};
+use std::path::PathBuf;
 use url::Url;
 #[cfg(feature = "proxy-adapter")]
 use venom_proxy::ProxyServer;
@@ -33,13 +34,37 @@ use venom_scanner::{
 
 /// Output format for deterministic `scan`. `text` is the default human-readable
 /// report. Without an explicit profile, `json` preserves the versioned
-/// `decision-scan/v1` wire document; an explicit profile selects the additive
-/// `web-assessment/v1` document.
+/// `decision-scan/v1` wire document. Explicit baseline retains the additive
+/// `web-assessment/v1` document. Completed web-review runs use the centralized
+/// `venom-rendered-assessment/v1` surface; incomplete/failed runs retain a
+/// separate `web-assessment/v2` diagnostic audit with items unavailable.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
 #[value(rename_all = "lowercase")]
 enum OutputFormat {
     Text,
     Json,
+}
+
+/// Additive typed assessment report format. This surface is available only
+/// for the explicit `web-review` profile and never changes `decision-scan/v1`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+#[value(rename_all = "lowercase")]
+enum CliReportFormat {
+    Json,
+    Csv,
+    Html,
+    Markdown,
+}
+
+impl From<CliReportFormat> for venom_scanner::ReportFormat {
+    fn from(value: CliReportFormat) -> Self {
+        match value {
+            CliReportFormat::Json => Self::Json,
+            CliReportFormat::Csv => Self::Csv,
+            CliReportFormat::Html => Self::Html,
+            CliReportFormat::Markdown => Self::Markdown,
+        }
+    }
 }
 
 /// Explicit product profile. Absence is a compatibility state that preserves
@@ -78,6 +103,20 @@ fn scan_profile_flags_conflict(
         Some("`--explain` is available only when no explicit `--profile` is selected")
     } else if enforce_defense && profile != Some(CliScanProfile::WebReview) {
         Some("`--enforce-defense` requires `--profile web-review`")
+    } else {
+        None
+    }
+}
+
+fn scan_report_flags_conflict(
+    profile: Option<CliScanProfile>,
+    report_format: Option<CliReportFormat>,
+    report_output: Option<&std::path::Path>,
+) -> Option<&'static str> {
+    if report_output.is_some() && report_format.is_none() {
+        Some("`--report-output` requires `--report-format`")
+    } else if report_format.is_some() && profile != Some(CliScanProfile::WebReview) {
+        Some("`--report-format` requires `--profile web-review`")
     } else {
         None
     }
@@ -132,6 +171,18 @@ enum Commands {
         /// without this flag.
         #[arg(long, requires = "profile")]
         enforce_defense: bool,
+        /// Select the centralized typed assessment renderer. Valid only with
+        /// `--profile web-review`. Without this option, text maps to Markdown
+        /// and JSON maps to JSON for completed web-review reports.
+        #[arg(long, value_enum, requires = "profile")]
+        report_format: Option<CliReportFormat>,
+        /// Atomically create a new report file instead of writing a completed
+        /// report to stdout. Existing files are never overwritten. Incomplete
+        /// or started-failure runs emit their typed diagnostic audit to stdout.
+        /// Publication requires same-directory hard-link support and does not
+        /// promise crash-durable directory metadata.
+        #[arg(long, requires = "report_format")]
+        report_output: Option<PathBuf>,
     },
     /// Run the historical mixed-authority, whole-run-unmetered heuristic pipeline.
     #[cfg(feature = "legacy-scanner")]
@@ -170,6 +221,8 @@ async fn run_deterministic_scan(
     explain: bool,
     profile: Option<CliScanProfile>,
     enforce_defense: bool,
+    report_format: Option<CliReportFormat>,
+    report_output: Option<PathBuf>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if scan_flags_conflict(format, explain) {
         use clap::CommandFactory;
@@ -181,6 +234,14 @@ async fn run_deterministic_scan(
             .exit();
     }
     if let Some(message) = scan_profile_flags_conflict(profile, explain, enforce_defense) {
+        use clap::CommandFactory;
+        Cli::command()
+            .error(clap::error::ErrorKind::ArgumentConflict, message)
+            .exit();
+    }
+    if let Some(message) =
+        scan_report_flags_conflict(profile, report_format, report_output.as_deref())
+    {
         use clap::CommandFactory;
         Cli::command()
             .error(clap::error::ErrorKind::ArgumentConflict, message)
@@ -199,15 +260,23 @@ async fn run_deterministic_scan(
             target,
             profile,
             matches!(format, OutputFormat::Json),
+            report_format.map(Into::into),
+            report_output.is_some(),
         )
         .await?;
-        let (rendered, post_render_failure) = execution.into_parts();
-        {
+        let (rendered, report_artifact, post_render_failure) = execution.into_parts();
+        if !rendered.is_empty() {
             use std::io::Write as _;
             let stdout = std::io::stdout();
             let mut output = stdout.lock();
             output.write_all(rendered.as_bytes())?;
             output.flush()?;
+        }
+        if let Some(artifact) = report_artifact {
+            let output = report_output.as_deref().ok_or_else(|| {
+                std::io::Error::other("report artifact has no authorized output path")
+            })?;
+            write_report_atomically(output, artifact.as_bytes())?;
         }
         if let Some(failure) = post_render_failure {
             return Err(std::io::Error::other(failure.message()).into());
@@ -231,6 +300,78 @@ async fn run_deterministic_scan(
         },
     }
     Ok(())
+}
+
+fn write_report_atomically(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::{
+        fs::{self, OpenOptions},
+        io::Write as _,
+        sync::atomic::{AtomicU64, Ordering},
+    };
+
+    static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(0);
+
+    if bytes.is_empty() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "refusing to create an empty report",
+        ));
+    }
+    if fs::symlink_metadata(path).is_ok() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            "report output already exists",
+        ));
+    }
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| std::path::Path::new("."));
+    if path.file_name().is_none() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "report output must name a file",
+        ));
+    }
+
+    let mut last_collision = None;
+    for _ in 0..32 {
+        let sequence = NEXT_TEMP_ID.fetch_add(1, Ordering::Relaxed);
+        let temporary = parent.join(format!(
+            ".venom-report-{}-{sequence}.tmp",
+            std::process::id()
+        ));
+        let mut file = match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary)
+        {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                last_collision = Some(error);
+                continue;
+            },
+            Err(error) => return Err(error),
+        };
+        let write_result = file.write_all(bytes).and_then(|()| file.sync_all());
+        drop(file);
+        if let Err(error) = write_result {
+            let _ = fs::remove_file(&temporary);
+            return Err(error);
+        }
+        if let Err(error) = fs::hard_link(&temporary, path) {
+            let _ = fs::remove_file(&temporary);
+            return Err(error);
+        }
+        fs::remove_file(&temporary)?;
+        return Ok(());
+    }
+    Err(last_collision.unwrap_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            "could not reserve a temporary report path",
+        )
+    }))
 }
 
 #[cfg(feature = "legacy-scanner")]
@@ -407,8 +548,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             explain,
             profile,
             enforce_defense,
+            report_format,
+            report_output,
         }) => {
-            run_deterministic_scan(target, format, explain, profile, enforce_defense).await?;
+            run_deterministic_scan(
+                target,
+                format,
+                explain,
+                profile,
+                enforce_defense,
+                report_format,
+                report_output,
+            )
+            .await?;
         },
         #[cfg(feature = "legacy-scanner")]
         Some(Commands::LegacyScan {
@@ -451,12 +603,16 @@ mod tests {
                 explain,
                 profile,
                 enforce_defense,
+                report_format,
+                report_output,
             }) => {
                 assert_eq!(target.as_str(), "https://example.test/");
                 assert_eq!(format, OutputFormat::Text);
                 assert!(!explain);
                 assert_eq!(profile, None);
                 assert!(!enforce_defense);
+                assert_eq!(report_format, None);
+                assert_eq!(report_output, None);
             },
             _ => panic!("expected the deterministic scan command"),
         }
@@ -473,6 +629,8 @@ mod tests {
                 explain,
                 profile,
                 enforce_defense,
+                report_format,
+                report_output,
             }) => {
                 assert_eq!(target.as_str(), "https://example.test/");
                 assert_eq!(format, OutputFormat::Text, "text is the default format");
@@ -482,6 +640,8 @@ mod tests {
                 );
                 assert_eq!(profile, None);
                 assert!(!enforce_defense);
+                assert_eq!(report_format, None);
+                assert_eq!(report_output, None);
             },
             _ => panic!("expected the deterministic scan command"),
         }
@@ -619,6 +779,83 @@ mod tests {
             scan_profile_flags_conflict(Some(CliScanProfile::WebReview), true, false).is_some()
         );
         assert_eq!(scan_profile_flags_conflict(None, false, false), None);
+    }
+
+    #[test]
+    fn assessment_report_flags_are_explicit_and_web_review_only() {
+        let cli = Cli::try_parse_from([
+            "venom",
+            "scan",
+            "--profile",
+            "web-review",
+            "--report-format",
+            "html",
+            "--report-output",
+            "review.html",
+            "https://example.test/",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Scan {
+                profile: Some(CliScanProfile::WebReview),
+                report_format: Some(CliReportFormat::Html),
+                report_output: Some(_),
+                ..
+            })
+        ));
+        assert_eq!(
+            scan_report_flags_conflict(
+                Some(CliScanProfile::Baseline),
+                Some(CliReportFormat::Json),
+                None,
+            ),
+            Some("`--report-format` requires `--profile web-review`")
+        );
+        assert_eq!(
+            scan_report_flags_conflict(
+                Some(CliScanProfile::WebReview),
+                None,
+                Some(std::path::Path::new("review.json")),
+            ),
+            Some("`--report-output` requires `--report-format`")
+        );
+        assert_eq!(
+            scan_report_flags_conflict(
+                Some(CliScanProfile::WebReview),
+                Some(CliReportFormat::Markdown),
+                None,
+            ),
+            None
+        );
+        assert!(Cli::try_parse_from([
+            "venom",
+            "scan",
+            "--report-output",
+            "review.json",
+            "https://example.test/",
+        ])
+        .is_err());
+    }
+
+    #[test]
+    fn atomic_report_output_is_complete_and_no_clobber() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "venom-main-atomic-report-{}-{nonce}.json",
+            std::process::id()
+        ));
+        write_report_atomically(&path, br#"{"schema":"test"}"#).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), br#"{"schema":"test"}"#);
+        let error = write_report_atomically(&path, b"replacement").unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists);
+        assert_eq!(std::fs::read(&path).unwrap(), br#"{"schema":"test"}"#);
+        std::fs::remove_file(path).unwrap();
     }
 
     #[test]
