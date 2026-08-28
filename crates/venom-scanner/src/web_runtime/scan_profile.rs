@@ -216,10 +216,9 @@ impl ScanProfileCapabilitiesV1 {
         low_risk_differential_review: false,
     };
 
-    // PR B exposes only capabilities that execute on this branch. PR C may
-    // deliberately enable low-risk differential review only after its native
-    // capabilities and boundary tests land; roadmap intent is not runtime
-    // truth and must not be advertised here.
+    // Expose only capabilities that execute on this branch. Passive review is
+    // composed by the origin assessment; low-risk differential review remains
+    // disabled until native capabilities and boundary tests land.
     const WEB_REVIEW: Self = Self {
         standard_web_decision: true,
         origin_discovery: true,
