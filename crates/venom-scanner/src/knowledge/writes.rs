@@ -7,7 +7,7 @@ use venom_core::{
     EntityId, Evidence, EvidenceId, Fact, Hypothesis, HypothesisState, OntologyStats,
 };
 
-use super::{index, KnowledgeBase, KnowledgeSnapshot, KnowledgeState};
+use crate::knowledge::{index, KnowledgeBase, KnowledgeSnapshot, KnowledgeState};
 
 /// Result of an idempotent write to the knowledge base.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

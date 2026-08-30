@@ -4,7 +4,7 @@ use venom_core::{BayesianEvidence, EvidenceId, Hypothesis};
 
 use crate::knowledge::{KnowledgeSnapshot, KnowledgeWrite};
 
-use super::{
+use crate::rules::{
     expression::ExpressionEvaluation, hypothesis_id_for_rule, registry::ReasoningRule,
     RuleEngineError,
 };

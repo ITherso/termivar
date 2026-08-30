@@ -1,10 +1,12 @@
 use venom_core::{ApiVisibilityObservation, EntityId, Evidence};
 
-use crate::{knowledge::KnowledgeBase, rules::RuleEngine};
-
-use super::{
-    model::{ApiObservationCommitReceipt, ApiObservationError, ApiObservationReceipt},
-    MAX_API_VISIBILITY_SOURCE_COMPONENT_BYTES,
+use crate::{
+    api_observation::{
+        model::{ApiObservationCommitReceipt, ApiObservationError, ApiObservationReceipt},
+        MAX_API_VISIBILITY_SOURCE_COMPONENT_BYTES,
+    },
+    knowledge::KnowledgeBase,
+    rules::RuleEngine,
 };
 
 /// Accepts one host-paired visibility observation and applies installed rules.

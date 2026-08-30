@@ -4,7 +4,7 @@ use venom_core::{
     EvidenceValue, HypothesisState, HypothesisStrength, KnowledgePredicate, Probability,
 };
 
-use super::{
+use crate::rules::{
     expression::{
         evidence_value_texts, is_false, text_contains, text_list_contains_exact, Expression,
         RequiredNullable,

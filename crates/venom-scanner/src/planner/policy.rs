@@ -2,7 +2,7 @@ use std::collections::BTreeSet;
 
 use thiserror::Error;
 
-use super::{model::ExclusionReason, PlannerError};
+use crate::planner::{model::ExclusionReason, PlannerError};
 
 /// Current host-owned action suppressions, preserving their authority source.
 ///

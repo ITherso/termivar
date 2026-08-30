@@ -3,13 +3,12 @@ use sha2::{Digest, Sha256};
 use std::fmt;
 use venom_core::{EntityId, RelationId};
 
-use crate::knowledge::MAX_KNOWLEDGE_RELATION_ID_BYTES;
-
-use super::{
+use crate::api_observation::{
     model::ApiObservationError, API_VISIBILITY_REVIEW_CURSOR_DOMAIN,
     API_VISIBILITY_REVIEW_CURSOR_PREFIX, API_VISIBILITY_REVIEW_RESOURCE_DIGEST_HEX_BYTES,
     MAX_API_VISIBILITY_REVIEW_CURSOR_BYTES,
 };
+use crate::knowledge::MAX_KNOWLEDGE_RELATION_ID_BYTES;
 
 /// Opaque v2 continuation token bound to one resource and relation position.
 ///

@@ -4,7 +4,7 @@ use venom_core::{ConceptId, EvidenceId, EvidenceValue, KnowledgePredicate, Relat
 
 use crate::knowledge::KnowledgeSnapshot;
 
-use super::{non_empty, RuleEngineError};
+use crate::rules::{non_empty, RuleEngineError};
 
 pub(super) fn is_false(value: &bool) -> bool {
     !*value

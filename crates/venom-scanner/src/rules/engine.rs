@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use crate::knowledge::{KnowledgeBase, KnowledgeBaseError, KnowledgeSnapshot};
 
-use super::{
+use crate::rules::{
     evaluation::{evaluate_rule, RuleApplication, RuleEvaluation},
     registry::{ReasoningRule, RuleWrite},
     RuleEngineError,

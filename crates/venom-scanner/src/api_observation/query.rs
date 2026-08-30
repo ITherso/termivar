@@ -2,13 +2,14 @@ use serde::{Deserialize, Deserializer, Serialize};
 use std::fmt;
 use venom_core::{EntityId, RelationId};
 
-use crate::knowledge::{KnowledgeBase, MAX_KNOWLEDGE_RELATION_ID_BYTES};
-
-use super::{
-    cursor::ApiVisibilityReviewCursor,
-    model::ApiObservationError,
-    review::{project_api_visibility_review, ApiVisibilityReview},
-    DEFAULT_API_VISIBILITY_REVIEW_SCAN_LIMIT, HARD_MAX_API_VISIBILITY_REVIEW_SCAN_LIMIT,
+use crate::{
+    api_observation::{
+        cursor::ApiVisibilityReviewCursor,
+        model::ApiObservationError,
+        review::{project_api_visibility_review, ApiVisibilityReview},
+        DEFAULT_API_VISIBILITY_REVIEW_SCAN_LIMIT, HARD_MAX_API_VISIBILITY_REVIEW_SCAN_LIMIT,
+    },
+    knowledge::{KnowledgeBase, MAX_KNOWLEDGE_RELATION_ID_BYTES},
 };
 
 /// Bounded cursor for one resource-scoped API visibility review page.

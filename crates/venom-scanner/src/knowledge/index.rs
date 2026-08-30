@@ -7,7 +7,7 @@ use std::{
 
 use venom_core::{EntityId, Evidence, EvidenceId, Fact, Hypothesis, KnowledgePredicate};
 
-use super::KnowledgeBase;
+use crate::knowledge::KnowledgeBase;
 
 impl KnowledgeBase {
     /// Returns the derived evidence records computed directly from `parent`,

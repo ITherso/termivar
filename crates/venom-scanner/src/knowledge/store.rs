@@ -7,7 +7,9 @@ use venom_core::{
     OntologyWrite, RelationTypeId,
 };
 
-use super::{bump_ontology_revision, KnowledgeAuthority, KnowledgeBaseStats, KnowledgeState};
+use crate::knowledge::{
+    bump_ontology_revision, KnowledgeAuthority, KnowledgeBaseStats, KnowledgeState,
+};
 
 /// Thread-safe, indexed knowledge shared by evidence and decision engines.
 ///

@@ -4,7 +4,7 @@ use venom_core::{
     EntityId, Evidence, KnowledgeEntity, KnowledgeRelation, RelationId, RelationKind,
 };
 
-use super::{
+use crate::knowledge::{
     bump_subject_revision, collect_indexed, identity_conflict, index, KnowledgeBase,
     KnowledgeBaseError, KnowledgeRecordKind, KnowledgeWrite,
 };

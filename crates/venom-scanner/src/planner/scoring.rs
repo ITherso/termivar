@@ -1,7 +1,7 @@
 use serde::{Deserialize, Deserializer, Serialize};
 use venom_core::Probability;
 
-use super::PlannerError;
+use crate::planner::PlannerError;
 
 const MAX_BASIS_POINTS: u16 = 10_000;
 

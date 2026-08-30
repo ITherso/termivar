@@ -2,7 +2,7 @@
 
 use venom_core::{EntityId, Evidence, Fact, Hypothesis, HypothesisState, Ontology};
 
-use super::{
+use crate::knowledge::{
     collect_indexed, subject_revision, validate_revisions, KnowledgeAuthority, KnowledgeBase,
     KnowledgeBaseError,
 };

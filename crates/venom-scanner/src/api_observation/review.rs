@@ -6,15 +6,17 @@ use venom_core::{
     HypothesisStrength, KnowledgePredicate, KnowledgeRelation, RelationId, RelationKind,
 };
 
-use crate::{knowledge::KnowledgeBase, rules::hypothesis_id_for_rule};
-
 #[cfg(feature = "scanning")]
-use super::model::ApiObservationCommitReceipt;
-use super::{
-    API_VISIBILITY_EVIDENCE_KIND, API_VISIBILITY_RELATION, API_VISIBILITY_SOURCE_METHOD,
-    AUTHORIZATION_BOUNDARY_RULE, COMPARISON_EVIDENCE_PREFIX, COMPARISON_RELATION_PREFIX,
-    COMPARISON_SUBJECT_PREFIX, MAX_API_VISIBILITY_REVIEW_RATIONALE_BYTES,
-    MAX_API_VISIBILITY_SOURCE_COMPONENT_BYTES, UI_API_BOUNDARY_RULE,
+use crate::api_observation::model::ApiObservationCommitReceipt;
+use crate::{
+    api_observation::{
+        API_VISIBILITY_EVIDENCE_KIND, API_VISIBILITY_RELATION, API_VISIBILITY_SOURCE_METHOD,
+        AUTHORIZATION_BOUNDARY_RULE, COMPARISON_EVIDENCE_PREFIX, COMPARISON_RELATION_PREFIX,
+        COMPARISON_SUBJECT_PREFIX, MAX_API_VISIBILITY_REVIEW_RATIONALE_BYTES,
+        MAX_API_VISIBILITY_SOURCE_COMPONENT_BYTES, UI_API_BOUNDARY_RULE,
+    },
+    knowledge::KnowledgeBase,
+    rules::hypothesis_id_for_rule,
 };
 
 /// Canonical paired observation and its reviewable boundary hypotheses.

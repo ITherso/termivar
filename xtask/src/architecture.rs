@@ -82,27 +82,27 @@ const MODULE_POLICIES: &[ModulePolicy] = &[
     },
     ModulePolicy {
         source: "knowledge/index.rs",
-        allowed_internal: &[],
+        allowed_internal: &["knowledge"],
         allowed_external: &[],
     },
     ModulePolicy {
         source: "knowledge/relations.rs",
-        allowed_internal: &[],
+        allowed_internal: &["knowledge"],
         allowed_external: &[],
     },
     ModulePolicy {
         source: "knowledge/snapshot.rs",
-        allowed_internal: &[],
+        allowed_internal: &["knowledge"],
         allowed_external: &[],
     },
     ModulePolicy {
         source: "knowledge/store.rs",
-        allowed_internal: &[],
+        allowed_internal: &["knowledge"],
         allowed_external: &[],
     },
     ModulePolicy {
         source: "knowledge/writes.rs",
-        allowed_internal: &[],
+        allowed_internal: &["knowledge"],
         allowed_external: &[],
     },
     ModulePolicy {
@@ -117,22 +117,22 @@ const MODULE_POLICIES: &[ModulePolicy] = &[
     },
     ModulePolicy {
         source: "rules/engine.rs",
-        allowed_internal: &["knowledge"],
+        allowed_internal: &["knowledge", "rules"],
         allowed_external: &[],
     },
     ModulePolicy {
         source: "rules/evaluation.rs",
-        allowed_internal: &["knowledge"],
+        allowed_internal: &["knowledge", "rules"],
         allowed_external: &[],
     },
     ModulePolicy {
         source: "rules/expression.rs",
-        allowed_internal: &["knowledge"],
+        allowed_internal: &["knowledge", "rules"],
         allowed_external: &[],
     },
     ModulePolicy {
         source: "rules/registry.rs",
-        allowed_internal: &[],
+        allowed_internal: &["rules"],
         allowed_external: &[],
     },
     ModulePolicy {
@@ -147,22 +147,22 @@ const MODULE_POLICIES: &[ModulePolicy] = &[
     },
     ModulePolicy {
         source: "planner/model.rs",
-        allowed_internal: &["payload_strategy", "rules"],
+        allowed_internal: &["payload_strategy", "planner", "rules"],
         allowed_external: &[],
     },
     ModulePolicy {
         source: "planner/policy.rs",
-        allowed_internal: &[],
+        allowed_internal: &["planner"],
         allowed_external: &[],
     },
     ModulePolicy {
         source: "planner/scoring.rs",
-        allowed_internal: &[],
+        allowed_internal: &["planner"],
         allowed_external: &[],
     },
     ModulePolicy {
         source: "planner/selection.rs",
-        allowed_internal: &["knowledge", "rules"],
+        allowed_internal: &["knowledge", "planner", "rules"],
         allowed_external: &[],
     },
     ModulePolicy {
@@ -222,12 +222,12 @@ const MODULE_POLICIES: &[ModulePolicy] = &[
     },
     ModulePolicy {
         source: "api_observation/cursor.rs",
-        allowed_internal: &["knowledge"],
+        allowed_internal: &["api_observation", "knowledge"],
         allowed_external: &["sha2"],
     },
     ModulePolicy {
         source: "api_observation/ingest.rs",
-        allowed_internal: &["knowledge", "rules"],
+        allowed_internal: &["api_observation", "knowledge", "rules"],
         allowed_external: &[],
     },
     ModulePolicy {
@@ -237,12 +237,12 @@ const MODULE_POLICIES: &[ModulePolicy] = &[
     },
     ModulePolicy {
         source: "api_observation/query.rs",
-        allowed_internal: &["knowledge"],
+        allowed_internal: &["api_observation", "knowledge"],
         allowed_external: &[],
     },
     ModulePolicy {
         source: "api_observation/review.rs",
-        allowed_internal: &["knowledge", "rules"],
+        allowed_internal: &["api_observation", "knowledge", "rules"],
         allowed_external: &[],
     },
     ModulePolicy {
