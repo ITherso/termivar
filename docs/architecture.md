@@ -100,21 +100,31 @@ plugin crates dynamically.
 
 ## Scanner modules
 
-```text
-venom-scanner/src/
-|-- phases/          ordered scan implementations
-|-- legacy_discovery.rs  distinct bounded transport for ordered phases 2–4 and 5–9
-|-- plugin.rs        Preview trait, host context, registry, and evidence boundary
-|-- contracts.rs     scanner traits and core contract re-exports
-|-- runner.rs        scheduling, timeouts, cancellation, aggregation
-|-- event_bus.rs     legacy-scanner host event delivery (opt-in)
-|-- reporting.rs     bounded typed RunReport renderer (opt-in)
-|-- distributed.rs   bounded process-local coordinator and result store (opt-in)
-|-- advanced_detection.rs  validated signal and technique records (opt-in)
-|-- anomaly.rs       validated deviation records and text matching (opt-in)
-|-- ml.rs            external-model record types only (opt-in)
-`-- lua_engine.rs    bounded host-owned Lua registry and executor (opt-in)
-```
+Responsibility-dense scanner domains keep their established root source module
+as a facade and place implementation ownership in private child modules. Eight
+facades remain public modules; `lua_engine` and `distributed` remain private
+modules with reviewed crate-root re-exports. Existing public module and
+re-export paths remain compatible. This is a source-organization boundary, not
+a second runtime or a capability change.
+
+| Facade | Private responsibility modules |
+| --- | --- |
+| `plugin.rs` | metadata, host context, registry, execution, recorder, limits, and broker transport |
+| `decision_loop.rs` | commands, state, transition policy, and receipts |
+| `decision_runner.rs` | executor registry, execution, failures, and receipts |
+| `http_evidence.rs` | policy, probes, response projection, form controls, passive review, request broker, and review response |
+| `knowledge.rs` | store, snapshots, writes, relations, and indexes |
+| `rules.rs` | expressions, registry, evaluation, and engine |
+| `planner.rs` | model, policy, scoring, and selection |
+| `api_observation.rs` | model, ingestion, query, review, and cursor |
+| `lua_engine.rs` | source, registry, VM, execution, limits, and history |
+| `distributed.rs` | model, limits, coordinator, queue, lease, worker, recovery, and results |
+
+The historical `phases/`, `legacy_discovery.rs`, `runner.rs`, and
+`event_bus.rs` remain opt-in through `legacy-scanner`. `reporting.rs` remains
+the single bounded typed renderer. Optional detection, platform-model, ML,
+monitoring, compliance, and threat-intelligence modules retain their separate
+feature boundaries.
 
 ## Target product-layer split
 
@@ -307,7 +317,40 @@ verification authority and claim bridge are specified by
 The host-owned, evidence-only plugin contract is specified by
 [ADR 0019](adr/0019-host-own-plugin-execution.md). The two Experimental
 host-execution contracts are specified by
-[ADR 0022](adr/0022-bound-host-lua-and-distributed-execution.md).
+[ADR 0022](adr/0022-bound-host-lua-and-distributed-execution.md). The additive
+profiled assessment-reporting composition and CLI publication boundary are
+specified by [ADR 0023](adr/0023-compose-profiled-assessment-reporting.md).
+
+For the ten responsibility-split domains above, the same gate also requires
+the reviewed private child-module inventory, pins facade-resident authority,
+rejects a responsibility collapsing back into a root facade or moving to a
+sibling, rejects parent-facade glob imports, and checks allowed cross-domain
+dependencies. These checks preserve the root source facade and its existing
+public module or crate-root re-export paths while keeping authority ownership
+explicit; they do not declare the Preview or Experimental APIs stable.
+
+## Runtime evidence boundaries
+
+The Rust `1.88.0` runtime-smoke matrix exercises the default CLI and a narrow
+loopback-only contract set on Ubuntu, Windows, and macOS. Passing those jobs is
+host-native smoke evidence, not platform certification or an all-features
+release claim.
+
+The `compat/current-head/` workspace uses one dedicated lockfile and four
+separately tested packages for default core, deterministic assessment/reporting,
+the Legacy `ScannerSdk` facade, and plugin API 0.2 against the same checkout.
+They are same-revision source-shape evidence only: they establish neither
+cross-version compatibility nor external adoption. See
+[Public API compatibility status](public-api-compatibility.md).
+
+The endpoint harness runs the real `WebAssessmentRuntime` only against its
+hard-coded loopback fixture. Initial controlled evidence for source commit
+`27321efbbf49cb2adbc72afb699d1b31ea407486` is retained from
+[workflow run 33292247976](https://github.com/ITherso/venom/actions/runs/33292247976),
+with [human-readable](reports/benchmarks/27321ef-endpoint-assessment.md) and
+[machine-readable](reports/benchmarks/27321ef-endpoint-assessment.json)
+records. One controlled run is not an SLA, capacity certification, accepted
+repeatable baseline, or regression threshold.
 
 ## Dependency review
 

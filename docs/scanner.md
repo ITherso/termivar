@@ -80,6 +80,24 @@ enabled enforcement can only narrow or suppress existing authorized work. It
 cannot add an action, expand exact-origin authority or budgets, or increase
 intensity.
 
+## Internal domain facades
+
+The scanner's responsibility-dense domains are split behind their existing
+root source facades. `plugin`, `decision_loop`, `decision_runner`,
+`http_evidence`, `knowledge`, `rules`, `planner`, and `api_observation` remain
+public modules; `lua_engine` and `distributed` remain private modules with
+reviewed crate-root re-exports. Private child modules own narrower model,
+policy, registry, execution, receipt, storage, query, VM, and coordination
+responsibilities. This organization does not add a scanner engine or change any
+capability semantics.
+
+`cargo xtask architecture` binds the reviewed child-module inventory, keeps
+authority-defining symbols in their facade, rejects responsibility moving back
+into the facade or across siblings, and checks allowed cross-domain imports.
+Lifecycle remains unchanged: the deterministic assessment and plugin API 0.2
+surfaces are Preview, `ScannerSdk` is a Legacy facade, and Lua/distributed host
+surfaces are Experimental.
+
 ## Historical ordered pipeline
 
 The ordered runner, scanner SDK, context, and phases require the non-default
@@ -166,8 +184,26 @@ it for completed `web-review` JSON, CSV, HTML, and Markdown output under the
 same 16 MiB ceiling. Assessment summaries and opaque references are already
 redacted before they reach the renderer. The renderer does not create items,
 upgrade dispositions, synthesize severity/risk, persist files, or acquire
-verdict authority. See [Bounded report rendering](reporting.md) and [ADR
-0021](adr/0021-render-bounded-run-reports.md).
+verdict authority. See [Bounded report rendering](reporting.md), [ADR
+0021](adr/0021-render-bounded-run-reports.md), and [ADR
+0023](adr/0023-compose-profiled-assessment-reporting.md).
+
+## Endpoint-scale evidence
+
+The endpoint harness exercises the real `WebAssessmentRuntime` only against a
+hard-coded `127.0.0.1` fixture. Its fixed workloads cover 100 endpoints, 1,000
+endpoints, and 10,000 requests. The last workload is a batch of ten independent
+998-subject origin assessments, each with its own broker, budget, cancellation,
+and deadline; it is not one 10,000-request authority.
+
+Initial controlled evidence for source commit
+`27321efbbf49cb2adbc72afb699d1b31ea407486` is retained from
+[workflow run 33292247976](https://github.com/ITherso/venom/actions/runs/33292247976)
+as [Markdown](reports/benchmarks/27321ef-endpoint-assessment.md) and
+[validated JSON](reports/benchmarks/27321ef-endpoint-assessment.json). These
+runner-local observations are not an SLA, capacity limit, concurrency result,
+accepted repeatable baseline, or regression threshold. See
+[Benchmarks](benchmarks.md) for the authority model and reproduction contract.
 
 ## Experimental host execution contracts
 

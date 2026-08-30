@@ -26,8 +26,9 @@ Architecture decision records (ADRs) preserve why a durable technical choice was
 | [0018](0018-bound-legacy-verification-authority.md) | Accepted | Bound legacy verification behind a separate active authority |
 | [0019](0019-host-own-plugin-execution.md) | Accepted | Make plugin execution host-owned and evidence-only |
 | [0020](0020-quarantine-platform-and-distribution-surfaces.md) | Accepted; reporting clause superseded by 0021, Lua/distributed clauses by 0022 | Quarantine platform and distribution surfaces |
-| [0021](0021-render-bounded-run-reports.md) | Accepted | Render bounded typed run reports without adding verdict authority |
+| [0021](0021-render-bounded-run-reports.md) | Accepted; CLI-composition statements superseded by [0023](0023-compose-profiled-assessment-reporting.md) | Render bounded typed run reports without adding verdict authority |
 | [0022](0022-bound-host-lua-and-distributed-execution.md) | Accepted | Bound host-owned Lua execution and process-local coordination |
+| [0023](0023-compose-profiled-assessment-reporting.md) | Accepted | Compose opt-in profiled assessment reporting at the CLI boundary |
 
 ## Format
 

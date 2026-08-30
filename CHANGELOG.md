@@ -41,6 +41,26 @@ All notable changes to Venom are recorded here. Releases use the categories from
   same-directory temporary-file and hard-link semantics. Incomplete or
   started-failed runs instead emit a redacted `web-assessment/v2` diagnostic,
   return nonzero, and create no report artifact.
+- A focused Rust 1.88 runtime-smoke matrix on Ubuntu, Windows, and macOS for
+  default CLI build/metadata, deterministic loopback scan behavior, atomic
+  report paths, the core wire golden, exact-origin authority, and redirect
+  no-follow behavior. This is a portability smoke layer, not platform
+  certification or a duplicate all-feature matrix.
+- Four separately tested current-head consumers under one dedicated lockfile
+  for default `venom-core`, deterministic assessment/reporting, the Legacy
+  `ScannerSdk` facade, and evidence-only plugin API 0.2. Separate package
+  invocations avoid feature unification; they prove same-revision source
+  compilation only, not cross-version compatibility, a stable ABI, or external
+  adoption.
+- A deterministic endpoint-assessment evidence harness over the real
+  `WebAssessmentRuntime`, with fixed harness-owned loopback workloads for 100
+  and 1,000 endpoints plus 10,000 requests, strict
+  `venom.endpoint-performance/v1` JSON/Markdown projection, an automatic
+  contract job on relevant changes, and measurement gated by manual dispatch
+  or an explicit same-repository PR label. The first controlled record captures
+  three measured samples and intra-run variance for source commit `27321ef`;
+  thresholds remain null and no repeatable accepted baseline, capacity claim,
+  or SLA is established.
 - Experimental opt-in host-library execution surfaces for bounded Lua 5.4
   source snapshots and deterministic process-local task/worker/result
   coordination. Neither surface has a repository CLI, scanner, plugin, or
@@ -104,7 +124,11 @@ All notable changes to Venom are recorded here. Releases use the categories from
 - A context-owned legacy discovery authority shared by crawler, optional directory, and parameter phases, with exact-origin redirect-disabled transport plus configurable depth, page, request, request-timeout, wall-time, cumulative-body, and per-response-body limits.
 - A distinct context-owned legacy verification authority for phases five through nine, with exact-origin bodyless transport, `Active`-stage accounting, disabled redirects/retries, and configurable request, timeout, wall-time, cumulative-body, and per-response-body limits.
 - A fail-closed legacy verifier bridge that accepts only allowlisted, case-correlated, knowledge-only `NeedsReview` reports and rolls their public projection back when a phase errors, times out, panics, is cancelled, or exhausts its bounded transport authority.
-- A Preview, opt-in host-library renderer for typed `RunReport` values, with format-safe encoding, an explicit document schema, a hard rendered-byte ceiling, typed failures, and no filesystem, persistence, CLI, or verdict authority.
+- The initial Preview, opt-in host-library renderer for typed `RunReport`
+  values, with format-safe encoding, an explicit document schema, a hard
+  rendered-byte ceiling, typed failures, and no renderer-owned filesystem,
+  persistence, CLI policy, or verdict authority. Its later explicit
+  `web-review` composition is described above.
 
 ### Changed
 
@@ -116,6 +140,13 @@ All notable changes to Venom are recorded here. Releases use the categories from
   `scanning + reporting` can now compose only completed runtime-owned
   `WebAssessmentRunReport` truth into a typed report, while generic
   caller-supplied `RunReport` values remain the separate host-library API.
+- Split responsibility-dense scanner facades into private domain modules for
+  plugin execution, decision-loop and runner state, HTTP evidence, knowledge,
+  rules, planning, API observation, Lua execution, and process-local
+  coordination while
+  preserving reviewed root facades, re-exports, feature closures, and runtime
+  behavior. Architecture gates prevent those responsibilities from silently
+  collapsing back into monolithic implementations.
 - Switched the pinned repository coverage measurement from Linux's default
   Ptrace backend to Tarpaulin's explicit LLVM backend and versioned the evidence
   record as `venom.coverage.v2`, including a normalized line-state digest that
@@ -144,7 +175,10 @@ All notable changes to Venom are recorded here. Releases use the categories from
 - Reframed the public README and linked onboarding, distribution, architecture, and profile guidance around the deterministic decision runtime, explicitly separating the opt-in legacy runner, unsupported adapters, and library-only surfaces.
 - Replaced the long-form promotional README with a concise project guide.
 - Standardized the historical pre-release baseline as `0.9.0-alpha` before advancing the remediated source line.
-- Replaced absolute completion claims with lifecycle labels such as Beta, Preview, and Experimental.
+- Replaced absolute completion claims with scoped lifecycle labels. Default
+  `venom-core` is a Stable candidate rather than a promise; deterministic APIs
+  and plugin API 0.2 are Preview, `ScannerSdk` is Legacy, and Lua/distributed
+  host surfaces are Experimental.
 - Moved shared event and finding contracts into `venom-core` while preserving scanner re-exports.
 - Documented the plugin system as a source-level preview instead of implying dynamic discovery.
 - Moved the editable Draw.io architecture source directly under `docs/` for discoverability.

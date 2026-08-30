@@ -92,6 +92,7 @@ nav:
       - ADR 0020 - Platform and distribution quarantine: adr/0020-quarantine-platform-and-distribution-surfaces.md
       - ADR 0021 - Bounded RunReport rendering: adr/0021-render-bounded-run-reports.md
       - ADR 0022 - Bounded host execution: adr/0022-bound-host-lua-and-distributed-execution.md
+      - ADR 0023 - Profiled assessment reporting: adr/0023-compose-profiled-assessment-reporting.md
       - Release process: RELEASE.md
 markdown_extensions:
   - admonition

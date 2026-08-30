@@ -118,9 +118,11 @@ stdout.
 The CLI creates a same-directory temporary file with exclusive creation,
 writes and synchronizes the complete rendered bytes, then publishes the new
 destination with a hard link. It never overwrites an existing destination and
-cleans up its temporary file on failure. Directory-metadata crash durability is
-best effort, and filesystems without the required same-directory hard-link
-semantics fail nonzero rather than reporting publication success.
+attempts best-effort temporary-file cleanup on failure. If cleanup after the
+hard link fails, the complete destination and temporary file can both remain
+while the command returns nonzero; it does not report publication success.
+Directory-metadata crash durability is best effort, and filesystems without the
+required same-directory hard-link semantics fail nonzero.
 
 An incomplete or started-failed `web-review` assessment is not a partial typed
 report. It emits the redacted `web-assessment/v2` diagnostic audit to stdout,
@@ -151,5 +153,6 @@ visible reversible escapes. HTML and Markdown apply context-specific encoding
 to every projected text value.
 
 See [ADR 0021](adr/0021-render-bounded-run-reports.md) for the original generic
-renderer boundary. The additive typed assessment schema does not reinterpret
-that contract or `decision-scan/v1`.
+renderer boundary and [ADR 0023](adr/0023-compose-profiled-assessment-reporting.md)
+for the additive CLI composition and publication boundary. The typed assessment
+schema does not reinterpret the generic renderer contract or `decision-scan/v1`.

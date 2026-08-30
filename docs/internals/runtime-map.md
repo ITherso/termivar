@@ -134,6 +134,17 @@ The deterministic modules are compiled through the scanner crate's default
 `decision_runner`, `runtime_budget`, `http_evidence`, `planner`, `rules`,
 `knowledge`, `experience`, `verification`, and `adaptive`.
 
+Internal responsibility splits do not create additional engines. The root
+source facades for `plugin`, `decision_loop`, `decision_runner`,
+`http_evidence`, `knowledge`, `rules`, `planner`, and `api_observation` remain
+public modules. `lua_engine` and `distributed` remain private modules with
+reviewed crate-root re-exports. Private child modules own narrower
+metadata/context/execution, state/policy/receipt, policy/probe/response,
+store/write/query, and coordinator/lease responsibilities.
+The architecture gate pins the reviewed child inventory, facade-resident
+authority, and allowed cross-domain dependencies so these domains cannot
+silently collapse back into responsibility-dense root files.
+
 Composition is selection-specific:
 
 - **Semantic extraction** (`semantic`) consumes evidence through a bounded
@@ -281,7 +292,7 @@ The following matrix separates build availability from actual execution:
 | Deterministic stack (`web_runtime`, `decision_runner`, `runtime_budget`, `http_evidence`, `planner`, `rules`, `knowledge`, `experience`, `verification`, `adaptive`, `web_*`, `api_evidence`, `api_observation`, `api_reasoning`) | scanner default (`core`, `scanning`) | Surface B; no-profile/`baseline` use the single-resource primitive, explicit `web-review` adds the origin orchestrator; API reasoning remains host opt-in | yes, profile-dependent | implemented and tested Preview |
 | `semantic` | scanner default | host library and explicit `web-review` post-commit composition | `web-review` only | implemented and tested Preview |
 | `defense` | scanner default | host library and explicit `web-review` observation/shadow; enforcement requires `--enforce-defense` | `web-review` only | implemented and tested Preview; cannot add or intensify actions |
-| `phases/*`, `legacy_discovery`, `runner`, `context`, `sdk` | opt-in (`legacy-scanner`) | Surface A; phases 2–4 use bounded passive discovery, phases 5–9 use separate bounded active verification, and phase-one/custom raw I/O remains possible | no | historical alpha runtime / SDK; whole-run accounting remains `Unmetered` |
+| `phases/*`, `legacy_discovery`, `runner`, `context`, `sdk` | opt-in (`legacy-scanner`) | Surface A; phases 2–4 use bounded passive discovery, phases 5–9 use separate bounded active verification, and phase-one/custom raw I/O remains possible | no | Legacy runtime / `ScannerSdk` facade; whole-run accounting remains `Unmetered` |
 | `advanced_detection`, `anomaly` | opt-in (`detection`) | no repository product caller; validated/catalogued caller records plus text matching only | no | Experimental; no deviation computation, response classification, or finding production |
 | `api`, `api_gateway`, `auth`, `cache`, `config`, `config_loader`, `metrics`, `post_exploitation`, `persistence`, `realtime`, `dashboard` | opt-in (`platform-models`) | no repository product caller | no | Experimental records, catalogs, and in-memory utilities; no API/auth/persistence/realtime execution path, and caller-owned collections are not uniformly capacity-bounded |
 | `reporting` | opt-in at scanner boundary; enabled by normal CLI dependency | standalone host `RunReport` rendering and, with `scanning`, typed completed-assessment composition/rendering | completed explicit `web-review` only | Preview bounded renderer; no I/O, persistence, risk synthesis, or verdict invention; see the [reporting guide](../reporting.md) |
@@ -334,3 +345,22 @@ The feature and module inventory comes from
 `crates/venom-cli/Cargo.toml`, and `crates/venom-cli/src/main.rs`. Numeric module
 counts are intentionally omitted because they drift; generate any count against
 a named commit with an explicit command.
+
+Runtime validation has deliberately narrower evidence boundaries than this
+inventory. Rust `1.88.0` smoke jobs exercise loopback CLI/path/scope contracts
+on Ubuntu, Windows, and macOS, but do not certify those platforms or duplicate
+the all-features matrix. The `compat/current-head/` workspace uses one dedicated
+lockfile and separate package tests for default core, deterministic
+assessment/reporting, the Legacy `ScannerSdk` facade, and plugin API 0.2 against
+the same checkout; they are not cross-version compatibility or
+external-adoption evidence.
+
+The loopback-only endpoint harness has one initial controlled record for source
+commit `27321efbbf49cb2adbc72afb699d1b31ea407486` from
+[workflow run 33292247976](https://github.com/ITherso/venom/actions/runs/33292247976):
+[Markdown](../reports/benchmarks/27321ef-endpoint-assessment.md) and
+[JSON](../reports/benchmarks/27321ef-endpoint-assessment.json). It exercises
+100 endpoints, 1,000 endpoints, and a 10,000-request batch using the real
+`WebAssessmentRuntime`. The batch is ten independent origin authorities, not
+one global assessment. This evidence is not an SLA, an accepted repeatable
+baseline, or a regression threshold.

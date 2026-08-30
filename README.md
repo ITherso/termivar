@@ -268,7 +268,8 @@ See the [runtime map](docs/internals/runtime-map.md) for the exact module and co
 | `venom scan` | Preview | No-profile conservative single-resource runtime keeps text, explain, and `decision-scan/v1`; explicit `baseline` and exact-origin `web-review` are additive profile-v1 surfaces |
 | `venom decision-scan` | Deprecated alias | Compatibility name for the same deterministic command and engine; the wire schema remains `decision-scan/v1` |
 | `venom legacy-scan` | Legacy alpha, opt-in | Historical mixed-authority pipeline: phases 2–4 share bounded passive discovery, phases 5–9 share separate bounded active verification, and phase-one/custom raw I/O keeps the whole run `Unmetered`; requires `legacy-scanner` and explicit acknowledgement |
-| Scanner SDK / native plugins | Preview, opt-in | Source-level host extensions; plugins receive a host-owned bounded context and record observations, not findings. No stock detector plugins ship, and plugins are not merged into the default runtime |
+| Scanner SDK | Legacy, opt-in | Historical source-level phase-composition facade behind `legacy-scanner`; it is covered by a same-revision compile fixture, not an accepted stable SDK baseline |
+| Native plugin API 0.2 | Preview, opt-in | Source-linked host extensions receive a host-owned bounded context and record evidence-only observations, not findings. No stock detector plugins ship, and plugins are not merged into the default runtime |
 | Run-report renderer | Preview, opt-in | Standalone `reporting` renders a host-pre-redacted `RunReport`; `scanning + reporting` also composes completed runtime-owned web-review truth into typed assessment reports, and the CLI uses that central renderer for completed web-review output. The renderer performs no I/O, persistence, risk synthesis, or verdict invention |
 | Lua execution | Experimental, opt-in | Implemented bounded, cooperative in-process Lua 5.4 registry/executor for explicit library hosts; no standard libraries, process isolation, plugin bridge, scanner phase, or repository CLI caller |
 | Distributed coordination | Experimental, opt-in | Implemented deterministic, bounded in-process task/worker/result state machines for explicit library hosts; no transport, authentication, serialization, persistence, ambient clock, background work, or multi-node control plane |
@@ -296,13 +297,14 @@ experimental relay require `api-adapter` and `proxy-adapter`.
 | --- | --- | --- |
 | Tests | Unit, integration, doc, security, template, and architecture jobs in [CI](.github/workflows/tests.yml) | Passing CI is not production readiness |
 | Rust compatibility | MSRV 1.88 plus stable, beta, and nightly | Pre-stable APIs may still change |
+| Cross-platform runtime smoke | Focused Rust 1.88 default-CLI and loopback checks on Ubuntu, Windows, and macOS | A small hosted-runner smoke matrix is not platform certification or broad all-feature support |
 | Coverage | Pinned Tarpaulin's LLVM backend enforces the accepted [21,439/24,842 observed source-line baseline](docs/reports/coverage/6edc4d925739.md) plus the same exact ratio on coverable changed lines; `venom.coverage.v2` evidence binds a normalized line-state digest | Coverage is a scoped navigation signal, not proof of test adequacy; the advisory [Codecov](https://codecov.io/gh/ITherso/venom) upload is best-effort and tokenless availability is not enforced |
 | Safe Rust / boundaries | Workspace crates forbid unsafe code; architecture checks enforce dependency and transport ownership | Static boundaries do not prove semantic correctness |
-| Public API compatibility | Blocking SemVer comparison for `venom-core` | Scanner, CLI, API, and proxy are outside that baseline |
+| Public API compatibility | Blocking SemVer comparison for `venom-core` plus four isolated [current-head consumer fixtures](docs/public-api-compatibility.md) | Same-revision compilation is not cross-version compatibility, a stable ABI, or external adoption; Scanner SDK and plugin baselines remain open |
 | Security scanning | RustSec, cargo-deny, Semgrep CE, Trivy, Dependabot, and scoped CodeQL | Automated scanners have false positives and false negatives |
 | Fuzzing | PR seed replay and compile checks; bounded scheduled/manual campaigns for four product-semantic and five parser targets | Time-bounded fuzzing is not a safety proof |
 | Mutation testing | Scoped, evidenced campaigns for selected policy, planner, runtime, and extraction contracts | No permanent mutation farm or project-wide score |
-| Performance | Compile/binary metrics and Criterion microbaseline artifacts | Controlled endpoint-scale CPU/RAM/latency report is still missing |
+| Performance | [Initial controlled endpoint evidence](docs/reports/benchmarks/27321ef-endpoint-assessment.md) covers the fixed 100/1,000-endpoint and 10,000-request loopback workloads | One workflow run provides intra-run variance only; no repeatable accepted baseline, threshold, capacity claim, or SLA exists |
 | Independent audit | Not completed | External review remains a stable-release gate |
 
 See [Fuzzing](docs/fuzzing.md), [Quality metrics](docs/quality-metrics.md), [Repository health](docs/repository-health.md), and [Project status](PROJECT_STATUS.md) for scope and caveats.
@@ -315,7 +317,12 @@ The latest published tag, **v0.9.0-alpha**, is historical and predates this sour
 - [Stable-release gates and active blockers](PROJECT_STATUS.md)
 - [Changelog](CHANGELOG.md)
 
-The current source state has no independent security audit, stable scanner/plugin ABI, endpoint-scale performance report, supported API service, supported MITM proxy, or deployable distributed control plane.
+The current source state has no independent security audit, accepted stable
+Scanner SDK/plugin source-compatibility baseline or deprecation window,
+repeatable accepted endpoint-performance baseline, supported API service,
+supported MITM proxy, or durable distributed control plane. The committed
+same-revision fixtures and first endpoint workflow record do not close those
+gates.
 
 ## Repository layout
 
@@ -334,7 +341,14 @@ The root `Cargo.toml` is a virtual workspace manifest. Runtime ownership and fea
 
 ## Scanner SDK and plugins
 
-Both generated starters compile in CI, but their source-level contracts remain Preview. The plugin starter is an INFO-only trait-boundary fixture: Venom ships no stock detector plugins, and plugin observations still require host reasoning and verification before any finding projection.
+Both generated starters compile in CI, but they do not share one lifecycle.
+The Scanner SDK starter exercises the historical Legacy facade; the native
+plugin starter targets the evidence-only Preview API 0.2 line. The plugin
+starter is an INFO-only trait-boundary fixture: Venom ships no stock detector
+plugins, and plugin observations still require host reasoning and verification
+before any finding projection. The four separately tested current-head
+consumers share one dedicated lockfile and provide same-revision compile
+evidence only; see [Public API compatibility status](docs/public-api-compatibility.md).
 
 ```bash
 cargo install cargo-generate
@@ -363,10 +377,12 @@ See the [Scanner SDK guide](docs/sdk.md), [Plugin development](docs/plugin.md), 
 
 ## Roadmap
 
-- Stabilize the deterministic runtime, Scanner SDK, and plugin contracts behind explicit compatibility baselines.
+- Select and baseline the intended deterministic scanner and plugin contracts,
+  while keeping the Legacy `ScannerSdk` facade outside any v1 claim until its
+  migration and deprecation policy is explicit.
 - Strengthen evidence lineage, replay/provenance contracts, and bounded application-structure semantics before adding broader domain behavior.
 - Expand reviewed semantic corpora and scoped mutation coverage without turning either technique into a completeness claim.
-- Publish controlled endpoint-scale CPU, memory, latency, and throughput evidence.
+- Repeat the controlled endpoint workloads on a comparable pinned hardware class and review inter-run variance before proposing a regression baseline or threshold.
 - Complete an independent security review and validate the contributor/SDK path with external adopters.
 - Explore bounded framework/CMS profiles only after their evidence, authorization, and claim policies are explicit; no WordPress or full Laravel scanner ships today.
 

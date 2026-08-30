@@ -1,9 +1,10 @@
-# Scanner SDK
+# Legacy Scanner SDK
 
-`ScannerSdk` is the opt-in historical composition surface for applications that
-build scanners with Venom. Hosts supply `ScanPhase` implementations; Venom owns
-ordering, per-phase timeouts, cancellation context, lifecycle events, and the
-typed run-report boundary.
+`ScannerSdk` is the opt-in **Legacy facade** for applications that compose the
+historical ordered phase runner. It is not the Preview deterministic assessment
+SDK and is not a v1 compatibility baseline. Hosts supply `ScanPhase`
+implementations; Venom owns ordering, per-phase timeouts, cancellation context,
+lifecycle events, and the typed run-report boundary.
 
 ## Generate a scanner
 
@@ -14,7 +15,10 @@ cd my-scanner
 cargo test
 ```
 
-The generated project contains a complete custom phase and an executable scanner. During alpha it tracks Venom `main`; pin a release tag or commit before distribution.
+The generated project contains a complete custom phase and an executable
+scanner using this Legacy facade. During alpha it tracks Venom `main`; pin and
+review an exact commit before distribution. Generating a project does not make
+the facade stable or move it into the default deterministic product.
 
 ## Compose directly
 
@@ -72,6 +76,9 @@ assert_eq!(report.outcomes()[0].confidence().parts_per_million(), 0);
   built-in phases two through four use an isolated passive broker, and built-in
   phases five through nine use a distinct `Active`-stage broker.
 - Product policy, UI, report rendering, and transports remain outside phase implementations.
+- New product capabilities belong under the deterministic
+  `StandardWebDecisionRuntime` / `WebAssessmentRuntime` authority rather than
+  adding behavior to this Legacy runner.
 
 `ScanContext` is non-exhaustive and runtime-constructed. Extensions borrow it,
 use its methods and documented public handles, and must not depend on struct
@@ -79,10 +86,20 @@ literals. Access reasoning state through `ScanContext::knowledge()`. Consumers
 moving from the tagged v0.9 contract or from unreleased `main` should follow the
 [ScanContext construction migration](migrations/scan-context-construction.md).
 
-This is a Preview source-level SDK. The plugin registration contract follows
-the [Plugin API and SemVer policy](plugin-api-policy.md); broader scanner source
-compatibility remains governed by the release notes, accepted ADRs, and the
-explicit baseline status in [Repository health](repository-health.md).
+This is a Legacy source-level facade. The deterministic assessment and typed
+report contracts remain Preview, as does the separate host-owned, evidence-only
+plugin API 0.2 described by the
+[Plugin API and SemVer policy](plugin-api-policy.md). Plugins still cannot
+author findings, severities, verifier outcomes, or `Confirmed` dispositions.
+
+Within `compat/current-head/`, which has one dedicated lockfile, the separately
+invoked Scanner SDK consumer proves only that an empty historical scanner can
+be built through the public facade at the same checkout. It is not a
+prior-release comparison, accepted v1 baseline, deprecation commitment,
+published-crate integration, or external-adoption result. Broader scanner
+compatibility remains governed by release notes, accepted ADRs, and the
+explicit baseline status in [Public API compatibility status](public-api-compatibility.md)
+and [Repository health](repository-health.md).
 
 The ordered runtime boundaries are recorded in
 [ADR 0016](adr/0016-bound-legacy-discovery-authority.md) and

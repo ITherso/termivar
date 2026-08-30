@@ -17,10 +17,11 @@ independent security assurance.
 | `cargo-mutants` | Scoped and manual | Selected policy, planner/runtime, and extraction contracts have evidenced review campaigns; no mutation workflow, workspace-wide baseline, or aggregate score is committed |
 | Source coverage | Enforced, scoped | Rust `1.88.0` and the explicit LLVM backend of `cargo-tarpaulin 0.37.2` enforce the accepted exact 21,439/24,842 aggregate and changed-line ratio for tracked Rust files under `crates/*/src/**` and `xtask/src/**`; `venom.coverage.v2` binds a normalized line-state digest, changed-file presence is fail-closed, and advisory Codecov upload remains best-effort |
 | MSRV | Configured in CI | Workspace packages declare Rust `1.88`; the compatibility matrix also exercises stable, beta, and nightly |
-| Cross-platform runtime smoke | Configured in CI | A focused Rust `1.88.0` matrix builds the default CLI and exercises CLI metadata, one deterministic loopback scan, atomic report paths, core wire stability, exact-origin authority, and redirect observation on Ubuntu, Windows, and macOS; it is not an all-features or release-readiness claim |
+| Cross-platform runtime smoke | Configured in CI | A focused Rust `1.88.0` matrix builds the default CLI and exercises CLI metadata, one deterministic loopback scan, atomic report paths, core wire stability, exact-origin authority, and redirect observation on Ubuntu, Windows, and macOS; it is not platform certification, all-features evidence, or a release-readiness claim |
 | SemVer | Configured for `venom-core` | `cargo xtask semver` compares the all-features core API with the recorded `v0.9.0-alpha` baseline using a patch-compatibility threshold |
-| Current-head downstream consumers | Configured in CI | Four separately tested path-dependent consumers compile default core, deterministic assessment/reporting, the Legacy Scanner SDK facade, and plugin API 0.2 against the same checkout; this is not cross-version or external-adoption evidence |
-| Architecture boundaries | Configured in CI | `cargo xtask architecture` checks virtual-root source, workspace edges, protected imports, and the transport-free reasoning build |
+| Current-head downstream consumers | Configured in CI | One dedicated lockfile supports four separate package tests for default core, deterministic assessment/reporting, the Legacy Scanner SDK facade, and plugin API 0.2 against the same checkout; this is not cross-version or external-adoption evidence |
+| Endpoint-scale evidence | Initial controlled record | The loopback-only real-runtime harness recorded fixed 100-endpoint, 1,000-endpoint, and 10,000-request workloads for source `27321ef` in workflow run `33292247976`; this is not an accepted repeatable baseline, SLA, capacity claim, or regression threshold |
+| Architecture boundaries | Configured in CI | `cargo xtask architecture` checks virtual-root source, workspace edges, protected imports, transport-free reasoning, and responsibility ownership behind ten modular root source facades |
 
 ## Release evidence
 
@@ -35,6 +36,15 @@ Ubuntu, Windows, and macOS. It uses deterministic loopback fixtures and a small
 set of path, scope, redirect, and wire-format checks; it does not replace the
 release workflow's artifact builds or establish broad platform support by
 configuration alone.
+
+The initial endpoint-scale record is tied to source commit
+`27321efbbf49cb2adbc72afb699d1b31ea407486` and
+[workflow run 33292247976](https://github.com/ITherso/venom/actions/runs/33292247976).
+Its [Markdown](reports/benchmarks/27321ef-endpoint-assessment.md) and
+[validated JSON](reports/benchmarks/27321ef-endpoint-assessment.json) retain the
+runner, workload, request-accounting, and variance metadata. One controlled
+run does not establish an accepted repeatable baseline or a release performance
+threshold.
 
 ## Public API compatibility scope
 
@@ -64,12 +74,13 @@ covered by this check.
 The SemVer command remains separate from `cargo xtask release`; CI installs the
 declared analysis-tool version and runs the compatibility job independently.
 
-The separately locked `compat/current-head/` workspace adds downstream-shaped
-compile evidence for four isolated feature closures. Its path dependencies all
-resolve to the same checkout, so a pass catches current-revision API drift but
-does not establish compatibility with a published release, a Rust ABI, a
-deprecation window, or external adoption. The lifecycle inventory and exact
-boundaries are recorded in [Public API compatibility status](public-api-compatibility.md).
+The `compat/current-head/` workspace uses one dedicated lockfile and separate
+package invocations to add downstream-shaped compile evidence for four isolated
+feature closures. Its path dependencies all resolve to the same checkout, so a
+pass catches current-revision API drift but does not establish compatibility
+with a published release, a Rust ABI, a deprecation window, or external
+adoption. The lifecycle inventory and exact boundaries are recorded in [Public
+API compatibility status](public-api-compatibility.md).
 
 ## Workflow supply-chain posture
 
@@ -94,4 +105,7 @@ remain external dependencies, and Dependabot proposals still require review.
 - Coverage is a scoped regression signal, not proof that the tests are adequate or that uncovered behavior is safe.
 - Scanner construction policy and same-revision downstream fixtures are documented, but Scanner SDK and plugin contracts still lack an accepted post-transition compatibility baseline and cross-version evidence.
 - Automated API linting and current-head compilation do not prove released-version Rust source compatibility; public-API review remains required.
-- No independent security audit, penetration-test report, compliance certification, or controlled end-to-end performance report has been completed.
+- No independent downstream adoption has been documented; repository-authored fixtures and demonstrations do not count as external adoption.
+- No independent security audit, penetration-test report, or compliance certification has been completed.
+- Initial controlled endpoint evidence exists, but no repeatable accepted performance baseline, SLA, capacity certification, or regression threshold has been established.
+- A supported API listener, TLS-intercepting MITM proxy, and durable distributed control plane remain absent. The process-local coordinator is Experimental and does not fill that product gap.

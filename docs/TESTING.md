@@ -11,10 +11,12 @@ source of truth.
 | --- | --- | --- |
 | Unit and contract tests | `crates/*/src/` | Local invariants, public contracts, and deterministic reasoning |
 | Scanner integration tests | `crates/venom-scanner/tests/` | Feature combinations and cross-module behavior |
-| Architecture policy | `cargo xtask architecture` | Workspace edges, virtual-root and example-target ownership, protected imports, and transport-free compilation |
+| Architecture policy | `cargo xtask architecture` | Workspace edges, virtual-root and example-target ownership, protected imports, transport-free compilation, and modular-facade responsibility ownership |
 | SDK examples | `examples/` | Compiling consumer-facing usage |
 | Template smoke tests | `templates/` in CI | Generated scanner and plugin projects compile independently |
+| Current-head consumers | `compat/current-head/` | One dedicated lockfile with separate package tests for core, deterministic assessment/reporting, Legacy `ScannerSdk`, and plugin API 0.2 |
 | Benchmarks | `crates/venom-scanner/benches/` | Criterion regression signals |
+| Endpoint evidence | `endpoint_assessment` bench plus `scripts/run-endpoint-performance.sh` | Real-runtime, loopback-only fixed workloads with strict JSON/Markdown evidence |
 | Fuzz targets | `fuzz/` | Bounded parser campaigns outside the main workspace |
 | Dashboard tests | `web/` | Server-render smoke, typecheck, lint, and production-build checks; no browser interaction or accessibility suite is currently configured |
 
@@ -82,8 +84,9 @@ focused scanner exact-origin and redirect-no-follow contracts.
 This matrix is intentionally a runtime portability smoke layer, not a second
 copy of the all-features, Clippy, coverage, security, fuzz, or release-artifact
 matrices. It tests only host-native builds and temporary-path behavior on the
-three hosted operating systems. All sockets opened by these tests bind to
-loopback; the job never scans a public target.
+three hosted operating systems. It is not platform certification or a claim
+that every feature is supported equally on each OS. All sockets opened by these
+tests bind to loopback; the job never scans a public target.
 
 ## Current-head downstream compile fixtures
 
@@ -265,9 +268,42 @@ a navigation signal, not proof of correctness; new behavior
 still needs assertions for failure paths and boundary conditions.
 
 Criterion output, compile time, binary size, and peak runner memory are
-published as workflow artifacts. See [Quality metrics](quality-metrics.md) and
-[Benchmarks](benchmarks.md). Do not copy runner-local values into the README as
-capacity claims.
+published as workflow artifacts. See [Quality metrics](quality-metrics.md).
+
+The endpoint-scale harness is a separate `harness = false` benchmark binary
+that runs the real `WebAssessmentRuntime` against only its hard-coded
+`127.0.0.1` fixture. It accepts fixed workload names rather than a target URL:
+100 endpoints, 1,000 endpoints, or a 10,000-request batch. The final batch is
+ten independent origin assessments, each with its own 1,000-request authority;
+it must not be described as one global budget. The harness fails unless
+endpoint execution, broker receipts, request counts, response bytes, active
+verification use, and completion state reconcile.
+
+Run the canonical Linux wrapper from a clean checkout:
+
+```bash
+bash scripts/run-endpoint-performance.sh \
+  --workload all \
+  --warmups 1 \
+  --samples 3 \
+  --output-dir target/endpoint-performance
+```
+
+Warmups and samples are hard-bounded. After the Cargo build, the wrapper clears
+HTTP(S)/ALL proxy variables and pins `NO_PROXY`; the benchmark binary separately
+rejects a proxy-bearing environment before opening its fixture. Output uses the
+strict `venom.endpoint-performance/v1` JSON schema plus a Markdown projection.
+Initial
+controlled evidence for source commit
+`27321efbbf49cb2adbc72afb699d1b31ea407486` was produced by
+[workflow run 33292247976](https://github.com/ITherso/venom/actions/runs/33292247976)
+and is retained as [Markdown](reports/benchmarks/27321ef-endpoint-assessment.md)
+and [JSON](reports/benchmarks/27321ef-endpoint-assessment.json). This is one
+runner-local measurement set with a fixed one-millisecond fixture delay. It is
+not an SLA, capacity limit, concurrency result, accepted repeatable baseline,
+or regression threshold; `thresholds` remains `null`. See
+[Benchmarks](benchmarks.md) for full provenance and limitations. Do not copy
+runner-local values into the README as capacity claims.
 
 ## Before a pull request
 

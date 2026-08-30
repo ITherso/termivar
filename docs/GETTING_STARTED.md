@@ -6,7 +6,10 @@ bounded default runtime documented here. Build a reviewed, pinned
 commit; it is not production-ready and must be run only against systems you own
 or are explicitly authorized to test.
 
-This guide covers the default deterministic CLI and the separately compiled historical runner. It does not describe a dashboard, API service, TLS-intercepting proxy, team service, or cloud control plane because those are not supported runtime products today.
+This guide covers the default deterministic CLI and the separately compiled
+historical runner. It does not describe a dashboard, bound API service,
+TLS-intercepting MITM proxy, durable distributed control plane, team service,
+or cloud control plane because those are not supported runtime products today.
 
 ## Prerequisites
 
@@ -256,9 +259,28 @@ cargo xtask docs
 
 The last command requires the documentation dependencies from `requirements-docs.txt`.
 
+CI adds deliberately scoped evidence beyond those local commands. A Rust
+`1.88.0` matrix builds and smoke-tests the default CLI plus loopback path,
+scope, redirect, wire, and report-output contracts on Ubuntu, Windows, and
+macOS. It is not platform certification or an all-features release claim. The
+`compat/current-head/` workspace uses one dedicated lockfile and separately
+tests four same-head packages for default core, deterministic
+assessment/reporting, the Legacy `ScannerSdk` facade, and plugin API 0.2; it
+does not prove cross-version compatibility or external adoption.
+
+The loopback endpoint harness also has [initial controlled evidence](reports/benchmarks/27321ef-endpoint-assessment.md)
+for source commit `27321efbbf49cb2adbc72afb699d1b31ea407486` from
+[workflow run 33292247976](https://github.com/ITherso/venom/actions/runs/33292247976),
+with a [validated JSON record](reports/benchmarks/27321ef-endpoint-assessment.json).
+It is one runner-local measurement set, not an SLA, accepted repeatable
+baseline, or capacity certification.
+
 ## Extend Venom
 
-The Scanner SDK and native plugin starters are Preview and compile in CI:
+The deterministic assessment/reporting surface and native plugin API 0.2 are
+Preview. `ScannerSdk` and its ordered phase runner are a Legacy facade. The
+generated scanner and plugin starters compile in CI, but generation does not
+change those lifecycle labels:
 
 ```bash
 cargo install cargo-generate
@@ -267,8 +289,10 @@ cargo xtask generate plugin my-venom-plugin
 ```
 
 They are source-level, opt-in library integrations, not runtime-loaded
-extensions for the default deterministic `scan`. Venom ships no stock detector
-plugins; the generated plugin records an INFO-only trait-boundary observation
+extensions for the default deterministic `scan`. The scanner starter uses the
+Legacy phase facade; new product capability belongs in the deterministic
+runtime rather than that runner. Venom ships no stock detector plugins; the
+generated Preview plugin records an INFO-only trait-boundary observation
 through host-owned policy and makes no security claim. Read the
 [Scanner SDK](sdk.md), [plugin guide](plugin.md), and
 [plugin API policy](plugin-api-policy.md) before depending on pre-stable

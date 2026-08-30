@@ -8,7 +8,7 @@ A compiled module is not necessarily a runtime feature. The [runtime map](docs/i
 
 | Label | Meaning |
 | --- | --- |
-| Beta | Usable in authorized research workflows, with pre-stable APIs |
+| Stable candidate | Narrow public surface under compatibility review; not an accepted stable-version promise |
 | Preview | Implemented for evaluation; contracts and behavior may change |
 | Experimental | Research surface with limited validation and stability guarantees |
 | Legacy | Maintained migration surface that is not the target runtime architecture |
@@ -19,7 +19,7 @@ A compiled module is not necessarily a runtime feature. The [runtime map](docs/i
 
 | Capability | Lifecycle | Current boundary |
 | --- | --- | --- |
-| Core contracts | Beta | Default `venom-core` exposes transport-neutral evidence, reasoning, ontology, outcome, predicate, and run-report records; its pre-quarantine config, error, event, finding, HTTP, vulnerability, and result facade requires non-default `legacy-contracts` |
+| Core contracts | Stable candidate | Default `venom-core` exposes transport-neutral evidence, reasoning, ontology, outcome, predicate, and run-report records; this inventory label is not an accepted stable baseline. Its pre-quarantine config, error, event, finding, HTTP, vulnerability, and result facade requires non-default `legacy-contracts` |
 | Deterministic decision runtime | Preview | Bounded typed evidence, reasoning, planning, execution, verification, Experience, and continuation in `venom-scanner` |
 | `venom scan` | Preview | With no profile, the conservative single-resource command and historically named `decision-scan/v1` JSON remain unchanged. Explicit `baseline` and `web-review` select strict `venom.scan-profile/v1` contracts without creating a second engine |
 | Origin assessment runtime | Preview | Explicit `web-review` only: deterministic bounded exact-origin discovery, semantic extraction, defense observation/shadow planning, passive review, the closed native differential catalog, and an optional host-authorized root API context pair share one request/budget/cancellation/scope authority; redirects remain disabled and discovery never silently crosses origin |
@@ -27,7 +27,7 @@ A compiled module is not necessarily a runtime feature. The [runtime map](docs/i
 | Native low-risk web review | Preview | Explicit `web-review` only. Matched CORS and optional allowlisted navigation-query control/candidate pairs run additively with eligible standard actions on the authorized starting resource through the existing Standard runtime and shared broker. CORS review requires two successful-status legs; redirects are inspected only for 301/302/303/307/308 and never followed. Reflected Origin, a generic response code, payload delivery, and exact reflection alone are not vulnerability confirmation |
 | `venom decision-scan` | Deprecated | Compatibility alias for `venom scan`; identical command definition and deterministic engine |
 | `venom legacy-scan` | Legacy | Historical mixed-authority pipeline: phases 2–4 share bounded passive discovery and phases 5–9 share a separate bounded active-verification broker; phase one and custom phases may retain direct I/O, so the whole run is `Unmetered`; requires `legacy-scanner` plus explicit acknowledgement |
-| Scanner SDK | Preview | Application-defined phases composed through `ScannerSdk` and a generated starter |
+| Scanner SDK | Legacy | Historical application-defined phases composed through `ScannerSdk` and a generated starter; same-revision compilation does not make this facade a stable SDK baseline |
 | HTTP API adapter | Unsupported | Absent by default; opt-in `api-adapter` exposes a command that fails nonzero because no listener is implemented |
 | Proxy adapter | Experimental | Absent by default; opt-in `proxy-adapter` is a fixed-upstream TCP relay only, with no `CONNECT`, TLS termination, certificate generation, or HTTP inspection |
 
@@ -70,11 +70,13 @@ A compiled module is not necessarily a runtime feature. The [runtime map](docs/i
 | Unit, integration, doc, security, and template tests | Automated | GitHub Actions also exercises architecture boundaries and Rust compatibility |
 | Source coverage | Enforced, scoped | Pinned Tarpaulin's LLVM backend enforces the accepted exact ratio of 21,439/24,842 observed source lines on the aggregate and coverable changed lines; `venom.coverage.v2` evidence binds a normalized line-state digest, changed files and path/blob-stable omissions fail closed, and advisory Codecov upload remains best-effort |
 | Rust compatibility | Automated | MSRV 1.88 plus stable, beta, and nightly |
-| Public API compatibility | Automated, scoped | Blocking SemVer comparison covers `venom-core`, not every workspace crate |
-| Criterion and build metrics | Automated | Runner-local artifacts exist; controlled endpoint-scale results remain missing |
+| Cross-platform runtime smoke | Automated, scoped | Focused Rust 1.88 default-CLI, loopback, wire, origin, redirect, and report-path checks run on Ubuntu, Windows, and macOS; this is not platform certification or the full matrix |
+| Public API compatibility | Automated, scoped | Blocking SemVer comparison covers `venom-core`; four separately resolved current-head consumers cover default core, deterministic assessment/reporting, the Legacy Scanner SDK facade, and plugin API 0.2 at the same revision only |
+| Criterion and build metrics | Automated | Runner-local compile, binary, memory, and microbenchmark artifacts exist; they are not endpoint-capacity claims |
+| Endpoint-scale performance | Initial controlled evidence | One fixed local-fixture workflow run covers 100/1,000 endpoints and 10,000 requests with three measured samples and intra-run variance; no repeatable accepted baseline, threshold, or SLA exists |
 | Fuzzing | Scheduled and bounded | Four product-semantic and five parser targets; PR seed replay/compile plus scheduled/manual campaigns |
 | Mutation testing | Scoped and evidenced | Selected semantic contracts have manual campaigns; no permanent farm or project-wide score |
 | Independent security audit | Missing | No external audit has been completed |
-| Stable public API | Preview | Compatibility is not guaranteed before a stable release |
+| Workspace-wide stable public API | Missing | Default `venom-core` is a Stable candidate only; deterministic assessment/reporting and plugin API 0.2 are Preview, while `ScannerSdk` is Legacy. No accepted workspace-wide baseline or stable ABI is claimed |
 
 See [Architecture](docs/architecture.md) for ownership rules, [Quality metrics](docs/quality-metrics.md) for measurement policy, [Repository health](docs/repository-health.md) for configured controls, and [Security](SECURITY.md) for responsible disclosure.
