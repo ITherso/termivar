@@ -134,7 +134,7 @@ depth two, 128 discovered references per document, 8,192 bytes per query-free
 canonical URL, 512 KiB of retained URL bytes, 64 forms, 64 control names per
 form, 64 candidate query names per route or form action, 256 total requests,
 256 KiB per response, a 16 MiB cumulative delivered-response threshold, 300
-seconds of wall time, six active verifications, and concurrency one. The
+seconds of wall time, eight active verifications, and concurrency one. The
 broker charges one complete crossing chunk before typed response-byte
 termination, so the cumulative threshold is not a byte-perfect retained-body
 maximum. CLI profile limits are not user-overridable. Library hosts may select
@@ -163,6 +163,15 @@ scanner-owned token and one unmatched quote only. A `NeedsReview` item requires
 the same status-class and normalized HTML/JSON structure difference on replay;
 error text, payload delivery, reflection, and latency alone are ignored.
 
+The same bounded parameter selection may run one initial versioned SSTI probe
+family. Two independent small arithmetic expressions must each produce their
+exact scanner-predicted result while both controls remain absent. Literal
+reflection, static numbers, generic errors, unrelated differences, unsupported
+media, truncation, or an inconsistent replay produce no SSTI item (or typed
+incompleteness where evidence collection was incomplete). A matched result is
+only `NeedsReview`; this capability performs no command execution or stronger
+template-engine verification.
+
 Credentialed candidate-specific CORS requires matched successful-status
 control/candidate responses; it and an exact candidate-specific external
 redirect relationship can produce only `NeedsReview`. Exact reflection in
@@ -190,7 +199,7 @@ remain disabled. Equal JSON visibility produces no item. A complete visibility
 difference is retained as one atomic comparison evidence reference and can
 produce only `NeedsReview`; it is never split into invented control/candidate
 records and never becomes authorization-vulnerability confirmation. The
-default web-review envelope permits at most six active verifications: four for
+default web-review envelope permits at most eight active verifications: six for
 the closed native catalog and two for this optional pair. Lower library-host
 limits still fail closed.
 

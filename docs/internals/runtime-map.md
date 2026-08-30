@@ -46,6 +46,7 @@ venom scan <target> --profile web-review
       -> passive header/cookie assessment projection
       -> root-scoped matched CORS and optional redirect/reflection review
       -> one bounded root-or-discovered SQL structural review with exact replay
+      -> one bounded root-or-discovered SSTI arithmetic review with independent replay
       -> optional exact-root anonymous/authorized API visibility pair
       -> central bounded assessment renderer on complete execution
 ```

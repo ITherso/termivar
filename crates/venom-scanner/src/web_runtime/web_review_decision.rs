@@ -24,7 +24,8 @@ use crate::{
     payload_strategies::{
         CORS_ORIGIN_PAIR_ID, CORS_ORIGIN_PAIR_REVISION, EXTERNAL_URL_QUERY_PAIR_ID,
         EXTERNAL_URL_QUERY_PAIR_REVISION, SQL_QUOTE_BALANCE_QUERY_PAIR_ID,
-        SQL_QUOTE_BALANCE_QUERY_PAIR_REVISION,
+        SQL_QUOTE_BALANCE_QUERY_PAIR_REVISION, SSTI_ARITHMETIC_EXPRESSION_PAIR_ID,
+        SSTI_ARITHMETIC_EXPRESSION_PAIR_REVISION,
     },
     payload_strategy::{PayloadStrategyError, PayloadStrategyRef},
     planner::{
@@ -257,6 +258,11 @@ fn payload_strategy_ref(
         | NativeWebReviewActionKind::SqlStructuralQueryReplayPair => (
             SQL_QUOTE_BALANCE_QUERY_PAIR_ID,
             SQL_QUOTE_BALANCE_QUERY_PAIR_REVISION,
+        ),
+        NativeWebReviewActionKind::SstiStructuralQueryPair
+        | NativeWebReviewActionKind::SstiStructuralQueryReplayPair => (
+            SSTI_ARITHMETIC_EXPRESSION_PAIR_ID,
+            SSTI_ARITHMETIC_EXPRESSION_PAIR_REVISION,
         ),
     };
     PayloadStrategyRef::new(id, revision)

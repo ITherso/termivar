@@ -85,7 +85,7 @@ must never be interpreted as a visibility comparison.
 - A usable pair requires capacity for two total requests and two active
   verifications. Separate connection pools intentionally trade connection reuse
   for principal isolation while sharing one budget.
-- The compiled origin-assessment default allows six active verifications: four
+- The compiled origin-assessment default allows eight active verifications: six
   for its closed native review catalog and two for one explicitly supplied
   context pair. Lower host limits remain authoritative and fail closed.
 - The same runtime instance cannot subsequently run `analyze()` or another

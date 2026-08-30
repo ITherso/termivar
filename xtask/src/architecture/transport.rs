@@ -421,8 +421,8 @@ fn inspect_native_review_execution_broker_boundary(
     Ok(violations.into_iter().collect())
 }
 
-const EXACT_NATIVE_REVIEW_EXECUTION_TOKEN_BYTES: usize = 17_601;
-const EXACT_NATIVE_REVIEW_EXECUTION_FINGERPRINT: u128 = 0xc13e_3dfe_dcc5_f01b_c640_c4fc_23a7_9a1e;
+const EXACT_NATIVE_REVIEW_EXECUTION_TOKEN_BYTES: usize = 20_754;
+const EXACT_NATIVE_REVIEW_EXECUTION_FINGERPRINT: u128 = 0x3be0_f9dd_9752_32e4_de6c_56fa_1bb8_49e5;
 
 fn native_review_execution_fingerprint_violations(source: &str, syntax: &syn::File) -> Vec<String> {
     let exact_tests = matches!(syntax.items.last(), Some(Item::Mod(module))
@@ -967,6 +967,8 @@ fn native_defense_classifier_is_exact(function: &syn::ItemFn) -> bool {
                 "RedirectReflectionQueryPair".to_owned(),
                 "SqlStructuralQueryPair".to_owned(),
                 "SqlStructuralQueryReplayPair".to_owned(),
+                "SstiStructuralQueryPair".to_owned(),
+                "SstiStructuralQueryReplayPair".to_owned(),
             ])
 }
 
@@ -988,6 +990,8 @@ fn collect_exact_native_review_patterns(
                 "RedirectReflectionQueryPair",
                 "SqlStructuralQueryPair",
                 "SqlStructuralQueryReplayPair",
+                "SstiStructuralQueryPair",
+                "SstiStructuralQueryReplayPair",
             ] {
                 if syn_path_is_exact(&pattern.path, &["NativeWebReviewActionKind", variant]) {
                     return variants.insert(variant.to_owned());

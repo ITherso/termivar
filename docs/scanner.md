@@ -44,6 +44,12 @@ operator, comment, statement separator, function, or delay syntax. An item
 requires the same candidate-specific status-class and normalized body-structure
 difference in both pairs; text and latency are not signals. Native actions do
 not suppress otherwise eligible standard actions.
+The same bounded selection composes one initial versioned SSTI brace-arithmetic
+family. Two independently derived expressions must produce their distinct exact
+expected results while their controls do not. Literal reflection, a result
+already present in control, generic errors, unrelated changes, or inconsistent
+replay are insufficient. This structural signal is at most `NeedsReview` and
+does not execute commands.
 A reflected Origin without the complete credential policy or without two
 successful-status legs is insufficient. Redirect review accepts only
 301/302/303/307/308, and redirects are not followed. Non-dangerous exact
@@ -72,8 +78,8 @@ produces no item. A complete difference is projected as one atomic comparison
 evidence reference and at most `NeedsReview`; it is not decomposed into fake
 control/candidate evidence and does not prove an authorization vulnerability.
 Incomplete collection stops later discovery and makes the run typed
-incomplete. The compiled web-review default reserves six active-verification
-slots for the closed four-request native catalog plus this optional two-request
+incomplete. The compiled web-review default reserves eight active-verification
+slots for the closed six-request native catalog plus this optional two-request
 pair; any lower host-selected ceiling still fails closed.
 
 Stable item identity preserves `authorized-root@1` for the exact origin root

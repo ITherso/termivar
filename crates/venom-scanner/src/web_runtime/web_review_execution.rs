@@ -19,6 +19,7 @@ use sha2::{Digest, Sha256};
 use thiserror::Error;
 use url::Url;
 
+use crate::payload_strategies::ssti_arithmetic_expression_pair::SstiArithmeticProbe;
 use crate::{
     decision_runner::{
         DecisionActionExecutor, DecisionExecutionStage, DecisionExecutorRegistry,
@@ -33,6 +34,7 @@ use crate::{
         standard_payload_strategies, CORS_ORIGIN_PAIR_HEADER_NAME, CORS_ORIGIN_PAIR_ID,
         CORS_ORIGIN_PAIR_REVISION, EXTERNAL_URL_QUERY_PAIR_ID, EXTERNAL_URL_QUERY_PAIR_REVISION,
         SQL_QUOTE_BALANCE_QUERY_PAIR_ID, SQL_QUOTE_BALANCE_QUERY_PAIR_REVISION,
+        SSTI_ARITHMETIC_EXPRESSION_PAIR_ID, SSTI_ARITHMETIC_EXPRESSION_PAIR_REVISION,
     },
     payload_strategy::{
         PayloadSeed, PayloadStrategyError, PayloadStrategyLimits, PayloadStrategyRef,
@@ -93,11 +95,18 @@ struct NativeExecutorBinding {
     executor: Arc<HttpEvidenceExecutor>,
 }
 
+struct NativeWebReviewQueryParameters {
+    redirect: Option<String>,
+    sql: Option<String>,
+    ssti: Option<String>,
+}
+
 /// Returns the one closed, deterministic executable subset for a subject.
 pub(crate) fn enabled_native_web_review_actions(
     include_cors: bool,
     redirect_query_configured: bool,
     sql_query_configured: bool,
+    ssti_query_configured: bool,
 ) -> Vec<NativeWebReviewActionKind> {
     NativeWebReviewActionKind::all()
         .into_iter()
@@ -106,6 +115,8 @@ pub(crate) fn enabled_native_web_review_actions(
             NativeWebReviewActionKind::RedirectReflectionQueryPair => redirect_query_configured,
             NativeWebReviewActionKind::SqlStructuralQueryPair
             | NativeWebReviewActionKind::SqlStructuralQueryReplayPair => sql_query_configured,
+            NativeWebReviewActionKind::SstiStructuralQueryPair
+            | NativeWebReviewActionKind::SstiStructuralQueryReplayPair => ssti_query_configured,
         })
         .collect()
 }
@@ -122,6 +133,7 @@ pub(crate) struct NativeWebReviewExecutorProfile {
     bindings: Vec<NativeExecutorBinding>,
     redirect_query_configured: bool,
     sql_query_configured: bool,
+    ssti_query_configured: bool,
     cors_configured: bool,
 }
 
@@ -147,6 +159,7 @@ impl fmt::Debug for NativeWebReviewExecutorProfile {
             )
             .field("redirect_query_configured", &self.redirect_query_configured)
             .field("sql_query_configured", &self.sql_query_configured)
+            .field("ssti_query_configured", &self.ssti_query_configured)
             .field("cors_configured", &self.cors_configured)
             .field("seed_values", &"<redacted>")
             .finish()
@@ -166,32 +179,40 @@ impl NativeWebReviewExecutorProfile {
         observer: Arc<dyn CompleteHttpResponseObserver>,
         redirect_query_parameter: Option<String>,
         sql_query_parameter: Option<String>,
+        ssti_query_parameter: Option<String>,
     ) -> Result<Self, NativeWebReviewExecutionError> {
         Self::build(
             requests,
             root,
             seeds,
             Some(observer),
-            redirect_query_parameter,
-            sql_query_parameter,
+            NativeWebReviewQueryParameters {
+                redirect: redirect_query_parameter,
+                sql: sql_query_parameter,
+                ssti: ssti_query_parameter,
+            },
             true,
         )
     }
 
-    pub(crate) fn new_sql_only(
+    pub(crate) fn new_structural_only(
         requests: HttpRequestBroker,
         root: Url,
         seeds: NativeWebReviewSeeds,
         observer: Arc<dyn CompleteHttpResponseObserver>,
-        sql_query_parameter: String,
+        sql_query_parameter: Option<String>,
+        ssti_query_parameter: Option<String>,
     ) -> Result<Self, NativeWebReviewExecutionError> {
         Self::build(
             requests,
             root,
             seeds,
             Some(observer),
-            None,
-            Some(sql_query_parameter),
+            NativeWebReviewQueryParameters {
+                redirect: None,
+                sql: sql_query_parameter,
+                ssti: ssti_query_parameter,
+            },
             false,
         )
     }
@@ -201,14 +222,18 @@ impl NativeWebReviewExecutorProfile {
         root: Url,
         seeds: NativeWebReviewSeeds,
         observer: Option<Arc<dyn CompleteHttpResponseObserver>>,
-        redirect_query_parameter: Option<String>,
-        sql_query_parameter: Option<String>,
+        query_parameters: NativeWebReviewQueryParameters,
         include_cors: bool,
     ) -> Result<Self, NativeWebReviewExecutionError> {
         validate_root(&requests, &root)?;
         if !seeds.matches_origin(&root) {
             return Err(NativeWebReviewExecutionError::SeedOriginMismatch);
         }
+        let NativeWebReviewQueryParameters {
+            redirect: redirect_query_parameter,
+            sql: sql_query_parameter,
+            ssti: ssti_query_parameter,
+        } = query_parameters;
         let limits =
             PayloadStrategyLimits::new(REVIEW_PAYLOAD_MAX_BYTES, REVIEW_PAYLOAD_MAX_BYTES)?;
         let strategies = standard_payload_strategies()?;
@@ -217,6 +242,7 @@ impl NativeWebReviewExecutorProfile {
             include_cors,
             redirect_query_parameter.is_some(),
             sql_query_parameter.is_some(),
+            ssti_query_parameter.is_some(),
         );
 
         let mut bindings = Vec::new();
@@ -306,6 +332,43 @@ impl NativeWebReviewExecutorProfile {
             }
         }
 
+        let ssti_query_configured =
+            enabled_actions.contains(&NativeWebReviewActionKind::SstiStructuralQueryPair);
+        if let Some(parameter) = ssti_query_parameter {
+            for (kind, probe) in [
+                (
+                    NativeWebReviewActionKind::SstiStructuralQueryPair,
+                    seeds.ssti_primary_probe(),
+                ),
+                (
+                    NativeWebReviewActionKind::SstiStructuralQueryReplayPair,
+                    seeds.ssti_replay_probe(),
+                ),
+            ] {
+                let strategy = payload_strategy_reference(kind)?;
+                let payload = HttpQueryPayloadBinding::new(
+                    strategies.clone(),
+                    strategy,
+                    PayloadSeed::new(probe.seed().into_bytes(), limits)?,
+                    limits,
+                    parameter.clone(),
+                )?;
+                let executor = configure_executor(
+                    HttpEvidenceExecutor::with_id_and_request_broker(
+                        kind.executor_id(),
+                        requests.clone(),
+                        provider.clone(),
+                    )?
+                    .with_query_payload_binding(payload),
+                    observer.as_ref(),
+                );
+                bindings.push(NativeExecutorBinding {
+                    kind,
+                    executor: Arc::new(executor),
+                });
+            }
+        }
+
         debug_assert_eq!(
             bindings
                 .iter()
@@ -317,6 +380,7 @@ impl NativeWebReviewExecutorProfile {
             bindings,
             redirect_query_configured,
             sql_query_configured,
+            ssti_query_configured,
             cors_configured: include_cors,
         })
     }
@@ -393,8 +457,11 @@ impl NativeWebReviewExecutorProfile {
             root,
             seeds,
             None,
-            redirect_query_parameter,
-            None,
+            NativeWebReviewQueryParameters {
+                redirect: redirect_query_parameter,
+                sql: None,
+                ssti: None,
+            },
             true,
         )
     }
@@ -414,6 +481,11 @@ fn payload_strategy_reference(
         | NativeWebReviewActionKind::SqlStructuralQueryReplayPair => (
             SQL_QUOTE_BALANCE_QUERY_PAIR_ID,
             SQL_QUOTE_BALANCE_QUERY_PAIR_REVISION,
+        ),
+        NativeWebReviewActionKind::SstiStructuralQueryPair
+        | NativeWebReviewActionKind::SstiStructuralQueryReplayPair => (
+            SSTI_ARITHMETIC_EXPRESSION_PAIR_ID,
+            SSTI_ARITHMETIC_EXPRESSION_PAIR_REVISION,
         ),
     };
     PayloadStrategyRef::new(id, revision)
@@ -467,6 +539,8 @@ pub(crate) struct NativeWebReviewSeeds {
     cors_origin: String,
     external_url: String,
     sql_token: String,
+    ssti_primary_probe: SstiArithmeticProbe,
+    ssti_replay_probe: SstiArithmeticProbe,
 }
 
 impl fmt::Debug for NativeWebReviewSeeds {
@@ -477,6 +551,10 @@ impl fmt::Debug for NativeWebReviewSeeds {
             .field("cors_origin_bytes", &self.cors_origin.len())
             .field("external_url_bytes", &self.external_url.len())
             .field("sql_token_bytes", &self.sql_token.len())
+            .field(
+                "ssti_probe_family",
+                &"web.review.ssti.family.brace-arithmetic@1",
+            )
             .field("values", &"<redacted>")
             .finish()
     }
@@ -489,11 +567,23 @@ impl NativeWebReviewSeeds {
         let origin = root.origin().ascii_serialization();
         let digest = Sha256::digest(origin.as_bytes());
         let identity = lowercase_hex(&digest[..REVIEW_SEED_DIGEST_BYTES]);
+        let primary_left = 2 + (digest[16] % 5);
+        let primary_right = 7 + (digest[17] % 3);
+        let replay_left = 9 + (digest[18] % 4);
+        let replay_right = 9 + (digest[19] % 4);
+        let ssti_primary_probe =
+            SstiArithmeticProbe::new(lowercase_hex(&digest[..8]), primary_left, primary_right)
+                .expect("bounded digest-derived primary SSTI operands are valid");
+        let ssti_replay_probe =
+            SstiArithmeticProbe::new(lowercase_hex(&digest[8..16]), replay_left, replay_right)
+                .expect("bounded digest-derived replay SSTI operands are valid");
         Ok(Self {
             origin_identity: origin,
             cors_origin: format!("https://cors-{identity}.review.invalid"),
             external_url: format!("https://redirect-{identity}.review.invalid/venom-review"),
             sql_token: format!("venom-review-{identity}"),
+            ssti_primary_probe,
+            ssti_replay_probe,
         })
     }
 
@@ -510,6 +600,14 @@ impl NativeWebReviewSeeds {
     /// Returns the bounded scanner-owned token used by the SQL mutation catalog.
     pub(crate) fn sql_token(&self) -> &str {
         &self.sql_token
+    }
+
+    pub(crate) fn ssti_primary_probe(&self) -> &SstiArithmeticProbe {
+        &self.ssti_primary_probe
+    }
+
+    pub(crate) fn ssti_replay_probe(&self) -> &SstiArithmeticProbe {
+        &self.ssti_replay_probe
     }
 
     fn matches_origin(&self, root: &Url) -> bool {

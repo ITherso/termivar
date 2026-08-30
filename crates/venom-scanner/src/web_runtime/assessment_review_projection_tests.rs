@@ -64,7 +64,8 @@ fn plan(
             | NativeReviewProjectionKind::TextReflection
             | NativeReviewProjectionKind::AttributeReflection
             | NativeReviewProjectionKind::DangerousReflection
-            | NativeReviewProjectionKind::SqlStructuralDifferential => {
+            | NativeReviewProjectionKind::SqlStructuralDifferential
+            | NativeReviewProjectionKind::SstiStructuralEvaluation => {
                 AssessmentItemTarget::query_parameter(QUERY_PARAMETER).unwrap()
             },
         },

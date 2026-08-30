@@ -118,10 +118,10 @@ pub const HARD_MAX_WEB_ASSESSMENT_TOTAL_RESPONSE_BYTES: u64 = 256 * 1024 * 1024;
 pub const DEFAULT_WEB_ASSESSMENT_MAX_WALL_TIME: Duration = Duration::from_secs(300);
 /// Compiled complete-assessment wall-clock ceiling.
 pub const HARD_MAX_WEB_ASSESSMENT_WALL_TIME: Duration = Duration::from_secs(3_600);
-/// Default maximum active verification dispatches: four for the closed native
+/// Default maximum active verification dispatches: six for the closed native
 /// review catalog plus two for one explicitly supplied authorization pair.
 /// Callers may select a lower ceiling; exhaustion remains fail-closed.
-pub const DEFAULT_WEB_ASSESSMENT_MAX_ACTIVE_VERIFICATIONS: u16 = 6;
+pub const DEFAULT_WEB_ASSESSMENT_MAX_ACTIVE_VERIFICATIONS: u16 = 8;
 /// Compiled maximum active verification dispatches.
 pub const HARD_MAX_WEB_ASSESSMENT_ACTIVE_VERIFICATIONS: u16 = 64;
 /// Assessment subjects execute sequentially under one shared authority.
@@ -167,6 +167,10 @@ fn select_sql_review_query_parameter(names: &[String]) -> Option<String> {
         })
         .min()
         .cloned()
+}
+
+fn select_ssti_review_query_parameter(names: &[String]) -> Option<String> {
+    select_sql_review_query_parameter(names)
 }
 
 pub(crate) const HARD_MAX_DISCOVERY_NAME_BYTES: usize =
@@ -1591,12 +1595,15 @@ impl WebAssessmentRuntimeBuilder {
                 select_redirect_review_query_parameter(&root_subject.query_parameter_names);
             let sql_query_parameter =
                 select_sql_review_query_parameter(&root_subject.query_parameter_names);
+            let ssti_query_parameter =
+                select_ssti_review_query_parameter(&root_subject.query_parameter_names);
             let observer = Arc::new(
                 AssessmentReviewObserverSet::new_with_sql(
                     root.url.clone(),
                     seeds.clone(),
                     redirect_query_parameter.as_deref(),
                     sql_query_parameter.as_deref(),
+                    ssti_query_parameter.as_deref(),
                 )
                 .map_err(|_| WebAssessmentRuntimeError::NativeReviewComposition)?,
             );
@@ -1605,6 +1612,7 @@ impl WebAssessmentRuntimeBuilder {
                 seeds.clone(),
                 redirect_query_parameter.as_deref(),
                 sql_query_parameter.as_deref(),
+                ssti_query_parameter.as_deref(),
             )
             .map_err(|_| WebAssessmentRuntimeError::NativeReviewComposition)?;
             Some(AssessmentNativeReviewRuntime {
@@ -1614,9 +1622,11 @@ impl WebAssessmentRuntimeBuilder {
                     true,
                     redirect_query_parameter.is_some(),
                     sql_query_parameter.is_some(),
+                    ssti_query_parameter.is_some(),
                 ),
                 redirect_query_parameter,
                 sql_query_parameter,
+                ssti_query_parameter,
                 observer,
                 ledger,
             })
@@ -1640,7 +1650,7 @@ impl WebAssessmentRuntimeBuilder {
             started: false,
             defense_enforcement: self.defense_enforcement,
             native_review,
-            non_root_sql_review: None,
+            non_root_structural_review: None,
             root_api_visibility,
             committed_api_visibility: None,
             defense_audit: WebAssessmentDefenseAudit::new(if self.defense_enforcement {
@@ -1666,7 +1676,7 @@ pub struct WebAssessmentRuntime {
     started: bool,
     defense_enforcement: bool,
     native_review: Option<AssessmentNativeReviewRuntime>,
-    non_root_sql_review: Option<AssessmentNativeReviewRuntime>,
+    non_root_structural_review: Option<AssessmentNativeReviewRuntime>,
     root_api_visibility: Option<RootApiVisibilityRuntime>,
     committed_api_visibility: Option<CommittedAssessmentApiVisibility>,
     defense_audit: WebAssessmentDefenseAudit,
@@ -1678,6 +1688,7 @@ struct AssessmentNativeReviewRuntime {
     seeds: NativeWebReviewSeeds,
     redirect_query_parameter: Option<String>,
     sql_query_parameter: Option<String>,
+    ssti_query_parameter: Option<String>,
     observer: Arc<AssessmentReviewObserverSet>,
     ledger: CommittedAssessmentReviewLedger,
     enabled_actions: Vec<NativeWebReviewActionKind>,
@@ -1779,6 +1790,7 @@ fn replay_native_review(
     Ok(enabled_complete
         && !review.ledger.has_incomplete_reflection_observation()
         && !review.ledger.has_incomplete_sql_observation()
+        && !review.ledger.has_incomplete_ssti_observation()
         && review.ledger.observations().len() == expected_observations)
 }
 
@@ -1859,11 +1871,11 @@ impl WebAssessmentRuntime {
                 current_envelope_subject.executed = true;
                 if subject.origin == WebAssessmentSubjectOrigin::Discovered
                     && subject.method == WebAssessmentMethod::Get
-                    && self.non_root_sql_review.is_none()
-                    && self
-                        .native_review
-                        .as_ref()
-                        .is_some_and(|review| review.sql_query_parameter.is_none())
+                    && self.non_root_structural_review.is_none()
+                    && self.native_review.as_ref().is_some_and(|review| {
+                        review.sql_query_parameter.is_none()
+                            && review.ssti_query_parameter.is_none()
+                    })
                 {
                     if let Some(parameter) =
                         select_sql_review_query_parameter(&subject.query_parameter_names)
@@ -1875,6 +1887,7 @@ impl WebAssessmentRuntime {
                                 seeds.clone(),
                                 None,
                                 Some(&parameter),
+                                Some(&parameter),
                             )
                             .map_err(|_| WebAssessmentRuntimeError::NativeReviewComposition)?,
                         );
@@ -1883,14 +1896,20 @@ impl WebAssessmentRuntime {
                             seeds.clone(),
                             None,
                             Some(&parameter),
+                            Some(&parameter),
                         )
                         .map_err(|_| WebAssessmentRuntimeError::NativeReviewComposition)?;
-                        self.non_root_sql_review = Some(AssessmentNativeReviewRuntime {
+                        self.non_root_structural_review = Some(AssessmentNativeReviewRuntime {
                             target: subject.url.clone(),
                             seeds,
-                            enabled_actions: enabled_native_web_review_actions(false, false, true),
+                            enabled_actions: enabled_native_web_review_actions(
+                                false, false, true, true,
+                            ),
                             redirect_query_parameter: None,
                             sql_query_parameter: Some(parameter),
+                            ssti_query_parameter: select_ssti_review_query_parameter(
+                                &subject.query_parameter_names,
+                            ),
                             observer,
                             ledger,
                         });
@@ -1921,23 +1940,22 @@ impl WebAssessmentRuntime {
                                 observer,
                                 review.redirect_query_parameter.clone(),
                                 review.sql_query_parameter.clone(),
+                                review.ssti_query_parameter.clone(),
                             )
                         },
                         None => builder,
                     }
                 } else if let Some(review) = self
-                    .non_root_sql_review
+                    .non_root_structural_review
                     .as_ref()
                     .filter(|review| review.target == subject.url)
                 {
                     let observer: Arc<dyn CompleteHttpResponseObserver> = review.observer.clone();
-                    builder.with_native_sql_review(
+                    builder.with_native_structural_review(
                         review.seeds.clone(),
                         observer,
-                        review
-                            .sql_query_parameter
-                            .clone()
-                            .expect("SQL-only review retains one query parameter"),
+                        review.sql_query_parameter.clone(),
+                        review.ssti_query_parameter.clone(),
                     )
                 } else {
                     builder
@@ -2031,7 +2049,7 @@ impl WebAssessmentRuntime {
                     if subject.origin == WebAssessmentSubjectOrigin::AuthorizedRoot {
                         self.native_review.as_mut()
                     } else {
-                        self.non_root_sql_review
+                        self.non_root_structural_review
                             .as_mut()
                             .filter(|review| review.target == subject.url)
                     };
@@ -2359,7 +2377,7 @@ impl WebAssessmentRuntime {
         let review_ledgers = self
             .native_review
             .iter()
-            .chain(self.non_root_sql_review.iter())
+            .chain(self.non_root_structural_review.iter())
             .map(|review| &review.ledger)
             .collect::<Vec<_>>();
         let assessment_projection = match project_assessment_items(

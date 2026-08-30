@@ -298,7 +298,7 @@ async fn opted_in_native_review_uses_exact_root_shared_authority_and_no_redirect
     assert_eq!(report.completion(), &WebAssessmentCompletion::Complete);
 
     let requests = server.requests().await;
-    assert_eq!(requests.len(), 9);
+    assert_eq!(requests.len(), 13);
     assert!(requests.iter().all(|request| request.path() == "/"));
     assert_eq!(
         requests
@@ -312,7 +312,7 @@ async fn opted_in_native_review_uses_exact_root_shared_authority_and_no_redirect
             .iter()
             .filter(|request| request.target.contains("return_to="))
             .count(),
-        5
+        9
     );
     assert_eq!(
         report.subjects()[0]
@@ -324,7 +324,7 @@ async fn opted_in_native_review_uses_exact_root_shared_authority_and_no_redirect
                     if is_native_review_action(evidence.case().action_id())
             ))
             .count(),
-        8
+        NativeWebReviewActionKind::all().len() * 2
     );
     let native_items = report
         .assessment_items()
@@ -486,7 +486,7 @@ async fn reflected_origin_and_generic_redirect_are_not_findings_and_text_reflect
         native_items[0].basis(),
         AssessmentBasis::Observation(_)
     ));
-    assert_eq!(server.requests().await.len(), 9);
+    assert_eq!(server.requests().await.len(), 13);
 }
 
 #[tokio::test]
@@ -511,13 +511,13 @@ async fn native_review_never_invents_an_unrecognized_query_parameter() {
     assert_eq!(report.completion(), &WebAssessmentCompletion::Complete);
 
     let requests = server.requests().await;
-    assert_eq!(requests.len(), 7);
+    assert_eq!(requests.len(), 11);
     assert_eq!(
         requests
             .iter()
             .filter(|request| request.target.contains("opaque="))
             .count(),
-        4
+        8
     );
     assert!(requests
         .iter()
@@ -582,8 +582,8 @@ async fn sql_review_projects_one_repeatable_non_root_item_without_query_value_le
         sql_items[0].basis(),
         AssessmentBasis::Differential(_)
     ));
-    assert_eq!(report.usage().active_verifications(), 3);
-    assert_eq!(report.usage().total_requests(), 8);
+    assert_eq!(report.usage().active_verifications(), 5);
+    assert_eq!(report.usage().total_requests(), 12);
     let requests = server.requests().await;
     assert!(requests
         .iter()
@@ -596,6 +596,84 @@ async fn sql_review_projects_one_repeatable_non_root_item_without_query_value_le
         .assessment_items()
         .iter()
         .all(|item| item.disposition() != AssessmentDisposition::Confirmed));
+}
+
+#[cfg(feature = "reporting")]
+#[tokio::test]
+async fn ssti_review_requires_two_exact_evaluations_and_redacts_every_renderer() {
+    const SECRET: &str = "VENOM-SSTI-MUST-NOT-LEAK-SECRET-123";
+    let server = serve(|request| {
+        let evaluated = Url::parse(&format!("http://fixture{}", request.target))
+            .ok()
+            .and_then(|url| {
+                url.query_pairs()
+                    .find_map(|(name, value)| (name == "item").then(|| value.into_owned()))
+            })
+            .and_then(|value| {
+                let (prefix, expression) = value.split_once("-{{")?;
+                let expression = expression.strip_suffix("}}-end")?;
+                let (left, right) = expression.split_once('*')?;
+                let product = left.parse::<u16>().ok()? * right.parse::<u16>().ok()?;
+                Some(format!("{prefix}-{product}-end"))
+            });
+        FixtureReply::Response(FixtureResponse::html(
+            evaluated.unwrap_or_else(|| "matched control".to_owned()),
+        ))
+    })
+    .await;
+
+    let run = async || {
+        let mut runtime = WebAssessmentRuntime::builder(server.url(&format!("/?item={SECRET}")))
+            .enable_low_risk_differential_review()
+            .build()
+            .unwrap();
+        runtime.analyze().await.unwrap()
+    };
+    let first = run().await;
+    let second = run().await;
+    for report in [&first, &second] {
+        assert_eq!(report.completion(), &WebAssessmentCompletion::Complete);
+        let items = report
+            .assessment_items()
+            .iter()
+            .filter(|item| item.capability_id() == "web.review.ssti.structural-evaluation@1")
+            .collect::<Vec<_>>();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].disposition(), AssessmentDisposition::NeedsReview);
+        assert!(matches!(items[0].basis(), AssessmentBasis::Differential(_)));
+        assert!(!format!("{report:?}").contains(SECRET));
+        assert!(report
+            .assessment_items()
+            .iter()
+            .all(|item| item.disposition() != AssessmentDisposition::Confirmed));
+    }
+    let first_fingerprint = first
+        .assessment_items()
+        .iter()
+        .find(|item| item.capability_id() == "web.review.ssti.structural-evaluation@1")
+        .unwrap()
+        .fingerprint();
+    let second_fingerprint = second
+        .assessment_items()
+        .iter()
+        .find(|item| item.capability_id() == "web.review.ssti.structural-evaluation@1")
+        .unwrap()
+        .fingerprint();
+    assert_eq!(first_fingerprint, second_fingerprint);
+
+    let product =
+        ReportGenerator::compose_assessment(first, ScanProfileV1::web_review().unwrap()).unwrap();
+    for format in [
+        ReportFormat::Json,
+        ReportFormat::Csv,
+        ReportFormat::Html,
+        ReportFormat::Markdown,
+    ] {
+        let rendered = ReportGenerator::generate_assessment(&product, format).unwrap();
+        assert!(!rendered.contains(SECRET));
+        assert!(rendered.contains("web.review.ssti.structural-evaluation@1"));
+        assert!(!rendered.contains("confirmed"));
+    }
 }
 
 #[tokio::test]

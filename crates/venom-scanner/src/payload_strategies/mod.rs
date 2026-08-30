@@ -29,6 +29,7 @@ pub mod encoding;
 pub mod external_url_query_pair;
 pub mod http_header_control_pair;
 pub mod sql_quote_balance_query_pair;
+pub mod ssti_arithmetic_expression_pair;
 
 pub use api_authorization_context_pair::{
     ApiAuthorizationContextPairStrategy, API_AUTHORIZATION_CONTEXT_PAIR_HEADER_NAME,
@@ -50,6 +51,10 @@ pub use sql_quote_balance_query_pair::{
     SqlQuoteBalanceQueryPairStrategy, SQL_QUOTE_BALANCE_QUERY_PAIR_ID,
     SQL_QUOTE_BALANCE_QUERY_PAIR_REVISION,
 };
+pub use ssti_arithmetic_expression_pair::{
+    SstiArithmeticExpressionPairStrategy, SSTI_ARITHMETIC_EXPRESSION_PAIR_ID,
+    SSTI_ARITHMETIC_EXPRESSION_PAIR_REVISION,
+};
 
 /// Builds the registry of payload strategies a standard profile may resolve.
 ///
@@ -63,6 +68,7 @@ pub fn standard_payload_strategies() -> Result<PayloadStrategyRegistry, PayloadS
     registry.register(Arc::new(CorsOriginPairStrategy::new()))?;
     registry.register(Arc::new(ExternalUrlQueryPairStrategy::new()))?;
     registry.register(Arc::new(SqlQuoteBalanceQueryPairStrategy::new()))?;
+    registry.register(Arc::new(SstiArithmeticExpressionPairStrategy::new()))?;
     Ok(registry)
 }
 
@@ -98,12 +104,19 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(registry.len(), 5);
+        let ssti_arithmetic_pair = PayloadStrategyRef::new(
+            SSTI_ARITHMETIC_EXPRESSION_PAIR_ID,
+            SSTI_ARITHMETIC_EXPRESSION_PAIR_REVISION,
+        )
+        .unwrap();
+
+        assert_eq!(registry.len(), 6);
         assert!(registry.contains(&header_pair));
         assert!(registry.contains(&authorization_pair));
         assert!(registry.contains(&cors_origin_pair));
         assert!(registry.contains(&external_url_query_pair));
         assert!(registry.contains(&sql_quote_pair));
+        assert!(registry.contains(&ssti_arithmetic_pair));
     }
 
     #[test]

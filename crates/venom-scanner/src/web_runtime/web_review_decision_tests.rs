@@ -12,7 +12,8 @@ use venom_core::{
 use crate::{
     payload_strategies::{
         CORS_ORIGIN_PAIR_ID, CORS_ORIGIN_PAIR_REVISION, EXTERNAL_URL_QUERY_PAIR_ID,
-        EXTERNAL_URL_QUERY_PAIR_REVISION,
+        EXTERNAL_URL_QUERY_PAIR_REVISION, SSTI_ARITHMETIC_EXPRESSION_PAIR_ID,
+        SSTI_ARITHMETIC_EXPRESSION_PAIR_REVISION,
     },
     web_actions::NativeWebReviewActionKind,
     AdaptationLimits, AttackAction, BenefitScore, DecisionLoopConfig, ExperiencePolicy,
@@ -32,7 +33,7 @@ fn decision_loop() -> DecisionLoop {
         DecisionLoopConfig::new(
             PlanningContext::new(
                 BenefitScore::from_percent(80).unwrap(),
-                8,
+                12,
                 RiskScore::from_percent(10).unwrap(),
             ),
             AdaptationLimits::default(),
@@ -83,6 +84,11 @@ fn expected_strategy(kind: NativeWebReviewActionKind) -> PayloadStrategyRef {
         | NativeWebReviewActionKind::SqlStructuralQueryReplayPair => (
             SQL_QUOTE_BALANCE_QUERY_PAIR_ID,
             SQL_QUOTE_BALANCE_QUERY_PAIR_REVISION,
+        ),
+        NativeWebReviewActionKind::SstiStructuralQueryPair
+        | NativeWebReviewActionKind::SstiStructuralQueryReplayPair => (
+            SSTI_ARITHMETIC_EXPRESSION_PAIR_ID,
+            SSTI_ARITHMETIC_EXPRESSION_PAIR_REVISION,
         ),
     };
     PayloadStrategyRef::new(id, revision).unwrap()
@@ -295,7 +301,7 @@ fn correlated_response_status_materializes_only_a_generic_supported_eligibility(
             &subject(),
             PlanningContext::new(
                 BenefitScore::from_percent(80).unwrap(),
-                8,
+                12,
                 RiskScore::from_percent(10).unwrap(),
             ),
         )
@@ -335,7 +341,7 @@ fn correlated_response_status_materializes_only_a_generic_supported_eligibility(
             &subject(),
             PlanningContext::new(
                 BenefitScore::from_percent(80).unwrap(),
-                8,
+                12,
                 RiskScore::from_percent(10).unwrap(),
             ),
         )

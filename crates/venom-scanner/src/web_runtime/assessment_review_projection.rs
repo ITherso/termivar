@@ -23,7 +23,20 @@ use super::{
     },
 };
 
-const MAX_NATIVE_REVIEW_PROJECTION_ITEMS: usize = 4;
+const MAX_NATIVE_REVIEW_PROJECTION_ITEMS: usize = 5;
+
+const SSTI_STRUCTURAL_REVIEW: AssessmentCapabilityDescriptor =
+    AssessmentCapabilityDescriptor::differential_review(
+        "web.review.ssti.structural-evaluation@1",
+        "Repeatable server-side template arithmetic evaluation behavior",
+        "template-expression-evaluation",
+        "Two independent matched arithmetic pairs produced their exact candidate-specific computed values; no command execution or stronger template-engine verification was attempted.",
+        None,
+        1_000_000,
+        Some("CWE-1336"),
+        "web.remediation.template-input-separation@1",
+        "Keep untrusted input out of template source and review the exact rendering path manually before treating this behavioral signal as a vulnerability.",
+    );
 
 const SQL_STRUCTURAL_REVIEW: AssessmentCapabilityDescriptor =
     AssessmentCapabilityDescriptor::differential_review(
@@ -125,6 +138,7 @@ enum NativeReviewProjectionKind {
     AttributeReflection,
     DangerousReflection,
     SqlStructuralDifferential,
+    SstiStructuralEvaluation,
 }
 
 impl NativeReviewProjectionKind {
@@ -137,6 +151,7 @@ impl NativeReviewProjectionKind {
             Self::AttributeReflection => &ATTRIBUTE_REFLECTION_OBSERVATION,
             Self::DangerousReflection => &DANGEROUS_REFLECTION_REVIEW,
             Self::SqlStructuralDifferential => &SQL_STRUCTURAL_REVIEW,
+            Self::SstiStructuralEvaluation => &SSTI_STRUCTURAL_REVIEW,
         }
     }
 
@@ -149,6 +164,7 @@ impl NativeReviewProjectionKind {
             | Self::CandidateSpecificExternalRedirect
             | Self::DangerousReflection
             | Self::SqlStructuralDifferential => NativeReviewProjectionBasis::Differential,
+            Self::SstiStructuralEvaluation => NativeReviewProjectionBasis::Differential,
         }
     }
 }
@@ -274,6 +290,21 @@ fn plan_candidate(
                 .ok_or(AssessmentReviewItemProjectionError::CandidateContract)?;
             (
                 NativeReviewProjectionKind::SqlStructuralDifferential,
+                AssessmentItemTarget::query_parameter(query_parameter)?,
+            )
+        },
+        AssessmentReviewCandidate::SstiStructural(_) => {
+            if candidate.disposition() != NativeReviewDisposition::NeedsReview
+                || candidate.reflection_context().is_some()
+                || candidate.cors_status_relationship().is_some()
+            {
+                return Err(AssessmentReviewItemProjectionError::CandidateContract);
+            }
+            let query_parameter = candidate
+                .query_parameter()
+                .ok_or(AssessmentReviewItemProjectionError::CandidateContract)?;
+            (
+                NativeReviewProjectionKind::SstiStructuralEvaluation,
                 AssessmentItemTarget::query_parameter(query_parameter)?,
             )
         },

@@ -934,3 +934,239 @@ fn sql_text_only_identical_noisy_and_incomplete_observations_make_no_claim() {
         assert!(output.is_empty());
     }
 }
+
+fn ssti_observation(
+    kind: NativeWebReviewActionKind,
+    stage: DecisionExecutionStage,
+    status: ReviewHttpStatusClass,
+    evaluation: SstiEvaluationRelation,
+    active_success: bool,
+    evidence_prefix: &str,
+) -> CommittedAssessmentReviewObservation {
+    fake_observation(
+        kind,
+        stage,
+        CommittedReviewResponse::SstiStructural { status, evaluation },
+        active_success,
+        evidence_prefix,
+    )
+}
+
+fn ssti_pair_set(
+    candidate: SstiEvaluationRelation,
+    replay_candidate: SstiEvaluationRelation,
+) -> [CommittedAssessmentReviewObservation; 4] {
+    let control = ssti_observation(
+        NativeWebReviewActionKind::SstiStructuralQueryPair,
+        DecisionExecutionStage::Passive,
+        ReviewHttpStatusClass::Successful,
+        SstiEvaluationRelation::Absent,
+        false,
+        "ssti-control",
+    );
+    let candidate = ssti_observation(
+        NativeWebReviewActionKind::SstiStructuralQueryPair,
+        DecisionExecutionStage::Active,
+        ReviewHttpStatusClass::Successful,
+        candidate,
+        true,
+        "ssti-candidate",
+    );
+    let mut replay_control = ssti_observation(
+        NativeWebReviewActionKind::SstiStructuralQueryReplayPair,
+        DecisionExecutionStage::Passive,
+        ReviewHttpStatusClass::Successful,
+        SstiEvaluationRelation::Absent,
+        false,
+        "ssti-replay-control",
+    );
+    replay_control.case_id = "case:decision:2:ssti-replay".to_owned();
+    let mut replay_candidate = ssti_observation(
+        NativeWebReviewActionKind::SstiStructuralQueryReplayPair,
+        DecisionExecutionStage::Active,
+        ReviewHttpStatusClass::Successful,
+        replay_candidate,
+        true,
+        "ssti-replay-candidate",
+    );
+    replay_candidate.case_id = replay_control.case_id.clone();
+    [control, candidate, replay_control, replay_candidate]
+}
+
+#[test]
+fn ssti_review_requires_two_exact_evaluations_and_is_never_confirmed() {
+    let [control, candidate, replay_control, replay_candidate] = ssti_pair_set(
+        SstiEvaluationRelation::ExpectedEvaluation,
+        SstiEvaluationRelation::ExpectedEvaluation,
+    );
+    let mut output = Vec::new();
+    append_ssti_candidate(
+        &control,
+        &candidate,
+        &replay_control,
+        &replay_candidate,
+        "item",
+        &mut output,
+    );
+    assert_eq!(output.len(), 1);
+    assert_eq!(
+        output[0].disposition(),
+        NativeReviewDisposition::NeedsReview
+    );
+    assert!(matches!(
+        output[0],
+        AssessmentReviewCandidate::SstiStructural(_)
+    ));
+
+    let mut repeated = Vec::new();
+    append_ssti_candidate(
+        &control,
+        &candidate,
+        &replay_control,
+        &replay_candidate,
+        "item",
+        &mut repeated,
+    );
+    assert_eq!(output, repeated);
+}
+
+#[test]
+fn ssti_literal_static_error_noisy_wrong_replay_and_incomplete_make_no_claim() {
+    for (candidate_relation, replay_relation) in [
+        (
+            SstiEvaluationRelation::LiteralReflection,
+            SstiEvaluationRelation::LiteralReflection,
+        ),
+        (
+            SstiEvaluationRelation::ExpectedEvaluation,
+            SstiEvaluationRelation::Absent,
+        ),
+        (
+            SstiEvaluationRelation::Absent,
+            SstiEvaluationRelation::ExpectedEvaluation,
+        ),
+        (
+            SstiEvaluationRelation::Unsupported,
+            SstiEvaluationRelation::Unsupported,
+        ),
+        (
+            SstiEvaluationRelation::Incomplete,
+            SstiEvaluationRelation::ExpectedEvaluation,
+        ),
+    ] {
+        let [control, candidate, replay_control, replay_candidate] =
+            ssti_pair_set(candidate_relation, replay_relation);
+        let mut output = Vec::new();
+        append_ssti_candidate(
+            &control,
+            &candidate,
+            &replay_control,
+            &replay_candidate,
+            "item",
+            &mut output,
+        );
+        assert!(output.is_empty());
+    }
+
+    let [mut control, candidate, replay_control, replay_candidate] = ssti_pair_set(
+        SstiEvaluationRelation::ExpectedEvaluation,
+        SstiEvaluationRelation::ExpectedEvaluation,
+    );
+    control.response = CommittedReviewResponse::SstiStructural {
+        status: ReviewHttpStatusClass::Successful,
+        evaluation: SstiEvaluationRelation::ExpectedPresentInControl,
+    };
+    let mut output = Vec::new();
+    append_ssti_candidate(
+        &control,
+        &candidate,
+        &replay_control,
+        &replay_candidate,
+        "item",
+        &mut output,
+    );
+    assert!(output.is_empty());
+
+    let [control, mut candidate, replay_control, replay_candidate] = ssti_pair_set(
+        SstiEvaluationRelation::ExpectedEvaluation,
+        SstiEvaluationRelation::ExpectedEvaluation,
+    );
+    candidate.response = CommittedReviewResponse::SstiStructural {
+        status: ReviewHttpStatusClass::ServerError,
+        evaluation: SstiEvaluationRelation::ExpectedEvaluation,
+    };
+    output.clear();
+    append_ssti_candidate(
+        &control,
+        &candidate,
+        &replay_control,
+        &replay_candidate,
+        "item",
+        &mut output,
+    );
+    assert!(output.is_empty());
+}
+
+#[test]
+fn ssti_observer_classifies_literal_static_evaluated_unsupported_and_incomplete_bodies() {
+    let observer =
+        AssessmentReviewObserverSet::new_with_sql(root(), seeds(), None, None, Some("item"))
+            .unwrap();
+    let contract = observer.ssti.as_ref().unwrap();
+    let probe = &contract.primary.probe;
+    let strategy = native_review_strategy_ref(NativeWebReviewActionKind::SstiStructuralQueryPair);
+    let cases = [
+        (
+            DecisionExecutionStage::Active,
+            &contract.primary.candidate_url,
+            Some(probe.candidate_value()),
+            Some("text/html"),
+            "literal-reflection",
+        ),
+        (
+            DecisionExecutionStage::Active,
+            &contract.primary.candidate_url,
+            Some(probe.expected_value()),
+            Some("text/html"),
+            "expected-evaluation",
+        ),
+        (
+            DecisionExecutionStage::Passive,
+            &contract.primary.control_url,
+            Some(probe.expected_value()),
+            Some("text/html"),
+            "expected-present-in-control",
+        ),
+        (
+            DecisionExecutionStage::Active,
+            &contract.primary.candidate_url,
+            Some(probe.expected_value()),
+            Some("application/octet-stream"),
+            "unsupported",
+        ),
+        (
+            DecisionExecutionStage::Active,
+            &contract.primary.candidate_url,
+            None,
+            Some("text/html"),
+            "incomplete",
+        ),
+    ];
+    for (stage, url, body, media_type, expected) in cases {
+        let evidence = observe(
+            &observer,
+            NativeWebReviewActionKind::SstiStructuralQueryPair,
+            stage,
+            url,
+            &HeaderMap::new(),
+            200,
+            media_type,
+            body.as_deref().map(str::as_bytes),
+            NativeWebReviewActionKind::SstiStructuralQueryPair.executor_id(),
+            Some(&strategy),
+            false,
+        )
+        .unwrap();
+        assert!(values(&evidence).contains(&(SSTI_EVALUATION_RELATION, expected)));
+    }
+}
