@@ -1,6 +1,9 @@
 //! Replayable session state and transition summaries.
 
-use super::*;
+use super::{
+    AdaptationLedger, DecisionLoopError, DecisionStopReason, Deserialize, Deserializer, EntityId,
+    Serialize, VerificationCase,
+};
 
 /// Replayable state of one target-scoped decision session.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

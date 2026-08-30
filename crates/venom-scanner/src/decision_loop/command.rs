@@ -1,6 +1,6 @@
 //! Side-effect-free commands emitted by the decision state machine.
 
-use super::*;
+use super::{Deserialize, Serialize, VerificationCase};
 
 /// Why an action execution was emitted.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

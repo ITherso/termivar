@@ -1,6 +1,11 @@
 //! Immutable pre-commit failure and committed-evidence receipts.
 
-use super::*;
+use super::{
+    DecisionActionOrigin, DecisionExecutionFailureKind, DecisionExecutionLimits,
+    DecisionExecutionRequest, DecisionExecutionStage, DecisionExecutorError, DecisionLoopCommand,
+    DecisionOutcomeReport, DecisionPlanningReport, Evidence, KnowledgeSnapshot, KnowledgeWrite,
+    RuntimeLimitExceeded, Serialize, VerificationCase,
+};
 
 /// Immutable audit receipt for an executor-reported pre-commit failure.
 ///

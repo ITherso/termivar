@@ -1,6 +1,9 @@
 //! Capability-bound executor request and trait contracts.
 
-use super::*;
+use super::{
+    async_trait, DecisionActionOrigin, DecisionExecutorError, Deserialize, Evidence, KnowledgeBase,
+    KnowledgeSnapshot, PayloadStrategyRef, Serialize, VerificationCase,
+};
 
 /// Verification stage whose evidence an executor must collect.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]

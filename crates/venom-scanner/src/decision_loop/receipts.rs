@@ -1,10 +1,13 @@
 //! Immutable reasoning, planning, and outcome audit receipts.
 
-use super::*;
+use super::{
+    AdaptiveDecision, AttackPlan, BTreeSet, DecisionLoopCommand, DecisionSessionTransition,
+    EntityId, ExperienceWrite, KnowledgeWrite, RuleApplication, Serialize, VerificationReport,
+};
 
 /// Reasoning applications committed before a later planning-stage failure.
 ///
-/// This receipt describes one successful in-memory [`RuleEngine::apply`]
+/// This receipt describes one successful in-memory [`crate::RuleEngine::apply`]
 /// transaction and its exact [`KnowledgeWrite`] statuses. It does not imply
 /// durable persistence. A rule evaluation remains the pre-commit candidate;
 /// hosts must query the knowledge base when verifier-owned terminal-state

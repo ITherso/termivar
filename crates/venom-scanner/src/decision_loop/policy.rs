@@ -1,6 +1,15 @@
 //! Deterministic reasoning, planning, verification, and adaptation policy.
 
-use super::*;
+use super::{
+    ActionSuppressionContext, ActiveEvidenceSnapshots, AdaptationLimits, AdaptivePipeline,
+    AttackPlan, AttackPlanner, BTreeSet, DecisionActionOrigin, DecisionLoopCommand,
+    DecisionLoopConfig, DecisionLoopError, DecisionLoopState, DecisionOutcomeReport,
+    DecisionPlanningReport, DecisionReasoningCommitReceipt, DecisionSession,
+    DecisionSessionTransition, DecisionStopReason, ExperiencePolicy, ExperienceStore,
+    KnowledgeBase, KnowledgeSnapshot, KnowledgeWrite, Outcome, PayloadStrategyRef,
+    PipelineDirective, PlanningContext, ResolvedVerificationTarget, RuleEngine,
+    ScheduledActionAuthorizationError, VerificationCase, VerificationPipeline, VerificationReport,
+};
 
 /// Deterministic coordinator for one evidence-to-command cycle.
 ///
