@@ -68,6 +68,23 @@ cargo test --workspace --all-features --tests --locked
 Never point automated tests at a public or customer system. Network behavior
 must use loopback fixtures with deterministic responses and bounded timeouts.
 
+## Cross-platform runtime smoke
+
+The Tests workflow has a small `Runtime Smoke` matrix on `ubuntu-latest`,
+`windows-latest`, and `macos-latest`, all using the declared Rust `1.88.0`
+toolchain. Each runner builds the default `venom-cli`, executes the built
+binary with `--version` and `--help`, and runs the real process-level default
+scan against a deterministic `127.0.0.1` fixture. It also exercises atomic
+`--report-output` create/no-clobber behavior through an explicitly selected
+`web-review` profile, the transport-neutral core RunReport wire golden, and
+focused scanner exact-origin and redirect-no-follow contracts.
+
+This matrix is intentionally a runtime portability smoke layer, not a second
+copy of the all-features, Clippy, coverage, security, fuzz, or release-artifact
+matrices. It tests only host-native builds and temporary-path behavior on the
+three hosted operating systems. All sockets opened by these tests bind to
+loopback; the job never scans a public target.
+
 ## Reasoning and runtime regressions
 
 Reasoning tests should assert the complete causal chain that matters to the

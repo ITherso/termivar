@@ -17,6 +17,7 @@ independent security assurance.
 | `cargo-mutants` | Scoped and manual | Selected policy, planner/runtime, and extraction contracts have evidenced review campaigns; no mutation workflow, workspace-wide baseline, or aggregate score is committed |
 | Source coverage | Enforced, scoped | Rust `1.88.0` and the explicit LLVM backend of `cargo-tarpaulin 0.37.2` enforce the accepted exact 21,439/24,842 aggregate and changed-line ratio for tracked Rust files under `crates/*/src/**` and `xtask/src/**`; `venom.coverage.v2` binds a normalized line-state digest, changed-file presence is fail-closed, and advisory Codecov upload remains best-effort |
 | MSRV | Configured in CI | Workspace packages declare Rust `1.88`; the compatibility matrix also exercises stable, beta, and nightly |
+| Cross-platform runtime smoke | Configured in CI | A focused Rust `1.88.0` matrix builds the default CLI and exercises CLI metadata, one deterministic loopback scan, atomic report paths, core wire stability, exact-origin authority, and redirect observation on Ubuntu, Windows, and macOS; it is not an all-features or release-readiness claim |
 | SemVer | Configured for `venom-core` | `cargo xtask semver` compares the all-features core API with the recorded `v0.9.0-alpha` baseline using a patch-compatibility threshold |
 | Architecture boundaries | Configured in CI | `cargo xtask architecture` checks virtual-root source, workspace edges, protected imports, and the transport-free reasoning build |
 
@@ -27,6 +28,12 @@ dependency-policy, and cross-platform build gates. `cargo xtask release` runs a
 local preflight without tagging or publishing. A release claim must identify
 the exact commit and retain the corresponding GitHub Actions result; the
 existence of either command is not evidence that it passed.
+
+The separate Tests-workflow runtime-smoke matrix adds host-native execution on
+Ubuntu, Windows, and macOS. It uses deterministic loopback fixtures and a small
+set of path, scope, redirect, and wire-format checks; it does not replace the
+release workflow's artifact builds or establish broad platform support by
+configuration alone.
 
 ## Public API compatibility scope
 

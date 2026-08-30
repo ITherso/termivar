@@ -136,6 +136,38 @@ jobs:
             "$scanner_dir/Cargo.toml"
           cargo test --manifest-path "$scanner_dir/Cargo.toml"
 
+  platform-runtime-smoke:
+    name: Runtime Smoke (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # 1.88.0
+        with:
+          toolchain: "1.88.0"
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      - name: Build default CLI
+        run: cargo build --locked -p venom-cli
+      - name: Exercise CLI metadata
+        run: |
+          cargo run --locked -p venom-cli -- --version
+          cargo run --locked -p venom-cli -- --help
+      - name: Exercise default decision scan against loopback
+        run: cargo test --locked -p venom-cli --test decision_scan_cli json_format_writes_parseable_json_to_stdout_and_the_runtime_notice_to_stderr
+      - name: Exercise atomic report-output path semantics
+        run: cargo test --locked -p venom-cli --test profile_scan_cli report_output_is_complete_atomic_and_never_overwritten
+      - name: Exercise focused core and scanner contracts
+        run: |
+          cargo test --locked -p venom-core --lib report_round_trip_and_golden_are_stable
+          cargo test --locked -p venom-scanner --lib authority_narrows_a_broader_policy_to_one_exact_origin
+          cargo test --locked -p venom-scanner --lib redirect_is_observed_without_following_the_location
+
   security-tests:
     name: Security Tests
     runs-on: ubuntu-latest
