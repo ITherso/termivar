@@ -8,15 +8,18 @@
 use std::{
     ffi::OsString,
     fmt,
-    fs::File,
+    fs::{self, File},
     io::{self, Read},
     path::PathBuf,
 };
 
-use venom_scanner::web_runtime::WebAssessmentRootAuthorizationContext;
+use venom_scanner::{
+    web_runtime::WebAssessmentRootAuthorizationContext, DEFAULT_MAX_PAYLOAD_ARTIFACT_BYTES,
+};
 
 /// The CLI deliberately uses the standard payload-strategy seed ceiling.
-pub(crate) const MAX_AUTHORIZATION_CONTEXT_BYTES: usize = 4 * 1024;
+pub(crate) const MAX_AUTHORIZATION_CONTEXT_BYTES: usize =
+    DEFAULT_MAX_PAYLOAD_ARTIFACT_BYTES as usize;
 
 /// One explicit out-of-band source for a complete Authorization header value.
 ///
@@ -72,8 +75,7 @@ impl AuthorizationInputSource {
         let bytes = match self {
             Self::Environment(name) => read_environment(name)?,
             Self::File(path) => {
-                let mut file =
-                    File::open(path).map_err(|_| AuthorizationInputError::SourceUnavailable)?;
+                let mut file = open_regular_file(path)?;
                 read_bounded_line_source(&mut file)?
             },
             Self::Stdin => {
@@ -93,6 +95,7 @@ pub(crate) enum AuthorizationInputError {
     ConflictingSources,
     SourceNameInvalid,
     SourceUnavailable,
+    SourceNotRegularFile,
     SourceNotUnicode,
     SourceReadFailed,
     ValueTooLarge,
@@ -105,6 +108,9 @@ impl fmt::Display for AuthorizationInputError {
             Self::ConflictingSources => "select exactly one authorization-context input source",
             Self::SourceNameInvalid => "authorization-context environment name is invalid",
             Self::SourceUnavailable => "authorization-context input source is unavailable",
+            Self::SourceNotRegularFile => {
+                "authorization-context file source must be a regular file"
+            },
             Self::SourceNotUnicode => {
                 "authorization-context environment value is not valid Unicode"
             },
@@ -137,6 +143,22 @@ fn read_environment(name: OsString) -> Result<Vec<u8>, AuthorizationInputError> 
         return Err(AuthorizationInputError::ValueTooLarge);
     }
     Ok(bytes)
+}
+
+fn open_regular_file(path: PathBuf) -> Result<File, AuthorizationInputError> {
+    let metadata =
+        fs::symlink_metadata(&path).map_err(|_| AuthorizationInputError::SourceUnavailable)?;
+    if !metadata.file_type().is_file() {
+        return Err(AuthorizationInputError::SourceNotRegularFile);
+    }
+    let file = File::open(path).map_err(|_| AuthorizationInputError::SourceUnavailable)?;
+    let opened_metadata = file
+        .metadata()
+        .map_err(|_| AuthorizationInputError::SourceUnavailable)?;
+    if !opened_metadata.is_file() {
+        return Err(AuthorizationInputError::SourceNotRegularFile);
+    }
+    Ok(file)
 }
 
 /// Reads at most the credential ceiling plus one terminal CRLF and then probes
@@ -273,5 +295,14 @@ mod tests {
         let error = read_bounded_line_source(&mut FailingReader).unwrap_err();
         assert_eq!(error, AuthorizationInputError::SourceReadFailed);
         assert!(!error.to_string().contains("PRIVATE_SOURCE_DIAGNOSTIC"));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn file_source_rejects_a_non_regular_object_before_opening_or_reading() {
+        let error = AuthorizationInputSource::File(PathBuf::from("/dev/null"))
+            .load()
+            .unwrap_err();
+        assert_eq!(error, AuthorizationInputError::SourceNotRegularFile);
     }
 }

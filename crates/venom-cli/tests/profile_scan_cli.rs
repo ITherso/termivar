@@ -414,7 +414,9 @@ fn authorization_context_sources_are_root_only_atomic_and_fully_redacted() {
             });
             if authorized {
                 counted.fetch_add(1, Ordering::SeqCst);
-                ok_json(&format!(r#"{{"id":1,"{PRIVATE_JSON_SENTINEL}":"visible"}}"#))
+                ok_json(&format!(
+                    r#"{{"id":1,"{PRIVATE_JSON_SENTINEL}":"visible"}}"#
+                ))
             } else {
                 ok_json(r#"{"id":1}"#)
             }
@@ -555,6 +557,173 @@ fn authorization_context_sources_are_root_only_atomic_and_fully_redacted() {
     assert!(!raw_secret.status.success());
     assert!(raw_secret.stdout.is_empty());
     assert_eq!(server.connections.load(Ordering::SeqCst), before);
+}
+
+#[test]
+fn insecure_domain_http_is_rejected_before_the_authorization_source_is_read() {
+    let missing_path = unique_report_path("insecure-http-missing-auth");
+    let missing_path_text = missing_path.to_string_lossy().into_owned();
+    let output = venom()
+        .args([
+            "scan",
+            "--profile",
+            "web-review",
+            "--auth-file",
+            missing_path_text.as_str(),
+            "http://localhost/",
+        ])
+        .output()
+        .expect("failed to run insecure-transport preflight");
+
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("requires HTTPS"),
+        "unexpected stderr: {stderr}"
+    );
+    assert!(!stderr.contains(missing_path_text.as_str()));
+    assert!(!stderr.contains("input source is unavailable"));
+}
+
+#[test]
+fn non_regular_authorization_file_is_rejected_before_network_dispatch() {
+    let server = serve(|_| ok_html("must not be requested", ""));
+    let directory = unique_report_path("auth-directory");
+    std::fs::create_dir(&directory).expect("create non-regular authorization source");
+    let directory_text = directory.to_string_lossy().into_owned();
+    let output = venom()
+        .args([
+            "scan",
+            "--profile",
+            "web-review",
+            "--auth-file",
+            directory_text.as_str(),
+            &server.url,
+        ])
+        .output()
+        .expect("failed to run non-regular authorization-source preflight");
+
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("must be a regular file"));
+    assert!(!stderr.contains(directory_text.as_str()));
+    assert_eq!(server.connections.load(Ordering::SeqCst), 0);
+    std::fs::remove_dir(directory).expect("remove non-regular authorization source");
+}
+
+#[test]
+fn report_destination_is_preflighted_before_secret_loading_or_network() {
+    let server = serve(|_| ok_html("must not be requested", ""));
+    let output_path = unique_report_path("existing-report");
+    let original = b"EXISTING_REPORT_MUST_NOT_CHANGE";
+    std::fs::write(&output_path, original).expect("create existing report destination");
+    let output_path_text = output_path.to_string_lossy().into_owned();
+    let missing_auth_path = unique_report_path("missing-report-preflight-auth");
+    let missing_auth_path_text = missing_auth_path.to_string_lossy().into_owned();
+    let output = venom()
+        .args([
+            "scan",
+            "--profile",
+            "web-review",
+            "--report-format",
+            "json",
+            "--report-output",
+            output_path_text.as_str(),
+            "--auth-file",
+            missing_auth_path_text.as_str(),
+            &server.url,
+        ])
+        .output()
+        .expect("failed to run report-output preflight");
+
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("report output already exists"));
+    assert!(!stderr.contains(missing_auth_path_text.as_str()));
+    assert!(!stderr.contains("authorization-context input source"));
+    assert_eq!(server.connections.load(Ordering::SeqCst), 0);
+    assert_eq!(std::fs::read(&output_path).unwrap(), original);
+    std::fs::remove_file(output_path).expect("remove existing report destination");
+}
+
+#[test]
+fn post_load_runtime_failure_never_discloses_authorization_material() {
+    const SECRET: &str = "Bearer POST_LOAD_RUNTIME_FAILURE_SECRET";
+    const ENV_NAME: &str = "VENOM_POST_LOAD_FAILURE_AUTH_SOURCE";
+    const PRIVATE_TRANSPORT_DIAGNOSTIC: &str = "PRIVATE_TRANSPORT_DIAGNOSTIC";
+
+    let authorized_hits = Arc::new(AtomicUsize::new(0));
+    let counted = Arc::clone(&authorized_hits);
+    let server = serve_request(move |_, request| {
+        let authorized = request.lines().any(|line| {
+            line.split_once(':').is_some_and(|(name, value)| {
+                name.eq_ignore_ascii_case("authorization") && value.trim() == SECRET
+            })
+        });
+        if authorized {
+            counted.fetch_add(1, Ordering::SeqCst);
+            // Closing without a response forces a transport failure only after
+            // the out-of-band credential has been loaded and dispatched.
+            Vec::new()
+        } else if request.lines().any(|line| {
+            line.split_once(':').is_some_and(|(name, value)| {
+                name.eq_ignore_ascii_case("accept")
+                    && value.trim().eq_ignore_ascii_case("application/json")
+            })
+        }) {
+            ok_json(r#"{"id":1}"#)
+        } else {
+            ok_html(PRIVATE_TRANSPORT_DIAGNOSTIC, "")
+        }
+    });
+    let auth_path = unique_report_path("post-load-runtime-auth");
+    std::fs::write(&auth_path, SECRET).expect("write bounded authorization source");
+    let auth_path_text = auth_path.to_string_lossy().into_owned();
+    let file_output = venom()
+        .args([
+            "scan",
+            "--profile",
+            "web-review",
+            "--format",
+            "json",
+            "--auth-file",
+            auth_path_text.as_str(),
+            &server.url,
+        ])
+        .output()
+        .expect("failed to run post-load transport failure");
+
+    let assert_redacted_failure = |output: &Output, source_identifier: &str| {
+        assert!(!output.status.success());
+        for rendered in [&output.stdout, &output.stderr] {
+            let rendered = String::from_utf8_lossy(rendered);
+            assert!(!rendered.contains(SECRET));
+            assert!(!rendered.contains(source_identifier));
+            assert!(!rendered.contains(PRIVATE_TRANSPORT_DIAGNOSTIC));
+        }
+    };
+    assert_redacted_failure(&file_output, auth_path_text.as_str());
+
+    let environment_output = venom()
+        .env(ENV_NAME, SECRET)
+        .args([
+            "scan",
+            "--profile",
+            "web-review",
+            "--format",
+            "json",
+            "--auth-env",
+            ENV_NAME,
+            &server.url,
+        ])
+        .output()
+        .expect("failed to run post-load environment transport failure");
+    assert_redacted_failure(&environment_output, ENV_NAME);
+    assert_eq!(authorized_hits.load(Ordering::SeqCst), 2);
+    std::fs::remove_file(auth_path).expect("remove authorization source");
 }
 
 #[test]

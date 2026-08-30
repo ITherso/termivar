@@ -144,6 +144,15 @@ fn is_exact_origin_root(target: &Url) -> bool {
         && target.fragment().is_none()
 }
 
+fn authorization_context_transport_is_allowed(target: &Url) -> bool {
+    target.scheme() == "https"
+        || (target.scheme() == "http"
+            && target.host().is_some_and(|host| {
+                matches!(host, url::Host::Ipv4(ip) if ip.is_loopback())
+                    || matches!(host, url::Host::Ipv6(ip) if ip.is_loopback())
+            }))
+}
+
 #[cfg(feature = "legacy-scanner")]
 const LEGACY_DIRECTORY_FUZZ_WARNING: &str = "[WARNING] Legacy directory discovery is enabled. This wordlist phase uses the bounded exact-origin discovery broker, but still increases request volume; run it only against explicitly authorized targets.";
 #[cfg(feature = "legacy-scanner")]
@@ -331,6 +340,13 @@ async fn run_deterministic_scan(
         )
         .into());
     }
+    if authorization_source.is_some() && !authorization_context_transport_is_allowed(&target) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "authorization-context review requires HTTPS; numeric loopback HTTP is allowed only for local fixtures",
+        )
+        .into());
+    }
 
     if let Some(selected_profile) = profile {
         let mut profile =
@@ -338,8 +354,9 @@ async fn run_deterministic_scan(
         if enforce_defense {
             profile = profile.with_defense_enforcement_enabled(true)?;
         }
-        // All flag, profile, and target checks above precede the only secret
-        // source read in the CLI.
+        preflight_report_output(report_output.as_deref())?;
+        // All flag, profile, target, and obvious report-output checks above
+        // precede the only secret source read in the CLI.
         let root_authorization_context = authorization_source
             .map(auth_input::AuthorizationInputSource::load)
             .transpose()?;
@@ -392,6 +409,49 @@ async fn run_deterministic_scan(
     Ok(())
 }
 
+fn preflight_report_output(path: Option<&std::path::Path>) -> std::io::Result<()> {
+    use std::fs;
+
+    let Some(path) = path else {
+        return Ok(());
+    };
+    if path.file_name().is_none() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "report output must name a file",
+        ));
+    }
+    match fs::symlink_metadata(path) {
+        Ok(_) => {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                "report output already exists",
+            ));
+        },
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {},
+        Err(error) => {
+            return Err(std::io::Error::new(
+                error.kind(),
+                "report output state could not be inspected",
+            ));
+        },
+    }
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| std::path::Path::new("."));
+    let metadata = fs::metadata(parent).map_err(|error| {
+        std::io::Error::new(error.kind(), "report output parent is unavailable")
+    })?;
+    if !metadata.is_dir() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "report output parent must be a directory",
+        ));
+    }
+    Ok(())
+}
+
 fn write_report_atomically(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
     use std::{
         fs::{self, OpenOptions},
@@ -407,22 +467,11 @@ fn write_report_atomically(path: &std::path::Path, bytes: &[u8]) -> std::io::Res
             "refusing to create an empty report",
         ));
     }
-    if fs::symlink_metadata(path).is_ok() {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::AlreadyExists,
-            "report output already exists",
-        ));
-    }
+    preflight_report_output(Some(path))?;
     let parent = path
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
         .unwrap_or_else(|| std::path::Path::new("."));
-    if path.file_name().is_none() {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            "report output must name a file",
-        ));
-    }
 
     let mut last_collision = None;
     for _ in 0..32 {
@@ -887,6 +936,22 @@ mod tests {
             scan_profile_flags_conflict(Some(CliScanProfile::WebReview), true, false).is_some()
         );
         assert_eq!(scan_profile_flags_conflict(None, false, false), None);
+    }
+
+    #[test]
+    fn authorization_transport_matches_the_scanner_fixture_boundary() {
+        assert!(authorization_context_transport_is_allowed(
+            &Url::parse("https://example.test/").unwrap()
+        ));
+        assert!(authorization_context_transport_is_allowed(
+            &Url::parse("http://127.0.0.1/").unwrap()
+        ));
+        assert!(authorization_context_transport_is_allowed(
+            &Url::parse("http://[::1]/").unwrap()
+        ));
+        assert!(!authorization_context_transport_is_allowed(
+            &Url::parse("http://localhost/").unwrap()
+        ));
     }
 
     #[test]
