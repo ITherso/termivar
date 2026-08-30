@@ -102,13 +102,33 @@ requests cannot activate it. The measurement checkout and artifact identity are
 pinned to the pull request head commit rather than GitHub's synthetic merge
 commit. Artifacts are measurements, not performance claims.
 
+### Initial controlled endpoint evidence
+
+Source commit `27321efbbf49cb2adbc72afb699d1b31ea407486` completed the fixed
+all-workload run with one warmup and three measured samples in
+[workflow run 33292247976](https://github.com/ITherso/venom/actions/runs/33292247976).
+The exact artifact is retained as the [human-readable record](reports/benchmarks/27321ef-endpoint-assessment.md)
+and [validated JSON](reports/benchmarks/27321ef-endpoint-assessment.json).
+
+| Workload | Wall median | Wall CV | Requests/s median | p95 dispatch latency |
+| --- | ---: | ---: | ---: | ---: |
+| 100 endpoints / 102 requests | 325.865 ms | 0.14% | 313.01 | 2 ms |
+| 1,000 endpoints / 1,002 requests | 3,747.424 ms | 0.48% | 267.38 | 2 ms |
+| 9,980 endpoints / 10,000 requests / 10 authorities | 37,454.359 ms | 0.48% | 266.99 | 2 ms |
+
+GNU `time` observed 78.38 total CPU seconds, 46% process CPU utilization, and
+333,036 KiB peak RSS across every selected workload, warmup, and measured
+sample. These are runner-local observations with a fixed one-millisecond
+fixture delay and millisecond receipt resolution. They are not an SLA, capacity
+limit, concurrency result, or accepted regression threshold.
+
 ## Release baseline
 
-Endpoint-scale infrastructure now exists, but a repeatable accepted baseline
-has not yet been published. Do not substitute microbenchmarks, one-off workflow
-artifacts, synthetic values, or estimates for a release capacity claim. The
+Initial controlled endpoint evidence now exists, but a repeatable accepted
+baseline has not yet been established. Do not substitute microbenchmarks, one
+workflow run, synthetic values, or estimates for a release capacity claim. The
 machine schema keeps `thresholds` exactly `null` and emits no speed pass/fail
-field. Multiple comparable manual runs must establish variance on a pinned
+field. Multiple comparable runs must establish inter-run variance on a pinned
 hardware class before a later reviewed change can propose regression
 thresholds.
 

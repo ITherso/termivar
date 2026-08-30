@@ -4,6 +4,12 @@ Venom publishes measurements as CI artifacts instead of embedding hand-maintaine
 
 Evidence-backed release baselines are committed under `docs/reports/benchmarks/`. The latest published record is [commit `f7d5120`](reports/benchmarks/f7d5120.md), with raw values in [JSON](reports/benchmarks/f7d5120.json).
 
+That record is the historical Criterion microbaseline. The separate initial
+endpoint-assessment evidence is pinned to source commit
+[`27321ef`](reports/benchmarks/27321ef-endpoint-assessment.md), with its exact
+[schema-v1 JSON](reports/benchmarks/27321ef-endpoint-assessment.json). It has no
+accepted speed threshold and does not replace the Criterion record.
+
 ## Every push and pull request
 
 The `Quality Metrics` workflow records:
@@ -88,8 +94,8 @@ claim that every mutation-relevant function has been exercised.
 | Metric | State | Exit criterion |
 | --- | --- | --- |
 | Project-wide mutation baseline | Missing | Commit a repeatable scope, exclusions, survivor policy, and comparable baseline |
-| Accepted endpoint throughput/latency baseline | Infrastructure available; baseline missing | Repeat comparable 100/1,000/10,000 local-fixture runs on a pinned hardware class and review variance |
-| Accepted scanner peak RAM/CPU baseline | Infrastructure available; baseline missing | Review repeated GNU `time` process evidence on the same pinned hardware class |
+| Accepted endpoint throughput/latency baseline | Initial controlled evidence available; repeatable baseline missing | Repeat comparable 100/1,000/10,000 local-fixture runs on a pinned hardware class and review inter-run variance |
+| Accepted scanner peak RAM/CPU baseline | Initial controlled GNU `time` evidence available; repeatable baseline missing | Review repeated process evidence on the same pinned hardware class |
 | External audit findings | Missing | Independent scope, report, and remediation record |
 
 If a permanent mutation job is introduced, it should normally run on a schedule
