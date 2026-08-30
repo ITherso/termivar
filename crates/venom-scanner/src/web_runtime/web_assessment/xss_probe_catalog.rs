@@ -25,6 +25,18 @@ pub(in crate::web_runtime) enum XssStructuralEvidenceExpectation {
     CandidateSpecificParserBoundary,
 }
 
+/// Evidence capability required before a catalog family can become network
+/// work. Catalog membership deliberately does not imply V1 executability.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::web_runtime) enum XssEvidenceCapability {
+    /// The bounded HTML parser can prove one exact scanner-owned node boundary.
+    ExactHtmlNodeBoundary,
+    /// Exact source quote state is required and is not retained by the DOM.
+    AttributeSourceQuoteMode,
+    /// A stronger script-boundary candidate/evidence contract is not in V1.
+    ScriptBoundaryTransition,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in crate::web_runtime) enum XssMaximumDisposition {
     NeedsReview,
@@ -108,6 +120,26 @@ impl XssProbeFamily {
         XssStructuralEvidenceExpectation::CandidateSpecificParserBoundary
     }
 
+    pub(in crate::web_runtime) const fn evidence_capability(self) -> XssEvidenceCapability {
+        match self {
+            Self::HtmlTextBoundary => XssEvidenceCapability::ExactHtmlNodeBoundary,
+            Self::UriAttributeStructure | Self::EventHandlerStructure => {
+                XssEvidenceCapability::AttributeSourceQuoteMode
+            },
+            Self::ScriptContentStructure => XssEvidenceCapability::ScriptBoundaryTransition,
+        }
+    }
+
+    /// V1 executes only families whose success can be proven by the currently
+    /// committed bounded parser evidence. Metadata-only families remain closed,
+    /// versioned extension points and create no request obligation.
+    pub(in crate::web_runtime) const fn is_v1_executable(self) -> bool {
+        matches!(
+            self.evidence_capability(),
+            XssEvidenceCapability::ExactHtmlNodeBoundary
+        )
+    }
+
     pub(in crate::web_runtime) const fn maximum_disposition(self) -> XssMaximumDisposition {
         let _ = self;
         XssMaximumDisposition::NeedsReview
@@ -133,7 +165,8 @@ pub(in crate::web_runtime) fn select_xss_probe_families(
     let mut compatible = XssProbeFamily::all()
         .into_iter()
         .filter(|family| {
-            family.compatible_context() == context
+            family.is_v1_executable()
+                && family.compatible_context() == context
                 && family.revision() == 1
                 && family.request_cost() <= 2
                 && family.request_cost().saturating_add(1) <= XSS_V1_MAX_TOTAL_REQUESTS
@@ -169,18 +202,9 @@ mod tests {
                 ExactHtmlReflectionContext::HtmlText,
                 Some(XssProbeFamily::HtmlTextBoundary),
             ),
-            (
-                ExactHtmlReflectionContext::UriAttribute,
-                Some(XssProbeFamily::UriAttributeStructure),
-            ),
-            (
-                ExactHtmlReflectionContext::EventHandlerAttribute,
-                Some(XssProbeFamily::EventHandlerStructure),
-            ),
-            (
-                ExactHtmlReflectionContext::ScriptElementContent,
-                Some(XssProbeFamily::ScriptContentStructure),
-            ),
+            (ExactHtmlReflectionContext::UriAttribute, None),
+            (ExactHtmlReflectionContext::EventHandlerAttribute, None),
+            (ExactHtmlReflectionContext::ScriptElementContent, None),
             (ExactHtmlReflectionContext::AttributeValue, None),
             (ExactHtmlReflectionContext::HtmlComment, None),
             (ExactHtmlReflectionContext::StyleAttribute, None),
@@ -211,6 +235,15 @@ mod tests {
                 XssMaximumDisposition::NeedsReview
             );
             assert!(!family.replay_required());
+        }
+        assert!(XssProbeFamily::HtmlTextBoundary.is_v1_executable());
+        for family in [
+            XssProbeFamily::UriAttributeStructure,
+            XssProbeFamily::EventHandlerStructure,
+            XssProbeFamily::ScriptContentStructure,
+        ] {
+            assert!(!family.is_v1_executable());
+            assert!(select_xss_probe_families(family.compatible_context()).is_empty());
         }
     }
 

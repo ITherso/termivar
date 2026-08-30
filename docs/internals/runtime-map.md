@@ -46,7 +46,7 @@ venom scan <target> --profile web-review
       -> passive header/cookie assessment projection
       -> root-scoped matched CORS and optional redirect review
       -> one bounded root-or-discovered parser-driven reflection-context pair
-      -> at most one assessment-wide compatible non-executing XSS structural family
+      -> at most one assessment-wide evidence-capable XSS structural family
       -> one bounded root-or-discovered SQL structural review with exact replay
       -> one bounded root-or-discovered SSTI arithmetic review with independent replay
       -> optional exact-root anonymous/authorized API visibility pair

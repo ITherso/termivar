@@ -298,6 +298,8 @@ fn planner_conflict_rolls_back_preflighted_reasoning_and_verification() {
 
 #[test]
 fn correlated_response_status_materializes_only_a_generic_supported_eligibility() {
+    const PLANNING_COST_BUDGET: u64 = 14;
+    const NATIVE_ACTION_COST: u64 = 2;
     let profile = NativeWebReviewDecisionProfile::new().unwrap();
     let mut decision_loop = decision_loop();
     profile.install(&mut decision_loop).unwrap();
@@ -310,7 +312,7 @@ fn correlated_response_status_materializes_only_a_generic_supported_eligibility(
             &subject(),
             PlanningContext::new(
                 BenefitScore::from_percent(80).unwrap(),
-                14,
+                PLANNING_COST_BUDGET,
                 RiskScore::from_percent(10).unwrap(),
             ),
         )
@@ -350,12 +352,18 @@ fn correlated_response_status_materializes_only_a_generic_supported_eligibility(
             &subject(),
             PlanningContext::new(
                 BenefitScore::from_percent(80).unwrap(),
-                14,
+                PLANNING_COST_BUDGET,
                 RiskScore::from_percent(10).unwrap(),
             ),
         )
         .unwrap();
-    assert_eq!(plan.steps().len(), NATIVE_WEB_REVIEW_ACTION_COUNT);
+    // This test exercises the complete closed catalog under an intentionally
+    // smaller planner budget. Catalog membership does not override action cost.
+    let budgeted_action_count = usize::try_from(PLANNING_COST_BUDGET / NATIVE_ACTION_COST)
+        .unwrap()
+        .min(NATIVE_WEB_REVIEW_ACTION_COUNT);
+    assert_eq!(profile.actions().count(), NATIVE_WEB_REVIEW_ACTION_COUNT);
+    assert_eq!(plan.steps().len(), budgeted_action_count);
     assert!(plan.steps().iter().all(|step| matches!(
         step.verification_target(),
         ResolvedVerificationTarget::KnowledgeOnly

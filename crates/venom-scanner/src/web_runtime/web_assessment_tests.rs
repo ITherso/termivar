@@ -19,6 +19,7 @@ use url::Url;
 use venom_core::{ConfidenceScore, EntityId, KnowledgePredicate};
 
 use super::*;
+use crate::web_actions::NATIVE_WEB_REVIEW_REQUESTS_PER_CASE;
 use crate::web_runtime::assessment_defense::{
     CommittedAssessmentDefenseLedger, ASSESSMENT_DEFENSE_NAMESPACE,
 };
@@ -298,7 +299,11 @@ async fn opted_in_native_review_uses_exact_root_shared_authority_and_no_redirect
     assert_eq!(report.completion(), &WebAssessmentCompletion::Complete);
 
     let requests = server.requests().await;
-    assert_eq!(requests.len(), 15);
+    let initial_enabled_actions =
+        enabled_native_web_review_actions(true, true, true, true, true, false);
+    // One bootstrap plus both legs of each subject-specific initial action.
+    let expected_requests = 1 + initial_enabled_actions.len() * NATIVE_WEB_REVIEW_REQUESTS_PER_CASE;
+    assert_eq!(requests.len(), expected_requests);
     assert!(requests.iter().all(|request| request.path() == "/"));
     assert_eq!(
         requests
@@ -324,7 +329,7 @@ async fn opted_in_native_review_uses_exact_root_shared_authority_and_no_redirect
                     if is_native_review_action(evidence.case().action_id())
             ))
             .count(),
-        NativeWebReviewActionKind::all().len() * 2
+        initial_enabled_actions.len() * NATIVE_WEB_REVIEW_REQUESTS_PER_CASE
     );
     let native_items = report
         .assessment_items()
@@ -431,7 +436,7 @@ async fn native_review_is_additive_to_eligible_standard_actions_under_one_budget
 }
 
 #[tokio::test]
-async fn reflected_origin_and_generic_redirect_are_not_findings_and_text_reflection_is_info() {
+async fn reflected_origin_and_generic_redirect_are_not_findings_and_text_boundary_is_review() {
     let server = serve(|request| {
         if let Some(origin) = request.headers.get("origin") {
             return FixtureReply::Response(
@@ -473,22 +478,43 @@ async fn reflected_origin_and_generic_redirect_are_not_findings_and_text_reflect
         .iter()
         .filter(|item| item.capability_id().starts_with("web.review."))
         .collect::<Vec<_>>();
-    assert_eq!(native_items.len(), 1);
+    assert_eq!(native_items.len(), 2);
     assert_eq!(
-        native_items[0].capability_id(),
-        "web.review.reflection.text-context@1"
+        native_items
+            .iter()
+            .map(|item| (item.capability_id(), item.disposition()))
+            .collect::<BTreeSet<_>>(),
+        BTreeSet::from([
+            (
+                "web.review.reflection.text-context@1",
+                AssessmentDisposition::Informational,
+            ),
+            (
+                "web.review.xss.structural-boundary@1",
+                AssessmentDisposition::NeedsReview,
+            ),
+        ])
     );
-    assert_eq!(
-        native_items[0].disposition(),
-        AssessmentDisposition::Informational
-    );
-    assert!(matches!(
-        native_items[0].basis(),
-        AssessmentBasis::Observation(_)
-    ));
-    // One separately accounted control/candidate reflection-context pair adds
-    // exactly two requests to the previous native review envelope.
-    assert_eq!(server.requests().await.len(), 15);
+    assert!(native_items.iter().all(|item| {
+        item.disposition() != AssessmentDisposition::Confirmed
+            && match item.capability_id() {
+                "web.review.reflection.text-context@1" => {
+                    matches!(item.basis(), AssessmentBasis::Observation(_))
+                },
+                "web.review.xss.structural-boundary@1" => {
+                    matches!(item.basis(), AssessmentBasis::Differential(_))
+                },
+                _ => false,
+            }
+    }));
+    let initial_enabled_actions =
+        enabled_native_web_review_actions(true, true, true, true, true, false);
+    // One bootstrap, the exact initial native legs, then the selected XSS
+    // child bootstrap plus its control/candidate pair.
+    let expected_requests = 1
+        + initial_enabled_actions.len() * NATIVE_WEB_REVIEW_REQUESTS_PER_CASE
+        + usize::from(xss_probe_catalog::XSS_V1_MAX_TOTAL_REQUESTS);
+    assert_eq!(server.requests().await.len(), expected_requests);
 }
 
 #[tokio::test]
@@ -702,7 +728,7 @@ async fn ssti_review_requires_two_exact_evaluations_and_redacts_every_renderer()
 
 #[cfg(feature = "reporting")]
 #[tokio::test]
-async fn event_handler_reflection_is_needs_review_deterministic_and_report_safe() {
+async fn html_text_boundary_is_needs_review_deterministic_and_report_safe() {
     const SECRET: &str = "VENOM-XSS-ARSENAL-MUST-NOT-LEAK-SECRET-123";
     let server = serve(|request| {
         let value = Url::parse(&format!("http://fixture{}", request.target))
@@ -713,11 +739,9 @@ async fn event_handler_reflection_is_needs_review_deterministic_and_report_safe(
             });
         let body = match value {
             Some(value) if value.starts_with("venom-reflection-candidate-") => {
-                format!("<button onclick=\"{value}\">continue</button>")
+                format!("<p>{value}</p>")
             },
-            Some(value) if value.starts_with("/*venom-xss-handler-") => {
-                format!("<button onclick=\"{value}\">continue</button>")
-            },
+            Some(value) if value.starts_with("<venom-xss-boundary ") => value,
             _ => "matched control".to_owned(),
         };
         FixtureReply::Response(FixtureResponse::html(body))
@@ -738,10 +762,10 @@ async fn event_handler_reflection_is_needs_review_deterministic_and_report_safe(
         let item = report
             .assessment_items()
             .iter()
-            .find(|item| item.capability_id() == "web.review.reflection.event-handler-context@1")
+            .find(|item| item.capability_id() == "web.review.reflection.text-context@1")
             .unwrap();
-        assert_eq!(item.disposition(), AssessmentDisposition::NeedsReview);
-        assert!(matches!(item.basis(), AssessmentBasis::Differential(_)));
+        assert_eq!(item.disposition(), AssessmentDisposition::Informational);
+        assert!(matches!(item.basis(), AssessmentBasis::Observation(_)));
         let xss_item = report
             .assessment_items()
             .iter()
@@ -765,7 +789,7 @@ async fn event_handler_reflection_is_needs_review_deterministic_and_report_safe(
             .to_owned()
     };
     for capability in [
-        "web.review.reflection.event-handler-context@1",
+        "web.review.reflection.text-context@1",
         "web.review.xss.structural-boundary@1",
     ] {
         assert_eq!(
@@ -777,7 +801,7 @@ async fn event_handler_reflection_is_needs_review_deterministic_and_report_safe(
     assert_eq!(
         requests
             .iter()
-            .filter(|request| request.target.contains("venom-xss-handler-"))
+            .filter(|request| request.target.contains("venom-xss-boundary"))
             .count(),
         2
     );
@@ -803,10 +827,10 @@ async fn event_handler_reflection_is_needs_review_deterministic_and_report_safe(
         let rendered = ReportGenerator::generate_assessment(&product, format).unwrap();
         assert!(!rendered.contains(SECRET));
         assert!(!rendered.contains("venom-reflection-candidate-"));
-        assert!(rendered.contains("web.review.reflection.event-handler-context@1"));
+        assert!(rendered.contains("web.review.reflection.text-context@1"));
         assert!(rendered.contains("web.review.xss.structural-boundary@1"));
-        assert!(!rendered.contains("venom-xss-handler-"));
-        assert!(!rendered.contains("<button onclick="));
+        assert!(!rendered.contains("venom-xss-boundary"));
+        assert!(!rendered.contains("<venom-xss-boundary"));
         assert!(!rendered.contains("confirmed"));
     }
 }

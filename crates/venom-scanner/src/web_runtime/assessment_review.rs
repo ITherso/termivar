@@ -903,36 +903,16 @@ fn classify_xss_structural_relation(
     if context == ExactHtmlReflectionContext::Incomplete {
         return XssStructuralRelation::Incomplete;
     }
-    match contract.family {
-        XssProbeFamily::HtmlTextBoundary => XssStructuralRelation::Incomplete,
-        XssProbeFamily::UriAttributeStructure => {
-            if context == ExactHtmlReflectionContext::UriAttribute {
-                XssStructuralRelation::StructuralBoundaryObserved
-            } else if context == ExactHtmlReflectionContext::Absent {
-                XssStructuralRelation::EncodedOrInert
-            } else {
-                XssStructuralRelation::ReflectedSameContext
-            }
-        },
-        XssProbeFamily::EventHandlerStructure => {
-            if context == ExactHtmlReflectionContext::EventHandlerAttribute {
-                XssStructuralRelation::StructuralBoundaryObserved
-            } else if context == ExactHtmlReflectionContext::Absent {
-                XssStructuralRelation::EncodedOrInert
-            } else {
-                XssStructuralRelation::ReflectedSameContext
-            }
-        },
-        XssProbeFamily::ScriptContentStructure => {
-            if context == ExactHtmlReflectionContext::ScriptElementContent {
-                XssStructuralRelation::StructuralBoundaryObserved
-            } else if context == ExactHtmlReflectionContext::Absent {
-                XssStructuralRelation::EncodedOrInert
-            } else {
-                XssStructuralRelation::ReflectedSameContext
-            }
-        },
+    if context == ExactHtmlReflectionContext::Absent {
+        return XssStructuralRelation::EncodedOrInert;
     }
+    if context == contract.family.compatible_context() {
+        // An interesting parser context proves placement only. Without one
+        // candidate-specific parser-visible node/attribute transition it does
+        // not prove structural boundary control.
+        return XssStructuralRelation::ReflectedSameContext;
+    }
+    XssStructuralRelation::Unsupported
 }
 
 fn html_contains_exact_xss_boundary(html: &str, identity: &str) -> Result<bool, ()> {

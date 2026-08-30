@@ -320,7 +320,7 @@ fn xss_only_subject_uses_one_exact_decision_executor_and_completeness_action() {
             root.clone(),
             seeds.clone(),
             "item",
-            XssProbeFamily::EventHandlerStructure,
+            XssProbeFamily::HtmlTextBoundary,
         )
         .unwrap(),
     );
@@ -331,7 +331,7 @@ fn xss_only_subject_uses_one_exact_decision_executor_and_completeness_action() {
         observer,
         NativeWebReviewQueryParameters::xss_only(
             "item".to_owned(),
-            XssProbeFamily::EventHandlerStructure,
+            XssProbeFamily::HtmlTextBoundary,
         ),
     )
     .unwrap();

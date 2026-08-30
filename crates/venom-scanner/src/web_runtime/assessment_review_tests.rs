@@ -430,54 +430,108 @@ fn reflection_context_requires_complete_utf8_html_and_exact_request_shape() {
 }
 
 #[test]
-fn xss_structural_families_require_exact_compatible_parser_evidence() {
+fn xss_html_text_family_requires_one_exact_candidate_specific_node_boundary() {
     let root = root();
     let seeds = seeds();
-    for family in XssProbeFamily::all() {
-        let observer = AssessmentReviewObserverSet::new_xss(
-            root.clone(),
-            seeds.clone(),
-            QUERY_PARAMETER,
-            family,
-        )
-        .unwrap();
+    let observer = AssessmentReviewObserverSet::new_xss(
+        root,
+        seeds,
+        QUERY_PARAMETER,
+        XssProbeFamily::HtmlTextBoundary,
+    )
+    .unwrap();
+    let contract = observer.xss.as_ref().unwrap();
+    let strategy = native_review_strategy_ref(NativeWebReviewActionKind::XssStructuralQueryPair);
+    let control = observe(
+        &observer,
+        NativeWebReviewActionKind::XssStructuralQueryPair,
+        DecisionExecutionStage::Passive,
+        &contract.control_url,
+        &HeaderMap::new(),
+        200,
+        Some("text/html"),
+        Some(b"<p>matched control</p>"),
+        NativeWebReviewActionKind::XssStructuralQueryPair.executor_id(),
+        Some(&strategy),
+        false,
+    )
+    .unwrap();
+    assert_eq!(
+        values(&control).last(),
+        Some(&(XSS_STRUCTURAL_RELATION, "encoded-or-inert"))
+    );
+
+    let candidate = observe(
+        &observer,
+        NativeWebReviewActionKind::XssStructuralQueryPair,
+        DecisionExecutionStage::Active,
+        &contract.candidate_url,
+        &HeaderMap::new(),
+        200,
+        Some("text/html"),
+        Some(contract.candidate_value.as_bytes()),
+        NativeWebReviewActionKind::XssStructuralQueryPair.executor_id(),
+        Some(&strategy),
+        false,
+    )
+    .unwrap();
+    assert_eq!(
+        values(&candidate).last(),
+        Some(&(XSS_STRUCTURAL_RELATION, "structural-boundary-observed"))
+    );
+
+    let encoded = format!(
+        "<p>{}</p>",
+        contract
+            .candidate_value
+            .replace('&', "&amp;")
+            .replace('<', "&lt;")
+            .replace('>', "&gt;")
+            .replace('"', "&quot;")
+    );
+    let candidate = observe(
+        &observer,
+        NativeWebReviewActionKind::XssStructuralQueryPair,
+        DecisionExecutionStage::Active,
+        &contract.candidate_url,
+        &HeaderMap::new(),
+        200,
+        Some("text/html"),
+        Some(encoded.as_bytes()),
+        NativeWebReviewActionKind::XssStructuralQueryPair.executor_id(),
+        Some(&strategy),
+        false,
+    )
+    .unwrap();
+    assert_eq!(
+        values(&candidate).last(),
+        Some(&(XSS_STRUCTURAL_RELATION, "reflected-same-context"))
+    );
+}
+
+#[test]
+fn xss_metadata_only_families_never_upgrade_same_context_reflection() {
+    for (family, body) in [
+        (
+            XssProbeFamily::UriAttributeStructure,
+            "<a href=\"{candidate}\">continue</a>",
+        ),
+        (
+            XssProbeFamily::EventHandlerStructure,
+            "<button onclick=\"{candidate}\">continue</button>",
+        ),
+        (
+            XssProbeFamily::ScriptContentStructure,
+            "<script>{candidate}</script>",
+        ),
+    ] {
+        assert!(!family.is_v1_executable());
+        let observer =
+            AssessmentReviewObserverSet::new_xss(root(), seeds(), QUERY_PARAMETER, family).unwrap();
         let contract = observer.xss.as_ref().unwrap();
+        let body = body.replace("{candidate}", &contract.candidate_value);
         let strategy =
             native_review_strategy_ref(NativeWebReviewActionKind::XssStructuralQueryPair);
-        let control = observe(
-            &observer,
-            NativeWebReviewActionKind::XssStructuralQueryPair,
-            DecisionExecutionStage::Passive,
-            &contract.control_url,
-            &HeaderMap::new(),
-            200,
-            Some("text/html"),
-            Some(b"<p>matched control</p>"),
-            NativeWebReviewActionKind::XssStructuralQueryPair.executor_id(),
-            Some(&strategy),
-            false,
-        )
-        .unwrap();
-        assert_eq!(
-            values(&control).last(),
-            Some(&(XSS_STRUCTURAL_RELATION, "encoded-or-inert"))
-        );
-
-        let body = match family {
-            XssProbeFamily::HtmlTextBoundary => contract.candidate_value.clone(),
-            XssProbeFamily::UriAttributeStructure => {
-                format!("<a href=\"{}\">continue</a>", contract.candidate_value)
-            },
-            XssProbeFamily::EventHandlerStructure => {
-                format!(
-                    "<button onclick=\"{}\">continue</button>",
-                    contract.candidate_value
-                )
-            },
-            XssProbeFamily::ScriptContentStructure => {
-                format!("<script>{}</script>", contract.candidate_value)
-            },
-        };
         let candidate = observe(
             &observer,
             NativeWebReviewActionKind::XssStructuralQueryPair,
@@ -494,39 +548,7 @@ fn xss_structural_families_require_exact_compatible_parser_evidence() {
         .unwrap();
         assert_eq!(
             values(&candidate).last(),
-            Some(&(XSS_STRUCTURAL_RELATION, "structural-boundary-observed"))
-        );
-
-        let wrong_context = if family == XssProbeFamily::HtmlTextBoundary {
-            format!(
-                "<p>{}</p>",
-                contract
-                    .candidate_value
-                    .replace('&', "&amp;")
-                    .replace('<', "&lt;")
-                    .replace('>', "&gt;")
-                    .replace('"', "&quot;")
-            )
-        } else {
-            format!("<p>{}</p>", contract.candidate_value)
-        };
-        let candidate = observe(
-            &observer,
-            NativeWebReviewActionKind::XssStructuralQueryPair,
-            DecisionExecutionStage::Active,
-            &contract.candidate_url,
-            &HeaderMap::new(),
-            200,
-            Some("text/html"),
-            Some(wrong_context.as_bytes()),
-            NativeWebReviewActionKind::XssStructuralQueryPair.executor_id(),
-            Some(&strategy),
-            false,
-        )
-        .unwrap();
-        assert_ne!(
-            values(&candidate).last(),
-            Some(&(XSS_STRUCTURAL_RELATION, "structural-boundary-observed"))
+            Some(&(XSS_STRUCTURAL_RELATION, "reflected-same-context"))
         );
     }
 }

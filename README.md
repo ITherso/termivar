@@ -183,13 +183,16 @@ most `NeedsReview`. The DOM representation does not preserve source quote mode,
 and no JavaScript/CSS grammar or browser executes the response, so reflection
 is never `Confirmed` XSS. The typed context model can support later
 context-compatible payload families without parsing human-readable labels.
-V1 uses that typed context to select at most one of four non-executing
-structural families across the complete assessment: HTML-text boundary,
-relative URI structure, inline-handler comment syntax, or script-content
-comment syntax. Selection is metadata-first, deterministic, and duplicate
-suppressed; catalog size does not increase the execution ceiling. Only exact
-candidate-specific parser-visible structural control can produce a separate
-`NeedsReview` item. Literal reflection or same-context placement alone cannot.
+V1 publishes four typed structural-family identities, while only the HTML-text
+boundary family is currently evidence-capable and executable. URI-attribute,
+inline-handler, and script-content families remain metadata-only until source
+quote or stronger script-boundary evidence exists. Selection is metadata-first,
+deterministic, and duplicate suppressed; catalog size does not increase the
+execution ceiling. Only an exact scanner-owned inert node parsed in the
+candidate but absent from the matched control can establish structural
+boundary evidence. Same-context URI, handler, or script reflection cannot
+produce a separate `NeedsReview` item. Literal reflection or same-context
+placement alone cannot.
 No JavaScript, event, navigation, callback, or browser is executed.
 The catalog is KnowledgeOnly and has no path to a `Confirmed` assessment item.
 Non-HTML is explicitly not applicable to reflection review; truncation,

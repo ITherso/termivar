@@ -60,14 +60,18 @@ inline-handler, script-element, and embedded-HTML attribute placement are at
 most `NeedsReview`. Source quote mode is intentionally unknown because the DOM
 does not preserve it. This layer performs no escape testing, JavaScript/CSS
 grammar analysis, browser execution, or XSS confirmation. The typed context
-selects at most one non-executing V1 family across the complete assessment:
-HTML-text boundary, relative URI structure, event-handler comment syntax, or
-script-content comment syntax. Selection is deterministic and metadata-first,
-so later catalog growth does not blindly multiply requests. Raw reflection in
-the same context is insufficient; exact candidate-specific parser-visible
-structural control is still only `NeedsReview`. Credentialed candidate-specific CORS, an exact
-candidate-specific external redirect, and repeatable SQL/SSTI structural
-relationships are also at most `NeedsReview`. Every native action is
+selects at most one non-executing V1 family across the complete assessment. The
+closed catalog contains HTML-text, URI-attribute, event-handler, and
+script-content identities, but only HTML-text is currently evidence-capable and
+executable: its candidate must create the exact scanner-owned inert node absent
+from the matched control. The other families remain metadata-only until source
+quote or stronger script-boundary evidence is available. Selection is
+deterministic and metadata-first, so later catalog growth does not blindly
+multiply requests. Raw reflection in the same context is insufficient; exact
+candidate-specific parser-visible structural control is still only
+`NeedsReview`. Credentialed candidate-specific CORS, an exact candidate-specific
+external redirect, and repeatable SQL/SSTI structural relationships are also at
+most `NeedsReview`. Every native action is
 KnowledgeOnly, and no native assessment capability can produce a `Confirmed`
 item.
 An explicitly non-HTML response makes reflection review not applicable. A
