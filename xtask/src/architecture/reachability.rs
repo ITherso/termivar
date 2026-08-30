@@ -394,10 +394,14 @@ mod tests {
     use syn::Item;
     use tempfile::TempDir;
 
+    fn assert_empty<T>(values: &[T]) {
+        assert!(values.is_empty());
+    }
+
     #[test]
     fn allowlist_is_empty_by_contract() {
         // The workspace is fully reachable today; the exception ledger stays empty.
-        assert!(SOURCE_REACHABILITY_ALLOWLIST.is_empty());
+        assert_empty(SOURCE_REACHABILITY_ALLOWLIST);
         assert!(allowed_sources_for("venom-scanner").is_empty());
     }
 

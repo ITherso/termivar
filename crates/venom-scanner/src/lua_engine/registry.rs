@@ -319,10 +319,10 @@ impl LuaScriptRegistry {
             .state
             .lock()
             .map_err(|_| LuaRegistryError::StateUnavailable)?;
-        if !state
+        if state
             .scripts
             .get(result.script_id())
-            .is_some_and(|entry| entry.generation == generation)
+            .is_none_or(|entry| entry.generation != generation)
         {
             return Ok(());
         }

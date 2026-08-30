@@ -485,5 +485,27 @@ mod tests {
     fn test_config_error_display() {
         let err = ConfigError::TargetEmpty;
         assert_eq!(err.to_string(), "Target cannot be empty");
+        assert_eq!(
+            ConfigError::InvalidTarget("invalid.example".to_owned()).to_string(),
+            "Invalid target: invalid.example"
+        );
+        assert_eq!(
+            ConfigError::ParseError("invalid input".to_owned()).to_string(),
+            "Parse error: invalid input"
+        );
+    }
+
+    #[test]
+    fn test_config_file_errors_remain_typed_and_contextual() {
+        let directory = tempfile::tempdir().unwrap();
+        let missing = Config::from_toml(directory.path().join("missing.toml")).unwrap_err();
+        assert!(matches!(missing, ConfigError::ParseError(_)));
+        assert!(missing.to_string().contains("Failed to read file"));
+
+        let malformed_path = directory.path().join("malformed.toml");
+        std::fs::write(&malformed_path, "target = [").unwrap();
+        let malformed = Config::from_toml(malformed_path).unwrap_err();
+        assert!(matches!(malformed, ConfigError::ParseError(_)));
+        assert!(malformed.to_string().contains("Failed to parse TOML"));
     }
 }

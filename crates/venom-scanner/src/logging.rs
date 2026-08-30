@@ -89,17 +89,17 @@ impl LogEntry {
         let mut output = format!("[{}] [{}]", self.timestamp, self.level);
 
         if let Some(phase) = self.phase {
-            output.push_str(&format!(" [Phase {}]", phase));
+            output.push_str(&format!(" [Phase {phase}]"));
         }
 
         output.push_str(&format!(" {}", self.message));
 
         if let Some(ctx) = &self.context {
-            output.push_str(&format!(" | {}", ctx));
+            output.push_str(&format!(" | {ctx}"));
         }
 
         if let Some(duration) = self.duration_ms {
-            output.push_str(&format!(" | {}ms", duration));
+            output.push_str(&format!(" | {duration}ms"));
         }
 
         output
@@ -153,11 +153,8 @@ impl Logger {
     /// Logs phase execution with timing
     pub fn phase_start(&self, phase: u8, name: &str) {
         self.log(
-            LogEntry::new(
-                LogLevel::Info,
-                format!("Starting Phase {}: {}", phase, name),
-            )
-            .with_phase(phase),
+            LogEntry::new(LogLevel::Info, format!("Starting Phase {phase}: {name}"))
+                .with_phase(phase),
         );
     }
 
@@ -166,7 +163,7 @@ impl Logger {
         self.log(
             LogEntry::new(
                 LogLevel::Info,
-                format!("Phase {} completed. Found {} issues.", phase, count),
+                format!("Phase {phase} completed. Found {count} issues."),
             )
             .with_phase(phase)
             .with_duration(duration_ms),
@@ -233,5 +230,7 @@ mod tests {
         logger.debug("Debug message".to_string());
         logger.info("Info message".to_string());
         logger.warn("Warning message".to_string());
+        logger.phase_start(3, "bounded review");
+        logger.phase_complete(3, 2, 17);
     }
 }

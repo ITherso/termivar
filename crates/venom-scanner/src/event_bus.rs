@@ -269,7 +269,7 @@ mod tests {
             let count_clone = count.clone();
             bus.subscribe(
                 EventType::FindingFound,
-                format!("handler_{}", i),
+                format!("handler_{i}"),
                 Arc::new(move |_| {
                     count_clone.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 }),
@@ -302,7 +302,7 @@ mod tests {
         let bus = EventBus::new();
 
         for i in 0..5 {
-            let event = Event::new(EventType::WorkerFinished, format!("worker_{}", i));
+            let event = Event::new(EventType::WorkerFinished, format!("worker_{i}"));
             bus.publish(event);
         }
 
@@ -450,7 +450,7 @@ mod tests {
         for i in 0..1000 {
             let bus_clone = bus.clone();
             let handle = std::thread::spawn(move || {
-                let event = Event::builder(EventType::FindingFound, format!("thread_{}", i))
+                let event = Event::builder(EventType::FindingFound, format!("thread_{i}"))
                     .correlation_id("scan_concurrent")
                     .build();
                 bus_clone.publish(event);
@@ -478,8 +478,7 @@ mod tests {
             let bus_clone = bus.clone();
             let task = tokio::spawn(async move {
                 let event =
-                    Event::builder(EventType::WorkerFinished, format!("async_worker_{}", i))
-                        .build();
+                    Event::builder(EventType::WorkerFinished, format!("async_worker_{i}")).build();
                 bus_clone.publish(event);
             });
             tasks.push(task);
@@ -528,7 +527,7 @@ mod tests {
         for i in 0..100 {
             bus.subscribe(
                 EventType::FindingFound,
-                format!("handler_{}", i),
+                format!("handler_{i}"),
                 Arc::new(|_| {}),
             );
         }
@@ -537,7 +536,7 @@ mod tests {
 
         // Unsubscribe all
         for i in 0..100 {
-            bus.unsubscribe(&EventType::FindingFound, &format!("handler_{}", i));
+            bus.unsubscribe(&EventType::FindingFound, &format!("handler_{i}"));
         }
 
         // Memory should be cleaned
@@ -625,7 +624,7 @@ mod tests {
                     // Subscribe
                     bus_clone.subscribe(
                         EventType::ScanCompleted,
-                        format!("handler_{}", i),
+                        format!("handler_{i}"),
                         Arc::new(|_| {}),
                     );
                 } else if i > 1 {
@@ -671,7 +670,7 @@ mod tests {
             let counter_clone = counter.clone();
             bus.subscribe(
                 EventType::AlertTriggered,
-                format!("listener_{}", i),
+                format!("listener_{i}"),
                 Arc::new(move |_| {
                     counter_clone.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 }),
@@ -719,7 +718,7 @@ mod tests {
         for scan_id in 0..10 {
             for _ in 0..100 {
                 let event = Event::builder(EventType::FindingFound, "test")
-                    .correlation_id(format!("scan_{}", scan_id))
+                    .correlation_id(format!("scan_{scan_id}"))
                     .build();
                 bus.publish(event);
             }
@@ -730,7 +729,7 @@ mod tests {
         for scan_id in 0..10 {
             let bus_clone = bus.clone();
             let task = tokio::spawn(async move {
-                let events = bus_clone.get_events_by_correlation(&format!("scan_{}", scan_id));
+                let events = bus_clone.get_events_by_correlation(&format!("scan_{scan_id}"));
                 assert_eq!(events.len(), 100);
             });
             tasks.push(task);

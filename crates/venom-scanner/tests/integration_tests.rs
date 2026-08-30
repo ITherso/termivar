@@ -56,10 +56,10 @@ fn test_findings_aggregation() {
     for i in 1..=5 {
         findings.push(ScanFinding {
             phase: 1,
-            module_name: format!("Issue {}", i),
+            module_name: format!("Issue {i}"),
             severity: "MEDIUM".to_string(),
-            description: format!("Test vulnerability {}", i),
-            evidence: format!("Evidence for issue {}", i),
+            description: format!("Test vulnerability {i}"),
+            evidence: format!("Evidence for issue {i}"),
         });
     }
 
@@ -176,7 +176,7 @@ fn test_severity_comparison() {
 /// Tests phase execution ordering
 #[test]
 fn test_phase_execution_order() {
-    let phases = vec![1, 2, 3, 4, 5, 6, 7, 8, 9];
+    let phases = [1, 2, 3, 4, 5, 6, 7, 8, 9];
 
     for i in 0..phases.len() - 1 {
         assert!(phases[i] < phases[i + 1]);
@@ -213,9 +213,9 @@ fn test_concurrent_finding_collection() {
         for i in 0..2 {
             findings.push(ScanFinding {
                 phase,
-                module_name: format!("Module {}", phase),
+                module_name: format!("Module {phase}"),
                 severity: "LOW".to_string(),
-                description: format!("Finding {} from phase {}", i, phase),
+                description: format!("Finding {i} from phase {phase}"),
                 evidence: "Evidence".to_string(),
             });
         }

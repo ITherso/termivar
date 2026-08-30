@@ -3424,7 +3424,7 @@ fn reporting_type_key(ty: &syn::Type) -> Option<String> {
             let lifetime = reference
                 .lifetime
                 .as_ref()
-                .map_or_else(String::new, |lifetime| format!("{} ", lifetime));
+                .map_or_else(String::new, |lifetime| format!("{lifetime} "));
             Some(format!(
                 "&{lifetime}{}",
                 reporting_type_key(&reference.elem)?
@@ -3475,7 +3475,7 @@ fn reporting_public_api_violations(source: &str) -> Result<Vec<String>, syn::Err
             |mut implementations, (owner, trait_name)| {
                 implementations
                     .entry(*owner)
-                    .or_insert_with(BTreeSet::new)
+                    .or_default()
                     .insert(*trait_name);
                 implementations
             },

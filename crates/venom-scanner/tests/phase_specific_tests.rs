@@ -70,7 +70,7 @@ fn test_phase2_parameter_extraction() {
 
 #[test]
 fn test_phase3_wordlist_coverage() {
-    let wordlist = vec![
+    let wordlist = [
         "/admin", "/api/v1", "/swagger", "/.git", "/.env", "/backup", "/test", "/config",
         "/uploads", "/health",
     ];
@@ -105,7 +105,7 @@ fn test_phase3_url_construction() {
     let paths = vec!["/admin", "/api", "/.git"];
 
     for path in paths {
-        let url = format!("{}{}", base, path);
+        let url = format!("{base}{path}");
         assert!(url.starts_with("https://example.com"));
         assert!(url.contains(path));
     }
@@ -117,7 +117,7 @@ fn test_phase3_url_construction() {
 
 #[test]
 fn test_phase4_param_wordlist() {
-    let params = vec![
+    let params = [
         "id", "user_id", "admin", "debug", "api_key", "token", "password", "email", "username",
         "redirect",
     ];
@@ -130,7 +130,7 @@ fn test_phase4_param_wordlist() {
 #[test]
 fn test_phase4_marker_detection() {
     let marker = "venom_7b3a9c2e_test";
-    let response_with_marker = format!("Error: invalid value: {}", marker);
+    let response_with_marker = format!("Error: invalid value: {marker}");
     let response_without = "Error: invalid parameter".to_string();
 
     assert!(response_with_marker.contains(marker));
@@ -389,7 +389,7 @@ fn test_finding_phase_consistency() {
     for phase_num in 1..=9 {
         let finding = ScanFinding {
             phase: phase_num,
-            module_name: format!("Phase {}", phase_num),
+            module_name: format!("Phase {phase_num}"),
             severity: "MEDIUM".to_string(),
             description: "Test".to_string(),
             evidence: "Evidence".to_string(),

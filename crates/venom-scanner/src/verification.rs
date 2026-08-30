@@ -292,7 +292,7 @@ impl<'de> Deserialize<'de> for VerificationCase {
                 "unknown reserved verification case field",
             ));
         }
-        if wire.payload_claim_policy_guard != !wire.applies_hypothesis_transition {
+        if wire.payload_claim_policy_guard == wire.applies_hypothesis_transition {
             return Err(serde::de::Error::custom(
                 "verification case compatibility guard is missing or inconsistent",
             ));

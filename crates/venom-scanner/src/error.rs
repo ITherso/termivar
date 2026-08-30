@@ -76,22 +76,19 @@ impl fmt::Display for ScannerError {
             ScannerError::NetworkError(e) => {
                 write!(
                     f,
-                    "Network error: {}. Check connectivity and target availability.",
-                    e
+                    "Network error: {e}. Check connectivity and target availability."
                 )
             },
             ScannerError::UrlParseError(e) => {
                 write!(
                     f,
-                    "URL parse error: {}. Ensure URL is valid and properly formatted.",
-                    e
+                    "URL parse error: {e}. Ensure URL is valid and properly formatted."
                 )
             },
             ScannerError::PayloadGenerationError(e) => {
                 write!(
                     f,
-                    "Payload generation error: {}. Check payload parameters and syntax.",
-                    e
+                    "Payload generation error: {e}. Check payload parameters and syntax."
                 )
             },
             ScannerError::PhaseTimeout => {
@@ -104,7 +101,7 @@ impl fmt::Display for ScannerError {
                 write!(f, "Invalid target URL. Provide valid HTTP/HTTPS URL.")
             },
             ScannerError::IoError(e) => {
-                write!(f, "IO error: {}. Check file permissions and disk space.", e)
+                write!(f, "IO error: {e}. Check file permissions and disk space.")
             },
             ScannerError::TaskJoinFailed => {
                 write!(
@@ -152,11 +149,11 @@ impl std::error::Error for ScannerError {
 impl From<reqwest::Error> for ScannerError {
     fn from(err: reqwest::Error) -> Self {
         let msg = if err.is_timeout() {
-            format!("HTTP timeout: {}", err)
+            format!("HTTP timeout: {err}")
         } else if err.is_connect() {
-            format!("Connection failed: {}", err)
+            format!("Connection failed: {err}")
         } else if err.status().is_some() {
-            format!("HTTP error: {}", err)
+            format!("HTTP error: {err}")
         } else {
             err.to_string()
         };
@@ -203,15 +200,22 @@ mod tests {
                 ScannerError::UrlParseError("invalid scheme".to_string()),
                 "URL parse error",
             ),
+            (
+                ScannerError::PayloadGenerationError("invalid payload".to_owned()),
+                "Payload generation error",
+            ),
+            (
+                ScannerError::IoError(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "denied",
+                )),
+                "IO error",
+            ),
         ];
 
         for (err, expected_text) in errors {
-            let display = format!("{}", err);
-            assert!(
-                display.contains(expected_text),
-                "Error message: {}",
-                display
-            );
+            let display = format!("{err}");
+            assert!(display.contains(expected_text), "Error message: {display}");
         }
     }
 
@@ -219,7 +223,7 @@ mod tests {
     fn test_error_from_conversion() {
         let url_err = url::Url::parse("invalid url").err().unwrap();
         let scanner_err = ScannerError::from(url_err);
-        assert!(format!("{:?}", scanner_err).contains("UrlParseError"));
+        assert!(format!("{scanner_err:?}").contains("UrlParseError"));
     }
 
     #[test]
@@ -228,6 +232,89 @@ mod tests {
         let io_err = std::io::Error::new(std::io::ErrorKind::NotFound, "file not found");
         let scanner_err = ScannerError::from(io_err);
         assert!(scanner_err.source().is_some());
+    }
+
+    #[tokio::test]
+    async fn reqwest_conversion_classifies_local_failures() {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+        use tokio::net::TcpListener;
+
+        let status_listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+            .await
+            .unwrap();
+        let status_address = status_listener.local_addr().unwrap();
+        let status_server = tokio::spawn(async move {
+            let (mut stream, _) = status_listener.accept().await.unwrap();
+            let mut request = [0_u8; 1024];
+            let _ = stream.read(&mut request).await.unwrap();
+            stream
+                .write_all(
+                    b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                )
+                .await
+                .unwrap();
+        });
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .redirect(reqwest::redirect::Policy::none())
+            .timeout(std::time::Duration::from_secs(5))
+            .build()
+            .unwrap();
+        let status_error = client
+            .get(format!("http://{status_address}/"))
+            .send()
+            .await
+            .unwrap()
+            .error_for_status()
+            .unwrap_err();
+        status_server.await.unwrap();
+        assert!(status_error.status().is_some());
+        assert!(ScannerError::from(status_error)
+            .to_string()
+            .contains("HTTP error"));
+
+        let timeout_listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+            .await
+            .unwrap();
+        let timeout_address = timeout_listener.local_addr().unwrap();
+        let timeout_server = tokio::spawn(async move {
+            let (mut stream, _) = timeout_listener.accept().await.unwrap();
+            let mut request = [0_u8; 1024];
+            let _ = stream.read(&mut request).await.unwrap();
+            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+        });
+        let timeout_client = reqwest::Client::builder()
+            .no_proxy()
+            .redirect(reqwest::redirect::Policy::none())
+            .timeout(std::time::Duration::from_millis(25))
+            .build()
+            .unwrap();
+        let timeout_error = timeout_client
+            .get(format!("http://{timeout_address}/"))
+            .send()
+            .await
+            .unwrap_err();
+        timeout_server.abort();
+        let _ = timeout_server.await;
+        assert!(timeout_error.is_timeout());
+        assert!(ScannerError::from(timeout_error)
+            .to_string()
+            .contains("HTTP timeout"));
+
+        let closed_listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+            .await
+            .unwrap();
+        let closed_address = closed_listener.local_addr().unwrap();
+        drop(closed_listener);
+        let connect_error = client
+            .get(format!("http://{closed_address}/"))
+            .send()
+            .await
+            .unwrap_err();
+        assert!(connect_error.is_connect());
+        assert!(ScannerError::from(connect_error)
+            .to_string()
+            .contains("Connection failed"));
     }
 
     #[test]

@@ -37,6 +37,7 @@ uuid = { workspace = true, optional = true }
 mlua = { version = "0.9", default-features = false, features = ["lua54", "vendored"], optional = true }
 
 [dev-dependencies]
+clap = { workspace = true }
 criterion = "0.5"
 tempfile = { workspace = true }
 

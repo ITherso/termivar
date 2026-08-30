@@ -23,11 +23,11 @@ fn test_error_variants() {
     let invalid_target = ScannerError::InvalidTarget;
 
     // Verify all variants can be created
-    assert!(!format!("{:?}", parse_error).is_empty());
-    assert!(!format!("{:?}", payload_error).is_empty());
-    assert!(!format!("{:?}", timeout_error).is_empty());
-    assert!(!format!("{:?}", network_error).is_empty());
-    assert!(!format!("{:?}", invalid_target).is_empty());
+    assert!(!format!("{parse_error:?}").is_empty());
+    assert!(!format!("{payload_error:?}").is_empty());
+    assert!(!format!("{timeout_error:?}").is_empty());
+    assert!(!format!("{network_error:?}").is_empty());
+    assert!(!format!("{invalid_target:?}").is_empty());
 }
 
 /// Tests error message content
@@ -36,7 +36,7 @@ fn test_error_messages() {
     let err_msg = "test error message";
     let error = ScannerError::NetworkError(err_msg.to_string());
 
-    let display = format!("{}", error);
+    let display = format!("{error}");
     assert!(!display.is_empty());
 }
 
@@ -60,14 +60,14 @@ fn test_error_from_conversion() {
     // This would require an actual reqwest error
     // Testing the capability to convert from external errors
     let scanner_error = ScannerError::NetworkError("HTTP error".to_string());
-    assert!(!format!("{:?}", scanner_error).is_empty());
+    assert!(!format!("{scanner_error:?}").is_empty());
 }
 
 /// Tests chaining error context
 #[test]
 fn test_error_context() {
     let base_error = ScannerError::UrlParseError("malformed URL".to_string());
-    let _context = format!("Failed during reconnaissance: {}", base_error);
+    let _context = format!("Failed during reconnaissance: {base_error}");
 
     // Should be able to add context to errors
 }
@@ -103,9 +103,9 @@ fn test_error_criticality() {
     let invalid_error = ScannerError::InvalidTarget;
 
     // All are valid errors that should be handled
-    assert!(!format!("{:?}", network_error).is_empty());
-    assert!(!format!("{:?}", timeout_error).is_empty());
-    assert!(!format!("{:?}", invalid_error).is_empty());
+    assert!(!format!("{network_error:?}").is_empty());
+    assert!(!format!("{timeout_error:?}").is_empty());
+    assert!(!format!("{invalid_error:?}").is_empty());
 }
 
 /// Tests error propagation with ?

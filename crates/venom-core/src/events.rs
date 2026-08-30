@@ -228,3 +228,17 @@ fn now_ms() -> u64 {
         .unwrap_or_default()
         .as_millis() as u64
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{Event, EventType};
+
+    #[test]
+    fn timestamp_string_preserves_three_millisecond_digits() {
+        let event = Event::builder(EventType::ScanStarted, "test")
+            .timestamp_ms(1_007)
+            .build();
+
+        assert_eq!(event.timestamp_str(), "1.007");
+    }
+}

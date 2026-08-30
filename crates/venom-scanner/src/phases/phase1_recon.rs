@@ -99,7 +99,7 @@ impl ScanPhase for ReconPhase {
                 // Check for Server header leakage
                 if let Some(server) = response.headers().get("server") {
                     if let Ok(server_str) = server.to_str() {
-                        ctx.log(format!("Server header: {}", server_str));
+                        ctx.log(format!("Server header: {server_str}"));
 
                         // Common vulnerable server versions
                         if server_str.contains("Apache/2.4.49")
@@ -110,7 +110,7 @@ impl ScanPhase for ReconPhase {
                                 module_name: self.name().to_string(),
                                 severity: "HIGH".to_string(),
                                 description: "Vulnerable Apache version detected (CVE-2021-41773 - Path Traversal)".to_string(),
-                                evidence: format!("Server header: {}", server_str),
+                                evidence: format!("Server header: {server_str}"),
                             });
                         }
                     }
@@ -119,19 +119,19 @@ impl ScanPhase for ReconPhase {
                 // Check for X-Powered-By header
                 if let Some(powered_by) = response.headers().get("x-powered-by") {
                     if let Ok(tech) = powered_by.to_str() {
-                        ctx.log(format!("X-Powered-By: {}", tech));
+                        ctx.log(format!("X-Powered-By: {tech}"));
                         findings.push(ScanFinding {
                             phase: self.phase_number(),
                             module_name: self.name().to_string(),
                             severity: "LOW".to_string(),
                             description: "Technology fingerprint detected".to_string(),
-                            evidence: format!("X-Powered-By: {}", tech),
+                            evidence: format!("X-Powered-By: {tech}"),
                         });
                     }
                 }
             },
             Err(e) => {
-                ctx.log(format!("Failed to reach target: {}", e));
+                ctx.log(format!("Failed to reach target: {e}"));
                 return Err(ScannerError::from(e));
             },
         }

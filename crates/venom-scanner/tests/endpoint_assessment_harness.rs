@@ -6,8 +6,9 @@ use std::ffi::OsString;
 mod endpoint_assessment_support;
 
 use endpoint_assessment_support::{
-    parse_arguments_for_test, run_benchmark, run_fixture_benchmark,
-    validate_proxy_environment_for_test, write_json_atomically, WorkloadSelection,
+    parse_arguments_for_test, parse_process_arguments_for_test, run_benchmark,
+    run_fixture_benchmark, validate_proxy_environment_for_test, write_json_atomically,
+    WorkloadSelection,
 };
 
 #[tokio::test]
@@ -78,6 +79,40 @@ fn arguments_are_bounded_and_expose_no_target_surface() {
     );
     assert!(!parsed.help_requested());
     assert!(endpoint_assessment_support::BenchmarkArguments::help().contains("127.0.0.1"));
+
+    let process_parsed = parse_process_arguments_for_test([
+        "endpoint_assessment",
+        "--workload",
+        "100",
+        "--warmups",
+        "2",
+        "--samples",
+        "4",
+        "--output",
+        "-report.json",
+    ])
+    .unwrap();
+    assert_eq!(process_parsed.selection(), WorkloadSelection::Endpoints100);
+    assert_eq!(process_parsed.warmups(), 2);
+    assert_eq!(process_parsed.samples(), 4);
+    assert_eq!(
+        process_parsed.output().unwrap(),
+        std::path::Path::new("-report.json")
+    );
+    assert!(parse_process_arguments_for_test([
+        "endpoint_assessment",
+        "--samples",
+        "3",
+        "--samples",
+        "4",
+    ])
+    .is_err());
+    assert!(parse_process_arguments_for_test([
+        "endpoint_assessment",
+        "--target",
+        "https://example.test",
+    ])
+    .is_err());
 
     // Keep both process and library entrypoints type-checked in this shared
     // support module without executing the process-argument adapter here.

@@ -267,11 +267,11 @@ pub enum ApiError {
 impl ApiError {
     pub fn message(&self) -> String {
         match self {
-            ApiError::ScanNotFound(id) => format!("Scan not found: {}", id),
-            ApiError::InvalidConfig(msg) => format!("Invalid configuration: {}", msg),
-            ApiError::InvalidTarget(url) => format!("Invalid target URL: {}", url),
-            ApiError::ScanAlreadyRunning(id) => format!("Scan already running: {}", id),
-            ApiError::InternalError(msg) => format!("Internal error: {}", msg),
+            ApiError::ScanNotFound(id) => format!("Scan not found: {id}"),
+            ApiError::InvalidConfig(msg) => format!("Invalid configuration: {msg}"),
+            ApiError::InvalidTarget(url) => format!("Invalid target URL: {url}"),
+            ApiError::ScanAlreadyRunning(id) => format!("Scan already running: {id}"),
+            ApiError::InternalError(msg) => format!("Internal error: {msg}"),
         }
     }
 }
@@ -363,11 +363,32 @@ mod tests {
 
     #[test]
     fn test_api_error_messages() {
-        let err = ApiError::ScanNotFound("abc123".to_string());
-        assert!(err.message().contains("abc123"));
+        let cases = [
+            (
+                ApiError::ScanNotFound("abc123".to_owned()),
+                "Scan not found: abc123",
+            ),
+            (
+                ApiError::InvalidConfig("bounded".to_owned()),
+                "Invalid configuration: bounded",
+            ),
+            (
+                ApiError::InvalidTarget("invalid".to_owned()),
+                "Invalid target URL: invalid",
+            ),
+            (
+                ApiError::ScanAlreadyRunning("abc123".to_owned()),
+                "Scan already running: abc123",
+            ),
+            (
+                ApiError::InternalError("redacted".to_owned()),
+                "Internal error: redacted",
+            ),
+        ];
 
-        let err2 = ApiError::InvalidTarget("invalid".to_string());
-        assert!(err2.message().contains("invalid"));
+        for (error, expected) in cases {
+            assert_eq!(error.message(), expected);
+        }
     }
 
     #[test]

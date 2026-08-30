@@ -5096,7 +5096,7 @@ fn inspect_production_verifier_descriptors(
         fn inspect_initializer(&mut self, expression: &syn::Expr) {
             let informational = expression_is_exact_named_call(expression, "informational");
             let differential = expression_is_exact_named_call(expression, "differential_review");
-            if !informational && !(self.allow_differential_review && differential) {
+            if !(informational || self.allow_differential_review && differential) {
                 self.invalid_initializers = self.invalid_initializers.saturating_add(1);
             }
             if expression_references_ident(expression, "VerifierTransition") {

@@ -217,7 +217,7 @@ impl ConfigLoader {
             *self.active_profile.lock().unwrap() = name.to_string();
             Ok(())
         } else {
-            Err(format!("Profile '{}' not found", name))
+            Err(format!("Profile '{name}' not found"))
         }
     }
 
@@ -234,13 +234,13 @@ impl ConfigLoader {
     pub fn merge_profiles(&self, base: &str, overlay: &str) -> Result<ScanProfile, String> {
         let base_profile = self
             .get_profile(base)
-            .ok_or_else(|| format!("Base profile '{}' not found", base))?;
+            .ok_or_else(|| format!("Base profile '{base}' not found"))?;
         let overlay_profile = self
             .get_profile(overlay)
-            .ok_or_else(|| format!("Overlay profile '{}' not found", overlay))?;
+            .ok_or_else(|| format!("Overlay profile '{overlay}' not found"))?;
 
         let mut merged = base_profile;
-        merged.name = format!("{}_merged_with_{}", base, overlay);
+        merged.name = format!("{base}_merged_with_{overlay}");
         merged.description = overlay_profile.description;
         merged.scan_intensity = overlay_profile.scan_intensity;
         merged.timeout_secs = overlay_profile.timeout_secs;
@@ -416,6 +416,10 @@ mod tests {
 
         let active = loader.get_active_profile();
         assert_eq!(active.name, "cloud");
+
+        let missing = loader.set_active_profile("missing").unwrap_err();
+        assert_eq!(missing, "Profile 'missing' not found");
+        assert_eq!(loader.get_active_profile().name, "cloud");
     }
 
     #[test]

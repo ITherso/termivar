@@ -350,7 +350,7 @@ impl<'de> Deserialize<'de> for AttackAction {
         {
             return Err(serde::de::Error::custom("unknown reserved action field"));
         }
-        if wire.payload_claim_policy_guard != !wire.verification_target.is_motivation() {
+        if wire.payload_claim_policy_guard == wire.verification_target.is_motivation() {
             return Err(serde::de::Error::custom(
                 "verification target compatibility guard is missing or inconsistent",
             ));
