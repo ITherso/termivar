@@ -1,13 +1,13 @@
 use std::sync::{Arc, Mutex};
 
-use super::coordinator::{lock_state, next_counter, CoordinatorState};
+use super::coordinator::{next_counter, CoordinatorState};
 use super::lease::{CancellationProof, CompletionReceipt, FailureProof, ScanTask};
 use super::limits::{validate_limits, DistributedLimits};
 use super::model::{
     validate_task_command_id, validate_task_spec, StateSnapshot, TaskPriority, TaskSpec,
     TaskStatus, Transition,
 };
-use super::DistributedError;
+use super::{lock_state, DistributedError};
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) struct QueueKey {

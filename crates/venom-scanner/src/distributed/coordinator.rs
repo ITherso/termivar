@@ -1,5 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex};
 
 use super::lease::{
     ensure_current_lease, ensure_queue_entry, terminalize_leased_task, terminalize_queued_task,
@@ -19,7 +19,7 @@ use super::worker::{
     prepare_assignment, release_worker, validate_worker_spec, WorkerNode, WorkerObservation,
     WorkerSpec, WorkerStatus,
 };
-use super::DistributedError;
+use super::{lock_state, DistributedError};
 
 pub(super) struct CoordinatorState {
     pub(super) limits: DistributedLimits,
@@ -94,12 +94,6 @@ impl CoordinatorState {
             workers: self.workers.len(),
         }
     }
-}
-
-pub(super) fn lock_state(
-    state: &Arc<Mutex<CoordinatorState>>,
-) -> Result<MutexGuard<'_, CoordinatorState>, DistributedError> {
-    state.lock().map_err(|_| DistributedError::StatePoisoned)
 }
 
 pub(super) fn next_counter(value: u64, counter: &'static str) -> Result<u64, DistributedError> {

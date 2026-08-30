@@ -114,4 +114,5 @@ pub type KnowledgeStoreError = KnowledgeBaseError;
 pub type KnowledgeStoreStats = KnowledgeBaseStats;
 
 #[cfg(test)]
+#[path = "knowledge/knowledge_tests.rs"]
 mod tests;

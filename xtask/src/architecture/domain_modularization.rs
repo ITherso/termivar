@@ -33,6 +33,7 @@ struct FacadeDomain {
     source: &'static str,
     children: &'static [ChildDomain],
     resident_symbols: &'static [&'static str],
+    resident_methods: &'static [MethodOwner],
 }
 
 const NO_METHODS: &[MethodOwner] = &[];
@@ -97,6 +98,8 @@ const DECISION_LOOP_CHILDREN: &[ChildDomain] = &[
     ChildDomain {
         module: "command",
         symbols: &[
+            "command_requiring_host_policy_context",
+            "execution_command_action_id",
             "DecisionActionOrigin",
             "DecisionStopReason",
             "DecisionLoopCommand",
@@ -500,51 +503,77 @@ const FACADES: &[FacadeDomain] = &[
         source: "plugin.rs",
         children: PLUGIN_CHILDREN,
         resident_symbols: NO_SYMBOLS,
+        resident_methods: NO_METHODS,
     },
     FacadeDomain {
         source: "decision_loop.rs",
         children: DECISION_LOOP_CHILDREN,
         resident_symbols: NO_SYMBOLS,
+        resident_methods: NO_METHODS,
     },
     FacadeDomain {
         source: "decision_runner.rs",
         children: DECISION_RUNNER_CHILDREN,
         resident_symbols: NO_SYMBOLS,
+        resident_methods: NO_METHODS,
     },
     FacadeDomain {
         source: "http_evidence.rs",
         children: HTTP_EVIDENCE_CHILDREN,
         resident_symbols: NO_SYMBOLS,
+        resident_methods: NO_METHODS,
     },
     FacadeDomain {
         source: "knowledge.rs",
         children: KNOWLEDGE_CHILDREN,
         resident_symbols: NO_SYMBOLS,
+        resident_methods: NO_METHODS,
     },
     FacadeDomain {
         source: "rules.rs",
         children: RULES_CHILDREN,
         resident_symbols: NO_SYMBOLS,
+        resident_methods: NO_METHODS,
     },
     FacadeDomain {
         source: "planner.rs",
         children: PLANNER_CHILDREN,
         resident_symbols: NO_SYMBOLS,
+        resident_methods: &[MethodOwner {
+            receiver: "PlannerError",
+            method: "from",
+        }],
     },
     FacadeDomain {
         source: "api_observation.rs",
         children: API_OBSERVATION_CHILDREN,
         resident_symbols: NO_SYMBOLS,
+        resident_methods: &[
+            MethodOwner {
+                receiver: "ApiObservationError",
+                method: "committed_observation",
+            },
+            MethodOwner {
+                receiver: "ApiObservationError",
+                method: "into_committed_observation",
+            },
+            MethodOwner {
+                receiver: "ApiObservationError",
+                method: "reasoning_source",
+            },
+        ],
     },
     FacadeDomain {
         source: "lua_engine.rs",
         children: LUA_ENGINE_CHILDREN,
         resident_symbols: NO_SYMBOLS,
+        resident_methods: NO_METHODS,
     },
     FacadeDomain {
         source: "distributed.rs",
         children: DISTRIBUTED_CHILDREN,
-        resident_symbols: &["DistributedError"],
+        resident_symbols: &["DistributedError", "lock_state"],
+        resident_methods: NO_METHODS,
     },
 ];
 
@@ -627,6 +656,24 @@ fn inspect_facade(
                 violations.push(format!(
                     "{} authority `{symbol}` must not move into child module {child}",
                     facade.source
+                ));
+            }
+        }
+    }
+
+    for method in facade.resident_methods {
+        let ownership = (method.receiver.to_owned(), method.method.to_owned());
+        if !facade_methods.contains(&ownership) {
+            violations.push(format!(
+                "{} authority {}::{} must remain implemented in the facade",
+                facade.source, method.receiver, method.method
+            ));
+        }
+        for (child, methods) in &child_methods {
+            if methods.contains(&ownership) {
+                violations.push(format!(
+                    "{} authority {}::{} must not move into child module {child}",
+                    facade.source, method.receiver, method.method
                 ));
             }
         }
@@ -815,6 +862,7 @@ mod tests {
         source: "facade.rs",
         children: CHILDREN,
         resident_symbols: NO_SYMBOLS,
+        resident_methods: NO_METHODS,
     };
 
     fn fixture(facade: &str, child: &str) -> Vec<String> {
@@ -889,13 +937,17 @@ mod tests {
             source: "facade.rs",
             children: CHILDREN,
             resident_symbols: &["FacadeError"],
+            resident_methods: &[MethodOwner {
+                receiver: "FacadeError",
+                method: "classify",
+            }],
         };
 
         let directory = tempfile::tempdir().unwrap();
         fs::create_dir(directory.path().join("facade")).unwrap();
         fs::write(
             directory.path().join("facade.rs"),
-            "pub enum FacadeError {} mod model; pub use model::OwnedModel;",
+            "pub enum FacadeError {} impl FacadeError { pub fn classify(&self) {} } mod model; pub use model::OwnedModel;",
         )
         .unwrap();
         fs::write(
@@ -914,13 +966,15 @@ mod tests {
         .unwrap();
         fs::write(
             directory.path().join("facade/model.rs"),
-            "pub enum FacadeError {} pub struct OwnedModel; impl OwnedModel { pub fn run(&self) {} }",
+            "pub enum FacadeError {} impl FacadeError { pub fn classify(&self) {} } pub struct OwnedModel; impl OwnedModel { pub fn run(&self) {} }",
         )
         .unwrap();
         let violations = inspect_facade(directory.path(), &AUTHORITY_DOMAIN).unwrap();
         assert!(violations
             .iter()
             .any(|violation| violation.contains("must remain defined in the facade")));
+        assert!(violations.iter().any(|violation| violation
+            .contains("authority FacadeError::classify must remain implemented in the facade")));
         assert!(violations
             .iter()
             .any(|violation| violation.contains("must not move into child module")));

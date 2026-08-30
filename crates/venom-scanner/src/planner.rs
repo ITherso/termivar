@@ -86,7 +86,13 @@ pub enum PlannerError {
 
     /// Expression evaluation failed.
     #[error(transparent)]
-    Rule(#[from] RuleEngineError),
+    Rule(RuleEngineError),
+}
+
+impl From<RuleEngineError> for PlannerError {
+    fn from(source: RuleEngineError) -> Self {
+        Self::Rule(source)
+    }
 }
 
 #[cfg(test)]

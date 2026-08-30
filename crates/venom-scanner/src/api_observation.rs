@@ -14,7 +14,7 @@
 //! authorized host establishes that two views describe the same logical
 //! resource before it constructs an [`venom_core::ApiVisibilityObservation`].
 
-use crate::knowledge::MAX_KNOWLEDGE_RELATION_ID_BYTES;
+use crate::{knowledge::MAX_KNOWLEDGE_RELATION_ID_BYTES, rules::RuleEngineError};
 
 mod cursor;
 mod ingest;
@@ -36,7 +36,7 @@ pub use review::{ApiVisibilityReview, ApiVisibilityReviewDisposition};
 #[cfg(test)]
 use crate::{
     knowledge::{KnowledgeBase, KnowledgeBaseError, KnowledgeWrite},
-    rules::{hypothesis_id_for_rule, RuleApplication, RuleEngine, RuleEngineError},
+    rules::{hypothesis_id_for_rule, RuleApplication, RuleEngine},
 };
 #[cfg(test)]
 use venom_core::{
@@ -70,6 +70,59 @@ pub const MAX_API_VISIBILITY_REVIEW_CURSOR_BYTES: usize = API_VISIBILITY_REVIEW_
     + API_VISIBILITY_REVIEW_RESOURCE_DIGEST_HEX_BYTES
     + 1
     + (MAX_KNOWLEDGE_RELATION_ID_BYTES * 2);
+
+impl ApiObservationError {
+    /// Returns the committed observation receipt when failure happened post-commit.
+    pub fn committed_observation(&self) -> Option<&ApiObservationCommitReceipt> {
+        match self {
+            Self::ReasoningAfterCommit { commit, .. } => Some(commit),
+            Self::ResourceMismatch { .. }
+            | Self::ZeroReviewScanLimit
+            | Self::ReviewScanLimitExceeded { .. }
+            | Self::ReviewCursorTooLong { .. }
+            | Self::ResourceBoundReviewCursorTooLong { .. }
+            | Self::InvalidResourceBoundReviewCursor { .. }
+            | Self::UnsupportedResourceBoundReviewCursorVersion
+            | Self::ResourceBoundReviewCursorMismatch
+            | Self::ObservationLimitExceeded { .. }
+            | Self::Knowledge(_) => None,
+        }
+    }
+
+    /// Takes the committed receipt without cloning it.
+    pub fn into_committed_observation(self) -> Option<ApiObservationCommitReceipt> {
+        match self {
+            Self::ReasoningAfterCommit { commit, .. } => Some(*commit),
+            Self::ResourceMismatch { .. }
+            | Self::ZeroReviewScanLimit
+            | Self::ReviewScanLimitExceeded { .. }
+            | Self::ReviewCursorTooLong { .. }
+            | Self::ResourceBoundReviewCursorTooLong { .. }
+            | Self::InvalidResourceBoundReviewCursor { .. }
+            | Self::UnsupportedResourceBoundReviewCursorVersion
+            | Self::ResourceBoundReviewCursorMismatch
+            | Self::ObservationLimitExceeded { .. }
+            | Self::Knowledge(_) => None,
+        }
+    }
+
+    /// Returns the post-commit reasoning error, when applicable.
+    pub fn reasoning_source(&self) -> Option<&RuleEngineError> {
+        match self {
+            Self::ReasoningAfterCommit { source, .. } => Some(source),
+            Self::ResourceMismatch { .. }
+            | Self::ZeroReviewScanLimit
+            | Self::ReviewScanLimitExceeded { .. }
+            | Self::ReviewCursorTooLong { .. }
+            | Self::ResourceBoundReviewCursorTooLong { .. }
+            | Self::InvalidResourceBoundReviewCursor { .. }
+            | Self::UnsupportedResourceBoundReviewCursorVersion
+            | Self::ResourceBoundReviewCursorMismatch
+            | Self::ObservationLimitExceeded { .. }
+            | Self::Knowledge(_) => None,
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests {

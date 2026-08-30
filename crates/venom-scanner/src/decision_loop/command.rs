@@ -77,3 +77,35 @@ pub enum DecisionLoopCommand {
         reason: DecisionStopReason,
     },
 }
+
+pub(crate) fn command_requiring_host_policy_context(
+    command: &DecisionLoopCommand,
+) -> Option<&'static str> {
+    match command {
+        DecisionLoopCommand::ExecuteAction {
+            origin: DecisionActionOrigin::Adaptive,
+            ..
+        } => Some("adaptive_execute_action"),
+        DecisionLoopCommand::ExecuteAction {
+            origin: DecisionActionOrigin::Retry,
+            ..
+        } => Some("retry_execute_action"),
+        DecisionLoopCommand::CollectActiveEvidence { .. } => Some("collect_active_evidence"),
+        DecisionLoopCommand::Replan => Some("replan"),
+        DecisionLoopCommand::ExecuteAction { .. }
+        | DecisionLoopCommand::Complete { .. }
+        | DecisionLoopCommand::AwaitHumanReview { .. }
+        | DecisionLoopCommand::Halt { .. } => None,
+    }
+}
+
+pub(crate) fn execution_command_action_id(command: &DecisionLoopCommand) -> Option<&str> {
+    match command {
+        DecisionLoopCommand::ExecuteAction { case, .. }
+        | DecisionLoopCommand::CollectActiveEvidence { case } => Some(case.action_id()),
+        DecisionLoopCommand::Replan
+        | DecisionLoopCommand::Complete { .. }
+        | DecisionLoopCommand::AwaitHumanReview { .. }
+        | DecisionLoopCommand::Halt { .. } => None,
+    }
+}

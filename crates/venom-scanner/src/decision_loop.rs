@@ -35,6 +35,7 @@ mod policy;
 mod receipts;
 mod state;
 
+pub(crate) use command::{command_requiring_host_policy_context, execution_command_action_id};
 pub use command::{DecisionActionOrigin, DecisionLoopCommand, DecisionStopReason};
 #[cfg(test)]
 use policy::transition_from_adaptive;
@@ -288,4 +289,5 @@ impl<'de> Deserialize<'de> for DecisionLoopConfig {
 }
 
 #[cfg(test)]
+#[path = "decision_loop/decision_loop_tests.rs"]
 mod tests;

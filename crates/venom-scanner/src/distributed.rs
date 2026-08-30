@@ -49,6 +49,7 @@ pub use worker::{WorkerNode, WorkerObservation, WorkerSpec, WorkerStatus, Worker
 
 #[cfg(test)]
 use std::collections::BTreeSet;
+use std::sync::{Arc, Mutex, MutexGuard};
 
 #[cfg(test)]
 use coordinator::{next_counter, next_u32};
@@ -149,6 +150,10 @@ pub enum DistributedError {
     StateInvariant { reason: &'static str },
     #[error("state lock is poisoned")]
     StatePoisoned,
+}
+
+fn lock_state<T>(state: &Arc<Mutex<T>>) -> Result<MutexGuard<'_, T>, DistributedError> {
+    state.lock().map_err(|_| DistributedError::StatePoisoned)
 }
 
 #[cfg(test)]

@@ -26,7 +26,9 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use venom_core::{EntityId, Evidence};
 
-use crate::decision_loop::ActiveEvidenceSnapshots;
+use crate::decision_loop::{
+    command_requiring_host_policy_context, execution_command_action_id, ActiveEvidenceSnapshots,
+};
 use crate::planner::ActionSuppressionContext;
 use crate::{
     DecisionActionOrigin, DecisionLoop, DecisionLoopCommand, DecisionLoopError, DecisionLoopState,
@@ -679,36 +681,6 @@ impl DecisionRunnerAdapter {
     }
 }
 
-fn command_requiring_host_policy_context(command: &DecisionLoopCommand) -> Option<&'static str> {
-    match command {
-        DecisionLoopCommand::ExecuteAction {
-            origin: DecisionActionOrigin::Adaptive,
-            ..
-        } => Some("adaptive_execute_action"),
-        DecisionLoopCommand::ExecuteAction {
-            origin: DecisionActionOrigin::Retry,
-            ..
-        } => Some("retry_execute_action"),
-        DecisionLoopCommand::CollectActiveEvidence { .. } => Some("collect_active_evidence"),
-        DecisionLoopCommand::Replan => Some("replan"),
-        DecisionLoopCommand::ExecuteAction { .. }
-        | DecisionLoopCommand::Complete { .. }
-        | DecisionLoopCommand::AwaitHumanReview { .. }
-        | DecisionLoopCommand::Halt { .. } => None,
-    }
-}
-
-fn execution_command_action_id(command: &DecisionLoopCommand) -> Option<&str> {
-    match command {
-        DecisionLoopCommand::ExecuteAction { case, .. }
-        | DecisionLoopCommand::CollectActiveEvidence { case } => Some(case.action_id()),
-        DecisionLoopCommand::Replan
-        | DecisionLoopCommand::Complete { .. }
-        | DecisionLoopCommand::AwaitHumanReview { .. }
-        | DecisionLoopCommand::Halt { .. } => None,
-    }
-}
-
 fn validate_session_case(
     session: &DecisionSession,
     stage: DecisionExecutionStage,
@@ -900,4 +872,5 @@ fn plugin_executor_error(error: crate::PluginError) -> DecisionExecutorError {
 }
 
 #[cfg(test)]
+#[path = "decision_runner/decision_runner_tests.rs"]
 mod tests;

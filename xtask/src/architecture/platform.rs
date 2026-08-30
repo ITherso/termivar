@@ -4629,8 +4629,8 @@ const EXACT_DISTRIBUTED_CONSTANTS: &[(&str, &str, u128)] = &[
     ("MAX_AGGREGATE_ITEMS", "usize", 65_536),
 ];
 
-const EXACT_DISTRIBUTED_PRODUCTION_TOKEN_BYTES: usize = 90_965;
-const EXACT_DISTRIBUTED_PRODUCTION_FINGERPRINT: u128 = 0x046d_53bc_ba30_b314_5ebe_a16a_3828_0e3f;
+const EXACT_DISTRIBUTED_PRODUCTION_TOKEN_BYTES: usize = 90_986;
+const EXACT_DISTRIBUTED_PRODUCTION_FINGERPRINT: u128 = 0xd532_01fe_237b_3a56_832d_5a7e_e74a_e2fe;
 
 fn distributed_public_api_violations(
     sources: &[NamedSource<'_>],
