@@ -56,8 +56,12 @@ visibility pair without creating another scanner engine or authority. Library
 hosts pass `WebAssessmentRootAuthorizationContext`; the CLI accepts the
 complete header value only via `--auth-env`, `--auth-file`, or `--auth-stdin`.
 There is no raw credential argument. The option requires `web-review` at the
-exact origin root, and both active legs use the same assessment broker, budget,
-cancellation token, deadline, and redirect-disabled policy. Equal visibility
+exact origin root and HTTPS; numeric-IP loopback HTTP is reserved for local
+fixtures. A file source must be a regular, non-symlink file. Standard-input
+loading waits for EOF and is intentionally controlled by the invoking host.
+Profile, target, transport, and obvious report-output failures are resolved
+before credential material is read. Both active legs use the same assessment
+broker, budget, cancellation token, deadline, and redirect-disabled policy. Equal visibility
 produces no item. A complete difference is projected as one atomic comparison
 evidence reference and at most `NeedsReview`; it is not decomposed into fake
 control/candidate evidence and does not prove an authorization vulnerability.

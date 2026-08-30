@@ -134,7 +134,11 @@ identity.
 An additional explicit `web-review` option can compare the exact origin root
 once as anonymous and once with a host-supplied `Authorization` context. Use
 `--auth-env`, `--auth-file`, or `--auth-stdin`; there is deliberately no raw
-credential command-line flag. The two active requests share the assessment's
+credential command-line flag. Credentialed review requires HTTPS; numeric-IP
+loopback HTTP is accepted only for deterministic local fixtures. `--auth-file`
+accepts a regular, non-symlink file, while `--auth-stdin` deliberately waits for
+EOF and therefore remains under the invoking host's input/lifecycle control.
+The two active requests share the assessment's
 broker, budget, cancellation, deadline, and exact-origin policy, and redirects
 remain disabled. Equal JSON visibility produces no item. A complete visibility
 difference is retained as one atomic comparison evidence reference and can
@@ -187,9 +191,11 @@ cargo run -p venom-cli --locked -- scan https://authorized.example.test \
 
 Populate `VENOM_AUTH_CONTEXT` through the host's secret-management mechanism,
 not as a literal command argument. Authorization-context review requires the
-exact origin root (`/`). Source names, paths, credential values, raw JSON
-bodies, cookies, and authorization headers are not emitted in reports or debug
-output.
+exact origin root (`/`) and an authenticated transport, except for numeric-IP
+loopback HTTP fixtures. Obvious report-output errors and target/profile policy
+failures are rejected before the source is read. Source names, paths,
+credential values, raw JSON bodies, cookies, and authorization headers are not
+emitted in reports or debug output.
 
 `--report-output` requires `--report-format`, creates a new file atomically
 through a same-directory temporary file and hard link, and never overwrites an

@@ -116,8 +116,13 @@ cargo run -p venom-cli --locked -- scan https://authorized.example.test \
   --profile web-review --report-format json --auth-file /secure/path/venom-auth-context
 ```
 
-`--auth-stdin` reads through EOF and is also supported. The three sources are mutually exclusive,
-bounded to 4 KiB, and consumed only after profile and exact-root validation.
+`--auth-stdin` reads through EOF and is also supported; the invoking host must
+therefore bound its own input lifecycle. `--auth-file` accepts only a regular,
+non-symlink file. The three sources are mutually exclusive, bounded to the
+scanner's compiled 4 KiB payload-artifact ceiling, and consumed only after
+profile, exact-root, authenticated-transport, and obvious report-output
+validation. Credentialed review requires HTTPS, with numeric-IP loopback HTTP
+reserved for deterministic local fixtures.
 Venom does not expose a raw `--authorization` option. It sends an anonymous
 control and an authorized candidate through the same global assessment
 authority. Equal JSON visibility emits no item; a complete difference is one
