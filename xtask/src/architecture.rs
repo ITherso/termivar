@@ -18,6 +18,7 @@ use syn::{
 
 mod cli_secret;
 mod deployment;
+mod domain_modularization;
 mod platform;
 mod plugin;
 mod reachability;
@@ -186,6 +187,7 @@ pub(crate) fn check(workspace_root: &Path) -> Result<(), Box<dyn Error>> {
     let mut violations = workspace_graph_violations(workspace_root)?;
     violations.extend(module_boundary_violations(workspace_root)?);
     violations.extend(cli_secret::check(workspace_root)?);
+    violations.extend(domain_modularization::check(workspace_root)?);
     violations.extend(transport::check(workspace_root)?);
     violations.extend(reachability::check(workspace_root)?);
     violations.extend(deployment::check(workspace_root)?);

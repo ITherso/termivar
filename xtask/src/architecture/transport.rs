@@ -22,7 +22,15 @@ use super::{
 const BOUNDED_RUNTIME_SOURCES: &[&str] = &[
     "crates/venom-cli/src/assessment_scan.rs",
     "crates/venom-scanner/src/decision_loop.rs",
+    "crates/venom-scanner/src/decision_loop/command.rs",
+    "crates/venom-scanner/src/decision_loop/policy.rs",
+    "crates/venom-scanner/src/decision_loop/receipts.rs",
+    "crates/venom-scanner/src/decision_loop/state.rs",
     "crates/venom-scanner/src/decision_runner.rs",
+    "crates/venom-scanner/src/decision_runner/execution.rs",
+    "crates/venom-scanner/src/decision_runner/failures.rs",
+    "crates/venom-scanner/src/decision_runner/receipts.rs",
+    "crates/venom-scanner/src/decision_runner/registry.rs",
     ASSESSMENT_API_VISIBILITY_SOURCE,
     ASSESSMENT_ITEM_SOURCE,
     "crates/venom-scanner/src/web_runtime/assessment_passive.rs",
@@ -32,6 +40,9 @@ const BOUNDED_RUNTIME_SOURCES: &[&str] = &[
     "crates/venom-scanner/src/web_runtime/assessment_defense.rs",
     "crates/venom-scanner/src/http_evidence.rs",
     "crates/venom-scanner/src/http_evidence/form_controls.rs",
+    "crates/venom-scanner/src/http_evidence/policy.rs",
+    "crates/venom-scanner/src/http_evidence/probe.rs",
+    "crates/venom-scanner/src/http_evidence/response.rs",
     HTTP_REVIEW_RESPONSE_SOURCE,
     "crates/venom-scanner/src/payload_strategy.rs",
     "crates/venom-scanner/src/planner.rs",
@@ -559,8 +570,16 @@ fn web_assessment_contract_violations(
     let assessment_item = fs::read_to_string(workspace_root.join(ASSESSMENT_ITEM_SOURCE))?;
     let assessment_report = fs::read_to_string(workspace_root.join(ASSESSMENT_REPORT_SOURCE))?;
     let knowledge = fs::read_to_string(workspace_root.join(KNOWLEDGE_SOURCE))?;
-    let http_evidence =
+    let mut http_evidence =
         fs::read_to_string(workspace_root.join("crates/venom-scanner/src/http_evidence.rs"))?;
+    for child in ["policy.rs", "probe.rs", "response.rs"] {
+        http_evidence.push('\n');
+        http_evidence.push_str(&fs::read_to_string(
+            workspace_root
+                .join("crates/venom-scanner/src/http_evidence")
+                .join(child),
+        )?);
+    }
     let broker = fs::read_to_string(workspace_root.join(TRANSPORT_OWNER_SOURCE))?;
     let facade =
         fs::read_to_string(workspace_root.join("crates/venom-scanner/src/web_runtime.rs"))?;
@@ -7534,8 +7553,7 @@ struct OwnershipVisitor<'source> {
 impl OwnershipVisitor<'_> {
     fn inspect_segments(&mut self, segments: &[String]) {
         if segments.is_empty()
-            || (self.source == "crates/venom-scanner/src/http_evidence.rs"
-                && allowed_http_facade_path(segments))
+            || (is_http_evidence_contract_source(self.source) && allowed_http_facade_path(segments))
             || (self.source == HTTP_REVIEW_RESPONSE_SOURCE
                 && allowed_review_response_metadata_path(segments))
         {
@@ -7771,6 +7789,9 @@ impl<'ast> Visit<'ast> for OwnershipVisitor<'_> {
                 "crates/venom-scanner/src/http_evidence.rs",
                 "request_broker"
             ) | ("crates/venom-scanner/src/http_evidence.rs", "form_controls")
+                | ("crates/venom-scanner/src/http_evidence.rs", "policy")
+                | ("crates/venom-scanner/src/http_evidence.rs", "probe")
+                | ("crates/venom-scanner/src/http_evidence.rs", "response")
                 | (
                     "crates/venom-scanner/src/http_evidence.rs",
                     "passive_review"
@@ -7779,6 +7800,14 @@ impl<'ast> Visit<'ast> for OwnershipVisitor<'_> {
                     "crates/venom-scanner/src/http_evidence.rs",
                     "review_response"
                 )
+                | ("crates/venom-scanner/src/decision_loop.rs", "command")
+                | ("crates/venom-scanner/src/decision_loop.rs", "policy")
+                | ("crates/venom-scanner/src/decision_loop.rs", "receipts")
+                | ("crates/venom-scanner/src/decision_loop.rs", "state")
+                | ("crates/venom-scanner/src/decision_runner.rs", "execution")
+                | ("crates/venom-scanner/src/decision_runner.rs", "failures")
+                | ("crates/venom-scanner/src/decision_runner.rs", "receipts")
+                | ("crates/venom-scanner/src/decision_runner.rs", "registry")
                 | ("crates/venom-scanner/src/web_actions.rs", "native_review")
                 | ("crates/venom-scanner/src/web_runtime.rs", "authority")
                 | ("crates/venom-scanner/src/web_runtime.rs", "api_visibility")
@@ -8378,6 +8407,16 @@ fn allowed_http_facade_path(segments: &[String]) -> bool {
                 "header" | "Error" | "Method" | "StatusCode" | "Url"
             )
         })
+}
+
+fn is_http_evidence_contract_source(source: &str) -> bool {
+    matches!(
+        source,
+        "crates/venom-scanner/src/http_evidence.rs"
+            | "crates/venom-scanner/src/http_evidence/policy.rs"
+            | "crates/venom-scanner/src/http_evidence/probe.rs"
+            | "crates/venom-scanner/src/http_evidence/response.rs"
+    )
 }
 
 fn allowed_review_response_metadata_path(segments: &[String]) -> bool {

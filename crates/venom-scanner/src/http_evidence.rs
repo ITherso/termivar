@@ -13,14 +13,12 @@
 //! typed observations. It does not classify vulnerabilities, follow redirects,
 //! choose follow-up actions, or mutate the knowledge base directly.
 
-use std::{collections::BTreeMap, collections::BTreeSet, fmt, sync::Arc, time::Duration};
+use std::{collections::BTreeSet, sync::Arc, time::Duration};
 
 use async_trait::async_trait;
-use reqwest::{
-    header::{HeaderMap, HeaderName, HeaderValue},
-    Method, StatusCode, Url,
-};
-use serde::{Deserialize, Serialize};
+#[cfg(test)]
+use reqwest::header::HeaderValue;
+use reqwest::{header::HeaderMap, header::HeaderName, StatusCode, Url};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 use venom_core::{
@@ -47,12 +45,21 @@ use crate::runtime_budget::RequestAccountingBroker;
 
 mod form_controls;
 pub(crate) mod passive_review;
+mod policy;
+mod probe;
 mod request_broker;
+mod response;
 mod review_response;
 
 use form_controls::{extract_form_control_names, FormControlExtraction};
 use passive_review::{project_passive_response, PassiveResponseProjection};
+use policy::forbidden_request_header;
+pub use policy::{
+    HttpBodyCapture, HttpEvidencePolicy, DEFAULT_HTTP_BODY_LIMIT, MAX_HTTP_BODY_LIMIT,
+};
+pub use probe::{HttpProbe, HttpProbeMethod, HttpProbeProvider, SubjectHttpProbeProvider};
 pub(crate) use request_broker::{HttpRequestBroker, HttpRequestBrokerError};
+pub(crate) use response::CollectedHttpResponse;
 #[cfg(test)]
 pub(crate) use review_response::{
     project_review_response, ReviewResponseProjection, EMPTY_REVIEW_RESPONSE_PROJECTION,
@@ -61,11 +68,8 @@ pub(crate) use review_response::{
     CorsAllowCredentialsRelation, CorsAllowOriginRelation, LocationRelation, VaryOriginRelation,
 };
 
-/// Default maximum number of response-body bytes read by one probe.
-pub const DEFAULT_HTTP_BODY_LIMIT: usize = 256 * 1024;
-
-/// Hard guard preventing an individual evidence probe from buffering too much.
-pub const MAX_HTTP_BODY_LIMIT: usize = 16 * 1024 * 1024;
+/// Stable executor identity used by the standard HTTP evidence collector.
+pub const HTTP_EVIDENCE_EXECUTOR_ID: &str = "http.evidence";
 
 const MAX_HTTP_PATH_SEGMENTS: usize = 128;
 const MAX_HTTP_PATH_SEGMENT_BYTES: usize = 256;
@@ -73,370 +77,6 @@ const MAX_HTTP_QUERY_PAYLOAD_PARAMETER_BYTES: usize = 64;
 const MAX_ASSESSMENT_DEFENSE_HEADER_OCCURRENCES: usize = 8;
 const MAX_ASSESSMENT_DEFENSE_HEADER_VALUE_BYTES: usize = 1024;
 const MAX_ASSESSMENT_DEFENSE_COOKIE_NAME_BYTES: usize = 256;
-
-/// Stable executor identity used by the standard HTTP evidence collector.
-pub const HTTP_EVIDENCE_EXECUTOR_ID: &str = "http.evidence";
-
-/// Discovery-only HTTP methods supported by the evidence executor.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-#[non_exhaustive]
-pub enum HttpProbeMethod {
-    /// Retrieve response headers and a bounded representation of the body.
-    Get,
-    /// Retrieve response headers without a response body.
-    Head,
-    /// Discover methods and protocol behavior exposed by the endpoint.
-    Options,
-}
-
-impl HttpProbeMethod {
-    fn as_reqwest(self) -> Method {
-        match self {
-            Self::Get => Method::GET,
-            Self::Head => Method::HEAD,
-            Self::Options => Method::OPTIONS,
-        }
-    }
-
-    /// Returns the stable uppercase method name.
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Get => "GET",
-            Self::Head => "HEAD",
-            Self::Options => "OPTIONS",
-        }
-    }
-}
-
-/// Response-body representation allowed to enter the knowledge base.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(tag = "mode", rename_all = "snake_case")]
-#[non_exhaustive]
-pub enum HttpBodyCapture {
-    /// Record byte count, truncation, and SHA-256 only.
-    #[default]
-    MetadataOnly,
-    /// Also record a bounded UTF-8 sample for textual response types.
-    TextSample {
-        /// Maximum Unicode scalar values retained in the sample.
-        max_chars: usize,
-    },
-}
-
-/// One validated, bodyless discovery request.
-#[derive(Clone, PartialEq, Eq)]
-pub struct HttpProbe {
-    url: Url,
-    method: HttpProbeMethod,
-    headers: BTreeMap<String, String>,
-}
-
-impl fmt::Debug for HttpProbe {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("HttpProbe")
-            .field("url", &"<redacted>")
-            .field("method", &self.method)
-            .field("header_names", &self.headers.keys().collect::<Vec<_>>())
-            .field("header_values", &"<redacted>")
-            .finish()
-    }
-}
-
-impl HttpProbe {
-    /// Creates a request for one absolute HTTP or HTTPS URL.
-    pub fn new(url: Url, method: HttpProbeMethod) -> Result<Self, HttpEvidenceError> {
-        validate_http_url(&url)?;
-        Ok(Self {
-            url,
-            method,
-            headers: BTreeMap::new(),
-        })
-    }
-
-    /// Adds or replaces a validated request header.
-    ///
-    /// `Host`, hop-by-hop framing headers, and proxy authorization are
-    /// rejected because they can change the scoped destination or transport
-    /// interpretation. Authentication and cookie headers remain explicit host
-    /// choices for authorized authenticated scans.
-    pub fn with_header(
-        mut self,
-        name: impl Into<String>,
-        value: impl Into<String>,
-    ) -> Result<Self, HttpEvidenceError> {
-        let name = name.into();
-        let parsed_name = HeaderName::from_bytes(name.as_bytes())
-            .map_err(|_| HttpEvidenceError::InvalidHeaderName { name: name.clone() })?;
-        if forbidden_request_header(&parsed_name) {
-            return Err(HttpEvidenceError::ForbiddenRequestHeader {
-                name: parsed_name.as_str().to_owned(),
-            });
-        }
-        let value = value.into();
-        HeaderValue::from_str(&value).map_err(|_| HttpEvidenceError::InvalidHeaderValue {
-            name: parsed_name.as_str().to_owned(),
-        })?;
-        self.headers.insert(parsed_name.as_str().to_owned(), value);
-        Ok(self)
-    }
-
-    /// Returns the absolute request URL.
-    pub fn url(&self) -> &Url {
-        &self.url
-    }
-
-    /// Returns the discovery method.
-    pub fn method(&self) -> HttpProbeMethod {
-        self.method
-    }
-
-    /// Returns request headers in stable lowercase-name order.
-    pub fn headers(&self) -> &BTreeMap<String, String> {
-        &self.headers
-    }
-}
-
-/// Host-owned mapping from a decision case to an HTTP discovery request.
-pub trait HttpProbeProvider: Send + Sync {
-    /// Resolves one request without performing I/O or changing decision state.
-    fn probe_for(&self, request: &DecisionExecutionRequest)
-        -> Result<HttpProbe, HttpEvidenceError>;
-}
-
-impl<F> HttpProbeProvider for F
-where
-    F: Fn(&DecisionExecutionRequest) -> Result<HttpProbe, HttpEvidenceError> + Send + Sync,
-{
-    fn probe_for(
-        &self,
-        request: &DecisionExecutionRequest,
-    ) -> Result<HttpProbe, HttpEvidenceError> {
-        self(request)
-    }
-}
-
-/// Default provider that interprets `endpoint:<absolute-url>` subjects.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct SubjectHttpProbeProvider {
-    method: HttpProbeMethod,
-}
-
-impl SubjectHttpProbeProvider {
-    /// Creates a subject-backed provider using the selected discovery method.
-    pub const fn new(method: HttpProbeMethod) -> Self {
-        Self { method }
-    }
-}
-
-impl Default for SubjectHttpProbeProvider {
-    fn default() -> Self {
-        Self::new(HttpProbeMethod::Get)
-    }
-}
-
-impl HttpProbeProvider for SubjectHttpProbeProvider {
-    fn probe_for(
-        &self,
-        request: &DecisionExecutionRequest,
-    ) -> Result<HttpProbe, HttpEvidenceError> {
-        let subject = request.case().subject().as_str();
-        let raw_url = subject.strip_prefix("endpoint:").ok_or_else(|| {
-            HttpEvidenceError::InvalidEndpointSubject {
-                subject: subject.to_owned(),
-            }
-        })?;
-        let url = Url::parse(raw_url).map_err(|source| HttpEvidenceError::InvalidUrl {
-            value: raw_url.to_owned(),
-            source,
-        })?;
-        HttpProbe::new(url, self.method)
-    }
-}
-
-/// Scope, resource, and evidence policy applied to every HTTP probe.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct HttpEvidencePolicy {
-    allowed_origins: BTreeSet<String>,
-    request_timeout_ms: u64,
-    max_body_bytes: usize,
-    body_capture: HttpBodyCapture,
-    captured_headers: BTreeSet<String>,
-    reliability: ConfidenceScore,
-}
-
-impl HttpEvidencePolicy {
-    /// Creates a policy for one or more explicitly authorized origins.
-    pub fn new(
-        allowed_origins: impl IntoIterator<Item = Url>,
-        request_timeout: Duration,
-        max_body_bytes: usize,
-    ) -> Result<Self, HttpEvidenceError> {
-        if request_timeout.is_zero() {
-            return Err(HttpEvidenceError::ZeroTimeout);
-        }
-        validate_body_limit(max_body_bytes)?;
-
-        let mut origins = BTreeSet::new();
-        for url in allowed_origins {
-            validate_http_url(&url)?;
-            origins.insert(origin(&url)?);
-        }
-        if origins.is_empty() {
-            return Err(HttpEvidenceError::EmptyAllowedOrigins);
-        }
-
-        Ok(Self {
-            allowed_origins: origins,
-            request_timeout_ms: u64::try_from(request_timeout.as_millis().max(1))
-                .unwrap_or(u64::MAX),
-            max_body_bytes,
-            body_capture: HttpBodyCapture::MetadataOnly,
-            captured_headers: default_captured_headers(),
-            reliability: ConfidenceScore::MAX,
-        })
-    }
-
-    /// Uses the standard timeout, body limit, headers, and maximum reliability.
-    pub fn for_origin(origin: Url) -> Result<Self, HttpEvidenceError> {
-        Self::new([origin], Duration::from_secs(15), DEFAULT_HTTP_BODY_LIMIT)
-    }
-
-    /// Returns this policy narrowed to the exact origin of `target`.
-    ///
-    /// All non-scope settings are preserved. The target must already be covered
-    /// by this policy, so narrowing can never turn an unauthorized target into
-    /// an authorized one. Bounded origin-level runtimes use this seam to ensure
-    /// that an explicitly broader host policy cannot silently expand discovery.
-    pub(crate) fn restricted_to_exact_origin(
-        &self,
-        target: &Url,
-    ) -> Result<Self, HttpEvidenceError> {
-        self.require_permitted_target(target)?;
-
-        let mut restricted = self.clone();
-        restricted.allowed_origins = BTreeSet::from([origin(target)?]);
-        Ok(restricted)
-    }
-
-    /// Narrows a policy for the names-only assessment observer.
-    ///
-    /// The assessment is never allowed to inherit text sampling or a
-    /// caller-added sensitive response header. The response body remains
-    /// transient inside the sealed executor observer. No raw response header
-    /// value enters assessment discovery evidence; normalized media type has
-    /// its own bounded predicate.
-    pub(crate) fn restricted_for_web_assessment(
-        &self,
-        target: &Url,
-        max_body_bytes: usize,
-    ) -> Result<Self, HttpEvidenceError> {
-        validate_body_limit(max_body_bytes)?;
-        let mut restricted = self.restricted_to_exact_origin(target)?;
-        restricted.max_body_bytes = restricted.max_body_bytes.min(max_body_bytes);
-        restricted.body_capture = HttpBodyCapture::MetadataOnly;
-        // Even Content-Type parameters are untrusted and may contain tokens.
-        // Discovery uses only RESPONSE_MEDIA_TYPE's normalized essence.
-        restricted.captured_headers.clear();
-        Ok(restricted)
-    }
-
-    /// Configures optional bounded text sampling.
-    pub fn with_body_capture(
-        mut self,
-        capture: HttpBodyCapture,
-    ) -> Result<Self, HttpEvidenceError> {
-        if let HttpBodyCapture::TextSample { max_chars } = capture {
-            if max_chars == 0 {
-                return Err(HttpEvidenceError::ZeroTextSampleLimit);
-            }
-            if max_chars > self.max_body_bytes {
-                return Err(HttpEvidenceError::TextSampleLimitTooLarge {
-                    max_chars,
-                    max_body_bytes: self.max_body_bytes,
-                });
-            }
-        }
-        self.body_capture = capture;
-        Ok(self)
-    }
-
-    /// Adds one response header to the evidence allowlist.
-    ///
-    /// Sensitive headers such as `set-cookie` are not included by default and
-    /// should be enabled only when the host's storage policy permits them.
-    pub fn capture_header(mut self, name: impl Into<String>) -> Result<Self, HttpEvidenceError> {
-        let name = name.into();
-        let parsed = HeaderName::from_bytes(name.as_bytes())
-            .map_err(|_| HttpEvidenceError::InvalidHeaderName { name: name.clone() })?;
-        self.captured_headers.insert(parsed.as_str().to_owned());
-        Ok(self)
-    }
-
-    /// Sets a non-zero ordinal source reliability for emitted evidence.
-    ///
-    /// Zero-confidence observations are rejected because deterministic rules
-    /// currently use declared likelihoods rather than scaling by this metadata.
-    pub fn with_reliability(
-        mut self,
-        reliability: ConfidenceScore,
-    ) -> Result<Self, HttpEvidenceError> {
-        if reliability == ConfidenceScore::NONE {
-            return Err(HttpEvidenceError::ZeroReliability);
-        }
-        self.reliability = reliability;
-        Ok(self)
-    }
-
-    /// Returns normalized authorized origins.
-    pub fn allowed_origins(&self) -> &BTreeSet<String> {
-        &self.allowed_origins
-    }
-
-    /// Returns the total request and body-read timeout.
-    pub fn request_timeout(&self) -> Duration {
-        Duration::from_millis(self.request_timeout_ms)
-    }
-
-    /// Returns the maximum buffered body bytes.
-    pub fn max_body_bytes(&self) -> usize {
-        self.max_body_bytes
-    }
-
-    /// Returns the body representation policy.
-    pub fn body_capture(&self) -> HttpBodyCapture {
-        self.body_capture
-    }
-
-    /// Returns captured response header names in stable order.
-    pub fn captured_headers(&self) -> &BTreeSet<String> {
-        &self.captured_headers
-    }
-
-    /// Returns the ordinal reliability attached to each observation.
-    pub fn reliability(&self) -> ConfidenceScore {
-        self.reliability
-    }
-
-    fn permits(&self, url: &Url) -> Result<bool, HttpEvidenceError> {
-        Ok(self.allowed_origins.contains(&origin(url)?))
-    }
-
-    /// Validates the complete request URL and enforces this policy's scope.
-    ///
-    /// Callers must use this typed seam instead of comparing serialized origins:
-    /// origin equality alone does not reject unsupported schemes or embedded
-    /// credentials.
-    pub(crate) fn require_permitted_target(&self, target: &Url) -> Result<(), HttpEvidenceError> {
-        if !self.permits(target)? {
-            return Err(HttpEvidenceError::TargetOutsidePolicy {
-                url: target.to_string(),
-            });
-        }
-        Ok(())
-    }
-}
 
 /// Configuration and execution failures for HTTP evidence collection.
 #[derive(Debug, Error)]
@@ -789,7 +429,7 @@ impl HttpQueryPayloadBinding {
         stage: DecisionExecutionStage,
         mut probe: HttpProbe,
     ) -> Result<HttpProbe, HttpEvidenceError> {
-        if probe.url.query().is_some() {
+        if probe.url().query().is_some() {
             return Err(HttpEvidenceError::QueryPayloadRequiresQueryFreeProbe);
         }
         let role = match stage {
@@ -813,7 +453,7 @@ impl HttpQueryPayloadBinding {
             return Ok(probe);
         }
         probe
-            .url
+            .url_mut()
             .query_pairs_mut()
             .append_pair(&self.parameter, value);
         Ok(probe)
@@ -1627,125 +1267,12 @@ pub(crate) fn passive_response_projection_for_test(
     project_passive_response(&map)
 }
 
-pub(crate) struct CollectedHttpResponse {
-    status: StatusCode,
-    final_url: Url,
-    version: String,
-    headers: HeaderMap,
-    body: Vec<u8>,
-    body_truncated: bool,
-    body_complete: bool,
-    ttfb_ms: u64,
-    total_ms: u64,
-}
-
-impl CollectedHttpResponse {
-    pub(crate) fn status(&self) -> u16 {
-        self.status.as_u16()
-    }
-
-    #[cfg(feature = "legacy-scanner")]
-    pub(crate) fn final_url(&self) -> &Url {
-        &self.final_url
-    }
-
-    #[cfg(feature = "legacy-scanner")]
-    pub(crate) fn header(&self, name: &str) -> Option<&str> {
-        self.headers.get(name)?.to_str().ok()
-    }
-
-    pub(crate) fn body(&self) -> &[u8] {
-        &self.body
-    }
-
-    pub(crate) fn body_truncated(&self) -> bool {
-        self.body_truncated
-    }
-
-    pub(crate) fn has_json_compatible_media_type(&self) -> bool {
-        normalized_media_type(&self.headers)
-            .as_deref()
-            .is_some_and(json_compatible_media_type)
-    }
-}
-
-fn validate_http_url(url: &Url) -> Result<(), HttpEvidenceError> {
-    if !matches!(url.scheme(), "http" | "https") {
-        return Err(HttpEvidenceError::UnsupportedScheme {
-            scheme: url.scheme().to_owned(),
-        });
-    }
-    if !url.username().is_empty() || url.password().is_some() {
-        return Err(HttpEvidenceError::EmbeddedCredentials);
-    }
-    Ok(())
-}
-
 fn validate_executor_id(id: impl Into<String>) -> Result<String, HttpEvidenceError> {
     let id = id.into();
     if id.trim().is_empty() {
         return Err(HttpEvidenceError::EmptyExecutorId);
     }
     Ok(id)
-}
-
-fn origin(url: &Url) -> Result<String, HttpEvidenceError> {
-    validate_http_url(url)?;
-    Ok(url.origin().ascii_serialization())
-}
-
-fn validate_body_limit(max_body_bytes: usize) -> Result<(), HttpEvidenceError> {
-    if max_body_bytes == 0 {
-        return Err(HttpEvidenceError::ZeroBodyLimit);
-    }
-    if max_body_bytes > MAX_HTTP_BODY_LIMIT {
-        return Err(HttpEvidenceError::BodyLimitTooLarge {
-            actual: max_body_bytes,
-            maximum: MAX_HTTP_BODY_LIMIT,
-        });
-    }
-    Ok(())
-}
-
-fn forbidden_request_header(name: &HeaderName) -> bool {
-    matches!(
-        name.as_str(),
-        "host"
-            | "connection"
-            | "content-length"
-            | "transfer-encoding"
-            | "upgrade"
-            | "proxy-authorization"
-            | "proxy-connection"
-    )
-}
-
-fn default_captured_headers() -> BTreeSet<String> {
-    [
-        "access-control-allow-origin",
-        "allow",
-        "cache-control",
-        "content-length",
-        "content-security-policy",
-        "content-type",
-        "location",
-        "ratelimit-limit",
-        "ratelimit-remaining",
-        "ratelimit-reset",
-        "retry-after",
-        "server",
-        "strict-transport-security",
-        "vary",
-        "www-authenticate",
-        "x-frame-options",
-        "x-powered-by",
-        "x-ratelimit-limit",
-        "x-ratelimit-remaining",
-        "x-ratelimit-reset",
-    ]
-    .into_iter()
-    .map(str::to_owned)
-    .collect()
 }
 
 fn joined_header(headers: &HeaderMap, name: &str) -> Option<String> {
