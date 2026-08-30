@@ -1,0 +1,128 @@
+name: Endpoint Performance Evidence
+
+on:
+  workflow_dispatch:
+    inputs:
+      workload:
+        description: Fixed loopback workload
+        required: true
+        default: all
+        type: choice
+        options:
+          - all
+          - '100'
+          - '1000'
+          - '10000'
+      warmups:
+        description: Warmup samples
+        required: true
+        default: '1'
+        type: choice
+        options:
+          - '1'
+          - '2'
+          - '3'
+      samples:
+        description: Measured samples
+        required: true
+        default: '3'
+        type: choice
+        options:
+          - '3'
+          - '5'
+          - '10'
+  pull_request:
+    types: [opened, synchronize, reopened, labeled]
+    paths:
+      - '.github/workflows/endpoint-performance.yml'
+      - 'crates/venom-scanner/Cargo.toml'
+      - 'crates/venom-scanner/benches/endpoint_assessment.rs'
+      - 'crates/venom-scanner/benches/endpoint_assessment_support/**'
+      - 'crates/venom-scanner/tests/endpoint_assessment_harness.rs'
+      - 'scripts/run-endpoint-performance.sh'
+      - 'scripts/endpoint_performance_report.py'
+      - 'scripts/tests/test_endpoint_performance_report.py'
+      - 'docs/benchmarks.md'
+      - 'docs/quality-metrics.md'
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/endpoint-performance.yml'
+      - 'crates/venom-scanner/Cargo.toml'
+      - 'crates/venom-scanner/benches/endpoint_assessment.rs'
+      - 'crates/venom-scanner/benches/endpoint_assessment_support/**'
+      - 'crates/venom-scanner/tests/endpoint_assessment_harness.rs'
+      - 'scripts/run-endpoint-performance.sh'
+      - 'scripts/endpoint_performance_report.py'
+      - 'scripts/tests/test_endpoint_performance_report.py'
+      - 'docs/benchmarks.md'
+      - 'docs/quality-metrics.md'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: endpoint-performance-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  contract:
+    name: Harness and report contracts
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # 1.88.0
+        with:
+          toolchain: '1.88.0'
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      - name: Check endpoint benchmark target
+        run: cargo check --locked -p venom-scanner --bench endpoint_assessment
+      - name: Exercise the small loopback authority fixture
+        run: cargo test --locked -p venom-scanner --test endpoint_assessment_harness
+      - name: Exercise strict JSON and Markdown projection
+        run: python3 -m unittest discover -s scripts/tests -p 'test_endpoint_performance_report.py'
+      - name: Check canonical Linux wrapper
+        run: |
+          bash -n scripts/run-endpoint-performance.sh
+          bash scripts/run-endpoint-performance.sh --help
+
+  measure:
+    name: Manual endpoint-scale evidence
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'pull_request' &&
+       github.event.action == 'labeled' &&
+       github.event.label.name == 'endpoint-performance-evidence' &&
+       github.event.pull_request.head.repo.full_name == github.repository)
+    needs: contract
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # 1.88.0
+        with:
+          toolchain: '1.88.0'
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      - name: Run selected loopback workloads
+        shell: bash
+        env:
+          PERF_WORKLOAD: ${{ github.event_name == 'workflow_dispatch' && inputs.workload || 'all' }}
+          PERF_WARMUPS: ${{ github.event_name == 'workflow_dispatch' && inputs.warmups || '1' }}
+          PERF_SAMPLES: ${{ github.event_name == 'workflow_dispatch' && inputs.samples || '3' }}
+        run: |
+          bash scripts/run-endpoint-performance.sh \
+            --workload "$PERF_WORKLOAD" \
+            --warmups "$PERF_WARMUPS" \
+            --samples "$PERF_SAMPLES" \
+            --output-dir target/endpoint-performance
+      - name: Publish evidence summary
+        shell: bash
+        run: cat target/endpoint-performance/endpoint-performance.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload complete evidence pair
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: endpoint-performance-${{ github.sha }}
+          path: target/endpoint-performance/
+          if-no-files-found: error
+          retention-days: 30

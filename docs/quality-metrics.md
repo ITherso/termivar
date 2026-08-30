@@ -17,6 +17,17 @@ The `Quality Metrics` workflow records:
 
 Results are runner-local regression signals. They are not comparable across arbitrary hardware and are not endpoint-capacity claims.
 
+Endpoint-scale assessment evidence is a separate manual surface. The
+`Endpoint Performance Evidence` workflow path-checks a small deterministic
+contract fixture. A manual dispatch may run the fixed 100-endpoint,
+1,000-endpoint, and 10,000-request workloads once the workflow is on the default
+branch; an explicit maintainer label provides the fixed full workload on a
+same-repository PR before merge. Those runs use only a harness-owned
+`127.0.0.1` fixture and emit schema
+`venom.endpoint-performance/v1` as validated JSON plus Markdown. The harness
+records real `WebAssessmentRuntime` broker receipts and the Linux wrapper adds
+GNU `time` CPU/RSS evidence. See [Benchmarks](benchmarks.md).
+
 Coverage is produced by the Tests workflow with measurement Rust `1.88.0`, its
 `llvm-tools-preview` component, and the explicit LLVM backend of
 `cargo-tarpaulin 0.37.2`, compiled by pinned installer Rust `1.91.0`. The
@@ -77,8 +88,8 @@ claim that every mutation-relevant function has been exercised.
 | Metric | State | Exit criterion |
 | --- | --- | --- |
 | Project-wide mutation baseline | Missing | Commit a repeatable scope, exclusions, survivor policy, and comparable baseline |
-| Endpoint throughput/latency | Missing | Controlled fixture at 100, 1,000, and 10,000 request scales |
-| Scanner peak RAM/CPU | Missing | End-to-end workload with pinned hardware and feature flags |
+| Accepted endpoint throughput/latency baseline | Infrastructure available; baseline missing | Repeat comparable 100/1,000/10,000 local-fixture runs on a pinned hardware class and review variance |
+| Accepted scanner peak RAM/CPU baseline | Infrastructure available; baseline missing | Review repeated GNU `time` process evidence on the same pinned hardware class |
 | External audit findings | Missing | Independent scope, report, and remediation record |
 
 If a permanent mutation job is introduced, it should normally run on a schedule

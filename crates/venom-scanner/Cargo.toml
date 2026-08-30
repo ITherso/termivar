@@ -115,3 +115,8 @@ targets = ["x86_64-unknown-linux-gnu"]
 [[bench]]
 name = "scanner_benchmarks"
 harness = false
+
+[[bench]]
+name = "endpoint_assessment"
+harness = false
+required-features = ["scanning"]

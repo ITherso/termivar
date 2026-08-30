@@ -8,8 +8,8 @@ cargo bench -p venom-scanner --bench scanner_benchmarks
 cargo xtask benchmark
 ```
 
-The active suite measures generic LRU-cache access and neutral percent encoding.
-Criterion stores reports under `target/criterion/`.
+The active Criterion suite measures neutral percent encoding. Criterion stores
+reports under `target/criterion/`.
 
 The `Quality Metrics` GitHub Actions workflow runs this suite on every push and pull request, then uploads Criterion output with build timing, binary size, and runner peak-RSS measurements. See [Quality metrics](quality-metrics.md).
 
@@ -32,18 +32,92 @@ limitations, and a [machine-readable JSON record](reports/benchmarks/f7d5120.jso
 A new current-suite baseline must come from a green run at the remediated commit;
 this document does not invent replacement measurements.
 
+## Endpoint assessment harness
+
+The endpoint-scale harness executes the real `WebAssessmentRuntime` with a
+validated `web-review` profile. Every HTTP dispatch goes through the runtime's
+broker and checked budget authority. The fixture is created by the harness on
+`127.0.0.1`; there is no target argument and no public network target can be
+supplied.
+The fixture applies a fixed one-millisecond response delay so the runtime's
+millisecond broker receipts retain useful latency resolution; that delay is
+recorded in the machine report and cannot be configured by the caller.
+The executable also rejects non-empty standard HTTP/HTTPS/ALL proxy variables
+before binding a fixture. The canonical wrapper clears those variables only
+after Cargo has built the binary and pins both `NO_PROXY` spellings to loopback.
+
+The fixed workloads are:
+
+| Workload | Retained/executed endpoints | Requests | Authority model |
+| --- | ---: | ---: | --- |
+| `endpoints-100` | 100 | 102 | One shared origin-assessment authority |
+| `endpoints-1000` | 1,000 | 1,002 | One shared origin-assessment authority |
+| `requests-10000` | 9,980 | 10,000 | Ten independent 998-subject assessments, 1,000 requests each |
+
+The two requests beyond each authority's endpoint count are the matched CORS
+control/candidate observations enabled by `web-review`. Both are transport
+receipts and action outcomes; only the candidate consumes the authority's one
+active-verification slot. The 10,000-request workload is deliberately not
+described as one global authority: it is a batch of ten independent
+assessments, each with its own broker, cancellation, deadline, and request
+budget.
+
+For every authority, the harness fails unless execution is complete, every
+subject was executed, request and active-verification usage match the expected
+counts, no transport receipt was omitted, receipt sequence is contiguous,
+every dispatch completed, and receipt bytes reconcile with runtime usage.
+Latency percentiles come from the broker's monotonic dispatch receipts.
+
+Use the canonical Linux wrapper so process CPU and peak RSS are collected from
+GNU `time` after the benchmark executable has already been built. The wrapper
+requires a clean worktree so its recorded commit SHA cannot label uncommitted
+source:
+
+```bash
+bash scripts/run-endpoint-performance.sh \
+  --workload all \
+  --warmups 1 \
+  --samples 3 \
+  --output-dir target/endpoint-performance
+```
+
+Warmups are hard-bounded to 1–3 and measured samples to 3–10. The command
+writes each validated JSON and Markdown file atomically under the selected
+output directory; a failure returns nonzero and is never reported as a
+successful evidence pair. The JSON schema is
+`venom.endpoint-performance/v1`; it records wall time, requests/second,
+p50/p95/p99 dispatch latency, response bytes, endpoint and request counts,
+authority partitioning, profile, commit, Rust version, OS, CPU, memory, build
+profile, process CPU, peak RSS, and sample variance. Unknown fields, incomplete
+accounting, mismatched summaries, and partially observed environment data fail
+closed.
+
+The `Endpoint Performance Evidence` workflow runs small harness and renderer
+contract tests when their paths change. Once the workflow is on the default
+branch, a manual dispatch can select a fixed workload and sample count. Before
+that, an authorized maintainer may explicitly apply the
+`endpoint-performance-evidence` label to a same-repository pull request; that
+event runs only the fixed `all`, one-warmup, three-sample measurement. Fork pull
+requests cannot activate it. Artifacts are measurements, not performance
+claims.
+
 ## Release baseline
 
-Endpoint-scale numbers have not yet been published. Do not substitute these microbenchmarks, synthetic values, or estimates for capacity measurements. A future end-to-end release baseline must record:
+Endpoint-scale infrastructure now exists, but a repeatable accepted baseline
+has not yet been published. Do not substitute microbenchmarks, one-off workflow
+artifacts, synthetic values, or estimates for a release capacity claim. The
+machine schema keeps `thresholds` exactly `null` and emits no speed pass/fail
+field. Multiple comparable manual runs must establish variance on a pinned
+hardware class before a later reviewed change can propose regression
+thresholds.
 
-| Scenario | Requests | Concurrency | CPU | Peak RAM | Wall time | p50 | p95 |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| 100 endpoints | TBD | TBD | TBD | TBD | TBD | TBD | TBD |
-| 1,000 endpoints | TBD | TBD | TBD | TBD | TBD | TBD | TBD |
-| 10,000 requests | TBD | TBD | TBD | TBD | TBD | TBD | TBD |
-
-Every published result must include commit SHA, Rust version, OS, CPU, memory, target fixture, feature flags, scan profile, and warm-up method. Compare releases only on the same controlled target and hardware class.
+Every published result must preserve commit SHA, Rust version, OS, CPU, memory,
+fixture identity, build profile, scan profile, and warm-up/sample method.
+Compare releases only on the same controlled fixture and hardware class.
 
 ## Graphs
 
-Criterion generates per-benchmark plots. Endpoint-scale graphs should show throughput and p95 latency against concurrency, plus peak memory against request count. Commit raw machine-readable output with any published chart.
+Criterion generates per-benchmark plots. Endpoint-scale evidence currently has
+fixed runtime concurrency of one; it must not be relabeled as a concurrency
+scaling result. Any future chart must retain the raw validated JSON beside the
+human-readable projection.
