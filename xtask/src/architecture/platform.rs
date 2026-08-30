@@ -908,26 +908,29 @@ pub(super) fn check(workspace_root: &Path) -> Result<Vec<String>, Box<dyn Error>
         &source,
     )?);
     violations.extend(forbidden_surface_source_violations(workspace_root)?);
-    let distributed_source =
-        fs::read_to_string(workspace_root.join("crates/venom-scanner/src/distributed.rs"))?;
-    violations.extend(distributed_public_api_violations(&distributed_source)?);
+    let scanner_source = workspace_root.join("crates/venom-scanner/src");
+    let distributed_source_storage =
+        read_ordered_sources(&scanner_source, DISTRIBUTED_PRODUCTION_SOURCE_PATHS)?;
+    let distributed_sources = borrowed_sources(&distributed_source_storage);
+    violations.extend(distributed_public_api_violations(&distributed_sources)?);
     violations.extend(distributed_source_authority_violations(
-        &distributed_source,
+        &distributed_sources,
     )?);
     violations.extend(distributed_production_inventory_violations(
-        &distributed_source,
+        &distributed_sources,
     ));
-    let lua_engine_source =
-        fs::read_to_string(workspace_root.join("crates/venom-scanner/src/lua_engine.rs"))?;
+    let lua_engine_source_storage =
+        read_ordered_sources(&scanner_source, LUA_ENGINE_PRODUCTION_SOURCE_PATHS)?;
+    let lua_engine_sources = borrowed_sources(&lua_engine_source_storage);
     let lua_config_source =
         fs::read_to_string(workspace_root.join("crates/venom-scanner/src/lua_config.rs"))?;
     violations.extend(lua_public_api_violations(
-        &lua_engine_source,
+        &lua_engine_sources,
         &lua_config_source,
     )?);
-    violations.extend(lua_source_authority_violations(&lua_engine_source)?);
+    violations.extend(lua_source_authority_violations(&lua_engine_sources)?);
     violations.extend(lua_production_inventory_violations(
-        &lua_engine_source,
+        &lua_engine_sources,
         &lua_config_source,
     ));
     let reporting_source =
@@ -4521,6 +4524,91 @@ fn surface_contract_violations(
     Ok(violations)
 }
 
+type NamedSource<'a> = (&'a str, &'a str);
+
+/// Stable source order follows the facade's private module declarations. Paths
+/// are part of the production fingerprint so moving, omitting, or substituting
+/// one child cannot preserve the audited inventory accidentally.
+const DISTRIBUTED_PRODUCTION_SOURCE_PATHS: &[&str] = &[
+    "distributed.rs",
+    "distributed/coordinator.rs",
+    "distributed/lease.rs",
+    "distributed/limits.rs",
+    "distributed/model.rs",
+    "distributed/queue.rs",
+    "distributed/recovery.rs",
+    "distributed/results.rs",
+    "distributed/worker.rs",
+];
+
+const DISTRIBUTED_ROOT_MODULES: &[&str] = &[
+    "coordinator",
+    "lease",
+    "limits",
+    "model",
+    "queue",
+    "recovery",
+    "results",
+    "worker",
+];
+
+const LUA_ENGINE_PRODUCTION_SOURCE_PATHS: &[&str] = &[
+    "lua_engine.rs",
+    "lua_engine/execution.rs",
+    "lua_engine/history.rs",
+    "lua_engine/limits.rs",
+    "lua_engine/registry.rs",
+    "lua_engine/source.rs",
+    "lua_engine/vm.rs",
+];
+
+const LUA_ENGINE_ROOT_MODULES: &[&str] =
+    &["execution", "history", "limits", "registry", "source", "vm"];
+const LUA_CONFIG_PRODUCTION_SOURCE_PATHS: &[&str] = &["lua_config.rs"];
+
+fn read_ordered_sources(
+    source_root: &Path,
+    paths: &'static [&'static str],
+) -> io::Result<Vec<(&'static str, String)>> {
+    paths
+        .iter()
+        .map(|path| fs::read_to_string(source_root.join(path)).map(|source| (*path, source)))
+        .collect()
+}
+
+fn borrowed_sources<'a>(sources: &'a [(&'static str, String)]) -> Vec<NamedSource<'a>> {
+    sources
+        .iter()
+        .map(|(path, source)| (*path, source.as_str()))
+        .collect()
+}
+
+fn source_path_inventory_violations(
+    surface: &str,
+    sources: &[NamedSource<'_>],
+    expected_paths: &[&str],
+) -> Vec<String> {
+    let actual_paths: Vec<_> = sources.iter().map(|(path, _)| *path).collect();
+    if actual_paths == expected_paths {
+        Vec::new()
+    } else {
+        vec![format!(
+            "{surface} production source inventory must remain exactly {expected_paths:?}, found {actual_paths:?}"
+        )]
+    }
+}
+
+fn combined_public_api_shape(sources: &[NamedSource<'_>]) -> Result<PublicApiShape, syn::Error> {
+    let mut combined = PublicApiShape::default();
+    for (_, source) in sources {
+        let shape = public_api_shape(source)?;
+        combined.symbols.extend(shape.symbols);
+        combined.methods.extend(shape.methods);
+        combined.fields.extend(shape.fields);
+    }
+    Ok(combined)
+}
+
 const EXACT_DISTRIBUTED_CONSTANTS: &[(&str, &str, u128)] = &[
     ("MAX_IDENTIFIER_BYTES", "usize", 256),
     ("MAX_TARGET_REF_BYTES", "usize", 1_024),
@@ -4541,17 +4629,26 @@ const EXACT_DISTRIBUTED_CONSTANTS: &[(&str, &str, u128)] = &[
     ("MAX_AGGREGATE_ITEMS", "usize", 65_536),
 ];
 
-const EXACT_DISTRIBUTED_PRODUCTION_TOKEN_BYTES: usize = 85_363;
-const EXACT_DISTRIBUTED_PRODUCTION_FINGERPRINT: u128 = 0x98e6_408a_8bae_3a86_bf1c_19c9_93d5_3d29;
+const EXACT_DISTRIBUTED_PRODUCTION_TOKEN_BYTES: usize = 90_965;
+const EXACT_DISTRIBUTED_PRODUCTION_FINGERPRINT: u128 = 0x046d_53bc_ba30_b314_5ebe_a16a_3828_0e3f;
 
-fn distributed_public_api_violations(source: &str) -> Result<Vec<String>, syn::Error> {
-    let syntax = syn::parse_file(source)?;
-    let shape = public_api_shape(source)?;
+fn distributed_public_api_violations(
+    sources: &[NamedSource<'_>],
+) -> Result<Vec<String>, syn::Error> {
+    let syntaxes: Vec<_> = sources
+        .iter()
+        .map(|(path, source)| syn::parse_file(source).map(|syntax| (*path, syntax)))
+        .collect::<Result<_, _>>()?;
+    let shape = combined_public_api_shape(sources)?;
     let expected_symbols: BTreeSet<_> = EXACT_DISTRIBUTED_REEXPORTS
         .iter()
         .map(|name| (*name).to_owned())
         .collect();
-    let mut violations = Vec::new();
+    let mut violations = source_path_inventory_violations(
+        "distributed",
+        sources,
+        DISTRIBUTED_PRODUCTION_SOURCE_PATHS,
+    );
     if shape.symbols != expected_symbols {
         violations.push(format!(
             "distributed public symbols must remain exactly {expected_symbols:?}, found {:?}",
@@ -4564,7 +4661,7 @@ fn distributed_public_api_violations(source: &str) -> Result<Vec<String>, syn::E
         .map(|(name, ty, value)| (*name, (*ty, *value)))
         .collect();
     let mut actual_constants = BTreeMap::new();
-    for item in &syntax.items {
+    for item in syntaxes.iter().flat_map(|(_, syntax)| &syntax.items) {
         let Item::Const(item) = item else {
             continue;
         };
@@ -4597,9 +4694,9 @@ fn distributed_public_api_violations(source: &str) -> Result<Vec<String>, syn::E
 
     let required_private_snapshots = ["AggregatedResult", "ScanTask", "WorkerNode"];
     for name in required_private_snapshots {
-        let matching: Vec<_> = syntax
-            .items
+        let matching: Vec<_> = syntaxes
             .iter()
+            .flat_map(|(_, syntax)| &syntax.items)
             .filter_map(|item| match item {
                 Item::Struct(item) if item.ident == name => Some(item),
                 _ => None,
@@ -4608,33 +4705,27 @@ fn distributed_public_api_violations(source: &str) -> Result<Vec<String>, syn::E
         match matching.as_slice() {
             [item]
                 if is_public(&item.vis)
-                    && item
-                        .fields
-                        .iter()
-                        .all(|field| matches!(field.vis, Visibility::Inherited)) => {},
+                    && item.fields.iter().all(|field| !is_public(&field.vis)) => {},
             _ => violations.push(format!(
-                "distributed snapshot `{name}` must exist exactly once with all fields private"
+                "distributed snapshot `{name}` must exist exactly once with all fields non-public"
             )),
         }
     }
-    let worker_pool = syntax.items.iter().find_map(|item| match item {
-        Item::Struct(item) if item.ident == "WorkerPool" => Some(item),
-        _ => None,
-    });
-    if worker_pool.is_none_or(|item| {
-        item.fields.iter().any(|field| {
-            field
-                .ident
-                .as_ref()
-                .is_some_and(|ident| ident == "task_queue")
-                && !matches!(field.vis, Visibility::Inherited)
-        }) || !item.fields.iter().any(|field| {
-            field
-                .ident
-                .as_ref()
-                .is_some_and(|ident| ident == "task_queue")
+    let worker_pools: Vec<_> = syntaxes
+        .iter()
+        .flat_map(|(_, syntax)| &syntax.items)
+        .filter_map(|item| match item {
+            Item::Struct(item) if item.ident == "WorkerPool" => Some(item),
+            _ => None,
         })
-    }) {
+        .collect();
+    let exact_private_task_queue = matches!(worker_pools.as_slice(), [item] if {
+        item.fields.iter().any(|field| {
+            field.ident.as_ref().is_some_and(|ident| ident == "task_queue")
+                && matches!(field.vis, Visibility::Inherited)
+        })
+    });
+    if !exact_private_task_queue {
         violations.push(
             "distributed `WorkerPool::task_queue` field must exist exactly as a private field"
                 .to_owned(),
@@ -4674,6 +4765,7 @@ fn evaluate_integer_expression(expression: &syn::Expr) -> Option<u128> {
 struct DistributedSourceVisitor {
     violations: BTreeSet<String>,
     inside_test_module: usize,
+    allowed_modules: BTreeSet<String>,
 }
 
 impl DistributedSourceVisitor {
@@ -4725,7 +4817,13 @@ impl<'ast> Visit<'ast> for DistributedSourceVisitor {
             self.inside_test_module -= 1;
             return;
         }
-        if self.inside_test_module == 0 {
+        let module_name = semantic_ident_name(&item.ident);
+        let exact_allowed_child = self.inside_test_module == 0
+            && item.content.is_none()
+            && item.attrs.is_empty()
+            && matches!(item.vis, Visibility::Inherited)
+            && self.allowed_modules.contains(&module_name);
+        if self.inside_test_module == 0 && !exact_allowed_child {
             self.violations.insert(format!(
                 "distributed production module `{}` is forbidden",
                 item.ident
@@ -4832,19 +4930,36 @@ fn inspect_distributed_macro_tokens(tokens: TokenStream, violations: &mut BTreeS
     }
 }
 
-fn distributed_source_authority_violations(source: &str) -> Result<Vec<String>, syn::Error> {
-    let syntax = syn::parse_file(source)?;
+fn distributed_source_authority_violations(
+    sources: &[NamedSource<'_>],
+) -> Result<Vec<String>, syn::Error> {
     let mut visitor = DistributedSourceVisitor::default();
-    visitor.visit_file(&syntax);
+    visitor.violations.extend(source_path_inventory_violations(
+        "distributed",
+        sources,
+        DISTRIBUTED_PRODUCTION_SOURCE_PATHS,
+    ));
+    for (path, source) in sources {
+        let syntax = syn::parse_file(source)?;
+        visitor.allowed_modules = if *path == "distributed.rs" {
+            DISTRIBUTED_ROOT_MODULES
+                .iter()
+                .map(|module| (*module).to_owned())
+                .collect()
+        } else {
+            BTreeSet::new()
+        };
+        visitor.visit_file(&syntax);
+    }
     Ok(visitor.violations.into_iter().collect())
 }
 
 fn exact_inline_tests_production<'a>(
-    surface: &str,
+    source_label: &str,
     source: &'a str,
 ) -> Result<&'a str, Vec<String>> {
     let syntax = syn::parse_file(source)
-        .map_err(|_| vec![format!("{surface}.rs must remain valid Rust source")])?;
+        .map_err(|_| vec![format!("{source_label} must remain valid Rust source")])?;
     let exact_test_modules = syntax
         .items
         .iter()
@@ -4870,21 +4985,20 @@ fn exact_inline_tests_production<'a>(
         )
     {
         return Err(vec![format!(
-            "{surface}.rs must end with exactly one exact cfg(test) inline tests module"
+            "{source_label} must end with exactly one exact cfg(test) inline tests module"
         )]);
     }
     source
-        .split_once("#[cfg(test)]")
+        .rsplit_once("#[cfg(test)]")
         .map(|(production, _)| production)
         .ok_or_else(|| {
             vec![format!(
-                "{surface}.rs must end production code with the exact cfg(test) module boundary"
+                "{source_label} must end production code with the exact cfg(test) module boundary"
             )]
         })
 }
 
-fn normalized_token_fingerprint(source: &str) -> Option<(usize, u128)> {
-    let normalized = source.parse::<TokenStream>().ok()?.to_string();
+fn normalized_text_fingerprint(normalized: &str) -> (usize, u128) {
     let fingerprint = normalized.bytes().fold(
         0x6c62_272e_07bb_0142_62b8_2175_6295_c58d_u128,
         |fingerprint, byte| {
@@ -4892,16 +5006,58 @@ fn normalized_token_fingerprint(source: &str) -> Option<(usize, u128)> {
                 .wrapping_mul(0x0000_0000_0100_0000_0000_0000_0000_013B_u128)
         },
     );
-    Some((normalized.len(), fingerprint))
+    (normalized.len(), fingerprint)
 }
 
-fn distributed_production_inventory_violations(source: &str) -> Vec<String> {
-    let production = match exact_inline_tests_production("distributed", source) {
-        Ok(production) => production,
+fn normalized_production_source_set_fingerprint(
+    surface: &str,
+    sources: &[NamedSource<'_>],
+    expected_paths: &[&str],
+    inline_test_roots: &[&str],
+) -> Result<(usize, u128), Vec<String>> {
+    let inventory_violations = source_path_inventory_violations(surface, sources, expected_paths);
+    if !inventory_violations.is_empty() {
+        return Err(inventory_violations);
+    }
+
+    let mut framed = String::new();
+    for (path, source) in sources {
+        let production = if inline_test_roots.contains(path) {
+            exact_inline_tests_production(path, source)?
+        } else {
+            syn::parse_file(source)
+                .map_err(|_| vec![format!("{path} must remain valid Rust source")])?;
+            source
+        };
+        let normalized = production
+            .parse::<TokenStream>()
+            .map_err(|_| {
+                vec![format!(
+                    "{path} production source must remain valid Rust tokens"
+                )]
+            })?
+            .to_string();
+        framed.push_str(&path.len().to_string());
+        framed.push(':');
+        framed.push_str(path);
+        framed.push(':');
+        framed.push_str(&normalized.len().to_string());
+        framed.push(':');
+        framed.push_str(&normalized);
+        framed.push(';');
+    }
+    Ok(normalized_text_fingerprint(&framed))
+}
+
+fn distributed_production_inventory_violations(sources: &[NamedSource<'_>]) -> Vec<String> {
+    let (bytes, fingerprint) = match normalized_production_source_set_fingerprint(
+        "distributed",
+        sources,
+        DISTRIBUTED_PRODUCTION_SOURCE_PATHS,
+        &["distributed.rs"],
+    ) {
+        Ok(inventory) => inventory,
         Err(violations) => return violations,
-    };
-    let Some((bytes, fingerprint)) = normalized_token_fingerprint(production) else {
-        return vec!["distributed.rs production source must remain valid Rust tokens".to_owned()];
     };
     if bytes == EXACT_DISTRIBUTED_PRODUCTION_TOKEN_BYTES
         && fingerprint == EXACT_DISTRIBUTED_PRODUCTION_FINGERPRINT
@@ -4909,7 +5065,7 @@ fn distributed_production_inventory_violations(source: &str) -> Vec<String> {
         Vec::new()
     } else {
         vec![format!(
-            "distributed.rs exact public signatures and production AST/body inventory changed; expected normalized bytes/fingerprint {EXACT_DISTRIBUTED_PRODUCTION_TOKEN_BYTES}/{EXACT_DISTRIBUTED_PRODUCTION_FINGERPRINT:032x}, found {bytes}/{fingerprint:032x}"
+            "distributed root+children exact public signatures and production AST/body inventory changed; expected normalized framed bytes/fingerprint {EXACT_DISTRIBUTED_PRODUCTION_TOKEN_BYTES}/{EXACT_DISTRIBUTED_PRODUCTION_FINGERPRINT:032x}, found {bytes}/{fingerprint:032x}"
         )]
     }
 }
@@ -4962,23 +5118,30 @@ const EXACT_LUA_CONFIG_FIELDS: &[&str] = &[
     "max_total_source_bytes",
 ];
 
-const EXACT_LUA_ENGINE_PRODUCTION_TOKEN_BYTES: usize = 55_087;
-const EXACT_LUA_ENGINE_PRODUCTION_FINGERPRINT: u128 = 0x7c70_6610_3bfb_7748_258d_7cf0_d530_5eac;
-const EXACT_LUA_CONFIG_PRODUCTION_TOKEN_BYTES: usize = 14_681;
-const EXACT_LUA_CONFIG_PRODUCTION_FINGERPRINT: u128 = 0x480e_8126_26da_0bb7_4470_56d7_d814_3eba;
+const EXACT_LUA_ENGINE_PRODUCTION_TOKEN_BYTES: usize = 58_034;
+const EXACT_LUA_ENGINE_PRODUCTION_FINGERPRINT: u128 = 0xa453_5e4b_8b89_3968_0cc1_d6dc_b10b_53b7;
+const EXACT_LUA_CONFIG_PRODUCTION_TOKEN_BYTES: usize = 14_705;
+const EXACT_LUA_CONFIG_PRODUCTION_FINGERPRINT: u128 = 0xfd78_2485_5656_70da_0d9e_2954_d06b_3fcb;
 
 fn lua_public_api_violations(
-    engine_source: &str,
+    engine_sources: &[NamedSource<'_>],
     config_source: &str,
 ) -> Result<Vec<String>, syn::Error> {
-    let engine_syntax = syn::parse_file(engine_source)?;
+    let engine_syntaxes: Vec<_> = engine_sources
+        .iter()
+        .map(|(path, source)| syn::parse_file(source).map(|syntax| (*path, syntax)))
+        .collect::<Result<_, _>>()?;
     let config_syntax = syn::parse_file(config_source)?;
-    let engine_shape = public_api_shape(engine_source)?;
+    let engine_shape = combined_public_api_shape(engine_sources)?;
     let expected_engine: BTreeSet<_> = EXACT_LUA_REEXPORTS
         .iter()
         .map(|name| (*name).to_owned())
         .collect();
-    let mut violations = Vec::new();
+    let mut violations = source_path_inventory_violations(
+        "Lua engine",
+        engine_sources,
+        LUA_ENGINE_PRODUCTION_SOURCE_PATHS,
+    );
     if engine_shape.symbols != expected_engine {
         violations.push(format!(
             "Lua engine public symbols must remain exactly {expected_engine:?}, found {:?}",
@@ -4995,9 +5158,9 @@ fn lua_public_api_violations(
         "LuaScriptManifest",
         "LuaScriptRegistry",
     ] {
-        let matching: Vec<_> = engine_syntax
-            .items
+        let matching: Vec<_> = engine_syntaxes
             .iter()
+            .flat_map(|(_, syntax)| &syntax.items)
             .filter_map(|item| match item {
                 Item::Struct(item) if item.ident == name => Some(item),
                 _ => None,
@@ -5006,12 +5169,9 @@ fn lua_public_api_violations(
         match matching.as_slice() {
             [item]
                 if is_public(&item.vis)
-                    && item
-                        .fields
-                        .iter()
-                        .all(|field| matches!(field.vis, Visibility::Inherited)) => {},
+                    && item.fields.iter().all(|field| !is_public(&field.vis)) => {},
             _ => violations.push(format!(
-                "Lua public host type `{name}` must exist exactly once with all fields private"
+                "Lua public host type `{name}` must exist exactly once with all fields non-public"
             )),
         }
     }
@@ -5113,6 +5273,7 @@ struct LuaSourceVisitor {
     violations: BTreeSet<String>,
     inside_test_module: usize,
     current_function: Vec<String>,
+    allowed_modules: BTreeSet<String>,
     new_with_calls: usize,
     memory_limit_calls: usize,
     hook_calls: usize,
@@ -5172,7 +5333,13 @@ impl<'ast> Visit<'ast> for LuaSourceVisitor {
             self.inside_test_module -= 1;
             return;
         }
-        if self.inside_test_module == 0 {
+        let module_name = semantic_ident_name(&item.ident);
+        let exact_allowed_child = self.inside_test_module == 0
+            && item.content.is_none()
+            && item.attrs.is_empty()
+            && matches!(item.vis, Visibility::Inherited)
+            && self.allowed_modules.contains(&module_name);
+        if self.inside_test_module == 0 && !exact_allowed_child {
             self.violations.insert(format!(
                 "Lua production module `{}` is forbidden",
                 item.ident
@@ -5414,10 +5581,25 @@ impl<'ast> Visit<'ast> for LuaSourceVisitor {
     }
 }
 
-fn lua_source_authority_violations(source: &str) -> Result<Vec<String>, syn::Error> {
-    let syntax = syn::parse_file(source)?;
+fn lua_source_authority_violations(sources: &[NamedSource<'_>]) -> Result<Vec<String>, syn::Error> {
     let mut visitor = LuaSourceVisitor::default();
-    visitor.visit_file(&syntax);
+    visitor.violations.extend(source_path_inventory_violations(
+        "Lua engine",
+        sources,
+        LUA_ENGINE_PRODUCTION_SOURCE_PATHS,
+    ));
+    for (path, source) in sources {
+        let syntax = syn::parse_file(source)?;
+        visitor.allowed_modules = if *path == "lua_engine.rs" {
+            LUA_ENGINE_ROOT_MODULES
+                .iter()
+                .map(|module| (*module).to_owned())
+                .collect()
+        } else {
+            BTreeSet::new()
+        };
+        visitor.visit_file(&syntax);
+    }
     for (label, actual, expected) in [
         ("Lua::new_with", visitor.new_with_calls, 1),
         ("set_memory_limit", visitor.memory_limit_calls, 1),
@@ -5438,38 +5620,52 @@ fn lua_source_authority_violations(source: &str) -> Result<Vec<String>, syn::Err
     Ok(visitor.violations.into_iter().collect())
 }
 
-fn lua_production_inventory_violations(engine_source: &str, config_source: &str) -> Vec<String> {
+fn lua_production_inventory_violations(
+    engine_sources: &[NamedSource<'_>],
+    config_source: &str,
+) -> Vec<String> {
     let mut violations = Vec::new();
-    for (surface, source, expected_bytes, expected_fingerprint) in [
+    let config_sources = [("lua_config.rs", config_source)];
+    for (
+        surface,
+        sources,
+        expected_paths,
+        inline_test_roots,
+        expected_bytes,
+        expected_fingerprint,
+    ) in [
         (
-            "lua_engine",
-            engine_source,
+            "Lua engine",
+            engine_sources,
+            LUA_ENGINE_PRODUCTION_SOURCE_PATHS,
+            &["lua_engine.rs"][..],
             EXACT_LUA_ENGINE_PRODUCTION_TOKEN_BYTES,
             EXACT_LUA_ENGINE_PRODUCTION_FINGERPRINT,
         ),
         (
-            "lua_config",
-            config_source,
+            "Lua config",
+            &config_sources,
+            LUA_CONFIG_PRODUCTION_SOURCE_PATHS,
+            &["lua_config.rs"][..],
             EXACT_LUA_CONFIG_PRODUCTION_TOKEN_BYTES,
             EXACT_LUA_CONFIG_PRODUCTION_FINGERPRINT,
         ),
     ] {
-        let production = match exact_inline_tests_production(surface, source) {
-            Ok(production) => production,
+        let (bytes, fingerprint) = match normalized_production_source_set_fingerprint(
+            surface,
+            sources,
+            expected_paths,
+            inline_test_roots,
+        ) {
+            Ok(inventory) => inventory,
             Err(mut errors) => {
                 violations.append(&mut errors);
                 continue;
             },
         };
-        let Some((bytes, fingerprint)) = normalized_token_fingerprint(production) else {
-            violations.push(format!(
-                "{surface}.rs production source must remain valid Rust tokens"
-            ));
-            continue;
-        };
         if bytes != expected_bytes || fingerprint != expected_fingerprint {
             violations.push(format!(
-                "{surface}.rs exact public signatures and production AST/body inventory changed; expected normalized bytes/fingerprint {expected_bytes}/{expected_fingerprint:032x}, found {bytes}/{fingerprint:032x}"
+                "{surface} root+children exact public signatures and production AST/body inventory changed; expected normalized framed bytes/fingerprint {expected_bytes}/{expected_fingerprint:032x}, found {bytes}/{fingerprint:032x}"
             ));
         }
     }
@@ -6565,6 +6761,108 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
 
+    fn distributed_sources() -> Vec<NamedSource<'static>> {
+        vec![
+            (
+                "distributed.rs",
+                include_str!("../../../crates/venom-scanner/src/distributed.rs"),
+            ),
+            (
+                "distributed/coordinator.rs",
+                include_str!("../../../crates/venom-scanner/src/distributed/coordinator.rs"),
+            ),
+            (
+                "distributed/lease.rs",
+                include_str!("../../../crates/venom-scanner/src/distributed/lease.rs"),
+            ),
+            (
+                "distributed/limits.rs",
+                include_str!("../../../crates/venom-scanner/src/distributed/limits.rs"),
+            ),
+            (
+                "distributed/model.rs",
+                include_str!("../../../crates/venom-scanner/src/distributed/model.rs"),
+            ),
+            (
+                "distributed/queue.rs",
+                include_str!("../../../crates/venom-scanner/src/distributed/queue.rs"),
+            ),
+            (
+                "distributed/recovery.rs",
+                include_str!("../../../crates/venom-scanner/src/distributed/recovery.rs"),
+            ),
+            (
+                "distributed/results.rs",
+                include_str!("../../../crates/venom-scanner/src/distributed/results.rs"),
+            ),
+            (
+                "distributed/worker.rs",
+                include_str!("../../../crates/venom-scanner/src/distributed/worker.rs"),
+            ),
+        ]
+    }
+
+    fn lua_engine_sources() -> Vec<NamedSource<'static>> {
+        vec![
+            (
+                "lua_engine.rs",
+                include_str!("../../../crates/venom-scanner/src/lua_engine.rs"),
+            ),
+            (
+                "lua_engine/execution.rs",
+                include_str!("../../../crates/venom-scanner/src/lua_engine/execution.rs"),
+            ),
+            (
+                "lua_engine/history.rs",
+                include_str!("../../../crates/venom-scanner/src/lua_engine/history.rs"),
+            ),
+            (
+                "lua_engine/limits.rs",
+                include_str!("../../../crates/venom-scanner/src/lua_engine/limits.rs"),
+            ),
+            (
+                "lua_engine/registry.rs",
+                include_str!("../../../crates/venom-scanner/src/lua_engine/registry.rs"),
+            ),
+            (
+                "lua_engine/source.rs",
+                include_str!("../../../crates/venom-scanner/src/lua_engine/source.rs"),
+            ),
+            (
+                "lua_engine/vm.rs",
+                include_str!("../../../crates/venom-scanner/src/lua_engine/vm.rs"),
+            ),
+        ]
+    }
+
+    fn source<'a>(sources: &[NamedSource<'a>], path: &str) -> &'a str {
+        sources
+            .iter()
+            .find_map(|(candidate, source)| (*candidate == path).then_some(*source))
+            .unwrap_or_else(|| panic!("missing test source {path}"))
+    }
+
+    fn replacing_source<'a>(
+        sources: &[NamedSource<'static>],
+        path: &str,
+        replacement: &'a str,
+    ) -> Vec<NamedSource<'a>> {
+        assert!(sources.iter().any(|(candidate, _)| *candidate == path));
+        sources
+            .iter()
+            .map(|(candidate, source)| {
+                (
+                    *candidate,
+                    if *candidate == path {
+                        replacement
+                    } else {
+                        *source
+                    },
+                )
+            })
+            .collect()
+    }
+
     fn valid_feature_map() -> BTreeMap<String, Vec<String>> {
         let mut features = BTreeMap::new();
         features.insert(
@@ -6778,14 +7076,15 @@ mod tests {
 
     #[test]
     fn distributed_source_is_ordered_integer_only_and_ambient_authority_free() {
-        let source = include_str!("../../../crates/venom-scanner/src/distributed.rs");
-        assert!(distributed_source_authority_violations(source)
+        let sources = distributed_sources();
+        assert!(distributed_source_authority_violations(&sources)
             .unwrap()
             .is_empty());
-        assert!(distributed_public_api_violations(source)
+        assert!(distributed_public_api_violations(&sources)
             .unwrap()
             .is_empty());
 
+        let root = source(&sources, "distributed.rs");
         for mutation in [
             "use dashmap::DashMap;",
             "use std::collections::HashMap;",
@@ -6805,30 +7104,56 @@ mod tests {
             "unsafe fn escaped_unsafe() {}",
             "const ESCAPED_INCLUDE: &str = include_str!(\"escaped\");",
         ] {
-            let mutated = source.replacen("#[cfg(test)]", &format!("{mutation}\n#[cfg(test)]"), 1);
-            let violations = distributed_source_authority_violations(&mutated).unwrap();
+            let mutated = root.replacen("#[cfg(test)]", &format!("{mutation}\n#[cfg(test)]"), 1);
+            let mutated_sources = replacing_source(&sources, "distributed.rs", &mutated);
+            let violations = distributed_source_authority_violations(&mutated_sources).unwrap();
             assert!(
                 !violations.is_empty(),
                 "distributed authority mutation escaped: {mutation}"
             );
         }
 
-        let public_snapshot = source.replacen(
-            "pub struct WorkerNode {\n    worker_id:",
+        let coordinator = source(&sources, "distributed/coordinator.rs");
+        let escaped_child = format!(
+            "{coordinator}\nuse std::process::Command;\nunsafe fn escaped_child_authority() {{}}\n"
+        );
+        let escaped_child_sources =
+            replacing_source(&sources, "distributed/coordinator.rs", &escaped_child);
+        let escaped_child_violations =
+            distributed_source_authority_violations(&escaped_child_sources).unwrap();
+        for marker in ["cannot use `process`", "safe Rust"] {
+            assert!(
+                escaped_child_violations
+                    .iter()
+                    .any(|violation| violation.contains(marker)),
+                "distributed child authority marker escaped: {marker}"
+            );
+        }
+
+        let worker = source(&sources, "distributed/worker.rs");
+        let public_snapshot = worker.replacen(
+            "pub struct WorkerNode {\n    pub(super) worker_id:",
             "pub struct WorkerNode {\n    pub worker_id:",
             1,
         );
-        assert!(distributed_public_api_violations(&public_snapshot)
+        assert_ne!(public_snapshot, worker);
+        let public_snapshot_sources =
+            replacing_source(&sources, "distributed/worker.rs", &public_snapshot);
+        assert!(distributed_public_api_violations(&public_snapshot_sources)
             .unwrap()
             .iter()
-            .any(|violation| violation.contains("all fields private")));
+            .any(|violation| violation.contains("all fields non-public")));
 
-        let constant_drift = source.replacen(
+        let limits = source(&sources, "distributed/limits.rs");
+        let constant_drift = limits.replacen(
             "pub const MAX_RESULTS: usize = 65_536;",
             "pub const MAX_RESULTS: usize = 65_535;",
             1,
         );
-        assert!(distributed_public_api_violations(&constant_drift)
+        assert_ne!(constant_drift, limits);
+        let constant_drift_sources =
+            replacing_source(&sources, "distributed/limits.rs", &constant_drift);
+        assert!(distributed_public_api_violations(&constant_drift_sources)
             .unwrap()
             .iter()
             .any(|violation| violation.contains("MAX_RESULTS")));
@@ -6836,139 +7161,258 @@ mod tests {
 
     #[test]
     fn host_surface_production_signatures_and_bodies_are_exact() {
-        let distributed = include_str!("../../../crates/venom-scanner/src/distributed.rs");
-        let lua_engine = include_str!("../../../crates/venom-scanner/src/lua_engine.rs");
+        let distributed = distributed_sources();
+        let lua_engine = lua_engine_sources();
         let lua_config = include_str!("../../../crates/venom-scanner/src/lua_config.rs");
-        assert!(distributed_production_inventory_violations(distributed).is_empty());
-        assert!(lua_production_inventory_violations(lua_engine, lua_config).is_empty());
+        let distributed_violations = distributed_production_inventory_violations(&distributed);
+        assert!(
+            distributed_violations.is_empty(),
+            "{distributed_violations:?}"
+        );
+        let lua_violations = lua_production_inventory_violations(&lua_engine, lua_config);
+        assert!(lua_violations.is_empty(), "{lua_violations:?}");
 
+        let queue = source(&distributed, "distributed/queue.rs");
         let distributed_signature =
-            distributed.replacen("expected_revision: u64,", "expected_revision: u32,", 1);
-        assert!(!distributed_production_inventory_violations(&distributed_signature).is_empty());
+            queue.replacen("expected_revision: u64,", "expected_revision: u32,", 1);
+        assert_ne!(distributed_signature, queue);
+        let distributed_signature_sources =
+            replacing_source(&distributed, "distributed/queue.rs", &distributed_signature);
+        assert!(
+            !distributed_production_inventory_violations(&distributed_signature_sources).is_empty()
+        );
 
-        let receipt_variant = distributed.replacen("MismatchedResultReceipt", "StaleResult", 1);
-        assert!(!distributed_production_inventory_violations(&receipt_variant).is_empty());
+        let distributed_root = source(&distributed, "distributed.rs");
+        let receipt_variant =
+            distributed_root.replacen("MismatchedResultReceipt", "StaleResult", 1);
+        assert_ne!(receipt_variant, distributed_root);
+        let receipt_variant_sources =
+            replacing_source(&distributed, "distributed.rs", &receipt_variant);
+        assert!(!distributed_production_inventory_violations(&receipt_variant_sources).is_empty());
 
-        let retry_backpressure = distributed.replacen(
-            "if state.queue.len() >= state.limits.max_queued_tasks {\n                return Err(DistributedError::QueuedTaskCapacityReached {",
-            "if false {\n                return Err(DistributedError::QueuedTaskCapacityReached {",
+        let retry_backpressure = queue.replacen(
+            "if state.queue.len() >= state.limits.max_queued_tasks {",
+            "if false {",
             1,
         );
-        assert!(!distributed_production_inventory_violations(&retry_backpressure).is_empty());
+        assert_ne!(retry_backpressure, queue);
+        let retry_backpressure_sources =
+            replacing_source(&distributed, "distributed/queue.rs", &retry_backpressure);
+        assert!(
+            !distributed_production_inventory_violations(&retry_backpressure_sources).is_empty()
+        );
 
+        let execution = source(&lua_engine, "lua_engine/execution.rs");
         let lua_signature =
-            lua_engine.replacen("pub async fn execute(", "pub async fn execute_changed(", 1);
-        assert!(!lua_production_inventory_violations(&lua_signature, lua_config).is_empty());
+            execution.replacen("pub async fn execute(", "pub async fn execute_changed(", 1);
+        assert_ne!(lua_signature, execution);
+        let lua_signature_sources =
+            replacing_source(&lua_engine, "lua_engine/execution.rs", &lua_signature);
+        assert!(
+            !lua_production_inventory_violations(&lua_signature_sources, lua_config).is_empty()
+        );
 
         let config_default = lua_config.replacen(
             "max_concurrent_executions: 4,",
             "max_concurrent_executions: 5,",
             1,
         );
-        assert!(!lua_production_inventory_violations(lua_engine, &config_default).is_empty());
+        assert!(!lua_production_inventory_violations(&lua_engine, &config_default).is_empty());
+    }
+
+    #[test]
+    fn host_surface_child_source_inventory_fails_closed() {
+        let mut distributed = distributed_sources();
+        distributed.remove(1);
+        assert!(distributed_public_api_violations(&distributed)
+            .unwrap()
+            .iter()
+            .any(|violation| violation.contains("production source inventory")));
+        assert!(distributed_source_authority_violations(&distributed)
+            .unwrap()
+            .iter()
+            .any(|violation| violation.contains("production source inventory")));
+        assert!(distributed_production_inventory_violations(&distributed)
+            .iter()
+            .any(|violation| violation.contains("production source inventory")));
+
+        let mut lua = lua_engine_sources();
+        lua.pop();
+        assert!(lua_public_api_violations(
+            &lua,
+            include_str!("../../../crates/venom-scanner/src/lua_config.rs")
+        )
+        .unwrap()
+        .iter()
+        .any(|violation| violation.contains("production source inventory")));
+        assert!(lua_source_authority_violations(&lua)
+            .unwrap()
+            .iter()
+            .any(|violation| violation.contains("production source inventory")));
+        assert!(lua_production_inventory_violations(
+            &lua,
+            include_str!("../../../crates/venom-scanner/src/lua_config.rs")
+        )
+        .iter()
+        .any(|violation| violation.contains("production source inventory")));
+
+        let mut reordered = distributed_sources();
+        reordered.swap(1, 2);
+        assert!(distributed_production_inventory_violations(&reordered)
+            .iter()
+            .any(|violation| violation.contains("production source inventory")));
     }
 
     #[test]
     fn lua_vm_construction_and_ambient_authority_are_exact() {
-        let source = include_str!("../../../crates/venom-scanner/src/lua_engine.rs");
+        let sources = lua_engine_sources();
         let config = include_str!("../../../crates/venom-scanner/src/lua_config.rs");
-        assert!(lua_source_authority_violations(source).unwrap().is_empty());
-        assert!(lua_public_api_violations(source, config)
+        assert!(lua_source_authority_violations(&sources)
+            .unwrap()
+            .is_empty());
+        assert!(lua_public_api_violations(&sources, config)
             .unwrap()
             .is_empty());
 
+        for (path, before, after) in [
+            ("lua_engine/vm.rs", "Lua::new_with(", "Lua::new("),
+            ("lua_engine/vm.rs", "StdLib::NONE", "StdLib::ALL"),
+            ("lua_engine/vm.rs", "ChunkMode::Text", "ChunkMode::Binary"),
+            (
+                "lua_engine/vm.rs",
+                ".set_environment(environment)",
+                ".set_environment(lua.globals())",
+            ),
+            (
+                "lua_engine/execution.rs",
+                "runtime.spawn_blocking",
+                "runtime.spawn",
+            ),
+            (
+                "lua_engine/vm.rs",
+                ".call::<_, MultiValue>(())",
+                ".call::<_, Value>(())",
+            ),
+        ] {
+            let original = source(&sources, path);
+            let mutation = original.replacen(before, after, 1);
+            assert_ne!(mutation, original, "missing Lua mutation target: {before}");
+            let mutated_sources = replacing_source(&sources, path, &mutation);
+            assert!(
+                !lua_source_authority_violations(&mutated_sources)
+                    .unwrap()
+                    .is_empty(),
+                "Lua child authority mutation escaped: {before}"
+            );
+        }
+
+        let execution = source(&sources, "lua_engine/execution.rs");
+        let escaped_child = format!(
+            "{execution}\nuse std::process::Command;\nunsafe fn escaped_child_authority() {{}}\n"
+        );
+        let escaped_child_sources =
+            replacing_source(&sources, "lua_engine/execution.rs", &escaped_child);
+        let escaped_child_violations =
+            lua_source_authority_violations(&escaped_child_sources).unwrap();
+        for marker in ["ambient capability import", "safe Rust"] {
+            assert!(
+                escaped_child_violations
+                    .iter()
+                    .any(|violation| violation.contains(marker)),
+                "Lua child authority marker escaped: {marker}"
+            );
+        }
+
+        let root = source(&sources, "lua_engine.rs");
         for mutation in [
-            source.replacen("Lua::new_with(", "Lua::new(", 1),
-            source.replacen("StdLib::NONE", "StdLib::ALL", 1),
-            source.replacen("ChunkMode::Text", "ChunkMode::Binary", 1),
-            source.replacen(".set_environment(environment)", ".set_environment(lua.globals())", 1),
-            source.replacen("runtime.spawn_blocking", "runtime.spawn", 1),
-            source.replacen(".call::<_, MultiValue>(())", ".call::<_, Value>(())", 1),
-            source.replacen(
+            root.replacen(
                 "#[cfg(test)]",
                 "use std::process::Command;\n#[cfg(test)]",
                 1,
             ),
-            source.replacen(
+            root.replacen(
                 "#[cfg(test)]",
                 "use std::net::TcpStream;\n#[cfg(test)]",
                 1,
             ),
-            source.replacen(
+            root.replacen(
                 "#[cfg(test)]",
                 "fn escaped_alias_fs() { let _ = fs::read(\"escaped\"); }\n#[cfg(test)]",
                 1,
             ),
-            source.replacen(
+            root.replacen(
                 "#[cfg(test)]",
                 "fn escaped_file(path: &Path) { let _ = File::open(path); }\n#[cfg(test)]",
                 1,
             ),
-            source.replacen(
+            root.replacen(
                 "#[cfg(test)]",
                 "static ESCAPED_LUA: usize = 0;\n#[cfg(test)]",
                 1,
             ),
-            source.replacen(
+            root.replacen(
                 "#[cfg(test)]",
                 "fn escaped_thread(lua: &Lua) { let _ = lua.create_thread(()); }\n#[cfg(test)]",
                 1,
             ),
-            source.replacen(
+            root.replacen(
                 "#[cfg(test)]",
                 "fn escaped_eval(lua: &Lua) { let _ = lua.eval::<()>(\"\"); }\n#[cfg(test)]",
                 1,
             ),
-            source.replacen(
+            root.replacen(
                 "#[cfg(test)]",
                 "fn escaped_userdata(lua: &Lua) { let _ = lua.create_userdata(()); }\n#[cfg(test)]",
                 1,
             ),
-            source.replacen(
+            root.replacen(
                 "#[cfg(test)]",
                 "fn escaped_callback(lua: &Lua) { let _ = lua.create_function_mut(|_, _: ()| Ok(())); }\n#[cfg(test)]",
                 1,
             ),
-            source.replacen(
+            root.replacen(
                 "#[cfg(test)]",
                 "unsafe fn escaped_unsafe() {}\n#[cfg(test)]",
                 1,
             ),
-            source.replacen(
+            root.replacen(
                 "#[cfg(test)]",
                 "const ESCAPED_INCLUDE: &[u8] = include_bytes!(\"escaped\");\n#[cfg(test)]",
                 1,
             ),
-            source.replacen(
+            root.replacen(
                 "#[cfg(test)]",
                 "macro_rules! escaped_macro { () => {} }\n#[cfg(test)]",
                 1,
             ),
         ] {
+            let mutated_sources = replacing_source(&sources, "lua_engine.rs", &mutation);
             assert!(
-                !lua_source_authority_violations(&mutation)
+                !lua_source_authority_violations(&mutated_sources)
                     .unwrap()
                     .is_empty(),
                 "Lua authority mutation escaped"
             );
         }
 
-        let public_manifest = source.replacen(
+        let public_manifest = root.replacen(
             "pub struct LuaScriptManifest {\n    id:",
             "pub struct LuaScriptManifest {\n    pub id:",
             1,
         );
-        assert!(lua_public_api_violations(&public_manifest, config)
+        assert_ne!(public_manifest, root);
+        let public_manifest_sources = replacing_source(&sources, "lua_engine.rs", &public_manifest);
+        assert!(lua_public_api_violations(&public_manifest_sources, config)
             .unwrap()
             .iter()
-            .any(|violation| violation.contains("all fields private")));
+            .any(|violation| violation.contains("all fields non-public")));
 
         let config_drift = config.replacen(
             "pub const HARD_MAX_MEMORY_BYTES: usize = 256 * 1_024 * 1_024;",
             "pub const HARD_MAX_MEMORY_BYTES: usize = 512 * 1_024 * 1_024;",
             1,
         );
-        assert!(lua_public_api_violations(source, &config_drift)
+        assert!(lua_public_api_violations(&sources, &config_drift)
             .unwrap()
             .iter()
             .any(|violation| violation.contains("HARD_MAX_MEMORY_BYTES")));

@@ -11,7 +11,7 @@ use std::{
     path::Path,
 };
 
-use syn::{Item, Type, Visibility};
+use syn::{visit::Visit, Item, Type, Visibility};
 
 use super::collect_use_paths;
 
@@ -32,9 +32,11 @@ struct ChildDomain {
 struct FacadeDomain {
     source: &'static str,
     children: &'static [ChildDomain],
+    resident_symbols: &'static [&'static str],
 }
 
 const NO_METHODS: &[MethodOwner] = &[];
+const NO_SYMBOLS: &[&str] = &[];
 
 const PLUGIN_CHILDREN: &[ChildDomain] = &[
     ChildDomain {
@@ -347,38 +349,202 @@ const API_OBSERVATION_CHILDREN: &[ChildDomain] = &[
     },
 ];
 
+const LUA_ENGINE_CHILDREN: &[ChildDomain] = &[
+    ChildDomain {
+        module: "source",
+        symbols: &["read_registered_source", "stable_script_id"],
+        methods: NO_METHODS,
+    },
+    ChildDomain {
+        module: "registry",
+        symbols: &[],
+        methods: &[MethodOwner {
+            receiver: "LuaScriptRegistry",
+            method: "register",
+        }],
+    },
+    ChildDomain {
+        module: "execution",
+        symbols: &[],
+        methods: &[MethodOwner {
+            receiver: "LuaScriptRegistry",
+            method: "execute",
+        }],
+    },
+    ChildDomain {
+        module: "vm",
+        symbols: &["execute_snapshot"],
+        methods: NO_METHODS,
+    },
+    ChildDomain {
+        module: "limits",
+        symbols: &["enforce_hook_controls"],
+        methods: NO_METHODS,
+    },
+    ChildDomain {
+        module: "history",
+        symbols: &["ExecutionProvenance", "elapsed_ms"],
+        methods: NO_METHODS,
+    },
+];
+
+const DISTRIBUTED_CHILDREN: &[ChildDomain] = &[
+    ChildDomain {
+        module: "model",
+        symbols: &[
+            "StateSnapshot",
+            "TaskPriority",
+            "TaskSpec",
+            "TaskStatus",
+            "Transition",
+        ],
+        methods: &[MethodOwner {
+            receiver: "TaskStatus",
+            method: "as_str",
+        }],
+    },
+    ChildDomain {
+        module: "limits",
+        symbols: &[
+            "DistributedLimits",
+            "MAX_ACTIVE_TASKS",
+            "MAX_AGGREGATE_ITEMS",
+            "MAX_HEARTBEAT_TIMEOUT_SECS",
+            "MAX_IDENTIFIER_BYTES",
+            "MAX_LEASE_TTL_SECS",
+            "MAX_RESULTS",
+            "MAX_RESULT_BYTES",
+            "MAX_RETRIES",
+            "MAX_TARGET_REF_BYTES",
+            "MAX_TASK_PHASES",
+            "MAX_TASK_RECORDS",
+            "MAX_TASK_TTL_SECS",
+            "MAX_TOTAL_RESULT_BYTES",
+            "MAX_WORKERS",
+            "MAX_WORKER_CAPACITY",
+            "MAX_WORKER_TAGS",
+            "UTILIZATION_BASIS_POINTS",
+        ],
+        methods: NO_METHODS,
+    },
+    ChildDomain {
+        module: "coordinator",
+        symbols: &["WorkerPool"],
+        methods: &[MethodOwner {
+            receiver: "WorkerPool",
+            method: "recover_expired_leases",
+        }],
+    },
+    ChildDomain {
+        module: "queue",
+        symbols: &["TaskQueue"],
+        methods: &[MethodOwner {
+            receiver: "TaskQueue",
+            method: "enqueue",
+        }],
+    },
+    ChildDomain {
+        module: "lease",
+        symbols: &[
+            "CancellationOutcome",
+            "CompletionOutcome",
+            "CompletionReceipt",
+            "FailureOutcome",
+            "QueuedTaskFence",
+            "ScanTask",
+            "StartOutcome",
+            "TaskLease",
+            "TaskOwnership",
+        ],
+        methods: &[MethodOwner {
+            receiver: "ScanTask",
+            method: "ownership",
+        }],
+    },
+    ChildDomain {
+        module: "worker",
+        symbols: &[
+            "WorkerNode",
+            "WorkerObservation",
+            "WorkerSpec",
+            "WorkerStatus",
+            "WorkerTag",
+        ],
+        methods: &[MethodOwner {
+            receiver: "WorkerNode",
+            method: "effective_capacity",
+        }],
+    },
+    ChildDomain {
+        module: "recovery",
+        symbols: &["RecoverySummary"],
+        methods: NO_METHODS,
+    },
+    ChildDomain {
+        module: "results",
+        symbols: &[
+            "AggregatedResult",
+            "ResultAggregator",
+            "ResultLimits",
+            "StoreResultOutcome",
+        ],
+        methods: &[MethodOwner {
+            receiver: "ResultAggregator",
+            method: "store_result",
+        }],
+    },
+];
+
 const FACADES: &[FacadeDomain] = &[
     FacadeDomain {
         source: "plugin.rs",
         children: PLUGIN_CHILDREN,
+        resident_symbols: NO_SYMBOLS,
     },
     FacadeDomain {
         source: "decision_loop.rs",
         children: DECISION_LOOP_CHILDREN,
+        resident_symbols: NO_SYMBOLS,
     },
     FacadeDomain {
         source: "decision_runner.rs",
         children: DECISION_RUNNER_CHILDREN,
+        resident_symbols: NO_SYMBOLS,
     },
     FacadeDomain {
         source: "http_evidence.rs",
         children: HTTP_EVIDENCE_CHILDREN,
+        resident_symbols: NO_SYMBOLS,
     },
     FacadeDomain {
         source: "knowledge.rs",
         children: KNOWLEDGE_CHILDREN,
+        resident_symbols: NO_SYMBOLS,
     },
     FacadeDomain {
         source: "rules.rs",
         children: RULES_CHILDREN,
+        resident_symbols: NO_SYMBOLS,
     },
     FacadeDomain {
         source: "planner.rs",
         children: PLANNER_CHILDREN,
+        resident_symbols: NO_SYMBOLS,
     },
     FacadeDomain {
         source: "api_observation.rs",
         children: API_OBSERVATION_CHILDREN,
+        resident_symbols: NO_SYMBOLS,
+    },
+    FacadeDomain {
+        source: "lua_engine.rs",
+        children: LUA_ENGINE_CHILDREN,
+        resident_symbols: NO_SYMBOLS,
+    },
+    FacadeDomain {
+        source: "distributed.rs",
+        children: DISTRIBUTED_CHILDREN,
+        resident_symbols: &["DistributedError"],
     },
 ];
 
@@ -438,8 +604,32 @@ fn inspect_facade(
         }
         let child_source = fs::read_to_string(child_path)?;
         let child_syntax = syn::parse_file(&child_source)?;
+        if contains_parent_glob_import(&child_syntax) {
+            violations.push(format!(
+                "{}/{}.rs must not import its parent facade with `use super::*`",
+                facade_path.with_extension("").display(),
+                child.module
+            ));
+        }
         child_symbols.insert(child.module, top_level_symbols(&child_syntax.items));
         child_methods.insert(child.module, top_level_methods(&child_syntax.items));
+    }
+
+    for symbol in facade.resident_symbols {
+        if !facade_symbols.contains(*symbol) {
+            violations.push(format!(
+                "{} authority `{symbol}` must remain defined in the facade",
+                facade.source
+            ));
+        }
+        for (child, symbols) in &child_symbols {
+            if symbols.contains(*symbol) {
+                violations.push(format!(
+                    "{} authority `{symbol}` must not move into child module {child}",
+                    facade.source
+                ));
+            }
+        }
     }
 
     for child in facade.children {
@@ -509,6 +699,31 @@ fn inspect_facade(
     }
 
     Ok(violations)
+}
+
+#[derive(Default)]
+struct ParentGlobImportVisitor {
+    found: bool,
+}
+
+impl<'ast> Visit<'ast> for ParentGlobImportVisitor {
+    fn visit_item_use(&mut self, item: &'ast syn::ItemUse) {
+        let mut paths = Vec::new();
+        collect_use_paths(&item.tree, Vec::new(), &mut paths);
+        if paths
+            .iter()
+            .any(|(segments, _, glob)| *glob && segments.as_slice() == ["super"])
+        {
+            self.found = true;
+        }
+        syn::visit::visit_item_use(self, item);
+    }
+}
+
+fn contains_parent_glob_import(source: &syn::File) -> bool {
+    let mut visitor = ParentGlobImportVisitor::default();
+    visitor.visit_file(source);
+    visitor.found
 }
 
 fn top_level_symbols(items: &[Item]) -> BTreeSet<String> {
@@ -599,6 +814,7 @@ mod tests {
     const DOMAIN: FacadeDomain = FacadeDomain {
         source: "facade.rs",
         children: CHILDREN,
+        resident_symbols: NO_SYMBOLS,
     };
 
     fn fixture(facade: &str, child: &str) -> Vec<String> {
@@ -648,5 +864,65 @@ mod tests {
         assert!(violations
             .iter()
             .any(|violation| violation.contains("must re-export")));
+    }
+
+    #[test]
+    fn rejects_parent_facade_glob_but_accepts_specific_super_imports() {
+        let violations = fixture(
+            "mod model; pub use model::OwnedModel;",
+            "use super::*; pub struct OwnedModel; impl OwnedModel { pub fn run(&self) {} }",
+        );
+        assert!(violations
+            .iter()
+            .any(|violation| violation.contains("must not import its parent facade")));
+
+        assert!(fixture(
+            "struct ParentAuthority; mod model; pub use model::OwnedModel;",
+            "use super::ParentAuthority; pub struct OwnedModel; impl OwnedModel { pub fn run(&self) { let _ = core::mem::size_of::<ParentAuthority>(); } }",
+        )
+        .is_empty());
+    }
+
+    #[test]
+    fn locks_facade_resident_authority_out_of_children() {
+        const AUTHORITY_DOMAIN: FacadeDomain = FacadeDomain {
+            source: "facade.rs",
+            children: CHILDREN,
+            resident_symbols: &["FacadeError"],
+        };
+
+        let directory = tempfile::tempdir().unwrap();
+        fs::create_dir(directory.path().join("facade")).unwrap();
+        fs::write(
+            directory.path().join("facade.rs"),
+            "pub enum FacadeError {} mod model; pub use model::OwnedModel;",
+        )
+        .unwrap();
+        fs::write(
+            directory.path().join("facade/model.rs"),
+            "pub struct OwnedModel; impl OwnedModel { pub fn run(&self) {} }",
+        )
+        .unwrap();
+        assert!(inspect_facade(directory.path(), &AUTHORITY_DOMAIN)
+            .unwrap()
+            .is_empty());
+
+        fs::write(
+            directory.path().join("facade.rs"),
+            "mod model; pub use model::{FacadeError, OwnedModel};",
+        )
+        .unwrap();
+        fs::write(
+            directory.path().join("facade/model.rs"),
+            "pub enum FacadeError {} pub struct OwnedModel; impl OwnedModel { pub fn run(&self) {} }",
+        )
+        .unwrap();
+        let violations = inspect_facade(directory.path(), &AUTHORITY_DOMAIN).unwrap();
+        assert!(violations
+            .iter()
+            .any(|violation| violation.contains("must remain defined in the facade")));
+        assert!(violations
+            .iter()
+            .any(|violation| violation.contains("must not move into child module")));
     }
 }
