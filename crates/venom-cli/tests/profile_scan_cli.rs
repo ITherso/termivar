@@ -845,7 +845,7 @@ fn web_review_is_exact_origin_bounded_parseable_and_value_redacted() {
     );
     assert!(item_projection.get("items").is_none());
     assert!(item_projection.get("projected_item_count").is_none());
-    assert!(value["incomplete_reasons"]
+    assert!(!value["incomplete_reasons"]
         .as_array()
         .unwrap()
         .iter()
