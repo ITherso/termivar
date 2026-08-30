@@ -1386,7 +1386,12 @@ fn expected_review_parent_ids(
         return Err(AssessmentReviewLedgerError::EvidenceProjection);
     }
     let mut items = vec![method, requested, status, final_url];
-    if kind == NativeWebReviewActionKind::RedirectReflectionQueryPair {
+    if matches!(
+        kind,
+        NativeWebReviewActionKind::RedirectReflectionQueryPair
+            | NativeWebReviewActionKind::SqlStructuralQueryPair
+            | NativeWebReviewActionKind::SqlStructuralQueryReplayPair
+    ) {
         let media = optional_unique_base(receipt, HttpEvidencePredicate::RESPONSE_MEDIA_TYPE)?;
         if let Some(media) = media {
             if !matches!(media.value(), EvidenceValue::Text(value) if !value.is_empty()) {

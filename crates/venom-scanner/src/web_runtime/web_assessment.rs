@@ -38,6 +38,7 @@ use super::{
         PassiveAssessmentProjectionIncompleteness, ASSESSMENT_PASSIVE_NAMESPACE,
     },
     assessment_review::{AssessmentReviewObserverSet, CommittedAssessmentReviewLedger},
+    web_review_execution::enabled_native_web_review_actions,
     NativeWebReviewSeeds, SharedWebRuntimeAuthority, StandardWebDecisionAssessmentFailureParts,
     StandardWebDecisionAssessmentParts, BOOTSTRAP_ACTION_ID, BOOTSTRAP_CASE_ID,
     BOOTSTRAP_HYPOTHESIS_ID,
@@ -1609,11 +1610,15 @@ impl WebAssessmentRuntimeBuilder {
             Some(AssessmentNativeReviewRuntime {
                 target: root.url.clone(),
                 seeds,
+                enabled_actions: enabled_native_web_review_actions(
+                    true,
+                    redirect_query_parameter.is_some(),
+                    sql_query_parameter.is_some(),
+                ),
                 redirect_query_parameter,
                 sql_query_parameter,
                 observer,
                 ledger,
-                sql_only: false,
             })
         } else {
             None
@@ -1675,7 +1680,7 @@ struct AssessmentNativeReviewRuntime {
     sql_query_parameter: Option<String>,
     observer: Arc<AssessmentReviewObserverSet>,
     ledger: CommittedAssessmentReviewLedger,
-    sql_only: bool,
+    enabled_actions: Vec<NativeWebReviewActionKind>,
 }
 
 struct FailedSubjectBoundary {
@@ -1765,30 +1770,13 @@ fn replay_native_review(
         }
     }
 
-    let cors_complete = review.sql_only
-        || review
-            .ledger
-            .pair_is_complete(NativeWebReviewActionKind::CorsPolicyPair);
-    let redirect_complete = review.sql_only
-        || review.redirect_query_parameter.as_ref().is_none_or(|_| {
-            review
-                .ledger
-                .pair_is_complete(NativeWebReviewActionKind::RedirectReflectionQueryPair)
-        });
-    let sql_complete = review.sql_query_parameter.is_none() || {
-        review
-            .ledger
-            .pair_is_complete(NativeWebReviewActionKind::SqlStructuralQueryPair)
-            && review
-                .ledger
-                .pair_is_complete(NativeWebReviewActionKind::SqlStructuralQueryReplayPair)
-    };
-    let expected_observations = usize::from(!review.sql_only) * 2
-        + usize::from(review.redirect_query_parameter.is_some()) * 2
-        + usize::from(review.sql_query_parameter.is_some()) * 4;
-    Ok(cors_complete
-        && redirect_complete
-        && sql_complete
+    let enabled_complete = review
+        .enabled_actions
+        .iter()
+        .copied()
+        .all(|kind| review.ledger.pair_is_complete(kind));
+    let expected_observations = review.enabled_actions.len() * 2;
+    Ok(enabled_complete
         && !review.ledger.has_incomplete_reflection_observation()
         && !review.ledger.has_incomplete_sql_observation()
         && review.ledger.observations().len() == expected_observations)
@@ -1900,11 +1888,11 @@ impl WebAssessmentRuntime {
                         self.non_root_sql_review = Some(AssessmentNativeReviewRuntime {
                             target: subject.url.clone(),
                             seeds,
+                            enabled_actions: enabled_native_web_review_actions(false, false, true),
                             redirect_query_parameter: None,
                             sql_query_parameter: Some(parameter),
                             observer,
                             ledger,
-                            sql_only: true,
                         });
                     }
                 }

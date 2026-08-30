@@ -28,7 +28,6 @@ use venom_core::{
 use crate::decision_runner::ContinuationAuthority;
 use crate::http_evidence::CompleteHttpResponseObserver;
 use crate::planner::ActionSuppressionContext;
-use crate::web_actions::NativeWebReviewActionKind;
 use crate::{
     AdaptationLimits, AdaptationRule, AdaptivePipelineError, BenefitScore, DecisionActionOrigin,
     DecisionEvidenceReceipt, DecisionExecutionClass, DecisionExecutionFailureReceipt,
@@ -836,22 +835,47 @@ impl StandardWebDecisionRuntimeBuilder {
         };
         let installation = profile.install(knowledge, &mut decision_loop, &mut executors)?;
 
-        let native_review_enabled = self.native_web_review.is_some();
-        if native_review_enabled {
-            let profile = NativeWebReviewDecisionProfile::new()
-                .map_err(|_| StandardWebDecisionRuntimeError::NativeWebReviewDecisionProfile)?;
+        let native_executor_profile = match self.native_web_review {
+            Some(config) => Some(
+                if config.sql_only {
+                    NativeWebReviewExecutorProfile::new_sql_only(
+                        requests.clone(),
+                        self.target.clone(),
+                        config.seeds,
+                        config.observer,
+                        config
+                            .sql_query_parameter
+                            .expect("sql-only review retains one validated query parameter"),
+                    )
+                } else {
+                    NativeWebReviewExecutorProfile::new(
+                        requests.clone(),
+                        self.target.clone(),
+                        config.seeds,
+                        config.observer,
+                        config.redirect_query_parameter,
+                        config.sql_query_parameter,
+                    )
+                }
+                .map_err(|_| StandardWebDecisionRuntimeError::NativeWebReviewExecutionProfile)?,
+            ),
+            None => None,
+        };
+        let native_review_actions = native_executor_profile
+            .as_ref()
+            .map(|profile| profile.actions().collect::<Vec<_>>())
+            .unwrap_or_default();
+        if !native_review_actions.is_empty() {
+            let profile =
+                NativeWebReviewDecisionProfile::for_actions(native_review_actions.iter().copied())
+                    .map_err(|_| StandardWebDecisionRuntimeError::NativeWebReviewDecisionProfile)?;
+            debug_assert_eq!(profile.actions().collect::<Vec<_>>(), native_review_actions);
             let report = profile
                 .install(&mut decision_loop)
                 .map_err(|_| StandardWebDecisionRuntimeError::NativeWebReviewDecisionProfile)?;
             debug_assert_eq!(report.reasoning_rules_inserted, 1);
-            debug_assert_eq!(
-                report.actions_inserted,
-                crate::web_actions::NATIVE_WEB_REVIEW_ACTION_COUNT
-            );
-            debug_assert_eq!(
-                report.active_rules_inserted,
-                crate::web_actions::NATIVE_WEB_REVIEW_ACTION_COUNT
-            );
+            debug_assert_eq!(report.actions_inserted, native_review_actions.len());
+            debug_assert_eq!(report.active_rules_inserted, native_review_actions.len());
         }
 
         // Surface-B multi-objective continuation: install continuation rules ONLY
@@ -888,38 +912,13 @@ impl StandardWebDecisionRuntimeBuilder {
         };
         executors.register(Arc::new(http_evidence))?;
 
-        let native_review_actions = match self.native_web_review {
-            Some(config) => {
-                let profile = if config.sql_only {
-                    NativeWebReviewExecutorProfile::new_sql_only(
-                        requests,
-                        self.target.clone(),
-                        config.seeds,
-                        config.observer,
-                        config
-                            .sql_query_parameter
-                            .expect("sql-only review retains one validated query parameter"),
-                    )
-                } else {
-                    NativeWebReviewExecutorProfile::new(
-                        requests,
-                        self.target.clone(),
-                        config.seeds,
-                        config.observer,
-                        config.redirect_query_parameter,
-                        config.sql_query_parameter,
-                    )
-                }
+        if let Some(profile) = native_executor_profile {
+            debug_assert_eq!(profile.actions().collect::<Vec<_>>(), native_review_actions);
+            let report = profile
+                .install(&mut executors)
                 .map_err(|_| StandardWebDecisionRuntimeError::NativeWebReviewExecutionProfile)?;
-                let actions = profile.actions().collect::<BTreeSet<_>>();
-                let report = profile.install(&mut executors).map_err(|_| {
-                    StandardWebDecisionRuntimeError::NativeWebReviewExecutionProfile
-                })?;
-                debug_assert_eq!(report.executors_inserted(), actions.len());
-                actions
-            },
-            None => BTreeSet::new(),
-        };
+            debug_assert_eq!(report.executors_inserted(), native_review_actions.len());
+        }
 
         let mut unsupported_actions: BTreeSet<_> = StandardWebActionKind::all()
             .into_iter()
@@ -927,14 +926,6 @@ impl StandardWebDecisionRuntimeBuilder {
             .map(|kind| kind.action_id().to_owned())
             .collect();
         unsupported_actions.extend(self.additional_suppressed_actions);
-        if native_review_enabled {
-            unsupported_actions.extend(
-                NativeWebReviewActionKind::all()
-                    .into_iter()
-                    .filter(|kind| !native_review_actions.contains(kind))
-                    .map(|kind| kind.action_id().to_owned()),
-            );
-        }
 
         Ok(StandardWebDecisionRuntime {
             target: self.target,

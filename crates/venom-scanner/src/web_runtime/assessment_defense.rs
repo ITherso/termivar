@@ -13,9 +13,11 @@ use venom_core::{
     KnowledgePredicate, PredicateDescriptor, ReasoningModelError,
 };
 
+#[cfg(test)]
+use crate::web_actions::NATIVE_WEB_REVIEW_ACTION_COUNT;
 use crate::{
     planner::{AttackPlan, AttackPlanner},
-    web_actions::{NativeWebReviewActionKind, NATIVE_WEB_REVIEW_ACTION_COUNT},
+    web_actions::NativeWebReviewActionKind,
     StandardWebActionKind, STANDARD_WEB_ACTION_COUNT,
 };
 use crate::{DecisionEvidenceReceipt, DecisionExecutionStage, KnowledgeBase, VerificationCase};
@@ -565,26 +567,18 @@ impl AssessmentDefenseController {
 /// Returns the exact closed action-to-defense-class catalog installed in an
 /// assessment planner.
 ///
-/// Standard-only composition remains valid. The only accepted extension is
-/// the complete native web-review catalog; partial catalogs and arbitrary
-/// replacement or extra action identities fail closed. Returning the catalog
-/// also gives enforcement one bounded set to iterate, so defense can only
-/// classify and remove actions the validated planner already owns.
+/// Standard-only composition remains valid. Its only accepted extensions are
+/// subject-specific subsets of the closed native web-review catalog;
+/// arbitrary replacement or extra action identities fail closed. Returning
+/// the installed subset also gives enforcement one bounded set to iterate, so
+/// defense can only classify and remove actions the validated planner owns.
 fn validated_assessment_action_classes(
     planner: &AttackPlanner,
 ) -> Result<BTreeMap<String, DefenseInteractionClass>, ()> {
     let has_all_standard = StandardWebActionKind::all()
         .into_iter()
         .all(|kind| planner.action(kind.action_id()).is_some());
-    let has_all_native = NativeWebReviewActionKind::all()
-        .into_iter()
-        .all(|kind| planner.action(kind.action_id()).is_some());
-    let standard_only = planner.len() == STANDARD_WEB_ACTION_COUNT && has_all_standard;
-    let standard_with_native = planner.len()
-        == STANDARD_WEB_ACTION_COUNT + NATIVE_WEB_REVIEW_ACTION_COUNT
-        && has_all_standard
-        && has_all_native;
-    if !standard_only && !standard_with_native {
+    if !has_all_standard || planner.len() < STANDARD_WEB_ACTION_COUNT {
         return Err(());
     }
 
@@ -595,13 +589,14 @@ fn validated_assessment_action_classes(
             standard_interaction_class(kind),
         );
     }
-    if standard_with_native {
-        for kind in NativeWebReviewActionKind::all() {
+    for kind in NativeWebReviewActionKind::all() {
+        if planner.action(kind.action_id()).is_some() {
             classes.insert(kind.action_id().to_owned(), native_interaction_class(kind));
         }
     }
-    debug_assert_eq!(classes.len(), planner.len());
-    Ok(classes)
+    (classes.len() == planner.len())
+        .then_some(classes)
+        .ok_or(())
 }
 
 const fn standard_interaction_class(kind: StandardWebActionKind) -> DefenseInteractionClass {
@@ -1180,17 +1175,23 @@ mod tests {
         planner
     }
 
-    fn standard_with_native_planner() -> AttackPlanner {
+    fn standard_with_native_actions(
+        actions: impl IntoIterator<Item = NativeWebReviewActionKind>,
+    ) -> AttackPlanner {
         let mut decision_loop = decision_loop();
         StandardWebAttackProfile::new()
             .unwrap()
             .install(decision_loop.planner_mut())
             .unwrap();
-        NativeWebReviewDecisionProfile::new()
+        NativeWebReviewDecisionProfile::for_actions(actions)
             .unwrap()
             .install(&mut decision_loop)
             .unwrap();
         decision_loop.planner().clone()
+    }
+
+    fn standard_with_native_planner() -> AttackPlanner {
+        standard_with_native_actions(NativeWebReviewActionKind::all())
     }
 
     fn unknown_action(id: &str) -> AttackAction {
@@ -1363,18 +1364,26 @@ mod tests {
     }
 
     #[test]
-    fn architecture_rejects_partial_and_unknown_native_catalogs() {
-        let combined = standard_with_native_planner();
-        let mut partial = standard_planner();
-        partial
-            .register(
-                combined
-                    .action(NativeWebReviewActionKind::CorsPolicyPair.action_id())
-                    .unwrap()
-                    .clone(),
-            )
-            .unwrap();
-        assert!(validated_assessment_action_classes(&partial).is_err());
+    fn architecture_accepts_native_subsets_and_rejects_unknown_actions() {
+        let catalog = NativeWebReviewActionKind::all();
+        for mask in 0..(1_usize << catalog.len()) {
+            let selected = catalog
+                .into_iter()
+                .enumerate()
+                .filter_map(|(index, kind)| ((mask & (1 << index)) != 0).then_some(kind))
+                .collect::<Vec<_>>();
+            let planner = standard_with_native_actions(selected.iter().copied());
+            let classes = validated_assessment_action_classes(&planner).unwrap();
+            assert_eq!(classes.len(), STANDARD_WEB_ACTION_COUNT + selected.len());
+            for kind in catalog {
+                assert_eq!(
+                    classes.get(kind.action_id()),
+                    selected
+                        .contains(&kind)
+                        .then_some(&DefenseInteractionClass::DifferentialRead)
+                );
+            }
+        }
 
         let mut unknown_extra = standard_planner();
         unknown_extra
@@ -1382,16 +1391,21 @@ mod tests {
             .unwrap();
         assert!(validated_assessment_action_classes(&unknown_extra).is_err());
 
-        // Match the complete catalog's length while replacing one required
+        // Match the complete catalog's length while replacing one legitimate
         // native identity with an arbitrary action. Length alone is not enough.
-        partial
+        let mut replacement = standard_with_native_actions(
+            catalog
+                .into_iter()
+                .take(NATIVE_WEB_REVIEW_ACTION_COUNT.saturating_sub(1)),
+        );
+        replacement
             .register(unknown_action("test.assessment-defense.replacement@1"))
             .unwrap();
         assert_eq!(
-            partial.len(),
+            replacement.len(),
             STANDARD_WEB_ACTION_COUNT + NATIVE_WEB_REVIEW_ACTION_COUNT
         );
-        assert!(validated_assessment_action_classes(&partial).is_err());
+        assert!(validated_assessment_action_classes(&replacement).is_err());
     }
 
     #[test]

@@ -130,6 +130,52 @@ fn profile_definitions_are_deterministic_exact_and_knowledge_only() {
 }
 
 #[test]
+fn subject_specific_profile_is_ordered_exact_and_rejects_duplicates() {
+    let requested = [
+        NativeWebReviewActionKind::SqlStructuralQueryReplayPair,
+        NativeWebReviewActionKind::SqlStructuralQueryPair,
+    ];
+    let profile = NativeWebReviewDecisionProfile::for_actions(requested).unwrap();
+    assert_eq!(
+        profile.actions().collect::<Vec<_>>(),
+        [
+            NativeWebReviewActionKind::SqlStructuralQueryPair,
+            NativeWebReviewActionKind::SqlStructuralQueryReplayPair,
+        ]
+    );
+    assert_eq!(profile.actions.len(), 2);
+    assert_eq!(profile.active_rules.len(), 2);
+    assert!(profile.reasoning_rule.is_some());
+
+    assert!(matches!(
+        NativeWebReviewDecisionProfile::for_actions([
+            NativeWebReviewActionKind::CorsPolicyPair,
+            NativeWebReviewActionKind::CorsPolicyPair,
+        ]),
+        Err(NativeWebReviewDecisionError::DuplicateAction { action_id })
+            if action_id == NativeWebReviewActionKind::CorsPolicyPair.action_id()
+    ));
+}
+
+#[test]
+fn empty_subject_specific_profile_intentionally_installs_nothing() {
+    let profile = NativeWebReviewDecisionProfile::for_actions([]).unwrap();
+    assert_eq!(profile.actions().len(), 0);
+    assert!(profile.actions.is_empty());
+    assert!(profile.active_rules.is_empty());
+    assert!(profile.reasoning_rule.is_none());
+
+    let mut decision_loop = decision_loop();
+    assert_eq!(
+        profile.install(&mut decision_loop).unwrap(),
+        NativeWebReviewDecisionInstallReport::default()
+    );
+    assert!(decision_loop.rules().is_empty());
+    assert!(decision_loop.planner().is_empty());
+    assert!(decision_loop.verification().active().is_empty());
+}
+
+#[test]
 fn standard_web_decision_profile_excludes_native_review_definitions() {
     let policy =
         HttpEvidencePolicy::for_origin(Url::parse("https://example.test/").unwrap()).unwrap();

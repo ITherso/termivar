@@ -93,6 +93,23 @@ struct NativeExecutorBinding {
     executor: Arc<HttpEvidenceExecutor>,
 }
 
+/// Returns the one closed, deterministic executable subset for a subject.
+pub(crate) fn enabled_native_web_review_actions(
+    include_cors: bool,
+    redirect_query_configured: bool,
+    sql_query_configured: bool,
+) -> Vec<NativeWebReviewActionKind> {
+    NativeWebReviewActionKind::all()
+        .into_iter()
+        .filter(|kind| match kind {
+            NativeWebReviewActionKind::CorsPolicyPair => include_cors,
+            NativeWebReviewActionKind::RedirectReflectionQueryPair => redirect_query_configured,
+            NativeWebReviewActionKind::SqlStructuralQueryPair
+            | NativeWebReviewActionKind::SqlStructuralQueryReplayPair => sql_query_configured,
+        })
+        .collect()
+}
+
 /// Opt-in executor bindings for matched CORS and redirect/reflection review.
 ///
 /// Construction validates the root against the broker's existing authority,
@@ -196,9 +213,14 @@ impl NativeWebReviewExecutorProfile {
             PayloadStrategyLimits::new(REVIEW_PAYLOAD_MAX_BYTES, REVIEW_PAYLOAD_MAX_BYTES)?;
         let strategies = standard_payload_strategies()?;
         let provider = Arc::new(SubjectHttpProbeProvider::new(HttpProbeMethod::Get));
+        let enabled_actions = enabled_native_web_review_actions(
+            include_cors,
+            redirect_query_parameter.is_some(),
+            sql_query_parameter.is_some(),
+        );
 
         let mut bindings = Vec::new();
-        if include_cors {
+        if enabled_actions.contains(&NativeWebReviewActionKind::CorsPolicyPair) {
             let cors_kind = NativeWebReviewActionKind::CorsPolicyPair;
             let cors_strategy = payload_strategy_reference(cors_kind)?;
             let cors_seed = PayloadSeed::new(seeds.cors_origin().as_bytes().to_vec(), limits)?;
@@ -224,7 +246,8 @@ impl NativeWebReviewExecutorProfile {
             });
         }
 
-        let redirect_query_configured = redirect_query_parameter.is_some();
+        let redirect_query_configured =
+            enabled_actions.contains(&NativeWebReviewActionKind::RedirectReflectionQueryPair);
         if let Some(parameter) = redirect_query_parameter {
             let redirect_kind = NativeWebReviewActionKind::RedirectReflectionQueryPair;
             let redirect_strategy = payload_strategy_reference(redirect_kind)?;
@@ -251,7 +274,8 @@ impl NativeWebReviewExecutorProfile {
             });
         }
 
-        let sql_query_configured = sql_query_parameter.is_some();
+        let sql_query_configured =
+            enabled_actions.contains(&NativeWebReviewActionKind::SqlStructuralQueryPair);
         if let Some(parameter) = sql_query_parameter {
             let sql_seed = PayloadSeed::new(seeds.sql_token().as_bytes().to_vec(), limits)?;
             for kind in [
@@ -282,6 +306,13 @@ impl NativeWebReviewExecutorProfile {
             }
         }
 
+        debug_assert_eq!(
+            bindings
+                .iter()
+                .map(|binding| binding.kind)
+                .collect::<Vec<_>>(),
+            enabled_actions
+        );
         Ok(Self {
             bindings,
             redirect_query_configured,

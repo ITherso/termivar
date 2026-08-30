@@ -9,6 +9,7 @@ use tokio::{
 };
 use venom_core::EntityId;
 
+use super::super::web_review_decision::NativeWebReviewDecisionProfile;
 use super::*;
 use crate::{
     DecisionActionOrigin, DecisionLoopCommand, DecisionRunnerAdapter, HttpEvidencePolicy,
@@ -241,6 +242,66 @@ fn absent_query_parameter_omits_redirect_executor_and_both_routes() {
     assert!(
         !profile.supports_exact_strategy(NativeWebReviewActionKind::RedirectReflectionQueryPair)
     );
+}
+
+#[test]
+fn decision_and_executor_share_each_subject_specific_enabled_action_set() {
+    let root = Url::parse("https://example.test/review").unwrap();
+    for (include_cors, redirect, sql) in [
+        (true, None, None),
+        (true, Some("next"), None),
+        (true, None, Some("item")),
+        (true, Some("next"), Some("item")),
+        (false, None, Some("item")),
+    ] {
+        let profile = NativeWebReviewExecutorProfile::build(
+            request_broker(&root),
+            root.clone(),
+            NativeWebReviewSeeds::from_authorized_origin(&root).unwrap(),
+            None,
+            redirect.map(str::to_owned),
+            sql.map(str::to_owned),
+            include_cors,
+        )
+        .unwrap();
+        let executor_actions = profile.actions().collect::<Vec<_>>();
+        assert_eq!(
+            executor_actions,
+            enabled_native_web_review_actions(include_cors, redirect.is_some(), sql.is_some())
+        );
+        let decision =
+            NativeWebReviewDecisionProfile::for_actions(executor_actions.iter().copied()).unwrap();
+        assert_eq!(decision.actions().collect::<Vec<_>>(), executor_actions);
+    }
+}
+
+#[tokio::test]
+async fn enabled_native_action_without_executor_route_still_fails_closed() {
+    let root = Url::parse("https://example.test/review").unwrap();
+    let kind = NativeWebReviewActionKind::CorsPolicyPair;
+    let decision = NativeWebReviewDecisionProfile::for_actions([kind]).unwrap();
+    assert_eq!(decision.actions().collect::<Vec<_>>(), [kind]);
+
+    let adapter = DecisionRunnerAdapter::new(DecisionExecutorRegistry::new());
+    let error = adapter
+        .execute_command(
+            &DecisionLoopCommand::ExecuteAction {
+                case: case(&root, "case:web-review:missing-executor", kind),
+                executor: None,
+                origin: DecisionActionOrigin::Planned,
+                delay_ms: None,
+            },
+            &KnowledgeBase::new(),
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        DecisionRunnerError::MissingActionRoute {
+            stage: DecisionExecutionStage::Passive,
+            action_id,
+        } if action_id == kind.action_id()
+    ));
 }
 
 #[test]

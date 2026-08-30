@@ -18,6 +18,8 @@ use venom_core::{
     OutcomeStatus, Probability, VerificationStage,
 };
 
+#[cfg(test)]
+use crate::web_actions::NATIVE_WEB_REVIEW_ACTION_COUNT;
 use crate::{
     payload_strategies::{
         CORS_ORIGIN_PAIR_ID, CORS_ORIGIN_PAIR_REVISION, EXTERNAL_URL_QUERY_PAIR_ID,
@@ -34,15 +36,13 @@ use crate::{
         HypothesisConclusion, KnowledgeLayer, ReasoningRule, RuleEngineError, RuleWrite,
     },
     verification::{VerificationError, VerificationRule, VerifierWrite},
-    web_actions::{
-        native_web_review_response_marker_predicate, NativeWebReviewActionKind,
-        NATIVE_WEB_REVIEW_ACTION_COUNT,
-    },
+    web_actions::{native_web_review_response_marker_predicate, NativeWebReviewActionKind},
     DecisionLoop,
 };
 
 #[cfg(test)]
 pub(crate) const NATIVE_WEB_REVIEW_REASONING_RULE_COUNT: usize = 1;
+#[cfg(test)]
 pub(crate) const NATIVE_WEB_REVIEW_ACTIVE_RULE_COUNT: usize = NATIVE_WEB_REVIEW_ACTION_COUNT;
 #[cfg(test)]
 pub(crate) const WEB_REVIEW_ELIGIBLE_PREDICATE: &str = "web.review.eligible";
@@ -52,6 +52,12 @@ const WEB_REVIEW_ELIGIBLE_RULE_ID: &str = "web.review.reason.eligible-from-respo
 /// Construction or atomic-installation failure for the opt-in profile.
 #[derive(Debug, Error)]
 pub(crate) enum NativeWebReviewDecisionError {
+    #[error("duplicate native web-review action `{action_id}`")]
+    DuplicateAction { action_id: &'static str },
+
+    #[error("native web-review action `{action_id}` is outside the closed catalog")]
+    ActionOutsideCatalog { action_id: &'static str },
+
     #[error(transparent)]
     Reasoning(#[from] RuleEngineError),
 
@@ -76,29 +82,69 @@ pub(crate) struct NativeWebReviewDecisionInstallReport {
 /// Validated, executor-free native web-review decision profile.
 #[derive(Debug, Clone)]
 pub(crate) struct NativeWebReviewDecisionProfile {
-    reasoning_rule: ReasoningRule,
+    reasoning_rule: Option<ReasoningRule>,
+    enabled_actions: Vec<NativeWebReviewActionKind>,
     actions: Vec<AttackAction>,
     active_rules: Vec<VerificationRule>,
 }
 
 impl NativeWebReviewDecisionProfile {
     /// Builds every definition without modifying host state.
+    #[cfg(test)]
     pub(crate) fn new() -> Result<Self, NativeWebReviewDecisionError> {
-        let actions = NativeWebReviewActionKind::all()
+        Self::for_actions(NativeWebReviewActionKind::all())
+    }
+
+    /// Builds the exact subject-specific executable subset in catalog order.
+    ///
+    /// The enum remains the closed universe. Duplicate inputs and values not
+    /// represented by [`NativeWebReviewActionKind::all`] fail closed, while an
+    /// empty set intentionally installs no eligibility rule or action.
+    pub(crate) fn for_actions(
+        actions: impl IntoIterator<Item = NativeWebReviewActionKind>,
+    ) -> Result<Self, NativeWebReviewDecisionError> {
+        let catalog = NativeWebReviewActionKind::all();
+        let mut requested = BTreeSet::new();
+        for kind in actions {
+            if !catalog.contains(&kind) {
+                return Err(NativeWebReviewDecisionError::ActionOutsideCatalog {
+                    action_id: kind.action_id(),
+                });
+            }
+            if !requested.insert(kind) {
+                return Err(NativeWebReviewDecisionError::DuplicateAction {
+                    action_id: kind.action_id(),
+                });
+            }
+        }
+        let enabled_actions = catalog
             .into_iter()
+            .filter(|kind| requested.contains(kind))
+            .collect::<Vec<_>>();
+        let actions = enabled_actions
+            .iter()
+            .copied()
             .map(build_action)
             .collect::<Result<Vec<_>, _>>()?;
-        let active_rules = NativeWebReviewActionKind::all()
-            .into_iter()
+        let active_rules = enabled_actions
+            .iter()
+            .copied()
             .map(build_active_rule)
             .collect::<Result<Vec<_>, _>>()?;
-        debug_assert_eq!(actions.len(), NATIVE_WEB_REVIEW_ACTION_COUNT);
-        debug_assert_eq!(active_rules.len(), NATIVE_WEB_REVIEW_ACTIVE_RULE_COUNT);
+        debug_assert_eq!(actions.len(), enabled_actions.len());
+        debug_assert_eq!(active_rules.len(), enabled_actions.len());
         Ok(Self {
-            reasoning_rule: build_eligibility_rule()?,
+            reasoning_rule: (!enabled_actions.is_empty())
+                .then(build_eligibility_rule)
+                .transpose()?,
+            enabled_actions,
             actions,
             active_rules,
         })
+    }
+
+    pub(crate) fn actions(&self) -> impl ExactSizeIterator<Item = NativeWebReviewActionKind> + '_ {
+        self.enabled_actions.iter().copied()
     }
 
     /// Installs reasoning, actions, and active verifier rules atomically.
@@ -109,12 +155,13 @@ impl NativeWebReviewDecisionProfile {
         decision_loop: &mut DecisionLoop,
     ) -> Result<NativeWebReviewDecisionInstallReport, NativeWebReviewDecisionError> {
         let mut prospective = decision_loop.clone();
-        let reasoning_rules_inserted = usize::from(matches!(
-            prospective
-                .rules_mut()
-                .register(self.reasoning_rule.clone())?,
-            RuleWrite::Inserted
-        ));
+        let reasoning_rules_inserted = match &self.reasoning_rule {
+            Some(rule) => usize::from(matches!(
+                prospective.rules_mut().register(rule.clone())?,
+                RuleWrite::Inserted
+            )),
+            None => 0,
+        };
 
         let mut actions_inserted = 0;
         for action in &self.actions {

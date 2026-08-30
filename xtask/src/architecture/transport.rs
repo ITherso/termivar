@@ -421,8 +421,8 @@ fn inspect_native_review_execution_broker_boundary(
     Ok(violations.into_iter().collect())
 }
 
-const EXACT_NATIVE_REVIEW_EXECUTION_TOKEN_BYTES: usize = 16_517;
-const EXACT_NATIVE_REVIEW_EXECUTION_FINGERPRINT: u128 = 0x49fb_1498_b3ca_377a_ffb6_1a1a_1f22_a327;
+const EXACT_NATIVE_REVIEW_EXECUTION_TOKEN_BYTES: usize = 17_601;
+const EXACT_NATIVE_REVIEW_EXECUTION_FINGERPRINT: u128 = 0xc13e_3dfe_dcc5_f01b_c640_c4fc_23a7_9a1e;
 
 fn native_review_execution_fingerprint_violations(source: &str, syntax: &syn::File) -> Vec<String> {
     let exact_tests = matches!(syntax.items.last(), Some(Item::Mod(module))
