@@ -2062,7 +2062,7 @@ impl WebAssessmentRuntime {
                                 match api_visibility_result {
                                     Ok(RootApiVisibilityOutcome::NoDifference) => {},
                                     Ok(RootApiVisibilityOutcome::NeedsReview(committed)) => {
-                                        self.committed_api_visibility = Some(committed);
+                                        self.committed_api_visibility = Some(*committed);
                                     },
                                     Ok(RootApiVisibilityOutcome::Incomplete) => {
                                         reasons.insert(

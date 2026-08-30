@@ -5523,8 +5523,8 @@ struct ReportingSourceVisitor {
     inside_test_module: usize,
 }
 
-const EXACT_REPORTING_PRODUCTION_TOKEN_BYTES: usize = 48_604;
-const EXACT_REPORTING_PRODUCTION_FINGERPRINT: u128 = 0xc9c1_3139_53da_39c9_f20c_f70f_8a17_f6db;
+const EXACT_REPORTING_PRODUCTION_TOKEN_BYTES: usize = 48_537;
+const EXACT_REPORTING_PRODUCTION_FINGERPRINT: u128 = 0xa7e8_6395_492c_37d9_ba90_4a62_bc03_d480;
 
 fn reporting_production_body_inventory_violations(source: &str) -> Vec<String> {
     let Ok(syntax) = syn::parse_file(source) else {
@@ -5870,7 +5870,7 @@ const ALLOWED_REPORTING_METHOD_CALLS: &[&str] = &[
     "write_str",
 ];
 
-const ALLOWED_REPORTING_MACROS: &[&str] = &["format_args", "matches"];
+const ALLOWED_REPORTING_MACROS: &[&str] = &["format_args", "matches", "vec"];
 const ALLOWED_REPORTING_ATTRIBUTES: &[&str] = &["derive", "doc", "non_exhaustive"];
 
 fn reporting_source_import_violations(source: &str) -> Result<Vec<String>, syn::Error> {

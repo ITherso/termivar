@@ -1280,10 +1280,8 @@ impl AssessmentBasisLinkageDocument {
                     if !differential.control().is_empty() || !differential.candidate().is_empty() {
                         return Err(ReportError::Serialization);
                     }
-                    let mut evidence_references = Vec::new();
-                    evidence_references.push(reference.to_string());
                     return Ok(Self {
-                        evidence_references,
+                        evidence_references: vec![reference.to_string()],
                         control_evidence_references: Vec::new(),
                         candidate_evidence_references: Vec::new(),
                         case_reference: None,

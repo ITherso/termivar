@@ -1054,6 +1054,11 @@ struct PlannedPassiveAssessmentItem {
     evidence_ids: Vec<EvidenceId>,
 }
 
+struct AssessmentReviewProjectionSources<'a> {
+    native: Option<&'a CommittedAssessmentReviewLedger>,
+    api_visibility: Option<&'a CommittedAssessmentApiVisibility>,
+}
+
 /// Projects only the explicitly authorized root. Conditions on discovered
 /// subjects are counted as incomplete instead of deriving an identity from a
 /// URL, path, BFS ordinal, or other potentially sensitive transport data.
@@ -1101,8 +1106,10 @@ pub(crate) fn project_assessment_items(
     let exact_origin = authorized_root.url().origin().ascii_serialization();
     project_assessment_items_for_root(
         ledger,
-        review,
-        api_visibility,
+        AssessmentReviewProjectionSources {
+            native: review,
+            api_visibility,
+        },
         knowledge,
         root_subject,
         &exact_origin,
@@ -1122,8 +1129,10 @@ fn project_passive_assessment_items_for_root(
 ) -> Result<PassiveAssessmentItemProjection, PassiveAssessmentItemProjectionError> {
     project_assessment_items_for_root(
         ledger,
-        None,
-        None,
+        AssessmentReviewProjectionSources {
+            native: None,
+            api_visibility: None,
+        },
         knowledge,
         root_subject,
         exact_origin,
@@ -1134,8 +1143,7 @@ fn project_passive_assessment_items_for_root(
 
 fn project_assessment_items_for_root(
     ledger: &CommittedAssessmentPassiveLedger,
-    review: Option<&CommittedAssessmentReviewLedger>,
-    api_visibility: Option<&CommittedAssessmentApiVisibility>,
+    reviews: AssessmentReviewProjectionSources<'_>,
     knowledge: &KnowledgeBase,
     root_subject: Option<EntityId>,
     exact_origin: &str,
@@ -1204,10 +1212,12 @@ fn project_assessment_items_for_root(
             &item.evidence_ids,
         )?;
     }
-    if let (Some(review), Some(root_subject)) = (review, root_subject.as_ref()) {
+    if let (Some(review), Some(root_subject)) = (reviews.native, root_subject.as_ref()) {
         project_assessment_review_items(&mut context, review, knowledge, root_subject)?;
     }
-    if let (Some(api_visibility), Some(root_subject)) = (api_visibility, root_subject.as_ref()) {
+    if let (Some(api_visibility), Some(root_subject)) =
+        (reviews.api_visibility, root_subject.as_ref())
+    {
         project_api_visibility_item(&mut context, knowledge, root_subject, api_visibility)?;
     }
     Ok(PassiveAssessmentItemProjection {

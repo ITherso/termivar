@@ -203,7 +203,7 @@ impl CommittedAssessmentApiVisibility {
 #[derive(Debug)]
 pub(super) enum RootApiVisibilityOutcome {
     NoDifference,
-    NeedsReview(CommittedAssessmentApiVisibility),
+    NeedsReview(Box<CommittedAssessmentApiVisibility>),
     Incomplete,
     Cancelled,
     RuntimeLimit(crate::RuntimeBudgetDimension),
@@ -227,7 +227,7 @@ impl RootApiVisibilityOutcome {
             },
             ApiVisibilityDifferentialDisposition::AwaitHumanReview => {
                 exact_committed_review(report, ApiVisibilityReviewDisposition::AwaitHumanReview)
-                    .map(Self::NeedsReview)
+                    .map(|committed| Self::NeedsReview(Box::new(committed)))
                     .unwrap_or(Self::ContractMismatch)
             },
             ApiVisibilityDifferentialDisposition::UnresolvedDifference => {
