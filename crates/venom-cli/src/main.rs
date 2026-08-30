@@ -1013,22 +1013,13 @@ mod tests {
 
     #[test]
     fn atomic_report_output_is_complete_and_no_clobber() {
-        use std::time::{SystemTime, UNIX_EPOCH};
-
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let path = std::env::temp_dir().join(format!(
-            "venom-main-atomic-report-{}-{nonce}.json",
-            std::process::id()
-        ));
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("report.json");
         write_report_atomically(&path, br#"{"schema":"test"}"#).unwrap();
         assert_eq!(std::fs::read(&path).unwrap(), br#"{"schema":"test"}"#);
         let error = write_report_atomically(&path, b"replacement").unwrap_err();
         assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists);
         assert_eq!(std::fs::read(&path).unwrap(), br#"{"schema":"test"}"#);
-        std::fs::remove_file(path).unwrap();
     }
 
     #[test]

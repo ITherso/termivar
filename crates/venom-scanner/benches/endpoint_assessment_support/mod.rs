@@ -14,7 +14,7 @@ pub(crate) use runner::run_benchmark;
 pub(crate) use runner::run_fixture_benchmark;
 
 pub(crate) async fn run_from_process_arguments() -> Result<(), String> {
-    let arguments = BenchmarkArguments::parse(std::env::args_os().skip(1))?;
+    let arguments = BenchmarkArguments::parse(std::env::args().skip(1).map(OsString::from))?;
     if arguments.help_requested() {
         println!("{}", BenchmarkArguments::help());
         return Ok(());
