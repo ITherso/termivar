@@ -1,12 +1,18 @@
 #![cfg(feature = "distributed")]
 
-use std::sync::{Arc, Barrier};
 use std::thread;
+use std::{
+    collections::BTreeSet,
+    sync::{Arc, Barrier},
+};
 use venom_scanner::{
     CancellationOutcome, CompletionOutcome, CompletionReceipt, DistributedError, DistributedLimits,
-    FailureOutcome, ResultAggregator, ResultLimits, ScanTask, StateSnapshot, StoreResultOutcome,
-    TaskLease, TaskOwnership, TaskPriority, TaskSpec, TaskStatus, WorkerNode, WorkerObservation,
-    WorkerPool, WorkerSpec, WorkerStatus, MAX_IDENTIFIER_BYTES, MAX_RESULTS, MAX_TASK_RECORDS,
+    FailureOutcome, ResultAggregator, ResultLimits, ScanTask, StartOutcome, StateSnapshot,
+    StoreResultOutcome, TaskLease, TaskOwnership, TaskPriority, TaskQueue, TaskSpec, TaskStatus,
+    WorkerNode, WorkerObservation, WorkerPool, WorkerSpec, WorkerStatus, WorkerTag,
+    MAX_ACTIVE_TASKS, MAX_AGGREGATE_ITEMS, MAX_HEARTBEAT_TIMEOUT_SECS, MAX_IDENTIFIER_BYTES,
+    MAX_LEASE_TTL_SECS, MAX_RESULTS, MAX_RESULT_BYTES, MAX_RETRIES, MAX_TARGET_REF_BYTES,
+    MAX_TASK_PHASES, MAX_TASK_RECORDS, MAX_TASK_TTL_SECS, MAX_TOTAL_RESULT_BYTES, MAX_WORKERS,
     MAX_WORKER_CAPACITY, UTILIZATION_BASIS_POINTS,
 };
 
@@ -63,6 +69,284 @@ fn assign(pool: &WorkerPool, now: u64, task_id: &str, worker_id: &str) -> TaskLe
     pool.assign_task(revision(pool), now, task_id, worker_id, 10)
         .expect("assign")
         .value
+}
+
+fn assert_task_admission_rejected(queue: &TaskQueue, spec: TaskSpec, expected: DistributedError) {
+    let before = queue.snapshot().expect("snapshot before invalid task");
+    assert_eq!(
+        queue.enqueue(before.revision, before.logical_time, spec),
+        Err(expected)
+    );
+    assert_eq!(
+        queue.snapshot().expect("snapshot after invalid task"),
+        before
+    );
+}
+
+fn assert_worker_admission_rejected(
+    pool: &WorkerPool,
+    spec: WorkerSpec,
+    expected: DistributedError,
+) {
+    let before = pool.snapshot().expect("snapshot before invalid worker");
+    assert_eq!(
+        pool.register_worker(before.revision, before.logical_time, spec),
+        Err(expected)
+    );
+    assert_eq!(
+        pool.snapshot().expect("snapshot after invalid worker"),
+        before
+    );
+}
+
+#[test]
+fn public_state_receipt_and_result_projection_preserves_exact_lifecycle() {
+    assert_eq!(
+        [
+            TaskStatus::Queued,
+            TaskStatus::Leased,
+            TaskStatus::Running,
+            TaskStatus::Completed,
+            TaskStatus::Failed,
+            TaskStatus::Cancelled,
+            TaskStatus::Expired,
+        ]
+        .map(TaskStatus::as_str),
+        [
+            "queued",
+            "leased",
+            "running",
+            "completed",
+            "failed",
+            "cancelled",
+            "expired",
+        ]
+    );
+    assert_eq!(
+        [
+            WorkerStatus::Healthy,
+            WorkerStatus::Busy,
+            WorkerStatus::Degraded,
+            WorkerStatus::Offline,
+        ]
+        .map(WorkerStatus::as_str),
+        ["healthy", "busy", "degraded", "offline"]
+    );
+    assert_eq!(
+        [
+            WorkerTag::Linux,
+            WorkerTag::Windows,
+            WorkerTag::Gpu,
+            WorkerTag::Internal,
+            WorkerTag::External,
+        ]
+        .map(WorkerTag::as_str),
+        ["linux", "windows", "gpu", "internal", "external"]
+    );
+
+    let default_pool = WorkerPool::default();
+    assert_eq!(
+        default_pool.snapshot().expect("default pool snapshot"),
+        StateSnapshot {
+            revision: 0,
+            logical_time: 0,
+            task_records: 0,
+            active_tasks: 0,
+            queued_tasks: 0,
+            terminal_tasks: 0,
+            workers: 0,
+        }
+    );
+
+    let standalone_queue = TaskQueue::default();
+    assert!(standalone_queue
+        .peek_next()
+        .expect("empty default queue")
+        .is_none());
+    assert_eq!(
+        standalone_queue
+            .snapshot()
+            .expect("default queue snapshot")
+            .revision,
+        0
+    );
+    let standalone_task = standalone_queue
+        .enqueue(0, 1, task("standalone", TaskPriority::Low))
+        .expect("standalone enqueue")
+        .value;
+    assert_eq!(
+        standalone_queue
+            .peek_next()
+            .expect("nonempty default queue")
+            .as_ref()
+            .map(ScanTask::task_id),
+        Some(standalone_task.task_id())
+    );
+    assert_eq!(
+        TaskQueue::with_limits(limits())
+            .expect("explicit queue limits")
+            .snapshot()
+            .expect("explicit queue snapshot")
+            .revision,
+        0
+    );
+
+    let pool = pool();
+    let mut worker_spec = WorkerSpec::new("worker-a", 4);
+    worker_spec.cpu_basis_points = 1_000;
+    worker_spec.memory_basis_points = 2_000;
+    worker_spec.network_basis_points = 3_000;
+    worker_spec.tags = BTreeSet::from([WorkerTag::Linux, WorkerTag::Internal]);
+    let worker = pool
+        .register_worker(0, 10, worker_spec)
+        .expect("worker registration")
+        .value;
+    assert_eq!(worker.worker_id(), "worker-a");
+    assert_eq!(worker.generation(), 1);
+    assert_eq!(worker.status(), WorkerStatus::Healthy);
+    assert_eq!(worker.capacity(), 4);
+    assert_eq!(worker.current_tasks(), 0);
+    assert_eq!(worker.completed_tasks(), 0);
+    assert_eq!(worker.last_heartbeat(), 10);
+    assert_eq!(worker.cpu_basis_points(), 1_000);
+    assert_eq!(worker.memory_basis_points(), 2_000);
+    assert_eq!(worker.network_basis_points(), 3_000);
+    assert_eq!(
+        worker.tags(),
+        &BTreeSet::from([WorkerTag::Linux, WorkerTag::Internal])
+    );
+    assert_eq!(worker.effective_capacity(), 3);
+    assert_eq!(worker.available_slots(), 3);
+
+    let queued = pool
+        .task_queue()
+        .enqueue(
+            revision(&pool),
+            11,
+            TaskSpec::new(
+                "task",
+                "scan-task",
+                "opaque-target-reference",
+                vec![2, 1],
+                TaskPriority::High,
+            ),
+        )
+        .expect("task admission")
+        .value;
+    assert_eq!(queued.task_id(), "task");
+    assert_eq!(queued.scan_id(), "scan-task");
+    assert_eq!(queued.target_ref(), "opaque-target-reference");
+    assert_eq!(queued.phases(), [2, 1]);
+    assert_eq!(queued.status(), TaskStatus::Queued);
+    assert_eq!(queued.priority(), TaskPriority::High);
+    assert_eq!(queued.created_at(), 11);
+    assert_eq!(queued.started_at(), None);
+    assert_eq!(queued.completed_at(), None);
+    assert_eq!(queued.retry_count(), 0);
+    assert_eq!(queued.attempt(), 0);
+    assert_eq!(queued.task_generation(), 0);
+    assert_eq!(queued.record_version(), 1);
+    assert_eq!(queued.assigned_to(), None);
+    assert_eq!(queued.lease(), None);
+    assert_eq!(queued.age_secs(15), 4);
+    let queued_fence = match queued.ownership().expect("queued ownership") {
+        TaskOwnership::Queued(fence) => fence,
+        TaskOwnership::Leased(_) => panic!("queued task returned leased ownership"),
+    };
+    assert_eq!(queued_fence.task_id(), queued.task_id());
+    assert_eq!(queued_fence.task_generation(), queued.task_generation());
+    assert_eq!(queued_fence.record_version(), queued.record_version());
+
+    let lease = pool
+        .assign_task(
+            revision(&pool),
+            12,
+            queued.task_id(),
+            worker.worker_id(),
+            10,
+        )
+        .expect("task assignment")
+        .value;
+    assert_eq!(lease.task_id(), queued.task_id());
+    assert_eq!(lease.worker_id(), worker.worker_id());
+    assert_eq!(lease.worker_generation(), worker.generation());
+    assert_eq!(lease.task_generation(), queued.task_generation());
+    assert_eq!(lease.attempt(), 1);
+    assert_eq!(lease.lease_id(), 1);
+    assert_eq!(lease.acquired_at(), 12);
+    assert_eq!(lease.expires_at(), 22);
+    let leased = pool
+        .task_queue()
+        .get_task(queued.task_id())
+        .expect("leased task read")
+        .expect("leased task");
+    assert_eq!(leased.assigned_to(), Some(worker.worker_id()));
+    assert_eq!(leased.lease(), Some(&lease));
+    assert!(matches!(
+        leased.ownership(),
+        Some(TaskOwnership::Leased(ref current)) if current == &lease
+    ));
+
+    let started = pool
+        .start_task(revision(&pool), 13, &lease)
+        .expect("task start");
+    assert!(matches!(started.value, StartOutcome::Started { .. }));
+    let running = pool
+        .task_queue()
+        .get_task(queued.task_id())
+        .expect("running task read")
+        .expect("running task");
+    assert_eq!(running.status(), TaskStatus::Running);
+    assert_eq!(running.started_at(), Some(13));
+    assert!(matches!(
+        running.ownership(),
+        Some(TaskOwnership::Leased(_))
+    ));
+
+    let completed = pool
+        .complete_task(revision(&pool), 14, &lease)
+        .expect("task completion");
+    let receipt = completed.value.receipt();
+    assert_eq!(receipt.task_id(), lease.task_id());
+    assert_eq!(receipt.task_generation(), lease.task_generation());
+    assert_eq!(receipt.attempt(), lease.attempt());
+    assert_eq!(receipt.lease_id(), lease.lease_id());
+    assert_eq!(receipt.worker_id(), lease.worker_id());
+    assert_eq!(receipt.worker_generation(), lease.worker_generation());
+    let terminal = pool
+        .task_queue()
+        .get_task(queued.task_id())
+        .expect("terminal task read")
+        .expect("terminal task");
+    assert_eq!(terminal.status(), TaskStatus::Completed);
+    assert_eq!(terminal.completed_at(), Some(14));
+    assert_eq!(terminal.assigned_to(), None);
+    assert_eq!(terminal.lease(), None);
+    assert_eq!(terminal.ownership(), None);
+    assert_eq!(receipt.record_version(), terminal.record_version());
+    let released_worker = pool
+        .get_worker(worker.worker_id())
+        .expect("released worker read")
+        .expect("released worker");
+    assert_eq!(released_worker.current_tasks(), 0);
+    assert_eq!(released_worker.completed_tasks(), 1);
+
+    let results = ResultAggregator::default();
+    assert_eq!(results.revision().expect("initial result revision"), 0);
+    assert_eq!(results.result_count().expect("initial result count"), 0);
+    assert_eq!(results.total_bytes().expect("initial result bytes"), 0);
+    let stored = results
+        .store_result(0, receipt, b"ok".to_vec())
+        .expect("result store");
+    assert_eq!(stored.value, StoreResultOutcome::Stored);
+    assert_eq!(results.revision().expect("stored result revision"), 1);
+    assert_eq!(results.result_count().expect("stored result count"), 1);
+    assert_eq!(results.total_bytes().expect("stored result bytes"), 2);
+    assert_eq!(
+        results.get_result(receipt.task_id()).expect("result read"),
+        Some(b"ok".to_vec())
+    );
+    pool.check_invariants().expect("lifecycle invariants");
 }
 
 #[test]
@@ -236,6 +520,545 @@ fn absolute_limit_ceilings_and_worker_capacity_are_enforced() {
             actual: MAX_RESULTS + 1,
             maximum: MAX_RESULTS,
         })
+    );
+}
+
+#[test]
+fn all_config_dimensions_fail_closed_before_mutation() {
+    let invalid_coordinator_limits = [
+        (
+            DistributedLimits {
+                max_task_records: 0,
+                ..limits()
+            },
+            DistributedError::InvalidLimit {
+                name: "max_task_records",
+            },
+        ),
+        (
+            DistributedLimits {
+                max_active_tasks: 0,
+                ..limits()
+            },
+            DistributedError::InvalidLimit {
+                name: "max_active_tasks",
+            },
+        ),
+        (
+            DistributedLimits {
+                max_queued_tasks: 0,
+                ..limits()
+            },
+            DistributedError::InvalidLimit {
+                name: "max_queued_tasks",
+            },
+        ),
+        (
+            DistributedLimits {
+                max_terminal_tasks: 0,
+                ..limits()
+            },
+            DistributedError::InvalidLimit {
+                name: "max_terminal_tasks",
+            },
+        ),
+        (
+            DistributedLimits {
+                max_workers: 0,
+                ..limits()
+            },
+            DistributedError::InvalidLimit {
+                name: "max_workers",
+            },
+        ),
+        (
+            DistributedLimits {
+                max_lease_ttl_secs: 0,
+                ..limits()
+            },
+            DistributedError::InvalidLimit {
+                name: "max_lease_ttl_secs",
+            },
+        ),
+        (
+            DistributedLimits {
+                max_task_ttl_secs: 0,
+                ..limits()
+            },
+            DistributedError::InvalidLimit {
+                name: "max_task_ttl_secs",
+            },
+        ),
+        (
+            DistributedLimits {
+                heartbeat_timeout_secs: 0,
+                ..limits()
+            },
+            DistributedError::InvalidLimit {
+                name: "heartbeat_timeout_secs",
+            },
+        ),
+        (
+            DistributedLimits {
+                max_task_records: MAX_TASK_RECORDS + 1,
+                ..limits()
+            },
+            DistributedError::CountLimitExceedsMaximum {
+                name: "max_task_records",
+                actual: MAX_TASK_RECORDS + 1,
+                maximum: MAX_TASK_RECORDS,
+            },
+        ),
+        (
+            DistributedLimits {
+                max_active_tasks: MAX_ACTIVE_TASKS + 1,
+                ..limits()
+            },
+            DistributedError::CountLimitExceedsMaximum {
+                name: "max_active_tasks",
+                actual: MAX_ACTIVE_TASKS + 1,
+                maximum: MAX_ACTIVE_TASKS,
+            },
+        ),
+        (
+            DistributedLimits {
+                max_queued_tasks: MAX_ACTIVE_TASKS + 1,
+                ..limits()
+            },
+            DistributedError::CountLimitExceedsMaximum {
+                name: "max_queued_tasks",
+                actual: MAX_ACTIVE_TASKS + 1,
+                maximum: MAX_ACTIVE_TASKS,
+            },
+        ),
+        (
+            DistributedLimits {
+                max_terminal_tasks: MAX_TASK_RECORDS + 1,
+                ..limits()
+            },
+            DistributedError::CountLimitExceedsMaximum {
+                name: "max_terminal_tasks",
+                actual: MAX_TASK_RECORDS + 1,
+                maximum: MAX_TASK_RECORDS,
+            },
+        ),
+        (
+            DistributedLimits {
+                max_workers: MAX_WORKERS + 1,
+                ..limits()
+            },
+            DistributedError::CountLimitExceedsMaximum {
+                name: "max_workers",
+                actual: MAX_WORKERS + 1,
+                maximum: MAX_WORKERS,
+            },
+        ),
+        (
+            DistributedLimits {
+                max_lease_ttl_secs: MAX_LEASE_TTL_SECS + 1,
+                ..limits()
+            },
+            DistributedError::TimeLimitExceedsMaximum {
+                name: "max_lease_ttl_secs",
+                actual: MAX_LEASE_TTL_SECS + 1,
+                maximum: MAX_LEASE_TTL_SECS,
+            },
+        ),
+        (
+            DistributedLimits {
+                max_task_ttl_secs: MAX_TASK_TTL_SECS + 1,
+                ..limits()
+            },
+            DistributedError::TimeLimitExceedsMaximum {
+                name: "max_task_ttl_secs",
+                actual: MAX_TASK_TTL_SECS + 1,
+                maximum: MAX_TASK_TTL_SECS,
+            },
+        ),
+        (
+            DistributedLimits {
+                heartbeat_timeout_secs: MAX_HEARTBEAT_TIMEOUT_SECS + 1,
+                ..limits()
+            },
+            DistributedError::TimeLimitExceedsMaximum {
+                name: "heartbeat_timeout_secs",
+                actual: MAX_HEARTBEAT_TIMEOUT_SECS + 1,
+                maximum: MAX_HEARTBEAT_TIMEOUT_SECS,
+            },
+        ),
+        (
+            DistributedLimits {
+                max_retries: MAX_RETRIES + 1,
+                ..limits()
+            },
+            DistributedError::RetryLimitExceedsMaximum {
+                actual: MAX_RETRIES + 1,
+                maximum: MAX_RETRIES,
+            },
+        ),
+        (
+            DistributedLimits {
+                max_task_records: 2,
+                max_active_tasks: 3,
+                max_queued_tasks: 2,
+                max_terminal_tasks: 2,
+                ..limits()
+            },
+            DistributedError::InvalidLimitRelationship {
+                reason: "max_active_tasks exceeds max_task_records",
+            },
+        ),
+        (
+            DistributedLimits {
+                max_task_records: 8,
+                max_active_tasks: 4,
+                max_queued_tasks: 5,
+                max_terminal_tasks: 8,
+                ..limits()
+            },
+            DistributedError::InvalidLimitRelationship {
+                reason: "max_queued_tasks exceeds max_active_tasks",
+            },
+        ),
+        (
+            DistributedLimits {
+                max_task_records: 4,
+                max_active_tasks: 2,
+                max_queued_tasks: 2,
+                max_terminal_tasks: 5,
+                ..limits()
+            },
+            DistributedError::InvalidLimitRelationship {
+                reason: "max_terminal_tasks exceeds max_task_records",
+            },
+        ),
+        (
+            DistributedLimits {
+                max_task_records: 8,
+                max_active_tasks: 4,
+                max_queued_tasks: 3,
+                max_terminal_tasks: 3,
+                ..limits()
+            },
+            DistributedError::InvalidLimitRelationship {
+                reason: "max_terminal_tasks is smaller than max_active_tasks",
+            },
+        ),
+    ];
+    for (candidate, expected) in invalid_coordinator_limits {
+        assert_eq!(WorkerPool::with_limits(candidate).err(), Some(expected));
+    }
+
+    let invalid_result_limits = [
+        (
+            ResultLimits {
+                max_results: 0,
+                ..ResultLimits::default()
+            },
+            DistributedError::InvalidLimit {
+                name: "max_results",
+            },
+        ),
+        (
+            ResultLimits {
+                max_result_bytes: 0,
+                ..ResultLimits::default()
+            },
+            DistributedError::InvalidLimit {
+                name: "max_result_bytes",
+            },
+        ),
+        (
+            ResultLimits {
+                max_total_bytes: 0,
+                ..ResultLimits::default()
+            },
+            DistributedError::InvalidLimit {
+                name: "max_total_bytes",
+            },
+        ),
+        (
+            ResultLimits {
+                max_aggregate_items: 0,
+                ..ResultLimits::default()
+            },
+            DistributedError::InvalidLimit {
+                name: "max_aggregate_items",
+            },
+        ),
+        (
+            ResultLimits {
+                max_aggregate_bytes: 0,
+                ..ResultLimits::default()
+            },
+            DistributedError::InvalidLimit {
+                name: "max_aggregate_bytes",
+            },
+        ),
+        (
+            ResultLimits {
+                max_results: MAX_RESULTS + 1,
+                ..ResultLimits::default()
+            },
+            DistributedError::CountLimitExceedsMaximum {
+                name: "max_results",
+                actual: MAX_RESULTS + 1,
+                maximum: MAX_RESULTS,
+            },
+        ),
+        (
+            ResultLimits {
+                max_result_bytes: MAX_RESULT_BYTES + 1,
+                ..ResultLimits::default()
+            },
+            DistributedError::CountLimitExceedsMaximum {
+                name: "max_result_bytes",
+                actual: MAX_RESULT_BYTES + 1,
+                maximum: MAX_RESULT_BYTES,
+            },
+        ),
+        (
+            ResultLimits {
+                max_total_bytes: MAX_TOTAL_RESULT_BYTES + 1,
+                ..ResultLimits::default()
+            },
+            DistributedError::CountLimitExceedsMaximum {
+                name: "max_total_bytes",
+                actual: MAX_TOTAL_RESULT_BYTES + 1,
+                maximum: MAX_TOTAL_RESULT_BYTES,
+            },
+        ),
+        (
+            ResultLimits {
+                max_aggregate_items: MAX_AGGREGATE_ITEMS + 1,
+                ..ResultLimits::default()
+            },
+            DistributedError::CountLimitExceedsMaximum {
+                name: "max_aggregate_items",
+                actual: MAX_AGGREGATE_ITEMS + 1,
+                maximum: MAX_AGGREGATE_ITEMS,
+            },
+        ),
+        (
+            ResultLimits {
+                max_aggregate_bytes: MAX_TOTAL_RESULT_BYTES + 1,
+                ..ResultLimits::default()
+            },
+            DistributedError::CountLimitExceedsMaximum {
+                name: "max_aggregate_bytes",
+                actual: MAX_TOTAL_RESULT_BYTES + 1,
+                maximum: MAX_TOTAL_RESULT_BYTES,
+            },
+        ),
+        (
+            ResultLimits {
+                max_result_bytes: 2,
+                max_total_bytes: 1,
+                ..ResultLimits::default()
+            },
+            DistributedError::InvalidLimitRelationship {
+                reason: "max_result_bytes exceeds max_total_bytes",
+            },
+        ),
+    ];
+    for (candidate, expected) in invalid_result_limits {
+        assert_eq!(
+            ResultAggregator::with_limits(candidate).err(),
+            Some(expected)
+        );
+    }
+
+    let queue = TaskQueue::default();
+    for (spec, expected) in [
+        (
+            TaskSpec::new("", "scan", "target", vec![], TaskPriority::Normal),
+            DistributedError::InvalidTask {
+                reason: "task_id is empty",
+            },
+        ),
+        (
+            TaskSpec::new("task", "", "target", vec![], TaskPriority::Normal),
+            DistributedError::InvalidTask {
+                reason: "scan_id is empty",
+            },
+        ),
+        (
+            TaskSpec::new(
+                "x".repeat(MAX_IDENTIFIER_BYTES + 1),
+                "scan",
+                "target",
+                vec![],
+                TaskPriority::Normal,
+            ),
+            DistributedError::InvalidTask {
+                reason: "task_id is too long",
+            },
+        ),
+        (
+            TaskSpec::new(
+                "task",
+                "x".repeat(MAX_IDENTIFIER_BYTES + 1),
+                "target",
+                vec![],
+                TaskPriority::Normal,
+            ),
+            DistributedError::InvalidTask {
+                reason: "scan_id is too long",
+            },
+        ),
+        (
+            TaskSpec::new("unsafe/id", "scan", "target", vec![], TaskPriority::Normal),
+            DistributedError::InvalidTask {
+                reason: "task_id contains unsafe characters",
+            },
+        ),
+        (
+            TaskSpec::new("task", "unsafe/id", "target", vec![], TaskPriority::Normal),
+            DistributedError::InvalidTask {
+                reason: "scan_id contains unsafe characters",
+            },
+        ),
+        (
+            TaskSpec::new("task", "scan", "", vec![], TaskPriority::Normal),
+            DistributedError::InvalidTask {
+                reason: "target_ref is empty",
+            },
+        ),
+        (
+            TaskSpec::new(
+                "task",
+                "scan",
+                "x".repeat(MAX_TARGET_REF_BYTES + 1),
+                vec![],
+                TaskPriority::Normal,
+            ),
+            DistributedError::InvalidTask {
+                reason: "target_ref is too long",
+            },
+        ),
+        (
+            TaskSpec::new(
+                "task",
+                "scan",
+                "target",
+                vec![0; MAX_TASK_PHASES + 1],
+                TaskPriority::Normal,
+            ),
+            DistributedError::InvalidTask {
+                reason: "too many phases",
+            },
+        ),
+    ] {
+        assert_task_admission_rejected(&queue, spec, expected);
+    }
+
+    let worker_pool = pool();
+    for (spec, expected) in [
+        (
+            WorkerSpec::new("", 1),
+            DistributedError::InvalidWorker {
+                reason: "worker_id is invalid",
+            },
+        ),
+        (
+            WorkerSpec::new("x".repeat(MAX_IDENTIFIER_BYTES + 1), 1),
+            DistributedError::InvalidWorker {
+                reason: "worker_id is invalid",
+            },
+        ),
+        (
+            WorkerSpec::new("unsafe/id", 1),
+            DistributedError::InvalidWorker {
+                reason: "worker_id is invalid",
+            },
+        ),
+        (
+            WorkerSpec::new("worker-zero", 0),
+            DistributedError::InvalidWorker {
+                reason: "capacity is zero",
+            },
+        ),
+    ] {
+        assert_worker_admission_rejected(&worker_pool, spec, expected);
+    }
+
+    let worker = register(&worker_pool, 10, "worker-a", 2);
+    for (observation, expected) in [
+        (
+            WorkerObservation {
+                status: WorkerStatus::Offline,
+                ..WorkerObservation::default()
+            },
+            DistributedError::InvalidWorker {
+                reason: "offline transition requires deregister or prune",
+            },
+        ),
+        (
+            WorkerObservation {
+                memory_basis_points: UTILIZATION_BASIS_POINTS + 1,
+                ..WorkerObservation::default()
+            },
+            DistributedError::InvalidWorker {
+                reason: "utilization exceeds 10000 basis points",
+            },
+        ),
+        (
+            WorkerObservation {
+                network_basis_points: UTILIZATION_BASIS_POINTS + 1,
+                ..WorkerObservation::default()
+            },
+            DistributedError::InvalidWorker {
+                reason: "utilization exceeds 10000 basis points",
+            },
+        ),
+    ] {
+        let before = worker_pool
+            .snapshot()
+            .expect("snapshot before invalid observation");
+        let worker_before = worker_pool
+            .get_worker(worker.worker_id())
+            .expect("worker before invalid observation")
+            .expect("registered worker");
+        assert_eq!(
+            worker_pool.update_worker(
+                before.revision,
+                before.logical_time,
+                worker.worker_id(),
+                worker.generation(),
+                observation,
+            ),
+            Err(expected)
+        );
+        assert_eq!(
+            worker_pool
+                .snapshot()
+                .expect("snapshot after invalid observation"),
+            before
+        );
+        assert_eq!(
+            worker_pool
+                .get_worker(worker.worker_id())
+                .expect("worker after invalid observation")
+                .expect("registered worker"),
+            worker_before
+        );
+    }
+
+    let before_regressed_observation = worker_pool
+        .snapshot()
+        .expect("snapshot before regressed observation");
+    assert_eq!(
+        worker_pool.get_available_worker(before_regressed_observation.logical_time - 1),
+        Err(DistributedError::LogicalTimeRegression {
+            current: before_regressed_observation.logical_time,
+            proposed: before_regressed_observation.logical_time - 1,
+        })
+    );
+    assert_eq!(
+        worker_pool
+            .snapshot()
+            .expect("snapshot after regressed observation"),
+        before_regressed_observation
     );
 }
 
