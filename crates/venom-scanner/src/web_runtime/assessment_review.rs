@@ -11,6 +11,9 @@ use std::{
     fmt,
 };
 
+use html5ever::{parse_document, tendril::TendrilSink, ParseOpts};
+use markup5ever_rcdom::{Handle, NodeData, RcDom};
+use sha2::{Digest, Sha256};
 use thiserror::Error;
 use url::Url;
 use venom_core::{
@@ -28,6 +31,7 @@ use crate::{
     payload_strategies::{
         ExternalUrlQueryPairStrategy, CORS_ORIGIN_PAIR_ID, CORS_ORIGIN_PAIR_REVISION,
         EXTERNAL_URL_QUERY_PAIR_ID, EXTERNAL_URL_QUERY_PAIR_REVISION,
+        SQL_QUOTE_BALANCE_QUERY_PAIR_ID, SQL_QUOTE_BALANCE_QUERY_PAIR_REVISION,
     },
     web_actions::{
         NativeWebReviewActionKind, NATIVE_WEB_REVIEW_EVIDENCE_NAMESPACE,
@@ -46,7 +50,8 @@ const ASSESSMENT_REVIEW_ALGORITHM: &str = "web.review.bounded-response-relations
 const ASSESSMENT_REVIEW_ALGORITHM_VERSION: u32 = 1;
 const MAX_REVIEW_QUERY_PARAMETER_BYTES: usize = 64;
 const MAX_REVIEW_CANDIDATE_BYTES: usize = 2_048;
-const MAX_REVIEW_OBSERVATIONS: usize = 4;
+const MAX_REVIEW_OBSERVATIONS: usize = 8;
+const MAX_SQL_STRUCTURE_NODES: usize = 256;
 
 const CORS_ALLOW_ORIGIN_RELATION: &str = "cors-allow-origin-relation";
 const CORS_ALLOW_CREDENTIALS_RELATION: &str = "cors-allow-credentials-relation";
@@ -55,11 +60,17 @@ const CORS_HTTP_STATUS_CLASS: &str = "cors-http-status-class";
 const REDIRECT_STATUS_RELATION: &str = "redirect-status-relation";
 const REDIRECT_LOCATION_RELATION: &str = "redirect-location-relation";
 const HTML_REFLECTION_CONTEXT: &str = "html-reflection-context";
+const SQL_HTTP_STATUS_CLASS: &str = "sql-http-status-class";
+const SQL_BODY_STRUCTURE: &str = "sql-body-structure";
 
 const CORS_ACTIVE_VERIFIER_RULE_ID: &str =
     "web.review.verify.active.cors-policy-pair.pair-complete@1";
 const REDIRECT_ACTIVE_VERIFIER_RULE_ID: &str =
     "web.review.verify.active.redirect-reflection-query-pair.pair-complete@1";
+const SQL_ACTIVE_VERIFIER_RULE_ID: &str =
+    "web.review.verify.active.sql-structural-query-pair.pair-complete@1";
+const SQL_REPLAY_ACTIVE_VERIFIER_RULE_ID: &str =
+    "web.review.verify.active.sql-structural-query-replay-pair.pair-complete@1";
 
 /// Returns the one verifier identity authorized to classify pair completion.
 ///
@@ -71,6 +82,10 @@ pub(crate) const fn native_review_active_verifier_rule_id(
     match kind {
         NativeWebReviewActionKind::CorsPolicyPair => CORS_ACTIVE_VERIFIER_RULE_ID,
         NativeWebReviewActionKind::RedirectReflectionQueryPair => REDIRECT_ACTIVE_VERIFIER_RULE_ID,
+        NativeWebReviewActionKind::SqlStructuralQueryPair => SQL_ACTIVE_VERIFIER_RULE_ID,
+        NativeWebReviewActionKind::SqlStructuralQueryReplayPair => {
+            SQL_REPLAY_ACTIVE_VERIFIER_RULE_ID
+        },
     }
 }
 
@@ -90,6 +105,23 @@ struct RedirectReflectionContract {
     query_parameter: String,
     candidate_url: Url,
     candidate_value: String,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+struct SqlStructuralContract {
+    query_parameter: String,
+    control_url: Url,
+    candidate_url: Url,
+}
+
+impl fmt::Debug for SqlStructuralContract {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("SqlStructuralContract")
+            .field("query_parameter", &"<redacted>")
+            .field("urls", &"<redacted>")
+            .finish()
+    }
 }
 
 impl fmt::Debug for RedirectReflectionContract {
@@ -114,6 +146,7 @@ pub(crate) struct AssessmentReviewObserverSet {
     subject: EntityId,
     seeds: NativeWebReviewSeeds,
     redirect: Option<RedirectReflectionContract>,
+    sql: Option<SqlStructuralContract>,
 }
 
 impl fmt::Debug for AssessmentReviewObserverSet {
@@ -124,16 +157,27 @@ impl fmt::Debug for AssessmentReviewObserverSet {
             .field("subject", &"<redacted>")
             .field("seeds", &self.seeds)
             .field("redirect", &self.redirect.as_ref().map(|_| "<configured>"))
+            .field("sql", &self.sql.as_ref().map(|_| "<configured>"))
             .finish()
     }
 }
 
 impl AssessmentReviewObserverSet {
     /// Binds CORS and an optional redirect/reflection pair to one exact root.
+    #[cfg(test)]
     pub(crate) fn new(
         root: Url,
         seeds: NativeWebReviewSeeds,
         redirect_query_parameter: Option<&str>,
+    ) -> Result<Self, AssessmentReviewObserverError> {
+        Self::new_with_sql(root, seeds, redirect_query_parameter, None)
+    }
+
+    pub(crate) fn new_with_sql(
+        root: Url,
+        seeds: NativeWebReviewSeeds,
+        redirect_query_parameter: Option<&str>,
+        sql_query_parameter: Option<&str>,
     ) -> Result<Self, AssessmentReviewObserverError> {
         let subject = review_root_subject(&root)?;
         let expected_seeds = NativeWebReviewSeeds::from_authorized_origin(&root)
@@ -158,11 +202,34 @@ impl AssessmentReviewObserverSet {
                 })
             })
             .transpose()?;
+        let sql = sql_query_parameter
+            .map(|query_parameter| {
+                if !valid_query_parameter(query_parameter) {
+                    return Err(AssessmentReviewObserverError::QueryParameter);
+                }
+                let mut control_url = root.clone();
+                control_url
+                    .query_pairs_mut()
+                    .append_pair(query_parameter, seeds.sql_token());
+                let mut candidate_value = seeds.sql_token().to_owned();
+                candidate_value.push('\'');
+                let mut candidate_url = root.clone();
+                candidate_url
+                    .query_pairs_mut()
+                    .append_pair(query_parameter, &candidate_value);
+                Ok(SqlStructuralContract {
+                    query_parameter: query_parameter.to_owned(),
+                    control_url,
+                    candidate_url,
+                })
+            })
+            .transpose()?;
         Ok(Self {
             root,
             subject,
             seeds,
             redirect,
+            sql,
         })
     }
 
@@ -184,6 +251,16 @@ impl AssessmentReviewObserverSet {
                 .redirect
                 .as_ref()
                 .map(|contract| &contract.candidate_url),
+            (
+                NativeWebReviewActionKind::SqlStructuralQueryPair
+                | NativeWebReviewActionKind::SqlStructuralQueryReplayPair,
+                DecisionExecutionStage::Passive,
+            ) => self.sql.as_ref().map(|contract| &contract.control_url),
+            (
+                NativeWebReviewActionKind::SqlStructuralQueryPair
+                | NativeWebReviewActionKind::SqlStructuralQueryReplayPair,
+                DecisionExecutionStage::Active,
+            ) => self.sql.as_ref().map(|contract| &contract.candidate_url),
         }
     }
 
@@ -215,57 +292,74 @@ impl AssessmentReviewObserverSet {
         &self,
         kind: NativeWebReviewActionKind,
         observation: &CompleteHttpResponseObservation<'_>,
-    ) -> Vec<(ReviewProperty, &'static str)> {
+    ) -> Vec<(ReviewProperty, String)> {
         let marker = match observation.stage() {
             DecisionExecutionStage::Passive => "passive-control",
             DecisionExecutionStage::Active => "active-candidate",
         };
         let projection = observation.review_response_projection();
-        let mut records = vec![(ReviewProperty::ResponseMarker, marker)];
+        let mut records = vec![(ReviewProperty::ResponseMarker, marker.to_owned())];
         match kind {
-            NativeWebReviewActionKind::CorsPolicyPair => records.extend([
-                (
-                    ReviewProperty::CorsHttpStatusClass,
-                    http_status_class_slug(classify_http_status(observation.status())),
-                ),
-                (
-                    ReviewProperty::CorsAllowOrigin,
-                    cors_allow_origin_slug(projection.access_control_allow_origin()),
-                ),
-                (
-                    ReviewProperty::CorsAllowCredentials,
-                    cors_allow_credentials_slug(projection.access_control_allow_credentials()),
-                ),
-                (
-                    ReviewProperty::CorsVaryOrigin,
-                    vary_origin_slug(projection.vary_origin()),
-                ),
-            ]),
-            NativeWebReviewActionKind::RedirectReflectionQueryPair => records.extend([
-                (
-                    ReviewProperty::RedirectStatus,
-                    if is_redirect_status(observation.status()) {
-                        "redirect"
-                    } else {
-                        "other"
-                    },
-                ),
-                (
-                    ReviewProperty::RedirectLocation,
-                    location_slug(projection.location()),
-                ),
-                (
-                    ReviewProperty::HtmlReflection,
-                    reflection_slug(classify_observation_reflection(
-                        observation,
-                        self.redirect
-                            .as_ref()
-                            .expect("enabled redirect observer retains its bounded contract")
-                            .candidate_value
-                            .as_str(),
-                    )),
-                ),
-            ]),
+            NativeWebReviewActionKind::CorsPolicyPair => records.extend(
+                [
+                    (
+                        ReviewProperty::CorsHttpStatusClass,
+                        http_status_class_slug(classify_http_status(observation.status())),
+                    ),
+                    (
+                        ReviewProperty::CorsAllowOrigin,
+                        cors_allow_origin_slug(projection.access_control_allow_origin()),
+                    ),
+                    (
+                        ReviewProperty::CorsAllowCredentials,
+                        cors_allow_credentials_slug(projection.access_control_allow_credentials()),
+                    ),
+                    (
+                        ReviewProperty::CorsVaryOrigin,
+                        vary_origin_slug(projection.vary_origin()),
+                    ),
+                ]
+                .map(|(property, value)| (property, value.to_owned())),
+            ),
+            NativeWebReviewActionKind::RedirectReflectionQueryPair => records.extend(
+                [
+                    (
+                        ReviewProperty::RedirectStatus,
+                        if is_redirect_status(observation.status()) {
+                            "redirect"
+                        } else {
+                            "other"
+                        },
+                    ),
+                    (
+                        ReviewProperty::RedirectLocation,
+                        location_slug(projection.location()),
+                    ),
+                    (
+                        ReviewProperty::HtmlReflection,
+                        reflection_slug(classify_observation_reflection(
+                            observation,
+                            self.redirect
+                                .as_ref()
+                                .expect("enabled redirect observer retains its bounded contract")
+                                .candidate_value
+                                .as_str(),
+                        )),
+                    ),
+                ]
+                .map(|(property, value)| (property, value.to_owned())),
+            ),
+            NativeWebReviewActionKind::SqlStructuralQueryPair
+            | NativeWebReviewActionKind::SqlStructuralQueryReplayPair => {
+                records.push((
+                    ReviewProperty::SqlHttpStatusClass,
+                    http_status_class_slug(classify_http_status(observation.status())).to_owned(),
+                ));
+                records.push((
+                    ReviewProperty::SqlBodyStructure,
+                    sql_body_structure(observation),
+                ));
+            },
         }
         records
     }
@@ -368,6 +462,11 @@ fn native_review_strategy_ref(kind: NativeWebReviewActionKind) -> PayloadStrateg
         NativeWebReviewActionKind::RedirectReflectionQueryPair => {
             (EXTERNAL_URL_QUERY_PAIR_ID, EXTERNAL_URL_QUERY_PAIR_REVISION)
         },
+        NativeWebReviewActionKind::SqlStructuralQueryPair
+        | NativeWebReviewActionKind::SqlStructuralQueryReplayPair => (
+            SQL_QUOTE_BALANCE_QUERY_PAIR_ID,
+            SQL_QUOTE_BALANCE_QUERY_PAIR_REVISION,
+        ),
     };
     PayloadStrategyRef::new(id, revision)
         .expect("native review strategies have valid static references")
@@ -401,7 +500,12 @@ fn review_projection_parents(
             .ok_or(HttpEvidenceError::AssessmentObserverInvariant { invariant })
     })
     .collect::<Result<Vec<_>, _>>()?;
-    if kind == NativeWebReviewActionKind::RedirectReflectionQueryPair {
+    if matches!(
+        kind,
+        NativeWebReviewActionKind::RedirectReflectionQueryPair
+            | NativeWebReviewActionKind::SqlStructuralQueryPair
+            | NativeWebReviewActionKind::SqlStructuralQueryReplayPair
+    ) {
         if observation.media_type().is_some() {
             parents.push(
                 observation
@@ -448,6 +552,87 @@ fn classify_observation_reflection(
     classify_exact_html_reflection(html, candidate)
 }
 
+fn sql_body_structure(observation: &CompleteHttpResponseObservation<'_>) -> String {
+    let Some(media_type) = observation.media_type() else {
+        return "incomplete".to_owned();
+    };
+    let Some(body) = observation.complete_body() else {
+        return "incomplete".to_owned();
+    };
+    let mut shape = Vec::new();
+    match media_type {
+        "text/html" => {
+            let Ok(html) = std::str::from_utf8(body) else {
+                return "incomplete".to_owned();
+            };
+            let dom = parse_document(RcDom::default(), ParseOpts::default()).one(html);
+            if !append_html_shape(&dom.document, &mut shape) {
+                return "incomplete".to_owned();
+            }
+        },
+        "application/json" => {
+            let Ok(value) = serde_json::from_slice::<serde_json::Value>(body) else {
+                return "incomplete".to_owned();
+            };
+            if !append_json_shape(&value, &mut shape) {
+                return "incomplete".to_owned();
+            }
+        },
+        value if value.starts_with("text/") => shape.extend_from_slice(b"text"),
+        _ => shape.extend_from_slice(b"binary"),
+    }
+    let digest = Sha256::digest(&shape);
+    format!("sha256:{digest:x}")
+}
+
+fn append_html_shape(handle: &Handle, output: &mut Vec<u8>) -> bool {
+    if let NodeData::Element { name, .. } = &handle.data {
+        if output.len() >= MAX_SQL_STRUCTURE_NODES.saturating_mul(32) {
+            return false;
+        }
+        output.extend_from_slice(name.local.as_bytes());
+        output.push(0);
+    }
+    for child in handle.children.borrow().iter() {
+        if !append_html_shape(child, output) {
+            return false;
+        }
+    }
+    true
+}
+
+fn append_json_shape(value: &serde_json::Value, output: &mut Vec<u8>) -> bool {
+    if output.len() >= MAX_SQL_STRUCTURE_NODES {
+        return false;
+    }
+    output.push(match value {
+        serde_json::Value::Null => b'n',
+        serde_json::Value::Bool(_) => b'b',
+        serde_json::Value::Number(_) => b'd',
+        serde_json::Value::String(_) => b's',
+        serde_json::Value::Array(_) => b'a',
+        serde_json::Value::Object(_) => b'o',
+    });
+    match value {
+        serde_json::Value::Array(values) => {
+            for value in values {
+                if !append_json_shape(value, output) {
+                    return false;
+                }
+            }
+        },
+        serde_json::Value::Object(values) => {
+            for value in values.values() {
+                if !append_json_shape(value, output) {
+                    return false;
+                }
+            }
+        },
+        _ => {},
+    }
+    true
+}
+
 fn review_source_method(
     kind: NativeWebReviewActionKind,
     stage: DecisionExecutionStage,
@@ -467,6 +652,20 @@ fn review_source_method(
             NativeWebReviewActionKind::RedirectReflectionQueryPair,
             DecisionExecutionStage::Active,
         ) => "redirect-reflection-candidate-response",
+        (NativeWebReviewActionKind::SqlStructuralQueryPair, DecisionExecutionStage::Passive) => {
+            "sql-structural-control-response"
+        },
+        (NativeWebReviewActionKind::SqlStructuralQueryPair, DecisionExecutionStage::Active) => {
+            "sql-structural-candidate-response"
+        },
+        (
+            NativeWebReviewActionKind::SqlStructuralQueryReplayPair,
+            DecisionExecutionStage::Passive,
+        ) => "sql-structural-replay-control-response",
+        (
+            NativeWebReviewActionKind::SqlStructuralQueryReplayPair,
+            DecisionExecutionStage::Active,
+        ) => "sql-structural-replay-candidate-response",
     }
 }
 
@@ -556,6 +755,8 @@ enum ReviewProperty {
     RedirectStatus,
     RedirectLocation,
     HtmlReflection,
+    SqlHttpStatusClass,
+    SqlBodyStructure,
 }
 
 impl ReviewProperty {
@@ -569,6 +770,8 @@ impl ReviewProperty {
             Self::RedirectStatus => REDIRECT_STATUS_RELATION,
             Self::RedirectLocation => REDIRECT_LOCATION_RELATION,
             Self::HtmlReflection => HTML_REFLECTION_CONTEXT,
+            Self::SqlHttpStatusClass => SQL_HTTP_STATUS_CLASS,
+            Self::SqlBodyStructure => SQL_BODY_STRUCTURE,
         }
     }
 
@@ -599,7 +802,7 @@ enum ReviewHttpStatusClass {
     Other,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum CommittedReviewResponse {
     Cors {
         status: ReviewHttpStatusClass,
@@ -611,6 +814,10 @@ enum CommittedReviewResponse {
         status: ReviewStatusRelation,
         location: LocationRelation,
         reflection: ExactHtmlReflectionContext,
+    },
+    SqlStructural {
+        status: ReviewHttpStatusClass,
+        body_structure: String,
     },
 }
 
@@ -676,6 +883,7 @@ pub(crate) struct CommittedAssessmentReviewLedger {
     subject: EntityId,
     seeds: NativeWebReviewSeeds,
     redirect: Option<RedirectReflectionContract>,
+    sql: Option<SqlStructuralContract>,
     observations: BTreeMap<ReviewReceiptKey, CommittedAssessmentReviewObservation>,
 }
 
@@ -687,23 +895,40 @@ impl fmt::Debug for CommittedAssessmentReviewLedger {
             .field("subject", &"<redacted>")
             .field("seeds", &self.seeds)
             .field("redirect", &self.redirect.as_ref().map(|_| "<configured>"))
+            .field("sql", &self.sql.as_ref().map(|_| "<configured>"))
             .field("observation_count", &self.observations.len())
             .finish()
     }
 }
 
 impl CommittedAssessmentReviewLedger {
+    #[cfg(test)]
     pub(crate) fn new(
         root: Url,
         seeds: NativeWebReviewSeeds,
         redirect_query_parameter: Option<&str>,
     ) -> Result<Self, AssessmentReviewObserverError> {
-        let observer = AssessmentReviewObserverSet::new(root, seeds, redirect_query_parameter)?;
+        Self::new_with_sql(root, seeds, redirect_query_parameter, None)
+    }
+
+    pub(crate) fn new_with_sql(
+        root: Url,
+        seeds: NativeWebReviewSeeds,
+        redirect_query_parameter: Option<&str>,
+        sql_query_parameter: Option<&str>,
+    ) -> Result<Self, AssessmentReviewObserverError> {
+        let observer = AssessmentReviewObserverSet::new_with_sql(
+            root,
+            seeds,
+            redirect_query_parameter,
+            sql_query_parameter,
+        )?;
         Ok(Self {
             root: observer.root,
             subject: observer.subject,
             seeds: observer.seeds,
             redirect: observer.redirect,
+            sql: observer.sql,
             observations: BTreeMap::new(),
         })
     }
@@ -712,6 +937,10 @@ impl CommittedAssessmentReviewLedger {
         &self,
     ) -> impl ExactSizeIterator<Item = &CommittedAssessmentReviewObservation> {
         self.observations.values()
+    }
+
+    pub(crate) fn subject(&self) -> &EntityId {
+        &self.subject
     }
 
     /// Returns whether an enabled HTML-reflection leg could not be classified
@@ -766,10 +995,17 @@ impl CommittedAssessmentReviewLedger {
             &self.root,
             &self.subject,
             self.redirect.as_ref(),
+            self.sql.as_ref(),
             kind,
         )?;
         validate_committed_batch(receipt, knowledge)?;
-        let mut parsed = parse_review_receipt(receipt, &self.root, self.redirect.as_ref(), kind)?;
+        let mut parsed = parse_review_receipt(
+            receipt,
+            &self.root,
+            self.redirect.as_ref(),
+            self.sql.as_ref(),
+            kind,
+        )?;
         parsed.active_pair_success =
             validate_verifier_proof(receipt, decision, knowledge, &parsed)?;
         let key = ReviewReceiptKey {
@@ -795,7 +1031,10 @@ impl CommittedAssessmentReviewLedger {
     /// There is deliberately no `Confirmed` candidate variant.
     pub(crate) fn candidates(&self) -> Vec<AssessmentReviewCandidate> {
         let mut candidates = Vec::new();
-        for kind in NativeWebReviewActionKind::all() {
+        for kind in [
+            NativeWebReviewActionKind::CorsPolicyPair,
+            NativeWebReviewActionKind::RedirectReflectionQueryPair,
+        ] {
             let passive = self
                 .observations
                 .values()
@@ -820,8 +1059,64 @@ impl CommittedAssessmentReviewLedger {
                 );
             }
         }
+        if let Some(contract) = self.sql.as_ref() {
+            let first = exact_pair(
+                &self.observations,
+                NativeWebReviewActionKind::SqlStructuralQueryPair,
+            );
+            let replay = exact_pair(
+                &self.observations,
+                NativeWebReviewActionKind::SqlStructuralQueryReplayPair,
+            );
+            if let (Some((control, candidate)), Some((replay_control, replay_candidate))) =
+                (first, replay)
+            {
+                append_sql_candidate(
+                    control,
+                    candidate,
+                    replay_control,
+                    replay_candidate,
+                    &contract.query_parameter,
+                    &mut candidates,
+                );
+            }
+        }
         candidates
     }
+
+    pub(crate) fn has_incomplete_sql_observation(&self) -> bool {
+        self.observations.values().any(|observation| {
+            matches!(
+                &observation.response,
+                CommittedReviewResponse::SqlStructural { body_structure, .. }
+                    if body_structure == "incomplete"
+            )
+        })
+    }
+}
+
+fn exact_pair(
+    observations: &BTreeMap<ReviewReceiptKey, CommittedAssessmentReviewObservation>,
+    kind: NativeWebReviewActionKind,
+) -> Option<(
+    &CommittedAssessmentReviewObservation,
+    &CommittedAssessmentReviewObservation,
+)> {
+    let mut controls = observations
+        .values()
+        .filter(|item| item.kind == kind && item.stage == DecisionExecutionStage::Passive);
+    let control = controls.next()?;
+    if controls.next().is_some() {
+        return None;
+    }
+    let mut candidates = observations
+        .values()
+        .filter(|item| item.kind == kind && item.stage == DecisionExecutionStage::Active);
+    let candidate = candidates.next()?;
+    if candidates.next().is_some() || !observations_form_exact_pair(control, candidate) {
+        return None;
+    }
+    Some((control, candidate))
 }
 
 fn validate_receipt_authority(
@@ -830,6 +1125,7 @@ fn validate_receipt_authority(
     root: &Url,
     subject: &EntityId,
     redirect: Option<&RedirectReflectionContract>,
+    sql: Option<&SqlStructuralContract>,
     kind: NativeWebReviewActionKind,
 ) -> Result<(), AssessmentReviewLedgerError> {
     let case = receipt.case();
@@ -851,7 +1147,7 @@ fn validate_receipt_authority(
         || receipt.evidence().len() != receipt.writes().len()
         || !execution_and_verification_stage_match(receipt.stage(), verification.stage())
         || verification.stage() != outcome.stage()
-        || !receipt_url_matches_contract(receipt, root, redirect, kind)
+        || !receipt_url_matches_contract(receipt, root, redirect, sql, kind)
     {
         return Err(AssessmentReviewLedgerError::ReceiptAuthority);
     }
@@ -879,6 +1175,7 @@ fn parse_review_receipt(
     receipt: &DecisionEvidenceReceipt,
     root: &Url,
     redirect: Option<&RedirectReflectionContract>,
+    sql: Option<&SqlStructuralContract>,
     kind: NativeWebReviewActionKind,
 ) -> Result<CommittedAssessmentReviewObservation, AssessmentReviewLedgerError> {
     let expected = expected_properties(kind);
@@ -895,7 +1192,7 @@ fn parse_review_receipt(
         return Err(AssessmentReviewLedgerError::EvidenceProjection);
     }
 
-    let parents = expected_review_parent_ids(receipt, root, redirect, kind)?;
+    let parents = expected_review_parent_ids(receipt, root, redirect, sql, kind)?;
     let source_method = review_source_method(kind, receipt.stage());
     let mut property_evidence = BTreeMap::new();
     let mut values = BTreeMap::new();
@@ -950,6 +1247,26 @@ fn parse_review_receipt(
                 status: parse_status_relation(value(&values, ReviewProperty::RedirectStatus)?)?,
                 location: parse_location(value(&values, ReviewProperty::RedirectLocation)?)?,
                 reflection: parse_reflection(value(&values, ReviewProperty::HtmlReflection)?)?,
+            }
+        },
+        NativeWebReviewActionKind::SqlStructuralQueryPair
+        | NativeWebReviewActionKind::SqlStructuralQueryReplayPair => {
+            let body_structure = value(&values, ReviewProperty::SqlBodyStructure)?;
+            if body_structure != "incomplete"
+                && !(body_structure.len() == 71
+                    && body_structure.starts_with("sha256:")
+                    && body_structure[7..]
+                        .bytes()
+                        .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase()))
+            {
+                return Err(AssessmentReviewLedgerError::EvidenceProjection);
+            }
+            CommittedReviewResponse::SqlStructural {
+                status: parse_http_status_class(value(
+                    &values,
+                    ReviewProperty::SqlHttpStatusClass,
+                )?)?,
+                body_structure: body_structure.to_owned(),
             }
         },
     };
@@ -1047,6 +1364,7 @@ fn expected_review_parent_ids(
     receipt: &DecisionEvidenceReceipt,
     root: &Url,
     redirect: Option<&RedirectReflectionContract>,
+    sql: Option<&SqlStructuralContract>,
     kind: NativeWebReviewActionKind,
 ) -> Result<Vec<EvidenceId>, AssessmentReviewLedgerError> {
     let method = unique_base(receipt, HttpEvidencePredicate::REQUEST_METHOD)?;
@@ -1054,7 +1372,14 @@ fn expected_review_parent_ids(
     let status = unique_base(receipt, HttpEvidencePredicate::RESPONSE_STATUS)?;
     let final_url = unique_base(receipt, HttpEvidencePredicate::RESPONSE_FINAL_URL)?;
     if method.value() != &EvidenceValue::Text("GET".to_owned())
-        || !requested_url_value_matches(requested.value(), root, redirect, receipt.stage(), kind)
+        || !requested_url_value_matches_with_sql(
+            requested.value(),
+            root,
+            redirect,
+            sql,
+            receipt.stage(),
+            kind,
+        )
         || status_u16(status.value()).is_none()
         || requested.value() != final_url.value()
     {
@@ -1126,19 +1451,28 @@ fn receipt_url_matches_contract(
     receipt: &DecisionEvidenceReceipt,
     root: &Url,
     redirect: Option<&RedirectReflectionContract>,
+    sql: Option<&SqlStructuralContract>,
     kind: NativeWebReviewActionKind,
 ) -> bool {
     unique_base(receipt, HttpEvidencePredicate::REQUEST_URL)
         .ok()
         .is_some_and(|evidence| {
-            requested_url_value_matches(evidence.value(), root, redirect, receipt.stage(), kind)
+            requested_url_value_matches_with_sql(
+                evidence.value(),
+                root,
+                redirect,
+                sql,
+                receipt.stage(),
+                kind,
+            )
         })
 }
 
-fn requested_url_value_matches(
+fn requested_url_value_matches_with_sql(
     value: &EvidenceValue,
     root: &Url,
     redirect: Option<&RedirectReflectionContract>,
+    sql: Option<&SqlStructuralContract>,
     stage: DecisionExecutionStage,
     kind: NativeWebReviewActionKind,
 ) -> bool {
@@ -1158,6 +1492,16 @@ fn requested_url_value_matches(
             NativeWebReviewActionKind::RedirectReflectionQueryPair,
             DecisionExecutionStage::Active,
         ) => redirect.is_some_and(|contract| url == contract.candidate_url),
+        (
+            NativeWebReviewActionKind::SqlStructuralQueryPair
+            | NativeWebReviewActionKind::SqlStructuralQueryReplayPair,
+            DecisionExecutionStage::Passive,
+        ) => sql.is_some_and(|contract| url == contract.control_url),
+        (
+            NativeWebReviewActionKind::SqlStructuralQueryPair
+            | NativeWebReviewActionKind::SqlStructuralQueryReplayPair,
+            DecisionExecutionStage::Active,
+        ) => sql.is_some_and(|contract| url == contract.candidate_url),
     }
 }
 
@@ -1193,10 +1537,18 @@ const REDIRECT_REVIEW_PROPERTIES: [ReviewProperty; 4] = [
     ReviewProperty::HtmlReflection,
 ];
 
+const SQL_REVIEW_PROPERTIES: [ReviewProperty; 3] = [
+    ReviewProperty::ResponseMarker,
+    ReviewProperty::SqlHttpStatusClass,
+    ReviewProperty::SqlBodyStructure,
+];
+
 fn expected_properties(kind: NativeWebReviewActionKind) -> &'static [ReviewProperty] {
     match kind {
         NativeWebReviewActionKind::CorsPolicyPair => &CORS_REVIEW_PROPERTIES,
         NativeWebReviewActionKind::RedirectReflectionQueryPair => &REDIRECT_REVIEW_PROPERTIES,
+        NativeWebReviewActionKind::SqlStructuralQueryPair
+        | NativeWebReviewActionKind::SqlStructuralQueryReplayPair => &SQL_REVIEW_PROPERTIES,
     }
 }
 
@@ -1359,6 +1711,26 @@ pub(crate) struct ReflectionReviewCandidate {
     candidate_evidence_ids: Vec<EvidenceId>,
 }
 
+#[cfg(test)]
+fn requested_url_value_matches(
+    value: &EvidenceValue,
+    root: &Url,
+    redirect: Option<&RedirectReflectionContract>,
+    stage: DecisionExecutionStage,
+    kind: NativeWebReviewActionKind,
+) -> bool {
+    requested_url_value_matches_with_sql(value, root, redirect, None, stage, kind)
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) struct SqlStructuralReviewCandidate {
+    subject: EntityId,
+    case_id: String,
+    query_parameter: String,
+    control_evidence_ids: Vec<EvidenceId>,
+    candidate_evidence_ids: Vec<EvidenceId>,
+}
+
 /// Typed output from the matched-pair ledger. No variant can assert a
 /// confirmed vulnerability.
 #[derive(Clone, PartialEq, Eq)]
@@ -1366,6 +1738,7 @@ pub(crate) enum AssessmentReviewCandidate {
     Cors(CorsReviewCandidate),
     Redirect(RedirectReviewCandidate),
     Reflection(ReflectionReviewCandidate),
+    SqlStructural(SqlStructuralReviewCandidate),
 }
 
 macro_rules! redacted_candidate_debug {
@@ -1389,6 +1762,7 @@ macro_rules! redacted_candidate_debug {
 
 redacted_candidate_debug!(CorsReviewCandidate, "CorsReviewCandidate");
 redacted_candidate_debug!(RedirectReviewCandidate, "RedirectReviewCandidate");
+redacted_candidate_debug!(SqlStructuralReviewCandidate, "SqlStructuralReviewCandidate");
 
 impl fmt::Debug for ReflectionReviewCandidate {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -1413,6 +1787,7 @@ impl fmt::Debug for AssessmentReviewCandidate {
             Self::Cors(value) => value.fmt(formatter),
             Self::Redirect(value) => value.fmt(formatter),
             Self::Reflection(value) => value.fmt(formatter),
+            Self::SqlStructural(value) => value.fmt(formatter),
         }
     }
 }
@@ -1420,7 +1795,9 @@ impl fmt::Debug for AssessmentReviewCandidate {
 impl AssessmentReviewCandidate {
     pub(crate) const fn disposition(&self) -> NativeReviewDisposition {
         match self {
-            Self::Cors(_) | Self::Redirect(_) => NativeReviewDisposition::NeedsReview,
+            Self::Cors(_) | Self::Redirect(_) | Self::SqlStructural(_) => {
+                NativeReviewDisposition::NeedsReview
+            },
             Self::Reflection(candidate) => candidate.disposition,
         }
     }
@@ -1430,6 +1807,7 @@ impl AssessmentReviewCandidate {
             Self::Cors(candidate) => &candidate.subject,
             Self::Redirect(candidate) => &candidate.subject,
             Self::Reflection(candidate) => &candidate.subject,
+            Self::SqlStructural(candidate) => &candidate.subject,
         }
     }
 
@@ -1438,6 +1816,7 @@ impl AssessmentReviewCandidate {
             Self::Cors(candidate) => &candidate.control_evidence_ids,
             Self::Redirect(candidate) => &candidate.control_evidence_ids,
             Self::Reflection(candidate) => &candidate.control_evidence_ids,
+            Self::SqlStructural(candidate) => &candidate.control_evidence_ids,
         }
     }
 
@@ -1446,13 +1825,14 @@ impl AssessmentReviewCandidate {
             Self::Cors(candidate) => &candidate.candidate_evidence_ids,
             Self::Redirect(candidate) => &candidate.candidate_evidence_ids,
             Self::Reflection(candidate) => &candidate.candidate_evidence_ids,
+            Self::SqlStructural(candidate) => &candidate.candidate_evidence_ids,
         }
     }
 
     pub(crate) const fn reflection_context(&self) -> Option<ReviewReflectionContext> {
         match self {
             Self::Reflection(candidate) => Some(candidate.context),
-            Self::Cors(_) | Self::Redirect(_) => None,
+            Self::Cors(_) | Self::Redirect(_) | Self::SqlStructural(_) => None,
         }
     }
 
@@ -1460,7 +1840,7 @@ impl AssessmentReviewCandidate {
     pub(crate) const fn cors_status_relationship(&self) -> Option<CorsStatusRelationship> {
         match self {
             Self::Cors(candidate) => Some(candidate.status_relationship),
-            Self::Redirect(_) | Self::Reflection(_) => None,
+            Self::Redirect(_) | Self::Reflection(_) | Self::SqlStructural(_) => None,
         }
     }
 
@@ -1468,6 +1848,7 @@ impl AssessmentReviewCandidate {
         match self {
             Self::Redirect(candidate) => Some(&candidate.query_parameter),
             Self::Reflection(candidate) => Some(&candidate.query_parameter),
+            Self::SqlStructural(candidate) => Some(&candidate.query_parameter),
             Self::Cors(_) => None,
         }
     }
@@ -1482,7 +1863,7 @@ fn append_pair_candidates(
     if !observations_form_exact_pair(control, candidate) {
         return;
     }
-    match (control.response, candidate.response) {
+    match (&control.response, &candidate.response) {
         (
             CommittedReviewResponse::Cors {
                 status: ReviewHttpStatusClass::Successful,
@@ -1499,7 +1880,7 @@ fn append_pair_candidates(
             subject: control.subject.clone(),
             case_id: control.case_id.clone(),
             status_relationship: CorsStatusRelationship::MatchedSuccessful,
-            vary_origin,
+            vary_origin: *vary_origin,
             control_evidence_ids: ids_for(
                 control,
                 &[
@@ -1560,8 +1941,8 @@ fn append_pair_candidates(
             append_reflection_candidate(
                 control,
                 candidate,
-                control_reflection,
-                candidate_reflection,
+                *control_reflection,
+                *candidate_reflection,
                 query_parameter,
                 output,
             );
@@ -1582,14 +1963,107 @@ fn append_pair_candidates(
             append_reflection_candidate(
                 control,
                 candidate,
-                control_reflection,
-                candidate_reflection,
+                *control_reflection,
+                *candidate_reflection,
                 query_parameter,
                 output,
             )
         },
         _ => {},
     }
+}
+
+fn append_sql_candidate(
+    control: &CommittedAssessmentReviewObservation,
+    candidate: &CommittedAssessmentReviewObservation,
+    replay_control: &CommittedAssessmentReviewObservation,
+    replay_candidate: &CommittedAssessmentReviewObservation,
+    query_parameter: &str,
+    output: &mut Vec<AssessmentReviewCandidate>,
+) {
+    if control.subject != replay_control.subject
+        || candidate.subject != replay_candidate.subject
+        || control.hypothesis_id != replay_control.hypothesis_id
+        || control.case_id == replay_control.case_id
+        || !disjoint(&control.evidence_ids, &candidate.evidence_ids)
+        || !disjoint(&control.evidence_ids, &replay_control.evidence_ids)
+        || !disjoint(&control.evidence_ids, &replay_candidate.evidence_ids)
+        || !disjoint(&candidate.evidence_ids, &replay_control.evidence_ids)
+        || !disjoint(&candidate.evidence_ids, &replay_candidate.evidence_ids)
+        || !disjoint(&replay_control.evidence_ids, &replay_candidate.evidence_ids)
+    {
+        return;
+    }
+    let (
+        CommittedReviewResponse::SqlStructural {
+            status: control_status,
+            body_structure: control_structure,
+        },
+        CommittedReviewResponse::SqlStructural {
+            status: candidate_status,
+            body_structure: candidate_structure,
+        },
+        CommittedReviewResponse::SqlStructural {
+            status: replay_control_status,
+            body_structure: replay_control_structure,
+        },
+        CommittedReviewResponse::SqlStructural {
+            status: replay_candidate_status,
+            body_structure: replay_candidate_structure,
+        },
+    ) = (
+        &control.response,
+        &candidate.response,
+        &replay_control.response,
+        &replay_candidate.response,
+    )
+    else {
+        return;
+    };
+    if control_structure == "incomplete"
+        || candidate_structure == "incomplete"
+        || control_status != replay_control_status
+        || control_structure != replay_control_structure
+        || candidate_status != replay_candidate_status
+        || candidate_structure != replay_candidate_structure
+        || control_status == candidate_status
+        || control_structure == candidate_structure
+    {
+        return;
+    }
+    output.push(AssessmentReviewCandidate::SqlStructural(
+        SqlStructuralReviewCandidate {
+            subject: control.subject.clone(),
+            case_id: control.case_id.clone(),
+            query_parameter: query_parameter.to_owned(),
+            control_evidence_ids: [control, replay_control]
+                .into_iter()
+                .flat_map(|observation| {
+                    ids_for(
+                        observation,
+                        &[
+                            ReviewProperty::ResponseMarker,
+                            ReviewProperty::SqlHttpStatusClass,
+                            ReviewProperty::SqlBodyStructure,
+                        ],
+                    )
+                })
+                .collect(),
+            candidate_evidence_ids: [candidate, replay_candidate]
+                .into_iter()
+                .flat_map(|observation| {
+                    ids_for(
+                        observation,
+                        &[
+                            ReviewProperty::ResponseMarker,
+                            ReviewProperty::SqlHttpStatusClass,
+                            ReviewProperty::SqlBodyStructure,
+                        ],
+                    )
+                })
+                .collect(),
+        },
+    ));
 }
 
 fn observations_form_exact_pair(

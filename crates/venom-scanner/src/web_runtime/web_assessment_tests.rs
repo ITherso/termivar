@@ -298,7 +298,7 @@ async fn opted_in_native_review_uses_exact_root_shared_authority_and_no_redirect
     assert_eq!(report.completion(), &WebAssessmentCompletion::Complete);
 
     let requests = server.requests().await;
-    assert_eq!(requests.len(), 5);
+    assert_eq!(requests.len(), 9);
     assert!(requests.iter().all(|request| request.path() == "/"));
     assert_eq!(
         requests
@@ -312,7 +312,7 @@ async fn opted_in_native_review_uses_exact_root_shared_authority_and_no_redirect
             .iter()
             .filter(|request| request.target.contains("return_to="))
             .count(),
-        1
+        5
     );
     assert_eq!(
         report.subjects()[0]
@@ -324,7 +324,7 @@ async fn opted_in_native_review_uses_exact_root_shared_authority_and_no_redirect
                     if is_native_review_action(evidence.case().action_id())
             ))
             .count(),
-        4
+        8
     );
     let native_items = report
         .assessment_items()
@@ -486,7 +486,7 @@ async fn reflected_origin_and_generic_redirect_are_not_findings_and_text_reflect
         native_items[0].basis(),
         AssessmentBasis::Observation(_)
     ));
-    assert_eq!(server.requests().await.len(), 5);
+    assert_eq!(server.requests().await.len(), 9);
 }
 
 #[tokio::test]
@@ -511,8 +511,17 @@ async fn native_review_never_invents_an_unrecognized_query_parameter() {
     assert_eq!(report.completion(), &WebAssessmentCompletion::Complete);
 
     let requests = server.requests().await;
-    assert_eq!(requests.len(), 3);
-    assert!(requests.iter().all(|request| !request.target.contains('?')));
+    assert_eq!(requests.len(), 7);
+    assert_eq!(
+        requests
+            .iter()
+            .filter(|request| request.target.contains("opaque="))
+            .count(),
+        4
+    );
+    assert!(requests
+        .iter()
+        .all(|request| !request.target.contains("review.invalid")));
     assert_eq!(
         requests
             .iter()
@@ -520,6 +529,73 @@ async fn native_review_never_invents_an_unrecognized_query_parameter() {
             .count(),
         1
     );
+}
+
+#[tokio::test]
+async fn sql_review_projects_one_repeatable_non_root_item_without_query_value_leakage() {
+    const SECRET: &str = "PRIVATE-SQL-QUERY-VALUE-SENTINEL";
+    let server = serve(|request| {
+        if request.path() == "/" {
+            return FixtureReply::Response(FixtureResponse::html(format!(
+                "<a href='/search?item={SECRET}'>search</a>"
+            )));
+        }
+        let candidate = Url::parse(&format!("http://fixture{}", request.target))
+            .ok()
+            .and_then(|url| {
+                url.query_pairs()
+                    .find_map(|(name, value)| (name == "item").then(|| value.into_owned()))
+            })
+            .is_some_and(|value| value.ends_with('\''));
+        if candidate {
+            FixtureReply::Response(FixtureResponse::new(
+                "500 Internal Server Error",
+                Some("text/html"),
+                "<html><body><section><code>failure</code></section></body></html>",
+            ))
+        } else {
+            FixtureReply::Response(FixtureResponse::html(
+                "<html><body><main>normal</main></body></html>",
+            ))
+        }
+    })
+    .await;
+    let mut runtime = WebAssessmentRuntime::builder(server.url("/"))
+        .enable_low_risk_differential_review()
+        .build()
+        .unwrap();
+
+    let report = runtime.analyze().await.unwrap();
+    assert_report_reconciles(&report);
+    assert_eq!(report.completion(), &WebAssessmentCompletion::Complete);
+    let sql_items = report
+        .assessment_items()
+        .iter()
+        .filter(|item| item.capability_id() == "web.review.sql.structural-differential@1")
+        .collect::<Vec<_>>();
+    assert_eq!(sql_items.len(), 1);
+    assert_eq!(
+        sql_items[0].disposition(),
+        AssessmentDisposition::NeedsReview
+    );
+    assert!(matches!(
+        sql_items[0].basis(),
+        AssessmentBasis::Differential(_)
+    ));
+    assert_eq!(report.usage().active_verifications(), 3);
+    assert_eq!(report.usage().total_requests(), 8);
+    let requests = server.requests().await;
+    assert!(requests
+        .iter()
+        .all(|request| request.host() == requests[0].host()));
+    assert!(requests
+        .iter()
+        .all(|request| !request.target.contains(SECRET)));
+    assert!(!format!("{report:?}").contains(SECRET));
+    assert!(report
+        .assessment_items()
+        .iter()
+        .all(|item| item.disposition() != AssessmentDisposition::Confirmed));
 }
 
 #[tokio::test]
@@ -604,7 +680,10 @@ async fn truncated_explicit_non_html_is_not_applicable_to_reflection_review() {
 
     let report = runtime.analyze().await.unwrap();
     assert_report_reconciles(&report);
-    assert_eq!(report.completion(), &WebAssessmentCompletion::Complete);
+    assert!(report
+        .completion()
+        .reasons()
+        .contains(&WebAssessmentIncompleteReason::DifferentialReviewIncomplete));
     assert!(report
         .assessment_items()
         .iter()

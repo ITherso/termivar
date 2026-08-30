@@ -1055,7 +1055,7 @@ struct PlannedPassiveAssessmentItem {
 }
 
 struct AssessmentReviewProjectionSources<'a> {
-    native: Option<&'a CommittedAssessmentReviewLedger>,
+    native: &'a [&'a CommittedAssessmentReviewLedger],
     api_visibility: Option<&'a CommittedAssessmentApiVisibility>,
 }
 
@@ -1068,7 +1068,7 @@ pub(crate) fn project_passive_assessment_items(
 ) -> Result<PassiveAssessmentItemProjection, PassiveAssessmentItemProjectionError> {
     project_assessment_items(
         ledger,
-        None,
+        &[],
         None,
         knowledge,
         authorized_root,
@@ -1080,7 +1080,7 @@ pub(crate) fn project_passive_assessment_items(
 /// one context-owned item/reference space.
 pub(crate) fn project_assessment_items(
     ledger: &CommittedAssessmentPassiveLedger,
-    review: Option<&CommittedAssessmentReviewLedger>,
+    review: &[&CommittedAssessmentReviewLedger],
     api_visibility: Option<&CommittedAssessmentApiVisibility>,
     knowledge: &KnowledgeBase,
     authorized_root: &WebAssessmentSubject,
@@ -1187,7 +1187,7 @@ fn project_passive_assessment_items_for_root(
     project_assessment_items_for_subjects(
         ledger,
         AssessmentReviewProjectionSources {
-            native: None,
+            native: &[],
             api_visibility: None,
         },
         knowledge,
@@ -1266,8 +1266,8 @@ fn project_assessment_items_for_subjects(
             &item.evidence_ids,
         )?;
     }
-    if let (Some(review), Some(root_subject)) = (reviews.native, root_subject.as_ref()) {
-        project_assessment_review_items(&mut context, review, knowledge, root_subject)?;
+    for review in reviews.native {
+        project_assessment_review_items(&mut context, review, knowledge, review.subject())?;
     }
     if let (Some(api_visibility), Some(root_subject)) =
         (reviews.api_visibility, root_subject.as_ref())

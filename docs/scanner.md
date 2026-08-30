@@ -38,13 +38,19 @@ authorized starting resource inside the same `StandardWebDecisionRuntime`
 session used for its bootstrap. It uses matched CORS control/candidate requests
 and, only for a recognized navigation parameter already named by the starting
 URL, a matched redirect/reflection query pair. The supplied query value is
-discarded. Native actions do not suppress otherwise eligible standard actions.
+discarded. At most one deterministic discovered parameter is also reviewed by
+two independent matched SQL quote-balance pairs. The mutation contains no
+operator, comment, statement separator, function, or delay syntax. An item
+requires the same candidate-specific status-class and normalized body-structure
+difference in both pairs; text and latency are not signals. Native actions do
+not suppress otherwise eligible standard actions.
 A reflected Origin without the complete credential policy or without two
 successful-status legs is insufficient. Redirect review accepts only
 301/302/303/307/308, and redirects are not followed. Non-dangerous exact
 reflection is `Informational`; dangerous-context reflection, credentialed
 candidate-specific CORS, and an exact candidate-specific external redirect are
-at most `NeedsReview`. Every native action is KnowledgeOnly, and no native
+at most `NeedsReview`; the repeatable SQL structural relationship is also at
+most `NeedsReview`. Every native action is KnowledgeOnly, and no native
 assessment capability can produce a `Confirmed` item.
 An explicitly non-HTML response makes reflection review not applicable. A
 truncated body, invalid UTF-8, or exhausted DOM/occurrence ceiling instead makes

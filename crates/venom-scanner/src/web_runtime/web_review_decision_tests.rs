@@ -79,6 +79,11 @@ fn expected_strategy(kind: NativeWebReviewActionKind) -> PayloadStrategyRef {
         NativeWebReviewActionKind::RedirectReflectionQueryPair => {
             (EXTERNAL_URL_QUERY_PAIR_ID, EXTERNAL_URL_QUERY_PAIR_REVISION)
         },
+        NativeWebReviewActionKind::SqlStructuralQueryPair
+        | NativeWebReviewActionKind::SqlStructuralQueryReplayPair => (
+            SQL_QUOTE_BALANCE_QUERY_PAIR_ID,
+            SQL_QUOTE_BALANCE_QUERY_PAIR_REVISION,
+        ),
     };
     PayloadStrategyRef::new(id, revision).unwrap()
 }

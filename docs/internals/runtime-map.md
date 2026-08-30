@@ -45,6 +45,7 @@ venom scan <target> --profile web-review
       -> defense observation and shadow planning
       -> passive header/cookie assessment projection
       -> root-scoped matched CORS and optional redirect/reflection review
+      -> one bounded root-or-discovered SQL structural review with exact replay
       -> optional exact-root anonymous/authorized API visibility pair
       -> central bounded assessment renderer on complete execution
 ```
@@ -93,6 +94,11 @@ followed. Passive and ordinary-reflection items are
 dangerous-context reflection relationships are at most `NeedsReview`. Every
 native action is KnowledgeOnly, and no native assessment capability can
 produce a `Confirmed` item.
+At most one deterministic query name across the assessment receives SQL
+structural review. Two independent matched quote-balance pairs must reproduce
+both a status-class and normalized body-structure change. Error text and
+latency are not classification inputs; incomplete or inconsistent replay emits
+no claim and incomplete collection remains typed incomplete.
 
 The optional authorization-context slice consumes a host-supplied complete
 header value only after explicit profile/root validation. It builds a separate

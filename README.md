@@ -157,6 +157,12 @@ compares a query-free control with one deterministic `.invalid` external
 destination without following redirects. Query values from the user are never
 retained or replayed.
 
+At most one deterministic parameter from the root or a discovered exact-origin
+resource receives SQL structural review. Two independent matched pairs use a
+scanner-owned token and one unmatched quote only. A `NeedsReview` item requires
+the same status-class and normalized HTML/JSON structure difference on replay;
+error text, payload delivery, reflection, and latency alone are ignored.
+
 Credentialed candidate-specific CORS requires matched successful-status
 control/candidate responses; it and an exact candidate-specific external
 redirect relationship can produce only `NeedsReview`. Exact reflection in
@@ -167,10 +173,9 @@ never `Confirmed` XSS. The catalog is KnowledgeOnly and has no path to a
 Non-HTML is explicitly not applicable to reflection review; truncation,
 invalid UTF-8, or an exhausted parser ceiling makes the opt-in review run
 incomplete rather than silently successful.
-The current stable item-identity authority projects only the exact origin root
-(`/`); a non-root starting target, or an eligible condition on a discovered
-non-root subject, becomes typed incompleteness rather than a URL-derived
-identity.
+Stable item identity preserves `authorized-root@1` for `/` and gives eligible
+discovered exact-origin resources an opaque `discovered-resource@1` identity
+derived from non-secret canonical structure and parameter names, never values.
 
 An additional explicit `web-review` option can compare the exact origin root
 once as anonymous and once with a host-supplied `Authorization` context. Use

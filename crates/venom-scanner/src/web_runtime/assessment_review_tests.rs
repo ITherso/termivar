@@ -606,7 +606,7 @@ fn exact_pair_completion_rejects_cross_case_and_cross_hypothesis_observations() 
     let control = fake_observation(
         NativeWebReviewActionKind::CorsPolicyPair,
         DecisionExecutionStage::Passive,
-        response,
+        response.clone(),
         false,
         "control",
     );
@@ -783,4 +783,154 @@ fn observer_and_ledger_constructors_reject_ambiguous_authority() {
         Err(AssessmentReviewObserverError::QueryParameter)
     ));
     assert!(CommittedAssessmentReviewLedger::new(root(), seeds, Some(QUERY_PARAMETER)).is_ok());
+}
+
+fn sql_observation(
+    kind: NativeWebReviewActionKind,
+    stage: DecisionExecutionStage,
+    status: ReviewHttpStatusClass,
+    structure: &str,
+    active_success: bool,
+    evidence_prefix: &str,
+) -> CommittedAssessmentReviewObservation {
+    fake_observation(
+        kind,
+        stage,
+        CommittedReviewResponse::SqlStructural {
+            status,
+            body_structure: structure.to_owned(),
+        },
+        active_success,
+        evidence_prefix,
+    )
+}
+
+fn sql_pair_set(
+    candidate_status: ReviewHttpStatusClass,
+    candidate_structure: &str,
+    replay_candidate_status: ReviewHttpStatusClass,
+    replay_candidate_structure: &str,
+) -> [CommittedAssessmentReviewObservation; 4] {
+    let control_structure =
+        "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    let control = sql_observation(
+        NativeWebReviewActionKind::SqlStructuralQueryPair,
+        DecisionExecutionStage::Passive,
+        ReviewHttpStatusClass::Successful,
+        control_structure,
+        false,
+        "sql-control",
+    );
+    let candidate = sql_observation(
+        NativeWebReviewActionKind::SqlStructuralQueryPair,
+        DecisionExecutionStage::Active,
+        candidate_status,
+        candidate_structure,
+        true,
+        "sql-candidate",
+    );
+    let mut replay_control = sql_observation(
+        NativeWebReviewActionKind::SqlStructuralQueryReplayPair,
+        DecisionExecutionStage::Passive,
+        ReviewHttpStatusClass::Successful,
+        control_structure,
+        false,
+        "sql-replay-control",
+    );
+    replay_control.case_id = "case:decision:2:sql-replay".to_owned();
+    let mut replay_candidate = sql_observation(
+        NativeWebReviewActionKind::SqlStructuralQueryReplayPair,
+        DecisionExecutionStage::Active,
+        replay_candidate_status,
+        replay_candidate_structure,
+        true,
+        "sql-replay-candidate",
+    );
+    replay_candidate.case_id = replay_control.case_id.clone();
+    [control, candidate, replay_control, replay_candidate]
+}
+
+#[test]
+fn sql_review_requires_two_repeatable_status_and_structure_differentials() {
+    let changed = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+    let [control, candidate, replay_control, replay_candidate] = sql_pair_set(
+        ReviewHttpStatusClass::ServerError,
+        changed,
+        ReviewHttpStatusClass::ServerError,
+        changed,
+    );
+    let mut output = Vec::new();
+    append_sql_candidate(
+        &control,
+        &candidate,
+        &replay_control,
+        &replay_candidate,
+        "item",
+        &mut output,
+    );
+    assert_eq!(output.len(), 1);
+    assert_eq!(
+        output[0].disposition(),
+        NativeReviewDisposition::NeedsReview
+    );
+    assert!(matches!(
+        output[0],
+        AssessmentReviewCandidate::SqlStructural(_)
+    ));
+
+    let mut repeated = Vec::new();
+    append_sql_candidate(
+        &control,
+        &candidate,
+        &replay_control,
+        &replay_candidate,
+        "item",
+        &mut repeated,
+    );
+    assert_eq!(output, repeated);
+}
+
+#[test]
+fn sql_text_only_identical_noisy_and_incomplete_observations_make_no_claim() {
+    let same = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    let changed = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+    for (status, structure, replay_status, replay_structure) in [
+        (
+            ReviewHttpStatusClass::ServerError,
+            same,
+            ReviewHttpStatusClass::ServerError,
+            same,
+        ),
+        (
+            ReviewHttpStatusClass::Successful,
+            changed,
+            ReviewHttpStatusClass::Successful,
+            changed,
+        ),
+        (
+            ReviewHttpStatusClass::ServerError,
+            changed,
+            ReviewHttpStatusClass::ClientError,
+            changed,
+        ),
+        (
+            ReviewHttpStatusClass::ServerError,
+            "incomplete",
+            ReviewHttpStatusClass::ServerError,
+            "incomplete",
+        ),
+    ] {
+        let [control, candidate, replay_control, replay_candidate] =
+            sql_pair_set(status, structure, replay_status, replay_structure);
+        let mut output = Vec::new();
+        append_sql_candidate(
+            &control,
+            &candidate,
+            &replay_control,
+            &replay_candidate,
+            "item",
+            &mut output,
+        );
+        assert!(output.is_empty());
+    }
 }

@@ -154,6 +154,20 @@ fn select_redirect_review_query_parameter(names: &[String]) -> Option<String> {
         .cloned()
 }
 
+fn select_sql_review_query_parameter(names: &[String]) -> Option<String> {
+    names
+        .iter()
+        .filter(|name| {
+            !name.is_empty()
+                && name.len() <= 64
+                && name.bytes().all(|byte| {
+                    byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~')
+                })
+        })
+        .min()
+        .cloned()
+}
+
 pub(crate) const HARD_MAX_DISCOVERY_NAME_BYTES: usize =
     SemanticExtractionLimits::HARD_MAX_ASSESSMENT_PARAMETER_NAME_BYTES;
 pub(crate) const HARD_MAX_DISCOVERY_NAMES_PER_REFERENCE: usize =
@@ -1574,25 +1588,32 @@ impl WebAssessmentRuntimeBuilder {
             let seeds = NativeWebReviewSeeds::from_authorized_origin(&root.url)?;
             let redirect_query_parameter =
                 select_redirect_review_query_parameter(&root_subject.query_parameter_names);
+            let sql_query_parameter =
+                select_sql_review_query_parameter(&root_subject.query_parameter_names);
             let observer = Arc::new(
-                AssessmentReviewObserverSet::new(
+                AssessmentReviewObserverSet::new_with_sql(
                     root.url.clone(),
                     seeds.clone(),
                     redirect_query_parameter.as_deref(),
+                    sql_query_parameter.as_deref(),
                 )
                 .map_err(|_| WebAssessmentRuntimeError::NativeReviewComposition)?,
             );
-            let ledger = CommittedAssessmentReviewLedger::new(
+            let ledger = CommittedAssessmentReviewLedger::new_with_sql(
                 root.url.clone(),
                 seeds.clone(),
                 redirect_query_parameter.as_deref(),
+                sql_query_parameter.as_deref(),
             )
             .map_err(|_| WebAssessmentRuntimeError::NativeReviewComposition)?;
             Some(AssessmentNativeReviewRuntime {
+                target: root.url.clone(),
                 seeds,
                 redirect_query_parameter,
+                sql_query_parameter,
                 observer,
                 ledger,
+                sql_only: false,
             })
         } else {
             None
@@ -1614,6 +1635,7 @@ impl WebAssessmentRuntimeBuilder {
             started: false,
             defense_enforcement: self.defense_enforcement,
             native_review,
+            non_root_sql_review: None,
             root_api_visibility,
             committed_api_visibility: None,
             defense_audit: WebAssessmentDefenseAudit::new(if self.defense_enforcement {
@@ -1639,6 +1661,7 @@ pub struct WebAssessmentRuntime {
     started: bool,
     defense_enforcement: bool,
     native_review: Option<AssessmentNativeReviewRuntime>,
+    non_root_sql_review: Option<AssessmentNativeReviewRuntime>,
     root_api_visibility: Option<RootApiVisibilityRuntime>,
     committed_api_visibility: Option<CommittedAssessmentApiVisibility>,
     defense_audit: WebAssessmentDefenseAudit,
@@ -1646,10 +1669,13 @@ pub struct WebAssessmentRuntime {
 }
 
 struct AssessmentNativeReviewRuntime {
+    target: Url,
     seeds: NativeWebReviewSeeds,
     redirect_query_parameter: Option<String>,
+    sql_query_parameter: Option<String>,
     observer: Arc<AssessmentReviewObserverSet>,
     ledger: CommittedAssessmentReviewLedger,
+    sql_only: bool,
 }
 
 struct FailedSubjectBoundary {
@@ -1739,22 +1765,32 @@ fn replay_native_review(
         }
     }
 
-    let cors_complete = review
-        .ledger
-        .pair_is_complete(NativeWebReviewActionKind::CorsPolicyPair);
-    let redirect_complete = review.redirect_query_parameter.as_ref().is_none_or(|_| {
+    let cors_complete = review.sql_only
+        || review
+            .ledger
+            .pair_is_complete(NativeWebReviewActionKind::CorsPolicyPair);
+    let redirect_complete = review.sql_only
+        || review.redirect_query_parameter.as_ref().is_none_or(|_| {
+            review
+                .ledger
+                .pair_is_complete(NativeWebReviewActionKind::RedirectReflectionQueryPair)
+        });
+    let sql_complete = review.sql_query_parameter.is_none() || {
         review
             .ledger
-            .pair_is_complete(NativeWebReviewActionKind::RedirectReflectionQueryPair)
-    });
-    let expected_observations = if review.redirect_query_parameter.is_some() {
-        4
-    } else {
-        2
+            .pair_is_complete(NativeWebReviewActionKind::SqlStructuralQueryPair)
+            && review
+                .ledger
+                .pair_is_complete(NativeWebReviewActionKind::SqlStructuralQueryReplayPair)
     };
+    let expected_observations = usize::from(!review.sql_only) * 2
+        + usize::from(review.redirect_query_parameter.is_some()) * 2
+        + usize::from(review.sql_query_parameter.is_some()) * 4;
     Ok(cors_complete
         && redirect_complete
+        && sql_complete
         && !review.ledger.has_incomplete_reflection_observation()
+        && !review.ledger.has_incomplete_sql_observation()
         && review.ledger.observations().len() == expected_observations)
 }
 
@@ -1833,6 +1869,45 @@ impl WebAssessmentRuntime {
                     });
                 };
                 current_envelope_subject.executed = true;
+                if subject.origin == WebAssessmentSubjectOrigin::Discovered
+                    && subject.method == WebAssessmentMethod::Get
+                    && self.non_root_sql_review.is_none()
+                    && self
+                        .native_review
+                        .as_ref()
+                        .is_some_and(|review| review.sql_query_parameter.is_none())
+                {
+                    if let Some(parameter) =
+                        select_sql_review_query_parameter(&subject.query_parameter_names)
+                    {
+                        let seeds = NativeWebReviewSeeds::from_authorized_origin(&subject.url)?;
+                        let observer = Arc::new(
+                            AssessmentReviewObserverSet::new_with_sql(
+                                subject.url.clone(),
+                                seeds.clone(),
+                                None,
+                                Some(&parameter),
+                            )
+                            .map_err(|_| WebAssessmentRuntimeError::NativeReviewComposition)?,
+                        );
+                        let ledger = CommittedAssessmentReviewLedger::new_with_sql(
+                            subject.url.clone(),
+                            seeds.clone(),
+                            None,
+                            Some(&parameter),
+                        )
+                        .map_err(|_| WebAssessmentRuntimeError::NativeReviewComposition)?;
+                        self.non_root_sql_review = Some(AssessmentNativeReviewRuntime {
+                            target: subject.url.clone(),
+                            seeds,
+                            redirect_query_parameter: None,
+                            sql_query_parameter: Some(parameter),
+                            observer,
+                            ledger,
+                            sql_only: true,
+                        });
+                    }
+                }
                 let subject_observer: Arc<dyn CompleteHttpResponseObserver> =
                     Arc::new(AssessmentDiscoveryObserver::new(
                         self.discovery_policy.clone(),
@@ -1857,10 +1932,25 @@ impl WebAssessmentRuntime {
                                 review.seeds.clone(),
                                 observer,
                                 review.redirect_query_parameter.clone(),
+                                review.sql_query_parameter.clone(),
                             )
                         },
                         None => builder,
                     }
+                } else if let Some(review) = self
+                    .non_root_sql_review
+                    .as_ref()
+                    .filter(|review| review.target == subject.url)
+                {
+                    let observer: Arc<dyn CompleteHttpResponseObserver> = review.observer.clone();
+                    builder.with_native_sql_review(
+                        review.seeds.clone(),
+                        observer,
+                        review
+                            .sql_query_parameter
+                            .clone()
+                            .expect("SQL-only review retains one query parameter"),
+                    )
                 } else {
                     builder
                 };
@@ -1949,13 +2039,17 @@ impl WebAssessmentRuntime {
                         )),
                     });
                 }
-                if subject.origin == WebAssessmentSubjectOrigin::AuthorizedRoot {
-                    let native_review_complete = match self.native_review.as_mut() {
-                        Some(review) => {
-                            replay_native_review(&standard, review, self.authority.knowledge())
-                        },
-                        None => Ok(true),
+                let selected_review =
+                    if subject.origin == WebAssessmentSubjectOrigin::AuthorizedRoot {
+                        self.native_review.as_mut()
+                    } else {
+                        self.non_root_sql_review
+                            .as_mut()
+                            .filter(|review| review.target == subject.url)
                     };
+                if let Some(review) = selected_review {
+                    let native_review_complete =
+                        replay_native_review(&standard, review, self.authority.knowledge());
                     match native_review_complete {
                         Ok(true) => {},
                         Ok(false) => {
@@ -2274,9 +2368,15 @@ impl WebAssessmentRuntime {
                 });
             },
         }
+        let review_ledgers = self
+            .native_review
+            .iter()
+            .chain(self.non_root_sql_review.iter())
+            .map(|review| &review.ledger)
+            .collect::<Vec<_>>();
         let assessment_projection = match project_assessment_items(
             &self.passive_ledger,
-            self.native_review.as_ref().map(|review| &review.ledger),
+            &review_ledgers,
             self.committed_api_visibility.as_ref(),
             self.authority.knowledge(),
             &self.root,

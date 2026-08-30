@@ -621,7 +621,9 @@ const fn standard_interaction_class(kind: StandardWebActionKind) -> DefenseInter
 const fn native_interaction_class(kind: NativeWebReviewActionKind) -> DefenseInteractionClass {
     match kind {
         NativeWebReviewActionKind::CorsPolicyPair
-        | NativeWebReviewActionKind::RedirectReflectionQueryPair => {
+        | NativeWebReviewActionKind::RedirectReflectionQueryPair
+        | NativeWebReviewActionKind::SqlStructuralQueryPair
+        | NativeWebReviewActionKind::SqlStructuralQueryReplayPair => {
             DefenseInteractionClass::DifferentialRead
         },
     }

@@ -529,6 +529,8 @@ struct NativeWebReviewRuntimeConfig {
     seeds: NativeWebReviewSeeds,
     observer: Arc<dyn CompleteHttpResponseObserver>,
     redirect_query_parameter: Option<String>,
+    sql_query_parameter: Option<String>,
+    sql_only: bool,
 }
 
 struct StandardWebDecisionRuntimePreflight {
@@ -688,12 +690,32 @@ impl StandardWebDecisionRuntimeBuilder {
         seeds: NativeWebReviewSeeds,
         observer: Arc<dyn CompleteHttpResponseObserver>,
         redirect_query_parameter: Option<String>,
+        sql_query_parameter: Option<String>,
     ) -> Self {
         self.assessment_defense_projection = true;
         self.native_web_review = Some(NativeWebReviewRuntimeConfig {
             seeds,
             observer,
             redirect_query_parameter,
+            sql_query_parameter,
+            sql_only: false,
+        });
+        self
+    }
+
+    pub(crate) fn with_native_sql_review(
+        mut self,
+        seeds: NativeWebReviewSeeds,
+        observer: Arc<dyn CompleteHttpResponseObserver>,
+        sql_query_parameter: String,
+    ) -> Self {
+        self.assessment_defense_projection = true;
+        self.native_web_review = Some(NativeWebReviewRuntimeConfig {
+            seeds,
+            observer,
+            redirect_query_parameter: None,
+            sql_query_parameter: Some(sql_query_parameter),
+            sql_only: true,
         });
         self
     }
@@ -868,13 +890,26 @@ impl StandardWebDecisionRuntimeBuilder {
 
         let native_review_actions = match self.native_web_review {
             Some(config) => {
-                let profile = NativeWebReviewExecutorProfile::new(
-                    requests,
-                    self.target.clone(),
-                    config.seeds,
-                    config.observer,
-                    config.redirect_query_parameter,
-                )
+                let profile = if config.sql_only {
+                    NativeWebReviewExecutorProfile::new_sql_only(
+                        requests,
+                        self.target.clone(),
+                        config.seeds,
+                        config.observer,
+                        config
+                            .sql_query_parameter
+                            .expect("sql-only review retains one validated query parameter"),
+                    )
+                } else {
+                    NativeWebReviewExecutorProfile::new(
+                        requests,
+                        self.target.clone(),
+                        config.seeds,
+                        config.observer,
+                        config.redirect_query_parameter,
+                        config.sql_query_parameter,
+                    )
+                }
                 .map_err(|_| StandardWebDecisionRuntimeError::NativeWebReviewExecutionProfile)?;
                 let actions = profile.actions().collect::<BTreeSet<_>>();
                 let report = profile.install(&mut executors).map_err(|_| {

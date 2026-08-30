@@ -421,8 +421,8 @@ fn inspect_native_review_execution_broker_boundary(
     Ok(violations.into_iter().collect())
 }
 
-const EXACT_NATIVE_REVIEW_EXECUTION_TOKEN_BYTES: usize = 14_328;
-const EXACT_NATIVE_REVIEW_EXECUTION_FINGERPRINT: u128 = 0x7771_354b_a5b7_4297_2df2_9bb9_9b49_496d;
+const EXACT_NATIVE_REVIEW_EXECUTION_TOKEN_BYTES: usize = 16_517;
+const EXACT_NATIVE_REVIEW_EXECUTION_FINGERPRINT: u128 = 0x49fb_1498_b3ca_377a_ffb6_1a1a_1f22_a327;
 
 fn native_review_execution_fingerprint_violations(source: &str, syntax: &syn::File) -> Vec<String> {
     let exact_tests = matches!(syntax.items.last(), Some(Item::Mod(module))
@@ -965,6 +965,8 @@ fn native_defense_classifier_is_exact(function: &syn::ItemFn) -> bool {
             == BTreeSet::from([
                 "CorsPolicyPair".to_owned(),
                 "RedirectReflectionQueryPair".to_owned(),
+                "SqlStructuralQueryPair".to_owned(),
+                "SqlStructuralQueryReplayPair".to_owned(),
             ])
 }
 
@@ -981,7 +983,12 @@ fn collect_exact_native_review_patterns(
                     .all(|case| collect_exact_native_review_patterns(case, variants))
         },
         syn::Pat::Path(pattern) if pattern.qself.is_none() => {
-            for variant in ["CorsPolicyPair", "RedirectReflectionQueryPair"] {
+            for variant in [
+                "CorsPolicyPair",
+                "RedirectReflectionQueryPair",
+                "SqlStructuralQueryPair",
+                "SqlStructuralQueryReplayPair",
+            ] {
                 if syn_path_is_exact(&pattern.path, &["NativeWebReviewActionKind", variant]) {
                     return variants.insert(variant.to_owned());
                 }

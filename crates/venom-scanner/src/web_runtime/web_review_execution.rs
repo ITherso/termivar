@@ -32,6 +32,7 @@ use crate::{
     payload_strategies::{
         standard_payload_strategies, CORS_ORIGIN_PAIR_HEADER_NAME, CORS_ORIGIN_PAIR_ID,
         CORS_ORIGIN_PAIR_REVISION, EXTERNAL_URL_QUERY_PAIR_ID, EXTERNAL_URL_QUERY_PAIR_REVISION,
+        SQL_QUOTE_BALANCE_QUERY_PAIR_ID, SQL_QUOTE_BALANCE_QUERY_PAIR_REVISION,
     },
     payload_strategy::{
         PayloadSeed, PayloadStrategyError, PayloadStrategyLimits, PayloadStrategyRef,
@@ -103,6 +104,8 @@ struct NativeExecutorBinding {
 pub(crate) struct NativeWebReviewExecutorProfile {
     bindings: Vec<NativeExecutorBinding>,
     redirect_query_configured: bool,
+    sql_query_configured: bool,
+    cors_configured: bool,
 }
 
 impl fmt::Debug for NativeWebReviewExecutorProfile {
@@ -126,6 +129,8 @@ impl fmt::Debug for NativeWebReviewExecutorProfile {
                     .collect::<Vec<_>>(),
             )
             .field("redirect_query_configured", &self.redirect_query_configured)
+            .field("sql_query_configured", &self.sql_query_configured)
+            .field("cors_configured", &self.cors_configured)
             .field("seed_values", &"<redacted>")
             .finish()
     }
@@ -143,6 +148,7 @@ impl NativeWebReviewExecutorProfile {
         seeds: NativeWebReviewSeeds,
         observer: Arc<dyn CompleteHttpResponseObserver>,
         redirect_query_parameter: Option<String>,
+        sql_query_parameter: Option<String>,
     ) -> Result<Self, NativeWebReviewExecutionError> {
         Self::build(
             requests,
@@ -150,6 +156,26 @@ impl NativeWebReviewExecutorProfile {
             seeds,
             Some(observer),
             redirect_query_parameter,
+            sql_query_parameter,
+            true,
+        )
+    }
+
+    pub(crate) fn new_sql_only(
+        requests: HttpRequestBroker,
+        root: Url,
+        seeds: NativeWebReviewSeeds,
+        observer: Arc<dyn CompleteHttpResponseObserver>,
+        sql_query_parameter: String,
+    ) -> Result<Self, NativeWebReviewExecutionError> {
+        Self::build(
+            requests,
+            root,
+            seeds,
+            Some(observer),
+            None,
+            Some(sql_query_parameter),
+            false,
         )
     }
 
@@ -159,6 +185,8 @@ impl NativeWebReviewExecutorProfile {
         seeds: NativeWebReviewSeeds,
         observer: Option<Arc<dyn CompleteHttpResponseObserver>>,
         redirect_query_parameter: Option<String>,
+        sql_query_parameter: Option<String>,
+        include_cors: bool,
     ) -> Result<Self, NativeWebReviewExecutionError> {
         validate_root(&requests, &root)?;
         if !seeds.matches_origin(&root) {
@@ -169,29 +197,32 @@ impl NativeWebReviewExecutorProfile {
         let strategies = standard_payload_strategies()?;
         let provider = Arc::new(SubjectHttpProbeProvider::new(HttpProbeMethod::Get));
 
-        let cors_kind = NativeWebReviewActionKind::CorsPolicyPair;
-        let cors_strategy = payload_strategy_reference(cors_kind)?;
-        let cors_seed = PayloadSeed::new(seeds.cors_origin().as_bytes().to_vec(), limits)?;
-        let cors_payload = HttpHeaderPayloadBinding::new(
-            strategies.clone(),
-            cors_strategy.clone(),
-            cors_seed,
-            limits,
-            CORS_ORIGIN_PAIR_HEADER_NAME,
-        )?;
-        let cors_executor = configure_executor(
-            HttpEvidenceExecutor::with_id_and_request_broker(
-                cors_kind.executor_id(),
-                requests.clone(),
-                provider.clone(),
-            )?
-            .with_payload_binding(cors_payload),
-            observer.as_ref(),
-        );
-        let mut bindings = vec![NativeExecutorBinding {
-            kind: cors_kind,
-            executor: Arc::new(cors_executor),
-        }];
+        let mut bindings = Vec::new();
+        if include_cors {
+            let cors_kind = NativeWebReviewActionKind::CorsPolicyPair;
+            let cors_strategy = payload_strategy_reference(cors_kind)?;
+            let cors_seed = PayloadSeed::new(seeds.cors_origin().as_bytes().to_vec(), limits)?;
+            let cors_payload = HttpHeaderPayloadBinding::new(
+                strategies.clone(),
+                cors_strategy,
+                cors_seed,
+                limits,
+                CORS_ORIGIN_PAIR_HEADER_NAME,
+            )?;
+            let cors_executor = configure_executor(
+                HttpEvidenceExecutor::with_id_and_request_broker(
+                    cors_kind.executor_id(),
+                    requests.clone(),
+                    provider.clone(),
+                )?
+                .with_payload_binding(cors_payload),
+                observer.as_ref(),
+            );
+            bindings.push(NativeExecutorBinding {
+                kind: cors_kind,
+                executor: Arc::new(cors_executor),
+            });
+        }
 
         let redirect_query_configured = redirect_query_parameter.is_some();
         if let Some(parameter) = redirect_query_parameter {
@@ -199,7 +230,7 @@ impl NativeWebReviewExecutorProfile {
             let redirect_strategy = payload_strategy_reference(redirect_kind)?;
             let redirect_seed = PayloadSeed::new(seeds.external_url().as_bytes().to_vec(), limits)?;
             let redirect_payload = HttpQueryPayloadBinding::new(
-                strategies,
+                strategies.clone(),
                 redirect_strategy.clone(),
                 redirect_seed,
                 limits,
@@ -208,8 +239,8 @@ impl NativeWebReviewExecutorProfile {
             let redirect_executor = configure_executor(
                 HttpEvidenceExecutor::with_id_and_request_broker(
                     redirect_kind.executor_id(),
-                    requests,
-                    provider,
+                    requests.clone(),
+                    provider.clone(),
                 )?
                 .with_query_payload_binding(redirect_payload),
                 observer.as_ref(),
@@ -220,9 +251,42 @@ impl NativeWebReviewExecutorProfile {
             });
         }
 
+        let sql_query_configured = sql_query_parameter.is_some();
+        if let Some(parameter) = sql_query_parameter {
+            let sql_seed = PayloadSeed::new(seeds.sql_token().as_bytes().to_vec(), limits)?;
+            for kind in [
+                NativeWebReviewActionKind::SqlStructuralQueryPair,
+                NativeWebReviewActionKind::SqlStructuralQueryReplayPair,
+            ] {
+                let strategy = payload_strategy_reference(kind)?;
+                let payload = HttpQueryPayloadBinding::new(
+                    strategies.clone(),
+                    strategy,
+                    sql_seed.clone(),
+                    limits,
+                    parameter.clone(),
+                )?;
+                let executor = configure_executor(
+                    HttpEvidenceExecutor::with_id_and_request_broker(
+                        kind.executor_id(),
+                        requests.clone(),
+                        provider.clone(),
+                    )?
+                    .with_query_payload_binding(payload),
+                    observer.as_ref(),
+                );
+                bindings.push(NativeExecutorBinding {
+                    kind,
+                    executor: Arc::new(executor),
+                });
+            }
+        }
+
         Ok(Self {
             bindings,
             redirect_query_configured,
+            sql_query_configured,
+            cors_configured: include_cors,
         })
     }
 
@@ -293,7 +357,15 @@ impl NativeWebReviewExecutorProfile {
         seeds: NativeWebReviewSeeds,
         redirect_query_parameter: Option<String>,
     ) -> Result<Self, NativeWebReviewExecutionError> {
-        Self::build(requests, root, seeds, None, redirect_query_parameter)
+        Self::build(
+            requests,
+            root,
+            seeds,
+            None,
+            redirect_query_parameter,
+            None,
+            true,
+        )
     }
 }
 
@@ -307,6 +379,11 @@ fn payload_strategy_reference(
         NativeWebReviewActionKind::RedirectReflectionQueryPair => {
             (EXTERNAL_URL_QUERY_PAIR_ID, EXTERNAL_URL_QUERY_PAIR_REVISION)
         },
+        NativeWebReviewActionKind::SqlStructuralQueryPair
+        | NativeWebReviewActionKind::SqlStructuralQueryReplayPair => (
+            SQL_QUOTE_BALANCE_QUERY_PAIR_ID,
+            SQL_QUOTE_BALANCE_QUERY_PAIR_REVISION,
+        ),
     };
     PayloadStrategyRef::new(id, revision)
 }
@@ -358,6 +435,7 @@ pub(crate) struct NativeWebReviewSeeds {
     origin_identity: String,
     cors_origin: String,
     external_url: String,
+    sql_token: String,
 }
 
 impl fmt::Debug for NativeWebReviewSeeds {
@@ -367,6 +445,7 @@ impl fmt::Debug for NativeWebReviewSeeds {
             .field("origin", &"<redacted>")
             .field("cors_origin_bytes", &self.cors_origin.len())
             .field("external_url_bytes", &self.external_url.len())
+            .field("sql_token_bytes", &self.sql_token.len())
             .field("values", &"<redacted>")
             .finish()
     }
@@ -383,6 +462,7 @@ impl NativeWebReviewSeeds {
             origin_identity: origin,
             cors_origin: format!("https://cors-{identity}.review.invalid"),
             external_url: format!("https://redirect-{identity}.review.invalid/venom-review"),
+            sql_token: format!("venom-review-{identity}"),
         })
     }
 
@@ -394,6 +474,11 @@ impl NativeWebReviewSeeds {
     /// Returns the exact external query value for executor binding or reflection matching.
     pub(crate) fn external_url(&self) -> &str {
         &self.external_url
+    }
+
+    /// Returns the bounded scanner-owned token used by the SQL mutation catalog.
+    pub(crate) fn sql_token(&self) -> &str {
+        &self.sql_token
     }
 
     fn matches_origin(&self, root: &Url) -> bool {

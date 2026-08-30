@@ -28,6 +28,11 @@ fn expected_strategy(kind: NativeWebReviewActionKind) -> PayloadStrategyRef {
         NativeWebReviewActionKind::RedirectReflectionQueryPair => {
             (EXTERNAL_URL_QUERY_PAIR_ID, EXTERNAL_URL_QUERY_PAIR_REVISION)
         },
+        NativeWebReviewActionKind::SqlStructuralQueryPair
+        | NativeWebReviewActionKind::SqlStructuralQueryReplayPair => (
+            SQL_QUOTE_BALANCE_QUERY_PAIR_ID,
+            SQL_QUOTE_BALANCE_QUERY_PAIR_REVISION,
+        ),
     };
     PayloadStrategyRef::new(id, revision).unwrap()
 }
@@ -253,7 +258,7 @@ fn installation_is_atomic_idempotent_and_preserves_exact_strategy_support() {
     assert_eq!(second, NativeWebReviewExecutionInstallReport::default());
     assert_eq!(registry.len(), 2);
     assert_eq!(profile.executor_ids().len(), 2);
-    for kind in NativeWebReviewActionKind::all() {
+    for kind in profile.actions() {
         assert!(registry.contains(kind.executor_id()));
         assert!(profile.supports_exact_strategy(kind));
     }
@@ -300,7 +305,7 @@ async fn passive_and_active_routes_share_each_exact_executor_and_materialize_pai
     let adapter = DecisionRunnerAdapter::new(registry);
     let knowledge = KnowledgeBase::new();
 
-    for (ordinal, kind) in NativeWebReviewActionKind::all().into_iter().enumerate() {
+    for (ordinal, kind) in profile.actions().enumerate() {
         let case = case(&root, &format!("case:web-review:{ordinal}"), kind);
         let passive = adapter
             .execute_command(
