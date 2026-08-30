@@ -44,6 +44,29 @@ observations and matched low-risk review items. Those relationships remain
 it is not a second engine. Scanner SDK and plugin APIs are optional library
 surfaces and are not silently inserted into `scan`.
 
+## Choose the runtime surface
+
+| Invocation | Authorized network envelope | Product output | Native assessment ceiling |
+| --- | --- | --- | --- |
+| `venom scan TARGET` | One decision subject under one exact-origin authority with no discovery crawl; 16 requests, 60 seconds, 1 MiB cumulative delivered-response threshold; redirects disabled | Text/`--explain` or unchanged `decision-scan/v1` JSON | No `AssessmentItem` projection |
+| `venom scan TARGET --profile baseline` | The same conservative single-resource primitive and limits | Additive `web-assessment/v1` profile audit; assessment-report and authorization-context flags are rejected | No native review item |
+| `venom scan TARGET --profile web-review` | Bounded exact-origin BFS under one budget, broker, cancellation authority, and scope policy | Completed `venom-rendered-assessment/v1`, or nonzero `web-assessment/v2` incompleteness with no partial file | `NeedsReview` |
+| `venom legacy-scan ... --acknowledge-legacy-heuristics` | Separate bounded passive and active authorities, but phase-one/custom I/O keeps whole-run accounting `Unmetered` | Legacy compatibility observations and allowlisted verifier projections | `NeedsReview` |
+
+The default command is therefore not a crawler. Origin discovery, passive
+policy review, matched differential review, semantic extraction, and defense
+shadow planning require explicit `--profile web-review`; assessment-file
+output additionally requires its report option. Deterministic modes and the
+built-in legacy brokers never silently expand authority across origins;
+host-defined legacy extensions retain their separately documented raw-client
+authority.
+
+> [!NOTE]
+> Venom has no supported API listener, `CONNECT`/TLS-intercepting MITM proxy,
+> or durable multi-node control plane. The optional proxy adapter is only a
+> fixed-upstream TCP relay, and distributed coordination remains an in-process
+> host-library state machine.
+
 ## Why Venom is different
 
 Venom uses a deliberately narrow claim vocabulary:
@@ -105,6 +128,24 @@ standard actions on the authorized root.
 Redirects remain disabled. Discovery does not turn a resource, form, or
 parameter name into a vulnerability claim and never follows a cross-origin
 reference.
+
+The built-in CLI `web-review` profile fixes its envelope at 64 subjects at
+depth two, 128 discovered references per document, 8,192 bytes per query-free
+canonical URL, 512 KiB of retained URL bytes, 64 forms, 64 control names per
+form, 64 candidate query names per route or form action, 256 total requests,
+256 KiB per response, a 16 MiB cumulative delivered-response threshold, 300
+seconds of wall time, six active verifications, and concurrency one. The
+broker charges one complete crossing chunk before typed response-byte
+termination, so the cumulative threshold is not a byte-perfect retained-body
+maximum. CLI profile limits are not user-overridable. Library hosts may select
+checked limits up to separate compiled hard maxima; values above those maxima
+fail closed.
+
+Defense enforcement is OFF by default. Explicit `--enforce-defense` can only
+remove or suppress already-authorized candidates through the monotonic defense
+mapping; shadow audit may record Allow, Deprioritize, or Suppress. Enforcement
+never adds or reorders actions, raises utility or intensity, expands scope or
+budget, invents evasion behavior, or delays work.
 
 The passive review observes HSTS, CSP, X-Content-Type-Options,
 Referrer-Policy, Permissions-Policy, and cookie attributes without retaining
@@ -196,6 +237,10 @@ loopback HTTP fixtures. Obvious report-output errors and target/profile policy
 failures are rejected before the source is read. Source names, paths,
 credential values, raw JSON bodies, cookies, and authorization headers are not
 emitted in reports or debug output.
+
+The central renderer fails closed above its 16 MiB hard ceiling. JSON, CSV,
+HTML, and Markdown preserve the distinction between `Informational` and
+`NeedsReview`; rendering never upgrades or invents a disposition.
 
 `--report-output` requires `--report-format`, creates a new file atomically
 through a same-directory temporary file and hard link, and never overwrites an
@@ -298,13 +343,13 @@ experimental relay require `api-adapter` and `proxy-adapter`.
 | Tests | Unit, integration, doc, security, template, and architecture jobs in [CI](.github/workflows/tests.yml) | Passing CI is not production readiness |
 | Rust compatibility | MSRV 1.88 plus stable, beta, and nightly | Pre-stable APIs may still change |
 | Cross-platform runtime smoke | Focused Rust 1.88 default-CLI and loopback checks on Ubuntu, Windows, and macOS | A small hosted-runner smoke matrix is not platform certification or broad all-feature support |
-| Coverage | Pinned Tarpaulin's LLVM backend enforces the accepted [21,439/24,842 observed source-line baseline](docs/reports/coverage/6edc4d925739.md) plus the same exact ratio on coverable changed lines; `venom.coverage.v2` evidence binds a normalized line-state digest | Coverage is a scoped navigation signal, not proof of test adequacy; the advisory [Codecov](https://codecov.io/gh/ITherso/venom) upload is best-effort and tokenless availability is not enforced |
+| Coverage | Final integration evidence covers 36,716/41,744 in-scope source lines (87.96%); pinned Tarpaulin's LLVM backend enforces the accepted [exact baseline](docs/reports/coverage/6edc4d925739.md) and the same exact ratio on coverable changed lines, while `venom.coverage.v2` binds a normalized line-state digest | Coverage is a scoped navigation signal, not proof of test adequacy; the advisory [Codecov](https://codecov.io/gh/ITherso/venom) upload is best-effort and tokenless availability is not enforced |
 | Safe Rust / boundaries | Workspace crates forbid unsafe code; architecture checks enforce dependency and transport ownership | Static boundaries do not prove semantic correctness |
 | Public API compatibility | Blocking SemVer comparison for `venom-core` plus four isolated [current-head consumer fixtures](docs/public-api-compatibility.md) | Same-revision compilation is not cross-version compatibility, a stable ABI, or external adoption; Scanner SDK and plugin baselines remain open |
 | Security scanning | RustSec, cargo-deny, Semgrep CE, Trivy, Dependabot, and scoped CodeQL | Automated scanners have false positives and false negatives |
 | Fuzzing | PR seed replay and compile checks; bounded scheduled/manual campaigns for four product-semantic and five parser targets | Time-bounded fuzzing is not a safety proof |
 | Mutation testing | Scoped, evidenced campaigns for selected policy, planner, runtime, and extraction contracts | No permanent mutation farm or project-wide score |
-| Performance | [Initial controlled endpoint evidence](docs/reports/benchmarks/27321ef-endpoint-assessment.md) covers the fixed 100/1,000-endpoint and 10,000-request loopback workloads | One workflow run provides intra-run variance only; no repeatable accepted baseline, threshold, capacity claim, or SLA exists |
+| Performance | [Initial controlled endpoint evidence](docs/reports/benchmarks/27321ef-endpoint-assessment.md) from source `27321ef` and run `33292247976` covers three samples of fixed 1 ms loopback fixtures at concurrency one; the 10,000-request workload is a batch of ten independent authorities | One workflow run provides intra-run variance only; no repeatable accepted baseline, threshold, capacity claim, or SLA exists |
 | Independent audit | Not completed | External review remains a stable-release gate |
 
 See [Fuzzing](docs/fuzzing.md), [Quality metrics](docs/quality-metrics.md), [Repository health](docs/repository-health.md), and [Project status](PROJECT_STATUS.md) for scope and caveats.
@@ -317,12 +362,18 @@ The latest published tag, **v0.9.0-alpha**, is historical and predates this sour
 - [Stable-release gates and active blockers](PROJECT_STATUS.md)
 - [Changelog](CHANGELOG.md)
 
-The current source state has no independent security audit, accepted stable
-Scanner SDK/plugin source-compatibility baseline or deprecation window,
-repeatable accepted endpoint-performance baseline, supported API service,
-supported MITM proxy, or durable distributed control plane. The committed
-same-revision fixtures and first endpoint workflow record do not close those
-gates.
+| Stable-release gate | Current truth |
+| --- | --- |
+| Internal deterministic CI | Implemented and green on the reviewed integration stack; this is not an external assessment |
+| Independent security audit | Open: [#6](https://github.com/ITherso/venom/issues/6) |
+| Independent version-pinned adoption | Open: [#63](https://github.com/ITherso/venom/issues/63); maintainer fixtures do not count |
+| Scanner SDK/plugin compatibility and deprecation baseline | Open: [#4](https://github.com/ITherso/venom/issues/4) and [#8](https://github.com/ITherso/venom/issues/8) |
+| Repeatable endpoint-performance baseline | Open: [#5](https://github.com/ITherso/venom/issues/5); one workflow record is not a threshold or SLA |
+| Supported API listener / MITM proxy | Absent |
+| Durable authenticated distributed control plane | Absent: [#7](https://github.com/ITherso/venom/issues/7); only process-local state machines exist |
+
+The committed same-revision fixtures, internal gates, and first endpoint
+workflow record close neither the external gates nor the product gaps above.
 
 ## Repository layout
 
@@ -356,7 +407,11 @@ cargo xtask generate scanner my-scanner
 cargo xtask generate plugin my-venom-plugin
 ```
 
-See the [Scanner SDK guide](docs/sdk.md), [Plugin development](docs/plugin.md), and [plugin API policy](docs/plugin-api-policy.md). Pin a Venom release tag or commit before publishing a third-party integration.
+See the [Scanner SDK guide](docs/sdk.md), [Plugin development](docs/plugin.md),
+and [plugin API policy](docs/plugin-api-policy.md). Until a remediated Preview
+tag and accepted cross-version baseline exist, pin a reviewed full commit.
+`ScannerSdk` remains Legacy; deterministic assessment/reporting and plugin API
+0.2 remain Preview.
 
 ## Documentation
 
