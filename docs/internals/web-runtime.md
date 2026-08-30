@@ -178,6 +178,18 @@ the observation and review. Post-commit errors expose the same audit plus the
 available comparison and commit receipt; they do not imply rollback or disk
 durability. See [ADR 0013](../adr/0013-runtime-owned-api-visibility-pairs.md).
 
+The opt-in origin assessment composes this workflow for the exact root only.
+`WebAssessmentRootAuthorizationContext` consumes one bounded complete
+`Authorization` value, builds a distinct Standard child with the assessment's
+existing `SharedWebRuntimeAuthority`, and runs the anonymous/authorized pair
+after root work but before discovery admission. It does not mint another broker
+or budget. A canonical `AwaitHumanReview` result is projected as one atomic
+comparison evidence reference; the assessment does not invent separate
+control/candidate evidence records. Equivalence emits no item. Incomplete
+collection, cancellation, or limit exhaustion halts later discovery and keeps
+the assessment incomplete. The capability has no verifier transition and can
+never produce `Confirmed`.
+
 ## Runtime safety envelope
 
 The runtime checks limits in a stable order before execution: wall time; advisory broker preflight for total requests, remaining response bytes, and active verifications; then attempts for the semantic action. Only the semantic attempt is reserved before an optional scheduler delay. A delay cancellation therefore consumes an action attempt but not a request. The shared host-owned request broker repeats the resource checks atomically, charges the exact buffered request-body length, and records the request immediately before `reqwest::Client::execute`, so a transport error or timeout after dispatch remains charged. An opaque request body whose length cannot be measured is rejected before dispatch.

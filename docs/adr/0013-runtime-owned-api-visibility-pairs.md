@@ -67,6 +67,13 @@ must never be interpreted as a visibility comparison.
    error exposes the transport audit, comparison, and available commit receipt
    rather than implying rollback. These are in-process receipts, not crash
    durability acknowledgements.
+9. An explicit origin-assessment host may compose one exact-root pair in a
+   distinct Standard child runtime only by supplying the assessment-owned
+   `SharedWebRuntimeAuthority`. Product projection preserves the comparator's
+   single atomic evidence object; it must not synthesize independent control
+   and candidate records. Equivalence produces no item, while the canonical
+   difference can produce at most `NeedsReview`. Partial execution makes the
+   assessment incomplete and suppresses later discovery.
 
 ## Consequences
 
@@ -78,6 +85,9 @@ must never be interpreted as a visibility comparison.
 - A usable pair requires capacity for two total requests and two active
   verifications. Separate connection pools intentionally trade connection reuse
   for principal isolation while sharing one budget.
+- The compiled origin-assessment default allows six active verifications: four
+  for its closed native review catalog and two for one explicitly supplied
+  context pair. Lower host limits remain authoritative and fail closed.
 - The same runtime instance cannot subsequently run `analyze()` or another
   paired workflow. A host that needs both creates separate bounded runtimes.
 - Existing transport-free ingestion remains available for hosts that collect

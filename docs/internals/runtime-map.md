@@ -45,6 +45,7 @@ venom scan <target> --profile web-review
       -> defense observation and shadow planning
       -> passive header/cookie assessment projection
       -> root-scoped matched CORS and optional redirect/reflection review
+      -> optional exact-root anonymous/authorized API visibility pair
       -> central bounded assessment renderer on complete execution
 ```
 
@@ -92,6 +93,18 @@ followed. Passive and ordinary-reflection items are
 dangerous-context reflection relationships are at most `NeedsReview`. Every
 native action is KnowledgeOnly, and no native assessment capability can
 produce a `Confirmed` item.
+
+The optional authorization-context slice consumes a host-supplied complete
+header value only after explicit profile/root validation. It builds a separate
+Standard child runtime with the assessment's existing shared authority, then
+executes the existing atomic API comparator once. Both legs are active, use
+separate principal-isolating connection pools, and share total-request,
+response-byte, active-verification, cancellation, deadline, and exact-origin
+limits. The compiled default active ceiling is six: four for the closed native
+catalog and two for this pair. Equivalent visibility emits no item; a complete
+difference is one opaque atomic evidence reference with maximum disposition
+`NeedsReview`. Partial collection or a lower exhausted limit is typed
+incomplete and cannot be reported as empty success.
 
 The stable item-identity authority currently registers only the exact origin
 root (`/`). A non-root starting target, or an eligible condition on a discovered

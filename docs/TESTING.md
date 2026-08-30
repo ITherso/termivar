@@ -124,6 +124,16 @@ failure must assert which of the comparison, observation receipt, and exact
 review remains available. These receipts describe in-process append-only state;
 they are not rollback or crash-durability claims.
 
+Assessment/CLI composition tests must additionally prove that the optional
+root context pair uses the origin assessment's existing authority, consumes two
+active leases, emits no item for equivalent visibility, and projects a
+difference through one atomic evidence reference with empty synthetic
+control/candidate lists. A one-active-verification limit must prevent the
+candidate leg, suppress later discovery, and return typed incompleteness. Env,
+file, and stdin sources must be exercised without allowing the credential,
+source identifier, file path, raw JSON, or private diagnostics into stdout,
+stderr, debug text, or any renderer.
+
 Native `web-review` CORS/redirect/reflection regression coverage also uses
 loopback only and must assert the complete product boundary:
 

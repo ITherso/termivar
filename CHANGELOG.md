@@ -25,6 +25,15 @@ All notable changes to Venom are recorded here. Releases use the categories from
   and no native assessment capability can produce `Confirmed`. Stable item
   identity is root-only; non-root conditions become typed incompleteness rather
   than URL-derived fingerprints.
+- An explicit exact-root `web-review` authorization-context option backed by
+  the existing atomic API comparator. CLI credentials come only from a bounded
+  environment, file, or stdin source; library hosts use a non-cloneable,
+  redacted context type. Anonymous and authorized legs share the origin
+  assessment authority. Equal visibility emits no item, a complete difference
+  remains one atomic `NeedsReview` evidence reference, and incomplete or
+  budget-limited collection suppresses later discovery instead of becoming
+  empty success. The compiled active-verification default is six: four closed
+  native-review requests plus the optional two-request API pair.
 - An additive `venom-rendered-assessment/v1` JSON/CSV/HTML/Markdown surface for
   completed `web-review` runs, composed from runtime-owned truth through the
   existing 16 MiB bounded renderer. CLI `--report-format` selects the encoding;

@@ -131,6 +131,19 @@ The current stable item-identity authority projects only the exact origin root
 non-root subject, becomes typed incompleteness rather than a URL-derived
 identity.
 
+An additional explicit `web-review` option can compare the exact origin root
+once as anonymous and once with a host-supplied `Authorization` context. Use
+`--auth-env`, `--auth-file`, or `--auth-stdin`; there is deliberately no raw
+credential command-line flag. The two active requests share the assessment's
+broker, budget, cancellation, deadline, and exact-origin policy, and redirects
+remain disabled. Equal JSON visibility produces no item. A complete visibility
+difference is retained as one atomic comparison evidence reference and can
+produce only `NeedsReview`; it is never split into invented control/candidate
+records and never becomes authorization-vulnerability confirmation. The
+default web-review envelope permits at most six active verifications: four for
+the closed native catalog and two for this optional pair. Lower library-host
+limits still fail closed.
+
 ## Try the deterministic runtime
 
 Requirements: Rust 1.88 or newer, Git, and an authorized reachable HTTP(S) origin.
@@ -168,7 +181,15 @@ cargo run -p venom-cli --locked -- scan https://authorized.example.test \
   --profile web-review --report-format csv
 cargo run -p venom-cli --locked -- scan https://authorized.example.test \
   --profile web-review --report-format html --report-output assessment.html
+cargo run -p venom-cli --locked -- scan https://authorized.example.test \
+  --profile web-review --report-format json --auth-env VENOM_AUTH_CONTEXT
 ```
+
+Populate `VENOM_AUTH_CONTEXT` through the host's secret-management mechanism,
+not as a literal command argument. Authorization-context review requires the
+exact origin root (`/`). Source names, paths, credential values, raw JSON
+bodies, cookies, and authorization headers are not emitted in reports or debug
+output.
 
 `--report-output` requires `--report-format`, creates a new file atomically
 through a same-directory temporary file and hard link, and never overwrites an

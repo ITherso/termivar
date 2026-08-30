@@ -105,6 +105,25 @@ relationships are at most `NeedsReview`; ordinary exact reflection remains
 `Informational`. No native assessment capability can produce a `Confirmed`
 item, and no browser execution is performed.
 
+To add the optional exact-root authorization-context comparison, load one
+complete `Authorization` header value into a secret source out of band, then
+name that source rather than placing the value in process arguments:
+
+```bash
+cargo run -p venom-cli --locked -- scan https://authorized.example.test \
+  --profile web-review --report-format json --auth-env VENOM_AUTH_CONTEXT
+cargo run -p venom-cli --locked -- scan https://authorized.example.test \
+  --profile web-review --report-format json --auth-file /secure/path/venom-auth-context
+```
+
+`--auth-stdin` reads through EOF and is also supported. The three sources are mutually exclusive,
+bounded to 4 KiB, and consumed only after profile and exact-root validation.
+Venom does not expose a raw `--authorization` option. It sends an anonymous
+control and an authorized candidate through the same global assessment
+authority. Equal JSON visibility emits no item; a complete difference is one
+atomic `NeedsReview` comparison, not confirmation of broken authorization.
+Credentials and raw response bodies are not serialized or logged.
+
 For completed reports, start `web-review` at the exact origin root (`/`). The
 current stable item-identity authority is root-only; a non-root starting target
 or eligible condition on a discovered non-root subject becomes typed
