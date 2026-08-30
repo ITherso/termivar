@@ -7,7 +7,7 @@
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::PathBuf;
-use std::process::{Command, Output};
+use std::process::{Command, Output, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -83,6 +83,14 @@ fn handle_connection(
 fn ok_html(body: &str, extra_headers: &str) -> Vec<u8> {
     format!(
         "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\n{extra_headers}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    )
+    .into_bytes()
+}
+
+fn ok_json(body: &str) -> Vec<u8> {
+    format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
         body.len()
     )
     .into_bytes()
@@ -381,6 +389,172 @@ fn profile_conflicts_fail_before_connection_or_output() {
         0,
         "profile conflicts must be rejected before network dispatch"
     );
+}
+
+#[test]
+fn authorization_context_sources_are_root_only_atomic_and_fully_redacted() {
+    const SECRET: &str = "Bearer CLI_PRIVATE_AUTHORIZATION_SENTINEL";
+    const ENV_NAME: &str = "VENOM_TEST_AUTHORIZATION_CONTEXT";
+    const PRIVATE_JSON_SENTINEL: &str = "CLI_PRIVATE_RESPONSE_FIELD_SENTINEL";
+
+    let authorized_hits = Arc::new(AtomicUsize::new(0));
+    let counted = Arc::clone(&authorized_hits);
+    let server = serve_request(move |_, request| {
+        let json_request = request.lines().any(|line| {
+            line.split_once(':').is_some_and(|(name, value)| {
+                name.eq_ignore_ascii_case("accept")
+                    && value.trim().eq_ignore_ascii_case("application/json")
+            })
+        });
+        if json_request {
+            let authorized = request.lines().any(|line| {
+                line.split_once(':').is_some_and(|(name, value)| {
+                    name.eq_ignore_ascii_case("authorization") && value.trim() == SECRET
+                })
+            });
+            if authorized {
+                counted.fetch_add(1, Ordering::SeqCst);
+                ok_json(&format!(r#"{{"id":1,"{PRIVATE_JSON_SENTINEL}":"visible"}}"#))
+            } else {
+                ok_json(r#"{"id":1}"#)
+            }
+        } else {
+            ok_html("root", "")
+        }
+    });
+
+    let assert_output = |output: Output, source_identifiers: &[&str]| {
+        assert!(
+            output.status.success(),
+            "authorization-context scan failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let stdout = String::from_utf8(output.stdout).unwrap();
+        let stderr = String::from_utf8(output.stderr).unwrap();
+        assert!(!stdout.contains(SECRET));
+        assert!(!stderr.contains(SECRET));
+        assert!(!stdout.contains(PRIVATE_JSON_SENTINEL));
+        assert!(!stderr.contains(PRIVATE_JSON_SENTINEL));
+        for identifier in source_identifiers {
+            assert!(!stdout.contains(identifier));
+            assert!(!stderr.contains(identifier));
+        }
+        assert!(stdout.contains("api.review.authorization-context.visibility-difference@1"));
+        let value: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+        let item = value["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|item| {
+                item["capability_id"] == "api.review.authorization-context.visibility-difference@1"
+            })
+            .unwrap();
+        assert_eq!(item["disposition"], "needs_review");
+        assert_eq!(item["claim_basis"], "differential");
+        assert_eq!(item["evidence_references"].as_array().unwrap().len(), 1);
+        assert!(item["control_evidence_references"]
+            .as_array()
+            .unwrap()
+            .is_empty());
+        assert!(item["candidate_evidence_references"]
+            .as_array()
+            .unwrap()
+            .is_empty());
+    };
+
+    let environment = venom()
+        .env(ENV_NAME, SECRET)
+        .args([
+            "scan",
+            "--profile",
+            "web-review",
+            "--report-format",
+            "json",
+            "--auth-env",
+            ENV_NAME,
+            &server.url,
+        ])
+        .output()
+        .expect("failed to run environment authorization source");
+    assert_output(environment, &[ENV_NAME]);
+
+    let auth_path = unique_report_path("auth-input");
+    std::fs::write(&auth_path, format!("{SECRET}\r\n")).unwrap();
+    let auth_path_text = auth_path.to_string_lossy().into_owned();
+    let file = venom()
+        .args([
+            "scan",
+            "--profile",
+            "web-review",
+            "--report-format",
+            "json",
+            "--auth-file",
+            auth_path_text.as_str(),
+            &server.url,
+        ])
+        .output()
+        .expect("failed to run file authorization source");
+    assert_output(file, &[auth_path_text.as_str()]);
+    std::fs::remove_file(&auth_path).unwrap();
+
+    let mut child = venom()
+        .args([
+            "scan",
+            "--profile",
+            "web-review",
+            "--report-format",
+            "json",
+            "--auth-stdin",
+            &server.url,
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to run stdin authorization source");
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(format!("{SECRET}\n").as_bytes())
+        .unwrap();
+    assert_output(child.wait_with_output().unwrap(), &[]);
+    assert_eq!(authorized_hits.load(Ordering::SeqCst), 3);
+
+    let before = server.connections.load(Ordering::SeqCst);
+    let missing_path = unique_report_path("missing-auth-input");
+    let missing_path_text = missing_path.to_string_lossy().into_owned();
+    let non_root = format!("{}private", server.url);
+    let rejected = venom()
+        .args([
+            "scan",
+            "--profile",
+            "web-review",
+            "--auth-file",
+            missing_path_text.as_str(),
+            &non_root,
+        ])
+        .output()
+        .unwrap();
+    assert!(!rejected.status.success());
+    let stderr = String::from_utf8_lossy(&rejected.stderr);
+    assert!(stderr.contains("exact origin root"));
+    assert!(!stderr.contains(missing_path_text.as_str()));
+    assert_eq!(server.connections.load(Ordering::SeqCst), before);
+
+    let raw_secret = venom()
+        .args([
+            "scan",
+            "--profile",
+            "web-review",
+            "--authorization",
+            &server.url,
+        ])
+        .output()
+        .unwrap();
+    assert!(!raw_secret.status.success());
+    assert!(raw_secret.stdout.is_empty());
+    assert_eq!(server.connections.load(Ordering::SeqCst), before);
 }
 
 #[test]

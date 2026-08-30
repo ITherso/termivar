@@ -15,8 +15,8 @@ use venom_scanner::web_runtime::{
     BuiltInScanProfile, ScanProfileScope, ScanProfileV1, WebAssessmentCompletion,
     WebAssessmentDefenseAudit, WebAssessmentDefenseBodyCoverage, WebAssessmentDefenseMode,
     WebAssessmentFailureReceipt, WebAssessmentForm, WebAssessmentFormMethod,
-    WebAssessmentIncompleteReason, WebAssessmentMethod, WebAssessmentRunReport,
-    WebAssessmentRuntime, WebAssessmentSubject, WebAssessmentSubjectOrigin,
+    WebAssessmentIncompleteReason, WebAssessmentMethod, WebAssessmentRootAuthorizationContext,
+    WebAssessmentRunReport, WebAssessmentRuntime, WebAssessmentSubject, WebAssessmentSubjectOrigin,
     WebAssessmentSubjectReport, WebAssessmentUsage,
 };
 use venom_scanner::{
@@ -315,11 +315,12 @@ pub(crate) async fn run_profile_scan(
     format_is_json: bool,
     report_format: Option<ReportFormat>,
     report_to_file: bool,
+    root_authorization_context: Option<WebAssessmentRootAuthorizationContext>,
 ) -> Result<AssessmentScanExecution, Box<dyn Error>> {
     let target_origin = target.origin().ascii_serialization();
     match (profile.profile(), profile.scope()) {
         (BuiltInScanProfile::Baseline, ScanProfileScope::SingleResource) => {
-            if report_format.is_some() || report_to_file {
+            if report_format.is_some() || report_to_file || root_authorization_context.is_some() {
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::InvalidInput,
                     "typed assessment reports require the web-review profile",
@@ -337,6 +338,7 @@ pub(crate) async fn run_profile_scan(
                 format_is_json,
                 report_format,
                 report_to_file,
+                root_authorization_context,
             )
             .await
         },
@@ -382,6 +384,7 @@ async fn run_web_review(
     format_is_json: bool,
     report_format: Option<ReportFormat>,
     report_to_file: bool,
+    root_authorization_context: Option<WebAssessmentRootAuthorizationContext>,
 ) -> Result<AssessmentScanExecution, Box<dyn Error>> {
     let mut builder = WebAssessmentRuntime::builder(target).limits(profile.web_assessment_limits());
     if profile.defense_enforcement_enabled() {
@@ -389,6 +392,9 @@ async fn run_web_review(
     }
     if profile.capabilities().low_risk_differential_review() {
         builder = builder.enable_low_risk_differential_review();
+    }
+    if let Some(context) = root_authorization_context {
+        builder = builder.with_root_authorization_context(context);
     }
     let mut runtime = builder.build()?;
     match runtime.analyze().await {
@@ -970,6 +976,9 @@ fn incomplete_reason_code(reason: &WebAssessmentIncompleteReason) -> &'static st
         WebAssessmentIncompleteReason::DifferentialReviewIncomplete => {
             "differential_review_incomplete"
         },
+        WebAssessmentIncompleteReason::ApiVisibilityReviewIncomplete => {
+            "api_visibility_review_incomplete"
+        },
         _ => "other",
     }
 }
@@ -1341,6 +1350,10 @@ mod tests {
             (
                 WebAssessmentIncompleteReason::DifferentialReviewIncomplete,
                 "differential_review_incomplete",
+            ),
+            (
+                WebAssessmentIncompleteReason::ApiVisibilityReviewIncomplete,
+                "api_visibility_review_incomplete",
             ),
         ];
         for (reason, expected) in incomplete {

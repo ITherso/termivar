@@ -19,10 +19,11 @@
 #![forbid(unsafe_code)]
 
 mod assessment_scan;
+mod auth_input;
 mod decision_scan;
 
 use clap::{Parser, Subcommand, ValueEnum};
-use std::path::PathBuf;
+use std::{ffi::OsString, path::PathBuf};
 use url::Url;
 #[cfg(feature = "proxy-adapter")]
 use venom_proxy::ProxyServer;
@@ -122,6 +123,27 @@ fn scan_report_flags_conflict(
     }
 }
 
+fn scan_authorization_flags_conflict(
+    profile: Option<CliScanProfile>,
+    authorization_source_selected: bool,
+) -> Option<&'static str> {
+    if authorization_source_selected && profile != Some(CliScanProfile::WebReview) {
+        Some("authorization-context input requires `--profile web-review`")
+    } else {
+        None
+    }
+}
+
+fn is_exact_origin_root(target: &Url) -> bool {
+    matches!(target.scheme(), "http" | "https")
+        && target.username().is_empty()
+        && target.password().is_none()
+        && target.host().is_some()
+        && target.path() == "/"
+        && target.query().is_none()
+        && target.fragment().is_none()
+}
+
 #[cfg(feature = "legacy-scanner")]
 const LEGACY_DIRECTORY_FUZZ_WARNING: &str = "[WARNING] Legacy directory discovery is enabled. This wordlist phase uses the bounded exact-origin discovery broker, but still increases request volume; run it only against explicitly authorized targets.";
 #[cfg(feature = "legacy-scanner")]
@@ -183,6 +205,32 @@ enum Commands {
         /// promise crash-durable directory metadata.
         #[arg(long, requires = "report_format")]
         report_output: Option<PathBuf>,
+        /// Read the complete authorized-root `Authorization` header value from
+        /// this environment variable. The variable name and value are redacted.
+        #[arg(
+            long,
+            value_name = "ENV_VAR",
+            requires = "profile",
+            conflicts_with_all = ["auth_file", "auth_stdin"]
+        )]
+        auth_env: Option<OsString>,
+        /// Read the complete authorized-root `Authorization` header value from
+        /// a bounded file. The path and value are redacted.
+        #[arg(
+            long,
+            value_name = "PATH",
+            requires = "profile",
+            conflicts_with_all = ["auth_env", "auth_stdin"]
+        )]
+        auth_file: Option<PathBuf>,
+        /// Read the complete authorized-root `Authorization` header value from
+        /// standard input through EOF. At most one terminal LF or CRLF is removed.
+        #[arg(
+            long,
+            requires = "profile",
+            conflicts_with_all = ["auth_env", "auth_file"]
+        )]
+        auth_stdin: bool,
     },
     /// Run the historical mixed-authority, whole-run-unmetered heuristic pipeline.
     #[cfg(feature = "legacy-scanner")]
@@ -223,6 +271,9 @@ async fn run_deterministic_scan(
     enforce_defense: bool,
     report_format: Option<CliReportFormat>,
     report_output: Option<PathBuf>,
+    auth_env: Option<OsString>,
+    auth_file: Option<PathBuf>,
+    auth_stdin: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if scan_flags_conflict(format, explain) {
         use clap::CommandFactory;
@@ -247,6 +298,23 @@ async fn run_deterministic_scan(
             .error(clap::error::ErrorKind::ArgumentConflict, message)
             .exit();
     }
+    let authorization_source =
+        auth_input::AuthorizationInputSource::select(auth_env, auth_file, auth_stdin)?;
+    if let Some(message) =
+        scan_authorization_flags_conflict(profile, authorization_source.is_some())
+    {
+        use clap::CommandFactory;
+        Cli::command()
+            .error(clap::error::ErrorKind::ArgumentConflict, message)
+            .exit();
+    }
+    if authorization_source.is_some() && !is_exact_origin_root(&target) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "authorization-context review requires an exact origin root target",
+        )
+        .into());
+    }
 
     if let Some(selected_profile) = profile {
         let mut profile =
@@ -254,6 +322,11 @@ async fn run_deterministic_scan(
         if enforce_defense {
             profile = profile.with_defense_enforcement_enabled(true)?;
         }
+        // All flag, profile, and target checks above precede the only secret
+        // source read in the CLI.
+        let root_authorization_context = authorization_source
+            .map(auth_input::AuthorizationInputSource::load)
+            .transpose()?;
 
         eprintln!("{DETERMINISTIC_SCAN_WARNING}");
         let execution = assessment_scan::run_profile_scan(
@@ -262,6 +335,7 @@ async fn run_deterministic_scan(
             matches!(format, OutputFormat::Json),
             report_format.map(Into::into),
             report_output.is_some(),
+            root_authorization_context,
         )
         .await?;
         let (rendered, report_artifact, post_render_failure) = execution.into_parts();
@@ -550,6 +624,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             enforce_defense,
             report_format,
             report_output,
+            auth_env,
+            auth_file,
+            auth_stdin,
         }) => {
             run_deterministic_scan(
                 target,
@@ -559,6 +636,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 enforce_defense,
                 report_format,
                 report_output,
+                auth_env,
+                auth_file,
+                auth_stdin,
             )
             .await?;
         },
@@ -605,6 +685,9 @@ mod tests {
                 enforce_defense,
                 report_format,
                 report_output,
+                auth_env,
+                auth_file,
+                auth_stdin,
             }) => {
                 assert_eq!(target.as_str(), "https://example.test/");
                 assert_eq!(format, OutputFormat::Text);
@@ -613,6 +696,9 @@ mod tests {
                 assert!(!enforce_defense);
                 assert_eq!(report_format, None);
                 assert_eq!(report_output, None);
+                assert_eq!(auth_env, None);
+                assert_eq!(auth_file, None);
+                assert!(!auth_stdin);
             },
             _ => panic!("expected the deterministic scan command"),
         }
@@ -631,6 +717,9 @@ mod tests {
                 enforce_defense,
                 report_format,
                 report_output,
+                auth_env,
+                auth_file,
+                auth_stdin,
             }) => {
                 assert_eq!(target.as_str(), "https://example.test/");
                 assert_eq!(format, OutputFormat::Text, "text is the default format");
@@ -642,6 +731,9 @@ mod tests {
                 assert!(!enforce_defense);
                 assert_eq!(report_format, None);
                 assert_eq!(report_output, None);
+                assert_eq!(auth_env, None);
+                assert_eq!(auth_file, None);
+                assert!(!auth_stdin);
             },
             _ => panic!("expected the deterministic scan command"),
         }
