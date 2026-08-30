@@ -47,9 +47,9 @@ jobs:
           toolchain: stable
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
       - name: Run unit tests
-        run: cargo test --lib --verbose
+        run: cargo test --locked --lib --verbose
       - name: Run doc tests
-        run: cargo test --doc --verbose
+        run: cargo test --locked --doc --verbose
       - name: Verify default and opt-in CLI contracts
         run: |
           cargo test --locked -p venom-cli --no-default-features
@@ -80,7 +80,7 @@ jobs:
           toolchain: stable
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
       - name: Run integration tests
-        run: cargo test --test '*' --all-features --verbose
+        run: cargo test --workspace --test '*' --all-features --locked --verbose
 
   plugin-template:
     name: Plugin Template
@@ -203,7 +203,7 @@ jobs:
       - name: Run security audit
         run: cargo audit
       - name: Run clippy (security lints)
-        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+        run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 
   code-coverage:
     name: Code Coverage
@@ -266,9 +266,9 @@ jobs:
           toolchain: ${{ matrix.rust }}
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
       - name: Check
-        run: cargo check --all-features
+        run: cargo check --workspace --all-features --locked
       - name: Test
-        run: cargo test --all-features
+        run: cargo test --workspace --all-features --locked
 
   performance-regression:
     name: Performance Regression Detection
