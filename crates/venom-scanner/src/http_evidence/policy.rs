@@ -31,7 +31,7 @@ pub enum HttpBodyCapture {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct HttpEvidencePolicy {
     allowed_origins: BTreeSet<String>,
-    request_timeout_ms: u64,
+    pub(super) request_timeout_ms: u64,
     max_body_bytes: usize,
     body_capture: HttpBodyCapture,
     captured_headers: BTreeSet<String>,
