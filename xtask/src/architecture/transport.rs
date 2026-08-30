@@ -2897,19 +2897,17 @@ impl<'ast> Visit<'ast> for AtomicPairedComparisonBodyVisitor {
         if matches!(call.func.as_ref(), syn::Expr::Path(path)
             if path.qself.is_none()
                 && syn_path_is_exact(&path.path, &["api_visibility_review_for_commit"]))
+            && call.args.len() == 2
+            && call
+                .args
+                .first()
+                .is_some_and(|argument| expression_is_path_ident(argument, "knowledge"))
+            && call
+                .args
+                .get(1)
+                .is_some_and(|argument| expression_is_path_ident(argument, "commit"))
         {
-            if call.args.len() == 2
-                && call
-                    .args
-                    .first()
-                    .is_some_and(|argument| expression_is_path_ident(argument, "knowledge"))
-                && call
-                    .args
-                    .get(1)
-                    .is_some_and(|argument| expression_is_path_ident(argument, "commit"))
-            {
-                self.canonical_review_calls = self.canonical_review_calls.saturating_add(1);
-            }
+            self.canonical_review_calls = self.canonical_review_calls.saturating_add(1);
         }
         if matches!(call.func.as_ref(), syn::Expr::Path(path)
             if path.qself.is_none()
