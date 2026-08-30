@@ -61,7 +61,7 @@ impl DecisionExecutorError {
     }
 
     /// Returns runner-owned execution context when this error crossed the
-    /// [`DecisionRunnerAdapter`] boundary.
+    /// [`super::DecisionRunnerAdapter`] boundary.
     pub fn execution_failure(&self) -> Option<&DecisionExecutionFailureReceipt> {
         self.receipt.as_deref()
     }

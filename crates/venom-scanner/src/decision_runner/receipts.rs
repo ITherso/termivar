@@ -10,7 +10,7 @@ use super::{
 /// Immutable audit receipt for an executor-reported pre-commit failure.
 ///
 /// The receipt exists only after an executor was resolved and returned
-/// [`DecisionExecutorError`]. It does not represent route lookup, evidence
+/// [`super::DecisionExecutorError`]. It does not represent route lookup, evidence
 /// validation, knowledge storage, or runtime wall-time failures.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct DecisionExecutionFailureReceipt {
