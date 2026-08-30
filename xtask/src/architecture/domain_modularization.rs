@@ -187,6 +187,166 @@ const HTTP_EVIDENCE_CHILDREN: &[ChildDomain] = &[
     },
 ];
 
+const KNOWLEDGE_CHILDREN: &[ChildDomain] = &[
+    ChildDomain {
+        module: "index",
+        symbols: &["collect_indexed", "index"],
+        methods: NO_METHODS,
+    },
+    ChildDomain {
+        module: "relations",
+        symbols: &[
+            "MAX_KNOWLEDGE_RELATION_ENTITY_ID_BYTES",
+            "MAX_KNOWLEDGE_RELATION_EVIDENCE_IDS",
+            "MAX_KNOWLEDGE_RELATION_EVIDENCE_ID_BYTES",
+            "MAX_KNOWLEDGE_RELATION_ID_BYTES",
+            "MAX_KNOWLEDGE_RELATION_KIND_BYTES",
+        ],
+        methods: NO_METHODS,
+    },
+    ChildDomain {
+        module: "snapshot",
+        symbols: &["KnowledgeSnapshot"],
+        methods: NO_METHODS,
+    },
+    ChildDomain {
+        module: "store",
+        symbols: &["KnowledgeBase"],
+        methods: NO_METHODS,
+    },
+    ChildDomain {
+        module: "writes",
+        symbols: &[
+            "HypothesisStateTransition",
+            "KnowledgeWrite",
+            "KnowledgeRecordKind",
+            "KnowledgeBaseError",
+            "KnowledgeBaseStats",
+        ],
+        methods: NO_METHODS,
+    },
+];
+
+const RULES_CHILDREN: &[ChildDomain] = &[
+    ChildDomain {
+        module: "expression",
+        symbols: &[
+            "KnowledgeLayer",
+            "Expression",
+            "ExpressionEvaluation",
+            "ExpressionTrace",
+        ],
+        methods: NO_METHODS,
+    },
+    ChildDomain {
+        module: "registry",
+        symbols: &[
+            "EvidenceSelector",
+            "EvidenceAggregation",
+            "EvidenceCalibration",
+            "HypothesisConclusion",
+            "ReasoningRule",
+            "RuleWrite",
+        ],
+        methods: NO_METHODS,
+    },
+    ChildDomain {
+        module: "evaluation",
+        symbols: &["RuleEvaluation", "RuleApplication"],
+        methods: NO_METHODS,
+    },
+    ChildDomain {
+        module: "engine",
+        symbols: &["RuleEngine"],
+        methods: NO_METHODS,
+    },
+];
+
+const PLANNER_CHILDREN: &[ChildDomain] = &[
+    ChildDomain {
+        module: "model",
+        symbols: &[
+            "RequiredStrength",
+            "HypothesisSelector",
+            "VerificationTarget",
+            "ResolvedVerificationTarget",
+            "AttackAction",
+            "PlanningContext",
+            "ExclusionReason",
+            "ExcludedAction",
+            "PlanStep",
+            "AttackPlan",
+            "PlannerWrite",
+        ],
+        methods: NO_METHODS,
+    },
+    ChildDomain {
+        module: "policy",
+        symbols: &[
+            "ActionSuppressionContext",
+            "ScheduledActionAuthorizationError",
+        ],
+        methods: NO_METHODS,
+    },
+    ChildDomain {
+        module: "scoring",
+        symbols: &[
+            "BenefitScore",
+            "RiskScore",
+            "ActionCost",
+            "UtilityScore",
+            "UtilityBreakdown",
+        ],
+        methods: NO_METHODS,
+    },
+    ChildDomain {
+        module: "selection",
+        symbols: &["AttackPlanner"],
+        methods: NO_METHODS,
+    },
+];
+
+const API_OBSERVATION_CHILDREN: &[ChildDomain] = &[
+    ChildDomain {
+        module: "cursor",
+        symbols: &["ApiVisibilityReviewCursor"],
+        methods: NO_METHODS,
+    },
+    ChildDomain {
+        module: "ingest",
+        symbols: &["ingest_api_visibility_observation"],
+        methods: NO_METHODS,
+    },
+    ChildDomain {
+        module: "model",
+        symbols: &[
+            "ApiObservationCommitReceipt",
+            "ApiObservationError",
+            "ApiObservationReceipt",
+        ],
+        methods: NO_METHODS,
+    },
+    ChildDomain {
+        module: "query",
+        symbols: &[
+            "api_visibility_reviews_for_resource",
+            "api_visibility_reviews_for_resource_v2",
+            "ApiVisibilityReviewPage",
+            "ApiVisibilityReviewQuery",
+        ],
+        methods: NO_METHODS,
+    },
+    ChildDomain {
+        module: "review",
+        symbols: &[
+            "api_visibility_review_for_commit",
+            "ApiVisibilityReview",
+            "ApiVisibilityReviewDisposition",
+        ],
+        methods: NO_METHODS,
+    },
+];
+
 const FACADES: &[FacadeDomain] = &[
     FacadeDomain {
         source: "plugin.rs",
@@ -203,6 +363,22 @@ const FACADES: &[FacadeDomain] = &[
     FacadeDomain {
         source: "http_evidence.rs",
         children: HTTP_EVIDENCE_CHILDREN,
+    },
+    FacadeDomain {
+        source: "knowledge.rs",
+        children: KNOWLEDGE_CHILDREN,
+    },
+    FacadeDomain {
+        source: "rules.rs",
+        children: RULES_CHILDREN,
+    },
+    FacadeDomain {
+        source: "planner.rs",
+        children: PLANNER_CHILDREN,
+    },
+    FacadeDomain {
+        source: "api_observation.rs",
+        children: API_OBSERVATION_CHILDREN,
     },
 ];
 
