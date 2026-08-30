@@ -85,6 +85,21 @@ matrices. It tests only host-native builds and temporary-path behavior on the
 three hosted operating systems. All sockets opened by these tests bind to
 loopback; the job never scans a public target.
 
+## Current-head downstream compile fixtures
+
+The `Downstream Current-Head Compile` job tests four separately resolved
+feature closures from `compat/current-head/`: default `venom-core`, the
+deterministic assessment/reporting Preview, the Legacy `ScannerSdk` facade,
+and plugin API 0.2. Run the packages independently so Cargo cannot unify their
+features and make a narrower consumer appear to compile against a broader
+surface.
+
+These fixtures use path dependencies into the same checkout. They detect
+accidental source drift at that revision, but do not compare released
+versions, select a v1 baseline, promise a stable ABI, or count as independent
+adoption. The exact lifecycle inventory and reproduction commands are in
+[Public API compatibility status](public-api-compatibility.md).
+
 ## Reasoning and runtime regressions
 
 Reasoning tests should assert the complete causal chain that matters to the

@@ -18,6 +18,7 @@ nav:
       - ScanContext migration: migrations/scan-context-construction.md
       - Plugins: plugin.md
       - Plugin API policy: plugin-api-policy.md
+      - Public API compatibility: public-api-compatibility.md
       - Lua: lua.md
       - Distributed: distributed.md
       - Anomaly detection: anomaly.md

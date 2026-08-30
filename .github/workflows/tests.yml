@@ -168,6 +168,27 @@ jobs:
           cargo test --locked -p venom-scanner --lib authority_narrows_a_broader_policy_to_one_exact_origin
           cargo test --locked -p venom-scanner --lib redirect_is_observed_without_following_the_location
 
+  downstream-current-head:
+    name: Downstream Current-Head Compile
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # 1.88.0
+        with:
+          toolchain: "1.88.0"
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      - name: Test default core consumer
+        run: cargo test --manifest-path compat/current-head/Cargo.toml --locked -p venom-current-head-core-consumer
+      - name: Test deterministic assessment consumer
+        run: cargo test --manifest-path compat/current-head/Cargo.toml --locked -p venom-current-head-deterministic-assessment-consumer
+      - name: Test historical Scanner SDK consumer
+        run: cargo test --manifest-path compat/current-head/Cargo.toml --locked -p venom-current-head-scanner-sdk-consumer
+      - name: Test plugin API 0.2 consumer
+        run: cargo test --manifest-path compat/current-head/Cargo.toml --locked -p venom-current-head-plugin-api-0-2-consumer
+
   security-tests:
     name: Security Tests
     runs-on: ubuntu-latest

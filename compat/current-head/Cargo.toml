@@ -1,0 +1,26 @@
+[workspace]
+members = [
+    "core-consumer",
+    "deterministic-assessment-consumer",
+    "scanner-sdk-consumer",
+    "plugin-api-0-2-consumer",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.0.0"
+edition = "2021"
+rust-version = "1.88"
+publish = false
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.rustdoc]
+broken_intra_doc_links = "deny"
+
+[workspace.dependencies]
+async-trait = "0.1"
+url = "2.5"
+venom-core = { path = "../../crates/venom-core", default-features = false }
+venom-scanner = { path = "../../crates/venom-scanner", default-features = false }

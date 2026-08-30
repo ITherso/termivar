@@ -19,6 +19,7 @@ independent security assurance.
 | MSRV | Configured in CI | Workspace packages declare Rust `1.88`; the compatibility matrix also exercises stable, beta, and nightly |
 | Cross-platform runtime smoke | Configured in CI | A focused Rust `1.88.0` matrix builds the default CLI and exercises CLI metadata, one deterministic loopback scan, atomic report paths, core wire stability, exact-origin authority, and redirect observation on Ubuntu, Windows, and macOS; it is not an all-features or release-readiness claim |
 | SemVer | Configured for `venom-core` | `cargo xtask semver` compares the all-features core API with the recorded `v0.9.0-alpha` baseline using a patch-compatibility threshold |
+| Current-head downstream consumers | Configured in CI | Four separately tested path-dependent consumers compile default core, deterministic assessment/reporting, the Legacy Scanner SDK facade, and plugin API 0.2 against the same checkout; this is not cross-version or external-adoption evidence |
 | Architecture boundaries | Configured in CI | `cargo xtask architecture` checks virtual-root source, workspace edges, protected imports, and the transport-free reasoning build |
 
 ## Release evidence
@@ -63,6 +64,13 @@ covered by this check.
 The SemVer command remains separate from `cargo xtask release`; CI installs the
 declared analysis-tool version and runs the compatibility job independently.
 
+The separately locked `compat/current-head/` workspace adds downstream-shaped
+compile evidence for four isolated feature closures. Its path dependencies all
+resolve to the same checkout, so a pass catches current-revision API drift but
+does not establish compatibility with a published release, a Rust ABI, a
+deprecation window, or external adoption. The lifecycle inventory and exact
+boundaries are recorded in [Public API compatibility status](public-api-compatibility.md).
+
 ## Workflow supply-chain posture
 
 The security workflow uses top-level read-only repository permissions and
@@ -84,6 +92,6 @@ remain external dependencies, and Dependabot proposals still require review.
 - Fuzzing is time-bounded and does not prove parser safety.
 - Scoped mutation campaigns do not establish project-wide mutation adequacy; survivor classification remains a review responsibility.
 - Coverage is a scoped regression signal, not proof that the tests are adequate or that uncovered behavior is safe.
-- Scanner construction policy is documented, but Scanner SDK and plugin contracts still lack an accepted post-transition compatibility baseline.
-- Automated API linting does not prove complete Rust source compatibility; public-API review and downstream compile fixtures remain required.
+- Scanner construction policy and same-revision downstream fixtures are documented, but Scanner SDK and plugin contracts still lack an accepted post-transition compatibility baseline and cross-version evidence.
+- Automated API linting and current-head compilation do not prove released-version Rust source compatibility; public-API review remains required.
 - No independent security audit, penetration-test report, compliance certification, or controlled end-to-end performance report has been completed.
