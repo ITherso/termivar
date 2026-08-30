@@ -29,8 +29,6 @@ use crate::web_runtime::assessment_passive::{
 use crate::web_runtime::{AssessmentBasis, AssessmentDisposition};
 #[cfg(feature = "reporting")]
 use crate::web_runtime::{BuiltInScanProfile, ASSESSMENT_RUN_REPORT_SCHEMA};
-#[cfg(feature = "reporting")]
-use crate::ReportGenerator;
 use crate::{
     defense::MAX_FINGERPRINT_BODY_SCAN_BYTES,
     http_evidence::{
@@ -44,6 +42,8 @@ use crate::{
     SemanticEntityType, TransportDispatchOutcome, DEFAULT_MAX_CONSECUTIVE_NO_PROGRESS_TURNS,
     DEFAULT_MAX_REQUEST_BODY_BYTES, DEFAULT_MAX_SAME_ACTION_ATTEMPTS,
 };
+#[cfg(feature = "reporting")]
+use crate::{ReportFormat, ReportGenerator};
 
 #[test]
 fn defense_mode_is_explicit_and_defaults_to_observation_only() {
@@ -84,6 +84,179 @@ async fn default_assessment_does_not_dispatch_native_review_mutations() {
             !is_native_review_action(evidence.case().action_id()),
         StandardWebDecisionRuntimeTurn::Planning(_) => true,
     }));
+}
+
+const PRIVATE_AUTHORIZATION_SENTINEL: &str = "Bearer PRIVATE_AUTHORIZATION_SENTINEL";
+
+fn root_authorization_context() -> WebAssessmentRootAuthorizationContext {
+    WebAssessmentRootAuthorizationContext::new(PRIVATE_AUTHORIZATION_SENTINEL.as_bytes().to_vec())
+        .unwrap()
+}
+
+#[tokio::test]
+async fn root_authorization_pair_uses_shared_authority_and_projects_one_atomic_review_basis() {
+    let server = serve(|request| {
+        if request.headers.get("accept").map(String::as_str) == Some("application/json") {
+            let body = if request.headers.contains_key("authorization") {
+                r#"{"id":1,"private_field":"visible"}"#
+            } else {
+                r#"{"id":1}"#
+            };
+            return FixtureReply::Response(FixtureResponse::new(
+                "200 OK",
+                Some("application/json"),
+                body,
+            ));
+        }
+        FixtureReply::Response(FixtureResponse::html("root"))
+    })
+    .await;
+    let mut runtime = WebAssessmentRuntime::builder(server.url("/"))
+        .with_root_authorization_context(root_authorization_context())
+        .build()
+        .unwrap();
+
+    let report = runtime.analyze().await.unwrap();
+    assert_report_reconciles(&report);
+    assert_eq!(report.completion(), &WebAssessmentCompletion::Complete);
+    assert_eq!(report.usage().active_verifications(), 2);
+    assert_eq!(report.usage().total_requests(), 3);
+
+    let item = report
+        .assessment_items()
+        .iter()
+        .find(|item| {
+            item.capability_id() == "api.review.authorization-context.visibility-difference@1"
+        })
+        .expect("canonical API visibility difference must project once");
+    assert_eq!(item.disposition(), AssessmentDisposition::NeedsReview);
+    assert_eq!(item.evidence_count(), 1);
+    let AssessmentBasis::Differential(basis) = item.basis() else {
+        panic!("API visibility review must retain a differential basis");
+    };
+    assert!(basis.control().is_empty());
+    assert!(basis.candidate().is_empty());
+    assert!(basis.paired_comparison().is_some());
+    assert!(report
+        .assessment_items()
+        .iter()
+        .all(|item| item.disposition() != AssessmentDisposition::Confirmed));
+
+    let requests = server.requests().await;
+    assert_eq!(
+        requests
+            .iter()
+            .filter(|request| request.headers.contains_key("authorization"))
+            .count(),
+        1
+    );
+    assert_eq!(
+        requests
+            .iter()
+            .find_map(|request| request.headers.get("authorization"))
+            .map(String::as_str),
+        Some(PRIVATE_AUTHORIZATION_SENTINEL)
+    );
+    assert!(!format!("{report:?}").contains(PRIVATE_AUTHORIZATION_SENTINEL));
+}
+
+#[tokio::test]
+async fn equivalent_root_authorization_pair_is_observation_only_and_emits_no_review_item() {
+    let server = serve(|request| {
+        if request.headers.get("accept").map(String::as_str) == Some("application/json") {
+            FixtureReply::Response(FixtureResponse::new(
+                "200 OK",
+                Some("application/json"),
+                r#"{"id":1}"#,
+            ))
+        } else {
+            FixtureReply::Response(FixtureResponse::html("root"))
+        }
+    })
+    .await;
+    let mut runtime = WebAssessmentRuntime::builder(server.url("/"))
+        .with_root_authorization_context(root_authorization_context())
+        .build()
+        .unwrap();
+
+    let report = runtime.analyze().await.unwrap();
+    assert_report_reconciles(&report);
+    assert_eq!(report.completion(), &WebAssessmentCompletion::Complete);
+    assert_eq!(report.usage().active_verifications(), 2);
+    assert!(report.assessment_items().iter().all(|item| {
+        item.capability_id() != "api.review.authorization-context.visibility-difference@1"
+    }));
+    assert!(report
+        .assessment_items()
+        .iter()
+        .all(|item| item.disposition() != AssessmentDisposition::Confirmed));
+}
+
+#[tokio::test]
+async fn root_authorization_pair_limit_is_incomplete_and_suppresses_discovery() {
+    let server = serve(|request| {
+        if request.headers.get("accept").map(String::as_str) == Some("application/json") {
+            return FixtureReply::Response(FixtureResponse::new(
+                "200 OK",
+                Some("application/json"),
+                r#"{"id":1}"#,
+            ));
+        }
+        FixtureReply::Response(FixtureResponse::html(
+            r#"<a href="/must-not-be-discovered">next</a>"#,
+        ))
+    })
+    .await;
+    let limits = WebAssessmentLimits::default()
+        .with_max_active_verifications(1)
+        .unwrap();
+    let mut runtime = WebAssessmentRuntime::builder(server.url("/"))
+        .limits(limits)
+        .with_root_authorization_context(root_authorization_context())
+        .build()
+        .unwrap();
+
+    let report = runtime.analyze().await.unwrap();
+    assert_report_reconciles(&report);
+    assert!(report
+        .completion()
+        .reasons()
+        .contains(&WebAssessmentIncompleteReason::ActiveVerificationLimit));
+    assert_eq!(report.subjects().len(), 1);
+    assert_eq!(report.usage().active_verifications(), 1);
+    assert!(report
+        .assessment_items()
+        .iter()
+        .all(|item| !item.capability_id().starts_with("api.review.")));
+    assert_eq!(server.hit_count("/must-not-be-discovered").await, 0);
+}
+
+#[test]
+fn root_authorization_context_is_redacted_bounded_and_root_only() {
+    let context = root_authorization_context();
+    assert!(!format!("{context:?}").contains(PRIVATE_AUTHORIZATION_SENTINEL));
+    for invalid in [b"".as_slice(), b" leading", b"trailing ", b"Bearer a\r\nb"] {
+        assert!(WebAssessmentRootAuthorizationContext::new(invalid.to_vec()).is_err());
+    }
+
+    for target in [
+        "https://example.test/path",
+        "https://example.test/?query=value",
+        "https://example.test/#fragment",
+        "https://user:password@example.test/",
+    ] {
+        let result = WebAssessmentRuntime::builder(Url::parse(target).unwrap())
+            .with_root_authorization_context(root_authorization_context())
+            .build();
+        let Err(error) = result else {
+            panic!("non-root authorization context must fail closed");
+        };
+        assert!(matches!(
+            error,
+            WebAssessmentRuntimeError::RootAuthorizationContextRequiresOriginRoot
+        ));
+        assert!(!format!("{error:?}").contains(PRIVATE_AUTHORIZATION_SENTINEL));
+    }
 }
 
 #[tokio::test]
@@ -466,6 +639,69 @@ async fn web_review_consumes_one_context_owned_item_set_into_the_additive_report
         .items()
         .windows(2)
         .all(|pair| pair[0].fingerprint() < pair[1].fingerprint()));
+}
+
+#[cfg(feature = "reporting")]
+#[tokio::test]
+async fn atomic_api_visibility_basis_is_distinct_and_redacted_in_every_renderer() {
+    let server = serve(|request| {
+        if request.headers.get("accept").map(String::as_str) == Some("application/json") {
+            let body = if request.headers.contains_key("authorization") {
+                r#"{"id":1,"private_field":"visible"}"#
+            } else {
+                r#"{"id":1}"#
+            };
+            FixtureReply::Response(FixtureResponse::new(
+                "200 OK",
+                Some("application/json"),
+                body,
+            ))
+        } else {
+            FixtureReply::Response(FixtureResponse::html("root"))
+        }
+    })
+    .await;
+    let mut runtime = WebAssessmentRuntime::builder(server.url("/"))
+        .with_root_authorization_context(root_authorization_context())
+        .build()
+        .unwrap();
+    let audit = runtime.analyze().await.unwrap();
+    let product =
+        ReportGenerator::compose_assessment(audit, ScanProfileV1::web_review().unwrap()).unwrap();
+
+    let json = ReportGenerator::generate_assessment(&product, ReportFormat::Json).unwrap();
+    let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+    let item = value["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| {
+            item["capability_id"] == "api.review.authorization-context.visibility-difference@1"
+        })
+        .unwrap();
+    assert_eq!(item["disposition"], "needs_review");
+    assert_eq!(item["claim_basis"], "differential");
+    assert_eq!(item["evidence_references"].as_array().unwrap().len(), 1);
+    assert!(item["control_evidence_references"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+    assert!(item["candidate_evidence_references"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+
+    for format in [
+        ReportFormat::Json,
+        ReportFormat::Csv,
+        ReportFormat::Html,
+        ReportFormat::Markdown,
+    ] {
+        let rendered = ReportGenerator::generate_assessment(&product, format).unwrap();
+        assert!(!rendered.contains(PRIVATE_AUTHORIZATION_SENTINEL));
+        assert!(rendered.contains("needs_review"));
+        assert!(!rendered.contains("confirmed"));
+    }
 }
 
 #[tokio::test]

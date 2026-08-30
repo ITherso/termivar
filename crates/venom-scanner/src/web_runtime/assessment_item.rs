@@ -11,12 +11,17 @@ use std::fmt;
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 use url::Url;
-use venom_core::{EntityId, EvidenceId, Probability, SecuritySeverity, VerificationStage};
+use venom_core::{
+    ApiEvidencePredicate, ApiVisibilityDimension, EntityId, EvidenceId, EvidenceValue, Probability,
+    SecuritySeverity, VerificationStage,
+};
 #[cfg(test)]
-use venom_core::{EvidenceValue, HypothesisState, KnowledgePredicate, Outcome, OutcomeStatus};
+use venom_core::{HypothesisState, KnowledgePredicate, Outcome, OutcomeStatus};
 
+use crate::api_observation::api_visibility_review_for_commit;
 use crate::knowledge::KnowledgeAuthority;
 use crate::KnowledgeBase;
+use crate::{ApiObservationCommitReceipt, ApiVisibilityReview, ApiVisibilityReviewDisposition};
 #[cfg(test)]
 use crate::{DecisionEvidenceReceipt, DecisionExecutionStage, DecisionOutcomeReport};
 
@@ -621,6 +626,88 @@ impl AssessmentProjectionContext {
         Ok(())
     }
 
+    /// Projects the existing API comparator's one atomic paired-comparison
+    /// evidence record. The record remains owned by its isolated comparison
+    /// subject; this method binds it to the already registered root only after
+    /// replaying the canonical commit/review contract.
+    pub(super) fn project_api_visibility_paired_comparison(
+        &mut self,
+        capability: &'static AssessmentCapabilityDescriptor,
+        knowledge: &KnowledgeBase,
+        authorized_root_subject: &EntityId,
+        commit: &ApiObservationCommitReceipt,
+        review: &ApiVisibilityReview,
+    ) -> Result<(), AssessmentItemProjectionError> {
+        check_projection_limit("items", self.items.len(), MAX_ASSESSMENT_ITEM_SET_ITEMS)?;
+        check_projection_limit("evidence", self.evidence.len(), MAX_PROJECTION_EVIDENCE)?;
+        self.validate_knowledge_authority(knowledge)?;
+        if !capability.allows_differential_review()
+            || commit.resource_scope() != authorized_root_subject
+            || review.resource_scope() != authorized_root_subject
+            || review.comparison_subject() != commit.comparison_subject()
+            || review.relation_id() != commit.relation_id()
+            || review.evidence().id() != commit.evidence_id()
+            || review.evidence().subject() != commit.comparison_subject()
+            || review.disposition() != ApiVisibilityReviewDisposition::AwaitHumanReview
+            || review.boundary_hypotheses().len() != 1
+            || review.evidence().predicate()
+                != &ApiEvidencePredicate::JSON_AUTHORIZATION_CONTEXT_DIFFERENCE.into_knowledge()
+            || review.evidence().value() != &EvidenceValue::from(ApiVisibilityDimension::Fields)
+        {
+            return Err(AssessmentItemProjectionError::ApiVisibilityReviewContractMismatch);
+        }
+        let canonical = api_visibility_review_for_commit(knowledge, commit)
+            .ok_or(AssessmentItemProjectionError::ApiVisibilityReviewContractMismatch)?;
+        if &canonical != review {
+            return Err(AssessmentItemProjectionError::ApiVisibilityReviewContractMismatch);
+        }
+        validate_runtime_identity(
+            commit.comparison_subject().as_str(),
+            MAX_PROJECTION_SUBJECT_ID_BYTES,
+        )?;
+        validate_runtime_identity(
+            commit.evidence_id().as_str(),
+            MAX_PROJECTION_RUNTIME_ID_BYTES,
+        )?;
+        if self.evidence.contains_key(commit.evidence_id()) {
+            return Err(AssessmentItemProjectionError::DuplicateEvidenceMapping);
+        }
+        let committed = knowledge
+            .evidence(commit.evidence_id())
+            .ok_or(AssessmentItemProjectionError::EvidenceNotCommitted)?;
+        if &committed != review.evidence() || committed.subject() != commit.comparison_subject() {
+            return Err(AssessmentItemProjectionError::EvidenceMappingMismatch);
+        }
+        let target = AssessmentItemTarget::subject();
+        let subject_projection = self.subject(authorized_root_subject, &target)?;
+        let confidence = bounded_observation_confidence(
+            capability,
+            knowledge,
+            std::iter::once(commit.evidence_id()),
+        )?;
+        let reference =
+            AssessmentEvidenceReference::new(next_ordinal(self.evidence.len(), "evidence")?);
+        let item = AssessmentItem::build(
+            capability,
+            self.stable_scope_id(),
+            subject_projection,
+            &target,
+            confidence,
+            AssessmentBasis::Differential(AssessmentDifferentialBasis {
+                evidence: AssessmentDifferentialEvidence::PairedComparison(reference),
+            }),
+        );
+        self.evidence.insert(
+            commit.evidence_id().clone(),
+            EvidenceProjection {
+                reference,
+                subject: commit.comparison_subject().clone(),
+            },
+        );
+        self.push_item(item);
+        Ok(())
+    }
+
     #[cfg(all(test, feature = "scanning"))]
     pub(crate) fn project_verifier(
         &mut self,
@@ -866,22 +953,54 @@ impl AssessmentObservationBasis {
     }
 }
 
-/// Matched control/candidate basis for a review item.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum AssessmentDifferentialEvidence {
+    MatchedPair {
+        control: Vec<AssessmentEvidenceReference>,
+        candidate: Vec<AssessmentEvidenceReference>,
+    },
+    PairedComparison(AssessmentEvidenceReference),
+}
+
+/// Matched or atomically paired evidence basis for a review item.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AssessmentDifferentialBasis {
-    control: Vec<AssessmentEvidenceReference>,
-    candidate: Vec<AssessmentEvidenceReference>,
+    evidence: AssessmentDifferentialEvidence,
 }
 
 impl AssessmentDifferentialBasis {
     /// Returns opaque negative/control evidence references.
     pub fn control(&self) -> &[AssessmentEvidenceReference] {
-        &self.control
+        match &self.evidence {
+            AssessmentDifferentialEvidence::MatchedPair { control, .. } => control,
+            AssessmentDifferentialEvidence::PairedComparison(_) => &[],
+        }
     }
 
     /// Returns opaque candidate evidence references.
     pub fn candidate(&self) -> &[AssessmentEvidenceReference] {
-        &self.candidate
+        match &self.evidence {
+            AssessmentDifferentialEvidence::MatchedPair { candidate, .. } => candidate,
+            AssessmentDifferentialEvidence::PairedComparison(_) => &[],
+        }
+    }
+
+    /// Returns the single canonical comparison evidence when the comparator
+    /// committed an atomic pair instead of two independently stored legs.
+    pub const fn paired_comparison(&self) -> Option<AssessmentEvidenceReference> {
+        match self.evidence {
+            AssessmentDifferentialEvidence::PairedComparison(reference) => Some(reference),
+            AssessmentDifferentialEvidence::MatchedPair { .. } => None,
+        }
+    }
+
+    fn evidence_count(&self) -> usize {
+        match &self.evidence {
+            AssessmentDifferentialEvidence::MatchedPair { control, candidate } => {
+                control.len() + candidate.len()
+            },
+            AssessmentDifferentialEvidence::PairedComparison(_) => 1,
+        }
     }
 }
 
@@ -947,7 +1066,7 @@ impl AssessmentBasis {
     pub fn evidence_count(&self) -> usize {
         match self {
             Self::Observation(basis) => basis.evidence.len(),
-            Self::Differential(basis) => basis.control.len() + basis.candidate.len(),
+            Self::Differential(basis) => basis.evidence_count(),
             Self::Verifier(basis) => basis.evidence.len(),
         }
     }
@@ -1125,7 +1244,9 @@ impl AssessmentItem {
             subject_projection,
             target,
             confidence,
-            AssessmentBasis::Differential(AssessmentDifferentialBasis { control, candidate }),
+            AssessmentBasis::Differential(AssessmentDifferentialBasis {
+                evidence: AssessmentDifferentialEvidence::MatchedPair { control, candidate },
+            }),
         ))
     }
 
@@ -1264,6 +1385,8 @@ pub enum AssessmentItemProjectionError {
     DuplicateEvidenceReference,
     #[error("differential control and candidate evidence overlap")]
     OverlappingDifferentialEvidence,
+    #[error("API visibility review does not match its canonical committed comparison")]
+    ApiVisibilityReviewContractMismatch,
     #[error("assessment confirmation denied: {0}")]
     ConfirmationDenied(AssessmentConfirmationDenial),
     #[error("static capability confidence is outside the fixed-point range")]

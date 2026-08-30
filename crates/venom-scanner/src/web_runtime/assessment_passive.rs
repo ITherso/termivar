@@ -28,6 +28,7 @@ use crate::{
 };
 
 use super::{
+    assessment_api_visibility::{project_api_visibility_item, CommittedAssessmentApiVisibility},
     assessment_item::{
         AssessmentCapabilityDescriptor, AssessmentItemProjectionError, AssessmentItemSet,
         AssessmentItemTarget, AssessmentProjectionContext, StableAssessmentScopeId,
@@ -1062,7 +1063,7 @@ pub(crate) fn project_passive_assessment_items(
     knowledge: &KnowledgeBase,
     authorized_root: &WebAssessmentSubject,
 ) -> Result<PassiveAssessmentItemProjection, PassiveAssessmentItemProjectionError> {
-    project_assessment_items(ledger, None, knowledge, authorized_root)
+    project_assessment_items(ledger, None, None, knowledge, authorized_root)
 }
 
 /// Projects passive observations and optional matched review candidates into
@@ -1070,6 +1071,7 @@ pub(crate) fn project_passive_assessment_items(
 pub(crate) fn project_assessment_items(
     ledger: &CommittedAssessmentPassiveLedger,
     review: Option<&CommittedAssessmentReviewLedger>,
+    api_visibility: Option<&CommittedAssessmentApiVisibility>,
     knowledge: &KnowledgeBase,
     authorized_root: &WebAssessmentSubject,
 ) -> Result<PassiveAssessmentItemProjection, PassiveAssessmentItemProjectionError> {
@@ -1100,6 +1102,7 @@ pub(crate) fn project_assessment_items(
     project_assessment_items_for_root(
         ledger,
         review,
+        api_visibility,
         knowledge,
         root_subject,
         &exact_origin,
@@ -1120,6 +1123,7 @@ fn project_passive_assessment_items_for_root(
     project_assessment_items_for_root(
         ledger,
         None,
+        None,
         knowledge,
         root_subject,
         exact_origin,
@@ -1131,6 +1135,7 @@ fn project_passive_assessment_items_for_root(
 fn project_assessment_items_for_root(
     ledger: &CommittedAssessmentPassiveLedger,
     review: Option<&CommittedAssessmentReviewLedger>,
+    api_visibility: Option<&CommittedAssessmentApiVisibility>,
     knowledge: &KnowledgeBase,
     root_subject: Option<EntityId>,
     exact_origin: &str,
@@ -1201,6 +1206,9 @@ fn project_assessment_items_for_root(
     }
     if let (Some(review), Some(root_subject)) = (review, root_subject.as_ref()) {
         project_assessment_review_items(&mut context, review, knowledge, root_subject)?;
+    }
+    if let (Some(api_visibility), Some(root_subject)) = (api_visibility, root_subject.as_ref()) {
+        project_api_visibility_item(&mut context, knowledge, root_subject, api_visibility)?;
     }
     Ok(PassiveAssessmentItemProjection {
         items: context.finish(),

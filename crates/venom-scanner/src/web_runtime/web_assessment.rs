@@ -19,11 +19,15 @@ use tokio_util::sync::CancellationToken;
 use url::Url;
 use venom_core::predicates::WebDiscoveryEvidencePredicate;
 use venom_core::{
-    DerivationAlgorithm, Evidence, EvidenceDerivation, EvidenceId, EvidenceKind, EvidenceOrigin,
-    EvidenceSource, EvidenceValue, HttpEvidencePredicate, PredicateDescriptor,
+    DerivationAlgorithm, EntityId, Evidence, EvidenceDerivation, EvidenceId, EvidenceKind,
+    EvidenceOrigin, EvidenceSource, EvidenceValue, HttpEvidencePredicate, PredicateDescriptor,
 };
 
 use super::{
+    assessment_api_visibility::{
+        build_root_api_visibility_runtime, CommittedAssessmentApiVisibility,
+        RootApiVisibilityOutcome, RootApiVisibilityRuntime, WebAssessmentRootAuthorizationContext,
+    },
     assessment_defense::{
         AssessmentDefenseBodyCoverage, AssessmentDefenseController, ASSESSMENT_DEFENSE_NAMESPACE,
     },
@@ -51,10 +55,11 @@ use crate::{
     AttackPlan, DecisionEvidenceReceipt, DecisionExecutionFailureReceipt, DecisionExecutionStage,
     DecisionLoopCommand, DecisionStopReason, DefensePosture, DefenseProduct, FingerprintConfidence,
     HttpEvidenceError, HttpEvidencePolicy, HttpProbe, HttpProbeMethod, KnowledgeBase, LimitsError,
-    RuntimeBudget, RuntimeBudgetDimension, RuntimeLimitExceeded, SemanticExtractionLimits,
-    SemanticExtractionResult, ShadowPlanDelta, StandardWebActionKind, StandardWebDecisionRuntime,
-    StandardWebDecisionRuntimeError, StandardWebDecisionRuntimeTurn, TransportDispatchAudit,
-    HTTP_EVIDENCE_EXECUTOR_ID, MAX_HTTP_BODY_LIMIT,
+    RuntimeApiVisibilityExecutionError, RuntimeBudget, RuntimeBudgetDimension,
+    RuntimeLimitExceeded, SemanticExtractionLimits, SemanticExtractionResult, ShadowPlanDelta,
+    StandardWebActionKind, StandardWebDecisionRuntime, StandardWebDecisionRuntimeError,
+    StandardWebDecisionRuntimeTurn, TransportDispatchAudit, HTTP_EVIDENCE_EXECUTOR_ID,
+    MAX_HTTP_BODY_LIMIT,
 };
 
 mod discovery;
@@ -112,8 +117,10 @@ pub const HARD_MAX_WEB_ASSESSMENT_TOTAL_RESPONSE_BYTES: u64 = 256 * 1024 * 1024;
 pub const DEFAULT_WEB_ASSESSMENT_MAX_WALL_TIME: Duration = Duration::from_secs(300);
 /// Compiled complete-assessment wall-clock ceiling.
 pub const HARD_MAX_WEB_ASSESSMENT_WALL_TIME: Duration = Duration::from_secs(3_600);
-/// Default maximum active verification dispatches.
-pub const DEFAULT_WEB_ASSESSMENT_MAX_ACTIVE_VERIFICATIONS: u16 = 4;
+/// Default maximum active verification dispatches: four for the closed native
+/// review catalog plus two for one explicitly supplied authorization pair.
+/// Callers may select a lower ceiling; exhaustion remains fail-closed.
+pub const DEFAULT_WEB_ASSESSMENT_MAX_ACTIVE_VERIFICATIONS: u16 = 6;
 /// Compiled maximum active verification dispatches.
 pub const HARD_MAX_WEB_ASSESSMENT_ACTIVE_VERIFICATIONS: u16 = 64;
 /// Assessment subjects execute sequentially under one shared authority.
@@ -805,6 +812,9 @@ pub enum WebAssessmentIncompleteReason {
     /// The explicitly enabled matched review catalog did not commit every
     /// control/candidate observation required by its configured boundary.
     DifferentialReviewIncomplete,
+    /// The explicitly supplied authorization-context pair did not produce one
+    /// complete canonical comparison suitable for product projection.
+    ApiVisibilityReviewIncomplete,
 }
 
 /// Whether every retained subject and eligible document completed within bounds.
@@ -1364,6 +1374,10 @@ pub enum WebAssessmentRuntimeError {
     RootRetentionLimit,
     #[error("native low-risk web review could not be composed safely")]
     NativeReviewComposition,
+    #[error("root authorization-context review requires an exact origin root target")]
+    RootAuthorizationContextRequiresOriginRoot,
+    #[error("root API authorization-context review could not be composed safely")]
+    ApiVisibilityComposition,
     #[error(transparent)]
     Standard(#[from] StandardWebDecisionRuntimeError),
     #[error("web assessment failed after it started")]
@@ -1371,6 +1385,12 @@ pub enum WebAssessmentRuntimeError {
         receipt: Box<WebAssessmentFailureReceipt>,
         #[source]
         source: Box<StandardWebDecisionRuntimeError>,
+    },
+    #[error("root API authorization-context review failed after it started")]
+    ApiVisibilityRunFailed {
+        receipt: Box<WebAssessmentFailureReceipt>,
+        #[source]
+        source: Box<RuntimeApiVisibilityExecutionError>,
     },
     #[error("committed web discovery evidence violated its typed projection contract")]
     ProjectionInvariant {
@@ -1398,11 +1418,21 @@ impl fmt::Debug for WebAssessmentRuntimeError {
             Self::NativeReviewComposition => {
                 formatter.write_str("WebAssessmentRuntimeError::NativeReviewComposition")
             },
+            Self::RootAuthorizationContextRequiresOriginRoot => formatter
+                .write_str("WebAssessmentRuntimeError::RootAuthorizationContextRequiresOriginRoot"),
+            Self::ApiVisibilityComposition => {
+                formatter.write_str("WebAssessmentRuntimeError::ApiVisibilityComposition")
+            },
             Self::Standard(_) => {
                 formatter.write_str("WebAssessmentRuntimeError::Standard(<redacted>)")
             },
             Self::RunFailed { receipt, .. } => formatter
                 .debug_struct("WebAssessmentRuntimeError::RunFailed")
+                .field("receipt", receipt)
+                .field("source", &"<redacted>")
+                .finish(),
+            Self::ApiVisibilityRunFailed { receipt, .. } => formatter
+                .debug_struct("WebAssessmentRuntimeError::ApiVisibilityRunFailed")
                 .field("receipt", receipt)
                 .field("source", &"<redacted>")
                 .finish(),
@@ -1417,9 +1447,9 @@ impl fmt::Debug for WebAssessmentRuntimeError {
 impl WebAssessmentRuntimeError {
     pub fn failure_receipt(&self) -> Option<&WebAssessmentFailureReceipt> {
         match self {
-            Self::RunFailed { receipt, .. } | Self::ProjectionInvariant { receipt } => {
-                Some(receipt)
-            },
+            Self::RunFailed { receipt, .. }
+            | Self::ApiVisibilityRunFailed { receipt, .. }
+            | Self::ProjectionInvariant { receipt } => Some(receipt),
             _ => None,
         }
     }
@@ -1433,6 +1463,7 @@ pub struct WebAssessmentRuntimeBuilder {
     cancellation: CancellationToken,
     defense_enforcement: bool,
     low_risk_differential_review: bool,
+    root_authorization_context: Option<WebAssessmentRootAuthorizationContext>,
 }
 
 impl WebAssessmentRuntimeBuilder {
@@ -1444,6 +1475,7 @@ impl WebAssessmentRuntimeBuilder {
             cancellation: CancellationToken::new(),
             defense_enforcement: false,
             low_risk_differential_review: false,
+            root_authorization_context: None,
         }
     }
     pub fn limits(mut self, limits: WebAssessmentLimits) -> Self {
@@ -1472,7 +1504,28 @@ impl WebAssessmentRuntimeBuilder {
         self.low_risk_differential_review = true;
         self
     }
+    /// Adds one anonymous/authorized JSON comparison for the exact origin root.
+    ///
+    /// The context is consumed during build and can neither be cloned nor
+    /// serialized. Both requests share the assessment's broker, cancellation,
+    /// deadline, and global budget.
+    pub fn with_root_authorization_context(
+        mut self,
+        context: WebAssessmentRootAuthorizationContext,
+    ) -> Self {
+        self.root_authorization_context = Some(context);
+        self
+    }
     pub fn build(self) -> Result<WebAssessmentRuntime, WebAssessmentRuntimeError> {
+        if self.root_authorization_context.is_some()
+            && (!self.target.username().is_empty()
+                || self.target.password().is_some()
+                || self.target.path() != "/"
+                || self.target.query().is_some()
+                || self.target.fragment().is_some())
+        {
+            return Err(WebAssessmentRuntimeError::RootAuthorizationContextRequiresOriginRoot);
+        }
         let semantic_limits = assessment_semantic_limits(self.limits)?;
         // Validate credentials and the HTTP(S) scheme before removing query
         // values from the root. The query-free URL is the only representation
@@ -1503,6 +1556,20 @@ impl WebAssessmentRuntimeBuilder {
             query_parameter_names: root.query_parameter_names,
             evidence_ids: Vec::new(),
         };
+        let root_api_visibility = self
+            .root_authorization_context
+            .map(|context| {
+                let resource_scope = EntityId::new(format!("endpoint:{}", root.url))
+                    .map_err(|_| WebAssessmentRuntimeError::ApiVisibilityComposition)?;
+                build_root_api_visibility_runtime(
+                    &root.url,
+                    resource_scope,
+                    authority.clone(),
+                    context,
+                )
+                .map_err(|_| WebAssessmentRuntimeError::ApiVisibilityComposition)
+            })
+            .transpose()?;
         let native_review = if self.low_risk_differential_review {
             let seeds = NativeWebReviewSeeds::from_authorized_origin(&root.url)?;
             let redirect_query_parameter =
@@ -1547,6 +1614,8 @@ impl WebAssessmentRuntimeBuilder {
             started: false,
             defense_enforcement: self.defense_enforcement,
             native_review,
+            root_api_visibility,
+            committed_api_visibility: None,
             defense_audit: WebAssessmentDefenseAudit::new(if self.defense_enforcement {
                 WebAssessmentDefenseMode::Enforced
             } else {
@@ -1570,6 +1639,8 @@ pub struct WebAssessmentRuntime {
     started: bool,
     defense_enforcement: bool,
     native_review: Option<AssessmentNativeReviewRuntime>,
+    root_api_visibility: Option<RootApiVisibilityRuntime>,
+    committed_api_visibility: Option<CommittedAssessmentApiVisibility>,
     defense_audit: WebAssessmentDefenseAudit,
     passive_ledger: CommittedAssessmentPassiveLedger,
 }
@@ -1917,7 +1988,7 @@ impl WebAssessmentRuntime {
                 if wall_time_reached_at_subject_boundary {
                     reasons.insert(WebAssessmentIncompleteReason::WallTimeLimit);
                 }
-                let should_stop = cancelled_at_subject_boundary
+                let mut should_stop = cancelled_at_subject_boundary
                     || wall_time_reached_at_subject_boundary
                     || standard.limit_exceeded().is_some()
                     || matches!(
@@ -1937,6 +2008,7 @@ impl WebAssessmentRuntime {
                 );
                 let parts = standard.into_assessment_parts();
                 let subject_report = WebAssessmentSubjectReport::complete(subject.clone(), parts);
+                let mut suppress_discovery_projection = false;
 
                 match projection {
                     Ok(projection) => {
@@ -1979,47 +2051,113 @@ impl WebAssessmentRuntime {
                                 )),
                             });
                         }
-                        if let Some(projection) = projection {
-                            projection.add_reasons(&mut reasons);
-                            self.ledger.apply(&projection);
-                            forms.extend(projection.forms);
-                            for route in projection.routes {
-                                let route_is_pending = self
-                                    .ledger
-                                    .subject_admission(&route.url)
-                                    .is_some_and(|entry| !entry.executed);
-                                if route_is_pending {
-                                    if let Some(existing) =
-                                        known_subjects.get_mut(route.url.as_str())
-                                    {
-                                        merge_subject_route(
-                                            existing,
-                                            &route,
-                                            subject.depth + 1,
-                                            self.limits.max_query_parameter_names(),
+                        if subject.origin == WebAssessmentSubjectOrigin::AuthorizedRoot
+                            && !should_stop
+                        {
+                            let api_visibility_result = match self.root_api_visibility.as_mut() {
+                                Some(runtime) => Some(runtime.execute().await),
+                                None => None,
+                            };
+                            if let Some(api_visibility_result) = api_visibility_result {
+                                match api_visibility_result {
+                                    Ok(RootApiVisibilityOutcome::NoDifference) => {},
+                                    Ok(RootApiVisibilityOutcome::NeedsReview(committed)) => {
+                                        self.committed_api_visibility = Some(committed);
+                                    },
+                                    Ok(RootApiVisibilityOutcome::Incomplete) => {
+                                        reasons.insert(
+                                            WebAssessmentIncompleteReason::ApiVisibilityReviewIncomplete,
                                         );
-                                    } else {
-                                        known_subjects.insert(
-                                            route.url.to_string(),
-                                            WebAssessmentSubject {
-                                                url: route.url.clone(),
-                                                method: route.method,
-                                                depth: subject.depth.saturating_add(1),
-                                                origin: WebAssessmentSubjectOrigin::Discovered,
-                                                query_parameter_names: route
-                                                    .query_parameter_names
-                                                    .clone(),
-                                                evidence_ids: route.evidence_ids.clone(),
+                                        should_stop = true;
+                                        suppress_discovery_projection = true;
+                                    },
+                                    Ok(RootApiVisibilityOutcome::Cancelled) => {
+                                        reasons.insert(
+                                            WebAssessmentIncompleteReason::HostCancellation,
+                                        );
+                                        should_stop = true;
+                                        suppress_discovery_projection = true;
+                                    },
+                                    Ok(RootApiVisibilityOutcome::RuntimeLimit(dimension)) => {
+                                        reasons.insert(reason_for_runtime_dimension(dimension));
+                                        should_stop = true;
+                                        suppress_discovery_projection = true;
+                                    },
+                                    Ok(RootApiVisibilityOutcome::ContractMismatch) => {
+                                        return Err(
+                                            WebAssessmentRuntimeError::ProjectionInvariant {
+                                                receipt: Box::new(self.failure_receipt(
+                                                    &known_subjects,
+                                                    subject_reports,
+                                                    forms,
+                                                    subject_report,
+                                                    failed_reasons(&reasons),
+                                                    started_at,
+                                                )),
                                             },
                                         );
-                                    }
+                                    },
+                                    Err(source) => {
+                                        return Err(
+                                            WebAssessmentRuntimeError::ApiVisibilityRunFailed {
+                                                receipt: Box::new(self.failure_receipt(
+                                                    &known_subjects,
+                                                    subject_reports,
+                                                    forms,
+                                                    subject_report,
+                                                    failed_reasons(&reasons),
+                                                    started_at,
+                                                )),
+                                                source: Box::new(source),
+                                            },
+                                        );
+                                    },
                                 }
-                                merge_pending_route(
-                                    &mut next_candidates,
-                                    route,
-                                    subject.depth + 1,
-                                    self.limits.max_query_parameter_names(),
-                                );
+                            }
+                        }
+                        if let Some(projection) = projection {
+                            projection.add_reasons(&mut reasons);
+                            if !suppress_discovery_projection {
+                                self.ledger.apply(&projection);
+                                forms.extend(projection.forms);
+                                for route in projection.routes {
+                                    let route_is_pending = self
+                                        .ledger
+                                        .subject_admission(&route.url)
+                                        .is_some_and(|entry| !entry.executed);
+                                    if route_is_pending {
+                                        if let Some(existing) =
+                                            known_subjects.get_mut(route.url.as_str())
+                                        {
+                                            merge_subject_route(
+                                                existing,
+                                                &route,
+                                                subject.depth + 1,
+                                                self.limits.max_query_parameter_names(),
+                                            );
+                                        } else {
+                                            known_subjects.insert(
+                                                route.url.to_string(),
+                                                WebAssessmentSubject {
+                                                    url: route.url.clone(),
+                                                    method: route.method,
+                                                    depth: subject.depth.saturating_add(1),
+                                                    origin: WebAssessmentSubjectOrigin::Discovered,
+                                                    query_parameter_names: route
+                                                        .query_parameter_names
+                                                        .clone(),
+                                                    evidence_ids: route.evidence_ids.clone(),
+                                                },
+                                            );
+                                        }
+                                    }
+                                    merge_pending_route(
+                                        &mut next_candidates,
+                                        route,
+                                        subject.depth + 1,
+                                        self.limits.max_query_parameter_names(),
+                                    );
+                                }
                             }
                         }
                     },
@@ -2139,6 +2277,7 @@ impl WebAssessmentRuntime {
         let assessment_projection = match project_assessment_items(
             &self.passive_ledger,
             self.native_review.as_ref().map(|review| &review.ledger),
+            self.committed_api_visibility.as_ref(),
             self.authority.knowledge(),
             &self.root,
         ) {

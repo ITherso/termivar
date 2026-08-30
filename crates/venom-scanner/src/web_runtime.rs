@@ -47,6 +47,7 @@ use crate::{
 };
 
 mod api_visibility;
+mod assessment_api_visibility;
 mod assessment_defense;
 mod assessment_item;
 mod assessment_passive;
@@ -77,6 +78,9 @@ pub use api_visibility::{
     ApiVisibilityDifferentialRequestError, ApiVisibilityInconclusiveReason, ApiVisibilityLeg,
     ApiVisibilityLegReceipt, RuntimeApiVisibilityError, RuntimeApiVisibilityExecutionError,
     RuntimeApiVisibilityRunReport,
+};
+pub use assessment_api_visibility::{
+    WebAssessmentAuthorizationContextError, WebAssessmentRootAuthorizationContext,
 };
 pub use assessment_item::{
     AssessmentBasis, AssessmentCaseReference, AssessmentConfirmationDenial,

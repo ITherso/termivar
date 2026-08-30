@@ -1186,10 +1186,14 @@ impl<'a> AssessmentItemDocument<'a> {
                     && self.verification_stage.is_none()
             },
             "differential" => {
-                self.disposition == "needs_review"
-                    && self.evidence_references.is_empty()
+                let atomic_pair = self.evidence_references.len() == 1
+                    && self.control_evidence_references.is_empty()
+                    && self.candidate_evidence_references.is_empty();
+                let matched_pair = self.evidence_references.is_empty()
                     && !self.control_evidence_references.is_empty()
-                    && !self.candidate_evidence_references.is_empty()
+                    && !self.candidate_evidence_references.is_empty();
+                self.disposition == "needs_review"
+                    && (atomic_pair || matched_pair)
                     && self.case_reference.is_none()
                     && self.outcome_reference.is_none()
                     && self.verification_stage.is_none()
@@ -1272,6 +1276,21 @@ impl AssessmentBasisLinkageDocument {
                 })
             },
             AssessmentBasis::Differential(differential) => {
+                if let Some(reference) = differential.paired_comparison() {
+                    if !differential.control().is_empty() || !differential.candidate().is_empty() {
+                        return Err(ReportError::Serialization);
+                    }
+                    let mut evidence_references = Vec::new();
+                    evidence_references.push(reference.to_string());
+                    return Ok(Self {
+                        evidence_references,
+                        control_evidence_references: Vec::new(),
+                        candidate_evidence_references: Vec::new(),
+                        case_reference: None,
+                        outcome_reference: None,
+                        verification_stage: None,
+                    });
+                }
                 let control_evidence_references = differential
                     .control()
                     .iter()
