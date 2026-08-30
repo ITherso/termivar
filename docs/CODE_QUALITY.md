@@ -48,7 +48,7 @@ Before submitting a change, run:
 ```bash
 cargo fmt --all -- --check
 cargo xtask architecture
-cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 cargo test --workspace --all-features --locked
 ```
 

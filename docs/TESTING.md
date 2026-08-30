@@ -200,7 +200,7 @@ Security checks are separate from functional tests:
 ```bash
 cargo audit
 cargo deny check
-cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 ```
 
 CI checks the declared MSRV (`1.88.0`), stable, beta, and nightly. Stable and
@@ -312,7 +312,7 @@ At minimum:
 ```bash
 cargo fmt --all -- --check
 cargo xtask architecture
-cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 cargo test --workspace --all-features --locked
 ```
 

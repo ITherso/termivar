@@ -6,8 +6,8 @@ The canonical contribution policy lives in the repository-root [CONTRIBUTING.md]
 
 ```bash
 cargo fmt --all -- --check
-cargo clippy --workspace --all-targets --all-features -- -D warnings
-cargo test --workspace --all-features
+cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+cargo test --workspace --all-features --locked
 cargo xtask docs
 ```
 

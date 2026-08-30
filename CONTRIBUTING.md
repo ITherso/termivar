@@ -11,7 +11,7 @@ or cache services.
 ```bash
 git clone https://github.com/ITherso/venom.git
 cd venom
-cargo test --workspace
+cargo test --workspace --locked
 ```
 
 The repository exposes common maintenance commands through `cargo xtask`:
@@ -53,8 +53,8 @@ Before opening a pull request, run:
 ```bash
 cargo fmt --all -- --check
 cargo xtask architecture
-cargo clippy --workspace --all-targets --all-features -- -D warnings
-cargo test --workspace --all-features
+cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+cargo test --workspace --all-features --locked
 ```
 
 Formatting is defined by `rustfmt.toml`; lint behavior is defined by `clippy.toml` and CI. Do not hand-format around these tools.
