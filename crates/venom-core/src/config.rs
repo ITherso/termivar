@@ -95,8 +95,8 @@ impl std::fmt::Display for ConfigError {
             ConfigError::RateLimitNegative => write!(f, "Rate limit cannot be negative"),
             ConfigError::MaxPayloadSizeZero => write!(f, "Max payload size must be greater than 0"),
             ConfigError::ConnectTimeoutZero => write!(f, "Connect timeout must be greater than 0"),
-            ConfigError::InvalidTarget(msg) => write!(f, "Invalid target: {}", msg),
-            ConfigError::ParseError(msg) => write!(f, "Parse error: {}", msg),
+            ConfigError::InvalidTarget(msg) => write!(f, "Invalid target: {msg}"),
+            ConfigError::ParseError(msg) => write!(f, "Parse error: {msg}"),
         }
     }
 }
@@ -158,10 +158,10 @@ impl Config {
     /// Loads configuration from TOML file with environment overrides
     pub fn from_toml(path: impl AsRef<Path>) -> Result<Self, ConfigError> {
         let content = std::fs::read_to_string(path)
-            .map_err(|e| ConfigError::ParseError(format!("Failed to read file: {}", e)))?;
+            .map_err(|e| ConfigError::ParseError(format!("Failed to read file: {e}")))?;
 
         let mut config: Config = toml::from_str(&content)
-            .map_err(|e| ConfigError::ParseError(format!("Failed to parse TOML: {}", e)))?;
+            .map_err(|e| ConfigError::ParseError(format!("Failed to parse TOML: {e}")))?;
 
         // Apply environment overrides
         config.apply_env_overrides()?;
@@ -224,13 +224,13 @@ impl Config {
     /// Exports configuration as TOML string
     pub fn to_toml(&self) -> Result<String, ConfigError> {
         toml::to_string_pretty(self)
-            .map_err(|e| ConfigError::ParseError(format!("Failed to serialize to TOML: {}", e)))
+            .map_err(|e| ConfigError::ParseError(format!("Failed to serialize to TOML: {e}")))
     }
 
     /// Exports configuration as JSON string
     pub fn to_json(&self) -> Result<String, ConfigError> {
         serde_json::to_string_pretty(self)
-            .map_err(|e| ConfigError::ParseError(format!("Failed to serialize to JSON: {}", e)))
+            .map_err(|e| ConfigError::ParseError(format!("Failed to serialize to JSON: {e}")))
     }
 }
 

@@ -152,7 +152,7 @@ impl Event {
     pub fn timestamp_str(&self) -> String {
         let secs = self.timestamp_ms / 1000;
         let millis = self.timestamp_ms % 1000;
-        format!("{}.{:03}", secs, millis)
+        format!("{secs}.{millis:03}")
     }
 }
 
