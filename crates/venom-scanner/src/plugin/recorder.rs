@@ -158,8 +158,6 @@ impl fmt::Debug for PluginObservation {
     }
 }
 
-/// Host-created request for one plugin invocation.
-
 pub(super) fn validate_observation_value(value: &EvidenceValue) -> Result<(), PluginError> {
     match value {
         EvidenceValue::Text(text) => {

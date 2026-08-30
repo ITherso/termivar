@@ -11584,7 +11584,15 @@ mod tests {
             .join("\n");
         assert!(violations.contains("must not implement"), "{violations}");
 
-        let http = seam.to_owned();
+        let mut http = seam.to_owned();
+        for child in [
+            include_str!("../../../crates/venom-scanner/src/http_evidence/policy.rs"),
+            include_str!("../../../crates/venom-scanner/src/http_evidence/probe.rs"),
+            include_str!("../../../crates/venom-scanner/src/http_evidence/response.rs"),
+        ] {
+            http.push('\n');
+            http.push_str(child);
+        }
         let broker =
             include_str!("../../../crates/venom-scanner/src/http_evidence/request_broker.rs");
         assert!(inspect_assessment_transport_markers(&http, broker).is_empty());
