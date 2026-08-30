@@ -2,9 +2,9 @@
 
 use super::{
     DecisionActionOrigin, DecisionExecutionFailureKind, DecisionExecutionLimits,
-    DecisionExecutionRequest, DecisionExecutionStage, DecisionExecutorError, DecisionLoopCommand,
-    DecisionOutcomeReport, DecisionPlanningReport, Evidence, KnowledgeSnapshot, KnowledgeWrite,
-    RuntimeLimitExceeded, Serialize, VerificationCase,
+    DecisionExecutionRequest, DecisionExecutionStage, DecisionLoopCommand, DecisionOutcomeReport,
+    DecisionPlanningReport, Evidence, KnowledgeSnapshot, KnowledgeWrite, RuntimeLimitExceeded,
+    Serialize, VerificationCase,
 };
 
 /// Immutable audit receipt for an executor-reported pre-commit failure.

@@ -36,6 +36,8 @@ mod receipts;
 mod state;
 
 pub use command::{DecisionActionOrigin, DecisionLoopCommand, DecisionStopReason};
+#[cfg(test)]
+use policy::transition_from_adaptive;
 pub use policy::DecisionLoop;
 pub use receipts::{DecisionOutcomeReport, DecisionPlanningReport, DecisionReasoningCommitReceipt};
 pub use state::{

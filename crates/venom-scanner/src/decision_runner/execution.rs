@@ -1,7 +1,7 @@
 //! Capability-bound executor request and trait contracts.
 
 use super::{
-    async_trait, DecisionActionOrigin, DecisionExecutorError, Deserialize, Evidence, KnowledgeBase,
+    async_trait, DecisionActionOrigin, DecisionExecutorError, Deserialize, Evidence,
     KnowledgeSnapshot, PayloadStrategyRef, Serialize, VerificationCase,
 };
 

@@ -1,13 +1,12 @@
 //! Deterministic reasoning, planning, verification, and adaptation policy.
 
 use super::{
-    ActionSuppressionContext, ActiveEvidenceSnapshots, AdaptationLimits, AdaptivePipeline,
-    AttackPlan, AttackPlanner, BTreeSet, DecisionActionOrigin, DecisionLoopCommand,
-    DecisionLoopConfig, DecisionLoopError, DecisionLoopState, DecisionOutcomeReport,
-    DecisionPlanningReport, DecisionReasoningCommitReceipt, DecisionSession,
-    DecisionSessionTransition, DecisionStopReason, ExperiencePolicy, ExperienceStore,
-    KnowledgeBase, KnowledgeSnapshot, KnowledgeWrite, Outcome, PayloadStrategyRef,
-    PipelineDirective, PlanningContext, ResolvedVerificationTarget, RuleEngine,
+    ActionSuppressionContext, ActiveEvidenceSnapshots, AdaptivePipeline, AttackPlan, AttackPlanner,
+    BTreeSet, DecisionActionOrigin, DecisionLoopCommand, DecisionLoopConfig, DecisionLoopError,
+    DecisionLoopState, DecisionOutcomeReport, DecisionPlanningReport,
+    DecisionReasoningCommitReceipt, DecisionSession, DecisionSessionTransition, DecisionStopReason,
+    ExperiencePolicy, ExperienceStore, KnowledgeBase, KnowledgeSnapshot, KnowledgeWrite, Outcome,
+    PayloadStrategyRef, PipelineDirective, PlanningContext, ResolvedVerificationTarget, RuleEngine,
     ScheduledActionAuthorizationError, VerificationCase, VerificationPipeline, VerificationReport,
 };
 
@@ -168,7 +167,7 @@ impl DecisionLoop {
         )
     }
 
-    fn plan_next_with_suppressed_actions_before_commit<F>(
+    pub(super) fn plan_next_with_suppressed_actions_before_commit<F>(
         &self,
         knowledge: &KnowledgeBase,
         experience: &ExperienceStore,
@@ -755,7 +754,7 @@ fn issue_action(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn transition_from_adaptive(
+pub(super) fn transition_from_adaptive(
     session: &mut DecisionSession,
     max_action_cycles: u32,
     planner: &AttackPlanner,
