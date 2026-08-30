@@ -10251,6 +10251,7 @@ mod tests {
                 ASSESSMENT_REVIEW_PROJECTION_SOURCE,
                 NATIVE_REVIEW_ACTION_SOURCE,
                 NATIVE_REVIEW_DECISION_SOURCE,
+                REFLECTION_CONTEXT_SOURCE,
             ])
         );
         for source_name in NATIVE_REVIEW_BOUNDED_SOURCES {
