@@ -98,8 +98,9 @@ branch, a manual dispatch can select a fixed workload and sample count. Before
 that, an authorized maintainer may explicitly apply the
 `endpoint-performance-evidence` label to a same-repository pull request; that
 event runs only the fixed `all`, one-warmup, three-sample measurement. Fork pull
-requests cannot activate it. Artifacts are measurements, not performance
-claims.
+requests cannot activate it. The measurement checkout and artifact identity are
+pinned to the pull request head commit rather than GitHub's synthetic merge
+commit. Artifacts are measurements, not performance claims.
 
 ## Release baseline
 

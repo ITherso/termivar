@@ -100,6 +100,8 @@ jobs:
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
       - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # 1.88.0
         with:
           toolchain: '1.88.0'
@@ -122,7 +124,7 @@ jobs:
       - name: Upload complete evidence pair
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: endpoint-performance-${{ github.sha }}
+          name: endpoint-performance-${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
           path: target/endpoint-performance/
           if-no-files-found: error
           retention-days: 30
