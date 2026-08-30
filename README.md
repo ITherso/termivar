@@ -183,6 +183,14 @@ most `NeedsReview`. The DOM representation does not preserve source quote mode,
 and no JavaScript/CSS grammar or browser executes the response, so reflection
 is never `Confirmed` XSS. The typed context model can support later
 context-compatible payload families without parsing human-readable labels.
+V1 uses that typed context to select at most one of four non-executing
+structural families across the complete assessment: HTML-text boundary,
+relative URI structure, inline-handler comment syntax, or script-content
+comment syntax. Selection is metadata-first, deterministic, and duplicate
+suppressed; catalog size does not increase the execution ceiling. Only exact
+candidate-specific parser-visible structural control can produce a separate
+`NeedsReview` item. Literal reflection or same-context placement alone cannot.
+No JavaScript, event, navigation, callback, or browser is executed.
 The catalog is KnowledgeOnly and has no path to a `Confirmed` assessment item.
 Non-HTML is explicitly not applicable to reflection review; truncation,
 invalid UTF-8, or an exhausted parser ceiling makes the opt-in review run
@@ -204,8 +212,9 @@ remain disabled. Equal JSON visibility produces no item. A complete visibility
 difference is retained as one atomic comparison evidence reference and can
 produce only `NeedsReview`; it is never split into invented control/candidate
 records and never becomes authorization-vulnerability confirmation. The
-default web-review envelope permits at most nine active verifications: seven for
-the closed native catalog and two for this optional pair. Lower library-host
+default web-review envelope permits at most ten active verifications: seven for
+the initial native review pass, one context-selected XSS structural family, and
+two for this optional pair. Lower library-host
 limits still fail closed.
 
 ## Try the deterministic runtime

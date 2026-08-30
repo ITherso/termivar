@@ -26,7 +26,8 @@ use crate::{
         EXTERNAL_URL_QUERY_PAIR_REVISION, REFLECTION_MARKER_QUERY_PAIR_ID,
         REFLECTION_MARKER_QUERY_PAIR_REVISION, SQL_QUOTE_BALANCE_QUERY_PAIR_ID,
         SQL_QUOTE_BALANCE_QUERY_PAIR_REVISION, SSTI_ARITHMETIC_EXPRESSION_PAIR_ID,
-        SSTI_ARITHMETIC_EXPRESSION_PAIR_REVISION,
+        SSTI_ARITHMETIC_EXPRESSION_PAIR_REVISION, XSS_STRUCTURAL_QUERY_PAIR_ID,
+        XSS_STRUCTURAL_QUERY_PAIR_REVISION,
     },
     payload_strategy::{PayloadStrategyError, PayloadStrategyRef},
     planner::{
@@ -268,6 +269,10 @@ fn payload_strategy_ref(
         | NativeWebReviewActionKind::SstiStructuralQueryReplayPair => (
             SSTI_ARITHMETIC_EXPRESSION_PAIR_ID,
             SSTI_ARITHMETIC_EXPRESSION_PAIR_REVISION,
+        ),
+        NativeWebReviewActionKind::XssStructuralQueryPair => (
+            XSS_STRUCTURAL_QUERY_PAIR_ID,
+            XSS_STRUCTURAL_QUERY_PAIR_REVISION,
         ),
     };
     PayloadStrategyRef::new(id, revision)

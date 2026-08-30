@@ -533,6 +533,8 @@ struct NativeWebReviewRuntimeConfig {
     reflection_query_parameter: Option<String>,
     sql_query_parameter: Option<String>,
     ssti_query_parameter: Option<String>,
+    xss_query_parameter: Option<String>,
+    xss_family: Option<web_assessment::XssProbeFamily>,
     structural_only: bool,
 }
 
@@ -705,6 +707,8 @@ impl StandardWebDecisionRuntimeBuilder {
             reflection_query_parameter,
             sql_query_parameter,
             ssti_query_parameter,
+            xss_query_parameter: None,
+            xss_family: None,
             structural_only: false,
         });
         self
@@ -726,6 +730,38 @@ impl StandardWebDecisionRuntimeBuilder {
             reflection_query_parameter,
             sql_query_parameter,
             ssti_query_parameter,
+            xss_query_parameter: None,
+            xss_family: None,
+            structural_only: true,
+        });
+        self
+    }
+
+    /// Composes one context-selected structural XSS pair under the existing
+    /// shared authority. Standard semantic actions are suppressed for this
+    /// bounded child pass; the bootstrap remains broker-accounted.
+    pub(crate) fn with_native_xss_structural_review(
+        mut self,
+        seeds: NativeWebReviewSeeds,
+        observer: Arc<dyn CompleteHttpResponseObserver>,
+        query_parameter: String,
+        family: web_assessment::XssProbeFamily,
+    ) -> Self {
+        self.assessment_defense_projection = true;
+        self.additional_suppressed_actions.extend(
+            StandardWebActionKind::all()
+                .into_iter()
+                .map(|kind| kind.action_id().to_owned()),
+        );
+        self.native_web_review = Some(NativeWebReviewRuntimeConfig {
+            seeds,
+            observer,
+            redirect_query_parameter: None,
+            reflection_query_parameter: None,
+            sql_query_parameter: None,
+            ssti_query_parameter: None,
+            xss_query_parameter: Some(query_parameter),
+            xss_family: Some(family),
             structural_only: true,
         });
         self
@@ -849,7 +885,17 @@ impl StandardWebDecisionRuntimeBuilder {
 
         let native_executor_profile = match self.native_web_review {
             Some(config) => Some(
-                if config.structural_only {
+                if let (Some(parameter), Some(family)) =
+                    (config.xss_query_parameter, config.xss_family)
+                {
+                    NativeWebReviewExecutorProfile::new_structural_only(
+                        requests.clone(),
+                        self.target.clone(),
+                        config.seeds,
+                        config.observer,
+                        NativeWebReviewQueryParameters::xss_only(parameter, family),
+                    )
+                } else if config.structural_only {
                     NativeWebReviewExecutorProfile::new_structural_only(
                         requests.clone(),
                         self.target.clone(),

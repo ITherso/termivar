@@ -703,7 +703,7 @@ async fn ssti_review_requires_two_exact_evaluations_and_redacts_every_renderer()
 #[cfg(feature = "reporting")]
 #[tokio::test]
 async fn event_handler_reflection_is_needs_review_deterministic_and_report_safe() {
-    const SECRET: &str = "VENOM-REFLECTION-MUST-NOT-LEAK-SECRET-123";
+    const SECRET: &str = "VENOM-XSS-ARSENAL-MUST-NOT-LEAK-SECRET-123";
     let server = serve(|request| {
         let value = Url::parse(&format!("http://fixture{}", request.target))
             .ok()
@@ -713,6 +713,9 @@ async fn event_handler_reflection_is_needs_review_deterministic_and_report_safe(
             });
         let body = match value {
             Some(value) if value.starts_with("venom-reflection-candidate-") => {
+                format!("<button onclick=\"{value}\">continue</button>")
+            },
+            Some(value) if value.starts_with("/*venom-xss-handler-") => {
                 format!("<button onclick=\"{value}\">continue</button>")
             },
             _ => "matched control".to_owned(),
@@ -739,22 +742,55 @@ async fn event_handler_reflection_is_needs_review_deterministic_and_report_safe(
             .unwrap();
         assert_eq!(item.disposition(), AssessmentDisposition::NeedsReview);
         assert!(matches!(item.basis(), AssessmentBasis::Differential(_)));
+        let xss_item = report
+            .assessment_items()
+            .iter()
+            .find(|item| item.capability_id() == "web.review.xss.structural-boundary@1")
+            .unwrap();
+        assert_eq!(xss_item.disposition(), AssessmentDisposition::NeedsReview);
+        assert!(matches!(xss_item.basis(), AssessmentBasis::Differential(_)));
         assert!(!format!("{report:?}").contains(SECRET));
         assert!(report
             .assessment_items()
             .iter()
             .all(|item| item.disposition() != AssessmentDisposition::Confirmed));
     }
-    let fingerprint = |report: &WebAssessmentRunReport| {
+    let fingerprint = |report: &WebAssessmentRunReport, capability: &str| {
         report
             .assessment_items()
             .iter()
-            .find(|item| item.capability_id() == "web.review.reflection.event-handler-context@1")
+            .find(|item| item.capability_id() == capability)
             .unwrap()
             .fingerprint()
             .to_owned()
     };
-    assert_eq!(fingerprint(&first), fingerprint(&second));
+    for capability in [
+        "web.review.reflection.event-handler-context@1",
+        "web.review.xss.structural-boundary@1",
+    ] {
+        assert_eq!(
+            fingerprint(&first, capability),
+            fingerprint(&second, capability)
+        );
+    }
+    let requests = server.requests().await;
+    assert_eq!(
+        requests
+            .iter()
+            .filter(|request| request.target.contains("venom-xss-handler-"))
+            .count(),
+        2
+    );
+    assert_eq!(
+        requests
+            .iter()
+            .filter(|request| request.target.contains("venom-xss-control-"))
+            .count(),
+        2
+    );
+    assert!(requests.iter().all(|request| {
+        !request.target.contains("javascript%3A") && !request.target.contains("http%3A%2F%2F")
+    }));
 
     let product =
         ReportGenerator::compose_assessment(first, ScanProfileV1::web_review().unwrap()).unwrap();
@@ -768,6 +804,8 @@ async fn event_handler_reflection_is_needs_review_deterministic_and_report_safe(
         assert!(!rendered.contains(SECRET));
         assert!(!rendered.contains("venom-reflection-candidate-"));
         assert!(rendered.contains("web.review.reflection.event-handler-context@1"));
+        assert!(rendered.contains("web.review.xss.structural-boundary@1"));
+        assert!(!rendered.contains("venom-xss-handler-"));
         assert!(!rendered.contains("<button onclick="));
         assert!(!rendered.contains("confirmed"));
     }

@@ -621,7 +621,8 @@ const fn native_interaction_class(kind: NativeWebReviewActionKind) -> DefenseInt
         | NativeWebReviewActionKind::SqlStructuralQueryPair
         | NativeWebReviewActionKind::SqlStructuralQueryReplayPair
         | NativeWebReviewActionKind::SstiStructuralQueryPair
-        | NativeWebReviewActionKind::SstiStructuralQueryReplayPair => {
+        | NativeWebReviewActionKind::SstiStructuralQueryReplayPair
+        | NativeWebReviewActionKind::XssStructuralQueryPair => {
             DefenseInteractionClass::DifferentialRead
         },
     }

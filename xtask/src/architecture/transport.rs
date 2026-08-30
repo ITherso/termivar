@@ -59,6 +59,7 @@ const BOUNDED_RUNTIME_SOURCES: &[&str] = &[
     "crates/venom-scanner/src/web_runtime/web_assessment/discovery.rs",
     "crates/venom-scanner/src/web_runtime/web_assessment/reflection_context.rs",
     "crates/venom-scanner/src/web_runtime/web_assessment/semantic.rs",
+    "crates/venom-scanner/src/web_runtime/web_assessment/xss_probe_catalog.rs",
     "crates/venom-scanner/src/web_decision.rs",
     "crates/venom-scanner/src/web_execution.rs",
     "crates/venom-scanner/src/web_planning.rs",
@@ -425,8 +426,8 @@ fn inspect_native_review_execution_broker_boundary(
     Ok(violations.into_iter().collect())
 }
 
-const EXACT_NATIVE_REVIEW_EXECUTION_TOKEN_BYTES: usize = 22_778;
-const EXACT_NATIVE_REVIEW_EXECUTION_FINGERPRINT: u128 = 0x7918_610f_aa47_2982_e9c1_f378_12b5_4636;
+const EXACT_NATIVE_REVIEW_EXECUTION_TOKEN_BYTES: usize = 24_366;
+const EXACT_NATIVE_REVIEW_EXECUTION_FINGERPRINT: u128 = 0xadd8_3055_453b_6660_e296_758e_47bb_15dd;
 
 fn native_review_execution_fingerprint_violations(source: &str, syntax: &syn::File) -> Vec<String> {
     let exact_tests = matches!(syntax.items.last(), Some(Item::Mod(module))
@@ -974,6 +975,7 @@ fn native_defense_classifier_is_exact(function: &syn::ItemFn) -> bool {
                 "SqlStructuralQueryReplayPair".to_owned(),
                 "SstiStructuralQueryPair".to_owned(),
                 "SstiStructuralQueryReplayPair".to_owned(),
+                "XssStructuralQueryPair".to_owned(),
             ])
 }
 
@@ -998,6 +1000,7 @@ fn collect_exact_native_review_patterns(
                 "SqlStructuralQueryReplayPair",
                 "SstiStructuralQueryPair",
                 "SstiStructuralQueryReplayPair",
+                "XssStructuralQueryPair",
             ] {
                 if syn_path_is_exact(&pattern.path, &["NativeWebReviewActionKind", variant]) {
                     return variants.insert(variant.to_owned());
@@ -7896,6 +7899,10 @@ impl<'ast> Visit<'ast> for OwnershipVisitor<'_> {
                 | (
                     "crates/venom-scanner/src/web_runtime/web_assessment.rs",
                     "semantic"
+                )
+                | (
+                    "crates/venom-scanner/src/web_runtime/web_assessment.rs",
+                    "xss_probe_catalog"
                 )
         );
         let attributes_are_exact = if self.source == "crates/venom-scanner/src/web_runtime.rs"

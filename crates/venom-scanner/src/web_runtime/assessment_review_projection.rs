@@ -51,6 +51,19 @@ const SQL_STRUCTURAL_REVIEW: AssessmentCapabilityDescriptor =
         "Review server-side query construction and use parameterized statements; validate the exact cause manually before treating this as a vulnerability.",
     );
 
+const XSS_STRUCTURAL_REVIEW: AssessmentCapabilityDescriptor =
+    AssessmentCapabilityDescriptor::differential_review(
+        "web.review.xss.structural-boundary@1",
+        "Context-specific reflected syntax changed parsed structure",
+        "xss-structural-control",
+        "A matched non-executing probe produced candidate-specific parser-visible structural control in a compatible reflected-input context; JavaScript or browser execution was not tested.",
+        None,
+        1_000_000,
+        Some("CWE-79"),
+        "web.remediation.contextual-output-encoding@1",
+        "Apply encoding for the exact output context and separately authorize execution verification before treating this structural signal as exploitable XSS.",
+    );
+
 const CORS_CREDENTIALS_REVIEW: AssessmentCapabilityDescriptor =
     AssessmentCapabilityDescriptor::differential_review(
         "web.review.cors.credentialed-external-origin@1",
@@ -195,6 +208,7 @@ enum NativeReviewProjectionKind {
     EmbeddedHtmlReflection,
     SqlStructuralDifferential,
     SstiStructuralEvaluation,
+    XssStructuralBoundary,
 }
 
 impl NativeReviewProjectionKind {
@@ -212,6 +226,7 @@ impl NativeReviewProjectionKind {
             Self::EmbeddedHtmlReflection => &EMBEDDED_HTML_REFLECTION_REVIEW,
             Self::SqlStructuralDifferential => &SQL_STRUCTURAL_REVIEW,
             Self::SstiStructuralEvaluation => &SSTI_STRUCTURAL_REVIEW,
+            Self::XssStructuralBoundary => &XSS_STRUCTURAL_REVIEW,
         }
     }
 
@@ -229,6 +244,7 @@ impl NativeReviewProjectionKind {
             | Self::EmbeddedHtmlReflection
             | Self::SqlStructuralDifferential => NativeReviewProjectionBasis::Differential,
             Self::SstiStructuralEvaluation => NativeReviewProjectionBasis::Differential,
+            Self::XssStructuralBoundary => NativeReviewProjectionBasis::Differential,
         }
     }
 }
@@ -390,6 +406,22 @@ fn plan_candidate(
                 .ok_or(AssessmentReviewItemProjectionError::CandidateContract)?;
             (
                 NativeReviewProjectionKind::SstiStructuralEvaluation,
+                AssessmentItemTarget::query_parameter(query_parameter)?,
+            )
+        },
+        AssessmentReviewCandidate::XssStructural(_) => {
+            if candidate.disposition() != NativeReviewDisposition::NeedsReview
+                || candidate.reflection_context().is_some()
+                || candidate.cors_status_relationship().is_some()
+                || candidate.xss_family().is_none()
+            {
+                return Err(AssessmentReviewItemProjectionError::CandidateContract);
+            }
+            let query_parameter = candidate
+                .query_parameter()
+                .ok_or(AssessmentReviewItemProjectionError::CandidateContract)?;
+            (
+                NativeReviewProjectionKind::XssStructuralBoundary,
                 AssessmentItemTarget::query_parameter(query_parameter)?,
             )
         },

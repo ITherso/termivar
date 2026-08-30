@@ -72,6 +72,9 @@ fn plan(
             | NativeReviewProjectionKind::SstiStructuralEvaluation => {
                 AssessmentItemTarget::query_parameter(QUERY_PARAMETER).unwrap()
             },
+            NativeReviewProjectionKind::XssStructuralBoundary => {
+                AssessmentItemTarget::query_parameter(QUERY_PARAMETER).unwrap()
+            },
         },
         control_evidence_ids: control
             .iter()

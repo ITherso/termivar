@@ -43,6 +43,10 @@ fn expected_strategy(kind: NativeWebReviewActionKind) -> PayloadStrategyRef {
             SSTI_ARITHMETIC_EXPRESSION_PAIR_ID,
             SSTI_ARITHMETIC_EXPRESSION_PAIR_REVISION,
         ),
+        NativeWebReviewActionKind::XssStructuralQueryPair => (
+            XSS_STRUCTURAL_QUERY_PAIR_ID,
+            XSS_STRUCTURAL_QUERY_PAIR_REVISION,
+        ),
     };
     PayloadStrategyRef::new(id, revision).unwrap()
 }
@@ -284,6 +288,7 @@ fn decision_and_executor_share_each_subject_specific_enabled_action_set() {
                 reflection: reflection.map(str::to_owned),
                 sql: sql.map(str::to_owned),
                 ssti: ssti.map(str::to_owned),
+                xss: None,
             },
             include_cors,
         )
@@ -297,12 +302,44 @@ fn decision_and_executor_share_each_subject_specific_enabled_action_set() {
                 reflection.is_some(),
                 sql.is_some(),
                 ssti.is_some(),
+                false,
             )
         );
         let decision =
             NativeWebReviewDecisionProfile::for_actions(executor_actions.iter().copied()).unwrap();
         assert_eq!(decision.actions().collect::<Vec<_>>(), executor_actions);
     }
+}
+
+#[test]
+fn xss_only_subject_uses_one_exact_decision_executor_and_completeness_action() {
+    let root = Url::parse("https://example.test/review").unwrap();
+    let seeds = NativeWebReviewSeeds::from_authorized_origin(&root).unwrap();
+    let observer = Arc::new(
+        super::super::assessment_review::AssessmentReviewObserverSet::new_xss(
+            root.clone(),
+            seeds.clone(),
+            "item",
+            XssProbeFamily::EventHandlerStructure,
+        )
+        .unwrap(),
+    );
+    let profile = NativeWebReviewExecutorProfile::new_structural_only(
+        request_broker(&root),
+        root,
+        seeds,
+        observer,
+        NativeWebReviewQueryParameters::xss_only(
+            "item".to_owned(),
+            XssProbeFamily::EventHandlerStructure,
+        ),
+    )
+    .unwrap();
+    let enabled = profile.actions().collect::<Vec<_>>();
+    assert_eq!(enabled, [NativeWebReviewActionKind::XssStructuralQueryPair]);
+    let decision = NativeWebReviewDecisionProfile::for_actions(enabled.iter().copied()).unwrap();
+    assert_eq!(decision.actions().collect::<Vec<_>>(), enabled);
+    assert!(profile.supports_exact_strategy(NativeWebReviewActionKind::XssStructuralQueryPair));
 }
 
 #[tokio::test]
@@ -312,6 +349,7 @@ async fn enabled_native_action_without_executor_route_still_fails_closed() {
         NativeWebReviewActionKind::CorsPolicyPair,
         NativeWebReviewActionKind::ReflectionContextQueryPair,
         NativeWebReviewActionKind::SstiStructuralQueryPair,
+        NativeWebReviewActionKind::XssStructuralQueryPair,
     ] {
         let decision = NativeWebReviewDecisionProfile::for_actions([kind]).unwrap();
         assert_eq!(decision.actions().collect::<Vec<_>>(), [kind]);

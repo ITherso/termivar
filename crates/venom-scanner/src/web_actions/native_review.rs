@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use crate::planner::{RiskScore, VerificationTarget};
 
 /// Number of actions in the native low-risk web-review catalog.
-pub const NATIVE_WEB_REVIEW_ACTION_COUNT: usize = 7;
+pub const NATIVE_WEB_REVIEW_ACTION_COUNT: usize = 8;
 
 /// Hard per-case request count declared by every native web-review action.
 pub const NATIVE_WEB_REVIEW_REQUESTS_PER_CASE: usize = 2;
@@ -63,6 +63,8 @@ pub enum NativeWebReviewActionKind {
     SstiStructuralQueryPair,
     /// Independent arithmetic replay of the SSTI structural comparison.
     SstiStructuralQueryReplayPair,
+    /// One context-selected non-executing structural XSS comparison.
+    XssStructuralQueryPair,
 }
 
 /// The only request surface an action may vary between its matched legs.
@@ -105,6 +107,7 @@ impl NativeWebReviewActionKind {
             Self::SqlStructuralQueryReplayPair,
             Self::SstiStructuralQueryPair,
             Self::SstiStructuralQueryReplayPair,
+            Self::XssStructuralQueryPair,
         ]
     }
 
@@ -118,6 +121,7 @@ impl NativeWebReviewActionKind {
             Self::SqlStructuralQueryReplayPair => "web.review.sql.structural-query-replay-pair@1",
             Self::SstiStructuralQueryPair => "web.review.ssti.structural-query-pair@1",
             Self::SstiStructuralQueryReplayPair => "web.review.ssti.structural-query-replay-pair@1",
+            Self::XssStructuralQueryPair => "web.review.xss.structural-query-pair@1",
         }
     }
 
@@ -139,6 +143,7 @@ impl NativeWebReviewActionKind {
             Self::SstiStructuralQueryReplayPair => {
                 "web.review.probe.ssti-structural-query-replay-pair@1"
             },
+            Self::XssStructuralQueryPair => "web.review.probe.xss-structural-query-pair@1",
         }
     }
 
@@ -152,6 +157,7 @@ impl NativeWebReviewActionKind {
             Self::SqlStructuralQueryReplayPair => "sql-structural-query-replay-pair",
             Self::SstiStructuralQueryPair => "ssti-structural-query-pair",
             Self::SstiStructuralQueryReplayPair => "ssti-structural-query-replay-pair",
+            Self::XssStructuralQueryPair => "xss-structural-query-pair",
         }
     }
 
@@ -168,7 +174,8 @@ impl NativeWebReviewActionKind {
             Self::SqlStructuralQueryPair
             | Self::SqlStructuralQueryReplayPair
             | Self::SstiStructuralQueryPair
-            | Self::SstiStructuralQueryReplayPair => {
+            | Self::SstiStructuralQueryReplayPair
+            | Self::XssStructuralQueryPair => {
                 NativeWebReviewDifferentialInput::SingleQueryParameter
             },
         }
@@ -204,7 +211,8 @@ impl NativeWebReviewActionKind {
             Self::SqlStructuralQueryPair
             | Self::SqlStructuralQueryReplayPair
             | Self::SstiStructuralQueryPair
-            | Self::SstiStructuralQueryReplayPair => 7,
+            | Self::SstiStructuralQueryReplayPair
+            | Self::XssStructuralQueryPair => 7,
         };
         RiskScore::from_percent(percent).expect("native web-review risk is a valid constant")
     }
@@ -280,6 +288,12 @@ mod tests {
                 "web.review.probe.ssti-structural-query-replay-pair@1",
                 "ssti-structural-query-replay-pair",
             ),
+            (
+                NativeWebReviewActionKind::XssStructuralQueryPair,
+                "web.review.xss.structural-query-pair@1",
+                "web.review.probe.xss-structural-query-pair@1",
+                "xss-structural-query-pair",
+            ),
         ];
 
         assert_eq!(
@@ -306,7 +320,7 @@ mod tests {
 
     #[test]
     fn every_native_action_is_low_risk_and_irrevocably_knowledge_only() {
-        let expected_risk_basis_points = [500, 800, 500, 700, 700, 700, 700];
+        let expected_risk_basis_points = [500, 800, 500, 700, 700, 700, 700, 700];
 
         for (kind, expected_risk) in NativeWebReviewActionKind::all()
             .into_iter()

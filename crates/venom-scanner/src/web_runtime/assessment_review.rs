@@ -29,11 +29,12 @@ use crate::{
         VaryOriginRelation,
     },
     payload_strategies::{
-        ExternalUrlQueryPairStrategy, CORS_ORIGIN_PAIR_ID, CORS_ORIGIN_PAIR_REVISION,
-        EXTERNAL_URL_QUERY_PAIR_ID, EXTERNAL_URL_QUERY_PAIR_REVISION,
+        ExternalUrlQueryPairStrategy, XssStructuralQueryPairStrategy, CORS_ORIGIN_PAIR_ID,
+        CORS_ORIGIN_PAIR_REVISION, EXTERNAL_URL_QUERY_PAIR_ID, EXTERNAL_URL_QUERY_PAIR_REVISION,
         REFLECTION_MARKER_QUERY_PAIR_ID, REFLECTION_MARKER_QUERY_PAIR_REVISION,
         SQL_QUOTE_BALANCE_QUERY_PAIR_ID, SQL_QUOTE_BALANCE_QUERY_PAIR_REVISION,
         SSTI_ARITHMETIC_EXPRESSION_PAIR_ID, SSTI_ARITHMETIC_EXPRESSION_PAIR_REVISION,
+        XSS_STRUCTURAL_QUERY_PAIR_ID, XSS_STRUCTURAL_QUERY_PAIR_REVISION,
     },
     web_actions::{
         NativeWebReviewActionKind, NATIVE_WEB_REVIEW_EVIDENCE_NAMESPACE,
@@ -44,7 +45,9 @@ use crate::{
     PayloadStrategyLimits, PayloadStrategyRef, PayloadVariantRole,
 };
 
-use super::web_assessment::{classify_exact_html_reflection, ExactHtmlReflectionContext};
+use super::web_assessment::{
+    classify_exact_html_reflection, ExactHtmlReflectionContext, XssProbeFamily,
+};
 use super::web_review_execution::NativeWebReviewSeeds;
 use crate::payload_strategies::ssti_arithmetic_expression_pair::SstiArithmeticProbe;
 
@@ -67,6 +70,8 @@ const SQL_HTTP_STATUS_CLASS: &str = "sql-http-status-class";
 const SQL_BODY_STRUCTURE: &str = "sql-body-structure";
 const SSTI_HTTP_STATUS_CLASS: &str = "ssti-http-status-class";
 const SSTI_EVALUATION_RELATION: &str = "ssti-evaluation-relation";
+const XSS_PROBE_FAMILY: &str = "xss-probe-family";
+const XSS_STRUCTURAL_RELATION: &str = "xss-structural-relation";
 
 const CORS_ACTIVE_VERIFIER_RULE_ID: &str =
     "web.review.verify.active.cors-policy-pair.pair-complete@1";
@@ -82,6 +87,8 @@ const SSTI_ACTIVE_VERIFIER_RULE_ID: &str =
     "web.review.verify.active.ssti-structural-query-pair.pair-complete@1";
 const SSTI_REPLAY_ACTIVE_VERIFIER_RULE_ID: &str =
     "web.review.verify.active.ssti-structural-query-replay-pair.pair-complete@1";
+const XSS_ACTIVE_VERIFIER_RULE_ID: &str =
+    "web.review.verify.active.xss-structural-query-pair.pair-complete@1";
 
 /// Returns the one verifier identity authorized to classify pair completion.
 ///
@@ -102,6 +109,7 @@ pub(crate) const fn native_review_active_verifier_rule_id(
         NativeWebReviewActionKind::SstiStructuralQueryReplayPair => {
             SSTI_REPLAY_ACTIVE_VERIFIER_RULE_ID
         },
+        NativeWebReviewActionKind::XssStructuralQueryPair => XSS_ACTIVE_VERIFIER_RULE_ID,
     }
 }
 
@@ -152,12 +160,23 @@ struct SstiStructuralContract {
     replay: SstiProbeContract,
 }
 
+#[derive(Clone, PartialEq, Eq)]
+struct XssStructuralContract {
+    query_parameter: String,
+    family: XssProbeFamily,
+    identity: String,
+    control_url: Url,
+    candidate_url: Url,
+    candidate_value: String,
+}
+
 #[derive(Clone, Copy)]
 struct ReviewContracts<'a> {
     redirect: Option<&'a RedirectReflectionContract>,
     reflection: Option<&'a ReflectionContextContract>,
     sql: Option<&'a SqlStructuralContract>,
     ssti: Option<&'a SstiStructuralContract>,
+    xss: Option<&'a XssStructuralContract>,
 }
 
 impl fmt::Debug for SstiStructuralContract {
@@ -166,6 +185,17 @@ impl fmt::Debug for SstiStructuralContract {
             .debug_struct("SstiStructuralContract")
             .field("query_parameter", &"<redacted>")
             .field("family", &"web.review.ssti.family.brace-arithmetic@1")
+            .field("urls", &"<redacted>")
+            .finish()
+    }
+}
+
+impl fmt::Debug for XssStructuralContract {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("XssStructuralContract")
+            .field("query_parameter", &"<redacted>")
+            .field("family", &self.family.stable_id())
             .field("urls", &"<redacted>")
             .finish()
     }
@@ -217,6 +247,7 @@ pub(crate) struct AssessmentReviewObserverSet {
     reflection: Option<ReflectionContextContract>,
     sql: Option<SqlStructuralContract>,
     ssti: Option<SstiStructuralContract>,
+    xss: Option<XssStructuralContract>,
 }
 
 impl fmt::Debug for AssessmentReviewObserverSet {
@@ -233,6 +264,7 @@ impl fmt::Debug for AssessmentReviewObserverSet {
             )
             .field("sql", &self.sql.as_ref().map(|_| "<configured>"))
             .field("ssti", &self.ssti.as_ref().map(|_| "<configured>"))
+            .field("xss", &self.xss.as_ref().map(|_| "<configured>"))
             .finish()
     }
 }
@@ -369,7 +401,58 @@ impl AssessmentReviewObserverSet {
             reflection,
             sql,
             ssti,
+            xss: None,
         })
+    }
+
+    pub(crate) fn new_xss(
+        root: Url,
+        seeds: NativeWebReviewSeeds,
+        query_parameter: &str,
+        family: XssProbeFamily,
+    ) -> Result<Self, AssessmentReviewObserverError> {
+        if !valid_query_parameter(query_parameter) {
+            return Err(AssessmentReviewObserverError::QueryParameter);
+        }
+        let mut observer = Self::new_with_sql(root, seeds, None, None, None, None)?;
+        let limits = PayloadStrategyLimits::new(256, 256)
+            .map_err(|_| AssessmentReviewObserverError::Candidate)?;
+        let seed_text = format!(
+            "{}:{}",
+            family.seed_code(),
+            observer.seeds.reflection_identity()
+        );
+        let seed = PayloadSeed::new(seed_text.into_bytes(), limits)
+            .map_err(|_| AssessmentReviewObserverError::Candidate)?;
+        let strategy = XssStructuralQueryPairStrategy::new();
+        let control = strategy
+            .derive_one(PayloadVariantRole::Control, &seed, limits)
+            .map_err(|_| AssessmentReviewObserverError::Candidate)?;
+        let candidate = strategy
+            .derive_one(PayloadVariantRole::Candidate, &seed, limits)
+            .map_err(|_| AssessmentReviewObserverError::Candidate)?;
+        let control_value = std::str::from_utf8(control.as_bytes())
+            .map_err(|_| AssessmentReviewObserverError::Candidate)?;
+        let candidate_value = std::str::from_utf8(candidate.as_bytes())
+            .map_err(|_| AssessmentReviewObserverError::Candidate)?
+            .to_owned();
+        let mut control_url = observer.root.clone();
+        control_url
+            .query_pairs_mut()
+            .append_pair(query_parameter, control_value);
+        let mut candidate_url = observer.root.clone();
+        candidate_url
+            .query_pairs_mut()
+            .append_pair(query_parameter, &candidate_value);
+        observer.xss = Some(XssStructuralContract {
+            query_parameter: query_parameter.to_owned(),
+            family,
+            identity: observer.seeds.reflection_identity().to_owned(),
+            control_url,
+            candidate_url,
+            candidate_value,
+        });
+        Ok(observer)
     }
 
     fn expected_url(
@@ -416,6 +499,12 @@ impl AssessmentReviewObserverSet {
                 self.ssti.as_ref().map(|contract| match stage {
                     DecisionExecutionStage::Passive => &contract.replay.control_url,
                     DecisionExecutionStage::Active => &contract.replay.candidate_url,
+                })
+            },
+            (NativeWebReviewActionKind::XssStructuralQueryPair, stage) => {
+                self.xss.as_ref().map(|contract| match stage {
+                    DecisionExecutionStage::Passive => &contract.control_url,
+                    DecisionExecutionStage::Active => &contract.candidate_url,
                 })
             },
         }
@@ -540,6 +629,24 @@ impl AssessmentReviewObserverSet {
                     ssti_evaluation_slug(classify_ssti_evaluation(observation, probe)).to_owned(),
                 ));
             },
+            NativeWebReviewActionKind::XssStructuralQueryPair => {
+                let contract = self
+                    .xss
+                    .as_ref()
+                    .expect("enabled XSS observer retains its bounded contract");
+                records.push((
+                    ReviewProperty::XssProbeFamily,
+                    contract.family.stable_id().to_owned(),
+                ));
+                records.push((
+                    ReviewProperty::XssStructuralRelation,
+                    xss_structural_relation_slug(classify_xss_structural_relation(
+                        observation,
+                        contract,
+                    ))
+                    .to_owned(),
+                ));
+            },
         }
         records
     }
@@ -656,6 +763,10 @@ fn native_review_strategy_ref(kind: NativeWebReviewActionKind) -> PayloadStrateg
             SSTI_ARITHMETIC_EXPRESSION_PAIR_ID,
             SSTI_ARITHMETIC_EXPRESSION_PAIR_REVISION,
         ),
+        NativeWebReviewActionKind::XssStructuralQueryPair => (
+            XSS_STRUCTURAL_QUERY_PAIR_ID,
+            XSS_STRUCTURAL_QUERY_PAIR_REVISION,
+        ),
     };
     PayloadStrategyRef::new(id, revision)
         .expect("native review strategies have valid static references")
@@ -696,6 +807,7 @@ fn review_projection_parents(
             | NativeWebReviewActionKind::SqlStructuralQueryReplayPair
             | NativeWebReviewActionKind::SstiStructuralQueryPair
             | NativeWebReviewActionKind::SstiStructuralQueryReplayPair
+            | NativeWebReviewActionKind::XssStructuralQueryPair
     ) {
         if observation.media_type().is_some() {
             parents.push(
@@ -741,6 +853,120 @@ fn classify_observation_reflection(
         return ExactHtmlReflectionContext::Incomplete;
     };
     classify_exact_html_reflection(html, candidate)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum XssStructuralRelation {
+    EncodedOrInert,
+    ReflectedSameContext,
+    StructuralBoundaryObserved,
+    Unsupported,
+    Incomplete,
+}
+
+fn classify_xss_structural_relation(
+    observation: &CompleteHttpResponseObservation<'_>,
+    contract: &XssStructuralContract,
+) -> XssStructuralRelation {
+    match observation.media_type() {
+        Some("text/html") => {},
+        Some(_) => return XssStructuralRelation::Unsupported,
+        None => return XssStructuralRelation::Incomplete,
+    }
+    let Some(body) = observation.complete_body() else {
+        return XssStructuralRelation::Incomplete;
+    };
+    let Ok(html) = std::str::from_utf8(body) else {
+        return XssStructuralRelation::Incomplete;
+    };
+    if observation.stage() == DecisionExecutionStage::Passive {
+        let context = classify_exact_html_reflection(html, &contract.candidate_value);
+        return if context == ExactHtmlReflectionContext::Absent {
+            XssStructuralRelation::EncodedOrInert
+        } else if context == ExactHtmlReflectionContext::Incomplete {
+            XssStructuralRelation::Incomplete
+        } else {
+            XssStructuralRelation::ReflectedSameContext
+        };
+    }
+    if contract.family == XssProbeFamily::HtmlTextBoundary {
+        return match html_contains_exact_xss_boundary(html, &contract.identity) {
+            Ok(true) => XssStructuralRelation::StructuralBoundaryObserved,
+            Ok(false) if html.contains(&contract.candidate_value) => {
+                XssStructuralRelation::ReflectedSameContext
+            },
+            Ok(false) => XssStructuralRelation::EncodedOrInert,
+            Err(()) => XssStructuralRelation::Incomplete,
+        };
+    }
+    let context = classify_exact_html_reflection(html, &contract.candidate_value);
+    if context == ExactHtmlReflectionContext::Incomplete {
+        return XssStructuralRelation::Incomplete;
+    }
+    match contract.family {
+        XssProbeFamily::HtmlTextBoundary => XssStructuralRelation::Incomplete,
+        XssProbeFamily::UriAttributeStructure => {
+            if context == ExactHtmlReflectionContext::UriAttribute {
+                XssStructuralRelation::StructuralBoundaryObserved
+            } else if context == ExactHtmlReflectionContext::Absent {
+                XssStructuralRelation::EncodedOrInert
+            } else {
+                XssStructuralRelation::ReflectedSameContext
+            }
+        },
+        XssProbeFamily::EventHandlerStructure => {
+            if context == ExactHtmlReflectionContext::EventHandlerAttribute {
+                XssStructuralRelation::StructuralBoundaryObserved
+            } else if context == ExactHtmlReflectionContext::Absent {
+                XssStructuralRelation::EncodedOrInert
+            } else {
+                XssStructuralRelation::ReflectedSameContext
+            }
+        },
+        XssProbeFamily::ScriptContentStructure => {
+            if context == ExactHtmlReflectionContext::ScriptElementContent {
+                XssStructuralRelation::StructuralBoundaryObserved
+            } else if context == ExactHtmlReflectionContext::Absent {
+                XssStructuralRelation::EncodedOrInert
+            } else {
+                XssStructuralRelation::ReflectedSameContext
+            }
+        },
+    }
+}
+
+fn html_contains_exact_xss_boundary(html: &str, identity: &str) -> Result<bool, ()> {
+    let dom = parse_document(RcDom::default(), ParseOpts::default()).one(html);
+    let mut pending = vec![dom.document];
+    let mut visited = 0_usize;
+    while let Some(handle) = pending.pop() {
+        visited = visited.saturating_add(1);
+        if visited > 4_096 {
+            return Err(());
+        }
+        if let NodeData::Element { name, attrs, .. } = &handle.data {
+            if name.local.as_ref() == "venom-xss-boundary"
+                && attrs.borrow().iter().any(|attribute| {
+                    attribute.name.local.as_ref() == "data-venom-token"
+                        && attribute.value.as_ref() == identity
+                })
+            {
+                return Ok(true);
+            }
+        }
+        pending.extend(handle.children.borrow().iter().rev().cloned());
+    }
+    Ok(false)
+}
+
+const fn xss_structural_relation_slug(relation: XssStructuralRelation) -> &'static str {
+    match relation {
+        XssStructuralRelation::EncodedOrInert => "encoded-or-inert",
+        XssStructuralRelation::ReflectedSameContext => "reflected-same-context",
+        XssStructuralRelation::StructuralBoundaryObserved => "structural-boundary-observed",
+        XssStructuralRelation::Unsupported => "unsupported",
+        XssStructuralRelation::Incomplete => "incomplete",
+    }
 }
 
 fn classify_ssti_evaluation(
@@ -921,6 +1147,12 @@ fn review_source_method(
             NativeWebReviewActionKind::SstiStructuralQueryReplayPair,
             DecisionExecutionStage::Active,
         ) => "ssti-structural-replay-candidate-response",
+        (NativeWebReviewActionKind::XssStructuralQueryPair, DecisionExecutionStage::Passive) => {
+            "xss-structural-control-response"
+        },
+        (NativeWebReviewActionKind::XssStructuralQueryPair, DecisionExecutionStage::Active) => {
+            "xss-structural-candidate-response"
+        },
     }
 }
 
@@ -1002,6 +1234,8 @@ enum ReviewProperty {
     SqlBodyStructure,
     SstiHttpStatusClass,
     SstiEvaluation,
+    XssProbeFamily,
+    XssStructuralRelation,
 }
 
 impl ReviewProperty {
@@ -1019,6 +1253,8 @@ impl ReviewProperty {
             Self::SqlBodyStructure => SQL_BODY_STRUCTURE,
             Self::SstiHttpStatusClass => SSTI_HTTP_STATUS_CLASS,
             Self::SstiEvaluation => SSTI_EVALUATION_RELATION,
+            Self::XssProbeFamily => XSS_PROBE_FAMILY,
+            Self::XssStructuralRelation => XSS_STRUCTURAL_RELATION,
         }
     }
 
@@ -1081,6 +1317,10 @@ enum CommittedReviewResponse {
     SstiStructural {
         status: ReviewHttpStatusClass,
         evaluation: SstiEvaluationRelation,
+    },
+    XssStructural {
+        family: XssProbeFamily,
+        relation: XssStructuralRelation,
     },
 }
 
@@ -1149,6 +1389,7 @@ pub(crate) struct CommittedAssessmentReviewLedger {
     reflection: Option<ReflectionContextContract>,
     sql: Option<SqlStructuralContract>,
     ssti: Option<SstiStructuralContract>,
+    xss: Option<XssStructuralContract>,
     observations: BTreeMap<ReviewReceiptKey, CommittedAssessmentReviewObservation>,
 }
 
@@ -1166,6 +1407,7 @@ impl fmt::Debug for CommittedAssessmentReviewLedger {
             )
             .field("sql", &self.sql.as_ref().map(|_| "<configured>"))
             .field("ssti", &self.ssti.as_ref().map(|_| "<configured>"))
+            .field("xss", &self.xss.as_ref().map(|_| "<configured>"))
             .field("observation_count", &self.observations.len())
             .finish()
     }
@@ -1212,6 +1454,27 @@ impl CommittedAssessmentReviewLedger {
             reflection: observer.reflection,
             sql: observer.sql,
             ssti: observer.ssti,
+            xss: observer.xss,
+            observations: BTreeMap::new(),
+        })
+    }
+
+    pub(crate) fn new_xss(
+        root: Url,
+        seeds: NativeWebReviewSeeds,
+        query_parameter: &str,
+        family: XssProbeFamily,
+    ) -> Result<Self, AssessmentReviewObserverError> {
+        let observer = AssessmentReviewObserverSet::new_xss(root, seeds, query_parameter, family)?;
+        Ok(Self {
+            root: observer.root,
+            subject: observer.subject,
+            seeds: observer.seeds,
+            redirect: observer.redirect,
+            reflection: observer.reflection,
+            sql: observer.sql,
+            ssti: observer.ssti,
+            xss: observer.xss,
             observations: BTreeMap::new(),
         })
     }
@@ -1272,29 +1535,23 @@ impl CommittedAssessmentReviewLedger {
     ) -> Result<Option<&CommittedAssessmentReviewObservation>, AssessmentReviewLedgerError> {
         let kind = review_kind(receipt.case().action_id())
             .ok_or(AssessmentReviewLedgerError::ReceiptAuthority)?;
+        let contracts = ReviewContracts {
+            redirect: self.redirect.as_ref(),
+            reflection: self.reflection.as_ref(),
+            sql: self.sql.as_ref(),
+            ssti: self.ssti.as_ref(),
+            xss: self.xss.as_ref(),
+        };
         validate_receipt_authority(
             receipt,
             decision,
             &self.root,
             &self.subject,
-            ReviewContracts {
-                redirect: self.redirect.as_ref(),
-                reflection: self.reflection.as_ref(),
-                sql: self.sql.as_ref(),
-                ssti: self.ssti.as_ref(),
-            },
+            contracts,
             kind,
         )?;
         validate_committed_batch(receipt, knowledge)?;
-        let mut parsed = parse_review_receipt(
-            receipt,
-            &self.root,
-            self.redirect.as_ref(),
-            self.reflection.as_ref(),
-            self.sql.as_ref(),
-            self.ssti.as_ref(),
-            kind,
-        )?;
+        let mut parsed = parse_review_receipt(receipt, &self.root, contracts, kind)?;
         parsed.active_pair_success =
             validate_verifier_proof(receipt, decision, knowledge, &parsed)?;
         let key = ReviewReceiptKey {
@@ -1401,7 +1658,93 @@ impl CommittedAssessmentReviewLedger {
                 );
             }
         }
+        if let Some(contract) = self.xss.as_ref() {
+            if let Some((control, candidate)) = exact_pair(
+                &self.observations,
+                NativeWebReviewActionKind::XssStructuralQueryPair,
+            ) {
+                if let (
+                    CommittedReviewResponse::XssStructural {
+                        family: control_family,
+                        relation: XssStructuralRelation::EncodedOrInert,
+                    },
+                    CommittedReviewResponse::XssStructural {
+                        family: candidate_family,
+                        relation: XssStructuralRelation::StructuralBoundaryObserved,
+                    },
+                ) = (&control.response, &candidate.response)
+                {
+                    if control_family == candidate_family && *candidate_family == contract.family {
+                        candidates.push(AssessmentReviewCandidate::XssStructural(
+                            XssStructuralReviewCandidate {
+                                subject: control.subject.clone(),
+                                case_id: control.case_id.clone(),
+                                family: contract.family,
+                                query_parameter: contract.query_parameter.clone(),
+                                control_evidence_ids: ids_for(
+                                    control,
+                                    &[
+                                        ReviewProperty::ResponseMarker,
+                                        ReviewProperty::XssProbeFamily,
+                                        ReviewProperty::XssStructuralRelation,
+                                    ],
+                                ),
+                                candidate_evidence_ids: ids_for(
+                                    candidate,
+                                    &[
+                                        ReviewProperty::ResponseMarker,
+                                        ReviewProperty::XssProbeFamily,
+                                        ReviewProperty::XssStructuralRelation,
+                                    ],
+                                ),
+                            },
+                        ));
+                    }
+                }
+            }
+        }
         candidates
+    }
+
+    /// Returns candidate-specific complete reflection contexts only. This is
+    /// the metadata boundary consumed before XSS payload materialization.
+    pub(crate) fn xss_selection_inputs(&self) -> Vec<XssSelectionInput> {
+        self.candidates()
+            .into_iter()
+            .filter_map(|candidate| match candidate {
+                AssessmentReviewCandidate::Reflection(candidate) => Some(XssSelectionInput {
+                    query_parameter: candidate.query_parameter,
+                    context: match candidate.context {
+                        ReviewReflectionContext::HtmlComment => {
+                            ExactHtmlReflectionContext::HtmlComment
+                        },
+                        ReviewReflectionContext::HtmlText => ExactHtmlReflectionContext::HtmlText,
+                        ReviewReflectionContext::AttributeValue => {
+                            ExactHtmlReflectionContext::AttributeValue
+                        },
+                        ReviewReflectionContext::UriAttribute => {
+                            ExactHtmlReflectionContext::UriAttribute
+                        },
+                        ReviewReflectionContext::StyleAttribute => {
+                            ExactHtmlReflectionContext::StyleAttribute
+                        },
+                        ReviewReflectionContext::StyleElementContent => {
+                            ExactHtmlReflectionContext::StyleElementContent
+                        },
+                        ReviewReflectionContext::EventHandlerAttribute => {
+                            ExactHtmlReflectionContext::EventHandlerAttribute
+                        },
+                        ReviewReflectionContext::ScriptElementContent => {
+                            ExactHtmlReflectionContext::ScriptElementContent
+                        },
+                        ReviewReflectionContext::EmbeddedHtmlAttribute => {
+                            ExactHtmlReflectionContext::EmbeddedHtmlAttribute
+                        },
+                    },
+                }),
+                _ => None,
+            })
+            .collect()
     }
 
     pub(crate) fn has_incomplete_sql_observation(&self) -> bool {
@@ -1420,6 +1763,18 @@ impl CommittedAssessmentReviewLedger {
                 observation.response,
                 CommittedReviewResponse::SstiStructural {
                     evaluation: SstiEvaluationRelation::Incomplete,
+                    ..
+                }
+            )
+        })
+    }
+
+    pub(crate) fn has_incomplete_xss_observation(&self) -> bool {
+        self.observations.values().any(|observation| {
+            matches!(
+                observation.response,
+                CommittedReviewResponse::XssStructural {
+                    relation: XssStructuralRelation::Incomplete,
                     ..
                 }
             )
@@ -1478,15 +1833,7 @@ fn validate_receipt_authority(
         || receipt.evidence().len() != receipt.writes().len()
         || !execution_and_verification_stage_match(receipt.stage(), verification.stage())
         || verification.stage() != outcome.stage()
-        || !receipt_url_matches_contract(
-            receipt,
-            root,
-            contracts.redirect,
-            contracts.reflection,
-            contracts.sql,
-            contracts.ssti,
-            kind,
-        )
+        || !receipt_url_matches_contract(receipt, root, contracts, kind)
     {
         return Err(AssessmentReviewLedgerError::ReceiptAuthority);
     }
@@ -1513,10 +1860,7 @@ fn validate_committed_batch(
 fn parse_review_receipt(
     receipt: &DecisionEvidenceReceipt,
     root: &Url,
-    redirect: Option<&RedirectReflectionContract>,
-    reflection: Option<&ReflectionContextContract>,
-    sql: Option<&SqlStructuralContract>,
-    ssti: Option<&SstiStructuralContract>,
+    contracts: ReviewContracts<'_>,
     kind: NativeWebReviewActionKind,
 ) -> Result<CommittedAssessmentReviewObservation, AssessmentReviewLedgerError> {
     let expected = expected_properties(kind);
@@ -1533,7 +1877,7 @@ fn parse_review_receipt(
         return Err(AssessmentReviewLedgerError::EvidenceProjection);
     }
 
-    let parents = expected_review_parent_ids(receipt, root, redirect, reflection, sql, ssti, kind)?;
+    let parents = expected_review_parent_ids(receipt, root, contracts, kind)?;
     let source_method = review_source_method(kind, receipt.stage());
     let mut property_evidence = BTreeMap::new();
     let mut values = BTreeMap::new();
@@ -1622,6 +1966,22 @@ fn parse_review_receipt(
                     ReviewProperty::SstiHttpStatusClass,
                 )?)?,
                 evaluation: parse_ssti_evaluation(value(&values, ReviewProperty::SstiEvaluation)?)?,
+            }
+        },
+        NativeWebReviewActionKind::XssStructuralQueryPair => {
+            let contract = contracts
+                .xss
+                .ok_or(AssessmentReviewLedgerError::EvidenceProjection)?;
+            let family = value(&values, ReviewProperty::XssProbeFamily)?;
+            if family != contract.family.stable_id() {
+                return Err(AssessmentReviewLedgerError::EvidenceProjection);
+            }
+            CommittedReviewResponse::XssStructural {
+                family: contract.family,
+                relation: parse_xss_structural_relation(value(
+                    &values,
+                    ReviewProperty::XssStructuralRelation,
+                )?)?,
             }
         },
     };
@@ -1718,10 +2078,7 @@ fn validate_verifier_proof(
 fn expected_review_parent_ids(
     receipt: &DecisionEvidenceReceipt,
     root: &Url,
-    redirect: Option<&RedirectReflectionContract>,
-    reflection: Option<&ReflectionContextContract>,
-    sql: Option<&SqlStructuralContract>,
-    ssti: Option<&SstiStructuralContract>,
+    contracts: ReviewContracts<'_>,
     kind: NativeWebReviewActionKind,
 ) -> Result<Vec<EvidenceId>, AssessmentReviewLedgerError> {
     let method = unique_base(receipt, HttpEvidencePredicate::REQUEST_METHOD)?;
@@ -1732,12 +2089,7 @@ fn expected_review_parent_ids(
         || !requested_url_value_matches_with_sql(
             requested.value(),
             root,
-            ReviewContracts {
-                redirect,
-                reflection,
-                sql,
-                ssti,
-            },
+            contracts,
             receipt.stage(),
             kind,
         )
@@ -1754,6 +2106,7 @@ fn expected_review_parent_ids(
             | NativeWebReviewActionKind::SqlStructuralQueryReplayPair
             | NativeWebReviewActionKind::SstiStructuralQueryPair
             | NativeWebReviewActionKind::SstiStructuralQueryReplayPair
+            | NativeWebReviewActionKind::XssStructuralQueryPair
     ) {
         let media = optional_unique_base(receipt, HttpEvidencePredicate::RESPONSE_MEDIA_TYPE)?;
         if let Some(media) = media {
@@ -1818,18 +2171,9 @@ fn optional_unique_base(
 fn receipt_url_matches_contract(
     receipt: &DecisionEvidenceReceipt,
     root: &Url,
-    redirect: Option<&RedirectReflectionContract>,
-    reflection: Option<&ReflectionContextContract>,
-    sql: Option<&SqlStructuralContract>,
-    ssti: Option<&SstiStructuralContract>,
+    contracts: ReviewContracts<'_>,
     kind: NativeWebReviewActionKind,
 ) -> bool {
-    let contracts = ReviewContracts {
-        redirect,
-        reflection,
-        sql,
-        ssti,
-    };
     unique_base(receipt, HttpEvidencePredicate::REQUEST_URL)
         .ok()
         .is_some_and(|evidence| {
@@ -1900,6 +2244,12 @@ fn requested_url_value_matches_with_sql(
                 DecisionExecutionStage::Active => url == contract.replay.candidate_url,
             })
         },
+        (NativeWebReviewActionKind::XssStructuralQueryPair, stage) => {
+            contracts.xss.is_some_and(|contract| match stage {
+                DecisionExecutionStage::Passive => url == contract.control_url,
+                DecisionExecutionStage::Active => url == contract.candidate_url,
+            })
+        },
     }
 }
 
@@ -1951,6 +2301,12 @@ const SSTI_REVIEW_PROPERTIES: [ReviewProperty; 3] = [
     ReviewProperty::SstiEvaluation,
 ];
 
+const XSS_REVIEW_PROPERTIES: [ReviewProperty; 3] = [
+    ReviewProperty::ResponseMarker,
+    ReviewProperty::XssProbeFamily,
+    ReviewProperty::XssStructuralRelation,
+];
+
 fn expected_properties(kind: NativeWebReviewActionKind) -> &'static [ReviewProperty] {
     match kind {
         NativeWebReviewActionKind::CorsPolicyPair => &CORS_REVIEW_PROPERTIES,
@@ -1960,6 +2316,7 @@ fn expected_properties(kind: NativeWebReviewActionKind) -> &'static [ReviewPrope
         | NativeWebReviewActionKind::SqlStructuralQueryReplayPair => &SQL_REVIEW_PROPERTIES,
         NativeWebReviewActionKind::SstiStructuralQueryPair
         | NativeWebReviewActionKind::SstiStructuralQueryReplayPair => &SSTI_REVIEW_PROPERTIES,
+        NativeWebReviewActionKind::XssStructuralQueryPair => &XSS_REVIEW_PROPERTIES,
     }
 }
 
@@ -2148,6 +2505,7 @@ fn requested_url_value_matches(
             reflection: None,
             sql: None,
             ssti: None,
+            xss: None,
         },
         stage,
         kind,
@@ -2164,6 +2522,25 @@ fn parse_ssti_evaluation(
         "expected-evaluation" => Ok(SstiEvaluationRelation::ExpectedEvaluation),
         "unsupported" => Ok(SstiEvaluationRelation::Unsupported),
         "incomplete" => Ok(SstiEvaluationRelation::Incomplete),
+        _ => Err(AssessmentReviewLedgerError::EvidenceProjection),
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct XssSelectionInput {
+    pub(crate) query_parameter: String,
+    pub(crate) context: ExactHtmlReflectionContext,
+}
+
+fn parse_xss_structural_relation(
+    value: &str,
+) -> Result<XssStructuralRelation, AssessmentReviewLedgerError> {
+    match value {
+        "encoded-or-inert" => Ok(XssStructuralRelation::EncodedOrInert),
+        "reflected-same-context" => Ok(XssStructuralRelation::ReflectedSameContext),
+        "structural-boundary-observed" => Ok(XssStructuralRelation::StructuralBoundaryObserved),
+        "unsupported" => Ok(XssStructuralRelation::Unsupported),
+        "incomplete" => Ok(XssStructuralRelation::Incomplete),
         _ => Err(AssessmentReviewLedgerError::EvidenceProjection),
     }
 }
@@ -2186,6 +2563,16 @@ pub(crate) struct SstiStructuralReviewCandidate {
     candidate_evidence_ids: Vec<EvidenceId>,
 }
 
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) struct XssStructuralReviewCandidate {
+    subject: EntityId,
+    case_id: String,
+    family: XssProbeFamily,
+    query_parameter: String,
+    control_evidence_ids: Vec<EvidenceId>,
+    candidate_evidence_ids: Vec<EvidenceId>,
+}
+
 /// Typed output from the matched-pair ledger. No variant can assert a
 /// confirmed vulnerability.
 #[derive(Clone, PartialEq, Eq)]
@@ -2195,6 +2582,7 @@ pub(crate) enum AssessmentReviewCandidate {
     Reflection(ReflectionReviewCandidate),
     SqlStructural(SqlStructuralReviewCandidate),
     SstiStructural(SstiStructuralReviewCandidate),
+    XssStructural(XssStructuralReviewCandidate),
 }
 
 macro_rules! redacted_candidate_debug {
@@ -2223,6 +2611,7 @@ redacted_candidate_debug!(
     SstiStructuralReviewCandidate,
     "SstiStructuralReviewCandidate"
 );
+redacted_candidate_debug!(XssStructuralReviewCandidate, "XssStructuralReviewCandidate");
 
 impl fmt::Debug for ReflectionReviewCandidate {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -2249,6 +2638,7 @@ impl fmt::Debug for AssessmentReviewCandidate {
             Self::Reflection(value) => value.fmt(formatter),
             Self::SqlStructural(value) => value.fmt(formatter),
             Self::SstiStructural(value) => value.fmt(formatter),
+            Self::XssStructural(value) => value.fmt(formatter),
         }
     }
 }
@@ -2260,6 +2650,7 @@ impl AssessmentReviewCandidate {
             | Self::Redirect(_)
             | Self::SqlStructural(_)
             | Self::SstiStructural(_) => NativeReviewDisposition::NeedsReview,
+            Self::XssStructural(_) => NativeReviewDisposition::NeedsReview,
             Self::Reflection(candidate) => candidate.disposition,
         }
     }
@@ -2271,6 +2662,7 @@ impl AssessmentReviewCandidate {
             Self::Reflection(candidate) => &candidate.subject,
             Self::SqlStructural(candidate) => &candidate.subject,
             Self::SstiStructural(candidate) => &candidate.subject,
+            Self::XssStructural(candidate) => &candidate.subject,
         }
     }
 
@@ -2281,6 +2673,7 @@ impl AssessmentReviewCandidate {
             Self::Reflection(candidate) => &candidate.control_evidence_ids,
             Self::SqlStructural(candidate) => &candidate.control_evidence_ids,
             Self::SstiStructural(candidate) => &candidate.control_evidence_ids,
+            Self::XssStructural(candidate) => &candidate.control_evidence_ids,
         }
     }
 
@@ -2291,6 +2684,7 @@ impl AssessmentReviewCandidate {
             Self::Reflection(candidate) => &candidate.candidate_evidence_ids,
             Self::SqlStructural(candidate) => &candidate.candidate_evidence_ids,
             Self::SstiStructural(candidate) => &candidate.candidate_evidence_ids,
+            Self::XssStructural(candidate) => &candidate.candidate_evidence_ids,
         }
     }
 
@@ -2301,6 +2695,7 @@ impl AssessmentReviewCandidate {
             | Self::Redirect(_)
             | Self::SqlStructural(_)
             | Self::SstiStructural(_) => None,
+            Self::XssStructural(_) => None,
         }
     }
 
@@ -2312,6 +2707,7 @@ impl AssessmentReviewCandidate {
             | Self::Reflection(_)
             | Self::SqlStructural(_)
             | Self::SstiStructural(_) => None,
+            Self::XssStructural(_) => None,
         }
     }
 
@@ -2321,7 +2717,15 @@ impl AssessmentReviewCandidate {
             Self::Reflection(candidate) => Some(&candidate.query_parameter),
             Self::SqlStructural(candidate) => Some(&candidate.query_parameter),
             Self::SstiStructural(candidate) => Some(&candidate.query_parameter),
+            Self::XssStructural(candidate) => Some(&candidate.query_parameter),
             Self::Cors(_) => None,
+        }
+    }
+
+    pub(crate) const fn xss_family(&self) -> Option<XssProbeFamily> {
+        match self {
+            Self::XssStructural(candidate) => Some(candidate.family),
+            _ => None,
         }
     }
 }

@@ -66,10 +66,12 @@ use crate::{
 mod discovery;
 mod reflection_context;
 mod semantic;
+mod xss_probe_catalog;
 
 use discovery::{canonicalize_root, parse_document, ParsedDocument, ParsedForm, ParsedRoute};
 pub(super) use reflection_context::{classify_exact_html_reflection, ExactHtmlReflectionContext};
 use semantic::{assessment_semantic_limits, AssessmentSemanticEvidence};
+pub(super) use xss_probe_catalog::{select_xss_probe_families, XssProbeFamily};
 
 /// Default maximum canonical subjects retained by one assessment.
 pub const DEFAULT_WEB_ASSESSMENT_MAX_SUBJECTS: usize = 64;
@@ -119,10 +121,11 @@ pub const HARD_MAX_WEB_ASSESSMENT_TOTAL_RESPONSE_BYTES: u64 = 256 * 1024 * 1024;
 pub const DEFAULT_WEB_ASSESSMENT_MAX_WALL_TIME: Duration = Duration::from_secs(300);
 /// Compiled complete-assessment wall-clock ceiling.
 pub const HARD_MAX_WEB_ASSESSMENT_WALL_TIME: Duration = Duration::from_secs(3_600);
-/// Default maximum active verification dispatches: seven for the closed native
-/// review catalog plus two for one explicitly supplied authorization pair.
+/// Default maximum active verification dispatches: seven for the initial
+/// native review pass, one context-selected XSS structural family, and two for
+/// one explicitly supplied authorization pair.
 /// Callers may select a lower ceiling; exhaustion remains fail-closed.
-pub const DEFAULT_WEB_ASSESSMENT_MAX_ACTIVE_VERIFICATIONS: u16 = 9;
+pub const DEFAULT_WEB_ASSESSMENT_MAX_ACTIVE_VERIFICATIONS: u16 = 10;
 /// Compiled maximum active verification dispatches.
 pub const HARD_MAX_WEB_ASSESSMENT_ACTIVE_VERIFICATIONS: u16 = 64;
 /// Assessment subjects execute sequentially under one shared authority.
@@ -1633,6 +1636,7 @@ impl WebAssessmentRuntimeBuilder {
                     reflection_query_parameter.is_some(),
                     sql_query_parameter.is_some(),
                     ssti_query_parameter.is_some(),
+                    false,
                 ),
                 redirect_query_parameter,
                 reflection_query_parameter,
@@ -1662,6 +1666,7 @@ impl WebAssessmentRuntimeBuilder {
             defense_enforcement: self.defense_enforcement,
             native_review,
             non_root_structural_review: None,
+            xss_structural_review: None,
             root_api_visibility,
             committed_api_visibility: None,
             defense_audit: WebAssessmentDefenseAudit::new(if self.defense_enforcement {
@@ -1688,6 +1693,7 @@ pub struct WebAssessmentRuntime {
     defense_enforcement: bool,
     native_review: Option<AssessmentNativeReviewRuntime>,
     non_root_structural_review: Option<AssessmentNativeReviewRuntime>,
+    xss_structural_review: Option<AssessmentNativeReviewRuntime>,
     root_api_visibility: Option<RootApiVisibilityRuntime>,
     committed_api_visibility: Option<CommittedAssessmentApiVisibility>,
     defense_audit: WebAssessmentDefenseAudit,
@@ -1831,6 +1837,10 @@ impl WebAssessmentRuntime {
             return Err(WebAssessmentRuntimeError::AlreadyStarted);
         }
         self.started = true;
+        let child_authority = self.authority.clone();
+        let compose_child = |builder: super::StandardWebDecisionRuntimeBuilder| {
+            builder.build_with_shared_authority(child_authority.clone())
+        };
         #[cfg(feature = "reporting")]
         let run_started_at = SystemTime::now();
         let timing = self.authority.start();
@@ -1917,7 +1927,7 @@ impl WebAssessmentRuntime {
                             target: subject.url.clone(),
                             seeds,
                             enabled_actions: enabled_native_web_review_actions(
-                                false, false, true, true, true,
+                                false, false, true, true, true, false,
                             ),
                             redirect_query_parameter: None,
                             reflection_query_parameter: Some(parameter.clone()),
@@ -1977,8 +1987,7 @@ impl WebAssessmentRuntime {
                 } else {
                     builder
                 };
-                let mut runtime = match builder.build_with_shared_authority(self.authority.clone())
-                {
+                let mut runtime = match compose_child(builder) {
                     Ok(runtime) => runtime,
                     Err(source) => {
                         return Err(self.run_failed(
@@ -2070,11 +2079,31 @@ impl WebAssessmentRuntime {
                             .as_mut()
                             .filter(|review| review.target == subject.url)
                     };
+                let mut pending_xss_review = None;
                 if let Some(review) = selected_review {
                     let native_review_complete =
                         replay_native_review(&standard, review, self.authority.knowledge());
                     match native_review_complete {
-                        Ok(true) => {},
+                        Ok(true) => {
+                            if self.xss_structural_review.is_none() {
+                                pending_xss_review =
+                                    review.ledger.xss_selection_inputs().into_iter().find_map(
+                                        |input| {
+                                            select_xss_probe_families(input.context)
+                                                .into_iter()
+                                                .next()
+                                                .map(|family| {
+                                                    (
+                                                        review.target.clone(),
+                                                        review.seeds.clone(),
+                                                        input.query_parameter,
+                                                        family,
+                                                    )
+                                                })
+                                        },
+                                    );
+                            }
+                        },
                         Ok(false) => {
                             reasons.insert(
                                 WebAssessmentIncompleteReason::DifferentialReviewIncomplete,
@@ -2094,6 +2123,90 @@ impl WebAssessmentRuntime {
                             });
                         },
                     }
+                }
+                if let Some((target, seeds, parameter, family)) = pending_xss_review {
+                    let observer = Arc::new(
+                        AssessmentReviewObserverSet::new_xss(
+                            target.clone(),
+                            seeds.clone(),
+                            &parameter,
+                            family,
+                        )
+                        .map_err(|_| WebAssessmentRuntimeError::NativeReviewComposition)?,
+                    );
+                    let ledger = CommittedAssessmentReviewLedger::new_xss(
+                        target.clone(),
+                        seeds.clone(),
+                        &parameter,
+                        family,
+                    )
+                    .map_err(|_| WebAssessmentRuntimeError::NativeReviewComposition)?;
+                    let mut review = AssessmentNativeReviewRuntime {
+                        target: target.clone(),
+                        seeds: seeds.clone(),
+                        redirect_query_parameter: None,
+                        reflection_query_parameter: None,
+                        sql_query_parameter: None,
+                        ssti_query_parameter: None,
+                        observer: observer.clone(),
+                        ledger,
+                        enabled_actions: vec![NativeWebReviewActionKind::XssStructuralQueryPair],
+                    };
+                    let response_observer: Arc<dyn CompleteHttpResponseObserver> = observer;
+                    let xss_builder = StandardWebDecisionRuntime::builder(target)
+                        .with_native_xss_structural_review(
+                            seeds,
+                            response_observer,
+                            parameter,
+                            family,
+                        )
+                        .with_assessment_defense_enforcement(self.defense_enforcement);
+                    let mut xss_runtime = compose_child(xss_builder)?;
+                    let xss_result = xss_runtime.analyze().await;
+                    let xss_defense = xss_runtime.assessment_defense_controller().cloned();
+                    let xss_planner = xss_runtime.assessment_planner().clone();
+                    match xss_result {
+                        Ok(xss_report) => {
+                            let replay = replay_standard_defense(
+                                &xss_report,
+                                &xss_planner,
+                                self.authority.knowledge(),
+                                self.defense_enforcement,
+                            );
+                            let defense_valid = match (xss_defense.as_ref(), replay) {
+                                (Some(expected), Ok(replayed))
+                                    if replayed.exact_audit_eq(expected) =>
+                                {
+                                    self.defense_audit.append_controller(&replayed).is_ok()
+                                },
+                                _ => false,
+                            };
+                            if !defense_valid {
+                                return Err(WebAssessmentRuntimeError::NativeReviewComposition);
+                            }
+                            match replay_native_review(
+                                &xss_report,
+                                &mut review,
+                                self.authority.knowledge(),
+                            ) {
+                                Ok(true) if !review.ledger.has_incomplete_xss_observation() => {},
+                                Ok(_) => {
+                                    reasons.insert(
+                                        WebAssessmentIncompleteReason::DifferentialReviewIncomplete,
+                                    );
+                                },
+                                Err(()) => {
+                                    return Err(WebAssessmentRuntimeError::NativeReviewComposition);
+                                },
+                            }
+                        },
+                        Err(_) => {
+                            reasons.insert(
+                                WebAssessmentIncompleteReason::DifferentialReviewIncomplete,
+                            );
+                        },
+                    }
+                    self.xss_structural_review = Some(review);
                 }
                 classify_standard_completion(&standard, &mut reasons);
                 let cancelled_at_subject_boundary = self.authority.cancellation().is_cancelled();
@@ -2395,6 +2508,7 @@ impl WebAssessmentRuntime {
             .native_review
             .iter()
             .chain(self.non_root_structural_review.iter())
+            .chain(self.xss_structural_review.iter())
             .map(|review| &review.ledger)
             .collect::<Vec<_>>();
         let assessment_projection = match project_assessment_items(

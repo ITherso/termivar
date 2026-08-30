@@ -31,6 +31,7 @@ pub mod http_header_control_pair;
 pub mod reflection_marker_query_pair;
 pub mod sql_quote_balance_query_pair;
 pub mod ssti_arithmetic_expression_pair;
+pub mod xss_structural_query_pair;
 
 pub use api_authorization_context_pair::{
     ApiAuthorizationContextPairStrategy, API_AUTHORIZATION_CONTEXT_PAIR_HEADER_NAME,
@@ -60,6 +61,10 @@ pub use ssti_arithmetic_expression_pair::{
     SstiArithmeticExpressionPairStrategy, SSTI_ARITHMETIC_EXPRESSION_PAIR_ID,
     SSTI_ARITHMETIC_EXPRESSION_PAIR_REVISION,
 };
+pub use xss_structural_query_pair::{
+    XssStructuralQueryPairStrategy, XSS_STRUCTURAL_QUERY_PAIR_ID,
+    XSS_STRUCTURAL_QUERY_PAIR_REVISION,
+};
 
 /// Builds the registry of payload strategies a standard profile may resolve.
 ///
@@ -75,6 +80,7 @@ pub fn standard_payload_strategies() -> Result<PayloadStrategyRegistry, PayloadS
     registry.register(Arc::new(ReflectionMarkerQueryPairStrategy::new()))?;
     registry.register(Arc::new(SqlQuoteBalanceQueryPairStrategy::new()))?;
     registry.register(Arc::new(SstiArithmeticExpressionPairStrategy::new()))?;
+    registry.register(Arc::new(XssStructuralQueryPairStrategy::new()))?;
     Ok(registry)
 }
 
@@ -121,7 +127,13 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(registry.len(), 7);
+        let xss_structural_pair = PayloadStrategyRef::new(
+            XSS_STRUCTURAL_QUERY_PAIR_ID,
+            XSS_STRUCTURAL_QUERY_PAIR_REVISION,
+        )
+        .unwrap();
+
+        assert_eq!(registry.len(), 8);
         assert!(registry.contains(&header_pair));
         assert!(registry.contains(&authorization_pair));
         assert!(registry.contains(&cors_origin_pair));
@@ -129,6 +141,7 @@ mod tests {
         assert!(registry.contains(&reflection_marker_pair));
         assert!(registry.contains(&sql_quote_pair));
         assert!(registry.contains(&ssti_arithmetic_pair));
+        assert!(registry.contains(&xss_structural_pair));
     }
 
     #[test]

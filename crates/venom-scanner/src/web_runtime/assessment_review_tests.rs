@@ -430,6 +430,150 @@ fn reflection_context_requires_complete_utf8_html_and_exact_request_shape() {
 }
 
 #[test]
+fn xss_structural_families_require_exact_compatible_parser_evidence() {
+    let root = root();
+    let seeds = seeds();
+    for family in XssProbeFamily::all() {
+        let observer = AssessmentReviewObserverSet::new_xss(
+            root.clone(),
+            seeds.clone(),
+            QUERY_PARAMETER,
+            family,
+        )
+        .unwrap();
+        let contract = observer.xss.as_ref().unwrap();
+        let strategy =
+            native_review_strategy_ref(NativeWebReviewActionKind::XssStructuralQueryPair);
+        let control = observe(
+            &observer,
+            NativeWebReviewActionKind::XssStructuralQueryPair,
+            DecisionExecutionStage::Passive,
+            &contract.control_url,
+            &HeaderMap::new(),
+            200,
+            Some("text/html"),
+            Some(b"<p>matched control</p>"),
+            NativeWebReviewActionKind::XssStructuralQueryPair.executor_id(),
+            Some(&strategy),
+            false,
+        )
+        .unwrap();
+        assert_eq!(
+            values(&control).last(),
+            Some(&(XSS_STRUCTURAL_RELATION, "encoded-or-inert"))
+        );
+
+        let body = match family {
+            XssProbeFamily::HtmlTextBoundary => contract.candidate_value.clone(),
+            XssProbeFamily::UriAttributeStructure => {
+                format!("<a href=\"{}\">continue</a>", contract.candidate_value)
+            },
+            XssProbeFamily::EventHandlerStructure => {
+                format!(
+                    "<button onclick=\"{}\">continue</button>",
+                    contract.candidate_value
+                )
+            },
+            XssProbeFamily::ScriptContentStructure => {
+                format!("<script>{}</script>", contract.candidate_value)
+            },
+        };
+        let candidate = observe(
+            &observer,
+            NativeWebReviewActionKind::XssStructuralQueryPair,
+            DecisionExecutionStage::Active,
+            &contract.candidate_url,
+            &HeaderMap::new(),
+            200,
+            Some("text/html"),
+            Some(body.as_bytes()),
+            NativeWebReviewActionKind::XssStructuralQueryPair.executor_id(),
+            Some(&strategy),
+            false,
+        )
+        .unwrap();
+        assert_eq!(
+            values(&candidate).last(),
+            Some(&(XSS_STRUCTURAL_RELATION, "structural-boundary-observed"))
+        );
+
+        let wrong_context = if family == XssProbeFamily::HtmlTextBoundary {
+            format!(
+                "<p>{}</p>",
+                contract
+                    .candidate_value
+                    .replace('&', "&amp;")
+                    .replace('<', "&lt;")
+                    .replace('>', "&gt;")
+                    .replace('"', "&quot;")
+            )
+        } else {
+            format!("<p>{}</p>", contract.candidate_value)
+        };
+        let candidate = observe(
+            &observer,
+            NativeWebReviewActionKind::XssStructuralQueryPair,
+            DecisionExecutionStage::Active,
+            &contract.candidate_url,
+            &HeaderMap::new(),
+            200,
+            Some("text/html"),
+            Some(wrong_context.as_bytes()),
+            NativeWebReviewActionKind::XssStructuralQueryPair.executor_id(),
+            Some(&strategy),
+            false,
+        )
+        .unwrap();
+        assert_ne!(
+            values(&candidate).last(),
+            Some(&(XSS_STRUCTURAL_RELATION, "structural-boundary-observed"))
+        );
+    }
+}
+
+#[test]
+fn xss_structural_analysis_fails_closed_for_truncation_and_non_html_media() {
+    let root = root();
+    let observer = AssessmentReviewObserverSet::new_xss(
+        root,
+        seeds(),
+        QUERY_PARAMETER,
+        XssProbeFamily::ScriptContentStructure,
+    )
+    .unwrap();
+    let contract = observer.xss.as_ref().unwrap();
+    let strategy = native_review_strategy_ref(NativeWebReviewActionKind::XssStructuralQueryPair);
+    for (media_type, body, expected) in [
+        (Some("text/html"), None, "incomplete"),
+        (
+            Some("application/json"),
+            Some(b"{}".as_slice()),
+            "unsupported",
+        ),
+        (None, Some(b"text".as_slice()), "incomplete"),
+    ] {
+        let evidence = observe(
+            &observer,
+            NativeWebReviewActionKind::XssStructuralQueryPair,
+            DecisionExecutionStage::Active,
+            &contract.candidate_url,
+            &HeaderMap::new(),
+            200,
+            media_type,
+            body,
+            NativeWebReviewActionKind::XssStructuralQueryPair.executor_id(),
+            Some(&strategy),
+            false,
+        )
+        .unwrap();
+        assert_eq!(
+            values(&evidence).last(),
+            Some(&(XSS_STRUCTURAL_RELATION, expected))
+        );
+    }
+}
+
+#[test]
 fn ledger_url_contract_rejects_cross_name_and_cross_seed_candidates() {
     let root = root();
     let seeds = seeds();
@@ -799,6 +943,78 @@ fn inert_reflection_is_informational_and_incomplete_or_control_reflection_yields
         &mut output,
     );
     assert!(output.is_empty());
+}
+
+#[test]
+fn xss_structural_candidate_requires_clean_control_and_exact_parser_boundary() {
+    let family = XssProbeFamily::EventHandlerStructure;
+    let mut ledger =
+        CommittedAssessmentReviewLedger::new_xss(root(), seeds(), QUERY_PARAMETER, family).unwrap();
+    let control = fake_observation(
+        NativeWebReviewActionKind::XssStructuralQueryPair,
+        DecisionExecutionStage::Passive,
+        CommittedReviewResponse::XssStructural {
+            family,
+            relation: XssStructuralRelation::EncodedOrInert,
+        },
+        false,
+        "xss-control",
+    );
+    let mut candidate = fake_observation(
+        NativeWebReviewActionKind::XssStructuralQueryPair,
+        DecisionExecutionStage::Active,
+        CommittedReviewResponse::XssStructural {
+            family,
+            relation: XssStructuralRelation::StructuralBoundaryObserved,
+        },
+        true,
+        "xss-candidate",
+    );
+    let insert_pair = |ledger: &mut CommittedAssessmentReviewLedger,
+                       control: CommittedAssessmentReviewObservation,
+                       candidate: CommittedAssessmentReviewObservation| {
+        ledger.observations.clear();
+        for observation in [control, candidate] {
+            ledger.observations.insert(
+                ReviewReceiptKey {
+                    kind: observation.kind,
+                    case_id: observation.case_id.clone(),
+                    stage: observation.stage,
+                },
+                observation,
+            );
+        }
+    };
+    insert_pair(&mut ledger, control.clone(), candidate.clone());
+    let items = ledger.candidates();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].disposition(), NativeReviewDisposition::NeedsReview);
+    assert_eq!(items[0].xss_family(), Some(family));
+    assert_eq!(items[0].query_parameter(), Some(QUERY_PARAMETER));
+
+    candidate.response = CommittedReviewResponse::XssStructural {
+        family,
+        relation: XssStructuralRelation::ReflectedSameContext,
+    };
+    insert_pair(&mut ledger, control.clone(), candidate.clone());
+    assert!(ledger.candidates().is_empty());
+
+    let reflected_control = fake_observation(
+        NativeWebReviewActionKind::XssStructuralQueryPair,
+        DecisionExecutionStage::Passive,
+        CommittedReviewResponse::XssStructural {
+            family,
+            relation: XssStructuralRelation::ReflectedSameContext,
+        },
+        false,
+        "xss-reflected-control",
+    );
+    candidate.response = CommittedReviewResponse::XssStructural {
+        family,
+        relation: XssStructuralRelation::StructuralBoundaryObserved,
+    };
+    insert_pair(&mut ledger, reflected_control, candidate);
+    assert!(ledger.candidates().is_empty());
 }
 
 #[test]

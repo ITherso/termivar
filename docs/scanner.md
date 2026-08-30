@@ -60,8 +60,12 @@ inline-handler, script-element, and embedded-HTML attribute placement are at
 most `NeedsReview`. Source quote mode is intentionally unknown because the DOM
 does not preserve it. This layer performs no escape testing, JavaScript/CSS
 grammar analysis, browser execution, or XSS confirmation. The typed context
-model is suitable for later context-specific payload-family selection without
-reparsing labels. Credentialed candidate-specific CORS, an exact
+selects at most one non-executing V1 family across the complete assessment:
+HTML-text boundary, relative URI structure, event-handler comment syntax, or
+script-content comment syntax. Selection is deterministic and metadata-first,
+so later catalog growth does not blindly multiply requests. Raw reflection in
+the same context is insufficient; exact candidate-specific parser-visible
+structural control is still only `NeedsReview`. Credentialed candidate-specific CORS, an exact
 candidate-specific external redirect, and repeatable SQL/SSTI structural
 relationships are also at most `NeedsReview`. Every native action is
 KnowledgeOnly, and no native assessment capability can produce a `Confirmed`
@@ -86,9 +90,10 @@ produces no item. A complete difference is projected as one atomic comparison
 evidence reference and at most `NeedsReview`; it is not decomposed into fake
 control/candidate evidence and does not prove an authorization vulnerability.
 Incomplete collection stops later discovery and makes the run typed
-incomplete. The compiled web-review default reserves nine active-verification
-slots for the closed seven-action native catalog plus this optional two-request
-pair; any lower host-selected ceiling still fails closed.
+incomplete. The compiled web-review default reserves ten active-verification
+slots: seven for the initial native review pass, one for the assessment-wide
+context-selected XSS structural family, and two for this optional pair; any
+lower host-selected ceiling still fails closed.
 
 Stable item identity preserves `authorized-root@1` for the exact origin root
 and assigns eligible discovered exact-origin subjects a deterministic opaque
