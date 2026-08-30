@@ -16,6 +16,7 @@ use syn::{
     Meta, Path as SynPath, Stmt, UseTree,
 };
 
+mod cli_secret;
 mod deployment;
 mod platform;
 mod plugin;
@@ -184,6 +185,7 @@ const MODULE_POLICIES: &[ModulePolicy] = &[
 pub(crate) fn check(workspace_root: &Path) -> Result<(), Box<dyn Error>> {
     let mut violations = workspace_graph_violations(workspace_root)?;
     violations.extend(module_boundary_violations(workspace_root)?);
+    violations.extend(cli_secret::check(workspace_root)?);
     violations.extend(transport::check(workspace_root)?);
     violations.extend(reachability::check(workspace_root)?);
     violations.extend(deployment::check(workspace_root)?);

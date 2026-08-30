@@ -549,8 +549,7 @@ fn web_assessment_contract_violations(
     let passive = fs::read_to_string(
         workspace_root.join("crates/venom-scanner/src/web_runtime/assessment_passive.rs"),
     )?;
-    let api_visibility =
-        fs::read_to_string(workspace_root.join(ASSESSMENT_API_VISIBILITY_SOURCE))?;
+    let api_visibility = fs::read_to_string(workspace_root.join(ASSESSMENT_API_VISIBILITY_SOURCE))?;
     let defense = fs::read_to_string(
         workspace_root.join("crates/venom-scanner/src/web_runtime/assessment_defense.rs"),
     )?;
@@ -1222,13 +1221,46 @@ fn inspect_web_assessment_composition(source: &str) -> Result<Vec<String>, syn::
     Ok(violations)
 }
 
-fn inspect_assessment_api_visibility_composition(
-    source: &str,
-) -> Result<Vec<String>, syn::Error> {
+fn inspect_assessment_api_visibility_composition(source: &str) -> Result<Vec<String>, syn::Error> {
     let syntax = syn::parse_file(source)?;
     let mut visitor = AssessmentApiVisibilityCompositionVisitor::default();
     visitor.visit_file(&syntax);
     let mut violations = visitor.violations.into_iter().collect::<Vec<_>>();
+    let builders = syntax
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Fn(item) if item.sig.ident == "build_root_api_visibility_runtime" => Some(item),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    if builders.len() != 1
+        || !builders
+            .first()
+            .is_some_and(|builder| exact_root_api_visibility_builder_signature(builder))
+    {
+        violations.push(
+            "build_root_api_visibility_runtime must retain its exact pub(super) target/resource/shared-authority/secret-context signature and typed result"
+                .to_owned(),
+        );
+    }
+    let descriptors = syntax
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Const(item)
+                if type_references_ident(&item.ty, "AssessmentCapabilityDescriptor") =>
+            {
+                Some(ident_name(&item.ident))
+            },
+            _ => None,
+        })
+        .collect::<BTreeSet<_>>();
+    if descriptors != BTreeSet::from(["API_AUTHORIZATION_VISIBILITY_REVIEW".to_owned()]) {
+        violations.push(format!(
+            "assessment API visibility capability descriptor inventory must remain exactly API_AUTHORIZATION_VISIBILITY_REVIEW; observed {descriptors:?}"
+        ));
+    }
     if visitor.authority_calls != 0 {
         violations.push(format!(
             "assessment API visibility must not construct SharedWebRuntimeAuthority; observed {} direct calls",
@@ -1239,6 +1271,12 @@ fn inspect_assessment_api_visibility_composition(
         violations.push(format!(
             "assessment API visibility must contain exactly one shared-authority child composition point; observed {}",
             visitor.shared_child_builds
+        ));
+    }
+    if visitor.exact_shared_child_builds != 1 {
+        violations.push(format!(
+            "assessment API visibility child build must use the exact StandardWebDecisionRuntime::builder(target.clone()).enable_api_reasoning().build_with_shared_authority(authority) receiver and assessment-owned authority parameter; observed {} exact calls",
+            visitor.exact_shared_child_builds
         ));
     }
     if visitor.paired_runs != 1 {
@@ -1254,6 +1292,123 @@ fn inspect_assessment_api_visibility_composition(
         ));
     }
     Ok(violations)
+}
+
+fn exact_root_api_visibility_builder_signature(item: &syn::ItemFn) -> bool {
+    if !is_pub_super_visibility(&item.vis)
+        || item.sig.asyncness.is_some()
+        || item.sig.constness.is_some()
+        || item.sig.unsafety.is_some()
+        || item.sig.abi.is_some()
+        || item.sig.variadic.is_some()
+        || !item.sig.generics.params.is_empty()
+        || item.sig.generics.where_clause.is_some()
+    {
+        return false;
+    }
+    let inputs = item.sig.inputs.iter().collect::<Vec<_>>();
+    inputs.len() == 4
+        && exact_named_typed_argument(inputs[0], "target", |item_type| {
+            is_exact_borrowed_ident(item_type, "Url")
+        })
+        && exact_named_typed_argument(inputs[1], "resource_scope", |item_type| {
+            is_plain_ident(item_type, "EntityId")
+        })
+        && exact_named_typed_argument(inputs[2], "authority", |item_type| {
+            is_plain_ident(item_type, "SharedWebRuntimeAuthority")
+        })
+        && exact_named_typed_argument(inputs[3], "context", |item_type| {
+            is_plain_ident(item_type, "WebAssessmentRootAuthorizationContext")
+        })
+        && matches!(&item.sig.output, syn::ReturnType::Type(_, output)
+        if is_result_of(
+            output,
+            "RootApiVisibilityRuntime",
+            "RootApiVisibilityCompositionError",
+        ))
+}
+
+fn exact_named_typed_argument(
+    argument: &syn::FnArg,
+    expected_name: &str,
+    type_matches: impl FnOnce(&syn::Type) -> bool,
+) -> bool {
+    let syn::FnArg::Typed(argument) = argument else {
+        return false;
+    };
+    argument.attrs.is_empty()
+        && matches!(argument.pat.as_ref(), syn::Pat::Ident(pattern)
+            if pattern.attrs.is_empty()
+                && pattern.by_ref.is_none()
+                && pattern.mutability.is_none()
+                && pattern.subpat.is_none()
+                && normalize_identifier(&ident_name(&pattern.ident)) == expected_name)
+        && type_matches(argument.ty.as_ref())
+}
+
+fn is_pub_super_visibility(visibility: &syn::Visibility) -> bool {
+    matches!(visibility, syn::Visibility::Restricted(restricted)
+        if restricted.in_token.is_none() && restricted.path.is_ident("super"))
+}
+
+fn exact_assessment_shared_authority_build(expression: &syn::ExprMethodCall) -> bool {
+    if expression.turbofish.is_some()
+        || expression.args.len() != 1
+        || !expression
+            .args
+            .first()
+            .is_some_and(|argument| expression_is_path_ident(argument, "authority"))
+    {
+        return false;
+    }
+    let syn::Expr::MethodCall(reasoning) = expression.receiver.as_ref() else {
+        return false;
+    };
+    if reasoning.method != "enable_api_reasoning"
+        || reasoning.turbofish.is_some()
+        || !reasoning.args.is_empty()
+    {
+        return false;
+    }
+    let syn::Expr::Call(builder) = reasoning.receiver.as_ref() else {
+        return false;
+    };
+    if builder.args.len() != 1
+        || !matches!(builder.func.as_ref(), syn::Expr::Path(path)
+        if path.qself.is_none()
+            && syn_path_is_exact(
+                &path.path,
+                &["StandardWebDecisionRuntime", "builder"],
+            ))
+    {
+        return false;
+    }
+    builder.args.first().is_some_and(|argument| {
+        matches!(argument, syn::Expr::MethodCall(clone)
+            if clone.method == "clone"
+                && clone.turbofish.is_none()
+                && clone.args.is_empty()
+                && expression_is_path_ident(clone.receiver.as_ref(), "target"))
+    })
+}
+
+fn expression_is_standard_runtime_builder_ufcs_build(expression: &syn::ExprCall) -> bool {
+    let syn::Expr::Path(path) = expression.func.as_ref() else {
+        return false;
+    };
+    if path
+        .path
+        .segments
+        .last()
+        .is_none_or(|segment| normalize_identifier(&ident_name(&segment.ident)) != "build")
+    {
+        return false;
+    }
+    path.path.segments.iter().any(|segment| {
+        normalize_identifier(&ident_name(&segment.ident)) == "StandardWebDecisionRuntimeBuilder"
+    }) || path.qself.as_ref().is_some_and(|qualified| {
+        type_references_ident(qualified.ty.as_ref(), "StandardWebDecisionRuntimeBuilder")
+    })
 }
 
 fn inspect_assessment_api_visibility_secret_boundary(
@@ -1318,9 +1473,7 @@ fn inspect_assessment_api_visibility_secret_boundary(
         ));
     }
     if source
-        .matches(
-            "formatter.write_str(\"WebAssessmentRootAuthorizationContext(<redacted>)\")",
-        )
+        .matches("formatter.write_str(\"WebAssessmentRootAuthorizationContext(<redacted>)\")")
         .count()
         != 1
     {
@@ -1340,6 +1493,7 @@ struct AssessmentApiVisibilityCompositionVisitor {
     closure_depth: usize,
     authority_calls: usize,
     shared_child_builds: usize,
+    exact_shared_child_builds: usize,
     paired_runs: usize,
     standalone_build_calls: usize,
     violations: BTreeSet<String>,
@@ -1418,6 +1572,13 @@ impl<'ast> Visit<'ast> for AssessmentApiVisibilityCompositionVisitor {
                 self.authority_calls = self.authority_calls.saturating_add(1);
             }
         }
+        if expression_is_standard_runtime_builder_ufcs_build(expression) {
+            self.standalone_build_calls = self.standalone_build_calls.saturating_add(1);
+            self.violations.insert(
+                "assessment API visibility must not invoke StandardWebDecisionRuntimeBuilder::build through UFCS"
+                    .to_owned(),
+            );
+        }
         visit::visit_expr_call(self, expression);
     }
 
@@ -1425,6 +1586,10 @@ impl<'ast> Visit<'ast> for AssessmentApiVisibilityCompositionVisitor {
         match normalize_identifier(&ident_name(&expression.method)) {
             "build_with_shared_authority" => {
                 self.shared_child_builds = self.shared_child_builds.saturating_add(1);
+                if exact_assessment_shared_authority_build(expression) {
+                    self.exact_shared_child_builds =
+                        self.exact_shared_child_builds.saturating_add(1);
+                }
                 let (impl_name, function_name) = self.current_boundary();
                 if impl_name != "<free>"
                     || function_name != "build_root_api_visibility_runtime"
@@ -1488,12 +1653,13 @@ impl<'ast> Visit<'ast> for AssessmentApiVisibilityCompositionVisitor {
             "new_exact_origin",
             "build_with_shared_authority",
             "run_api_visibility_pair",
+            "build",
         ]
         .iter()
         .any(|identifier| token_stream_contains_identifier(item.tokens.clone(), identifier))
         {
             self.violations.insert(
-                "assessment API visibility hides authority composition or pair execution inside a macro"
+                "assessment API visibility hides authority composition, standalone runtime build, or pair execution inside a macro"
                     .to_owned(),
             );
         }
@@ -2101,9 +2267,10 @@ fn inspect_assessment_api_visibility_facade(source: &str) -> Result<Vec<String>,
         collect_use_paths(&item_use.tree, Vec::new(), &mut paths);
         let mut matched_item = false;
         for (segments, binding, is_glob) in paths {
-            if segments.first().is_some_and(|segment| {
-                normalize_identifier(segment) == "assessment_api_visibility"
-            }) {
+            if segments
+                .first()
+                .is_some_and(|segment| normalize_identifier(segment) == "assessment_api_visibility")
+            {
                 matched_item = true;
                 if !item_use.attrs.is_empty() {
                     violations.push(
@@ -2122,12 +2289,15 @@ fn inspect_assessment_api_visibility_facade(source: &str) -> Result<Vec<String>,
                             .to_owned(),
                     );
                 }
-                let export = binding.as_ref().or_else(|| segments.last()).ok_or_else(|| {
-                    syn::Error::new_spanned(
-                        &item_use.tree,
-                        "missing assessment API visibility export",
-                    )
-                })?;
+                let export = binding
+                    .as_ref()
+                    .or_else(|| segments.last())
+                    .ok_or_else(|| {
+                        syn::Error::new_spanned(
+                            &item_use.tree,
+                            "missing assessment API visibility export",
+                        )
+                    })?;
                 exports.insert(normalize_identifier(export).to_owned());
             }
         }
@@ -2301,6 +2471,7 @@ fn inspect_assessment_item_projection(source: &str) -> Result<Vec<String>, syn::
         ));
     }
     violations.extend(inspect_assessment_item_public_storage(&syntax));
+    violations.extend(inspect_atomic_paired_comparison_projection(&syntax));
     violations.extend(inspect_assessment_projection_context(&syntax, source));
     violations.extend(inspect_assessment_item_set(&syntax));
     violations.extend(inspect_assessment_scope_binding(&syntax));
@@ -2585,6 +2756,455 @@ fn inspect_assessment_item_projection(source: &str) -> Result<Vec<String>, syn::
     Ok(violations)
 }
 
+fn inspect_atomic_paired_comparison_projection(syntax: &syn::File) -> Vec<String> {
+    let mut violations = Vec::new();
+    let methods = syntax
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Impl(item)
+                if item.trait_.is_none()
+                    && type_last_identifier(item.self_ty.as_ref()).as_deref()
+                        == Some("AssessmentProjectionContext") =>
+            {
+                Some(item)
+            },
+            _ => None,
+        })
+        .flat_map(|item| item.items.iter())
+        .filter_map(|item| match item {
+            syn::ImplItem::Fn(method)
+                if method.sig.ident == "project_api_visibility_paired_comparison" =>
+            {
+                Some(method)
+            },
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    if methods.len() != 1
+        || !methods
+            .first()
+            .is_some_and(|method| exact_atomic_paired_comparison_signature(method))
+    {
+        violations.push(
+            "AssessmentProjectionContext::project_api_visibility_paired_comparison must retain its exact private capability/knowledge/root/commit/review signature"
+                .to_owned(),
+        );
+    }
+    if methods.len() != 1
+        || !methods
+            .first()
+            .is_some_and(|method| exact_atomic_paired_comparison_body(method))
+    {
+        violations.push(
+            "atomic API paired-comparison projection must retain canonical authority validation, canonical review replay, exact AssessmentItem::build basis, evidence insertion, and push ordering"
+                .to_owned(),
+        );
+    }
+
+    let mut visitor = AtomicPairedComparisonConstructionVisitor::default();
+    visitor.visit_file(syntax);
+    violations.extend(visitor.violations);
+    if visitor.constructions != 1
+        || visitor.exact_constructions != 1
+        || visitor.constructor_references != 1
+    {
+        violations.push(format!(
+            "AssessmentDifferentialEvidence::PairedComparison must have one direct, unaliased, unconditional construction using the canonical reference inside AssessmentProjectionContext::project_api_visibility_paired_comparison; observed {} constructions, {} exact constructions, and {} constructor references",
+            visitor.constructions, visitor.exact_constructions, visitor.constructor_references
+        ));
+    }
+    violations
+}
+
+fn exact_atomic_paired_comparison_signature(method: &syn::ImplItemFn) -> bool {
+    let Some(receiver) = method.sig.receiver() else {
+        return false;
+    };
+    if !is_pub_super_visibility(&method.vis)
+        || receiver.reference.is_none()
+        || receiver.mutability.is_none()
+        || receiver.colon_token.is_some()
+        || method.sig.asyncness.is_some()
+        || method.sig.constness.is_some()
+        || method.sig.unsafety.is_some()
+        || method.sig.abi.is_some()
+        || method.sig.variadic.is_some()
+        || !method.sig.generics.params.is_empty()
+        || method.sig.generics.where_clause.is_some()
+    {
+        return false;
+    }
+    let inputs = method.sig.inputs.iter().skip(1).collect::<Vec<_>>();
+    inputs.len() == 5
+        && exact_named_typed_argument(inputs[0], "capability", |item_type| {
+            is_static_borrowed_ident(item_type, "AssessmentCapabilityDescriptor")
+        })
+        && exact_named_typed_argument(inputs[1], "knowledge", |item_type| {
+            is_borrowed_ident(item_type, "KnowledgeBase")
+        })
+        && exact_named_typed_argument(inputs[2], "authorized_root_subject", |item_type| {
+            is_borrowed_ident(item_type, "EntityId")
+        })
+        && exact_named_typed_argument(inputs[3], "commit", |item_type| {
+            is_borrowed_ident(item_type, "ApiObservationCommitReceipt")
+        })
+        && exact_named_typed_argument(inputs[4], "review", |item_type| {
+            is_borrowed_ident(item_type, "ApiVisibilityReview")
+        })
+        && matches!(&method.sig.output, syn::ReturnType::Type(_, output)
+            if generic_type_arguments(output, "Result").is_some_and(|arguments|
+                arguments.len() == 2
+                    && matches!(arguments[0], syn::Type::Tuple(tuple) if tuple.elems.is_empty())
+                    && is_plain_ident(arguments[1], "AssessmentItemProjectionError")))
+}
+
+fn exact_atomic_paired_comparison_body(method: &syn::ImplItemFn) -> bool {
+    let mut visitor = AtomicPairedComparisonBodyVisitor::default();
+    visitor.visit_block(&method.block);
+    visitor.validate_authority_calls == 1
+        && visitor.canonical_review_calls == 1
+        && visitor.exact_item_builds == 1
+        && visitor.total_item_builds == 1
+        && visitor.exact_evidence_inserts == 1
+        && visitor.exact_item_pushes == 1
+        && statement_reference_precedes(
+            &method.block,
+            "validate_knowledge_authority",
+            "api_visibility_review_for_commit",
+        )
+        && statement_reference_precedes(
+            &method.block,
+            "api_visibility_review_for_commit",
+            "PairedComparison",
+        )
+        && statement_reference_precedes(&method.block, "PairedComparison", "insert")
+        && statement_reference_precedes(&method.block, "insert", "push_item")
+}
+
+#[derive(Default)]
+struct AtomicPairedComparisonBodyVisitor {
+    validate_authority_calls: usize,
+    canonical_review_calls: usize,
+    total_item_builds: usize,
+    exact_item_builds: usize,
+    exact_evidence_inserts: usize,
+    exact_item_pushes: usize,
+}
+
+impl<'ast> Visit<'ast> for AtomicPairedComparisonBodyVisitor {
+    fn visit_expr_call(&mut self, call: &'ast syn::ExprCall) {
+        if matches!(call.func.as_ref(), syn::Expr::Path(path)
+            if path.qself.is_none()
+                && syn_path_is_exact(&path.path, &["api_visibility_review_for_commit"]))
+        {
+            if call.args.len() == 2
+                && call
+                    .args
+                    .first()
+                    .is_some_and(|argument| expression_is_path_ident(argument, "knowledge"))
+                && call
+                    .args
+                    .get(1)
+                    .is_some_and(|argument| expression_is_path_ident(argument, "commit"))
+            {
+                self.canonical_review_calls = self.canonical_review_calls.saturating_add(1);
+            }
+        }
+        if matches!(call.func.as_ref(), syn::Expr::Path(path)
+            if path.qself.is_none()
+                && syn_path_is_exact(&path.path, &["AssessmentItem", "build"]))
+        {
+            self.total_item_builds = self.total_item_builds.saturating_add(1);
+            if exact_atomic_assessment_item_build(call) {
+                self.exact_item_builds = self.exact_item_builds.saturating_add(1);
+            }
+        }
+        visit::visit_expr_call(self, call);
+    }
+
+    fn visit_expr_method_call(&mut self, call: &'ast syn::ExprMethodCall) {
+        match normalize_identifier(&ident_name(&call.method)) {
+            "validate_knowledge_authority"
+                if expression_is_path_ident(call.receiver.as_ref(), "self")
+                    && call.args.len() == 1
+                    && call.args.first().is_some_and(|argument| {
+                        expression_is_path_ident(argument, "knowledge")
+                    }) =>
+            {
+                self.validate_authority_calls = self.validate_authority_calls.saturating_add(1);
+            },
+            "insert"
+                if expression_is_self_field(call.receiver.as_ref(), "evidence")
+                    && exact_atomic_evidence_insert(call) =>
+            {
+                self.exact_evidence_inserts = self.exact_evidence_inserts.saturating_add(1);
+            },
+            "push_item"
+                if expression_is_path_ident(call.receiver.as_ref(), "self")
+                    && call.args.len() == 1
+                    && call
+                        .args
+                        .first()
+                        .is_some_and(|argument| expression_is_path_ident(argument, "item")) =>
+            {
+                self.exact_item_pushes = self.exact_item_pushes.saturating_add(1);
+            },
+            _ => {},
+        }
+        visit::visit_expr_method_call(self, call);
+    }
+}
+
+fn exact_atomic_assessment_item_build(call: &syn::ExprCall) -> bool {
+    if call.args.len() != 6 {
+        return false;
+    }
+    let arguments = call.args.iter().collect::<Vec<_>>();
+    expression_is_path_ident(arguments[0], "capability")
+        && matches!(arguments[1], syn::Expr::MethodCall(method)
+            if method.method == "stable_scope_id"
+                && method.args.is_empty()
+                && expression_is_path_ident(method.receiver.as_ref(), "self"))
+        && expression_is_path_ident(arguments[2], "subject_projection")
+        && expression_is_borrowed_path_ident(arguments[3], "target")
+        && expression_is_path_ident(arguments[4], "confidence")
+        && exact_atomic_differential_basis(arguments[5])
+}
+
+fn exact_atomic_differential_basis(expression: &syn::Expr) -> bool {
+    let syn::Expr::Call(call) = expression else {
+        return false;
+    };
+    if call.args.len() != 1
+        || !matches!(call.func.as_ref(), syn::Expr::Path(path)
+            if path.qself.is_none()
+                && syn_path_is_exact(&path.path, &["AssessmentBasis", "Differential"]))
+    {
+        return false;
+    }
+    matches!(call.args.first(), Some(syn::Expr::Struct(item))
+        if item.rest.is_none()
+            && syn_path_is_exact(&item.path, &["AssessmentDifferentialBasis"])
+            && item.fields.len() == 1
+            && item.fields.first().is_some_and(|field|
+                matches!(&field.member, syn::Member::Named(member) if member == "evidence")
+                    && exact_atomic_paired_comparison_expression(&field.expr)))
+}
+
+fn exact_atomic_paired_comparison_expression(expression: &syn::Expr) -> bool {
+    matches!(expression, syn::Expr::Call(call)
+        if call.args.len() == 1
+            && matches!(call.func.as_ref(), syn::Expr::Path(path)
+                if path.qself.is_none()
+                    && syn_path_is_exact(
+                        &path.path,
+                        &["AssessmentDifferentialEvidence", "PairedComparison"],
+                    ))
+            && call.args.first().is_some_and(|argument|
+                expression_is_path_ident(argument, "reference")))
+}
+
+fn exact_atomic_evidence_insert(call: &syn::ExprMethodCall) -> bool {
+    if call.args.len() != 2 {
+        return false;
+    }
+    let Some(key) = call.args.first() else {
+        return false;
+    };
+    let key_is_exact = matches!(key, syn::Expr::MethodCall(clone)
+        if clone.method == "clone"
+            && clone.args.is_empty()
+            && matches!(clone.receiver.as_ref(), syn::Expr::MethodCall(evidence_id)
+                if evidence_id.method == "evidence_id"
+                    && evidence_id.args.is_empty()
+                    && expression_is_path_ident(evidence_id.receiver.as_ref(), "commit")));
+    let value_is_exact = call.args.get(1).is_some_and(|value| {
+        matches!(value, syn::Expr::Struct(item)
+            if item.rest.is_none()
+                && syn_path_is_exact(&item.path, &["EvidenceProjection"])
+                && item.fields.len() == 2
+                && item.fields.iter().all(|field| match &field.member {
+                    syn::Member::Named(member) if member == "reference" => {
+                        expression_is_path_ident(&field.expr, "reference")
+                    },
+                    syn::Member::Named(member) if member == "subject" => {
+                        matches!(&field.expr, syn::Expr::MethodCall(clone)
+                            if clone.method == "clone"
+                                && clone.args.is_empty()
+                                && matches!(clone.receiver.as_ref(), syn::Expr::MethodCall(subject)
+                                    if subject.method == "comparison_subject"
+                                        && subject.args.is_empty()
+                                        && expression_is_path_ident(subject.receiver.as_ref(), "commit")))
+                    },
+                    _ => false,
+                }))
+    });
+    key_is_exact && value_is_exact
+}
+
+fn expression_is_self_field(expression: &syn::Expr, expected: &str) -> bool {
+    matches!(expression, syn::Expr::Field(field)
+        if expression_is_path_ident(field.base.as_ref(), "self")
+            && matches!(&field.member, syn::Member::Named(member)
+                if normalize_identifier(&ident_name(member)) == expected))
+}
+
+fn expression_is_borrowed_path_ident(expression: &syn::Expr, expected: &str) -> bool {
+    matches!(expression, syn::Expr::Reference(reference)
+        if reference.mutability.is_none()
+            && expression_is_path_ident(reference.expr.as_ref(), expected))
+}
+
+#[derive(Default)]
+struct AtomicPairedComparisonConstructionVisitor {
+    current_impl: Option<String>,
+    current_function: Option<String>,
+    control_depth: usize,
+    closure_depth: usize,
+    constructions: usize,
+    exact_constructions: usize,
+    constructor_references: usize,
+    violations: Vec<String>,
+}
+
+impl AtomicPairedComparisonConstructionVisitor {
+    fn in_control_flow(&mut self, visit: impl FnOnce(&mut Self)) {
+        self.control_depth = self.control_depth.saturating_add(1);
+        visit(self);
+        self.control_depth = self.control_depth.saturating_sub(1);
+    }
+}
+
+impl<'ast> Visit<'ast> for AtomicPairedComparisonConstructionVisitor {
+    fn visit_item(&mut self, item: &'ast Item) {
+        if !has_cfg_test(item_attributes(item)) {
+            visit::visit_item(self, item);
+        }
+    }
+
+    fn visit_item_impl(&mut self, item: &'ast syn::ItemImpl) {
+        if has_cfg_test(&item.attrs) {
+            return;
+        }
+        let prior = self.current_impl.take();
+        self.current_impl = type_last_identifier(item.self_ty.as_ref());
+        visit::visit_item_impl(self, item);
+        self.current_impl = prior;
+    }
+
+    fn visit_item_use(&mut self, item: &'ast syn::ItemUse) {
+        if has_cfg_test(&item.attrs) {
+            return;
+        }
+        let mut paths = Vec::new();
+        collect_use_paths(&item.tree, Vec::new(), &mut paths);
+        if paths.iter().any(|(segments, binding, _)| {
+            segments.iter().any(|segment| {
+                normalize_identifier(segment) == "PairedComparison"
+                    || binding
+                        .as_ref()
+                        .is_some_and(|binding| normalize_identifier(binding) == "PairedComparison")
+            })
+        }) {
+            self.violations.push(
+                "PairedComparison constructor must not be imported or aliased away from its canonical qualified construction site"
+                    .to_owned(),
+            );
+        }
+        visit::visit_item_use(self, item);
+    }
+
+    fn visit_impl_item_fn(&mut self, method: &'ast syn::ImplItemFn) {
+        if has_cfg_test(&method.attrs) {
+            return;
+        }
+        let prior = self.current_function.replace(ident_name(&method.sig.ident));
+        visit::visit_impl_item_fn(self, method);
+        self.current_function = prior;
+    }
+
+    fn visit_item_fn(&mut self, item: &'ast syn::ItemFn) {
+        if has_cfg_test(&item.attrs) {
+            return;
+        }
+        let prior_impl = self.current_impl.take();
+        let prior_function = self.current_function.replace(ident_name(&item.sig.ident));
+        visit::visit_item_fn(self, item);
+        self.current_impl = prior_impl;
+        self.current_function = prior_function;
+    }
+
+    fn visit_expr_call(&mut self, call: &'ast syn::ExprCall) {
+        let is_constructor = matches!(call.func.as_ref(), syn::Expr::Path(path)
+            if path.path.segments.last().is_some_and(|segment|
+                normalize_identifier(&ident_name(&segment.ident)) == "PairedComparison"));
+        if is_constructor {
+            self.constructions = self.constructions.saturating_add(1);
+            if self.current_impl.as_deref() == Some("AssessmentProjectionContext")
+                && self.current_function.as_deref()
+                    == Some("project_api_visibility_paired_comparison")
+                && self.control_depth == 0
+                && self.closure_depth == 0
+                && exact_atomic_paired_comparison_expression(&syn::Expr::Call(call.clone()))
+            {
+                self.exact_constructions = self.exact_constructions.saturating_add(1);
+            } else {
+                self.violations.push(
+                    "PairedComparison construction escaped its canonical assessment API projection method or exact reference binding"
+                        .to_owned(),
+                );
+            }
+        }
+        visit::visit_expr_call(self, call);
+    }
+
+    fn visit_expr_path(&mut self, expression: &'ast syn::ExprPath) {
+        if expression.path.segments.last().is_some_and(|segment| {
+            normalize_identifier(&ident_name(&segment.ident)) == "PairedComparison"
+        }) {
+            self.constructor_references = self.constructor_references.saturating_add(1);
+        }
+        visit::visit_expr_path(self, expression);
+    }
+
+    fn visit_expr_if(&mut self, expression: &'ast syn::ExprIf) {
+        self.in_control_flow(|visitor| visit::visit_expr_if(visitor, expression));
+    }
+
+    fn visit_expr_for_loop(&mut self, expression: &'ast syn::ExprForLoop) {
+        self.in_control_flow(|visitor| visit::visit_expr_for_loop(visitor, expression));
+    }
+
+    fn visit_expr_loop(&mut self, expression: &'ast syn::ExprLoop) {
+        self.in_control_flow(|visitor| visit::visit_expr_loop(visitor, expression));
+    }
+
+    fn visit_expr_match(&mut self, expression: &'ast syn::ExprMatch) {
+        self.in_control_flow(|visitor| visit::visit_expr_match(visitor, expression));
+    }
+
+    fn visit_expr_while(&mut self, expression: &'ast syn::ExprWhile) {
+        self.in_control_flow(|visitor| visit::visit_expr_while(visitor, expression));
+    }
+
+    fn visit_expr_closure(&mut self, expression: &'ast syn::ExprClosure) {
+        self.closure_depth = self.closure_depth.saturating_add(1);
+        visit::visit_expr_closure(self, expression);
+        self.closure_depth = self.closure_depth.saturating_sub(1);
+    }
+
+    fn visit_macro(&mut self, item: &'ast Macro) {
+        if token_stream_contains_identifier(item.tokens.clone(), "PairedComparison") {
+            self.violations.push(
+                "PairedComparison construction must not be hidden inside a macro token stream"
+                    .to_owned(),
+            );
+        }
+        visit::visit_macro(self, item);
+    }
+}
+
 fn inspect_assessment_item_public_storage(syntax: &syn::File) -> Vec<String> {
     let mut violations = Vec::new();
     let differential_evidence = syntax.items.iter().find_map(|item| match item {
@@ -2594,8 +3214,11 @@ fn inspect_assessment_item_public_storage(syntax: &syn::File) -> Vec<String> {
     let differential_evidence_is_exact = differential_evidence.is_some_and(|item| {
         matches!(item.vis, syn::Visibility::Inherited)
             && item.variants.len() == 2
-            && item.variants.iter().zip(["MatchedPair", "PairedComparison"]).all(
-                |(variant, expected)| {
+            && item
+                .variants
+                .iter()
+                .zip(["MatchedPair", "PairedComparison"])
+                .all(|(variant, expected)| {
                     if ident_name(&variant.ident) != expected || variant.discriminant.is_some() {
                         return false;
                     }
@@ -2604,7 +3227,10 @@ fn inspect_assessment_item_public_storage(syntax: &syn::File) -> Vec<String> {
                             fields.named.len() == 2
                                 && fields.named.iter().all(|field| {
                                     field.ident.as_ref().is_some_and(|ident| {
-                                        matches!(ident_name(ident).as_str(), "control" | "candidate")
+                                        matches!(
+                                            ident_name(ident).as_str(),
+                                            "control" | "candidate"
+                                        )
                                     }) && is_generic_of_idents(
                                         &field.ty,
                                         "Vec",
@@ -2621,8 +3247,7 @@ fn inspect_assessment_item_public_storage(syntax: &syn::File) -> Vec<String> {
                         },
                         _ => false,
                     }
-                },
-            )
+                })
     });
     if !differential_evidence_is_exact {
         violations.push(
@@ -2662,9 +3287,9 @@ fn inspect_assessment_item_public_storage(syntax: &syn::File) -> Vec<String> {
             }),
             "AssessmentDifferentialBasis" => private_named_fields(item).is_some_and(|fields| {
                 fields.len() == 1
-                    && fields
-                        .get("evidence")
-                        .is_some_and(|field| is_plain_ident(field, "AssessmentDifferentialEvidence"))
+                    && fields.get("evidence").is_some_and(|field| {
+                        is_plain_ident(field, "AssessmentDifferentialEvidence")
+                    })
             }),
             "AssessmentVerifierBasis" => private_named_fields(item).is_some_and(|fields| {
                 fields.len() == 5
@@ -9272,10 +9897,28 @@ mod tests {
     fn valid_assessment_api_visibility_composition() -> &'static str {
         r#"
             struct SharedWebRuntimeAuthority;
-            struct ChildBuilder;
-            impl ChildBuilder {
-                fn build_with_shared_authority(&self, _: SharedWebRuntimeAuthority) {}
-                fn build(&self) {}
+            struct Url;
+            struct EntityId;
+            struct WebAssessmentRootAuthorizationContext;
+            struct RootApiVisibilityCompositionError;
+            struct StandardWebDecisionRuntime;
+            struct StandardWebDecisionRuntimeBuilder;
+            impl StandardWebDecisionRuntime {
+                fn builder(_: Url) -> StandardWebDecisionRuntimeBuilder {
+                    StandardWebDecisionRuntimeBuilder
+                }
+            }
+            impl StandardWebDecisionRuntimeBuilder {
+                fn enable_api_reasoning(self) -> Self { self }
+                fn build_with_shared_authority(
+                    self,
+                    _: SharedWebRuntimeAuthority,
+                ) -> Result<ApiRuntime, RootApiVisibilityCompositionError> {
+                    Ok(ApiRuntime)
+                }
+                fn build(self) -> Result<ApiRuntime, RootApiVisibilityCompositionError> {
+                    Ok(ApiRuntime)
+                }
             }
             struct RootApiVisibilityRuntime { runtime: ApiRuntime }
             impl RootApiVisibilityRuntime {
@@ -9283,12 +9926,19 @@ mod tests {
                     self.runtime.run_api_visibility_pair();
                 }
             }
-            fn build_root_api_visibility_runtime(
-                builder: ChildBuilder,
+            pub(super) fn build_root_api_visibility_runtime(
+                target: &Url,
+                resource_scope: EntityId,
                 authority: SharedWebRuntimeAuthority,
-            ) {
-                builder.build_with_shared_authority(authority);
+                context: WebAssessmentRootAuthorizationContext,
+            ) -> Result<RootApiVisibilityRuntime, RootApiVisibilityCompositionError> {
+                let runtime = StandardWebDecisionRuntime::builder(target.clone())
+                    .enable_api_reasoning()
+                    .build_with_shared_authority(authority)?;
+                Ok(RootApiVisibilityRuntime { runtime })
             }
+            const API_AUTHORIZATION_VISIBILITY_REVIEW: AssessmentCapabilityDescriptor =
+                AssessmentCapabilityDescriptor::differential_review();
         "#
     }
 
@@ -9332,19 +9982,17 @@ mod tests {
 
     #[test]
     fn assessment_api_visibility_gate_requires_shared_authority_and_atomic_pair_execution() {
-        assert!(
-            inspect_assessment_api_visibility_composition(
-                valid_assessment_api_visibility_composition()
-            )
-            .unwrap()
-            .is_empty()
-        );
+        assert!(inspect_assessment_api_visibility_composition(
+            valid_assessment_api_visibility_composition()
+        )
+        .unwrap()
+        .is_empty());
 
         for (mutation, needle) in [
             (
                 valid_assessment_api_visibility_composition().replace(
-                    "builder.build_with_shared_authority(authority);",
-                    "builder.build();",
+                    ".build_with_shared_authority(authority)?;",
+                    ".build()?;",
                 ),
                 "standalone .build()",
             ),
@@ -9364,10 +10012,52 @@ mod tests {
             ),
             (
                 valid_assessment_api_visibility_composition().replace(
-                    "builder.build_with_shared_authority(authority);",
-                    "if enabled() { builder.build_with_shared_authority(authority); }",
+                    "let runtime = StandardWebDecisionRuntime::builder(target.clone())\n                    .enable_api_reasoning()\n                    .build_with_shared_authority(authority)?;",
+                    "let runtime = if enabled() { StandardWebDecisionRuntime::builder(target.clone())\n                    .enable_api_reasoning()\n                    .build_with_shared_authority(authority)? } else { fallback() };",
                 ),
                 "unconditional call",
+            ),
+            (
+                valid_assessment_api_visibility_composition().replace(
+                    ".build_with_shared_authority(authority)?;",
+                    ".build_with_shared_authority(other_authority)?;",
+                ),
+                "assessment-owned authority parameter",
+            ),
+            (
+                valid_assessment_api_visibility_composition().replace(
+                    "StandardWebDecisionRuntime::builder(target.clone())\n                    .enable_api_reasoning()\n                    .build_with_shared_authority(authority)?;",
+                    "alternate_builder.build_with_shared_authority(authority)?;",
+                ),
+                "exact StandardWebDecisionRuntime::builder",
+            ),
+            (
+                valid_assessment_api_visibility_composition().replace(
+                    "                context: WebAssessmentRootAuthorizationContext,",
+                    "                context: WebAssessmentRootAuthorizationContext,\n                alternate_authority: SharedWebRuntimeAuthority,",
+                ),
+                "exact pub(super)",
+            ),
+            (
+                valid_assessment_api_visibility_composition().replace(
+                    "let runtime = StandardWebDecisionRuntime::builder(target.clone())\n                    .enable_api_reasoning()\n                    .build_with_shared_authority(authority)?;",
+                    "let runtime = StandardWebDecisionRuntimeBuilder::build(builder)?;",
+                ),
+                "UFCS",
+            ),
+            (
+                valid_assessment_api_visibility_composition().replace(
+                    "let runtime = StandardWebDecisionRuntime::builder(target.clone())\n                    .enable_api_reasoning()\n                    .build_with_shared_authority(authority)?;",
+                    "let runtime = <StandardWebDecisionRuntimeBuilder>::build(builder)?;",
+                ),
+                "UFCS",
+            ),
+            (
+                valid_assessment_api_visibility_composition().replace(
+                    "let runtime = StandardWebDecisionRuntime::builder(target.clone())\n                    .enable_api_reasoning()\n                    .build_with_shared_authority(authority)?;",
+                    "let runtime = escape!(builder.build())?;",
+                ),
+                "inside a macro",
             ),
         ] {
             let violations = inspect_assessment_api_visibility_composition(&mutation)
@@ -9375,6 +10065,27 @@ mod tests {
                 .join("\n");
             assert!(violations.contains(needle), "{violations}");
         }
+    }
+
+    #[test]
+    fn assessment_api_visibility_descriptor_inventory_is_exact() {
+        let extra = format!(
+            "{}\nconst SECOND_REVIEW: AssessmentCapabilityDescriptor = AssessmentCapabilityDescriptor::differential_review();",
+            valid_assessment_api_visibility_composition()
+        );
+        let violations = inspect_assessment_api_visibility_composition(&extra)
+            .unwrap()
+            .join("\n");
+        assert!(violations.contains("descriptor inventory"), "{violations}");
+
+        let renamed = valid_assessment_api_visibility_composition().replace(
+            "API_AUTHORIZATION_VISIBILITY_REVIEW",
+            "RENAMED_AUTHORIZATION_REVIEW",
+        );
+        let violations = inspect_assessment_api_visibility_composition(&renamed)
+            .unwrap()
+            .join("\n");
+        assert!(violations.contains("descriptor inventory"), "{violations}");
     }
 
     #[test]
@@ -9411,8 +10122,8 @@ mod tests {
             ),
         ] {
             let syntax = syn::parse_file(&mutation).unwrap();
-            let violations = inspect_assessment_api_visibility_secret_boundary(&syntax, &mutation)
-                .join("\n");
+            let violations =
+                inspect_assessment_api_visibility_secret_boundary(&syntax, &mutation).join("\n");
             assert!(violations.contains(needle), "{violations}");
         }
     }
@@ -9879,6 +10590,84 @@ mod tests {
             violations.contains("exact private matched-pair or single atomic"),
             "{violations}"
         );
+    }
+
+    #[test]
+    fn atomic_paired_comparison_has_one_canonical_construction_authority() {
+        let source =
+            include_str!("../../../crates/venom-scanner/src/web_runtime/assessment_item.rs");
+
+        for (mutation, needle) in [
+            (
+                source.replacen(
+                    "        review: &ApiVisibilityReview,\n    ) -> Result<(), AssessmentItemProjectionError> {",
+                    "        review: &ApiVisibilityReview,\n        forged: &AssessmentEvidenceReference,\n    ) -> Result<(), AssessmentItemProjectionError> {",
+                    1,
+                ),
+                "exact private capability/knowledge/root/commit/review signature",
+            ),
+            (
+                source.replacen(
+                    "AssessmentDifferentialEvidence::PairedComparison(reference),",
+                    "AssessmentDifferentialEvidence::PairedComparison(forged_reference),",
+                    1,
+                ),
+                "canonical assessment API projection method or exact reference binding",
+            ),
+            (
+                source.replacen(
+                    "AssessmentBasis::Differential(AssessmentDifferentialBasis {",
+                    "AssessmentBasis::Observation(AssessmentDifferentialBasis {",
+                    1,
+                ),
+                "exact AssessmentItem::build basis",
+            ),
+            (
+                source.replacen(
+                    "api_visibility_review_for_commit(knowledge, commit)",
+                    "api_visibility_review_for_commit(knowledge, other_commit)",
+                    1,
+                ),
+                "canonical review replay",
+            ),
+            (
+                source.replacen(
+                    "subject: commit.comparison_subject().clone(),",
+                    "subject: authorized_root_subject.clone(),",
+                    1,
+                ),
+                "evidence insertion",
+            ),
+            (
+                format!(
+                    "{source}\nfn forge_atomic(reference: AssessmentEvidenceReference) {{ let _ = AssessmentDifferentialEvidence::PairedComparison(reference); }}"
+                ),
+                "escaped its canonical",
+            ),
+            (
+                format!(
+                    "{source}\nfn alias_atomic(reference: AssessmentEvidenceReference) {{ let pair = AssessmentDifferentialEvidence::PairedComparison; let _ = pair(reference); }}"
+                ),
+                "direct, unaliased",
+            ),
+            (
+                format!(
+                    "{source}\nuse AssessmentDifferentialEvidence::PairedComparison as Pair;\nfn import_atomic(reference: AssessmentEvidenceReference) {{ let _ = Pair(reference); }}"
+                ),
+                "must not be imported or aliased",
+            ),
+            (
+                format!(
+                    "{source}\nfn forge_atomic_macro() {{ forge!(AssessmentDifferentialEvidence::PairedComparison(reference)); }}"
+                ),
+                "hidden inside a macro",
+            ),
+        ] {
+            let violations = inspect_assessment_item_projection(&mutation)
+                .unwrap()
+                .join("\n");
+            assert!(violations.contains(needle), "{needle}: {violations}");
+        }
     }
 
     #[test]
