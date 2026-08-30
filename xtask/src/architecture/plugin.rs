@@ -76,6 +76,12 @@ pub(super) fn check(workspace_root: &Path) -> Result<Vec<String>, Box<dyn Error>
         &library_source,
     );
 
+    for path in rust_sources_below(&scanner.join("plugin"))? {
+        let source = fs::read_to_string(&path)?;
+        let name = path.strip_prefix(workspace_root)?.display().to_string();
+        violations.extend(validate_plugin_implementation_source(&name, &source));
+    }
+
     let mut consumer_sources = vec![
         workspace_root.join("examples/custom_plugin.rs"),
         workspace_root.join("crates/venom-scanner/tests/plugin_integration_tests.rs"),
@@ -180,6 +186,26 @@ fn validate_contract_sources(
             ));
         }
     }
+    violations
+}
+
+fn validate_plugin_implementation_source(name: &str, source: &str) -> Vec<String> {
+    let mut violations = Vec::new();
+    for forbidden in [
+        "ScanFinding",
+        "retry_count",
+        "Vec<ScanFinding>",
+        "severity:",
+        "Outcome::new",
+        "RunOutcomeRecord",
+    ] {
+        if source.contains(forbidden) {
+            violations.push(format!(
+                "plugin implementation {name} contains forbidden claim surface {forbidden}"
+            ));
+        }
+    }
+    violations.extend(validate_direct_transport(name, source));
     violations
 }
 
