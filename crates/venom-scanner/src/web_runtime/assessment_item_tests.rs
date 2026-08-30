@@ -76,6 +76,112 @@ fn test_scope_id() -> StableAssessmentScopeId {
     StableAssessmentScopeId::from_exact_origin("https://assessment-tests.test").unwrap()
 }
 
+fn discovered_subject_id(
+    url: &str,
+    method: crate::web_runtime::WebAssessmentMethod,
+    names: &[&str],
+) -> StableAssessmentSubjectId {
+    let mut url = Url::parse(url).unwrap();
+    url.set_query(None);
+    url.set_fragment(None);
+    StableAssessmentSubjectId::from_discovered_resource(
+        &test_scope_id(),
+        method,
+        &url,
+        &names
+            .iter()
+            .map(|name| (*name).to_owned())
+            .collect::<Vec<_>>(),
+    )
+    .unwrap()
+}
+
+#[test]
+fn versioned_discovered_subject_identity_is_deterministic_structural_and_private() {
+    use crate::web_runtime::WebAssessmentMethod;
+
+    assert_eq!(
+        StableAssessmentSubjectId::new("authorized-root@1")
+            .unwrap()
+            .as_str(),
+        "authorized-root@1"
+    );
+
+    let first = discovered_subject_id(
+        "https://assessment-tests.test/account/./profile?tab=VENOM-MUST-NOT-LEAK-QUERY-SECRET-123&page=1#secret",
+        WebAssessmentMethod::Get,
+        &["tab", "page", "tab"],
+    );
+    let repeated = discovered_subject_id(
+        "https://ASSESSMENT-TESTS.test:443/account/profile?page=999&tab=other",
+        WebAssessmentMethod::Get,
+        &["page", "tab"],
+    );
+    assert_eq!(first, repeated);
+    assert!(first.as_str().starts_with("discovered-resource@1:"));
+    assert_eq!(first.as_str().len(), "discovered-resource@1:".len() + 64);
+    assert!(!first
+        .as_str()
+        .contains("VENOM-MUST-NOT-LEAK-QUERY-SECRET-123"));
+    assert!(!format!("{first:?}").contains("VENOM-MUST-NOT-LEAK-QUERY-SECRET-123"));
+
+    assert_ne!(
+        first,
+        discovered_subject_id(
+            "https://assessment-tests.test/account/other",
+            WebAssessmentMethod::Get,
+            &["page", "tab"],
+        )
+    );
+    assert_ne!(
+        first,
+        discovered_subject_id(
+            "https://assessment-tests.test/account/profile",
+            WebAssessmentMethod::Head,
+            &["page", "tab"],
+        )
+    );
+    assert_ne!(
+        first,
+        discovered_subject_id(
+            "https://assessment-tests.test/account/profile",
+            WebAssessmentMethod::Get,
+            &["tab"],
+        )
+    );
+}
+
+#[test]
+fn discovered_subject_identity_fails_closed_for_unapproved_structure() {
+    use crate::web_runtime::WebAssessmentMethod;
+
+    for invalid in [
+        "https://other.test/account",
+        "https://user:secret@assessment-tests.test/account",
+        "https://assessment-tests.test/account?secret=raw",
+        "https://assessment-tests.test/account#fragment",
+    ] {
+        assert_eq!(
+            StableAssessmentSubjectId::from_discovered_resource(
+                &test_scope_id(),
+                WebAssessmentMethod::Get,
+                &Url::parse(invalid).unwrap(),
+                &[],
+            ),
+            Err(AssessmentItemProjectionError::InvalidStableSubjectIdentity)
+        );
+    }
+    assert_eq!(
+        StableAssessmentSubjectId::from_discovered_resource(
+            &test_scope_id(),
+            WebAssessmentMethod::Get,
+            &Url::parse("https://assessment-tests.test/account").unwrap(),
+            &["x".repeat(MAX_QUERY_PARAMETER_NAME_BYTES + 1)],
+        ),
+        Err(AssessmentItemProjectionError::InvalidStableSubjectIdentity)
+    );
+}
+
 fn references(values: &[u32]) -> Vec<AssessmentEvidenceReference> {
     values
         .iter()

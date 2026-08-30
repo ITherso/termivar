@@ -2280,6 +2280,10 @@ impl WebAssessmentRuntime {
             self.committed_api_visibility.as_ref(),
             self.authority.knowledge(),
             &self.root,
+            &subject_reports
+                .iter()
+                .map(|report| report.subject().clone())
+                .collect::<Vec<_>>(),
         ) {
             Ok(projection) => projection,
             Err(_) => {

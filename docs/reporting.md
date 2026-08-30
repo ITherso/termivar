@@ -87,10 +87,11 @@ records. The currently implemented native passive header/cookie capabilities
 emit only `Informational`; no native assessment capability currently produces
 `Confirmed`.
 
-Stable item identity is currently limited to the exact origin root (`/`). A
-non-root starting target, or an eligible condition on a discovered non-root
-subject, becomes typed incompleteness and cannot enter this completed-report
-path.
+The exact origin root retains `authorized-root@1`. Eligible discovered
+exact-origin subjects can enter this completed-report path through opaque,
+deterministic `discovered-resource@1` identities; renderers receive only the
+existing references and digests, never query values or readable path material.
+A non-root starting target remains typed incompleteness.
 
 ## CLI assessment output
 

@@ -2761,7 +2761,7 @@ fn inspect_assessment_item_projection(source: &str) -> Result<Vec<String>, syn::
         ),
         (
             "digest_field(&mut digest, stable_scope_id.as_str());",
-            2,
+            3,
             "assessment scope fingerprint framing",
         ),
         (
@@ -3907,7 +3907,7 @@ fn inspect_assessment_item_set(syntax: &syn::File) -> Vec<String> {
         })
         .collect::<BTreeMap<_, _>>();
     let expected = BTreeSet::from([
-        "contains_only_stable_subject".to_owned(),
+        "contains_stable_subject".to_owned(),
         "into_parts".to_owned(),
         "items".to_owned(),
         "matches_exact_origin".to_owned(),
@@ -3950,23 +3950,22 @@ fn inspect_assessment_item_set(syntax: &syn::File) -> Vec<String> {
             "AssessmentItemSet::items must remain a read-only borrowed typed-item view".to_owned(),
         );
     }
-    let contains_only_stable_subject =
-        methods
-            .get("contains_only_stable_subject")
-            .is_some_and(|method| {
-                is_pub_crate_visibility(&method.vis)
-                    && attributes_are_exact_cfg_feature_allowing_docs(&method.attrs, "reporting")
-                    && method.sig.receiver().is_some_and(|receiver| {
-                        receiver.reference.is_some() && receiver.mutability.is_none()
-                    })
-                    && typed_input_types(method) == ["str"]
-                    && matches!(&method.sig.output, syn::ReturnType::Type(_, output)
+    let contains_stable_subject = methods
+        .get("contains_stable_subject")
+        .is_some_and(|method| {
+            is_pub_crate_visibility(&method.vis)
+                && attributes_are_exact_cfg_feature_allowing_docs(&method.attrs, "reporting")
+                && method.sig.receiver().is_some_and(|receiver| {
+                    receiver.reference.is_some() && receiver.mutability.is_none()
+                })
+                && typed_input_types(method) == ["str"]
+                && matches!(&method.sig.output, syn::ReturnType::Type(_, output)
                     if is_plain_ident(output, "bool"))
-                    && stable_subject_inventory_check_is_exact(&method.block)
-            });
-    if !contains_only_stable_subject {
+                && root_subject_inventory_check_is_exact(&method.block)
+        });
+    if !contains_stable_subject {
         violations.push(
-            "AssessmentItemSet::contains_only_stable_subject must validate one checked stable identity, bind its digest to the existing scope, and require exactly subject reference zero"
+            "AssessmentItemSet::contains_stable_subject must validate one checked stable identity, bind its digest to the existing scope, and require exact subject reference zero without forbidding additional closed-context subjects"
                 .to_owned(),
         );
     }
@@ -3990,7 +3989,7 @@ fn inspect_assessment_item_set(syntax: &syn::File) -> Vec<String> {
     violations
 }
 
-fn stable_subject_inventory_check_is_exact(block: &syn::Block) -> bool {
+fn root_subject_inventory_check_is_exact(block: &syn::Block) -> bool {
     if block.stmts.len() != 3 {
         return false;
     }
@@ -4025,10 +4024,21 @@ fn stable_subject_inventory_check_is_exact(block: &syn::Block) -> bool {
                             matches!(argument, syn::Expr::Reference(reference)
                                 if reference.mutability.is_none()
                                     && expression_is_path_ident(reference.expr.as_ref(), "stable_identity"))))));
-    let exact_inventory_match = matches!(&block.stmts[2], syn::Stmt::Expr(syn::Expr::Macro(item), None)
-        if item.mac.path.is_ident("matches")
-            && normalized_token_text(&item.mac.tokens)
-                == "self.subjects.as_slice(),[subject]ifsubject.reference()==AssessmentSubjectReference::new(0)&&subject.fingerprint()==expected");
+    let exact_inventory_match = block_references_all(
+        block,
+        &[
+            "subjects",
+            "iter",
+            "any",
+            "reference",
+            "AssessmentSubjectReference",
+            "new",
+            "fingerprint",
+            "expected",
+        ],
+    ) && !["all", "position", "retain", "remove"]
+        .iter()
+        .any(|forbidden| block_references_all(block, &[*forbidden]));
     checked_identity && scoped_fingerprint && exact_inventory_match
 }
 
@@ -4416,7 +4426,7 @@ fn inspect_assessment_report_boundary(source: &str) -> Result<Vec<String>, syn::
                     "matches_exact_origin",
                     "authorized_origin",
                     "ScopeAuthorityMismatch",
-                    "contains_only_stable_subject",
+                    "contains_stable_subject",
                     "SubjectReferenceMismatch",
                     "into_parts",
                     "validate_subject_inventory",
@@ -4441,11 +4451,7 @@ fn inspect_assessment_report_boundary(source: &str) -> Result<Vec<String>, syn::
                 "matches_exact_origin",
             )
             && statement_reference_precedes(&method.block, "matches_exact_origin", "into_parts")
-            && statement_reference_precedes(
-                &method.block,
-                "contains_only_stable_subject",
-                "into_parts",
-            )
+            && statement_reference_precedes(&method.block, "contains_stable_subject", "into_parts")
             && statement_reference_precedes(&method.block, "validate_subject_inventory", "Self")
             && statement_reference_precedes(
                 &method.block,
@@ -4818,7 +4824,7 @@ fn block_has_exact_stable_subject_call(block: &syn::Block) -> bool {
     }
     impl<'ast> Visit<'ast> for StableSubjectCallVisitor {
         fn visit_expr_method_call(&mut self, call: &'ast syn::ExprMethodCall) {
-            if call.method == "contains_only_stable_subject" {
+            if call.method == "contains_stable_subject" {
                 self.total_calls = self.total_calls.saturating_add(1);
                 let exact = expression_is_path_ident(call.receiver.as_ref(), "items")
                     && call.args.len() == 1
@@ -11031,7 +11037,7 @@ mod tests {
                 .unwrap()
                 .join("\n");
             assert!(
-                violations.contains("contains_only_stable_subject"),
+                violations.contains("contains_stable_subject"),
                 "{violations}"
             );
         }
@@ -11152,8 +11158,8 @@ mod tests {
                 "let _ = (&truth.expected_accounting, truth.expected_elapsed_ms);",
             ),
             (
-                "contains_only_stable_subject(\"authorized-root@1\")",
-                "contains_only_stable_subject(\"caller-selected-root\")",
+                "contains_stable_subject(\"authorized-root@1\")",
+                "contains_stable_subject(\"caller-selected-root\")",
             ),
         ] {
             let weakened = report_source.replacen(original, replacement, 1);

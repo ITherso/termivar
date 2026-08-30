@@ -32,7 +32,7 @@ use super::{
     assessment_item::{
         AssessmentCapabilityDescriptor, AssessmentItemProjectionError, AssessmentItemSet,
         AssessmentItemTarget, AssessmentProjectionContext, StableAssessmentScopeId,
-        StableAssessmentSubjectId,
+        StableAssessmentSubjectId, MAX_ASSESSMENT_ITEM_SET_ITEMS,
     },
     assessment_review::CommittedAssessmentReviewLedger,
     assessment_review_projection::{
@@ -1059,16 +1059,21 @@ struct AssessmentReviewProjectionSources<'a> {
     api_visibility: Option<&'a CommittedAssessmentApiVisibility>,
 }
 
-/// Projects only the explicitly authorized root. Conditions on discovered
-/// subjects are counted as incomplete instead of deriving an identity from a
-/// URL, path, BFS ordinal, or other potentially sensitive transport data.
+/// Test adapter that projects only the explicitly authorized root.
 #[cfg(test)]
 pub(crate) fn project_passive_assessment_items(
     ledger: &CommittedAssessmentPassiveLedger,
     knowledge: &KnowledgeBase,
     authorized_root: &WebAssessmentSubject,
 ) -> Result<PassiveAssessmentItemProjection, PassiveAssessmentItemProjectionError> {
-    project_assessment_items(ledger, None, None, knowledge, authorized_root)
+    project_assessment_items(
+        ledger,
+        None,
+        None,
+        knowledge,
+        authorized_root,
+        std::slice::from_ref(authorized_root),
+    )
 }
 
 /// Projects passive observations and optional matched review candidates into
@@ -1079,6 +1084,7 @@ pub(crate) fn project_assessment_items(
     api_visibility: Option<&CommittedAssessmentApiVisibility>,
     knowledge: &KnowledgeBase,
     authorized_root: &WebAssessmentSubject,
+    assessment_subjects: &[WebAssessmentSubject],
 ) -> Result<PassiveAssessmentItemProjection, PassiveAssessmentItemProjectionError> {
     if authorized_root.origin() != WebAssessmentSubjectOrigin::AuthorizedRoot
         || authorized_root.depth() != 0
@@ -1090,11 +1096,11 @@ pub(crate) fn project_assessment_items(
     {
         return Err(PassiveAssessmentItemProjectionError::InvalidAuthorizedRoot);
     }
-    // `authorized-root@1` is deliberately reserved for the exact origin root
-    // resource. Assigning the same stable identity to arbitrary starting paths
-    // would collapse distinct resources on one origin into one fingerprint.
-    // Non-root paths stay unprojected until a host can supply an approved,
-    // non-secret stable alias through a future explicit identity authority.
+    let exact_origin = authorized_root.url().origin().ascii_serialization();
+    let scope = StableAssessmentScopeId::from_exact_origin(&exact_origin)?;
+    // `authorized-root@1` remains reserved for the exact origin root. Eligible
+    // discovered resources receive a separate opaque, versioned identity that
+    // is derived only from their already-canonical structural subject.
     let root_subject = if authorized_root.url().path() == "/" {
         Some(
             EntityId::new(format!("endpoint:{}", authorized_root.url()))
@@ -1103,8 +1109,50 @@ pub(crate) fn project_assessment_items(
     } else {
         None
     };
-    let exact_origin = authorized_root.url().origin().ascii_serialization();
-    project_assessment_items_for_root(
+    let mut stable_subjects = Vec::new();
+    if let Some(root_subject) = &root_subject {
+        stable_subjects.push((
+            root_subject.clone(),
+            StableAssessmentSubjectId::new(AUTHORIZED_ROOT_STABLE_SUBJECT_ID)?,
+            authorized_root.query_parameter_names().to_vec(),
+        ));
+    }
+    let mut discovered = assessment_subjects
+        .iter()
+        .filter(|subject| subject.origin() == WebAssessmentSubjectOrigin::Discovered)
+        .collect::<Vec<_>>();
+    discovered.sort_unstable_by(|left, right| {
+        left.depth()
+            .cmp(&right.depth())
+            .then_with(|| left.url().as_str().cmp(right.url().as_str()))
+            .then_with(|| left.method().cmp(&right.method()))
+    });
+    for subject in discovered {
+        if subject.depth() == 0
+            || subject.url().origin() != authorized_root.url().origin()
+            || subject.url().query().is_some()
+            || subject.url().fragment().is_some()
+        {
+            continue;
+        }
+        let Ok(stable_id) = StableAssessmentSubjectId::from_discovered_resource(
+            &scope,
+            subject.method(),
+            subject.url(),
+            subject.query_parameter_names(),
+        ) else {
+            continue;
+        };
+        let Ok(runtime_subject) = EntityId::new(format!("endpoint:{}", subject.url())) else {
+            continue;
+        };
+        stable_subjects.push((
+            runtime_subject,
+            stable_id,
+            subject.query_parameter_names().to_vec(),
+        ));
+    }
+    project_assessment_items_for_subjects(
         ledger,
         AssessmentReviewProjectionSources {
             native: review,
@@ -1112,8 +1160,8 @@ pub(crate) fn project_assessment_items(
         },
         knowledge,
         root_subject,
-        &exact_origin,
-        authorized_root.query_parameter_names(),
+        scope,
+        stable_subjects,
         authorized_root.url().scheme() == "https",
     )
 }
@@ -1127,7 +1175,16 @@ fn project_passive_assessment_items_for_root(
     root_query_parameter_names: &[String],
     https: bool,
 ) -> Result<PassiveAssessmentItemProjection, PassiveAssessmentItemProjectionError> {
-    project_assessment_items_for_root(
+    let scope = StableAssessmentScopeId::from_exact_origin(exact_origin)?;
+    let stable_subjects = match root_subject.as_ref() {
+        Some(subject) => vec![(
+            subject.clone(),
+            StableAssessmentSubjectId::new(AUTHORIZED_ROOT_STABLE_SUBJECT_ID)?,
+            root_query_parameter_names.to_vec(),
+        )],
+        None => Vec::new(),
+    };
+    project_assessment_items_for_subjects(
         ledger,
         AssessmentReviewProjectionSources {
             native: None,
@@ -1135,42 +1192,38 @@ fn project_passive_assessment_items_for_root(
         },
         knowledge,
         root_subject,
-        exact_origin,
-        root_query_parameter_names,
+        scope,
+        stable_subjects,
         https,
     )
 }
 
-fn project_assessment_items_for_root(
+fn project_assessment_items_for_subjects(
     ledger: &CommittedAssessmentPassiveLedger,
     reviews: AssessmentReviewProjectionSources<'_>,
     knowledge: &KnowledgeBase,
     root_subject: Option<EntityId>,
-    exact_origin: &str,
-    root_query_parameter_names: &[String],
+    scope: StableAssessmentScopeId,
+    stable_subjects: Vec<(EntityId, StableAssessmentSubjectId, Vec<String>)>,
     https: bool,
 ) -> Result<PassiveAssessmentItemProjection, PassiveAssessmentItemProjectionError> {
-    let scope = StableAssessmentScopeId::from_exact_origin(exact_origin)?;
     let mut context = AssessmentProjectionContext::new(knowledge, scope);
-    if let Some(root_subject) = &root_subject {
-        context.register_subject(
-            root_subject.clone(),
-            StableAssessmentSubjectId::new(AUTHORIZED_ROOT_STABLE_SUBJECT_ID)?,
-            root_query_parameter_names.iter().cloned(),
-        )?;
+    let stable_subject_ids = stable_subjects
+        .iter()
+        .map(|(subject, _, _)| subject.clone())
+        .collect::<std::collections::BTreeSet<_>>();
+    for (subject, stable_id, query_parameter_names) in stable_subjects {
+        context.register_subject(subject, stable_id, query_parameter_names)?;
     }
 
-    let mut root_items = Vec::new();
+    let mut planned_items = Vec::new();
     let mut incompleteness = PassiveAssessmentProjectionIncompleteness {
         root_subject_identity_unavailable: root_subject.is_none(),
         ..PassiveAssessmentProjectionIncompleteness::default()
     };
     for observation in ledger.observations() {
         let planned = passive_conditions(observation, https)?;
-        if root_subject
-            .as_ref()
-            .is_none_or(|root_subject| observation.subject != *root_subject)
-        {
+        if !stable_subject_ids.contains(&observation.subject) {
             if !planned.is_empty() {
                 incompleteness.non_root_observations = incompleteness
                     .non_root_observations
@@ -1186,28 +1239,29 @@ fn project_assessment_items_for_root(
             }
             continue;
         }
-        root_items.extend(planned);
-        if root_items.len() > MAX_PASSIVE_ASSESSMENT_CONDITIONS {
+        planned_items.extend(
+            planned
+                .into_iter()
+                .map(|item| (observation.subject.clone(), item)),
+        );
+        if planned_items.len() > MAX_ASSESSMENT_ITEM_SET_ITEMS {
             return Err(PassiveAssessmentItemProjectionError::ConditionLimit);
         }
     }
 
-    let evidence_ids = root_items
+    let evidence_ids = planned_items
         .iter()
-        .flat_map(|item| item.evidence_ids.iter().cloned())
+        .flat_map(|(_, item)| item.evidence_ids.iter().cloned())
         .collect::<std::collections::BTreeSet<_>>();
     for evidence_id in evidence_ids {
         context.register_evidence(knowledge, &evidence_id)?;
     }
     let target = AssessmentItemTarget::subject();
-    for item in root_items {
-        let root_subject = root_subject
-            .as_ref()
-            .expect("root items require an authorized root identity");
+    for (subject, item) in planned_items {
         context.project_observation(
             item.condition.capability(),
             knowledge,
-            root_subject,
+            &subject,
             &target,
             &item.evidence_ids,
         )?;

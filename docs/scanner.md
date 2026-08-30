@@ -70,9 +70,12 @@ incomplete. The compiled web-review default reserves six active-verification
 slots for the closed four-request native catalog plus this optional two-request
 pair; any lower host-selected ceiling still fails closed.
 
-Stable item identity is currently limited to the exact origin root (`/`). A
-non-root starting target, or an eligible condition on a discovered non-root
-subject, becomes typed incompleteness rather than a URL-derived fingerprint.
+Stable item identity preserves `authorized-root@1` for the exact origin root
+and assigns eligible discovered exact-origin subjects a deterministic opaque
+`discovered-resource@1` identity. Its digest preimage uses only the stable
+scope, method, canonical resource structure, and sorted unique query names;
+query values and readable path material are never public identity metadata. A
+non-root starting target remains typed incompleteness.
 
 Defense enforcement remains off unless `--enforce-defense` is supplied with
 `web-review`. Observation and shadow planning are always non-authoritative;

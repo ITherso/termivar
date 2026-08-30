@@ -133,9 +133,10 @@ atomic `NeedsReview` comparison, not confirmation of broken authorization.
 Credentials and raw response bodies are not serialized or logged.
 
 For completed reports, start `web-review` at the exact origin root (`/`). The
-current stable item-identity authority is root-only; a non-root starting target
-or eligible condition on a discovered non-root subject becomes typed
-incompleteness rather than a URL-derived fingerprint.
+historical root identity remains `authorized-root@1`. Eligible discovered
+exact-origin subjects use an opaque `discovered-resource@1` identity derived
+from canonical structure without query values or readable path material. A
+non-root starting target still becomes typed incompleteness.
 
 Completed `web-review` runs use `venom-rendered-assessment/v1`. The normal text
 selection maps to Markdown, and `--format json` maps to assessment JSON because

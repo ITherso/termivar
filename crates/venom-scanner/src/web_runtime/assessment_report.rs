@@ -163,7 +163,7 @@ impl AssessmentRunReport {
         if !items.matches_exact_origin(run_report.authorized_origin()) {
             return Err(AssessmentRunReportError::ScopeAuthorityMismatch);
         }
-        if !items.contains_only_stable_subject("authorized-root@1") {
+        if !items.contains_stable_subject("authorized-root@1") {
             return Err(AssessmentRunReportError::SubjectReferenceMismatch);
         }
         let (subjects, mut items) = items.into_parts();

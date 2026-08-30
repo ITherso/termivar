@@ -39,6 +39,9 @@ pub const MAX_ASSESSMENT_DISPLAY_BYTES: usize = 1_024;
 const FINGERPRINT_DOMAIN: &[u8] = b"venom.assessment-item.fingerprint.v1\0";
 const SCOPE_IDENTITY_DOMAIN: &[u8] = b"venom.assessment-scope.exact-origin.v1\0";
 const SUBJECT_IDENTITY_DOMAIN: &[u8] = b"venom.assessment-subject.identity.v1\0";
+const DISCOVERED_SUBJECT_IDENTITY_DOMAIN: &[u8] =
+    b"venom.assessment-subject.discovered-resource.v1\0";
+const DISCOVERED_SUBJECT_IDENTITY_VERSION: &str = "discovered-resource@1";
 const MAX_STABLE_SUBJECT_ID_BYTES: usize = 256;
 const MAX_QUERY_PARAMETER_NAME_BYTES: usize = 256;
 const MAX_PROJECTION_SUBJECTS: usize = 1_024;
@@ -223,6 +226,59 @@ impl StableAssessmentSubjectId {
         Ok(Self(value))
     }
 
+    pub(crate) fn from_discovered_resource(
+        stable_scope_id: &StableAssessmentScopeId,
+        method: super::web_assessment::WebAssessmentMethod,
+        canonical_url: &Url,
+        query_parameter_names: &[String],
+    ) -> Result<Self, AssessmentItemProjectionError> {
+        let exact_origin = canonical_url.origin().ascii_serialization();
+        if !StableAssessmentScopeId::from_exact_origin(&exact_origin)
+            .is_ok_and(|expected| expected == *stable_scope_id)
+            || !matches!(canonical_url.scheme(), "http" | "https")
+            || canonical_url.host().is_none()
+            || !canonical_url.username().is_empty()
+            || canonical_url.password().is_some()
+            || canonical_url.path().is_empty()
+            || canonical_url.query().is_some()
+            || canonical_url.fragment().is_some()
+            || canonical_url.as_str().len() > MAX_PROJECTION_SUBJECT_ID_BYTES
+            || query_parameter_names.len() > MAX_PROJECTION_QUERY_NAMES_PER_SUBJECT
+        {
+            return Err(AssessmentItemProjectionError::InvalidStableSubjectIdentity);
+        }
+
+        let mut canonical_names = BTreeSet::new();
+        for name in query_parameter_names {
+            if name.is_empty()
+                || name.len() > MAX_QUERY_PARAMETER_NAME_BYTES
+                || name.chars().any(char::is_control)
+            {
+                return Err(AssessmentItemProjectionError::InvalidStableSubjectIdentity);
+            }
+            canonical_names.insert(name.as_str());
+        }
+
+        let method = match method {
+            super::web_assessment::WebAssessmentMethod::Get => "GET",
+            super::web_assessment::WebAssessmentMethod::Head => "HEAD",
+        };
+        let mut digest = Sha256::new();
+        digest.update(DISCOVERED_SUBJECT_IDENTITY_DOMAIN);
+        digest_field(&mut digest, DISCOVERED_SUBJECT_IDENTITY_VERSION);
+        digest_field(&mut digest, stable_scope_id.as_str());
+        digest_field(&mut digest, method);
+        digest_field(&mut digest, canonical_url.path());
+        digest.update((canonical_names.len() as u64).to_be_bytes());
+        for name in canonical_names {
+            digest_field(&mut digest, name);
+        }
+        Self::new(format!(
+            "{DISCOVERED_SUBJECT_IDENTITY_VERSION}:{:x}",
+            digest.finalize()
+        ))
+    }
+
     fn as_str(&self) -> &str {
         &self.0
     }
@@ -374,23 +430,21 @@ impl AssessmentItemSet {
         self.stable_scope_id.matches_exact_origin(value)
     }
 
-    /// Verifies that this set contains exactly one subject minted from the
-    /// supplied host-approved stable identity under its existing scope.
+    /// Verifies that this set contains a subject minted from the supplied
+    /// host-approved stable identity under its existing scope.
     ///
     /// Report composition uses this to bind the opaque inventory back to the
     /// runtime's authorized root without exposing or re-hashing a URL path.
     #[cfg(feature = "reporting")]
-    pub(crate) fn contains_only_stable_subject(&self, stable_identity: &str) -> bool {
+    pub(crate) fn contains_stable_subject(&self, stable_identity: &str) -> bool {
         let Ok(stable_identity) = StableAssessmentSubjectId::new(stable_identity) else {
             return false;
         };
         let expected = assessment_subject_fingerprint(&self.stable_scope_id, &stable_identity);
-        matches!(
-            self.subjects.as_slice(),
-            [subject]
-                if subject.reference() == AssessmentSubjectReference::new(0)
-                    && subject.fingerprint() == expected
-        )
+        self.subjects.iter().any(|subject| {
+            subject.reference() == AssessmentSubjectReference::new(0)
+                && subject.fingerprint() == expected
+        })
     }
 
     #[cfg(any(feature = "reporting", test))]

@@ -643,6 +643,84 @@ async fn web_review_consumes_one_context_owned_item_set_into_the_additive_report
 
 #[cfg(feature = "reporting")]
 #[tokio::test]
+async fn discovered_passive_items_have_repeatable_private_identity_in_every_renderer() {
+    const SECRET: &str = "VENOM-MUST-NOT-LEAK-QUERY-SECRET-123";
+    let server = serve(|request| {
+        let body = if request.path() == "/" {
+            format!(
+                "<a href='/account/./profile?tab={SECRET}&page=1'>first</a>\
+                 <a href='/account/profile?page=999&tab=other#ignored'>duplicate</a>"
+            )
+        } else {
+            "profile".to_owned()
+        };
+        FixtureReply::Response(FixtureResponse::html(body))
+    })
+    .await;
+
+    let run = async || {
+        let mut runtime = WebAssessmentRuntime::builder(server.url("/"))
+            .build()
+            .unwrap();
+        runtime.analyze().await.unwrap()
+    };
+    let first = run().await;
+    let second = run().await;
+    for report in [&first, &second] {
+        assert_eq!(report.completion(), &WebAssessmentCompletion::Complete);
+        assert!(!report
+            .completion()
+            .reasons()
+            .contains(&WebAssessmentIncompleteReason::AssessmentSubjectIdentityUnavailable));
+        assert_eq!(report.subjects().len(), 2);
+        assert_eq!(
+            report
+                .subjects()
+                .iter()
+                .filter(|subject| subject.subject().url().path() == "/account/profile")
+                .count(),
+            1
+        );
+        assert!(report.assessment_items().iter().any(|item| {
+            item.subject_reference().to_string() == "subject-0001"
+                && item.disposition() == AssessmentDisposition::Informational
+        }));
+        assert!(report
+            .assessment_items()
+            .iter()
+            .all(|item| item.disposition() != AssessmentDisposition::Confirmed));
+        assert!(!format!("{report:?}").contains(SECRET));
+    }
+    assert_eq!(
+        first
+            .assessment_items()
+            .iter()
+            .map(|item| item.fingerprint())
+            .collect::<Vec<_>>(),
+        second
+            .assessment_items()
+            .iter()
+            .map(|item| item.fingerprint())
+            .collect::<Vec<_>>()
+    );
+
+    let product =
+        ReportGenerator::compose_assessment(first, ScanProfileV1::web_review().unwrap()).unwrap();
+    assert_eq!(product.subject_count(), 2);
+    for format in [
+        ReportFormat::Json,
+        ReportFormat::Csv,
+        ReportFormat::Html,
+        ReportFormat::Markdown,
+    ] {
+        let rendered = ReportGenerator::generate_assessment(&product, format).unwrap();
+        assert!(!rendered.contains(SECRET));
+        assert!(rendered.contains("subject-0001"));
+    }
+}
+
+#[cfg(feature = "reporting")]
+#[tokio::test]
 async fn atomic_api_visibility_basis_is_distinct_and_redacted_in_every_renderer() {
     let server = serve(|request| {
         if request.headers.get("accept").map(String::as_str) == Some("application/json") {

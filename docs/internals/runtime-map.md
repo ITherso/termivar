@@ -106,11 +106,12 @@ difference is one opaque atomic evidence reference with maximum disposition
 `NeedsReview`. Partial collection or a lower exhausted limit is typed
 incomplete and cannot be reported as empty success.
 
-The stable item-identity authority currently registers only the exact origin
-root (`/`). A non-root starting target, or an eligible condition on a discovered
-non-root subject, records typed incompleteness rather than deriving a stable
-fingerprint from URL/path/BFS identity. Such a run cannot be composed as a
-completed assessment report.
+The stable item-identity authority preserves `authorized-root@1` for the exact
+origin root and registers eligible discovered exact-origin subjects with an
+opaque `discovered-resource@1` digest over canonical structure. The identity
+contains no query values or readable path material and grants no request
+authority. Unsafe subjects and non-root starting targets remain typed
+incompleteness and cannot be composed as completed assessment reports.
 
 On the no-profile compatibility path, text summary, `--explain`, and
 `--format json` are renderings of the same typed runtime report. The JSON contract keeps its historical
