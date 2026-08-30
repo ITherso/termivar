@@ -23,6 +23,7 @@ const BOUNDED_RUNTIME_SOURCES: &[&str] = &[
     "crates/venom-cli/src/assessment_scan.rs",
     "crates/venom-scanner/src/decision_loop.rs",
     "crates/venom-scanner/src/decision_runner.rs",
+    ASSESSMENT_API_VISIBILITY_SOURCE,
     ASSESSMENT_ITEM_SOURCE,
     "crates/venom-scanner/src/web_runtime/assessment_passive.rs",
     ASSESSMENT_REVIEW_SOURCE,
@@ -60,6 +61,8 @@ const BOUNDED_RUNTIME_SOURCES: &[&str] = &[
 const TRANSPORT_OWNER_SOURCE: &str = "crates/venom-scanner/src/http_evidence/request_broker.rs";
 const SHARED_RUNTIME_AUTHORITY_SOURCE: &str = "crates/venom-scanner/src/web_runtime/authority.rs";
 const LEGACY_DISCOVERY_AUTHORITY_SOURCE: &str = "crates/venom-scanner/src/legacy_discovery.rs";
+const ASSESSMENT_API_VISIBILITY_SOURCE: &str =
+    "crates/venom-scanner/src/web_runtime/assessment_api_visibility.rs";
 const ASSESSMENT_ITEM_SOURCE: &str = "crates/venom-scanner/src/web_runtime/assessment_item.rs";
 const ASSESSMENT_REPORT_SOURCE: &str = "crates/venom-scanner/src/web_runtime/assessment_report.rs";
 const ASSESSMENT_REVIEW_SOURCE: &str = "crates/venom-scanner/src/web_runtime/assessment_review.rs";
@@ -113,6 +116,11 @@ const ASSESSMENT_ITEM_PUBLIC_EXPORTS: &[&str] = &[
     "AssessmentRemediation",
     "AssessmentSubjectReference",
     "AssessmentVerifierBasis",
+];
+
+const ASSESSMENT_API_VISIBILITY_PUBLIC_EXPORTS: &[&str] = &[
+    "WebAssessmentAuthorizationContextError",
+    "WebAssessmentRootAuthorizationContext",
 ];
 
 const ASSESSMENT_PROJECTION_CONTEXT_LIMITS: &[(&str, usize)] = &[
@@ -541,6 +549,8 @@ fn web_assessment_contract_violations(
     let passive = fs::read_to_string(
         workspace_root.join("crates/venom-scanner/src/web_runtime/assessment_passive.rs"),
     )?;
+    let api_visibility =
+        fs::read_to_string(workspace_root.join(ASSESSMENT_API_VISIBILITY_SOURCE))?;
     let defense = fs::read_to_string(
         workspace_root.join("crates/venom-scanner/src/web_runtime/assessment_defense.rs"),
     )?;
@@ -574,6 +584,7 @@ fn web_assessment_contract_violations(
             "crates/venom-scanner/src/web_runtime/assessment_passive.rs",
             passive.as_str(),
         ),
+        (ASSESSMENT_API_VISIBILITY_SOURCE, api_visibility.as_str()),
         (ASSESSMENT_ITEM_SOURCE, assessment_item.as_str()),
     ] {
         for forbidden in [
@@ -609,8 +620,17 @@ fn web_assessment_contract_violations(
         }
     }
     violations.extend(inspect_web_assessment_composition(&assessment)?);
+    violations.extend(inspect_assessment_api_visibility_composition(
+        &api_visibility,
+    )?);
+    let api_visibility_syntax = syn::parse_file(&api_visibility)?;
+    violations.extend(inspect_assessment_api_visibility_secret_boundary(
+        &api_visibility_syntax,
+        &api_visibility,
+    ));
     violations.extend(inspect_web_assessment_models(&assessment)?);
     violations.extend(inspect_web_assessment_facade(&facade)?);
+    violations.extend(inspect_assessment_api_visibility_facade(&facade)?);
     violations.extend(inspect_assessment_item_facade(&facade)?);
     violations.extend(inspect_assessment_item_projection(&assessment_item)?);
     violations.extend(inspect_assessment_report_boundary(&assessment_report)?);
@@ -1202,6 +1222,285 @@ fn inspect_web_assessment_composition(source: &str) -> Result<Vec<String>, syn::
     Ok(violations)
 }
 
+fn inspect_assessment_api_visibility_composition(
+    source: &str,
+) -> Result<Vec<String>, syn::Error> {
+    let syntax = syn::parse_file(source)?;
+    let mut visitor = AssessmentApiVisibilityCompositionVisitor::default();
+    visitor.visit_file(&syntax);
+    let mut violations = visitor.violations.into_iter().collect::<Vec<_>>();
+    if visitor.authority_calls != 0 {
+        violations.push(format!(
+            "assessment API visibility must not construct SharedWebRuntimeAuthority; observed {} direct calls",
+            visitor.authority_calls
+        ));
+    }
+    if visitor.shared_child_builds != 1 {
+        violations.push(format!(
+            "assessment API visibility must contain exactly one shared-authority child composition point; observed {}",
+            visitor.shared_child_builds
+        ));
+    }
+    if visitor.paired_runs != 1 {
+        violations.push(format!(
+            "assessment API visibility must execute exactly one existing atomic API pair through RootApiVisibilityRuntime::execute; observed {}",
+            visitor.paired_runs
+        ));
+    }
+    if visitor.standalone_build_calls != 0 {
+        violations.push(format!(
+            "assessment API visibility contains {} standalone .build() calls; its child must use the assessment-owned shared authority",
+            visitor.standalone_build_calls
+        ));
+    }
+    Ok(violations)
+}
+
+fn inspect_assessment_api_visibility_secret_boundary(
+    syntax: &syn::File,
+    source: &str,
+) -> Vec<String> {
+    let mut violations = Vec::new();
+    let context = syntax.items.iter().find_map(|item| match item {
+        Item::Struct(item) if item.ident == "WebAssessmentRootAuthorizationContext" => Some(item),
+        _ => None,
+    });
+    let context_is_exact = context.is_some_and(|item| {
+        matches!(item.vis, syn::Visibility::Public(_))
+            && !attrs_reference_any_ident(
+                &item.attrs,
+                &["Clone", "Copy", "Default", "Deserialize", "Serialize"],
+            )
+            && private_named_fields(item).is_some_and(|fields| {
+                fields.len() == 1
+                    && fields
+                        .get("candidate_header_value")
+                        .is_some_and(|field| is_plain_ident(field, "String"))
+            })
+    });
+    if !context_is_exact
+        || type_has_explicit_trait_impl(
+            syntax,
+            "WebAssessmentRootAuthorizationContext",
+            &["Clone", "Copy", "Default", "Deserialize", "Serialize"],
+        )
+    {
+        violations.push(
+            "root authorization context must remain one private bounded value with no clone, default, or serialization authority"
+                .to_owned(),
+        );
+    }
+
+    let public_methods = syntax
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Impl(item)
+                if item.trait_.is_none()
+                    && type_last_identifier(item.self_ty.as_ref()).as_deref()
+                        == Some("WebAssessmentRootAuthorizationContext") =>
+            {
+                Some(item)
+            },
+            _ => None,
+        })
+        .flat_map(|item| item.items.iter())
+        .filter_map(|item| match item {
+            syn::ImplItem::Fn(method) if matches!(method.vis, syn::Visibility::Public(_)) => {
+                Some(ident_name(&method.sig.ident))
+            },
+            _ => None,
+        })
+        .collect::<BTreeSet<_>>();
+    if public_methods != BTreeSet::from(["new".to_owned()]) {
+        violations.push(format!(
+            "root authorization context public method inventory must remain constructor-only; observed {public_methods:?}"
+        ));
+    }
+    if source
+        .matches(
+            "formatter.write_str(\"WebAssessmentRootAuthorizationContext(<redacted>)\")",
+        )
+        .count()
+        != 1
+    {
+        violations.push(
+            "root authorization context Debug implementation must remain the exact value-free redaction"
+                .to_owned(),
+        );
+    }
+    violations
+}
+
+#[derive(Default)]
+struct AssessmentApiVisibilityCompositionVisitor {
+    current_impl: Option<String>,
+    current_function: Option<String>,
+    control_depth: usize,
+    closure_depth: usize,
+    authority_calls: usize,
+    shared_child_builds: usize,
+    paired_runs: usize,
+    standalone_build_calls: usize,
+    violations: BTreeSet<String>,
+}
+
+impl AssessmentApiVisibilityCompositionVisitor {
+    fn in_control_flow(&mut self, visit: impl FnOnce(&mut Self)) {
+        self.control_depth = self.control_depth.saturating_add(1);
+        visit(self);
+        self.control_depth = self.control_depth.saturating_sub(1);
+    }
+
+    fn current_boundary(&self) -> (&str, &str) {
+        (
+            self.current_impl.as_deref().unwrap_or("<free>"),
+            self.current_function.as_deref().unwrap_or("<none>"),
+        )
+    }
+}
+
+impl<'ast> Visit<'ast> for AssessmentApiVisibilityCompositionVisitor {
+    fn visit_item(&mut self, item: &'ast Item) {
+        if !has_cfg_test(item_attributes(item)) {
+            visit::visit_item(self, item);
+        }
+    }
+
+    fn visit_item_impl(&mut self, item: &'ast syn::ItemImpl) {
+        if has_cfg_test(&item.attrs) {
+            return;
+        }
+        let prior = self.current_impl.take();
+        self.current_impl = match item.self_ty.as_ref() {
+            syn::Type::Path(path) => path
+                .path
+                .segments
+                .last()
+                .map(|segment| ident_name(&segment.ident)),
+            _ => None,
+        };
+        visit::visit_item_impl(self, item);
+        self.current_impl = prior;
+    }
+
+    fn visit_impl_item_fn(&mut self, item: &'ast syn::ImplItemFn) {
+        if has_cfg_test(&item.attrs) {
+            return;
+        }
+        let prior = self.current_function.replace(ident_name(&item.sig.ident));
+        visit::visit_impl_item_fn(self, item);
+        self.current_function = prior;
+    }
+
+    fn visit_item_fn(&mut self, item: &'ast syn::ItemFn) {
+        if has_cfg_test(&item.attrs) {
+            return;
+        }
+        let prior_impl = self.current_impl.take();
+        let prior_function = self.current_function.replace(ident_name(&item.sig.ident));
+        visit::visit_item_fn(self, item);
+        self.current_impl = prior_impl;
+        self.current_function = prior_function;
+    }
+
+    fn visit_expr_call(&mut self, expression: &'ast syn::ExprCall) {
+        if let syn::Expr::Path(path) = expression.func.as_ref() {
+            let segments = path_segments(&path.path);
+            if segments.len() >= 2
+                && segments
+                    .last()
+                    .is_some_and(|value| normalize_identifier(value) == "new_exact_origin")
+                && segments
+                    .get(segments.len() - 2)
+                    .is_some_and(|value| normalize_identifier(value) == "SharedWebRuntimeAuthority")
+            {
+                self.authority_calls = self.authority_calls.saturating_add(1);
+            }
+        }
+        visit::visit_expr_call(self, expression);
+    }
+
+    fn visit_expr_method_call(&mut self, expression: &'ast syn::ExprMethodCall) {
+        match normalize_identifier(&ident_name(&expression.method)) {
+            "build_with_shared_authority" => {
+                self.shared_child_builds = self.shared_child_builds.saturating_add(1);
+                let (impl_name, function_name) = self.current_boundary();
+                if impl_name != "<free>"
+                    || function_name != "build_root_api_visibility_runtime"
+                    || self.control_depth != 0
+                    || self.closure_depth != 0
+                {
+                    self.violations.insert(format!(
+                        "assessment API child shared-authority composition must remain one unconditional call in build_root_api_visibility_runtime, not {impl_name}::{function_name}"
+                    ));
+                }
+            },
+            "run_api_visibility_pair" => {
+                self.paired_runs = self.paired_runs.saturating_add(1);
+                let (impl_name, function_name) = self.current_boundary();
+                if impl_name != "RootApiVisibilityRuntime"
+                    || function_name != "execute"
+                    || self.control_depth != 0
+                    || self.closure_depth != 0
+                {
+                    self.violations.insert(format!(
+                        "the atomic API comparator must run only through RootApiVisibilityRuntime::execute, not {impl_name}::{function_name}"
+                    ));
+                }
+            },
+            "build" => {
+                self.standalone_build_calls = self.standalone_build_calls.saturating_add(1);
+            },
+            _ => {},
+        }
+        visit::visit_expr_method_call(self, expression);
+    }
+
+    fn visit_expr_if(&mut self, expression: &'ast syn::ExprIf) {
+        self.in_control_flow(|visitor| visit::visit_expr_if(visitor, expression));
+    }
+
+    fn visit_expr_for_loop(&mut self, expression: &'ast syn::ExprForLoop) {
+        self.in_control_flow(|visitor| visit::visit_expr_for_loop(visitor, expression));
+    }
+
+    fn visit_expr_loop(&mut self, expression: &'ast syn::ExprLoop) {
+        self.in_control_flow(|visitor| visit::visit_expr_loop(visitor, expression));
+    }
+
+    fn visit_expr_match(&mut self, expression: &'ast syn::ExprMatch) {
+        self.in_control_flow(|visitor| visit::visit_expr_match(visitor, expression));
+    }
+
+    fn visit_expr_while(&mut self, expression: &'ast syn::ExprWhile) {
+        self.in_control_flow(|visitor| visit::visit_expr_while(visitor, expression));
+    }
+
+    fn visit_expr_closure(&mut self, expression: &'ast syn::ExprClosure) {
+        self.closure_depth = self.closure_depth.saturating_add(1);
+        visit::visit_expr_closure(self, expression);
+        self.closure_depth = self.closure_depth.saturating_sub(1);
+    }
+
+    fn visit_macro(&mut self, item: &'ast Macro) {
+        if [
+            "new_exact_origin",
+            "build_with_shared_authority",
+            "run_api_visibility_pair",
+        ]
+        .iter()
+        .any(|identifier| token_stream_contains_identifier(item.tokens.clone(), identifier))
+        {
+            self.violations.insert(
+                "assessment API visibility hides authority composition or pair execution inside a macro"
+                    .to_owned(),
+            );
+        }
+        visit::visit_macro(self, item);
+    }
+}
+
 #[derive(Default)]
 struct AssessmentCompositionVisitor {
     current_impl: Option<String>,
@@ -1767,6 +2066,94 @@ fn inspect_assessment_item_facade(source: &str) -> Result<Vec<String>, syn::Erro
     Ok(violations)
 }
 
+fn inspect_assessment_api_visibility_facade(source: &str) -> Result<Vec<String>, syn::Error> {
+    let syntax = syn::parse_file(source)?;
+    let mut violations = Vec::new();
+    let modules = syntax
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Mod(item) if item.ident == "assessment_api_visibility" => Some(item),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    if modules.len() != 1
+        || !matches!(modules[0].vis, syn::Visibility::Inherited)
+        || modules[0].content.is_some()
+        || !modules[0].attrs.is_empty()
+    {
+        violations.push(
+            "assessment API visibility module must be one private canonical external child with no path redirection"
+                .to_owned(),
+        );
+    }
+
+    let mut exports = BTreeSet::new();
+    let mut export_items = 0usize;
+    for item in &syntax.items {
+        let Item::Use(item_use) = item else {
+            continue;
+        };
+        if !matches!(item_use.vis, syn::Visibility::Public(_)) {
+            continue;
+        }
+        let mut paths = Vec::new();
+        collect_use_paths(&item_use.tree, Vec::new(), &mut paths);
+        let mut matched_item = false;
+        for (segments, binding, is_glob) in paths {
+            if segments.first().is_some_and(|segment| {
+                normalize_identifier(segment) == "assessment_api_visibility"
+            }) {
+                matched_item = true;
+                if !item_use.attrs.is_empty() {
+                    violations.push(
+                        "assessment API visibility facade export must be unconditional and unannotated"
+                            .to_owned(),
+                    );
+                }
+                let is_alias = binding.as_ref().is_some_and(|binding| {
+                    segments.last().is_none_or(|source| {
+                        normalize_identifier(source) != normalize_identifier(binding)
+                    })
+                });
+                if is_glob || is_alias {
+                    violations.push(
+                        "assessment API visibility facade must use exact direct exports without aliases or globs"
+                            .to_owned(),
+                    );
+                }
+                let export = binding.as_ref().or_else(|| segments.last()).ok_or_else(|| {
+                    syn::Error::new_spanned(
+                        &item_use.tree,
+                        "missing assessment API visibility export",
+                    )
+                })?;
+                exports.insert(normalize_identifier(export).to_owned());
+            }
+        }
+        if matched_item {
+            export_items = export_items.saturating_add(1);
+        }
+    }
+    if export_items != 1 {
+        violations.push(format!(
+            "assessment API visibility facade must contain exactly one direct public export item; observed {export_items}"
+        ));
+    }
+    let expected = ASSESSMENT_API_VISIBILITY_PUBLIC_EXPORTS
+        .iter()
+        .map(|value| (*value).to_owned())
+        .collect::<BTreeSet<_>>();
+    if exports != expected {
+        violations.push(format!(
+            "assessment API visibility web-runtime export allowlist drifted; missing={:?}, unexpected={:?}",
+            expected.difference(&exports).collect::<Vec<_>>(),
+            exports.difference(&expected).collect::<Vec<_>>()
+        ));
+    }
+    Ok(violations)
+}
+
 fn inspect_assessment_item_projection(source: &str) -> Result<Vec<String>, syn::Error> {
     let syntax = syn::parse_file(source)?;
     let mut violations = Vec::new();
@@ -1942,7 +2329,7 @@ fn inspect_assessment_item_projection(source: &str) -> Result<Vec<String>, syn::
         ("AssessmentObservationBasis", BTreeSet::from(["evidence"])),
         (
             "AssessmentDifferentialBasis",
-            BTreeSet::from(["candidate", "control"]),
+            BTreeSet::from(["candidate", "control", "paired_comparison"]),
         ),
         (
             "AssessmentVerifierBasis",
@@ -2200,6 +2587,49 @@ fn inspect_assessment_item_projection(source: &str) -> Result<Vec<String>, syn::
 
 fn inspect_assessment_item_public_storage(syntax: &syn::File) -> Vec<String> {
     let mut violations = Vec::new();
+    let differential_evidence = syntax.items.iter().find_map(|item| match item {
+        Item::Enum(item) if item.ident == "AssessmentDifferentialEvidence" => Some(item),
+        _ => None,
+    });
+    let differential_evidence_is_exact = differential_evidence.is_some_and(|item| {
+        matches!(item.vis, syn::Visibility::Inherited)
+            && item.variants.len() == 2
+            && item.variants.iter().zip(["MatchedPair", "PairedComparison"]).all(
+                |(variant, expected)| {
+                    if ident_name(&variant.ident) != expected || variant.discriminant.is_some() {
+                        return false;
+                    }
+                    match (expected, &variant.fields) {
+                        ("MatchedPair", syn::Fields::Named(fields)) => {
+                            fields.named.len() == 2
+                                && fields.named.iter().all(|field| {
+                                    field.ident.as_ref().is_some_and(|ident| {
+                                        matches!(ident_name(ident).as_str(), "control" | "candidate")
+                                    }) && is_generic_of_idents(
+                                        &field.ty,
+                                        "Vec",
+                                        &["AssessmentEvidenceReference"],
+                                    )
+                                })
+                        },
+                        ("PairedComparison", syn::Fields::Unnamed(fields)) => {
+                            fields.unnamed.len() == 1
+                                && is_plain_ident(
+                                    &fields.unnamed[0].ty,
+                                    "AssessmentEvidenceReference",
+                                )
+                        },
+                        _ => false,
+                    }
+                },
+            )
+    });
+    if !differential_evidence_is_exact {
+        violations.push(
+            "AssessmentDifferentialEvidence must remain the exact private matched-pair or single atomic paired-comparison identity"
+                .to_owned(),
+        );
+    }
     for item in &syntax.items {
         let Item::Struct(item) = item else {
             continue;
@@ -2231,12 +2661,10 @@ fn inspect_assessment_item_public_storage(syntax: &syn::File) -> Vec<String> {
                     })
             }),
             "AssessmentDifferentialBasis" => private_named_fields(item).is_some_and(|fields| {
-                fields.len() == 2
-                    && ["control", "candidate"].iter().all(|field_name| {
-                        fields.get(*field_name).is_some_and(|field| {
-                            is_generic_of_idents(field, "Vec", &["AssessmentEvidenceReference"])
-                        })
-                    })
+                fields.len() == 1
+                    && fields
+                        .get("evidence")
+                        .is_some_and(|field| is_plain_ident(field, "AssessmentDifferentialEvidence"))
             }),
             "AssessmentVerifierBasis" => private_named_fields(item).is_some_and(|fields| {
                 fields.len() == 5
@@ -4052,14 +4480,17 @@ fn inspect_production_verifier_descriptors(
         }
     }
     let mut visitor = DescriptorVisitor {
-        allow_differential_review: source_name == ASSESSMENT_REVIEW_PROJECTION_SOURCE,
+        allow_differential_review: matches!(
+            source_name,
+            ASSESSMENT_REVIEW_PROJECTION_SOURCE | ASSESSMENT_API_VISIBILITY_SOURCE
+        ),
         ..DescriptorVisitor::default()
     };
     visitor.visit_file(syntax);
     let mut violations = Vec::new();
     if visitor.invalid_initializers != 0 {
         violations.push(format!(
-            "{source_name} defines a production AssessmentCapabilityDescriptor outside its exact constructor allowlist; differential_review is restricted to {ASSESSMENT_REVIEW_PROJECTION_SOURCE}"
+            "{source_name} defines a production AssessmentCapabilityDescriptor outside its exact constructor allowlist; differential_review is restricted to {ASSESSMENT_REVIEW_PROJECTION_SOURCE} and {ASSESSMENT_API_VISIBILITY_SOURCE}"
         ));
     }
     if visitor.verifier_transitions != 0 {
@@ -6731,6 +7162,10 @@ impl<'ast> Visit<'ast> for OwnershipVisitor<'_> {
                 | ("crates/venom-scanner/src/web_runtime.rs", "assessment_item")
                 | (
                     "crates/venom-scanner/src/web_runtime.rs",
+                    "assessment_api_visibility"
+                )
+                | (
+                    "crates/venom-scanner/src/web_runtime.rs",
                     "assessment_passive"
                 )
                 | (
@@ -8834,6 +9269,29 @@ mod tests {
         "#
     }
 
+    fn valid_assessment_api_visibility_composition() -> &'static str {
+        r#"
+            struct SharedWebRuntimeAuthority;
+            struct ChildBuilder;
+            impl ChildBuilder {
+                fn build_with_shared_authority(&self, _: SharedWebRuntimeAuthority) {}
+                fn build(&self) {}
+            }
+            struct RootApiVisibilityRuntime { runtime: ApiRuntime }
+            impl RootApiVisibilityRuntime {
+                async fn execute(&mut self) {
+                    self.runtime.run_api_visibility_pair();
+                }
+            }
+            fn build_root_api_visibility_runtime(
+                builder: ChildBuilder,
+                authority: SharedWebRuntimeAuthority,
+            ) {
+                builder.build_with_shared_authority(authority);
+            }
+        "#
+    }
+
     #[test]
     fn assessment_composition_gate_requires_one_direct_global_authority_and_shared_children() {
         assert!(
@@ -8867,6 +9325,93 @@ mod tests {
         ] {
             let violations = inspect_web_assessment_composition(&mutation)
                 .unwrap()
+                .join("\n");
+            assert!(violations.contains(needle), "{violations}");
+        }
+    }
+
+    #[test]
+    fn assessment_api_visibility_gate_requires_shared_authority_and_atomic_pair_execution() {
+        assert!(
+            inspect_assessment_api_visibility_composition(
+                valid_assessment_api_visibility_composition()
+            )
+            .unwrap()
+            .is_empty()
+        );
+
+        for (mutation, needle) in [
+            (
+                valid_assessment_api_visibility_composition().replace(
+                    "builder.build_with_shared_authority(authority);",
+                    "builder.build();",
+                ),
+                "standalone .build()",
+            ),
+            (
+                valid_assessment_api_visibility_composition().replace(
+                    "self.runtime.run_api_visibility_pair();",
+                    "self.runtime.observe();",
+                ),
+                "exactly one existing atomic API pair",
+            ),
+            (
+                format!(
+                    "{}\nfn escape() {{ let _ = SharedWebRuntimeAuthority::new_exact_origin(); }}",
+                    valid_assessment_api_visibility_composition()
+                ),
+                "must not construct SharedWebRuntimeAuthority",
+            ),
+            (
+                valid_assessment_api_visibility_composition().replace(
+                    "builder.build_with_shared_authority(authority);",
+                    "if enabled() { builder.build_with_shared_authority(authority); }",
+                ),
+                "unconditional call",
+            ),
+        ] {
+            let violations = inspect_assessment_api_visibility_composition(&mutation)
+                .unwrap()
+                .join("\n");
+            assert!(violations.contains(needle), "{violations}");
+        }
+    }
+
+    #[test]
+    fn assessment_api_visibility_secret_boundary_is_noncloneable_and_value_free() {
+        let source = include_str!(
+            "../../../crates/venom-scanner/src/web_runtime/assessment_api_visibility.rs"
+        );
+        let syntax = syn::parse_file(source).unwrap();
+        assert!(inspect_assessment_api_visibility_secret_boundary(&syntax, source).is_empty());
+
+        for (mutation, needle) in [
+            (
+                source.replacen(
+                    "pub struct WebAssessmentRootAuthorizationContext {",
+                    "#[derive(Clone)]\npub struct WebAssessmentRootAuthorizationContext {",
+                    1,
+                ),
+                "no clone",
+            ),
+            (
+                source.replacen(
+                    "    fn into_candidate_header_value(self) -> String {",
+                    "    pub fn into_candidate_header_value(self) -> String {",
+                    1,
+                ),
+                "constructor-only",
+            ),
+            (
+                source.replace(
+                    "WebAssessmentRootAuthorizationContext(<redacted>)",
+                    "WebAssessmentRootAuthorizationContext(value)",
+                ),
+                "value-free redaction",
+            ),
+        ] {
+            let syntax = syn::parse_file(&mutation).unwrap();
+            let violations = inspect_assessment_api_visibility_secret_boundary(&syntax, &mutation)
                 .join("\n");
             assert!(violations.contains(needle), "{violations}");
         }
@@ -9191,6 +9736,33 @@ mod tests {
     }
 
     #[test]
+    fn assessment_api_visibility_facade_export_allowlist_is_exact() {
+        let exports = ASSESSMENT_API_VISIBILITY_PUBLIC_EXPORTS.join(", ");
+        let valid = format!(
+            "mod assessment_api_visibility;\n\
+             pub use assessment_api_visibility::{{{exports}}};"
+        );
+        assert!(inspect_assessment_api_visibility_facade(&valid)
+            .unwrap()
+            .is_empty());
+
+        let unexpected = valid.replace("};", ", AccidentalExport};");
+        let violations = inspect_assessment_api_visibility_facade(&unexpected)
+            .unwrap()
+            .join("\n");
+        assert!(violations.contains("unexpected"), "{violations}");
+
+        let public_module = valid.replace(
+            "mod assessment_api_visibility;",
+            "pub mod assessment_api_visibility;",
+        );
+        let violations = inspect_assessment_api_visibility_facade(&public_module)
+            .unwrap()
+            .join("\n");
+        assert!(violations.contains("private canonical"), "{violations}");
+    }
+
+    #[test]
     fn assessment_item_source_is_a_bounded_projection_consumer() {
         assert!(BOUNDED_RUNTIME_SOURCES.contains(&ASSESSMENT_ITEM_SOURCE));
         assert!(!DIRECT_CLIENT_SOURCE_ALLOWLIST.contains(&ASSESSMENT_ITEM_SOURCE));
@@ -9294,6 +9866,19 @@ mod tests {
             .unwrap()
             .join("\n");
         assert!(violations.contains("RuntimeBudget"), "{violations}");
+
+        let forged_atomic = source.replacen(
+            "PairedComparison(AssessmentEvidenceReference),",
+            "PairedComparison(Vec<AssessmentEvidenceReference>),",
+            1,
+        );
+        let violations = inspect_assessment_item_projection(&forged_atomic)
+            .unwrap()
+            .join("\n");
+        assert!(
+            violations.contains("exact private matched-pair or single atomic"),
+            "{violations}"
+        );
     }
 
     #[test]
@@ -9944,6 +10529,12 @@ mod tests {
         .unwrap();
         assert!(inspect_production_verifier_descriptors(
             ASSESSMENT_REVIEW_PROJECTION_SOURCE,
+            &differential,
+            false,
+        )
+        .is_empty());
+        assert!(inspect_production_verifier_descriptors(
+            ASSESSMENT_API_VISIBILITY_SOURCE,
             &differential,
             false,
         )
