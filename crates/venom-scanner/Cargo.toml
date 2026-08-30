@@ -120,3 +120,7 @@ harness = false
 name = "endpoint_assessment"
 harness = false
 required-features = ["scanning"]
+
+[[test]]
+name = "endpoint_assessment_harness"
+required-features = ["scanning"]
