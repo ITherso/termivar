@@ -37,7 +37,7 @@ chrono = { version = "0.4", features = ["serde"] }
 thiserror = "1"
 clap = { version = "4", features = ["derive"] }
 async-trait = "0.1"
-base64 = "0.22"
+base64 = "0.23"
 hex = "0.4"
 axum = { version = "0.7", default-features = false }
 futures = "0.3"
