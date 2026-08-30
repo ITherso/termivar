@@ -263,7 +263,7 @@ enum Commands {
     },
 }
 
-async fn run_deterministic_scan(
+struct DeterministicScanInvocation {
     target: Url,
     format: OutputFormat,
     explain: bool,
@@ -274,7 +274,23 @@ async fn run_deterministic_scan(
     auth_env: Option<OsString>,
     auth_file: Option<PathBuf>,
     auth_stdin: bool,
+}
+
+async fn run_deterministic_scan(
+    invocation: DeterministicScanInvocation,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let DeterministicScanInvocation {
+        target,
+        format,
+        explain,
+        profile,
+        enforce_defense,
+        report_format,
+        report_output,
+        auth_env,
+        auth_file,
+        auth_stdin,
+    } = invocation;
     if scan_flags_conflict(format, explain) {
         use clap::CommandFactory;
         Cli::command()
@@ -628,7 +644,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             auth_file,
             auth_stdin,
         }) => {
-            run_deterministic_scan(
+            run_deterministic_scan(DeterministicScanInvocation {
                 target,
                 format,
                 explain,
@@ -639,7 +655,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 auth_env,
                 auth_file,
                 auth_stdin,
-            )
+            })
             .await?;
         },
         #[cfg(feature = "legacy-scanner")]
