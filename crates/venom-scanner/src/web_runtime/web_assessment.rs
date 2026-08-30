@@ -64,10 +64,11 @@ use crate::{
 };
 
 mod discovery;
+mod reflection_context;
 mod semantic;
 
 use discovery::{canonicalize_root, parse_document, ParsedDocument, ParsedForm, ParsedRoute};
-pub(super) use discovery::{classify_exact_html_reflection, ExactHtmlReflectionContext};
+pub(super) use reflection_context::{classify_exact_html_reflection, ExactHtmlReflectionContext};
 use semantic::{assessment_semantic_limits, AssessmentSemanticEvidence};
 
 /// Default maximum canonical subjects retained by one assessment.
@@ -118,10 +119,10 @@ pub const HARD_MAX_WEB_ASSESSMENT_TOTAL_RESPONSE_BYTES: u64 = 256 * 1024 * 1024;
 pub const DEFAULT_WEB_ASSESSMENT_MAX_WALL_TIME: Duration = Duration::from_secs(300);
 /// Compiled complete-assessment wall-clock ceiling.
 pub const HARD_MAX_WEB_ASSESSMENT_WALL_TIME: Duration = Duration::from_secs(3_600);
-/// Default maximum active verification dispatches: six for the closed native
+/// Default maximum active verification dispatches: seven for the closed native
 /// review catalog plus two for one explicitly supplied authorization pair.
 /// Callers may select a lower ceiling; exhaustion remains fail-closed.
-pub const DEFAULT_WEB_ASSESSMENT_MAX_ACTIVE_VERIFICATIONS: u16 = 8;
+pub const DEFAULT_WEB_ASSESSMENT_MAX_ACTIVE_VERIFICATIONS: u16 = 9;
 /// Compiled maximum active verification dispatches.
 pub const HARD_MAX_WEB_ASSESSMENT_ACTIVE_VERIFICATIONS: u16 = 64;
 /// Assessment subjects execute sequentially under one shared authority.
@@ -170,6 +171,10 @@ fn select_sql_review_query_parameter(names: &[String]) -> Option<String> {
 }
 
 fn select_ssti_review_query_parameter(names: &[String]) -> Option<String> {
+    select_sql_review_query_parameter(names)
+}
+
+fn select_reflection_review_query_parameter(names: &[String]) -> Option<String> {
     select_sql_review_query_parameter(names)
 }
 
@@ -1597,11 +1602,14 @@ impl WebAssessmentRuntimeBuilder {
                 select_sql_review_query_parameter(&root_subject.query_parameter_names);
             let ssti_query_parameter =
                 select_ssti_review_query_parameter(&root_subject.query_parameter_names);
+            let reflection_query_parameter =
+                select_reflection_review_query_parameter(&root_subject.query_parameter_names);
             let observer = Arc::new(
                 AssessmentReviewObserverSet::new_with_sql(
                     root.url.clone(),
                     seeds.clone(),
                     redirect_query_parameter.as_deref(),
+                    reflection_query_parameter.as_deref(),
                     sql_query_parameter.as_deref(),
                     ssti_query_parameter.as_deref(),
                 )
@@ -1611,6 +1619,7 @@ impl WebAssessmentRuntimeBuilder {
                 root.url.clone(),
                 seeds.clone(),
                 redirect_query_parameter.as_deref(),
+                reflection_query_parameter.as_deref(),
                 sql_query_parameter.as_deref(),
                 ssti_query_parameter.as_deref(),
             )
@@ -1621,10 +1630,12 @@ impl WebAssessmentRuntimeBuilder {
                 enabled_actions: enabled_native_web_review_actions(
                     true,
                     redirect_query_parameter.is_some(),
+                    reflection_query_parameter.is_some(),
                     sql_query_parameter.is_some(),
                     ssti_query_parameter.is_some(),
                 ),
                 redirect_query_parameter,
+                reflection_query_parameter,
                 sql_query_parameter,
                 ssti_query_parameter,
                 observer,
@@ -1687,6 +1698,7 @@ struct AssessmentNativeReviewRuntime {
     target: Url,
     seeds: NativeWebReviewSeeds,
     redirect_query_parameter: Option<String>,
+    reflection_query_parameter: Option<String>,
     sql_query_parameter: Option<String>,
     ssti_query_parameter: Option<String>,
     observer: Arc<AssessmentReviewObserverSet>,
@@ -1888,6 +1900,7 @@ impl WebAssessmentRuntime {
                                 None,
                                 Some(&parameter),
                                 Some(&parameter),
+                                Some(&parameter),
                             )
                             .map_err(|_| WebAssessmentRuntimeError::NativeReviewComposition)?,
                         );
@@ -1897,15 +1910,17 @@ impl WebAssessmentRuntime {
                             None,
                             Some(&parameter),
                             Some(&parameter),
+                            Some(&parameter),
                         )
                         .map_err(|_| WebAssessmentRuntimeError::NativeReviewComposition)?;
                         self.non_root_structural_review = Some(AssessmentNativeReviewRuntime {
                             target: subject.url.clone(),
                             seeds,
                             enabled_actions: enabled_native_web_review_actions(
-                                false, false, true, true,
+                                false, false, true, true, true,
                             ),
                             redirect_query_parameter: None,
+                            reflection_query_parameter: Some(parameter.clone()),
                             sql_query_parameter: Some(parameter),
                             ssti_query_parameter: select_ssti_review_query_parameter(
                                 &subject.query_parameter_names,
@@ -1939,6 +1954,7 @@ impl WebAssessmentRuntime {
                                 review.seeds.clone(),
                                 observer,
                                 review.redirect_query_parameter.clone(),
+                                review.reflection_query_parameter.clone(),
                                 review.sql_query_parameter.clone(),
                                 review.ssti_query_parameter.clone(),
                             )
@@ -1956,6 +1972,7 @@ impl WebAssessmentRuntime {
                         observer,
                         review.sql_query_parameter.clone(),
                         review.ssti_query_parameter.clone(),
+                        review.reflection_query_parameter.clone(),
                     )
                 } else {
                     builder

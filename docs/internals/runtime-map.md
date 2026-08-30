@@ -44,7 +44,8 @@ venom scan <target> --profile web-review
       -> bounded semantic extraction
       -> defense observation and shadow planning
       -> passive header/cookie assessment projection
-      -> root-scoped matched CORS and optional redirect/reflection review
+      -> root-scoped matched CORS and optional redirect review
+      -> one bounded root-or-discovered parser-driven reflection-context pair
       -> one bounded root-or-discovered SQL structural review with exact replay
       -> one bounded root-or-discovered SSTI arithmetic review with independent replay
       -> optional exact-root anonymous/authorized API visibility pair
@@ -86,13 +87,16 @@ native differential catalog is composed into the authorized root's existing
 Standard runtime session, so bootstrap and pair legs share the same broker and
 global budget without suppressing eligible standard actions. CORS always uses
 a matched no-Origin/candidate pair and requires successful status classes on
-both legs. The
-redirect/reflection action exists only when the starting URL supplied a
+both legs. The redirect action exists only when the starting URL supplied a
 recognized navigation parameter name; its original value is discarded. Only
 301/302/303/307/308 are treated as redirect statuses, and redirects are not
-followed. Passive and ordinary-reflection items are
-`Informational`; exact credentialed CORS, candidate-specific redirect, and
-dangerous-context reflection relationships are at most `NeedsReview`. Every
+followed. A distinct two-request reflection pair uses a scanner-owned inert
+marker and one bounded `html5ever` parse for supported `text/html`. Comment,
+ordinary text, and ordinary attribute placement are `Informational`; typed
+URI-bearing, style, inline-handler, script-element, and embedded-HTML attribute
+placement is at most `NeedsReview`. Quote mode and deep JavaScript/CSS context
+are not inferred from the DOM. Exact credentialed CORS and candidate-specific
+redirect relationships are also at most `NeedsReview`. Every
 native action is KnowledgeOnly, and no native assessment capability can
 produce a `Confirmed` item.
 At most one deterministic query name across the assessment receives SQL

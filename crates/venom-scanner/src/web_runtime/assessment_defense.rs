@@ -617,6 +617,7 @@ const fn native_interaction_class(kind: NativeWebReviewActionKind) -> DefenseInt
     match kind {
         NativeWebReviewActionKind::CorsPolicyPair
         | NativeWebReviewActionKind::RedirectReflectionQueryPair
+        | NativeWebReviewActionKind::ReflectionContextQueryPair
         | NativeWebReviewActionKind::SqlStructuralQueryPair
         | NativeWebReviewActionKind::SqlStructuralQueryReplayPair
         | NativeWebReviewActionKind::SstiStructuralQueryPair

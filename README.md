@@ -134,7 +134,7 @@ depth two, 128 discovered references per document, 8,192 bytes per query-free
 canonical URL, 512 KiB of retained URL bytes, 64 forms, 64 control names per
 form, 64 candidate query names per route or form action, 256 total requests,
 256 KiB per response, a 16 MiB cumulative delivered-response threshold, 300
-seconds of wall time, eight active verifications, and concurrency one. The
+seconds of wall time, nine active verifications, and concurrency one. The
 broker charges one complete crossing chunk before typed response-byte
 termination, so the cumulative threshold is not a byte-perfect retained-body
 maximum. CLI profile limits are not user-overridable. Library hosts may select
@@ -174,11 +174,16 @@ template-engine verification.
 
 Credentialed candidate-specific CORS requires matched successful-status
 control/candidate responses; it and an exact candidate-specific external
-redirect relationship can produce only `NeedsReview`. Exact reflection in
-inert, text, or ordinary attribute context is `Informational`; a dangerous HTML
-context is `NeedsReview`. No browser executes the response, so reflection is
-never `Confirmed` XSS. The catalog is KnowledgeOnly and has no path to a
-`Confirmed` assessment item.
+redirect relationship can produce only `NeedsReview`. A separate two-request
+reflection pair uses a bounded scanner-owned inert marker and parses each
+supported `text/html` candidate once with `html5ever`. Comment, ordinary text,
+and ordinary attribute placement are `Informational`; URI-bearing, style,
+inline-handler, script-element, and embedded-HTML attribute placement are at
+most `NeedsReview`. The DOM representation does not preserve source quote mode,
+and no JavaScript/CSS grammar or browser executes the response, so reflection
+is never `Confirmed` XSS. The typed context model can support later
+context-compatible payload families without parsing human-readable labels.
+The catalog is KnowledgeOnly and has no path to a `Confirmed` assessment item.
 Non-HTML is explicitly not applicable to reflection review; truncation,
 invalid UTF-8, or an exhausted parser ceiling makes the opt-in review run
 incomplete rather than silently successful.
@@ -199,7 +204,7 @@ remain disabled. Equal JSON visibility produces no item. A complete visibility
 difference is retained as one atomic comparison evidence reference and can
 produce only `NeedsReview`; it is never split into invented control/candidate
 records and never becomes authorization-vulnerability confirmation. The
-default web-review envelope permits at most eight active verifications: six for
+default web-review envelope permits at most nine active verifications: seven for
 the closed native catalog and two for this optional pair. Lower library-host
 limits still fail closed.
 

@@ -144,7 +144,6 @@ fn composite_observer_projects_both_exact_action_contracts_without_raw_values() 
         .append_pair(QUERY_PARAMETER, seeds.external_url());
     let redirect_strategy =
         native_review_strategy_ref(NativeWebReviewActionKind::RedirectReflectionQueryPair);
-    let body = format!("<script>const next = '{}';</script>", seeds.external_url());
     let redirect = observe(
         &observer,
         NativeWebReviewActionKind::RedirectReflectionQueryPair,
@@ -152,8 +151,8 @@ fn composite_observer_projects_both_exact_action_contracts_without_raw_values() 
         &candidate_url,
         &headers(&[("location", seeds.external_url())]),
         302,
-        Some("text/html"),
-        Some(body.as_bytes()),
+        None,
+        None,
         NativeWebReviewActionKind::RedirectReflectionQueryPair.executor_id(),
         Some(&redirect_strategy),
         false,
@@ -165,7 +164,33 @@ fn composite_observer_projects_both_exact_action_contracts_without_raw_values() 
             (NATIVE_WEB_REVIEW_RESPONSE_MARKER, "active-candidate"),
             (REDIRECT_STATUS_RELATION, "redirect"),
             (REDIRECT_LOCATION_RELATION, "exact-external-query-value",),
-            (HTML_REFLECTION_CONTEXT, "dangerous"),
+        ]
+    );
+
+    let reflection_contract = observer.reflection.as_ref().unwrap();
+    let marker = seeds.reflection_candidate_marker();
+    let body = format!("<script>const data = '{marker}';</script>");
+    let reflection_strategy =
+        native_review_strategy_ref(NativeWebReviewActionKind::ReflectionContextQueryPair);
+    let reflection = observe(
+        &observer,
+        NativeWebReviewActionKind::ReflectionContextQueryPair,
+        DecisionExecutionStage::Active,
+        &reflection_contract.candidate_url,
+        &HeaderMap::new(),
+        200,
+        Some("text/html"),
+        Some(body.as_bytes()),
+        NativeWebReviewActionKind::ReflectionContextQueryPair.executor_id(),
+        Some(&reflection_strategy),
+        false,
+    )
+    .unwrap();
+    assert_eq!(
+        values(&reflection),
+        vec![
+            (NATIVE_WEB_REVIEW_RESPONSE_MARKER, "active-candidate"),
+            (HTML_REFLECTION_CONTEXT, "script-element-content"),
         ]
     );
 
@@ -173,6 +198,7 @@ fn composite_observer_projects_both_exact_action_contracts_without_raw_values() 
         format!("{observer:?}"),
         format!("{cors:?}"),
         format!("{redirect:?}"),
+        format!("{reflection:?}"),
     ] {
         assert!(!debug.contains(seeds.cors_origin()));
         assert!(!debug.contains(seeds.external_url()));
@@ -345,18 +371,15 @@ fn unrelated_actions_are_ignored_but_malformed_recognized_actions_fail_closed() 
 }
 
 #[test]
-fn redirect_reflection_requires_complete_utf8_html_and_exact_request_shape() {
+fn reflection_context_requires_complete_utf8_html_and_exact_request_shape() {
     let root = root();
     let seeds = seeds();
     let observer =
         AssessmentReviewObserverSet::new(root.clone(), seeds.clone(), Some(QUERY_PARAMETER))
             .unwrap();
     let strategy =
-        native_review_strategy_ref(NativeWebReviewActionKind::RedirectReflectionQueryPair);
-    let mut candidate_url = root.clone();
-    candidate_url
-        .query_pairs_mut()
-        .append_pair(QUERY_PARAMETER, seeds.external_url());
+        native_review_strategy_ref(NativeWebReviewActionKind::ReflectionContextQueryPair);
+    let contract = observer.reflection.as_ref().unwrap();
 
     for (media_type, body, expected) in [
         (Some("text/html"), None, "incomplete"),
@@ -366,14 +389,14 @@ fn redirect_reflection_requires_complete_utf8_html_and_exact_request_shape() {
     ] {
         let evidence = observe(
             &observer,
-            NativeWebReviewActionKind::RedirectReflectionQueryPair,
+            NativeWebReviewActionKind::ReflectionContextQueryPair,
             DecisionExecutionStage::Active,
-            &candidate_url,
+            &contract.candidate_url,
             &HeaderMap::new(),
             200,
             media_type,
             body,
-            NativeWebReviewActionKind::RedirectReflectionQueryPair.executor_id(),
+            NativeWebReviewActionKind::ReflectionContextQueryPair.executor_id(),
             Some(&strategy),
             false,
         )
@@ -387,18 +410,18 @@ fn redirect_reflection_requires_complete_utf8_html_and_exact_request_shape() {
     let mut wrong_name = root.clone();
     wrong_name
         .query_pairs_mut()
-        .append_pair("next", seeds.external_url());
+        .append_pair("next", &seeds.reflection_candidate_marker());
     assert!(matches!(
         observe(
             &observer,
-            NativeWebReviewActionKind::RedirectReflectionQueryPair,
+            NativeWebReviewActionKind::ReflectionContextQueryPair,
             DecisionExecutionStage::Active,
             &wrong_name,
             &HeaderMap::new(),
             200,
             Some("text/html"),
             Some(b"<p>ordinary</p>"),
-            NativeWebReviewActionKind::RedirectReflectionQueryPair.executor_id(),
+            NativeWebReviewActionKind::ReflectionContextQueryPair.executor_id(),
             Some(&strategy),
             false,
         ),
@@ -659,14 +682,13 @@ fn exact_pair_completion_rejects_cross_case_and_cross_hypothesis_observations() 
 }
 
 #[test]
-fn redirect_and_dangerous_reflection_remain_distinct_needs_review_candidates() {
+fn redirect_and_script_reflection_remain_distinct_needs_review_candidates() {
     let control = fake_observation(
         NativeWebReviewActionKind::RedirectReflectionQueryPair,
         DecisionExecutionStage::Passive,
-        CommittedReviewResponse::RedirectReflection {
+        CommittedReviewResponse::Redirect {
             status: ReviewStatusRelation::Other,
             location: LocationRelation::Missing,
-            reflection: ExactHtmlReflectionContext::Absent,
         },
         false,
         "redirect-control",
@@ -674,48 +696,70 @@ fn redirect_and_dangerous_reflection_remain_distinct_needs_review_candidates() {
     let candidate = fake_observation(
         NativeWebReviewActionKind::RedirectReflectionQueryPair,
         DecisionExecutionStage::Active,
-        CommittedReviewResponse::RedirectReflection {
+        CommittedReviewResponse::Redirect {
             status: ReviewStatusRelation::Redirect,
             location: LocationRelation::ExactExternalQueryValue,
-            reflection: ExactHtmlReflectionContext::Dangerous,
         },
         true,
         "redirect-candidate",
     );
     let mut output = Vec::new();
     append_pair_candidates(&control, &candidate, Some(QUERY_PARAMETER), &mut output);
-    assert_eq!(output.len(), 2);
-    assert!(output
-        .iter()
-        .all(|item| item.disposition() == NativeReviewDisposition::NeedsReview));
+    assert_eq!(output.len(), 1);
+    assert_eq!(
+        output[0].disposition(),
+        NativeReviewDisposition::NeedsReview
+    );
     assert_eq!(output[0].query_parameter(), Some(QUERY_PARAMETER));
+
+    let reflection_control = fake_observation(
+        NativeWebReviewActionKind::ReflectionContextQueryPair,
+        DecisionExecutionStage::Passive,
+        CommittedReviewResponse::Reflection {
+            reflection: ExactHtmlReflectionContext::Absent,
+        },
+        false,
+        "context-control",
+    );
+    let reflection_candidate = fake_observation(
+        NativeWebReviewActionKind::ReflectionContextQueryPair,
+        DecisionExecutionStage::Active,
+        CommittedReviewResponse::Reflection {
+            reflection: ExactHtmlReflectionContext::ScriptElementContent,
+        },
+        true,
+        "context-candidate",
+    );
+    append_pair_candidates(
+        &reflection_control,
+        &reflection_candidate,
+        Some(QUERY_PARAMETER),
+        &mut output,
+    );
+    assert_eq!(output.len(), 2);
     assert_eq!(
         output[1].reflection_context(),
-        Some(ReviewReflectionContext::Dangerous)
+        Some(ReviewReflectionContext::ScriptElementContent)
     );
 }
 
 #[test]
 fn inert_reflection_is_informational_and_incomplete_or_control_reflection_yields_no_claim() {
-    let base_response = CommittedReviewResponse::RedirectReflection {
-        status: ReviewStatusRelation::Other,
-        location: LocationRelation::Other,
+    let base_response = CommittedReviewResponse::Reflection {
         reflection: ExactHtmlReflectionContext::Absent,
     };
     let control = fake_observation(
-        NativeWebReviewActionKind::RedirectReflectionQueryPair,
+        NativeWebReviewActionKind::ReflectionContextQueryPair,
         DecisionExecutionStage::Passive,
         base_response,
         false,
         "reflection-control",
     );
     let mut candidate = fake_observation(
-        NativeWebReviewActionKind::RedirectReflectionQueryPair,
+        NativeWebReviewActionKind::ReflectionContextQueryPair,
         DecisionExecutionStage::Active,
-        CommittedReviewResponse::RedirectReflection {
-            status: ReviewStatusRelation::Other,
-            location: LocationRelation::Other,
-            reflection: ExactHtmlReflectionContext::Inert,
+        CommittedReviewResponse::Reflection {
+            reflection: ExactHtmlReflectionContext::HtmlComment,
         },
         true,
         "reflection-candidate",
@@ -728,9 +772,7 @@ fn inert_reflection_is_informational_and_incomplete_or_control_reflection_yields
         NativeReviewDisposition::Informational
     );
 
-    candidate.response = CommittedReviewResponse::RedirectReflection {
-        status: ReviewStatusRelation::Other,
-        location: LocationRelation::Other,
+    candidate.response = CommittedReviewResponse::Reflection {
         reflection: ExactHtmlReflectionContext::Incomplete,
     };
     output.clear();
@@ -738,20 +780,16 @@ fn inert_reflection_is_informational_and_incomplete_or_control_reflection_yields
     assert!(output.is_empty());
 
     let reflected_control = fake_observation(
-        NativeWebReviewActionKind::RedirectReflectionQueryPair,
+        NativeWebReviewActionKind::ReflectionContextQueryPair,
         DecisionExecutionStage::Passive,
-        CommittedReviewResponse::RedirectReflection {
-            status: ReviewStatusRelation::Other,
-            location: LocationRelation::Other,
-            reflection: ExactHtmlReflectionContext::Text,
+        CommittedReviewResponse::Reflection {
+            reflection: ExactHtmlReflectionContext::HtmlText,
         },
         false,
         "reflected-control",
     );
-    candidate.response = CommittedReviewResponse::RedirectReflection {
-        status: ReviewStatusRelation::Other,
-        location: LocationRelation::Other,
-        reflection: ExactHtmlReflectionContext::Dangerous,
+    candidate.response = CommittedReviewResponse::Reflection {
+        reflection: ExactHtmlReflectionContext::EventHandlerAttribute,
     };
     output.clear();
     append_pair_candidates(
@@ -1110,7 +1148,7 @@ fn ssti_literal_static_error_noisy_wrong_replay_and_incomplete_make_no_claim() {
 #[test]
 fn ssti_observer_classifies_literal_static_evaluated_unsupported_and_incomplete_bodies() {
     let observer =
-        AssessmentReviewObserverSet::new_with_sql(root(), seeds(), None, None, Some("item"))
+        AssessmentReviewObserverSet::new_with_sql(root(), seeds(), None, None, None, Some("item"))
             .unwrap();
     let contract = observer.ssti.as_ref().unwrap();
     let probe = &contract.primary.probe;

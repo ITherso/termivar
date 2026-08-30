@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use crate::planner::{RiskScore, VerificationTarget};
 
 /// Number of actions in the native low-risk web-review catalog.
-pub const NATIVE_WEB_REVIEW_ACTION_COUNT: usize = 6;
+pub const NATIVE_WEB_REVIEW_ACTION_COUNT: usize = 7;
 
 /// Hard per-case request count declared by every native web-review action.
 pub const NATIVE_WEB_REVIEW_REQUESTS_PER_CASE: usize = 2;
@@ -53,6 +53,8 @@ pub enum NativeWebReviewActionKind {
     CorsPolicyPair,
     /// Compare a query-free request to one carrying a single case-specific query value.
     RedirectReflectionQueryPair,
+    /// Classify one inert scanner-owned marker in a bounded HTML parse tree.
+    ReflectionContextQueryPair,
     /// First matched quote-balance structural comparison.
     SqlStructuralQueryPair,
     /// Exact replay of the first SQL structural comparison.
@@ -98,6 +100,7 @@ impl NativeWebReviewActionKind {
         [
             Self::CorsPolicyPair,
             Self::RedirectReflectionQueryPair,
+            Self::ReflectionContextQueryPair,
             Self::SqlStructuralQueryPair,
             Self::SqlStructuralQueryReplayPair,
             Self::SstiStructuralQueryPair,
@@ -110,6 +113,7 @@ impl NativeWebReviewActionKind {
         match self {
             Self::CorsPolicyPair => "web.review.cors.policy-pair@1",
             Self::RedirectReflectionQueryPair => "web.review.redirect-reflection.query-pair@1",
+            Self::ReflectionContextQueryPair => "web.review.reflection.context-query-pair@1",
             Self::SqlStructuralQueryPair => "web.review.sql.structural-query-pair@1",
             Self::SqlStructuralQueryReplayPair => "web.review.sql.structural-query-replay-pair@1",
             Self::SstiStructuralQueryPair => "web.review.ssti.structural-query-pair@1",
@@ -126,6 +130,7 @@ impl NativeWebReviewActionKind {
             Self::RedirectReflectionQueryPair => {
                 "web.review.probe.redirect-reflection-query-pair@1"
             },
+            Self::ReflectionContextQueryPair => "web.review.probe.reflection-context-query-pair@1",
             Self::SqlStructuralQueryPair => "web.review.probe.sql-structural-query-pair@1",
             Self::SqlStructuralQueryReplayPair => {
                 "web.review.probe.sql-structural-query-replay-pair@1"
@@ -142,6 +147,7 @@ impl NativeWebReviewActionKind {
         match self {
             Self::CorsPolicyPair => "cors-policy-pair",
             Self::RedirectReflectionQueryPair => "redirect-reflection-query-pair",
+            Self::ReflectionContextQueryPair => "reflection-context-query-pair",
             Self::SqlStructuralQueryPair => "sql-structural-query-pair",
             Self::SqlStructuralQueryReplayPair => "sql-structural-query-replay-pair",
             Self::SstiStructuralQueryPair => "ssti-structural-query-pair",
@@ -154,6 +160,9 @@ impl NativeWebReviewActionKind {
         match self {
             Self::CorsPolicyPair => NativeWebReviewDifferentialInput::OriginHeader,
             Self::RedirectReflectionQueryPair => {
+                NativeWebReviewDifferentialInput::SingleQueryParameter
+            },
+            Self::ReflectionContextQueryPair => {
                 NativeWebReviewDifferentialInput::SingleQueryParameter
             },
             Self::SqlStructuralQueryPair
@@ -191,6 +200,7 @@ impl NativeWebReviewActionKind {
         let percent = match self {
             Self::CorsPolicyPair => 5,
             Self::RedirectReflectionQueryPair => 8,
+            Self::ReflectionContextQueryPair => 5,
             Self::SqlStructuralQueryPair
             | Self::SqlStructuralQueryReplayPair
             | Self::SstiStructuralQueryPair
@@ -239,6 +249,12 @@ mod tests {
                 "web.review.redirect-reflection.query-pair@1",
                 "web.review.probe.redirect-reflection-query-pair@1",
                 "redirect-reflection-query-pair",
+            ),
+            (
+                NativeWebReviewActionKind::ReflectionContextQueryPair,
+                "web.review.reflection.context-query-pair@1",
+                "web.review.probe.reflection-context-query-pair@1",
+                "reflection-context-query-pair",
             ),
             (
                 NativeWebReviewActionKind::SqlStructuralQueryPair,
@@ -290,7 +306,7 @@ mod tests {
 
     #[test]
     fn every_native_action_is_low_risk_and_irrevocably_knowledge_only() {
-        let expected_risk_basis_points = [500, 800, 700, 700];
+        let expected_risk_basis_points = [500, 800, 500, 700, 700, 700, 700];
 
         for (kind, expected_risk) in NativeWebReviewActionKind::all()
             .into_iter()
@@ -337,6 +353,10 @@ mod tests {
         );
         assert_eq!(
             NativeWebReviewActionKind::RedirectReflectionQueryPair.differential_input(),
+            NativeWebReviewDifferentialInput::SingleQueryParameter
+        );
+        assert_eq!(
+            NativeWebReviewActionKind::ReflectionContextQueryPair.differential_input(),
             NativeWebReviewDifferentialInput::SingleQueryParameter
         );
     }

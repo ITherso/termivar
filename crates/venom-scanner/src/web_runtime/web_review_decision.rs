@@ -23,7 +23,8 @@ use crate::web_actions::NATIVE_WEB_REVIEW_ACTION_COUNT;
 use crate::{
     payload_strategies::{
         CORS_ORIGIN_PAIR_ID, CORS_ORIGIN_PAIR_REVISION, EXTERNAL_URL_QUERY_PAIR_ID,
-        EXTERNAL_URL_QUERY_PAIR_REVISION, SQL_QUOTE_BALANCE_QUERY_PAIR_ID,
+        EXTERNAL_URL_QUERY_PAIR_REVISION, REFLECTION_MARKER_QUERY_PAIR_ID,
+        REFLECTION_MARKER_QUERY_PAIR_REVISION, SQL_QUOTE_BALANCE_QUERY_PAIR_ID,
         SQL_QUOTE_BALANCE_QUERY_PAIR_REVISION, SSTI_ARITHMETIC_EXPRESSION_PAIR_ID,
         SSTI_ARITHMETIC_EXPRESSION_PAIR_REVISION,
     },
@@ -254,6 +255,10 @@ fn payload_strategy_ref(
         NativeWebReviewActionKind::RedirectReflectionQueryPair => {
             (EXTERNAL_URL_QUERY_PAIR_ID, EXTERNAL_URL_QUERY_PAIR_REVISION)
         },
+        NativeWebReviewActionKind::ReflectionContextQueryPair => (
+            REFLECTION_MARKER_QUERY_PAIR_ID,
+            REFLECTION_MARKER_QUERY_PAIR_REVISION,
+        ),
         NativeWebReviewActionKind::SqlStructuralQueryPair
         | NativeWebReviewActionKind::SqlStructuralQueryReplayPair => (
             SQL_QUOTE_BALANCE_QUERY_PAIR_ID,

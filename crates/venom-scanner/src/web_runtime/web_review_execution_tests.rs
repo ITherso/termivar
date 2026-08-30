@@ -29,6 +29,10 @@ fn expected_strategy(kind: NativeWebReviewActionKind) -> PayloadStrategyRef {
         NativeWebReviewActionKind::RedirectReflectionQueryPair => {
             (EXTERNAL_URL_QUERY_PAIR_ID, EXTERNAL_URL_QUERY_PAIR_REVISION)
         },
+        NativeWebReviewActionKind::ReflectionContextQueryPair => (
+            REFLECTION_MARKER_QUERY_PAIR_ID,
+            REFLECTION_MARKER_QUERY_PAIR_REVISION,
+        ),
         NativeWebReviewActionKind::SqlStructuralQueryPair
         | NativeWebReviewActionKind::SqlStructuralQueryReplayPair => (
             SQL_QUOTE_BALANCE_QUERY_PAIR_ID,
@@ -119,6 +123,12 @@ fn construction_is_deterministic_and_seeds_are_reserved_non_secret_values() {
         .ends_with(".review.invalid/venom-review"));
     assert!(first.cors_origin().is_ascii());
     assert!(first.external_url().is_ascii());
+    assert!(first.reflection_control_marker().is_ascii());
+    assert!(first.reflection_candidate_marker().is_ascii());
+    assert_ne!(
+        first.reflection_control_marker(),
+        first.reflection_candidate_marker()
+    );
 }
 
 #[test]
@@ -134,11 +144,15 @@ fn debug_output_redacts_root_and_both_seed_values() {
     assert!(!debug.contains("opaque-root-marker"));
     assert!(!debug.contains(seeds.cors_origin()));
     assert!(!debug.contains(seeds.external_url()));
+    assert!(!debug.contains(&seeds.reflection_control_marker()));
+    assert!(!debug.contains(&seeds.reflection_candidate_marker()));
     assert!(debug.contains("<redacted>"));
 
     let seed_debug = format!("{seeds:?}");
     assert!(!seed_debug.contains(seeds.cors_origin()));
     assert!(!seed_debug.contains(seeds.external_url()));
+    assert!(!seed_debug.contains(&seeds.reflection_control_marker()));
+    assert!(!seed_debug.contains(&seeds.reflection_candidate_marker()));
     assert!(seed_debug.contains("<redacted>"));
 }
 
@@ -252,13 +266,13 @@ fn absent_query_parameter_omits_redirect_executor_and_both_routes() {
 #[test]
 fn decision_and_executor_share_each_subject_specific_enabled_action_set() {
     let root = Url::parse("https://example.test/review").unwrap();
-    for (include_cors, redirect, sql, ssti) in [
-        (true, None, None, None),
-        (true, Some("next"), None, None),
-        (true, None, Some("item"), Some("item")),
-        (true, Some("next"), Some("item"), Some("item")),
-        (false, None, Some("item"), Some("item")),
-        (false, None, None, Some("item")),
+    for (include_cors, redirect, reflection, sql, ssti) in [
+        (true, None, None, None, None),
+        (true, Some("next"), Some("item"), None, None),
+        (true, None, Some("item"), Some("item"), Some("item")),
+        (true, Some("next"), Some("item"), Some("item"), Some("item")),
+        (false, None, Some("item"), Some("item"), Some("item")),
+        (false, None, None, None, Some("item")),
     ] {
         let profile = NativeWebReviewExecutorProfile::build(
             request_broker(&root),
@@ -267,6 +281,7 @@ fn decision_and_executor_share_each_subject_specific_enabled_action_set() {
             None,
             NativeWebReviewQueryParameters {
                 redirect: redirect.map(str::to_owned),
+                reflection: reflection.map(str::to_owned),
                 sql: sql.map(str::to_owned),
                 ssti: ssti.map(str::to_owned),
             },
@@ -279,6 +294,7 @@ fn decision_and_executor_share_each_subject_specific_enabled_action_set() {
             enabled_native_web_review_actions(
                 include_cors,
                 redirect.is_some(),
+                reflection.is_some(),
                 sql.is_some(),
                 ssti.is_some(),
             )
@@ -294,6 +310,7 @@ async fn enabled_native_action_without_executor_route_still_fails_closed() {
     let root = Url::parse("https://example.test/review").unwrap();
     for kind in [
         NativeWebReviewActionKind::CorsPolicyPair,
+        NativeWebReviewActionKind::ReflectionContextQueryPair,
         NativeWebReviewActionKind::SstiStructuralQueryPair,
     ] {
         let decision = NativeWebReviewDecisionProfile::for_actions([kind]).unwrap();
@@ -333,10 +350,10 @@ fn installation_is_atomic_idempotent_and_preserves_exact_strategy_support() {
 
     let first = profile.install(&mut registry).unwrap();
     let second = profile.install(&mut registry).unwrap();
-    assert_eq!(first.executors_inserted(), 2);
+    assert_eq!(first.executors_inserted(), 3);
     assert_eq!(second, NativeWebReviewExecutionInstallReport::default());
-    assert_eq!(registry.len(), 2);
-    assert_eq!(profile.executor_ids().len(), 2);
+    assert_eq!(registry.len(), 3);
+    assert_eq!(profile.executor_ids().len(), 3);
     for kind in profile.actions() {
         assert!(registry.contains(kind.executor_id()));
         assert!(profile.supports_exact_strategy(kind));
@@ -370,11 +387,14 @@ fn installation_is_atomic_idempotent_and_preserves_exact_strategy_support() {
     assert!(
         !conflicted.contains(NativeWebReviewActionKind::RedirectReflectionQueryPair.executor_id())
     );
+    assert!(
+        !conflicted.contains(NativeWebReviewActionKind::ReflectionContextQueryPair.executor_id())
+    );
 }
 
 #[tokio::test]
 async fn passive_and_active_routes_share_each_exact_executor_and_materialize_pairs() {
-    let (root, captured) = serve_capturing(4).await;
+    let (root, captured) = serve_capturing(6).await;
     let seeds = NativeWebReviewSeeds::from_authorized_origin(&root).unwrap();
     let profile =
         profile_without_observer(request_broker(&root), root.clone(), Some("next".to_owned()))
@@ -410,7 +430,7 @@ async fn passive_and_active_routes_share_each_exact_executor_and_materialize_pai
     }
 
     let requests = captured.lock().await.clone();
-    assert_eq!(requests.len(), 4);
+    assert_eq!(requests.len(), 6);
     let cors_control = requests[0].to_ascii_lowercase();
     let cors_candidate = requests[1].to_ascii_lowercase();
     assert!(!cors_control.contains("\r\norigin:"));
@@ -423,4 +443,18 @@ async fn passive_and_active_routes_share_each_exact_executor_and_materialize_pai
     assert!(redirect_candidate_line.ends_with(" HTTP/1.1"));
     assert!(redirect_candidate_line.contains("review.invalid%2Fvenom-review"));
     assert!(!redirect_candidate_line.contains(seeds.external_url()));
+
+    let reflection_control_line = requests[4].lines().next().unwrap();
+    let reflection_candidate_line = requests[5].lines().next().unwrap();
+    assert!(reflection_control_line.contains("venom-reflection-control-"));
+    assert!(reflection_candidate_line.contains("venom-reflection-candidate-"));
+    let marker = reflection_candidate_line
+        .split_once("?next=")
+        .unwrap()
+        .1
+        .strip_suffix(" HTTP/1.1")
+        .unwrap();
+    assert!(marker
+        .bytes()
+        .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-'));
 }

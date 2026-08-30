@@ -28,6 +28,7 @@ pub mod cors_origin_pair;
 pub mod encoding;
 pub mod external_url_query_pair;
 pub mod http_header_control_pair;
+pub mod reflection_marker_query_pair;
 pub mod sql_quote_balance_query_pair;
 pub mod ssti_arithmetic_expression_pair;
 
@@ -46,6 +47,10 @@ pub use external_url_query_pair::{
 pub use http_header_control_pair::{
     HttpHeaderControlPairStrategy, HTTP_HEADER_CONTROL_PAIR_HEADER_NAME,
     HTTP_HEADER_CONTROL_PAIR_ID, HTTP_HEADER_CONTROL_PAIR_REVISION,
+};
+pub use reflection_marker_query_pair::{
+    ReflectionMarkerQueryPairStrategy, REFLECTION_MARKER_QUERY_PAIR_ID,
+    REFLECTION_MARKER_QUERY_PAIR_REVISION,
 };
 pub use sql_quote_balance_query_pair::{
     SqlQuoteBalanceQueryPairStrategy, SQL_QUOTE_BALANCE_QUERY_PAIR_ID,
@@ -67,6 +72,7 @@ pub fn standard_payload_strategies() -> Result<PayloadStrategyRegistry, PayloadS
     registry.register(Arc::new(ApiAuthorizationContextPairStrategy::new()))?;
     registry.register(Arc::new(CorsOriginPairStrategy::new()))?;
     registry.register(Arc::new(ExternalUrlQueryPairStrategy::new()))?;
+    registry.register(Arc::new(ReflectionMarkerQueryPairStrategy::new()))?;
     registry.register(Arc::new(SqlQuoteBalanceQueryPairStrategy::new()))?;
     registry.register(Arc::new(SstiArithmeticExpressionPairStrategy::new()))?;
     Ok(registry)
@@ -97,6 +103,11 @@ mod tests {
         let external_url_query_pair =
             PayloadStrategyRef::new(EXTERNAL_URL_QUERY_PAIR_ID, EXTERNAL_URL_QUERY_PAIR_REVISION)
                 .unwrap();
+        let reflection_marker_pair = PayloadStrategyRef::new(
+            REFLECTION_MARKER_QUERY_PAIR_ID,
+            REFLECTION_MARKER_QUERY_PAIR_REVISION,
+        )
+        .unwrap();
 
         let sql_quote_pair = PayloadStrategyRef::new(
             SQL_QUOTE_BALANCE_QUERY_PAIR_ID,
@@ -110,11 +121,12 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(registry.len(), 6);
+        assert_eq!(registry.len(), 7);
         assert!(registry.contains(&header_pair));
         assert!(registry.contains(&authorization_pair));
         assert!(registry.contains(&cors_origin_pair));
         assert!(registry.contains(&external_url_query_pair));
+        assert!(registry.contains(&reflection_marker_pair));
         assert!(registry.contains(&sql_quote_pair));
         assert!(registry.contains(&ssti_arithmetic_pair));
     }

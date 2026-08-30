@@ -33,7 +33,7 @@ fn decision_loop() -> DecisionLoop {
         DecisionLoopConfig::new(
             PlanningContext::new(
                 BenefitScore::from_percent(80).unwrap(),
-                12,
+                14,
                 RiskScore::from_percent(10).unwrap(),
             ),
             AdaptationLimits::default(),
@@ -80,6 +80,10 @@ fn expected_strategy(kind: NativeWebReviewActionKind) -> PayloadStrategyRef {
         NativeWebReviewActionKind::RedirectReflectionQueryPair => {
             (EXTERNAL_URL_QUERY_PAIR_ID, EXTERNAL_URL_QUERY_PAIR_REVISION)
         },
+        NativeWebReviewActionKind::ReflectionContextQueryPair => (
+            REFLECTION_MARKER_QUERY_PAIR_ID,
+            REFLECTION_MARKER_QUERY_PAIR_REVISION,
+        ),
         NativeWebReviewActionKind::SqlStructuralQueryPair
         | NativeWebReviewActionKind::SqlStructuralQueryReplayPair => (
             SQL_QUOTE_BALANCE_QUERY_PAIR_ID,
@@ -301,7 +305,7 @@ fn correlated_response_status_materializes_only_a_generic_supported_eligibility(
             &subject(),
             PlanningContext::new(
                 BenefitScore::from_percent(80).unwrap(),
-                12,
+                14,
                 RiskScore::from_percent(10).unwrap(),
             ),
         )
@@ -341,7 +345,7 @@ fn correlated_response_status_materializes_only_a_generic_supported_eligibility(
             &subject(),
             PlanningContext::new(
                 BenefitScore::from_percent(80).unwrap(),
-                12,
+                14,
                 RiskScore::from_percent(10).unwrap(),
             ),
         )

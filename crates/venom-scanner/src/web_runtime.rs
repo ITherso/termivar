@@ -69,7 +69,9 @@ pub(crate) use assessment_review::AssessmentReviewObserverSet;
 pub(crate) use authority::SharedWebRuntimeAuthority;
 pub(crate) use web_assessment::AssessmentDiscoveryObserver;
 use web_review_decision::NativeWebReviewDecisionProfile;
-use web_review_execution::{NativeWebReviewExecutorProfile, NativeWebReviewSeeds};
+use web_review_execution::{
+    NativeWebReviewExecutorProfile, NativeWebReviewQueryParameters, NativeWebReviewSeeds,
+};
 
 pub use api_visibility::{
     ApiVisibilityContextProbe, ApiVisibilityDifferentialAudit,
@@ -528,6 +530,7 @@ struct NativeWebReviewRuntimeConfig {
     seeds: NativeWebReviewSeeds,
     observer: Arc<dyn CompleteHttpResponseObserver>,
     redirect_query_parameter: Option<String>,
+    reflection_query_parameter: Option<String>,
     sql_query_parameter: Option<String>,
     ssti_query_parameter: Option<String>,
     structural_only: bool,
@@ -690,6 +693,7 @@ impl StandardWebDecisionRuntimeBuilder {
         seeds: NativeWebReviewSeeds,
         observer: Arc<dyn CompleteHttpResponseObserver>,
         redirect_query_parameter: Option<String>,
+        reflection_query_parameter: Option<String>,
         sql_query_parameter: Option<String>,
         ssti_query_parameter: Option<String>,
     ) -> Self {
@@ -698,6 +702,7 @@ impl StandardWebDecisionRuntimeBuilder {
             seeds,
             observer,
             redirect_query_parameter,
+            reflection_query_parameter,
             sql_query_parameter,
             ssti_query_parameter,
             structural_only: false,
@@ -711,12 +716,14 @@ impl StandardWebDecisionRuntimeBuilder {
         observer: Arc<dyn CompleteHttpResponseObserver>,
         sql_query_parameter: Option<String>,
         ssti_query_parameter: Option<String>,
+        reflection_query_parameter: Option<String>,
     ) -> Self {
         self.assessment_defense_projection = true;
         self.native_web_review = Some(NativeWebReviewRuntimeConfig {
             seeds,
             observer,
             redirect_query_parameter: None,
+            reflection_query_parameter,
             sql_query_parameter,
             ssti_query_parameter,
             structural_only: true,
@@ -848,8 +855,11 @@ impl StandardWebDecisionRuntimeBuilder {
                         self.target.clone(),
                         config.seeds,
                         config.observer,
-                        config.sql_query_parameter,
-                        config.ssti_query_parameter,
+                        NativeWebReviewQueryParameters::structural(
+                            config.reflection_query_parameter,
+                            config.sql_query_parameter,
+                            config.ssti_query_parameter,
+                        ),
                     )
                 } else {
                     NativeWebReviewExecutorProfile::new(
@@ -857,9 +867,12 @@ impl StandardWebDecisionRuntimeBuilder {
                         self.target.clone(),
                         config.seeds,
                         config.observer,
-                        config.redirect_query_parameter,
-                        config.sql_query_parameter,
-                        config.ssti_query_parameter,
+                        NativeWebReviewQueryParameters::full(
+                            config.redirect_query_parameter,
+                            config.reflection_query_parameter,
+                            config.sql_query_parameter,
+                            config.ssti_query_parameter,
+                        ),
                     )
                 }
                 .map_err(|_| StandardWebDecisionRuntimeError::NativeWebReviewExecutionProfile)?,

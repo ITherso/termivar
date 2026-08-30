@@ -52,12 +52,20 @@ replay are insufficient. This structural signal is at most `NeedsReview` and
 does not execute commands.
 A reflected Origin without the complete credential policy or without two
 successful-status legs is insufficient. Redirect review accepts only
-301/302/303/307/308, and redirects are not followed. Non-dangerous exact
-reflection is `Informational`; dangerous-context reflection, credentialed
-candidate-specific CORS, and an exact candidate-specific external redirect are
-at most `NeedsReview`; the repeatable SQL structural relationship is also at
-most `NeedsReview`. Every native action is KnowledgeOnly, and no native
-assessment capability can produce a `Confirmed` item.
+301/302/303/307/308, and redirects are not followed. A separate matched
+reflection pair sends one bounded scanner-owned inert marker and parses a
+supported `text/html` candidate once with `html5ever`. Comment, ordinary text,
+and ordinary attribute placement are `Informational`; URI-bearing, style,
+inline-handler, script-element, and embedded-HTML attribute placement are at
+most `NeedsReview`. Source quote mode is intentionally unknown because the DOM
+does not preserve it. This layer performs no escape testing, JavaScript/CSS
+grammar analysis, browser execution, or XSS confirmation. The typed context
+model is suitable for later context-specific payload-family selection without
+reparsing labels. Credentialed candidate-specific CORS, an exact
+candidate-specific external redirect, and repeatable SQL/SSTI structural
+relationships are also at most `NeedsReview`. Every native action is
+KnowledgeOnly, and no native assessment capability can produce a `Confirmed`
+item.
 An explicitly non-HTML response makes reflection review not applicable. A
 truncated body, invalid UTF-8, or exhausted DOM/occurrence ceiling instead makes
 the selected differential review typed incomplete; it is never reported as an
@@ -78,8 +86,8 @@ produces no item. A complete difference is projected as one atomic comparison
 evidence reference and at most `NeedsReview`; it is not decomposed into fake
 control/candidate evidence and does not prove an authorization vulnerability.
 Incomplete collection stops later discovery and makes the run typed
-incomplete. The compiled web-review default reserves eight active-verification
-slots for the closed six-request native catalog plus this optional two-request
+incomplete. The compiled web-review default reserves nine active-verification
+slots for the closed seven-action native catalog plus this optional two-request
 pair; any lower host-selected ceiling still fails closed.
 
 Stable item identity preserves `authorized-root@1` for the exact origin root

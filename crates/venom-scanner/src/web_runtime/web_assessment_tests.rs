@@ -298,7 +298,7 @@ async fn opted_in_native_review_uses_exact_root_shared_authority_and_no_redirect
     assert_eq!(report.completion(), &WebAssessmentCompletion::Complete);
 
     let requests = server.requests().await;
-    assert_eq!(requests.len(), 13);
+    assert_eq!(requests.len(), 15);
     assert!(requests.iter().all(|request| request.path() == "/"));
     assert_eq!(
         requests
@@ -312,7 +312,7 @@ async fn opted_in_native_review_uses_exact_root_shared_authority_and_no_redirect
             .iter()
             .filter(|request| request.target.contains("return_to="))
             .count(),
-        9
+        11
     );
     assert_eq!(
         report.subjects()[0]
@@ -340,7 +340,7 @@ async fn opted_in_native_review_uses_exact_root_shared_authority_and_no_redirect
         BTreeSet::from([
             "web.review.cors.credentialed-external-origin@1",
             "web.review.redirect.candidate-specific-external@1",
-            "web.review.reflection.dangerous-html-context@1",
+            "web.review.reflection.script-element-context@1",
         ])
     );
     assert!(native_items.iter().all(|item| {
@@ -486,7 +486,9 @@ async fn reflected_origin_and_generic_redirect_are_not_findings_and_text_reflect
         native_items[0].basis(),
         AssessmentBasis::Observation(_)
     ));
-    assert_eq!(server.requests().await.len(), 13);
+    // One separately accounted control/candidate reflection-context pair adds
+    // exactly two requests to the previous native review envelope.
+    assert_eq!(server.requests().await.len(), 15);
 }
 
 #[tokio::test]
@@ -511,13 +513,13 @@ async fn native_review_never_invents_an_unrecognized_query_parameter() {
     assert_eq!(report.completion(), &WebAssessmentCompletion::Complete);
 
     let requests = server.requests().await;
-    assert_eq!(requests.len(), 11);
+    assert_eq!(requests.len(), 13);
     assert_eq!(
         requests
             .iter()
             .filter(|request| request.target.contains("opaque="))
             .count(),
-        8
+        10
     );
     assert!(requests
         .iter()
@@ -540,13 +542,22 @@ async fn sql_review_projects_one_repeatable_non_root_item_without_query_value_le
                 "<a href='/search?item={SECRET}'>search</a>"
             )));
         }
-        let candidate = Url::parse(&format!("http://fixture{}", request.target))
+        let value = Url::parse(&format!("http://fixture{}", request.target))
             .ok()
             .and_then(|url| {
                 url.query_pairs()
                     .find_map(|(name, value)| (name == "item").then(|| value.into_owned()))
-            })
-            .is_some_and(|value| value.ends_with('\''));
+            });
+        if value
+            .as_deref()
+            .is_some_and(|value| value.starts_with("venom-reflection-candidate-"))
+        {
+            return FixtureReply::Response(FixtureResponse::html(format!(
+                "<button onclick=\"{}\">continue</button>",
+                value.as_deref().unwrap()
+            )));
+        }
+        let candidate = value.is_some_and(|value| value.ends_with('\''));
         if candidate {
             FixtureReply::Response(FixtureResponse::new(
                 "500 Internal Server Error",
@@ -582,8 +593,21 @@ async fn sql_review_projects_one_repeatable_non_root_item_without_query_value_le
         sql_items[0].basis(),
         AssessmentBasis::Differential(_)
     ));
-    assert_eq!(report.usage().active_verifications(), 5);
-    assert_eq!(report.usage().total_requests(), 12);
+    let reflection_item = report
+        .assessment_items()
+        .iter()
+        .find(|item| item.capability_id() == "web.review.reflection.event-handler-context@1")
+        .unwrap();
+    assert_eq!(
+        reflection_item.disposition(),
+        AssessmentDisposition::NeedsReview
+    );
+    assert_eq!(
+        reflection_item.subject_reference().to_string(),
+        "subject-0001"
+    );
+    assert_eq!(report.usage().active_verifications(), 6);
+    assert_eq!(report.usage().total_requests(), 14);
     let requests = server.requests().await;
     assert!(requests
         .iter()
@@ -672,6 +696,79 @@ async fn ssti_review_requires_two_exact_evaluations_and_redacts_every_renderer()
         let rendered = ReportGenerator::generate_assessment(&product, format).unwrap();
         assert!(!rendered.contains(SECRET));
         assert!(rendered.contains("web.review.ssti.structural-evaluation@1"));
+        assert!(!rendered.contains("confirmed"));
+    }
+}
+
+#[cfg(feature = "reporting")]
+#[tokio::test]
+async fn event_handler_reflection_is_needs_review_deterministic_and_report_safe() {
+    const SECRET: &str = "VENOM-REFLECTION-MUST-NOT-LEAK-SECRET-123";
+    let server = serve(|request| {
+        let value = Url::parse(&format!("http://fixture{}", request.target))
+            .ok()
+            .and_then(|url| {
+                url.query_pairs()
+                    .find_map(|(name, value)| (name == "item").then(|| value.into_owned()))
+            });
+        let body = match value {
+            Some(value) if value.starts_with("venom-reflection-candidate-") => {
+                format!("<button onclick=\"{value}\">continue</button>")
+            },
+            _ => "matched control".to_owned(),
+        };
+        FixtureReply::Response(FixtureResponse::html(body))
+    })
+    .await;
+
+    let run = async || {
+        let mut runtime = WebAssessmentRuntime::builder(server.url(&format!("/?item={SECRET}")))
+            .enable_low_risk_differential_review()
+            .build()
+            .unwrap();
+        runtime.analyze().await.unwrap()
+    };
+    let first = run().await;
+    let second = run().await;
+    for report in [&first, &second] {
+        assert_eq!(report.completion(), &WebAssessmentCompletion::Complete);
+        let item = report
+            .assessment_items()
+            .iter()
+            .find(|item| item.capability_id() == "web.review.reflection.event-handler-context@1")
+            .unwrap();
+        assert_eq!(item.disposition(), AssessmentDisposition::NeedsReview);
+        assert!(matches!(item.basis(), AssessmentBasis::Differential(_)));
+        assert!(!format!("{report:?}").contains(SECRET));
+        assert!(report
+            .assessment_items()
+            .iter()
+            .all(|item| item.disposition() != AssessmentDisposition::Confirmed));
+    }
+    let fingerprint = |report: &WebAssessmentRunReport| {
+        report
+            .assessment_items()
+            .iter()
+            .find(|item| item.capability_id() == "web.review.reflection.event-handler-context@1")
+            .unwrap()
+            .fingerprint()
+            .to_owned()
+    };
+    assert_eq!(fingerprint(&first), fingerprint(&second));
+
+    let product =
+        ReportGenerator::compose_assessment(first, ScanProfileV1::web_review().unwrap()).unwrap();
+    for format in [
+        ReportFormat::Json,
+        ReportFormat::Csv,
+        ReportFormat::Html,
+        ReportFormat::Markdown,
+    ] {
+        let rendered = ReportGenerator::generate_assessment(&product, format).unwrap();
+        assert!(!rendered.contains(SECRET));
+        assert!(!rendered.contains("venom-reflection-candidate-"));
+        assert!(rendered.contains("web.review.reflection.event-handler-context@1"));
+        assert!(!rendered.contains("<button onclick="));
         assert!(!rendered.contains("confirmed"));
     }
 }

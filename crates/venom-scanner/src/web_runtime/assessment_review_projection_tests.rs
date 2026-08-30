@@ -63,7 +63,11 @@ fn plan(
             | NativeReviewProjectionKind::InertReflection
             | NativeReviewProjectionKind::TextReflection
             | NativeReviewProjectionKind::AttributeReflection
-            | NativeReviewProjectionKind::DangerousReflection
+            | NativeReviewProjectionKind::UriAttributeReflection
+            | NativeReviewProjectionKind::StyleReflection
+            | NativeReviewProjectionKind::EventHandlerReflection
+            | NativeReviewProjectionKind::ScriptElementReflection
+            | NativeReviewProjectionKind::EmbeddedHtmlReflection
             | NativeReviewProjectionKind::SqlStructuralDifferential
             | NativeReviewProjectionKind::SstiStructuralEvaluation => {
                 AssessmentItemTarget::query_parameter(QUERY_PARAMETER).unwrap()
@@ -113,7 +117,11 @@ fn closed_capability_mapping_never_projects_confirmed() {
         NativeReviewProjectionKind::InertReflection,
         NativeReviewProjectionKind::TextReflection,
         NativeReviewProjectionKind::AttributeReflection,
-        NativeReviewProjectionKind::DangerousReflection,
+        NativeReviewProjectionKind::UriAttributeReflection,
+        NativeReviewProjectionKind::StyleReflection,
+        NativeReviewProjectionKind::EventHandlerReflection,
+        NativeReviewProjectionKind::ScriptElementReflection,
+        NativeReviewProjectionKind::EmbeddedHtmlReflection,
     ] {
         let item = project_one(kind);
         assert_ne!(item.disposition(), AssessmentDisposition::Confirmed);
@@ -146,7 +154,7 @@ fn cors_and_redirect_attach_only_semantically_valid_cwe_metadata() {
     assert_eq!(redirect.cwe(), Some("CWE-601"));
     assert_eq!(redirect.severity(), None);
 
-    let reflection = project_one(NativeReviewProjectionKind::DangerousReflection);
+    let reflection = project_one(NativeReviewProjectionKind::ScriptElementReflection);
     assert_eq!(reflection.cwe(), None);
     assert_eq!(reflection.severity(), None);
     assert!(reflection.redacted_summary().contains("not tested"));
@@ -180,7 +188,7 @@ fn redirect_and_reflection_share_one_registered_evidence_inventory() {
             &candidate,
         ),
         plan(
-            NativeReviewProjectionKind::DangerousReflection,
+            NativeReviewProjectionKind::ScriptElementReflection,
             &subject,
             &control,
             &candidate,
@@ -204,7 +212,7 @@ fn malformed_pair_and_cross_subject_plan_fail_closed() {
     let other = EntityId::new("endpoint:https://review-projection.test/other").unwrap();
     let knowledge = KnowledgeBase::new();
     let overlapping = plan(
-        NativeReviewProjectionKind::DangerousReflection,
+        NativeReviewProjectionKind::ScriptElementReflection,
         &subject,
         &["evidence:overlap"],
         &["evidence:overlap"],

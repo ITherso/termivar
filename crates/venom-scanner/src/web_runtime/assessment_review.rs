@@ -31,6 +31,7 @@ use crate::{
     payload_strategies::{
         ExternalUrlQueryPairStrategy, CORS_ORIGIN_PAIR_ID, CORS_ORIGIN_PAIR_REVISION,
         EXTERNAL_URL_QUERY_PAIR_ID, EXTERNAL_URL_QUERY_PAIR_REVISION,
+        REFLECTION_MARKER_QUERY_PAIR_ID, REFLECTION_MARKER_QUERY_PAIR_REVISION,
         SQL_QUOTE_BALANCE_QUERY_PAIR_ID, SQL_QUOTE_BALANCE_QUERY_PAIR_REVISION,
         SSTI_ARITHMETIC_EXPRESSION_PAIR_ID, SSTI_ARITHMETIC_EXPRESSION_PAIR_REVISION,
     },
@@ -71,6 +72,8 @@ const CORS_ACTIVE_VERIFIER_RULE_ID: &str =
     "web.review.verify.active.cors-policy-pair.pair-complete@1";
 const REDIRECT_ACTIVE_VERIFIER_RULE_ID: &str =
     "web.review.verify.active.redirect-reflection-query-pair.pair-complete@1";
+const REFLECTION_ACTIVE_VERIFIER_RULE_ID: &str =
+    "web.review.verify.active.reflection-context-query-pair.pair-complete@1";
 const SQL_ACTIVE_VERIFIER_RULE_ID: &str =
     "web.review.verify.active.sql-structural-query-pair.pair-complete@1";
 const SQL_REPLAY_ACTIVE_VERIFIER_RULE_ID: &str =
@@ -90,6 +93,7 @@ pub(crate) const fn native_review_active_verifier_rule_id(
     match kind {
         NativeWebReviewActionKind::CorsPolicyPair => CORS_ACTIVE_VERIFIER_RULE_ID,
         NativeWebReviewActionKind::RedirectReflectionQueryPair => REDIRECT_ACTIVE_VERIFIER_RULE_ID,
+        NativeWebReviewActionKind::ReflectionContextQueryPair => REFLECTION_ACTIVE_VERIFIER_RULE_ID,
         NativeWebReviewActionKind::SqlStructuralQueryPair => SQL_ACTIVE_VERIFIER_RULE_ID,
         NativeWebReviewActionKind::SqlStructuralQueryReplayPair => {
             SQL_REPLAY_ACTIVE_VERIFIER_RULE_ID
@@ -120,6 +124,14 @@ struct RedirectReflectionContract {
 }
 
 #[derive(Clone, PartialEq, Eq)]
+struct ReflectionContextContract {
+    query_parameter: String,
+    control_url: Url,
+    candidate_url: Url,
+    candidate_value: String,
+}
+
+#[derive(Clone, PartialEq, Eq)]
 struct SqlStructuralContract {
     query_parameter: String,
     control_url: Url,
@@ -143,6 +155,7 @@ struct SstiStructuralContract {
 #[derive(Clone, Copy)]
 struct ReviewContracts<'a> {
     redirect: Option<&'a RedirectReflectionContract>,
+    reflection: Option<&'a ReflectionContextContract>,
     sql: Option<&'a SqlStructuralContract>,
     ssti: Option<&'a SstiStructuralContract>,
 }
@@ -179,6 +192,17 @@ impl fmt::Debug for RedirectReflectionContract {
     }
 }
 
+impl fmt::Debug for ReflectionContextContract {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ReflectionContextContract")
+            .field("query_parameter", &"<redacted>")
+            .field("urls", &"<redacted>")
+            .field("candidate_value", &"<redacted>")
+            .finish()
+    }
+}
+
 /// Stateless composite complete-response observer for the enabled native actions.
 ///
 /// A fresh instance is bound to the exact executor/strategy catalog, one root
@@ -190,6 +214,7 @@ pub(crate) struct AssessmentReviewObserverSet {
     subject: EntityId,
     seeds: NativeWebReviewSeeds,
     redirect: Option<RedirectReflectionContract>,
+    reflection: Option<ReflectionContextContract>,
     sql: Option<SqlStructuralContract>,
     ssti: Option<SstiStructuralContract>,
 }
@@ -202,6 +227,10 @@ impl fmt::Debug for AssessmentReviewObserverSet {
             .field("subject", &"<redacted>")
             .field("seeds", &self.seeds)
             .field("redirect", &self.redirect.as_ref().map(|_| "<configured>"))
+            .field(
+                "reflection",
+                &self.reflection.as_ref().map(|_| "<configured>"),
+            )
             .field("sql", &self.sql.as_ref().map(|_| "<configured>"))
             .field("ssti", &self.ssti.as_ref().map(|_| "<configured>"))
             .finish()
@@ -216,13 +245,21 @@ impl AssessmentReviewObserverSet {
         seeds: NativeWebReviewSeeds,
         redirect_query_parameter: Option<&str>,
     ) -> Result<Self, AssessmentReviewObserverError> {
-        Self::new_with_sql(root, seeds, redirect_query_parameter, None, None)
+        Self::new_with_sql(
+            root,
+            seeds,
+            redirect_query_parameter,
+            redirect_query_parameter,
+            None,
+            None,
+        )
     }
 
     pub(crate) fn new_with_sql(
         root: Url,
         seeds: NativeWebReviewSeeds,
         redirect_query_parameter: Option<&str>,
+        reflection_query_parameter: Option<&str>,
         sql_query_parameter: Option<&str>,
         ssti_query_parameter: Option<&str>,
     ) -> Result<Self, AssessmentReviewObserverError> {
@@ -246,6 +283,27 @@ impl AssessmentReviewObserverSet {
                     query_parameter: query_parameter.to_owned(),
                     candidate_url,
                     candidate_value: seeds.external_url().to_owned(),
+                })
+            })
+            .transpose()?;
+        let reflection = reflection_query_parameter
+            .map(|query_parameter| {
+                if !valid_query_parameter(query_parameter) {
+                    return Err(AssessmentReviewObserverError::QueryParameter);
+                }
+                let mut control_url = root.clone();
+                control_url
+                    .query_pairs_mut()
+                    .append_pair(query_parameter, &seeds.reflection_control_marker());
+                let mut candidate_url = root.clone();
+                candidate_url
+                    .query_pairs_mut()
+                    .append_pair(query_parameter, &seeds.reflection_candidate_marker());
+                Ok(ReflectionContextContract {
+                    query_parameter: query_parameter.to_owned(),
+                    control_url,
+                    candidate_url,
+                    candidate_value: seeds.reflection_candidate_marker(),
                 })
             })
             .transpose()?;
@@ -308,6 +366,7 @@ impl AssessmentReviewObserverSet {
             subject,
             seeds,
             redirect,
+            reflection,
             sql,
             ssti,
         })
@@ -331,6 +390,12 @@ impl AssessmentReviewObserverSet {
                 .redirect
                 .as_ref()
                 .map(|contract| &contract.candidate_url),
+            (NativeWebReviewActionKind::ReflectionContextQueryPair, stage) => {
+                self.reflection.as_ref().map(|contract| match stage {
+                    DecisionExecutionStage::Passive => &contract.control_url,
+                    DecisionExecutionStage::Active => &contract.candidate_url,
+                })
+            },
             (
                 NativeWebReviewActionKind::SqlStructuralQueryPair
                 | NativeWebReviewActionKind::SqlStructuralQueryReplayPair,
@@ -427,20 +492,23 @@ impl AssessmentReviewObserverSet {
                         ReviewProperty::RedirectLocation,
                         location_slug(projection.location()),
                     ),
-                    (
-                        ReviewProperty::HtmlReflection,
-                        reflection_slug(classify_observation_reflection(
-                            observation,
-                            self.redirect
-                                .as_ref()
-                                .expect("enabled redirect observer retains its bounded contract")
-                                .candidate_value
-                                .as_str(),
-                        )),
-                    ),
                 ]
                 .map(|(property, value)| (property, value.to_owned())),
             ),
+            NativeWebReviewActionKind::ReflectionContextQueryPair => {
+                let candidate = self
+                    .reflection
+                    .as_ref()
+                    .expect("enabled reflection observer retains its bounded contract")
+                    .candidate_value
+                    .as_str();
+                records.push((
+                    ReviewProperty::HtmlReflection,
+                    classify_observation_reflection(observation, candidate)
+                        .stable_id()
+                        .to_owned(),
+                ));
+            },
             NativeWebReviewActionKind::SqlStructuralQueryPair
             | NativeWebReviewActionKind::SqlStructuralQueryReplayPair => {
                 records.push((
@@ -574,6 +642,10 @@ fn native_review_strategy_ref(kind: NativeWebReviewActionKind) -> PayloadStrateg
         NativeWebReviewActionKind::RedirectReflectionQueryPair => {
             (EXTERNAL_URL_QUERY_PAIR_ID, EXTERNAL_URL_QUERY_PAIR_REVISION)
         },
+        NativeWebReviewActionKind::ReflectionContextQueryPair => (
+            REFLECTION_MARKER_QUERY_PAIR_ID,
+            REFLECTION_MARKER_QUERY_PAIR_REVISION,
+        ),
         NativeWebReviewActionKind::SqlStructuralQueryPair
         | NativeWebReviewActionKind::SqlStructuralQueryReplayPair => (
             SQL_QUOTE_BALANCE_QUERY_PAIR_ID,
@@ -619,7 +691,7 @@ fn review_projection_parents(
     .collect::<Result<Vec<_>, _>>()?;
     if matches!(
         kind,
-        NativeWebReviewActionKind::RedirectReflectionQueryPair
+        NativeWebReviewActionKind::ReflectionContextQueryPair
             | NativeWebReviewActionKind::SqlStructuralQueryPair
             | NativeWebReviewActionKind::SqlStructuralQueryReplayPair
             | NativeWebReviewActionKind::SstiStructuralQueryPair
@@ -814,6 +886,13 @@ fn review_source_method(
             NativeWebReviewActionKind::RedirectReflectionQueryPair,
             DecisionExecutionStage::Active,
         ) => "redirect-reflection-candidate-response",
+        (
+            NativeWebReviewActionKind::ReflectionContextQueryPair,
+            DecisionExecutionStage::Passive,
+        ) => "reflection-context-control-response",
+        (NativeWebReviewActionKind::ReflectionContextQueryPair, DecisionExecutionStage::Active) => {
+            "reflection-context-candidate-response"
+        },
         (NativeWebReviewActionKind::SqlStructuralQueryPair, DecisionExecutionStage::Passive) => {
             "sql-structural-control-response"
         },
@@ -909,18 +988,6 @@ fn location_slug(relation: LocationRelation) -> &'static str {
     }
 }
 
-fn reflection_slug(context: ExactHtmlReflectionContext) -> &'static str {
-    match context {
-        ExactHtmlReflectionContext::Absent => "absent",
-        ExactHtmlReflectionContext::Inert => "inert",
-        ExactHtmlReflectionContext::Text => "text",
-        ExactHtmlReflectionContext::Attribute => "attribute",
-        ExactHtmlReflectionContext::Dangerous => "dangerous",
-        ExactHtmlReflectionContext::NotApplicable => "not-applicable",
-        ExactHtmlReflectionContext::Incomplete => "incomplete",
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum ReviewProperty {
     ResponseMarker,
@@ -1000,9 +1067,11 @@ enum CommittedReviewResponse {
         allow_credentials: CorsAllowCredentialsRelation,
         vary_origin: VaryOriginRelation,
     },
-    RedirectReflection {
+    Redirect {
         status: ReviewStatusRelation,
         location: LocationRelation,
+    },
+    Reflection {
         reflection: ExactHtmlReflectionContext,
     },
     SqlStructural {
@@ -1077,6 +1146,7 @@ pub(crate) struct CommittedAssessmentReviewLedger {
     subject: EntityId,
     seeds: NativeWebReviewSeeds,
     redirect: Option<RedirectReflectionContract>,
+    reflection: Option<ReflectionContextContract>,
     sql: Option<SqlStructuralContract>,
     ssti: Option<SstiStructuralContract>,
     observations: BTreeMap<ReviewReceiptKey, CommittedAssessmentReviewObservation>,
@@ -1090,6 +1160,10 @@ impl fmt::Debug for CommittedAssessmentReviewLedger {
             .field("subject", &"<redacted>")
             .field("seeds", &self.seeds)
             .field("redirect", &self.redirect.as_ref().map(|_| "<configured>"))
+            .field(
+                "reflection",
+                &self.reflection.as_ref().map(|_| "<configured>"),
+            )
             .field("sql", &self.sql.as_ref().map(|_| "<configured>"))
             .field("ssti", &self.ssti.as_ref().map(|_| "<configured>"))
             .field("observation_count", &self.observations.len())
@@ -1104,13 +1178,21 @@ impl CommittedAssessmentReviewLedger {
         seeds: NativeWebReviewSeeds,
         redirect_query_parameter: Option<&str>,
     ) -> Result<Self, AssessmentReviewObserverError> {
-        Self::new_with_sql(root, seeds, redirect_query_parameter, None, None)
+        Self::new_with_sql(
+            root,
+            seeds,
+            redirect_query_parameter,
+            redirect_query_parameter,
+            None,
+            None,
+        )
     }
 
     pub(crate) fn new_with_sql(
         root: Url,
         seeds: NativeWebReviewSeeds,
         redirect_query_parameter: Option<&str>,
+        reflection_query_parameter: Option<&str>,
         sql_query_parameter: Option<&str>,
         ssti_query_parameter: Option<&str>,
     ) -> Result<Self, AssessmentReviewObserverError> {
@@ -1118,6 +1200,7 @@ impl CommittedAssessmentReviewLedger {
             root,
             seeds,
             redirect_query_parameter,
+            reflection_query_parameter,
             sql_query_parameter,
             ssti_query_parameter,
         )?;
@@ -1126,6 +1209,7 @@ impl CommittedAssessmentReviewLedger {
             subject: observer.subject,
             seeds: observer.seeds,
             redirect: observer.redirect,
+            reflection: observer.reflection,
             sql: observer.sql,
             ssti: observer.ssti,
             observations: BTreeMap::new(),
@@ -1148,7 +1232,7 @@ impl CommittedAssessmentReviewLedger {
         self.observations.values().any(|observation| {
             matches!(
                 observation.response,
-                CommittedReviewResponse::RedirectReflection {
+                CommittedReviewResponse::Reflection {
                     reflection: ExactHtmlReflectionContext::Incomplete,
                     ..
                 }
@@ -1195,6 +1279,7 @@ impl CommittedAssessmentReviewLedger {
             &self.subject,
             ReviewContracts {
                 redirect: self.redirect.as_ref(),
+                reflection: self.reflection.as_ref(),
                 sql: self.sql.as_ref(),
                 ssti: self.ssti.as_ref(),
             },
@@ -1205,6 +1290,7 @@ impl CommittedAssessmentReviewLedger {
             receipt,
             &self.root,
             self.redirect.as_ref(),
+            self.reflection.as_ref(),
             self.sql.as_ref(),
             self.ssti.as_ref(),
             kind,
@@ -1237,6 +1323,7 @@ impl CommittedAssessmentReviewLedger {
         for kind in [
             NativeWebReviewActionKind::CorsPolicyPair,
             NativeWebReviewActionKind::RedirectReflectionQueryPair,
+            NativeWebReviewActionKind::ReflectionContextQueryPair,
         ] {
             let passive = self
                 .observations
@@ -1255,9 +1342,17 @@ impl CommittedAssessmentReviewLedger {
                 append_pair_candidates(
                     control,
                     candidate,
-                    self.redirect
-                        .as_ref()
-                        .map(|contract| contract.query_parameter.as_str()),
+                    match kind {
+                        NativeWebReviewActionKind::RedirectReflectionQueryPair => self
+                            .redirect
+                            .as_ref()
+                            .map(|contract| contract.query_parameter.as_str()),
+                        NativeWebReviewActionKind::ReflectionContextQueryPair => self
+                            .reflection
+                            .as_ref()
+                            .map(|contract| contract.query_parameter.as_str()),
+                        _ => None,
+                    },
                     &mut candidates,
                 );
             }
@@ -1387,6 +1482,7 @@ fn validate_receipt_authority(
             receipt,
             root,
             contracts.redirect,
+            contracts.reflection,
             contracts.sql,
             contracts.ssti,
             kind,
@@ -1418,6 +1514,7 @@ fn parse_review_receipt(
     receipt: &DecisionEvidenceReceipt,
     root: &Url,
     redirect: Option<&RedirectReflectionContract>,
+    reflection: Option<&ReflectionContextContract>,
     sql: Option<&SqlStructuralContract>,
     ssti: Option<&SstiStructuralContract>,
     kind: NativeWebReviewActionKind,
@@ -1436,7 +1533,7 @@ fn parse_review_receipt(
         return Err(AssessmentReviewLedgerError::EvidenceProjection);
     }
 
-    let parents = expected_review_parent_ids(receipt, root, redirect, sql, ssti, kind)?;
+    let parents = expected_review_parent_ids(receipt, root, redirect, reflection, sql, ssti, kind)?;
     let source_method = review_source_method(kind, receipt.stage());
     let mut property_evidence = BTreeMap::new();
     let mut values = BTreeMap::new();
@@ -1487,9 +1584,13 @@ fn parse_review_receipt(
             vary_origin: parse_vary_origin(value(&values, ReviewProperty::CorsVaryOrigin)?)?,
         },
         NativeWebReviewActionKind::RedirectReflectionQueryPair => {
-            CommittedReviewResponse::RedirectReflection {
+            CommittedReviewResponse::Redirect {
                 status: parse_status_relation(value(&values, ReviewProperty::RedirectStatus)?)?,
                 location: parse_location(value(&values, ReviewProperty::RedirectLocation)?)?,
+            }
+        },
+        NativeWebReviewActionKind::ReflectionContextQueryPair => {
+            CommittedReviewResponse::Reflection {
                 reflection: parse_reflection(value(&values, ReviewProperty::HtmlReflection)?)?,
             }
         },
@@ -1618,6 +1719,7 @@ fn expected_review_parent_ids(
     receipt: &DecisionEvidenceReceipt,
     root: &Url,
     redirect: Option<&RedirectReflectionContract>,
+    reflection: Option<&ReflectionContextContract>,
     sql: Option<&SqlStructuralContract>,
     ssti: Option<&SstiStructuralContract>,
     kind: NativeWebReviewActionKind,
@@ -1630,9 +1732,12 @@ fn expected_review_parent_ids(
         || !requested_url_value_matches_with_sql(
             requested.value(),
             root,
-            redirect,
-            sql,
-            ssti,
+            ReviewContracts {
+                redirect,
+                reflection,
+                sql,
+                ssti,
+            },
             receipt.stage(),
             kind,
         )
@@ -1644,7 +1749,7 @@ fn expected_review_parent_ids(
     let mut items = vec![method, requested, status, final_url];
     if matches!(
         kind,
-        NativeWebReviewActionKind::RedirectReflectionQueryPair
+        NativeWebReviewActionKind::ReflectionContextQueryPair
             | NativeWebReviewActionKind::SqlStructuralQueryPair
             | NativeWebReviewActionKind::SqlStructuralQueryReplayPair
             | NativeWebReviewActionKind::SstiStructuralQueryPair
@@ -1714,19 +1819,24 @@ fn receipt_url_matches_contract(
     receipt: &DecisionEvidenceReceipt,
     root: &Url,
     redirect: Option<&RedirectReflectionContract>,
+    reflection: Option<&ReflectionContextContract>,
     sql: Option<&SqlStructuralContract>,
     ssti: Option<&SstiStructuralContract>,
     kind: NativeWebReviewActionKind,
 ) -> bool {
+    let contracts = ReviewContracts {
+        redirect,
+        reflection,
+        sql,
+        ssti,
+    };
     unique_base(receipt, HttpEvidencePredicate::REQUEST_URL)
         .ok()
         .is_some_and(|evidence| {
             requested_url_value_matches_with_sql(
                 evidence.value(),
                 root,
-                redirect,
-                sql,
-                ssti,
+                contracts,
                 receipt.stage(),
                 kind,
             )
@@ -1736,9 +1846,7 @@ fn receipt_url_matches_contract(
 fn requested_url_value_matches_with_sql(
     value: &EvidenceValue,
     root: &Url,
-    redirect: Option<&RedirectReflectionContract>,
-    sql: Option<&SqlStructuralContract>,
-    ssti: Option<&SstiStructuralContract>,
+    contracts: ReviewContracts<'_>,
     stage: DecisionExecutionStage,
     kind: NativeWebReviewActionKind,
 ) -> bool {
@@ -1753,29 +1861,41 @@ fn requested_url_value_matches_with_sql(
         (
             NativeWebReviewActionKind::RedirectReflectionQueryPair,
             DecisionExecutionStage::Passive,
-        ) => redirect.is_some() && &url == root,
+        ) => contracts.redirect.is_some() && &url == root,
         (
             NativeWebReviewActionKind::RedirectReflectionQueryPair,
             DecisionExecutionStage::Active,
-        ) => redirect.is_some_and(|contract| url == contract.candidate_url),
+        ) => contracts
+            .redirect
+            .is_some_and(|contract| url == contract.candidate_url),
+        (NativeWebReviewActionKind::ReflectionContextQueryPair, stage) => {
+            contracts.reflection.is_some_and(|contract| match stage {
+                DecisionExecutionStage::Passive => url == contract.control_url,
+                DecisionExecutionStage::Active => url == contract.candidate_url,
+            })
+        },
         (
             NativeWebReviewActionKind::SqlStructuralQueryPair
             | NativeWebReviewActionKind::SqlStructuralQueryReplayPair,
             DecisionExecutionStage::Passive,
-        ) => sql.is_some_and(|contract| url == contract.control_url),
+        ) => contracts
+            .sql
+            .is_some_and(|contract| url == contract.control_url),
         (
             NativeWebReviewActionKind::SqlStructuralQueryPair
             | NativeWebReviewActionKind::SqlStructuralQueryReplayPair,
             DecisionExecutionStage::Active,
-        ) => sql.is_some_and(|contract| url == contract.candidate_url),
+        ) => contracts
+            .sql
+            .is_some_and(|contract| url == contract.candidate_url),
         (NativeWebReviewActionKind::SstiStructuralQueryPair, stage) => {
-            ssti.is_some_and(|contract| match stage {
+            contracts.ssti.is_some_and(|contract| match stage {
                 DecisionExecutionStage::Passive => url == contract.primary.control_url,
                 DecisionExecutionStage::Active => url == contract.primary.candidate_url,
             })
         },
         (NativeWebReviewActionKind::SstiStructuralQueryReplayPair, stage) => {
-            ssti.is_some_and(|contract| match stage {
+            contracts.ssti.is_some_and(|contract| match stage {
                 DecisionExecutionStage::Passive => url == contract.replay.control_url,
                 DecisionExecutionStage::Active => url == contract.replay.candidate_url,
             })
@@ -1808,10 +1928,14 @@ const CORS_REVIEW_PROPERTIES: [ReviewProperty; 5] = [
     ReviewProperty::CorsVaryOrigin,
 ];
 
-const REDIRECT_REVIEW_PROPERTIES: [ReviewProperty; 4] = [
+const REDIRECT_REVIEW_PROPERTIES: [ReviewProperty; 3] = [
     ReviewProperty::ResponseMarker,
     ReviewProperty::RedirectStatus,
     ReviewProperty::RedirectLocation,
+];
+
+const REFLECTION_REVIEW_PROPERTIES: [ReviewProperty; 2] = [
+    ReviewProperty::ResponseMarker,
     ReviewProperty::HtmlReflection,
 ];
 
@@ -1831,6 +1955,7 @@ fn expected_properties(kind: NativeWebReviewActionKind) -> &'static [ReviewPrope
     match kind {
         NativeWebReviewActionKind::CorsPolicyPair => &CORS_REVIEW_PROPERTIES,
         NativeWebReviewActionKind::RedirectReflectionQueryPair => &REDIRECT_REVIEW_PROPERTIES,
+        NativeWebReviewActionKind::ReflectionContextQueryPair => &REFLECTION_REVIEW_PROPERTIES,
         NativeWebReviewActionKind::SqlStructuralQueryPair
         | NativeWebReviewActionKind::SqlStructuralQueryReplayPair => &SQL_REVIEW_PROPERTIES,
         NativeWebReviewActionKind::SstiStructuralQueryPair
@@ -1928,10 +2053,15 @@ fn parse_reflection(
 ) -> Result<ExactHtmlReflectionContext, AssessmentReviewLedgerError> {
     match value {
         "absent" => Ok(ExactHtmlReflectionContext::Absent),
-        "inert" => Ok(ExactHtmlReflectionContext::Inert),
-        "text" => Ok(ExactHtmlReflectionContext::Text),
-        "attribute" => Ok(ExactHtmlReflectionContext::Attribute),
-        "dangerous" => Ok(ExactHtmlReflectionContext::Dangerous),
+        "html-comment" => Ok(ExactHtmlReflectionContext::HtmlComment),
+        "html-text" => Ok(ExactHtmlReflectionContext::HtmlText),
+        "attribute-value" => Ok(ExactHtmlReflectionContext::AttributeValue),
+        "uri-attribute" => Ok(ExactHtmlReflectionContext::UriAttribute),
+        "style-attribute" => Ok(ExactHtmlReflectionContext::StyleAttribute),
+        "style-element-content" => Ok(ExactHtmlReflectionContext::StyleElementContent),
+        "event-handler-attribute" => Ok(ExactHtmlReflectionContext::EventHandlerAttribute),
+        "script-element-content" => Ok(ExactHtmlReflectionContext::ScriptElementContent),
+        "embedded-html-attribute" => Ok(ExactHtmlReflectionContext::EmbeddedHtmlAttribute),
         "not-applicable" => Ok(ExactHtmlReflectionContext::NotApplicable),
         "incomplete" => Ok(ExactHtmlReflectionContext::Incomplete),
         _ => Err(AssessmentReviewLedgerError::EvidenceProjection),
@@ -1980,10 +2110,15 @@ pub(crate) struct RedirectReviewCandidate {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ReviewReflectionContext {
-    Inert,
-    Text,
-    Attribute,
-    Dangerous,
+    HtmlComment,
+    HtmlText,
+    AttributeValue,
+    UriAttribute,
+    StyleAttribute,
+    StyleElementContent,
+    EventHandlerAttribute,
+    ScriptElementContent,
+    EmbeddedHtmlAttribute,
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -2005,7 +2140,18 @@ fn requested_url_value_matches(
     stage: DecisionExecutionStage,
     kind: NativeWebReviewActionKind,
 ) -> bool {
-    requested_url_value_matches_with_sql(value, root, redirect, None, None, stage, kind)
+    requested_url_value_matches_with_sql(
+        value,
+        root,
+        ReviewContracts {
+            redirect,
+            reflection: None,
+            sql: None,
+            ssti: None,
+        },
+        stage,
+        kind,
+    )
 }
 
 fn parse_ssti_evaluation(
@@ -2183,7 +2329,7 @@ impl AssessmentReviewCandidate {
 fn append_pair_candidates(
     control: &CommittedAssessmentReviewObservation,
     candidate: &CommittedAssessmentReviewObservation,
-    redirect_query_parameter: Option<&str>,
+    query_parameter: Option<&str>,
     output: &mut Vec<AssessmentReviewCandidate>,
 ) {
     if !observations_form_exact_pair(control, candidate) {
@@ -2227,18 +2373,16 @@ fn append_pair_candidates(
             ),
         })),
         (
-            CommittedReviewResponse::RedirectReflection {
+            CommittedReviewResponse::Redirect {
                 status: _,
                 location: LocationRelation::Missing,
-                reflection: control_reflection,
             },
-            CommittedReviewResponse::RedirectReflection {
+            CommittedReviewResponse::Redirect {
                 status: ReviewStatusRelation::Redirect,
                 location: LocationRelation::ExactExternalQueryValue,
-                reflection: candidate_reflection,
             },
         ) => {
-            let Some(query_parameter) = redirect_query_parameter else {
+            let Some(query_parameter) = query_parameter else {
                 return;
             };
             output.push(AssessmentReviewCandidate::Redirect(
@@ -2264,26 +2408,16 @@ fn append_pair_candidates(
                     ),
                 },
             ));
-            append_reflection_candidate(
-                control,
-                candidate,
-                *control_reflection,
-                *candidate_reflection,
-                query_parameter,
-                output,
-            );
         },
         (
-            CommittedReviewResponse::RedirectReflection {
+            CommittedReviewResponse::Reflection {
                 reflection: control_reflection,
-                ..
             },
-            CommittedReviewResponse::RedirectReflection {
+            CommittedReviewResponse::Reflection {
                 reflection: candidate_reflection,
-                ..
             },
         ) => {
-            let Some(query_parameter) = redirect_query_parameter else {
+            let Some(query_parameter) = query_parameter else {
                 return;
             };
             append_reflection_candidate(
@@ -2501,20 +2635,40 @@ fn append_reflection_candidate(
         return;
     }
     let (context, disposition) = match candidate_context {
-        ExactHtmlReflectionContext::Inert => (
-            ReviewReflectionContext::Inert,
+        ExactHtmlReflectionContext::HtmlComment => (
+            ReviewReflectionContext::HtmlComment,
             NativeReviewDisposition::Informational,
         ),
-        ExactHtmlReflectionContext::Text => (
-            ReviewReflectionContext::Text,
+        ExactHtmlReflectionContext::HtmlText => (
+            ReviewReflectionContext::HtmlText,
             NativeReviewDisposition::Informational,
         ),
-        ExactHtmlReflectionContext::Attribute => (
-            ReviewReflectionContext::Attribute,
+        ExactHtmlReflectionContext::AttributeValue => (
+            ReviewReflectionContext::AttributeValue,
             NativeReviewDisposition::Informational,
         ),
-        ExactHtmlReflectionContext::Dangerous => (
-            ReviewReflectionContext::Dangerous,
+        ExactHtmlReflectionContext::UriAttribute => (
+            ReviewReflectionContext::UriAttribute,
+            NativeReviewDisposition::NeedsReview,
+        ),
+        ExactHtmlReflectionContext::StyleAttribute => (
+            ReviewReflectionContext::StyleAttribute,
+            NativeReviewDisposition::NeedsReview,
+        ),
+        ExactHtmlReflectionContext::StyleElementContent => (
+            ReviewReflectionContext::StyleElementContent,
+            NativeReviewDisposition::NeedsReview,
+        ),
+        ExactHtmlReflectionContext::EventHandlerAttribute => (
+            ReviewReflectionContext::EventHandlerAttribute,
+            NativeReviewDisposition::NeedsReview,
+        ),
+        ExactHtmlReflectionContext::ScriptElementContent => (
+            ReviewReflectionContext::ScriptElementContent,
+            NativeReviewDisposition::NeedsReview,
+        ),
+        ExactHtmlReflectionContext::EmbeddedHtmlAttribute => (
+            ReviewReflectionContext::EmbeddedHtmlAttribute,
             NativeReviewDisposition::NeedsReview,
         ),
         ExactHtmlReflectionContext::Absent

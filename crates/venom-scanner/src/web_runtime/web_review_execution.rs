@@ -33,6 +33,7 @@ use crate::{
     payload_strategies::{
         standard_payload_strategies, CORS_ORIGIN_PAIR_HEADER_NAME, CORS_ORIGIN_PAIR_ID,
         CORS_ORIGIN_PAIR_REVISION, EXTERNAL_URL_QUERY_PAIR_ID, EXTERNAL_URL_QUERY_PAIR_REVISION,
+        REFLECTION_MARKER_QUERY_PAIR_ID, REFLECTION_MARKER_QUERY_PAIR_REVISION,
         SQL_QUOTE_BALANCE_QUERY_PAIR_ID, SQL_QUOTE_BALANCE_QUERY_PAIR_REVISION,
         SSTI_ARITHMETIC_EXPRESSION_PAIR_ID, SSTI_ARITHMETIC_EXPRESSION_PAIR_REVISION,
     },
@@ -95,16 +96,42 @@ struct NativeExecutorBinding {
     executor: Arc<HttpEvidenceExecutor>,
 }
 
-struct NativeWebReviewQueryParameters {
+pub(crate) struct NativeWebReviewQueryParameters {
     redirect: Option<String>,
+    reflection: Option<String>,
     sql: Option<String>,
     ssti: Option<String>,
+}
+
+impl NativeWebReviewQueryParameters {
+    pub(crate) fn full(
+        redirect: Option<String>,
+        reflection: Option<String>,
+        sql: Option<String>,
+        ssti: Option<String>,
+    ) -> Self {
+        Self {
+            redirect,
+            reflection,
+            sql,
+            ssti,
+        }
+    }
+
+    pub(crate) fn structural(
+        reflection: Option<String>,
+        sql: Option<String>,
+        ssti: Option<String>,
+    ) -> Self {
+        Self::full(None, reflection, sql, ssti)
+    }
 }
 
 /// Returns the one closed, deterministic executable subset for a subject.
 pub(crate) fn enabled_native_web_review_actions(
     include_cors: bool,
     redirect_query_configured: bool,
+    reflection_query_configured: bool,
     sql_query_configured: bool,
     ssti_query_configured: bool,
 ) -> Vec<NativeWebReviewActionKind> {
@@ -113,6 +140,7 @@ pub(crate) fn enabled_native_web_review_actions(
         .filter(|kind| match kind {
             NativeWebReviewActionKind::CorsPolicyPair => include_cors,
             NativeWebReviewActionKind::RedirectReflectionQueryPair => redirect_query_configured,
+            NativeWebReviewActionKind::ReflectionContextQueryPair => reflection_query_configured,
             NativeWebReviewActionKind::SqlStructuralQueryPair
             | NativeWebReviewActionKind::SqlStructuralQueryReplayPair => sql_query_configured,
             NativeWebReviewActionKind::SstiStructuralQueryPair
@@ -132,6 +160,7 @@ pub(crate) fn enabled_native_web_review_actions(
 pub(crate) struct NativeWebReviewExecutorProfile {
     bindings: Vec<NativeExecutorBinding>,
     redirect_query_configured: bool,
+    reflection_query_configured: bool,
     sql_query_configured: bool,
     ssti_query_configured: bool,
     cors_configured: bool,
@@ -158,6 +187,10 @@ impl fmt::Debug for NativeWebReviewExecutorProfile {
                     .collect::<Vec<_>>(),
             )
             .field("redirect_query_configured", &self.redirect_query_configured)
+            .field(
+                "reflection_query_configured",
+                &self.reflection_query_configured,
+            )
             .field("sql_query_configured", &self.sql_query_configured)
             .field("ssti_query_configured", &self.ssti_query_configured)
             .field("cors_configured", &self.cors_configured)
@@ -177,20 +210,14 @@ impl NativeWebReviewExecutorProfile {
         root: Url,
         seeds: NativeWebReviewSeeds,
         observer: Arc<dyn CompleteHttpResponseObserver>,
-        redirect_query_parameter: Option<String>,
-        sql_query_parameter: Option<String>,
-        ssti_query_parameter: Option<String>,
+        query_parameters: NativeWebReviewQueryParameters,
     ) -> Result<Self, NativeWebReviewExecutionError> {
         Self::build(
             requests,
             root,
             seeds,
             Some(observer),
-            NativeWebReviewQueryParameters {
-                redirect: redirect_query_parameter,
-                sql: sql_query_parameter,
-                ssti: ssti_query_parameter,
-            },
+            query_parameters,
             true,
         )
     }
@@ -200,19 +227,14 @@ impl NativeWebReviewExecutorProfile {
         root: Url,
         seeds: NativeWebReviewSeeds,
         observer: Arc<dyn CompleteHttpResponseObserver>,
-        sql_query_parameter: Option<String>,
-        ssti_query_parameter: Option<String>,
+        query_parameters: NativeWebReviewQueryParameters,
     ) -> Result<Self, NativeWebReviewExecutionError> {
         Self::build(
             requests,
             root,
             seeds,
             Some(observer),
-            NativeWebReviewQueryParameters {
-                redirect: None,
-                sql: sql_query_parameter,
-                ssti: ssti_query_parameter,
-            },
+            query_parameters,
             false,
         )
     }
@@ -231,6 +253,7 @@ impl NativeWebReviewExecutorProfile {
         }
         let NativeWebReviewQueryParameters {
             redirect: redirect_query_parameter,
+            reflection: reflection_query_parameter,
             sql: sql_query_parameter,
             ssti: ssti_query_parameter,
         } = query_parameters;
@@ -241,6 +264,7 @@ impl NativeWebReviewExecutorProfile {
         let enabled_actions = enabled_native_web_review_actions(
             include_cors,
             redirect_query_parameter.is_some(),
+            reflection_query_parameter.is_some(),
             sql_query_parameter.is_some(),
             ssti_query_parameter.is_some(),
         );
@@ -297,6 +321,32 @@ impl NativeWebReviewExecutorProfile {
             bindings.push(NativeExecutorBinding {
                 kind: redirect_kind,
                 executor: Arc::new(redirect_executor),
+            });
+        }
+
+        let reflection_query_configured =
+            enabled_actions.contains(&NativeWebReviewActionKind::ReflectionContextQueryPair);
+        if let Some(parameter) = reflection_query_parameter {
+            let kind = NativeWebReviewActionKind::ReflectionContextQueryPair;
+            let payload = HttpQueryPayloadBinding::new(
+                strategies.clone(),
+                payload_strategy_reference(kind)?,
+                PayloadSeed::new(seeds.reflection_identity().as_bytes().to_vec(), limits)?,
+                limits,
+                parameter,
+            )?;
+            let executor = configure_executor(
+                HttpEvidenceExecutor::with_id_and_request_broker(
+                    kind.executor_id(),
+                    requests.clone(),
+                    provider.clone(),
+                )?
+                .with_query_payload_binding(payload),
+                observer.as_ref(),
+            );
+            bindings.push(NativeExecutorBinding {
+                kind,
+                executor: Arc::new(executor),
             });
         }
 
@@ -379,6 +429,7 @@ impl NativeWebReviewExecutorProfile {
         Ok(Self {
             bindings,
             redirect_query_configured,
+            reflection_query_configured,
             sql_query_configured,
             ssti_query_configured,
             cors_configured: include_cors,
@@ -458,6 +509,7 @@ impl NativeWebReviewExecutorProfile {
             seeds,
             None,
             NativeWebReviewQueryParameters {
+                reflection: redirect_query_parameter.clone(),
                 redirect: redirect_query_parameter,
                 sql: None,
                 ssti: None,
@@ -477,6 +529,10 @@ fn payload_strategy_reference(
         NativeWebReviewActionKind::RedirectReflectionQueryPair => {
             (EXTERNAL_URL_QUERY_PAIR_ID, EXTERNAL_URL_QUERY_PAIR_REVISION)
         },
+        NativeWebReviewActionKind::ReflectionContextQueryPair => (
+            REFLECTION_MARKER_QUERY_PAIR_ID,
+            REFLECTION_MARKER_QUERY_PAIR_REVISION,
+        ),
         NativeWebReviewActionKind::SqlStructuralQueryPair
         | NativeWebReviewActionKind::SqlStructuralQueryReplayPair => (
             SQL_QUOTE_BALANCE_QUERY_PAIR_ID,
@@ -538,6 +594,7 @@ pub(crate) struct NativeWebReviewSeeds {
     origin_identity: String,
     cors_origin: String,
     external_url: String,
+    reflection_identity: String,
     sql_token: String,
     ssti_primary_probe: SstiArithmeticProbe,
     ssti_replay_probe: SstiArithmeticProbe,
@@ -550,6 +607,7 @@ impl fmt::Debug for NativeWebReviewSeeds {
             .field("origin", &"<redacted>")
             .field("cors_origin_bytes", &self.cors_origin.len())
             .field("external_url_bytes", &self.external_url.len())
+            .field("reflection_marker_bytes", &72_usize)
             .field("sql_token_bytes", &self.sql_token.len())
             .field(
                 "ssti_probe_family",
@@ -581,6 +639,7 @@ impl NativeWebReviewSeeds {
             origin_identity: origin,
             cors_origin: format!("https://cors-{identity}.review.invalid"),
             external_url: format!("https://redirect-{identity}.review.invalid/venom-review"),
+            reflection_identity: identity.clone(),
             sql_token: format!("venom-review-{identity}"),
             ssti_primary_probe,
             ssti_replay_probe,
@@ -595,6 +654,21 @@ impl NativeWebReviewSeeds {
     /// Returns the exact external query value for executor binding or reflection matching.
     pub(crate) fn external_url(&self) -> &str {
         &self.external_url
+    }
+
+    pub(crate) fn reflection_identity(&self) -> &str {
+        &self.reflection_identity
+    }
+
+    pub(crate) fn reflection_control_marker(&self) -> String {
+        format!("venom-reflection-control-{}-end", self.reflection_identity)
+    }
+
+    pub(crate) fn reflection_candidate_marker(&self) -> String {
+        format!(
+            "venom-reflection-candidate-{}-end",
+            self.reflection_identity
+        )
     }
 
     /// Returns the bounded scanner-owned token used by the SQL mutation catalog.

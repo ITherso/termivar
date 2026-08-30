@@ -77,17 +77,69 @@ const OPEN_REDIRECT_REVIEW: AssessmentCapabilityDescriptor =
         "Resolve redirects through an explicit allowlist or server-owned destination identifier instead of accepting an arbitrary destination.",
     );
 
-const DANGEROUS_REFLECTION_REVIEW: AssessmentCapabilityDescriptor =
+const URI_REFLECTION_REVIEW: AssessmentCapabilityDescriptor =
     AssessmentCapabilityDescriptor::differential_review(
-        "web.review.reflection.dangerous-html-context@1",
-        "Exact candidate reflection reached a dangerous HTML context",
+        "web.review.reflection.uri-attribute-context@1",
+        "Reflected input reached a URI-bearing HTML attribute",
         "reflection-context",
-        "The exact scanner-generated candidate was absent from the control and appeared in a dangerous HTML parsing context; browser execution was not tested.",
+        "The scanner marker was absent from the control and appeared in a URI-bearing attribute; executable URI behavior was not tested.",
         None,
         1_000_000,
         None,
         "web.remediation.contextual-output-encoding@1",
-        "Apply output encoding for the destination context and validate the rendered behavior with an authorized browser-level review.",
+        "Apply context-appropriate encoding and constrain URI destinations and schemes before a separately authorized execution review.",
+    );
+
+const STYLE_REFLECTION_REVIEW: AssessmentCapabilityDescriptor =
+    AssessmentCapabilityDescriptor::differential_review(
+        "web.review.reflection.style-context@1",
+        "Reflected input reached an HTML style context",
+        "reflection-context",
+        "The scanner marker was absent from the control and appeared in a style attribute or style element; CSS execution or exfiltration was not tested.",
+        None,
+        1_000_000,
+        None,
+        "web.remediation.contextual-output-encoding@1",
+        "Keep untrusted input out of CSS source and apply encoding appropriate to the exact style context.",
+    );
+
+const EVENT_HANDLER_REFLECTION_REVIEW: AssessmentCapabilityDescriptor =
+    AssessmentCapabilityDescriptor::differential_review(
+        "web.review.reflection.event-handler-context@1",
+        "Reflected input reached an inline event-handler attribute",
+        "reflection-context",
+        "The scanner marker was absent from the control and appeared in an inline event-handler attribute; JavaScript execution was not tested.",
+        None,
+        1_000_000,
+        None,
+        "web.remediation.contextual-output-encoding@1",
+        "Do not place untrusted data in inline event handlers; use data-only DOM APIs and separately authorize any execution verification.",
+    );
+
+const SCRIPT_REFLECTION_REVIEW: AssessmentCapabilityDescriptor =
+    AssessmentCapabilityDescriptor::differential_review(
+        "web.review.reflection.script-element-context@1",
+        "Reflected input reached script element content",
+        "reflection-context",
+        "The scanner marker was absent from the control and appeared in script element content; JavaScript grammar and execution were not tested.",
+        None,
+        1_000_000,
+        None,
+        "web.remediation.contextual-output-encoding@1",
+        "Keep untrusted input out of script source and serialize data with a context-safe mechanism.",
+    );
+
+const EMBEDDED_HTML_REFLECTION_REVIEW: AssessmentCapabilityDescriptor =
+    AssessmentCapabilityDescriptor::differential_review(
+        "web.review.reflection.embedded-html-attribute-context@1",
+        "Reflected input reached an embedded-HTML attribute",
+        "reflection-context",
+        "The scanner marker was absent from the control and appeared in an attribute interpreted as embedded HTML; browser execution was not tested.",
+        None,
+        1_000_000,
+        None,
+        "web.remediation.contextual-output-encoding@1",
+        "Avoid placing untrusted input in embedded HTML and apply an allowlist-based sanitizer when markup is required.",
     );
 
 const INERT_REFLECTION_OBSERVATION: AssessmentCapabilityDescriptor =
@@ -136,7 +188,11 @@ enum NativeReviewProjectionKind {
     InertReflection,
     TextReflection,
     AttributeReflection,
-    DangerousReflection,
+    UriAttributeReflection,
+    StyleReflection,
+    EventHandlerReflection,
+    ScriptElementReflection,
+    EmbeddedHtmlReflection,
     SqlStructuralDifferential,
     SstiStructuralEvaluation,
 }
@@ -149,7 +205,11 @@ impl NativeReviewProjectionKind {
             Self::InertReflection => &INERT_REFLECTION_OBSERVATION,
             Self::TextReflection => &TEXT_REFLECTION_OBSERVATION,
             Self::AttributeReflection => &ATTRIBUTE_REFLECTION_OBSERVATION,
-            Self::DangerousReflection => &DANGEROUS_REFLECTION_REVIEW,
+            Self::UriAttributeReflection => &URI_REFLECTION_REVIEW,
+            Self::StyleReflection => &STYLE_REFLECTION_REVIEW,
+            Self::EventHandlerReflection => &EVENT_HANDLER_REFLECTION_REVIEW,
+            Self::ScriptElementReflection => &SCRIPT_REFLECTION_REVIEW,
+            Self::EmbeddedHtmlReflection => &EMBEDDED_HTML_REFLECTION_REVIEW,
             Self::SqlStructuralDifferential => &SQL_STRUCTURAL_REVIEW,
             Self::SstiStructuralEvaluation => &SSTI_STRUCTURAL_REVIEW,
         }
@@ -162,7 +222,11 @@ impl NativeReviewProjectionKind {
             },
             Self::CorsCredentialedExternalOrigin
             | Self::CandidateSpecificExternalRedirect
-            | Self::DangerousReflection
+            | Self::UriAttributeReflection
+            | Self::StyleReflection
+            | Self::EventHandlerReflection
+            | Self::ScriptElementReflection
+            | Self::EmbeddedHtmlReflection
             | Self::SqlStructuralDifferential => NativeReviewProjectionBasis::Differential,
             Self::SstiStructuralEvaluation => NativeReviewProjectionBasis::Differential,
         }
@@ -257,20 +321,41 @@ fn plan_candidate(
                 .query_parameter()
                 .ok_or(AssessmentReviewItemProjectionError::CandidateContract)?;
             let kind = match (candidate.reflection_context(), candidate.disposition()) {
-                (Some(ReviewReflectionContext::Inert), NativeReviewDisposition::Informational) => {
-                    NativeReviewProjectionKind::InertReflection
-                },
-                (Some(ReviewReflectionContext::Text), NativeReviewDisposition::Informational) => {
-                    NativeReviewProjectionKind::TextReflection
-                },
                 (
-                    Some(ReviewReflectionContext::Attribute),
+                    Some(ReviewReflectionContext::HtmlComment),
+                    NativeReviewDisposition::Informational,
+                ) => NativeReviewProjectionKind::InertReflection,
+                (
+                    Some(ReviewReflectionContext::HtmlText),
+                    NativeReviewDisposition::Informational,
+                ) => NativeReviewProjectionKind::TextReflection,
+                (
+                    Some(ReviewReflectionContext::AttributeValue),
                     NativeReviewDisposition::Informational,
                 ) => NativeReviewProjectionKind::AttributeReflection,
                 (
-                    Some(ReviewReflectionContext::Dangerous),
+                    Some(ReviewReflectionContext::UriAttribute),
                     NativeReviewDisposition::NeedsReview,
-                ) => NativeReviewProjectionKind::DangerousReflection,
+                ) => NativeReviewProjectionKind::UriAttributeReflection,
+                (
+                    Some(
+                        ReviewReflectionContext::StyleAttribute
+                        | ReviewReflectionContext::StyleElementContent,
+                    ),
+                    NativeReviewDisposition::NeedsReview,
+                ) => NativeReviewProjectionKind::StyleReflection,
+                (
+                    Some(ReviewReflectionContext::EventHandlerAttribute),
+                    NativeReviewDisposition::NeedsReview,
+                ) => NativeReviewProjectionKind::EventHandlerReflection,
+                (
+                    Some(ReviewReflectionContext::ScriptElementContent),
+                    NativeReviewDisposition::NeedsReview,
+                ) => NativeReviewProjectionKind::ScriptElementReflection,
+                (
+                    Some(ReviewReflectionContext::EmbeddedHtmlAttribute),
+                    NativeReviewDisposition::NeedsReview,
+                ) => NativeReviewProjectionKind::EmbeddedHtmlReflection,
                 _ => return Err(AssessmentReviewItemProjectionError::CandidateContract),
             };
             (

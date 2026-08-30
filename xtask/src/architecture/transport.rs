@@ -57,6 +57,7 @@ const BOUNDED_RUNTIME_SOURCES: &[&str] = &[
     NATIVE_REVIEW_ACTION_SOURCE,
     "crates/venom-scanner/src/web_runtime/web_assessment.rs",
     "crates/venom-scanner/src/web_runtime/web_assessment/discovery.rs",
+    "crates/venom-scanner/src/web_runtime/web_assessment/reflection_context.rs",
     "crates/venom-scanner/src/web_runtime/web_assessment/semantic.rs",
     "crates/venom-scanner/src/web_decision.rs",
     "crates/venom-scanner/src/web_execution.rs",
@@ -90,12 +91,15 @@ const NATIVE_REVIEW_DECISION_SOURCE: &str =
     "crates/venom-scanner/src/web_runtime/web_review_decision.rs";
 const NATIVE_REVIEW_EXECUTION_SOURCE: &str =
     "crates/venom-scanner/src/web_runtime/web_review_execution.rs";
+const REFLECTION_CONTEXT_SOURCE: &str =
+    "crates/venom-scanner/src/web_runtime/web_assessment/reflection_context.rs";
 const NATIVE_REVIEW_BOUNDED_SOURCES: &[&str] = &[
     HTTP_REVIEW_RESPONSE_SOURCE,
     ASSESSMENT_REVIEW_SOURCE,
     ASSESSMENT_REVIEW_PROJECTION_SOURCE,
     NATIVE_REVIEW_ACTION_SOURCE,
     NATIVE_REVIEW_DECISION_SOURCE,
+    REFLECTION_CONTEXT_SOURCE,
 ];
 const KNOWLEDGE_SOURCE: &str = "crates/venom-scanner/src/knowledge.rs";
 
@@ -421,8 +425,8 @@ fn inspect_native_review_execution_broker_boundary(
     Ok(violations.into_iter().collect())
 }
 
-const EXACT_NATIVE_REVIEW_EXECUTION_TOKEN_BYTES: usize = 20_754;
-const EXACT_NATIVE_REVIEW_EXECUTION_FINGERPRINT: u128 = 0x3be0_f9dd_9752_32e4_de6c_56fa_1bb8_49e5;
+const EXACT_NATIVE_REVIEW_EXECUTION_TOKEN_BYTES: usize = 22_778;
+const EXACT_NATIVE_REVIEW_EXECUTION_FINGERPRINT: u128 = 0x7918_610f_aa47_2982_e9c1_f378_12b5_4636;
 
 fn native_review_execution_fingerprint_violations(source: &str, syntax: &syn::File) -> Vec<String> {
     let exact_tests = matches!(syntax.items.last(), Some(Item::Mod(module))
@@ -965,6 +969,7 @@ fn native_defense_classifier_is_exact(function: &syn::ItemFn) -> bool {
             == BTreeSet::from([
                 "CorsPolicyPair".to_owned(),
                 "RedirectReflectionQueryPair".to_owned(),
+                "ReflectionContextQueryPair".to_owned(),
                 "SqlStructuralQueryPair".to_owned(),
                 "SqlStructuralQueryReplayPair".to_owned(),
                 "SstiStructuralQueryPair".to_owned(),
@@ -988,6 +993,7 @@ fn collect_exact_native_review_patterns(
             for variant in [
                 "CorsPolicyPair",
                 "RedirectReflectionQueryPair",
+                "ReflectionContextQueryPair",
                 "SqlStructuralQueryPair",
                 "SqlStructuralQueryReplayPair",
                 "SstiStructuralQueryPair",
@@ -7882,6 +7888,10 @@ impl<'ast> Visit<'ast> for OwnershipVisitor<'_> {
                 | (
                     "crates/venom-scanner/src/web_runtime/web_assessment.rs",
                     "discovery"
+                )
+                | (
+                    "crates/venom-scanner/src/web_runtime/web_assessment.rs",
+                    "reflection_context"
                 )
                 | (
                     "crates/venom-scanner/src/web_runtime/web_assessment.rs",
