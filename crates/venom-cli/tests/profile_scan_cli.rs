@@ -607,7 +607,10 @@ fn non_regular_authorization_file_is_rejected_before_network_dispatch() {
     assert!(!output.status.success());
     assert!(output.stdout.is_empty());
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("must be a regular file"));
+    assert!(
+        stderr.contains("SourceNotRegularFile"),
+        "unexpected stderr: {stderr}"
+    );
     assert!(!stderr.contains(directory_text.as_str()));
     assert_eq!(server.connections.load(Ordering::SeqCst), 0);
     std::fs::remove_dir(directory).expect("remove non-regular authorization source");

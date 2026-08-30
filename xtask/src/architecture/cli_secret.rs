@@ -1187,10 +1187,9 @@ impl<'ast> Visit<'ast> for BoundaryOrderVisitor {
             .segments
             .last()
             .map(|segment| segment.ident.to_string())
+            .filter(|name| self.observed.contains(name.as_str()))
         {
-            if self.observed.contains(name.as_str()) {
-                self.order.push(name);
-            }
+            self.order.push(name);
         }
         visit::visit_path(self, path);
     }
