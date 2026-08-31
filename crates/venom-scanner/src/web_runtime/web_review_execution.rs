@@ -37,7 +37,9 @@ use crate::{
         SQL_QUOTE_BALANCE_QUERY_PAIR_ID, SQL_QUOTE_BALANCE_QUERY_PAIR_REVISION,
         SSTI_ARITHMETIC_EXPRESSION_PAIR_ID, SSTI_ARITHMETIC_EXPRESSION_PAIR_REVISION,
         XSS_ATTRIBUTE_BOUNDARY_QUERY_PAIR_ID, XSS_ATTRIBUTE_BOUNDARY_QUERY_PAIR_REVISION,
-        XSS_STRUCTURAL_QUERY_PAIR_ID, XSS_STRUCTURAL_QUERY_PAIR_REVISION,
+        XSS_JAVASCRIPT_LEXICAL_BOUNDARY_QUERY_PAIR_ID,
+        XSS_JAVASCRIPT_LEXICAL_BOUNDARY_QUERY_PAIR_REVISION, XSS_STRUCTURAL_QUERY_PAIR_ID,
+        XSS_STRUCTURAL_QUERY_PAIR_REVISION,
     },
     payload_strategy::{
         PayloadSeed, PayloadStrategyError, PayloadStrategyLimits, PayloadStrategyRef,
@@ -163,7 +165,10 @@ pub(crate) fn enabled_native_web_review_actions(
             NativeWebReviewActionKind::SstiStructuralQueryPair
             | NativeWebReviewActionKind::SstiStructuralQueryReplayPair => ssti_query_configured,
             NativeWebReviewActionKind::XssStructuralQueryPair
-            | NativeWebReviewActionKind::XssAttributeBoundaryQueryPair => xss_action == Some(*kind),
+            | NativeWebReviewActionKind::XssAttributeBoundaryQueryPair
+            | NativeWebReviewActionKind::XssScriptLexicalBoundaryQueryPair => {
+                xss_action == Some(*kind)
+            },
         })
         .collect()
 }
@@ -608,6 +613,10 @@ fn payload_strategy_reference(
         NativeWebReviewActionKind::XssAttributeBoundaryQueryPair => (
             XSS_ATTRIBUTE_BOUNDARY_QUERY_PAIR_ID,
             XSS_ATTRIBUTE_BOUNDARY_QUERY_PAIR_REVISION,
+        ),
+        NativeWebReviewActionKind::XssScriptLexicalBoundaryQueryPair => (
+            XSS_JAVASCRIPT_LEXICAL_BOUNDARY_QUERY_PAIR_ID,
+            XSS_JAVASCRIPT_LEXICAL_BOUNDARY_QUERY_PAIR_REVISION,
         ),
     };
     PayloadStrategyRef::new(id, revision)

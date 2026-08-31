@@ -147,6 +147,20 @@ pub(in crate::web_runtime) enum JavaScriptSourceResult {
     Incomplete,
 }
 
+/// Exact bounded lexical result for one scanner-owned boundary/tail pair.
+///
+/// The matcher accepts only complete block-comment tokens on the exact inline
+/// script host established by [`JavaScriptReflectionAnchor`]. Raw substring
+/// presence, a token in another script, or a token retained inside a string or
+/// template is never a match.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::web_runtime) enum ExactJavaScriptBoundaryMatch {
+    Absent,
+    Matched,
+    Ambiguous,
+    Incomplete,
+}
+
 impl JavaScriptSourceResult {
     pub(in crate::web_runtime) const fn exact_anchor(&self) -> Option<&JavaScriptReflectionAnchor> {
         match self {
@@ -342,11 +356,30 @@ fn locate_source_script_host(
     marker_offset: usize,
     marker_len: usize,
 ) -> SourceScriptResult {
-    let bytes = html.as_bytes();
     let marker_end = marker_offset.saturating_add(marker_len);
+    let mut matched = None;
+    if visit_source_script_hosts(html, |host| {
+        if marker_offset >= host.body_start && marker_end <= host.body_end {
+            matched = Some(host);
+        }
+    })
+    .is_err()
+    {
+        return SourceScriptResult::Incomplete;
+    }
+    matched.map_or(SourceScriptResult::Absent, SourceScriptResult::Exact)
+}
+
+/// Visits each bounded source-level script host in document order. This is
+/// shared by reflection classification and lexical boundary matching so both
+/// paths use the same ordinal, type, raw-text, and limit contract.
+fn visit_source_script_hosts(
+    html: &str,
+    mut visitor: impl FnMut(SourceScriptHost),
+) -> Result<(), ()> {
+    let bytes = html.as_bytes();
     let mut cursor = 0_usize;
     let mut script_ordinal = 0_usize;
-    let mut matched = None;
     while cursor < bytes.len() {
         if bytes[cursor] != b'<' {
             cursor += 1;
@@ -354,21 +387,21 @@ fn locate_source_script_host(
         }
         if bytes[cursor..].starts_with(b"<!--") {
             let Some(end) = find_bytes(&bytes[cursor + 4..], b"-->") else {
-                return SourceScriptResult::Incomplete;
+                return Err(());
             };
             cursor = cursor + 4 + end + 3;
             continue;
         }
         if bytes[cursor..].starts_with(b"<!") || bytes[cursor..].starts_with(b"<?") {
             let Some(end) = bytes[cursor + 2..].iter().position(|byte| *byte == b'>') else {
-                return SourceScriptResult::Incomplete;
+                return Err(());
             };
             cursor = cursor + 2 + end + 1;
             continue;
         }
         if bytes[cursor..].starts_with(b"</") {
             let Some(end) = bytes[cursor + 2..].iter().position(|byte| *byte == b'>') else {
-                return SourceScriptResult::Incomplete;
+                return Err(());
             };
             cursor = cursor + 2 + end + 1;
             continue;
@@ -379,51 +412,48 @@ fn locate_source_script_host(
         }
         let start_tag = match parse_source_start_tag(bytes, cursor) {
             Ok(tag) => tag,
-            Err(()) => return SourceScriptResult::Incomplete,
+            Err(()) => return Err(()),
         };
         cursor = start_tag.next;
         if start_tag.name != "script" {
             if start_tag.name == "style" && !start_tag.self_closing {
                 let Some(close) = find_raw_text_close(&bytes[cursor..], b"</style") else {
-                    return SourceScriptResult::Incomplete;
+                    return Err(());
                 };
                 let close_start = cursor + close;
                 let Some(close_end) = bytes[close_start..].iter().position(|byte| *byte == b'>')
                 else {
-                    return SourceScriptResult::Incomplete;
+                    return Err(());
                 };
                 cursor = close_start + close_end + 1;
             }
             continue;
         }
         if start_tag.self_closing || script_ordinal >= MAX_SCRIPT_ELEMENTS {
-            return SourceScriptResult::Incomplete;
+            return Err(());
         }
         let body_start = cursor;
         let Some(close) = find_raw_text_close(&bytes[body_start..], b"</script") else {
-            return SourceScriptResult::Incomplete;
+            return Err(());
         };
         let body_end = body_start + close;
         let close_start = body_end;
         let Some(close_end) = bytes[close_start..].iter().position(|byte| *byte == b'>') else {
-            return SourceScriptResult::Incomplete;
+            return Err(());
         };
         if body_end.saturating_sub(body_start) > MAX_INLINE_SCRIPT_BYTES {
-            return SourceScriptResult::Incomplete;
+            return Err(());
         }
-        if marker_offset >= body_start && marker_end <= body_end {
-            matched = Some(SourceScriptHost {
-                kind: start_tag.script_kind,
-                ordinal: u16::try_from(script_ordinal)
-                    .expect("compiled script-element bound fits u16"),
-                body_start,
-                body_end,
-            });
-        }
+        visitor(SourceScriptHost {
+            kind: start_tag.script_kind,
+            ordinal: u16::try_from(script_ordinal).expect("compiled script-element bound fits u16"),
+            body_start,
+            body_end,
+        });
         script_ordinal = script_ordinal.saturating_add(1);
         cursor = close_start + close_end + 1;
     }
-    matched.map_or(SourceScriptResult::Absent, SourceScriptResult::Exact)
+    Ok(())
 }
 
 struct SourceStartTag {
@@ -742,6 +772,238 @@ fn collect_inline_script_body(handle: &Handle) -> Option<String> {
     Some(body)
 }
 
+/// Matches one exact scanner-owned JavaScript block-comment boundary pair on
+/// the same source/DOM script host established by the initial reflection.
+///
+/// `boundary_comment` and `tail_comment` are the exact production-derived
+/// block-comment tokens, including `/*` and `*/`. Their inner values must use
+/// the same bounded scanner-marker alphabet as the reflection analyzer.
+pub(in crate::web_runtime) fn match_exact_xss_javascript_boundary_document(
+    html: &str,
+    boundary_comment: &str,
+    tail_comment: &str,
+    anchor: &JavaScriptReflectionAnchor,
+) -> ExactJavaScriptBoundaryMatch {
+    if html.len() > MAX_HTTP_BODY_LIMIT
+        || !valid_exact_block_comment(boundary_comment)
+        || !valid_exact_block_comment(tail_comment)
+        || boundary_comment == tail_comment
+        || !anchor.script_kind().is_executable_inline()
+    {
+        return ExactJavaScriptBoundaryMatch::Incomplete;
+    }
+    let mut expected_host = None;
+    if visit_source_script_hosts(html, |host| {
+        if host.ordinal == anchor.script_ordinal() {
+            expected_host = Some(host);
+        }
+    })
+    .is_err()
+    {
+        return ExactJavaScriptBoundaryMatch::Incomplete;
+    }
+    let Some(host) = expected_host else {
+        return ExactJavaScriptBoundaryMatch::Incomplete;
+    };
+    if host.kind != anchor.script_kind() {
+        return ExactJavaScriptBoundaryMatch::Incomplete;
+    }
+    let Some(source) = html.get(host.body_start..host.body_end) else {
+        return ExactJavaScriptBoundaryMatch::Incomplete;
+    };
+    let Some(dom_source) = collect_exact_dom_script_host_body(html, anchor) else {
+        return ExactJavaScriptBoundaryMatch::Incomplete;
+    };
+    let boundary_count = html.match_indices(boundary_comment).take(2).count();
+    let tail_count = html.match_indices(tail_comment).take(2).count();
+    match (boundary_count, tail_count) {
+        (0, 0) => {
+            return if javascript_source_is_complete(source) {
+                ExactJavaScriptBoundaryMatch::Absent
+            } else {
+                ExactJavaScriptBoundaryMatch::Incomplete
+            };
+        },
+        (1, 1) => {},
+        _ => return ExactJavaScriptBoundaryMatch::Ambiguous,
+    }
+    if !source.contains(boundary_comment) || !source.contains(tail_comment) {
+        // Current-case artifacts outside the source-anchored host cannot be
+        // correlated to this probe.
+        return ExactJavaScriptBoundaryMatch::Ambiguous;
+    }
+    if dom_source.match_indices(boundary_comment).take(2).count() != 1
+        || dom_source.match_indices(tail_comment).take(2).count() != 1
+    {
+        return ExactJavaScriptBoundaryMatch::Incomplete;
+    }
+    inspect_exact_javascript_boundary_source(source, boundary_comment, tail_comment)
+}
+
+/// Validates production candidate bytes against the exact lexical contract
+/// before they can be installed into an executor.
+pub(in crate::web_runtime) fn validate_exact_xss_javascript_boundary_candidate(
+    candidate: &str,
+    boundary_comment: &str,
+    tail_comment: &str,
+    context: JavaScriptReflectionContext,
+) -> ExactJavaScriptBoundaryMatch {
+    let delimiter = match context {
+        JavaScriptReflectionContext::SingleQuotedString => "'",
+        JavaScriptReflectionContext::DoubleQuotedString => "\"",
+        JavaScriptReflectionContext::TemplateLiteralText => "`",
+        JavaScriptReflectionContext::TemplateExpression
+        | JavaScriptReflectionContext::ExpressionOrCode
+        | JavaScriptReflectionContext::LineComment
+        | JavaScriptReflectionContext::BlockComment
+        | JavaScriptReflectionContext::RegexLiteral
+        | JavaScriptReflectionContext::RegexCharacterClass => {
+            return ExactJavaScriptBoundaryMatch::Incomplete;
+        },
+    };
+    let source = format!("{delimiter}{candidate}{delimiter}");
+    inspect_exact_javascript_boundary_source(&source, boundary_comment, tail_comment)
+}
+
+fn valid_exact_block_comment(comment: &str) -> bool {
+    let Some(inner) = comment
+        .strip_prefix("/*")
+        .and_then(|value| value.strip_suffix("*/"))
+    else {
+        return false;
+    };
+    !inner.is_empty()
+        && inner.len() <= MAX_JAVASCRIPT_MARKER_BYTES
+        && inner.bytes().all(is_scanner_marker_byte)
+}
+
+fn inspect_exact_javascript_boundary_source(
+    source: &str,
+    boundary_comment: &str,
+    tail_comment: &str,
+) -> ExactJavaScriptBoundaryMatch {
+    if source.len() > MAX_INLINE_SCRIPT_BYTES
+        || !valid_exact_block_comment(boundary_comment)
+        || !valid_exact_block_comment(tail_comment)
+        || boundary_comment == tail_comment
+    {
+        return ExactJavaScriptBoundaryMatch::Incomplete;
+    }
+    let mut boundary_occurrences = source
+        .match_indices(boundary_comment)
+        .map(|(offset, _)| offset);
+    let boundary_start = boundary_occurrences.next();
+    let boundary_duplicate = boundary_occurrences.next().is_some();
+    let mut tail_occurrences = source.match_indices(tail_comment).map(|(offset, _)| offset);
+    let tail_start = tail_occurrences.next();
+    let tail_duplicate = tail_occurrences.next().is_some();
+    let (Some(boundary_start), Some(tail_start)) = (boundary_start, tail_start) else {
+        return if boundary_start.is_none() && tail_start.is_none() {
+            ExactJavaScriptBoundaryMatch::Absent
+        } else {
+            ExactJavaScriptBoundaryMatch::Ambiguous
+        };
+    };
+    if boundary_duplicate || tail_duplicate {
+        return ExactJavaScriptBoundaryMatch::Ambiguous;
+    }
+    let boundary_end = boundary_start.saturating_add(boundary_comment.len());
+    let tail_end = tail_start.saturating_add(tail_comment.len());
+    if boundary_end > tail_start || source.get(boundary_end..tail_start) != Some("+") {
+        return ExactJavaScriptBoundaryMatch::Ambiguous;
+    }
+
+    // Target only the safe scanner-owned comment interiors. Starting a target
+    // at `/` would first classify it as code before the lexer recognizes the
+    // complete block-comment token.
+    let mut targets = [
+        LexicalTarget {
+            start: boundary_start + 2,
+            end: boundary_end - 2,
+            found: None,
+            exact_block_comment: Some((boundary_start, boundary_end)),
+        },
+        LexicalTarget {
+            start: tail_start + 2,
+            end: tail_end - 2,
+            found: None,
+            exact_block_comment: Some((tail_start, tail_end)),
+        },
+    ];
+    let mut lexer = MarkerLexer {
+        source: source.as_bytes(),
+        targets: &mut targets,
+        cursor: 0,
+        tokens: 0,
+        nesting: 0,
+    };
+    match lexer.scan_code(false, false) {
+        Ok(()) if lexer.cursor == lexer.source.len() => {
+            match (lexer.targets[0].found, lexer.targets[1].found) {
+                (
+                    Some(JavaScriptReflectionContext::BlockComment),
+                    Some(JavaScriptReflectionContext::BlockComment),
+                ) => ExactJavaScriptBoundaryMatch::Matched,
+                (Some(left), Some(right)) if left == right => ExactJavaScriptBoundaryMatch::Absent,
+                (Some(_), Some(_)) => ExactJavaScriptBoundaryMatch::Ambiguous,
+                _ => ExactJavaScriptBoundaryMatch::Incomplete,
+            }
+        },
+        Ok(()) | Err(LexerFailure::Incomplete) => ExactJavaScriptBoundaryMatch::Incomplete,
+        Err(LexerFailure::Ambiguous) => ExactJavaScriptBoundaryMatch::Ambiguous,
+    }
+}
+
+fn collect_exact_dom_script_host_body(
+    html: &str,
+    anchor: &JavaScriptReflectionAnchor,
+) -> Option<String> {
+    let dom = parse_document(RcDom::default(), ParseOpts::default()).one(html);
+    let mut pending = vec![dom.document.clone()];
+    let mut visited = 0_usize;
+    let mut script_ordinal = 0_usize;
+    let mut matched = None;
+    while let Some(handle) = pending.pop() {
+        visited = visited.saturating_add(1);
+        if visited > MAX_REFLECTION_DOM_NODES {
+            return None;
+        }
+        if let NodeData::Element { name, attrs, .. } = &handle.data {
+            if name.ns == ns!(html) && name.local.as_ref() == "script" {
+                if script_ordinal >= MAX_SCRIPT_ELEMENTS {
+                    return None;
+                }
+                if script_ordinal == usize::from(anchor.script_ordinal()) {
+                    let kind = classify_script_kind(&attrs.borrow());
+                    let script_body = collect_inline_script_body(&handle)?;
+                    if kind != anchor.script_kind() {
+                        return None;
+                    }
+                    matched = Some(script_body);
+                }
+                script_ordinal = script_ordinal.saturating_add(1);
+            }
+        }
+        pending.extend(handle.children.borrow().iter().rev().cloned());
+    }
+    matched
+}
+
+fn javascript_source_is_complete(source: &str) -> bool {
+    if source.len() > MAX_INLINE_SCRIPT_BYTES {
+        return false;
+    }
+    let mut targets = [];
+    let mut lexer = MarkerLexer {
+        source: source.as_bytes(),
+        targets: &mut targets,
+        cursor: 0,
+        tokens: 0,
+        nesting: 0,
+    };
+    matches!(lexer.scan_code(false, false), Ok(())) && lexer.cursor == lexer.source.len()
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum LexicalResult {
     Exact(JavaScriptReflectionContext),
@@ -757,17 +1019,21 @@ fn classify_javascript_lexical_context(source: &str, marker: &str) -> LexicalRes
     if occurrences.next().is_some() {
         return LexicalResult::Ambiguous;
     }
+    let mut targets = [LexicalTarget {
+        start: marker_start,
+        end: marker_start.saturating_add(marker.len()),
+        found: None,
+        exact_block_comment: None,
+    }];
     let mut lexer = MarkerLexer {
         source: source.as_bytes(),
-        marker_start,
-        marker_end: marker_start.saturating_add(marker.len()),
+        targets: &mut targets,
         cursor: 0,
         tokens: 0,
         nesting: 0,
-        found: None,
     };
     match lexer.scan_code(false, false) {
-        Ok(()) if lexer.cursor == lexer.source.len() => lexer
+        Ok(()) if lexer.cursor == lexer.source.len() => lexer.targets[0]
             .found
             .map_or(LexicalResult::Incomplete, LexicalResult::Exact),
         Ok(()) | Err(LexerFailure::Incomplete) => LexicalResult::Incomplete,
@@ -782,23 +1048,32 @@ enum LexerFailure {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct LexicalTarget {
+    start: usize,
+    end: usize,
+    found: Option<JavaScriptReflectionContext>,
+    /// Exact token bounds required when this target is classified as a block
+    /// comment. Reflection markers use containment; scanner boundary tokens
+    /// must coincide with the lexer-opened comment itself.
+    exact_block_comment: Option<(usize, usize)>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SlashGoal {
     RegexAllowed,
     DivisionOnly,
     Ambiguous,
 }
 
-struct MarkerLexer<'a> {
-    source: &'a [u8],
-    marker_start: usize,
-    marker_end: usize,
+struct MarkerLexer<'source, 'targets> {
+    source: &'source [u8],
+    targets: &'targets mut [LexicalTarget],
     cursor: usize,
     tokens: usize,
     nesting: usize,
-    found: Option<JavaScriptReflectionContext>,
 }
 
-impl MarkerLexer<'_> {
+impl MarkerLexer<'_, '_> {
     fn scan_code(
         &mut self,
         stop_at_template_brace: bool,
@@ -1107,13 +1382,7 @@ impl MarkerLexer<'_> {
                     {
                         self.cursor += 1;
                     }
-                    if self.found != Some(JavaScriptReflectionContext::RegexCharacterClass) {
-                        self.record_range(
-                            start,
-                            self.cursor,
-                            JavaScriptReflectionContext::RegexLiteral,
-                        )?;
-                    }
+                    self.record_regex_range(start, self.cursor)?;
                     return Ok(());
                 },
                 _ if line_terminator_len(self.source, self.cursor).is_some() => {
@@ -1137,7 +1406,13 @@ impl MarkerLexer<'_> {
     }
 
     fn slash_may_enclose_marker(&self) -> bool {
-        if self.marker_start <= self.cursor {
+        self.targets
+            .iter()
+            .any(|target| self.slash_may_enclose_target(*target))
+    }
+
+    fn slash_may_enclose_target(&self, target: LexicalTarget) -> bool {
+        if target.start <= self.cursor {
             return false;
         }
         let mut cursor = self.cursor + 1;
@@ -1157,9 +1432,9 @@ impl MarkerLexer<'_> {
                     cursor += 1;
                 },
                 b'/' if !in_class => {
-                    return self.marker_start > self.cursor
-                        && self.marker_end <= cursor
-                        && self.marker_start < cursor;
+                    return target.start > self.cursor
+                        && target.end <= cursor
+                        && target.start < cursor;
                 },
                 _ => cursor += 1,
             }
@@ -1168,8 +1443,10 @@ impl MarkerLexer<'_> {
     }
 
     fn record_point(&mut self, context: JavaScriptReflectionContext) -> Result<(), LexerFailure> {
-        if self.cursor == self.marker_start {
-            self.set_context(context)?;
+        for index in 0..self.targets.len() {
+            if self.cursor == self.targets[index].start {
+                self.set_context(index, context)?;
+            }
         }
         Ok(())
     }
@@ -1180,10 +1457,20 @@ impl MarkerLexer<'_> {
         end: usize,
         context: JavaScriptReflectionContext,
     ) -> Result<(), LexerFailure> {
-        if self.marker_start >= start && self.marker_end <= end {
-            self.set_context(context)?;
-        } else if self.marker_start < end && self.marker_end > start {
-            return Err(LexerFailure::Incomplete);
+        for index in 0..self.targets.len() {
+            let target = self.targets[index];
+            if target.start >= start && target.end <= end {
+                if context == JavaScriptReflectionContext::BlockComment
+                    && target
+                        .exact_block_comment
+                        .is_some_and(|expected| expected != (start, end))
+                {
+                    return Err(LexerFailure::Ambiguous);
+                }
+                self.set_context(index, context)?;
+            } else if target.start < end && target.end > start {
+                return Err(LexerFailure::Incomplete);
+            }
         }
         Ok(())
     }
@@ -1194,15 +1481,36 @@ impl MarkerLexer<'_> {
         end: usize,
         context: JavaScriptReflectionContext,
     ) -> Result<(), LexerFailure> {
-        if self.marker_start >= start && self.marker_start < end {
-            self.set_context(context)?;
+        for index in 0..self.targets.len() {
+            let marker_start = self.targets[index].start;
+            if marker_start >= start && marker_start < end {
+                self.set_context(index, context)?;
+            }
         }
         Ok(())
     }
 
-    fn set_context(&mut self, context: JavaScriptReflectionContext) -> Result<(), LexerFailure> {
-        match self.found {
-            None => self.found = Some(context),
+    fn record_regex_range(&mut self, start: usize, end: usize) -> Result<(), LexerFailure> {
+        for index in 0..self.targets.len() {
+            let target = self.targets[index];
+            if target.start >= start && target.end <= end {
+                if target.found != Some(JavaScriptReflectionContext::RegexCharacterClass) {
+                    self.set_context(index, JavaScriptReflectionContext::RegexLiteral)?;
+                }
+            } else if target.start < end && target.end > start {
+                return Err(LexerFailure::Incomplete);
+            }
+        }
+        Ok(())
+    }
+
+    fn set_context(
+        &mut self,
+        index: usize,
+        context: JavaScriptReflectionContext,
+    ) -> Result<(), LexerFailure> {
+        match self.targets[index].found {
+            None => self.targets[index].found = Some(context),
             Some(existing) if existing == context => {},
             Some(_) => return Err(LexerFailure::Ambiguous),
         }
@@ -1904,5 +2212,227 @@ mod tests {
                 assert!(usize::from(anchor.script_ordinal()) < MAX_SCRIPT_ELEMENTS);
             }
         }
+    }
+
+    const XSS_IDENTITY: &str = "0123456789abcdef0123456789abcdef";
+
+    fn xss_boundary_comment() -> String {
+        format!("/*venom-xss-js-boundary-{XSS_IDENTITY}*/")
+    }
+
+    fn xss_tail_comment() -> String {
+        format!("/*venom-xss-js-tail-{XSS_IDENTITY}*/")
+    }
+
+    fn xss_candidate(delimiter: char) -> String {
+        format!(
+            "{delimiter}{}+{}{delimiter}",
+            xss_boundary_comment(),
+            xss_tail_comment()
+        )
+    }
+
+    fn script_anchor_for(delimiter: char, attributes: &str) -> JavaScriptReflectionAnchor {
+        exact(
+            attributes,
+            &format!("const value = {delimiter}{MARKER}{delimiter};"),
+        )
+    }
+
+    #[test]
+    fn production_shaped_script_candidates_create_exact_block_comment_boundaries() {
+        for (delimiter, context) in [
+            ('\'', JavaScriptReflectionContext::SingleQuotedString),
+            ('"', JavaScriptReflectionContext::DoubleQuotedString),
+            ('`', JavaScriptReflectionContext::TemplateLiteralText),
+        ] {
+            let candidate = xss_candidate(delimiter);
+            assert_eq!(
+                validate_exact_xss_javascript_boundary_candidate(
+                    &candidate,
+                    &xss_boundary_comment(),
+                    &xss_tail_comment(),
+                    context,
+                ),
+                ExactJavaScriptBoundaryMatch::Matched,
+                "{delimiter}"
+            );
+
+            let attributes = if delimiter == '"' {
+                " type=\"module\""
+            } else {
+                ""
+            };
+            let anchor = script_anchor_for(delimiter, attributes);
+            let candidate_html = html(
+                attributes,
+                &format!("const value = {delimiter}{candidate}{delimiter};"),
+            );
+            assert_eq!(
+                match_exact_xss_javascript_boundary_document(
+                    &candidate_html,
+                    &xss_boundary_comment(),
+                    &xss_tail_comment(),
+                    &anchor,
+                ),
+                ExactJavaScriptBoundaryMatch::Matched,
+                "{delimiter}"
+            );
+        }
+    }
+
+    #[test]
+    fn raw_comment_shapes_inside_original_string_are_not_lexical_boundaries() {
+        let anchor = script_anchor_for('\'', "");
+        let retained = html(
+            "",
+            &format!(
+                "const value = '{}+{}';",
+                xss_boundary_comment(),
+                xss_tail_comment()
+            ),
+        );
+        assert_eq!(
+            match_exact_xss_javascript_boundary_document(
+                &retained,
+                &xss_boundary_comment(),
+                &xss_tail_comment(),
+                &anchor,
+            ),
+            ExactJavaScriptBoundaryMatch::Absent
+        );
+    }
+
+    #[test]
+    fn duplicate_partial_reordered_and_wrong_host_artifacts_fail_closed() {
+        let anchor = script_anchor_for('\'', "");
+        let candidate = xss_candidate('\'');
+        let positive_source = format!("const value = '{candidate}';");
+        let duplicate = html("", &format!("{positive_source}{positive_source}"));
+        assert_eq!(
+            match_exact_xss_javascript_boundary_document(
+                &duplicate,
+                &xss_boundary_comment(),
+                &xss_tail_comment(),
+                &anchor,
+            ),
+            ExactJavaScriptBoundaryMatch::Ambiguous
+        );
+
+        let enclosing_comment = html(
+            "",
+            &format!(
+                "/*unrelated-prefix {}+{}''",
+                xss_boundary_comment(),
+                xss_tail_comment()
+            ),
+        );
+        assert_eq!(
+            match_exact_xss_javascript_boundary_document(
+                &enclosing_comment,
+                &xss_boundary_comment(),
+                &xss_tail_comment(),
+                &anchor,
+            ),
+            ExactJavaScriptBoundaryMatch::Ambiguous,
+            "scanner text contained in a different lexer-opened comment is not an exact token"
+        );
+
+        let partial = html(
+            "",
+            &format!("const value = ''{}+'';", xss_boundary_comment()),
+        );
+        assert_eq!(
+            match_exact_xss_javascript_boundary_document(
+                &partial,
+                &xss_boundary_comment(),
+                &xss_tail_comment(),
+                &anchor,
+            ),
+            ExactJavaScriptBoundaryMatch::Ambiguous
+        );
+
+        let reordered = html(
+            "",
+            &format!(
+                "const value = ''{}+{}'';",
+                xss_tail_comment(),
+                xss_boundary_comment()
+            ),
+        );
+        assert_eq!(
+            match_exact_xss_javascript_boundary_document(
+                &reordered,
+                &xss_boundary_comment(),
+                &xss_tail_comment(),
+                &anchor,
+            ),
+            ExactJavaScriptBoundaryMatch::Ambiguous
+        );
+
+        let wrong_host =
+            format!("<script>const value = 'safe';</script><script>{positive_source}</script>");
+        assert_eq!(
+            match_exact_xss_javascript_boundary_document(
+                &wrong_host,
+                &xss_boundary_comment(),
+                &xss_tail_comment(),
+                &anchor,
+            ),
+            ExactJavaScriptBoundaryMatch::Ambiguous
+        );
+    }
+
+    #[test]
+    fn missing_invalid_malformed_and_host_kind_mismatch_are_not_positive() {
+        let anchor = script_anchor_for('\'', "");
+        assert_eq!(
+            match_exact_xss_javascript_boundary_document(
+                &html("", "const value = 'safe';"),
+                &xss_boundary_comment(),
+                &xss_tail_comment(),
+                &anchor,
+            ),
+            ExactJavaScriptBoundaryMatch::Absent
+        );
+        assert_eq!(
+            match_exact_xss_javascript_boundary_document(
+                &html("", "const value = 'unterminated"),
+                &xss_boundary_comment(),
+                &xss_tail_comment(),
+                &anchor,
+            ),
+            ExactJavaScriptBoundaryMatch::Incomplete,
+            "absence is accepted only after the expected host is lexically complete"
+        );
+        assert_eq!(
+            match_exact_xss_javascript_boundary_document(
+                &html("", "const value = 'safe';"),
+                "/*not a scanner token*/",
+                &xss_tail_comment(),
+                &anchor,
+            ),
+            ExactJavaScriptBoundaryMatch::Incomplete
+        );
+
+        let candidate = xss_candidate('\'');
+        assert_eq!(
+            match_exact_xss_javascript_boundary_document(
+                &html("", &format!("const value = '{candidate}'; 'unterminated")),
+                &xss_boundary_comment(),
+                &xss_tail_comment(),
+                &anchor,
+            ),
+            ExactJavaScriptBoundaryMatch::Incomplete
+        );
+        assert_eq!(
+            match_exact_xss_javascript_boundary_document(
+                &html(" type=\"module\"", &format!("const value = '{candidate}';"),),
+                &xss_boundary_comment(),
+                &xss_tail_comment(),
+                &anchor,
+            ),
+            ExactJavaScriptBoundaryMatch::Incomplete
+        );
     }
 }

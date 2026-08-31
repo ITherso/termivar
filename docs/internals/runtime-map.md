@@ -46,7 +46,7 @@ venom scan <target> --profile web-review
       -> passive header/cookie assessment projection
       -> root-scoped matched CORS and optional redirect review
       -> one bounded root-or-discovered parser-driven reflection-context pair
-      -> one DOM reflection parse + one bounded attribute-source anchor pass
+      -> one DOM reflection parse + bounded attribute/JavaScript source-anchor passes
       -> at most one assessment-wide evidence-capable XSS structural family
       -> one bounded root-or-discovered SQL structural review with exact replay
       -> one bounded root-or-discovered SSTI arithmetic review with independent replay
@@ -96,8 +96,9 @@ followed. A distinct two-request reflection pair uses a scanner-owned inert
 marker and one bounded `html5ever` parse for supported `text/html`. Comment,
 ordinary text, and ordinary attribute placement are `Informational`; typed
 URI-bearing, style, inline-handler, script-element, and embedded-HTML attribute
-placement is at most `NeedsReview`. Quote mode and deep JavaScript/CSS context
-are not inferred from the DOM. Exact credentialed CORS and candidate-specific
+placement is at most `NeedsReview`. Quote mode and JavaScript lexical context
+are supplied only by their bounded source analyzers and cross-checked with the
+DOM; CSS context is not inferred. Exact credentialed CORS and candidate-specific
 redirect relationships are also at most `NeedsReview`. Every
 native action is KnowledgeOnly, and no native assessment capability can
 produce a `Confirmed` item.
@@ -106,10 +107,18 @@ an exact normalized host/sink and double-, single-, or unquoted mode, then
 cross-checks that anchor against `html5ever`. HTML-text evidence requires the
 exact inert scanner node. Ordinary, URI, and event-handler attribute evidence
 requires exact inert boundary and tail attributes on that same anchored HTML
-host/sink and a clean matched control. Script remains metadata-only. Selection
-precedes payload materialization and admits one family, preserving the existing
-child-bootstrap plus control/candidate three-request ceiling regardless of
-catalog size.
+host/sink and a clean matched control. A separate bounded, non-evaluating pass
+classifies one unique marker on one supported inline classic/module script host.
+Single-quoted string, double-quoted string, and template-literal-text families
+require exact ordered scanner-owned boundary/tail block-comment tokens outside
+the original string/template context on that same host, with neither token in
+control. Expression/code, template-expression, line/block-comment, and regex
+contexts remain metadata-only. Selection precedes payload materialization and
+admits one family, preserving one child bootstrap plus control/candidate—the
+three-request ceiling—regardless of catalog size; metadata growth does not add
+per-family HTML/JavaScript parses or requests. Lexical boundary evidence remains
+KnowledgeOnly and can project at most `NeedsReview`; no JavaScript or browser is
+executed.
 At most one deterministic query name across the assessment receives SQL
 structural review. Two independent matched quote-balance pairs must reproduce
 both a status-class and normalized body-structure change. Error text and

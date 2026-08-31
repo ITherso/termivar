@@ -19,7 +19,9 @@ use url::Url;
 use venom_core::{ConfidenceScore, EntityId, KnowledgePredicate};
 
 use super::*;
-use crate::web_actions::NATIVE_WEB_REVIEW_REQUESTS_PER_CASE;
+use crate::web_actions::{
+    NATIVE_WEB_REVIEW_ACTIVE_REQUESTS_PER_CASE, NATIVE_WEB_REVIEW_REQUESTS_PER_CASE,
+};
 use crate::web_runtime::assessment_defense::{
     CommittedAssessmentDefenseLedger, ASSESSMENT_DEFENSE_NAMESPACE,
 };
@@ -301,13 +303,29 @@ async fn opted_in_native_review_uses_exact_root_shared_authority_and_no_redirect
     let requests = server.requests().await;
     let initial_enabled_actions =
         enabled_native_web_review_actions(true, true, true, true, true, None);
+    let xss_enabled_actions = runtime
+        .xss_structural_review
+        .as_ref()
+        .expect("the exact single-quoted script anchor selects one child review")
+        .enabled_actions
+        .clone();
+    assert_eq!(
+        xss_enabled_actions,
+        [NativeWebReviewActionKind::XssScriptLexicalBoundaryQueryPair]
+    );
     assert_eq!(
         report.usage().active_verifications(),
-        u16::try_from(initial_enabled_actions.len()).unwrap(),
-        "JavaScript source metadata must not create an active action in PR A"
+        u16::try_from(initial_enabled_actions.len() + xss_enabled_actions.len()).unwrap(),
+        "the exact initial plan plus one selected script child own every active verification"
     );
-    // One bootstrap plus both legs of each subject-specific initial action.
-    let expected_requests = 1 + initial_enabled_actions.len() * NATIVE_WEB_REVIEW_REQUESTS_PER_CASE;
+    // Each runtime owns one bootstrap plus both legs of its exact enabled set.
+    let initial_requests = 1 + initial_enabled_actions.len() * NATIVE_WEB_REVIEW_REQUESTS_PER_CASE;
+    let xss_child_requests = 1 + xss_enabled_actions.len() * NATIVE_WEB_REVIEW_REQUESTS_PER_CASE;
+    assert_eq!(
+        xss_child_requests,
+        usize::from(xss_probe_catalog::XSS_V1_MAX_TOTAL_REQUESTS)
+    );
+    let expected_requests = initial_requests + xss_child_requests;
     assert_eq!(requests.len(), expected_requests);
     assert!(requests.iter().all(|request| request.path() == "/"));
     assert_eq!(
@@ -322,7 +340,15 @@ async fn opted_in_native_review_uses_exact_root_shared_authority_and_no_redirect
             .iter()
             .filter(|request| request.target.contains("return_to="))
             .count(),
-        11
+        initial_enabled_actions
+            .iter()
+            .map(|kind| match kind {
+                NativeWebReviewActionKind::CorsPolicyPair => 0,
+                NativeWebReviewActionKind::RedirectReflectionQueryPair => 1,
+                _ => NATIVE_WEB_REVIEW_REQUESTS_PER_CASE,
+            })
+            .sum::<usize>()
+            + xss_enabled_actions.len() * NATIVE_WEB_REVIEW_REQUESTS_PER_CASE
     );
     assert_eq!(
         report.subjects()[0]
@@ -334,24 +360,27 @@ async fn opted_in_native_review_uses_exact_root_shared_authority_and_no_redirect
                     if is_native_review_action(evidence.case().action_id())
             ))
             .count(),
-        initial_enabled_actions.len() * NATIVE_WEB_REVIEW_REQUESTS_PER_CASE
+        initial_enabled_actions.len() * NATIVE_WEB_REVIEW_REQUESTS_PER_CASE,
+        "the parent subject turn log retains the exact initial runtime; the selected child is accounted by its separate action receipts"
     );
     let native_items = report
         .assessment_items()
         .iter()
         .filter(|item| item.capability_id().starts_with("web.review."))
         .collect::<Vec<_>>();
-    assert_eq!(native_items.len(), 3);
+    let expected_capabilities = BTreeSet::from([
+        "web.review.cors.credentialed-external-origin@1",
+        "web.review.redirect.candidate-specific-external@1",
+        "web.review.reflection.script-element-context@1",
+        "web.review.xss.structural-boundary@1",
+    ]);
+    assert_eq!(native_items.len(), expected_capabilities.len());
     assert_eq!(
         native_items
             .iter()
             .map(|item| item.capability_id())
             .collect::<BTreeSet<_>>(),
-        BTreeSet::from([
-            "web.review.cors.credentialed-external-origin@1",
-            "web.review.redirect.candidate-specific-external@1",
-            "web.review.reflection.script-element-context@1",
-        ])
+        expected_capabilities
     );
     assert!(native_items.iter().all(|item| {
         item.disposition() == AssessmentDisposition::NeedsReview
@@ -1013,6 +1042,174 @@ async fn quote_aware_attribute_boundaries_are_bounded_needs_review_only() {
                 assert!(!rendered.contains("venom-reflection-candidate-"));
                 assert!(!rendered.contains("confirmed"));
             }
+        }
+    }
+}
+
+#[tokio::test]
+async fn single_quoted_script_boundary_is_bounded_needs_review_and_report_safe() {
+    const SECRET: &str = "VENOM-JS-XSS-MUST-NOT-LEAK-SECRET-123";
+    let server = serve(|request| {
+        let value = Url::parse(&format!("http://fixture{}", request.target))
+            .ok()
+            .and_then(|url| {
+                url.query_pairs()
+                    .find_map(|(name, value)| (name == "item").then(|| value.into_owned()))
+            })
+            .unwrap_or_else(|| "matched-control".to_owned());
+        FixtureReply::Response(FixtureResponse::html(format!(
+            "<script>const value = '{value}';</script>"
+        )))
+    })
+    .await;
+
+    let mut runtime = WebAssessmentRuntime::builder(server.url(&format!("/?item={SECRET}")))
+        .enable_low_risk_differential_review()
+        .build()
+        .unwrap();
+    let report = runtime.analyze().await.unwrap();
+    assert_report_reconciles(&report);
+    assert_eq!(report.completion(), &WebAssessmentCompletion::Complete);
+
+    let query_parameter_names = vec!["item".to_owned()];
+    let redirect_query_parameter = select_redirect_review_query_parameter(&query_parameter_names);
+    assert_eq!(redirect_query_parameter, None);
+    let initial_actions = enabled_native_web_review_actions(
+        true,
+        redirect_query_parameter.is_some(),
+        true,
+        true,
+        true,
+        None,
+    );
+    assert_eq!(
+        runtime.native_review.as_ref().unwrap().enabled_actions,
+        initial_actions
+    );
+    assert!(!initial_actions.contains(&NativeWebReviewActionKind::RedirectReflectionQueryPair));
+
+    let xss_actions = runtime
+        .xss_structural_review
+        .as_ref()
+        .expect("the exact JavaScript source anchor selects one child review")
+        .enabled_actions
+        .as_slice();
+    assert_eq!(
+        xss_actions,
+        &[NativeWebReviewActionKind::XssScriptLexicalBoundaryQueryPair]
+    );
+    assert_eq!(
+        NativeWebReviewActionKind::XssScriptLexicalBoundaryQueryPair.verification_target(),
+        crate::planner::VerificationTarget::KnowledgeOnly
+    );
+
+    let expected_initial_requests = 1 + initial_actions.len() * NATIVE_WEB_REVIEW_REQUESTS_PER_CASE;
+    let expected_xss_child_requests = 1 + xss_actions.len() * NATIVE_WEB_REVIEW_REQUESTS_PER_CASE;
+    assert_eq!(
+        expected_xss_child_requests,
+        usize::from(xss_probe_catalog::XSS_V1_MAX_TOTAL_REQUESTS)
+    );
+    assert_eq!(expected_xss_child_requests, 3);
+
+    let expected_initial_active =
+        initial_actions.len() * NATIVE_WEB_REVIEW_ACTIVE_REQUESTS_PER_CASE;
+    let expected_xss_active = xss_actions.len() * NATIVE_WEB_REVIEW_ACTIVE_REQUESTS_PER_CASE;
+    assert_eq!(expected_xss_active, 1);
+    assert_eq!(
+        usize::from(report.usage().active_verifications()),
+        expected_initial_active + expected_xss_active
+    );
+
+    let xss_items = report
+        .assessment_items()
+        .iter()
+        .filter(|item| item.capability_id() == "web.review.xss.structural-boundary@1")
+        .collect::<Vec<_>>();
+    assert_eq!(xss_items.len(), 1);
+    assert_eq!(
+        xss_items[0].disposition(),
+        AssessmentDisposition::NeedsReview
+    );
+    assert!(matches!(
+        xss_items[0].basis(),
+        AssessmentBasis::Differential(_)
+    ));
+    assert!(report
+        .assessment_items()
+        .iter()
+        .all(|item| item.disposition() != AssessmentDisposition::Confirmed));
+
+    let script_action = NativeWebReviewActionKind::XssScriptLexicalBoundaryQueryPair.action_id();
+    let script_receipts = report
+        .transport()
+        .receipts()
+        .iter()
+        .filter(|receipt| receipt.action_id() == script_action)
+        .collect::<Vec<_>>();
+    assert_eq!(script_receipts.len(), NATIVE_WEB_REVIEW_REQUESTS_PER_CASE);
+    assert_eq!(
+        script_receipts
+            .iter()
+            .filter(|receipt| receipt.stage() == DecisionExecutionStage::Active)
+            .count(),
+        NATIVE_WEB_REVIEW_ACTIVE_REQUESTS_PER_CASE
+    );
+
+    let requests = server.requests().await;
+    assert_eq!(
+        requests.len(),
+        expected_initial_requests + expected_xss_child_requests
+    );
+    assert!(requests.iter().all(|request| request.path() == "/"));
+    assert!(requests
+        .iter()
+        .all(|request| request.host() == requests[0].host()));
+    assert!(requests
+        .iter()
+        .all(|request| !request.target.contains("review.invalid")));
+    assert_eq!(
+        requests
+            .iter()
+            .filter(|request| request.target.contains("venom-xss-js-control-"))
+            .count(),
+        1
+    );
+    assert_eq!(
+        requests
+            .iter()
+            .filter(|request| request.target.contains("venom-xss-js-boundary-"))
+            .count(),
+        1
+    );
+    assert!(requests.iter().all(|request| {
+        let target = request.target.to_ascii_lowercase();
+        !target.contains("javascript%3a")
+            && !target.contains("data%3a")
+            && !target.contains("http%3a%2f%2f")
+            && !target.contains("https%3a%2f%2f")
+            && !target.contains("alert")
+            && !target.contains("prompt")
+            && !target.contains("confirm")
+    }));
+    assert!(!format!("{report:?}").contains(SECRET));
+
+    #[cfg(feature = "reporting")]
+    {
+        let product =
+            ReportGenerator::compose_assessment(report, ScanProfileV1::web_review().unwrap())
+                .unwrap();
+        for format in [
+            ReportFormat::Json,
+            ReportFormat::Csv,
+            ReportFormat::Html,
+            ReportFormat::Markdown,
+        ] {
+            let rendered = ReportGenerator::generate_assessment(&product, format).unwrap();
+            assert!(!rendered.contains(SECRET));
+            assert!(!rendered.contains("venom-xss-js-control-"));
+            assert!(!rendered.contains("venom-xss-js-boundary-"));
+            assert!(!rendered.contains("venom-xss-js-tail-"));
+            assert!(!rendered.contains("confirmed"));
         }
     }
 }

@@ -52,6 +52,34 @@ fn attribute_xss_selection(element: &str, attribute: &str, delimiter: &str) -> X
     .unwrap()
 }
 
+fn javascript_xss_selection(delimiter: char) -> XssProbeSelection {
+    let marker = seeds().reflection_candidate_marker();
+    let html = format!("<script>const reflected = {delimiter}{marker}{delimiter};</script>");
+    let context = classify_exact_html_reflection(&html, &marker);
+    let source = cross_validate_javascript_reflection_source(&html, &marker, context);
+    super::super::web_assessment::select_xss_probe_families(
+        context,
+        &AttributeSourceResult::Absent,
+        &source,
+    )
+    .into_iter()
+    .next()
+    .unwrap()
+}
+
+fn script_value_document(delimiter: char, value: &str) -> String {
+    format!("<script>const reflected = {delimiter}{value}{delimiter};</script>")
+}
+
+fn same_context_script_document(candidate_delimiter: char, candidate: &str) -> String {
+    let inert_delimiter = if candidate_delimiter == '"' {
+        '\''
+    } else {
+        '"'
+    };
+    script_value_document(inert_delimiter, candidate)
+}
+
 fn headers(values: &[(&str, &str)]) -> HeaderMap {
     let mut headers = HeaderMap::new();
     for (name, value) in values {
@@ -852,6 +880,360 @@ fn quote_aware_attribute_families_require_exact_host_sink_dom_boundaries() {
             projected.last(),
             Some(&(XSS_STRUCTURAL_RELATION, "structural-boundary-observed"))
         );
+    }
+}
+
+#[test]
+fn javascript_xss_observer_classifies_exact_lexical_boundaries_and_fail_closed_negatives() {
+    for (delimiter, family, variant, context_id) in [
+        (
+            '\'',
+            XssProbeFamily::ScriptSingleQuotedStringBoundary,
+            "web.review.xss.variant.script.single-quoted-string@1",
+            "single-quoted-string",
+        ),
+        (
+            '"',
+            XssProbeFamily::ScriptDoubleQuotedStringBoundary,
+            "web.review.xss.variant.script.double-quoted-string@1",
+            "double-quoted-string",
+        ),
+        (
+            '`',
+            XssProbeFamily::ScriptTemplateLiteralBoundary,
+            "web.review.xss.variant.script.template-literal-text@1",
+            "template-literal-text",
+        ),
+    ] {
+        let selection = javascript_xss_selection(delimiter);
+        let anchor = selection.javascript_anchor().unwrap();
+        assert_eq!(selection.family(), family);
+        assert_eq!(selection.variant_id(), variant);
+        assert_eq!(anchor.script_kind().stable_id(), "classic-javascript");
+        assert_eq!(anchor.context().stable_id(), context_id);
+        assert_eq!(anchor.script_ordinal(), 0);
+        assert_eq!(
+            selection.action_kind(),
+            NativeWebReviewActionKind::XssScriptLexicalBoundaryQueryPair
+        );
+
+        let observer = AssessmentReviewObserverSet::new_xss(
+            root(),
+            seeds(),
+            QUERY_PARAMETER,
+            selection.clone(),
+        )
+        .unwrap();
+        let contract = observer.xss.as_ref().unwrap();
+        let strategy = native_review_strategy_ref(selection.action_kind());
+        let tokens =
+            XssJavascriptLexicalProbeTokens::from_identity(&contract.probe.parts().identity)
+                .unwrap();
+
+        let control_body = script_value_document(delimiter, &contract.probe.parts().control_value);
+        let control = observe(
+            &observer,
+            selection.action_kind(),
+            DecisionExecutionStage::Passive,
+            &contract.control_url,
+            &HeaderMap::new(),
+            200,
+            Some("text/html"),
+            Some(control_body.as_bytes()),
+            selection.action_kind().executor_id(),
+            Some(&strategy),
+            false,
+        )
+        .unwrap();
+        assert_eq!(
+            values(&control),
+            vec![
+                (NATIVE_WEB_REVIEW_RESPONSE_MARKER, "passive-control"),
+                (XSS_PROBE_FAMILY, family.stable_id()),
+                (XSS_PROBE_VARIANT, variant),
+                (JAVASCRIPT_SOURCE_STATUS, "exact-script-anchor"),
+                (JAVASCRIPT_SOURCE_SCRIPT_KIND, "classic-javascript"),
+                (JAVASCRIPT_SOURCE_CONTEXT, context_id),
+                (JAVASCRIPT_SOURCE_SCRIPT_ORDINAL, "0"),
+                (XSS_STRUCTURAL_RELATION, "encoded-or-inert"),
+            ]
+        );
+
+        let candidate_body =
+            script_value_document(delimiter, &contract.probe.parts().candidate_value);
+        let candidate = observe(
+            &observer,
+            selection.action_kind(),
+            DecisionExecutionStage::Active,
+            &contract.candidate_url,
+            &HeaderMap::new(),
+            200,
+            Some("text/html"),
+            Some(candidate_body.as_bytes()),
+            selection.action_kind().executor_id(),
+            Some(&strategy),
+            false,
+        )
+        .unwrap();
+        assert_eq!(
+            values(&candidate),
+            vec![
+                (NATIVE_WEB_REVIEW_RESPONSE_MARKER, "active-candidate"),
+                (XSS_PROBE_FAMILY, family.stable_id()),
+                (XSS_PROBE_VARIANT, variant),
+                (JAVASCRIPT_SOURCE_STATUS, "exact-script-anchor"),
+                (JAVASCRIPT_SOURCE_SCRIPT_KIND, "classic-javascript"),
+                (JAVASCRIPT_SOURCE_CONTEXT, context_id),
+                (JAVASCRIPT_SOURCE_SCRIPT_ORDINAL, "0"),
+                (XSS_STRUCTURAL_RELATION, "structural-boundary-observed"),
+            ]
+        );
+
+        let same_context_body =
+            same_context_script_document(delimiter, &contract.probe.parts().candidate_value);
+        let same_context = observe(
+            &observer,
+            selection.action_kind(),
+            DecisionExecutionStage::Active,
+            &contract.candidate_url,
+            &HeaderMap::new(),
+            200,
+            Some("text/html"),
+            Some(same_context_body.as_bytes()),
+            selection.action_kind().executor_id(),
+            Some(&strategy),
+            false,
+        )
+        .unwrap();
+        assert_eq!(
+            values(&same_context).last(),
+            Some(&(XSS_STRUCTURAL_RELATION, "reflected-same-context"))
+        );
+
+        let encoded_candidate = contract
+            .probe
+            .parts()
+            .candidate_value
+            .replace('&', "&amp;")
+            .replace('/', "&#47;")
+            .replace('\'', "&#39;")
+            .replace('"', "&quot;")
+            .replace('`', "&#96;");
+        let encoded_body = script_value_document(delimiter, &encoded_candidate);
+        let encoded = observe(
+            &observer,
+            selection.action_kind(),
+            DecisionExecutionStage::Active,
+            &contract.candidate_url,
+            &HeaderMap::new(),
+            200,
+            Some("text/html"),
+            Some(encoded_body.as_bytes()),
+            selection.action_kind().executor_id(),
+            Some(&strategy),
+            false,
+        )
+        .unwrap();
+        assert_eq!(
+            values(&encoded).last(),
+            Some(&(XSS_STRUCTURAL_RELATION, "encoded-or-inert"))
+        );
+
+        let partial_candidate = format!("{delimiter}{}{delimiter}", tokens.boundary_comment());
+        let partial_body = script_value_document(delimiter, &partial_candidate);
+        let partial = observe(
+            &observer,
+            selection.action_kind(),
+            DecisionExecutionStage::Active,
+            &contract.candidate_url,
+            &HeaderMap::new(),
+            200,
+            Some("text/html"),
+            Some(partial_body.as_bytes()),
+            selection.action_kind().executor_id(),
+            Some(&strategy),
+            false,
+        )
+        .unwrap();
+        assert_eq!(
+            values(&partial).last(),
+            Some(&(XSS_STRUCTURAL_RELATION, "incomplete"))
+        );
+
+        let debug = format!("{observer:?}{control:?}{candidate:?}");
+        for scanner_owned_value in [
+            contract.probe.parts().identity.as_str(),
+            contract.probe.parts().candidate_value.as_str(),
+            tokens.boundary_comment(),
+            tokens.tail_comment(),
+        ] {
+            assert!(!debug.contains(scanner_owned_value));
+        }
+    }
+}
+
+#[test]
+fn javascript_xss_observer_vocabulary_reconstructs_exact_review_only_ledger_pairs() {
+    for (delimiter, family) in [
+        ('\'', XssProbeFamily::ScriptSingleQuotedStringBoundary),
+        ('"', XssProbeFamily::ScriptDoubleQuotedStringBoundary),
+        ('`', XssProbeFamily::ScriptTemplateLiteralBoundary),
+    ] {
+        let selection = javascript_xss_selection(delimiter);
+        let variant = selection.variant_id();
+        let action = selection.action_kind();
+        assert_eq!(
+            action.verification_target(),
+            crate::planner::VerificationTarget::KnowledgeOnly
+        );
+        let source_evidence_ids = REFLECTION_REVIEW_PROPERTIES
+            .iter()
+            .map(|property| fake_id(&format!("js-source-{}", property.name())))
+            .collect::<Vec<_>>();
+
+        let observer = AssessmentReviewObserverSet::new_xss_with_source_evidence(
+            root(),
+            seeds(),
+            QUERY_PARAMETER,
+            selection.clone(),
+            source_evidence_ids.clone(),
+        )
+        .unwrap();
+        let contract = observer.xss.as_ref().unwrap();
+        let strategy = native_review_strategy_ref(action);
+        assert_eq!(strategy.id(), XSS_JAVASCRIPT_LEXICAL_BOUNDARY_QUERY_PAIR_ID);
+        assert_eq!(
+            strategy.revision(),
+            XSS_JAVASCRIPT_LEXICAL_BOUNDARY_QUERY_PAIR_REVISION
+        );
+        let control_body = script_value_document(delimiter, &contract.probe.parts().control_value);
+        let candidate_body =
+            script_value_document(delimiter, &contract.probe.parts().candidate_value);
+        let control_evidence = observe(
+            &observer,
+            action,
+            DecisionExecutionStage::Passive,
+            &contract.control_url,
+            &HeaderMap::new(),
+            200,
+            Some("text/html"),
+            Some(control_body.as_bytes()),
+            action.executor_id(),
+            Some(&strategy),
+            false,
+        )
+        .unwrap();
+        let candidate_evidence = observe(
+            &observer,
+            action,
+            DecisionExecutionStage::Active,
+            &contract.candidate_url,
+            &HeaderMap::new(),
+            200,
+            Some("text/html"),
+            Some(candidate_body.as_bytes()),
+            action.executor_id(),
+            Some(&strategy),
+            false,
+        )
+        .unwrap();
+
+        for (evidence, expected_method) in [
+            (
+                &control_evidence,
+                "xss-script-lexical-boundary-control-response",
+            ),
+            (
+                &candidate_evidence,
+                "xss-script-lexical-boundary-candidate-response",
+            ),
+        ] {
+            let EvidenceOrigin::Derived(first_derivation) = evidence[0].origin() else {
+                panic!("XSS review evidence must retain exact derived parents")
+            };
+            const COMPLETE_HTTP_RESPONSE_PARENTS: usize = 7;
+            assert_eq!(
+                first_derivation.parents().len(),
+                COMPLETE_HTTP_RESPONSE_PARENTS + REFLECTION_REVIEW_PROPERTIES.len()
+            );
+            assert!(source_evidence_ids
+                .iter()
+                .all(|id| first_derivation.parents().contains(id)));
+            for item in evidence {
+                let EvidenceOrigin::Derived(derivation) = item.origin() else {
+                    panic!("XSS review evidence must remain derived")
+                };
+                assert_eq!(derivation.parents(), first_derivation.parents());
+                assert_eq!(item.source().component(), action.executor_id());
+                assert_eq!(item.source().method(), expected_method);
+                assert_eq!(item.source().correlation_id(), Some(CASE_ID));
+            }
+        }
+
+        let relation = |evidence: &[Evidence]| {
+            let projected = values(evidence);
+            let slug = projected
+                .iter()
+                .find_map(|(property, value)| {
+                    (*property == XSS_STRUCTURAL_RELATION).then_some(*value)
+                })
+                .unwrap();
+            parse_xss_structural_relation(slug).unwrap()
+        };
+        let control = fake_observation(
+            action,
+            DecisionExecutionStage::Passive,
+            CommittedReviewResponse::XssStructural {
+                family,
+                variant,
+                relation: relation(&control_evidence),
+            },
+            false,
+            family.seed_code(),
+        );
+        let candidate_suffix = format!("{}-candidate", family.seed_code());
+        let candidate = fake_observation(
+            action,
+            DecisionExecutionStage::Active,
+            CommittedReviewResponse::XssStructural {
+                family,
+                variant,
+                relation: relation(&candidate_evidence),
+            },
+            true,
+            &candidate_suffix,
+        );
+        let mut ledger = CommittedAssessmentReviewLedger::new_xss_with_source_evidence(
+            root(),
+            seeds(),
+            QUERY_PARAMETER,
+            selection,
+            source_evidence_ids.clone(),
+        )
+        .unwrap();
+        for observation in [control, candidate] {
+            ledger.observations.insert(
+                ReviewReceiptKey {
+                    kind: observation.kind,
+                    case_id: observation.case_id.clone(),
+                    stage: observation.stage,
+                },
+                observation,
+            );
+        }
+
+        assert!(ledger.pair_is_complete(action));
+        let items = ledger.candidates();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].disposition(), NativeReviewDisposition::NeedsReview);
+        assert_eq!(items[0].xss_family(), Some(family));
+        assert_eq!(items[0].query_parameter(), Some(QUERY_PARAMETER));
+        assert!(source_evidence_ids
+            .iter()
+            .all(|id| items[0].candidate_evidence_ids().contains(id)));
+        assert!(source_evidence_ids
+            .iter()
+            .all(|id| !items[0].control_evidence_ids().contains(id)));
     }
 }
 

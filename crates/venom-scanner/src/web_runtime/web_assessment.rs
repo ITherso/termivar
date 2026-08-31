@@ -79,7 +79,9 @@ pub(super) use attribute_source_context::{
 };
 use discovery::{canonicalize_root, parse_document, ParsedDocument, ParsedForm, ParsedRoute};
 pub(super) use javascript_source_context::{
-    cross_validate_javascript_reflection_source, JavaScriptScriptKind, JavaScriptSourceResult,
+    cross_validate_javascript_reflection_source, match_exact_xss_javascript_boundary_document,
+    validate_exact_xss_javascript_boundary_candidate, ExactJavaScriptBoundaryMatch,
+    JavaScriptScriptKind, JavaScriptSourceResult,
 };
 pub(super) use reflection_context::{
     classify_exact_html_reflection, match_exact_xss_html_boundary_document,
@@ -2118,6 +2120,7 @@ impl WebAssessmentRuntime {
                                                 review.target.clone(),
                                                 review.seeds.clone(),
                                                 input.query_parameter,
+                                                input.source_evidence_ids,
                                                 selection,
                                             )
                                         })
@@ -2144,22 +2147,26 @@ impl WebAssessmentRuntime {
                         },
                     }
                 }
-                if let Some((target, seeds, parameter, selection)) = pending_xss_review {
+                if let Some((target, seeds, parameter, source_evidence_ids, selection)) =
+                    pending_xss_review
+                {
                     let xss_action = selection.action_kind();
                     let observer = Arc::new(
-                        AssessmentReviewObserverSet::new_xss(
+                        AssessmentReviewObserverSet::new_xss_with_source_evidence(
                             target.clone(),
                             seeds.clone(),
                             &parameter,
                             selection.clone(),
+                            source_evidence_ids.clone(),
                         )
                         .map_err(|_| WebAssessmentRuntimeError::NativeReviewComposition)?,
                     );
-                    let ledger = CommittedAssessmentReviewLedger::new_xss(
+                    let ledger = CommittedAssessmentReviewLedger::new_xss_with_source_evidence(
                         target.clone(),
                         seeds.clone(),
                         &parameter,
                         selection.clone(),
+                        source_evidence_ids,
                     )
                     .map_err(|_| WebAssessmentRuntimeError::NativeReviewComposition)?;
                     let mut review = AssessmentNativeReviewRuntime {

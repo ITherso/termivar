@@ -183,16 +183,27 @@ most `NeedsReview`. One bounded source pass cross-checks exact ordinary, URI,
 and event-handler attribute anchors with the DOM and retains only typed
 double-, single-, or unquoted mode plus normalized element/attribute names.
 Ambiguous, incomplete, mismatched, comment, script, or style source never
-enables an attribute probe. Quote-aware V1 candidates are non-executing and can
-produce structural evidence only when the candidate DOM contains both exact
-scanner-owned inert attributes on the exact anchored HTML host/sink while the
-matched control contains neither. The HTML-text family retains its exact inert
-node contract; script-content remains metadata-only pending stronger grammar
-evidence. Selection is metadata-first, deterministic, duplicate suppressed,
-and capped at one family, so catalog size does not increase the three-request
-XSS child ceiling. Literal or same-context reflection alone cannot produce the
-structural item.
-No JavaScript, event, navigation, callback, or browser is executed.
+enables an attribute probe. Quote-aware attribute candidates are non-executing
+and can produce structural evidence only when the candidate DOM contains both
+exact scanner-owned inert attributes on the exact anchored HTML host/sink while
+the matched control contains neither. The HTML-text family retains its exact
+inert node contract. For supported inline classic and module scripts, a separate
+bounded, non-evaluating source pass cross-checks one exact script host with the
+DOM and classifies the marker's JavaScript lexical context. Single-quoted
+strings, double-quoted strings, and template-literal text have executable V1
+families; expression and template-expression positions, line and block
+comments, and regex contexts remain metadata-only. A positive script result
+requires the exact scanner-owned boundary and tail block comments to be parsed
+as JavaScript comment tokens outside the original string or template-text
+context, in order on that same script host, while the matched control contains
+neither token. Raw token substrings and same-context reflection are
+insufficient.
+
+Selection is metadata-first, deterministic, duplicate suppressed, and capped
+at one family. One selected family uses one shared-authority child bootstrap
+plus one control and one candidate, so catalog size does not increase the
+three-request XSS child ceiling or cause per-family source parsing. No
+JavaScript, event, navigation, callback, or browser is executed.
 The catalog is KnowledgeOnly and has no path to a `Confirmed` assessment item.
 Non-HTML is explicitly not applicable to reflection review; truncation,
 invalid UTF-8, or an exhausted parser ceiling makes the opt-in review run

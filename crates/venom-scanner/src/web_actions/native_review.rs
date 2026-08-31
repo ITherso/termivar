@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use crate::planner::{RiskScore, VerificationTarget};
 
 /// Number of actions in the native low-risk web-review catalog.
-pub const NATIVE_WEB_REVIEW_ACTION_COUNT: usize = 9;
+pub const NATIVE_WEB_REVIEW_ACTION_COUNT: usize = 10;
 
 /// Hard per-case request count declared by every native web-review action.
 pub const NATIVE_WEB_REVIEW_REQUESTS_PER_CASE: usize = 2;
@@ -67,6 +67,8 @@ pub enum NativeWebReviewActionKind {
     XssStructuralQueryPair,
     /// One source-anchored quote-aware inert attribute-boundary comparison.
     XssAttributeBoundaryQueryPair,
+    /// One source-anchored non-executing JavaScript lexical-boundary comparison.
+    XssScriptLexicalBoundaryQueryPair,
 }
 
 /// The only request surface an action may vary between its matched legs.
@@ -111,6 +113,7 @@ impl NativeWebReviewActionKind {
             Self::SstiStructuralQueryReplayPair,
             Self::XssStructuralQueryPair,
             Self::XssAttributeBoundaryQueryPair,
+            Self::XssScriptLexicalBoundaryQueryPair,
         ]
     }
 
@@ -126,6 +129,9 @@ impl NativeWebReviewActionKind {
             Self::SstiStructuralQueryReplayPair => "web.review.ssti.structural-query-replay-pair@1",
             Self::XssStructuralQueryPair => "web.review.xss.structural-query-pair@1",
             Self::XssAttributeBoundaryQueryPair => "web.review.xss.attribute-boundary-query-pair@1",
+            Self::XssScriptLexicalBoundaryQueryPair => {
+                "web.review.xss.script-lexical-boundary-query-pair@1"
+            },
         }
     }
 
@@ -151,6 +157,9 @@ impl NativeWebReviewActionKind {
             Self::XssAttributeBoundaryQueryPair => {
                 "web.review.probe.xss-attribute-boundary-query-pair@1"
             },
+            Self::XssScriptLexicalBoundaryQueryPair => {
+                "web.review.probe.xss-script-lexical-boundary-query-pair@1"
+            },
         }
     }
 
@@ -166,6 +175,7 @@ impl NativeWebReviewActionKind {
             Self::SstiStructuralQueryReplayPair => "ssti-structural-query-replay-pair",
             Self::XssStructuralQueryPair => "xss-structural-query-pair",
             Self::XssAttributeBoundaryQueryPair => "xss-attribute-boundary-query-pair",
+            Self::XssScriptLexicalBoundaryQueryPair => "xss-script-lexical-boundary-query-pair",
         }
     }
 
@@ -184,7 +194,8 @@ impl NativeWebReviewActionKind {
             | Self::SstiStructuralQueryPair
             | Self::SstiStructuralQueryReplayPair
             | Self::XssStructuralQueryPair
-            | Self::XssAttributeBoundaryQueryPair => {
+            | Self::XssAttributeBoundaryQueryPair
+            | Self::XssScriptLexicalBoundaryQueryPair => {
                 NativeWebReviewDifferentialInput::SingleQueryParameter
             },
         }
@@ -222,7 +233,8 @@ impl NativeWebReviewActionKind {
             | Self::SstiStructuralQueryPair
             | Self::SstiStructuralQueryReplayPair
             | Self::XssStructuralQueryPair
-            | Self::XssAttributeBoundaryQueryPair => 7,
+            | Self::XssAttributeBoundaryQueryPair
+            | Self::XssScriptLexicalBoundaryQueryPair => 7,
         };
         RiskScore::from_percent(percent).expect("native web-review risk is a valid constant")
     }
@@ -310,6 +322,12 @@ mod tests {
                 "web.review.probe.xss-attribute-boundary-query-pair@1",
                 "xss-attribute-boundary-query-pair",
             ),
+            (
+                NativeWebReviewActionKind::XssScriptLexicalBoundaryQueryPair,
+                "web.review.xss.script-lexical-boundary-query-pair@1",
+                "web.review.probe.xss-script-lexical-boundary-query-pair@1",
+                "xss-script-lexical-boundary-query-pair",
+            ),
         ];
 
         assert_eq!(
@@ -336,7 +354,7 @@ mod tests {
 
     #[test]
     fn every_native_action_is_low_risk_and_irrevocably_knowledge_only() {
-        let expected_risk_basis_points = [500, 800, 500, 700, 700, 700, 700, 700, 700];
+        let expected_risk_basis_points = [500, 800, 500, 700, 700, 700, 700, 700, 700, 700];
 
         for (kind, expected_risk) in NativeWebReviewActionKind::all()
             .into_iter()

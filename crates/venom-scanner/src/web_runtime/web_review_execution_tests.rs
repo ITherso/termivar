@@ -11,8 +11,8 @@ use venom_core::EntityId;
 
 use super::super::web_assessment::{
     classify_exact_html_reflection, cross_validate_attribute_reflection_source,
-    select_xss_probe_families, AttributeSourceResult, ExactHtmlReflectionContext,
-    JavaScriptSourceResult, XssProbeSelection,
+    cross_validate_javascript_reflection_source, select_xss_probe_families, AttributeSourceResult,
+    ExactHtmlReflectionContext, JavaScriptSourceResult, XssProbeSelection,
 };
 use super::super::web_review_decision::NativeWebReviewDecisionProfile;
 use super::*;
@@ -55,6 +55,10 @@ fn expected_strategy(kind: NativeWebReviewActionKind) -> PayloadStrategyRef {
         NativeWebReviewActionKind::XssAttributeBoundaryQueryPair => (
             XSS_ATTRIBUTE_BOUNDARY_QUERY_PAIR_ID,
             XSS_ATTRIBUTE_BOUNDARY_QUERY_PAIR_REVISION,
+        ),
+        NativeWebReviewActionKind::XssScriptLexicalBoundaryQueryPair => (
+            XSS_JAVASCRIPT_LEXICAL_BOUNDARY_QUERY_PAIR_ID,
+            XSS_JAVASCRIPT_LEXICAL_BOUNDARY_QUERY_PAIR_REVISION,
         ),
     };
     PayloadStrategyRef::new(id, revision).unwrap()
@@ -102,6 +106,17 @@ fn attribute_xss_selection() -> XssProbeSelection {
     let context = classify_exact_html_reflection(&html, MARKER);
     let source = cross_validate_attribute_reflection_source(&html, MARKER, context);
     select_xss_probe_families(context, &source, &JavaScriptSourceResult::Absent)
+        .into_iter()
+        .next()
+        .unwrap()
+}
+
+fn script_xss_selection() -> XssProbeSelection {
+    const MARKER: &str = "venom-reflection-candidate-0123456789abcdef-end";
+    let html = format!("<script>const value = '{MARKER}';</script>");
+    let context = classify_exact_html_reflection(&html, MARKER);
+    let source = cross_validate_javascript_reflection_source(&html, MARKER, context);
+    select_xss_probe_families(context, &AttributeSourceResult::Absent, &source)
         .into_iter()
         .next()
         .unwrap()
@@ -349,12 +364,26 @@ fn xss_only_subject_uses_one_exact_decision_executor_and_completeness_action() {
         (
             html_xss_selection(),
             NativeWebReviewActionKind::XssStructuralQueryPair,
-            NativeWebReviewActionKind::XssAttributeBoundaryQueryPair,
+            [
+                NativeWebReviewActionKind::XssAttributeBoundaryQueryPair,
+                NativeWebReviewActionKind::XssScriptLexicalBoundaryQueryPair,
+            ],
         ),
         (
             attribute_xss_selection(),
             NativeWebReviewActionKind::XssAttributeBoundaryQueryPair,
-            NativeWebReviewActionKind::XssStructuralQueryPair,
+            [
+                NativeWebReviewActionKind::XssStructuralQueryPair,
+                NativeWebReviewActionKind::XssScriptLexicalBoundaryQueryPair,
+            ],
+        ),
+        (
+            script_xss_selection(),
+            NativeWebReviewActionKind::XssScriptLexicalBoundaryQueryPair,
+            [
+                NativeWebReviewActionKind::XssStructuralQueryPair,
+                NativeWebReviewActionKind::XssAttributeBoundaryQueryPair,
+            ],
         ),
     ] {
         let seeds = NativeWebReviewSeeds::from_authorized_origin(&root).unwrap();
@@ -381,7 +410,9 @@ fn xss_only_subject_uses_one_exact_decision_executor_and_completeness_action() {
             NativeWebReviewDecisionProfile::for_actions(enabled.iter().copied()).unwrap();
         assert_eq!(decision.actions().collect::<Vec<_>>(), enabled);
         assert!(profile.supports_exact_strategy(expected));
-        assert!(!profile.supports_exact_strategy(stale));
+        for stale in stale {
+            assert!(!profile.supports_exact_strategy(stale));
+        }
     }
 }
 
@@ -394,6 +425,7 @@ async fn enabled_native_action_without_executor_route_still_fails_closed() {
         NativeWebReviewActionKind::SstiStructuralQueryPair,
         NativeWebReviewActionKind::XssStructuralQueryPair,
         NativeWebReviewActionKind::XssAttributeBoundaryQueryPair,
+        NativeWebReviewActionKind::XssScriptLexicalBoundaryQueryPair,
     ] {
         let decision = NativeWebReviewDecisionProfile::for_actions([kind]).unwrap();
         assert_eq!(decision.actions().collect::<Vec<_>>(), [kind]);

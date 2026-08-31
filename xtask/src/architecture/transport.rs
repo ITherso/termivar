@@ -438,8 +438,8 @@ fn inspect_native_review_execution_broker_boundary(
     Ok(violations.into_iter().collect())
 }
 
-const EXACT_NATIVE_REVIEW_EXECUTION_TOKEN_BYTES: usize = 24_753;
-const EXACT_NATIVE_REVIEW_EXECUTION_FINGERPRINT: u128 = 0x534d_82eb_bb26_a898_a395_8617_5cb3_4b2a;
+const EXACT_NATIVE_REVIEW_EXECUTION_TOKEN_BYTES: usize = 25_096;
+const EXACT_NATIVE_REVIEW_EXECUTION_FINGERPRINT: u128 = 0xef77_57a9_6057_29e3_609e_fc60_a122_c8fc;
 
 fn native_review_execution_fingerprint_violations(source: &str, syntax: &syn::File) -> Vec<String> {
     let exact_tests = matches!(syntax.items.last(), Some(Item::Mod(module))
@@ -989,6 +989,7 @@ fn native_defense_classifier_is_exact(function: &syn::ItemFn) -> bool {
                 "SstiStructuralQueryReplayPair".to_owned(),
                 "XssStructuralQueryPair".to_owned(),
                 "XssAttributeBoundaryQueryPair".to_owned(),
+                "XssScriptLexicalBoundaryQueryPair".to_owned(),
             ])
 }
 
@@ -1015,6 +1016,7 @@ fn collect_exact_native_review_patterns(
                 "SstiStructuralQueryReplayPair",
                 "XssStructuralQueryPair",
                 "XssAttributeBoundaryQueryPair",
+                "XssScriptLexicalBoundaryQueryPair",
             ] {
                 if syn_path_is_exact(&pattern.path, &["NativeWebReviewActionKind", variant]) {
                     return variants.insert(variant.to_owned());

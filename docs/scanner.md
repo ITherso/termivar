@@ -63,25 +63,42 @@ cross-checks them with the DOM; ambiguity, incompleteness, or disagreement
 fails closed. The typed context and quote mode select at most one non-executing
 V1 family across the assessment. HTML-text requires its exact inert node.
 Attribute families require exact inert boundary and tail attributes on the
-anchored HTML host and sink, absent from control. Script remains metadata-only
-because JavaScript grammar evidence is not available. Selection is deterministic
-and metadata-first, so later catalog growth does not blindly multiply requests
-or source/DOM parses. Raw or same-context reflection is insufficient; exact
-candidate-specific parser-visible structural control is still only
-`NeedsReview`. No JavaScript/CSS grammar, browser execution, or XSS confirmation
-is performed. Credentialed candidate-specific CORS, an exact candidate-specific
-external redirect, and repeatable SQL/SSTI structural relationships are also at
-most `NeedsReview`. Every native action is
+anchored HTML host and sink, absent from control.
+
+For a unique marker in a supported inline classic or module script, one
+bounded, non-evaluating JavaScript source pass is cross-checked with the
+`html5ever` script context and exact script host. Single-quoted strings,
+double-quoted strings, and template-literal text have executable V1 families.
+Expression/code, template-expression, line-comment, block-comment, and regex
+contexts remain metadata-only. A positive script result requires both exact
+scanner-owned inert block-comment tokens to be recognized as JavaScript comment
+tokens outside the original string or template text, in the expected order on
+the same script host, and absent from the control. Raw substrings, encoded
+syntax, and same-context reflection are insufficient.
+
+Selection is deterministic and metadata-first, so later catalog growth does
+not blindly multiply requests, payload materialization, or source/DOM parses.
+One selected family uses one child bootstrap plus one control and one candidate:
+three requests total. Exact candidate-specific structural control is still only
+`NeedsReview`. No JavaScript is evaluated and no browser execution or XSS
+confirmation is performed. Credentialed candidate-specific CORS, an exact
+candidate-specific external redirect, and repeatable SQL/SSTI structural
+relationships are also at most `NeedsReview`. Every native action is
 KnowledgeOnly, and no native assessment capability can produce a `Confirmed`
 item.
 
-| XSS structural family | Context | Quote modes | Executable? | Required evidence | Request cost | Maximum |
+| XSS structural family | Context | Source mode | Executable? | Required evidence | Request cost | Maximum |
 | --- | --- | --- | --- | --- | ---: | --- |
 | HTML text boundary | HTML text | N/A | Yes | Exact candidate-specific inert HTML node, absent from control | 3 including child bootstrap | `NeedsReview` |
 | Ordinary attribute boundary | Ordinary attribute | Double, single, unquoted | Yes | Exact source/DOM anchor plus exact inert boundary and tail attributes on the host/sink | 3 including child bootstrap | `NeedsReview` |
 | URI attribute boundary | URI-bearing attribute | Double, single, unquoted | Yes | Same exact anchored host/sink attribute evidence; no executable URI scheme | 3 including child bootstrap | `NeedsReview` |
 | Event-handler attribute boundary | Inline handler attribute | Double, single, unquoted | Yes | Same exact anchored host/sink attribute evidence; event is never triggered | 3 including child bootstrap | `NeedsReview` |
-| Script content structure | Script element content | N/A | No, metadata-only | Requires future grammar/source evidence | 0 | None |
+| JavaScript single-quoted string boundary | Supported inline classic/module script | Single-quoted string text | Yes | Exact ordered boundary/tail block-comment tokens outside the string on the exact script host; clean control | 3 including child bootstrap | `NeedsReview` |
+| JavaScript double-quoted string boundary | Supported inline classic/module script | Double-quoted string text | Yes | Exact ordered boundary/tail block-comment tokens outside the string on the exact script host; clean control | 3 including child bootstrap | `NeedsReview` |
+| JavaScript template-literal boundary | Supported inline classic/module script | Template-literal text | Yes | Exact ordered boundary/tail block-comment tokens outside template text on the exact script host; clean control | 3 including child bootstrap | `NeedsReview` |
+| JavaScript expression structures | Supported inline classic/module script | Expression/code or template expression | No, metadata-only | No narrow executable-slot evidence contract in V1 | 0 | None |
+| JavaScript comment structures | Supported inline classic/module script | Line or block comment | No, metadata-only | No active structural family in V1 | 0 | None |
+| JavaScript regex structure | Supported inline classic/module script | Regex literal or character class | No, metadata-only | Slash/grammar-sensitive contexts remain fail-closed | 0 | None |
 An explicitly non-HTML response makes reflection review not applicable. A
 truncated body, invalid UTF-8, or exhausted DOM/occurrence ceiling instead makes
 the selected differential review typed incomplete; it is never reported as an

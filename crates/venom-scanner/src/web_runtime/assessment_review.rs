@@ -30,13 +30,16 @@ use crate::{
     },
     payload_strategies::{
         ExternalUrlQueryPairStrategy, XssAttributeBoundaryQueryPairStrategy,
+        XssJavascriptLexicalBoundaryQueryPairStrategy, XssJavascriptLexicalProbeTokens,
         XssStructuralQueryPairStrategy, CORS_ORIGIN_PAIR_ID, CORS_ORIGIN_PAIR_REVISION,
         EXTERNAL_URL_QUERY_PAIR_ID, EXTERNAL_URL_QUERY_PAIR_REVISION,
         REFLECTION_MARKER_QUERY_PAIR_ID, REFLECTION_MARKER_QUERY_PAIR_REVISION,
         SQL_QUOTE_BALANCE_QUERY_PAIR_ID, SQL_QUOTE_BALANCE_QUERY_PAIR_REVISION,
         SSTI_ARITHMETIC_EXPRESSION_PAIR_ID, SSTI_ARITHMETIC_EXPRESSION_PAIR_REVISION,
         XSS_ATTRIBUTE_BOUNDARY_QUERY_PAIR_ID, XSS_ATTRIBUTE_BOUNDARY_QUERY_PAIR_REVISION,
-        XSS_STRUCTURAL_QUERY_PAIR_ID, XSS_STRUCTURAL_QUERY_PAIR_REVISION,
+        XSS_JAVASCRIPT_LEXICAL_BOUNDARY_QUERY_PAIR_ID,
+        XSS_JAVASCRIPT_LEXICAL_BOUNDARY_QUERY_PAIR_REVISION, XSS_STRUCTURAL_QUERY_PAIR_ID,
+        XSS_STRUCTURAL_QUERY_PAIR_REVISION,
     },
     web_actions::{
         NativeWebReviewActionKind, NATIVE_WEB_REVIEW_EVIDENCE_NAMESPACE,
@@ -50,9 +53,11 @@ use crate::{
 use super::web_assessment::{
     classify_exact_html_reflection, cross_validate_attribute_reflection_source,
     cross_validate_javascript_reflection_source, match_exact_xss_attribute_boundary_document,
-    match_exact_xss_html_boundary_document, validate_exact_xss_html_boundary_fragment,
-    AttributeSourceResult, ExactHtmlReflectionContext, ExactXssAttributeBoundaryMatch,
-    ExactXssBoundaryMatch, JavaScriptSourceResult, XssProbeFamily, XssProbeSelection,
+    match_exact_xss_html_boundary_document, match_exact_xss_javascript_boundary_document,
+    validate_exact_xss_html_boundary_fragment, validate_exact_xss_javascript_boundary_candidate,
+    AttributeSourceResult, ExactHtmlReflectionContext, ExactJavaScriptBoundaryMatch,
+    ExactXssAttributeBoundaryMatch, ExactXssBoundaryMatch, JavaScriptSourceResult, XssProbeFamily,
+    XssProbeSelection,
 };
 use super::web_review_execution::NativeWebReviewSeeds;
 use crate::payload_strategies::ssti_arithmetic_expression_pair::SstiArithmeticProbe;
@@ -107,6 +112,8 @@ const XSS_ACTIVE_VERIFIER_RULE_ID: &str =
     "web.review.verify.active.xss-structural-query-pair.pair-complete@1";
 const XSS_ATTRIBUTE_ACTIVE_VERIFIER_RULE_ID: &str =
     "web.review.verify.active.xss-attribute-boundary-query-pair.pair-complete@1";
+const XSS_SCRIPT_ACTIVE_VERIFIER_RULE_ID: &str =
+    "web.review.verify.active.xss-script-lexical-boundary-query-pair.pair-complete@1";
 
 /// Returns the one verifier identity authorized to classify pair completion.
 ///
@@ -130,6 +137,9 @@ pub(crate) const fn native_review_active_verifier_rule_id(
         NativeWebReviewActionKind::XssStructuralQueryPair => XSS_ACTIVE_VERIFIER_RULE_ID,
         NativeWebReviewActionKind::XssAttributeBoundaryQueryPair => {
             XSS_ATTRIBUTE_ACTIVE_VERIFIER_RULE_ID
+        },
+        NativeWebReviewActionKind::XssScriptLexicalBoundaryQueryPair => {
+            XSS_SCRIPT_ACTIVE_VERIFIER_RULE_ID
         },
     }
 }
@@ -205,6 +215,9 @@ impl XssStructuralProbeParts {
             NativeWebReviewActionKind::XssAttributeBoundaryQueryPair => {
                 Box::new(XssAttributeBoundaryQueryPairStrategy::new())
             },
+            NativeWebReviewActionKind::XssScriptLexicalBoundaryQueryPair => {
+                Box::new(XssJavascriptLexicalBoundaryQueryPairStrategy::new())
+            },
             _ => return Err(AssessmentReviewObserverError::Candidate),
         };
         let control = strategy
@@ -261,9 +274,33 @@ impl XssStructuralProbeParts {
                     return Err(AssessmentReviewObserverError::Candidate);
                 }
             },
+            XssProbeFamily::ScriptSingleQuotedStringBoundary
+            | XssProbeFamily::ScriptDoubleQuotedStringBoundary
+            | XssProbeFamily::ScriptTemplateLiteralBoundary => {
+                let anchor = self
+                    .selection
+                    .javascript_anchor()
+                    .ok_or(AssessmentReviewObserverError::Candidate)?;
+                let tokens = XssJavascriptLexicalProbeTokens::from_identity(&self.identity)
+                    .ok_or(AssessmentReviewObserverError::Candidate)?;
+                if validate_exact_xss_javascript_boundary_candidate(
+                    &self.candidate_value,
+                    tokens.boundary_comment(),
+                    tokens.tail_comment(),
+                    anchor.context(),
+                ) != ExactJavaScriptBoundaryMatch::Matched
+                {
+                    return Err(AssessmentReviewObserverError::Candidate);
+                }
+            },
             XssProbeFamily::UriAttributeStructure
             | XssProbeFamily::EventHandlerStructure
-            | XssProbeFamily::ScriptContentStructure => {
+            | XssProbeFamily::ScriptContentStructure
+            | XssProbeFamily::ScriptExpressionStructure
+            | XssProbeFamily::ScriptTemplateExpressionStructure
+            | XssProbeFamily::ScriptLineCommentStructure
+            | XssProbeFamily::ScriptBlockCommentStructure
+            | XssProbeFamily::ScriptRegexStructure => {
                 return Err(AssessmentReviewObserverError::Candidate);
             },
         }
@@ -305,6 +342,22 @@ struct XssStructuralContract {
     probe: XssStructuralProbe,
     control_url: Url,
     candidate_url: Url,
+    source_evidence_ids: Vec<EvidenceId>,
+}
+
+fn canonical_xss_source_evidence_ids(
+    mut ids: Vec<EvidenceId>,
+    required: bool,
+) -> Result<Vec<EvidenceId>, AssessmentReviewObserverError> {
+    let supplied = ids.len();
+    ids.sort();
+    ids.dedup();
+    let valid_len =
+        (!required && ids.is_empty()) || ids.len() == REFLECTION_REVIEW_PROPERTIES.len();
+    if ids.len() != supplied || !valid_len {
+        return Err(AssessmentReviewObserverError::Candidate);
+    }
+    Ok(ids)
 }
 
 #[derive(Clone, Copy)]
@@ -334,6 +387,7 @@ impl fmt::Debug for XssStructuralContract {
             .field("query_parameter", &"<redacted>")
             .field("family", &self.probe.parts().selection.family().stable_id())
             .field("variant", &self.probe.parts().selection.variant_id())
+            .field("source_evidence_count", &self.source_evidence_ids.len())
             .field("urls", &"<redacted>")
             .finish()
     }
@@ -543,15 +597,46 @@ impl AssessmentReviewObserverSet {
         })
     }
 
+    #[cfg(test)]
     pub(crate) fn new_xss(
         root: Url,
         seeds: NativeWebReviewSeeds,
         query_parameter: &str,
         selection: XssProbeSelection,
     ) -> Result<Self, AssessmentReviewObserverError> {
+        Self::new_xss_internal(root, seeds, query_parameter, selection, Vec::new(), false)
+    }
+
+    pub(crate) fn new_xss_with_source_evidence(
+        root: Url,
+        seeds: NativeWebReviewSeeds,
+        query_parameter: &str,
+        selection: XssProbeSelection,
+        source_evidence_ids: Vec<EvidenceId>,
+    ) -> Result<Self, AssessmentReviewObserverError> {
+        Self::new_xss_internal(
+            root,
+            seeds,
+            query_parameter,
+            selection,
+            source_evidence_ids,
+            true,
+        )
+    }
+
+    fn new_xss_internal(
+        root: Url,
+        seeds: NativeWebReviewSeeds,
+        query_parameter: &str,
+        selection: XssProbeSelection,
+        source_evidence_ids: Vec<EvidenceId>,
+        require_source_evidence: bool,
+    ) -> Result<Self, AssessmentReviewObserverError> {
         if !valid_query_parameter(query_parameter) {
             return Err(AssessmentReviewObserverError::QueryParameter);
         }
+        let source_evidence_ids =
+            canonical_xss_source_evidence_ids(source_evidence_ids, require_source_evidence)?;
         let mut observer = Self::new_with_sql(root, seeds, None, None, None, None)?;
         let probe = XssStructuralProbe::derive(selection, observer.seeds.reflection_identity())?;
         let mut control_url = observer.root.clone();
@@ -567,6 +652,7 @@ impl AssessmentReviewObserverSet {
             probe,
             control_url,
             candidate_url,
+            source_evidence_ids,
         });
         Ok(observer)
     }
@@ -619,7 +705,8 @@ impl AssessmentReviewObserverSet {
             },
             (
                 NativeWebReviewActionKind::XssStructuralQueryPair
-                | NativeWebReviewActionKind::XssAttributeBoundaryQueryPair,
+                | NativeWebReviewActionKind::XssAttributeBoundaryQueryPair
+                | NativeWebReviewActionKind::XssScriptLexicalBoundaryQueryPair,
                 stage,
             ) => self.xss.as_ref().map(|contract| match stage {
                 DecisionExecutionStage::Passive => &contract.control_url,
@@ -788,7 +875,8 @@ impl AssessmentReviewObserverSet {
                 ));
             },
             NativeWebReviewActionKind::XssStructuralQueryPair
-            | NativeWebReviewActionKind::XssAttributeBoundaryQueryPair => {
+            | NativeWebReviewActionKind::XssAttributeBoundaryQueryPair
+            | NativeWebReviewActionKind::XssScriptLexicalBoundaryQueryPair => {
                 let contract = self
                     .xss
                     .as_ref()
@@ -807,6 +895,34 @@ impl AssessmentReviewObserverSet {
                     ReviewProperty::XssProbeVariant,
                     contract.probe.parts().selection.variant_id().to_owned(),
                 ));
+                let javascript_anchor = contract.probe.parts().selection.javascript_anchor();
+                records.extend([
+                    (
+                        ReviewProperty::JavaScriptSourceStatus,
+                        javascript_anchor
+                            .map_or("absent", |_| "exact-script-anchor")
+                            .to_owned(),
+                    ),
+                    (
+                        ReviewProperty::JavaScriptSourceScriptKind,
+                        javascript_anchor
+                            .map_or("none", |anchor| anchor.script_kind().stable_id())
+                            .to_owned(),
+                    ),
+                    (
+                        ReviewProperty::JavaScriptSourceContext,
+                        javascript_anchor
+                            .map_or("none", |anchor| anchor.context().stable_id())
+                            .to_owned(),
+                    ),
+                    (
+                        ReviewProperty::JavaScriptSourceScriptOrdinal,
+                        javascript_anchor.map_or_else(
+                            || "none".to_owned(),
+                            |anchor| anchor.script_ordinal().to_string(),
+                        ),
+                    ),
+                ]);
                 records.push((
                     ReviewProperty::XssStructuralRelation,
                     xss_structural_relation_slug(classify_xss_structural_relation(
@@ -846,7 +962,22 @@ impl CompleteHttpResponseObserver for AssessmentReviewObserverSet {
         };
         self.validate_recognized(kind, &observation)?;
 
-        let parents = review_projection_parents(&observation, kind)?;
+        let mut parents = review_projection_parents(&observation, kind)?;
+        if matches!(
+            kind,
+            NativeWebReviewActionKind::XssStructuralQueryPair
+                | NativeWebReviewActionKind::XssAttributeBoundaryQueryPair
+                | NativeWebReviewActionKind::XssScriptLexicalBoundaryQueryPair
+        ) {
+            parents.extend(
+                self.xss
+                    .as_ref()
+                    .expect("enabled XSS observer retains its bounded contract")
+                    .source_evidence_ids
+                    .iter()
+                    .cloned(),
+            );
+        }
         let derivation = EvidenceDerivation::new(
             parents,
             DerivationAlgorithm::new(
@@ -940,6 +1071,10 @@ fn native_review_strategy_ref(kind: NativeWebReviewActionKind) -> PayloadStrateg
             XSS_ATTRIBUTE_BOUNDARY_QUERY_PAIR_ID,
             XSS_ATTRIBUTE_BOUNDARY_QUERY_PAIR_REVISION,
         ),
+        NativeWebReviewActionKind::XssScriptLexicalBoundaryQueryPair => (
+            XSS_JAVASCRIPT_LEXICAL_BOUNDARY_QUERY_PAIR_ID,
+            XSS_JAVASCRIPT_LEXICAL_BOUNDARY_QUERY_PAIR_REVISION,
+        ),
     };
     PayloadStrategyRef::new(id, revision)
         .expect("native review strategies have valid static references")
@@ -982,6 +1117,7 @@ fn review_projection_parents(
             | NativeWebReviewActionKind::SstiStructuralQueryReplayPair
             | NativeWebReviewActionKind::XssStructuralQueryPair
             | NativeWebReviewActionKind::XssAttributeBoundaryQueryPair
+            | NativeWebReviewActionKind::XssScriptLexicalBoundaryQueryPair
     ) {
         if observation.media_type().is_some() {
             parents.push(
@@ -1107,9 +1243,53 @@ fn classify_xss_structural_relation(
                 anchor,
             )
         },
+        XssProbeFamily::ScriptSingleQuotedStringBoundary
+        | XssProbeFamily::ScriptDoubleQuotedStringBoundary
+        | XssProbeFamily::ScriptTemplateLiteralBoundary => {
+            let Some(anchor) = contract.probe.parts().selection.javascript_anchor() else {
+                return XssStructuralRelation::Incomplete;
+            };
+            let Some(tokens) =
+                XssJavascriptLexicalProbeTokens::from_identity(&contract.probe.parts().identity)
+            else {
+                return XssStructuralRelation::Incomplete;
+            };
+            return match (
+                observation.stage(),
+                match_exact_xss_javascript_boundary_document(
+                    html,
+                    tokens.boundary_comment(),
+                    tokens.tail_comment(),
+                    anchor,
+                ),
+            ) {
+                (DecisionExecutionStage::Active, ExactJavaScriptBoundaryMatch::Matched) => {
+                    XssStructuralRelation::StructuralBoundaryObserved
+                },
+                (DecisionExecutionStage::Passive, ExactJavaScriptBoundaryMatch::Matched) => {
+                    XssStructuralRelation::ReflectedSameContext
+                },
+                (_, ExactJavaScriptBoundaryMatch::Absent)
+                    if html.contains(&contract.probe.parts().candidate_value) =>
+                {
+                    XssStructuralRelation::ReflectedSameContext
+                },
+                (_, ExactJavaScriptBoundaryMatch::Absent) => XssStructuralRelation::EncodedOrInert,
+                (
+                    _,
+                    ExactJavaScriptBoundaryMatch::Ambiguous
+                    | ExactJavaScriptBoundaryMatch::Incomplete,
+                ) => XssStructuralRelation::Incomplete,
+            };
+        },
         XssProbeFamily::UriAttributeStructure
         | XssProbeFamily::EventHandlerStructure
-        | XssProbeFamily::ScriptContentStructure => return XssStructuralRelation::Unsupported,
+        | XssProbeFamily::ScriptContentStructure
+        | XssProbeFamily::ScriptExpressionStructure
+        | XssProbeFamily::ScriptTemplateExpressionStructure
+        | XssProbeFamily::ScriptLineCommentStructure
+        | XssProbeFamily::ScriptBlockCommentStructure
+        | XssProbeFamily::ScriptRegexStructure => return XssStructuralRelation::Unsupported,
     };
     match (observation.stage(), boundary) {
         (DecisionExecutionStage::Active, ExactXssAttributeBoundaryMatch::Matched) => {
@@ -1333,6 +1513,14 @@ fn review_source_method(
             NativeWebReviewActionKind::XssAttributeBoundaryQueryPair,
             DecisionExecutionStage::Active,
         ) => "xss-attribute-boundary-candidate-response",
+        (
+            NativeWebReviewActionKind::XssScriptLexicalBoundaryQueryPair,
+            DecisionExecutionStage::Passive,
+        ) => "xss-script-lexical-boundary-control-response",
+        (
+            NativeWebReviewActionKind::XssScriptLexicalBoundaryQueryPair,
+            DecisionExecutionStage::Active,
+        ) => "xss-script-lexical-boundary-candidate-response",
     }
 }
 
@@ -1662,6 +1850,7 @@ impl CommittedAssessmentReviewLedger {
         })
     }
 
+    #[cfg(test)]
     pub(crate) fn new_xss(
         root: Url,
         seeds: NativeWebReviewSeeds,
@@ -1670,7 +1859,28 @@ impl CommittedAssessmentReviewLedger {
     ) -> Result<Self, AssessmentReviewObserverError> {
         let observer =
             AssessmentReviewObserverSet::new_xss(root, seeds, query_parameter, selection)?;
-        Ok(Self {
+        Ok(Self::from_xss_observer(observer))
+    }
+
+    pub(crate) fn new_xss_with_source_evidence(
+        root: Url,
+        seeds: NativeWebReviewSeeds,
+        query_parameter: &str,
+        selection: XssProbeSelection,
+        source_evidence_ids: Vec<EvidenceId>,
+    ) -> Result<Self, AssessmentReviewObserverError> {
+        let observer = AssessmentReviewObserverSet::new_xss_with_source_evidence(
+            root,
+            seeds,
+            query_parameter,
+            selection,
+            source_evidence_ids,
+        )?;
+        Ok(Self::from_xss_observer(observer))
+    }
+
+    fn from_xss_observer(observer: AssessmentReviewObserverSet) -> Self {
+        Self {
             root: observer.root,
             subject: observer.subject,
             seeds: observer.seeds,
@@ -1680,7 +1890,7 @@ impl CommittedAssessmentReviewLedger {
             ssti: observer.ssti,
             xss: observer.xss,
             observations: BTreeMap::new(),
-        })
+        }
     }
 
     pub(crate) fn observations(
@@ -1755,6 +1965,20 @@ impl CommittedAssessmentReviewLedger {
             kind,
         )?;
         validate_committed_batch(receipt, knowledge)?;
+        if matches!(
+            kind,
+            NativeWebReviewActionKind::XssStructuralQueryPair
+                | NativeWebReviewActionKind::XssAttributeBoundaryQueryPair
+                | NativeWebReviewActionKind::XssScriptLexicalBoundaryQueryPair
+        ) {
+            validate_xss_source_evidence(
+                self.xss
+                    .as_ref()
+                    .ok_or(AssessmentReviewLedgerError::ReceiptAuthority)?,
+                &self.subject,
+                knowledge,
+            )?;
+        }
         let mut parsed = parse_review_receipt(receipt, &self.root, contracts, kind)?;
         parsed.active_pair_success =
             validate_verifier_proof(receipt, decision, knowledge, &parsed)?;
@@ -1908,7 +2132,12 @@ impl CommittedAssessmentReviewLedger {
                                         ReviewProperty::XssProbeVariant,
                                         ReviewProperty::XssStructuralRelation,
                                     ],
-                                ),
+                                )
+                                .into_iter()
+                                .chain(contract.source_evidence_ids.iter().cloned())
+                                .collect::<BTreeSet<_>>()
+                                .into_iter()
+                                .collect(),
                             },
                         ));
                     }
@@ -1955,6 +2184,7 @@ impl CommittedAssessmentReviewLedger {
                     },
                     attribute_source: candidate.attribute_source,
                     javascript_source: candidate.javascript_source,
+                    source_evidence_ids: candidate.candidate_evidence_ids,
                 }),
                 _ => None,
             })
@@ -2069,6 +2299,108 @@ fn validate_committed_batch(
         }
     }
     Ok(())
+}
+
+fn validate_xss_source_evidence(
+    contract: &XssStructuralContract,
+    subject: &EntityId,
+    knowledge: &KnowledgeBase,
+) -> Result<(), AssessmentReviewLedgerError> {
+    // Unit-level observer/ledger tests can bind a child contract without an
+    // originating reflection run. Production composition always uses the
+    // source-evidence constructor, which requires the complete closed set.
+    if contract.source_evidence_ids.is_empty() {
+        return Ok(());
+    }
+    if contract.source_evidence_ids.len() != REFLECTION_REVIEW_PROPERTIES.len() {
+        return Err(AssessmentReviewLedgerError::EvidenceProjection);
+    }
+
+    let reflection_kind = NativeWebReviewActionKind::ReflectionContextQueryPair;
+    let expected_method = review_source_method(reflection_kind, DecisionExecutionStage::Active);
+    let mut correlation_id: Option<String> = None;
+    let mut values = BTreeMap::new();
+    for id in &contract.source_evidence_ids {
+        let evidence = knowledge
+            .evidence(id)
+            .ok_or(AssessmentReviewLedgerError::EvidenceProjection)?;
+        let property = REFLECTION_REVIEW_PROPERTIES
+            .iter()
+            .copied()
+            .find(|property| evidence.predicate() == &property.predicate())
+            .ok_or(AssessmentReviewLedgerError::EvidenceProjection)?;
+        let EvidenceValue::Text(value) = evidence.value() else {
+            return Err(AssessmentReviewLedgerError::EvidenceProjection);
+        };
+        let source_correlation = evidence
+            .source()
+            .correlation_id()
+            .ok_or(AssessmentReviewLedgerError::EvidenceProjection)?;
+        if evidence.kind() != &EvidenceKind::Custom(ASSESSMENT_REVIEW_CATEGORY.to_owned())
+            || evidence.subject() != subject
+            || evidence.source().component() != reflection_kind.executor_id()
+            || evidence.source().method() != expected_method
+            || correlation_id
+                .as_deref()
+                .is_some_and(|expected| expected != source_correlation)
+            || values.insert(property, value.clone()).is_some()
+        {
+            return Err(AssessmentReviewLedgerError::EvidenceProjection);
+        }
+        correlation_id.get_or_insert_with(|| source_correlation.to_owned());
+    }
+    if values.len() != REFLECTION_REVIEW_PROPERTIES.len()
+        || values
+            .get(&ReviewProperty::ResponseMarker)
+            .map(String::as_str)
+            != Some(stage_marker(DecisionExecutionStage::Active))
+        || values
+            .get(&ReviewProperty::HtmlReflection)
+            .map(String::as_str)
+            != Some(
+                contract
+                    .probe
+                    .parts()
+                    .selection
+                    .family()
+                    .compatible_context()
+                    .stable_id(),
+            )
+    {
+        return Err(AssessmentReviewLedgerError::EvidenceProjection);
+    }
+
+    let attribute_source = AttributeSourceResult::from_evidence_fields(
+        value_text(&values, ReviewProperty::HtmlAttributeSourceStatus)?,
+        value_text(&values, ReviewProperty::HtmlAttributeSourceQuoteMode)?,
+        value_text(&values, ReviewProperty::HtmlAttributeSourceElement)?,
+        value_text(&values, ReviewProperty::HtmlAttributeSourceName)?,
+        value_text(&values, ReviewProperty::HtmlAttributeSourceContext)?,
+    )
+    .ok_or(AssessmentReviewLedgerError::EvidenceProjection)?;
+    let javascript_source = JavaScriptSourceResult::from_evidence_fields(
+        value_text(&values, ReviewProperty::JavaScriptSourceStatus)?,
+        value_text(&values, ReviewProperty::JavaScriptSourceScriptKind)?,
+        value_text(&values, ReviewProperty::JavaScriptSourceContext)?,
+        value_text(&values, ReviewProperty::JavaScriptSourceScriptOrdinal)?,
+    )
+    .ok_or(AssessmentReviewLedgerError::EvidenceProjection)?;
+    if attribute_source.exact_anchor() != contract.probe.parts().selection.attribute_anchor()
+        || javascript_source.exact_anchor() != contract.probe.parts().selection.javascript_anchor()
+    {
+        return Err(AssessmentReviewLedgerError::EvidenceProjection);
+    }
+    Ok(())
+}
+
+fn value_text(
+    values: &BTreeMap<ReviewProperty, String>,
+    property: ReviewProperty,
+) -> Result<&str, AssessmentReviewLedgerError> {
+    values
+        .get(&property)
+        .map(String::as_str)
+        .ok_or(AssessmentReviewLedgerError::EvidenceProjection)
 }
 
 fn parse_review_receipt(
@@ -2220,7 +2552,8 @@ fn parse_review_receipt(
             }
         },
         NativeWebReviewActionKind::XssStructuralQueryPair
-        | NativeWebReviewActionKind::XssAttributeBoundaryQueryPair => {
+        | NativeWebReviewActionKind::XssAttributeBoundaryQueryPair
+        | NativeWebReviewActionKind::XssScriptLexicalBoundaryQueryPair => {
             let contract = contracts
                 .xss
                 .ok_or(AssessmentReviewLedgerError::EvidenceProjection)?;
@@ -2229,6 +2562,25 @@ fn parse_review_receipt(
             if kind != contract.probe.parts().selection.action_kind()
                 || family != contract.probe.parts().selection.family().stable_id()
                 || variant != contract.probe.parts().selection.variant_id()
+            {
+                return Err(AssessmentReviewLedgerError::EvidenceProjection);
+            }
+            let javascript_source = JavaScriptSourceResult::from_evidence_fields(
+                value(&values, ReviewProperty::JavaScriptSourceStatus)?,
+                value(&values, ReviewProperty::JavaScriptSourceScriptKind)?,
+                value(&values, ReviewProperty::JavaScriptSourceContext)?,
+                value(&values, ReviewProperty::JavaScriptSourceScriptOrdinal)?,
+            )
+            .ok_or(AssessmentReviewLedgerError::EvidenceProjection)?;
+            if javascript_source.exact_anchor()
+                != contract.probe.parts().selection.javascript_anchor()
+                || (contract
+                    .probe
+                    .parts()
+                    .selection
+                    .javascript_anchor()
+                    .is_none()
+                    && !matches!(javascript_source, JavaScriptSourceResult::Absent))
             {
                 return Err(AssessmentReviewLedgerError::EvidenceProjection);
             }
@@ -2365,6 +2717,7 @@ fn expected_review_parent_ids(
             | NativeWebReviewActionKind::SstiStructuralQueryReplayPair
             | NativeWebReviewActionKind::XssStructuralQueryPair
             | NativeWebReviewActionKind::XssAttributeBoundaryQueryPair
+            | NativeWebReviewActionKind::XssScriptLexicalBoundaryQueryPair
     ) {
         let media = optional_unique_base(receipt, HttpEvidencePredicate::RESPONSE_MEDIA_TYPE)?;
         if let Some(media) = media {
@@ -2397,6 +2750,21 @@ fn expected_review_parent_ids(
         .into_iter()
         .map(|item| item.id().clone())
         .collect::<Vec<_>>();
+    if matches!(
+        kind,
+        NativeWebReviewActionKind::XssStructuralQueryPair
+            | NativeWebReviewActionKind::XssAttributeBoundaryQueryPair
+            | NativeWebReviewActionKind::XssScriptLexicalBoundaryQueryPair
+    ) {
+        ids.extend(
+            contracts
+                .xss
+                .ok_or(AssessmentReviewLedgerError::EvidenceProjection)?
+                .source_evidence_ids
+                .iter()
+                .cloned(),
+        );
+    }
     ids.sort();
     ids.dedup();
     Ok(ids)
@@ -2504,7 +2872,8 @@ fn requested_url_value_matches_with_sql(
         },
         (
             NativeWebReviewActionKind::XssStructuralQueryPair
-            | NativeWebReviewActionKind::XssAttributeBoundaryQueryPair,
+            | NativeWebReviewActionKind::XssAttributeBoundaryQueryPair
+            | NativeWebReviewActionKind::XssScriptLexicalBoundaryQueryPair,
             stage,
         ) => contracts.xss.is_some_and(|contract| match stage {
             DecisionExecutionStage::Passive => url == contract.control_url,
@@ -2570,10 +2939,14 @@ const SSTI_REVIEW_PROPERTIES: [ReviewProperty; 3] = [
     ReviewProperty::SstiEvaluation,
 ];
 
-const XSS_REVIEW_PROPERTIES: [ReviewProperty; 4] = [
+const XSS_REVIEW_PROPERTIES: [ReviewProperty; 8] = [
     ReviewProperty::ResponseMarker,
     ReviewProperty::XssProbeFamily,
     ReviewProperty::XssProbeVariant,
+    ReviewProperty::JavaScriptSourceStatus,
+    ReviewProperty::JavaScriptSourceScriptKind,
+    ReviewProperty::JavaScriptSourceContext,
+    ReviewProperty::JavaScriptSourceScriptOrdinal,
     ReviewProperty::XssStructuralRelation,
 ];
 
@@ -2587,7 +2960,8 @@ fn expected_properties(kind: NativeWebReviewActionKind) -> &'static [ReviewPrope
         NativeWebReviewActionKind::SstiStructuralQueryPair
         | NativeWebReviewActionKind::SstiStructuralQueryReplayPair => &SSTI_REVIEW_PROPERTIES,
         NativeWebReviewActionKind::XssStructuralQueryPair
-        | NativeWebReviewActionKind::XssAttributeBoundaryQueryPair => &XSS_REVIEW_PROPERTIES,
+        | NativeWebReviewActionKind::XssAttributeBoundaryQueryPair
+        | NativeWebReviewActionKind::XssScriptLexicalBoundaryQueryPair => &XSS_REVIEW_PROPERTIES,
     }
 }
 
@@ -2799,12 +3173,26 @@ fn parse_ssti_evaluation(
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub(crate) struct XssSelectionInput {
     pub(crate) query_parameter: String,
     pub(crate) context: ExactHtmlReflectionContext,
     pub(crate) attribute_source: AttributeSourceResult,
     pub(crate) javascript_source: JavaScriptSourceResult,
+    pub(crate) source_evidence_ids: Vec<EvidenceId>,
+}
+
+impl fmt::Debug for XssSelectionInput {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("XssSelectionInput")
+            .field("query_parameter", &"<redacted>")
+            .field("context", &self.context)
+            .field("attribute_source", &self.attribute_source.status_id())
+            .field("javascript_source", &self.javascript_source.status_id())
+            .field("source_evidence_count", &self.source_evidence_ids.len())
+            .finish()
+    }
 }
 
 fn parse_xss_structural_relation(
@@ -3380,13 +3768,7 @@ fn append_reflection_candidate(
                     ReviewProperty::HtmlReflection,
                 ],
             ),
-            candidate_evidence_ids: ids_for(
-                candidate,
-                &[
-                    ReviewProperty::ResponseMarker,
-                    ReviewProperty::HtmlReflection,
-                ],
-            ),
+            candidate_evidence_ids: ids_for(candidate, &REFLECTION_REVIEW_PROPERTIES),
         },
     ));
 }

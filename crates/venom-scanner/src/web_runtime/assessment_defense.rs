@@ -623,7 +623,8 @@ const fn native_interaction_class(kind: NativeWebReviewActionKind) -> DefenseInt
         | NativeWebReviewActionKind::SstiStructuralQueryPair
         | NativeWebReviewActionKind::SstiStructuralQueryReplayPair
         | NativeWebReviewActionKind::XssStructuralQueryPair
-        | NativeWebReviewActionKind::XssAttributeBoundaryQueryPair => {
+        | NativeWebReviewActionKind::XssAttributeBoundaryQueryPair
+        | NativeWebReviewActionKind::XssScriptLexicalBoundaryQueryPair => {
             DefenseInteractionClass::DifferentialRead
         },
     }
