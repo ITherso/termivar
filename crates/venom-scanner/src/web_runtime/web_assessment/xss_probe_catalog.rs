@@ -10,7 +10,7 @@ use super::{
     attribute_source_context::{
         AttributeQuoteMode, AttributeReflectionAnchor, AttributeSourceResult,
     },
-    ExactHtmlReflectionContext,
+    ExactHtmlReflectionContext, JavaScriptSourceResult,
 };
 use crate::web_actions::NativeWebReviewActionKind;
 
@@ -310,6 +310,7 @@ impl fmt::Debug for XssProbeSelection {
 pub(in crate::web_runtime) fn select_xss_probe_families(
     context: ExactHtmlReflectionContext,
     attribute_source: &AttributeSourceResult,
+    _javascript_source: &JavaScriptSourceResult,
 ) -> Vec<XssProbeSelection> {
     let exact_anchor = attribute_source.exact_anchor();
     let mut compatible = XssProbeFamily::all()
@@ -369,10 +370,18 @@ mod tests {
 
     use super::super::{
         classify_exact_html_reflection, cross_validate_attribute_reflection_source,
+        cross_validate_javascript_reflection_source,
     };
 
     const MARKER: &str = "venom-reflection-candidate-0123456789abcdef-end";
     const IDENTITY: &str = "0123456789abcdef0123456789abcdef";
+
+    fn select_xss_probe_families(
+        context: ExactHtmlReflectionContext,
+        attribute_source: &AttributeSourceResult,
+    ) -> Vec<XssProbeSelection> {
+        super::select_xss_probe_families(context, attribute_source, &JavaScriptSourceResult::Absent)
+    }
 
     fn exact_attribute_source(
         element: &str,
@@ -541,6 +550,17 @@ mod tests {
             )
             .is_empty());
         }
+
+        let html = format!("<script>const reflected = '{MARKER}';</script>");
+        let context = classify_exact_html_reflection(&html, MARKER);
+        let javascript_source = cross_validate_javascript_reflection_source(&html, MARKER, context);
+        assert!(javascript_source.exact_anchor().is_some());
+        assert!(super::select_xss_probe_families(
+            context,
+            &AttributeSourceResult::Absent,
+            &javascript_source,
+        )
+        .is_empty());
     }
 
     #[test]

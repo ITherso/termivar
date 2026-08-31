@@ -12,7 +12,7 @@ use venom_core::EntityId;
 use super::super::web_assessment::{
     classify_exact_html_reflection, cross_validate_attribute_reflection_source,
     select_xss_probe_families, AttributeSourceResult, ExactHtmlReflectionContext,
-    XssProbeSelection,
+    JavaScriptSourceResult, XssProbeSelection,
 };
 use super::super::web_review_decision::NativeWebReviewDecisionProfile;
 use super::*;
@@ -89,6 +89,7 @@ fn html_xss_selection() -> XssProbeSelection {
     select_xss_probe_families(
         ExactHtmlReflectionContext::HtmlText,
         &AttributeSourceResult::Absent,
+        &JavaScriptSourceResult::Absent,
     )
     .into_iter()
     .next()
@@ -100,7 +101,7 @@ fn attribute_xss_selection() -> XssProbeSelection {
     let html = format!("<div title=\"{MARKER}\"></div>");
     let context = classify_exact_html_reflection(&html, MARKER);
     let source = cross_validate_attribute_reflection_source(&html, MARKER, context);
-    select_xss_probe_families(context, &source)
+    select_xss_probe_families(context, &source, &JavaScriptSourceResult::Absent)
         .into_iter()
         .next()
         .unwrap()

@@ -49,9 +49,10 @@ use crate::{
 
 use super::web_assessment::{
     classify_exact_html_reflection, cross_validate_attribute_reflection_source,
-    match_exact_xss_attribute_boundary_document, match_exact_xss_html_boundary_document,
-    validate_exact_xss_html_boundary_fragment, AttributeSourceResult, ExactHtmlReflectionContext,
-    ExactXssAttributeBoundaryMatch, ExactXssBoundaryMatch, XssProbeFamily, XssProbeSelection,
+    cross_validate_javascript_reflection_source, match_exact_xss_attribute_boundary_document,
+    match_exact_xss_html_boundary_document, validate_exact_xss_html_boundary_fragment,
+    AttributeSourceResult, ExactHtmlReflectionContext, ExactXssAttributeBoundaryMatch,
+    ExactXssBoundaryMatch, JavaScriptSourceResult, XssProbeFamily, XssProbeSelection,
 };
 use super::web_review_execution::NativeWebReviewSeeds;
 use crate::payload_strategies::ssti_arithmetic_expression_pair::SstiArithmeticProbe;
@@ -76,6 +77,10 @@ const HTML_ATTRIBUTE_SOURCE_QUOTE_MODE: &str = "html-attribute-source-quote-mode
 const HTML_ATTRIBUTE_SOURCE_ELEMENT: &str = "html-attribute-source-element";
 const HTML_ATTRIBUTE_SOURCE_NAME: &str = "html-attribute-source-name";
 const HTML_ATTRIBUTE_SOURCE_CONTEXT: &str = "html-attribute-source-context";
+const JAVASCRIPT_SOURCE_STATUS: &str = "javascript-source-status";
+const JAVASCRIPT_SOURCE_SCRIPT_KIND: &str = "javascript-source-script-kind";
+const JAVASCRIPT_SOURCE_CONTEXT: &str = "javascript-source-context";
+const JAVASCRIPT_SOURCE_SCRIPT_ORDINAL: &str = "javascript-source-script-ordinal";
 const SQL_HTTP_STATUS_CLASS: &str = "sql-http-status-class";
 const SQL_BODY_STRUCTURE: &str = "sql-body-structure";
 const SSTI_HTTP_STATUS_CLASS: &str = "ssti-http-status-class";
@@ -733,6 +738,22 @@ impl AssessmentReviewObserverSet {
                         ReviewProperty::HtmlAttributeSourceContext,
                         classification.attribute_source.context_id().to_owned(),
                     ),
+                    (
+                        ReviewProperty::JavaScriptSourceStatus,
+                        classification.javascript_source.status_id().to_owned(),
+                    ),
+                    (
+                        ReviewProperty::JavaScriptSourceScriptKind,
+                        classification.javascript_source.script_kind_id().to_owned(),
+                    ),
+                    (
+                        ReviewProperty::JavaScriptSourceContext,
+                        classification.javascript_source.context_id().to_owned(),
+                    ),
+                    (
+                        ReviewProperty::JavaScriptSourceScriptOrdinal,
+                        classification.javascript_source.script_ordinal_id(),
+                    ),
                 ]);
             },
             NativeWebReviewActionKind::SqlStructuralQueryPair
@@ -993,6 +1014,7 @@ fn review_projection_parents(
 struct ReflectionObservationClassification {
     context: ExactHtmlReflectionContext,
     attribute_source: AttributeSourceResult,
+    javascript_source: JavaScriptSourceResult,
 }
 
 fn classify_observation_reflection(
@@ -1005,12 +1027,16 @@ fn classify_observation_reflection(
             return ReflectionObservationClassification {
                 context: ExactHtmlReflectionContext::NotApplicable,
                 attribute_source: AttributeSourceResult::Unsupported,
+                javascript_source: JavaScriptSourceResult::Unsupported(
+                    super::web_assessment::JavaScriptScriptKind::Unsupported,
+                ),
             };
         },
         None => {
             return ReflectionObservationClassification {
                 context: ExactHtmlReflectionContext::Incomplete,
                 attribute_source: AttributeSourceResult::Incomplete,
+                javascript_source: JavaScriptSourceResult::Incomplete,
             };
         },
     }
@@ -1018,18 +1044,21 @@ fn classify_observation_reflection(
         return ReflectionObservationClassification {
             context: ExactHtmlReflectionContext::Incomplete,
             attribute_source: AttributeSourceResult::Incomplete,
+            javascript_source: JavaScriptSourceResult::Incomplete,
         };
     };
     let Ok(html) = std::str::from_utf8(body) else {
         return ReflectionObservationClassification {
             context: ExactHtmlReflectionContext::Incomplete,
             attribute_source: AttributeSourceResult::Incomplete,
+            javascript_source: JavaScriptSourceResult::Incomplete,
         };
     };
     let context = classify_exact_html_reflection(html, candidate);
     ReflectionObservationClassification {
         context,
         attribute_source: cross_validate_attribute_reflection_source(html, candidate, context),
+        javascript_source: cross_validate_javascript_reflection_source(html, candidate, context),
     }
 }
 
@@ -1386,6 +1415,10 @@ enum ReviewProperty {
     HtmlAttributeSourceElement,
     HtmlAttributeSourceName,
     HtmlAttributeSourceContext,
+    JavaScriptSourceStatus,
+    JavaScriptSourceScriptKind,
+    JavaScriptSourceContext,
+    JavaScriptSourceScriptOrdinal,
     SqlHttpStatusClass,
     SqlBodyStructure,
     SstiHttpStatusClass,
@@ -1411,6 +1444,10 @@ impl ReviewProperty {
             Self::HtmlAttributeSourceElement => HTML_ATTRIBUTE_SOURCE_ELEMENT,
             Self::HtmlAttributeSourceName => HTML_ATTRIBUTE_SOURCE_NAME,
             Self::HtmlAttributeSourceContext => HTML_ATTRIBUTE_SOURCE_CONTEXT,
+            Self::JavaScriptSourceStatus => JAVASCRIPT_SOURCE_STATUS,
+            Self::JavaScriptSourceScriptKind => JAVASCRIPT_SOURCE_SCRIPT_KIND,
+            Self::JavaScriptSourceContext => JAVASCRIPT_SOURCE_CONTEXT,
+            Self::JavaScriptSourceScriptOrdinal => JAVASCRIPT_SOURCE_SCRIPT_ORDINAL,
             Self::SqlHttpStatusClass => SQL_HTTP_STATUS_CLASS,
             Self::SqlBodyStructure => SQL_BODY_STRUCTURE,
             Self::SstiHttpStatusClass => SSTI_HTTP_STATUS_CLASS,
@@ -1473,6 +1510,7 @@ enum CommittedReviewResponse {
     Reflection {
         reflection: ExactHtmlReflectionContext,
         attribute_source: AttributeSourceResult,
+        javascript_source: JavaScriptSourceResult,
     },
     SqlStructural {
         status: ReviewHttpStatusClass,
@@ -1916,6 +1954,7 @@ impl CommittedAssessmentReviewLedger {
                         },
                     },
                     attribute_source: candidate.attribute_source,
+                    javascript_source: candidate.javascript_source,
                 }),
                 _ => None,
             })
@@ -2124,9 +2163,30 @@ fn parse_review_receipt(
             {
                 return Err(AssessmentReviewLedgerError::EvidenceProjection);
             }
+            let javascript_source = JavaScriptSourceResult::from_evidence_fields(
+                value(&values, ReviewProperty::JavaScriptSourceStatus)?,
+                value(&values, ReviewProperty::JavaScriptSourceScriptKind)?,
+                value(&values, ReviewProperty::JavaScriptSourceContext)?,
+                value(&values, ReviewProperty::JavaScriptSourceScriptOrdinal)?,
+            )
+            .ok_or(AssessmentReviewLedgerError::EvidenceProjection)?;
+            if javascript_source.exact_anchor().is_some()
+                && reflection != ExactHtmlReflectionContext::ScriptElementContent
+            {
+                return Err(AssessmentReviewLedgerError::EvidenceProjection);
+            }
+            if reflection == ExactHtmlReflectionContext::ScriptElementContent
+                && matches!(javascript_source, JavaScriptSourceResult::Absent)
+            {
+                // The observer upgrades this impossible disagreement to
+                // `Incomplete`; accepting `Absent` here would let a forged
+                // receipt bypass the fixed source/DOM cross-check vocabulary.
+                return Err(AssessmentReviewLedgerError::EvidenceProjection);
+            }
             CommittedReviewResponse::Reflection {
                 reflection,
                 attribute_source,
+                javascript_source,
             }
         },
         NativeWebReviewActionKind::SqlStructuralQueryPair
@@ -2484,7 +2544,7 @@ const REDIRECT_REVIEW_PROPERTIES: [ReviewProperty; 3] = [
     ReviewProperty::RedirectLocation,
 ];
 
-const REFLECTION_REVIEW_PROPERTIES: [ReviewProperty; 7] = [
+const REFLECTION_REVIEW_PROPERTIES: [ReviewProperty; 11] = [
     ReviewProperty::ResponseMarker,
     ReviewProperty::HtmlReflection,
     ReviewProperty::HtmlAttributeSourceStatus,
@@ -2492,6 +2552,10 @@ const REFLECTION_REVIEW_PROPERTIES: [ReviewProperty; 7] = [
     ReviewProperty::HtmlAttributeSourceElement,
     ReviewProperty::HtmlAttributeSourceName,
     ReviewProperty::HtmlAttributeSourceContext,
+    ReviewProperty::JavaScriptSourceStatus,
+    ReviewProperty::JavaScriptSourceScriptKind,
+    ReviewProperty::JavaScriptSourceContext,
+    ReviewProperty::JavaScriptSourceScriptOrdinal,
 ];
 
 const SQL_REVIEW_PROPERTIES: [ReviewProperty; 3] = [
@@ -2692,6 +2756,7 @@ pub(crate) struct ReflectionReviewCandidate {
     query_parameter: String,
     context: ReviewReflectionContext,
     attribute_source: AttributeSourceResult,
+    javascript_source: JavaScriptSourceResult,
     disposition: NativeReviewDisposition,
     control_evidence_ids: Vec<EvidenceId>,
     candidate_evidence_ids: Vec<EvidenceId>,
@@ -2739,6 +2804,7 @@ pub(crate) struct XssSelectionInput {
     pub(crate) query_parameter: String,
     pub(crate) context: ExactHtmlReflectionContext,
     pub(crate) attribute_source: AttributeSourceResult,
+    pub(crate) javascript_source: JavaScriptSourceResult,
 }
 
 fn parse_xss_structural_relation(
@@ -3027,10 +3093,12 @@ fn append_pair_candidates(
             CommittedReviewResponse::Reflection {
                 reflection: control_reflection,
                 attribute_source: _,
+                javascript_source: _,
             },
             CommittedReviewResponse::Reflection {
                 reflection: candidate_reflection,
                 attribute_source: candidate_attribute_source,
+                javascript_source: candidate_javascript_source,
             },
         ) => {
             let Some(query_parameter) = query_parameter else {
@@ -3041,7 +3109,10 @@ fn append_pair_candidates(
                 candidate,
                 *control_reflection,
                 *candidate_reflection,
-                candidate_attribute_source.clone(),
+                ReflectionSourceIntelligence {
+                    attribute: candidate_attribute_source.clone(),
+                    javascript: candidate_javascript_source.clone(),
+                },
                 query_parameter,
                 output,
             )
@@ -3245,7 +3316,7 @@ fn append_reflection_candidate(
     candidate: &CommittedAssessmentReviewObservation,
     control_context: ExactHtmlReflectionContext,
     candidate_context: ExactHtmlReflectionContext,
-    candidate_attribute_source: AttributeSourceResult,
+    source: ReflectionSourceIntelligence,
     query_parameter: &str,
     output: &mut Vec<AssessmentReviewCandidate>,
 ) {
@@ -3299,7 +3370,8 @@ fn append_reflection_candidate(
             case_id: control.case_id.clone(),
             query_parameter: query_parameter.to_owned(),
             context,
-            attribute_source: candidate_attribute_source,
+            attribute_source: source.attribute,
+            javascript_source: source.javascript,
             disposition,
             control_evidence_ids: ids_for(
                 control,
@@ -3317,6 +3389,11 @@ fn append_reflection_candidate(
             ),
         },
     ));
+}
+
+struct ReflectionSourceIntelligence {
+    attribute: AttributeSourceResult,
+    javascript: JavaScriptSourceResult,
 }
 
 fn ids_for(

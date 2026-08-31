@@ -58,6 +58,7 @@ const BOUNDED_RUNTIME_SOURCES: &[&str] = &[
     "crates/venom-scanner/src/web_runtime/web_assessment.rs",
     ATTRIBUTE_BOUNDARY_MATCHER_SOURCE,
     ATTRIBUTE_SOURCE_CONTEXT_SOURCE,
+    JAVASCRIPT_SOURCE_CONTEXT_SOURCE,
     "crates/venom-scanner/src/web_runtime/web_assessment/discovery.rs",
     "crates/venom-scanner/src/web_runtime/web_assessment/reflection_context.rs",
     "crates/venom-scanner/src/web_runtime/web_assessment/semantic.rs",
@@ -98,6 +99,8 @@ const ATTRIBUTE_SOURCE_CONTEXT_SOURCE: &str =
     "crates/venom-scanner/src/web_runtime/web_assessment/attribute_source_context.rs";
 const ATTRIBUTE_BOUNDARY_MATCHER_SOURCE: &str =
     "crates/venom-scanner/src/web_runtime/web_assessment/attribute_boundary_matcher.rs";
+const JAVASCRIPT_SOURCE_CONTEXT_SOURCE: &str =
+    "crates/venom-scanner/src/web_runtime/web_assessment/javascript_source_context.rs";
 const REFLECTION_CONTEXT_SOURCE: &str =
     "crates/venom-scanner/src/web_runtime/web_assessment/reflection_context.rs";
 const NATIVE_REVIEW_BOUNDED_SOURCES: &[&str] = &[
@@ -108,6 +111,7 @@ const NATIVE_REVIEW_BOUNDED_SOURCES: &[&str] = &[
     NATIVE_REVIEW_DECISION_SOURCE,
     ATTRIBUTE_BOUNDARY_MATCHER_SOURCE,
     ATTRIBUTE_SOURCE_CONTEXT_SOURCE,
+    JAVASCRIPT_SOURCE_CONTEXT_SOURCE,
     REFLECTION_CONTEXT_SOURCE,
 ];
 const KNOWLEDGE_SOURCE: &str = "crates/venom-scanner/src/knowledge.rs";
@@ -7908,6 +7912,10 @@ impl<'ast> Visit<'ast> for OwnershipVisitor<'_> {
                 )
                 | (
                     "crates/venom-scanner/src/web_runtime/web_assessment.rs",
+                    "javascript_source_context"
+                )
+                | (
+                    "crates/venom-scanner/src/web_runtime/web_assessment.rs",
                     "discovery"
                 )
                 | (
@@ -10278,6 +10286,7 @@ mod tests {
                 NATIVE_REVIEW_DECISION_SOURCE,
                 ATTRIBUTE_BOUNDARY_MATCHER_SOURCE,
                 ATTRIBUTE_SOURCE_CONTEXT_SOURCE,
+                JAVASCRIPT_SOURCE_CONTEXT_SOURCE,
                 REFLECTION_CONTEXT_SOURCE,
             ])
         );

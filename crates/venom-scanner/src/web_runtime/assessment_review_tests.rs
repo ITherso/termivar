@@ -30,6 +30,7 @@ fn html_text_selection() -> XssProbeSelection {
     super::super::web_assessment::select_xss_probe_families(
         ExactHtmlReflectionContext::HtmlText,
         &AttributeSourceResult::Absent,
+        &JavaScriptSourceResult::Absent,
     )
     .into_iter()
     .next()
@@ -41,10 +42,14 @@ fn attribute_xss_selection(element: &str, attribute: &str, delimiter: &str) -> X
     let html = format!("<{element} {attribute}={delimiter}{marker}{delimiter}></{element}>");
     let context = classify_exact_html_reflection(&html, &marker);
     let source = cross_validate_attribute_reflection_source(&html, &marker, context);
-    super::super::web_assessment::select_xss_probe_families(context, &source)
-        .into_iter()
-        .next()
-        .unwrap()
+    super::super::web_assessment::select_xss_probe_families(
+        context,
+        &source,
+        &JavaScriptSourceResult::Absent,
+    )
+    .into_iter()
+    .next()
+    .unwrap()
 }
 
 fn headers(values: &[(&str, &str)]) -> HeaderMap {
@@ -218,6 +223,10 @@ fn composite_observer_projects_both_exact_action_contracts_without_raw_values() 
             (HTML_ATTRIBUTE_SOURCE_ELEMENT, "none"),
             (HTML_ATTRIBUTE_SOURCE_NAME, "none"),
             (HTML_ATTRIBUTE_SOURCE_CONTEXT, "none"),
+            (JAVASCRIPT_SOURCE_STATUS, "exact-script-anchor"),
+            (JAVASCRIPT_SOURCE_SCRIPT_KIND, "classic-javascript"),
+            (JAVASCRIPT_SOURCE_CONTEXT, "single-quoted-string"),
+            (JAVASCRIPT_SOURCE_SCRIPT_ORDINAL, "0"),
         ]
     );
 
@@ -516,6 +525,12 @@ fn reflection_context_requires_complete_utf8_html_and_exact_request_shape() {
                 .find(|(property, _)| *property == HTML_ATTRIBUTE_SOURCE_STATUS),
             Some(&(HTML_ATTRIBUTE_SOURCE_STATUS, expected_source))
         );
+        assert_eq!(
+            projected
+                .iter()
+                .find(|(property, _)| *property == JAVASCRIPT_SOURCE_STATUS),
+            Some(&(JAVASCRIPT_SOURCE_STATUS, expected_source))
+        );
     }
 
     let mut wrong_name = root.clone();
@@ -662,6 +677,7 @@ fn xss_metadata_only_families_never_upgrade_same_context_reflection() {
         assert!(super::super::web_assessment::select_xss_probe_families(
             family.compatible_context(),
             &AttributeSourceResult::Absent,
+            &JavaScriptSourceResult::Absent,
         )
         .is_empty());
     }
@@ -1128,6 +1144,7 @@ fn redirect_and_script_reflection_remain_distinct_needs_review_candidates() {
         CommittedReviewResponse::Reflection {
             reflection: ExactHtmlReflectionContext::Absent,
             attribute_source: AttributeSourceResult::Absent,
+            javascript_source: JavaScriptSourceResult::Absent,
         },
         false,
         "context-control",
@@ -1138,6 +1155,7 @@ fn redirect_and_script_reflection_remain_distinct_needs_review_candidates() {
         CommittedReviewResponse::Reflection {
             reflection: ExactHtmlReflectionContext::ScriptElementContent,
             attribute_source: AttributeSourceResult::Absent,
+            javascript_source: JavaScriptSourceResult::Absent,
         },
         true,
         "context-candidate",
@@ -1160,6 +1178,7 @@ fn inert_reflection_is_informational_and_incomplete_or_control_reflection_yields
     let base_response = CommittedReviewResponse::Reflection {
         reflection: ExactHtmlReflectionContext::Absent,
         attribute_source: AttributeSourceResult::Absent,
+        javascript_source: JavaScriptSourceResult::Absent,
     };
     let control = fake_observation(
         NativeWebReviewActionKind::ReflectionContextQueryPair,
@@ -1174,6 +1193,7 @@ fn inert_reflection_is_informational_and_incomplete_or_control_reflection_yields
         CommittedReviewResponse::Reflection {
             reflection: ExactHtmlReflectionContext::HtmlComment,
             attribute_source: AttributeSourceResult::Absent,
+            javascript_source: JavaScriptSourceResult::Absent,
         },
         true,
         "reflection-candidate",
@@ -1189,6 +1209,7 @@ fn inert_reflection_is_informational_and_incomplete_or_control_reflection_yields
     candidate.response = CommittedReviewResponse::Reflection {
         reflection: ExactHtmlReflectionContext::Incomplete,
         attribute_source: AttributeSourceResult::Incomplete,
+        javascript_source: JavaScriptSourceResult::Incomplete,
     };
     output.clear();
     append_pair_candidates(&control, &candidate, Some(QUERY_PARAMETER), &mut output);
@@ -1200,6 +1221,7 @@ fn inert_reflection_is_informational_and_incomplete_or_control_reflection_yields
         CommittedReviewResponse::Reflection {
             reflection: ExactHtmlReflectionContext::HtmlText,
             attribute_source: AttributeSourceResult::Absent,
+            javascript_source: JavaScriptSourceResult::Absent,
         },
         false,
         "reflected-control",
@@ -1207,6 +1229,7 @@ fn inert_reflection_is_informational_and_incomplete_or_control_reflection_yields
     candidate.response = CommittedReviewResponse::Reflection {
         reflection: ExactHtmlReflectionContext::EventHandlerAttribute,
         attribute_source: AttributeSourceResult::Absent,
+        javascript_source: JavaScriptSourceResult::Absent,
     };
     output.clear();
     append_pair_candidates(

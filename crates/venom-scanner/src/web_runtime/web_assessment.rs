@@ -66,6 +66,7 @@ use crate::{
 mod attribute_boundary_matcher;
 mod attribute_source_context;
 mod discovery;
+mod javascript_source_context;
 mod reflection_context;
 mod semantic;
 mod xss_probe_catalog;
@@ -77,6 +78,9 @@ pub(super) use attribute_source_context::{
     cross_validate_attribute_reflection_source, AttributeQuoteMode, AttributeSourceResult,
 };
 use discovery::{canonicalize_root, parse_document, ParsedDocument, ParsedForm, ParsedRoute};
+pub(super) use javascript_source_context::{
+    cross_validate_javascript_reflection_source, JavaScriptScriptKind, JavaScriptSourceResult,
+};
 pub(super) use reflection_context::{
     classify_exact_html_reflection, match_exact_xss_html_boundary_document,
     validate_exact_xss_html_boundary_fragment, ExactHtmlReflectionContext, ExactXssBoundaryMatch,
@@ -2105,6 +2109,7 @@ impl WebAssessmentRuntime {
                                         select_xss_probe_families(
                                             input.context,
                                             &input.attribute_source,
+                                            &input.javascript_source,
                                         )
                                         .into_iter()
                                         .next()

@@ -301,6 +301,11 @@ async fn opted_in_native_review_uses_exact_root_shared_authority_and_no_redirect
     let requests = server.requests().await;
     let initial_enabled_actions =
         enabled_native_web_review_actions(true, true, true, true, true, None);
+    assert_eq!(
+        report.usage().active_verifications(),
+        u16::try_from(initial_enabled_actions.len()).unwrap(),
+        "JavaScript source metadata must not create an active action in PR A"
+    );
     // One bootstrap plus both legs of each subject-specific initial action.
     let expected_requests = 1 + initial_enabled_actions.len() * NATIVE_WEB_REVIEW_REQUESTS_PER_CASE;
     assert_eq!(requests.len(), expected_requests);
