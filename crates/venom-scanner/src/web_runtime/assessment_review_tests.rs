@@ -191,6 +191,11 @@ fn composite_observer_projects_both_exact_action_contracts_without_raw_values() 
         vec![
             (NATIVE_WEB_REVIEW_RESPONSE_MARKER, "active-candidate"),
             (HTML_REFLECTION_CONTEXT, "script-element-content"),
+            (HTML_ATTRIBUTE_SOURCE_STATUS, "absent"),
+            (HTML_ATTRIBUTE_SOURCE_QUOTE_MODE, "none"),
+            (HTML_ATTRIBUTE_SOURCE_ELEMENT, "none"),
+            (HTML_ATTRIBUTE_SOURCE_NAME, "none"),
+            (HTML_ATTRIBUTE_SOURCE_CONTEXT, "none"),
         ]
     );
 
@@ -203,6 +208,76 @@ fn composite_observer_projects_both_exact_action_contracts_without_raw_values() 
         assert!(!debug.contains(seeds.cors_origin()));
         assert!(!debug.contains(seeds.external_url()));
         assert!(!debug.contains(body.as_str()));
+    }
+}
+
+#[test]
+fn reflection_observer_commits_only_bounded_source_anchor_fields() {
+    let root = root();
+    let seeds = seeds();
+    let observer = AssessmentReviewObserverSet::new_with_sql(
+        root,
+        seeds.clone(),
+        None,
+        Some(QUERY_PARAMETER),
+        None,
+        None,
+    )
+    .unwrap();
+    let contract = observer.reflection.as_ref().unwrap();
+    let marker = seeds.reflection_candidate_marker();
+    let strategy =
+        native_review_strategy_ref(NativeWebReviewActionKind::ReflectionContextQueryPair);
+    for (body, quote_mode, element, attribute, context) in [
+        (
+            format!("<div title=\"{marker}\"></div>"),
+            "double-quoted",
+            "div",
+            "title",
+            "attribute-value",
+        ),
+        (
+            format!("<a href='{marker}'>x</a>"),
+            "single-quoted",
+            "a",
+            "href",
+            "uri-attribute",
+        ),
+        (
+            format!("<button onclick={marker}>x</button>"),
+            "unquoted",
+            "button",
+            "onclick",
+            "event-handler-attribute",
+        ),
+    ] {
+        let evidence = observe(
+            &observer,
+            NativeWebReviewActionKind::ReflectionContextQueryPair,
+            DecisionExecutionStage::Active,
+            &contract.candidate_url,
+            &HeaderMap::new(),
+            200,
+            Some("text/html"),
+            Some(body.as_bytes()),
+            NativeWebReviewActionKind::ReflectionContextQueryPair.executor_id(),
+            Some(&strategy),
+            false,
+        )
+        .unwrap();
+        let projected = values(&evidence);
+        for expected in [
+            (HTML_ATTRIBUTE_SOURCE_STATUS, "exact-attribute-anchor"),
+            (HTML_ATTRIBUTE_SOURCE_QUOTE_MODE, quote_mode),
+            (HTML_ATTRIBUTE_SOURCE_ELEMENT, element),
+            (HTML_ATTRIBUTE_SOURCE_NAME, attribute),
+            (HTML_ATTRIBUTE_SOURCE_CONTEXT, context),
+        ] {
+            assert!(projected.contains(&expected), "{projected:?}");
+        }
+        let debug = format!("{evidence:?}");
+        assert!(!debug.contains(&marker));
+        assert!(!debug.contains(&body));
     }
 }
 
@@ -401,9 +476,23 @@ fn reflection_context_requires_complete_utf8_html_and_exact_request_shape() {
             false,
         )
         .unwrap();
+        let projected = values(&evidence);
         assert_eq!(
-            values(&evidence).last(),
+            projected
+                .iter()
+                .find(|(property, _)| *property == HTML_REFLECTION_CONTEXT),
             Some(&(HTML_REFLECTION_CONTEXT, expected))
+        );
+        let expected_source = if expected == "not-applicable" {
+            "unsupported"
+        } else {
+            "incomplete"
+        };
+        assert_eq!(
+            projected
+                .iter()
+                .find(|(property, _)| *property == HTML_ATTRIBUTE_SOURCE_STATUS),
+            Some(&(HTML_ATTRIBUTE_SOURCE_STATUS, expected_source))
         );
     }
 
@@ -919,6 +1008,7 @@ fn redirect_and_script_reflection_remain_distinct_needs_review_candidates() {
         DecisionExecutionStage::Passive,
         CommittedReviewResponse::Reflection {
             reflection: ExactHtmlReflectionContext::Absent,
+            attribute_source: AttributeSourceResult::Absent,
         },
         false,
         "context-control",
@@ -928,6 +1018,7 @@ fn redirect_and_script_reflection_remain_distinct_needs_review_candidates() {
         DecisionExecutionStage::Active,
         CommittedReviewResponse::Reflection {
             reflection: ExactHtmlReflectionContext::ScriptElementContent,
+            attribute_source: AttributeSourceResult::Absent,
         },
         true,
         "context-candidate",
@@ -949,6 +1040,7 @@ fn redirect_and_script_reflection_remain_distinct_needs_review_candidates() {
 fn inert_reflection_is_informational_and_incomplete_or_control_reflection_yields_no_claim() {
     let base_response = CommittedReviewResponse::Reflection {
         reflection: ExactHtmlReflectionContext::Absent,
+        attribute_source: AttributeSourceResult::Absent,
     };
     let control = fake_observation(
         NativeWebReviewActionKind::ReflectionContextQueryPair,
@@ -962,6 +1054,7 @@ fn inert_reflection_is_informational_and_incomplete_or_control_reflection_yields
         DecisionExecutionStage::Active,
         CommittedReviewResponse::Reflection {
             reflection: ExactHtmlReflectionContext::HtmlComment,
+            attribute_source: AttributeSourceResult::Absent,
         },
         true,
         "reflection-candidate",
@@ -976,6 +1069,7 @@ fn inert_reflection_is_informational_and_incomplete_or_control_reflection_yields
 
     candidate.response = CommittedReviewResponse::Reflection {
         reflection: ExactHtmlReflectionContext::Incomplete,
+        attribute_source: AttributeSourceResult::Incomplete,
     };
     output.clear();
     append_pair_candidates(&control, &candidate, Some(QUERY_PARAMETER), &mut output);
@@ -986,12 +1080,14 @@ fn inert_reflection_is_informational_and_incomplete_or_control_reflection_yields
         DecisionExecutionStage::Passive,
         CommittedReviewResponse::Reflection {
             reflection: ExactHtmlReflectionContext::HtmlText,
+            attribute_source: AttributeSourceResult::Absent,
         },
         false,
         "reflected-control",
     );
     candidate.response = CommittedReviewResponse::Reflection {
         reflection: ExactHtmlReflectionContext::EventHandlerAttribute,
+        attribute_source: AttributeSourceResult::Absent,
     };
     output.clear();
     append_pair_candidates(

@@ -56,6 +56,7 @@ const BOUNDED_RUNTIME_SOURCES: &[&str] = &[
     "crates/venom-scanner/src/web_actions.rs",
     NATIVE_REVIEW_ACTION_SOURCE,
     "crates/venom-scanner/src/web_runtime/web_assessment.rs",
+    ATTRIBUTE_SOURCE_CONTEXT_SOURCE,
     "crates/venom-scanner/src/web_runtime/web_assessment/discovery.rs",
     "crates/venom-scanner/src/web_runtime/web_assessment/reflection_context.rs",
     "crates/venom-scanner/src/web_runtime/web_assessment/semantic.rs",
@@ -92,6 +93,8 @@ const NATIVE_REVIEW_DECISION_SOURCE: &str =
     "crates/venom-scanner/src/web_runtime/web_review_decision.rs";
 const NATIVE_REVIEW_EXECUTION_SOURCE: &str =
     "crates/venom-scanner/src/web_runtime/web_review_execution.rs";
+const ATTRIBUTE_SOURCE_CONTEXT_SOURCE: &str =
+    "crates/venom-scanner/src/web_runtime/web_assessment/attribute_source_context.rs";
 const REFLECTION_CONTEXT_SOURCE: &str =
     "crates/venom-scanner/src/web_runtime/web_assessment/reflection_context.rs";
 const NATIVE_REVIEW_BOUNDED_SOURCES: &[&str] = &[
@@ -100,6 +103,7 @@ const NATIVE_REVIEW_BOUNDED_SOURCES: &[&str] = &[
     ASSESSMENT_REVIEW_PROJECTION_SOURCE,
     NATIVE_REVIEW_ACTION_SOURCE,
     NATIVE_REVIEW_DECISION_SOURCE,
+    ATTRIBUTE_SOURCE_CONTEXT_SOURCE,
     REFLECTION_CONTEXT_SOURCE,
 ];
 const KNOWLEDGE_SOURCE: &str = "crates/venom-scanner/src/knowledge.rs";
@@ -7890,6 +7894,10 @@ impl<'ast> Visit<'ast> for OwnershipVisitor<'_> {
                 | ("crates/venom-scanner/src/web_runtime.rs", "web_assessment")
                 | (
                     "crates/venom-scanner/src/web_runtime/web_assessment.rs",
+                    "attribute_source_context"
+                )
+                | (
+                    "crates/venom-scanner/src/web_runtime/web_assessment.rs",
                     "discovery"
                 )
                 | (
@@ -10258,6 +10266,7 @@ mod tests {
                 ASSESSMENT_REVIEW_PROJECTION_SOURCE,
                 NATIVE_REVIEW_ACTION_SOURCE,
                 NATIVE_REVIEW_DECISION_SOURCE,
+                ATTRIBUTE_SOURCE_CONTEXT_SOURCE,
                 REFLECTION_CONTEXT_SOURCE,
             ])
         );

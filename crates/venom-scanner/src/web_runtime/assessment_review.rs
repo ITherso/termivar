@@ -46,9 +46,9 @@ use crate::{
 };
 
 use super::web_assessment::{
-    classify_exact_html_reflection, match_exact_xss_html_boundary_document,
-    validate_exact_xss_html_boundary_fragment, ExactHtmlReflectionContext, ExactXssBoundaryMatch,
-    XssProbeFamily,
+    classify_exact_html_reflection, cross_validate_attribute_reflection_source,
+    match_exact_xss_html_boundary_document, validate_exact_xss_html_boundary_fragment,
+    AttributeSourceResult, ExactHtmlReflectionContext, ExactXssBoundaryMatch, XssProbeFamily,
 };
 use super::web_review_execution::NativeWebReviewSeeds;
 use crate::payload_strategies::ssti_arithmetic_expression_pair::SstiArithmeticProbe;
@@ -68,6 +68,11 @@ const CORS_HTTP_STATUS_CLASS: &str = "cors-http-status-class";
 const REDIRECT_STATUS_RELATION: &str = "redirect-status-relation";
 const REDIRECT_LOCATION_RELATION: &str = "redirect-location-relation";
 const HTML_REFLECTION_CONTEXT: &str = "html-reflection-context";
+const HTML_ATTRIBUTE_SOURCE_STATUS: &str = "html-attribute-source-status";
+const HTML_ATTRIBUTE_SOURCE_QUOTE_MODE: &str = "html-attribute-source-quote-mode";
+const HTML_ATTRIBUTE_SOURCE_ELEMENT: &str = "html-attribute-source-element";
+const HTML_ATTRIBUTE_SOURCE_NAME: &str = "html-attribute-source-name";
+const HTML_ATTRIBUTE_SOURCE_CONTEXT: &str = "html-attribute-source-context";
 const SQL_HTTP_STATUS_CLASS: &str = "sql-http-status-class";
 const SQL_BODY_STRUCTURE: &str = "sql-body-structure";
 const SSTI_HTTP_STATUS_CLASS: &str = "ssti-http-status-class";
@@ -648,12 +653,36 @@ impl AssessmentReviewObserverSet {
                     .expect("enabled reflection observer retains its bounded contract")
                     .candidate_value
                     .as_str();
-                records.push((
-                    ReviewProperty::HtmlReflection,
-                    classify_observation_reflection(observation, candidate)
-                        .stable_id()
-                        .to_owned(),
-                ));
+                let classification = classify_observation_reflection(observation, candidate);
+                records.extend([
+                    (
+                        ReviewProperty::HtmlReflection,
+                        classification.context.stable_id().to_owned(),
+                    ),
+                    (
+                        ReviewProperty::HtmlAttributeSourceStatus,
+                        classification.attribute_source.status_id().to_owned(),
+                    ),
+                    (
+                        ReviewProperty::HtmlAttributeSourceQuoteMode,
+                        classification.attribute_source.quote_mode_id().to_owned(),
+                    ),
+                    (
+                        ReviewProperty::HtmlAttributeSourceElement,
+                        classification.attribute_source.element_name_id().to_owned(),
+                    ),
+                    (
+                        ReviewProperty::HtmlAttributeSourceName,
+                        classification
+                            .attribute_source
+                            .attribute_name_id()
+                            .to_owned(),
+                    ),
+                    (
+                        ReviewProperty::HtmlAttributeSourceContext,
+                        classification.attribute_source.context_id().to_owned(),
+                    ),
+                ]);
             },
             NativeWebReviewActionKind::SqlStructuralQueryPair
             | NativeWebReviewActionKind::SqlStructuralQueryReplayPair => {
@@ -894,22 +923,47 @@ fn review_projection_parents(
     Ok(parents)
 }
 
+struct ReflectionObservationClassification {
+    context: ExactHtmlReflectionContext,
+    attribute_source: AttributeSourceResult,
+}
+
 fn classify_observation_reflection(
     observation: &CompleteHttpResponseObservation<'_>,
     candidate: &str,
-) -> ExactHtmlReflectionContext {
+) -> ReflectionObservationClassification {
     match observation.media_type() {
         Some("text/html") => {},
-        Some(_) => return ExactHtmlReflectionContext::NotApplicable,
-        None => return ExactHtmlReflectionContext::Incomplete,
+        Some(_) => {
+            return ReflectionObservationClassification {
+                context: ExactHtmlReflectionContext::NotApplicable,
+                attribute_source: AttributeSourceResult::Unsupported,
+            };
+        },
+        None => {
+            return ReflectionObservationClassification {
+                context: ExactHtmlReflectionContext::Incomplete,
+                attribute_source: AttributeSourceResult::Incomplete,
+            };
+        },
     }
     let Some(body) = observation.complete_body() else {
-        return ExactHtmlReflectionContext::Incomplete;
+        return ReflectionObservationClassification {
+            context: ExactHtmlReflectionContext::Incomplete,
+            attribute_source: AttributeSourceResult::Incomplete,
+        };
     };
     let Ok(html) = std::str::from_utf8(body) else {
-        return ExactHtmlReflectionContext::Incomplete;
+        return ReflectionObservationClassification {
+            context: ExactHtmlReflectionContext::Incomplete,
+            attribute_source: AttributeSourceResult::Incomplete,
+        };
     };
-    classify_exact_html_reflection(html, candidate)
+    let context = classify_exact_html_reflection(html, candidate);
+    ReflectionObservationClassification {
+        context,
+        attribute_source: cross_validate_attribute_reflection_source(html, candidate, context),
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1248,6 +1302,11 @@ enum ReviewProperty {
     RedirectStatus,
     RedirectLocation,
     HtmlReflection,
+    HtmlAttributeSourceStatus,
+    HtmlAttributeSourceQuoteMode,
+    HtmlAttributeSourceElement,
+    HtmlAttributeSourceName,
+    HtmlAttributeSourceContext,
     SqlHttpStatusClass,
     SqlBodyStructure,
     SstiHttpStatusClass,
@@ -1267,6 +1326,11 @@ impl ReviewProperty {
             Self::RedirectStatus => REDIRECT_STATUS_RELATION,
             Self::RedirectLocation => REDIRECT_LOCATION_RELATION,
             Self::HtmlReflection => HTML_REFLECTION_CONTEXT,
+            Self::HtmlAttributeSourceStatus => HTML_ATTRIBUTE_SOURCE_STATUS,
+            Self::HtmlAttributeSourceQuoteMode => HTML_ATTRIBUTE_SOURCE_QUOTE_MODE,
+            Self::HtmlAttributeSourceElement => HTML_ATTRIBUTE_SOURCE_ELEMENT,
+            Self::HtmlAttributeSourceName => HTML_ATTRIBUTE_SOURCE_NAME,
+            Self::HtmlAttributeSourceContext => HTML_ATTRIBUTE_SOURCE_CONTEXT,
             Self::SqlHttpStatusClass => SQL_HTTP_STATUS_CLASS,
             Self::SqlBodyStructure => SQL_BODY_STRUCTURE,
             Self::SstiHttpStatusClass => SSTI_HTTP_STATUS_CLASS,
@@ -1327,6 +1391,7 @@ enum CommittedReviewResponse {
     },
     Reflection {
         reflection: ExactHtmlReflectionContext,
+        attribute_source: AttributeSourceResult,
     },
     SqlStructural {
         status: ReviewHttpStatusClass,
@@ -1761,6 +1826,7 @@ impl CommittedAssessmentReviewLedger {
                             ExactHtmlReflectionContext::EmbeddedHtmlAttribute
                         },
                     },
+                    attribute_source: candidate.attribute_source,
                 }),
                 _ => None,
             })
@@ -1954,8 +2020,24 @@ fn parse_review_receipt(
             }
         },
         NativeWebReviewActionKind::ReflectionContextQueryPair => {
+            let reflection = parse_reflection(value(&values, ReviewProperty::HtmlReflection)?)?;
+            let attribute_source = AttributeSourceResult::from_evidence_fields(
+                value(&values, ReviewProperty::HtmlAttributeSourceStatus)?,
+                value(&values, ReviewProperty::HtmlAttributeSourceQuoteMode)?,
+                value(&values, ReviewProperty::HtmlAttributeSourceElement)?,
+                value(&values, ReviewProperty::HtmlAttributeSourceName)?,
+                value(&values, ReviewProperty::HtmlAttributeSourceContext)?,
+            )
+            .ok_or(AssessmentReviewLedgerError::EvidenceProjection)?;
+            if attribute_source
+                .exact_anchor()
+                .is_some_and(|anchor| anchor.context() != reflection)
+            {
+                return Err(AssessmentReviewLedgerError::EvidenceProjection);
+            }
             CommittedReviewResponse::Reflection {
-                reflection: parse_reflection(value(&values, ReviewProperty::HtmlReflection)?)?,
+                reflection,
+                attribute_source,
             }
         },
         NativeWebReviewActionKind::SqlStructuralQueryPair
@@ -2304,9 +2386,14 @@ const REDIRECT_REVIEW_PROPERTIES: [ReviewProperty; 3] = [
     ReviewProperty::RedirectLocation,
 ];
 
-const REFLECTION_REVIEW_PROPERTIES: [ReviewProperty; 2] = [
+const REFLECTION_REVIEW_PROPERTIES: [ReviewProperty; 7] = [
     ReviewProperty::ResponseMarker,
     ReviewProperty::HtmlReflection,
+    ReviewProperty::HtmlAttributeSourceStatus,
+    ReviewProperty::HtmlAttributeSourceQuoteMode,
+    ReviewProperty::HtmlAttributeSourceElement,
+    ReviewProperty::HtmlAttributeSourceName,
+    ReviewProperty::HtmlAttributeSourceContext,
 ];
 
 const SQL_REVIEW_PROPERTIES: [ReviewProperty; 3] = [
@@ -2504,6 +2591,7 @@ pub(crate) struct ReflectionReviewCandidate {
     case_id: String,
     query_parameter: String,
     context: ReviewReflectionContext,
+    attribute_source: AttributeSourceResult,
     disposition: NativeReviewDisposition,
     control_evidence_ids: Vec<EvidenceId>,
     candidate_evidence_ids: Vec<EvidenceId>,
@@ -2550,6 +2638,7 @@ fn parse_ssti_evaluation(
 pub(crate) struct XssSelectionInput {
     pub(crate) query_parameter: String,
     pub(crate) context: ExactHtmlReflectionContext,
+    pub(crate) attribute_source: AttributeSourceResult,
 }
 
 fn parse_xss_structural_relation(
@@ -2640,6 +2729,7 @@ impl fmt::Debug for ReflectionReviewCandidate {
             .field("subject", &"<redacted>")
             .field("case_id", &"<redacted>")
             .field("context", &self.context)
+            .field("attribute_source", &self.attribute_source.status_id())
             .field("disposition", &self.disposition)
             .field("control_evidence_count", &self.control_evidence_ids.len())
             .field(
@@ -2836,9 +2926,11 @@ fn append_pair_candidates(
         (
             CommittedReviewResponse::Reflection {
                 reflection: control_reflection,
+                attribute_source: _,
             },
             CommittedReviewResponse::Reflection {
                 reflection: candidate_reflection,
+                attribute_source: candidate_attribute_source,
             },
         ) => {
             let Some(query_parameter) = query_parameter else {
@@ -2849,6 +2941,7 @@ fn append_pair_candidates(
                 candidate,
                 *control_reflection,
                 *candidate_reflection,
+                candidate_attribute_source.clone(),
                 query_parameter,
                 output,
             )
@@ -3052,6 +3145,7 @@ fn append_reflection_candidate(
     candidate: &CommittedAssessmentReviewObservation,
     control_context: ExactHtmlReflectionContext,
     candidate_context: ExactHtmlReflectionContext,
+    candidate_attribute_source: AttributeSourceResult,
     query_parameter: &str,
     output: &mut Vec<AssessmentReviewCandidate>,
 ) {
@@ -3105,6 +3199,7 @@ fn append_reflection_candidate(
             case_id: control.case_id.clone(),
             query_parameter: query_parameter.to_owned(),
             context,
+            attribute_source: candidate_attribute_source,
             disposition,
             control_evidence_ids: ids_for(
                 control,

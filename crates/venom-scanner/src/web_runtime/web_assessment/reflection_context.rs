@@ -257,7 +257,7 @@ fn bounded_count(haystack: &str, needle: &str, remaining: usize) -> usize {
         .count()
 }
 
-fn attribute_context(name: &str) -> ExactHtmlReflectionContext {
+pub(super) fn attribute_context(name: &str) -> ExactHtmlReflectionContext {
     if name == "srcdoc" {
         ExactHtmlReflectionContext::EmbeddedHtmlAttribute
     } else if name.starts_with("on") {
