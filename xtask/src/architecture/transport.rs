@@ -2782,7 +2782,7 @@ fn inspect_assessment_item_projection(source: &str) -> Result<Vec<String>, syn::
     for (marker, expected, boundary) in [
         (
             "preflight_evidence_ids(evidence_ids)?;",
-            2,
+            3,
             "observation and context evidence preflight",
         ),
         (
