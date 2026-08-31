@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use crate::planner::{RiskScore, VerificationTarget};
 
 /// Number of actions in the native low-risk web-review catalog.
-pub const NATIVE_WEB_REVIEW_ACTION_COUNT: usize = 8;
+pub const NATIVE_WEB_REVIEW_ACTION_COUNT: usize = 9;
 
 /// Hard per-case request count declared by every native web-review action.
 pub const NATIVE_WEB_REVIEW_REQUESTS_PER_CASE: usize = 2;
@@ -65,6 +65,8 @@ pub enum NativeWebReviewActionKind {
     SstiStructuralQueryReplayPair,
     /// One context-selected non-executing structural XSS comparison.
     XssStructuralQueryPair,
+    /// One source-anchored quote-aware inert attribute-boundary comparison.
+    XssAttributeBoundaryQueryPair,
 }
 
 /// The only request surface an action may vary between its matched legs.
@@ -108,6 +110,7 @@ impl NativeWebReviewActionKind {
             Self::SstiStructuralQueryPair,
             Self::SstiStructuralQueryReplayPair,
             Self::XssStructuralQueryPair,
+            Self::XssAttributeBoundaryQueryPair,
         ]
     }
 
@@ -122,6 +125,7 @@ impl NativeWebReviewActionKind {
             Self::SstiStructuralQueryPair => "web.review.ssti.structural-query-pair@1",
             Self::SstiStructuralQueryReplayPair => "web.review.ssti.structural-query-replay-pair@1",
             Self::XssStructuralQueryPair => "web.review.xss.structural-query-pair@1",
+            Self::XssAttributeBoundaryQueryPair => "web.review.xss.attribute-boundary-query-pair@1",
         }
     }
 
@@ -144,6 +148,9 @@ impl NativeWebReviewActionKind {
                 "web.review.probe.ssti-structural-query-replay-pair@1"
             },
             Self::XssStructuralQueryPair => "web.review.probe.xss-structural-query-pair@1",
+            Self::XssAttributeBoundaryQueryPair => {
+                "web.review.probe.xss-attribute-boundary-query-pair@1"
+            },
         }
     }
 
@@ -158,6 +165,7 @@ impl NativeWebReviewActionKind {
             Self::SstiStructuralQueryPair => "ssti-structural-query-pair",
             Self::SstiStructuralQueryReplayPair => "ssti-structural-query-replay-pair",
             Self::XssStructuralQueryPair => "xss-structural-query-pair",
+            Self::XssAttributeBoundaryQueryPair => "xss-attribute-boundary-query-pair",
         }
     }
 
@@ -175,7 +183,8 @@ impl NativeWebReviewActionKind {
             | Self::SqlStructuralQueryReplayPair
             | Self::SstiStructuralQueryPair
             | Self::SstiStructuralQueryReplayPair
-            | Self::XssStructuralQueryPair => {
+            | Self::XssStructuralQueryPair
+            | Self::XssAttributeBoundaryQueryPair => {
                 NativeWebReviewDifferentialInput::SingleQueryParameter
             },
         }
@@ -212,7 +221,8 @@ impl NativeWebReviewActionKind {
             | Self::SqlStructuralQueryReplayPair
             | Self::SstiStructuralQueryPair
             | Self::SstiStructuralQueryReplayPair
-            | Self::XssStructuralQueryPair => 7,
+            | Self::XssStructuralQueryPair
+            | Self::XssAttributeBoundaryQueryPair => 7,
         };
         RiskScore::from_percent(percent).expect("native web-review risk is a valid constant")
     }
@@ -294,6 +304,12 @@ mod tests {
                 "web.review.probe.xss-structural-query-pair@1",
                 "xss-structural-query-pair",
             ),
+            (
+                NativeWebReviewActionKind::XssAttributeBoundaryQueryPair,
+                "web.review.xss.attribute-boundary-query-pair@1",
+                "web.review.probe.xss-attribute-boundary-query-pair@1",
+                "xss-attribute-boundary-query-pair",
+            ),
         ];
 
         assert_eq!(
@@ -320,7 +336,7 @@ mod tests {
 
     #[test]
     fn every_native_action_is_low_risk_and_irrevocably_knowledge_only() {
-        let expected_risk_basis_points = [500, 800, 500, 700, 700, 700, 700, 700];
+        let expected_risk_basis_points = [500, 800, 500, 700, 700, 700, 700, 700, 700];
 
         for (kind, expected_risk) in NativeWebReviewActionKind::all()
             .into_iter()

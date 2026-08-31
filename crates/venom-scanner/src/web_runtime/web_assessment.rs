@@ -63,14 +63,18 @@ use crate::{
     MAX_HTTP_BODY_LIMIT,
 };
 
+mod attribute_boundary_matcher;
 mod attribute_source_context;
 mod discovery;
 mod reflection_context;
 mod semantic;
 mod xss_probe_catalog;
 
+pub(super) use attribute_boundary_matcher::{
+    match_exact_xss_attribute_boundary_document, ExactXssAttributeBoundaryMatch,
+};
 pub(super) use attribute_source_context::{
-    cross_validate_attribute_reflection_source, AttributeSourceResult,
+    cross_validate_attribute_reflection_source, AttributeQuoteMode, AttributeSourceResult,
 };
 use discovery::{canonicalize_root, parse_document, ParsedDocument, ParsedForm, ParsedRoute};
 pub(super) use reflection_context::{
@@ -78,7 +82,7 @@ pub(super) use reflection_context::{
     validate_exact_xss_html_boundary_fragment, ExactHtmlReflectionContext, ExactXssBoundaryMatch,
 };
 use semantic::{assessment_semantic_limits, AssessmentSemanticEvidence};
-pub(super) use xss_probe_catalog::{select_xss_probe_families, XssProbeFamily};
+pub(super) use xss_probe_catalog::{select_xss_probe_families, XssProbeFamily, XssProbeSelection};
 
 /// Default maximum canonical subjects retained by one assessment.
 pub const DEFAULT_WEB_ASSESSMENT_MAX_SUBJECTS: usize = 64;
@@ -1643,7 +1647,7 @@ impl WebAssessmentRuntimeBuilder {
                     reflection_query_parameter.is_some(),
                     sql_query_parameter.is_some(),
                     ssti_query_parameter.is_some(),
-                    false,
+                    None,
                 ),
                 redirect_query_parameter,
                 reflection_query_parameter,
@@ -1934,7 +1938,7 @@ impl WebAssessmentRuntime {
                             target: subject.url.clone(),
                             seeds,
                             enabled_actions: enabled_native_web_review_actions(
-                                false, false, true, true, true, false,
+                                false, false, true, true, true, None,
                             ),
                             redirect_query_parameter: None,
                             reflection_query_parameter: Some(parameter.clone()),
@@ -2093,22 +2097,26 @@ impl WebAssessmentRuntime {
                     match native_review_complete {
                         Ok(true) => {
                             if self.xss_structural_review.is_none() {
-                                pending_xss_review =
-                                    review.ledger.xss_selection_inputs().into_iter().find_map(
-                                        |input| {
-                                            select_xss_probe_families(input.context)
-                                                .into_iter()
-                                                .next()
-                                                .map(|family| {
-                                                    (
-                                                        review.target.clone(),
-                                                        review.seeds.clone(),
-                                                        input.query_parameter,
-                                                        family,
-                                                    )
-                                                })
-                                        },
-                                    );
+                                pending_xss_review = review
+                                    .ledger
+                                    .xss_selection_inputs()
+                                    .into_iter()
+                                    .find_map(|input| {
+                                        select_xss_probe_families(
+                                            input.context,
+                                            &input.attribute_source,
+                                        )
+                                        .into_iter()
+                                        .next()
+                                        .map(|selection| {
+                                            (
+                                                review.target.clone(),
+                                                review.seeds.clone(),
+                                                input.query_parameter,
+                                                selection,
+                                            )
+                                        })
+                                    });
                             }
                         },
                         Ok(false) => {
@@ -2131,13 +2139,14 @@ impl WebAssessmentRuntime {
                         },
                     }
                 }
-                if let Some((target, seeds, parameter, family)) = pending_xss_review {
+                if let Some((target, seeds, parameter, selection)) = pending_xss_review {
+                    let xss_action = selection.action_kind();
                     let observer = Arc::new(
                         AssessmentReviewObserverSet::new_xss(
                             target.clone(),
                             seeds.clone(),
                             &parameter,
-                            family,
+                            selection.clone(),
                         )
                         .map_err(|_| WebAssessmentRuntimeError::NativeReviewComposition)?,
                     );
@@ -2145,7 +2154,7 @@ impl WebAssessmentRuntime {
                         target.clone(),
                         seeds.clone(),
                         &parameter,
-                        family,
+                        selection.clone(),
                     )
                     .map_err(|_| WebAssessmentRuntimeError::NativeReviewComposition)?;
                     let mut review = AssessmentNativeReviewRuntime {
@@ -2157,7 +2166,7 @@ impl WebAssessmentRuntime {
                         ssti_query_parameter: None,
                         observer: observer.clone(),
                         ledger,
-                        enabled_actions: vec![NativeWebReviewActionKind::XssStructuralQueryPair],
+                        enabled_actions: vec![xss_action],
                     };
                     let response_observer: Arc<dyn CompleteHttpResponseObserver> = observer;
                     let xss_builder = StandardWebDecisionRuntime::builder(target)
@@ -2165,7 +2174,7 @@ impl WebAssessmentRuntime {
                             seeds,
                             response_observer,
                             parameter,
-                            family,
+                            selection,
                         )
                         .with_assessment_defense_enforcement(self.defense_enforcement);
                     let mut xss_runtime = compose_child(xss_builder)?;

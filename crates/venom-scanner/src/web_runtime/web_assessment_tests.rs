@@ -300,7 +300,7 @@ async fn opted_in_native_review_uses_exact_root_shared_authority_and_no_redirect
 
     let requests = server.requests().await;
     let initial_enabled_actions =
-        enabled_native_web_review_actions(true, true, true, true, true, false);
+        enabled_native_web_review_actions(true, true, true, true, true, None);
     // One bootstrap plus both legs of each subject-specific initial action.
     let expected_requests = 1 + initial_enabled_actions.len() * NATIVE_WEB_REVIEW_REQUESTS_PER_CASE;
     assert_eq!(requests.len(), expected_requests);
@@ -508,7 +508,7 @@ async fn reflected_origin_and_generic_redirect_are_not_findings_and_text_boundar
             }
     }));
     let initial_enabled_actions =
-        enabled_native_web_review_actions(true, true, true, true, true, false);
+        enabled_native_web_review_actions(true, true, true, true, true, None);
     // One bootstrap, the exact initial native legs, then the selected XSS
     // child bootstrap plus its control/candidate pair.
     let expected_requests = 1
@@ -832,6 +832,94 @@ async fn html_text_boundary_is_needs_review_deterministic_and_report_safe() {
         assert!(!rendered.contains("venom-xss-boundary"));
         assert!(!rendered.contains("data-venom-xss-boundary-token"));
         assert!(!rendered.contains("confirmed"));
+    }
+}
+
+#[tokio::test]
+async fn quote_aware_attribute_boundaries_are_bounded_needs_review_only() {
+    const SECRET: &str = "VENOM-ATTRIBUTE-XSS-MUST-NOT-LEAK-SECRET-123";
+    for (element, attribute, delimiter) in [
+        ("div", "title", "\""),
+        ("a", "href", "'"),
+        ("button", "onclick", ""),
+    ] {
+        let server = serve(move |request| {
+            let value = Url::parse(&format!("http://fixture{}", request.target))
+                .ok()
+                .and_then(|url| {
+                    url.query_pairs()
+                        .find_map(|(name, value)| (name == "item").then(|| value.into_owned()))
+                });
+            let body = value.map_or_else(
+                || "matched control".to_owned(),
+                |value| {
+                    format!("<{element} {attribute}={delimiter}{value}{delimiter}></{element}>")
+                },
+            );
+            FixtureReply::Response(FixtureResponse::html(body))
+        })
+        .await;
+        let mut runtime = WebAssessmentRuntime::builder(server.url(&format!("/?item={SECRET}")))
+            .enable_low_risk_differential_review()
+            .build()
+            .unwrap();
+        let report = runtime.analyze().await.unwrap();
+        assert_eq!(report.completion(), &WebAssessmentCompletion::Complete);
+        let xss_items = report
+            .assessment_items()
+            .iter()
+            .filter(|item| item.capability_id() == "web.review.xss.structural-boundary@1")
+            .collect::<Vec<_>>();
+        assert_eq!(xss_items.len(), 1);
+        assert_eq!(
+            xss_items[0].disposition(),
+            AssessmentDisposition::NeedsReview
+        );
+        assert!(matches!(
+            xss_items[0].basis(),
+            AssessmentBasis::Differential(_)
+        ));
+        assert!(report
+            .assessment_items()
+            .iter()
+            .all(|item| item.disposition() != AssessmentDisposition::Confirmed));
+        assert!(!format!("{report:?}").contains(SECRET));
+
+        let initial = enabled_native_web_review_actions(true, true, true, true, true, None);
+        assert_eq!(
+            server.requests().await.len(),
+            1 + initial.len() * NATIVE_WEB_REVIEW_REQUESTS_PER_CASE
+                + usize::from(xss_probe_catalog::XSS_V1_MAX_TOTAL_REQUESTS)
+        );
+        assert!(server
+            .requests()
+            .await
+            .iter()
+            .filter(|request| request.target.contains("data-venom-xss-boundary-token"))
+            .all(|request| {
+                !request.target.contains("javascript%3A")
+                    && !request.target.contains("data%3A")
+                    && !request.target.contains("http%3A%2F%2F")
+            }));
+        #[cfg(feature = "reporting")]
+        {
+            let product =
+                ReportGenerator::compose_assessment(report, ScanProfileV1::web_review().unwrap())
+                    .unwrap();
+            for format in [
+                ReportFormat::Json,
+                ReportFormat::Csv,
+                ReportFormat::Html,
+                ReportFormat::Markdown,
+            ] {
+                let rendered = ReportGenerator::generate_assessment(&product, format).unwrap();
+                assert!(!rendered.contains(SECRET));
+                assert!(!rendered.contains("data-venom-xss-boundary-token"));
+                assert!(!rendered.contains("data-venom-xss-tail-token"));
+                assert!(!rendered.contains("venom-reflection-candidate-"));
+                assert!(!rendered.contains("confirmed"));
+            }
+        }
     }
 }
 

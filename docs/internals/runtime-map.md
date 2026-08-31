@@ -46,6 +46,7 @@ venom scan <target> --profile web-review
       -> passive header/cookie assessment projection
       -> root-scoped matched CORS and optional redirect review
       -> one bounded root-or-discovered parser-driven reflection-context pair
+      -> one DOM reflection parse + one bounded attribute-source anchor pass
       -> at most one assessment-wide evidence-capable XSS structural family
       -> one bounded root-or-discovered SQL structural review with exact replay
       -> one bounded root-or-discovered SSTI arithmetic review with independent replay
@@ -100,6 +101,15 @@ are not inferred from the DOM. Exact credentialed CORS and candidate-specific
 redirect relationships are also at most `NeedsReview`. Every
 native action is KnowledgeOnly, and no native assessment capability can
 produce a `Confirmed` item.
+For XSS structural selection, one fail-closed linear source pass retains only
+an exact normalized host/sink and double-, single-, or unquoted mode, then
+cross-checks that anchor against `html5ever`. HTML-text evidence requires the
+exact inert scanner node. Ordinary, URI, and event-handler attribute evidence
+requires exact inert boundary and tail attributes on that same anchored HTML
+host/sink and a clean matched control. Script remains metadata-only. Selection
+precedes payload materialization and admits one family, preserving the existing
+child-bootstrap plus control/candidate three-request ceiling regardless of
+catalog size.
 At most one deterministic query name across the assessment receives SQL
 structural review. Two independent matched quote-balance pairs must reproduce
 both a status-class and normalized body-structure change. Error text and

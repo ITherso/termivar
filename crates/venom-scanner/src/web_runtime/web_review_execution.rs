@@ -36,6 +36,7 @@ use crate::{
         REFLECTION_MARKER_QUERY_PAIR_ID, REFLECTION_MARKER_QUERY_PAIR_REVISION,
         SQL_QUOTE_BALANCE_QUERY_PAIR_ID, SQL_QUOTE_BALANCE_QUERY_PAIR_REVISION,
         SSTI_ARITHMETIC_EXPRESSION_PAIR_ID, SSTI_ARITHMETIC_EXPRESSION_PAIR_REVISION,
+        XSS_ATTRIBUTE_BOUNDARY_QUERY_PAIR_ID, XSS_ATTRIBUTE_BOUNDARY_QUERY_PAIR_REVISION,
         XSS_STRUCTURAL_QUERY_PAIR_ID, XSS_STRUCTURAL_QUERY_PAIR_REVISION,
     },
     payload_strategy::{
@@ -44,7 +45,7 @@ use crate::{
     web_actions::NativeWebReviewActionKind,
 };
 
-use super::web_assessment::XssProbeFamily;
+use super::web_assessment::XssProbeSelection;
 
 const REVIEW_PAYLOAD_MAX_BYTES: u32 = 256;
 const REVIEW_SEED_DIGEST_BYTES: usize = 16;
@@ -104,7 +105,7 @@ pub(crate) struct NativeWebReviewQueryParameters {
     reflection: Option<String>,
     sql: Option<String>,
     ssti: Option<String>,
-    xss: Option<(String, XssProbeFamily)>,
+    xss: Option<(String, XssProbeSelection)>,
 }
 
 impl NativeWebReviewQueryParameters {
@@ -131,13 +132,13 @@ impl NativeWebReviewQueryParameters {
         Self::full(None, reflection, sql, ssti)
     }
 
-    pub(crate) fn xss_only(parameter: String, family: XssProbeFamily) -> Self {
+    pub(crate) fn xss_only(parameter: String, selection: XssProbeSelection) -> Self {
         Self {
             redirect: None,
             reflection: None,
             sql: None,
             ssti: None,
-            xss: Some((parameter, family)),
+            xss: Some((parameter, selection)),
         }
     }
 }
@@ -149,7 +150,7 @@ pub(crate) fn enabled_native_web_review_actions(
     reflection_query_configured: bool,
     sql_query_configured: bool,
     ssti_query_configured: bool,
-    xss_query_configured: bool,
+    xss_action: Option<NativeWebReviewActionKind>,
 ) -> Vec<NativeWebReviewActionKind> {
     NativeWebReviewActionKind::all()
         .into_iter()
@@ -161,7 +162,8 @@ pub(crate) fn enabled_native_web_review_actions(
             | NativeWebReviewActionKind::SqlStructuralQueryReplayPair => sql_query_configured,
             NativeWebReviewActionKind::SstiStructuralQueryPair
             | NativeWebReviewActionKind::SstiStructuralQueryReplayPair => ssti_query_configured,
-            NativeWebReviewActionKind::XssStructuralQueryPair => xss_query_configured,
+            NativeWebReviewActionKind::XssStructuralQueryPair
+            | NativeWebReviewActionKind::XssAttributeBoundaryQueryPair => xss_action == Some(*kind),
         })
         .collect()
 }
@@ -180,7 +182,7 @@ pub(crate) struct NativeWebReviewExecutorProfile {
     reflection_query_configured: bool,
     sql_query_configured: bool,
     ssti_query_configured: bool,
-    xss_query_configured: bool,
+    xss_action: Option<NativeWebReviewActionKind>,
     cors_configured: bool,
 }
 
@@ -211,7 +213,10 @@ impl fmt::Debug for NativeWebReviewExecutorProfile {
             )
             .field("sql_query_configured", &self.sql_query_configured)
             .field("ssti_query_configured", &self.ssti_query_configured)
-            .field("xss_query_configured", &self.xss_query_configured)
+            .field(
+                "xss_action",
+                &self.xss_action.map(NativeWebReviewActionKind::action_id),
+            )
             .field("cors_configured", &self.cors_configured)
             .field("seed_values", &"<redacted>")
             .finish()
@@ -287,7 +292,9 @@ impl NativeWebReviewExecutorProfile {
             reflection_query_parameter.is_some(),
             sql_query_parameter.is_some(),
             ssti_query_parameter.is_some(),
-            xss_query_parameter.is_some(),
+            xss_query_parameter
+                .as_ref()
+                .map(|(_, selection)| selection.action_kind()),
         );
 
         let mut bindings = Vec::new();
@@ -440,11 +447,12 @@ impl NativeWebReviewExecutorProfile {
             }
         }
 
-        let xss_query_configured =
-            enabled_actions.contains(&NativeWebReviewActionKind::XssStructuralQueryPair);
-        if let Some((parameter, family)) = xss_query_parameter {
-            let kind = NativeWebReviewActionKind::XssStructuralQueryPair;
-            let seed = format!("{}:{}", family.seed_code(), seeds.reflection_identity());
+        let xss_action = xss_query_parameter
+            .as_ref()
+            .map(|(_, selection)| selection.action_kind());
+        if let Some((parameter, selection)) = xss_query_parameter {
+            let kind = selection.action_kind();
+            let seed = selection.strategy_seed(seeds.reflection_identity());
             let payload = HttpQueryPayloadBinding::new(
                 strategies,
                 payload_strategy_reference(kind)?,
@@ -480,7 +488,7 @@ impl NativeWebReviewExecutorProfile {
             reflection_query_configured,
             sql_query_configured,
             ssti_query_configured,
-            xss_query_configured,
+            xss_action,
             cors_configured: include_cors,
         })
     }
@@ -596,6 +604,10 @@ fn payload_strategy_reference(
         NativeWebReviewActionKind::XssStructuralQueryPair => (
             XSS_STRUCTURAL_QUERY_PAIR_ID,
             XSS_STRUCTURAL_QUERY_PAIR_REVISION,
+        ),
+        NativeWebReviewActionKind::XssAttributeBoundaryQueryPair => (
+            XSS_ATTRIBUTE_BOUNDARY_QUERY_PAIR_ID,
+            XSS_ATTRIBUTE_BOUNDARY_QUERY_PAIR_REVISION,
         ),
     };
     PayloadStrategyRef::new(id, revision)

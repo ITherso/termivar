@@ -6,6 +6,12 @@ All notable changes to Venom are recorded here. Releases use the categories from
 
 ### Added
 
+- Bounded HTML attribute source intelligence and quote-aware structural XSS
+  review for ordinary, URI-bearing, and inline event-handler attributes. One
+  source/DOM-cross-validated double-, single-, or unquoted anchor may select one
+  non-executing inert boundary pair; exact host/sink boundary-and-tail evidence
+  is `NeedsReview` only. Script context remains metadata-only, and no browser or
+  JavaScript execution was added.
 - A strict `venom.scan-profile/v1` product contract with exactly two CLI-wired
   built-ins: explicit single-resource `baseline` and opt-in exact-origin
   `web-review`. The origin assessment uses one shared runtime budget, metered

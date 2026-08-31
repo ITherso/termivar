@@ -13,7 +13,8 @@ use crate::{
     payload_strategies::{
         CORS_ORIGIN_PAIR_ID, CORS_ORIGIN_PAIR_REVISION, EXTERNAL_URL_QUERY_PAIR_ID,
         EXTERNAL_URL_QUERY_PAIR_REVISION, SSTI_ARITHMETIC_EXPRESSION_PAIR_ID,
-        SSTI_ARITHMETIC_EXPRESSION_PAIR_REVISION, XSS_STRUCTURAL_QUERY_PAIR_ID,
+        SSTI_ARITHMETIC_EXPRESSION_PAIR_REVISION, XSS_ATTRIBUTE_BOUNDARY_QUERY_PAIR_ID,
+        XSS_ATTRIBUTE_BOUNDARY_QUERY_PAIR_REVISION, XSS_STRUCTURAL_QUERY_PAIR_ID,
         XSS_STRUCTURAL_QUERY_PAIR_REVISION,
     },
     web_actions::NativeWebReviewActionKind,
@@ -98,6 +99,10 @@ fn expected_strategy(kind: NativeWebReviewActionKind) -> PayloadStrategyRef {
         NativeWebReviewActionKind::XssStructuralQueryPair => (
             XSS_STRUCTURAL_QUERY_PAIR_ID,
             XSS_STRUCTURAL_QUERY_PAIR_REVISION,
+        ),
+        NativeWebReviewActionKind::XssAttributeBoundaryQueryPair => (
+            XSS_ATTRIBUTE_BOUNDARY_QUERY_PAIR_ID,
+            XSS_ATTRIBUTE_BOUNDARY_QUERY_PAIR_REVISION,
         ),
     };
     PayloadStrategyRef::new(id, revision).unwrap()

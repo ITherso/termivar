@@ -9,6 +9,11 @@ use tokio::{
 };
 use venom_core::EntityId;
 
+use super::super::web_assessment::{
+    classify_exact_html_reflection, cross_validate_attribute_reflection_source,
+    select_xss_probe_families, AttributeSourceResult, ExactHtmlReflectionContext,
+    XssProbeSelection,
+};
 use super::super::web_review_decision::NativeWebReviewDecisionProfile;
 use super::*;
 use crate::{
@@ -47,6 +52,10 @@ fn expected_strategy(kind: NativeWebReviewActionKind) -> PayloadStrategyRef {
             XSS_STRUCTURAL_QUERY_PAIR_ID,
             XSS_STRUCTURAL_QUERY_PAIR_REVISION,
         ),
+        NativeWebReviewActionKind::XssAttributeBoundaryQueryPair => (
+            XSS_ATTRIBUTE_BOUNDARY_QUERY_PAIR_ID,
+            XSS_ATTRIBUTE_BOUNDARY_QUERY_PAIR_REVISION,
+        ),
     };
     PayloadStrategyRef::new(id, revision).unwrap()
 }
@@ -74,6 +83,27 @@ fn case(root: &Url, case_id: &str, kind: NativeWebReviewActionKind) -> Verificat
     )
     .unwrap()
     .with_payload_strategy(Some(expected_strategy(kind)))
+}
+
+fn html_xss_selection() -> XssProbeSelection {
+    select_xss_probe_families(
+        ExactHtmlReflectionContext::HtmlText,
+        &AttributeSourceResult::Absent,
+    )
+    .into_iter()
+    .next()
+    .unwrap()
+}
+
+fn attribute_xss_selection() -> XssProbeSelection {
+    const MARKER: &str = "venom-reflection-candidate-0123456789abcdef-end";
+    let html = format!("<div title=\"{MARKER}\"></div>");
+    let context = classify_exact_html_reflection(&html, MARKER);
+    let source = cross_validate_attribute_reflection_source(&html, MARKER, context);
+    select_xss_probe_families(context, &source)
+        .into_iter()
+        .next()
+        .unwrap()
 }
 
 async fn serve_capturing(connections: usize) -> (Url, Arc<Mutex<Vec<String>>>) {
@@ -302,7 +332,7 @@ fn decision_and_executor_share_each_subject_specific_enabled_action_set() {
                 reflection.is_some(),
                 sql.is_some(),
                 ssti.is_some(),
-                false,
+                None,
             )
         );
         let decision =
@@ -314,32 +344,44 @@ fn decision_and_executor_share_each_subject_specific_enabled_action_set() {
 #[test]
 fn xss_only_subject_uses_one_exact_decision_executor_and_completeness_action() {
     let root = Url::parse("https://example.test/review").unwrap();
-    let seeds = NativeWebReviewSeeds::from_authorized_origin(&root).unwrap();
-    let observer = Arc::new(
-        super::super::assessment_review::AssessmentReviewObserverSet::new_xss(
-            root.clone(),
-            seeds.clone(),
-            "item",
-            XssProbeFamily::HtmlTextBoundary,
-        )
-        .unwrap(),
-    );
-    let profile = NativeWebReviewExecutorProfile::new_structural_only(
-        request_broker(&root),
-        root,
-        seeds,
-        observer,
-        NativeWebReviewQueryParameters::xss_only(
-            "item".to_owned(),
-            XssProbeFamily::HtmlTextBoundary,
+    for (selection, expected, stale) in [
+        (
+            html_xss_selection(),
+            NativeWebReviewActionKind::XssStructuralQueryPair,
+            NativeWebReviewActionKind::XssAttributeBoundaryQueryPair,
         ),
-    )
-    .unwrap();
-    let enabled = profile.actions().collect::<Vec<_>>();
-    assert_eq!(enabled, [NativeWebReviewActionKind::XssStructuralQueryPair]);
-    let decision = NativeWebReviewDecisionProfile::for_actions(enabled.iter().copied()).unwrap();
-    assert_eq!(decision.actions().collect::<Vec<_>>(), enabled);
-    assert!(profile.supports_exact_strategy(NativeWebReviewActionKind::XssStructuralQueryPair));
+        (
+            attribute_xss_selection(),
+            NativeWebReviewActionKind::XssAttributeBoundaryQueryPair,
+            NativeWebReviewActionKind::XssStructuralQueryPair,
+        ),
+    ] {
+        let seeds = NativeWebReviewSeeds::from_authorized_origin(&root).unwrap();
+        let observer = Arc::new(
+            super::super::assessment_review::AssessmentReviewObserverSet::new_xss(
+                root.clone(),
+                seeds.clone(),
+                "item",
+                selection.clone(),
+            )
+            .unwrap(),
+        );
+        let profile = NativeWebReviewExecutorProfile::new_structural_only(
+            request_broker(&root),
+            root.clone(),
+            seeds,
+            observer,
+            NativeWebReviewQueryParameters::xss_only("item".to_owned(), selection),
+        )
+        .unwrap();
+        let enabled = profile.actions().collect::<Vec<_>>();
+        assert_eq!(enabled, [expected]);
+        let decision =
+            NativeWebReviewDecisionProfile::for_actions(enabled.iter().copied()).unwrap();
+        assert_eq!(decision.actions().collect::<Vec<_>>(), enabled);
+        assert!(profile.supports_exact_strategy(expected));
+        assert!(!profile.supports_exact_strategy(stale));
+    }
 }
 
 #[tokio::test]
@@ -350,6 +392,7 @@ async fn enabled_native_action_without_executor_route_still_fails_closed() {
         NativeWebReviewActionKind::ReflectionContextQueryPair,
         NativeWebReviewActionKind::SstiStructuralQueryPair,
         NativeWebReviewActionKind::XssStructuralQueryPair,
+        NativeWebReviewActionKind::XssAttributeBoundaryQueryPair,
     ] {
         let decision = NativeWebReviewDecisionProfile::for_actions([kind]).unwrap();
         assert_eq!(decision.actions().collect::<Vec<_>>(), [kind]);

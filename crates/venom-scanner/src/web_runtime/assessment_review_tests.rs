@@ -2,6 +2,7 @@ use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use url::Url;
 use venom_core::{ConfidenceScore, EntityId, EvidenceId, EvidenceValue};
 
+use super::super::web_assessment::AttributeQuoteMode;
 use super::*;
 use crate::http_evidence::{
     complete_http_response_observation_for_test, passive_response_projection_for_test,
@@ -23,6 +24,27 @@ fn seeds() -> NativeWebReviewSeeds {
 
 fn subject() -> EntityId {
     EntityId::new(format!("endpoint:{}", root())).unwrap()
+}
+
+fn html_text_selection() -> XssProbeSelection {
+    super::super::web_assessment::select_xss_probe_families(
+        ExactHtmlReflectionContext::HtmlText,
+        &AttributeSourceResult::Absent,
+    )
+    .into_iter()
+    .next()
+    .unwrap()
+}
+
+fn attribute_xss_selection(element: &str, attribute: &str, delimiter: &str) -> XssProbeSelection {
+    let marker = seeds().reflection_candidate_marker();
+    let html = format!("<{element} {attribute}={delimiter}{marker}{delimiter}></{element}>");
+    let context = classify_exact_html_reflection(&html, &marker);
+    let source = cross_validate_attribute_reflection_source(&html, &marker, context);
+    super::super::web_assessment::select_xss_probe_families(context, &source)
+        .into_iter()
+        .next()
+        .unwrap()
 }
 
 fn headers(values: &[(&str, &str)]) -> HeaderMap {
@@ -522,13 +544,9 @@ fn reflection_context_requires_complete_utf8_html_and_exact_request_shape() {
 fn xss_html_text_family_requires_one_exact_candidate_specific_node_boundary() {
     let root = root();
     let seeds = seeds();
-    let observer = AssessmentReviewObserverSet::new_xss(
-        root,
-        seeds,
-        QUERY_PARAMETER,
-        XssProbeFamily::HtmlTextBoundary,
-    )
-    .unwrap();
+    let observer =
+        AssessmentReviewObserverSet::new_xss(root, seeds, QUERY_PARAMETER, html_text_selection())
+            .unwrap();
     let contract = observer.xss.as_ref().unwrap();
     let strategy = native_review_strategy_ref(NativeWebReviewActionKind::XssStructuralQueryPair);
     let control = observe(
@@ -621,8 +639,7 @@ fn production_derived_xss_candidate_bytes_and_matcher_share_one_identity() {
     const IDENTITY: &str = "0123456789abcdef0123456789abcdef";
     const EXPECTED: &str =
         "<span data-venom-xss-boundary-token=\"0123456789abcdef0123456789abcdef\"></span>";
-    let parts =
-        XssStructuralProbeParts::derive_values(XssProbeFamily::HtmlTextBoundary, IDENTITY).unwrap();
+    let parts = XssStructuralProbeParts::derive_values(html_text_selection(), IDENTITY).unwrap();
     assert_eq!(parts.identity, IDENTITY);
     assert_eq!(parts.candidate_value.as_bytes(), EXPECTED.as_bytes());
     assert_eq!(
@@ -636,58 +653,26 @@ fn production_derived_xss_candidate_bytes_and_matcher_share_one_identity() {
 
 #[test]
 fn xss_metadata_only_families_never_upgrade_same_context_reflection() {
-    for (family, body) in [
-        (
-            XssProbeFamily::UriAttributeStructure,
-            "<a href=\"{candidate}\">continue</a>",
-        ),
-        (
-            XssProbeFamily::EventHandlerStructure,
-            "<button onclick=\"{candidate}\">continue</button>",
-        ),
-        (
-            XssProbeFamily::ScriptContentStructure,
-            "<script>{candidate}</script>",
-        ),
+    for family in [
+        XssProbeFamily::UriAttributeStructure,
+        XssProbeFamily::EventHandlerStructure,
+        XssProbeFamily::ScriptContentStructure,
     ] {
         assert!(!family.is_v1_executable());
-        let observer =
-            AssessmentReviewObserverSet::new_xss(root(), seeds(), QUERY_PARAMETER, family).unwrap();
-        let contract = observer.xss.as_ref().unwrap();
-        let body = body.replace("{candidate}", &contract.probe.parts().candidate_value);
-        let strategy =
-            native_review_strategy_ref(NativeWebReviewActionKind::XssStructuralQueryPair);
-        let candidate = observe(
-            &observer,
-            NativeWebReviewActionKind::XssStructuralQueryPair,
-            DecisionExecutionStage::Active,
-            &contract.candidate_url,
-            &HeaderMap::new(),
-            200,
-            Some("text/html"),
-            Some(body.as_bytes()),
-            NativeWebReviewActionKind::XssStructuralQueryPair.executor_id(),
-            Some(&strategy),
-            false,
+        assert!(super::super::web_assessment::select_xss_probe_families(
+            family.compatible_context(),
+            &AttributeSourceResult::Absent,
         )
-        .unwrap();
-        assert_eq!(
-            values(&candidate).last(),
-            Some(&(XSS_STRUCTURAL_RELATION, "reflected-same-context"))
-        );
+        .is_empty());
     }
 }
 
 #[test]
 fn xss_structural_analysis_fails_closed_for_truncation_and_non_html_media() {
     let root = root();
-    let observer = AssessmentReviewObserverSet::new_xss(
-        root,
-        seeds(),
-        QUERY_PARAMETER,
-        XssProbeFamily::ScriptContentStructure,
-    )
-    .unwrap();
+    let observer =
+        AssessmentReviewObserverSet::new_xss(root, seeds(), QUERY_PARAMETER, html_text_selection())
+            .unwrap();
     let contract = observer.xss.as_ref().unwrap();
     let strategy = native_review_strategy_ref(NativeWebReviewActionKind::XssStructuralQueryPair);
     for (media_type, body, expected) in [
@@ -716,6 +701,140 @@ fn xss_structural_analysis_fails_closed_for_truncation_and_non_html_media() {
         assert_eq!(
             values(&evidence).last(),
             Some(&(XSS_STRUCTURAL_RELATION, expected))
+        );
+    }
+}
+
+#[test]
+fn quote_aware_attribute_families_require_exact_host_sink_dom_boundaries() {
+    for (element, attribute, delimiter, quote_mode, family) in [
+        (
+            "div",
+            "title",
+            "\"",
+            AttributeQuoteMode::DoubleQuoted,
+            XssProbeFamily::AttributeValueBoundary,
+        ),
+        (
+            "div",
+            "title",
+            "'",
+            AttributeQuoteMode::SingleQuoted,
+            XssProbeFamily::AttributeValueBoundary,
+        ),
+        (
+            "div",
+            "title",
+            "",
+            AttributeQuoteMode::Unquoted,
+            XssProbeFamily::AttributeValueBoundary,
+        ),
+        (
+            "a",
+            "href",
+            "\"",
+            AttributeQuoteMode::DoubleQuoted,
+            XssProbeFamily::UriAttributeBoundary,
+        ),
+        (
+            "a",
+            "href",
+            "'",
+            AttributeQuoteMode::SingleQuoted,
+            XssProbeFamily::UriAttributeBoundary,
+        ),
+        (
+            "a",
+            "href",
+            "",
+            AttributeQuoteMode::Unquoted,
+            XssProbeFamily::UriAttributeBoundary,
+        ),
+        (
+            "button",
+            "onclick",
+            "\"",
+            AttributeQuoteMode::DoubleQuoted,
+            XssProbeFamily::EventHandlerAttributeBoundary,
+        ),
+        (
+            "button",
+            "onclick",
+            "'",
+            AttributeQuoteMode::SingleQuoted,
+            XssProbeFamily::EventHandlerAttributeBoundary,
+        ),
+        (
+            "button",
+            "onclick",
+            "",
+            AttributeQuoteMode::Unquoted,
+            XssProbeFamily::EventHandlerAttributeBoundary,
+        ),
+    ] {
+        let selection = attribute_xss_selection(element, attribute, delimiter);
+        assert_eq!(selection.family(), family);
+        assert_eq!(selection.quote_mode(), Some(quote_mode));
+        assert_eq!(
+            selection.action_kind(),
+            NativeWebReviewActionKind::XssAttributeBoundaryQueryPair
+        );
+        let observer = AssessmentReviewObserverSet::new_xss(
+            root(),
+            seeds(),
+            QUERY_PARAMETER,
+            selection.clone(),
+        )
+        .unwrap();
+        let contract = observer.xss.as_ref().unwrap();
+        let strategy = native_review_strategy_ref(selection.action_kind());
+        let control_body = format!(
+            "<{element} {attribute}={delimiter}{}{delimiter}></{element}>",
+            contract.probe.parts().control_value,
+        );
+        let control = observe(
+            &observer,
+            selection.action_kind(),
+            DecisionExecutionStage::Passive,
+            &contract.control_url,
+            &HeaderMap::new(),
+            200,
+            Some("text/html"),
+            Some(control_body.as_bytes()),
+            selection.action_kind().executor_id(),
+            Some(&strategy),
+            false,
+        )
+        .unwrap();
+        assert_eq!(
+            values(&control).last(),
+            Some(&(XSS_STRUCTURAL_RELATION, "encoded-or-inert"))
+        );
+
+        let candidate_body = format!(
+            "<{element} {attribute}={delimiter}{}{delimiter}></{element}>",
+            contract.probe.parts().candidate_value,
+        );
+        let candidate = observe(
+            &observer,
+            selection.action_kind(),
+            DecisionExecutionStage::Active,
+            &contract.candidate_url,
+            &HeaderMap::new(),
+            200,
+            Some("text/html"),
+            Some(candidate_body.as_bytes()),
+            selection.action_kind().executor_id(),
+            Some(&strategy),
+            false,
+        )
+        .unwrap();
+        let projected = values(&candidate);
+        assert!(projected.contains(&(XSS_PROBE_FAMILY, family.stable_id())));
+        assert!(projected.contains(&(XSS_PROBE_VARIANT, selection.variant_id())));
+        assert_eq!(
+            projected.last(),
+            Some(&(XSS_STRUCTURAL_RELATION, "structural-boundary-observed"))
         );
     }
 }
@@ -1102,13 +1221,17 @@ fn inert_reflection_is_informational_and_incomplete_or_control_reflection_yields
 #[test]
 fn xss_structural_candidate_requires_clean_control_and_exact_parser_boundary() {
     let family = XssProbeFamily::HtmlTextBoundary;
+    let selection = html_text_selection();
+    let variant = selection.variant_id();
     let mut ledger =
-        CommittedAssessmentReviewLedger::new_xss(root(), seeds(), QUERY_PARAMETER, family).unwrap();
+        CommittedAssessmentReviewLedger::new_xss(root(), seeds(), QUERY_PARAMETER, selection)
+            .unwrap();
     let control = fake_observation(
         NativeWebReviewActionKind::XssStructuralQueryPair,
         DecisionExecutionStage::Passive,
         CommittedReviewResponse::XssStructural {
             family,
+            variant,
             relation: XssStructuralRelation::EncodedOrInert,
         },
         false,
@@ -1119,6 +1242,7 @@ fn xss_structural_candidate_requires_clean_control_and_exact_parser_boundary() {
         DecisionExecutionStage::Active,
         CommittedReviewResponse::XssStructural {
             family,
+            variant,
             relation: XssStructuralRelation::StructuralBoundaryObserved,
         },
         true,
@@ -1148,6 +1272,7 @@ fn xss_structural_candidate_requires_clean_control_and_exact_parser_boundary() {
 
     candidate.response = CommittedReviewResponse::XssStructural {
         family,
+        variant,
         relation: XssStructuralRelation::ReflectedSameContext,
     };
     insert_pair(&mut ledger, control.clone(), candidate.clone());
@@ -1158,6 +1283,7 @@ fn xss_structural_candidate_requires_clean_control_and_exact_parser_boundary() {
         DecisionExecutionStage::Passive,
         CommittedReviewResponse::XssStructural {
             family,
+            variant,
             relation: XssStructuralRelation::ReflectedSameContext,
         },
         false,
@@ -1165,6 +1291,7 @@ fn xss_structural_candidate_requires_clean_control_and_exact_parser_boundary() {
     );
     candidate.response = CommittedReviewResponse::XssStructural {
         family,
+        variant,
         relation: XssStructuralRelation::StructuralBoundaryObserved,
     };
     insert_pair(&mut ledger, reflected_control, candidate);
@@ -1175,6 +1302,7 @@ fn xss_structural_candidate_requires_clean_control_and_exact_parser_boundary() {
         DecisionExecutionStage::Passive,
         CommittedReviewResponse::XssStructural {
             family,
+            variant,
             relation: XssStructuralRelation::StructuralBoundaryObserved,
         },
         false,
@@ -1185,6 +1313,7 @@ fn xss_structural_candidate_requires_clean_control_and_exact_parser_boundary() {
         DecisionExecutionStage::Active,
         CommittedReviewResponse::XssStructural {
             family,
+            variant,
             relation: XssStructuralRelation::StructuralBoundaryObserved,
         },
         true,

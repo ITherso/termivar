@@ -8,7 +8,7 @@ use html5ever::{
 };
 use markup5ever_rcdom::{Handle, NodeData, RcDom};
 
-const MAX_REFLECTION_DOM_NODES: usize = 4_096;
+pub(super) const MAX_REFLECTION_DOM_NODES: usize = 4_096;
 const MAX_REFLECTION_OCCURRENCES: usize = 32;
 const XSS_BOUNDARY_ELEMENT: &str = "span";
 const XSS_BOUNDARY_ATTRIBUTE: &str = "data-venom-xss-boundary-token";
@@ -56,7 +56,7 @@ pub(in crate::web_runtime) fn match_exact_xss_html_boundary_document(
     inspect_exact_xss_boundary(&dom.document, identity)
 }
 
-fn is_canonical_xss_identity(identity: &str) -> bool {
+pub(super) fn is_canonical_xss_identity(identity: &str) -> bool {
     identity.len() == 32
         && identity
             .bytes()

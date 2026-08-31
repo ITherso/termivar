@@ -56,6 +56,7 @@ const BOUNDED_RUNTIME_SOURCES: &[&str] = &[
     "crates/venom-scanner/src/web_actions.rs",
     NATIVE_REVIEW_ACTION_SOURCE,
     "crates/venom-scanner/src/web_runtime/web_assessment.rs",
+    ATTRIBUTE_BOUNDARY_MATCHER_SOURCE,
     ATTRIBUTE_SOURCE_CONTEXT_SOURCE,
     "crates/venom-scanner/src/web_runtime/web_assessment/discovery.rs",
     "crates/venom-scanner/src/web_runtime/web_assessment/reflection_context.rs",
@@ -95,6 +96,8 @@ const NATIVE_REVIEW_EXECUTION_SOURCE: &str =
     "crates/venom-scanner/src/web_runtime/web_review_execution.rs";
 const ATTRIBUTE_SOURCE_CONTEXT_SOURCE: &str =
     "crates/venom-scanner/src/web_runtime/web_assessment/attribute_source_context.rs";
+const ATTRIBUTE_BOUNDARY_MATCHER_SOURCE: &str =
+    "crates/venom-scanner/src/web_runtime/web_assessment/attribute_boundary_matcher.rs";
 const REFLECTION_CONTEXT_SOURCE: &str =
     "crates/venom-scanner/src/web_runtime/web_assessment/reflection_context.rs";
 const NATIVE_REVIEW_BOUNDED_SOURCES: &[&str] = &[
@@ -103,6 +106,7 @@ const NATIVE_REVIEW_BOUNDED_SOURCES: &[&str] = &[
     ASSESSMENT_REVIEW_PROJECTION_SOURCE,
     NATIVE_REVIEW_ACTION_SOURCE,
     NATIVE_REVIEW_DECISION_SOURCE,
+    ATTRIBUTE_BOUNDARY_MATCHER_SOURCE,
     ATTRIBUTE_SOURCE_CONTEXT_SOURCE,
     REFLECTION_CONTEXT_SOURCE,
 ];
@@ -430,8 +434,8 @@ fn inspect_native_review_execution_broker_boundary(
     Ok(violations.into_iter().collect())
 }
 
-const EXACT_NATIVE_REVIEW_EXECUTION_TOKEN_BYTES: usize = 24_366;
-const EXACT_NATIVE_REVIEW_EXECUTION_FINGERPRINT: u128 = 0xadd8_3055_453b_6660_e296_758e_47bb_15dd;
+const EXACT_NATIVE_REVIEW_EXECUTION_TOKEN_BYTES: usize = 24_753;
+const EXACT_NATIVE_REVIEW_EXECUTION_FINGERPRINT: u128 = 0x534d_82eb_bb26_a898_a395_8617_5cb3_4b2a;
 
 fn native_review_execution_fingerprint_violations(source: &str, syntax: &syn::File) -> Vec<String> {
     let exact_tests = matches!(syntax.items.last(), Some(Item::Mod(module))
@@ -980,6 +984,7 @@ fn native_defense_classifier_is_exact(function: &syn::ItemFn) -> bool {
                 "SstiStructuralQueryPair".to_owned(),
                 "SstiStructuralQueryReplayPair".to_owned(),
                 "XssStructuralQueryPair".to_owned(),
+                "XssAttributeBoundaryQueryPair".to_owned(),
             ])
 }
 
@@ -1005,6 +1010,7 @@ fn collect_exact_native_review_patterns(
                 "SstiStructuralQueryPair",
                 "SstiStructuralQueryReplayPair",
                 "XssStructuralQueryPair",
+                "XssAttributeBoundaryQueryPair",
             ] {
                 if syn_path_is_exact(&pattern.path, &["NativeWebReviewActionKind", variant]) {
                     return variants.insert(variant.to_owned());
@@ -7894,6 +7900,10 @@ impl<'ast> Visit<'ast> for OwnershipVisitor<'_> {
                 | ("crates/venom-scanner/src/web_runtime.rs", "web_assessment")
                 | (
                     "crates/venom-scanner/src/web_runtime/web_assessment.rs",
+                    "attribute_boundary_matcher"
+                )
+                | (
+                    "crates/venom-scanner/src/web_runtime/web_assessment.rs",
                     "attribute_source_context"
                 )
                 | (
@@ -10266,6 +10276,7 @@ mod tests {
                 ASSESSMENT_REVIEW_PROJECTION_SOURCE,
                 NATIVE_REVIEW_ACTION_SOURCE,
                 NATIVE_REVIEW_DECISION_SOURCE,
+                ATTRIBUTE_BOUNDARY_MATCHER_SOURCE,
                 ATTRIBUTE_SOURCE_CONTEXT_SOURCE,
                 REFLECTION_CONTEXT_SOURCE,
             ])

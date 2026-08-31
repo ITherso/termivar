@@ -57,23 +57,31 @@ reflection pair sends one bounded scanner-owned inert marker and parses a
 supported `text/html` candidate once with `html5ever`. Comment, ordinary text,
 and ordinary attribute placement are `Informational`; URI-bearing, style,
 inline-handler, script-element, and embedded-HTML attribute placement are at
-most `NeedsReview`. Source quote mode is intentionally unknown because the DOM
-does not preserve it. This layer performs no escape testing, JavaScript/CSS
-grammar analysis, browser execution, or XSS confirmation. The typed context
-selects at most one non-executing V1 family across the complete assessment. The
-closed catalog contains HTML-text, URI-attribute, event-handler, and
-script-content identities, but only HTML-text is currently evidence-capable and
-executable: its candidate must create the exact scanner-owned inert node absent
-from the matched control. The other families remain metadata-only until source
-quote or stronger script-boundary evidence is available. Selection is
-deterministic and metadata-first, so later catalog growth does not blindly
-multiply requests. Raw reflection in the same context is insufficient; exact
+most `NeedsReview`. A bounded single-pass source analyzer supplies exact
+double-, single-, or unquoted ordinary/URI/event-handler attribute anchors and
+cross-checks them with the DOM; ambiguity, incompleteness, or disagreement
+fails closed. The typed context and quote mode select at most one non-executing
+V1 family across the assessment. HTML-text requires its exact inert node.
+Attribute families require exact inert boundary and tail attributes on the
+anchored HTML host and sink, absent from control. Script remains metadata-only
+because JavaScript grammar evidence is not available. Selection is deterministic
+and metadata-first, so later catalog growth does not blindly multiply requests
+or source/DOM parses. Raw or same-context reflection is insufficient; exact
 candidate-specific parser-visible structural control is still only
-`NeedsReview`. Credentialed candidate-specific CORS, an exact candidate-specific
+`NeedsReview`. No JavaScript/CSS grammar, browser execution, or XSS confirmation
+is performed. Credentialed candidate-specific CORS, an exact candidate-specific
 external redirect, and repeatable SQL/SSTI structural relationships are also at
 most `NeedsReview`. Every native action is
 KnowledgeOnly, and no native assessment capability can produce a `Confirmed`
 item.
+
+| XSS structural family | Context | Quote modes | Executable? | Required evidence | Request cost | Maximum |
+| --- | --- | --- | --- | --- | ---: | --- |
+| HTML text boundary | HTML text | N/A | Yes | Exact candidate-specific inert HTML node, absent from control | 3 including child bootstrap | `NeedsReview` |
+| Ordinary attribute boundary | Ordinary attribute | Double, single, unquoted | Yes | Exact source/DOM anchor plus exact inert boundary and tail attributes on the host/sink | 3 including child bootstrap | `NeedsReview` |
+| URI attribute boundary | URI-bearing attribute | Double, single, unquoted | Yes | Same exact anchored host/sink attribute evidence; no executable URI scheme | 3 including child bootstrap | `NeedsReview` |
+| Event-handler attribute boundary | Inline handler attribute | Double, single, unquoted | Yes | Same exact anchored host/sink attribute evidence; event is never triggered | 3 including child bootstrap | `NeedsReview` |
+| Script content structure | Script element content | N/A | No, metadata-only | Requires future grammar/source evidence | 0 | None |
 An explicitly non-HTML response makes reflection review not applicable. A
 truncated body, invalid UTF-8, or exhausted DOM/occurrence ceiling instead makes
 the selected differential review typed incomplete; it is never reported as an

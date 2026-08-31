@@ -179,20 +179,19 @@ reflection pair uses a bounded scanner-owned inert marker and parses each
 supported `text/html` candidate once with `html5ever`. Comment, ordinary text,
 and ordinary attribute placement are `Informational`; URI-bearing, style,
 inline-handler, script-element, and embedded-HTML attribute placement are at
-most `NeedsReview`. The DOM representation does not preserve source quote mode,
-and no JavaScript/CSS grammar or browser executes the response, so reflection
-is never `Confirmed` XSS. The typed context model can support later
-context-compatible payload families without parsing human-readable labels.
-V1 publishes four typed structural-family identities, while only the HTML-text
-boundary family is currently evidence-capable and executable. URI-attribute,
-inline-handler, and script-content families remain metadata-only until source
-quote or stronger script-boundary evidence exists. Selection is metadata-first,
-deterministic, and duplicate suppressed; catalog size does not increase the
-execution ceiling. Only an exact scanner-owned inert node parsed in the
-candidate but absent from the matched control can establish structural
-boundary evidence. Same-context URI, handler, or script reflection cannot
-produce a separate `NeedsReview` item. Literal reflection or same-context
-placement alone cannot.
+most `NeedsReview`. One bounded source pass cross-checks exact ordinary, URI,
+and event-handler attribute anchors with the DOM and retains only typed
+double-, single-, or unquoted mode plus normalized element/attribute names.
+Ambiguous, incomplete, mismatched, comment, script, or style source never
+enables an attribute probe. Quote-aware V1 candidates are non-executing and can
+produce structural evidence only when the candidate DOM contains both exact
+scanner-owned inert attributes on the exact anchored HTML host/sink while the
+matched control contains neither. The HTML-text family retains its exact inert
+node contract; script-content remains metadata-only pending stronger grammar
+evidence. Selection is metadata-first, deterministic, duplicate suppressed,
+and capped at one family, so catalog size does not increase the three-request
+XSS child ceiling. Literal or same-context reflection alone cannot produce the
+structural item.
 No JavaScript, event, navigation, callback, or browser is executed.
 The catalog is KnowledgeOnly and has no path to a `Confirmed` assessment item.
 Non-HTML is explicitly not applicable to reflection review; truncation,
