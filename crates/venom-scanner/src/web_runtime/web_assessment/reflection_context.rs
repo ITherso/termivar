@@ -369,7 +369,7 @@ mod tests {
         .one(html)
     }
 
-    fn obsolete_synthetic_document(html: &str) -> RcDom {
+    fn synthetic_framed_document(html: &str) -> RcDom {
         let framed = format!("<!doctype html><html><head></head><body>{html}</body></html>");
         parse_document(RcDom::default(), ParseOpts::default()).one(framed.as_str())
     }
@@ -382,15 +382,15 @@ mod tests {
         let byte_read_facts = inspect_xss_boundary(&byte_read.document, XSS_IDENTITY);
         let fragment = body_fragment(XSS_BOUNDARY);
         let fragment_facts = inspect_xss_boundary(&fragment.document, XSS_IDENTITY);
-        let synthetic = obsolete_synthetic_document(XSS_BOUNDARY);
+        let synthetic = synthetic_framed_document(XSS_BOUNDARY);
         let synthetic_facts = inspect_xss_boundary(&synthetic.document, XSS_IDENTITY);
 
         assert_eq!(direct_facts.exact_boundary_count, 1, "{direct_facts:?}");
         assert_eq!(byte_read_facts, direct_facts);
         assert_eq!(fragment_facts.exact_boundary_count, 1, "{fragment_facts:?}");
         assert_eq!(
-            synthetic_facts.exact_boundary_count, 0,
-            "the obsolete synthetic framing defect must remain explicit: {synthetic_facts:?}"
+            synthetic_facts.exact_boundary_count, 1,
+            "framing must preserve the exact scanner-owned boundary: {synthetic_facts:?}"
         );
     }
 

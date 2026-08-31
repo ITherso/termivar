@@ -507,7 +507,10 @@ fn xss_html_text_family_requires_one_exact_candidate_specific_node_boundary() {
     .unwrap();
     assert_eq!(
         values(&candidate).last(),
-        Some(&(XSS_STRUCTURAL_RELATION, "reflected-same-context"))
+        // Encoding removes both the exact raw candidate and its parser-visible
+        // boundary. `ReflectedSameContext` remains reserved for an exact raw
+        // candidate that survives without establishing the required node.
+        Some(&(XSS_STRUCTURAL_RELATION, "encoded-or-inert"))
     );
 }
 
