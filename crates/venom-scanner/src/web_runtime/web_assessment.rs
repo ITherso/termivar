@@ -70,8 +70,8 @@ mod xss_probe_catalog;
 
 use discovery::{canonicalize_root, parse_document, ParsedDocument, ParsedForm, ParsedRoute};
 pub(super) use reflection_context::{
-    classify_exact_html_reflection, match_exact_xss_html_boundary, ExactHtmlReflectionContext,
-    ExactXssBoundaryMatch,
+    classify_exact_html_reflection, match_exact_xss_html_boundary_document,
+    validate_exact_xss_html_boundary_fragment, ExactHtmlReflectionContext, ExactXssBoundaryMatch,
 };
 use semantic::{assessment_semantic_limits, AssessmentSemanticEvidence};
 pub(super) use xss_probe_catalog::{select_xss_probe_families, XssProbeFamily};

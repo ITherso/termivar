@@ -534,7 +534,7 @@ fn production_derived_xss_candidate_bytes_and_matcher_share_one_identity() {
     assert_eq!(parts.identity, IDENTITY);
     assert_eq!(parts.candidate_value.as_bytes(), EXPECTED.as_bytes());
     assert_eq!(
-        match_exact_xss_html_boundary(&parts.candidate_value, &parts.identity),
+        validate_exact_xss_html_boundary_fragment(&parts.candidate_value, &parts.identity),
         ExactXssBoundaryMatch::Matched
     );
     let probe = parts.validate().unwrap();

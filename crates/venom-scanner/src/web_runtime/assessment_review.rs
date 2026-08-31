@@ -46,8 +46,9 @@ use crate::{
 };
 
 use super::web_assessment::{
-    classify_exact_html_reflection, match_exact_xss_html_boundary, ExactHtmlReflectionContext,
-    ExactXssBoundaryMatch, XssProbeFamily,
+    classify_exact_html_reflection, match_exact_xss_html_boundary_document,
+    validate_exact_xss_html_boundary_fragment, ExactHtmlReflectionContext, ExactXssBoundaryMatch,
+    XssProbeFamily,
 };
 use super::web_review_execution::NativeWebReviewSeeds;
 use crate::payload_strategies::ssti_arithmetic_expression_pair::SstiArithmeticProbe;
@@ -204,7 +205,7 @@ impl XssStructuralProbeParts {
 
     fn validate(self) -> Result<XssStructuralProbe, AssessmentReviewObserverError> {
         if self.family == XssProbeFamily::HtmlTextBoundary
-            && match_exact_xss_html_boundary(&self.candidate_value, &self.identity)
+            && validate_exact_xss_html_boundary_fragment(&self.candidate_value, &self.identity)
                 != ExactXssBoundaryMatch::Matched
         {
             return Err(AssessmentReviewObserverError::Candidate);
@@ -946,7 +947,8 @@ fn classify_xss_structural_relation(
         };
     }
     if contract.probe.parts().family == XssProbeFamily::HtmlTextBoundary {
-        return match match_exact_xss_html_boundary(html, &contract.probe.parts().identity) {
+        return match match_exact_xss_html_boundary_document(html, &contract.probe.parts().identity)
+        {
             ExactXssBoundaryMatch::Matched => XssStructuralRelation::StructuralBoundaryObserved,
             ExactXssBoundaryMatch::Absent
                 if html.contains(&contract.probe.parts().candidate_value) =>
