@@ -46,7 +46,8 @@ use crate::{
 };
 
 use super::web_assessment::{
-    classify_exact_html_reflection, ExactHtmlReflectionContext, XssProbeFamily,
+    classify_exact_html_reflection, match_exact_xss_html_boundary, ExactHtmlReflectionContext,
+    ExactXssBoundaryMatch, XssProbeFamily,
 };
 use super::web_review_execution::NativeWebReviewSeeds;
 use crate::payload_strategies::ssti_arithmetic_expression_pair::SstiArithmeticProbe;
@@ -161,13 +162,70 @@ struct SstiStructuralContract {
 }
 
 #[derive(Clone, PartialEq, Eq)]
-struct XssStructuralContract {
-    query_parameter: String,
+struct XssStructuralProbe {
     family: XssProbeFamily,
     identity: String,
+    control_value: String,
+    candidate_value: String,
+}
+
+impl XssStructuralProbe {
+    fn derive(
+        family: XssProbeFamily,
+        identity: &str,
+    ) -> Result<Self, AssessmentReviewObserverError> {
+        let limits = PayloadStrategyLimits::new(256, 256)
+            .map_err(|_| AssessmentReviewObserverError::Candidate)?;
+        let seed = PayloadSeed::new(
+            format!("{}:{identity}", family.seed_code()).into_bytes(),
+            limits,
+        )
+        .map_err(|_| AssessmentReviewObserverError::Candidate)?;
+        let strategy = XssStructuralQueryPairStrategy::new();
+        let control = strategy
+            .derive_one(PayloadVariantRole::Control, &seed, limits)
+            .map_err(|_| AssessmentReviewObserverError::Candidate)?;
+        let candidate = strategy
+            .derive_one(PayloadVariantRole::Candidate, &seed, limits)
+            .map_err(|_| AssessmentReviewObserverError::Candidate)?;
+        let control_value = std::str::from_utf8(control.as_bytes())
+            .map_err(|_| AssessmentReviewObserverError::Candidate)?
+            .to_owned();
+        let candidate_value = std::str::from_utf8(candidate.as_bytes())
+            .map_err(|_| AssessmentReviewObserverError::Candidate)?
+            .to_owned();
+        if family == XssProbeFamily::HtmlTextBoundary
+            && match_exact_xss_html_boundary(&candidate_value, identity)
+                != ExactXssBoundaryMatch::Matched
+        {
+            return Err(AssessmentReviewObserverError::Candidate);
+        }
+        Ok(Self {
+            family,
+            identity: identity.to_owned(),
+            control_value,
+            candidate_value,
+        })
+    }
+}
+
+impl fmt::Debug for XssStructuralProbe {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("XssStructuralProbe")
+            .field("family", &self.family.stable_id())
+            .field("identity_bytes", &self.identity.len())
+            .field("values", &"<redacted>")
+            .finish()
+    }
+}
+
+#[derive(Clone, PartialEq, Eq)]
+struct XssStructuralContract {
+    query_parameter: String,
+    probe: XssStructuralProbe,
     control_url: Url,
     candidate_url: Url,
-    candidate_value: String,
 }
 
 #[derive(Clone, Copy)]
@@ -195,7 +253,7 @@ impl fmt::Debug for XssStructuralContract {
         formatter
             .debug_struct("XssStructuralContract")
             .field("query_parameter", &"<redacted>")
-            .field("family", &self.family.stable_id())
+            .field("family", &self.probe.family.stable_id())
             .field("urls", &"<redacted>")
             .finish()
     }
@@ -415,42 +473,20 @@ impl AssessmentReviewObserverSet {
             return Err(AssessmentReviewObserverError::QueryParameter);
         }
         let mut observer = Self::new_with_sql(root, seeds, None, None, None, None)?;
-        let limits = PayloadStrategyLimits::new(256, 256)
-            .map_err(|_| AssessmentReviewObserverError::Candidate)?;
-        let seed_text = format!(
-            "{}:{}",
-            family.seed_code(),
-            observer.seeds.reflection_identity()
-        );
-        let seed = PayloadSeed::new(seed_text.into_bytes(), limits)
-            .map_err(|_| AssessmentReviewObserverError::Candidate)?;
-        let strategy = XssStructuralQueryPairStrategy::new();
-        let control = strategy
-            .derive_one(PayloadVariantRole::Control, &seed, limits)
-            .map_err(|_| AssessmentReviewObserverError::Candidate)?;
-        let candidate = strategy
-            .derive_one(PayloadVariantRole::Candidate, &seed, limits)
-            .map_err(|_| AssessmentReviewObserverError::Candidate)?;
-        let control_value = std::str::from_utf8(control.as_bytes())
-            .map_err(|_| AssessmentReviewObserverError::Candidate)?;
-        let candidate_value = std::str::from_utf8(candidate.as_bytes())
-            .map_err(|_| AssessmentReviewObserverError::Candidate)?
-            .to_owned();
+        let probe = XssStructuralProbe::derive(family, observer.seeds.reflection_identity())?;
         let mut control_url = observer.root.clone();
         control_url
             .query_pairs_mut()
-            .append_pair(query_parameter, control_value);
+            .append_pair(query_parameter, &probe.control_value);
         let mut candidate_url = observer.root.clone();
         candidate_url
             .query_pairs_mut()
-            .append_pair(query_parameter, &candidate_value);
+            .append_pair(query_parameter, &probe.candidate_value);
         observer.xss = Some(XssStructuralContract {
             query_parameter: query_parameter.to_owned(),
-            family,
-            identity: observer.seeds.reflection_identity().to_owned(),
+            probe,
             control_url,
             candidate_url,
-            candidate_value,
         });
         Ok(observer)
     }
@@ -636,7 +672,7 @@ impl AssessmentReviewObserverSet {
                     .expect("enabled XSS observer retains its bounded contract");
                 records.push((
                     ReviewProperty::XssProbeFamily,
-                    contract.family.stable_id().to_owned(),
+                    contract.probe.family.stable_id().to_owned(),
                 ));
                 records.push((
                     ReviewProperty::XssStructuralRelation,
@@ -880,7 +916,7 @@ fn classify_xss_structural_relation(
         return XssStructuralRelation::Incomplete;
     };
     if observation.stage() == DecisionExecutionStage::Passive {
-        let context = classify_exact_html_reflection(html, &contract.candidate_value);
+        let context = classify_exact_html_reflection(html, &contract.probe.candidate_value);
         return if context == ExactHtmlReflectionContext::Absent {
             XssStructuralRelation::EncodedOrInert
         } else if context == ExactHtmlReflectionContext::Incomplete {
@@ -889,54 +925,32 @@ fn classify_xss_structural_relation(
             XssStructuralRelation::ReflectedSameContext
         };
     }
-    if contract.family == XssProbeFamily::HtmlTextBoundary {
-        return match html_contains_exact_xss_boundary(html, &contract.identity) {
-            Ok(true) => XssStructuralRelation::StructuralBoundaryObserved,
-            Ok(false) if html.contains(&contract.candidate_value) => {
+    if contract.probe.family == XssProbeFamily::HtmlTextBoundary {
+        return match match_exact_xss_html_boundary(html, &contract.probe.identity) {
+            ExactXssBoundaryMatch::Matched => XssStructuralRelation::StructuralBoundaryObserved,
+            ExactXssBoundaryMatch::Absent if html.contains(&contract.probe.candidate_value) => {
                 XssStructuralRelation::ReflectedSameContext
             },
-            Ok(false) => XssStructuralRelation::EncodedOrInert,
-            Err(()) => XssStructuralRelation::Incomplete,
+            ExactXssBoundaryMatch::Absent => XssStructuralRelation::EncodedOrInert,
+            ExactXssBoundaryMatch::Ambiguous | ExactXssBoundaryMatch::Incomplete => {
+                XssStructuralRelation::Incomplete
+            },
         };
     }
-    let context = classify_exact_html_reflection(html, &contract.candidate_value);
+    let context = classify_exact_html_reflection(html, &contract.probe.candidate_value);
     if context == ExactHtmlReflectionContext::Incomplete {
         return XssStructuralRelation::Incomplete;
     }
     if context == ExactHtmlReflectionContext::Absent {
         return XssStructuralRelation::EncodedOrInert;
     }
-    if context == contract.family.compatible_context() {
+    if context == contract.probe.family.compatible_context() {
         // An interesting parser context proves placement only. Without one
         // candidate-specific parser-visible node/attribute transition it does
         // not prove structural boundary control.
         return XssStructuralRelation::ReflectedSameContext;
     }
     XssStructuralRelation::Unsupported
-}
-
-fn html_contains_exact_xss_boundary(html: &str, identity: &str) -> Result<bool, ()> {
-    let dom = parse_document(RcDom::default(), ParseOpts::default()).one(html);
-    let mut pending = vec![dom.document];
-    let mut visited = 0_usize;
-    while let Some(handle) = pending.pop() {
-        visited = visited.saturating_add(1);
-        if visited > 4_096 {
-            return Err(());
-        }
-        if let NodeData::Element { name, attrs, .. } = &handle.data {
-            if name.local.as_ref() == "span"
-                && attrs.borrow().iter().any(|attribute| {
-                    attribute.name.local.as_ref() == "data-venom-xss-boundary-token"
-                        && attribute.value.as_ref() == identity
-                })
-            {
-                return Ok(true);
-            }
-        }
-        pending.extend(handle.children.borrow().iter().rev().cloned());
-    }
-    Ok(false)
 }
 
 const fn xss_structural_relation_slug(relation: XssStructuralRelation) -> &'static str {
@@ -1654,12 +1668,14 @@ impl CommittedAssessmentReviewLedger {
                     },
                 ) = (&control.response, &candidate.response)
                 {
-                    if control_family == candidate_family && *candidate_family == contract.family {
+                    if control_family == candidate_family
+                        && *candidate_family == contract.probe.family
+                    {
                         candidates.push(AssessmentReviewCandidate::XssStructural(
                             XssStructuralReviewCandidate {
                                 subject: control.subject.clone(),
                                 case_id: control.case_id.clone(),
-                                family: contract.family,
+                                family: contract.probe.family,
                                 query_parameter: contract.query_parameter.clone(),
                                 control_evidence_ids: ids_for(
                                     control,
@@ -1953,11 +1969,11 @@ fn parse_review_receipt(
                 .xss
                 .ok_or(AssessmentReviewLedgerError::EvidenceProjection)?;
             let family = value(&values, ReviewProperty::XssProbeFamily)?;
-            if family != contract.family.stable_id() {
+            if family != contract.probe.family.stable_id() {
                 return Err(AssessmentReviewLedgerError::EvidenceProjection);
             }
             CommittedReviewResponse::XssStructural {
-                family: contract.family,
+                family: contract.probe.family,
                 relation: parse_xss_structural_relation(value(
                     &values,
                     ReviewProperty::XssStructuralRelation,

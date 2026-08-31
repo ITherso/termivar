@@ -8,6 +8,68 @@ use markup5ever_rcdom::{NodeData, RcDom};
 
 const MAX_REFLECTION_DOM_NODES: usize = 4_096;
 const MAX_REFLECTION_OCCURRENCES: usize = 32;
+const XSS_BOUNDARY_ELEMENT: &str = "span";
+const XSS_BOUNDARY_ATTRIBUTE: &str = "data-venom-xss-boundary-token";
+
+/// Exact bounded DOM result for one scanner-owned inert HTML boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::web_runtime) enum ExactXssBoundaryMatch {
+    Absent,
+    Matched,
+    Ambiguous,
+    Incomplete,
+}
+
+/// Requires exactly one HTML `span` carrying the exact scanner-owned token.
+///
+/// The token is the correlation identity; raw candidate markup is deliberately
+/// not used as evidence identity.
+pub(in crate::web_runtime) fn match_exact_xss_html_boundary(
+    html: &str,
+    identity: &str,
+) -> ExactXssBoundaryMatch {
+    if identity.len() != 32
+        || !identity
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+    {
+        return ExactXssBoundaryMatch::Incomplete;
+    }
+    let dom = parse_document(RcDom::default(), ParseOpts::default()).one(html);
+    let mut pending = vec![dom.document];
+    let mut nodes = 0_usize;
+    let mut matches = 0_usize;
+    while let Some(handle) = pending.pop() {
+        nodes = nodes.saturating_add(1);
+        if nodes > MAX_REFLECTION_DOM_NODES {
+            return ExactXssBoundaryMatch::Incomplete;
+        }
+        if let NodeData::Element { name, attrs, .. } = &handle.data {
+            if name.ns == ns!(html) && name.local.as_ref() == XSS_BOUNDARY_ELEMENT {
+                matches = matches.saturating_add(
+                    attrs
+                        .borrow()
+                        .iter()
+                        .filter(|attribute| {
+                            attribute.name.ns.as_ref().is_empty()
+                                && attribute.name.local.as_ref() == XSS_BOUNDARY_ATTRIBUTE
+                                && attribute.value.as_ref() == identity
+                        })
+                        .count(),
+                );
+                if matches > 1 {
+                    return ExactXssBoundaryMatch::Ambiguous;
+                }
+            }
+        }
+        pending.extend(handle.children.borrow().iter().rev().cloned());
+    }
+    if matches == 1 {
+        ExactXssBoundaryMatch::Matched
+    } else {
+        ExactXssBoundaryMatch::Absent
+    }
+}
 
 /// Strongest exact context observed in one complete bounded HTML document.
 ///
