@@ -632,8 +632,65 @@ async fn sql_review_projects_one_repeatable_non_root_item_without_query_value_le
         reflection_item.subject_reference().to_string(),
         "subject-0001"
     );
-    assert_eq!(report.usage().active_verifications(), 6);
-    assert_eq!(report.usage().total_requests(), 14);
+    let expected_root_actions =
+        enabled_native_web_review_actions(true, false, false, false, false, None);
+    let expected_non_root_actions =
+        enabled_native_web_review_actions(false, false, true, true, true, None);
+    let root_review = runtime.native_review.as_ref().unwrap();
+    let non_root_review = runtime.non_root_structural_review.as_ref().unwrap();
+    let xss_review = runtime.xss_structural_review.as_ref().unwrap();
+    assert_eq!(&root_review.enabled_actions, &expected_root_actions);
+    assert_eq!(&non_root_review.enabled_actions, &expected_non_root_actions);
+    assert_eq!(
+        xss_review.enabled_actions.as_slice(),
+        &[NativeWebReviewActionKind::XssAttributeBoundaryQueryPair]
+    );
+    assert_eq!(
+        expected_non_root_actions
+            .iter()
+            .copied()
+            .filter(|kind| matches!(
+                kind,
+                NativeWebReviewActionKind::SqlStructuralQueryPair
+                    | NativeWebReviewActionKind::SqlStructuralQueryReplayPair
+            ))
+            .collect::<Vec<_>>(),
+        [
+            NativeWebReviewActionKind::SqlStructuralQueryPair,
+            NativeWebReviewActionKind::SqlStructuralQueryReplayPair,
+        ]
+    );
+    assert!(expected_root_actions
+        .iter()
+        .chain(&expected_non_root_actions)
+        .all(|kind| *kind != NativeWebReviewActionKind::RedirectReflectionQueryPair));
+
+    // The initial root/non-root plans still own six active actions. The one
+    // context-selected attribute-XSS child owns the seventh independently.
+    let expected_initial_active_verifications =
+        u16::try_from(expected_root_actions.len() + expected_non_root_actions.len()).unwrap();
+    let expected_xss_active_verifications =
+        u16::try_from(xss_review.enabled_actions.len()).unwrap();
+    assert_eq!(expected_initial_active_verifications, 6);
+    assert_eq!(expected_xss_active_verifications, 1);
+    assert_eq!(
+        report.usage().active_verifications(),
+        expected_initial_active_verifications + expected_xss_active_verifications
+    );
+    // Each executed assessment subject owns one bootstrap request, and each
+    // initial native action owns its fixed control/candidate legs. The selected
+    // XSS child then owns its separate bootstrap and control/candidate pair.
+    let expected_initial_bootstrap_requests = report.usage().executed_subjects();
+    let expected_initial_requests = expected_initial_bootstrap_requests
+        + usize::from(expected_initial_active_verifications) * NATIVE_WEB_REVIEW_REQUESTS_PER_CASE;
+    let expected_xss_child_requests = usize::from(xss_probe_catalog::XSS_V1_MAX_TOTAL_REQUESTS);
+    assert_eq!(expected_initial_bootstrap_requests, 2);
+    assert_eq!(expected_initial_requests, 14);
+    assert_eq!(expected_xss_child_requests, 3);
+    assert_eq!(
+        usize::try_from(report.usage().total_requests()).unwrap(),
+        expected_initial_requests + expected_xss_child_requests
+    );
     let requests = server.requests().await;
     assert!(requests
         .iter()
@@ -885,15 +942,47 @@ async fn quote_aware_attribute_boundaries_are_bounded_needs_review_only() {
             .all(|item| item.disposition() != AssessmentDisposition::Confirmed));
         assert!(!format!("{report:?}").contains(SECRET));
 
-        let initial = enabled_native_web_review_actions(true, true, true, true, true, None);
-        assert_eq!(
-            server.requests().await.len(),
-            1 + initial.len() * NATIVE_WEB_REVIEW_REQUESTS_PER_CASE
-                + usize::from(xss_probe_catalog::XSS_V1_MAX_TOTAL_REQUESTS)
+        let query_parameter_names = vec!["item".to_owned()];
+        let redirect_query_parameter =
+            select_redirect_review_query_parameter(&query_parameter_names);
+        assert_eq!(redirect_query_parameter, None);
+        let initial = enabled_native_web_review_actions(
+            true,
+            redirect_query_parameter.is_some(),
+            true,
+            true,
+            true,
+            None,
         );
-        assert!(server
-            .requests()
-            .await
+        assert_eq!(
+            runtime.native_review.as_ref().unwrap().enabled_actions,
+            initial
+        );
+        assert!(!initial.contains(&NativeWebReviewActionKind::RedirectReflectionQueryPair));
+        assert_eq!(
+            runtime
+                .xss_structural_review
+                .as_ref()
+                .unwrap()
+                .enabled_actions
+                .as_slice(),
+            &[NativeWebReviewActionKind::XssAttributeBoundaryQueryPair]
+        );
+        let expected_initial_requests = 1 + initial.len() * NATIVE_WEB_REVIEW_REQUESTS_PER_CASE;
+        let expected_xss_child_requests = usize::from(xss_probe_catalog::XSS_V1_MAX_TOTAL_REQUESTS);
+        assert_eq!(expected_xss_child_requests, 3);
+        let requests = server.requests().await;
+        assert_eq!(
+            requests.len(),
+            expected_initial_requests + expected_xss_child_requests
+        );
+        assert!(requests
+            .iter()
+            .all(|request| request.host() == requests[0].host()));
+        assert!(requests
+            .iter()
+            .all(|request| !request.target.contains("review.invalid")));
+        assert!(requests
             .iter()
             .filter(|request| request.target.contains("data-venom-xss-boundary-token"))
             .all(|request| {
