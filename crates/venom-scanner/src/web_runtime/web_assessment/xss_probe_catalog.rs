@@ -78,7 +78,7 @@ impl XssProbeFamily {
     /// Stable normalized wire-shape identity used before materialization.
     pub(in crate::web_runtime) const fn candidate_shape_id(self) -> &'static str {
         match self {
-            Self::HtmlTextBoundary => "html-custom-element-boundary@1",
+            Self::HtmlTextBoundary => "html-inert-element-boundary@1",
             Self::UriAttributeStructure => "relative-uri-component-structure@1",
             Self::EventHandlerStructure => "javascript-block-comment-handler@1",
             Self::ScriptContentStructure => "javascript-block-comment-script@1",

@@ -925,9 +925,9 @@ fn html_contains_exact_xss_boundary(html: &str, identity: &str) -> Result<bool, 
             return Err(());
         }
         if let NodeData::Element { name, attrs, .. } = &handle.data {
-            if name.local.as_ref() == "venom-xss-boundary"
+            if name.local.as_ref() == "span"
                 && attrs.borrow().iter().any(|attribute| {
-                    attribute.name.local.as_ref() == "data-venom-token"
+                    attribute.name.local.as_ref() == "data-venom-xss-boundary-token"
                         && attribute.value.as_ref() == identity
                 })
             {

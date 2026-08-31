@@ -42,7 +42,7 @@ impl XssStructuralQueryPairStrategy {
         }
         match family {
             "html" => Some(format!(
-                "<venom-xss-boundary data-venom-token=\"{identity}\"></venom-xss-boundary>"
+                "<span data-venom-xss-boundary-token=\"{identity}\"></span>"
             )),
             "uri" => Some(format!(
                 "venom-xss-{identity}/segment?probe={identity}#boundary"

@@ -741,7 +741,7 @@ async fn html_text_boundary_is_needs_review_deterministic_and_report_safe() {
             Some(value) if value.starts_with("venom-reflection-candidate-") => {
                 format!("<p>{value}</p>")
             },
-            Some(value) if value.starts_with("<venom-xss-boundary ") => value,
+            Some(value) if value.starts_with("<span data-venom-xss-boundary-token=") => value,
             _ => "matched control".to_owned(),
         };
         FixtureReply::Response(FixtureResponse::html(body))
@@ -830,7 +830,7 @@ async fn html_text_boundary_is_needs_review_deterministic_and_report_safe() {
         assert!(rendered.contains("web.review.reflection.text-context@1"));
         assert!(rendered.contains("web.review.xss.structural-boundary@1"));
         assert!(!rendered.contains("venom-xss-boundary"));
-        assert!(!rendered.contains("<venom-xss-boundary"));
+        assert!(!rendered.contains("data-venom-xss-boundary-token"));
         assert!(!rendered.contains("confirmed"));
     }
 }
