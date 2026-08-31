@@ -1,5 +1,3 @@
-use html5ever::{ns, parse_document as parse_html_document, tendril::TendrilSink, ParseOpts};
-use markup5ever_rcdom::{NodeData as TestNodeData, RcDom as TestRcDom};
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use url::Url;
 use venom_core::{ConfidenceScore, EntityId, EvidenceId, EvidenceValue};
@@ -471,7 +469,7 @@ fn xss_html_text_family_requires_one_exact_candidate_specific_node_boundary() {
         &HeaderMap::new(),
         200,
         Some("text/html"),
-        Some(contract.probe.candidate_value.as_bytes()),
+        Some(contract.probe.parts().candidate_value.as_bytes()),
         NativeWebReviewActionKind::XssStructuralQueryPair.executor_id(),
         Some(&strategy),
         false,
@@ -486,6 +484,7 @@ fn xss_html_text_family_requires_one_exact_candidate_specific_node_boundary() {
         "<p>{}</p>",
         contract
             .probe
+            .parts()
             .candidate_value
             .replace('&', "&amp;")
             .replace('<', "&lt;")
@@ -513,7 +512,7 @@ fn xss_html_text_family_requires_one_exact_candidate_specific_node_boundary() {
 }
 
 #[test]
-fn xss_html_boundary_identity_candidate_dom_and_matcher_share_one_truth() {
+fn xss_seed_identity_is_pinned_canonical_and_redacted() {
     const EXPECTED_IDENTITY: &str = "cbde631857b638780e0cd315f53a6801";
     let seeds = seeds();
     assert_eq!(seeds.reflection_identity().len(), 32);
@@ -522,99 +521,25 @@ fn xss_html_boundary_identity_candidate_dom_and_matcher_share_one_truth() {
         .bytes()
         .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase()));
     assert_eq!(seeds.reflection_identity(), EXPECTED_IDENTITY);
+    assert!(!format!("{seeds:?}").contains(EXPECTED_IDENTITY));
+}
 
-    // This is the real production derivation retained by the observer, not a
-    // separately typed test candidate.
-    let observer = AssessmentReviewObserverSet::new_xss(
-        root(),
-        seeds,
-        QUERY_PARAMETER,
-        XssProbeFamily::HtmlTextBoundary,
-    )
-    .unwrap();
-    let probe = &observer.xss.as_ref().unwrap().probe;
-    assert_eq!(probe.identity, EXPECTED_IDENTITY);
-
-    let dom = parse_html_document(TestRcDom::default(), ParseOpts::default())
-        .one(probe.candidate_value.as_str());
-    let mut pending = vec![dom.document];
-    let mut exact_nodes = 0_usize;
-    while let Some(handle) = pending.pop() {
-        if let TestNodeData::Element { name, attrs, .. } = &handle.data {
-            if name.ns == ns!(html) && name.local.as_ref() == "span" {
-                let attrs = attrs.borrow();
-                if attrs.iter().any(|attribute| {
-                    attribute.name.ns.as_ref().is_empty()
-                        && attribute.name.local.as_ref() == "data-venom-xss-boundary-token"
-                        && attribute.value.as_ref() == EXPECTED_IDENTITY
-                }) {
-                    exact_nodes += 1;
-                }
-            }
-        }
-        pending.extend(handle.children.borrow().iter().rev().cloned());
-    }
-    assert_eq!(exact_nodes, 1);
+#[test]
+fn production_derived_xss_candidate_bytes_and_matcher_share_one_identity() {
+    const IDENTITY: &str = "0123456789abcdef0123456789abcdef";
+    const EXPECTED: &str =
+        "<span data-venom-xss-boundary-token=\"0123456789abcdef0123456789abcdef\"></span>";
+    let parts =
+        XssStructuralProbeParts::derive_values(XssProbeFamily::HtmlTextBoundary, IDENTITY).unwrap();
+    assert_eq!(parts.identity, IDENTITY);
+    assert_eq!(parts.candidate_value.as_bytes(), EXPECTED.as_bytes());
     assert_eq!(
-        match_exact_xss_html_boundary(&probe.candidate_value, &probe.identity),
+        match_exact_xss_html_boundary(&parts.candidate_value, &parts.identity),
         ExactXssBoundaryMatch::Matched
     );
-
-    let wrong_identity = "00000000000000000000000000000000";
-    assert_eq!(
-        match_exact_xss_html_boundary(&probe.candidate_value, wrong_identity),
-        ExactXssBoundaryMatch::Absent
-    );
-    assert_eq!(
-        match_exact_xss_html_boundary(
-            &probe.candidate_value.replace("<span", "<div"),
-            &probe.identity,
-        ),
-        ExactXssBoundaryMatch::Absent
-    );
-    assert_eq!(
-        match_exact_xss_html_boundary(
-            &probe
-                .candidate_value
-                .replace("data-venom-xss-boundary-token", "data-unrelated-token"),
-            &probe.identity,
-        ),
-        ExactXssBoundaryMatch::Absent
-    );
-
-    let encoded = probe
-        .candidate_value
-        .replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;");
-    assert_eq!(
-        match_exact_xss_html_boundary(&encoded, &probe.identity),
-        ExactXssBoundaryMatch::Absent
-    );
-    assert_eq!(
-        match_exact_xss_html_boundary("<p>clean control</p>", &probe.identity),
-        ExactXssBoundaryMatch::Absent
-    );
-    assert_eq!(
-        match_exact_xss_html_boundary(
-            "<span data-venom-xss-boundary-token=\"00000000000000000000000000000000\"></span>",
-            &probe.identity,
-        ),
-        ExactXssBoundaryMatch::Absent
-    );
-    assert_eq!(
-        match_exact_xss_html_boundary(
-            &format!("{}{}", probe.candidate_value, probe.candidate_value),
-            &probe.identity,
-        ),
-        ExactXssBoundaryMatch::Ambiguous
-    );
-    let oversized_dom = "<i></i>".repeat(4_097);
-    assert_eq!(
-        match_exact_xss_html_boundary(&oversized_dom, &probe.identity),
-        ExactXssBoundaryMatch::Incomplete
-    );
+    let probe = parts.validate().unwrap();
+    assert_eq!(probe.parts().identity, IDENTITY);
+    assert_eq!(probe.parts().candidate_value, EXPECTED);
 }
 
 #[test]
@@ -637,7 +562,7 @@ fn xss_metadata_only_families_never_upgrade_same_context_reflection() {
         let observer =
             AssessmentReviewObserverSet::new_xss(root(), seeds(), QUERY_PARAMETER, family).unwrap();
         let contract = observer.xss.as_ref().unwrap();
-        let body = body.replace("{candidate}", &contract.probe.candidate_value);
+        let body = body.replace("{candidate}", &contract.probe.parts().candidate_value);
         let strategy =
             native_review_strategy_ref(NativeWebReviewActionKind::XssStructuralQueryPair);
         let candidate = observe(
@@ -1144,6 +1069,29 @@ fn xss_structural_candidate_requires_clean_control_and_exact_parser_boundary() {
         relation: XssStructuralRelation::StructuralBoundaryObserved,
     };
     insert_pair(&mut ledger, reflected_control, candidate);
+    assert!(ledger.candidates().is_empty());
+
+    let boundary_control = fake_observation(
+        NativeWebReviewActionKind::XssStructuralQueryPair,
+        DecisionExecutionStage::Passive,
+        CommittedReviewResponse::XssStructural {
+            family,
+            relation: XssStructuralRelation::StructuralBoundaryObserved,
+        },
+        false,
+        "xss-preexisting-boundary-control",
+    );
+    let boundary_candidate = fake_observation(
+        NativeWebReviewActionKind::XssStructuralQueryPair,
+        DecisionExecutionStage::Active,
+        CommittedReviewResponse::XssStructural {
+            family,
+            relation: XssStructuralRelation::StructuralBoundaryObserved,
+        },
+        true,
+        "xss-preexisting-boundary-candidate",
+    );
+    insert_pair(&mut ledger, boundary_control, boundary_candidate);
     assert!(ledger.candidates().is_empty());
 }
 

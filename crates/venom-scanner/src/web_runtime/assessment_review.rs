@@ -162,15 +162,15 @@ struct SstiStructuralContract {
 }
 
 #[derive(Clone, PartialEq, Eq)]
-struct XssStructuralProbe {
+struct XssStructuralProbeParts {
     family: XssProbeFamily,
     identity: String,
     control_value: String,
     candidate_value: String,
 }
 
-impl XssStructuralProbe {
-    fn derive(
+impl XssStructuralProbeParts {
+    fn derive_values(
         family: XssProbeFamily,
         identity: &str,
     ) -> Result<Self, AssessmentReviewObserverError> {
@@ -194,12 +194,6 @@ impl XssStructuralProbe {
         let candidate_value = std::str::from_utf8(candidate.as_bytes())
             .map_err(|_| AssessmentReviewObserverError::Candidate)?
             .to_owned();
-        if family == XssProbeFamily::HtmlTextBoundary
-            && match_exact_xss_html_boundary(&candidate_value, identity)
-                != ExactXssBoundaryMatch::Matched
-        {
-            return Err(AssessmentReviewObserverError::Candidate);
-        }
         Ok(Self {
             family,
             identity: identity.to_owned(),
@@ -207,14 +201,40 @@ impl XssStructuralProbe {
             candidate_value,
         })
     }
+
+    fn validate(self) -> Result<XssStructuralProbe, AssessmentReviewObserverError> {
+        if self.family == XssProbeFamily::HtmlTextBoundary
+            && match_exact_xss_html_boundary(&self.candidate_value, &self.identity)
+                != ExactXssBoundaryMatch::Matched
+        {
+            return Err(AssessmentReviewObserverError::Candidate);
+        }
+        Ok(XssStructuralProbe(self))
+    }
+}
+
+#[derive(Clone, PartialEq, Eq)]
+struct XssStructuralProbe(XssStructuralProbeParts);
+
+impl XssStructuralProbe {
+    fn derive(
+        family: XssProbeFamily,
+        identity: &str,
+    ) -> Result<Self, AssessmentReviewObserverError> {
+        XssStructuralProbeParts::derive_values(family, identity)?.validate()
+    }
+
+    const fn parts(&self) -> &XssStructuralProbeParts {
+        &self.0
+    }
 }
 
 impl fmt::Debug for XssStructuralProbe {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("XssStructuralProbe")
-            .field("family", &self.family.stable_id())
-            .field("identity_bytes", &self.identity.len())
+            .field("family", &self.parts().family.stable_id())
+            .field("identity_bytes", &self.parts().identity.len())
             .field("values", &"<redacted>")
             .finish()
     }
@@ -253,7 +273,7 @@ impl fmt::Debug for XssStructuralContract {
         formatter
             .debug_struct("XssStructuralContract")
             .field("query_parameter", &"<redacted>")
-            .field("family", &self.probe.family.stable_id())
+            .field("family", &self.probe.parts().family.stable_id())
             .field("urls", &"<redacted>")
             .finish()
     }
@@ -477,11 +497,11 @@ impl AssessmentReviewObserverSet {
         let mut control_url = observer.root.clone();
         control_url
             .query_pairs_mut()
-            .append_pair(query_parameter, &probe.control_value);
+            .append_pair(query_parameter, &probe.parts().control_value);
         let mut candidate_url = observer.root.clone();
         candidate_url
             .query_pairs_mut()
-            .append_pair(query_parameter, &probe.candidate_value);
+            .append_pair(query_parameter, &probe.parts().candidate_value);
         observer.xss = Some(XssStructuralContract {
             query_parameter: query_parameter.to_owned(),
             probe,
@@ -672,7 +692,7 @@ impl AssessmentReviewObserverSet {
                     .expect("enabled XSS observer retains its bounded contract");
                 records.push((
                     ReviewProperty::XssProbeFamily,
-                    contract.probe.family.stable_id().to_owned(),
+                    contract.probe.parts().family.stable_id().to_owned(),
                 ));
                 records.push((
                     ReviewProperty::XssStructuralRelation,
@@ -916,7 +936,7 @@ fn classify_xss_structural_relation(
         return XssStructuralRelation::Incomplete;
     };
     if observation.stage() == DecisionExecutionStage::Passive {
-        let context = classify_exact_html_reflection(html, &contract.probe.candidate_value);
+        let context = classify_exact_html_reflection(html, &contract.probe.parts().candidate_value);
         return if context == ExactHtmlReflectionContext::Absent {
             XssStructuralRelation::EncodedOrInert
         } else if context == ExactHtmlReflectionContext::Incomplete {
@@ -925,10 +945,12 @@ fn classify_xss_structural_relation(
             XssStructuralRelation::ReflectedSameContext
         };
     }
-    if contract.probe.family == XssProbeFamily::HtmlTextBoundary {
-        return match match_exact_xss_html_boundary(html, &contract.probe.identity) {
+    if contract.probe.parts().family == XssProbeFamily::HtmlTextBoundary {
+        return match match_exact_xss_html_boundary(html, &contract.probe.parts().identity) {
             ExactXssBoundaryMatch::Matched => XssStructuralRelation::StructuralBoundaryObserved,
-            ExactXssBoundaryMatch::Absent if html.contains(&contract.probe.candidate_value) => {
+            ExactXssBoundaryMatch::Absent
+                if html.contains(&contract.probe.parts().candidate_value) =>
+            {
                 XssStructuralRelation::ReflectedSameContext
             },
             ExactXssBoundaryMatch::Absent => XssStructuralRelation::EncodedOrInert,
@@ -937,14 +959,14 @@ fn classify_xss_structural_relation(
             },
         };
     }
-    let context = classify_exact_html_reflection(html, &contract.probe.candidate_value);
+    let context = classify_exact_html_reflection(html, &contract.probe.parts().candidate_value);
     if context == ExactHtmlReflectionContext::Incomplete {
         return XssStructuralRelation::Incomplete;
     }
     if context == ExactHtmlReflectionContext::Absent {
         return XssStructuralRelation::EncodedOrInert;
     }
-    if context == contract.probe.family.compatible_context() {
+    if context == contract.probe.parts().family.compatible_context() {
         // An interesting parser context proves placement only. Without one
         // candidate-specific parser-visible node/attribute transition it does
         // not prove structural boundary control.
@@ -1669,13 +1691,13 @@ impl CommittedAssessmentReviewLedger {
                 ) = (&control.response, &candidate.response)
                 {
                     if control_family == candidate_family
-                        && *candidate_family == contract.probe.family
+                        && *candidate_family == contract.probe.parts().family
                     {
                         candidates.push(AssessmentReviewCandidate::XssStructural(
                             XssStructuralReviewCandidate {
                                 subject: control.subject.clone(),
                                 case_id: control.case_id.clone(),
-                                family: contract.probe.family,
+                                family: contract.probe.parts().family,
                                 query_parameter: contract.query_parameter.clone(),
                                 control_evidence_ids: ids_for(
                                     control,
@@ -1969,11 +1991,11 @@ fn parse_review_receipt(
                 .xss
                 .ok_or(AssessmentReviewLedgerError::EvidenceProjection)?;
             let family = value(&values, ReviewProperty::XssProbeFamily)?;
-            if family != contract.probe.family.stable_id() {
+            if family != contract.probe.parts().family.stable_id() {
                 return Err(AssessmentReviewLedgerError::EvidenceProjection);
             }
             CommittedReviewResponse::XssStructural {
-                family: contract.probe.family,
+                family: contract.probe.parts().family,
                 relation: parse_xss_structural_relation(value(
                     &values,
                     ReviewProperty::XssStructuralRelation,

@@ -10,6 +10,8 @@ const MAX_REFLECTION_DOM_NODES: usize = 4_096;
 const MAX_REFLECTION_OCCURRENCES: usize = 32;
 const XSS_BOUNDARY_ELEMENT: &str = "span";
 const XSS_BOUNDARY_ATTRIBUTE: &str = "data-venom-xss-boundary-token";
+const XSS_BOUNDARY_PARSE_PREFIX: &str = "<!doctype html><html><head></head><body>";
+const XSS_BOUNDARY_PARSE_SUFFIX: &str = "</body></html>";
 
 /// Exact bounded DOM result for one scanner-owned inert HTML boundary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -35,7 +37,14 @@ pub(in crate::web_runtime) fn match_exact_xss_html_boundary(
     {
         return ExactXssBoundaryMatch::Incomplete;
     }
-    let dom = parse_document(RcDom::default(), ParseOpts::default()).one(html);
+    // `html5ever` document parsing deliberately treats a leading phrasing
+    // fragment differently from body content. The structural probe is
+    // selected only for an established HTML-text reflection, so frame the
+    // already-bounded response as body content before asking the same parser
+    // for node semantics. The frame is scanner-owned and never evidence.
+    let Some(dom) = parse_xss_boundary_body(html) else {
+        return ExactXssBoundaryMatch::Incomplete;
+    };
     let mut pending = vec![dom.document];
     let mut nodes = 0_usize;
     let mut matches = 0_usize;
@@ -51,7 +60,7 @@ pub(in crate::web_runtime) fn match_exact_xss_html_boundary(
                         .borrow()
                         .iter()
                         .filter(|attribute| {
-                            attribute.name.ns.as_ref().is_empty()
+                            attribute.name.ns == ns!()
                                 && attribute.name.local.as_ref() == XSS_BOUNDARY_ATTRIBUTE
                                 && attribute.value.as_ref() == identity
                         })
@@ -69,6 +78,18 @@ pub(in crate::web_runtime) fn match_exact_xss_html_boundary(
     } else {
         ExactXssBoundaryMatch::Absent
     }
+}
+
+fn parse_xss_boundary_body(html: &str) -> Option<RcDom> {
+    let capacity = XSS_BOUNDARY_PARSE_PREFIX
+        .len()
+        .checked_add(html.len())
+        .and_then(|value| value.checked_add(XSS_BOUNDARY_PARSE_SUFFIX.len()))?;
+    let mut framed = String::with_capacity(capacity);
+    framed.push_str(XSS_BOUNDARY_PARSE_PREFIX);
+    framed.push_str(html);
+    framed.push_str(XSS_BOUNDARY_PARSE_SUFFIX);
+    Some(parse_document(RcDom::default(), ParseOpts::default()).one(framed.as_str()))
 }
 
 /// Strongest exact context observed in one complete bounded HTML document.
@@ -258,6 +279,90 @@ mod tests {
     use super::*;
 
     const MARKER: &str = "venom-reflection-candidate-0123456789abcdef-end";
+    const XSS_IDENTITY: &str = "0123456789abcdef0123456789abcdef";
+    const XSS_BOUNDARY: &str =
+        "<span data-venom-xss-boundary-token=\"0123456789abcdef0123456789abcdef\"></span>";
+
+    #[derive(Debug, Default, PartialEq, Eq)]
+    struct XssBoundaryInspection {
+        html_span_count: usize,
+        scanner_attribute_name_count: usize,
+        empty_attribute_namespace_count: usize,
+        exact_value_count: usize,
+        exact_boundary_count: usize,
+    }
+
+    fn inspect_xss_boundary(html: &str, identity: &str) -> XssBoundaryInspection {
+        let dom = parse_xss_boundary_body(html).unwrap();
+        let mut inspection = XssBoundaryInspection::default();
+        let mut pending = vec![dom.document];
+        while let Some(handle) = pending.pop() {
+            if let NodeData::Element { name, attrs, .. } = &handle.data {
+                let html_span = name.ns == ns!(html) && name.local.as_ref() == "span";
+                inspection.html_span_count += usize::from(html_span);
+                let mut exact_attribute = false;
+                for attribute in attrs.borrow().iter() {
+                    let scanner_name = attribute.name.local.as_ref() == XSS_BOUNDARY_ATTRIBUTE;
+                    inspection.scanner_attribute_name_count += usize::from(scanner_name);
+                    inspection.empty_attribute_namespace_count +=
+                        usize::from(scanner_name && attribute.name.ns == ns!());
+                    let exact_value = scanner_name && attribute.value.as_ref() == identity;
+                    inspection.exact_value_count += usize::from(exact_value);
+                    exact_attribute |= exact_value && attribute.name.ns == ns!();
+                }
+                inspection.exact_boundary_count += usize::from(html_span && exact_attribute);
+            }
+            pending.extend(handle.children.borrow().iter().rev().cloned());
+        }
+        inspection
+    }
+
+    #[test]
+    fn canonical_xss_boundary_has_exact_typed_parser_identity() {
+        assert_eq!(
+            inspect_xss_boundary(XSS_BOUNDARY, XSS_IDENTITY),
+            XssBoundaryInspection {
+                html_span_count: 1,
+                scanner_attribute_name_count: 1,
+                empty_attribute_namespace_count: 1,
+                exact_value_count: 1,
+                exact_boundary_count: 1,
+            }
+        );
+        assert_eq!(
+            match_exact_xss_html_boundary(XSS_BOUNDARY, XSS_IDENTITY),
+            ExactXssBoundaryMatch::Matched
+        );
+    }
+
+    #[test]
+    fn xss_boundary_matcher_rejects_wrong_encoded_foreign_and_ambiguous_artifacts() {
+        let wrong_identity = "00000000000000000000000000000000";
+        for value in [
+            XSS_BOUNDARY.replace("<span", "<div"),
+            XSS_BOUNDARY.replace(XSS_BOUNDARY_ATTRIBUTE, "data-unrelated-token"),
+            XSS_BOUNDARY.replace(XSS_IDENTITY, wrong_identity),
+            XSS_BOUNDARY
+                .replace('&', "&amp;")
+                .replace('<', "&lt;")
+                .replace('>', "&gt;")
+                .replace('"', "&quot;"),
+            XSS_IDENTITY.to_owned(),
+        ] {
+            assert_ne!(
+                match_exact_xss_html_boundary(&value, XSS_IDENTITY),
+                ExactXssBoundaryMatch::Matched
+            );
+        }
+        assert_eq!(
+            match_exact_xss_html_boundary(&format!("{XSS_BOUNDARY}{XSS_BOUNDARY}"), XSS_IDENTITY,),
+            ExactXssBoundaryMatch::Ambiguous
+        );
+        assert_eq!(
+            match_exact_xss_html_boundary(&"<i></i>".repeat(4_097), XSS_IDENTITY),
+            ExactXssBoundaryMatch::Incomplete
+        );
+    }
 
     #[test]
     fn parser_distinguishes_closed_context_vocabulary() {
