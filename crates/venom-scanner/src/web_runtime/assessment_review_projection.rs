@@ -249,12 +249,18 @@ impl NativeReviewProjectionKind {
     }
 }
 
+#[derive(Clone)]
 struct PlannedAssessmentReviewItem {
     kind: NativeReviewProjectionKind,
     subject: EntityId,
     target: AssessmentItemTarget,
     control_evidence_ids: Vec<EvidenceId>,
     candidate_evidence_ids: Vec<EvidenceId>,
+}
+
+struct PlannedAssessmentReviewLedgerBatch {
+    expected_subject: EntityId,
+    plans: Vec<PlannedAssessmentReviewItem>,
 }
 
 /// Fail-closed errors from reducing a committed review candidate into the
@@ -270,30 +276,44 @@ pub(crate) enum AssessmentReviewItemProjectionError {
     Item(#[from] AssessmentItemProjectionError),
 }
 
-/// Adds review items to an existing assessment projection context.
+/// Adds every committed native-review ledger to one assessment projection.
 ///
 /// The caller owns subject registration and later consumes the same context
-/// for both passive and native-review items. This avoids minting an unrelated
-/// reference space or merging independently projected item sets.
-pub(crate) fn project_assessment_review_items(
+/// for passive and native-review items. All ledgers are planned before any
+/// native evidence is registered, so prerequisite evidence shared by an
+/// originating reflection item and a selected child item receives exactly one
+/// document-local reference. The underlying registration API remains one-shot
+/// and deliberately rejects accidental duplicate registration.
+pub(crate) fn project_assessment_review_ledgers(
     context: &mut AssessmentProjectionContext,
-    ledger: &CommittedAssessmentReviewLedger,
+    ledgers: &[&CommittedAssessmentReviewLedger],
     knowledge: &KnowledgeBase,
-    authorized_root_subject: &EntityId,
 ) -> Result<usize, AssessmentReviewItemProjectionError> {
+    let mut batches = Vec::with_capacity(ledgers.len());
+    for ledger in ledgers {
+        batches.push(plan_ledger(ledger)?);
+    }
+    project_batches(context, knowledge, &batches)
+}
+
+fn plan_ledger(
+    ledger: &CommittedAssessmentReviewLedger,
+) -> Result<PlannedAssessmentReviewLedgerBatch, AssessmentReviewItemProjectionError> {
     let candidates = ledger.candidates();
     if candidates.len() > MAX_NATIVE_REVIEW_PROJECTION_ITEMS {
         return Err(AssessmentReviewItemProjectionError::ItemLimit);
     }
     let mut plans = Vec::with_capacity(candidates.len());
     for candidate in &candidates {
-        if candidate.subject() != authorized_root_subject {
+        if candidate.subject() != ledger.subject() {
             return Err(AssessmentReviewItemProjectionError::CandidateContract);
         }
         plans.push(plan_candidate(candidate)?);
     }
-    project_plans(context, knowledge, authorized_root_subject, &plans)?;
-    Ok(plans.len())
+    Ok(PlannedAssessmentReviewLedgerBatch {
+        expected_subject: ledger.subject().clone(),
+        plans,
+    })
 }
 
 fn plan_candidate(
@@ -463,64 +483,99 @@ fn validate_plan(
     Ok(())
 }
 
+#[cfg(test)]
 fn project_plans(
     context: &mut AssessmentProjectionContext,
     knowledge: &KnowledgeBase,
-    authorized_root_subject: &EntityId,
+    expected_subject: &EntityId,
     plans: &[PlannedAssessmentReviewItem],
 ) -> Result<(), AssessmentReviewItemProjectionError> {
-    if plans.len() > MAX_NATIVE_REVIEW_PROJECTION_ITEMS
-        || plans
-            .iter()
-            .any(|plan| &plan.subject != authorized_root_subject)
-    {
-        return Err(AssessmentReviewItemProjectionError::CandidateContract);
-    }
-    for plan in plans {
-        validate_plan(plan)?;
+    let batch = PlannedAssessmentReviewLedgerBatch {
+        expected_subject: expected_subject.clone(),
+        plans: plans.to_vec(),
+    };
+    project_batches(context, knowledge, std::slice::from_ref(&batch)).map(|_| ())
+}
+
+fn project_batches(
+    context: &mut AssessmentProjectionContext,
+    knowledge: &KnowledgeBase,
+    batches: &[PlannedAssessmentReviewLedgerBatch],
+) -> Result<usize, AssessmentReviewItemProjectionError> {
+    let mut item_count = 0usize;
+    for batch in batches {
+        if batch.plans.len() > MAX_NATIVE_REVIEW_PROJECTION_ITEMS
+            || batch
+                .plans
+                .iter()
+                .any(|plan| plan.subject != batch.expected_subject)
+        {
+            return Err(AssessmentReviewItemProjectionError::CandidateContract);
+        }
+        for plan in &batch.plans {
+            validate_plan(plan)?;
+            context.preflight_evidence_projection(
+                knowledge,
+                &plan.subject,
+                &plan.target,
+                &plan.control_evidence_ids,
+            )?;
+            context.preflight_evidence_projection(
+                knowledge,
+                &plan.subject,
+                &plan.target,
+                &plan.candidate_evidence_ids,
+            )?;
+        }
+        item_count = item_count
+            .checked_add(batch.plans.len())
+            .ok_or(AssessmentReviewItemProjectionError::ItemLimit)?;
     }
 
     // Differential items retain both matched legs. Informational reflection
     // items make only the candidate observation visible: their product text
     // does not assert a control relationship, while the sealed ledger may
     // still require a clean control before authorizing that conservative
-    // observation. Register each referenced identity once in deterministic
-    // order.
-    let evidence_ids = plans
+    // observation. Planning deduplicates product-visible identities globally;
+    // strict context registration remains one-shot and non-idempotent.
+    let evidence_ids = batches
         .iter()
-        .flat_map(|plan| {
-            let control = matches!(plan.kind.basis(), NativeReviewProjectionBasis::Differential)
-                .then_some(plan.control_evidence_ids.as_slice())
-                .unwrap_or_default();
-            control.iter().chain(&plan.candidate_evidence_ids)
+        .flat_map(|batch| {
+            batch.plans.iter().flat_map(|plan| {
+                let control =
+                    matches!(plan.kind.basis(), NativeReviewProjectionBasis::Differential)
+                        .then_some(plan.control_evidence_ids.as_slice())
+                        .unwrap_or_default();
+                control.iter().chain(&plan.candidate_evidence_ids)
+            })
         })
         .collect::<BTreeSet<_>>();
     for evidence_id in evidence_ids {
         context.register_evidence(knowledge, evidence_id)?;
     }
 
-    for plan in plans {
-        match plan.kind.basis() {
-            NativeReviewProjectionBasis::Observation => {
-                context.project_observation(
+    for batch in batches {
+        for plan in &batch.plans {
+            match plan.kind.basis() {
+                NativeReviewProjectionBasis::Observation => context.project_observation(
                     plan.kind.capability(),
                     knowledge,
                     &plan.subject,
                     &plan.target,
                     &plan.candidate_evidence_ids,
-                )?;
-            },
-            NativeReviewProjectionBasis::Differential => context.project_differential(
-                plan.kind.capability(),
-                knowledge,
-                &plan.subject,
-                &plan.target,
-                &plan.control_evidence_ids,
-                &plan.candidate_evidence_ids,
-            )?,
+                )?,
+                NativeReviewProjectionBasis::Differential => context.project_differential(
+                    plan.kind.capability(),
+                    knowledge,
+                    &plan.subject,
+                    &plan.target,
+                    &plan.control_evidence_ids,
+                    &plan.candidate_evidence_ids,
+                )?,
+            }
         }
     }
-    Ok(())
+    Ok(item_count)
 }
 
 #[cfg(test)]

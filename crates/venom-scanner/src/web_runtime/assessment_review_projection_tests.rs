@@ -4,11 +4,25 @@ use venom_core::{
 
 use super::*;
 use crate::web_runtime::assessment_item::{
-    AssessmentBasis, AssessmentDisposition, StableAssessmentScopeId, StableAssessmentSubjectId,
+    AssessmentBasis, AssessmentDisposition, AssessmentEvidenceReference, StableAssessmentScopeId,
+    StableAssessmentSubjectId,
 };
 use crate::web_runtime::AssessmentItem;
 
 const QUERY_PARAMETER: &str = "return_to";
+const SHARED_SOURCE_EVIDENCE: [&str; 11] = [
+    "evidence:shared-source:00",
+    "evidence:shared-source:01",
+    "evidence:shared-source:02",
+    "evidence:shared-source:03",
+    "evidence:shared-source:04",
+    "evidence:shared-source:05",
+    "evidence:shared-source:06",
+    "evidence:shared-source:07",
+    "evidence:shared-source:08",
+    "evidence:shared-source:09",
+    "evidence:shared-source:10",
+];
 
 fn root_subject() -> EntityId {
     EntityId::new("endpoint:https://review-projection.test/").unwrap()
@@ -112,6 +126,114 @@ fn project_one(kind: NativeReviewProjectionKind) -> AssessmentItem {
     items.pop().unwrap()
 }
 
+fn shared_review_batches(subject: &EntityId) -> Vec<PlannedAssessmentReviewLedgerBatch> {
+    let reflection = plan(
+        NativeReviewProjectionKind::ScriptElementReflection,
+        subject,
+        &[
+            "evidence:reflection:control:marker",
+            "evidence:reflection:control:context",
+        ],
+        &SHARED_SOURCE_EVIDENCE,
+    );
+    let mut xss_candidate = vec![
+        "evidence:xss:candidate:marker",
+        "evidence:xss:candidate:family",
+        "evidence:xss:candidate:variant",
+        "evidence:xss:candidate:relation",
+    ];
+    xss_candidate.extend(SHARED_SOURCE_EVIDENCE);
+    let xss = plan(
+        NativeReviewProjectionKind::XssStructuralBoundary,
+        subject,
+        &[
+            "evidence:xss:control:marker",
+            "evidence:xss:control:family",
+            "evidence:xss:control:variant",
+            "evidence:xss:control:relation",
+        ],
+        &xss_candidate,
+    );
+    vec![
+        PlannedAssessmentReviewLedgerBatch {
+            expected_subject: subject.clone(),
+            plans: vec![reflection],
+        },
+        PlannedAssessmentReviewLedgerBatch {
+            expected_subject: subject.clone(),
+            plans: vec![xss],
+        },
+    ]
+}
+
+fn product_visible_ids(batches: &[PlannedAssessmentReviewLedgerBatch]) -> BTreeSet<EvidenceId> {
+    batches
+        .iter()
+        .flat_map(|batch| {
+            batch.plans.iter().flat_map(|plan| {
+                let control =
+                    matches!(plan.kind.basis(), NativeReviewProjectionBasis::Differential)
+                        .then_some(plan.control_evidence_ids.as_slice())
+                        .unwrap_or_default();
+                control.iter().chain(&plan.candidate_evidence_ids)
+            })
+        })
+        .cloned()
+        .collect()
+}
+
+fn item_references(item: &AssessmentItem) -> BTreeSet<AssessmentEvidenceReference> {
+    match item.basis() {
+        AssessmentBasis::Observation(basis) => basis.evidence().iter().copied().collect(),
+        AssessmentBasis::Differential(basis) => basis
+            .control()
+            .iter()
+            .chain(basis.candidate())
+            .copied()
+            .collect(),
+        AssessmentBasis::Verifier(_) => panic!("native review cannot project Confirmed"),
+    }
+}
+
+fn shared_projection_snapshot(
+    reverse_batches: bool,
+) -> (
+    Vec<(EvidenceId, AssessmentEvidenceReference)>,
+    BTreeSet<AssessmentEvidenceReference>,
+    Vec<AssessmentItem>,
+) {
+    let subject = root_subject();
+    let mut batches = shared_review_batches(&subject);
+    if reverse_batches {
+        batches.reverse();
+    }
+    let all_ids = product_visible_ids(&batches);
+    assert_eq!(all_ids.len(), 21);
+    let knowledge = KnowledgeBase::new();
+    for id in &all_ids {
+        knowledge
+            .insert_evidence(evidence(id.as_str(), &subject))
+            .unwrap();
+    }
+    let mut context = projection_context(&knowledge, &subject);
+    assert_eq!(project_batches(&mut context, &knowledge, &batches), Ok(2));
+    assert_eq!(context.registered_evidence_count(), all_ids.len());
+    let mapping = all_ids
+        .iter()
+        .map(|id| (id.clone(), context.evidence_reference_for(id).unwrap()))
+        .collect::<Vec<_>>();
+    let shared = SHARED_SOURCE_EVIDENCE
+        .iter()
+        .map(|id| {
+            context
+                .evidence_reference_for(&EvidenceId::parse(*id).unwrap())
+                .unwrap()
+        })
+        .collect::<BTreeSet<_>>();
+    let (_, items) = context.finish().into_parts();
+    (mapping, shared, items)
+}
+
 #[test]
 fn closed_capability_mapping_never_projects_confirmed() {
     for kind in [
@@ -210,6 +332,109 @@ fn redirect_and_reflection_share_one_registered_evidence_inventory() {
 }
 
 #[test]
+fn aggregate_native_review_projection_reuses_shared_source_references() {
+    let (mapping, expected_shared, items) = shared_projection_snapshot(false);
+    assert_eq!(mapping.len(), 21);
+    assert_eq!(expected_shared.len(), SHARED_SOURCE_EVIDENCE.len());
+    assert_eq!(items.len(), 2);
+    assert!(items
+        .iter()
+        .all(|item| item.disposition() == AssessmentDisposition::NeedsReview));
+    assert!(items
+        .iter()
+        .all(|item| item.disposition() != AssessmentDisposition::Confirmed));
+
+    let reflection = items
+        .iter()
+        .find(|item| item.capability_id() == "web.review.reflection.script-element-context@1")
+        .unwrap();
+    let xss = items
+        .iter()
+        .find(|item| item.capability_id() == "web.review.xss.structural-boundary@1")
+        .unwrap();
+    assert_eq!(reflection.evidence_count(), 13);
+    assert_eq!(xss.evidence_count(), 19);
+    assert_eq!(
+        item_references(reflection).len(),
+        reflection.evidence_count()
+    );
+    assert_eq!(item_references(xss).len(), xss.evidence_count());
+    let shared = item_references(reflection)
+        .intersection(&item_references(xss))
+        .copied()
+        .collect::<BTreeSet<_>>();
+    assert_eq!(shared, expected_shared);
+}
+
+#[test]
+fn aggregate_native_review_projection_is_ledger_order_independent() {
+    let (forward_mapping, _, mut forward_items) = shared_projection_snapshot(false);
+    let (reverse_mapping, _, mut reverse_items) = shared_projection_snapshot(true);
+    assert_eq!(forward_mapping, reverse_mapping);
+
+    let item_key = |item: &AssessmentItem| {
+        (
+            item.capability_id(),
+            item.fingerprint().to_owned(),
+            item.disposition(),
+            item_references(item),
+        )
+    };
+    forward_items.sort_by_key(&item_key);
+    reverse_items.sort_by_key(&item_key);
+    assert_eq!(
+        forward_items.iter().map(&item_key).collect::<Vec<_>>(),
+        reverse_items.iter().map(&item_key).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn aggregate_native_review_limit_remains_per_ledger() {
+    let subject = root_subject();
+    let kinds = [
+        NativeReviewProjectionKind::CorsCredentialedExternalOrigin,
+        NativeReviewProjectionKind::CandidateSpecificExternalRedirect,
+        NativeReviewProjectionKind::InertReflection,
+        NativeReviewProjectionKind::TextReflection,
+        NativeReviewProjectionKind::AttributeReflection,
+        NativeReviewProjectionKind::UriAttributeReflection,
+        NativeReviewProjectionKind::StyleReflection,
+        NativeReviewProjectionKind::EventHandlerReflection,
+        NativeReviewProjectionKind::ScriptElementReflection,
+        NativeReviewProjectionKind::EmbeddedHtmlReflection,
+    ];
+    let knowledge = KnowledgeBase::new();
+    let mut plans = Vec::new();
+    for (index, kind) in kinds.into_iter().enumerate() {
+        let control = format!("evidence:per-ledger:{index}:control");
+        let candidate = format!("evidence:per-ledger:{index}:candidate");
+        knowledge
+            .insert_evidence(evidence(&control, &subject))
+            .unwrap();
+        knowledge
+            .insert_evidence(evidence(&candidate, &subject))
+            .unwrap();
+        plans.push(plan(kind, &subject, &[&control], &[&candidate]));
+    }
+    let batches = vec![
+        PlannedAssessmentReviewLedgerBatch {
+            expected_subject: subject.clone(),
+            plans: plans.drain(..MAX_NATIVE_REVIEW_PROJECTION_ITEMS).collect(),
+        },
+        PlannedAssessmentReviewLedgerBatch {
+            expected_subject: subject.clone(),
+            plans,
+        },
+    ];
+    let mut context = projection_context(&knowledge, &subject);
+    assert_eq!(
+        project_batches(&mut context, &knowledge, &batches),
+        Ok(kinds.len())
+    );
+    assert_eq!(context.finish().items().len(), kinds.len());
+}
+
+#[test]
 fn malformed_pair_and_cross_subject_plan_fail_closed() {
     let subject = root_subject();
     let other = EntityId::new("endpoint:https://review-projection.test/other").unwrap();
@@ -255,5 +480,15 @@ fn unavailable_committed_evidence_cannot_produce_an_item() {
             AssessmentItemProjectionError::EvidenceNotCommitted,
         ))
     );
+    assert!(context.finish().items().is_empty());
+}
+
+#[test]
+fn zero_native_review_batches_are_a_noop() {
+    let subject = root_subject();
+    let knowledge = KnowledgeBase::new();
+    let mut context = projection_context(&knowledge, &subject);
+    assert_eq!(project_batches(&mut context, &knowledge, &[]), Ok(0));
+    assert_eq!(context.registered_evidence_count(), 0);
     assert!(context.finish().items().is_empty());
 }

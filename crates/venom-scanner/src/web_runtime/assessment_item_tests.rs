@@ -617,6 +617,33 @@ fn informational_confidence_is_capped_by_committed_evidence_reliability() {
 }
 
 #[test]
+fn direct_duplicate_evidence_registration_remains_strict() {
+    let subject = test_subject("subject:strict-evidence-registration");
+    let evidence = test_evidence(
+        "evidence:strict-evidence-registration",
+        subject.clone(),
+        "case:strict-evidence-registration",
+    );
+    let knowledge = KnowledgeBase::new();
+    knowledge.insert_evidence(evidence.clone()).unwrap();
+    let mut context = AssessmentProjectionContext::new(&knowledge, test_scope_id());
+    context
+        .register_subject(
+            subject,
+            StableAssessmentSubjectId::new("route.strict-evidence-registration@1").unwrap(),
+            Vec::new(),
+        )
+        .unwrap();
+    context
+        .register_evidence(&knowledge, evidence.id())
+        .unwrap();
+    assert_eq!(
+        context.register_evidence(&knowledge, evidence.id()),
+        Err(AssessmentItemProjectionError::DuplicateEvidenceMapping)
+    );
+}
+
+#[test]
 fn context_owned_item_set_is_bounded_and_consumes_one_reference_authority() {
     let subject = test_subject("subject:context-owned-items");
     let (mut context, ids, knowledge) = mapped_context(

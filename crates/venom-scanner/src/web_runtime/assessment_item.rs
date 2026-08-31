@@ -632,6 +632,46 @@ impl AssessmentProjectionContext {
         Ok(reference)
     }
 
+    #[cfg(test)]
+    pub(crate) fn registered_evidence_count(&self) -> usize {
+        self.evidence.len()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn evidence_reference_for(
+        &self,
+        evidence_id: &EvidenceId,
+    ) -> Option<AssessmentEvidenceReference> {
+        self.evidence
+            .get(evidence_id)
+            .map(|projection| projection.reference)
+    }
+
+    pub(super) fn preflight_evidence_projection(
+        &self,
+        knowledge: &KnowledgeBase,
+        subject: &EntityId,
+        target: &AssessmentItemTarget,
+        evidence_ids: &[EvidenceId],
+    ) -> Result<(), AssessmentItemProjectionError> {
+        self.validate_knowledge_authority(knowledge)?;
+        self.subject(subject, target)?;
+        preflight_evidence_ids(evidence_ids)?;
+        for evidence_id in evidence_ids {
+            let evidence = knowledge
+                .evidence(evidence_id)
+                .ok_or(AssessmentItemProjectionError::EvidenceNotCommitted)?;
+            validate_runtime_identity(
+                evidence.subject().as_str(),
+                MAX_PROJECTION_SUBJECT_ID_BYTES,
+            )?;
+            if evidence.subject() != subject {
+                return Err(AssessmentItemProjectionError::EvidenceMappingMismatch);
+            }
+        }
+        Ok(())
+    }
+
     pub(crate) fn project_observation(
         &mut self,
         capability: &'static AssessmentCapabilityDescriptor,

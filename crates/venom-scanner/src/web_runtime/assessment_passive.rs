@@ -36,7 +36,7 @@ use super::{
     },
     assessment_review::CommittedAssessmentReviewLedger,
     assessment_review_projection::{
-        project_assessment_review_items, AssessmentReviewItemProjectionError,
+        project_assessment_review_ledgers, AssessmentReviewItemProjectionError,
     },
     web_assessment::{
         WebAssessmentMethod, WebAssessmentSubject, WebAssessmentSubjectOrigin,
@@ -1266,9 +1266,7 @@ fn project_assessment_items_for_subjects(
             &item.evidence_ids,
         )?;
     }
-    for review in reviews.native {
-        project_assessment_review_items(&mut context, review, knowledge, review.subject())?;
-    }
+    project_assessment_review_ledgers(&mut context, reviews.native, knowledge)?;
     if let (Some(api_visibility), Some(root_subject)) =
         (reviews.api_visibility, root_subject.as_ref())
     {
