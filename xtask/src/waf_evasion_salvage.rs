@@ -1059,20 +1059,7 @@ fn validate_current_replacement_paths(workspace_root: &Path, ledger: &SalvageLed
 }
 
 fn validate_prior_ledger(workspace_root: &Path, ledger: &SalvageLedger) -> TaskResult {
-    scanner_salvage::run(workspace_root, false)?;
-    let source = read_bounded(
-        &workspace_root.join(PRIOR_LEDGER_RELATIVE_PATH),
-        MAX_LEDGER_BYTES,
-    )?;
-    let source = std::str::from_utf8(&source)
-        .map_err(|_| "prior historical scanner ledger is not valid UTF-8")?;
-    let value = source
-        .parse::<toml::Table>()
-        .map_err(|_| "prior historical scanner ledger is not valid TOML")?;
-    let digest = value
-        .get("ledger_digest")
-        .and_then(toml::Value::as_str)
-        .ok_or("prior historical scanner ledger has no digest")?;
+    let digest = scanner_salvage::validate_repository_contract_without_history(workspace_root)?;
     if digest != ledger.prior_salvage_digest || digest != PRIOR_LEDGER_DIGEST {
         return Err("prior historical scanner ledger digest changed".into());
     }
@@ -2180,13 +2167,15 @@ mod tests {
     #[test]
     fn prior_38_file_ledger_digest_remains_unchanged() {
         let root = super::super::workspace_root();
-        let path = root.join(PRIOR_LEDGER_RELATIVE_PATH);
-        if !path.is_file() {
-            return;
-        }
-        scanner_salvage::run(&root, false).expect("prior scanner salvage remains valid");
-        let source = fs::read_to_string(path).expect("read prior ledger");
-        assert!(source.contains(&format!("ledger_digest = \"{PRIOR_LEDGER_DIGEST}\"")));
+        let prior_digest = scanner_salvage::validate_repository_contract_without_history(&root)
+            .expect("prior scanner salvage semantic contract remains valid");
+        assert_eq!(prior_digest, PRIOR_LEDGER_DIGEST);
+
+        let source = read_bounded(&root.join(LEDGER_RELATIVE_PATH), MAX_LEDGER_BYTES)
+            .expect("read WAF/evasion ledger");
+        let current = parse_ledger(&source).expect("parse WAF/evasion ledger");
+        assert_eq!(current.prior_salvage_digest, prior_digest);
+        validate_prior_ledger(&root, &current).expect("cross-epoch semantic digest relationship");
     }
 
     #[test]

@@ -33,49 +33,86 @@ const MAX_NOTES_BYTES: usize = 768;
 const MAX_PREREQUISITES: usize = 16;
 
 pub(super) fn run(workspace_root: &Path, write: bool) -> TaskResult {
-    let ledger_path = workspace_root.join(LEDGER_RELATIVE_PATH);
-    let source = read_bounded(&ledger_path, MAX_LEDGER_BYTES)?;
-    let mut ledger = parse_ledger(&source)?;
-    validate_ledger(&ledger)?;
-    validate_required_component_contracts(&ledger)?;
-    validate_history(workspace_root, &ledger)?;
-    let digest = semantic_digest(&ledger);
+    let mut local = load_and_validate_local_semantics(workspace_root)?;
+    validate_history(workspace_root, &local.ledger)?;
 
     if write {
-        rewrite_digest(&ledger_path, &source, &digest)?;
-        ledger.ledger_digest.clone_from(&digest);
+        let ledger_path = workspace_root.join(LEDGER_RELATIVE_PATH);
+        rewrite_digest(&ledger_path, &local.source, &local.semantic_digest)?;
+        local
+            .ledger
+            .ledger_digest
+            .clone_from(&local.semantic_digest);
         let report_path = workspace_root.join(REPORT_RELATIVE_PATH);
         if let Some(parent) = report_path.parent() {
             fs::create_dir_all(parent)?;
         }
-        fs::write(report_path, render_markdown(&ledger))?;
+        fs::write(report_path, render_markdown(&local.ledger))?;
     } else {
-        if ledger.ledger_digest != digest {
-            return Err(format!(
-                "salvage ledger digest mismatch: stored {}, computed {digest}",
-                ledger.ledger_digest
-            )
-            .into());
-        }
-        let report_source =
-            read_bounded(&workspace_root.join(REPORT_RELATIVE_PATH), MAX_REPORT_BYTES)?;
-        let report = std::str::from_utf8(&report_source)
-            .map_err(|_| "generated salvage report is not valid UTF-8")?;
-        let expected = render_markdown(&ledger);
-        if normalize_line_endings(report) != expected {
-            return Err("generated salvage report is stale; run `cargo run -p xtask -- scanner-salvage --write`".into());
-        }
+        validate_checked_local_outputs(workspace_root, &local.ledger, &local.semantic_digest)?;
     }
 
-    let summary = Summary::from_ledger(&ledger);
+    let summary = Summary::from_ledger(&local.ledger);
     println!(
         "historical scanner salvage validated: {} file(s), {} component(s), {} P0/P1, digest {}",
-        ledger.files.len(),
+        local.ledger.files.len(),
         summary.component_count,
         summary.high_priority_count,
-        digest
+        local.semantic_digest
     );
     Ok(())
+}
+
+struct ValidatedLocalScannerSalvage {
+    source: Vec<u8>,
+    ledger: SalvageLedger,
+    semantic_digest: String,
+}
+
+fn load_and_validate_local_semantics(
+    workspace_root: &Path,
+) -> TaskResult<ValidatedLocalScannerSalvage> {
+    let ledger_path = workspace_root.join(LEDGER_RELATIVE_PATH);
+    let source = read_bounded(&ledger_path, MAX_LEDGER_BYTES)?;
+    let ledger = parse_ledger(&source)?;
+    validate_ledger(&ledger)?;
+    validate_required_component_contracts(&ledger)?;
+    let semantic_digest = semantic_digest(&ledger);
+    Ok(ValidatedLocalScannerSalvage {
+        source,
+        ledger,
+        semantic_digest,
+    })
+}
+
+fn validate_checked_local_outputs(
+    workspace_root: &Path,
+    ledger: &SalvageLedger,
+    semantic_digest: &str,
+) -> TaskResult {
+    if ledger.ledger_digest != semantic_digest {
+        return Err(format!(
+            "salvage ledger digest mismatch: stored {}, computed {semantic_digest}",
+            ledger.ledger_digest
+        )
+        .into());
+    }
+    let report_source = read_bounded(&workspace_root.join(REPORT_RELATIVE_PATH), MAX_REPORT_BYTES)?;
+    let report = std::str::from_utf8(&report_source)
+        .map_err(|_| "generated salvage report is not valid UTF-8")?;
+    let expected = render_markdown(ledger);
+    if normalize_line_endings(report) != expected {
+        return Err("generated salvage report is stale; run `cargo run -p xtask -- scanner-salvage --write`".into());
+    }
+    Ok(())
+}
+
+pub(super) fn validate_repository_contract_without_history(
+    workspace_root: &Path,
+) -> TaskResult<String> {
+    let local = load_and_validate_local_semantics(workspace_root)?;
+    validate_checked_local_outputs(workspace_root, &local.ledger, &local.semantic_digest)?;
+    Ok(local.semantic_digest)
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -1498,6 +1535,42 @@ mod tests {
         fs::write(&path, b"1234").expect("write fixture");
         assert_eq!(read_bounded(&path, 4).unwrap(), b"1234");
         assert!(read_bounded(&path, 3).is_err());
+    }
+
+    #[test]
+    fn local_repository_contract_requires_no_git_history() {
+        const EXPECTED_DIGEST: &str =
+            "salvage-sha256:8c949aaea6e19707bcf1b1eee6e3552827c87ea0639915d6153c607209011165";
+
+        let repository = super::super::workspace_root();
+        let temporary = TempDir::new().expect("temporary directory");
+        for relative in [LEDGER_RELATIVE_PATH, REPORT_RELATIVE_PATH] {
+            let destination = temporary.path().join(relative);
+            fs::create_dir_all(destination.parent().expect("fixture parent"))
+                .expect("create fixture parent");
+            fs::copy(repository.join(relative), destination).expect("copy repository fixture");
+        }
+        assert!(!temporary.path().join(".git").exists());
+
+        let digest = validate_repository_contract_without_history(temporary.path())
+            .expect("local semantic contract without Git history");
+        assert_eq!(digest, EXPECTED_DIGEST);
+
+        let ledger_path = temporary.path().join(LEDGER_RELATIVE_PATH);
+        let original_ledger = fs::read_to_string(&ledger_path).expect("read copied ledger");
+        let stale_ledger = original_ledger.replace(
+            EXPECTED_DIGEST,
+            &format!("{DIGEST_PREFIX}:{}", "0".repeat(64)),
+        );
+        fs::write(&ledger_path, stale_ledger).expect("write stale digest fixture");
+        assert!(validate_repository_contract_without_history(temporary.path()).is_err());
+
+        fs::write(&ledger_path, original_ledger).expect("restore ledger fixture");
+        let report_path = temporary.path().join(REPORT_RELATIVE_PATH);
+        let mut stale_report = fs::read_to_string(&report_path).expect("read copied report");
+        stale_report.push_str("\nstale\n");
+        fs::write(report_path, stale_report).expect("write stale report fixture");
+        assert!(validate_repository_contract_without_history(temporary.path()).is_err());
     }
 
     #[test]
