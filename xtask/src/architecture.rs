@@ -19,6 +19,7 @@ use syn::{
 mod cli_secret;
 mod deployment;
 mod domain_modularization;
+mod exploit;
 mod platform;
 mod plugin;
 mod reachability;
@@ -282,6 +283,7 @@ pub(crate) fn check(workspace_root: &Path) -> Result<(), Box<dyn Error>> {
     violations.extend(reachability::check(workspace_root)?);
     violations.extend(deployment::check(workspace_root)?);
     violations.extend(platform::check(workspace_root)?);
+    violations.extend(exploit::check(workspace_root)?);
     violations.extend(source_hygiene::check(workspace_root)?);
     violations.extend(plugin::check(workspace_root)?);
     violations.extend(workflows::check(workspace_root)?);
@@ -445,6 +447,7 @@ fn manifest_inherits_workspace_lints(manifest: &str) -> bool {
 fn allowed_workspace_graph() -> BTreeMap<String, BTreeSet<String>> {
     [
         ("venom-core", &[][..]),
+        ("venom-exploit", &["venom-core"][..]),
         ("venom-scanner", &["venom-core"][..]),
         ("venom-proxy", &[][..]),
         ("venom-api", &[][..]),
@@ -453,7 +456,7 @@ fn allowed_workspace_graph() -> BTreeMap<String, BTreeSet<String>> {
             &["venom-api", "venom-core", "venom-proxy", "venom-scanner"][..],
         ),
         ("venom-examples", &["venom-scanner"][..]),
-        ("xtask", &[][..]),
+        ("xtask", &["venom-exploit"][..]),
     ]
     .into_iter()
     .map(|(package, dependencies)| {
@@ -1541,6 +1544,23 @@ mod tests {
         let violations = validate_workspace_graph(&graph).join("\n");
         assert!(violations.contains("venom-core -> venom-scanner"));
         assert!(violations.contains("venom-product has no architecture policy"));
+    }
+
+    #[test]
+    fn workspace_allowlist_pins_exploit_domain_edges() {
+        let graph = allowed_workspace_graph();
+
+        assert_eq!(
+            graph.get("venom-exploit"),
+            Some(&BTreeSet::from(["venom-core".to_owned()]))
+        );
+        assert_eq!(
+            graph.get("xtask"),
+            Some(&BTreeSet::from(["venom-exploit".to_owned()]))
+        );
+        for product in ["venom-scanner", "venom-cli", "venom-api", "venom-proxy"] {
+            assert!(!graph[product].contains("venom-exploit"));
+        }
     }
 
     #[test]

@@ -12,6 +12,7 @@ The editable diagrams.net source is [architecture.drawio](architecture.drawio). 
 | --- | --- | --- |
 | `venom-core` | Default transport-neutral evidence, reasoning, ontology, outcome, predicate, and run-report contracts; the pre-quarantine facade is feature-gated | External libraries only |
 | `venom-scanner` | Phase/plugin traits, deterministic reasoning, runner, detection, opt-in bounded report rendering, and Experimental host-owned Lua/coordination execution | `venom-core` |
+| `venom-exploit` | Preview, non-published exploit manifest/catalog, applicability, risk, authorization-requirement, and lifecycle contracts; no execution runtime | `venom-core` only where shared opaque identity/evidence contracts are required |
 | `venom-proxy` | Experimental fixed-upstream TCP relay; no HTTP/TLS interception | External libraries only |
 | `venom-api` | Library health router and its local unsupported-listener error | External libraries only |
 | `venom-cli` | Composition root and command routing | `venom-scanner` by default; `venom-api` and `venom-proxy` only through explicit adapter features |
@@ -31,7 +32,19 @@ flowchart TD
     CLI -. "api-adapter" .-> API[venom-api]
     CLI -. "proxy-adapter" .-> Proxy[venom-proxy]
     Scanner --> Core["venom-core<br/>Evidence / Reasoning / Outcomes / Reports"]
+    Exploit["venom-exploit<br/>Preview metadata/catalog only"] --> Core
 ```
+
+`venom-exploit` is an independent workspace domain rather than part of the
+scanner product graph. `venom-scanner`, `venom-cli`, `venom-api`, and
+`venom-proxy` do not depend on it. Its V1 library accepts bounded manifest bytes
+from a host and performs deterministic validation and catalog queries; it owns
+no network client, process launcher, browser, filesystem loader/writer, CLI
+command, or execution authority. Repository-owned pack file discovery belongs
+to `xtask`, not the library. The historical
+`venom_scanner::post_exploitation` metadata scaffold remains separately
+quarantined behind `platform-models` and is not imported or expanded by this
+domain.
 
 The pre-quarantine `Config`, shared `Error`, lifecycle-event, `ScanFinding`, raw
 HTTP, vulnerability, and scan-result records remain in `venom-core` only behind

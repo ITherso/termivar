@@ -2148,6 +2148,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "venom-exploit"
+version = "0.10.0-alpha.1"
+dependencies = [
+ "hex",
+ "semver",
+ "serde",
+ "sha2",
+ "thiserror 1.0.69",
+ "toml",
+ "venom-core",
+]
+
+[[package]]
 name = "venom-proxy"
 version = "0.10.0-alpha.1"
 dependencies = [
@@ -2511,6 +2524,7 @@ dependencies = [
  "proc-macro2",
  "syn",
  "tempfile",
+ "venom-exploit",
 ]
 
 [[package]]

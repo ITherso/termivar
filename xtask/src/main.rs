@@ -1,6 +1,7 @@
 //! Repository maintenance commands exposed through `cargo xtask`.
 
 mod architecture;
+mod exploit_catalog;
 mod release_metadata;
 mod semver;
 
@@ -29,6 +30,8 @@ enum Task {
     Benchmark,
     /// Build MkDocs and Rust API documentation.
     Docs,
+    /// Validate repository-owned exploit-pack manifests and catalog identity.
+    ExploitCatalog,
     /// Run the local release preflight without tagging or publishing.
     Release,
     /// Verify tag-time changelog and supported-version metadata.
@@ -78,6 +81,7 @@ fn main() -> TaskResult {
             )?;
             run_mkdocs(&root)
         },
+        Task::ExploitCatalog => exploit_catalog::check(&root),
         Task::Release => release_preflight(&root),
         Task::ReleaseMetadata { version } => release_metadata::check(&root, &version),
         Task::Semver => semver::check(&root),

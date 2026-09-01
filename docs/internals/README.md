@@ -70,6 +70,9 @@ Explicit host --> TaskQueue <--> WorkerPool --> WorkerNode
       |              |
       |              `--> CompletionReceipt --> ResultAggregator
       `--> LuaScriptRegistry --> fresh bounded Lua VM
+
+Bounded manifest bytes --> venom-exploit validation --> sealed metadata catalog
+                                                        (no execution runtime)
 ```
 
 - [Scheduler](scheduler.md): explicit-time revisioned queue/worker assignment,
@@ -93,5 +96,8 @@ Explicit host --> TaskQueue <--> WorkerPool --> WorkerNode
 - [Web verification](web-verification.md): action/case isolation, passive/active rules, and conservative outcomes.
 - [Plugin registry](plugin-registry.md): host-owned scope, request/evidence budgets, redaction, validation, execution, and accounting.
 - [Semantic producer contract](semantic-producer-contract.md): production evidence vocabulary compatibility for semantic entity extraction and explicit deferred gaps.
+- [ADR 0024](../adr/0024-separate-exploit-manifest-catalog.md): separate
+  bounded exploit metadata/catalog contracts from the quarantined historical
+  scanner scaffold and from future execution authority.
 
 Cross-boundary changes should start in [Architecture Decisions](../adr/README.md). Public contract changes must also follow the [Plugin API policy](../plugin-api-policy.md).

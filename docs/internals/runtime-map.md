@@ -12,6 +12,15 @@ Venom has one default scan runtime, one separately compiled historical runner,
 and optional host/adapter surfaces. A capability in one surface does not silently
 participate in another.
 
+The separate `venom-exploit` workspace crate is not a runtime surface in this
+state. It is a Preview, non-published library for bounded
+`venom.exploit-manifest/v1` metadata, deterministic catalog selection,
+applicability/risk declarations, authorization requirements, and lifecycle
+vocabulary. It has no module executor, target adapter, network/process/browser
+authority, filesystem loader, scanner/CLI/API/proxy dependency edge, or route
+from an `AssessmentItem` to an exploit. Repository pack validation is an
+explicit `xtask` operation and does not participate in `venom scan`.
+
 ## Default deterministic scan runtime (Surface B)
 
 `venom scan <target>` is the canonical CLI path. With no explicit profile, it
@@ -193,6 +202,11 @@ Composition is selection-specific:
 - **Distributed coordination** (`distributed`, opt-in) is a bounded,
   deterministic process-local task/worker/result state machine for an explicit
   library host. It is not a transport service or multi-node control plane.
+- **Exploit manifests/catalog** (`venom-exploit`, independent Preview crate)
+  validate host-supplied bounded metadata and repository-owned lab manifests.
+  Catalog membership, applicability, maturity, and manifest authorization
+  requirements grant no execution authority. No stock runtime or CLI consumes
+  the catalog.
 
 ## Historical mixed-authority runner (Surface A)
 

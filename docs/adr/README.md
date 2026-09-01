@@ -29,6 +29,7 @@ Architecture decision records (ADRs) preserve why a durable technical choice was
 | [0021](0021-render-bounded-run-reports.md) | Accepted; CLI-composition statements superseded by [0023](0023-compose-profiled-assessment-reporting.md) | Render bounded typed run reports without adding verdict authority |
 | [0022](0022-bound-host-lua-and-distributed-execution.md) | Accepted | Bound host-owned Lua execution and process-local coordination |
 | [0023](0023-compose-profiled-assessment-reporting.md) | Accepted | Compose opt-in profiled assessment reporting at the CLI boundary |
+| [0024](0024-separate-exploit-manifest-catalog.md) | Accepted | Establish a separate bounded exploit manifest and catalog domain without execution authority |
 
 ## Format
 
