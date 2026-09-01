@@ -1,0 +1,858 @@
+schema = "venom.post-workspace-waf-evasion-salvage/v1"
+source_epoch = "post-workspace-waf-evasion-quarantine"
+source_snapshot_commit = "52238460484e7a1469f1028fdd6361072a0daba5"
+quarantine_commit = "5a0563886658859b6e3e163f732a298914b10800"
+scoped_source_paths = [
+    "crates/venom-scanner/src/adaptive/mod.rs",
+    "crates/venom-scanner/src/adaptive/payloads.rs",
+    "crates/venom-scanner/src/adaptive/scoring.rs",
+    "crates/venom-scanner/src/adaptive/strategy.rs",
+    "crates/venom-scanner/src/advanced_detection.rs",
+    "crates/venom-scanner/src/api.rs",
+    "crates/venom-scanner/src/config.rs",
+    "crates/venom-scanner/src/config_loader.rs",
+    "crates/venom-scanner/src/lib.rs",
+    "crates/venom-scanner/src/payload_strategies/encoding.rs",
+    "crates/venom-scanner/src/payload_strategies/mod.rs",
+    "crates/venom-scanner/src/payload_strategies/normalization.rs",
+    "crates/venom-scanner/src/waf.rs",
+]
+expected_scoped_file_count = 13
+algorithm_version = "venom.post-workspace-waf-evasion-salvage-digest/v1"
+ledger_digest = "waf-evasion-salvage-sha256:2218688ac3f99b707d6206a8351b8deb2af4cd8e640a6e6f3e41df01c4f3efef"
+current_replacement_baseline_sha = "e1e4077d159d6df5cdca8e274ecd40b40bb2f9c5"
+prior_salvage_ledger = "salvage/historical-scanner/ledger.toml"
+prior_salvage_digest = "salvage-sha256:8c949aaea6e19707bcf1b1eee6e3552827c87ea0639915d6153c607209011165"
+separate_source_epoch = true
+
+[[files]]
+path = "crates/venom-scanner/src/adaptive/mod.rs"
+blob_sha = "98075bcbbd7ab1dd140b59d14277d1f8b1b8cf07"
+byte_size = 5286
+source_role = "adaptive-orchestration"
+quarantine_change = "materially-narrowed"
+historical_build_reachability = "built"
+historical_runtime_reachability = "partially-reachable"
+direct_network_authority = "none"
+request_shape_authority = "none"
+process_filesystem_authority = "none"
+unsafe_code = "absent"
+identity_behavior = "deterministic"
+evidence_quality = "heuristic"
+claim_risk = "high"
+current_replacement_paths = ["crates/venom-scanner/src/adaptive/pipeline.rs", "crates/venom-scanner/src/defense/state.rs", "crates/venom-scanner/src/defense/transition.rs"]
+salvage_priority = "p1"
+notes = "Combined the retained declarative pipeline with a disconnected response-history engine that inferred blocking patterns and recommended attack-shaped strategies."
+
+[[files.components]]
+id = "adaptive.legacy-engine-orchestration"
+source_symbol = "AdaptiveEngine"
+disposition = "superseded-by-current-runtime"
+priority = "p1"
+historical_behavior = "Recorded recent response metrics, inferred coarse patterns, and delegated to a fixed adaptation selector."
+old_runtime_reachability = "unreachable"
+reusable_value = "Bounded history and deterministic decision boundaries now represented by committed typed evidence and the declarative pipeline."
+prohibited_restoration_behaviors = ["blind-dispatch", "status-only-authority", "rate-limit-evasion"]
+modern_destination = "venom-scanner:defense-state-transition"
+current_replacement_paths = ["crates/venom-scanner/src/adaptive/pipeline.rs", "crates/venom-scanner/src/defense/state.rs", "crates/venom-scanner/src/defense/transition.rs"]
+prerequisites = ["Committed control and candidate evidence", "Shared bounded runtime accounting"]
+status = "superseded"
+rationale = "The old engine had no repository runtime caller and coupled heuristic scoring to mutations; current observation and execution authority are separate."
+
+[[files]]
+path = "crates/venom-scanner/src/adaptive/payloads.rs"
+blob_sha = "75e5c863e53cf580ed6d3df2a3b86818ee7b8b41"
+byte_size = 17516
+source_role = "adaptive-payload-transforms"
+quarantine_change = "removed"
+historical_build_reachability = "built"
+historical_runtime_reachability = "library-only"
+direct_network_authority = "none"
+request_shape_authority = "mixed"
+process_filesystem_authority = "none"
+unsafe_code = "absent"
+identity_behavior = "mixed"
+evidence_quality = "unsubstantiated"
+claim_risk = "high"
+current_replacement_paths = ["crates/venom-scanner/src/payload_strategies/encoding.rs", "crates/venom-scanner/src/payload_strategy.rs"]
+salvage_priority = "p1"
+notes = "Exposed arbitrary string transformers, composite chains, query-shaped mutations, truncation, and a fixed pattern dispatcher without semantic verification."
+
+[[files.components]]
+id = "adaptive.composite-chains"
+source_symbol = "CompositeTransformer"
+disposition = "import-metadata-only"
+priority = "p2"
+historical_behavior = "Applied an arbitrary-length caller-provided vector of dynamic string transformers in order."
+old_runtime_reachability = "library-only"
+reusable_value = "Ordered transformation identity and future chain-compatibility vocabulary."
+prohibited_restoration_behaviors = ["unbounded-transform-chain", "generic-string-mutation"]
+modern_destination = "venom-scanner:normalization-resilience"
+current_replacement_paths = []
+prerequisites = ["Versioned transform catalog", "Explicit chain-depth policy", "Semantic verifier"]
+status = "metadata-only"
+rationale = "Composition may remain catalog metadata, while V1 execution stays at one compatible transform."
+
+[[files.components]]
+id = "adaptive.decoy-parameters"
+source_symbol = "PollutionTransformer and DecoyTransformer"
+disposition = "move-to-different-capability"
+priority = "p2"
+historical_behavior = "Appended deterministic or fixed ampersand-separated parameters to an arbitrary payload string."
+old_runtime_reachability = "library-only"
+reusable_value = "A future typed request-shape strategy concept."
+prohibited_restoration_behaviors = ["generic-string-mutation", "request-shape-mutation"]
+modern_destination = "future-typed-request-shape"
+current_replacement_paths = []
+prerequisites = ["Typed query authority", "Duplicate-parameter semantics", "Request accounting"]
+status = "planned"
+rationale = "Adding parameters changes request shape and is not a payload-byte normalization."
+
+[[files.components]]
+id = "adaptive.pattern-mutation-dispatch"
+source_symbol = "PayloadMutator::mutate"
+disposition = "reject-blind-dispatcher"
+priority = "never"
+historical_behavior = "Mapped block, rate-limit, and content-filter labels directly to case or query mutations."
+old_runtime_reachability = "library-only"
+reusable_value = "None of the fixed pattern-to-transform authority."
+prohibited_restoration_behaviors = ["blind-dispatch", "status-only-authority", "rate-limit-evasion", "request-shape-mutation"]
+modern_destination = "none"
+current_replacement_paths = []
+prerequisites = []
+status = "rejected"
+rationale = "Response labels do not prove transform compatibility, semantic equivalence, or request authority."
+
+[[files.components]]
+id = "adaptive.payload-reduction"
+source_symbol = "ReductionTransformer"
+disposition = "reject-misleading-claim"
+priority = "never"
+historical_behavior = "Truncated a string at a UTF-8 boundary and presented it as an adaptive payload mutation."
+old_runtime_reachability = "library-only"
+reusable_value = "Only the separate bounded-output requirement already enforced by PayloadArtifact."
+prohibited_restoration_behaviors = ["semantic-truncation", "generic-string-mutation", "misleading-bypass-claim"]
+modern_destination = "none"
+current_replacement_paths = []
+prerequisites = []
+status = "rejected"
+rationale = "Truncation is not semantic-preserving and cannot be called an equivalent representation."
+
+[[files.components]]
+id = "adaptive.raw-transformers"
+source_symbol = "EncodingTransformer, CaseTransformer, and CommentTransformer"
+disposition = "rewrite-from-contract"
+priority = "p1"
+historical_behavior = "Lowercased or alternated arbitrary characters and appended a SQL comment without grammar awareness."
+old_runtime_reachability = "library-only"
+reusable_value = "Case and comment family concepts after separation by grammar and verifier."
+prohibited_restoration_behaviors = ["generic-string-mutation", "misleading-bypass-claim"]
+modern_destination = "venom-scanner:normalization-resilience"
+current_replacement_paths = []
+prerequisites = ["Typed probe representation", "Versioned transform identity", "Semantic verifier and replay"]
+status = "planned"
+rationale = "Useful concepts require separate HTML and future SQL contracts, not restoration of raw mutations."
+
+[[files.components]]
+id = "adaptive.transformer-taxonomy"
+source_symbol = "PayloadTransformer implementations"
+disposition = "import-metadata-only"
+priority = "p1"
+historical_behavior = "Named encoding, case, pollution, comment, decoy, reduction, and composite families."
+old_runtime_reachability = "library-only"
+reusable_value = "Closed transformation-family vocabulary and deterministic naming ideas."
+prohibited_restoration_behaviors = ["blind-dispatch", "generic-string-mutation"]
+modern_destination = "venom-scanner:normalization-resilience"
+current_replacement_paths = []
+prerequisites = ["Closed metadata schema", "Typed compatibility declarations"]
+status = "metadata-only"
+rationale = "Family names may enter a catalog without making every entry executable."
+
+[[files.components]]
+id = "adaptive.unbounded-transformer-trait"
+source_symbol = "PayloadTransformer"
+disposition = "rewrite-from-contract"
+priority = "p1"
+historical_behavior = "Allowed arbitrary dynamic code to transform an unconstrained string with caller-defined identity and hooks."
+old_runtime_reachability = "library-only"
+reusable_value = "A transform interface after closing identity, compatibility, output, and evidence contracts."
+prohibited_restoration_behaviors = ["generic-string-mutation", "unbounded-transform-chain", "blind-dispatch"]
+modern_destination = "venom-scanner:normalization-resilience"
+current_replacement_paths = []
+prerequisites = ["Closed executable set", "Bounded PayloadArtifact", "Semantic verifier"]
+status = "planned"
+rationale = "The open trait provided no compatibility, risk, request-cost, or semantic guarantees."
+
+[[files]]
+path = "crates/venom-scanner/src/adaptive/scoring.rs"
+blob_sha = "1e57275eafb0a5b7f4532273cddda2d190d71c5f"
+byte_size = 17375
+source_role = "adaptive-response-scoring"
+quarantine_change = "removed"
+historical_build_reachability = "built"
+historical_runtime_reachability = "library-only"
+direct_network_authority = "none"
+request_shape_authority = "none"
+process_filesystem_authority = "none"
+unsafe_code = "absent"
+identity_behavior = "deterministic"
+evidence_quality = "heuristic"
+claim_risk = "high"
+current_replacement_paths = ["crates/venom-scanner/src/defense/state.rs", "crates/venom-scanner/src/defense/transition.rs"]
+salvage_priority = "p1"
+notes = "Calculated uncalibrated detection probabilities from status, latency, and error-keyword ratios and used a fixed adjustment threshold."
+
+[[files.components]]
+id = "adaptive.scoring-dimensions"
+source_symbol = "ResponseMetrics, ScoringWeights, and ScoreBreakdown"
+disposition = "import-metadata-only"
+priority = "p1"
+historical_behavior = "Modeled status, timing, size, error keywords, redirects, weights, and score breakdowns."
+old_runtime_reachability = "library-only"
+reusable_value = "Risk, cost, compatibility, and prior-evidence dimensions after redefining their semantics."
+prohibited_restoration_behaviors = ["status-only-authority", "misleading-bypass-claim"]
+modern_destination = "venom-scanner:defense-state-transition"
+current_replacement_paths = []
+prerequisites = ["Committed typed evidence", "Calibrated deterministic ranking"]
+status = "metadata-only"
+rationale = "Dimensions can inform metadata-first ranking, but the old numeric score did not measure bypass probability."
+
+[[files.components]]
+id = "adaptive.uncalibrated-detection-score"
+source_symbol = "ScoringEngine::detection_probability and should_adjust_payload"
+disposition = "reject-misleading-claim"
+priority = "never"
+historical_behavior = "Combined fixed response ratios into a detection probability and used it as adjustment authority."
+old_runtime_reachability = "library-only"
+reusable_value = "None of the probability or execution-authority claim."
+prohibited_restoration_behaviors = ["status-only-authority", "blind-dispatch", "misleading-bypass-claim"]
+modern_destination = "none"
+current_replacement_paths = []
+prerequisites = []
+status = "rejected"
+rationale = "The score was uncalibrated and did not prove candidate-specific defense or semantic equivalence."
+
+[[files]]
+path = "crates/venom-scanner/src/adaptive/strategy.rs"
+blob_sha = "5f61539efe99b163e73b7b34f25a25655b4589a3"
+byte_size = 3305
+source_role = "adaptive-strategy-selection"
+quarantine_change = "removed"
+historical_build_reachability = "built"
+historical_runtime_reachability = "library-only"
+direct_network_authority = "none"
+request_shape_authority = "method-and-query"
+process_filesystem_authority = "none"
+unsafe_code = "absent"
+identity_behavior = "deterministic"
+evidence_quality = "heuristic"
+claim_risk = "high"
+current_replacement_paths = ["crates/venom-scanner/src/defense/policy.rs", "crates/venom-scanner/src/defense/transition.rs"]
+salvage_priority = "p1"
+notes = "Mapped broad response labels to encoding, comments, decoys, delay, method change, case mutation, truncation, or pollution."
+
+[[files.components]]
+id = "adaptive.no-pattern-hpp-map"
+source_symbol = "StrategySelector::recommend(None)"
+disposition = "reject-blind-dispatcher"
+priority = "never"
+historical_behavior = "Recommended parameter pollution when no detection pattern was present."
+old_runtime_reachability = "library-only"
+reusable_value = "None of the absence-to-request-mutation mapping."
+prohibited_restoration_behaviors = ["blind-dispatch", "request-shape-mutation"]
+modern_destination = "none"
+current_replacement_paths = []
+prerequisites = []
+status = "rejected"
+rationale = "Missing evidence cannot authorize duplicate parameters."
+
+[[files.components]]
+id = "adaptive.rate-limit-map"
+source_symbol = "StrategySelector::recommend(RateLimiting)"
+disposition = "superseded-by-current-runtime"
+priority = "p1"
+historical_behavior = "Recommended delay and HTTP method change after a rate-limit pattern."
+old_runtime_reachability = "library-only"
+reusable_value = "Typed rate-limit recognition followed by restrictive policy."
+prohibited_restoration_behaviors = ["rate-limit-evasion", "blind-dispatch", "request-shape-mutation"]
+modern_destination = "venom-scanner:defense-state-transition"
+current_replacement_paths = ["crates/venom-scanner/src/defense/policy.rs", "crates/venom-scanner/src/defense/state.rs"]
+prerequisites = ["Typed rate-limit evidence", "Backoff or halt policy"]
+status = "superseded"
+rationale = "Current policy backs off or suppresses work; rate limiting never authorizes method rotation."
+
+[[files.components]]
+id = "adaptive.status-evasion-map"
+source_symbol = "StrategySelector status and content branches"
+disposition = "reject-blind-dispatcher"
+priority = "never"
+historical_behavior = "Mapped block status to encoding, comments, and decoys, and content filtering to case and truncation."
+old_runtime_reachability = "library-only"
+reusable_value = "None of the fixed response-to-evasion authority."
+prohibited_restoration_behaviors = ["status-only-authority", "blind-dispatch", "semantic-truncation", "request-shape-mutation"]
+modern_destination = "none"
+current_replacement_paths = []
+prerequisites = []
+status = "rejected"
+rationale = "Selection instead requires candidate-specific evidence, compatibility, budget, semantic proof, and replay."
+
+[[files.components]]
+id = "adaptive.strategy-taxonomy"
+source_symbol = "AdaptationStrategy and DetectionPattern"
+disposition = "import-metadata-only"
+priority = "p1"
+historical_behavior = "Enumerated encoding, delay, case, comments, truncation, pollution, method change, and decoys."
+old_runtime_reachability = "library-only"
+reusable_value = "Family and risk vocabulary after separating payload, request-shape, and rate-limit domains."
+prohibited_restoration_behaviors = ["blind-dispatch", "rate-limit-evasion", "request-shape-mutation"]
+modern_destination = "venom-scanner:normalization-resilience"
+current_replacement_paths = []
+prerequisites = ["Closed catalog", "Typed domain compatibility"]
+status = "metadata-only"
+rationale = "The taxonomy stays inert until each family has its own authority and verifier contract."
+
+[[files]]
+path = "crates/venom-scanner/src/advanced_detection.rs"
+blob_sha = "f1e5cd86985462295148b8f060d3b07c1ebbf4ca"
+byte_size = 14944
+source_role = "defense-evasion-analysis"
+quarantine_change = "materially-narrowed"
+historical_build_reachability = "declared-but-unbuilt"
+historical_runtime_reachability = "library-only"
+direct_network_authority = "none"
+request_shape_authority = "none"
+process_filesystem_authority = "none"
+unsafe_code = "absent"
+identity_behavior = "mixed"
+evidence_quality = "unsubstantiated"
+claim_risk = "high"
+current_replacement_paths = ["crates/venom-scanner/src/advanced_detection.rs"]
+salvage_priority = "p2"
+notes = "Stored caller-provided WAF-bypass and signature-evasion records and selected reported effectiveness without runtime evidence."
+
+[[files.components]]
+id = "advanced.signature-evasion-selection"
+source_symbol = "SignatureEvasionEngine"
+disposition = "reject-blind-dispatcher"
+priority = "never"
+historical_behavior = "Selected the highest caller-reported evasion rule for a target signature label."
+old_runtime_reachability = "library-only"
+reusable_value = "Only neutral rule metadata after removing execution and bypass implications."
+prohibited_restoration_behaviors = ["blind-dispatch", "misleading-bypass-claim", "fingerprint-as-authority"]
+modern_destination = "none"
+current_replacement_paths = []
+prerequisites = []
+status = "rejected"
+rationale = "A label and self-reported score cannot authorize a transform or prove defensive success."
+
+[[files.components]]
+id = "advanced.transform-taxonomy"
+source_symbol = "BypassCategory, EversionType, WafBypassTechnique, and EversionRule"
+disposition = "import-metadata-only"
+priority = "p2"
+historical_behavior = "Recorded encoding, obfuscation, fragmentation, normalization, timing, manipulation, noise, and bypass labels."
+old_runtime_reachability = "library-only"
+reusable_value = "Neutral transformation categories and deterministic catalog-record vocabulary."
+prohibited_restoration_behaviors = ["misleading-bypass-claim", "fingerprint-as-authority"]
+modern_destination = "venom-scanner:normalization-resilience"
+current_replacement_paths = []
+prerequisites = ["Neutral metadata", "No catalog-to-execution obligation"]
+status = "metadata-only"
+rationale = "Taxonomy may remain inert metadata while executable transforms use separate typed contracts."
+
+[[files.components]]
+id = "advanced.uncalibrated-bypass-ranking"
+source_symbol = "WafBypassSelector"
+disposition = "reject-misleading-claim"
+priority = "never"
+historical_behavior = "Ranked techniques solely by caller-supplied effectiveness and called the result the best bypass."
+old_runtime_reachability = "library-only"
+reusable_value = "Deterministic tie-breaking only after replacing score and claim semantics."
+prohibited_restoration_behaviors = ["misleading-bypass-claim", "fingerprint-as-authority", "blind-dispatch"]
+modern_destination = "none"
+current_replacement_paths = []
+prerequisites = []
+status = "rejected"
+rationale = "Uncalibrated metadata is neither effectiveness evidence nor execution authority."
+
+[[files]]
+path = "crates/venom-scanner/src/api.rs"
+blob_sha = "7e396bc2d5ffc7384c8e979b48b6cb60d4387bb9"
+byte_size = 10733
+source_role = "api-configuration"
+quarantine_change = "materially-narrowed"
+historical_build_reachability = "built"
+historical_runtime_reachability = "library-only"
+direct_network_authority = "none"
+request_shape_authority = "none"
+process_filesystem_authority = "none"
+unsafe_code = "absent"
+identity_behavior = "not-applicable"
+evidence_quality = "not-applicable"
+claim_risk = "moderate"
+current_replacement_paths = ["crates/venom-scanner/src/api.rs"]
+salvage_priority = "p3"
+notes = "Exposed inert enable_waf_evasion and enable_adaptive_payloads booleans without scanner runtime authority."
+
+[[files.components]]
+id = "api.dead-waf-adaptive-flags"
+source_symbol = "ScanConfigRequest WAF and adaptive booleans"
+disposition = "archive-reference"
+priority = "p3"
+historical_behavior = "Accepted flags implying WAF-evasion and adaptive-payload activation without an executor path."
+old_runtime_reachability = "library-only"
+reusable_value = "Evidence that future opt-in must be a checked runtime policy."
+prohibited_restoration_behaviors = ["blind-dispatch", "fingerprint-as-authority"]
+modern_destination = "documentation-only"
+current_replacement_paths = []
+prerequisites = []
+status = "archived"
+rationale = "The flags carried no authority and must not return as compatibility switches."
+
+[[files]]
+path = "crates/venom-scanner/src/config.rs"
+blob_sha = "b419bd6404415185592e7171769d07bdf1f17ecd"
+byte_size = 8857
+source_role = "scanner-configuration"
+quarantine_change = "materially-narrowed"
+historical_build_reachability = "built"
+historical_runtime_reachability = "library-only"
+direct_network_authority = "none"
+request_shape_authority = "none"
+process_filesystem_authority = "none"
+unsafe_code = "absent"
+identity_behavior = "not-applicable"
+evidence_quality = "not-applicable"
+claim_risk = "moderate"
+current_replacement_paths = ["crates/venom-scanner/src/config.rs"]
+salvage_priority = "p3"
+notes = "Normal, aggressive, and stealth presets enabled WAF evasion and adaptive payloads despite lacking runtime ownership."
+
+[[files.components]]
+id = "config.dead-evasion-presets"
+source_symbol = "ScanConfig flags and preset constructors"
+disposition = "archive-reference"
+priority = "p3"
+historical_behavior = "Set WAF-evasion and adaptive-payload flags in descriptive presets."
+old_runtime_reachability = "library-only"
+reusable_value = "The requirement for separate default-off build and runtime checks."
+prohibited_restoration_behaviors = ["blind-dispatch", "fingerprint-as-authority"]
+modern_destination = "documentation-only"
+current_replacement_paths = []
+prerequisites = []
+status = "archived"
+rationale = "Descriptive presets cannot grant transformation or request authority."
+
+[[files]]
+path = "crates/venom-scanner/src/config_loader.rs"
+blob_sha = "cebc6c466c84d72c1f0beeb0f0607486ee91c054"
+byte_size = 14147
+source_role = "configuration-loading"
+quarantine_change = "materially-narrowed"
+historical_build_reachability = "built"
+historical_runtime_reachability = "library-only"
+direct_network_authority = "none"
+request_shape_authority = "none"
+process_filesystem_authority = "none"
+unsafe_code = "absent"
+identity_behavior = "deterministic"
+evidence_quality = "not-applicable"
+claim_risk = "moderate"
+current_replacement_paths = ["crates/venom-scanner/src/config_loader.rs"]
+salvage_priority = "p3"
+notes = "Named a waf_bypass script and waf_detection option in a profile whose values were not runtime-wired."
+
+[[files.components]]
+id = "config-loader.dead-waf-labels"
+source_symbol = "ScanProfile::aggressive WAF labels"
+disposition = "archive-reference"
+priority = "p3"
+historical_behavior = "Added WAF-named script and option labels without an execution contract."
+old_runtime_reachability = "library-only"
+reusable_value = "Provenance showing that labels cannot imply an enabled capability."
+prohibited_restoration_behaviors = ["blind-dispatch", "fingerprint-as-authority"]
+modern_destination = "documentation-only"
+current_replacement_paths = []
+prerequisites = []
+status = "archived"
+rationale = "A label cannot replace feature gating, opt-in, executor binding, and evidence completeness."
+
+[[files]]
+path = "crates/venom-scanner/src/lib.rs"
+blob_sha = "3c8b6ddf2ed34670fd8d8d07385e75e916482638"
+byte_size = 17487
+source_role = "crate-api-surface"
+quarantine_change = "materially-narrowed"
+historical_build_reachability = "built"
+historical_runtime_reachability = "partially-reachable"
+direct_network_authority = "none"
+request_shape_authority = "none"
+process_filesystem_authority = "none"
+unsafe_code = "absent"
+identity_behavior = "not-applicable"
+evidence_quality = "mixed"
+claim_risk = "mixed"
+current_replacement_paths = ["crates/venom-scanner/src/lib.rs", "crates/venom-scanner/src/defense/fingerprint.rs", "crates/venom-scanner/src/payload_strategies/encoding.rs"]
+salvage_priority = "p3"
+notes = "Declared and exported the legacy waf module, evasion enum, adaptive mutator, and experimental bypass selectors."
+
+[[files.components]]
+id = "lib.legacy-waf-adaptive-exports"
+source_symbol = "WAF, evasion, adaptive, and advanced-detection exports"
+disposition = "archive-reference"
+priority = "p3"
+historical_behavior = "Made disconnected detection, mutation, and bypass-shaped types public."
+old_runtime_reachability = "library-only"
+reusable_value = "A precise record of historical build and API reachability."
+prohibited_restoration_behaviors = ["blind-dispatch", "fingerprint-as-authority", "misleading-bypass-claim"]
+modern_destination = "documentation-only"
+current_replacement_paths = []
+prerequisites = []
+status = "archived"
+rationale = "Public history is provenance, not authority to restore removed modules."
+
+[[files]]
+path = "crates/venom-scanner/src/payload_strategies/encoding.rs"
+blob_sha = "c32c4752e7e2befac8ec0c8086be690476e42269"
+byte_size = 11909
+source_role = "payload-encoding"
+quarantine_change = "materially-narrowed"
+historical_build_reachability = "built"
+historical_runtime_reachability = "library-only"
+direct_network_authority = "none"
+request_shape_authority = "mixed"
+process_filesystem_authority = "none"
+unsafe_code = "absent"
+identity_behavior = "deterministic"
+evidence_quality = "not-applicable"
+claim_risk = "high"
+current_replacement_paths = ["crates/venom-scanner/src/payload_strategies/encoding.rs", "crates/venom-scanner/src/payload_strategy.rs"]
+salvage_priority = "p0"
+notes = "Mixed neutral percent and hex encoders with double encoding, attack-shaped transforms, a dispatcher, and a bounded artifact adapter."
+
+[[files.components]]
+id = "relocated.artifact-envelope"
+source_symbol = "encode_into_artifact"
+disposition = "superseded-by-current-runtime"
+priority = "p0"
+historical_behavior = "Placed one selected transformation result inside bounded redacted PayloadArtifact."
+old_runtime_reachability = "library-only"
+reusable_value = "Bounded output, redacted Debug, digest receipt, and strategy identity."
+prohibited_restoration_behaviors = ["raw-payload-evidence"]
+modern_destination = "venom-scanner:payload-artifact"
+current_replacement_paths = ["crates/venom-scanner/src/payload_strategy.rs"]
+prerequisites = ["No direct restoration"]
+status = "superseded"
+rationale = "PayloadArtifact remains the mandatory output boundary for future transforms."
+
+[[files.components]]
+id = "relocated.double-encoding"
+source_symbol = "double_url_encode"
+disposition = "rewrite-from-contract"
+priority = "p2"
+historical_behavior = "Applied the same generic percent encoder twice and implied an evasion representation."
+old_runtime_reachability = "library-only"
+reusable_value = "An explicit decode-depth concept after exact wire-layer proof."
+prohibited_restoration_behaviors = ["ambiguous-encoding-layer", "generic-string-mutation", "misleading-bypass-claim"]
+modern_destination = "venom-scanner:normalization-resilience"
+current_replacement_paths = []
+prerequisites = ["Explicit decode depth", "Exact URL serialization", "Semantic verifier and replay"]
+status = "planned"
+rationale = "Two generic encoding calls do not establish a valid two-layer application contract."
+
+[[files.components]]
+id = "relocated.evasion-dispatch"
+source_symbol = "EvasionTechnique and apply_evasion"
+disposition = "reject-blind-dispatcher"
+priority = "never"
+historical_behavior = "Treated case, comments, whitespace, encoding, pollution, and splitting as uniform variants."
+old_runtime_reachability = "library-only"
+reusable_value = "Only family names after separation into typed domains."
+prohibited_restoration_behaviors = ["blind-dispatch", "generic-string-mutation", "request-shape-mutation", "http-splitting", "crlf-injection"]
+modern_destination = "none"
+current_replacement_paths = []
+prerequisites = []
+status = "rejected"
+rationale = "The dispatcher lacked compatibility, semantic proof, risk selection, accounting, and lineage."
+
+[[files.components]]
+id = "relocated.neutral-percent-hex"
+source_symbol = "url_encode and hex_encode"
+disposition = "superseded-by-current-runtime"
+priority = "p1"
+historical_behavior = "Deterministically percent-encoded non-unreserved characters or emitted percent-prefixed hex bytes."
+old_runtime_reachability = "library-only"
+reusable_value = "Neutral deterministic byte encoding without application-equivalence claims."
+prohibited_restoration_behaviors = ["ambiguous-encoding-layer", "misleading-bypass-claim"]
+modern_destination = "venom-scanner:payload-strategies-encoding"
+current_replacement_paths = ["crates/venom-scanner/src/payload_strategies/encoding.rs"]
+prerequisites = ["No direct restoration"]
+status = "superseded"
+rationale = "Current percent and hex primitives remove attack dispatch and bypass claims."
+
+[[files]]
+path = "crates/venom-scanner/src/payload_strategies/mod.rs"
+blob_sha = "43f2faff46737a9e3bd7223d4377d635f4e0e2a9"
+byte_size = 3949
+source_role = "payload-strategy-exports"
+quarantine_change = "materially-narrowed"
+historical_build_reachability = "built"
+historical_runtime_reachability = "library-only"
+direct_network_authority = "none"
+request_shape_authority = "none"
+process_filesystem_authority = "none"
+unsafe_code = "absent"
+identity_behavior = "not-applicable"
+evidence_quality = "not-applicable"
+claim_risk = "moderate"
+current_replacement_paths = ["crates/venom-scanner/src/payload_strategies/mod.rs", "crates/venom-scanner/src/payload_strategies/encoding.rs"]
+salvage_priority = "p3"
+notes = "The quarantine removed the legacy normalization export while retaining bounded neutral payload strategy modules."
+
+[[files.components]]
+id = "payload-strategies.legacy-normalization-exports"
+source_symbol = "normalization module export"
+disposition = "archive-reference"
+priority = "p3"
+historical_behavior = "Exported generic normalization helpers beside neutral encoding strategies."
+old_runtime_reachability = "library-only"
+reusable_value = "Historical module-boundary evidence for why raw normalization was removed."
+prohibited_restoration_behaviors = ["blind-dispatch", "generic-string-mutation"]
+modern_destination = "documentation-only"
+current_replacement_paths = []
+prerequisites = ["Preserve as recovery evidence only"]
+status = "archived"
+rationale = "The export itself has no runtime value and must not recreate the removed raw-string mutation boundary."
+
+[[files]]
+path = "crates/venom-scanner/src/payload_strategies/normalization.rs"
+blob_sha = "c94f06c536b1a2d9dd4bdb0d1e62bde887bd4e09"
+byte_size = 2233
+source_role = "payload-normalization"
+quarantine_change = "removed"
+historical_build_reachability = "built"
+historical_runtime_reachability = "library-only"
+direct_network_authority = "none"
+request_shape_authority = "payload-bytes"
+process_filesystem_authority = "none"
+unsafe_code = "absent"
+identity_behavior = "deterministic"
+evidence_quality = "unsubstantiated"
+claim_risk = "high"
+current_replacement_paths = []
+salvage_priority = "p0"
+notes = "Applied case, SQL-comment, and space-to-tab mutations to arbitrary strings without grammar compatibility or application-semantic verification."
+
+[[files.components]]
+id = "relocated.raw-normalization-helpers"
+source_symbol = "case_variation/comment_injection/whitespace_variation"
+disposition = "rewrite-from-contract"
+priority = "p0"
+historical_behavior = "Mutated raw payload strings using alternating case, fixed SQL keyword replacement, and global whitespace substitution."
+old_runtime_reachability = "library-only"
+reusable_value = "Case and HTML inter-token whitespace concepts can inform typed, bounded transformations with semantic replay."
+prohibited_restoration_behaviors = ["generic-string-mutation", "misleading-bypass-claim"]
+modern_destination = "venom-scanner:normalization-resilience"
+current_replacement_paths = []
+prerequisites = ["Typed parser-context compatibility", "Bounded payload artifact", "Application-semantic verifier", "Candidate and replay evidence"]
+status = "planned"
+rationale = "Only a contract-driven rewrite can separate equivalent representation review from blind evasion mutation."
+
+[[files]]
+path = "crates/venom-scanner/src/waf.rs"
+blob_sha = "171a4c324069e5747c747fcdd82a107c1409bc73"
+byte_size = 8777
+source_role = "waf-fingerprint-and-transforms"
+quarantine_change = "removed"
+historical_build_reachability = "built"
+historical_runtime_reachability = "library-only"
+direct_network_authority = "none"
+request_shape_authority = "mixed"
+process_filesystem_authority = "none"
+unsafe_code = "absent"
+identity_behavior = "deterministic"
+evidence_quality = "mixed"
+claim_risk = "high"
+current_replacement_paths = ["crates/venom-scanner/src/defense/fingerprint.rs", "crates/venom-scanner/src/defense/state.rs", "crates/venom-scanner/src/defense/transition.rs", "crates/venom-scanner/src/payload_strategies/encoding.rs", "crates/venom-scanner/src/payload_strategy.rs"]
+salvage_priority = "p0"
+notes = "Combined a weak product/status detector with raw case, comment, encoding, query-shape, and framing mutations under one generic dispatcher."
+
+[[files.components]]
+id = "waf.product-vocabulary"
+source_symbol = "WafProduct"
+disposition = "superseded-by-current-runtime"
+priority = "p2"
+historical_behavior = "Named a fixed set of defensive products and an unknown fallback."
+old_runtime_reachability = "library-only"
+reusable_value = "Product vocabulary is represented by the typed modern defense domain."
+prohibited_restoration_behaviors = ["product-misclassification", "fingerprint-as-authority"]
+modern_destination = "venom-scanner:defense"
+current_replacement_paths = ["crates/venom-scanner/src/defense/fingerprint.rs"]
+prerequisites = ["Use typed DefenseProduct identities"]
+status = "superseded"
+rationale = "Restoring the legacy enum would duplicate current defense identity without adding authority."
+
+[[files.components]]
+id = "waf.header-body-fingerprint"
+source_symbol = "WafDetector::detect_from_headers/detect_from_body"
+disposition = "superseded-by-current-runtime"
+priority = "p0"
+historical_behavior = "Matched exact reconstructed header strings and unbounded body substrings, including mapping Amazon infrastructure to AWS WAF."
+old_runtime_reachability = "library-only"
+reusable_value = "Bounded defensive-product hints remain useful as observation-only ranking context."
+prohibited_restoration_behaviors = ["fingerprint-as-authority", "product-misclassification", "status-only-authority"]
+modern_destination = "venom-scanner:defense-fingerprint"
+current_replacement_paths = ["crates/venom-scanner/src/defense/fingerprint.rs"]
+prerequisites = ["Bounded response fingerprinting", "Typed confidence", "Observation-only authority"]
+status = "superseded"
+rationale = "Modern bounded fingerprinting supersedes exact header reconstruction and ambiguous infrastructure claims."
+
+[[files.components]]
+id = "waf.status-only-detection"
+source_symbol = "WafDetector::detect_from_status"
+disposition = "reject-misleading-claim"
+priority = "never"
+historical_behavior = "Described 403, 406, 418, or 429 alone as possible WAF blocking or WAF rate limiting."
+old_runtime_reachability = "library-only"
+reusable_value = "Status is one bounded observation only when correlated with control and candidate evidence."
+prohibited_restoration_behaviors = ["status-only-authority", "fingerprint-as-authority", "misleading-bypass-claim"]
+modern_destination = "venom-scanner:defense-state-transition"
+current_replacement_paths = []
+prerequisites = ["Committed control and candidate DefenseState evidence"]
+status = "rejected"
+rationale = "A status code alone cannot prove a defensive product or candidate-specific engagement."
+
+[[files.components]]
+id = "waf.case-variation"
+source_symbol = "PayloadEncoder::case_variation"
+disposition = "rewrite-from-contract"
+priority = "p0"
+historical_behavior = "Alternated ASCII case across every raw payload character by position."
+old_runtime_reachability = "library-only"
+reusable_value = "Typed HTML token case can model an equivalent scanner-owned representation."
+prohibited_restoration_behaviors = ["generic-string-mutation", "misleading-bypass-claim"]
+modern_destination = "venom-scanner:normalization-resilience"
+current_replacement_paths = []
+prerequisites = ["Typed scanner-owned HTML tokens", "Exact semantic verifier", "Replay", "Bounded output"]
+status = "planned"
+rationale = "Grammar-aware token transformation is required so identity values and target-controlled text remain unchanged."
+
+[[files.components]]
+id = "waf.sql-comment-injection"
+source_symbol = "PayloadEncoder::comment_injection_sql"
+disposition = "rewrite-from-contract"
+priority = "p1"
+historical_behavior = "Replaced selected SQL keyword substrings with inline-comment spellings regardless of SQL grammar or DBMS."
+old_runtime_reachability = "library-only"
+reusable_value = "SQL comment families may become typed catalog metadata after semantic-equivalence contracts exist."
+prohibited_restoration_behaviors = ["generic-string-mutation", "blind-dispatch", "misleading-bypass-claim"]
+modern_destination = "venom-scanner:payload-catalog"
+current_replacement_paths = []
+prerequisites = ["SQL grammar and DBMS compatibility", "Semantic-equivalence verifier", "Separate reviewed activation"]
+status = "planned"
+rationale = "Generic string replacement cannot establish SQL semantic equivalence and is not executable in normalization V1."
+
+[[files.components]]
+id = "waf.whitespace-variation"
+source_symbol = "EvisionTechnique::WhespaceVariation"
+disposition = "rewrite-from-contract"
+priority = "p0"
+historical_behavior = "Globally replaced ASCII spaces with horizontal tabs in arbitrary payload strings."
+old_runtime_reachability = "library-only"
+reusable_value = "One scanner-owned HTML syntactic separator may be transformed where HTML grammar proves equivalence."
+prohibited_restoration_behaviors = ["generic-string-mutation", "crlf-injection", "misleading-bypass-claim"]
+modern_destination = "venom-scanner:normalization-resilience"
+current_replacement_paths = []
+prerequisites = ["Typed scanner-owned separator", "No request-shape change", "DOM semantic verifier", "Replay"]
+status = "planned"
+rationale = "Whitespace transformation must be grammar-specific and bounded rather than string-wide."
+
+[[files.components]]
+id = "waf.url-percent-encoding"
+source_symbol = "PayloadEncoder::url_encode"
+disposition = "superseded-by-current-runtime"
+priority = "p1"
+historical_behavior = "Percent-encoded non-unreserved characters without an explicit wire-layer or decode-depth contract."
+old_runtime_reachability = "library-only"
+reusable_value = "Neutral byte percent encoding is retained without claiming application-level equivalence."
+prohibited_restoration_behaviors = ["ambiguous-encoding-layer", "misleading-bypass-claim"]
+modern_destination = "venom-scanner:payload-strategies-encoding"
+current_replacement_paths = ["crates/venom-scanner/src/payload_strategies/encoding.rs"]
+prerequisites = ["Use current neutral encoder"]
+status = "superseded"
+rationale = "Any active resilience use still requires a separate versioned exact-wire decode-layer contract."
+
+[[files.components]]
+id = "waf.double-url-encoding"
+source_symbol = "PayloadEncoder::double_url_encode"
+disposition = "rewrite-from-contract"
+priority = "p2"
+historical_behavior = "Applied the same generic percent encoder twice without proving URL serialization or application decode depth."
+old_runtime_reachability = "library-only"
+reusable_value = "Explicit multi-layer encoding metadata may be useful when exact wire and fixture behavior are pinned."
+prohibited_restoration_behaviors = ["ambiguous-encoding-layer", "generic-string-mutation", "misleading-bypass-claim"]
+modern_destination = "venom-scanner:normalization-resilience"
+current_replacement_paths = []
+prerequisites = ["Exact wire serialization", "Explicit decode-depth contract", "Parameter-shape proof", "Application fixture proof"]
+status = "planned"
+rationale = "Two encoder calls do not establish a valid two-layer representation contract."
+
+[[files.components]]
+id = "waf.hex-encoding"
+source_symbol = "PayloadEncoder::hex_encode"
+disposition = "superseded-by-current-runtime"
+priority = "p1"
+historical_behavior = "Rendered every payload byte as percent-prefixed lowercase hexadecimal."
+old_runtime_reachability = "library-only"
+reusable_value = "Deterministic neutral hexadecimal byte encoding remains available without bypass claims."
+prohibited_restoration_behaviors = ["ambiguous-encoding-layer", "misleading-bypass-claim"]
+modern_destination = "venom-scanner:payload-strategies-encoding"
+current_replacement_paths = ["crates/venom-scanner/src/payload_strategies/encoding.rs"]
+prerequisites = ["Use current neutral encoder"]
+status = "superseded"
+rationale = "Neutral hexadecimal output does not imply application-semantic equivalence or defense bypass."
+
+[[files.components]]
+id = "waf.parameter-pollution"
+source_symbol = "EvisionTechnique::ParameterPollution"
+disposition = "move-to-different-capability"
+priority = "p1"
+historical_behavior = "Appended a duplicate id parameter by raw string formatting."
+old_runtime_reachability = "library-only"
+reusable_value = "Parameter multiplicity belongs in a future typed request-shape capability."
+prohibited_restoration_behaviors = ["request-shape-mutation", "generic-string-mutation", "blind-dispatch"]
+modern_destination = "future-typed-request-shape"
+current_replacement_paths = []
+prerequisites = ["Typed parameter identity", "Explicit request-shape authority", "Application semantic verifier"]
+status = "planned"
+rationale = "HPP is not an ordinary payload representation and must not execute in normalization V1."
+
+[[files.components]]
+id = "waf.http-splitting"
+source_symbol = "EvisionTechnique::HttpSplitting"
+disposition = "reject-unsafe-technique"
+priority = "never"
+historical_behavior = "Treated newline percent replacement as a generic HTTP splitting evasion technique."
+old_runtime_reachability = "library-only"
+reusable_value = "Only the boundary decision that request framing is a separate high-risk capability."
+prohibited_restoration_behaviors = ["http-splitting", "crlf-injection", "request-shape-mutation"]
+modern_destination = "future-request-framing"
+current_replacement_paths = []
+prerequisites = ["Separate request-framing review if ever authorized"]
+status = "rejected"
+rationale = "Request framing and CRLF techniques are forbidden in the low-risk normalization domain."
+
+[[files.components]]
+id = "waf.generic-evasion-dispatch"
+source_symbol = "PayloadEncoder::apply_evasion"
+disposition = "reject-blind-dispatcher"
+priority = "never"
+historical_behavior = "Mapped caller-selected techniques uniformly over raw payload strings and returned unverified outputs."
+old_runtime_reachability = "library-only"
+reusable_value = "None; future selection must operate on typed metadata before one bounded payload materialization."
+prohibited_restoration_behaviors = ["blind-dispatch", "generic-string-mutation", "unbounded-transform-chain", "request-shape-mutation", "misleading-bypass-claim"]
+modern_destination = "none"
+current_replacement_paths = []
+prerequisites = ["Do not restore"]
+status = "rejected"
+rationale = "The dispatcher lacked context compatibility, semantic verification, request accounting, evidence lineage, and risk-aware selection."

@@ -94,7 +94,7 @@ Execution decisions are deterministic and model-independent. Venom does not requ
 | Output | Unchanged no-profile text/`--explain`/`decision-scan/v1`; explicit profile audits; and bounded JSON, CSV, HTML, or Markdown assessment reports for completed `web-review` runs |
 | Exploit foundation | Independent Preview `venom-exploit` manifest/catalog library plus a disconnected non-default orchestration API. Only a five-step in-memory canary fixture exercises host-minted grants, typed permits/receipts, impact verification, and cleanup verification; there is no real exploit, production adapter, or scanner/CLI/API/proxy integration |
 | Artifact signatures | Independent Preview `venom-artifact` library scans bounded caller-supplied buffers/readers for exact/wildcard signatures with overlapping deterministic observations. Explicit local regular-file access is available only through the non-default CLI `artifact-adapter`; matches are not malware or vulnerability verdicts |
-| Historical salvage inventory | A strict repository ledger and local-Git `xtask` check classify the deleted 38-file scanner tree at component level. Only the detector byte-pattern component is now restored in `venom-artifact`; unsafe mmap and fabricated legacy request findings remain rejected |
+| Historical salvage inventories | Two strict repository ledgers and local-Git `xtask` checks preserve separate source epochs: the deleted 38-file pre-workspace scanner tree and the 13-file/39-component post-workspace WAF/evasion quarantine wave. Only the first epoch's detector byte-pattern component is restored in `venom-artifact`; the second ledger adds no runtime capability, restores no source, and grants no execution or claim authority |
 
 The standard web profile currently has conservative, claim-specific behavior:
 
@@ -472,7 +472,9 @@ tag and accepted cross-version baseline exist, pin a reviewed full commit.
 - [Architecture](docs/architecture.md)
 - [Runtime map: what actually runs](docs/internals/runtime-map.md)
 - [Historical scanner salvage](docs/history/historical-scanner-salvage.md)
+- [Post-workspace WAF/evasion salvage](docs/history/post-workspace-waf-evasion-salvage.md)
 - [Historical salvage policy](docs/adr/0025-record-historical-scanner-salvage.md)
+- [Post-workspace WAF/evasion salvage policy](docs/adr/0027-record-post-workspace-waf-evasion-salvage.md)
 - [Artifact signature scanning](docs/artifact-signatures.md)
 - [Artifact signature architecture decision](docs/adr/0026-restore-bounded-artifact-signatures.md)
 - [Lua execution](docs/lua.md)

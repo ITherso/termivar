@@ -34,6 +34,17 @@ byte-pattern component is now marked `Restored` by the separate
 `venom-artifact` domain. Its unsafe mmap adapter, fabricated request-path
 finding logic, and unsupported optimization claims remain rejected.
 
+The separate
+[post-workspace WAF/evasion salvage ledger](../history/post-workspace-waf-evasion-salvage.md)
+records a later 13-file, 39-component source epoch around the WAF/evasion
+quarantine commit. The `xtask waf-evasion-salvage` check reads only that strict
+ledger, its generated report, and local Git objects. It maps historical
+fingerprinting to the existing observation-only `defense` domain and neutral
+encoding to the existing payload-strategy boundary where applicable. It does
+not restore `waf.rs`, retired adaptive modules, a generic evasion dispatcher,
+or any request path. No classification enables a transform, sends a request,
+or raises finding authority.
+
 `venom-artifact` is not part of either scan runtime. Its Preview library scans
 bounded caller-supplied byte slices or `Read` streams and emits exact/wildcard
 match observations with deterministic offsets and completion truth. The

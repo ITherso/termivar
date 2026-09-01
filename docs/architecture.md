@@ -20,10 +20,14 @@ The editable diagrams.net source is [architecture.drawio](architecture.drawio). 
 
 `xtask` is repository tooling rather than a runtime layer. It may orchestrate
 workspace commands but application crates must not depend on it. Its
-`scanner-salvage` check validates the strict historical scanner ledger against
-local Git objects and the deterministic generated report; it never compiles or
-executes the deleted source. The ledger classifies recovery candidates and
-rejected behavior but creates no application dependency or runtime authority.
+`scanner-salvage` and `waf-evasion-salvage` checks validate two strict,
+separate historical source epochs against local Git objects and deterministic
+generated reports. The first covers the deleted 38-file pre-workspace scanner
+tree; the second covers 13 files and 39 components from the post-workspace
+WAF/evasion quarantine wave. Neither check compiles or executes historical
+source. The ledgers classify recovery candidates, superseded implementations,
+and rejected behavior but create no application dependency, runtime
+capability, execution authority, or claim authority.
 
 The repository root is a virtual Cargo workspace and has no `src/` tree. Rust
 source must live under a declared workspace package; otherwise it would be
@@ -353,9 +357,12 @@ host-execution contracts are specified by
 [ADR 0022](adr/0022-bound-host-lua-and-distributed-execution.md). The additive
 profiled assessment-reporting composition and CLI publication boundary are
 specified by [ADR 0023](adr/0023-compose-profiled-assessment-reporting.md).
-The component-level historical recovery inventory and its no-runtime boundary
-are specified by
-[ADR 0025](adr/0025-record-historical-scanner-salvage.md).
+The pre-workspace component-level historical recovery inventory and its
+no-runtime boundary are specified by
+[ADR 0025](adr/0025-record-historical-scanner-salvage.md). The separate
+post-workspace WAF/evasion quarantine inventory is specified by
+[ADR 0027](adr/0027-record-post-workspace-waf-evasion-salvage.md); it does not
+restore `waf.rs`, the retired adaptive modules, or a transformation dispatcher.
 
 For the ten responsibility-split domains above, the same gate also requires
 the reviewed private child-module inventory, pins facade-resident authority,

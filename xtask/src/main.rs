@@ -6,6 +6,7 @@ mod exploit_catalog;
 mod release_metadata;
 mod scanner_salvage;
 mod semver;
+mod waf_evasion_salvage;
 
 use clap::{Parser, Subcommand, ValueEnum};
 use std::{
@@ -44,6 +45,12 @@ enum Task {
     Semver,
     /// Validate the deleted scanner tree's historical salvage ledger.
     ScannerSalvage {
+        /// Rewrite the stored semantic digest and generated Markdown report.
+        #[arg(long)]
+        write: bool,
+    },
+    /// Validate the post-workspace WAF/evasion salvage ledger.
+    WafEvasionSalvage {
         /// Rewrite the stored semantic digest and generated Markdown report.
         #[arg(long)]
         write: bool,
@@ -97,6 +104,7 @@ fn main() -> TaskResult {
         Task::ReleaseMetadata { version } => release_metadata::check(&root, &version),
         Task::Semver => semver::check(&root),
         Task::ScannerSalvage { write } => scanner_salvage::run(&root, write),
+        Task::WafEvasionSalvage { write } => waf_evasion_salvage::run(&root, write),
         Task::Generate { template, name } => generate(&root, template, &name),
     }
 }
@@ -237,5 +245,22 @@ mod tests {
         assert!(validate_project_name("custom-scanner").is_ok());
         assert!(validate_project_name("Custom Scanner").is_err());
         assert!(validate_project_name("../scanner").is_err());
+    }
+
+    #[test]
+    fn waf_evasion_salvage_command_has_an_explicit_write_mode() {
+        let check = Cli::try_parse_from(["cargo xtask", "waf-evasion-salvage"])
+            .expect("parse validation command");
+        assert!(matches!(
+            check.command,
+            Task::WafEvasionSalvage { write: false }
+        ));
+
+        let write = Cli::try_parse_from(["cargo xtask", "waf-evasion-salvage", "--write"])
+            .expect("parse generation command");
+        assert!(matches!(
+            write.command,
+            Task::WafEvasionSalvage { write: true }
+        ));
     }
 }

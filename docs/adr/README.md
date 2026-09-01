@@ -32,6 +32,7 @@ Architecture decision records (ADRs) preserve why a durable technical choice was
 | [0024](0024-separate-exploit-manifest-catalog.md) | Accepted | Establish a separate bounded exploit manifest and catalog domain without execution authority |
 | [0025](0025-record-historical-scanner-salvage.md) | Accepted; detector recovery clause extended by [0026](0026-restore-bounded-artifact-signatures.md) | Record component-level historical scanner salvage before restoring capability |
 | [0026](0026-restore-bounded-artifact-signatures.md) | Accepted | Restore only bounded artifact-signature observations in a separate domain |
+| [0027](0027-record-post-workspace-waf-evasion-salvage.md) | Accepted | Record the separate post-workspace WAF/evasion quarantine epoch without restoring runtime authority |
 
 ## Format
 
