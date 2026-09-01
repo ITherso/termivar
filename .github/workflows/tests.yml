@@ -79,6 +79,27 @@ jobs:
       - name: Revalidate pre-workspace historical scanner salvage ledger
         run: cargo run --locked -p xtask -- scanner-salvage
 
+  scanner-conformance-corpus:
+    name: Scanner Conformance Corpus
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # 1.88.0
+        with:
+          toolchain: "1.88.0"
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      - name: Test scanner conformance corpus contracts
+        run: cargo test --locked -p xtask scanner_corpus
+      - name: Validate scanner conformance corpus
+        run: cargo run --locked -p xtask -- scanner-corpus
+      - name: Exercise corpus through current scanner semantics
+        run: cargo test --locked -p venom-scanner --all-features versioned_scanner_corpus_dispatches_through_current_production_semantics
+
   artifact-signature-catalog:
     name: Artifact Signature Catalog
     runs-on: ubuntu-latest

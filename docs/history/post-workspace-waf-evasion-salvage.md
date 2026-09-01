@@ -9,8 +9,8 @@ This report is generated from the authoritative TOML ledger. Historical WAF/evas
 | Historical source snapshot | 52238460484e7a1469f1028fdd6361072a0daba5 |
 | Quarantine/removal | 5a0563886658859b6e3e163f732a298914b10800 |
 | Current replacement baseline | e1e4077d159d6df5cdca8e274ecd40b40bb2f9c5 |
-| Semantic ledger digest | waf-evasion-salvage-sha256:d7dd1bc20c53ba709b9e2fab70510f9882e48902f6dfc9b9d551c60ba18683ab |
-| Prior source-epoch digest | salvage-sha256:8c949aaea6e19707bcf1b1eee6e3552827c87ea0639915d6153c607209011165 |
+| Semantic ledger digest | waf-evasion-salvage-sha256:ce26aba8311def8a0eb58fa33e0aa7d286a1723b9b850f9f19eb9ce9a6f2679a |
+| Prior source-epoch digest | salvage-sha256:cd706569ed6044cc99b97bb55322a6651b271fa233a66651cd8b477625e63843 |
 
 ## Classification summary
 

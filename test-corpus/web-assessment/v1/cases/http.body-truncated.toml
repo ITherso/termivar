@@ -1,0 +1,26 @@
+schema = "security-assessment-fixture/v1"
+id = "http.body-truncated"
+revision = 1
+category = "http-media"
+purpose = "Preserve body truncation as typed incompleteness rather than an empty successful response."
+provenance = "generated-boundary"
+support = "current"
+tags = ["boundary", "http", "truncated"]
+
+[request]
+method = "get"
+origin = "https://example.test"
+path = "/corpus/http/truncated"
+role = "bootstrap"
+
+[response]
+status = 200
+media_type = "application/json"
+role = "bootstrap"
+completion = "incomplete"
+truncated = true
+body_file = "bodies/http-truncated.txt"
+
+[expected]
+http_media = "truncated"
+incompleteness = "body-truncated"

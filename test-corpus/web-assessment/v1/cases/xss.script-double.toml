@@ -1,0 +1,37 @@
+schema = "security-assessment-fixture/v1"
+id = "xss.script-double"
+revision = 1
+category = "xss"
+purpose = "Describe a generated scanner-owned double-quoted lexical boundary without committed executable source."
+provenance = "generated-boundary"
+support = "current"
+tags = ["double-quoted", "generated", "xss"]
+
+[request]
+method = "get"
+origin = "https://example.test"
+path = "/review/xss/script-double"
+role = "bootstrap"
+
+[[request.query]]
+name = "q"
+value = "fixture-script-double"
+
+[response]
+status = 200
+control_status = 200
+control_body_file = "bodies/xss-script-double.html"
+source_body_file = "bodies/xss-source-script-double.html"
+media_type = "text/html"
+role = "bootstrap"
+completion = "complete"
+truncated = false
+body_file = "bodies/xss-script-double.html"
+
+[expected]
+reflection_context = "script"
+javascript_context = "double-quoted"
+xss_relation = "matched"
+assessment_capability = "xss-script-lexical-boundary"
+maximum_disposition = "needs-review"
+maximum_authority = "knowledge-only"

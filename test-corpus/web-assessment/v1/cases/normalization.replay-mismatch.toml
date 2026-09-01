@@ -1,0 +1,32 @@
+schema = "security-assessment-fixture/v1"
+id = "normalization.replay-mismatch"
+revision = 1
+category = "defense"
+purpose = "Reject a normalization result when the distinct replay does not reproduce inert semantics."
+provenance = "generated-boundary"
+support = "current"
+tags = ["defense", "normalization", "replay-mismatch"]
+
+[request]
+method = "get"
+origin = "https://example.test"
+path = "/review/normalization/replay-mismatch"
+role = "bootstrap"
+
+[response]
+status = 200
+control_status = 403
+control_body_file = "bodies/defense-blocked.html"
+replay_status = 200
+replay_body_file = "bodies/normalization-semantics-absent.html"
+media_type = "text/html"
+role = "bootstrap"
+completion = "complete"
+truncated = false
+body_file = "bodies/normalization-replay-mismatch.html"
+
+[expected]
+defense_state = "open"
+defense_transition = "none"
+normalization_outcome = "replay-mismatch"
+maximum_authority = "knowledge-only"

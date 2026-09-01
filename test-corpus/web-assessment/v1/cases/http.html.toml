@@ -1,0 +1,26 @@
+schema = "security-assessment-fixture/v1"
+id = "http.html"
+revision = 1
+category = "http-media"
+purpose = "Classify a complete HTML document and keep GraphQL-like interpretation absent."
+provenance = "historical-sanitized"
+support = "current"
+tags = ["html", "http", "negative-graphql"]
+
+[request]
+method = "get"
+origin = "https://example.test"
+path = "/corpus/http/html"
+role = "bootstrap"
+
+[response]
+status = 200
+media_type = "text/html; charset=utf-8"
+role = "bootstrap"
+completion = "complete"
+truncated = false
+body_file = "bodies/http-page.html"
+
+[expected]
+http_media = "html"
+graphql_evidence = "graphql-like-html"

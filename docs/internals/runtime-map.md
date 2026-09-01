@@ -31,8 +31,11 @@ is repository evidence, not runtime authority. The explicit `xtask
 scanner-salvage` check reads only the strict ledger, generated report, and local
 Git objects for the deleted 38-file tree. Only the historical detector's
 byte-pattern component is now marked `Restored` by the separate
-`venom-artifact` domain. Its unsafe mmap adapter, fabricated request-path
-finding logic, and unsupported optimization claims remain rejected.
+`venom-artifact` domain. The historical request/response fixture component is
+restored only as the sanitized repository conformance corpus; synthetic
+vulnerabilities remain rejected. Its unsafe mmap adapter, fabricated
+request-path finding logic, and unsupported optimization claims remain
+rejected.
 
 The separate
 [post-workspace WAF/evasion salvage ledger](../history/post-workspace-waf-evasion-salvage.md)
@@ -48,6 +51,14 @@ feature-gated normalization-resilience runtime. Every rejected blind,
 request-shape, framing, rate-limit, and misleading-claim component remains
 rejected; ledger status itself never authorizes execution or raises claim
 authority.
+
+The [scanner conformance corpus](scanner-conformance-corpus.md) is also outside
+every product runtime. Its 50 sanitized cases use the internal
+`security-assessment-fixture/v1` schema and are checked by the deterministic
+`xtask scanner-corpus` command. Validation and the conformance harness perform
+no network requests, add no scanner action or executor, and change no report
+claim. Passing these repository cases demonstrates agreement with checked-in
+contracts only; it is not an empirical scanner-accuracy measurement.
 
 `venom-artifact` is not part of either scan runtime. Its Preview library scans
 bounded caller-supplied byte slices or `Read` streams and emits exact/wildcard

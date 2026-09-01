@@ -1,0 +1,38 @@
+schema = "security-assessment-fixture/v1"
+id = "graphql.control-envelope"
+revision = 1
+category = "api-graphql"
+purpose = "Describe an exact scanner-owned typename control envelope for future bounded protocol review."
+provenance = "current-authored"
+support = "metadata-only"
+tags = ["control", "graphql", "metadata"]
+
+[request]
+method = "post"
+origin = "https://api.example.test"
+path = "/graphql"
+role = "bootstrap"
+body_media_type = "application/json"
+inline_body = '''{"query":"query CorpusControl { fixtureControl: __typename }"}'''
+
+[[request.headers]]
+name = "accept"
+value = "application/graphql-response+json, application/json"
+
+[[request.headers]]
+name = "content-type"
+value = "application/json"
+
+[response]
+status = 200
+media_type = "application/graphql-response+json"
+role = "bootstrap"
+completion = "complete"
+truncated = false
+body_file = "bodies/graphql-control.json"
+
+[expected]
+graphql_evidence = "typename-control"
+maximum_disposition = "informational"
+maximum_authority = "knowledge-only"
+incompleteness = "future-metadata-only"

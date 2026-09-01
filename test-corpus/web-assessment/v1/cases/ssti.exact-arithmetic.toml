@@ -1,0 +1,36 @@
+schema = "security-assessment-fixture/v1"
+id = "ssti.exact-arithmetic"
+revision = 1
+category = "ssti"
+purpose = "Represent an exact scanner-owned arithmetic result with independent replay agreement."
+provenance = "generated-boundary"
+support = "current"
+tags = ["arithmetic", "replay", "ssti"]
+
+[request]
+method = "get"
+origin = "https://example.test"
+path = "/review/ssti/arithmetic"
+role = "bootstrap"
+
+[[request.query]]
+name = "view"
+value = "fixture-arithmetic-case"
+
+[response]
+status = 200
+control_status = 200
+control_body_file = "bodies/ssti-control.html"
+replay_status = 200
+replay_body_file = "bodies/ssti-arithmetic.html"
+media_type = "text/html"
+role = "bootstrap"
+completion = "complete"
+truncated = false
+body_file = "bodies/ssti-arithmetic.html"
+
+[expected]
+ssti_relation = "matched"
+assessment_capability = "ssti-arithmetic-review"
+maximum_disposition = "needs-review"
+maximum_authority = "knowledge-only"

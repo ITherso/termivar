@@ -1,0 +1,25 @@
+schema = "security-assessment-fixture/v1"
+id = "http.media-malformed"
+revision = 1
+category = "http-media"
+purpose = "Reject malformed media-type parameter syntax despite a JSON-shaped body."
+provenance = "current-authored"
+support = "current"
+tags = ["http", "malformed", "media"]
+
+[request]
+method = "get"
+origin = "https://example.test"
+path = "/corpus/http/malformed-media"
+role = "bootstrap"
+
+[response]
+status = 200
+media_type = "application/json/extra"
+role = "bootstrap"
+completion = "complete"
+truncated = false
+body_file = "bodies/http-malformed-media.json"
+
+[expected]
+http_media = "malformed"

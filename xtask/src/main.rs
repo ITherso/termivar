@@ -4,6 +4,7 @@ mod architecture;
 mod artifact_catalog;
 mod exploit_catalog;
 mod release_metadata;
+mod scanner_corpus;
 mod scanner_salvage;
 mod semver;
 mod waf_evasion_salvage;
@@ -37,6 +38,12 @@ enum Task {
     Docs,
     /// Validate repository-owned exploit-pack manifests and catalog identity.
     ExploitCatalog,
+    /// Validate the repository-owned security-assessment conformance corpus.
+    ScannerCorpus {
+        /// Rewrite the stored semantic digest and generated corpus inventory.
+        #[arg(long)]
+        write: bool,
+    },
     /// Run the local release preflight without tagging or publishing.
     Release,
     /// Verify tag-time changelog and supported-version metadata.
@@ -102,6 +109,7 @@ fn main() -> TaskResult {
         Task::ExploitCatalog => exploit_catalog::check(&root),
         Task::Release => release_preflight(&root),
         Task::ReleaseMetadata { version } => release_metadata::check(&root, &version),
+        Task::ScannerCorpus { write } => scanner_corpus::run(&root, write),
         Task::Semver => semver::check(&root),
         Task::ScannerSalvage { write } => scanner_salvage::run(&root, write),
         Task::WafEvasionSalvage { write } => waf_evasion_salvage::run(&root, write),
@@ -262,5 +270,19 @@ mod tests {
             write.command,
             Task::WafEvasionSalvage { write: true }
         ));
+    }
+
+    #[test]
+    fn scanner_corpus_command_has_an_explicit_write_mode() {
+        let check = Cli::try_parse_from(["cargo xtask", "scanner-corpus"])
+            .expect("parse validation command");
+        assert!(matches!(
+            check.command,
+            Task::ScannerCorpus { write: false }
+        ));
+
+        let write = Cli::try_parse_from(["cargo xtask", "scanner-corpus", "--write"])
+            .expect("parse generation command");
+        assert!(matches!(write.command, Task::ScannerCorpus { write: true }));
     }
 }

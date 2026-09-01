@@ -1,0 +1,34 @@
+schema = "security-assessment-fixture/v1"
+id = "sql.error-text-only"
+revision = 1
+category = "sql"
+purpose = "Keep a sanitized parser diagnostic insufficient without paired structural evidence."
+provenance = "historical-sanitized"
+support = "current"
+tags = ["diagnostic", "negative", "sql"]
+
+[request]
+method = "get"
+origin = "https://example.test"
+path = "/review/sql/error-text"
+role = "bootstrap"
+
+[[request.query]]
+name = "term"
+value = "fixture-error-marker"
+
+[response]
+status = 500
+control_status = 200
+control_body_file = "bodies/sql-control.txt"
+replay_status = 500
+replay_body_file = "bodies/sql-error-text.txt"
+media_type = "text/plain"
+role = "bootstrap"
+completion = "complete"
+truncated = false
+body_file = "bodies/sql-error-text.txt"
+
+[expected]
+sql_relation = "not-matched"
+maximum_authority = "knowledge-only"

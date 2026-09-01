@@ -1,0 +1,38 @@
+schema = "security-assessment-fixture/v1"
+id = "graphql.introspection-restricted"
+revision = 1
+category = "api-graphql"
+purpose = "Describe a correlated structured error that restricts introspection without implying a vulnerability."
+provenance = "current-authored"
+support = "metadata-only"
+tags = ["graphql", "introspection", "restricted"]
+
+[request]
+method = "post"
+origin = "https://api.example.test"
+path = "/graphql"
+role = "bootstrap"
+body_media_type = "application/json"
+inline_body = '''{"query":"query CorpusRestricted { fixtureRestricted: __typename __schema { queryType { name } } }"}'''
+
+[[request.headers]]
+name = "accept"
+value = "application/graphql-response+json, application/json"
+
+[[request.headers]]
+name = "content-type"
+value = "application/json"
+
+[response]
+status = 200
+media_type = "application/graphql-response+json"
+role = "bootstrap"
+completion = "complete"
+truncated = false
+body_file = "bodies/graphql-restricted.json"
+
+[expected]
+graphql_evidence = "introspection-restricted"
+maximum_disposition = "informational"
+maximum_authority = "knowledge-only"
+incompleteness = "future-metadata-only"

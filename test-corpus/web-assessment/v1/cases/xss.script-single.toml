@@ -1,0 +1,37 @@
+schema = "security-assessment-fixture/v1"
+id = "xss.script-single"
+revision = 1
+category = "xss"
+purpose = "Describe a generated scanner-owned single-quoted lexical boundary without committed executable source."
+provenance = "generated-boundary"
+support = "current"
+tags = ["generated", "single-quoted", "xss"]
+
+[request]
+method = "get"
+origin = "https://example.test"
+path = "/review/xss/script-single"
+role = "bootstrap"
+
+[[request.query]]
+name = "q"
+value = "fixture-script-single"
+
+[response]
+status = 200
+control_status = 200
+control_body_file = "bodies/xss-script-single.html"
+source_body_file = "bodies/xss-source-script-single.html"
+media_type = "text/html"
+role = "bootstrap"
+completion = "complete"
+truncated = false
+body_file = "bodies/xss-script-single.html"
+
+[expected]
+reflection_context = "script"
+javascript_context = "single-quoted"
+xss_relation = "matched"
+assessment_capability = "xss-script-lexical-boundary"
+maximum_disposition = "needs-review"
+maximum_authority = "knowledge-only"

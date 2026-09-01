@@ -1,0 +1,26 @@
+schema = "security-assessment-fixture/v1"
+id = "defense.server-error-only"
+revision = 1
+category = "defense"
+purpose = "Keep a server error from becoming defensive engagement without paired evidence."
+provenance = "current-authored"
+support = "current"
+tags = ["defense", "negative", "server-error"]
+
+[request]
+method = "get"
+origin = "https://api.example.test"
+path = "/review/server-error"
+role = "bootstrap"
+
+[response]
+status = 503
+media_type = "text/html"
+role = "bootstrap"
+completion = "complete"
+truncated = false
+body_file = "bodies/defense-server-error.html"
+
+[expected]
+defense_state = "unknown"
+defense_transition = "none"

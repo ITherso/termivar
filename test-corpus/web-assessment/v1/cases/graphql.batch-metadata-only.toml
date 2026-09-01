@@ -1,0 +1,29 @@
+schema = "security-assessment-fixture/v1"
+id = "graphql.batch-metadata-only"
+revision = 1
+category = "api-graphql"
+purpose = "Retain batch-shaped response taxonomy as metadata without creating an execution obligation."
+provenance = "generated-boundary"
+support = "metadata-only"
+tags = ["batch", "graphql", "metadata"]
+
+[request]
+method = "post"
+origin = "https://api.example.test"
+path = "/graphql"
+role = "bootstrap"
+body_media_type = "application/json"
+inline_body = '''[{"query":"query CorpusOne { fixtureOne: __typename }"},{"query":"query CorpusTwo { fixtureTwo: __typename }"}]'''
+
+[response]
+status = 200
+media_type = "application/json"
+role = "bootstrap"
+completion = "complete"
+truncated = false
+body_file = "bodies/graphql-batch.json"
+
+[expected]
+graphql_evidence = "batch-metadata-only"
+maximum_authority = "knowledge-only"
+incompleteness = "future-metadata-only"

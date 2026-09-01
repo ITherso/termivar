@@ -5,7 +5,7 @@ deletion_commit = "28bfb2d8ae3a4f707b7423cac65b6be8e11085b6"
 historical_source_root = "src/scanner"
 expected_file_count = 38
 algorithm_version = "venom.historical-scanner-salvage-digest/v1"
-ledger_digest = "salvage-sha256:8c949aaea6e19707bcf1b1eee6e3552827c87ea0639915d6153c607209011165"
+ledger_digest = "salvage-sha256:cd706569ed6044cc99b97bb55322a6651b271fa233a66651cd8b477625e63843"
 current_replacement_baseline_sha = "cbca14d10db4ee641308f3b3e290bf75d937c8a7"
 
 [[files]]
@@ -1472,8 +1472,9 @@ reusable_value = "Sanitizable historical fixture inputs and negative cases."
 prohibited_behaviors = ["raw-sensitive-evidence", "fabricated-finding"]
 modern_destination = "fixture-corpus"
 prerequisites = ["fixture provenance review", "current schema conversion", "negative expectation audit"]
-status = "planned"
-rationale = "Selected inputs may improve current tests after evidence expectations are rewritten."
+modern_implementation = "test-corpus/web-assessment/v1 with xtask scanner-corpus validation"
+status = "restored"
+rationale = "Selected request/response concepts were re-authored as bounded sanitized fixtures with typed expectations; fabricated findings and sensitive historical material were not copied."
 
 [[files.components]]
 id = "fixtures.synthetic-vulnerabilities"

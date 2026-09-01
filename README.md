@@ -95,7 +95,8 @@ Execution decisions are deterministic and model-independent. Venom does not requ
 | Exploit foundation | Independent Preview `venom-exploit` manifest/catalog library plus a disconnected non-default orchestration API. Only a five-step in-memory canary fixture exercises host-minted grants, typed permits/receipts, impact verification, and cleanup verification; there is no real exploit, production adapter, or scanner/CLI/API/proxy integration |
 | Artifact signatures | Independent Preview `venom-artifact` library scans bounded caller-supplied buffers/readers for exact/wildcard signatures with overlapping deterministic observations. Explicit local regular-file access is available only through the non-default CLI `artifact-adapter`; matches are not malware or vulnerability verdicts |
 | Normalization resilience | Non-default Preview scanner/CLI feature plus explicit `--normalization-resilience` on `web-review`. V1 selects at most one typed depth-one HTML representation, reuses committed XSS/defense evidence, and requires transformed candidate plus distinct replay to reproduce the same inert parser semantics. It is `NeedsReview` / `KnowledgeOnly` only, not a generic or product-specific WAF-bypass claim |
-| Historical salvage inventories | Two strict repository ledgers and local-Git `xtask` checks preserve separate source epochs: the deleted 38-file pre-workspace scanner tree and the 13-file/39-component post-workspace WAF/evasion quarantine wave. The detector byte-pattern component is restored in `venom-artifact`; only the historical HTML token-case and inter-token whitespace concepts are marked restored by the separately reviewed normalization runtime. Historical source itself remains non-authoritative |
+| Scanner conformance corpus | Repository-only `security-assessment-fixture/v1` data provides 50 sanitized request/response cases and deterministic `xtask scanner-corpus` checks. It adds no runtime request or claim, and conformance is not an empirical accuracy result |
+| Historical salvage inventories | Two strict repository ledgers and local-Git `xtask` checks preserve separate source epochs: the deleted 38-file pre-workspace scanner tree and the 13-file/39-component post-workspace WAF/evasion quarantine wave. The detector byte-pattern component is restored in `venom-artifact`, the sanitized fixture component is restored only as repository conformance data, and the historical HTML token-case/inter-token whitespace concepts are restored by the separately reviewed normalization runtime. Historical source itself remains non-authoritative |
 
 The standard web profile currently has conservative, claim-specific behavior:
 
@@ -457,6 +458,7 @@ workflow record close neither the external gates nor the product gaps above.
 crates/       Rust workspace crates: core, scanner, exploit metadata, CLI, API adapter, proxy relay
 exploit-packs/ Repository-owned bounded manifest metadata; no payloads or executable code
 salvage/      Machine-readable historical capability dispositions; ledger status is never runtime authority
+test-corpus/  Sanitized versioned request/response conformance data; never runtime authority
 docs/         Architecture, operating guides, ADRs, and contributor internals
 fuzz/         cargo-fuzz harnesses and reviewed seed corpora
 templates/    Scanner SDK and plugin starter templates
@@ -497,6 +499,7 @@ tag and accepted cross-version baseline exist, pin a reviewed full commit.
 - [Distribution and installation](docs/DISTRIBUTION.md)
 - [Architecture](docs/architecture.md)
 - [Runtime map: what actually runs](docs/internals/runtime-map.md)
+- [Scanner conformance corpus](docs/internals/scanner-conformance-corpus.md)
 - [Normalization-resilience review](docs/internals/normalization-resilience.md)
 - [Historical scanner salvage](docs/history/historical-scanner-salvage.md)
 - [Post-workspace WAF/evasion salvage](docs/history/post-workspace-waf-evasion-salvage.md)

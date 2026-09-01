@@ -1,0 +1,30 @@
+schema = "security-assessment-fixture/v1"
+id = "sql.truncated"
+revision = 1
+category = "sql"
+purpose = "Fail closed when a SQL structural-review body is truncated before classification."
+provenance = "generated-boundary"
+support = "current"
+tags = ["boundary", "sql", "truncated"]
+
+[request]
+method = "get"
+origin = "https://example.test"
+path = "/review/sql/truncated"
+role = "bootstrap"
+
+[[request.query]]
+name = "term"
+value = "fixture-truncated"
+
+[response]
+status = 200
+media_type = "application/json"
+role = "bootstrap"
+completion = "incomplete"
+truncated = true
+body_file = "bodies/sql-truncated.txt"
+
+[expected]
+sql_relation = "ambiguous"
+incompleteness = "body-truncated"

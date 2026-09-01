@@ -1,0 +1,26 @@
+schema = "security-assessment-fixture/v1"
+id = "defense.challenge-body"
+revision = 1
+category = "defense"
+purpose = "Recognize a bounded challenge response without treating it as a proven product or bypass."
+provenance = "current-authored"
+support = "current"
+tags = ["challenge", "control", "defense"]
+
+[request]
+method = "get"
+origin = "https://challenge.example.test"
+path = "/review/challenge"
+role = "control"
+
+[response]
+status = 403
+media_type = "text/html"
+role = "control"
+completion = "complete"
+truncated = false
+body_file = "bodies/defense-challenge.html"
+
+[expected]
+defense_state = "challenge"
+defense_transition = "standing-block"

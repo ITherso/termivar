@@ -1,0 +1,34 @@
+schema = "security-assessment-fixture/v1"
+id = "sql.transient-candidate-only"
+revision = 1
+category = "sql"
+purpose = "Keep a candidate-only structural difference non-positive when replay is inconsistent."
+provenance = "current-authored"
+support = "current"
+tags = ["candidate-only", "negative", "sql"]
+
+[request]
+method = "get"
+origin = "https://example.test"
+path = "/review/sql/transient"
+role = "bootstrap"
+
+[[request.query]]
+name = "term"
+value = "fixture-transient"
+
+[response]
+status = 500
+control_status = 200
+control_body_file = "bodies/sql-control-empty.json"
+replay_status = 200
+replay_body_file = "bodies/sql-control-empty.json"
+media_type = "application/json"
+role = "bootstrap"
+completion = "complete"
+truncated = false
+body_file = "bodies/sql-transient.json"
+
+[expected]
+sql_relation = "candidate-only"
+maximum_authority = "knowledge-only"

@@ -1,0 +1,37 @@
+schema = "security-assessment-fixture/v1"
+id = "xss.script-template"
+revision = 1
+category = "xss"
+purpose = "Describe a generated scanner-owned template-text lexical boundary without committed executable source."
+provenance = "generated-boundary"
+support = "current"
+tags = ["generated", "template-text", "xss"]
+
+[request]
+method = "get"
+origin = "https://example.test"
+path = "/review/xss/script-template"
+role = "bootstrap"
+
+[[request.query]]
+name = "q"
+value = "fixture-script-template"
+
+[response]
+status = 200
+control_status = 200
+control_body_file = "bodies/xss-script-template.html"
+source_body_file = "bodies/xss-source-script-template.html"
+media_type = "text/html"
+role = "bootstrap"
+completion = "complete"
+truncated = false
+body_file = "bodies/xss-script-template.html"
+
+[expected]
+reflection_context = "script"
+javascript_context = "template-text"
+xss_relation = "matched"
+assessment_capability = "xss-script-lexical-boundary"
+maximum_disposition = "needs-review"
+maximum_authority = "knowledge-only"

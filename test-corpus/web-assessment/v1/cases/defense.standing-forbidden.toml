@@ -1,0 +1,26 @@
+schema = "security-assessment-fixture/v1"
+id = "defense.standing-forbidden"
+revision = 1
+category = "defense"
+purpose = "Keep a standing forbidden control distinct from candidate-specific engagement."
+provenance = "current-authored"
+support = "current"
+tags = ["control", "defense", "standing-block"]
+
+[request]
+method = "get"
+origin = "https://blocked.example.test"
+path = "/review/standing-block"
+role = "control"
+
+[response]
+status = 403
+media_type = "text/html"
+role = "control"
+completion = "complete"
+truncated = false
+body_file = "bodies/defense-standing.html"
+
+[expected]
+defense_state = "blocking"
+defense_transition = "standing-block"

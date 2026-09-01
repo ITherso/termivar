@@ -1,0 +1,26 @@
+schema = "security-assessment-fixture/v1"
+id = "http.binary-unsupported"
+revision = 1
+category = "http-media"
+purpose = "Classify a safe text-backed binary-media fixture as unsupported for semantic review."
+provenance = "current-authored"
+support = "current"
+tags = ["binary", "http", "unsupported"]
+
+[request]
+method = "get"
+origin = "https://assets.example.test"
+path = "/corpus/http/binary"
+role = "bootstrap"
+
+[response]
+status = 200
+media_type = "application/octet-stream"
+role = "bootstrap"
+completion = "complete"
+truncated = false
+body_file = "bodies/http-binary-marker.txt"
+
+[expected]
+http_media = "unsupported-binary"
+incompleteness = "unsupported-by-runtime"

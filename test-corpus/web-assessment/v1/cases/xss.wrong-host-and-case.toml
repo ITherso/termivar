@@ -1,0 +1,36 @@
+schema = "security-assessment-fixture/v1"
+id = "xss.wrong-host-and-case"
+revision = 1
+category = "xss"
+purpose = "Reject boundary evidence attached to the wrong host element or scanner case identity."
+provenance = "current-authored"
+support = "current"
+tags = ["identity", "negative", "xss"]
+
+[request]
+method = "get"
+origin = "https://example.test"
+path = "/review/xss/wrong-host"
+role = "bootstrap"
+
+[[request.query]]
+name = "q"
+value = "fixture-expected-host"
+
+[response]
+status = 200
+control_status = 200
+control_body_file = "bodies/xss-wrong-host.html"
+source_body_file = "bodies/xss-source-attribute-double.html"
+media_type = "text/html"
+role = "bootstrap"
+completion = "complete"
+truncated = false
+body_file = "bodies/xss-wrong-host.html"
+
+[expected]
+reflection_context = "attribute"
+html_quote_mode = "double"
+xss_relation = "ambiguous"
+maximum_authority = "knowledge-only"
+incompleteness = "response-incomplete"

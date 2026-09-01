@@ -84,6 +84,7 @@ Bounded manifest bytes --> venom-exploit validation --> sealed metadata catalog
 - [Decision runner](decision-runner.md): command execution, executor routing, evidence provenance, and verifier handoff.
 - [Declarative policy wire contracts](declarative-policy-wire.md): fail-closed semantic fields, compatibility guards, and host loader limits.
 - [HTTP evidence executor](http-evidence.md): scope policy, bounded collection, typed observations, and rate-limit normalization.
+- [Scanner conformance corpus](scanner-conformance-corpus.md): strict repository-only sanitized request/response cases, deterministic validation, and the boundary between contract checks and empirical accuracy.
 - [API predicate vocabulary](api-predicates.md): canonical and normalized HTTP/API predicates plus atomic evidence/resource-scope observation bundles.
 - [API visibility evidence](api-evidence.md): bounded JSON comparison, broker-backed authorization-context pairs, atomic ingestion receipts, and resource-scoped review projections.
 - [API reasoning](api-reasoning.md): deterministic JSON/GraphQL fingerprinting, capped API evidence contributions, and review-only visibility-boundary hypotheses.

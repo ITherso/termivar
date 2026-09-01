@@ -1,0 +1,34 @@
+schema = "security-assessment-fixture/v1"
+id = "ssti.literal-reflection"
+revision = 1
+category = "ssti"
+purpose = "Keep a scanner-owned expression description that remains literal from becoming evaluation evidence."
+provenance = "current-authored"
+support = "current"
+tags = ["literal", "negative", "ssti"]
+
+[request]
+method = "get"
+origin = "https://example.test"
+path = "/review/ssti/literal"
+role = "bootstrap"
+
+[[request.query]]
+name = "view"
+value = "fixture-literal-case"
+
+[response]
+status = 200
+control_status = 200
+control_body_file = "bodies/ssti-control.html"
+replay_status = 200
+replay_body_file = "bodies/ssti-literal.html"
+media_type = "text/html"
+role = "bootstrap"
+completion = "complete"
+truncated = false
+body_file = "bodies/ssti-literal.html"
+
+[expected]
+ssti_relation = "literal-reflection"
+maximum_authority = "knowledge-only"

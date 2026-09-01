@@ -1,0 +1,32 @@
+schema = "security-assessment-fixture/v1"
+id = "defense.fingerprint-only"
+revision = 1
+category = "defense"
+purpose = "Keep a product-style response hint observational when no defensive engagement occurred."
+provenance = "current-authored"
+support = "current"
+tags = ["defense", "fingerprint", "observation"]
+
+[request]
+method = "get"
+origin = "https://edge.example.test"
+path = "/review/fingerprint"
+role = "bootstrap"
+
+[response]
+status = 200
+media_type = "text/html"
+role = "bootstrap"
+completion = "complete"
+truncated = false
+body_file = "bodies/defense-fingerprint.html"
+
+[[response.headers]]
+name = "server"
+value = "FixtureEdge/1.0"
+
+[expected]
+defense_state = "open"
+defense_transition = "none"
+maximum_disposition = "informational"
+maximum_authority = "knowledge-only"

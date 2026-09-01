@@ -1,0 +1,34 @@
+schema = "security-assessment-fixture/v1"
+id = "normalization.semantic-gap"
+revision = 1
+category = "defense"
+purpose = "Represent replayed equivalent inert parser semantics after candidate-specific blocking."
+provenance = "generated-boundary"
+support = "current"
+tags = ["defense", "normalization", "replay"]
+
+[request]
+method = "get"
+origin = "https://example.test"
+path = "/review/normalization/semantic-gap"
+role = "bootstrap"
+
+[response]
+status = 200
+control_status = 403
+control_body_file = "bodies/defense-blocked.html"
+replay_status = 200
+replay_body_file = "bodies/normalization-gap.html"
+media_type = "text/html"
+role = "bootstrap"
+completion = "complete"
+truncated = false
+body_file = "bodies/normalization-gap.html"
+
+[expected]
+defense_state = "open"
+defense_transition = "deescalated"
+normalization_outcome = "semantic-gap-observed"
+assessment_capability = "defense-normalization-gap"
+maximum_disposition = "needs-review"
+maximum_authority = "knowledge-only"

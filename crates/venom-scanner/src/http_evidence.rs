@@ -1346,7 +1346,7 @@ fn textual_response(headers: &HeaderMap) -> bool {
         .unwrap_or(false)
 }
 
-fn normalized_media_type(headers: &HeaderMap) -> Option<String> {
+pub(crate) fn normalized_media_type(headers: &HeaderMap) -> Option<String> {
     let mut values = headers.get_all("content-type").iter();
     let raw = values.next()?.to_str().ok()?;
     if values.next().is_some() {
@@ -1369,7 +1369,7 @@ fn normalized_media_type(headers: &HeaderMap) -> Option<String> {
     ))
 }
 
-fn json_compatible_media_type(media_type: &str) -> bool {
+pub(crate) fn json_compatible_media_type(media_type: &str) -> bool {
     media_type
         .split_once('/')
         .is_some_and(|(_, subtype)| subtype == "json" || subtype.ends_with("+json"))

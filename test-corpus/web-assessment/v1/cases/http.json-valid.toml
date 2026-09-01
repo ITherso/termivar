@@ -1,0 +1,26 @@
+schema = "security-assessment-fixture/v1"
+id = "http.json-valid"
+revision = 1
+category = "http-media"
+purpose = "Recognize a complete ordinary JSON response without upgrading it to GraphQL evidence."
+provenance = "historical-sanitized"
+support = "current"
+tags = ["http", "json", "negative-graphql"]
+
+[request]
+method = "get"
+origin = "https://example.test"
+path = "/corpus/http/json"
+role = "bootstrap"
+
+[response]
+status = 200
+media_type = "application/json"
+role = "bootstrap"
+completion = "complete"
+truncated = false
+body_file = "bodies/http-json-valid.json"
+
+[expected]
+http_media = "json"
+graphql_evidence = "generic-json"

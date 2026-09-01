@@ -1,0 +1,34 @@
+schema = "security-assessment-fixture/v1"
+id = "sql.timing-only"
+revision = 1
+category = "sql"
+purpose = "Keep a timing-only observation outside structural SQL review conclusions."
+provenance = "historical-sanitized"
+support = "current"
+tags = ["negative", "sql", "timing"]
+
+[request]
+method = "get"
+origin = "https://example.test"
+path = "/review/sql/timing"
+role = "bootstrap"
+
+[[request.query]]
+name = "term"
+value = "fixture-timing-marker"
+
+[response]
+status = 200
+control_status = 200
+control_body_file = "bodies/sql-control-timing.json"
+replay_status = 200
+replay_body_file = "bodies/sql-timing.json"
+media_type = "application/json"
+role = "bootstrap"
+completion = "complete"
+truncated = false
+body_file = "bodies/sql-timing.json"
+
+[expected]
+sql_relation = "not-matched"
+maximum_authority = "knowledge-only"

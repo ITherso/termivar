@@ -1,0 +1,25 @@
+schema = "security-assessment-fixture/v1"
+id = "http.vendor-json"
+revision = 1
+category = "http-media"
+purpose = "Normalize a structured syntax suffix media type as JSON-compatible evidence."
+provenance = "current-authored"
+support = "current"
+tags = ["http", "json-suffix", "media"]
+
+[request]
+method = "get"
+origin = "https://api.example.test"
+path = "/corpus/http/vendor-json"
+role = "bootstrap"
+
+[response]
+status = 200
+media_type = "application/vnd.fixture+json; charset=utf-8"
+role = "bootstrap"
+completion = "complete"
+truncated = false
+body_file = "bodies/http-vendor-json.json"
+
+[expected]
+http_media = "json-suffix"

@@ -1,0 +1,35 @@
+schema = "security-assessment-fixture/v1"
+id = "xss.ambiguous-duplicate"
+revision = 1
+category = "xss"
+purpose = "Fail closed when more than one scanner-owned boundary candidate makes source identity ambiguous."
+provenance = "generated-boundary"
+support = "current"
+tags = ["ambiguous", "duplicate", "xss"]
+
+[request]
+method = "get"
+origin = "https://example.test"
+path = "/review/xss/ambiguous"
+role = "bootstrap"
+
+[[request.query]]
+name = "q"
+value = "fixture-ambiguous"
+
+[response]
+status = 200
+control_status = 200
+control_body_file = "bodies/xss-ambiguous.html"
+source_body_file = "bodies/xss-source-html-text.html"
+media_type = "text/html"
+role = "bootstrap"
+completion = "complete"
+truncated = false
+body_file = "bodies/xss-ambiguous.html"
+
+[expected]
+reflection_context = "html-text"
+html_quote_mode = "not-applicable"
+xss_relation = "ambiguous"
+maximum_authority = "knowledge-only"

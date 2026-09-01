@@ -1,0 +1,32 @@
+schema = "security-assessment-fixture/v1"
+id = "normalization.accepted-semantics-absent"
+revision = 1
+category = "defense"
+purpose = "Keep an accepted transformed response non-positive when inert application semantics are absent."
+provenance = "generated-boundary"
+support = "current"
+tags = ["defense", "negative", "normalization"]
+
+[request]
+method = "get"
+origin = "https://example.test"
+path = "/review/normalization/semantics-absent"
+role = "bootstrap"
+
+[response]
+status = 200
+control_status = 403
+control_body_file = "bodies/defense-blocked.html"
+replay_status = 200
+replay_body_file = "bodies/normalization-semantics-absent.html"
+media_type = "text/html"
+role = "bootstrap"
+completion = "complete"
+truncated = false
+body_file = "bodies/normalization-semantics-absent.html"
+
+[expected]
+defense_state = "open"
+defense_transition = "deescalated"
+normalization_outcome = "accepted-semantics-unknown"
+maximum_authority = "knowledge-only"

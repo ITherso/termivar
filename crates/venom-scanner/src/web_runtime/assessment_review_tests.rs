@@ -1213,7 +1213,7 @@ fn javascript_xss_observer_vocabulary_reconstructs_exact_review_only_ledger_pair
             root(),
             seeds(),
             QUERY_PARAMETER,
-            selection,
+            selection.clone(),
             source_evidence_ids.clone(),
         )
         .unwrap();
@@ -2139,5 +2139,1398 @@ fn ssti_observer_classifies_literal_static_evaluated_unsupported_and_incomplete_
         )
         .unwrap();
         assert!(values(&evidence).contains(&(SSTI_EVALUATION_RELATION, expected)));
+    }
+}
+
+mod scanner_corpus_conformance {
+    use std::{
+        collections::{BTreeMap, BTreeSet},
+        fs,
+        path::{Component, Path, PathBuf},
+    };
+
+    use serde::Deserialize;
+    use venom_core::{
+        ApiKnowledgePredicate, ApiResponseFormat, ApiSurfaceKind, ConfidenceScore, EntityId,
+        Evidence, EvidenceKind, EvidenceSource, EvidenceValue, HttpEvidencePredicate,
+    };
+
+    use super::*;
+    use crate::{
+        defense::{
+            DefensePosture, DefenseState, DefenseStatusSignal, DefenseTransition,
+            DefenseTransitionKind,
+        },
+        http_evidence::{json_compatible_media_type, normalized_media_type},
+        KnowledgeBase, RuleEngine, StandardApiReasoning,
+    };
+
+    const CORPUS_SCHEMA: &str = "security-assessment-corpus/v1";
+    const CASE_SCHEMA: &str = "security-assessment-fixture/v1";
+    const MAX_CASE_BYTES: u64 = 64 * 1024;
+    const MAX_BODY_BYTES: u64 = 512 * 1024;
+    const REFLECTION_MARKER_PLACEHOLDER: &str = "{{CORPUS_REFLECTION_MARKER}}";
+    const XSS_CANDIDATE_PLACEHOLDER: &str = "{{CORPUS_XSS_CANDIDATE}}";
+    const XSS_CANDIDATE_ESCAPED_PLACEHOLDER: &str = "{{CORPUS_XSS_CANDIDATE_HTML_ESCAPED}}";
+    const SSTI_EXPECTED_PLACEHOLDER: &str = "{{CORPUS_SSTI_EXPECTED}}";
+    const SSTI_CANDIDATE_PLACEHOLDER: &str = "{{CORPUS_SSTI_CANDIDATE}}";
+    #[cfg(feature = "normalization-resilience")]
+    const NORMALIZATION_ARTIFACT_PLACEHOLDER: &str = "{{CORPUS_NORMALIZATION_ARTIFACT}}";
+    #[cfg(feature = "normalization-resilience")]
+    const NORMALIZATION_CANDIDATE_ID: &str = "0123456789abcdef0123456789abcdef";
+    #[cfg(feature = "normalization-resilience")]
+    const NORMALIZATION_REPLAY_ID: &str = "fedcba9876543210fedcba9876543210";
+
+    #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd)]
+    #[serde(rename_all = "kebab-case")]
+    enum CaseCategory {
+        HttpMedia,
+        Defense,
+        Sql,
+        Ssti,
+        Xss,
+        Normalization,
+        ApiGraphql,
+    }
+
+    #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+    #[serde(rename_all = "kebab-case")]
+    enum SupportLevel {
+        Current,
+        MetadataOnly,
+    }
+
+    #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+    #[serde(rename_all = "kebab-case")]
+    enum CompletionState {
+        Complete,
+        Incomplete,
+    }
+
+    #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+    #[serde(rename_all = "kebab-case")]
+    enum HttpMediaExpectation {
+        Json,
+        JsonSuffix,
+        GraphqlResponseJson,
+        Malformed,
+        Html,
+        UnsupportedBinary,
+        Truncated,
+    }
+
+    #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+    #[serde(rename_all = "kebab-case")]
+    enum DefenseStateExpectation {
+        Open,
+        Blocking,
+        Challenge,
+        RateLimited,
+        Unknown,
+    }
+
+    #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+    #[serde(rename_all = "kebab-case")]
+    enum DefenseTransitionExpectation {
+        None,
+        StandingBlock,
+        CandidateSpecificBlock,
+        RateLimit,
+        Deescalated,
+    }
+
+    #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+    #[serde(rename_all = "kebab-case")]
+    enum StructuralRelationExpectation {
+        Matched,
+        NotMatched,
+        CandidateOnly,
+        ReplayMismatch,
+        LiteralReflection,
+        Contaminated,
+        Ambiguous,
+    }
+
+    #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+    #[serde(rename_all = "kebab-case")]
+    enum NormalizationExpectation {
+        SemanticGapObserved,
+        AcceptedSemanticsUnknown,
+        ReplayMismatch,
+        Ineligible,
+        StillBlocked,
+    }
+
+    #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+    #[serde(rename_all = "kebab-case")]
+    enum GraphqlExpectation {
+        ExactEnvelope,
+        TypenameControl,
+        IntrospectionAvailable,
+        IntrospectionRestricted,
+        GenericJson,
+        GraphqlLikeHtml,
+        MalformedEnvelope,
+        PartialDataWithErrors,
+        DepthLimited,
+        BatchMetadataOnly,
+        GetQueryMetadataOnly,
+    }
+
+    #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+    #[serde(rename_all = "kebab-case")]
+    enum IncompletenessExpectation {
+        BodyTruncated,
+        ResponseIncomplete,
+        UnsupportedByRuntime,
+        FutureMetadataOnly,
+    }
+
+    #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+    #[serde(rename_all = "kebab-case")]
+    enum ReflectionContextExpectation {
+        HtmlText,
+        Attribute,
+        Script,
+        SameContext,
+        Ambiguous,
+    }
+
+    #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+    #[serde(rename_all = "kebab-case")]
+    enum HtmlQuoteExpectation {
+        Double,
+        Single,
+        Unquoted,
+        NotApplicable,
+    }
+
+    #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+    #[serde(rename_all = "kebab-case")]
+    enum JavascriptContextExpectation {
+        SingleQuoted,
+        DoubleQuoted,
+        TemplateText,
+    }
+
+    #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+    #[serde(rename_all = "kebab-case")]
+    enum DispositionExpectation {
+        Informational,
+        NeedsReview,
+    }
+
+    #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+    #[serde(rename_all = "kebab-case")]
+    enum MaximumAuthorityExpectation {
+        KnowledgeOnly,
+    }
+
+    #[derive(Deserialize)]
+    struct CorpusManifest {
+        schema: String,
+        case_files: Vec<String>,
+    }
+
+    #[derive(Deserialize)]
+    struct FixtureCase {
+        schema: String,
+        id: String,
+        category: CaseCategory,
+        support: SupportLevel,
+        #[serde(default)]
+        tags: Vec<String>,
+        #[serde(default)]
+        parent_case: Option<String>,
+        request: FixtureRequest,
+        response: FixtureResponse,
+        expected: ExpectedSemantics,
+    }
+
+    #[derive(Deserialize)]
+    struct FixtureRequest {
+        origin: String,
+        path: String,
+    }
+
+    #[derive(Deserialize)]
+    struct FixtureResponse {
+        status: u16,
+        media_type: String,
+        completion: CompletionState,
+        truncated: bool,
+        #[serde(default)]
+        headers: Vec<FixtureHeader>,
+        #[serde(default)]
+        body_file: Option<String>,
+        #[serde(default)]
+        inline_body: Option<String>,
+        #[serde(default)]
+        control_status: Option<u16>,
+        #[serde(default)]
+        control_body_file: Option<String>,
+        #[serde(default)]
+        replay_status: Option<u16>,
+        #[serde(default)]
+        replay_body_file: Option<String>,
+        #[serde(default)]
+        source_body_file: Option<String>,
+    }
+
+    #[derive(Deserialize)]
+    struct FixtureHeader {
+        name: String,
+        value: String,
+    }
+
+    #[derive(Default, Deserialize)]
+    struct ExpectedSemantics {
+        #[serde(default)]
+        http_media: Option<HttpMediaExpectation>,
+        #[serde(default)]
+        defense_state: Option<DefenseStateExpectation>,
+        #[serde(default)]
+        defense_transition: Option<DefenseTransitionExpectation>,
+        #[serde(default)]
+        reflection_context: Option<ReflectionContextExpectation>,
+        #[serde(default)]
+        html_quote_mode: Option<HtmlQuoteExpectation>,
+        #[serde(default)]
+        javascript_context: Option<JavascriptContextExpectation>,
+        #[serde(default)]
+        sql_relation: Option<StructuralRelationExpectation>,
+        #[serde(default)]
+        ssti_relation: Option<StructuralRelationExpectation>,
+        #[serde(default)]
+        xss_relation: Option<StructuralRelationExpectation>,
+        #[serde(default)]
+        normalization_outcome: Option<NormalizationExpectation>,
+        #[serde(default)]
+        graphql_evidence: Option<GraphqlExpectation>,
+        #[serde(default)]
+        assessment_capability: Option<String>,
+        #[serde(default)]
+        maximum_disposition: Option<DispositionExpectation>,
+        #[serde(default)]
+        maximum_authority: Option<MaximumAuthorityExpectation>,
+        #[serde(default)]
+        incompleteness: Option<IncompletenessExpectation>,
+    }
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum SemanticMismatch {
+        HttpMedia,
+        DefenseState,
+        DefenseTransition,
+        SqlReview,
+        SstiReview,
+        XssReview,
+        #[cfg(feature = "normalization-resilience")]
+        NormalizationReview,
+        ApiReasoning,
+    }
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum ConformanceResult {
+        Pass,
+        SemanticMismatch(SemanticMismatch),
+        UnsupportedByCurrentRuntime,
+        FixtureInvalid,
+        Incomplete,
+    }
+
+    #[derive(Clone, Copy, Debug, Default)]
+    struct ApiReasoningResult {
+        json: bool,
+        graphql: bool,
+    }
+
+    fn corpus_root() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .join("test-corpus/web-assessment/v1")
+    }
+
+    fn bounded_text(path: &Path, maximum: u64) -> Result<String, ()> {
+        let metadata = fs::symlink_metadata(path).map_err(|_| ())?;
+        if !metadata.file_type().is_file() || metadata.len() > maximum {
+            return Err(());
+        }
+        fs::read_to_string(path).map_err(|_| ())
+    }
+
+    fn safe_relative_path(value: &str) -> bool {
+        let path = Path::new(value);
+        !path.is_absolute()
+            && path
+                .components()
+                .all(|component| matches!(component, Component::Normal(_)))
+    }
+
+    fn load_cases() -> Result<Vec<FixtureCase>, ()> {
+        let root = corpus_root();
+        let manifest_source = bounded_text(&root.join("manifest.toml"), MAX_CASE_BYTES)?;
+        let manifest: CorpusManifest = toml::from_str(&manifest_source).map_err(|_| ())?;
+        if manifest.schema != CORPUS_SCHEMA || manifest.case_files.is_empty() {
+            return Err(());
+        }
+        let mut cases = Vec::with_capacity(manifest.case_files.len());
+        let mut ids = BTreeSet::new();
+        for relative in manifest.case_files {
+            if !safe_relative_path(&relative) || !relative.starts_with("cases/") {
+                return Err(());
+            }
+            let source = bounded_text(&root.join(relative), MAX_CASE_BYTES)?;
+            let case: FixtureCase = toml::from_str(&source).map_err(|_| ())?;
+            if case.schema != CASE_SCHEMA || !ids.insert(case.id.clone()) {
+                return Err(());
+            }
+            cases.push(case);
+        }
+        Ok(cases)
+    }
+
+    fn fixture_body(file: Option<&String>, inline: Option<&String>) -> Result<Vec<u8>, ()> {
+        match (file, inline) {
+            (Some(relative), None) if safe_relative_path(relative) => {
+                let path = corpus_root().join(relative);
+                let metadata = fs::symlink_metadata(&path).map_err(|_| ())?;
+                if !metadata.file_type().is_file() || metadata.len() > MAX_BODY_BYTES {
+                    return Err(());
+                }
+                fs::read(path).map_err(|_| ())
+            },
+            (None, Some(body)) if body.len() as u64 <= MAX_BODY_BYTES => {
+                Ok(body.as_bytes().to_vec())
+            },
+            _ => Err(()),
+        }
+    }
+
+    fn response_body(case: &FixtureCase) -> Result<Vec<u8>, ()> {
+        fixture_body(
+            case.response.body_file.as_ref(),
+            case.response.inline_body.as_ref(),
+        )
+    }
+
+    fn response_leg_body(case: &FixtureCase, file: Option<&String>) -> Result<Vec<u8>, ()> {
+        match file {
+            Some(file) => fixture_body(Some(file), None),
+            None => response_body(case),
+        }
+    }
+
+    fn control_body(case: &FixtureCase) -> Result<Vec<u8>, ()> {
+        response_leg_body(case, case.response.control_body_file.as_ref())
+    }
+
+    fn replay_body(case: &FixtureCase) -> Result<Vec<u8>, ()> {
+        response_leg_body(case, case.response.replay_body_file.as_ref())
+    }
+
+    fn source_body(case: &FixtureCase) -> Result<Vec<u8>, ()> {
+        response_leg_body(case, case.response.source_body_file.as_ref())
+    }
+
+    fn body_text(bytes: Vec<u8>) -> Result<String, ()> {
+        String::from_utf8(bytes).map_err(|_| ())
+    }
+
+    fn rendered_source_body(case: &FixtureCase, marker: &str) -> Result<String, ()> {
+        let template = body_text(source_body(case)?)?;
+        let rendered = template.replace(REFLECTION_MARKER_PLACEHOLDER, marker);
+        if rendered.contains("{{CORPUS_") {
+            return Err(());
+        }
+        Ok(rendered)
+    }
+
+    fn html_escape(value: &str) -> String {
+        value
+            .replace('&', "&amp;")
+            .replace('<', "&lt;")
+            .replace('>', "&gt;")
+            .replace('"', "&quot;")
+            .replace('\'', "&#39;")
+    }
+
+    fn render_xss_template(template: Vec<u8>, candidate: &str) -> Result<String, ()> {
+        let template = body_text(template)?;
+        let rendered = template
+            .replace(XSS_CANDIDATE_ESCAPED_PLACEHOLDER, &html_escape(candidate))
+            .replace(XSS_CANDIDATE_PLACEHOLDER, candidate);
+        if rendered.contains("{{CORPUS_") {
+            return Err(());
+        }
+        Ok(rendered)
+    }
+
+    fn rendered_xss_body(case: &FixtureCase, candidate: &str) -> Result<String, ()> {
+        render_xss_template(response_body(case)?, candidate)
+    }
+
+    fn rendered_ssti_body(bytes: Vec<u8>, probe: &SstiArithmeticProbe) -> Result<Vec<u8>, ()> {
+        let template = body_text(bytes)?;
+        let rendered = template
+            .replace(SSTI_EXPECTED_PLACEHOLDER, &probe.expected_value())
+            .replace(SSTI_CANDIDATE_PLACEHOLDER, &probe.candidate_value());
+        if rendered.contains("{{CORPUS_") {
+            return Err(());
+        }
+        Ok(rendered.into_bytes())
+    }
+
+    fn fixture_media(value: &str) -> Option<String> {
+        let mut headers = HeaderMap::new();
+        headers.insert("content-type", HeaderValue::from_str(value).ok()?);
+        normalized_media_type(&headers)
+    }
+
+    fn api_reasoning(case: &FixtureCase) -> Result<ApiReasoningResult, ()> {
+        let mut endpoint = Url::parse(&case.request.origin).map_err(|_| ())?;
+        endpoint.set_path(&case.request.path);
+        endpoint.set_query(None);
+        endpoint.set_fragment(None);
+        let subject = EntityId::new(format!("endpoint:{endpoint}")).map_err(|_| ())?;
+        let source = EvidenceSource::new("scanner.corpus", "semantic-harness").map_err(|_| ())?;
+        let mut evidence = Vec::new();
+        if let Some(media_type) = fixture_media(&case.response.media_type) {
+            evidence.push(Evidence::new(
+                subject.clone(),
+                EvidenceKind::Http,
+                HttpEvidencePredicate::RESPONSE_MEDIA_TYPE.into_knowledge(),
+                EvidenceValue::Text(media_type.clone()),
+                source.clone(),
+                ConfidenceScore::MAX,
+            ));
+            evidence.push(Evidence::new(
+                subject.clone(),
+                EvidenceKind::Http,
+                HttpEvidencePredicate::RESPONSE_MEDIA_TYPE_JSON_COMPATIBLE.into_knowledge(),
+                EvidenceValue::Boolean(json_compatible_media_type(&media_type)),
+                source.clone(),
+                ConfidenceScore::MAX,
+            ));
+        }
+        for segment in case
+            .request
+            .path
+            .split('/')
+            .filter(|segment| !segment.is_empty())
+        {
+            evidence.push(Evidence::new(
+                subject.clone(),
+                EvidenceKind::Http,
+                HttpEvidencePredicate::REQUEST_PATH_SEGMENT.into_knowledge(),
+                EvidenceValue::Text(segment.to_owned()),
+                source.clone(),
+                ConfidenceScore::MAX,
+            ));
+        }
+
+        let knowledge = KnowledgeBase::new();
+        knowledge.insert_evidence_batch(evidence).map_err(|_| ())?;
+        let mut engine = RuleEngine::new();
+        StandardApiReasoning::new()
+            .map_err(|_| ())?
+            .install(&knowledge, &mut engine)
+            .map_err(|_| ())?;
+        engine.apply(&knowledge, &subject).map_err(|_| ())?;
+        let snapshot = knowledge.snapshot_for_subject(&subject);
+        let json = snapshot.hypotheses().iter().any(|hypothesis| {
+            hypothesis.predicate() == &ApiKnowledgePredicate::RESPONSE_FORMAT.into_knowledge()
+                && hypothesis.value() == &ApiResponseFormat::Json.into()
+        });
+        let graphql = snapshot.hypotheses().iter().any(|hypothesis| {
+            hypothesis.predicate() == &ApiKnowledgePredicate::SURFACE_KIND.into_knowledge()
+                && hypothesis.value() == &ApiSurfaceKind::GraphQl.into()
+        });
+        Ok(ApiReasoningResult { json, graphql })
+    }
+
+    fn observation_contract_matches(case: &FixtureCase) -> bool {
+        case.expected.assessment_capability.is_none()
+            && matches!(
+                case.expected.maximum_disposition,
+                None | Some(DispositionExpectation::Informational)
+            )
+            && case
+                .expected
+                .maximum_authority
+                .is_none_or(|authority| authority == MaximumAuthorityExpectation::KnowledgeOnly)
+    }
+
+    fn run_http_media(case: &FixtureCase) -> ConformanceResult {
+        let Some(expected) = case.expected.http_media else {
+            return ConformanceResult::FixtureInvalid;
+        };
+        let Ok(reasoning) = api_reasoning(case) else {
+            return ConformanceResult::FixtureInvalid;
+        };
+        let normalized = fixture_media(&case.response.media_type);
+        let matched = match expected {
+            HttpMediaExpectation::Json | HttpMediaExpectation::JsonSuffix => {
+                normalized
+                    .as_deref()
+                    .is_some_and(json_compatible_media_type)
+                    && reasoning.json
+                    && !reasoning.graphql
+            },
+            HttpMediaExpectation::GraphqlResponseJson => {
+                normalized.as_deref() == Some("application/graphql-response+json")
+                    && reasoning.json
+                    && reasoning.graphql
+            },
+            HttpMediaExpectation::Malformed => normalized.is_none() && !reasoning.json,
+            HttpMediaExpectation::Html => {
+                normalized.as_deref() == Some("text/html") && !reasoning.json && !reasoning.graphql
+            },
+            HttpMediaExpectation::UnsupportedBinary => {
+                normalized.as_deref() == Some("application/octet-stream") && !reasoning.json
+            },
+            HttpMediaExpectation::Truncated => case.response.truncated,
+        };
+        if !matched {
+            return ConformanceResult::SemanticMismatch(SemanticMismatch::HttpMedia);
+        }
+        let graphql_matches = match case.expected.graphql_evidence {
+            Some(GraphqlExpectation::GenericJson) => reasoning.json && !reasoning.graphql,
+            Some(GraphqlExpectation::GraphqlLikeHtml) => !reasoning.json && !reasoning.graphql,
+            Some(_) => false,
+            None => true,
+        };
+        if !graphql_matches || !observation_contract_matches(case) {
+            return ConformanceResult::SemanticMismatch(SemanticMismatch::ApiReasoning);
+        }
+        terminal_result(case)
+    }
+
+    fn defense_state_from(
+        case: &FixtureCase,
+        status: u16,
+        body: Vec<u8>,
+    ) -> Result<DefenseState, ()> {
+        let body = String::from_utf8(body).map_err(|_| ())?;
+        let headers = case
+            .response
+            .headers
+            .iter()
+            .map(|header| (header.name.as_str(), header.value.as_str()))
+            .collect::<Vec<_>>();
+        Ok(DefenseState::observe(status, &headers, &body))
+    }
+
+    fn defense_state(case: &FixtureCase) -> Result<DefenseState, ()> {
+        defense_state_from(case, case.response.status, response_body(case)?)
+    }
+
+    fn defense_control_state(case: &FixtureCase) -> Result<DefenseState, ()> {
+        let body = String::from_utf8(control_body(case)?).map_err(|_| ())?;
+        Ok(DefenseState::observe(
+            case.response.control_status.unwrap_or(200),
+            &[],
+            &body,
+        ))
+    }
+
+    fn defense_state_matches(state: &DefenseState, expected: DefenseStateExpectation) -> bool {
+        match expected {
+            DefenseStateExpectation::Open => state.posture() == DefensePosture::Open,
+            DefenseStateExpectation::Blocking => state.posture() == DefensePosture::Blocking,
+            DefenseStateExpectation::Challenge => {
+                state.posture() == DefensePosture::Blocking && state.is_challenged()
+            },
+            DefenseStateExpectation::RateLimited => state.is_rate_limited(),
+            DefenseStateExpectation::Unknown => {
+                state.status_signal() == DefenseStatusSignal::ServerError
+                    && state.posture() == DefensePosture::Open
+            },
+        }
+    }
+
+    fn run_defense(case: &FixtureCase, cases: &BTreeMap<&str, &FixtureCase>) -> ConformanceResult {
+        let Some(expected_state) = case.expected.defense_state else {
+            return ConformanceResult::FixtureInvalid;
+        };
+        let Ok(state) = defense_state(case) else {
+            return ConformanceResult::FixtureInvalid;
+        };
+        if !defense_state_matches(&state, expected_state) {
+            return ConformanceResult::SemanticMismatch(SemanticMismatch::DefenseState);
+        }
+        let Some(expected_transition) = case.expected.defense_transition else {
+            return ConformanceResult::FixtureInvalid;
+        };
+        let transition_matches = match expected_transition {
+            DefenseTransitionExpectation::None => case.parent_case.is_none(),
+            DefenseTransitionExpectation::StandingBlock => {
+                case.parent_case.is_none() && state.posture() == DefensePosture::Blocking
+            },
+            DefenseTransitionExpectation::CandidateSpecificBlock => {
+                let Some(parent) = case.parent_case.as_deref().and_then(|id| cases.get(id)) else {
+                    return ConformanceResult::FixtureInvalid;
+                };
+                let Ok(control) = defense_state(parent) else {
+                    return ConformanceResult::FixtureInvalid;
+                };
+                let transition = DefenseTransition::between(&control, &state);
+                transition.kind() == DefenseTransitionKind::DefenseEngaged
+                    && transition.is_newly_blocking()
+                    && !transition.is_newly_rate_limited()
+            },
+            DefenseTransitionExpectation::RateLimit => {
+                let Ok(control) = defense_control_state(case) else {
+                    return ConformanceResult::FixtureInvalid;
+                };
+                DefenseTransition::between(&control, &state).is_newly_rate_limited()
+            },
+            DefenseTransitionExpectation::Deescalated => {
+                let Ok(control) = defense_control_state(case) else {
+                    return ConformanceResult::FixtureInvalid;
+                };
+                DefenseTransition::between(&control, &state).kind()
+                    == DefenseTransitionKind::DefenseRelaxed
+            },
+        };
+        if !transition_matches {
+            return ConformanceResult::SemanticMismatch(SemanticMismatch::DefenseTransition);
+        }
+        if case.expected.normalization_outcome.is_some() {
+            run_normalization(case)
+        } else if !observation_contract_matches(case) {
+            ConformanceResult::SemanticMismatch(SemanticMismatch::DefenseState)
+        } else {
+            terminal_result(case)
+        }
+    }
+
+    fn fixture_sql_structure(case: &FixtureCase, body: &[u8]) -> String {
+        let requested_url = root();
+        let expected_subject = subject();
+        let passive = passive_response_projection_for_test(&[]);
+        let media_type = fixture_media(&case.response.media_type);
+        let observation =
+            complete_http_response_observation_for_test(CompleteHttpResponseObservationTestInput {
+                case_id: CASE_ID,
+                action_id: NativeWebReviewActionKind::SqlStructuralQueryPair.action_id(),
+                executor_id: NativeWebReviewActionKind::SqlStructuralQueryPair.executor_id(),
+                hypothesis_id: HYPOTHESIS_ID,
+                has_payload_strategy: true,
+                payload_strategy: None,
+                applies_hypothesis_transition: false,
+                stage: DecisionExecutionStage::Active,
+                subject: &expected_subject,
+                method: HttpProbeMethod::Get,
+                requested_url: &requested_url,
+                status: case.response.status,
+                media_type: media_type.as_deref(),
+                reliability: ConfidenceScore::MAX,
+                complete_body: (!case.response.truncated).then_some(body),
+                request_method_evidence_id: None,
+                request_url_evidence_id: None,
+                response_status_evidence_id: None,
+                response_final_url_evidence_id: None,
+                response_media_type_evidence_id: None,
+                response_body_truncated_evidence_id: None,
+                response_body_digest_evidence_id: None,
+                passive_response_projection: &passive,
+                review_response_projection: None,
+            });
+        sql_body_structure(&observation)
+    }
+
+    fn review_contract_matches(
+        case: &FixtureCase,
+        candidates: &[AssessmentReviewCandidate],
+        capability: &str,
+        action: NativeWebReviewActionKind,
+    ) -> bool {
+        let capability_matches = match case.expected.assessment_capability.as_deref() {
+            Some(expected) => expected == capability && candidates.len() == 1,
+            None => candidates.is_empty(),
+        };
+        let disposition_matches = match case.expected.maximum_disposition {
+            Some(DispositionExpectation::NeedsReview) => {
+                candidates.len() == 1
+                    && candidates[0].disposition() == NativeReviewDisposition::NeedsReview
+            },
+            Some(DispositionExpectation::Informational) | None => candidates.is_empty(),
+        };
+        let authority_matches = case.expected.maximum_authority.is_none_or(|authority| {
+            authority == MaximumAuthorityExpectation::KnowledgeOnly
+                && action.verification_target() == crate::VerificationTarget::KnowledgeOnly
+        });
+        capability_matches && disposition_matches && authority_matches
+    }
+
+    fn run_sql(case: &FixtureCase) -> ConformanceResult {
+        let Some(expected) = case.expected.sql_relation else {
+            return ConformanceResult::FixtureInvalid;
+        };
+        let Ok(candidate_body) = response_body(case) else {
+            return ConformanceResult::FixtureInvalid;
+        };
+        let structure = fixture_sql_structure(case, &candidate_body);
+        if case.response.truncated {
+            if structure != "incomplete" {
+                return ConformanceResult::SemanticMismatch(SemanticMismatch::SqlReview);
+            }
+            return ConformanceResult::Incomplete;
+        }
+        let (Ok(control_body), Ok(replay_body)) = (control_body(case), replay_body(case)) else {
+            return ConformanceResult::FixtureInvalid;
+        };
+        let control_structure = fixture_sql_structure(case, &control_body);
+        let replay_structure = fixture_sql_structure(case, &replay_body);
+        let control_status = classify_http_status(case.response.control_status.unwrap_or(200));
+        let candidate_status = classify_http_status(case.response.status);
+        let replay_status =
+            classify_http_status(case.response.replay_status.unwrap_or(case.response.status));
+        let control = sql_observation(
+            NativeWebReviewActionKind::SqlStructuralQueryPair,
+            DecisionExecutionStage::Passive,
+            control_status,
+            &control_structure,
+            false,
+            "corpus-sql-control",
+        );
+        let candidate = sql_observation(
+            NativeWebReviewActionKind::SqlStructuralQueryPair,
+            DecisionExecutionStage::Active,
+            candidate_status,
+            &structure,
+            true,
+            "corpus-sql-candidate",
+        );
+        let mut replay_control = sql_observation(
+            NativeWebReviewActionKind::SqlStructuralQueryReplayPair,
+            DecisionExecutionStage::Passive,
+            control_status,
+            &control_structure,
+            false,
+            "corpus-sql-replay-control",
+        );
+        replay_control.case_id = "case:corpus:sql-replay".to_owned();
+        let mut replay_candidate = sql_observation(
+            NativeWebReviewActionKind::SqlStructuralQueryReplayPair,
+            DecisionExecutionStage::Active,
+            replay_status,
+            &replay_structure,
+            true,
+            "corpus-sql-replay-candidate",
+        );
+        replay_candidate.case_id = replay_control.case_id.clone();
+        let mut output = Vec::new();
+        append_sql_candidate(
+            &control,
+            &candidate,
+            &replay_control,
+            &replay_candidate,
+            QUERY_PARAMETER,
+            &mut output,
+        );
+        if (expected == StructuralRelationExpectation::Matched) != (output.len() == 1) {
+            return ConformanceResult::SemanticMismatch(SemanticMismatch::SqlReview);
+        }
+        if !review_contract_matches(
+            case,
+            &output,
+            "sql-structural-review",
+            NativeWebReviewActionKind::SqlStructuralQueryPair,
+        ) {
+            return ConformanceResult::SemanticMismatch(SemanticMismatch::SqlReview);
+        }
+        terminal_result(case)
+    }
+
+    fn classify_ssti_fixture(
+        stage: DecisionExecutionStage,
+        body: Option<&[u8]>,
+        media_type: Option<&str>,
+        probe: &SstiArithmeticProbe,
+    ) -> SstiEvaluationRelation {
+        let requested_url = root();
+        let expected_subject = subject();
+        let passive = passive_response_projection_for_test(&[]);
+        let observation =
+            complete_http_response_observation_for_test(CompleteHttpResponseObservationTestInput {
+                case_id: CASE_ID,
+                action_id: NativeWebReviewActionKind::SstiStructuralQueryPair.action_id(),
+                executor_id: NativeWebReviewActionKind::SstiStructuralQueryPair.executor_id(),
+                hypothesis_id: HYPOTHESIS_ID,
+                has_payload_strategy: true,
+                payload_strategy: None,
+                applies_hypothesis_transition: false,
+                stage,
+                subject: &expected_subject,
+                method: HttpProbeMethod::Get,
+                requested_url: &requested_url,
+                status: 200,
+                media_type,
+                reliability: ConfidenceScore::MAX,
+                complete_body: body,
+                request_method_evidence_id: None,
+                request_url_evidence_id: None,
+                response_status_evidence_id: None,
+                response_final_url_evidence_id: None,
+                response_media_type_evidence_id: None,
+                response_body_truncated_evidence_id: None,
+                response_body_digest_evidence_id: None,
+                passive_response_projection: &passive,
+                review_response_projection: None,
+            });
+        classify_ssti_evaluation(&observation, probe)
+    }
+
+    fn run_ssti(case: &FixtureCase) -> ConformanceResult {
+        let Some(expected) = case.expected.ssti_relation else {
+            return ConformanceResult::FixtureInvalid;
+        };
+        let (Ok(control_template), Ok(candidate_template), Ok(replay_template)) =
+            (control_body(case), response_body(case), replay_body(case))
+        else {
+            return ConformanceResult::FixtureInvalid;
+        };
+        let observer = match AssessmentReviewObserverSet::new_with_sql(
+            root(),
+            seeds(),
+            None,
+            None,
+            None,
+            Some(QUERY_PARAMETER),
+        ) {
+            Ok(observer) => observer,
+            Err(_) => return ConformanceResult::FixtureInvalid,
+        };
+        let Some(contract) = observer.ssti.as_ref() else {
+            return ConformanceResult::FixtureInvalid;
+        };
+        let probe = &contract.primary.probe;
+        let media = fixture_media(&case.response.media_type);
+        let (Ok(control_body), Ok(candidate_body), Ok(replay_body)) = (
+            rendered_ssti_body(control_template, probe),
+            rendered_ssti_body(candidate_template, probe),
+            rendered_ssti_body(replay_template, probe),
+        ) else {
+            return ConformanceResult::FixtureInvalid;
+        };
+        let control_relation = classify_ssti_fixture(
+            DecisionExecutionStage::Passive,
+            Some(&control_body),
+            media.as_deref(),
+            probe,
+        );
+        let candidate_relation = classify_ssti_fixture(
+            DecisionExecutionStage::Active,
+            (!case.response.truncated).then_some(candidate_body.as_slice()),
+            media.as_deref(),
+            probe,
+        );
+        let replay_relation = classify_ssti_fixture(
+            DecisionExecutionStage::Active,
+            (!case.response.truncated).then_some(replay_body.as_slice()),
+            media.as_deref(),
+            probe,
+        );
+        let [mut control, candidate, replay_control, replay_candidate] =
+            ssti_pair_set(candidate_relation, replay_relation);
+        control.response = CommittedReviewResponse::SstiStructural {
+            status: ReviewHttpStatusClass::Successful,
+            evaluation: control_relation,
+        };
+        let mut output = Vec::new();
+        append_ssti_candidate(
+            &control,
+            &candidate,
+            &replay_control,
+            &replay_candidate,
+            QUERY_PARAMETER,
+            &mut output,
+        );
+        if (expected == StructuralRelationExpectation::Matched) != (output.len() == 1) {
+            return ConformanceResult::SemanticMismatch(SemanticMismatch::SstiReview);
+        }
+        if !review_contract_matches(
+            case,
+            &output,
+            "ssti-arithmetic-review",
+            NativeWebReviewActionKind::SstiStructuralQueryPair,
+        ) {
+            return ConformanceResult::SemanticMismatch(SemanticMismatch::SstiReview);
+        }
+        terminal_result(case)
+    }
+
+    struct XssFixtureSelection {
+        selection: XssProbeSelection,
+        context: ExactHtmlReflectionContext,
+        attribute: AttributeSourceResult,
+        javascript: JavaScriptSourceResult,
+    }
+
+    fn xss_selection(case: &FixtureCase) -> Result<XssFixtureSelection, ()> {
+        let marker = seeds().reflection_candidate_marker();
+        let source = rendered_source_body(case, &marker)?;
+        let context = classify_exact_html_reflection(&source, &marker);
+        let attribute = cross_validate_attribute_reflection_source(&source, &marker, context);
+        let javascript = cross_validate_javascript_reflection_source(&source, &marker, context);
+        let mut selections = crate::web_runtime::web_assessment::select_xss_probe_families(
+            context,
+            &attribute,
+            &javascript,
+        );
+        if selections.len() != 1 {
+            return Err(());
+        }
+        Ok(XssFixtureSelection {
+            selection: selections.remove(0),
+            context,
+            attribute,
+            javascript,
+        })
+    }
+
+    fn xss_context_matches(
+        expected: ReflectionContextExpectation,
+        fixture: &XssFixtureSelection,
+        relation: &str,
+    ) -> bool {
+        match expected {
+            ReflectionContextExpectation::HtmlText => {
+                fixture.context == ExactHtmlReflectionContext::HtmlText
+            },
+            ReflectionContextExpectation::Attribute => matches!(
+                fixture.context,
+                ExactHtmlReflectionContext::AttributeValue
+                    | ExactHtmlReflectionContext::UriAttribute
+                    | ExactHtmlReflectionContext::EventHandlerAttribute
+            ),
+            ReflectionContextExpectation::Script => {
+                fixture.context == ExactHtmlReflectionContext::ScriptElementContent
+            },
+            ReflectionContextExpectation::SameContext => relation == "reflected-same-context",
+            ReflectionContextExpectation::Ambiguous => relation == "incomplete",
+        }
+    }
+
+    fn xss_source_contract_matches(
+        case: &FixtureCase,
+        fixture: &XssFixtureSelection,
+        relation: &str,
+    ) -> bool {
+        if case
+            .expected
+            .reflection_context
+            .is_some_and(|expected| !xss_context_matches(expected, fixture, relation))
+        {
+            return false;
+        }
+        let quote = fixture.attribute.quote_mode_id();
+        if case.expected.html_quote_mode.is_some_and(|expected| {
+            let expected = match expected {
+                HtmlQuoteExpectation::Double => "double-quoted",
+                HtmlQuoteExpectation::Single => "single-quoted",
+                HtmlQuoteExpectation::Unquoted => "unquoted",
+                HtmlQuoteExpectation::NotApplicable => "none",
+            };
+            quote != expected
+        }) {
+            return false;
+        }
+        let javascript = fixture.javascript.context_id();
+        !case.expected.javascript_context.is_some_and(|expected| {
+            let expected = match expected {
+                JavascriptContextExpectation::SingleQuoted => "single-quoted-string",
+                JavascriptContextExpectation::DoubleQuoted => "double-quoted-string",
+                JavascriptContextExpectation::TemplateText => "template-literal-text",
+            };
+            javascript != expected
+        })
+    }
+
+    fn xss_capability(selection: &XssProbeSelection) -> &'static str {
+        match selection.family() {
+            XssProbeFamily::HtmlTextBoundary => "xss-html-text-boundary",
+            XssProbeFamily::AttributeValueBoundary => "xss-attribute-boundary",
+            XssProbeFamily::UriAttributeBoundary => "xss-uri-attribute-boundary",
+            XssProbeFamily::EventHandlerAttributeBoundary => "xss-event-attribute-boundary",
+            XssProbeFamily::ScriptSingleQuotedStringBoundary
+            | XssProbeFamily::ScriptDoubleQuotedStringBoundary
+            | XssProbeFamily::ScriptTemplateLiteralBoundary => "xss-script-lexical-boundary",
+            _ => "unsupported-xss-family",
+        }
+    }
+
+    fn observe_xss_relation(
+        observer: &AssessmentReviewObserverSet,
+        selection: &XssProbeSelection,
+        stage: DecisionExecutionStage,
+        requested_url: &Url,
+        status: u16,
+        body: &[u8],
+    ) -> Result<String, ()> {
+        let strategy = native_review_strategy_ref(selection.action_kind());
+        let evidence = observe(
+            observer,
+            selection.action_kind(),
+            stage,
+            requested_url,
+            &HeaderMap::new(),
+            status,
+            Some("text/html"),
+            Some(body),
+            selection.action_kind().executor_id(),
+            Some(&strategy),
+            false,
+        )
+        .map_err(|_| ())?;
+        values(&evidence)
+            .into_iter()
+            .find_map(|(property, value)| {
+                (property == XSS_STRUCTURAL_RELATION).then_some(value.to_owned())
+            })
+            .ok_or(())
+    }
+
+    fn run_xss(case: &FixtureCase) -> ConformanceResult {
+        let Some(expected) = case.expected.xss_relation else {
+            return ConformanceResult::FixtureInvalid;
+        };
+        let Ok(fixture) = xss_selection(case) else {
+            return ConformanceResult::FixtureInvalid;
+        };
+        let selection = fixture.selection.clone();
+        let observer = match AssessmentReviewObserverSet::new_xss(
+            root(),
+            seeds(),
+            QUERY_PARAMETER,
+            selection.clone(),
+        ) {
+            Ok(observer) => observer,
+            Err(_) => return ConformanceResult::FixtureInvalid,
+        };
+        let Some(contract) = observer.xss.as_ref() else {
+            return ConformanceResult::FixtureInvalid;
+        };
+        let candidate_value = contract.probe.parts().candidate_value.as_str();
+        let Ok(body) = rendered_xss_body(case, candidate_value) else {
+            return ConformanceResult::FixtureInvalid;
+        };
+        let Ok(relation) = observe_xss_relation(
+            &observer,
+            &selection,
+            DecisionExecutionStage::Active,
+            &contract.candidate_url,
+            case.response.status,
+            body.as_bytes(),
+        ) else {
+            return ConformanceResult::FixtureInvalid;
+        };
+        let relation_matches = match expected {
+            StructuralRelationExpectation::Matched => relation == "structural-boundary-observed",
+            StructuralRelationExpectation::LiteralReflection => {
+                relation == "reflected-same-context"
+            },
+            StructuralRelationExpectation::Ambiguous => relation == "incomplete",
+            StructuralRelationExpectation::NotMatched
+            | StructuralRelationExpectation::CandidateOnly
+            | StructuralRelationExpectation::ReplayMismatch
+            | StructuralRelationExpectation::Contaminated => {
+                matches!(
+                    relation.as_str(),
+                    "encoded-or-inert" | "reflected-same-context"
+                )
+            },
+        };
+        if !relation_matches {
+            return ConformanceResult::SemanticMismatch(SemanticMismatch::XssReview);
+        }
+
+        if !xss_source_contract_matches(case, &fixture, &relation) {
+            return ConformanceResult::SemanticMismatch(SemanticMismatch::XssReview);
+        }
+        let Ok(parsed_relation) = parse_xss_structural_relation(&relation) else {
+            return ConformanceResult::FixtureInvalid;
+        };
+        let family = selection.family();
+        let variant = selection.variant_id().to_owned();
+        let Ok(control_template) = control_body(case) else {
+            return ConformanceResult::FixtureInvalid;
+        };
+        let Ok(control_body) =
+            render_xss_template(control_template, &contract.probe.parts().control_value)
+        else {
+            return ConformanceResult::FixtureInvalid;
+        };
+        let Ok(control_relation) = observe_xss_relation(
+            &observer,
+            &selection,
+            DecisionExecutionStage::Passive,
+            &contract.control_url,
+            case.response.control_status.unwrap_or(200),
+            control_body.as_bytes(),
+        ) else {
+            return ConformanceResult::FixtureInvalid;
+        };
+        let Ok(control_relation) = parse_xss_structural_relation(&control_relation) else {
+            return ConformanceResult::FixtureInvalid;
+        };
+        let control = fake_observation(
+            selection.action_kind(),
+            DecisionExecutionStage::Passive,
+            CommittedReviewResponse::XssStructural {
+                family,
+                variant: variant.clone(),
+                relation: control_relation,
+            },
+            false,
+            "corpus-xss-control",
+        );
+        let candidate = fake_observation(
+            selection.action_kind(),
+            DecisionExecutionStage::Active,
+            CommittedReviewResponse::XssStructural {
+                family,
+                variant,
+                relation: parsed_relation,
+            },
+            true,
+            "corpus-xss-candidate",
+        );
+        let mut ledger = match CommittedAssessmentReviewLedger::new_xss(
+            root(),
+            seeds(),
+            QUERY_PARAMETER,
+            selection.clone(),
+        ) {
+            Ok(ledger) => ledger,
+            Err(_) => return ConformanceResult::FixtureInvalid,
+        };
+        for observation in [control, candidate] {
+            ledger.observations.insert(
+                ReviewReceiptKey {
+                    kind: observation.kind,
+                    case_id: observation.case_id.clone(),
+                    stage: observation.stage,
+                },
+                observation,
+            );
+        }
+        let candidates = ledger.candidates();
+        if (expected == StructuralRelationExpectation::Matched) != (candidates.len() == 1) {
+            return ConformanceResult::SemanticMismatch(SemanticMismatch::XssReview);
+        }
+        let capability = xss_capability(&selection);
+        if !review_contract_matches(case, &candidates, capability, selection.action_kind()) {
+            return ConformanceResult::SemanticMismatch(SemanticMismatch::XssReview);
+        }
+        terminal_result(case)
+    }
+
+    #[cfg(feature = "normalization-resilience")]
+    fn run_normalization(case: &FixtureCase) -> ConformanceResult {
+        use crate::{
+            payload_strategies::normalization_resilience_query_pair::NormalizationResilienceQueryPairStrategy,
+            web_runtime::web_assessment::{
+                match_exact_xss_html_boundary_document, select_normalization_transform,
+            },
+            PayloadSeed, PayloadStrategy, PayloadStrategyLimits, PayloadVariantRole,
+        };
+
+        let Some(expected) = case.expected.normalization_outcome else {
+            return ConformanceResult::FixtureInvalid;
+        };
+        let Some(selection) = select_normalization_transform(&html_text_selection(), None) else {
+            return ConformanceResult::UnsupportedByCurrentRuntime;
+        };
+        if !selection.is_executable_v1_contract() {
+            return ConformanceResult::SemanticMismatch(SemanticMismatch::NormalizationReview);
+        }
+        let Some(encoded_seed) =
+            selection.strategy_seed(NORMALIZATION_CANDIDATE_ID, NORMALIZATION_REPLAY_ID)
+        else {
+            return ConformanceResult::FixtureInvalid;
+        };
+        let Ok(limits) = PayloadStrategyLimits::new(512, 512) else {
+            return ConformanceResult::FixtureInvalid;
+        };
+        let Ok(seed) = PayloadSeed::new(encoded_seed.into_bytes(), limits) else {
+            return ConformanceResult::FixtureInvalid;
+        };
+        let strategy = NormalizationResilienceQueryPairStrategy::new();
+        let Ok(candidate) = strategy.derive_one(PayloadVariantRole::Control, &seed, limits) else {
+            return ConformanceResult::FixtureInvalid;
+        };
+        let Ok(replay) = strategy.derive_one(PayloadVariantRole::Candidate, &seed, limits) else {
+            return ConformanceResult::FixtureInvalid;
+        };
+        let (Ok(candidate_template), Ok(replay_template)) =
+            (response_body(case), replay_body(case))
+        else {
+            return ConformanceResult::FixtureInvalid;
+        };
+        let Ok(candidate_template) = body_text(candidate_template) else {
+            return ConformanceResult::FixtureInvalid;
+        };
+        let Ok(replay_template) = body_text(replay_template) else {
+            return ConformanceResult::FixtureInvalid;
+        };
+        let candidate_body = candidate_template.replace(
+            NORMALIZATION_ARTIFACT_PLACEHOLDER,
+            std::str::from_utf8(candidate.as_bytes()).unwrap_or_default(),
+        );
+        let replay_body = replay_template.replace(
+            NORMALIZATION_ARTIFACT_PLACEHOLDER,
+            std::str::from_utf8(replay.as_bytes()).unwrap_or_default(),
+        );
+        if candidate_body.contains("{{CORPUS_") || replay_body.contains("{{CORPUS_") {
+            return ConformanceResult::FixtureInvalid;
+        }
+        let candidate_semantic =
+            match_exact_xss_html_boundary_document(&candidate_body, NORMALIZATION_CANDIDATE_ID)
+                == ExactXssBoundaryMatch::Matched;
+        let replay_semantic =
+            match_exact_xss_html_boundary_document(&replay_body, NORMALIZATION_REPLAY_ID)
+                == ExactXssBoundaryMatch::Matched;
+        let matched = match expected {
+            NormalizationExpectation::SemanticGapObserved => candidate_semantic && replay_semantic,
+            NormalizationExpectation::AcceptedSemanticsUnknown => !candidate_semantic,
+            NormalizationExpectation::ReplayMismatch => candidate_semantic && !replay_semantic,
+            NormalizationExpectation::Ineligible | NormalizationExpectation::StillBlocked => {
+                !candidate_semantic && !replay_semantic
+            },
+        };
+        let contract_matches = match case.expected.assessment_capability.as_deref() {
+            Some("defense-normalization-gap") => {
+                expected == NormalizationExpectation::SemanticGapObserved
+                    && candidate_semantic
+                    && replay_semantic
+                    && case.expected.maximum_disposition
+                        == Some(DispositionExpectation::NeedsReview)
+                    && case.expected.maximum_authority
+                        == Some(MaximumAuthorityExpectation::KnowledgeOnly)
+            },
+            Some(_) => false,
+            None => case.expected.maximum_disposition.is_none(),
+        };
+        if matched && contract_matches {
+            terminal_result(case)
+        } else {
+            ConformanceResult::SemanticMismatch(SemanticMismatch::NormalizationReview)
+        }
+    }
+
+    #[cfg(not(feature = "normalization-resilience"))]
+    fn run_normalization(_case: &FixtureCase) -> ConformanceResult {
+        ConformanceResult::UnsupportedByCurrentRuntime
+    }
+
+    fn run_graphql_metadata(case: &FixtureCase) -> ConformanceResult {
+        let Some(_expected) = case.expected.graphql_evidence else {
+            return ConformanceResult::FixtureInvalid;
+        };
+        let Ok(reasoning) = api_reasoning(case) else {
+            return ConformanceResult::SemanticMismatch(SemanticMismatch::ApiReasoning);
+        };
+        if !reasoning.json
+            || !reasoning.graphql
+            || case.support != SupportLevel::MetadataOnly
+            || case.expected.maximum_authority != Some(MaximumAuthorityExpectation::KnowledgeOnly)
+        {
+            return ConformanceResult::SemanticMismatch(SemanticMismatch::ApiReasoning);
+        }
+        // V1 corpus data records future protocol shapes only. The current API
+        // reasoner consumes already-normalized evidence and owns no executor or
+        // bounded GraphQL envelope classifier, so this harness never upgrades
+        // a body fixture into an execution claim.
+        ConformanceResult::UnsupportedByCurrentRuntime
+    }
+
+    fn terminal_result(case: &FixtureCase) -> ConformanceResult {
+        if case.support == SupportLevel::MetadataOnly {
+            return ConformanceResult::UnsupportedByCurrentRuntime;
+        }
+        match case.expected.incompleteness {
+            Some(
+                IncompletenessExpectation::UnsupportedByRuntime
+                | IncompletenessExpectation::FutureMetadataOnly,
+            ) => ConformanceResult::UnsupportedByCurrentRuntime,
+            Some(
+                IncompletenessExpectation::BodyTruncated
+                | IncompletenessExpectation::ResponseIncomplete,
+            ) => ConformanceResult::Incomplete,
+            None if case.response.completion == CompletionState::Incomplete
+                || case.response.truncated =>
+            {
+                ConformanceResult::Incomplete
+            },
+            None => ConformanceResult::Pass,
+        }
+    }
+
+    fn expected_result(case: &FixtureCase) -> ConformanceResult {
+        #[cfg(not(feature = "normalization-resilience"))]
+        if case.expected.normalization_outcome.is_some() {
+            return ConformanceResult::UnsupportedByCurrentRuntime;
+        }
+        terminal_result(case)
+    }
+
+    fn dispatch(case: &FixtureCase, cases: &BTreeMap<&str, &FixtureCase>) -> ConformanceResult {
+        match case.category {
+            CaseCategory::HttpMedia => run_http_media(case),
+            CaseCategory::Defense => run_defense(case, cases),
+            CaseCategory::Sql => run_sql(case),
+            CaseCategory::Ssti => run_ssti(case),
+            CaseCategory::Xss => run_xss(case),
+            CaseCategory::Normalization => run_normalization(case),
+            CaseCategory::ApiGraphql => run_graphql_metadata(case),
+        }
+    }
+
+    #[test]
+    fn versioned_scanner_corpus_dispatches_through_current_production_semantics() {
+        let cases = load_cases().expect("the checked scanner corpus must be structurally valid");
+        assert_eq!(cases.len(), 50, "V1 corpus inventory changed unexpectedly");
+        let by_id = cases
+            .iter()
+            .map(|case| (case.id.as_str(), case))
+            .collect::<BTreeMap<_, _>>();
+        let mut categories = BTreeSet::new();
+        let mut outcomes = BTreeMap::<&'static str, usize>::new();
+
+        for case in &cases {
+            categories.insert(case.category);
+            let actual = dispatch(case, &by_id);
+            let expected = expected_result(case);
+            let outcome = match actual {
+                ConformanceResult::Pass => "pass",
+                ConformanceResult::SemanticMismatch(_) => "semantic-mismatch",
+                ConformanceResult::UnsupportedByCurrentRuntime => "unsupported",
+                ConformanceResult::FixtureInvalid => "fixture-invalid",
+                ConformanceResult::Incomplete => "incomplete",
+            };
+            *outcomes.entry(outcome).or_default() += 1;
+            assert_eq!(actual, expected, "corpus case `{}` diverged", case.id);
+        }
+
+        assert_eq!(
+            categories,
+            BTreeSet::from([
+                CaseCategory::HttpMedia,
+                CaseCategory::Defense,
+                CaseCategory::Sql,
+                CaseCategory::Ssti,
+                CaseCategory::Xss,
+                CaseCategory::ApiGraphql,
+            ])
+        );
+        assert!(outcomes.get("pass").copied().unwrap_or_default() > 0);
+        assert!(outcomes.get("unsupported").copied().unwrap_or_default() > 0);
+        assert!(outcomes.get("incomplete").copied().unwrap_or_default() > 0);
+        assert_eq!(outcomes.get("semantic-mismatch"), None);
+        assert_eq!(outcomes.get("fixture-invalid"), None);
+        assert!(cases.iter().filter(|case| case.tags.is_empty()).count() < cases.len());
     }
 }

@@ -1,0 +1,29 @@
+schema = "security-assessment-fixture/v1"
+id = "graphql.malformed-envelope"
+revision = 1
+category = "api-graphql"
+purpose = "Fail closed on a malformed JSON body even when the response media type is GraphQL-compatible."
+provenance = "generated-boundary"
+support = "metadata-only"
+tags = ["boundary", "graphql", "malformed"]
+
+[request]
+method = "post"
+origin = "https://api.example.test"
+path = "/graphql"
+role = "bootstrap"
+body_media_type = "application/json"
+inline_body = '''{"query":"query CorpusMalformed { fixtureMalformed: __typename }"}'''
+
+[response]
+status = 200
+media_type = "application/graphql-response+json"
+role = "bootstrap"
+completion = "complete"
+truncated = false
+body_file = "bodies/graphql-malformed.txt"
+
+[expected]
+graphql_evidence = "malformed-envelope"
+maximum_authority = "knowledge-only"
+incompleteness = "future-metadata-only"

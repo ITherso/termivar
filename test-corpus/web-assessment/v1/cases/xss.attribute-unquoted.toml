@@ -1,0 +1,37 @@
+schema = "security-assessment-fixture/v1"
+id = "xss.attribute-unquoted"
+revision = 1
+category = "xss"
+purpose = "Match exact inert boundary and tail attributes at an unquoted source anchor."
+provenance = "generated-boundary"
+support = "current"
+tags = ["attribute", "unquoted", "xss"]
+
+[request]
+method = "get"
+origin = "https://example.test"
+path = "/review/xss/attribute-unquoted"
+role = "bootstrap"
+
+[[request.query]]
+name = "q"
+value = "fixture-attribute-unquoted"
+
+[response]
+status = 200
+control_status = 200
+control_body_file = "bodies/xss-attribute-unquoted.html"
+source_body_file = "bodies/xss-source-attribute-unquoted.html"
+media_type = "text/html"
+role = "bootstrap"
+completion = "complete"
+truncated = false
+body_file = "bodies/xss-attribute-unquoted.html"
+
+[expected]
+reflection_context = "attribute"
+html_quote_mode = "unquoted"
+xss_relation = "matched"
+assessment_capability = "xss-attribute-boundary"
+maximum_disposition = "needs-review"
+maximum_authority = "knowledge-only"

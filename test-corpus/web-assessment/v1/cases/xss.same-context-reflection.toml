@@ -1,0 +1,35 @@
+schema = "security-assessment-fixture/v1"
+id = "xss.same-context-reflection"
+revision = 1
+category = "xss"
+purpose = "Preserve sanitized same-context reflection as observation rather than structural XSS evidence."
+provenance = "historical-sanitized"
+support = "current"
+tags = ["historical", "reflection", "xss"]
+
+[request]
+method = "get"
+origin = "https://example.test"
+path = "/review/xss/same-context"
+role = "bootstrap"
+
+[[request.query]]
+name = "q"
+value = "fixture-canary"
+
+[response]
+status = 200
+control_status = 200
+control_body_file = "bodies/xss-same-context.html"
+source_body_file = "bodies/xss-source-html-text.html"
+media_type = "text/html"
+role = "bootstrap"
+completion = "complete"
+truncated = false
+body_file = "bodies/xss-same-context.html"
+
+[expected]
+reflection_context = "html-text"
+html_quote_mode = "not-applicable"
+xss_relation = "literal-reflection"
+maximum_authority = "knowledge-only"

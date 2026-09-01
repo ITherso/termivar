@@ -1,0 +1,37 @@
+schema = "security-assessment-fixture/v1"
+id = "xss.html-text-boundary"
+revision = 1
+category = "xss"
+purpose = "Require the exact scanner-owned inert element for HTML text structural control."
+provenance = "generated-boundary"
+support = "current"
+tags = ["html-text", "structural", "xss"]
+
+[request]
+method = "get"
+origin = "https://example.test"
+path = "/review/xss/html-text"
+role = "bootstrap"
+
+[[request.query]]
+name = "q"
+value = "fixture-html-text"
+
+[response]
+status = 200
+control_status = 200
+control_body_file = "bodies/xss-html-text.html"
+source_body_file = "bodies/xss-source-html-text.html"
+media_type = "text/html"
+role = "bootstrap"
+completion = "complete"
+truncated = false
+body_file = "bodies/xss-html-text.html"
+
+[expected]
+reflection_context = "html-text"
+html_quote_mode = "not-applicable"
+xss_relation = "matched"
+assessment_capability = "xss-html-text-boundary"
+maximum_disposition = "needs-review"
+maximum_authority = "knowledge-only"

@@ -1,0 +1,27 @@
+schema = "security-assessment-fixture/v1"
+id = "http.graphql-response-json"
+revision = 1
+category = "http-media"
+purpose = "Recognize the exact GraphQL response JSON media type without enabling protocol execution."
+provenance = "current-authored"
+support = "current"
+tags = ["graphql", "http", "media"]
+
+[request]
+method = "post"
+origin = "https://api.example.test"
+path = "/corpus/http/graphql-media"
+role = "bootstrap"
+body_media_type = "application/json"
+inline_body = '''{"fixture":"media-only"}'''
+
+[response]
+status = 200
+media_type = "application/graphql-response+json"
+role = "bootstrap"
+completion = "complete"
+truncated = false
+body_file = "bodies/http-graphql-media.json"
+
+[expected]
+http_media = "graphql-response-json"

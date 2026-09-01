@@ -1,0 +1,32 @@
+schema = "security-assessment-fixture/v1"
+id = "defense.rate-limited"
+revision = 1
+category = "defense"
+purpose = "Represent rate limiting as backoff evidence rather than an invitation to transform requests."
+provenance = "historical-sanitized"
+support = "current"
+tags = ["backoff", "defense", "rate-limit"]
+
+[request]
+method = "get"
+origin = "https://api.example.test"
+path = "/review/rate-limit"
+role = "control"
+
+[response]
+status = 429
+control_status = 200
+control_body_file = "bodies/defense-open.html"
+media_type = "application/json"
+role = "control"
+completion = "complete"
+truncated = false
+body_file = "bodies/defense-rate-limit.json"
+
+[[response.headers]]
+name = "retry-after"
+value = "30"
+
+[expected]
+defense_state = "rate-limited"
+defense_transition = "rate-limit"

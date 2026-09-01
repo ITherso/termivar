@@ -1,0 +1,35 @@
+schema = "security-assessment-fixture/v1"
+id = "xss.encoded-inert"
+revision = 1
+category = "xss"
+purpose = "Keep an encoded inert representation as ordinary text rather than structural control."
+provenance = "current-authored"
+support = "current"
+tags = ["encoded", "negative", "xss"]
+
+[request]
+method = "get"
+origin = "https://example.test"
+path = "/review/xss/encoded-inert"
+role = "bootstrap"
+
+[[request.query]]
+name = "q"
+value = "fixture-encoded-inert"
+
+[response]
+status = 200
+control_status = 200
+control_body_file = "bodies/xss-encoded-inert.html"
+source_body_file = "bodies/xss-source-html-text.html"
+media_type = "text/html"
+role = "bootstrap"
+completion = "complete"
+truncated = false
+body_file = "bodies/xss-encoded-inert.html"
+
+[expected]
+reflection_context = "html-text"
+html_quote_mode = "not-applicable"
+xss_relation = "not-matched"
+maximum_authority = "knowledge-only"

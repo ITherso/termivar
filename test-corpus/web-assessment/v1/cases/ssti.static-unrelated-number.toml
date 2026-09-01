@@ -1,0 +1,34 @@
+schema = "security-assessment-fixture/v1"
+id = "ssti.static-unrelated-number"
+revision = 1
+category = "ssti"
+purpose = "Reject a static unrelated number as arithmetic evaluation evidence."
+provenance = "current-authored"
+support = "current"
+tags = ["negative", "ssti", "static"]
+
+[request]
+method = "get"
+origin = "https://example.test"
+path = "/review/ssti/static-number"
+role = "bootstrap"
+
+[[request.query]]
+name = "view"
+value = "fixture-static-case"
+
+[response]
+status = 200
+control_status = 200
+control_body_file = "bodies/ssti-control.html"
+replay_status = 200
+replay_body_file = "bodies/ssti-static-number.html"
+media_type = "text/html"
+role = "bootstrap"
+completion = "complete"
+truncated = false
+body_file = "bodies/ssti-static-number.html"
+
+[expected]
+ssti_relation = "not-matched"
+maximum_authority = "knowledge-only"

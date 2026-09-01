@@ -1,0 +1,26 @@
+schema = "security-assessment-fixture/v1"
+id = "defense.open-control"
+revision = 1
+category = "defense"
+purpose = "Provide the open control leg for a candidate-specific defensive engagement pair."
+provenance = "historical-sanitized"
+support = "current"
+tags = ["control", "defense", "open"]
+
+[request]
+method = "get"
+origin = "https://example.test"
+path = "/review/defense-candidate"
+role = "control"
+
+[response]
+status = 200
+media_type = "text/html"
+role = "control"
+completion = "complete"
+truncated = false
+body_file = "bodies/defense-open.html"
+
+[expected]
+defense_state = "open"
+defense_transition = "none"

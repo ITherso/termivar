@@ -10,7 +10,7 @@ This report is generated from `salvage/historical-scanner/ledger.toml`. Historic
 | Pre-deletion snapshot | ede3d9e5b1098434a771ae6ca3cb530941e22210 |
 | Physical deletion | 28bfb2d8ae3a4f707b7423cac65b6be8e11085b6 |
 | Current replacement baseline | cbca14d10db4ee641308f3b3e290bf75d937c8a7 |
-| Semantic ledger digest | salvage-sha256:8c949aaea6e19707bcf1b1eee6e3552827c87ea0639915d6153c607209011165 |
+| Semantic ledger digest | salvage-sha256:cd706569ed6044cc99b97bb55322a6651b271fa233a66651cd8b477625e63843 |
 
 ## Classification summary
 
@@ -140,7 +140,7 @@ This report is generated from `salvage/historical-scanner/ledger.toml`. Historic
 | `ssrf.vector-taxonomy` | `src/scanner/ssrf_detector.rs` | import-metadata-only | p2 | planned | venom-scanner:oast | direct-network-authority, unbounded-io |
 | `ssti.direct-review` | `src/scanner/ssti_expert.rs` | superseded-by-current-runtime | p3 | superseded | venom-scanner:web-assessment | direct-network-authority, legacy-runtime-coupling, misleading-claim |
 | `ssti.engine-taxonomy` | `src/scanner/ssti_expert.rs` | import-metadata-only | p2 | planned | venom-scanner:payload-catalog | direct-network-authority, raw-sensitive-evidence |
-| `fixtures.request-response-corpus` | `src/scanner/test_fixtures.rs` | import-fixture-corpus | p1 | planned | fixture-corpus | raw-sensitive-evidence, fabricated-finding |
+| `fixtures.request-response-corpus` | `src/scanner/test_fixtures.rs` | import-fixture-corpus | p1 | restored | fixture-corpus | raw-sensitive-evidence, fabricated-finding |
 | `fixtures.synthetic-vulnerabilities` | `src/scanner/test_fixtures.rs` | reject-misleading-claim | never | rejected | none | misleading-claim, fabricated-finding, automatic-severity |
 | `threat-intel.ioc-taxonomy` | `src/scanner/threat_intelligence.rs` | rewrite-from-contract | p2 | planned | documentation-only | raw-sensitive-evidence, automatic-severity |
 | `threat-intel.static-claims` | `src/scanner/threat_intelligence.rs` | reject-misleading-claim | never | rejected | none | misleading-claim, unconditional-success, automatic-severity |
@@ -162,7 +162,7 @@ This report is generated from `salvage/historical-scanner/ledger.toml`. Historic
 - `mutation.payload-taxonomy` → `venom-scanner:payload-catalog` (planned): Import only reviewed metadata in a later payload-catalog mission.
 - `oauth-jwt.protocol-taxonomy` → `venom-scanner:authz` (planned): Rebuild from protocol and identity evidence rather than reuse the analyzer.
 - `sqli-payloads.catalog` → `venom-scanner:payload-catalog` (planned): Candidate strings require individual evidence-compatible review before activation.
-- `fixtures.request-response-corpus` → `fixture-corpus` (planned): Selected inputs may improve current tests after evidence expectations are rewritten.
+- `fixtures.request-response-corpus` → `fixture-corpus` (restored; implementation `test-corpus/web-assessment/v1 with xtask scanner-corpus validation`): Selected request/response concepts were re-authored as bounded sanitized fixtures with typed expectations; fabricated findings and sensitive historical material were not copied.
 - `websocket.protocol-taxonomy` → `future-websocket-domain` (planned): Only metadata should survive until a real bounded protocol domain exists.
 - `xss-payloads.catalog` → `venom-scanner:payload-catalog` (planned): Each future candidate requires separate safe evidence review before activation.
 

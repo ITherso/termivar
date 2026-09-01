@@ -1,0 +1,37 @@
+schema = "security-assessment-fixture/v1"
+id = "xss.event-handler-attribute"
+revision = 1
+category = "xss"
+purpose = "Model event-handler sink structure with inert data attributes and no executable fixture value."
+provenance = "current-authored"
+support = "current"
+tags = ["attribute", "event-handler", "xss"]
+
+[request]
+method = "get"
+origin = "https://example.test"
+path = "/review/xss/event-attribute"
+role = "bootstrap"
+
+[[request.query]]
+name = "q"
+value = "fixture-event-attribute"
+
+[response]
+status = 200
+control_status = 200
+control_body_file = "bodies/xss-event-attribute.html"
+source_body_file = "bodies/xss-source-event.html"
+media_type = "text/html"
+role = "bootstrap"
+completion = "complete"
+truncated = false
+body_file = "bodies/xss-event-attribute.html"
+
+[expected]
+reflection_context = "attribute"
+html_quote_mode = "double"
+xss_relation = "matched"
+assessment_capability = "xss-event-attribute-boundary"
+maximum_disposition = "needs-review"
+maximum_authority = "knowledge-only"

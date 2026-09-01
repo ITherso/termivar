@@ -1,0 +1,36 @@
+schema = "security-assessment-fixture/v1"
+id = "sql.structural-replay-match"
+revision = 1
+category = "sql"
+purpose = "Represent a deterministic structural difference reproduced by an independent replay pair."
+provenance = "generated-boundary"
+support = "current"
+tags = ["replay", "sql", "structural"]
+
+[request]
+method = "get"
+origin = "https://example.test"
+path = "/review/sql/structural-replay"
+role = "bootstrap"
+
+[[request.query]]
+name = "term"
+value = "fixture-structural"
+
+[response]
+status = 500
+control_status = 200
+control_body_file = "bodies/sql-control-empty.json"
+replay_status = 500
+replay_body_file = "bodies/sql-structural.json"
+media_type = "application/json"
+role = "bootstrap"
+completion = "complete"
+truncated = false
+body_file = "bodies/sql-structural.json"
+
+[expected]
+sql_relation = "matched"
+assessment_capability = "sql-structural-review"
+maximum_disposition = "needs-review"
+maximum_authority = "knowledge-only"

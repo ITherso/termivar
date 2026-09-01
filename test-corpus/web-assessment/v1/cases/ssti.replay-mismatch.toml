@@ -1,0 +1,34 @@
+schema = "security-assessment-fixture/v1"
+id = "ssti.replay-mismatch"
+revision = 1
+category = "ssti"
+purpose = "Reject an arithmetic candidate whose distinct replay result does not match."
+provenance = "generated-boundary"
+support = "current"
+tags = ["negative", "replay-mismatch", "ssti"]
+
+[request]
+method = "get"
+origin = "https://example.test"
+path = "/review/ssti/replay-mismatch"
+role = "bootstrap"
+
+[[request.query]]
+name = "view"
+value = "fixture-replay-case"
+
+[response]
+status = 200
+control_status = 200
+control_body_file = "bodies/ssti-control.html"
+replay_status = 200
+replay_body_file = "bodies/ssti-static-number.html"
+media_type = "text/html"
+role = "bootstrap"
+completion = "complete"
+truncated = false
+body_file = "bodies/ssti-replay-mismatch.html"
+
+[expected]
+ssti_relation = "replay-mismatch"
+maximum_authority = "knowledge-only"

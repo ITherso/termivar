@@ -1,0 +1,37 @@
+schema = "security-assessment-fixture/v1"
+id = "xss.attribute-double"
+revision = 1
+category = "xss"
+purpose = "Match exact inert boundary and tail attributes at a double-quoted source anchor."
+provenance = "generated-boundary"
+support = "current"
+tags = ["attribute", "double-quoted", "xss"]
+
+[request]
+method = "get"
+origin = "https://example.test"
+path = "/review/xss/attribute-double"
+role = "bootstrap"
+
+[[request.query]]
+name = "q"
+value = "fixture-attribute-double"
+
+[response]
+status = 200
+control_status = 200
+control_body_file = "bodies/xss-attribute-double.html"
+source_body_file = "bodies/xss-source-attribute-double.html"
+media_type = "text/html"
+role = "bootstrap"
+completion = "complete"
+truncated = false
+body_file = "bodies/xss-attribute-double.html"
+
+[expected]
+reflection_context = "attribute"
+html_quote_mode = "double"
+xss_relation = "matched"
+assessment_capability = "xss-attribute-boundary"
+maximum_disposition = "needs-review"
+maximum_authority = "knowledge-only"
