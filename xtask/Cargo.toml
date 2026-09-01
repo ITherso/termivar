@@ -14,7 +14,7 @@ cargo_metadata = "0.18"
 clap = { workspace = true, features = ["derive"] }
 proc-macro2 = "1"
 syn = { version = "2", features = ["full", "visit"] }
-venom-exploit = { path = "../crates/venom-exploit" }
+venom-exploit = { path = "../crates/venom-exploit", version = "=0.10.0-alpha.1" }
 
 [dev-dependencies]
 tempfile = { workspace = true }
