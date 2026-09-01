@@ -12,7 +12,7 @@ The editable diagrams.net source is [architecture.drawio](architecture.drawio). 
 | --- | --- | --- |
 | `venom-core` | Default transport-neutral evidence, reasoning, ontology, outcome, predicate, and run-report contracts; the pre-quarantine facade is feature-gated | External libraries only |
 | `venom-scanner` | Phase/plugin traits, deterministic reasoning, runner, detection, opt-in bounded report rendering, and Experimental host-owned Lua/coordination execution | `venom-core` |
-| `venom-exploit` | Preview, non-published exploit manifest/catalog, applicability, risk, authorization-requirement, and lifecycle contracts; no execution runtime | `venom-core` only where shared opaque identity/evidence contracts are required |
+| `venom-exploit` | Preview, non-published exploit manifest/catalog plus disconnected non-default authorized orchestration contracts; only an in-memory lab fixture executes | `venom-core` only where shared opaque identity/evidence contracts are required |
 | `venom-proxy` | Experimental fixed-upstream TCP relay; no HTTP/TLS interception | External libraries only |
 | `venom-api` | Library health router and its local unsupported-listener error | External libraries only |
 | `venom-cli` | Composition root and command routing | `venom-scanner` by default; `venom-api` and `venom-proxy` only through explicit adapter features |
@@ -32,16 +32,20 @@ flowchart TD
     CLI -. "api-adapter" .-> API[venom-api]
     CLI -. "proxy-adapter" .-> Proxy[venom-proxy]
     Scanner --> Core["venom-core<br/>Evidence / Reasoning / Outcomes / Reports"]
-    Exploit["venom-exploit<br/>Preview metadata/catalog only"] --> Core
+    Exploit["venom-exploit<br/>Preview metadata + opt-in lab orchestration"] --> Core
 ```
 
 `venom-exploit` is an independent workspace domain rather than part of the
 scanner product graph. `venom-scanner`, `venom-cli`, `venom-api`, and
-`venom-proxy` do not depend on it. Its V1 library accepts bounded manifest bytes
-from a host and performs deterministic validation and catalog queries; it owns
-no network client, process launcher, browser, filesystem loader/writer, CLI
-command, or execution authority. Repository-owned pack file discovery belongs
-to `xtask`, not the library. The historical
+`venom-proxy` do not depend on it. Its V1 default library accepts bounded
+manifest bytes and performs deterministic validation and catalog queries. A
+non-default Preview feature adds host-minted grants, sealed deterministic plans,
+typed permits/receipts, and separate impact/cleanup lifecycle accounting. Only
+an in-memory canary integration fixture exercises that API. The crate owns no
+production target/network/process/browser/filesystem adapter, CLI command, or
+authority derived from metadata. Source-linked implementations are cooperative
+trusted code, not sandboxed third-party code. Repository-owned pack file
+discovery belongs to `xtask`, not the library. The historical
 `venom_scanner::post_exploitation` metadata scaffold remains separately
 quarantined behind `platform-models` and is not imported or expanded by this
 domain.

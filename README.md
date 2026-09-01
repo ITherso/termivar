@@ -92,7 +92,7 @@ Execution decisions are deterministic and model-independent. Venom does not requ
 | Continuation | Multi-objective replanning, Experience-based suppression, bounded counters, and host-policy-checked adaptive authority |
 | Execution | Exact-origin, redirect-disabled transport actions through one metered request broker; a tested zero-I/O `LocalKnowledge` library contract |
 | Output | Unchanged no-profile text/`--explain`/`decision-scan/v1`; explicit profile audits; and bounded JSON, CSV, HTML, or Markdown assessment reports for completed `web-review` runs |
-| Exploit foundation | Independent Preview `venom-exploit` manifest/catalog library with bounded metadata and deterministic identity; no executor, production transport, real exploit module, or scanner/CLI integration |
+| Exploit foundation | Independent Preview `venom-exploit` manifest/catalog library plus a disconnected non-default orchestration API. Only a five-step in-memory canary fixture exercises host-minted grants, typed permits/receipts, impact verification, and cleanup verification; there is no real exploit, production adapter, or scanner/CLI/API/proxy integration |
 
 The standard web profile currently has conservative, claim-specific behavior:
 
@@ -343,6 +343,7 @@ See the [runtime map](docs/internals/runtime-map.md) for the exact module and co
 - A same-origin route is not authorization to request it; the host remains the authority boundary.
 - Missing evidence in a bounded or truncated sample is not evidence of absence.
 - Successful execution is not automatically confirmation, a finding, or a vulnerability claim.
+- In exploit orchestration, applicability is not authorization; attempt delivery is not trigger evidence; trigger evidence is not verified impact; and verified impact is not verified cleanup.
 - An `AssessmentItem` observation can be `Informational`; a matched differential may justify `NeedsReview`; only a verifier-authorized, case-correlated transition under a confirming claim policy may be `Confirmed`.
 - A repeated SQL timing differential, exact text reflection, or template-arithmetic result still requires claim-specific review; none is an exploit or vulnerability verdict.
 - Delivering an OOB callback URL to the target is not evidence that the target made the callback. HTTP 200, 401, or 403 is only the probe response.
@@ -360,7 +361,7 @@ See the [runtime map](docs/internals/runtime-map.md) for the exact module and co
 | Run-report renderer | Preview, opt-in | Standalone `reporting` renders a host-pre-redacted `RunReport`; `scanning + reporting` also composes completed runtime-owned web-review truth into typed assessment reports, and the CLI uses that central renderer for completed web-review output. The renderer performs no I/O, persistence, risk synthesis, or verdict invention |
 | Lua execution | Experimental, opt-in | Implemented bounded, cooperative in-process Lua 5.4 registry/executor for explicit library hosts; no standard libraries, process isolation, plugin bridge, scanner phase, or repository CLI caller |
 | Distributed coordination | Experimental, opt-in | Implemented deterministic, bounded in-process task/worker/result state machines for explicit library hosts; no transport, authentication, serialization, persistence, ambient clock, background work, or multi-node control plane |
-| Exploit manifest/catalog | Preview, disconnected | Independent bounded metadata and deterministic catalog library; no execution runtime, real exploit module, target adapter, scanner/CLI caller, or authority grant |
+| Exploit foundation | Preview, disconnected | Default manifest/catalog library plus a non-default host orchestration API with non-deserializable host-minted grants, deterministic plans, typed permits/receipts, and a redacted run report. Only the in-memory `venom-canary` integration fixture executes; no real exploit, production target/network/process/filesystem adapter, CLI/API/scanner caller, package authenticity, or sandbox is implemented |
 | `venom api` | Unsupported, opt-in | Absent from default builds; the `api-adapter` feature reports that no listener is implemented |
 | `venom proxy` | Experimental, opt-in | Absent from default builds; `proxy-adapter` exposes an explicit fixed-upstream TCP relay with no `CONNECT`, TLS termination, certificate generation, or HTTP inspection |
 

@@ -12,13 +12,18 @@ Venom has one default scan runtime, one separately compiled historical runner,
 and optional host/adapter surfaces. A capability in one surface does not silently
 participate in another.
 
-The separate `venom-exploit` workspace crate is not a runtime surface in this
-state. It is a Preview, non-published library for bounded
+The separate, non-published `venom-exploit` workspace crate remains outside all
+product runtimes. Its default Preview surface owns bounded
 `venom.exploit-manifest/v1` metadata, deterministic catalog selection,
 applicability/risk declarations, authorization requirements, and lifecycle
-vocabulary. It has no module executor, target adapter, network/process/browser
-authority, filesystem loader, scanner/CLI/API/proxy dependency edge, or route
-from an `AssessmentItem` to an exploit. Repository pack validation is an
+vocabulary. Its non-default `orchestration` feature adds an explicit host
+library for deterministic planning, host-minted non-deserializable grants,
+sealed source-linked implementation bindings, narrow step permits, validated
+receipts, impact/cleanup accounting, and `venom.exploit-run/v1` reports. Only a
+wholly in-memory `venom-canary` integration fixture exercises that surface.
+There is no production target, network, process, browser, filesystem, or
+external-callback adapter; no scanner/CLI/API/proxy dependency edge; and no
+route from an `AssessmentItem` to an exploit. Repository pack validation is an
 explicit `xtask` operation and does not participate in `venom scan`.
 
 ## Default deterministic scan runtime (Surface B)
@@ -202,11 +207,15 @@ Composition is selection-specific:
 - **Distributed coordination** (`distributed`, opt-in) is a bounded,
   deterministic process-local task/worker/result state machine for an explicit
   library host. It is not a transport service or multi-node control plane.
-- **Exploit manifests/catalog** (`venom-exploit`, independent Preview crate)
-  validate host-supplied bounded metadata and repository-owned lab manifests.
-  Catalog membership, applicability, maturity, and manifest authorization
-  requirements grant no execution authority. No stock runtime or CLI consumes
-  the catalog.
+- **Exploit foundation** (`venom-exploit`, independent Preview crate) validates
+  host-supplied bounded metadata and repository-owned lab manifests. Its
+  non-default orchestration API requires an exact host-minted grant before a
+  prepared plan can produce step permits. Catalog membership, applicability,
+  maturity, a prepared plan, and implementation presence grant no execution
+  authority. Attempt, trigger, impact, cleanup, and cleanup verification remain
+  distinct facts. Source-linked implementations are cooperative trusted code,
+  not sandboxed code. No stock runtime or CLI consumes this API; the only
+  executor is an in-memory integration-test fixture.
 
 ## Historical mixed-authority runner (Surface A)
 
