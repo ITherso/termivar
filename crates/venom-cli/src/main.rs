@@ -1128,8 +1128,8 @@ mod tests {
                     input,
                     format: ArtifactOutputFormat::Json,
                 },
-            }) if signatures == PathBuf::from("signatures.toml")
-                && input == PathBuf::from("artifact.bin")
+            }) if signatures.as_path() == std::path::Path::new("signatures.toml")
+                && input.as_path() == std::path::Path::new("artifact.bin")
         ));
 
         assert!(Cli::try_parse_from(["venom", "artifact", "scan-file"]).is_err());
