@@ -108,6 +108,7 @@ class ScopeTests(unittest.TestCase):
 
     def test_scope_is_exact_and_rejects_path_escape(self) -> None:
         self.assertTrue(gate.in_scope("crates/venom-core/src/lib.rs"))
+        self.assertTrue(gate.in_scope("crates/venom-exploit/src/lib.rs"))
         self.assertTrue(gate.in_scope("xtask/src/architecture/workflows.rs"))
         self.assertFalse(gate.in_scope("crates/venom-core/tests/integration.rs"))
         self.assertFalse(gate.in_scope("examples/src/lib.rs"))
@@ -643,13 +644,14 @@ class RatioAndEvaluationTests(unittest.TestCase):
     def test_new_omission_cannot_silently_improve_aggregate_ratio(self) -> None:
         baseline = valid_record()
         current = copy.deepcopy(baseline["coverage"])
+        invisible_exploit_source = "crates/venom-exploit/src/declaration_only.rs"
         current["omitted_in_scope_files"] = sorted(
-            [*baseline["coverage"]["omitted_in_scope_files"], "xtask/src/new.rs"]
+            [*baseline["coverage"]["omitted_in_scope_files"], invisible_exploit_source]
         )
         violations, _ = gate._evaluation_violations(
             current,
             None,
-            ["xtask/src/new.rs"],
+            [invisible_exploit_source],
             ("docs/reports/coverage/aaaaaaa.json", baseline),
             ("docs/reports/coverage/aaaaaaa.json", baseline),
             False,
