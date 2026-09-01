@@ -17,7 +17,12 @@ The editable diagrams.net source is [architecture.drawio](architecture.drawio). 
 | `venom-api` | Library health router and its local unsupported-listener error | External libraries only |
 | `venom-cli` | Composition root and command routing | `venom-scanner` by default; `venom-api` and `venom-proxy` only through explicit adapter features |
 
-`xtask` is repository tooling rather than a runtime layer. It may orchestrate workspace commands but application crates must not depend on it.
+`xtask` is repository tooling rather than a runtime layer. It may orchestrate
+workspace commands but application crates must not depend on it. Its
+`scanner-salvage` check validates the strict historical scanner ledger against
+local Git objects and the deterministic generated report; it never compiles or
+executes the deleted source. The ledger classifies recovery candidates and
+rejected behavior but creates no application dependency or runtime authority.
 
 The repository root is a virtual Cargo workspace and has no `src/` tree. Rust
 source must live under a declared workspace package; otherwise it would be
@@ -337,6 +342,9 @@ host-execution contracts are specified by
 [ADR 0022](adr/0022-bound-host-lua-and-distributed-execution.md). The additive
 profiled assessment-reporting composition and CLI publication boundary are
 specified by [ADR 0023](adr/0023-compose-profiled-assessment-reporting.md).
+The component-level historical recovery inventory and its no-runtime boundary
+are specified by
+[ADR 0025](adr/0025-record-historical-scanner-salvage.md).
 
 For the ten responsibility-split domains above, the same gate also requires
 the reviewed private child-module inventory, pins facade-resident authority,

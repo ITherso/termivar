@@ -3,6 +3,7 @@
 mod architecture;
 mod exploit_catalog;
 mod release_metadata;
+mod scanner_salvage;
 mod semver;
 
 use clap::{Parser, Subcommand, ValueEnum};
@@ -38,6 +39,12 @@ enum Task {
     ReleaseMetadata { version: String },
     /// Check venom-core's public API against the pinned compatibility baseline.
     Semver,
+    /// Validate the deleted scanner tree's historical salvage ledger.
+    ScannerSalvage {
+        /// Rewrite the stored semantic digest and generated Markdown report.
+        #[arg(long)]
+        write: bool,
+    },
     /// Generate an SDK starter project.
     Generate {
         #[arg(value_enum)]
@@ -85,6 +92,7 @@ fn main() -> TaskResult {
         Task::Release => release_preflight(&root),
         Task::ReleaseMetadata { version } => release_metadata::check(&root, &version),
         Task::Semver => semver::check(&root),
+        Task::ScannerSalvage { write } => scanner_salvage::run(&root, write),
         Task::Generate { template, name } => generate(&root, template, &name),
     }
 }

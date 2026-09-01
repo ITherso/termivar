@@ -93,6 +93,7 @@ Execution decisions are deterministic and model-independent. Venom does not requ
 | Execution | Exact-origin, redirect-disabled transport actions through one metered request broker; a tested zero-I/O `LocalKnowledge` library contract |
 | Output | Unchanged no-profile text/`--explain`/`decision-scan/v1`; explicit profile audits; and bounded JSON, CSV, HTML, or Markdown assessment reports for completed `web-review` runs |
 | Exploit foundation | Independent Preview `venom-exploit` manifest/catalog library plus a disconnected non-default orchestration API. Only a five-step in-memory canary fixture exercises host-minted grants, typed permits/receipts, impact verification, and cleanup verification; there is no real exploit, production adapter, or scanner/CLI/API/proxy integration |
+| Historical salvage inventory | A strict repository ledger and local-Git `xtask` check classify the deleted 38-file scanner tree at component level. The ledger changes no runtime and grants no authority; its first P0 candidate is the historical byte-pattern buffer scanner for a future separate `venom-artifact` domain, which is not implemented here |
 
 The standard web profile currently has conservative, claim-specific behavior:
 
@@ -424,6 +425,7 @@ workflow record close neither the external gates nor the product gaps above.
 ```text
 crates/       Rust workspace crates: core, scanner, exploit metadata, CLI, API adapter, proxy relay
 exploit-packs/ Repository-owned bounded manifest metadata; no payloads or executable code
+salvage/      Machine-readable historical capability dispositions; no restored source or runtime
 docs/         Architecture, operating guides, ADRs, and contributor internals
 fuzz/         cargo-fuzz harnesses and reviewed seed corpora
 templates/    Scanner SDK and plugin starter templates
@@ -464,6 +466,8 @@ tag and accepted cross-version baseline exist, pin a reviewed full commit.
 - [Distribution and installation](docs/DISTRIBUTION.md)
 - [Architecture](docs/architecture.md)
 - [Runtime map: what actually runs](docs/internals/runtime-map.md)
+- [Historical scanner salvage](docs/history/historical-scanner-salvage.md)
+- [Historical salvage policy](docs/adr/0025-record-historical-scanner-salvage.md)
 - [Lua execution](docs/lua.md)
 - [Distributed coordination](docs/distributed.md)
 - [Decision runner](docs/internals/decision-runner.md)

@@ -26,6 +26,15 @@ external-callback adapter; no scanner/CLI/API/proxy dependency edge; and no
 route from an `AssessmentItem` to an exploit. Repository pack validation is an
 explicit `xtask` operation and does not participate in `venom scan`.
 
+The [historical scanner salvage ledger](../history/historical-scanner-salvage.md)
+is also repository evidence, not a runtime surface. The explicit
+`xtask scanner-salvage` check reads only the strict ledger, generated report,
+and local Git objects for the deleted 38-file tree. A component marked
+`Planned` is neither compiled nor executable. In particular, the historical
+byte-pattern buffer scanner is only a P0 candidate for a future separate
+`venom-artifact` domain in this change; no artifact scanner or file-access
+adapter exists yet.
+
 ## Default deterministic scan runtime (Surface B)
 
 `venom scan <target>` is the canonical CLI path. With no explicit profile, it

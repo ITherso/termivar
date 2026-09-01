@@ -1,0 +1,1702 @@
+schema = "venom.historical-scanner-salvage/v1"
+source_snapshot_commit = "ede3d9e5b1098434a771ae6ca3cb530941e22210"
+workspace_split_commit = "3c90364279284bdbb82494b4e03d71b5066657c4"
+deletion_commit = "28bfb2d8ae3a4f707b7423cac65b6be8e11085b6"
+historical_source_root = "src/scanner"
+expected_file_count = 38
+algorithm_version = "venom.historical-scanner-salvage-digest/v1"
+ledger_digest = "salvage-sha256:ea796c3d94acba1eda29be76bd3f4d33365b747e145a2d0d956931b08eedd8ae"
+current_replacement_baseline_sha = "cbca14d10db4ee641308f3b3e290bf75d937c8a7"
+
+[[files]]
+path = "src/scanner/analyzer.rs"
+blob_sha = "ce5ddb0590e12dead0a57553d4391ffc36e20e67"
+byte_size = 10718
+source_role = "analysis"
+build_reachability = "declared-but-unbuilt"
+old_default_runtime_reachability = "unreachable"
+direct_network_io = "none"
+direct_filesystem_io = "none"
+process_interaction = "none"
+unsafe_code = "absent"
+identity_behavior = "deterministic"
+evidence_quality = "heuristic"
+claim_risk = "high"
+salvage_priority = "p2"
+notes = "Compared caller-supplied response records with fixed timing, size, status, error, similarity, and header weights."
+
+[[files.components]]
+id = "analyzer.response-factors"
+symbol = "ComparativeAnalyzer response factor calculations"
+disposition = "rewrite-from-contract"
+priority = "p2"
+historical_behavior = "Calculated weighted differences between two supplied responses."
+old_runtime_reachability = "unreachable"
+reusable_value = "Response-differential factor vocabulary and small deterministic fixtures."
+prohibited_behaviors = ["misleading-claim", "raw-sensitive-evidence"]
+modern_destination = "venom-scanner:anomaly"
+prerequisites = ["bounded response evidence contract", "calibrated factor semantics"]
+status = "planned"
+rationale = "Retain the comparison ideas only behind current evidence and privacy contracts."
+
+[[files.components]]
+id = "analyzer.vulnerability-threshold"
+symbol = "AnalysisResult::is_vulnerable and calculate_confidence"
+disposition = "reject-misleading-claim"
+priority = "never"
+historical_behavior = "Converted an uncalibrated weighted threshold directly into a vulnerability boolean."
+old_runtime_reachability = "unreachable"
+reusable_value = "None without a calibrated evidence model."
+prohibited_behaviors = ["misleading-claim", "automatic-severity"]
+modern_destination = "none"
+prerequisites = []
+status = "rejected"
+rationale = "A response difference is not vulnerability confirmation."
+
+[[files]]
+path = "src/scanner/anomaly_detector.rs"
+blob_sha = "3b019843708d77d7dc6d8e6479dad49b00fb60f7"
+byte_size = 15154
+source_role = "anomaly"
+build_reachability = "declared-but-unbuilt"
+old_default_runtime_reachability = "unreachable"
+direct_network_io = "none"
+direct_filesystem_io = "none"
+process_interaction = "none"
+unsafe_code = "absent"
+identity_behavior = "deterministic"
+evidence_quality = "heuristic"
+claim_risk = "high"
+salvage_priority = "p2"
+notes = "Maintained unbounded request history and applied fixed statistical and character-count thresholds."
+
+[[files.components]]
+id = "anomaly.feature-statistics"
+symbol = "RequestMetrics and AnomalyDetector statistics"
+disposition = "rewrite-from-contract"
+priority = "p2"
+historical_behavior = "Derived averages, deviations, entropy, volume, timing, and encoding features."
+old_runtime_reachability = "unreachable"
+reusable_value = "Feature-dimension vocabulary and bounded statistical test ideas."
+prohibited_behaviors = ["unbounded-io", "raw-sensitive-evidence"]
+modern_destination = "future-venom-ml"
+prerequisites = ["bounded feature store", "model provenance and calibration"]
+status = "planned"
+rationale = "The features may inform a future calibrated anomaly domain."
+
+[[files.components]]
+id = "anomaly.attack-classification"
+symbol = "detect_* anomaly result construction"
+disposition = "reject-misleading-claim"
+priority = "never"
+historical_behavior = "Assigned attack labels, severity, and confidence from fixed uncalibrated thresholds."
+old_runtime_reachability = "unreachable"
+reusable_value = "No product claim is reusable as implemented."
+prohibited_behaviors = ["misleading-claim", "automatic-severity"]
+modern_destination = "none"
+prerequisites = []
+status = "rejected"
+rationale = "Heuristic anomalies cannot silently become attack or vulnerability claims."
+
+[[files]]
+path = "src/scanner/api_scanner.rs"
+blob_sha = "838ced24e954235b40e760ae24fd01eac025cba7"
+byte_size = 27680
+source_role = "api-assessment"
+build_reachability = "declared-but-unbuilt"
+old_default_runtime_reachability = "unreachable"
+direct_network_io = "none"
+direct_filesystem_io = "none"
+process_interaction = "none"
+unsafe_code = "absent"
+identity_behavior = "randomized"
+evidence_quality = "fabricated"
+claim_risk = "fabricated"
+salvage_priority = "p1"
+notes = "Modeled REST, GraphQL, gRPC, SOAP, and generic services but used no protocol transport."
+
+[[files.components]]
+id = "api.protocol-taxonomy"
+symbol = "APIType, APIEndpoint, GraphQL, gRPC, SOAP, and REST models"
+disposition = "rewrite-from-contract"
+priority = "p1"
+historical_behavior = "Enumerated API protocol families, endpoint shapes, parameters, and candidate tests."
+old_runtime_reachability = "unreachable"
+reusable_value = "Protocol taxonomy and candidate assessment families."
+prohibited_behaviors = ["legacy-runtime-coupling", "random-identity"]
+modern_destination = "venom-scanner:api-assessment"
+prerequisites = ["protocol-specific transport authority", "matched evidence contracts"]
+status = "planned"
+rationale = "Rebuild from typed protocol evidence rather than preserve the scaffold."
+
+[[files.components]]
+id = "api.unconditional-tests"
+symbol = "test_* helpers and synthetic endpoint discovery"
+disposition = "reject-fabricated-behavior"
+priority = "never"
+historical_behavior = "Returned true for every test and generated random high or critical findings for synthetic endpoints."
+old_runtime_reachability = "unreachable"
+reusable_value = "None of the generated findings."
+prohibited_behaviors = ["fabricated-finding", "unconditional-success", "random-identity", "automatic-severity"]
+modern_destination = "none"
+prerequisites = []
+status = "rejected"
+rationale = "No API request or response evidence supported the findings."
+
+[[files]]
+path = "src/scanner/baseline.rs"
+blob_sha = "a338ed2ebc654f5c0e95526bbf2bc818dd5d2b11"
+byte_size = 7250
+source_role = "baseline"
+build_reachability = "declared-but-unbuilt"
+old_default_runtime_reachability = "unreachable"
+direct_network_io = "direct"
+direct_filesystem_io = "none"
+process_interaction = "none"
+unsafe_code = "absent"
+identity_behavior = "not-applicable"
+evidence_quality = "heuristic"
+claim_risk = "moderate"
+current_replacement = "Current web assessment reflection and response evidence contracts."
+salvage_priority = "p2"
+notes = "Created its own reqwest client, ignored sample_count, and returned fixed behavior statistics."
+
+[[files.components]]
+id = "baseline.fingerprint-vocabulary"
+symbol = "ApplicationContext and detect_framework/language/database/waf"
+disposition = "rewrite-from-contract"
+priority = "p2"
+historical_behavior = "Matched response body and headers against framework, language, database, and WAF strings."
+old_runtime_reachability = "unreachable"
+reusable_value = "Application fingerprint categories and benign fixtures."
+prohibited_behaviors = ["raw-sensitive-evidence", "misleading-claim"]
+modern_destination = "venom-scanner:web-assessment"
+prerequisites = ["bounded response authority", "typed confidence and evidence"]
+status = "planned"
+rationale = "Fingerprint observations require bounded shared evidence and conservative claims."
+
+[[files.components]]
+id = "baseline.direct-collector"
+symbol = "BaselineCollector::collect and detect_application_context"
+disposition = "superseded-by-current-runtime"
+priority = "p3"
+historical_behavior = "Opened an independent HTTP client and silently returned empty context after errors."
+old_runtime_reachability = "unreachable"
+reusable_value = "Collection intent is represented by current assessment planning."
+prohibited_behaviors = ["direct-network-authority", "unbounded-io", "legacy-runtime-coupling"]
+modern_destination = "venom-scanner:web-assessment"
+prerequisites = []
+status = "superseded"
+rationale = "Current scans use the shared broker, exact origin, and RuntimeBudget."
+
+[[files]]
+path = "src/scanner/behavioral_analyzer.rs"
+blob_sha = "a1b4122a8249956acee105d8827ae01cdfa4a9c5"
+byte_size = 16751
+source_role = "behavioral"
+build_reachability = "declared-but-unbuilt"
+old_default_runtime_reachability = "unreachable"
+direct_network_io = "none"
+direct_filesystem_io = "none"
+process_interaction = "none"
+unsafe_code = "absent"
+identity_behavior = "deterministic"
+evidence_quality = "heuristic"
+claim_risk = "high"
+salvage_priority = "p2"
+notes = "Stored unbounded user sessions and classified behavior with fixed request-rate and entropy rules."
+
+[[files.components]]
+id = "behavior.feature-vocabulary"
+symbol = "RequestBehavior metrics and feature calculations"
+disposition = "rewrite-from-contract"
+priority = "p2"
+historical_behavior = "Calculated rate, timing variance, parameter variance, method diversity, and path entropy."
+old_runtime_reachability = "unreachable"
+reusable_value = "Behavior feature vocabulary and deterministic fixtures."
+prohibited_behaviors = ["unbounded-io", "raw-sensitive-evidence"]
+modern_destination = "future-venom-ml"
+prerequisites = ["bounded privacy-preserving feature contract", "calibrated model provenance"]
+status = "planned"
+rationale = "The feature ideas need a bounded and calibrated implementation."
+
+[[files.components]]
+id = "behavior.actor-classification"
+symbol = "classify_behavior and fixed confidence"
+disposition = "reject-misleading-claim"
+priority = "never"
+historical_behavior = "Labeled users as attacker, scanner, or bot with a fixed confidence."
+old_runtime_reachability = "unreachable"
+reusable_value = "No actor claim is reusable as implemented."
+prohibited_behaviors = ["misleading-claim", "automatic-severity", "raw-sensitive-evidence"]
+modern_destination = "none"
+prerequisites = []
+status = "rejected"
+rationale = "Uncalibrated behavioral heuristics cannot establish attacker identity."
+
+[[files]]
+path = "src/scanner/business_logic_fuzzer.rs"
+blob_sha = "8e992960e378711db07e9fb4ad15957234399cae"
+byte_size = 38908
+source_role = "business-logic"
+build_reachability = "declared-but-unbuilt"
+old_default_runtime_reachability = "unreachable"
+direct_network_io = "none"
+direct_filesystem_io = "none"
+process_interaction = "none"
+unsafe_code = "absent"
+identity_behavior = "randomized"
+evidence_quality = "fabricated"
+claim_risk = "fabricated"
+salvage_priority = "p1"
+notes = "Contained useful workflow vocabulary but every analysis method appended a prewritten vulnerability."
+
+[[files.components]]
+id = "business-logic.workflow-taxonomy"
+symbol = "BusinessLogicVulnType and workflow/transaction models"
+disposition = "import-metadata-only"
+priority = "p1"
+historical_behavior = "Enumerated workflow, pricing, discount, state, authorization, inventory, and payment cases."
+old_runtime_reachability = "unreachable"
+reusable_value = "Business-logic and authorization test-family taxonomy."
+prohibited_behaviors = ["fabricated-finding", "automatic-severity"]
+modern_destination = "venom-scanner:authz"
+prerequisites = ["explicit workflow model", "matched authorization evidence"]
+status = "planned"
+rationale = "Only metadata can be imported before real workflow authority exists."
+
+[[files.components]]
+id = "business-logic.fixed-findings"
+symbol = "BusinessLogicFuzzer::analyze_application and test_* methods"
+disposition = "reject-fabricated-behavior"
+priority = "never"
+historical_behavior = "Unconditionally emitted random-ID high and critical findings with invented evidence."
+old_runtime_reachability = "unreachable"
+reusable_value = "None of the result construction."
+prohibited_behaviors = ["fabricated-finding", "unconditional-success", "random-identity", "automatic-severity", "raw-sensitive-evidence"]
+modern_destination = "none"
+prerequisites = []
+status = "rejected"
+rationale = "No target workflow was executed or observed."
+
+[[files]]
+path = "src/scanner/deserialization.rs"
+blob_sha = "20bd32b0eb2120be2d0bc7ac8a6fa719ea85b628"
+byte_size = 27235
+source_role = "deserialization"
+build_reachability = "declared-but-unbuilt"
+old_default_runtime_reachability = "unreachable"
+direct_network_io = "none"
+direct_filesystem_io = "none"
+process_interaction = "none"
+unsafe_code = "absent"
+identity_behavior = "randomized"
+evidence_quality = "heuristic"
+claim_risk = "high"
+salvage_priority = "p2"
+notes = "Inspected caller bytes for serialization and gadget strings, then attached RCE-oriented results and payload material."
+
+[[files.components]]
+id = "deserialization.format-gadget-taxonomy"
+symbol = "SerializationLanguage, GadgetChain, and format detection"
+disposition = "import-metadata-only"
+priority = "p2"
+historical_behavior = "Enumerated serialization families, gadget libraries, and marker concepts."
+old_runtime_reachability = "unreachable"
+reusable_value = "Format and gadget metadata for future applicability or artifact work."
+prohibited_behaviors = ["raw-sensitive-evidence", "automatic-severity"]
+modern_destination = "venom-exploit"
+prerequisites = ["bounded parser or signature evidence", "exact implementation applicability"]
+status = "planned"
+rationale = "Retain taxonomy without importing payload execution or claims."
+
+[[files.components]]
+id = "deserialization.rce-inference"
+symbol = "analyze_* and detect_* vulnerability construction"
+disposition = "reject-misleading-claim"
+priority = "never"
+historical_behavior = "Promoted marker strings to random-ID deserialization and RCE vulnerabilities."
+old_runtime_reachability = "unreachable"
+reusable_value = "None of the vulnerability projection."
+prohibited_behaviors = ["misleading-claim", "random-identity", "automatic-severity", "raw-sensitive-evidence"]
+modern_destination = "none"
+prerequisites = []
+status = "rejected"
+rationale = "A serialized marker or gadget name does not prove trigger or impact."
+
+[[files]]
+path = "src/scanner/detector.rs"
+blob_sha = "9796e2527fd32b794d98ff009f3d07cc08c3b1e8"
+byte_size = 8278
+source_role = "signature-detection"
+build_reachability = "declared-but-unbuilt"
+old_default_runtime_reachability = "partially-reachable"
+direct_network_io = "none"
+direct_filesystem_io = "direct"
+process_interaction = "none"
+unsafe_code = "present"
+identity_behavior = "mixed"
+evidence_quality = "mixed"
+claim_risk = "mixed"
+salvage_priority = "p0"
+notes = "Mixed a useful hex/wildcard buffer scanner with unsafe mmap, unused optimization scaffolding, and reachable fabricated web findings."
+
+[[files.components]]
+id = "detector.byte-pattern"
+symbol = "Pattern::parse, Scanner::add_pattern, and Scanner::scan_memory"
+disposition = "port-algorithm"
+priority = "p0"
+historical_behavior = "Parsed hexadecimal and wildcard atoms and scanned caller-supplied byte slices for offsets."
+old_runtime_reachability = "unreachable"
+reusable_value = "Hex and wildcard syntax, deterministic offset matching, and basic fixtures."
+prohibited_behaviors = ["unbounded-io", "misleading-claim", "raw-sensitive-evidence"]
+modern_destination = "venom-artifact"
+prerequisites = ["bounded pattern and catalog contracts", "overlap-preserving deterministic matcher", "typed observation report"]
+status = "planned"
+rationale = "This is the only P0 algorithm and should be cleanly reimplemented, not copied."
+
+[[files.components]]
+id = "detector.mmap-file-adapter"
+symbol = "Scanner::scan_file"
+disposition = "reject-unsafe-adapter"
+priority = "never"
+historical_behavior = "Opened arbitrary paths and mapped files through the sole historical unsafe block."
+old_runtime_reachability = "unreachable"
+reusable_value = "Only the intent to scan a large explicit file."
+prohibited_behaviors = ["unsafe-adapter", "direct-filesystem-authority", "unbounded-io"]
+modern_destination = "none"
+prerequisites = []
+status = "rejected"
+rationale = "A future CLI must use a safe bounded reader and explicit file authority."
+
+[[files.components]]
+id = "detector.unused-bmh-claim"
+symbol = "Scanner::build_skip_table and optimization comments"
+disposition = "reject-misleading-claim"
+priority = "never"
+historical_behavior = "Built an unused skip table while advertising BMH, cache-aware, zero-copy scanning."
+old_runtime_reachability = "unreachable"
+reusable_value = "No optimization claim; a future anchor index requires its own tests."
+prohibited_behaviors = ["misleading-claim"]
+modern_destination = "none"
+prerequisites = []
+status = "rejected"
+rationale = "The production loop was a sliding window and skipped overlapping matches after success."
+
+[[files.components]]
+id = "detector.request-vulnerability"
+symbol = "VulnerabilityDetector::detect_sqli, detect_xss, and scan_request"
+disposition = "reject-fabricated-behavior"
+priority = "never"
+historical_behavior = "Searched request paths for payload substrings and emitted random-ID high or critical vulnerabilities."
+old_runtime_reachability = "reachable"
+reusable_value = "None; current reflection and structural review supersede it."
+prohibited_behaviors = ["fabricated-finding", "random-identity", "raw-sensitive-evidence", "automatic-severity", "legacy-runtime-coupling"]
+modern_destination = "none"
+prerequisites = []
+status = "rejected"
+rationale = "Payload presence in a request is not target evidence or a vulnerability."
+
+[[files]]
+path = "src/scanner/endpoint_fuzzer.rs"
+blob_sha = "68c3c05b6df281d4967a2040de27d1858d1b5c5b"
+byte_size = 16423
+source_role = "endpoint-fuzzing"
+build_reachability = "declared-but-unbuilt"
+old_default_runtime_reachability = "unreachable"
+direct_network_io = "none"
+direct_filesystem_io = "none"
+process_interaction = "none"
+unsafe_code = "absent"
+identity_behavior = "randomized"
+evidence_quality = "fabricated"
+claim_risk = "fabricated"
+salvage_priority = "p2"
+notes = "Contained a useful wordlist but simulated every endpoint response as HTTP 200."
+
+[[files.components]]
+id = "endpoint.wordlist-taxonomy"
+symbol = "generate_wordlist and EndpointType"
+disposition = "import-metadata-only"
+priority = "p2"
+historical_behavior = "Enumerated common API, admin, debug, backup, legacy, and documentation paths."
+old_runtime_reachability = "unreachable"
+reusable_value = "Endpoint family taxonomy and historical candidate strings."
+prohibited_behaviors = ["direct-network-authority", "unbounded-io"]
+modern_destination = "venom-scanner:api-assessment"
+prerequisites = ["subject-specific catalog selection", "shared broker and request budget"]
+status = "planned"
+rationale = "Import only bounded metadata before any active endpoint capability."
+
+[[files.components]]
+id = "endpoint.simulated-discovery"
+symbol = "test_endpoint and fuzz_endpoints"
+disposition = "reject-fabricated-behavior"
+priority = "never"
+historical_behavior = "Returned a fixed successful response without I/O and reported each wordlist entry as discovered."
+old_runtime_reachability = "unreachable"
+reusable_value = "None of the discovery results."
+prohibited_behaviors = ["fabricated-finding", "unconditional-success", "random-identity"]
+modern_destination = "none"
+prerequisites = []
+status = "rejected"
+rationale = "Discovery requires real bounded response evidence."
+
+[[files]]
+path = "src/scanner/error_handling.rs"
+blob_sha = "a9660987663e7f1d75cf38567f16127939fadd69"
+byte_size = 11409
+source_role = "error-handling"
+build_reachability = "declared-but-unbuilt"
+old_default_runtime_reachability = "unreachable"
+direct_network_io = "none"
+direct_filesystem_io = "none"
+process_interaction = "none"
+unsafe_code = "absent"
+identity_behavior = "not-applicable"
+evidence_quality = "not-applicable"
+claim_risk = "low"
+current_replacement = "venom-core errors, scanner policy, shared broker, and RuntimeBudget."
+salvage_priority = "p3"
+notes = "Legacy configuration, retry, proxy, error report, and encoding models are covered by current typed contracts."
+
+[[files.components]]
+id = "error.legacy-config"
+symbol = "VenomError, ScannerConfig, ErrorReport, and ErrorHandler"
+disposition = "superseded-by-current-runtime"
+priority = "p3"
+historical_behavior = "Modeled unchecked target strings, retry policy, proxy configuration, and arbitrary diagnostic messages."
+old_runtime_reachability = "unreachable"
+reusable_value = "Historical configuration vocabulary only."
+prohibited_behaviors = ["raw-sensitive-evidence", "legacy-runtime-coupling"]
+modern_destination = "venom-scanner:web-assessment"
+prerequisites = []
+status = "superseded"
+rationale = "Current authority, budget, and redacted error types replace this surface."
+
+[[files]]
+path = "src/scanner/exploit_automation.rs"
+blob_sha = "d660b09aded30620bd671a84dc4bf74866dad86c"
+byte_size = 36383
+source_role = "exploit-research"
+build_reachability = "declared-but-unbuilt"
+old_default_runtime_reachability = "unreachable"
+direct_network_io = "none"
+direct_filesystem_io = "none"
+process_interaction = "none"
+unsafe_code = "absent"
+identity_behavior = "randomized"
+evidence_quality = "fabricated"
+claim_risk = "fabricated"
+current_replacement = "venom-exploit manifest, authorization, plan, receipt, impact, and cleanup contracts."
+salvage_priority = "p3"
+notes = "Stored commands, credentials, callbacks, persistence, and prewritten successful exploit outcomes without executing them."
+
+[[files.components]]
+id = "exploit-automation.lifecycle-vocabulary"
+symbol = "ExploitStatus, ExploitChain, ExploitStep, PostExploitAction, and SystemAccess"
+disposition = "superseded-by-current-runtime"
+priority = "p3"
+historical_behavior = "Represented exploit stages, credentials, post-actions, and cleanup flags in unbounded caller-owned strings."
+old_runtime_reachability = "unreachable"
+reusable_value = "The stage distinction is represented more strictly by venom-exploit."
+prohibited_behaviors = ["raw-sensitive-evidence", "unconditional-success", "legacy-runtime-coupling"]
+modern_destination = "venom-exploit"
+prerequisites = []
+status = "superseded"
+rationale = "Current exploit orchestration separates authorization, trigger, impact, and cleanup."
+
+[[files.components]]
+id = "exploit-automation.fabricated-success"
+symbol = "ExploitAutomation::execute_exploits and exploit_* methods"
+disposition = "reject-fabricated-behavior"
+priority = "never"
+historical_behavior = "Returned successful exploit, credential, command, exfiltration, callback, and persistence records without execution."
+old_runtime_reachability = "unreachable"
+reusable_value = "None of the results or operational material."
+prohibited_behaviors = ["fabricated-finding", "unconditional-success", "raw-sensitive-evidence", "automatic-severity", "random-identity"]
+modern_destination = "none"
+prerequisites = []
+status = "rejected"
+rationale = "Fabricated trigger and impact records violate current exploit lifecycle semantics."
+
+[[files]]
+path = "src/scanner/exploiter.rs"
+blob_sha = "2d9b2c69ca6914004f49cc593af3861f25a10366"
+byte_size = 8407
+source_role = "exploit-research"
+build_reachability = "declared-but-unbuilt"
+old_default_runtime_reachability = "reachable"
+direct_network_io = "none"
+direct_filesystem_io = "none"
+process_interaction = "direct"
+unsafe_code = "absent"
+identity_behavior = "deterministic"
+evidence_quality = "unsubstantiated"
+claim_risk = "high"
+salvage_priority = "never"
+notes = "The old scanner and proxy called this module after heuristic findings; it invoked searchsploit or returned generic payload suggestions."
+
+[[files.components]]
+id = "exploiter.searchsploit-process"
+symbol = "ExploitFinder::search_searchsploit"
+disposition = "reject-unsafe-adapter"
+priority = "never"
+historical_behavior = "Spawned an external searchsploit process with caller-derived query text."
+old_runtime_reachability = "reachable"
+reusable_value = "Only the concept of catalog lookup, now modeled by venom-exploit."
+prohibited_behaviors = ["process-authority", "unbounded-io", "raw-sensitive-evidence", "legacy-runtime-coupling"]
+modern_destination = "none"
+prerequisites = []
+status = "rejected"
+rationale = "No implicit external process belongs in scanner finding projection."
+
+[[files.components]]
+id = "exploiter.generated-suggestions"
+symbol = "generate_payload_suggestions and suggest_exploit_payload"
+disposition = "reject-misleading-claim"
+priority = "never"
+historical_behavior = "Mapped a vulnerability label to raw payload suggestions and fixed severity without applicability or authorization."
+old_runtime_reachability = "reachable"
+reusable_value = "None of the operational payload strings."
+prohibited_behaviors = ["misleading-claim", "raw-sensitive-evidence", "automatic-severity", "legacy-runtime-coupling"]
+modern_destination = "none"
+prerequisites = []
+status = "rejected"
+rationale = "A label cannot authorize or substantiate an exploit."
+
+[[files]]
+path = "src/scanner/gadget_analyzer.rs"
+blob_sha = "3c78ede7d4fffa83b74fde86a4651d13062c8c03"
+byte_size = 15883
+source_role = "gadget-analysis"
+build_reachability = "declared-but-unbuilt"
+old_default_runtime_reachability = "unreachable"
+direct_network_io = "none"
+direct_filesystem_io = "none"
+process_interaction = "none"
+unsafe_code = "absent"
+identity_behavior = "randomized"
+evidence_quality = "heuristic"
+claim_risk = "high"
+salvage_priority = "p2"
+notes = "Matched gadget names in caller payload text and calculated an uncalibrated RCE score."
+
+[[files.components]]
+id = "gadget.library-taxonomy"
+symbol = "GadgetChainAnalysis, LibraryRequirement, and known chain tables"
+disposition = "import-metadata-only"
+priority = "p2"
+historical_behavior = "Enumerated gadget-chain and library requirement concepts across runtimes."
+old_runtime_reachability = "unreachable"
+reusable_value = "Gadget and prerequisite taxonomy for exploit applicability metadata."
+prohibited_behaviors = ["raw-sensitive-evidence", "automatic-severity"]
+modern_destination = "venom-exploit"
+prerequisites = ["exact product and library applicability", "reviewed implementation binding"]
+status = "planned"
+rationale = "Import taxonomy only; do not import gadget payload execution."
+
+[[files.components]]
+id = "gadget.rce-score"
+symbol = "analyze_payload and calculate_rce_score"
+disposition = "reject-misleading-claim"
+priority = "never"
+historical_behavior = "Converted payload substrings into random-ID gadget detections and RCE likelihood."
+old_runtime_reachability = "unreachable"
+reusable_value = "None of the impact claim."
+prohibited_behaviors = ["misleading-claim", "random-identity", "automatic-severity", "raw-sensitive-evidence"]
+modern_destination = "none"
+prerequisites = []
+status = "rejected"
+rationale = "Gadget names do not prove deserialization, trigger, or impact."
+
+[[files]]
+path = "src/scanner/idor_detector.rs"
+blob_sha = "93901e476a700049e773d3ae64a2108c5ef2ab1e"
+byte_size = 16748
+source_role = "authorization"
+build_reachability = "declared-but-unbuilt"
+old_default_runtime_reachability = "unreachable"
+direct_network_io = "direct"
+direct_filesystem_io = "none"
+process_interaction = "none"
+unsafe_code = "absent"
+identity_behavior = "deterministic"
+evidence_quality = "heuristic"
+claim_risk = "high"
+salvage_priority = "p1"
+notes = "Included useful ID-shape mutations but sent direct requests and inferred IDOR from coarse response differences."
+
+[[files.components]]
+id = "idor.reference-mutation"
+symbol = "detect_id_pattern, mutate_id, and IdorType"
+disposition = "rewrite-from-contract"
+priority = "p1"
+historical_behavior = "Classified numeric, UUID, hash, and string references and generated nearby candidates."
+old_runtime_reachability = "unreachable"
+reusable_value = "Reference taxonomy and bounded mutation ideas."
+prohibited_behaviors = ["direct-network-authority", "misleading-claim"]
+modern_destination = "venom-scanner:authz"
+prerequisites = ["two-principal authorization contract", "stable resource identity", "matched control evidence"]
+status = "planned"
+rationale = "Authorization review must be rebuilt around identity and authority, not response similarity alone."
+
+[[files.components]]
+id = "idor.direct-prober"
+symbol = "detect_idor, get_baseline, and test_* request methods"
+disposition = "reject-unsafe-adapter"
+priority = "never"
+historical_behavior = "Created its own client and mutated raw URLs without shared origin or budget authority."
+old_runtime_reachability = "unreachable"
+reusable_value = "No transport implementation."
+prohibited_behaviors = ["direct-network-authority", "unbounded-io", "legacy-runtime-coupling", "misleading-claim"]
+modern_destination = "none"
+prerequisites = []
+status = "rejected"
+rationale = "Any future IDOR execution must use explicit subject and authorization contracts."
+
+[[files]]
+path = "src/scanner/infrastructure_scanner.rs"
+blob_sha = "f1c757819f3ab141a18ee4df7f676378d4e93029"
+byte_size = 41006
+source_role = "infrastructure"
+build_reachability = "declared-but-unbuilt"
+old_default_runtime_reachability = "unreachable"
+direct_network_io = "none"
+direct_filesystem_io = "none"
+process_interaction = "none"
+unsafe_code = "absent"
+identity_behavior = "randomized"
+evidence_quality = "fabricated"
+claim_risk = "fabricated"
+salvage_priority = "p2"
+notes = "Modeled cloud resources but filled every result with hard-coded example infrastructure and impacts."
+
+[[files.components]]
+id = "infrastructure.resource-taxonomy"
+symbol = "CloudResource, SecurityGroup, IAMRole, certificate, container, and Kubernetes models"
+disposition = "import-metadata-only"
+priority = "p2"
+historical_behavior = "Enumerated cloud, TLS, IAM, container, registry, and cluster configuration categories."
+old_runtime_reachability = "unreachable"
+reusable_value = "Infrastructure configuration taxonomy for future reviewed domains."
+prohibited_behaviors = ["fabricated-finding", "raw-sensitive-evidence"]
+modern_destination = "documentation-only"
+prerequisites = ["separate authorized infrastructure domain", "provider-backed evidence contracts"]
+status = "planned"
+rationale = "Metadata may guide future work but is not current product support."
+
+[[files.components]]
+id = "infrastructure.example-findings"
+symbol = "scan_infrastructure and test_* methods"
+disposition = "reject-fabricated-behavior"
+priority = "never"
+historical_behavior = "Unconditionally returned invented AWS, database, credential, TLS, container, and Kubernetes findings."
+old_runtime_reachability = "unreachable"
+reusable_value = "None of the resources, evidence, impact, or severity."
+prohibited_behaviors = ["fabricated-finding", "unconditional-success", "random-identity", "raw-sensitive-evidence", "automatic-severity"]
+modern_destination = "none"
+prerequisites = []
+status = "rejected"
+rationale = "Hard-coded examples cannot be emitted as target observations."
+
+[[files]]
+path = "src/scanner/integration_tests.rs"
+blob_sha = "41366a4f6da3f252e7f0035f6a8314465054fe0b"
+byte_size = 20796
+source_role = "test-fixture"
+build_reachability = "declared-but-unbuilt"
+old_default_runtime_reachability = "unreachable"
+direct_network_io = "none"
+direct_filesystem_io = "none"
+process_interaction = "none"
+unsafe_code = "absent"
+identity_behavior = "deterministic"
+evidence_quality = "fixture-only"
+claim_risk = "moderate"
+salvage_priority = "p2"
+notes = "An in-module harness tested historical modules with synthetic data and rendered a report."
+
+[[files.components]]
+id = "integration.fixture-cases"
+symbol = "IntegrationTestSuite test_* methods"
+disposition = "import-fixture-corpus"
+priority = "p2"
+historical_behavior = "Supplied representative SQLi, XSS, IDOR, SSRF, anomaly, threat, behavior, and scoring inputs."
+old_runtime_reachability = "unreachable"
+reusable_value = "Sanitizable historical input cases and negative-test ideas."
+prohibited_behaviors = ["fabricated-finding", "raw-sensitive-evidence"]
+modern_destination = "fixture-corpus"
+prerequisites = ["fixture provenance review", "current expected-outcome rewrite"]
+status = "planned"
+rationale = "Inputs may be useful, but old expected success is not current evidence."
+
+[[files.components]]
+id = "integration.generated-report"
+symbol = "IntegrationTestSuite::generate_report"
+disposition = "archive-reference"
+priority = "p3"
+historical_behavior = "Summarized synthetic module pass/fail and elapsed time as an integration report."
+old_runtime_reachability = "unreachable"
+reusable_value = "Historical documentation of intended module breadth."
+prohibited_behaviors = ["misleading-claim"]
+modern_destination = "documentation-only"
+prerequisites = ["clearly labeled historical context"]
+status = "planned"
+rationale = "Archive as history, never as proof that the old scanner worked."
+
+[[files]]
+path = "src/scanner/ml_detection.rs"
+blob_sha = "5a536fbecbee1bbe402d9fe15f379f9c4e20068e"
+byte_size = 15891
+source_role = "machine-learning"
+build_reachability = "declared-but-unbuilt"
+old_default_runtime_reachability = "unreachable"
+direct_network_io = "none"
+direct_filesystem_io = "none"
+process_interaction = "none"
+unsafe_code = "absent"
+identity_behavior = "deterministic"
+evidence_quality = "heuristic"
+claim_risk = "high"
+salvage_priority = "p1"
+notes = "Called fixed heuristics and hand-written k-means support a complete ML engine and zero-day detector."
+
+[[files.components]]
+id = "ml.feature-clustering-research"
+symbol = "MLFeatures, perform_kmeans, and distance helpers"
+disposition = "rewrite-from-contract"
+priority = "p1"
+historical_behavior = "Defined feature dimensions, baseline concepts, pattern signatures, and clustering calculations."
+old_runtime_reachability = "unreachable"
+reusable_value = "Feature vocabulary, clustering research ideas, and test corpus concepts."
+prohibited_behaviors = ["raw-sensitive-evidence", "automatic-severity", "misleading-claim"]
+modern_destination = "future-venom-ml"
+prerequisites = ["versioned model provenance", "calibration and evaluation corpus", "bounded feature authority"]
+status = "planned"
+rationale = "Rebuild only after a genuine model and evaluation contract exists."
+
+[[files.components]]
+id = "ml.zero-day-claims"
+symbol = "detect, assess_zero_day_likelihood, confidence, and recommendation"
+disposition = "reject-misleading-claim"
+priority = "never"
+historical_behavior = "Called fixed thresholds machine learning and assigned zero-day likelihood, Critical severity, and confidence."
+old_runtime_reachability = "unreachable"
+reusable_value = "None of the product claims."
+prohibited_behaviors = ["misleading-claim", "automatic-severity"]
+modern_destination = "none"
+prerequisites = []
+status = "rejected"
+rationale = "No trained, wired, calibrated, or provenance-bound model existed."
+
+[[files]]
+path = "src/scanner/mod.rs"
+blob_sha = "ec9bb91213cadb8df21acf15f6655be92e73e30c"
+byte_size = 8690
+source_role = "module-root"
+build_reachability = "declared-but-unbuilt"
+old_default_runtime_reachability = "reachable"
+direct_network_io = "direct"
+direct_filesystem_io = "none"
+process_interaction = "none"
+unsafe_code = "absent"
+identity_behavior = "randomized"
+evidence_quality = "heuristic"
+claim_risk = "high"
+current_replacement = "Current venom-scanner WebAssessmentRuntime, shared broker, evidence ledger, and typed review actions."
+salvage_priority = "p3"
+notes = "The old CLI Scanner used this facade to discover paths and send direct SQLi, XSS, and traversal probes."
+
+[[files.components]]
+id = "scanner-root.facade-intent"
+symbol = "Scanner facade and endpoint/probe organization"
+disposition = "superseded-by-current-runtime"
+priority = "p3"
+historical_behavior = "Combined target strings, endpoint discovery, direct HTTP probes, and finding projection."
+old_runtime_reachability = "reachable"
+reusable_value = "Only the broad idea of a scan facade and named capability ownership."
+prohibited_behaviors = ["legacy-runtime-coupling", "raw-sensitive-evidence"]
+modern_destination = "venom-scanner:web-assessment"
+prerequisites = []
+status = "superseded"
+rationale = "The current runtime separates authority, planning, execution, evidence, and projection."
+
+[[files.components]]
+id = "scanner-root.direct-client"
+symbol = "Scanner::new, discover_endpoints, and test_* network methods"
+disposition = "reject-unsafe-adapter"
+priority = "never"
+historical_behavior = "Created an unrestricted client, probed a fixed path list, and constructed raw target URLs."
+old_runtime_reachability = "reachable"
+reusable_value = "No network adapter."
+prohibited_behaviors = ["direct-network-authority", "unbounded-io", "legacy-runtime-coupling"]
+modern_destination = "none"
+prerequisites = []
+status = "rejected"
+rationale = "Every current request must use exact-origin shared authority and RuntimeBudget."
+
+[[files.components]]
+id = "scanner-root.heuristic-findings"
+symbol = "test_sql_injection, test_xss, and test_path_traversal result projection"
+disposition = "reject-misleading-claim"
+priority = "never"
+historical_behavior = "Turned error keywords, reflection, or file markers into random-ID high and critical vulnerabilities."
+old_runtime_reachability = "reachable"
+reusable_value = "None of the finding semantics."
+prohibited_behaviors = ["misleading-claim", "random-identity", "raw-sensitive-evidence", "automatic-severity"]
+modern_destination = "none"
+prerequisites = []
+status = "rejected"
+rationale = "Current structural evidence produces at most conservative review unless a verifier is authorized."
+
+[[files]]
+path = "src/scanner/mutation.rs"
+blob_sha = "736ebe80707de7d9080f88566e5a7871ed50a93e"
+byte_size = 13261
+source_role = "mutation"
+build_reachability = "declared-but-unbuilt"
+old_default_runtime_reachability = "unreachable"
+direct_network_io = "none"
+direct_filesystem_io = "none"
+process_interaction = "none"
+unsafe_code = "absent"
+identity_behavior = "deterministic"
+evidence_quality = "not-applicable"
+claim_risk = "low"
+salvage_priority = "p1"
+notes = "Generated raw SQLi, XSS, SSTI, traversal, encoding, case, comment, and whitespace variants without executing them."
+
+[[files.components]]
+id = "mutation.payload-taxonomy"
+symbol = "PayloadTechnique, EncodingMethod, generators, and generate_variations"
+disposition = "import-metadata-only"
+priority = "p1"
+historical_behavior = "Enumerated payload families, encoding methods, and mutation transformations."
+old_runtime_reachability = "unreachable"
+reusable_value = "Family, encoding, and transformation taxonomy plus historical strings."
+prohibited_behaviors = ["direct-network-authority", "raw-sensitive-evidence"]
+modern_destination = "venom-scanner:payload-catalog"
+prerequisites = ["metadata-first selection", "versioned strategy identity", "bounded payload materialization"]
+status = "planned"
+rationale = "Import only reviewed metadata in a later payload-catalog mission."
+
+[[files]]
+path = "src/scanner/oauth_jwt_breaker.rs"
+blob_sha = "43b2c07af78435db1f3c203bc3e39efb5a541f29"
+byte_size = 32098
+source_role = "authentication"
+build_reachability = "declared-but-unbuilt"
+old_default_runtime_reachability = "unreachable"
+direct_network_io = "none"
+direct_filesystem_io = "none"
+process_interaction = "none"
+unsafe_code = "absent"
+identity_behavior = "randomized"
+evidence_quality = "fabricated"
+claim_risk = "fabricated"
+salvage_priority = "p1"
+notes = "Modeled tokens and OAuth flows but generated findings without cryptographic or protocol execution evidence."
+
+[[files.components]]
+id = "oauth-jwt.protocol-taxonomy"
+symbol = "JWTToken, OAuthFlow, authorization code, refresh, and session models"
+disposition = "rewrite-from-contract"
+priority = "p1"
+historical_behavior = "Enumerated JWT fields, OAuth grants, PKCE, refresh, scope, and session weakness categories."
+old_runtime_reachability = "unreachable"
+reusable_value = "Authentication prerequisite and protocol test-family vocabulary."
+prohibited_behaviors = ["raw-sensitive-evidence", "automatic-severity"]
+modern_destination = "venom-scanner:authz"
+prerequisites = ["bounded token parser", "cryptographic verification contract", "explicit account authority"]
+status = "planned"
+rationale = "Rebuild from protocol and identity evidence rather than reuse the analyzer."
+
+[[files.components]]
+id = "oauth-jwt.fabricated-findings"
+symbol = "analyze_tokens and test_* methods"
+disposition = "reject-fabricated-behavior"
+priority = "never"
+historical_behavior = "Created random-ID high or critical token vulnerabilities from prewritten cases."
+old_runtime_reachability = "unreachable"
+reusable_value = "None of the findings or token material."
+prohibited_behaviors = ["fabricated-finding", "random-identity", "raw-sensitive-evidence", "automatic-severity"]
+modern_destination = "none"
+prerequisites = []
+status = "rejected"
+rationale = "Token metadata does not prove server acceptance or authorization bypass."
+
+[[files]]
+path = "src/scanner/osint_reconnaissance.rs"
+blob_sha = "b2291695af02cfb435e59166c8c87cd8e83c29ad"
+byte_size = 31943
+source_role = "reconnaissance"
+build_reachability = "declared-but-unbuilt"
+old_default_runtime_reachability = "unreachable"
+direct_network_io = "none"
+direct_filesystem_io = "none"
+process_interaction = "none"
+unsafe_code = "absent"
+identity_behavior = "randomized"
+evidence_quality = "fabricated"
+claim_risk = "fabricated"
+salvage_priority = "p3"
+notes = "Claimed broad OSINT collection but performed no external lookup and returned invented people, credentials, services, and resources."
+
+[[files.components]]
+id = "osint.category-taxonomy"
+symbol = "OsintType and footprint, domain, subdomain, employee, credential, and service models"
+disposition = "import-metadata-only"
+priority = "p3"
+historical_behavior = "Enumerated OSINT source and finding categories."
+old_runtime_reachability = "unreachable"
+reusable_value = "Category vocabulary as historical research input."
+prohibited_behaviors = ["raw-sensitive-evidence", "fabricated-finding"]
+modern_destination = "documentation-only"
+prerequisites = ["separate privacy-reviewed OSINT authority"]
+status = "planned"
+rationale = "No current runtime destination or collection authority exists."
+
+[[files.components]]
+id = "osint.fabricated-recon"
+symbol = "perform_reconnaissance and discovery/check methods"
+disposition = "reject-fabricated-behavior"
+priority = "never"
+historical_behavior = "Returned invented breach credentials, keys, employees, DNS, social, services, and exposure findings."
+old_runtime_reachability = "unreachable"
+reusable_value = "None of the data or findings."
+prohibited_behaviors = ["fabricated-finding", "unconditional-success", "random-identity", "raw-sensitive-evidence", "automatic-severity"]
+modern_destination = "none"
+prerequisites = []
+status = "rejected"
+rationale = "No source query or provenance supported the output."
+
+[[files]]
+path = "src/scanner/parallel.rs"
+blob_sha = "f84ce2c2ad5bd5dfc2241df8dbaf6b0ab8408904"
+byte_size = 9541
+source_role = "concurrency"
+build_reachability = "declared-but-unbuilt"
+old_default_runtime_reachability = "unreachable"
+direct_network_io = "none"
+direct_filesystem_io = "none"
+process_interaction = "none"
+unsafe_code = "absent"
+identity_behavior = "deterministic"
+evidence_quality = "unsubstantiated"
+claim_risk = "moderate"
+current_replacement = "Current shared broker, bounded execution plans, cancellation, and RuntimeBudget."
+salvage_priority = "p3"
+notes = "Spawned bounded worker tasks and a clock rate limiter, but workers never executed scan capabilities."
+
+[[files.components]]
+id = "parallel.scheduler-contract"
+symbol = "ScanTask, ParallelScanner, RateLimiter, and ScanProgress"
+disposition = "superseded-by-current-runtime"
+priority = "p3"
+historical_behavior = "Modeled queues, workers, progress, rate limiting, and result collection."
+old_runtime_reachability = "unreachable"
+reusable_value = "Concurrency and accounting intent now represented by current runtime contracts."
+prohibited_behaviors = ["unbounded-io", "legacy-runtime-coupling"]
+modern_destination = "venom-scanner:web-assessment"
+prerequisites = []
+status = "superseded"
+rationale = "Current broker and budget own execution concurrency and authority."
+
+[[files.components]]
+id = "parallel.stub-completion"
+symbol = "ParallelScanner::scan_parallel worker body"
+disposition = "reject-misleading-claim"
+priority = "never"
+historical_behavior = "Marked every dequeued task complete after no scan and fixed a duration of 100 milliseconds."
+old_runtime_reachability = "unreachable"
+reusable_value = "None of the completion receipts."
+prohibited_behaviors = ["misleading-claim", "unconditional-success"]
+modern_destination = "none"
+prerequisites = []
+status = "rejected"
+rationale = "A queued task is not completed execution."
+
+[[files]]
+path = "src/scanner/payloads.rs"
+blob_sha = "1c698ec19d1a219edb665809517d69f5811cf994"
+byte_size = 1678
+source_role = "payload-catalog"
+build_reachability = "declared-but-unbuilt"
+old_default_runtime_reachability = "unreachable"
+direct_network_io = "none"
+direct_filesystem_io = "none"
+process_interaction = "none"
+unsafe_code = "absent"
+identity_behavior = "deterministic"
+evidence_quality = "not-applicable"
+claim_risk = "low"
+salvage_priority = "p2"
+notes = "A small static corpus for SQLi, XSS, SSTI, XXE, command injection, SSRF, and traversal."
+
+[[files.components]]
+id = "payloads.small-corpus"
+symbol = "Payloads family functions"
+disposition = "import-metadata-only"
+priority = "p2"
+historical_behavior = "Returned raw strings grouped only by vulnerability class."
+old_runtime_reachability = "unreachable"
+reusable_value = "Historical family membership and fixture strings."
+prohibited_behaviors = ["direct-network-authority", "raw-sensitive-evidence"]
+modern_destination = "venom-scanner:payload-catalog"
+prerequisites = ["typed family metadata", "versioned evidence-compatible strategy"]
+status = "planned"
+rationale = "Review later as metadata; do not directly re-enable execution."
+
+[[files]]
+path = "src/scanner/performance_benchmark.rs"
+blob_sha = "2c18559a76fb8dd6cbef7930a56815315a49e420"
+byte_size = 13398
+source_role = "benchmark"
+build_reachability = "declared-but-unbuilt"
+old_default_runtime_reachability = "unreachable"
+direct_network_io = "none"
+direct_filesystem_io = "none"
+process_interaction = "none"
+unsafe_code = "absent"
+identity_behavior = "deterministic"
+evidence_quality = "fixture-only"
+claim_risk = "high"
+salvage_priority = "p3"
+notes = "Timed simulate_* helpers rather than scanner algorithms and rendered the results as module benchmarks."
+
+[[files.components]]
+id = "benchmark.scenario-corpus"
+symbol = "benchmark_* scenario names and iteration shapes"
+disposition = "import-fixture-corpus"
+priority = "p3"
+historical_behavior = "Enumerated performance scenarios for scanner capability families."
+old_runtime_reachability = "unreachable"
+reusable_value = "Historical benchmark scenario names and fixed corpus sizes."
+prohibited_behaviors = ["misleading-claim"]
+modern_destination = "fixture-corpus"
+prerequisites = ["benchmark real production algorithms"]
+status = "planned"
+rationale = "The scenarios can inform future real benchmarks."
+
+[[files.components]]
+id = "benchmark.simulated-results"
+symbol = "simulate_* methods and generated benchmark report"
+disposition = "reject-misleading-claim"
+priority = "never"
+historical_behavior = "Measured trivial simulated loops and labeled them scanner throughput and success."
+old_runtime_reachability = "unreachable"
+reusable_value = "None of the measurements."
+prohibited_behaviors = ["misleading-claim", "unconditional-success"]
+modern_destination = "none"
+prerequisites = []
+status = "rejected"
+rationale = "Synthetic helper timing is not product performance evidence."
+
+[[files]]
+path = "src/scanner/release_config.rs"
+blob_sha = "d783e621884dd0eabc77b758cd62f6c7dd0d23fe"
+byte_size = 15960
+source_role = "release-configuration"
+build_reachability = "declared-but-unbuilt"
+old_default_runtime_reachability = "unreachable"
+direct_network_io = "none"
+direct_filesystem_io = "none"
+process_interaction = "none"
+unsafe_code = "absent"
+identity_behavior = "not-applicable"
+evidence_quality = "unsubstantiated"
+claim_risk = "high"
+salvage_priority = "p3"
+notes = "Recorded a historical feature inventory alongside unsupported detection-rate and false-positive metrics."
+
+[[files.components]]
+id = "release.historical-inventory"
+symbol = "ReleaseInfo, ModuleCapabilities, ModuleStatus, and get_all_modules"
+disposition = "archive-reference"
+priority = "p3"
+historical_behavior = "Listed intended modules, features, status, and release metadata."
+old_runtime_reachability = "unreachable"
+reusable_value = "Timeline evidence for intended historical capability breadth."
+prohibited_behaviors = ["misleading-claim"]
+modern_destination = "documentation-only"
+prerequisites = ["clearly labeled historical status"]
+status = "planned"
+rationale = "Preserve as history, not as a current capability matrix."
+
+[[files.components]]
+id = "release.fabricated-quality-metrics"
+symbol = "module detection rates, false-positive rates, and validate_release"
+disposition = "reject-misleading-claim"
+priority = "never"
+historical_behavior = "Embedded unsupported detection and false-positive percentages and validated release readiness from them."
+old_runtime_reachability = "unreachable"
+reusable_value = "None of the quality values."
+prohibited_behaviors = ["misleading-claim", "unconditional-success"]
+modern_destination = "none"
+prerequisites = []
+status = "rejected"
+rationale = "Quality metrics require measured reproducible evidence."
+
+[[files]]
+path = "src/scanner/scoring.rs"
+blob_sha = "87c55c601b59cc60f0a83a5a06b38c049ebf1e30"
+byte_size = 20714
+source_role = "scoring"
+build_reachability = "declared-but-unbuilt"
+old_default_runtime_reachability = "unreachable"
+direct_network_io = "none"
+direct_filesystem_io = "none"
+process_interaction = "none"
+unsafe_code = "absent"
+identity_behavior = "randomized"
+evidence_quality = "heuristic"
+claim_risk = "high"
+current_replacement = "Current AssessmentDisposition, verifier policy, and evidence-backed projection."
+salvage_priority = "p2"
+notes = "Implemented a CVSS-like factor vocabulary but mixed non-standard heuristics, random IDs, and automatic confidence."
+
+[[files.components]]
+id = "scoring.factor-vocabulary"
+symbol = "SeverityLevel, ScoreFactor, CVSS-like dimensions, and score functions"
+disposition = "rewrite-from-contract"
+priority = "p2"
+historical_behavior = "Calculated base, temporal, environmental, exploitability, impact, and confidence values from supplied strings."
+old_runtime_reachability = "unreachable"
+reusable_value = "Scoring dimension vocabulary for a future standards-checked policy."
+prohibited_behaviors = ["automatic-severity", "misleading-claim"]
+modern_destination = "documentation-only"
+prerequisites = ["standards conformance vectors", "evidence-bound scoring authority"]
+status = "planned"
+rationale = "Reimplement only with a validated standard and explicit claim policy."
+
+[[files.components]]
+id = "scoring.automatic-disposition"
+symbol = "score_vulnerability identity, confidence, and severity projection"
+disposition = "reject-misleading-claim"
+priority = "never"
+historical_behavior = "Generated random identity and automatic severity and confidence from unvalidated caller metadata."
+old_runtime_reachability = "unreachable"
+reusable_value = "None of the disposition semantics."
+prohibited_behaviors = ["misleading-claim", "random-identity", "automatic-severity"]
+modern_destination = "none"
+prerequisites = []
+status = "rejected"
+rationale = "Severity cannot create vulnerability evidence or confirmation authority."
+
+[[files]]
+path = "src/scanner/source_code_analyzer.rs"
+blob_sha = "136727f6f74bbb81811390de9d546fc12d8e96fc"
+byte_size = 37449
+source_role = "source-analysis"
+build_reachability = "declared-but-unbuilt"
+old_default_runtime_reachability = "unreachable"
+direct_network_io = "none"
+direct_filesystem_io = "none"
+process_interaction = "none"
+unsafe_code = "absent"
+identity_behavior = "randomized"
+evidence_quality = "heuristic"
+claim_risk = "high"
+salvage_priority = "p2"
+notes = "Accepted caller-supplied source models and matched strings without parser, syntax tree, control-flow, or data-flow evidence."
+
+[[files.components]]
+id = "source-analysis.pattern-taxonomy"
+symbol = "CodeVulnType, SourceFile, FunctionAnalysis, SecurityCall, SecretPattern, and CodePattern"
+disposition = "rewrite-from-contract"
+priority = "p2"
+historical_behavior = "Enumerated source-analysis categories, secret patterns, dependency concepts, and security-call families."
+old_runtime_reachability = "unreachable"
+reusable_value = "Source-analysis taxonomy and sanitizable fixtures."
+prohibited_behaviors = ["raw-sensitive-evidence", "automatic-severity"]
+modern_destination = "venom-artifact"
+prerequisites = ["language-aware parser", "bounded source authority", "data-flow evidence contract"]
+status = "planned"
+rationale = "A future source domain must be parser-backed and remain distinct from substring scanning."
+
+[[files.components]]
+id = "source-analysis.substring-findings"
+symbol = "analyze_codebase and test_* vulnerability methods"
+disposition = "reject-misleading-claim"
+priority = "never"
+historical_behavior = "Promoted source substrings into random-ID vulnerabilities and automatic severity."
+old_runtime_reachability = "unreachable"
+reusable_value = "None of the finding projection."
+prohibited_behaviors = ["misleading-claim", "random-identity", "raw-sensitive-evidence", "automatic-severity"]
+modern_destination = "none"
+prerequisites = []
+status = "rejected"
+rationale = "Substring presence does not prove reachability, control flow, or impact."
+
+[[files]]
+path = "src/scanner/sqli_advanced.rs"
+blob_sha = "7f2b920a998dc48d25a0c1a1511dacd3b535e0a4"
+byte_size = 22998
+source_role = "sql-injection"
+build_reachability = "declared-but-unbuilt"
+old_default_runtime_reachability = "unreachable"
+direct_network_io = "direct"
+direct_filesystem_io = "none"
+process_interaction = "none"
+unsafe_code = "absent"
+identity_behavior = "deterministic"
+evidence_quality = "heuristic"
+claim_risk = "high"
+current_replacement = "Current bounded SQL structural control, candidate, replay, observer, and ledger review."
+salvage_priority = "p2"
+notes = "Contained DBMS and technique breadth but independently sent extraction, stacked-query, timing, and WAF-bypass probes."
+
+[[files.components]]
+id = "sqli-advanced.technique-taxonomy"
+symbol = "InjectionType, DatabaseType, fingerprinting, enumeration, and extraction candidate families"
+disposition = "import-metadata-only"
+priority = "p2"
+historical_behavior = "Enumerated union, error, boolean, time, stacked, second-order, DBMS, extraction, and bypass techniques."
+old_runtime_reachability = "unreachable"
+reusable_value = "DBMS and injection-family metadata plus historical candidate strings."
+prohibited_behaviors = ["direct-network-authority", "raw-sensitive-evidence"]
+modern_destination = "venom-scanner:payload-catalog"
+prerequisites = ["metadata-first family selection", "versioned evidence contract"]
+status = "planned"
+rationale = "Import only reviewed metadata in a later payload-catalog mission."
+
+[[files.components]]
+id = "sqli-advanced.direct-extraction"
+symbol = "detect_advanced_sqli and network test/extraction methods"
+disposition = "superseded-by-current-runtime"
+priority = "p3"
+historical_behavior = "Used an independent client for intrusive probes and inferred SQLi from errors, timing, and response differences."
+old_runtime_reachability = "unreachable"
+reusable_value = "Differential intent is represented by current structural SQL review."
+prohibited_behaviors = ["direct-network-authority", "unbounded-io", "raw-sensitive-evidence", "misleading-claim"]
+modern_destination = "venom-scanner:web-assessment"
+prerequisites = []
+status = "superseded"
+rationale = "Current SQL actions are bounded, evidence-correlated, KnowledgeOnly, and NeedsReview at most."
+
+[[files]]
+path = "src/scanner/sqli_expert.rs"
+blob_sha = "5fcfb7ec4f53a1eaef85542ed2e121114f5b3dec"
+byte_size = 13244
+source_role = "sql-injection"
+build_reachability = "declared-but-unbuilt"
+old_default_runtime_reachability = "unreachable"
+direct_network_io = "direct"
+direct_filesystem_io = "none"
+process_interaction = "none"
+unsafe_code = "absent"
+identity_behavior = "deterministic"
+evidence_quality = "heuristic"
+claim_risk = "high"
+current_replacement = "Current SQL structural review and replay evidence."
+salvage_priority = "p3"
+notes = "Combined baseline, mutation, and comparison helpers but owned an independent HTTP client and direct finding semantics."
+
+[[files.components]]
+id = "sqli-expert.differential-intent"
+symbol = "SqliExpert baseline, control, and candidate organization"
+disposition = "superseded-by-current-runtime"
+priority = "p3"
+historical_behavior = "Compared baseline and mutated requests across union, boolean, timing, and error candidates."
+old_runtime_reachability = "unreachable"
+reusable_value = "Matched differential and DBMS-context intent already exists in current SQL review."
+prohibited_behaviors = ["direct-network-authority", "legacy-runtime-coupling"]
+modern_destination = "venom-scanner:web-assessment"
+prerequisites = []
+status = "superseded"
+rationale = "Current observer and ledger provide stronger bounded structural evidence."
+
+[[files.components]]
+id = "sqli-expert.heuristic-confirmation"
+symbol = "test_* finding construction and detect_dbms"
+disposition = "reject-misleading-claim"
+priority = "never"
+historical_behavior = "Treated timing, error strings, and response differences as SQLi vulnerability evidence through a second client."
+old_runtime_reachability = "unreachable"
+reusable_value = "None of the confirmation semantics."
+prohibited_behaviors = ["misleading-claim", "direct-network-authority", "automatic-severity", "raw-sensitive-evidence"]
+modern_destination = "none"
+prerequisites = []
+status = "rejected"
+rationale = "Timing and error strings alone cannot confirm SQL injection."
+
+[[files]]
+path = "src/scanner/sqli_payloads.rs"
+blob_sha = "9968dad1f39750e9045c25d9d9884e07619b7387"
+byte_size = 17027
+source_role = "payload-catalog"
+build_reachability = "declared-but-unbuilt"
+old_default_runtime_reachability = "unreachable"
+direct_network_io = "none"
+direct_filesystem_io = "none"
+process_interaction = "none"
+unsafe_code = "absent"
+identity_behavior = "deterministic"
+evidence_quality = "not-applicable"
+claim_risk = "low"
+salvage_priority = "p1"
+notes = "Static SQL payload definitions grouped by DBMS, category, difficulty, and bypass metadata."
+
+[[files.components]]
+id = "sqli-payloads.catalog"
+symbol = "SqliPayloadGenerator DBMS and category catalogs"
+disposition = "import-metadata-only"
+priority = "p1"
+historical_behavior = "Enumerated MySQL, PostgreSQL, MSSQL, Oracle, generic, union, boolean, timing, error, and bypass strings."
+old_runtime_reachability = "unreachable"
+reusable_value = "DBMS, family, category, encoding, and historical fixture metadata."
+prohibited_behaviors = ["direct-network-authority", "raw-sensitive-evidence"]
+modern_destination = "venom-scanner:payload-catalog"
+prerequisites = ["closed family IDs", "versioned strategies", "subject-specific bounded selection"]
+status = "planned"
+rationale = "Candidate strings require individual evidence-compatible review before activation."
+
+[[files]]
+path = "src/scanner/ssrf_detector.rs"
+blob_sha = "ae7f38ef5aaa5521a5072378a5590fb8b8a8ec88"
+byte_size = 15430
+source_role = "server-side-request"
+build_reachability = "declared-but-unbuilt"
+old_default_runtime_reachability = "unreachable"
+direct_network_io = "direct"
+direct_filesystem_io = "none"
+process_interaction = "none"
+unsafe_code = "absent"
+identity_behavior = "deterministic"
+evidence_quality = "heuristic"
+claim_risk = "high"
+salvage_priority = "p2"
+notes = "Enumerated SSRF vectors but directly tested localhost, private addresses, metadata, file schemes, ports, and bypass forms."
+
+[[files.components]]
+id = "ssrf.vector-taxonomy"
+symbol = "SsrfType and target/vector families"
+disposition = "import-metadata-only"
+priority = "p2"
+historical_behavior = "Enumerated local, internal, metadata, file, port, DNS, redirect, and filter-bypass SSRF cases."
+old_runtime_reachability = "unreachable"
+reusable_value = "SSRF vector and evidence-capability taxonomy."
+prohibited_behaviors = ["direct-network-authority", "unbounded-io"]
+modern_destination = "venom-scanner:oast"
+prerequisites = ["explicit OAST authority", "exact callback correlation", "network-scope policy"]
+status = "planned"
+rationale = "Only metadata is reusable until a separately authorized OAST domain exists."
+
+[[files.components]]
+id = "ssrf.direct-prober"
+symbol = "detect_ssrf and test_* network methods"
+disposition = "reject-unsafe-adapter"
+priority = "never"
+historical_behavior = "Used its own client to probe sensitive local and cloud targets and inferred SSRF from coarse responses."
+old_runtime_reachability = "unreachable"
+reusable_value = "No transport implementation."
+prohibited_behaviors = ["direct-network-authority", "unbounded-io", "legacy-runtime-coupling", "misleading-claim"]
+modern_destination = "none"
+prerequisites = []
+status = "rejected"
+rationale = "Sensitive SSRF targets require separate explicit authority and correlated evidence."
+
+[[files]]
+path = "src/scanner/ssti_expert.rs"
+blob_sha = "a550407e6e8f215371b2577a1b1ef681a281e0d7"
+byte_size = 10024
+source_role = "template-injection"
+build_reachability = "declared-but-unbuilt"
+old_default_runtime_reachability = "unreachable"
+direct_network_io = "direct"
+direct_filesystem_io = "none"
+process_interaction = "none"
+unsafe_code = "absent"
+identity_behavior = "deterministic"
+evidence_quality = "heuristic"
+claim_risk = "high"
+current_replacement = "Current SSTI structural control, candidate, replay, observer, and ledger review."
+salvage_priority = "p2"
+notes = "Sent Jinja, ERB, Smarty, Twig, and Java template candidates through an independent client."
+
+[[files.components]]
+id = "ssti.engine-taxonomy"
+symbol = "engine-specific test methods and mutation families"
+disposition = "import-metadata-only"
+priority = "p2"
+historical_behavior = "Enumerated template-engine syntax and arithmetic evaluation candidates."
+old_runtime_reachability = "unreachable"
+reusable_value = "Engine and candidate-family taxonomy plus historical fixtures."
+prohibited_behaviors = ["direct-network-authority", "raw-sensitive-evidence"]
+modern_destination = "venom-scanner:payload-catalog"
+prerequisites = ["closed engine context", "versioned structural evidence strategy"]
+status = "planned"
+rationale = "Metadata may inform later catalog work without reactivating direct requests."
+
+[[files.components]]
+id = "ssti.direct-review"
+symbol = "SstiExpert::detect_ssti and test_* request methods"
+disposition = "superseded-by-current-runtime"
+priority = "p3"
+historical_behavior = "Built raw URLs, used a separate client, and inferred evaluation from response strings."
+old_runtime_reachability = "unreachable"
+reusable_value = "Structural intent is represented by current SSTI review."
+prohibited_behaviors = ["direct-network-authority", "legacy-runtime-coupling", "misleading-claim"]
+modern_destination = "venom-scanner:web-assessment"
+prerequisites = []
+status = "superseded"
+rationale = "Current SSTI review preserves bounded matched evidence and conservative disposition."
+
+[[files]]
+path = "src/scanner/test_fixtures.rs"
+blob_sha = "5f9baec25ca5d1b8049b70b477e94eac9e5972a9"
+byte_size = 15512
+source_role = "test-fixture"
+build_reachability = "declared-but-unbuilt"
+old_default_runtime_reachability = "unreachable"
+direct_network_io = "none"
+direct_filesystem_io = "none"
+process_interaction = "none"
+unsafe_code = "absent"
+identity_behavior = "deterministic"
+evidence_quality = "fixture-only"
+claim_risk = "moderate"
+salvage_priority = "p1"
+notes = "Generated mock requests, responses, CVSS inputs, threat indicators, behavior patterns, and synthetic vulnerability data."
+
+[[files.components]]
+id = "fixtures.request-response-corpus"
+symbol = "TestDataGenerator request, response, CVSS, threat, and behavior helpers"
+disposition = "import-fixture-corpus"
+priority = "p1"
+historical_behavior = "Produced deterministic positive, negative, timing, and protocol-shaped test inputs."
+old_runtime_reachability = "unreachable"
+reusable_value = "Sanitizable historical fixture inputs and negative cases."
+prohibited_behaviors = ["raw-sensitive-evidence", "fabricated-finding"]
+modern_destination = "fixture-corpus"
+prerequisites = ["fixture provenance review", "current schema conversion", "negative expectation audit"]
+status = "planned"
+rationale = "Selected inputs may improve current tests after evidence expectations are rewritten."
+
+[[files.components]]
+id = "fixtures.synthetic-vulnerabilities"
+symbol = "generate_vulnerability_data and vulnerable mock endpoint expectations"
+disposition = "reject-misleading-claim"
+priority = "never"
+historical_behavior = "Constructed synthetic vulnerability records and vulnerable responses as if they demonstrated detector correctness."
+old_runtime_reachability = "unreachable"
+reusable_value = "Only raw fixture inputs after removing product claims."
+prohibited_behaviors = ["misleading-claim", "fabricated-finding", "automatic-severity"]
+modern_destination = "none"
+prerequisites = []
+status = "rejected"
+rationale = "A fixture can exercise a contract but cannot prove real vulnerability behavior."
+
+[[files]]
+path = "src/scanner/threat_intelligence.rs"
+blob_sha = "05f4751986c0a06d146ebbf6d39414a0d945c03c"
+byte_size = 12457
+source_role = "threat-intelligence"
+build_reachability = "declared-but-unbuilt"
+old_default_runtime_reachability = "unreachable"
+direct_network_io = "none"
+direct_filesystem_io = "none"
+process_interaction = "none"
+unsafe_code = "absent"
+identity_behavior = "deterministic"
+evidence_quality = "heuristic"
+claim_risk = "high"
+salvage_priority = "p2"
+notes = "Maintained in-memory IOC records and static correlation rules; feed update had no external implementation."
+
+[[files.components]]
+id = "threat-intel.ioc-taxonomy"
+symbol = "ThreatIntel, IndicatorType, VulnerabilityIntel, and correlation/profile methods"
+disposition = "rewrite-from-contract"
+priority = "p2"
+historical_behavior = "Modeled IOC types, threat levels, vulnerability intelligence, correlation, and recommendation categories."
+old_runtime_reachability = "unreachable"
+reusable_value = "IOC and provenance vocabulary for a future threat-intelligence domain."
+prohibited_behaviors = ["raw-sensitive-evidence", "automatic-severity"]
+modern_destination = "documentation-only"
+prerequisites = ["versioned source provenance", "bounded feed authority", "expiry and confidence model"]
+status = "planned"
+rationale = "Rebuild around authoritative sources and deterministic evidence identity."
+
+[[files.components]]
+id = "threat-intel.static-claims"
+symbol = "check_zero_day_patterns, update_from_feed, and fixed recommendation logic"
+disposition = "reject-misleading-claim"
+priority = "never"
+historical_behavior = "Used static or no-op data paths to claim active exploits, reputation, feed updates, and zero-day patterns."
+old_runtime_reachability = "unreachable"
+reusable_value = "None of the live-intelligence claims."
+prohibited_behaviors = ["misleading-claim", "unconditional-success", "automatic-severity"]
+modern_destination = "none"
+prerequisites = []
+status = "rejected"
+rationale = "Threat intelligence requires source provenance and freshness evidence."
+
+[[files]]
+path = "src/scanner/websocket_scanner.rs"
+blob_sha = "ace607e084037d947e22bad5dd6bb657856786da"
+byte_size = 17627
+source_role = "websocket"
+build_reachability = "declared-but-unbuilt"
+old_default_runtime_reachability = "unreachable"
+direct_network_io = "none"
+direct_filesystem_io = "none"
+process_interaction = "none"
+unsafe_code = "absent"
+identity_behavior = "randomized"
+evidence_quality = "fabricated"
+claim_risk = "fabricated"
+salvage_priority = "p1"
+notes = "Modeled WebSocket, Socket.IO, and WebRTC data but all primary WebSocket test helpers returned true without transport."
+
+[[files.components]]
+id = "websocket.protocol-taxonomy"
+symbol = "WebSocketMessage, MessageType, SocketIOEvent, and WebRTCFingerprint"
+disposition = "import-metadata-only"
+priority = "p1"
+historical_behavior = "Enumerated message directions, frame categories, Socket.IO events, WebRTC fingerprints, and candidate weakness classes."
+old_runtime_reachability = "unreachable"
+reusable_value = "Protocol/message taxonomy and historical candidate families."
+prohibited_behaviors = ["fabricated-finding", "raw-sensitive-evidence"]
+modern_destination = "future-websocket-domain"
+prerequisites = ["explicit protocol transport authority", "matched message evidence", "bounded session lifecycle"]
+status = "planned"
+rationale = "Only metadata should survive until a real bounded protocol domain exists."
+
+[[files.components]]
+id = "websocket.unconditional-findings"
+symbol = "scan_websocket and test_* helpers"
+disposition = "reject-fabricated-behavior"
+priority = "never"
+historical_behavior = "Returned true for every protocol test and emitted random high-severity findings with invented payload and impact."
+old_runtime_reachability = "unreachable"
+reusable_value = "None of the findings."
+prohibited_behaviors = ["fabricated-finding", "unconditional-success", "random-identity", "raw-sensitive-evidence", "automatic-severity"]
+modern_destination = "none"
+prerequisites = []
+status = "rejected"
+rationale = "No WebSocket connection, message exchange, or target evidence occurred."
+
+[[files]]
+path = "src/scanner/xss_advanced.rs"
+blob_sha = "88a0adae4606f754454cd9aab6955482171abaa5"
+byte_size = 23484
+source_role = "cross-site-scripting"
+build_reachability = "declared-but-unbuilt"
+old_default_runtime_reachability = "unreachable"
+direct_network_io = "direct"
+direct_filesystem_io = "none"
+process_interaction = "none"
+unsafe_code = "absent"
+identity_behavior = "deterministic"
+evidence_quality = "heuristic"
+claim_risk = "high"
+current_replacement = "Current HTML, attribute, and JavaScript source-context XSS structural review."
+salvage_priority = "p2"
+notes = "Contained broad context, sink, CSP, mutation, event, and URI concepts but used a separate client and substring heuristics."
+
+[[files.components]]
+id = "xss-advanced.context-taxonomy"
+symbol = "XssType, XssContext, SinkInfo, CspBypass, and context-aware payload families"
+disposition = "import-metadata-only"
+priority = "p2"
+historical_behavior = "Enumerated HTML, attribute, script, URI, event, DOM sink, CSP, mutation, and protocol contexts."
+old_runtime_reachability = "unreachable"
+reusable_value = "Context, sink, CSP, and family metadata plus historical fixtures."
+prohibited_behaviors = ["direct-network-authority", "raw-sensitive-evidence"]
+modern_destination = "venom-scanner:payload-catalog"
+prerequisites = ["exact source context", "versioned inert evidence strategy", "metadata-first selection"]
+status = "planned"
+rationale = "The taxonomy may extend the current catalog after individual evidence review."
+
+[[files.components]]
+id = "xss-advanced.direct-scanner"
+symbol = "detect_advanced_xss and network test methods"
+disposition = "superseded-by-current-runtime"
+priority = "p3"
+historical_behavior = "Sent raw candidates with its own client and inferred reflected, DOM, mutation, CSP, event, and protocol XSS from source strings."
+old_runtime_reachability = "unreachable"
+reusable_value = "Context-aware selection intent is represented by current source and parser evidence."
+prohibited_behaviors = ["direct-network-authority", "legacy-runtime-coupling", "misleading-claim", "raw-sensitive-evidence"]
+modern_destination = "venom-scanner:web-assessment"
+prerequisites = []
+status = "superseded"
+rationale = "Current XSS actions remain KnowledgeOnly and NeedsReview without browser execution."
+
+[[files]]
+path = "src/scanner/xss_expert.rs"
+blob_sha = "2bb71e3f709d4c745729020b5e3654224cc5dd16"
+byte_size = 10631
+source_role = "cross-site-scripting"
+build_reachability = "declared-but-unbuilt"
+old_default_runtime_reachability = "unreachable"
+direct_network_io = "direct"
+direct_filesystem_io = "none"
+process_interaction = "none"
+unsafe_code = "absent"
+identity_behavior = "deterministic"
+evidence_quality = "heuristic"
+claim_risk = "high"
+current_replacement = "Current source, DOM, and JavaScript-context XSS evidence and structural families."
+salvage_priority = "p3"
+notes = "Combined context strings and reflection checks with an independent HTTP client and vulnerability-oriented results."
+
+[[files.components]]
+id = "xss-expert.context-intent"
+symbol = "detect_context, is_payload_reflected, and is_parameter_used_in_sink"
+disposition = "superseded-by-current-runtime"
+priority = "p3"
+historical_behavior = "Tried to distinguish HTML attribute, text, script, and sink contexts from source strings."
+old_runtime_reachability = "unreachable"
+reusable_value = "Context-sensitive selection intent now has typed source and parser evidence."
+prohibited_behaviors = ["legacy-runtime-coupling", "raw-sensitive-evidence"]
+modern_destination = "venom-scanner:web-assessment"
+prerequisites = []
+status = "superseded"
+rationale = "Current analyzers provide exact quote and JavaScript lexical context without raw report leakage."
+
+[[files.components]]
+id = "xss-expert.reflection-claim"
+symbol = "detect_xss and test_* request methods"
+disposition = "reject-misleading-claim"
+priority = "never"
+historical_behavior = "Used a second client and treated reflected strings or sink names as XSS vulnerability evidence."
+old_runtime_reachability = "unreachable"
+reusable_value = "None of the vulnerability claim."
+prohibited_behaviors = ["misleading-claim", "direct-network-authority", "raw-sensitive-evidence", "automatic-severity"]
+modern_destination = "none"
+prerequisites = []
+status = "rejected"
+rationale = "Reflection and sink text do not establish structural control or execution."
+
+[[files]]
+path = "src/scanner/xss_payloads.rs"
+blob_sha = "35a48a5754fb8286c3efd493932b60585c0f47c4"
+byte_size = 19551
+source_role = "payload-catalog"
+build_reachability = "declared-but-unbuilt"
+old_default_runtime_reachability = "unreachable"
+direct_network_io = "none"
+direct_filesystem_io = "none"
+process_interaction = "none"
+unsafe_code = "absent"
+identity_behavior = "deterministic"
+evidence_quality = "not-applicable"
+claim_risk = "low"
+salvage_priority = "p1"
+notes = "Static XSS strings grouped by HTML, attribute, JavaScript, CSS, URI, mutation, CSP, filter, and difficulty metadata."
+
+[[files.components]]
+id = "xss-payloads.catalog"
+symbol = "XssPayloadGenerator context and bypass catalogs"
+disposition = "import-metadata-only"
+priority = "p1"
+historical_behavior = "Enumerated context-specific, mutation, CSP, filter, encoding, and bypass candidate strings."
+old_runtime_reachability = "unreachable"
+reusable_value = "Context, family, encoding, difficulty, and historical fixture metadata."
+prohibited_behaviors = ["direct-network-authority", "raw-sensitive-evidence"]
+modern_destination = "venom-scanner:payload-catalog"
+prerequisites = ["closed family IDs", "exact source-context compatibility", "versioned inert evidence strategies"]
+status = "planned"
+rationale = "Each future candidate requires separate safe evidence review before activation."

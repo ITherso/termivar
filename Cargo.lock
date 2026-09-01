@@ -2523,8 +2523,11 @@ dependencies = [
  "cargo_metadata",
  "clap",
  "proc-macro2",
+ "serde",
+ "sha2",
  "syn",
  "tempfile",
+ "toml",
  "venom-exploit",
 ]
 
