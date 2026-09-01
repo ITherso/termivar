@@ -1,0 +1,41 @@
+schema = "venom.artifact-signatures/v1"
+pack_id = "venom-canary"
+pack_revision = 1
+title = "Venom artifact scanner canaries"
+summary = "Harmless deterministic markers for exact, wildcard, overlap, and streaming-boundary tests."
+
+[[signatures]]
+id = "venom-canary-exact"
+revision = 1
+label = "Exact Venom canary"
+observation_class = "test-canary"
+pattern = "56 45 4E 4F 4D 2D 43 41 4E 41 52 59"
+tags = ["exact", "lab"]
+description = "A fixed ASCII test marker with no product or malware meaning."
+
+[[signatures]]
+id = "venom-canary-wildcard"
+revision = 1
+label = "Wildcard Venom canary"
+observation_class = "test-canary"
+pattern = "56 45 4E 4F 4D ?? 43 41 4E 41 52 59"
+tags = ["lab", "wildcard"]
+description = "A one-byte wildcard fixture for deterministic pattern compilation."
+
+[[signatures]]
+id = "venom-overlap-canary"
+revision = 1
+label = "Overlapping match canary"
+observation_class = "test-canary"
+pattern = "41 41"
+tags = ["lab", "overlap"]
+description = "The input AAA produces observations at offsets zero and one."
+
+[[signatures]]
+id = "venom-stream-boundary-canary"
+revision = 1
+label = "Streaming boundary canary"
+observation_class = "test-canary"
+pattern = "43 48 55 4E 4B ?? 42 4F 55 4E 44 41 52 59"
+tags = ["lab", "streaming"]
+description = "A marker used to prove matching across bounded reader chunks."

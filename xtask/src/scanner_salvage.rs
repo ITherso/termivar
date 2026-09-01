@@ -362,6 +362,7 @@ fn validate_required_component_contracts(ledger: &SalvageLedger) -> TaskResult {
                     component.priority,
                     component.status,
                     component.modern_destination,
+                    component.modern_implementation.as_deref(),
                 ),
             )
         })
@@ -372,8 +373,9 @@ fn validate_required_component_contracts(ledger: &SalvageLedger) -> TaskResult {
             (
                 Disposition::PortAlgorithm,
                 Priority::P0,
-                ComponentStatus::Planned,
+                ComponentStatus::Restored,
                 ModernDestination::VenomArtifact,
+                Some("venom_artifact::ArtifactScanner (venom.artifact-signature-scan/v1)"),
             ),
         ),
         (
@@ -383,6 +385,7 @@ fn validate_required_component_contracts(ledger: &SalvageLedger) -> TaskResult {
                 Priority::Never,
                 ComponentStatus::Rejected,
                 ModernDestination::None,
+                None,
             ),
         ),
         (
@@ -392,6 +395,7 @@ fn validate_required_component_contracts(ledger: &SalvageLedger) -> TaskResult {
                 Priority::Never,
                 ComponentStatus::Rejected,
                 ModernDestination::None,
+                None,
             ),
         ),
         (
@@ -401,6 +405,7 @@ fn validate_required_component_contracts(ledger: &SalvageLedger) -> TaskResult {
                 Priority::Never,
                 ComponentStatus::Rejected,
                 ModernDestination::None,
+                None,
             ),
         ),
     ]);
@@ -1037,11 +1042,17 @@ fn render_markdown(ledger: &SalvageLedger) -> String {
                     ComponentStatus::Planned | ComponentStatus::Restored
                 )
         }) {
+            let implementation = component
+                .modern_implementation
+                .as_deref()
+                .map(|value| format!("; implementation `{}`", escape_markdown(value)))
+                .unwrap_or_default();
             output.push_str(&format!(
-                "- `{}` → `{}` ({}): {}\n",
+                "- `{}` → `{}` ({}{}): {}\n",
                 escape_markdown(&component.id),
                 component.modern_destination.wire(),
                 component.status.wire(),
+                implementation,
                 escape_markdown(&component.rationale)
             ));
         }
@@ -1318,6 +1329,20 @@ mod tests {
             .find(|component| component.id == "detector.byte-pattern")
             .expect("byte-pattern component")
             .disposition = Disposition::ArchiveReference;
+        assert!(validate_required_component_contracts(&fixture).is_err());
+
+        let source = fs::read(root.join(LEDGER_RELATIVE_PATH)).expect("read repository ledger");
+        let mut fixture = parse_ledger(&source).expect("parse repository ledger");
+        fixture
+            .files
+            .iter_mut()
+            .find(|file| file.path == "src/scanner/detector.rs")
+            .expect("detector record")
+            .components
+            .iter_mut()
+            .find(|component| component.id == "detector.byte-pattern")
+            .expect("byte-pattern component")
+            .modern_implementation = Some("venom_artifact::OtherScanner".to_owned());
         assert!(validate_required_component_contracts(&fixture).is_err());
     }
 

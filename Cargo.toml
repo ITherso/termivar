@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "crates/venom-artifact",
     "crates/venom-core",
     "crates/venom-exploit",
     "crates/venom-proxy",

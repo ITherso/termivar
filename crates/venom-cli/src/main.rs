@@ -10,7 +10,8 @@
 //! - **Optional surfaces:** the historical mixed-authority, whole-run-unmetered
 //!   runner is available only as `legacy-scan` under `legacy-scanner`;
 //!   unsupported API and experimental proxy adapters are separately
-//!   feature-gated.
+//!   feature-gated. The local, explicit-file artifact adapter is available only
+//!   under `artifact-adapter` and does not participate in `scan`.
 //! - **Support:** all surfaces remain alpha. The default runtime emits
 //!   operational decisions and verifier outcomes, not vulnerability findings.
 //!
@@ -18,6 +19,8 @@
 
 #![forbid(unsafe_code)]
 
+#[cfg(feature = "artifact-adapter")]
+mod artifact_adapter;
 mod assessment_scan;
 mod auth_input;
 mod decision_scan;
@@ -75,6 +78,33 @@ impl From<CliReportFormat> for venom_scanner::ReportFormat {
 enum CliScanProfile {
     Baseline,
     WebReview,
+}
+
+/// Output format for the opt-in local artifact adapter.
+#[cfg(feature = "artifact-adapter")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+#[value(rename_all = "lowercase")]
+enum ArtifactOutputFormat {
+    Text,
+    Json,
+}
+
+/// Explicit operations in the isolated artifact domain.
+#[cfg(feature = "artifact-adapter")]
+#[derive(Subcommand)]
+enum ArtifactCommands {
+    /// Scan one explicitly selected regular file with one signature manifest.
+    ScanFile {
+        /// Strict `venom.artifact-signatures/v1` manifest to compile.
+        #[arg(long, value_name = "SIGNATURES.toml")]
+        signatures: PathBuf,
+        /// One explicit local regular file. Directories and links are rejected.
+        #[arg(long, value_name = "FILE")]
+        input: PathBuf,
+        /// Render the bounded observation report as text or JSON.
+        #[arg(long, value_enum, default_value_t = ArtifactOutputFormat::Text)]
+        format: ArtifactOutputFormat,
+    },
 }
 
 impl From<CliScanProfile> for venom_scanner::web_runtime::BuiltInScanProfile {
@@ -269,6 +299,12 @@ enum Commands {
         /// Explicit fixed upstream socket. No implicit destination is used.
         #[arg(long)]
         upstream: std::net::SocketAddr,
+    },
+    /// Run an opt-in bounded signature scan of one explicit local file.
+    #[cfg(feature = "artifact-adapter")]
+    Artifact {
+        #[command(subcommand)]
+        command: ArtifactCommands,
     },
 }
 
@@ -723,6 +759,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Some(Commands::Proxy { addr, upstream }) => {
             ProxyServer::new(addr, upstream).start().await?;
         },
+        #[cfg(feature = "artifact-adapter")]
+        Some(Commands::Artifact {
+            command:
+                ArtifactCommands::ScanFile {
+                    signatures,
+                    input,
+                    format,
+                },
+        }) => {
+            artifact_adapter::scan_file(&signatures, &input, format)?;
+        },
         None => {
             println!("Venom v{}", env!("CARGO_PKG_VERSION"));
             println!("Use --help for more information");
@@ -1050,6 +1097,54 @@ mod tests {
     #[cfg(not(feature = "proxy-adapter"))]
     fn default_cli_has_no_proxy_command() {
         assert!(Cli::try_parse_from(["venom", "proxy"]).is_err());
+    }
+
+    #[test]
+    #[cfg(not(feature = "artifact-adapter"))]
+    fn default_cli_has_no_artifact_command() {
+        assert!(Cli::try_parse_from(["venom", "artifact"]).is_err());
+    }
+
+    #[test]
+    #[cfg(feature = "artifact-adapter")]
+    fn artifact_scan_file_requires_explicit_paths_and_has_a_closed_format() {
+        let cli = Cli::try_parse_from([
+            "venom",
+            "artifact",
+            "scan-file",
+            "--signatures",
+            "signatures.toml",
+            "--input",
+            "artifact.bin",
+            "--format",
+            "json",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Artifact {
+                command: ArtifactCommands::ScanFile {
+                    signatures,
+                    input,
+                    format: ArtifactOutputFormat::Json,
+                },
+            }) if signatures == PathBuf::from("signatures.toml")
+                && input == PathBuf::from("artifact.bin")
+        ));
+
+        assert!(Cli::try_parse_from(["venom", "artifact", "scan-file"]).is_err());
+        assert!(Cli::try_parse_from([
+            "venom",
+            "artifact",
+            "scan-file",
+            "--signatures",
+            "signatures.toml",
+            "--input",
+            "artifact.bin",
+            "--format",
+            "yaml",
+        ])
+        .is_err());
     }
 
     #[test]

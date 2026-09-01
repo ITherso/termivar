@@ -123,7 +123,8 @@ const REQUIRED_CLI_DEPENDENCIES: &[&str] = &[
     "venom-scanner",
 ];
 
-const OPTIONAL_CLI_DEPENDENCIES: &[&str] = &["reqwest", "venom-api", "venom-proxy"];
+const OPTIONAL_CLI_DEPENDENCIES: &[&str] =
+    &["reqwest", "venom-api", "venom-artifact", "venom-proxy"];
 const REQUIRED_API_DEPENDENCIES: &[&str] = &["axum"];
 const REQUIRED_PROXY_DEPENDENCIES: &[&str] = &["tokio"];
 
@@ -1092,6 +1093,7 @@ fn cli_feature_violations(
     }
     for (feature, expected) in [
         ("api-adapter", &["dep:venom-api"][..]),
+        ("artifact-adapter", &["dep:venom-artifact"][..]),
         (
             "legacy-scanner",
             &["dep:reqwest", "venom-scanner/legacy-scanner"][..],
@@ -1112,7 +1114,7 @@ fn cli_feature_violations(
         }
     }
 
-    for dependency in ["reqwest", "venom-api", "venom-proxy"] {
+    for dependency in ["reqwest", "venom-api", "venom-artifact", "venom-proxy"] {
         if dependencies
             .get(dependency)
             .is_none_or(|contract| !contract.optional)
@@ -8844,6 +8846,10 @@ mod tests {
             ("default".to_owned(), Vec::new()),
             ("api-adapter".to_owned(), vec!["dep:venom-api".to_owned()]),
             (
+                "artifact-adapter".to_owned(),
+                vec!["dep:venom-artifact".to_owned()],
+            ),
+            (
                 "legacy-scanner".to_owned(),
                 vec![
                     "dep:reqwest".to_owned(),
@@ -8863,6 +8869,7 @@ mod tests {
         let dependencies = BTreeMap::from([
             ("reqwest".to_owned(), optional.clone()),
             ("venom-api".to_owned(), optional.clone()),
+            ("venom-artifact".to_owned(), optional.clone()),
             ("venom-proxy".to_owned(), optional),
             (
                 "venom-scanner".to_owned(),
@@ -8887,6 +8894,14 @@ mod tests {
             .any(|violation| violation.contains("venom-api") && violation.contains("optional")));
 
         dependencies.get_mut("venom-api").unwrap().optional = true;
+        dependencies.get_mut("venom-artifact").unwrap().optional = false;
+        assert!(cli_feature_violations(&features, &dependencies)
+            .iter()
+            .any(
+                |violation| violation.contains("venom-artifact") && violation.contains("optional")
+            ));
+
+        dependencies.get_mut("venom-artifact").unwrap().optional = true;
         dependencies
             .get_mut("venom-scanner")
             .unwrap()

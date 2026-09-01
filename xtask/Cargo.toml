@@ -18,6 +18,7 @@ sha2 = { workspace = true }
 syn = { version = "2", features = ["full", "visit"] }
 toml = { workspace = true }
 venom-exploit = { path = "../crates/venom-exploit", version = "=0.10.0-alpha.1" }
+venom-artifact = { path = "../crates/venom-artifact", version = "=0.10.0-alpha.1" }
 
 [dev-dependencies]
 tempfile = { workspace = true }

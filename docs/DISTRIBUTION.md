@@ -84,7 +84,14 @@ venom --help
 venom scan --help
 ```
 
-The supported CLI truth is documented in [Getting Started](GETTING_STARTED.md). `venom scan` is the bounded deterministic Preview, while `decision-scan` is its deprecated compatibility alias. The mixed-authority `legacy-scan` (whose complete run remains `Unmetered`), unsupported `api`, and experimental `proxy` adapters are absent from default builds and require explicit Cargo features.
+The supported CLI truth is documented in [Getting Started](GETTING_STARTED.md).
+`venom scan` is the bounded deterministic Preview, while `decision-scan` is its
+deprecated compatibility alias. The mixed-authority `legacy-scan` (whose
+complete run remains `Unmetered`), Preview local-file `artifact`, unsupported
+`api`, and experimental `proxy` adapters are absent from default builds and
+require explicit Cargo features. The artifact adapter reads only one explicitly
+selected regular file and reports signature observations; it is not a machine
+scanner, malware verifier, or distribution channel.
 
 ## Reporting problems
 

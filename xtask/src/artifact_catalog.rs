@@ -1,0 +1,401 @@
+//! Repository-owned artifact-signature pack validation.
+
+use crate::TaskResult;
+use std::{
+    fs::{self, File},
+    io::Read,
+    path::{Path, PathBuf},
+};
+use venom_artifact::{
+    ArtifactCatalog, ArtifactCatalogBuilder, ArtifactSignaturePack, MAX_SIGNATURE_MANIFEST_BYTES,
+};
+
+const MAX_PACK_ENTRIES: usize = 4_096;
+const MAX_PACK_DEPTH: usize = 8;
+const MAX_DIRECTORY_NAME_BYTES: usize = 128;
+const MAX_README_BYTES: u64 = 256 * 1024;
+
+pub(super) fn check(workspace_root: &Path) -> TaskResult {
+    let summary = validate_repository_catalog(workspace_root)?;
+    println!(
+        "artifact catalog validated: {} pack(s), {} signature(s), digest {}",
+        summary.pack_count, summary.signature_count, summary.catalog_digest
+    );
+    Ok(())
+}
+
+#[derive(Debug, Eq, PartialEq)]
+struct CatalogValidationSummary {
+    pack_count: usize,
+    signature_count: usize,
+    catalog_digest: String,
+}
+
+fn validate_repository_catalog(workspace_root: &Path) -> TaskResult<CatalogValidationSummary> {
+    let pack_root = workspace_root.join("artifact-signatures");
+    let manifest_paths = discover_manifest_paths(&pack_root)?;
+    let mut builder = ArtifactCatalogBuilder::new();
+
+    for manifest_path in &manifest_paths {
+        let source = read_bounded(manifest_path, MAX_SIGNATURE_MANIFEST_BYTES)?;
+        let pack = ArtifactSignaturePack::parse_toml(&source).map_err(|error| {
+            format!(
+                "invalid artifact signature pack {}: {error}",
+                repository_relative(workspace_root, manifest_path)
+            )
+        })?;
+        builder.register(pack).map_err(|error| {
+            format!(
+                "cannot register artifact signature pack {}: {error}",
+                repository_relative(workspace_root, manifest_path)
+            )
+        })?;
+    }
+
+    let catalog: ArtifactCatalog = builder.seal()?;
+    Ok(CatalogValidationSummary {
+        pack_count: catalog.pack_count(),
+        signature_count: catalog.len(),
+        catalog_digest: catalog.digest().to_string(),
+    })
+}
+
+fn discover_manifest_paths(pack_root: &Path) -> TaskResult<Vec<PathBuf>> {
+    validate_pack_root(pack_root)?;
+    let canonical_root = fs::canonicalize(pack_root)?;
+    let mut pending = vec![(pack_root.to_path_buf(), 0_usize)];
+    let mut manifests = Vec::new();
+    let mut entry_count = 0_usize;
+
+    while let Some((directory, depth)) = pending.pop() {
+        let remaining_entries = MAX_PACK_ENTRIES
+            .checked_sub(entry_count)
+            .ok_or("artifact-signature entry count exceeded its bound")?;
+        let mut entries = fs::read_dir(&directory)?
+            .take(remaining_entries.saturating_add(1))
+            .collect::<Result<Vec<_>, _>>()?;
+        if entries.len() > remaining_entries {
+            return Err(format!(
+                "artifact-signatures contains more than {MAX_PACK_ENTRIES} entries"
+            )
+            .into());
+        }
+        entries.sort_by_key(fs::DirEntry::file_name);
+
+        for entry in entries {
+            entry_count = entry_count
+                .checked_add(1)
+                .ok_or("artifact-signature entry count overflow")?;
+            debug_assert!(entry_count <= MAX_PACK_ENTRIES);
+
+            let path = entry.path();
+            let metadata = fs::symlink_metadata(&path)?;
+            if is_link_like(&metadata) {
+                return Err(format!(
+                    "symbolic links are forbidden in artifact-signatures: {}",
+                    display_relative(pack_root, &path)
+                )
+                .into());
+            }
+            ensure_descendant(&canonical_root, &path)?;
+
+            if metadata.is_dir() {
+                validate_directory_name(&entry.file_name())?;
+                let child_depth = depth
+                    .checked_add(1)
+                    .ok_or("artifact-signature directory depth overflow")?;
+                if child_depth > MAX_PACK_DEPTH {
+                    return Err(format!(
+                        "artifact-signature directory depth exceeds {MAX_PACK_DEPTH}: {}",
+                        display_relative(pack_root, &path)
+                    )
+                    .into());
+                }
+                pending.push((path, child_depth));
+                continue;
+            }
+
+            if !metadata.is_file() {
+                return Err(format!(
+                    "only regular metadata files are allowed in artifact-signatures: {}",
+                    display_relative(pack_root, &path)
+                )
+                .into());
+            }
+            if has_executable_permissions(&metadata) {
+                return Err(format!(
+                    "executable files are forbidden in artifact-signatures: {}",
+                    display_relative(pack_root, &path)
+                )
+                .into());
+            }
+
+            let file_name = entry
+                .file_name()
+                .into_string()
+                .map_err(|_| "artifact-signature file names must be valid UTF-8")?;
+            match file_name.as_str() {
+                "signatures.toml" => {
+                    if metadata.len() > MAX_SIGNATURE_MANIFEST_BYTES as u64 {
+                        return Err(format!(
+                            "artifact signature manifest exceeds {MAX_SIGNATURE_MANIFEST_BYTES} bytes: {}",
+                            display_relative(pack_root, &path)
+                        )
+                        .into());
+                    }
+                    manifests.push(path);
+                },
+                "README.md" if metadata.len() <= MAX_README_BYTES => {},
+                "README.md" => {
+                    return Err(format!(
+                        "artifact-signature README exceeds {MAX_README_BYTES} bytes: {}",
+                        display_relative(pack_root, &path)
+                    )
+                    .into());
+                },
+                _ => {
+                    return Err(format!(
+                        "unexpected file in artifact-signatures (V1 allows only signatures.toml and README.md): {}",
+                        display_relative(pack_root, &path)
+                    )
+                    .into());
+                },
+            }
+        }
+    }
+
+    manifests.sort_by(|left, right| {
+        display_relative(pack_root, left).cmp(&display_relative(pack_root, right))
+    });
+    Ok(manifests)
+}
+
+fn validate_pack_root(pack_root: &Path) -> TaskResult {
+    let metadata = fs::symlink_metadata(pack_root).map_err(|error| {
+        format!(
+            "repository artifact-signatures root is unavailable at {}: {error}",
+            pack_root.display()
+        )
+    })?;
+    if is_link_like(&metadata) || !metadata.is_dir() {
+        return Err("repository artifact-signatures root must be a real directory".into());
+    }
+    Ok(())
+}
+
+fn is_link_like(metadata: &fs::Metadata) -> bool {
+    if metadata.file_type().is_symlink() {
+        return true;
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+        metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+    }
+    #[cfg(not(windows))]
+    {
+        false
+    }
+}
+
+fn has_executable_permissions(_metadata: &fs::Metadata) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        _metadata.permissions().mode() & 0o111 != 0
+    }
+    #[cfg(not(unix))]
+    {
+        false
+    }
+}
+
+fn validate_directory_name(name: &std::ffi::OsStr) -> TaskResult {
+    let name = name
+        .to_str()
+        .ok_or("artifact-signature directory names must be valid UTF-8")?;
+    let valid = !name.is_empty()
+        && name.len() <= MAX_DIRECTORY_NAME_BYTES
+        && name.bytes().all(|byte| {
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'-' | b'_')
+        });
+    if valid {
+        Ok(())
+    } else {
+        Err(format!(
+            "invalid artifact-signature directory name (use bounded lowercase ASCII IDs): {name:?}"
+        )
+        .into())
+    }
+}
+
+fn ensure_descendant(canonical_root: &Path, path: &Path) -> TaskResult {
+    let canonical_path = fs::canonicalize(path)?;
+    if canonical_path.starts_with(canonical_root) {
+        Ok(())
+    } else {
+        Err(format!(
+            "artifact-signature path escapes repository-owned root: {}",
+            path.display()
+        )
+        .into())
+    }
+}
+
+fn read_bounded(path: &Path, limit: usize) -> TaskResult<Vec<u8>> {
+    let read_limit = u64::try_from(limit)?
+        .checked_add(1)
+        .ok_or("manifest read limit overflow")?;
+    let mut source = Vec::with_capacity(limit.min(16 * 1024));
+    File::open(path)?
+        .take(read_limit)
+        .read_to_end(&mut source)?;
+    if source.len() > limit {
+        Err(format!(
+            "artifact signature manifest exceeds {limit} bytes: {}",
+            path.display()
+        )
+        .into())
+    } else {
+        Ok(source)
+    }
+}
+
+fn repository_relative(workspace_root: &Path, path: &Path) -> String {
+    path.strip_prefix(workspace_root)
+        .unwrap_or(path)
+        .to_string_lossy()
+        .replace('\\', "/")
+}
+
+fn display_relative(root: &Path, path: &Path) -> String {
+    path.strip_prefix(root)
+        .unwrap_or(path)
+        .to_string_lossy()
+        .replace('\\', "/")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use tempfile::TempDir;
+
+    fn pack_root() -> (TempDir, PathBuf) {
+        let temporary = TempDir::new().expect("temporary directory");
+        let root = temporary.path().join("artifact-signatures");
+        fs::create_dir(&root).expect("create pack root");
+        (temporary, root)
+    }
+
+    #[test]
+    fn discovery_is_sorted_and_accepts_only_v1_metadata_files() {
+        let (_temporary, root) = pack_root();
+        for pack in ["z-pack", "a-pack"] {
+            let directory = root.join("lab").join(pack);
+            fs::create_dir_all(&directory).expect("create pack directory");
+            fs::write(directory.join("signatures.toml"), b"schema = 'test'")
+                .expect("write manifest");
+            fs::write(directory.join("README.md"), b"# Fixture").expect("write readme");
+        }
+
+        let manifests = discover_manifest_paths(&root).expect("discover manifests");
+        let relative = manifests
+            .iter()
+            .map(|path| display_relative(&root, path))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            relative,
+            ["lab/a-pack/signatures.toml", "lab/z-pack/signatures.toml"]
+        );
+    }
+
+    #[test]
+    fn unexpected_or_unsafe_pack_paths_are_rejected() {
+        let (_temporary, root) = pack_root();
+        let pack = root.join("lab/venom-canary");
+        fs::create_dir_all(&pack).expect("create pack directory");
+        fs::write(pack.join("scan.ps1"), b"not executed").expect("write unexpected file");
+        let error = discover_manifest_paths(&root).expect_err("unexpected file must fail");
+        assert!(error.to_string().contains("unexpected file"));
+
+        let (_temporary, root) = pack_root();
+        fs::create_dir(root.join("Unsafe Name")).expect("create unsafe directory");
+        let error = discover_manifest_paths(&root).expect_err("unsafe name must fail");
+        assert!(error.to_string().contains("directory name"));
+    }
+
+    #[test]
+    fn bounded_reader_rejects_oversized_sources_without_full_read() {
+        let temporary = TempDir::new().expect("temporary directory");
+        let path = temporary.path().join("signatures.toml");
+        fs::write(&path, vec![b'x'; 17]).expect("write source");
+
+        let error = read_bounded(&path, 16).expect_err("oversized input must fail");
+        assert!(error.to_string().contains("exceeds 16 bytes"));
+    }
+
+    #[test]
+    fn repository_lab_catalog_is_deterministic() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("xtask must live below workspace root")
+            .to_path_buf();
+        let summary = validate_repository_catalog(&root).expect("validate repository catalog");
+        let repeated = validate_repository_catalog(&root).expect("repeat repository validation");
+        assert_eq!(summary.pack_count, 1);
+        assert_eq!(summary.signature_count, 4);
+        assert_eq!(
+            summary.catalog_digest,
+            "artifact-catalog-sha256:8b844c968ff62cd8c3fec8865872b27f9a928560ecb08dc1ea44f64b22aed5a6"
+        );
+        assert_eq!(summary, repeated);
+    }
+
+    #[test]
+    fn duplicate_repository_pack_is_rejected_by_catalog_sealing() {
+        let repository_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("xtask must live below workspace root")
+            .to_path_buf();
+        let source = read_bounded(
+            &repository_root.join("artifact-signatures/lab/venom-canary/signatures.toml"),
+            MAX_SIGNATURE_MANIFEST_BYTES,
+        )
+        .expect("read repository manifest");
+        let temporary = TempDir::new().expect("temporary directory");
+        for pack in ["first", "second"] {
+            let directory = temporary.path().join("artifact-signatures/lab").join(pack);
+            fs::create_dir_all(&directory).expect("create pack directory");
+            fs::write(directory.join("signatures.toml"), &source).expect("copy manifest");
+        }
+
+        let error = validate_repository_catalog(temporary.path())
+            .expect_err("duplicate pack identity must fail");
+        assert!(error.to_string().contains("cannot register"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symbolic_links_and_executable_metadata_are_rejected() {
+        use std::os::unix::fs::{symlink, PermissionsExt};
+
+        let (_temporary, root) = pack_root();
+        let outside = root.parent().expect("pack root has parent").join("outside");
+        fs::create_dir(&outside).expect("create outside directory");
+        symlink(&outside, root.join("lab")).expect("create symbolic link");
+        let error = discover_manifest_paths(&root).expect_err("symbolic link must fail");
+        assert!(error.to_string().contains("symbolic links are forbidden"));
+
+        let (_temporary, root) = pack_root();
+        let readme = root.join("README.md");
+        fs::write(&readme, b"metadata").expect("write metadata file");
+        fs::set_permissions(&readme, fs::Permissions::from_mode(0o755))
+            .expect("mark metadata executable");
+        let error = discover_manifest_paths(&root).expect_err("executable metadata must fail");
+        assert!(error.to_string().contains("executable files are forbidden"));
+    }
+}

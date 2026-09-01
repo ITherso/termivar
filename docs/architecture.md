@@ -13,9 +13,10 @@ The editable diagrams.net source is [architecture.drawio](architecture.drawio). 
 | `venom-core` | Default transport-neutral evidence, reasoning, ontology, outcome, predicate, and run-report contracts; the pre-quarantine facade is feature-gated | External libraries only |
 | `venom-scanner` | Phase/plugin traits, deterministic reasoning, runner, detection, opt-in bounded report rendering, and Experimental host-owned Lua/coordination execution | `venom-core` |
 | `venom-exploit` | Preview, non-published exploit manifest/catalog plus disconnected non-default authorized orchestration contracts; only an in-memory lab fixture executes | `venom-core` only where shared opaque identity/evidence contracts are required |
+| `venom-artifact` | Preview, non-published exact/wildcard buffer and bounded-reader signature observations; no path, network, process, exploit, or verdict authority | External libraries only |
 | `venom-proxy` | Experimental fixed-upstream TCP relay; no HTTP/TLS interception | External libraries only |
 | `venom-api` | Library health router and its local unsupported-listener error | External libraries only |
-| `venom-cli` | Composition root and command routing | `venom-scanner` by default; `venom-api` and `venom-proxy` only through explicit adapter features |
+| `venom-cli` | Composition root and command routing | `venom-scanner` by default; `venom-api`, `venom-proxy`, and `venom-artifact` only through explicit adapter features |
 
 `xtask` is repository tooling rather than a runtime layer. It may orchestrate
 workspace commands but application crates must not depend on it. Its
@@ -36,9 +37,19 @@ flowchart TD
     CLI[venom-cli] --> Scanner[venom-scanner]
     CLI -. "api-adapter" .-> API[venom-api]
     CLI -. "proxy-adapter" .-> Proxy[venom-proxy]
+    CLI -. "artifact-adapter" .-> Artifact["venom-artifact<br/>bounded observations"]
     Scanner --> Core["venom-core<br/>Evidence / Reasoning / Outcomes / Reports"]
     Exploit["venom-exploit<br/>Preview metadata + opt-in lab orchestration"] --> Core
 ```
+
+`venom-artifact` is a separate artifact-observation domain. Its library accepts
+caller-supplied bytes or bounded readers and owns no filesystem path, network,
+process, browser, or exploit authority. Only the CLI's non-default
+`artifact-adapter` may open one explicitly selected local regular file for a
+read-only scan; it performs no recursion and does not alter `venom scan`.
+Signature matches are deterministic observations, never malware verdicts,
+vulnerabilities, or severity assignments. Repository signature discovery is an
+explicit non-scanning `xtask artifact-catalog` operation.
 
 `venom-exploit` is an independent workspace domain rather than part of the
 scanner product graph. `venom-scanner`, `venom-cli`, `venom-api`, and

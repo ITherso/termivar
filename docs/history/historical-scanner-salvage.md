@@ -10,7 +10,7 @@ This report is generated from `salvage/historical-scanner/ledger.toml`. Historic
 | Pre-deletion snapshot | ede3d9e5b1098434a771ae6ca3cb530941e22210 |
 | Physical deletion | 28bfb2d8ae3a4f707b7423cac65b6be8e11085b6 |
 | Current replacement baseline | cbca14d10db4ee641308f3b3e290bf75d937c8a7 |
-| Semantic ledger digest | salvage-sha256:ea796c3d94acba1eda29be76bd3f4d33365b747e145a2d0d956931b08eedd8ae |
+| Semantic ledger digest | salvage-sha256:8c949aaea6e19707bcf1b1eee6e3552827c87ea0639915d6153c607209011165 |
 
 ## Classification summary
 
@@ -91,7 +91,7 @@ This report is generated from `salvage/historical-scanner/ledger.toml`. Historic
 | `business-logic.workflow-taxonomy` | `src/scanner/business_logic_fuzzer.rs` | import-metadata-only | p1 | planned | venom-scanner:authz | fabricated-finding, automatic-severity |
 | `deserialization.format-gadget-taxonomy` | `src/scanner/deserialization.rs` | import-metadata-only | p2 | planned | venom-exploit | raw-sensitive-evidence, automatic-severity |
 | `deserialization.rce-inference` | `src/scanner/deserialization.rs` | reject-misleading-claim | never | rejected | none | misleading-claim, random-identity, automatic-severity, raw-sensitive-evidence |
-| `detector.byte-pattern` | `src/scanner/detector.rs` | port-algorithm | p0 | planned | venom-artifact | unbounded-io, misleading-claim, raw-sensitive-evidence |
+| `detector.byte-pattern` | `src/scanner/detector.rs` | port-algorithm | p0 | restored | venom-artifact | unbounded-io, misleading-claim, raw-sensitive-evidence |
 | `detector.mmap-file-adapter` | `src/scanner/detector.rs` | reject-unsafe-adapter | never | rejected | none | unsafe-adapter, direct-filesystem-authority, unbounded-io |
 | `detector.request-vulnerability` | `src/scanner/detector.rs` | reject-fabricated-behavior | never | rejected | none | fabricated-finding, random-identity, raw-sensitive-evidence, automatic-severity, legacy-runtime-coupling |
 | `detector.unused-bmh-claim` | `src/scanner/detector.rs` | reject-misleading-claim | never | rejected | none | misleading-claim |
@@ -156,7 +156,7 @@ This report is generated from `salvage/historical-scanner/ledger.toml`. Historic
 
 - `api.protocol-taxonomy` → `venom-scanner:api-assessment` (planned): Rebuild from typed protocol evidence rather than preserve the scaffold.
 - `business-logic.workflow-taxonomy` → `venom-scanner:authz` (planned): Only metadata can be imported before real workflow authority exists.
-- `detector.byte-pattern` → `venom-artifact` (planned): This is the only P0 algorithm and should be cleanly reimplemented, not copied.
+- `detector.byte-pattern` → `venom-artifact` (restored; implementation `venom_artifact::ArtifactScanner (venom.artifact-signature-scan/v1)`): Venom Artifact V1 cleanly reimplements the bounded exact/wildcard matcher and does not copy the historical monolith.
 - `idor.reference-mutation` → `venom-scanner:authz` (planned): Authorization review must be rebuilt around identity and authority, not response similarity alone.
 - `ml.feature-clustering-research` → `future-venom-ml` (planned): Rebuild only after a genuine model and evaluation contract exists.
 - `mutation.payload-taxonomy` → `venom-scanner:payload-catalog` (planned): Import only reviewed metadata in a later payload-catalog mission.

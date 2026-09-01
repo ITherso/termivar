@@ -71,6 +71,7 @@ nav:
       - Runtime-truth baseline audit: audits/runtime-truth-remediation.md
       - Runtime-truth remediation closure: audits/runtime-truth-remediation-closure.md
       - Historical scanner salvage: history/historical-scanner-salvage.md
+      - Artifact signature scanning: artifact-signatures.md
       - ADR 0001 - Cargo workspace: adr/0001-use-workspace.md
       - ADR 0002 - Plugin boundary: adr/0002-plugin-boundary.md
       - ADR 0003 - Event bus: adr/0003-event-bus.md
@@ -96,6 +97,7 @@ nav:
       - ADR 0023 - Profiled assessment reporting: adr/0023-compose-profiled-assessment-reporting.md
       - ADR 0024 - Exploit manifest/catalog boundary: adr/0024-separate-exploit-manifest-catalog.md
       - ADR 0025 - Historical scanner salvage: adr/0025-record-historical-scanner-salvage.md
+      - ADR 0026 - Artifact signature scanning: adr/0026-restore-bounded-artifact-signatures.md
       - Release process: RELEASE.md
 markdown_extensions:
   - admonition

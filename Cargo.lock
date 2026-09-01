@@ -2105,6 +2105,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "venom-artifact"
+version = "0.10.0-alpha.1"
+dependencies = [
+ "hex",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror 1.0.69",
+ "toml",
+]
+
+[[package]]
 name = "venom-cli"
 version = "0.10.0-alpha.1"
 dependencies = [
@@ -2116,6 +2128,7 @@ dependencies = [
  "tokio",
  "url",
  "venom-api",
+ "venom-artifact",
  "venom-core",
  "venom-proxy",
  "venom-scanner",
@@ -2528,6 +2541,7 @@ dependencies = [
  "syn",
  "tempfile",
  "toml",
+ "venom-artifact",
  "venom-exploit",
 ]
 

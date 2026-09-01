@@ -16,6 +16,7 @@ use syn::{
     Meta, Path as SynPath, Stmt, UseTree,
 };
 
+mod artifact;
 mod cli_secret;
 mod deployment;
 mod domain_modularization;
@@ -278,6 +279,7 @@ pub(crate) fn check(workspace_root: &Path) -> Result<(), Box<dyn Error>> {
     let mut violations = workspace_graph_violations(workspace_root)?;
     violations.extend(module_boundary_violations(workspace_root)?);
     violations.extend(cli_secret::check(workspace_root)?);
+    violations.extend(artifact::check(workspace_root)?);
     violations.extend(domain_modularization::check(workspace_root)?);
     violations.extend(transport::check(workspace_root)?);
     violations.extend(reachability::check(workspace_root)?);
@@ -447,16 +449,23 @@ fn manifest_inherits_workspace_lints(manifest: &str) -> bool {
 fn allowed_workspace_graph() -> BTreeMap<String, BTreeSet<String>> {
     [
         ("venom-core", &[][..]),
+        ("venom-artifact", &[][..]),
         ("venom-exploit", &["venom-core"][..]),
         ("venom-scanner", &["venom-core"][..]),
         ("venom-proxy", &[][..]),
         ("venom-api", &[][..]),
         (
             "venom-cli",
-            &["venom-api", "venom-core", "venom-proxy", "venom-scanner"][..],
+            &[
+                "venom-api",
+                "venom-artifact",
+                "venom-core",
+                "venom-proxy",
+                "venom-scanner",
+            ][..],
         ),
         ("venom-examples", &["venom-scanner"][..]),
-        ("xtask", &["venom-exploit"][..]),
+        ("xtask", &["venom-artifact", "venom-exploit"][..]),
     ]
     .into_iter()
     .map(|(package, dependencies)| {
@@ -1556,10 +1565,25 @@ mod tests {
         );
         assert_eq!(
             graph.get("xtask"),
-            Some(&BTreeSet::from(["venom-exploit".to_owned()]))
+            Some(&BTreeSet::from([
+                "venom-artifact".to_owned(),
+                "venom-exploit".to_owned(),
+            ]))
         );
         for product in ["venom-scanner", "venom-cli", "venom-api", "venom-proxy"] {
             assert!(!graph[product].contains("venom-exploit"));
+        }
+    }
+
+    #[test]
+    fn workspace_allowlist_pins_artifact_domain_edges() {
+        let graph = allowed_workspace_graph();
+
+        assert_eq!(graph.get("venom-artifact"), Some(&BTreeSet::new()));
+        assert!(graph["venom-cli"].contains("venom-artifact"));
+        assert!(graph["xtask"].contains("venom-artifact"));
+        for product in ["venom-scanner", "venom-exploit", "venom-api", "venom-proxy"] {
+            assert!(!graph[product].contains("venom-artifact"));
         }
     }
 

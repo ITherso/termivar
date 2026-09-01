@@ -262,6 +262,7 @@ fn help_exposes_primary_product_and_only_enabled_optional_commands() {
     assert_eq!(has_command("legacy-scan"), cfg!(feature = "legacy-scanner"));
     assert_eq!(has_command("api"), cfg!(feature = "api-adapter"));
     assert_eq!(has_command("proxy"), cfg!(feature = "proxy-adapter"));
+    assert_eq!(has_command("artifact"), cfg!(feature = "artifact-adapter"));
     assert!(
         stdout.contains("decision-scan"),
         "deprecated alias should remain discoverable"

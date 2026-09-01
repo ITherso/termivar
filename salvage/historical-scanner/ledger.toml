@@ -5,7 +5,7 @@ deletion_commit = "28bfb2d8ae3a4f707b7423cac65b6be8e11085b6"
 historical_source_root = "src/scanner"
 expected_file_count = 38
 algorithm_version = "venom.historical-scanner-salvage-digest/v1"
-ledger_digest = "salvage-sha256:ea796c3d94acba1eda29be76bd3f4d33365b747e145a2d0d956931b08eedd8ae"
+ledger_digest = "salvage-sha256:8c949aaea6e19707bcf1b1eee6e3552827c87ea0639915d6153c607209011165"
 current_replacement_baseline_sha = "cbca14d10db4ee641308f3b3e290bf75d937c8a7"
 
 [[files]]
@@ -352,8 +352,9 @@ reusable_value = "Hex and wildcard syntax, deterministic offset matching, and ba
 prohibited_behaviors = ["unbounded-io", "misleading-claim", "raw-sensitive-evidence"]
 modern_destination = "venom-artifact"
 prerequisites = ["bounded pattern and catalog contracts", "overlap-preserving deterministic matcher", "typed observation report"]
-status = "planned"
-rationale = "This is the only P0 algorithm and should be cleanly reimplemented, not copied."
+modern_implementation = "venom_artifact::ArtifactScanner (venom.artifact-signature-scan/v1)"
+status = "restored"
+rationale = "Venom Artifact V1 cleanly reimplements the bounded exact/wildcard matcher and does not copy the historical monolith."
 
 [[files.components]]
 id = "detector.mmap-file-adapter"

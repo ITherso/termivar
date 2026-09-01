@@ -236,8 +236,10 @@ For example, collecting PHP-style form-control names or Sanctum-compatible cooki
 
 ## Optional CLI adapters
 
-Default builds expose neither `api` nor `proxy`. They can be compiled as explicit adapters, but they are not scan alternatives:
+Default builds expose none of `artifact`, `api`, or `proxy`. They can be
+compiled as explicit adapters, but they are not scan alternatives:
 
+- `cargo run -p venom-cli --locked --features artifact-adapter -- artifact scan-file --signatures artifact-signatures/lab/venom-canary/signatures.toml --input ./authorized-sample.bin --format json` performs one bounded read-only scan of one explicit regular file. It does not recurse, acquire process memory, write files, issue network requests, or turn observations into malware/vulnerability verdicts.
 - `cargo run -p venom-cli --locked --features api-adapter -- api --addr 127.0.0.1:8080` is unsupported and exits nonzero: the library has a health router, but no listener is implemented.
 - `cargo run -p venom-cli --locked --features proxy-adapter -- proxy --addr 127.0.0.1:8081 --upstream 127.0.0.1:9081` starts an experimental TCP relay to the explicitly selected upstream. It does not implement HTTP `CONNECT`, TLS termination, generated certificates, or request inspection.
 

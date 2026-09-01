@@ -1,6 +1,7 @@
 //! Repository maintenance commands exposed through `cargo xtask`.
 
 mod architecture;
+mod artifact_catalog;
 mod exploit_catalog;
 mod release_metadata;
 mod scanner_salvage;
@@ -27,6 +28,8 @@ struct Cli {
 enum Task {
     /// Verify workspace and reasoning-module dependency direction.
     Architecture,
+    /// Validate repository-owned artifact signature packs and catalog identity.
+    ArtifactCatalog,
     /// Run the maintained Criterion scanner benchmark suite.
     Benchmark,
     /// Build MkDocs and Rust API documentation.
@@ -63,6 +66,7 @@ fn main() -> TaskResult {
     let root = workspace_root();
     match Cli::parse().command {
         Task::Architecture => architecture_preflight(&root),
+        Task::ArtifactCatalog => artifact_catalog::check(&root),
         Task::Benchmark => run(
             &root,
             "cargo",

@@ -23,12 +23,14 @@ default = []
 legacy-scanner = ["dep:reqwest", "venom-scanner/legacy-scanner"]
 api-adapter = ["dep:venom-api"]
 proxy-adapter = ["dep:venom-proxy"]
+artifact-adapter = ["dep:venom-artifact"]
 
 [dependencies]
 venom-core = { version = "0.10.0-alpha.1", path = "../venom-core" }
 venom-scanner = { version = "0.10.0-alpha.1", path = "../venom-scanner", default-features = false, features = ["scanning", "reporting"] }
 venom-api = { version = "0.10.0-alpha.1", path = "../venom-api", optional = true }
 venom-proxy = { version = "0.10.0-alpha.1", path = "../venom-proxy", optional = true }
+venom-artifact = { version = "=0.10.0-alpha.1", path = "../venom-artifact", optional = true }
 tokio = { workspace = true }
 reqwest = { workspace = true, optional = true }
 url = "2.5"

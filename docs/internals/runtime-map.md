@@ -27,13 +27,21 @@ route from an `AssessmentItem` to an exploit. Repository pack validation is an
 explicit `xtask` operation and does not participate in `venom scan`.
 
 The [historical scanner salvage ledger](../history/historical-scanner-salvage.md)
-is also repository evidence, not a runtime surface. The explicit
-`xtask scanner-salvage` check reads only the strict ledger, generated report,
-and local Git objects for the deleted 38-file tree. A component marked
-`Planned` is neither compiled nor executable. In particular, the historical
-byte-pattern buffer scanner is only a P0 candidate for a future separate
-`venom-artifact` domain in this change; no artifact scanner or file-access
-adapter exists yet.
+is repository evidence, not runtime authority. The explicit `xtask
+scanner-salvage` check reads only the strict ledger, generated report, and local
+Git objects for the deleted 38-file tree. Only the historical detector's
+byte-pattern component is now marked `Restored` by the separate
+`venom-artifact` domain. Its unsafe mmap adapter, fabricated request-path
+finding logic, and unsupported optimization claims remain rejected.
+
+`venom-artifact` is not part of either scan runtime. Its Preview library scans
+bounded caller-supplied byte slices or `Read` streams and emits exact/wildcard
+match observations with deterministic offsets and completion truth. The
+non-default CLI `artifact-adapter` owns the only repository file-access edge:
+one explicitly selected local regular file, read-only, without recursion,
+globbing, process acquisition, network I/O, execution, or file writes. No
+signature observation triggers exploit orchestration or becomes a malware or
+vulnerability verdict.
 
 ## Default deterministic scan runtime (Surface B)
 

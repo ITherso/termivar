@@ -93,7 +93,8 @@ Execution decisions are deterministic and model-independent. Venom does not requ
 | Execution | Exact-origin, redirect-disabled transport actions through one metered request broker; a tested zero-I/O `LocalKnowledge` library contract |
 | Output | Unchanged no-profile text/`--explain`/`decision-scan/v1`; explicit profile audits; and bounded JSON, CSV, HTML, or Markdown assessment reports for completed `web-review` runs |
 | Exploit foundation | Independent Preview `venom-exploit` manifest/catalog library plus a disconnected non-default orchestration API. Only a five-step in-memory canary fixture exercises host-minted grants, typed permits/receipts, impact verification, and cleanup verification; there is no real exploit, production adapter, or scanner/CLI/API/proxy integration |
-| Historical salvage inventory | A strict repository ledger and local-Git `xtask` check classify the deleted 38-file scanner tree at component level. The ledger changes no runtime and grants no authority; its first P0 candidate is the historical byte-pattern buffer scanner for a future separate `venom-artifact` domain, which is not implemented here |
+| Artifact signatures | Independent Preview `venom-artifact` library scans bounded caller-supplied buffers/readers for exact/wildcard signatures with overlapping deterministic observations. Explicit local regular-file access is available only through the non-default CLI `artifact-adapter`; matches are not malware or vulnerability verdicts |
+| Historical salvage inventory | A strict repository ledger and local-Git `xtask` check classify the deleted 38-file scanner tree at component level. Only the detector byte-pattern component is now restored in `venom-artifact`; unsafe mmap and fabricated legacy request findings remain rejected |
 
 The standard web profile currently has conservative, claim-specific behavior:
 
@@ -363,6 +364,7 @@ See the [runtime map](docs/internals/runtime-map.md) for the exact module and co
 | Lua execution | Experimental, opt-in | Implemented bounded, cooperative in-process Lua 5.4 registry/executor for explicit library hosts; no standard libraries, process isolation, plugin bridge, scanner phase, or repository CLI caller |
 | Distributed coordination | Experimental, opt-in | Implemented deterministic, bounded in-process task/worker/result state machines for explicit library hosts; no transport, authentication, serialization, persistence, ambient clock, background work, or multi-node control plane |
 | Exploit foundation | Preview, disconnected | Default manifest/catalog library plus a non-default host orchestration API with non-deserializable host-minted grants, deterministic plans, typed permits/receipts, and a redacted run report. Only the in-memory `venom-canary` integration fixture executes; no real exploit, production target/network/process/filesystem adapter, CLI/API/scanner caller, package authenticity, or sandbox is implemented |
+| `venom artifact scan-file` | Preview, opt-in | Absent from default builds; `artifact-adapter` scans one explicitly selected local regular file with one strict signature manifest. It is read-only, non-recursive, and emits observations rather than malware or vulnerability verdicts |
 | `venom api` | Unsupported, opt-in | Absent from default builds; the `api-adapter` feature reports that no listener is implemented |
 | `venom proxy` | Experimental, opt-in | Absent from default builds; `proxy-adapter` exposes an explicit fixed-upstream TCP relay with no `CONNECT`, TLS termination, certificate generation, or HTTP inspection |
 
@@ -380,6 +382,9 @@ workers require the independent `legacy-scanner`, `platform-models`, `plugins`,
 enables `reporting` so a completed explicit `web-review` run reaches the same
 bounded renderer used by library hosts. The CLI's unsupported API hook and
 experimental relay require `api-adapter` and `proxy-adapter`.
+
+The separate local-file artifact command requires `artifact-adapter`; it does
+not participate in `venom scan` and does not add a scanner network action.
 
 ## Quality and robustness
 
@@ -468,6 +473,8 @@ tag and accepted cross-version baseline exist, pin a reviewed full commit.
 - [Runtime map: what actually runs](docs/internals/runtime-map.md)
 - [Historical scanner salvage](docs/history/historical-scanner-salvage.md)
 - [Historical salvage policy](docs/adr/0025-record-historical-scanner-salvage.md)
+- [Artifact signature scanning](docs/artifact-signatures.md)
+- [Artifact signature architecture decision](docs/adr/0026-restore-bounded-artifact-signatures.md)
 - [Lua execution](docs/lua.md)
 - [Distributed coordination](docs/distributed.md)
 - [Decision runner](docs/internals/decision-runner.md)
