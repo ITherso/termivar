@@ -129,11 +129,14 @@ fn scan_profile_flags_conflict(
     profile: Option<CliScanProfile>,
     explain: bool,
     enforce_defense: bool,
+    normalization_resilience: bool,
 ) -> Option<&'static str> {
     if profile.is_some() && explain {
         Some("`--explain` is available only when no explicit `--profile` is selected")
     } else if enforce_defense && profile != Some(CliScanProfile::WebReview) {
         Some("`--enforce-defense` requires `--profile web-review`")
+    } else if normalization_resilience && profile != Some(CliScanProfile::WebReview) {
+        Some("`--normalization-resilience` requires `--profile web-review`")
     } else {
         None
     }
@@ -232,6 +235,12 @@ enum Commands {
         /// without this flag.
         #[arg(long, requires = "profile")]
         enforce_defense: bool,
+        /// Explicitly enable the bounded normalization-resilience review. This
+        /// option is compiled only with `normalization-resilience` and is valid
+        /// only with `--profile web-review`.
+        #[cfg(feature = "normalization-resilience")]
+        #[arg(long, requires = "profile")]
+        normalization_resilience: bool,
         /// Select the centralized typed assessment renderer. Valid only with
         /// `--profile web-review`. Without this option, text maps to Markdown
         /// and JSON maps to JSON for completed web-review reports.
@@ -314,6 +323,7 @@ struct DeterministicScanInvocation {
     explain: bool,
     profile: Option<CliScanProfile>,
     enforce_defense: bool,
+    normalization_resilience: bool,
     report_format: Option<CliReportFormat>,
     report_output: Option<PathBuf>,
     auth_env: Option<OsString>,
@@ -330,6 +340,7 @@ async fn run_deterministic_scan(
         explain,
         profile,
         enforce_defense,
+        normalization_resilience,
         report_format,
         report_output,
         auth_env,
@@ -345,7 +356,9 @@ async fn run_deterministic_scan(
             )
             .exit();
     }
-    if let Some(message) = scan_profile_flags_conflict(profile, explain, enforce_defense) {
+    if let Some(message) =
+        scan_profile_flags_conflict(profile, explain, enforce_defense, normalization_resilience)
+    {
         use clap::CommandFactory;
         Cli::command()
             .error(clap::error::ErrorKind::ArgumentConflict, message)
@@ -405,6 +418,7 @@ async fn run_deterministic_scan(
             report_format.map(Into::into),
             report_output.is_some(),
             root_authorization_context,
+            normalization_resilience,
         )
         .await?;
         let (rendered, report_artifact, post_render_failure) = execution.into_parts();
@@ -723,18 +737,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             explain,
             profile,
             enforce_defense,
+            #[cfg(feature = "normalization-resilience")]
+            normalization_resilience,
             report_format,
             report_output,
             auth_env,
             auth_file,
             auth_stdin,
         }) => {
+            #[cfg(not(feature = "normalization-resilience"))]
+            let normalization_resilience = false;
             run_deterministic_scan(DeterministicScanInvocation {
                 target,
                 format,
                 explain,
                 profile,
                 enforce_defense,
+                normalization_resilience,
                 report_format,
                 report_output,
                 auth_env,
@@ -795,6 +814,8 @@ mod tests {
                 explain,
                 profile,
                 enforce_defense,
+                #[cfg(feature = "normalization-resilience")]
+                normalization_resilience,
                 report_format,
                 report_output,
                 auth_env,
@@ -806,6 +827,8 @@ mod tests {
                 assert!(!explain);
                 assert_eq!(profile, None);
                 assert!(!enforce_defense);
+                #[cfg(feature = "normalization-resilience")]
+                assert!(!normalization_resilience);
                 assert_eq!(report_format, None);
                 assert_eq!(report_output, None);
                 assert_eq!(auth_env, None);
@@ -827,6 +850,8 @@ mod tests {
                 explain,
                 profile,
                 enforce_defense,
+                #[cfg(feature = "normalization-resilience")]
+                normalization_resilience,
                 report_format,
                 report_output,
                 auth_env,
@@ -841,6 +866,8 @@ mod tests {
                 );
                 assert_eq!(profile, None);
                 assert!(!enforce_defense);
+                #[cfg(feature = "normalization-resilience")]
+                assert!(!normalization_resilience);
                 assert_eq!(report_format, None);
                 assert_eq!(report_output, None);
                 assert_eq!(auth_env, None);
@@ -971,18 +998,92 @@ mod tests {
         ])
         .is_err());
         assert_eq!(
-            scan_profile_flags_conflict(Some(CliScanProfile::Baseline), false, true),
+            scan_profile_flags_conflict(Some(CliScanProfile::Baseline), false, true, false),
             Some("`--enforce-defense` requires `--profile web-review`")
         );
         assert_eq!(
-            scan_profile_flags_conflict(Some(CliScanProfile::WebReview), false, true),
+            scan_profile_flags_conflict(Some(CliScanProfile::WebReview), false, true, false),
             None
         );
-        assert!(scan_profile_flags_conflict(Some(CliScanProfile::Baseline), true, false).is_some());
         assert!(
-            scan_profile_flags_conflict(Some(CliScanProfile::WebReview), true, false).is_some()
+            scan_profile_flags_conflict(Some(CliScanProfile::Baseline), true, false, false)
+                .is_some()
         );
-        assert_eq!(scan_profile_flags_conflict(None, false, false), None);
+        assert!(
+            scan_profile_flags_conflict(Some(CliScanProfile::WebReview), true, false, false)
+                .is_some()
+        );
+        assert_eq!(scan_profile_flags_conflict(None, false, false, false), None);
+    }
+
+    #[cfg(feature = "normalization-resilience")]
+    #[test]
+    fn normalization_resilience_is_an_explicit_web_review_only_option() {
+        assert!(Cli::try_parse_from([
+            "venom",
+            "scan",
+            "--normalization-resilience",
+            "https://example.test/",
+        ])
+        .is_err());
+
+        let baseline = Cli::try_parse_from([
+            "venom",
+            "scan",
+            "--profile",
+            "baseline",
+            "--normalization-resilience",
+            "https://example.test/",
+        ])
+        .expect("the semantic profile guard runs before runtime dispatch");
+        assert!(matches!(
+            baseline.command,
+            Some(Commands::Scan {
+                profile: Some(CliScanProfile::Baseline),
+                normalization_resilience: true,
+                ..
+            })
+        ));
+        assert_eq!(
+            scan_profile_flags_conflict(Some(CliScanProfile::Baseline), false, false, true),
+            Some("`--normalization-resilience` requires `--profile web-review`")
+        );
+
+        let review = Cli::try_parse_from([
+            "venom",
+            "scan",
+            "--profile",
+            "web-review",
+            "--normalization-resilience",
+            "https://example.test/",
+        ])
+        .unwrap();
+        assert!(matches!(
+            review.command,
+            Some(Commands::Scan {
+                profile: Some(CliScanProfile::WebReview),
+                normalization_resilience: true,
+                ..
+            })
+        ));
+        assert_eq!(
+            scan_profile_flags_conflict(Some(CliScanProfile::WebReview), false, false, true),
+            None
+        );
+    }
+
+    #[cfg(not(feature = "normalization-resilience"))]
+    #[test]
+    fn default_cli_does_not_parse_the_normalization_resilience_option() {
+        assert!(Cli::try_parse_from([
+            "venom",
+            "scan",
+            "--profile",
+            "web-review",
+            "--normalization-resilience",
+            "https://example.test/",
+        ])
+        .is_err());
     }
 
     #[test]

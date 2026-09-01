@@ -50,6 +50,11 @@ use crate::{
     PayloadStrategyLimits, PayloadStrategyRef, PayloadVariantRole,
 };
 
+#[cfg(feature = "normalization-resilience")]
+use crate::DefensePosture;
+
+#[cfg(feature = "normalization-resilience")]
+use super::assessment_defense::{AssessmentDefenseBodyCoverage, CommittedAssessmentDefenseLedger};
 use super::web_assessment::{
     classify_exact_html_reflection, cross_validate_attribute_reflection_source,
     cross_validate_javascript_reflection_source, match_exact_xss_attribute_boundary_document,
@@ -59,7 +64,14 @@ use super::web_assessment::{
     ExactXssAttributeBoundaryMatch, ExactXssBoundaryMatch, JavaScriptSourceResult, XssProbeFamily,
     XssProbeSelection,
 };
+#[cfg(feature = "normalization-resilience")]
+use super::web_assessment::{NormalizationTransformRef, NormalizationTransformSelection};
 use super::web_review_execution::NativeWebReviewSeeds;
+#[cfg(feature = "normalization-resilience")]
+use crate::payload_strategies::normalization_resilience_query_pair::{
+    NormalizationResilienceQueryPairStrategy, NORMALIZATION_RESILIENCE_QUERY_PAIR_ID,
+    NORMALIZATION_RESILIENCE_QUERY_PAIR_REVISION,
+};
 use crate::payload_strategies::ssti_arithmetic_expression_pair::SstiArithmeticProbe;
 
 const ASSESSMENT_REVIEW_CATEGORY: &str = "web-review-observation";
@@ -114,6 +126,9 @@ const XSS_ATTRIBUTE_ACTIVE_VERIFIER_RULE_ID: &str =
     "web.review.verify.active.xss-attribute-boundary-query-pair.pair-complete@1";
 const XSS_SCRIPT_ACTIVE_VERIFIER_RULE_ID: &str =
     "web.review.verify.active.xss-script-lexical-boundary-query-pair.pair-complete@1";
+#[cfg(feature = "normalization-resilience")]
+const NORMALIZATION_ACTIVE_VERIFIER_RULE_ID: &str =
+    "web.review.verify.active.normalization-resilience-query-pair.pair-complete@1";
 
 /// Returns the one verifier identity authorized to classify pair completion.
 ///
@@ -140,6 +155,10 @@ pub(crate) const fn native_review_active_verifier_rule_id(
         },
         NativeWebReviewActionKind::XssScriptLexicalBoundaryQueryPair => {
             XSS_SCRIPT_ACTIVE_VERIFIER_RULE_ID
+        },
+        #[cfg(feature = "normalization-resilience")]
+        NativeWebReviewActionKind::NormalizationResilienceQueryPair => {
+            NORMALIZATION_ACTIVE_VERIFIER_RULE_ID
         },
     }
 }
@@ -194,7 +213,8 @@ struct SstiStructuralContract {
 #[derive(Clone, PartialEq, Eq)]
 struct XssStructuralProbeParts {
     selection: XssProbeSelection,
-    identity: String,
+    control_identity: String,
+    candidate_identity: String,
     control_value: String,
     candidate_value: String,
 }
@@ -234,16 +254,26 @@ impl XssStructuralProbeParts {
             .to_owned();
         Ok(Self {
             selection,
-            identity: identity.to_owned(),
+            control_identity: identity.to_owned(),
+            candidate_identity: identity.to_owned(),
             control_value,
             candidate_value,
         })
     }
 
     fn validate(self) -> Result<XssStructuralProbe, AssessmentReviewObserverError> {
+        self.validate_structural_value(&self.candidate_value, &self.candidate_identity)?;
+        Ok(XssStructuralProbe(self))
+    }
+
+    fn validate_structural_value(
+        &self,
+        value: &str,
+        identity: &str,
+    ) -> Result<(), AssessmentReviewObserverError> {
         match self.selection.family() {
             XssProbeFamily::HtmlTextBoundary => {
-                if validate_exact_xss_html_boundary_fragment(&self.candidate_value, &self.identity)
+                if validate_exact_xss_html_boundary_fragment(value, identity)
                     != ExactXssBoundaryMatch::Matched
                 {
                     return Err(AssessmentReviewObserverError::Candidate);
@@ -265,10 +295,10 @@ impl XssStructuralProbeParts {
                     "<{} {}={quote}{}{quote}></{}>",
                     anchor.element_local_name(),
                     anchor.attribute_local_name(),
-                    self.candidate_value,
+                    value,
                     anchor.element_local_name(),
                 );
-                if match_exact_xss_attribute_boundary_document(&document, &self.identity, anchor)
+                if match_exact_xss_attribute_boundary_document(&document, identity, anchor)
                     != ExactXssAttributeBoundaryMatch::Matched
                 {
                     return Err(AssessmentReviewObserverError::Candidate);
@@ -281,10 +311,10 @@ impl XssStructuralProbeParts {
                     .selection
                     .javascript_anchor()
                     .ok_or(AssessmentReviewObserverError::Candidate)?;
-                let tokens = XssJavascriptLexicalProbeTokens::from_identity(&self.identity)
+                let tokens = XssJavascriptLexicalProbeTokens::from_identity(identity)
                     .ok_or(AssessmentReviewObserverError::Candidate)?;
                 if validate_exact_xss_javascript_boundary_candidate(
-                    &self.candidate_value,
+                    value,
                     tokens.boundary_comment(),
                     tokens.tail_comment(),
                     anchor.context(),
@@ -304,7 +334,7 @@ impl XssStructuralProbeParts {
                 return Err(AssessmentReviewObserverError::Candidate);
             },
         }
-        Ok(XssStructuralProbe(self))
+        Ok(())
     }
 }
 
@@ -319,6 +349,42 @@ impl XssStructuralProbe {
         XssStructuralProbeParts::derive_values(selection, identity)?.validate()
     }
 
+    #[cfg(feature = "normalization-resilience")]
+    fn derive_normalization(
+        selection: &NormalizationTransformSelection,
+        transformed_identity: &str,
+        replay_identity: &str,
+    ) -> Result<Self, AssessmentReviewObserverError> {
+        let limits = PayloadStrategyLimits::new(256, 256)
+            .map_err(|_| AssessmentReviewObserverError::Candidate)?;
+        let encoded_seed = selection
+            .strategy_seed(transformed_identity, replay_identity)
+            .ok_or(AssessmentReviewObserverError::Candidate)?;
+        let seed = PayloadSeed::new(encoded_seed.into_bytes(), limits)
+            .map_err(|_| AssessmentReviewObserverError::Candidate)?;
+        let strategy = NormalizationResilienceQueryPairStrategy::new();
+        let control = strategy
+            .derive_one(PayloadVariantRole::Control, &seed, limits)
+            .map_err(|_| AssessmentReviewObserverError::Candidate)?;
+        let candidate = strategy
+            .derive_one(PayloadVariantRole::Candidate, &seed, limits)
+            .map_err(|_| AssessmentReviewObserverError::Candidate)?;
+        let parts = XssStructuralProbeParts {
+            selection: selection.parent_selection().clone(),
+            control_identity: transformed_identity.to_owned(),
+            candidate_identity: replay_identity.to_owned(),
+            control_value: std::str::from_utf8(control.as_bytes())
+                .map_err(|_| AssessmentReviewObserverError::Candidate)?
+                .to_owned(),
+            candidate_value: std::str::from_utf8(candidate.as_bytes())
+                .map_err(|_| AssessmentReviewObserverError::Candidate)?
+                .to_owned(),
+        };
+        parts.validate_structural_value(&parts.control_value, &parts.control_identity)?;
+        parts.validate_structural_value(&parts.candidate_value, &parts.candidate_identity)?;
+        Ok(Self(parts))
+    }
+
     const fn parts(&self) -> &XssStructuralProbeParts {
         &self.0
     }
@@ -330,7 +396,13 @@ impl fmt::Debug for XssStructuralProbe {
             .debug_struct("XssStructuralProbe")
             .field("family", &self.parts().selection.family().stable_id())
             .field("variant", &self.parts().selection.variant_id())
-            .field("identity_bytes", &self.parts().identity.len())
+            .field(
+                "identity_bytes",
+                &(
+                    self.parts().control_identity.len(),
+                    self.parts().candidate_identity.len(),
+                ),
+            )
             .field("values", &"<redacted>")
             .finish()
     }
@@ -340,9 +412,82 @@ impl fmt::Debug for XssStructuralProbe {
 struct XssStructuralContract {
     query_parameter: String,
     probe: XssStructuralProbe,
+    action_kind: NativeWebReviewActionKind,
+    variant_id: String,
+    #[cfg(feature = "normalization-resilience")]
+    normalization_transform: Option<NormalizationTransformRef>,
     control_url: Url,
     candidate_url: Url,
     source_evidence_ids: Vec<EvidenceId>,
+    #[cfg(feature = "normalization-resilience")]
+    normalization_parent: Option<NormalizationParentEvidence>,
+}
+
+/// Exact committed parent authority for one optional normalization child.
+///
+/// This value is derived only from the sealed XSS review and defense ledgers.
+/// It contains no payload, response body, query value, or credential material.
+#[cfg(feature = "normalization-resilience")]
+#[derive(Clone, PartialEq, Eq)]
+pub(in crate::web_runtime) struct NormalizationParentEvidence {
+    root: Url,
+    subject: EntityId,
+    query_parameter: String,
+    selection: XssProbeSelection,
+    parent_case: crate::VerificationCase,
+    control_evidence_ids: Vec<EvidenceId>,
+    canonical_candidate_evidence_ids: Vec<EvidenceId>,
+    source_evidence_ids: Vec<EvidenceId>,
+}
+
+#[cfg(feature = "normalization-resilience")]
+impl fmt::Debug for NormalizationParentEvidence {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("NormalizationParentEvidence")
+            .field("root", &"<redacted>")
+            .field("subject", &"<redacted>")
+            .field("query_parameter", &"<redacted>")
+            .field("parent_family", &self.selection.family().stable_id())
+            .field("parent_case", &"<redacted>")
+            .field("control_evidence_count", &self.control_evidence_ids.len())
+            .field(
+                "canonical_candidate_evidence_count",
+                &self.canonical_candidate_evidence_ids.len(),
+            )
+            .finish()
+    }
+}
+
+#[cfg(feature = "normalization-resilience")]
+impl NormalizationParentEvidence {
+    pub(in crate::web_runtime) fn selection(&self) -> &XssProbeSelection {
+        &self.selection
+    }
+
+    pub(in crate::web_runtime) fn query_parameter(&self) -> &str {
+        &self.query_parameter
+    }
+
+    pub(in crate::web_runtime) fn root(&self) -> &Url {
+        &self.root
+    }
+
+    pub(in crate::web_runtime) fn subject(&self) -> &EntityId {
+        &self.subject
+    }
+
+    fn control_evidence_ids(&self) -> &[EvidenceId] {
+        &self.control_evidence_ids
+    }
+
+    fn canonical_candidate_evidence_ids(&self) -> &[EvidenceId] {
+        &self.canonical_candidate_evidence_ids
+    }
+
+    fn source_evidence_ids(&self) -> &[EvidenceId] {
+        &self.source_evidence_ids
+    }
 }
 
 fn canonical_xss_source_evidence_ids(
@@ -386,7 +531,8 @@ impl fmt::Debug for XssStructuralContract {
             .debug_struct("XssStructuralContract")
             .field("query_parameter", &"<redacted>")
             .field("family", &self.probe.parts().selection.family().stable_id())
-            .field("variant", &self.probe.parts().selection.variant_id())
+            .field("variant", &self.variant_id)
+            .field("action", &self.action_kind.action_id())
             .field("source_evidence_count", &self.source_evidence_ids.len())
             .field("urls", &"<redacted>")
             .finish()
@@ -649,10 +795,65 @@ impl AssessmentReviewObserverSet {
             .append_pair(query_parameter, &probe.parts().candidate_value);
         observer.xss = Some(XssStructuralContract {
             query_parameter: query_parameter.to_owned(),
+            action_kind: probe.parts().selection.action_kind(),
+            variant_id: probe.parts().selection.variant_id().to_owned(),
+            #[cfg(feature = "normalization-resilience")]
+            normalization_transform: None,
             probe,
             control_url,
             candidate_url,
             source_evidence_ids,
+            #[cfg(feature = "normalization-resilience")]
+            normalization_parent: None,
+        });
+        Ok(observer)
+    }
+
+    /// Binds one metadata-selected transformed candidate/replay pair to the
+    /// exact parent subject and parameter without resending the parent pair.
+    #[cfg(feature = "normalization-resilience")]
+    pub(in crate::web_runtime) fn new_normalization(
+        root: Url,
+        seeds: NativeWebReviewSeeds,
+        selection: NormalizationTransformSelection,
+        parent: &NormalizationParentEvidence,
+    ) -> Result<Self, AssessmentReviewObserverError> {
+        if parent.root() != &root
+            || !valid_query_parameter(parent.query_parameter())
+            || selection.parent_selection() != parent.selection()
+        {
+            return Err(AssessmentReviewObserverError::Candidate);
+        }
+        let mut observer = Self::new_with_sql(root, seeds, None, None, None, None)?;
+        if &observer.subject != parent.subject() {
+            return Err(AssessmentReviewObserverError::Candidate);
+        }
+        let transformed_identity = observer.seeds.normalization_candidate_identity();
+        let replay_identity = observer.seeds.normalization_replay_identity();
+        let probe = XssStructuralProbe::derive_normalization(
+            &selection,
+            &transformed_identity,
+            &replay_identity,
+        )?;
+        let mut control_url = observer.root.clone();
+        control_url
+            .query_pairs_mut()
+            .append_pair(parent.query_parameter(), &probe.parts().control_value);
+        let mut candidate_url = observer.root.clone();
+        candidate_url
+            .query_pairs_mut()
+            .append_pair(parent.query_parameter(), &probe.parts().candidate_value);
+        let transform = selection.transform_ref();
+        observer.xss = Some(XssStructuralContract {
+            query_parameter: parent.query_parameter().to_owned(),
+            probe,
+            action_kind: NativeWebReviewActionKind::NormalizationResilienceQueryPair,
+            variant_id: format!("{}@{}", transform.id(), transform.revision()),
+            normalization_transform: Some(transform),
+            control_url,
+            candidate_url,
+            source_evidence_ids: parent.source_evidence_ids().to_vec(),
+            normalization_parent: Some(parent.clone()),
         });
         Ok(observer)
     }
@@ -712,6 +913,13 @@ impl AssessmentReviewObserverSet {
                 DecisionExecutionStage::Passive => &contract.control_url,
                 DecisionExecutionStage::Active => &contract.candidate_url,
             }),
+            #[cfg(feature = "normalization-resilience")]
+            (NativeWebReviewActionKind::NormalizationResilienceQueryPair, stage) => {
+                self.xss.as_ref().map(|contract| match stage {
+                    DecisionExecutionStage::Passive => &contract.control_url,
+                    DecisionExecutionStage::Active => &contract.candidate_url,
+                })
+            },
         }
     }
 
@@ -877,63 +1085,69 @@ impl AssessmentReviewObserverSet {
             NativeWebReviewActionKind::XssStructuralQueryPair
             | NativeWebReviewActionKind::XssAttributeBoundaryQueryPair
             | NativeWebReviewActionKind::XssScriptLexicalBoundaryQueryPair => {
-                let contract = self
-                    .xss
-                    .as_ref()
-                    .expect("enabled XSS observer retains its bounded contract");
-                records.push((
-                    ReviewProperty::XssProbeFamily,
-                    contract
-                        .probe
-                        .parts()
-                        .selection
-                        .family()
-                        .stable_id()
-                        .to_owned(),
-                ));
-                records.push((
-                    ReviewProperty::XssProbeVariant,
-                    contract.probe.parts().selection.variant_id().to_owned(),
-                ));
-                let javascript_anchor = contract.probe.parts().selection.javascript_anchor();
-                records.extend([
-                    (
-                        ReviewProperty::JavaScriptSourceStatus,
-                        javascript_anchor
-                            .map_or("absent", |_| "exact-script-anchor")
-                            .to_owned(),
-                    ),
-                    (
-                        ReviewProperty::JavaScriptSourceScriptKind,
-                        javascript_anchor
-                            .map_or("none", |anchor| anchor.script_kind().stable_id())
-                            .to_owned(),
-                    ),
-                    (
-                        ReviewProperty::JavaScriptSourceContext,
-                        javascript_anchor
-                            .map_or("none", |anchor| anchor.context().stable_id())
-                            .to_owned(),
-                    ),
-                    (
-                        ReviewProperty::JavaScriptSourceScriptOrdinal,
-                        javascript_anchor.map_or_else(
-                            || "none".to_owned(),
-                            |anchor| anchor.script_ordinal().to_string(),
-                        ),
-                    ),
-                ]);
-                records.push((
-                    ReviewProperty::XssStructuralRelation,
-                    xss_structural_relation_slug(classify_xss_structural_relation(
-                        observation,
-                        contract,
-                    ))
-                    .to_owned(),
-                ));
+                self.append_xss_projection(observation, &mut records);
+            },
+            #[cfg(feature = "normalization-resilience")]
+            NativeWebReviewActionKind::NormalizationResilienceQueryPair => {
+                self.append_xss_projection(observation, &mut records);
             },
         }
         records
+    }
+
+    fn append_xss_projection(
+        &self,
+        observation: &CompleteHttpResponseObservation<'_>,
+        records: &mut Vec<(ReviewProperty, String)>,
+    ) {
+        let contract = self
+            .xss
+            .as_ref()
+            .expect("enabled XSS observer retains its bounded contract");
+        records.push((
+            ReviewProperty::XssProbeFamily,
+            contract
+                .probe
+                .parts()
+                .selection
+                .family()
+                .stable_id()
+                .to_owned(),
+        ));
+        records.push((ReviewProperty::XssProbeVariant, contract.variant_id.clone()));
+        let javascript_anchor = contract.probe.parts().selection.javascript_anchor();
+        records.extend([
+            (
+                ReviewProperty::JavaScriptSourceStatus,
+                javascript_anchor
+                    .map_or("absent", |_| "exact-script-anchor")
+                    .to_owned(),
+            ),
+            (
+                ReviewProperty::JavaScriptSourceScriptKind,
+                javascript_anchor
+                    .map_or("none", |anchor| anchor.script_kind().stable_id())
+                    .to_owned(),
+            ),
+            (
+                ReviewProperty::JavaScriptSourceContext,
+                javascript_anchor
+                    .map_or("none", |anchor| anchor.context().stable_id())
+                    .to_owned(),
+            ),
+            (
+                ReviewProperty::JavaScriptSourceScriptOrdinal,
+                javascript_anchor.map_or_else(
+                    || "none".to_owned(),
+                    |anchor| anchor.script_ordinal().to_string(),
+                ),
+            ),
+        ]);
+        records.push((
+            ReviewProperty::XssStructuralRelation,
+            xss_structural_relation_slug(classify_xss_structural_relation(observation, contract))
+                .to_owned(),
+        ));
     }
 }
 
@@ -963,12 +1177,7 @@ impl CompleteHttpResponseObserver for AssessmentReviewObserverSet {
         self.validate_recognized(kind, &observation)?;
 
         let mut parents = review_projection_parents(&observation, kind)?;
-        if matches!(
-            kind,
-            NativeWebReviewActionKind::XssStructuralQueryPair
-                | NativeWebReviewActionKind::XssAttributeBoundaryQueryPair
-                | NativeWebReviewActionKind::XssScriptLexicalBoundaryQueryPair
-        ) {
+        if is_xss_response_action(kind) {
             parents.extend(
                 self.xss
                     .as_ref()
@@ -1075,6 +1284,11 @@ fn native_review_strategy_ref(kind: NativeWebReviewActionKind) -> PayloadStrateg
             XSS_JAVASCRIPT_LEXICAL_BOUNDARY_QUERY_PAIR_ID,
             XSS_JAVASCRIPT_LEXICAL_BOUNDARY_QUERY_PAIR_REVISION,
         ),
+        #[cfg(feature = "normalization-resilience")]
+        NativeWebReviewActionKind::NormalizationResilienceQueryPair => (
+            NORMALIZATION_RESILIENCE_QUERY_PAIR_ID,
+            NORMALIZATION_RESILIENCE_QUERY_PAIR_REVISION,
+        ),
     };
     PayloadStrategyRef::new(id, revision)
         .expect("native review strategies have valid static references")
@@ -1108,17 +1322,16 @@ fn review_projection_parents(
             .ok_or(HttpEvidenceError::AssessmentObserverInvariant { invariant })
     })
     .collect::<Result<Vec<_>, _>>()?;
-    if matches!(
-        kind,
-        NativeWebReviewActionKind::ReflectionContextQueryPair
-            | NativeWebReviewActionKind::SqlStructuralQueryPair
-            | NativeWebReviewActionKind::SqlStructuralQueryReplayPair
-            | NativeWebReviewActionKind::SstiStructuralQueryPair
-            | NativeWebReviewActionKind::SstiStructuralQueryReplayPair
-            | NativeWebReviewActionKind::XssStructuralQueryPair
-            | NativeWebReviewActionKind::XssAttributeBoundaryQueryPair
-            | NativeWebReviewActionKind::XssScriptLexicalBoundaryQueryPair
-    ) {
+    if is_xss_response_action(kind)
+        || matches!(
+            kind,
+            NativeWebReviewActionKind::ReflectionContextQueryPair
+                | NativeWebReviewActionKind::SqlStructuralQueryPair
+                | NativeWebReviewActionKind::SqlStructuralQueryReplayPair
+                | NativeWebReviewActionKind::SstiStructuralQueryPair
+                | NativeWebReviewActionKind::SstiStructuralQueryReplayPair
+        )
+    {
         if observation.media_type().is_some() {
             parents.push(
                 observation
@@ -1222,9 +1435,34 @@ fn classify_xss_structural_relation(
     let Ok(html) = std::str::from_utf8(body) else {
         return XssStructuralRelation::Incomplete;
     };
+    #[cfg(feature = "normalization-resilience")]
+    let normalization =
+        contract.action_kind == NativeWebReviewActionKind::NormalizationResilienceQueryPair;
+    #[cfg(not(feature = "normalization-resilience"))]
+    let normalization = false;
+    let (identity, expected_value) = if normalization {
+        match observation.stage() {
+            DecisionExecutionStage::Passive => (
+                contract.probe.parts().control_identity.as_str(),
+                contract.probe.parts().control_value.as_str(),
+            ),
+            DecisionExecutionStage::Active => (
+                contract.probe.parts().candidate_identity.as_str(),
+                contract.probe.parts().candidate_value.as_str(),
+            ),
+        }
+    } else {
+        // Preserve the established XSS V1 control semantics: both legs are
+        // classified against the candidate boundary identity/value, so a
+        // benign reflected control remains `EncodedOrInert`.
+        (
+            contract.probe.parts().candidate_identity.as_str(),
+            contract.probe.parts().candidate_value.as_str(),
+        )
+    };
     let boundary = match contract.probe.parts().selection.family() {
         XssProbeFamily::HtmlTextBoundary => {
-            match match_exact_xss_html_boundary_document(html, &contract.probe.parts().identity) {
+            match match_exact_xss_html_boundary_document(html, identity) {
                 ExactXssBoundaryMatch::Absent => ExactXssAttributeBoundaryMatch::Absent,
                 ExactXssBoundaryMatch::Matched => ExactXssAttributeBoundaryMatch::Matched,
                 ExactXssBoundaryMatch::Ambiguous => ExactXssAttributeBoundaryMatch::Ambiguous,
@@ -1237,11 +1475,7 @@ fn classify_xss_structural_relation(
             let Some(anchor) = contract.probe.parts().selection.attribute_anchor() else {
                 return XssStructuralRelation::Incomplete;
             };
-            match_exact_xss_attribute_boundary_document(
-                html,
-                &contract.probe.parts().identity,
-                anchor,
-            )
+            match_exact_xss_attribute_boundary_document(html, identity, anchor)
         },
         XssProbeFamily::ScriptSingleQuotedStringBoundary
         | XssProbeFamily::ScriptDoubleQuotedStringBoundary
@@ -1249,9 +1483,7 @@ fn classify_xss_structural_relation(
             let Some(anchor) = contract.probe.parts().selection.javascript_anchor() else {
                 return XssStructuralRelation::Incomplete;
             };
-            let Some(tokens) =
-                XssJavascriptLexicalProbeTokens::from_identity(&contract.probe.parts().identity)
-            else {
+            let Some(tokens) = XssJavascriptLexicalProbeTokens::from_identity(identity) else {
                 return XssStructuralRelation::Incomplete;
             };
             return match (
@@ -1263,15 +1495,16 @@ fn classify_xss_structural_relation(
                     anchor,
                 ),
             ) {
+                (_, ExactJavaScriptBoundaryMatch::Matched) if normalization => {
+                    XssStructuralRelation::StructuralBoundaryObserved
+                },
                 (DecisionExecutionStage::Active, ExactJavaScriptBoundaryMatch::Matched) => {
                     XssStructuralRelation::StructuralBoundaryObserved
                 },
                 (DecisionExecutionStage::Passive, ExactJavaScriptBoundaryMatch::Matched) => {
                     XssStructuralRelation::ReflectedSameContext
                 },
-                (_, ExactJavaScriptBoundaryMatch::Absent)
-                    if html.contains(&contract.probe.parts().candidate_value) =>
-                {
+                (_, ExactJavaScriptBoundaryMatch::Absent) if html.contains(expected_value) => {
                     XssStructuralRelation::ReflectedSameContext
                 },
                 (_, ExactJavaScriptBoundaryMatch::Absent) => XssStructuralRelation::EncodedOrInert,
@@ -1292,15 +1525,16 @@ fn classify_xss_structural_relation(
         | XssProbeFamily::ScriptRegexStructure => return XssStructuralRelation::Unsupported,
     };
     match (observation.stage(), boundary) {
+        (_, ExactXssAttributeBoundaryMatch::Matched) if normalization => {
+            XssStructuralRelation::StructuralBoundaryObserved
+        },
         (DecisionExecutionStage::Active, ExactXssAttributeBoundaryMatch::Matched) => {
             XssStructuralRelation::StructuralBoundaryObserved
         },
         (DecisionExecutionStage::Passive, ExactXssAttributeBoundaryMatch::Matched) => {
             XssStructuralRelation::ReflectedSameContext
         },
-        (_, ExactXssAttributeBoundaryMatch::Absent)
-            if html.contains(&contract.probe.parts().candidate_value) =>
-        {
+        (_, ExactXssAttributeBoundaryMatch::Absent) if html.contains(expected_value) => {
             XssStructuralRelation::ReflectedSameContext
         },
         (_, ExactXssAttributeBoundaryMatch::Absent) => XssStructuralRelation::EncodedOrInert,
@@ -1521,6 +1755,16 @@ fn review_source_method(
             NativeWebReviewActionKind::XssScriptLexicalBoundaryQueryPair,
             DecisionExecutionStage::Active,
         ) => "xss-script-lexical-boundary-candidate-response",
+        #[cfg(feature = "normalization-resilience")]
+        (
+            NativeWebReviewActionKind::NormalizationResilienceQueryPair,
+            DecisionExecutionStage::Passive,
+        ) => "normalization-transformed-candidate-response",
+        #[cfg(feature = "normalization-resilience")]
+        (
+            NativeWebReviewActionKind::NormalizationResilienceQueryPair,
+            DecisionExecutionStage::Active,
+        ) => "normalization-transformed-replay-response",
     }
 }
 
@@ -1710,7 +1954,7 @@ enum CommittedReviewResponse {
     },
     XssStructural {
         family: XssProbeFamily,
-        variant: &'static str,
+        variant: String,
         relation: XssStructuralRelation,
     },
 }
@@ -1782,12 +2026,14 @@ pub(crate) struct CommittedAssessmentReviewLedger {
     ssti: Option<SstiStructuralContract>,
     xss: Option<XssStructuralContract>,
     observations: BTreeMap<ReviewReceiptKey, CommittedAssessmentReviewObservation>,
+    #[cfg(feature = "normalization-resilience")]
+    normalization_candidate: Option<NormalizationReviewCandidate>,
 }
 
 impl fmt::Debug for CommittedAssessmentReviewLedger {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("CommittedAssessmentReviewLedger")
+        let mut debug = formatter.debug_struct("CommittedAssessmentReviewLedger");
+        debug
             .field("root", &"<redacted>")
             .field("subject", &"<redacted>")
             .field("seeds", &self.seeds)
@@ -1799,9 +2045,28 @@ impl fmt::Debug for CommittedAssessmentReviewLedger {
             .field("sql", &self.sql.as_ref().map(|_| "<configured>"))
             .field("ssti", &self.ssti.as_ref().map(|_| "<configured>"))
             .field("xss", &self.xss.as_ref().map(|_| "<configured>"))
-            .field("observation_count", &self.observations.len())
-            .finish()
+            .field("observation_count", &self.observations.len());
+        #[cfg(feature = "normalization-resilience")]
+        debug.field(
+            "normalization_candidate",
+            &self.normalization_candidate.as_ref().map(|_| "<committed>"),
+        );
+        debug.finish()
     }
+}
+
+/// Typed terminal audit result for one explicitly enabled normalization child.
+///
+/// Only [`Self::SemanticNormalizationGapObserved`] can create a product item;
+/// every other state remains internal, conservative audit truth.
+#[cfg(feature = "normalization-resilience")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::web_runtime) enum NormalizationReviewOutcome {
+    SemanticNormalizationGapObserved,
+    VariantStillBlocked,
+    VariantAcceptedSemanticsUnknown,
+    ReplayMismatch,
+    Incomplete,
 }
 
 impl CommittedAssessmentReviewLedger {
@@ -1847,6 +2112,8 @@ impl CommittedAssessmentReviewLedger {
             ssti: observer.ssti,
             xss: observer.xss,
             observations: BTreeMap::new(),
+            #[cfg(feature = "normalization-resilience")]
+            normalization_candidate: None,
         })
     }
 
@@ -1890,7 +2157,21 @@ impl CommittedAssessmentReviewLedger {
             ssti: observer.ssti,
             xss: observer.xss,
             observations: BTreeMap::new(),
+            #[cfg(feature = "normalization-resilience")]
+            normalization_candidate: None,
         }
+    }
+
+    #[cfg(feature = "normalization-resilience")]
+    pub(in crate::web_runtime) fn new_normalization(
+        root: Url,
+        seeds: NativeWebReviewSeeds,
+        selection: NormalizationTransformSelection,
+        parent: &NormalizationParentEvidence,
+    ) -> Result<Self, AssessmentReviewObserverError> {
+        let observer =
+            AssessmentReviewObserverSet::new_normalization(root, seeds, selection, parent)?;
+        Ok(Self::from_xss_observer(observer))
     }
 
     pub(crate) fn observations(
@@ -1901,6 +2182,101 @@ impl CommittedAssessmentReviewLedger {
 
     pub(crate) fn subject(&self) -> &EntityId {
         &self.subject
+    }
+
+    /// Derives a normalization parent only from one complete XSS pair and its
+    /// exact candidate-specific defense transition.
+    ///
+    /// A fingerprint, a bare status code, a standing block, rate limiting, or
+    /// incomplete response coverage cannot produce this value.
+    #[cfg(feature = "normalization-resilience")]
+    pub(in crate::web_runtime) fn normalization_parent_evidence(
+        &self,
+        defense: &CommittedAssessmentDefenseLedger,
+    ) -> Result<Option<NormalizationParentEvidence>, AssessmentReviewLedgerError> {
+        let Some(contract) = self.xss.as_ref() else {
+            return Ok(None);
+        };
+        if contract.source_evidence_ids.len() != REFLECTION_REVIEW_PROPERTIES.len() {
+            return Ok(None);
+        }
+        if !matches!(
+            contract.probe.parts().selection.family(),
+            XssProbeFamily::HtmlTextBoundary
+                | XssProbeFamily::AttributeValueBoundary
+                | XssProbeFamily::UriAttributeBoundary
+                | XssProbeFamily::EventHandlerAttributeBoundary
+        ) {
+            return Ok(None);
+        }
+        let parent_kind = contract.probe.parts().selection.action_kind();
+        let Some((control, candidate)) = exact_pair(&self.observations, parent_kind) else {
+            return Ok(None);
+        };
+
+        let mut matching = defense.transitions().iter().filter(|transition| {
+            let case = transition.case();
+            case.id() == control.case_id
+                && case.subject() == &control.subject
+                && case.action_id() == parent_kind.action_id()
+                && case.hypothesis_id() == control.hypothesis_id
+                && case.payload_strategy() == Some(&native_review_strategy_ref(parent_kind))
+        });
+        let Some(transition) = matching.next() else {
+            return Ok(None);
+        };
+        if matching.next().is_some()
+            || !transition.candidate_block_status_appeared()
+            || !transition.suppression_newly_blocking()
+            || transition.newly_rate_limited()
+        {
+            return Ok(None);
+        }
+        let Some((defense_control, defense_candidate)) =
+            defense.exact_observation_pair(transition.case())
+        else {
+            return Ok(None);
+        };
+        if defense_control.body_coverage() != AssessmentDefenseBodyCoverage::CompleteUtf8Prefix
+            || defense_candidate.body_coverage()
+                != AssessmentDefenseBodyCoverage::CompleteUtf8Prefix
+            || defense_control.input_limit_reached()
+            || defense_candidate.input_limit_reached()
+            || defense_control.state().is_rate_limited()
+            || defense_candidate.state().is_rate_limited()
+        {
+            return Ok(None);
+        }
+
+        let mut control_ids = control
+            .evidence_ids
+            .iter()
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        control_ids.extend(transition.control_evidence_ids().iter().cloned());
+        let mut candidate_ids = candidate
+            .evidence_ids
+            .iter()
+            .cloned()
+            .chain(contract.source_evidence_ids.iter().cloned())
+            .collect::<BTreeSet<_>>();
+        candidate_ids.extend(transition.candidate_evidence_ids().iter().cloned());
+        if control_ids.is_empty()
+            || candidate_ids.is_empty()
+            || control_ids.iter().any(|id| candidate_ids.contains(id))
+        {
+            return Err(AssessmentReviewLedgerError::EvidenceProjection);
+        }
+        Ok(Some(NormalizationParentEvidence {
+            root: self.root.clone(),
+            subject: self.subject.clone(),
+            query_parameter: contract.query_parameter.clone(),
+            selection: contract.probe.parts().selection.clone(),
+            parent_case: transition.case().clone(),
+            control_evidence_ids: control_ids.into_iter().collect(),
+            canonical_candidate_evidence_ids: candidate_ids.into_iter().collect(),
+            source_evidence_ids: contract.source_evidence_ids.clone(),
+        }))
     }
 
     /// Returns whether an enabled HTML-reflection leg could not be classified
@@ -1939,6 +2315,121 @@ impl CommittedAssessmentReviewLedger {
         candidates.next().is_none() && observations_form_exact_pair(control, candidate)
     }
 
+    /// Finalizes one normalization child against its separately committed
+    /// defense observations.
+    ///
+    /// The passive child leg is the transformed candidate and the active leg
+    /// is its distinct replay. Both must reproduce the exact inert structural
+    /// semantic and both must be complete, non-blocked, and non-rate-limited.
+    /// The canonical parent evidence is retained independently from the child
+    /// evidence so a 403-to-200 status change alone can never create an item.
+    #[cfg(feature = "normalization-resilience")]
+    pub(in crate::web_runtime) fn finalize_normalization(
+        &mut self,
+        defense: &CommittedAssessmentDefenseLedger,
+    ) -> Result<NormalizationReviewOutcome, AssessmentReviewLedgerError> {
+        let Some(contract) = self.xss.as_ref() else {
+            return Ok(NormalizationReviewOutcome::Incomplete);
+        };
+        if contract.action_kind != NativeWebReviewActionKind::NormalizationResilienceQueryPair {
+            return Ok(NormalizationReviewOutcome::Incomplete);
+        }
+        let Some(transform) = contract.normalization_transform else {
+            return Err(AssessmentReviewLedgerError::ReceiptAuthority);
+        };
+        let Some(parent) = contract.normalization_parent.as_ref() else {
+            return Err(AssessmentReviewLedgerError::ReceiptAuthority);
+        };
+        let Some((transformed, replay)) = exact_pair(
+            &self.observations,
+            NativeWebReviewActionKind::NormalizationResilienceQueryPair,
+        ) else {
+            return Ok(NormalizationReviewOutcome::Incomplete);
+        };
+        let child_defense = exact_normalization_defense_pair(defense, transformed, replay)?;
+        let Some((transformed_defense, replay_defense)) = child_defense else {
+            return Ok(NormalizationReviewOutcome::Incomplete);
+        };
+        if [transformed_defense, replay_defense]
+            .into_iter()
+            .any(|item| {
+                item.body_coverage() != AssessmentDefenseBodyCoverage::CompleteUtf8Prefix
+                    || item.input_limit_reached()
+            })
+        {
+            return Ok(NormalizationReviewOutcome::Incomplete);
+        }
+        if [transformed_defense, replay_defense]
+            .into_iter()
+            .any(|item| {
+                item.state().posture() == DefensePosture::Blocking
+                    || item.state().is_challenged()
+                    || item.state().is_rate_limited()
+            })
+        {
+            return Ok(NormalizationReviewOutcome::VariantStillBlocked);
+        }
+
+        let expected_family = contract.probe.parts().selection.family();
+        let expected_variant = contract.variant_id.as_str();
+        let transformed_semantic =
+            normalization_semantic_matches(transformed, expected_family, expected_variant)?;
+        let replay_semantic =
+            normalization_semantic_matches(replay, expected_family, expected_variant)?;
+        let (Some(transformed_semantic), Some(replay_semantic)) =
+            (transformed_semantic, replay_semantic)
+        else {
+            return Ok(NormalizationReviewOutcome::Incomplete);
+        };
+        match (transformed_semantic, replay_semantic) {
+            (false, _) => {
+                return Ok(NormalizationReviewOutcome::VariantAcceptedSemanticsUnknown);
+            },
+            (true, false) => return Ok(NormalizationReviewOutcome::ReplayMismatch),
+            (true, true) => {},
+        }
+
+        let control_evidence_ids = parent
+            .control_evidence_ids()
+            .iter()
+            .chain(parent.canonical_candidate_evidence_ids())
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        let candidate_evidence_ids = transformed
+            .evidence_ids
+            .iter()
+            .chain(&replay.evidence_ids)
+            .chain(transformed_defense.evidence_ids())
+            .chain(replay_defense.evidence_ids())
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        if control_evidence_ids.is_empty()
+            || candidate_evidence_ids.is_empty()
+            || control_evidence_ids
+                .iter()
+                .any(|id| candidate_evidence_ids.contains(id))
+        {
+            return Err(AssessmentReviewLedgerError::EvidenceProjection);
+        }
+        let candidate = NormalizationReviewCandidate {
+            subject: self.subject.clone(),
+            case_id: transformed.case_id.clone(),
+            family: expected_family,
+            transform,
+            query_parameter: contract.query_parameter.clone(),
+            control_evidence_ids: control_evidence_ids.into_iter().collect(),
+            candidate_evidence_ids: candidate_evidence_ids.into_iter().collect(),
+        };
+        if let Some(existing) = self.normalization_candidate.as_ref() {
+            if existing != &candidate {
+                return Err(AssessmentReviewLedgerError::ReplayConflict);
+            }
+        } else {
+            self.normalization_candidate = Some(candidate);
+        }
+        Ok(NormalizationReviewOutcome::SemanticNormalizationGapObserved)
+    }
+
     /// Replays one outcome only after both its receipt batch and verifier audit
     /// are validated against the authoritative knowledge store.
     pub(crate) fn ingest_outcome(
@@ -1965,12 +2456,7 @@ impl CommittedAssessmentReviewLedger {
             kind,
         )?;
         validate_committed_batch(receipt, knowledge)?;
-        if matches!(
-            kind,
-            NativeWebReviewActionKind::XssStructuralQueryPair
-                | NativeWebReviewActionKind::XssAttributeBoundaryQueryPair
-                | NativeWebReviewActionKind::XssScriptLexicalBoundaryQueryPair
-        ) {
+        if is_xss_response_action(kind) {
             validate_xss_source_evidence(
                 self.xss
                     .as_ref()
@@ -2086,11 +2572,13 @@ impl CommittedAssessmentReviewLedger {
                 );
             }
         }
-        if let Some(contract) = self.xss.as_ref() {
-            if let Some((control, candidate)) = exact_pair(
-                &self.observations,
-                contract.probe.parts().selection.action_kind(),
-            ) {
+        if let Some(contract) = self
+            .xss
+            .as_ref()
+            .filter(|contract| !is_normalization_action(contract.action_kind))
+        {
+            if let Some((control, candidate)) = exact_pair(&self.observations, contract.action_kind)
+            {
                 if let (
                     CommittedReviewResponse::XssStructural {
                         family: control_family,
@@ -2107,7 +2595,7 @@ impl CommittedAssessmentReviewLedger {
                     if control_family == candidate_family
                         && control_variant == candidate_variant
                         && *candidate_family == contract.probe.parts().selection.family()
-                        && *candidate_variant == contract.probe.parts().selection.variant_id()
+                        && candidate_variant == &contract.variant_id
                     {
                         candidates.push(AssessmentReviewCandidate::XssStructural(
                             XssStructuralReviewCandidate {
@@ -2143,6 +2631,10 @@ impl CommittedAssessmentReviewLedger {
                     }
                 }
             }
+        }
+        #[cfg(feature = "normalization-resilience")]
+        if let Some(candidate) = self.normalization_candidate.clone() {
+            candidates.push(AssessmentReviewCandidate::Normalization(candidate));
         }
         candidates
     }
@@ -2248,6 +2740,75 @@ fn exact_pair(
         return None;
     }
     Some((control, candidate))
+}
+
+#[cfg(feature = "normalization-resilience")]
+fn exact_normalization_defense_pair<'a>(
+    defense: &'a CommittedAssessmentDefenseLedger,
+    transformed: &CommittedAssessmentReviewObservation,
+    replay: &CommittedAssessmentReviewObservation,
+) -> Result<
+    Option<(
+        &'a super::assessment_defense::CommittedAssessmentDefenseObservation,
+        &'a super::assessment_defense::CommittedAssessmentDefenseObservation,
+    )>,
+    AssessmentReviewLedgerError,
+> {
+    if !observations_form_exact_pair(transformed, replay) {
+        return Err(AssessmentReviewLedgerError::ReceiptAuthority);
+    }
+    let expected_strategy =
+        native_review_strategy_ref(NativeWebReviewActionKind::NormalizationResilienceQueryPair);
+    let matching = |stage| {
+        defense
+            .observations()
+            .iter()
+            .filter(|observation| observation.stage() == stage)
+            .filter(|observation| {
+                let case = observation.case();
+                case.id() == transformed.case_id
+                    && case.subject() == &transformed.subject
+                    && case.action_id()
+                        == NativeWebReviewActionKind::NormalizationResilienceQueryPair.action_id()
+                    && case.hypothesis_id() == transformed.hypothesis_id
+                    && case.payload_strategy() == Some(&expected_strategy)
+                    && !case.applies_hypothesis_transition()
+            })
+            .collect::<Vec<_>>()
+    };
+    let passive = matching(DecisionExecutionStage::Passive);
+    let active = matching(DecisionExecutionStage::Active);
+    match (passive.as_slice(), active.as_slice()) {
+        ([passive], [active]) => Ok(Some((*passive, *active))),
+        ([], _) | (_, []) => Ok(None),
+        _ => Err(AssessmentReviewLedgerError::EvidenceProjection),
+    }
+}
+
+#[cfg(feature = "normalization-resilience")]
+fn normalization_semantic_matches(
+    observation: &CommittedAssessmentReviewObservation,
+    expected_family: XssProbeFamily,
+    expected_variant: &str,
+) -> Result<Option<bool>, AssessmentReviewLedgerError> {
+    let CommittedReviewResponse::XssStructural {
+        family,
+        variant,
+        relation,
+    } = &observation.response
+    else {
+        return Err(AssessmentReviewLedgerError::EvidenceProjection);
+    };
+    if *family != expected_family || variant != expected_variant {
+        return Err(AssessmentReviewLedgerError::EvidenceProjection);
+    }
+    Ok(match relation {
+        XssStructuralRelation::StructuralBoundaryObserved => Some(true),
+        XssStructuralRelation::Incomplete => None,
+        XssStructuralRelation::EncodedOrInert
+        | XssStructuralRelation::ReflectedSameContext
+        | XssStructuralRelation::Unsupported => Some(false),
+    })
 }
 
 fn validate_receipt_authority(
@@ -2559,9 +3120,9 @@ fn parse_review_receipt(
                 .ok_or(AssessmentReviewLedgerError::EvidenceProjection)?;
             let family = value(&values, ReviewProperty::XssProbeFamily)?;
             let variant = value(&values, ReviewProperty::XssProbeVariant)?;
-            if kind != contract.probe.parts().selection.action_kind()
+            if kind != contract.action_kind
                 || family != contract.probe.parts().selection.family().stable_id()
-                || variant != contract.probe.parts().selection.variant_id()
+                || variant != contract.variant_id
             {
                 return Err(AssessmentReviewLedgerError::EvidenceProjection);
             }
@@ -2586,7 +3147,47 @@ fn parse_review_receipt(
             }
             CommittedReviewResponse::XssStructural {
                 family: contract.probe.parts().selection.family(),
-                variant: contract.probe.parts().selection.variant_id(),
+                variant: contract.variant_id.clone(),
+                relation: parse_xss_structural_relation(value(
+                    &values,
+                    ReviewProperty::XssStructuralRelation,
+                )?)?,
+            }
+        },
+        #[cfg(feature = "normalization-resilience")]
+        NativeWebReviewActionKind::NormalizationResilienceQueryPair => {
+            let contract = contracts
+                .xss
+                .ok_or(AssessmentReviewLedgerError::EvidenceProjection)?;
+            let family = value(&values, ReviewProperty::XssProbeFamily)?;
+            let variant = value(&values, ReviewProperty::XssProbeVariant)?;
+            if kind != contract.action_kind
+                || family != contract.probe.parts().selection.family().stable_id()
+                || variant != contract.variant_id
+                || contract.normalization_transform.is_none()
+                || contract.normalization_parent.is_none()
+                || contract
+                    .probe
+                    .parts()
+                    .selection
+                    .javascript_anchor()
+                    .is_some()
+            {
+                return Err(AssessmentReviewLedgerError::EvidenceProjection);
+            }
+            let javascript_source = JavaScriptSourceResult::from_evidence_fields(
+                value(&values, ReviewProperty::JavaScriptSourceStatus)?,
+                value(&values, ReviewProperty::JavaScriptSourceScriptKind)?,
+                value(&values, ReviewProperty::JavaScriptSourceContext)?,
+                value(&values, ReviewProperty::JavaScriptSourceScriptOrdinal)?,
+            )
+            .ok_or(AssessmentReviewLedgerError::EvidenceProjection)?;
+            if !matches!(javascript_source, JavaScriptSourceResult::Absent) {
+                return Err(AssessmentReviewLedgerError::EvidenceProjection);
+            }
+            CommittedReviewResponse::XssStructural {
+                family: contract.probe.parts().selection.family(),
+                variant: contract.variant_id.clone(),
                 relation: parse_xss_structural_relation(value(
                     &values,
                     ReviewProperty::XssStructuralRelation,
@@ -2708,17 +3309,16 @@ fn expected_review_parent_ids(
         return Err(AssessmentReviewLedgerError::EvidenceProjection);
     }
     let mut items = vec![method, requested, status, final_url];
-    if matches!(
-        kind,
-        NativeWebReviewActionKind::ReflectionContextQueryPair
-            | NativeWebReviewActionKind::SqlStructuralQueryPair
-            | NativeWebReviewActionKind::SqlStructuralQueryReplayPair
-            | NativeWebReviewActionKind::SstiStructuralQueryPair
-            | NativeWebReviewActionKind::SstiStructuralQueryReplayPair
-            | NativeWebReviewActionKind::XssStructuralQueryPair
-            | NativeWebReviewActionKind::XssAttributeBoundaryQueryPair
-            | NativeWebReviewActionKind::XssScriptLexicalBoundaryQueryPair
-    ) {
+    if is_xss_response_action(kind)
+        || matches!(
+            kind,
+            NativeWebReviewActionKind::ReflectionContextQueryPair
+                | NativeWebReviewActionKind::SqlStructuralQueryPair
+                | NativeWebReviewActionKind::SqlStructuralQueryReplayPair
+                | NativeWebReviewActionKind::SstiStructuralQueryPair
+                | NativeWebReviewActionKind::SstiStructuralQueryReplayPair
+        )
+    {
         let media = optional_unique_base(receipt, HttpEvidencePredicate::RESPONSE_MEDIA_TYPE)?;
         if let Some(media) = media {
             if !matches!(media.value(), EvidenceValue::Text(value) if !value.is_empty()) {
@@ -2750,12 +3350,7 @@ fn expected_review_parent_ids(
         .into_iter()
         .map(|item| item.id().clone())
         .collect::<Vec<_>>();
-    if matches!(
-        kind,
-        NativeWebReviewActionKind::XssStructuralQueryPair
-            | NativeWebReviewActionKind::XssAttributeBoundaryQueryPair
-            | NativeWebReviewActionKind::XssScriptLexicalBoundaryQueryPair
-    ) {
+    if is_xss_response_action(kind) {
         ids.extend(
             contracts
                 .xss
@@ -2879,6 +3474,13 @@ fn requested_url_value_matches_with_sql(
             DecisionExecutionStage::Passive => url == contract.control_url,
             DecisionExecutionStage::Active => url == contract.candidate_url,
         }),
+        #[cfg(feature = "normalization-resilience")]
+        (NativeWebReviewActionKind::NormalizationResilienceQueryPair, stage) => {
+            contracts.xss.is_some_and(|contract| match stage {
+                DecisionExecutionStage::Passive => url == contract.control_url,
+                DecisionExecutionStage::Active => url == contract.candidate_url,
+            })
+        },
     }
 }
 
@@ -2897,6 +3499,38 @@ fn review_kind(action_id: &str) -> Option<NativeWebReviewActionKind> {
     NativeWebReviewActionKind::all()
         .into_iter()
         .find(|kind| kind.action_id() == action_id)
+}
+
+const fn is_normalization_action(kind: NativeWebReviewActionKind) -> bool {
+    #[cfg(feature = "normalization-resilience")]
+    {
+        matches!(
+            kind,
+            NativeWebReviewActionKind::NormalizationResilienceQueryPair
+        )
+    }
+    #[cfg(not(feature = "normalization-resilience"))]
+    {
+        let _ = kind;
+        false
+    }
+}
+
+const fn is_xss_response_action(kind: NativeWebReviewActionKind) -> bool {
+    match kind {
+        NativeWebReviewActionKind::XssStructuralQueryPair
+        | NativeWebReviewActionKind::XssAttributeBoundaryQueryPair
+        | NativeWebReviewActionKind::XssScriptLexicalBoundaryQueryPair => true,
+        #[cfg(feature = "normalization-resilience")]
+        NativeWebReviewActionKind::NormalizationResilienceQueryPair => true,
+        NativeWebReviewActionKind::CorsPolicyPair
+        | NativeWebReviewActionKind::RedirectReflectionQueryPair
+        | NativeWebReviewActionKind::ReflectionContextQueryPair
+        | NativeWebReviewActionKind::SqlStructuralQueryPair
+        | NativeWebReviewActionKind::SqlStructuralQueryReplayPair
+        | NativeWebReviewActionKind::SstiStructuralQueryPair
+        | NativeWebReviewActionKind::SstiStructuralQueryReplayPair => false,
+    }
 }
 
 const CORS_REVIEW_PROPERTIES: [ReviewProperty; 5] = [
@@ -2962,6 +3596,8 @@ fn expected_properties(kind: NativeWebReviewActionKind) -> &'static [ReviewPrope
         NativeWebReviewActionKind::XssStructuralQueryPair
         | NativeWebReviewActionKind::XssAttributeBoundaryQueryPair
         | NativeWebReviewActionKind::XssScriptLexicalBoundaryQueryPair => &XSS_REVIEW_PROPERTIES,
+        #[cfg(feature = "normalization-resilience")]
+        NativeWebReviewActionKind::NormalizationResilienceQueryPair => &XSS_REVIEW_PROPERTIES,
     }
 }
 
@@ -3236,6 +3872,20 @@ pub(crate) struct XssStructuralReviewCandidate {
     candidate_evidence_ids: Vec<EvidenceId>,
 }
 
+/// One independently replayed normalization gap. The transform reference is
+/// retained as typed stable identity; no transformed bytes are retained.
+#[cfg(feature = "normalization-resilience")]
+#[derive(Clone, PartialEq, Eq)]
+pub(in crate::web_runtime) struct NormalizationReviewCandidate {
+    subject: EntityId,
+    case_id: String,
+    family: XssProbeFamily,
+    transform: NormalizationTransformRef,
+    query_parameter: String,
+    control_evidence_ids: Vec<EvidenceId>,
+    candidate_evidence_ids: Vec<EvidenceId>,
+}
+
 /// Typed output from the matched-pair ledger. No variant can assert a
 /// confirmed vulnerability.
 #[derive(Clone, PartialEq, Eq)]
@@ -3246,6 +3896,8 @@ pub(crate) enum AssessmentReviewCandidate {
     SqlStructural(SqlStructuralReviewCandidate),
     SstiStructural(SstiStructuralReviewCandidate),
     XssStructural(XssStructuralReviewCandidate),
+    #[cfg(feature = "normalization-resilience")]
+    Normalization(NormalizationReviewCandidate),
 }
 
 macro_rules! redacted_candidate_debug {
@@ -3275,6 +3927,8 @@ redacted_candidate_debug!(
     "SstiStructuralReviewCandidate"
 );
 redacted_candidate_debug!(XssStructuralReviewCandidate, "XssStructuralReviewCandidate");
+#[cfg(feature = "normalization-resilience")]
+redacted_candidate_debug!(NormalizationReviewCandidate, "NormalizationReviewCandidate");
 
 impl fmt::Debug for ReflectionReviewCandidate {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -3303,6 +3957,8 @@ impl fmt::Debug for AssessmentReviewCandidate {
             Self::SqlStructural(value) => value.fmt(formatter),
             Self::SstiStructural(value) => value.fmt(formatter),
             Self::XssStructural(value) => value.fmt(formatter),
+            #[cfg(feature = "normalization-resilience")]
+            Self::Normalization(value) => value.fmt(formatter),
         }
     }
 }
@@ -3315,6 +3971,8 @@ impl AssessmentReviewCandidate {
             | Self::SqlStructural(_)
             | Self::SstiStructural(_) => NativeReviewDisposition::NeedsReview,
             Self::XssStructural(_) => NativeReviewDisposition::NeedsReview,
+            #[cfg(feature = "normalization-resilience")]
+            Self::Normalization(_) => NativeReviewDisposition::NeedsReview,
             Self::Reflection(candidate) => candidate.disposition,
         }
     }
@@ -3327,6 +3985,8 @@ impl AssessmentReviewCandidate {
             Self::SqlStructural(candidate) => &candidate.subject,
             Self::SstiStructural(candidate) => &candidate.subject,
             Self::XssStructural(candidate) => &candidate.subject,
+            #[cfg(feature = "normalization-resilience")]
+            Self::Normalization(candidate) => &candidate.subject,
         }
     }
 
@@ -3338,6 +3998,8 @@ impl AssessmentReviewCandidate {
             Self::SqlStructural(candidate) => &candidate.control_evidence_ids,
             Self::SstiStructural(candidate) => &candidate.control_evidence_ids,
             Self::XssStructural(candidate) => &candidate.control_evidence_ids,
+            #[cfg(feature = "normalization-resilience")]
+            Self::Normalization(candidate) => &candidate.control_evidence_ids,
         }
     }
 
@@ -3349,6 +4011,8 @@ impl AssessmentReviewCandidate {
             Self::SqlStructural(candidate) => &candidate.candidate_evidence_ids,
             Self::SstiStructural(candidate) => &candidate.candidate_evidence_ids,
             Self::XssStructural(candidate) => &candidate.candidate_evidence_ids,
+            #[cfg(feature = "normalization-resilience")]
+            Self::Normalization(candidate) => &candidate.candidate_evidence_ids,
         }
     }
 
@@ -3360,6 +4024,8 @@ impl AssessmentReviewCandidate {
             | Self::SqlStructural(_)
             | Self::SstiStructural(_) => None,
             Self::XssStructural(_) => None,
+            #[cfg(feature = "normalization-resilience")]
+            Self::Normalization(_) => None,
         }
     }
 
@@ -3372,6 +4038,8 @@ impl AssessmentReviewCandidate {
             | Self::SqlStructural(_)
             | Self::SstiStructural(_) => None,
             Self::XssStructural(_) => None,
+            #[cfg(feature = "normalization-resilience")]
+            Self::Normalization(_) => None,
         }
     }
 
@@ -3382,6 +4050,8 @@ impl AssessmentReviewCandidate {
             Self::SqlStructural(candidate) => Some(&candidate.query_parameter),
             Self::SstiStructural(candidate) => Some(&candidate.query_parameter),
             Self::XssStructural(candidate) => Some(&candidate.query_parameter),
+            #[cfg(feature = "normalization-resilience")]
+            Self::Normalization(candidate) => Some(&candidate.query_parameter),
             Self::Cors(_) => None,
         }
     }
@@ -3389,6 +4059,16 @@ impl AssessmentReviewCandidate {
     pub(crate) const fn xss_family(&self) -> Option<XssProbeFamily> {
         match self {
             Self::XssStructural(candidate) => Some(candidate.family),
+            #[cfg(feature = "normalization-resilience")]
+            Self::Normalization(candidate) => Some(candidate.family),
+            _ => None,
+        }
+    }
+
+    #[cfg(feature = "normalization-resilience")]
+    pub(crate) const fn normalization_transform(&self) -> Option<NormalizationTransformRef> {
+        match self {
+            Self::Normalization(candidate) => Some(candidate.transform),
             _ => None,
         }
     }

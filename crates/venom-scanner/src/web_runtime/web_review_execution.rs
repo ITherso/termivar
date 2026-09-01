@@ -19,6 +19,10 @@ use sha2::{Digest, Sha256};
 use thiserror::Error;
 use url::Url;
 
+#[cfg(feature = "normalization-resilience")]
+use crate::payload_strategies::normalization_resilience_query_pair::{
+    NORMALIZATION_RESILIENCE_QUERY_PAIR_ID, NORMALIZATION_RESILIENCE_QUERY_PAIR_REVISION,
+};
 use crate::payload_strategies::ssti_arithmetic_expression_pair::SstiArithmeticProbe;
 use crate::{
     decision_runner::{
@@ -47,6 +51,8 @@ use crate::{
     web_actions::NativeWebReviewActionKind,
 };
 
+#[cfg(feature = "normalization-resilience")]
+use super::web_assessment::NormalizationTransformSelection;
 use super::web_assessment::XssProbeSelection;
 
 const REVIEW_PAYLOAD_MAX_BYTES: u32 = 256;
@@ -108,6 +114,8 @@ pub(crate) struct NativeWebReviewQueryParameters {
     sql: Option<String>,
     ssti: Option<String>,
     xss: Option<(String, XssProbeSelection)>,
+    #[cfg(feature = "normalization-resilience")]
+    normalization: Option<(String, NormalizationTransformSelection)>,
 }
 
 impl NativeWebReviewQueryParameters {
@@ -123,6 +131,8 @@ impl NativeWebReviewQueryParameters {
             sql,
             ssti,
             xss: None,
+            #[cfg(feature = "normalization-resilience")]
+            normalization: None,
         }
     }
 
@@ -141,6 +151,23 @@ impl NativeWebReviewQueryParameters {
             sql: None,
             ssti: None,
             xss: Some((parameter, selection)),
+            #[cfg(feature = "normalization-resilience")]
+            normalization: None,
+        }
+    }
+
+    #[cfg(feature = "normalization-resilience")]
+    pub(crate) fn normalization_only(
+        parameter: String,
+        selection: NormalizationTransformSelection,
+    ) -> Self {
+        Self {
+            redirect: None,
+            reflection: None,
+            sql: None,
+            ssti: None,
+            xss: None,
+            normalization: Some((parameter, selection)),
         }
     }
 }
@@ -167,6 +194,10 @@ pub(crate) fn enabled_native_web_review_actions(
             NativeWebReviewActionKind::XssStructuralQueryPair
             | NativeWebReviewActionKind::XssAttributeBoundaryQueryPair
             | NativeWebReviewActionKind::XssScriptLexicalBoundaryQueryPair => {
+                xss_action == Some(*kind)
+            },
+            #[cfg(feature = "normalization-resilience")]
+            NativeWebReviewActionKind::NormalizationResilienceQueryPair => {
                 xss_action == Some(*kind)
             },
         })
@@ -286,20 +317,34 @@ impl NativeWebReviewExecutorProfile {
             sql: sql_query_parameter,
             ssti: ssti_query_parameter,
             xss: xss_query_parameter,
+            #[cfg(feature = "normalization-resilience")]
+                normalization: normalization_query_parameter,
         } = query_parameters;
         let limits =
             PayloadStrategyLimits::new(REVIEW_PAYLOAD_MAX_BYTES, REVIEW_PAYLOAD_MAX_BYTES)?;
         let strategies = standard_payload_strategies()?;
         let provider = Arc::new(SubjectHttpProbeProvider::new(HttpProbeMethod::Get));
+        let xss_action = xss_query_parameter
+            .as_ref()
+            .map(|(_, selection)| selection.action_kind());
+        #[cfg(feature = "normalization-resilience")]
+        let xss_action = if normalization_query_parameter.is_some() {
+            if xss_action.is_some() {
+                return Err(NativeWebReviewExecutionError::Payload(
+                    PayloadStrategyError::DerivationFailed,
+                ));
+            }
+            Some(NativeWebReviewActionKind::NormalizationResilienceQueryPair)
+        } else {
+            xss_action
+        };
         let enabled_actions = enabled_native_web_review_actions(
             include_cors,
             redirect_query_parameter.is_some(),
             reflection_query_parameter.is_some(),
             sql_query_parameter.is_some(),
             ssti_query_parameter.is_some(),
-            xss_query_parameter
-                .as_ref()
-                .map(|(_, selection)| selection.action_kind()),
+            xss_action,
         );
 
         let mut bindings = Vec::new();
@@ -452,14 +497,11 @@ impl NativeWebReviewExecutorProfile {
             }
         }
 
-        let xss_action = xss_query_parameter
-            .as_ref()
-            .map(|(_, selection)| selection.action_kind());
         if let Some((parameter, selection)) = xss_query_parameter {
             let kind = selection.action_kind();
             let seed = selection.strategy_seed(seeds.reflection_identity());
             let payload = HttpQueryPayloadBinding::new(
-                strategies,
+                strategies.clone(),
                 payload_strategy_reference(kind)?,
                 PayloadSeed::new(seed.into_bytes(), limits)?,
                 limits,
@@ -468,8 +510,44 @@ impl NativeWebReviewExecutorProfile {
             let executor = configure_executor(
                 HttpEvidenceExecutor::with_id_and_request_broker(
                     kind.executor_id(),
-                    requests,
-                    provider,
+                    requests.clone(),
+                    provider.clone(),
+                )?
+                .with_query_payload_binding(payload),
+                observer.as_ref(),
+            );
+            bindings.push(NativeExecutorBinding {
+                kind,
+                executor: Arc::new(executor),
+            });
+        }
+
+        #[cfg(feature = "normalization-resilience")]
+        if let Some((parameter, selection)) = normalization_query_parameter {
+            let kind = NativeWebReviewActionKind::NormalizationResilienceQueryPair;
+            debug_assert!(selection.is_executable_v1_contract());
+            let strategy = selection.strategy_ref();
+            debug_assert_eq!(strategy, payload_strategy_reference(kind)?);
+            let seed = selection
+                .strategy_seed(
+                    &seeds.normalization_candidate_identity(),
+                    &seeds.normalization_replay_identity(),
+                )
+                .ok_or(NativeWebReviewExecutionError::Payload(
+                    PayloadStrategyError::DerivationFailed,
+                ))?;
+            let payload = HttpQueryPayloadBinding::new(
+                strategies.clone(),
+                strategy,
+                PayloadSeed::new(seed.into_bytes(), limits)?,
+                limits,
+                parameter,
+            )?;
+            let executor = configure_executor(
+                HttpEvidenceExecutor::with_id_and_request_broker(
+                    kind.executor_id(),
+                    requests.clone(),
+                    provider.clone(),
                 )?
                 .with_query_payload_binding(payload),
                 observer.as_ref(),
@@ -576,6 +654,8 @@ impl NativeWebReviewExecutorProfile {
                 sql: None,
                 ssti: None,
                 xss: None,
+                #[cfg(feature = "normalization-resilience")]
+                normalization: None,
             },
             true,
         )
@@ -617,6 +697,11 @@ fn payload_strategy_reference(
         NativeWebReviewActionKind::XssScriptLexicalBoundaryQueryPair => (
             XSS_JAVASCRIPT_LEXICAL_BOUNDARY_QUERY_PAIR_ID,
             XSS_JAVASCRIPT_LEXICAL_BOUNDARY_QUERY_PAIR_REVISION,
+        ),
+        #[cfg(feature = "normalization-resilience")]
+        NativeWebReviewActionKind::NormalizationResilienceQueryPair => (
+            NORMALIZATION_RESILIENCE_QUERY_PAIR_ID,
+            NORMALIZATION_RESILIENCE_QUERY_PAIR_REVISION,
         ),
     };
     PayloadStrategyRef::new(id, revision)
@@ -733,6 +818,28 @@ impl NativeWebReviewSeeds {
 
     pub(crate) fn reflection_identity(&self) -> &str {
         &self.reflection_identity
+    }
+
+    #[cfg(feature = "normalization-resilience")]
+    pub(crate) fn normalization_candidate_identity(&self) -> String {
+        self.normalization_identity("transformed-candidate")
+    }
+
+    #[cfg(feature = "normalization-resilience")]
+    pub(crate) fn normalization_replay_identity(&self) -> String {
+        self.normalization_identity("transformed-replay")
+    }
+
+    #[cfg(feature = "normalization-resilience")]
+    fn normalization_identity(&self, role: &str) -> String {
+        let mut digest = Sha256::new();
+        digest.update(b"venom.normalization-resilience.identity/v1\0");
+        digest.update((self.origin_identity.len() as u64).to_be_bytes());
+        digest.update(self.origin_identity.as_bytes());
+        digest.update((role.len() as u64).to_be_bytes());
+        digest.update(role.as_bytes());
+        let digest = digest.finalize();
+        lowercase_hex(&digest[..REVIEW_SEED_DIGEST_BYTES])
     }
 
     pub(crate) fn reflection_control_marker(&self) -> String {

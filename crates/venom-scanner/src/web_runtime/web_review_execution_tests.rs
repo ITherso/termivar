@@ -60,6 +60,11 @@ fn expected_strategy(kind: NativeWebReviewActionKind) -> PayloadStrategyRef {
             XSS_JAVASCRIPT_LEXICAL_BOUNDARY_QUERY_PAIR_ID,
             XSS_JAVASCRIPT_LEXICAL_BOUNDARY_QUERY_PAIR_REVISION,
         ),
+        #[cfg(feature = "normalization-resilience")]
+        NativeWebReviewActionKind::NormalizationResilienceQueryPair => (
+            NORMALIZATION_RESILIENCE_QUERY_PAIR_ID,
+            NORMALIZATION_RESILIENCE_QUERY_PAIR_REVISION,
+        ),
     };
     PayloadStrategyRef::new(id, revision).unwrap()
 }
@@ -335,6 +340,8 @@ fn decision_and_executor_share_each_subject_specific_enabled_action_set() {
                 sql: sql.map(str::to_owned),
                 ssti: ssti.map(str::to_owned),
                 xss: None,
+                #[cfg(feature = "normalization-resilience")]
+                normalization: None,
             },
             include_cors,
         )

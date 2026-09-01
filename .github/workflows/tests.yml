@@ -122,11 +122,12 @@ jobs:
           cargo test --locked -p venom-cli --no-default-features --features api-adapter
           cargo test --locked -p venom-cli --no-default-features --features proxy-adapter
           cargo test --locked -p venom-cli --no-default-features --features artifact-adapter
+          cargo test --locked -p venom-cli --no-default-features --features normalization-resilience
       - name: Verify scanner feature boundaries independently
         run: |
           set -euo pipefail
           for feature in \
-            core scanning legacy-scanner platform-models reporting detection ml \
+            core scanning normalization-resilience legacy-scanner platform-models reporting detection ml \
             distributed monitoring compliance threat-intel plugins lua
           do
             cargo test --locked -p venom-scanner --no-default-features --features "$feature" --lib --tests

@@ -23,6 +23,9 @@ use super::{
     },
 };
 
+#[cfg(feature = "normalization-resilience")]
+use super::web_assessment::XssProbeFamily;
+
 const MAX_NATIVE_REVIEW_PROJECTION_ITEMS: usize = 5;
 
 const SSTI_STRUCTURAL_REVIEW: AssessmentCapabilityDescriptor =
@@ -62,6 +65,62 @@ const XSS_STRUCTURAL_REVIEW: AssessmentCapabilityDescriptor =
         Some("CWE-79"),
         "web.remediation.contextual-output-encoding@1",
         "Apply encoding for the exact output context and separately authorize execution verification before treating this structural signal as exploitable XSS.",
+    );
+
+#[cfg(feature = "normalization-resilience")]
+const HTML_TEXT_TOKEN_CASE_NORMALIZATION_REVIEW: AssessmentCapabilityDescriptor =
+    AssessmentCapabilityDescriptor::differential_review(
+        "web.review.normalization-resilience.xss.html-text-boundary.html-token-case@1",
+        "Equivalent HTML token-case representation reached the same inert structure",
+        "defense-normalization-gap",
+        "A transformed representation and distinct replay reproduced the same inert application parser semantics while the canonical candidate produced candidate-specific defensive blocking; neither XSS execution nor a WAF bypass was confirmed.",
+        None,
+        1_000_000,
+        None,
+        "web.remediation.defense-normalization-consistency@1",
+        "Align defensive and application normalization for equivalent HTML syntax and manually review the exact rule and parser boundary.",
+    );
+
+#[cfg(feature = "normalization-resilience")]
+const ATTRIBUTE_VALUE_INTER_TOKEN_TAB_NORMALIZATION_REVIEW: AssessmentCapabilityDescriptor =
+    AssessmentCapabilityDescriptor::differential_review(
+        "web.review.normalization-resilience.xss.attribute-value-boundary.html-inter-token-tab@1",
+        "Equivalent HTML whitespace representation reached the same inert structure",
+        "defense-normalization-gap",
+        "A transformed representation and distinct replay reproduced the same inert application parser semantics while the canonical candidate produced candidate-specific defensive blocking; neither XSS execution nor a WAF bypass was confirmed.",
+        None,
+        1_000_000,
+        None,
+        "web.remediation.defense-normalization-consistency@1",
+        "Align defensive and application normalization for equivalent HTML whitespace and manually review the exact rule and parser boundary.",
+    );
+
+#[cfg(feature = "normalization-resilience")]
+const URI_ATTRIBUTE_INTER_TOKEN_TAB_NORMALIZATION_REVIEW: AssessmentCapabilityDescriptor =
+    AssessmentCapabilityDescriptor::differential_review(
+        "web.review.normalization-resilience.xss.uri-attribute-boundary.html-inter-token-tab@1",
+        "Equivalent URI-attribute whitespace representation reached the same inert structure",
+        "defense-normalization-gap",
+        "A transformed representation and distinct replay reproduced the same inert application parser semantics while the canonical candidate produced candidate-specific defensive blocking; neither XSS execution nor a WAF bypass was confirmed.",
+        None,
+        1_000_000,
+        None,
+        "web.remediation.defense-normalization-consistency@1",
+        "Align defensive and application normalization for equivalent URI-attribute syntax and manually review the exact rule and parser boundary.",
+    );
+
+#[cfg(feature = "normalization-resilience")]
+const EVENT_HANDLER_INTER_TOKEN_TAB_NORMALIZATION_REVIEW: AssessmentCapabilityDescriptor =
+    AssessmentCapabilityDescriptor::differential_review(
+        "web.review.normalization-resilience.xss.event-handler-attribute-boundary.html-inter-token-tab@1",
+        "Equivalent event-handler-attribute whitespace representation reached the same inert structure",
+        "defense-normalization-gap",
+        "A transformed representation and distinct replay reproduced the same inert application parser semantics while the canonical candidate produced candidate-specific defensive blocking; neither XSS execution nor a WAF bypass was confirmed.",
+        None,
+        1_000_000,
+        None,
+        "web.remediation.defense-normalization-consistency@1",
+        "Align defensive and application normalization for equivalent event-handler-attribute syntax and manually review the exact rule and parser boundary.",
     );
 
 const CORS_CREDENTIALS_REVIEW: AssessmentCapabilityDescriptor =
@@ -209,6 +268,14 @@ enum NativeReviewProjectionKind {
     SqlStructuralDifferential,
     SstiStructuralEvaluation,
     XssStructuralBoundary,
+    #[cfg(feature = "normalization-resilience")]
+    NormalizationHtmlTextTokenCase,
+    #[cfg(feature = "normalization-resilience")]
+    NormalizationAttributeValueInterTokenTab,
+    #[cfg(feature = "normalization-resilience")]
+    NormalizationUriAttributeInterTokenTab,
+    #[cfg(feature = "normalization-resilience")]
+    NormalizationEventHandlerAttributeInterTokenTab,
 }
 
 impl NativeReviewProjectionKind {
@@ -227,6 +294,20 @@ impl NativeReviewProjectionKind {
             Self::SqlStructuralDifferential => &SQL_STRUCTURAL_REVIEW,
             Self::SstiStructuralEvaluation => &SSTI_STRUCTURAL_REVIEW,
             Self::XssStructuralBoundary => &XSS_STRUCTURAL_REVIEW,
+            #[cfg(feature = "normalization-resilience")]
+            Self::NormalizationHtmlTextTokenCase => &HTML_TEXT_TOKEN_CASE_NORMALIZATION_REVIEW,
+            #[cfg(feature = "normalization-resilience")]
+            Self::NormalizationAttributeValueInterTokenTab => {
+                &ATTRIBUTE_VALUE_INTER_TOKEN_TAB_NORMALIZATION_REVIEW
+            },
+            #[cfg(feature = "normalization-resilience")]
+            Self::NormalizationUriAttributeInterTokenTab => {
+                &URI_ATTRIBUTE_INTER_TOKEN_TAB_NORMALIZATION_REVIEW
+            },
+            #[cfg(feature = "normalization-resilience")]
+            Self::NormalizationEventHandlerAttributeInterTokenTab => {
+                &EVENT_HANDLER_INTER_TOKEN_TAB_NORMALIZATION_REVIEW
+            },
         }
     }
 
@@ -245,6 +326,13 @@ impl NativeReviewProjectionKind {
             | Self::SqlStructuralDifferential => NativeReviewProjectionBasis::Differential,
             Self::SstiStructuralEvaluation => NativeReviewProjectionBasis::Differential,
             Self::XssStructuralBoundary => NativeReviewProjectionBasis::Differential,
+            #[cfg(feature = "normalization-resilience")]
+            Self::NormalizationHtmlTextTokenCase
+            | Self::NormalizationAttributeValueInterTokenTab
+            | Self::NormalizationUriAttributeInterTokenTab
+            | Self::NormalizationEventHandlerAttributeInterTokenTab => {
+                NativeReviewProjectionBasis::Differential
+            },
         }
     }
 }
@@ -442,6 +530,43 @@ fn plan_candidate(
                 .ok_or(AssessmentReviewItemProjectionError::CandidateContract)?;
             (
                 NativeReviewProjectionKind::XssStructuralBoundary,
+                AssessmentItemTarget::query_parameter(query_parameter)?,
+            )
+        },
+        #[cfg(feature = "normalization-resilience")]
+        AssessmentReviewCandidate::Normalization(_) => {
+            if candidate.disposition() != NativeReviewDisposition::NeedsReview
+                || candidate.reflection_context().is_some()
+                || candidate.cors_status_relationship().is_some()
+                || candidate.xss_family().is_none()
+            {
+                return Err(AssessmentReviewItemProjectionError::CandidateContract);
+            }
+            let query_parameter = candidate
+                .query_parameter()
+                .ok_or(AssessmentReviewItemProjectionError::CandidateContract)?;
+            let transform = candidate
+                .normalization_transform()
+                .ok_or(AssessmentReviewItemProjectionError::CandidateContract)?;
+            let kind = match (transform.id(), transform.revision(), candidate.xss_family()) {
+                ("xss.html-token-case", 1, Some(XssProbeFamily::HtmlTextBoundary)) => {
+                    NativeReviewProjectionKind::NormalizationHtmlTextTokenCase
+                },
+                ("xss.html-inter-token-tab", 1, Some(XssProbeFamily::AttributeValueBoundary)) => {
+                    NativeReviewProjectionKind::NormalizationAttributeValueInterTokenTab
+                },
+                ("xss.html-inter-token-tab", 1, Some(XssProbeFamily::UriAttributeBoundary)) => {
+                    NativeReviewProjectionKind::NormalizationUriAttributeInterTokenTab
+                },
+                (
+                    "xss.html-inter-token-tab",
+                    1,
+                    Some(XssProbeFamily::EventHandlerAttributeBoundary),
+                ) => NativeReviewProjectionKind::NormalizationEventHandlerAttributeInterTokenTab,
+                _ => return Err(AssessmentReviewItemProjectionError::CandidateContract),
+            };
+            (
+                kind,
                 AssessmentItemTarget::query_parameter(query_parameter)?,
             )
         },

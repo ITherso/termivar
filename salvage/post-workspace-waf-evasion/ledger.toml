@@ -19,7 +19,7 @@ scoped_source_paths = [
 ]
 expected_scoped_file_count = 13
 algorithm_version = "venom.post-workspace-waf-evasion-salvage-digest/v1"
-ledger_digest = "waf-evasion-salvage-sha256:2218688ac3f99b707d6206a8351b8deb2af4cd8e640a6e6f3e41df01c4f3efef"
+ledger_digest = "waf-evasion-salvage-sha256:d7dd1bc20c53ba709b9e2fab70510f9882e48902f6dfc9b9d551c60ba18683ab"
 current_replacement_baseline_sha = "e1e4077d159d6df5cdca8e274ecd40b40bb2f9c5"
 prior_salvage_ledger = "salvage/historical-scanner/ledger.toml"
 prior_salvage_digest = "salvage-sha256:8c949aaea6e19707bcf1b1eee6e3552827c87ea0639915d6153c607209011165"
@@ -732,10 +732,10 @@ old_runtime_reachability = "library-only"
 reusable_value = "Typed HTML token case can model an equivalent scanner-owned representation."
 prohibited_restoration_behaviors = ["generic-string-mutation", "misleading-bypass-claim"]
 modern_destination = "venom-scanner:normalization-resilience"
-current_replacement_paths = []
+current_replacement_paths = ["crates/venom-scanner/src/payload_strategies/normalization_resilience_query_pair.rs", "crates/venom-scanner/src/web_runtime/web_assessment/normalization_transform_catalog.rs"]
 prerequisites = ["Typed scanner-owned HTML tokens", "Exact semantic verifier", "Replay", "Bounded output"]
-status = "planned"
-rationale = "Grammar-aware token transformation is required so identity values and target-controlled text remain unchanged."
+status = "restored"
+rationale = "V1 restores only typed scanner-owned HTML token case with exact semantic verification and replay; identity values and target-controlled text remain unchanged."
 
 [[files.components]]
 id = "waf.sql-comment-injection"
@@ -762,10 +762,10 @@ old_runtime_reachability = "library-only"
 reusable_value = "One scanner-owned HTML syntactic separator may be transformed where HTML grammar proves equivalence."
 prohibited_restoration_behaviors = ["generic-string-mutation", "crlf-injection", "misleading-bypass-claim"]
 modern_destination = "venom-scanner:normalization-resilience"
-current_replacement_paths = []
+current_replacement_paths = ["crates/venom-scanner/src/payload_strategies/normalization_resilience_query_pair.rs", "crates/venom-scanner/src/web_runtime/web_assessment/normalization_transform_catalog.rs"]
 prerequisites = ["Typed scanner-owned separator", "No request-shape change", "DOM semantic verifier", "Replay"]
-status = "planned"
-rationale = "Whitespace transformation must be grammar-specific and bounded rather than string-wide."
+status = "restored"
+rationale = "V1 restores only one typed scanner-owned HTML horizontal separator with DOM semantic verification and replay; generic string-wide whitespace mutation remains prohibited."
 
 [[files.components]]
 id = "waf.url-percent-encoding"

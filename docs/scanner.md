@@ -104,6 +104,47 @@ truncated body, invalid UTF-8, or exhausted DOM/occurrence ceiling instead makes
 the selected differential review typed incomplete; it is never reported as an
 empty successful assessment.
 
+### Optional normalization-resilience review
+
+Normalization resilience is excluded from the default scanner and CLI feature
+sets. It requires the non-default `normalization-resilience` feature plus the
+explicit `--normalization-resilience` flag on `--profile web-review`; the flag
+is rejected for `baseline` and with no profile. It does not alter
+`venom.scan-profile/v1` or `decision-scan/v1`.
+
+The review consumes one complete committed XSS parent pair only when the
+control is not blocking and the canonical candidate creates a new
+candidate-specific defensive engagement. Standing blocks, rate limiting,
+timeouts, truncation, ambiguity, canonical semantic success, and fingerprint
+evidence alone are ineligible. A strong/probable fingerprint may annotate or
+tie-break compatible metadata; it never authorizes a request or a claim.
+
+V1 selects at most one transform with chain depth one:
+
+| Transform | Availability | Parent family |
+| --- | --- | --- |
+| `xss.html-token-case@1` | Executable | HTML text boundary |
+| `xss.html-inter-token-tab@1` | Executable | Ordinary, URI, or event-handler attribute boundary |
+| `query.percent-decode-depth-one@1` | Metadata only | No V1 request obligation |
+| `query.percent-decode-depth-two@1` | Metadata only | No V1 request obligation |
+
+The typed serializers change only scanner-owned HTML token names or one
+scanner-owned horizontal separator. They do not mutate arbitrary payload text,
+identity values, target-controlled values, parameter names, event names, URI
+schemes, or JavaScript. The committed parent control/canonical pair is not
+resent. One selected child uses one bootstrap request, one transformed
+candidate, and one distinct transformed replay: exactly three child requests
+and one active verification through the same exact-origin, redirect-disabled
+broker and `RuntimeBudget`.
+
+Both transformed legs must avoid the canonical candidate's defensive block and
+reach the parent's exact existing inert DOM semantic verifier. A status change
+without those semantics is not enough; a missing or mismatched replay produces
+no item. The resulting defensive-normalization-gap capability is at most
+`NeedsReview` and always `KnowledgeOnly`. It is not WAF-bypass confirmation,
+XSS execution, or a product-specific bypass result. See
+[Normalization-resilience review](internals/normalization-resilience.md).
+
 An explicit root authorization context adds one anonymous/authorized JSON
 visibility pair without creating another scanner engine or authority. Library
 hosts pass `WebAssessmentRootAuthorizationContext`; the CLI accepts the
@@ -285,6 +326,7 @@ multi-node contract. See [Distributed coordination](distributed.md).
 | --- | --- | --- |
 | `core` | Transport-neutral evidence, knowledge, planning, and verification contracts | Preview |
 | `scanning` | Deterministic evidence, reasoning, planning, execution, verification, and bounded runtime | Preview |
+| `normalization-resilience` | Non-default, explicit `web-review` normalization child for one typed HTML transform with candidate/replay semantic proof; maximum `NeedsReview` / `KnowledgeOnly` | Preview |
 | `legacy-scanner` | Historical ordered runner, context, phases, and Scanner SDK; separate bounded discovery and active-verification slices within an otherwise unmetered run | Legacy |
 | `platform-models` | Unwired API/auth/dashboard/persistence/post-exploitation/realtime library models | Experimental |
 | `reporting` | Bounded generic `RunReport` renderer; with `scanning`, also the central typed assessment renderer used by completed CLI `web-review` runs. No renderer-owned I/O, persistence, or verdict generation | Preview |

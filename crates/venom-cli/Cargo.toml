@@ -24,6 +24,7 @@ legacy-scanner = ["dep:reqwest", "venom-scanner/legacy-scanner"]
 api-adapter = ["dep:venom-api"]
 proxy-adapter = ["dep:venom-proxy"]
 artifact-adapter = ["dep:venom-artifact"]
+normalization-resilience = ["venom-scanner/normalization-resilience"]
 
 [dependencies]
 venom-core = { version = "0.10.0-alpha.1", path = "../venom-core" }

@@ -316,10 +316,18 @@ pub(crate) async fn run_profile_scan(
     report_format: Option<ReportFormat>,
     report_to_file: bool,
     root_authorization_context: Option<WebAssessmentRootAuthorizationContext>,
+    normalization_resilience: bool,
 ) -> Result<AssessmentScanExecution, Box<dyn Error>> {
     let target_origin = target.origin().ascii_serialization();
     match (profile.profile(), profile.scope()) {
         (BuiltInScanProfile::Baseline, ScanProfileScope::SingleResource) => {
+            if normalization_resilience {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "normalization-resilience review requires the web-review profile",
+                )
+                .into());
+            }
             if report_format.is_some() || report_to_file || root_authorization_context.is_some() {
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::InvalidInput,
@@ -333,12 +341,15 @@ pub(crate) async fn run_profile_scan(
         (BuiltInScanProfile::WebReview, ScanProfileScope::ExactOrigin) => {
             run_web_review(
                 target,
-                target_origin,
-                profile,
-                format_is_json,
-                report_format,
-                report_to_file,
-                root_authorization_context,
+                WebReviewRunOptions {
+                    target_origin,
+                    profile,
+                    format_is_json,
+                    report_format,
+                    report_to_file,
+                    root_authorization_context,
+                    normalization_resilience,
+                },
             )
             .await
         },
@@ -377,21 +388,49 @@ async fn run_baseline(
     }
 }
 
-async fn run_web_review(
-    target: Url,
+struct WebReviewRunOptions {
     target_origin: String,
     profile: ScanProfileV1,
     format_is_json: bool,
     report_format: Option<ReportFormat>,
     report_to_file: bool,
     root_authorization_context: Option<WebAssessmentRootAuthorizationContext>,
+    normalization_resilience: bool,
+}
+
+async fn run_web_review(
+    target: Url,
+    options: WebReviewRunOptions,
 ) -> Result<AssessmentScanExecution, Box<dyn Error>> {
+    let WebReviewRunOptions {
+        target_origin,
+        profile,
+        format_is_json,
+        report_format,
+        report_to_file,
+        root_authorization_context,
+        normalization_resilience,
+    } = options;
     let mut builder = WebAssessmentRuntime::builder(target).limits(profile.web_assessment_limits());
     if profile.defense_enforcement_enabled() {
         builder = builder.enable_defense_enforcement();
     }
     if profile.capabilities().low_risk_differential_review() {
         builder = builder.enable_low_risk_differential_review();
+    }
+    if normalization_resilience {
+        #[cfg(feature = "normalization-resilience")]
+        {
+            builder = builder.enable_normalization_resilience();
+        }
+        #[cfg(not(feature = "normalization-resilience"))]
+        {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "normalization-resilience runtime support is not compiled",
+            )
+            .into());
+        }
     }
     if let Some(context) = root_authorization_context {
         builder = builder.with_root_authorization_context(context);
@@ -1150,6 +1189,25 @@ fn append_assessment_item_lines(lines: &mut Vec<String>, report: &AssessmentItem
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn baseline_rejects_normalization_resilience_before_transport() {
+        let error = run_profile_scan(
+            Url::parse("https://example.test/").unwrap(),
+            ScanProfileV1::baseline().unwrap(),
+            false,
+            None,
+            false,
+            None,
+            true,
+        )
+        .await
+        .expect_err("normalization resilience is web-review only");
+        assert_eq!(
+            error.to_string(),
+            "normalization-resilience review requires the web-review profile"
+        );
+    }
 
     fn minimal_baseline_document(disposition: AssessmentDisposition) -> WebAssessmentDocument {
         WebAssessmentDocument {

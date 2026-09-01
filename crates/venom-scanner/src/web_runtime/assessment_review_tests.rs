@@ -683,14 +683,19 @@ fn production_derived_xss_candidate_bytes_and_matcher_share_one_identity() {
     const EXPECTED: &str =
         "<span data-venom-xss-boundary-token=\"0123456789abcdef0123456789abcdef\"></span>";
     let parts = XssStructuralProbeParts::derive_values(html_text_selection(), IDENTITY).unwrap();
-    assert_eq!(parts.identity, IDENTITY);
+    assert_eq!(parts.control_identity, IDENTITY);
+    assert_eq!(parts.candidate_identity, IDENTITY);
     assert_eq!(parts.candidate_value.as_bytes(), EXPECTED.as_bytes());
     assert_eq!(
-        validate_exact_xss_html_boundary_fragment(&parts.candidate_value, &parts.identity),
+        validate_exact_xss_html_boundary_fragment(
+            &parts.candidate_value,
+            &parts.candidate_identity,
+        ),
         ExactXssBoundaryMatch::Matched
     );
     let probe = parts.validate().unwrap();
-    assert_eq!(probe.parts().identity, IDENTITY);
+    assert_eq!(probe.parts().control_identity, IDENTITY);
+    assert_eq!(probe.parts().candidate_identity, IDENTITY);
     assert_eq!(probe.parts().candidate_value, EXPECTED);
 }
 
@@ -926,9 +931,10 @@ fn javascript_xss_observer_classifies_exact_lexical_boundaries_and_fail_closed_n
         .unwrap();
         let contract = observer.xss.as_ref().unwrap();
         let strategy = native_review_strategy_ref(selection.action_kind());
-        let tokens =
-            XssJavascriptLexicalProbeTokens::from_identity(&contract.probe.parts().identity)
-                .unwrap();
+        let tokens = XssJavascriptLexicalProbeTokens::from_identity(
+            &contract.probe.parts().candidate_identity,
+        )
+        .unwrap();
 
         let control_body = script_value_document(delimiter, &contract.probe.parts().control_value);
         let control = observe(
@@ -1062,7 +1068,7 @@ fn javascript_xss_observer_classifies_exact_lexical_boundaries_and_fail_closed_n
 
         let debug = format!("{observer:?}{control:?}{candidate:?}");
         for scanner_owned_value in [
-            contract.probe.parts().identity.as_str(),
+            contract.probe.parts().candidate_identity.as_str(),
             contract.probe.parts().candidate_value.as_str(),
             tokens.boundary_comment(),
             tokens.tail_comment(),
@@ -1185,7 +1191,7 @@ fn javascript_xss_observer_vocabulary_reconstructs_exact_review_only_ledger_pair
             DecisionExecutionStage::Passive,
             CommittedReviewResponse::XssStructural {
                 family,
-                variant,
+                variant: variant.to_owned(),
                 relation: relation(&control_evidence),
             },
             false,
@@ -1197,7 +1203,7 @@ fn javascript_xss_observer_vocabulary_reconstructs_exact_review_only_ledger_pair
             DecisionExecutionStage::Active,
             CommittedReviewResponse::XssStructural {
                 family,
-                variant,
+                variant: variant.to_owned(),
                 relation: relation(&candidate_evidence),
             },
             true,
@@ -1636,7 +1642,7 @@ fn xss_structural_candidate_requires_clean_control_and_exact_parser_boundary() {
         DecisionExecutionStage::Passive,
         CommittedReviewResponse::XssStructural {
             family,
-            variant,
+            variant: variant.to_owned(),
             relation: XssStructuralRelation::EncodedOrInert,
         },
         false,
@@ -1647,7 +1653,7 @@ fn xss_structural_candidate_requires_clean_control_and_exact_parser_boundary() {
         DecisionExecutionStage::Active,
         CommittedReviewResponse::XssStructural {
             family,
-            variant,
+            variant: variant.to_owned(),
             relation: XssStructuralRelation::StructuralBoundaryObserved,
         },
         true,
@@ -1677,7 +1683,7 @@ fn xss_structural_candidate_requires_clean_control_and_exact_parser_boundary() {
 
     candidate.response = CommittedReviewResponse::XssStructural {
         family,
-        variant,
+        variant: variant.to_owned(),
         relation: XssStructuralRelation::ReflectedSameContext,
     };
     insert_pair(&mut ledger, control.clone(), candidate.clone());
@@ -1688,7 +1694,7 @@ fn xss_structural_candidate_requires_clean_control_and_exact_parser_boundary() {
         DecisionExecutionStage::Passive,
         CommittedReviewResponse::XssStructural {
             family,
-            variant,
+            variant: variant.to_owned(),
             relation: XssStructuralRelation::ReflectedSameContext,
         },
         false,
@@ -1696,7 +1702,7 @@ fn xss_structural_candidate_requires_clean_control_and_exact_parser_boundary() {
     );
     candidate.response = CommittedReviewResponse::XssStructural {
         family,
-        variant,
+        variant: variant.to_owned(),
         relation: XssStructuralRelation::StructuralBoundaryObserved,
     };
     insert_pair(&mut ledger, reflected_control, candidate);
@@ -1707,7 +1713,7 @@ fn xss_structural_candidate_requires_clean_control_and_exact_parser_boundary() {
         DecisionExecutionStage::Passive,
         CommittedReviewResponse::XssStructural {
             family,
-            variant,
+            variant: variant.to_owned(),
             relation: XssStructuralRelation::StructuralBoundaryObserved,
         },
         false,
@@ -1718,7 +1724,7 @@ fn xss_structural_candidate_requires_clean_control_and_exact_parser_boundary() {
         DecisionExecutionStage::Active,
         CommittedReviewResponse::XssStructural {
             family,
-            variant,
+            variant: variant.to_owned(),
             relation: XssStructuralRelation::StructuralBoundaryObserved,
         },
         true,

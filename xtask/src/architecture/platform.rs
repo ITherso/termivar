@@ -27,6 +27,7 @@ const QUARANTINED_FEATURES: &[&str] = &[
     "distributed",
     "legacy-scanner",
     "lua",
+    "normalization-resilience",
     "platform-models",
     "plugins",
     "reporting",
@@ -45,6 +46,7 @@ const EXACT_SCANNER_FEATURES: &[&str] = &[
     "minimal",
     "ml",
     "monitoring",
+    "normalization-resilience",
     "platform-models",
     "plugins",
     "reporting",
@@ -62,6 +64,7 @@ const FULL_AGGREGATE_FEATURES: &[&str] = &[
     "lua",
     "ml",
     "monitoring",
+    "normalization-resilience",
     "platform-models",
     "plugins",
     "reporting",
@@ -78,6 +81,7 @@ const ENTERPRISE_AGGREGATE_FEATURES: &[&str] = &[
     "lua",
     "ml",
     "monitoring",
+    "normalization-resilience",
     "platform-models",
     "plugins",
     "reporting",
@@ -1098,6 +1102,10 @@ fn cli_feature_violations(
             "legacy-scanner",
             &["dep:reqwest", "venom-scanner/legacy-scanner"][..],
         ),
+        (
+            "normalization-resilience",
+            &["venom-scanner/normalization-resilience"][..],
+        ),
         ("proxy-adapter", &["dep:venom-proxy"][..]),
     ] {
         let actual: BTreeSet<_> = features
@@ -1247,6 +1255,20 @@ fn exact_raw_feature_closures() -> Vec<(&'static str, &'static [&'static str])> 
         (
             "scanning",
             &[
+                "scanning",
+                "core",
+                "dep:async-trait",
+                "dep:html5ever",
+                "dep:markup5ever_rcdom",
+                "dep:reqwest",
+                "dep:tokio",
+                "dep:tokio-util",
+            ],
+        ),
+        (
+            "normalization-resilience",
+            &[
+                "normalization-resilience",
                 "scanning",
                 "core",
                 "dep:async-trait",
@@ -6888,6 +6910,10 @@ mod tests {
             .collect(),
         );
         features.insert(
+            "normalization-resilience".to_owned(),
+            vec!["scanning".to_owned()],
+        );
+        features.insert(
             "legacy-scanner".to_owned(),
             [
                 "scanning",
@@ -8855,6 +8881,10 @@ mod tests {
                     "dep:reqwest".to_owned(),
                     "venom-scanner/legacy-scanner".to_owned(),
                 ],
+            ),
+            (
+                "normalization-resilience".to_owned(),
+                vec!["venom-scanner/normalization-resilience".to_owned()],
             ),
             (
                 "proxy-adapter".to_owned(),

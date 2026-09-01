@@ -241,6 +241,30 @@ successful-status relationship, and redirect classification is the closed
 suppress these already-planned differential reads but cannot add a native
 action, refill the plan, increase intensity, or broaden scope.
 
+Normalization resilience is a separate opt-in composition rather than a
+responsibility of `defense`. Both the scanner/CLI
+`normalization-resilience` feature and the explicit
+`--normalization-resilience --profile web-review` runtime choice are required.
+The feature consumes one already committed XSS parent control/canonical pair
+only after a typed candidate-specific blocking transition. Fingerprints and
+status codes do not authorize it. Metadata selection admits at most one
+depth-one source-linked serializer: HTML scanner-token case for an HTML-text
+parent, or one horizontal scanner-owned inter-token separator for an anchored
+ordinary/URI/event-handler attribute parent. Percent decode-depth entries are
+metadata-only.
+
+The parent requests are reused rather than resent. A selected child has one
+shared-authority bootstrap, transformed candidate, and distinct transformed
+replay—three requests and one active verification through the existing broker.
+Both transformed legs must avoid the canonical block and satisfy the same
+existing inert DOM semantic verifier. Projection registers shared evidence once
+and can emit only a defensive-normalization-gap `NeedsReview` item under
+`KnowledgeOnly` authority. The boundary adds no `waf.rs`, generic dispatcher,
+second client, redirect/origin expansion, request-shape mutation, rate-limit
+evasion, browser/process/exploit dependency, or confirmed/product-specific
+bypass claim. See
+[Normalization-resilience review](internals/normalization-resilience.md).
+
 The ordered legacy runner is separate. Its phases two through four share a
 context-owned passive discovery authority that accepts exact-origin requests,
 disables redirects, applies one configurable request/time/body envelope, and
@@ -363,6 +387,9 @@ no-runtime boundary are specified by
 post-workspace WAF/evasion quarantine inventory is specified by
 [ADR 0027](adr/0027-record-post-workspace-waf-evasion-salvage.md); it does not
 restore `waf.rs`, the retired adaptive modules, or a transformation dispatcher.
+The ledger marks only the typed HTML token-case and inter-token-whitespace
+concepts restored by normalization resilience; all blind, unsafe, and
+misleading historical behavior retains its prior disposition.
 
 For the ten responsibility-split domains above, the same gate also requires
 the reviewed private child-module inventory, pins facade-resident authority,

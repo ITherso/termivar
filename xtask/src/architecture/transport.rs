@@ -59,6 +59,7 @@ const BOUNDED_RUNTIME_SOURCES: &[&str] = &[
     ATTRIBUTE_BOUNDARY_MATCHER_SOURCE,
     ATTRIBUTE_SOURCE_CONTEXT_SOURCE,
     JAVASCRIPT_SOURCE_CONTEXT_SOURCE,
+    "crates/venom-scanner/src/web_runtime/web_assessment/normalization_transform_catalog.rs",
     "crates/venom-scanner/src/web_runtime/web_assessment/discovery.rs",
     "crates/venom-scanner/src/web_runtime/web_assessment/reflection_context.rs",
     "crates/venom-scanner/src/web_runtime/web_assessment/semantic.rs",
@@ -438,8 +439,8 @@ fn inspect_native_review_execution_broker_boundary(
     Ok(violations.into_iter().collect())
 }
 
-const EXACT_NATIVE_REVIEW_EXECUTION_TOKEN_BYTES: usize = 25_096;
-const EXACT_NATIVE_REVIEW_EXECUTION_FINGERPRINT: u128 = 0xef77_57a9_6057_29e3_609e_fc60_a122_c8fc;
+const EXACT_NATIVE_REVIEW_EXECUTION_TOKEN_BYTES: usize = 28_744;
+const EXACT_NATIVE_REVIEW_EXECUTION_FINGERPRINT: u128 = 0xc5ab_9d1a_17b6_1d45_86d7_714d_89df_4fd1;
 
 fn native_review_execution_fingerprint_violations(source: &str, syntax: &syn::File) -> Vec<String> {
     let exact_tests = matches!(syntax.items.last(), Some(Item::Mod(module))
@@ -454,7 +455,11 @@ fn native_review_execution_fingerprint_violations(source: &str, syntax: &syn::Fi
                         if matches!(&value.value, syn::Expr::Lit(literal)
                             if matches!(&literal.lit, syn::Lit::Str(path)
                                 if path.value() == "web_review_execution_tests.rs")))));
-    let Some((production, _)) = source.rsplit_once("#[cfg(test)]") else {
+    // Git may materialize checked-in Rust sources with CRLF on Windows. The
+    // production fingerprint is a repository-semantic contract, so normalize
+    // line endings before tokenization rather than pinning a host checkout.
+    let normalized_source = source.replace("\r\n", "\n");
+    let Some((production, _)) = normalized_source.rsplit_once("#[cfg(test)]") else {
         return vec![
             "native web-review execution must end with its exact external cfg(test) module"
                 .to_owned(),
@@ -962,7 +967,8 @@ fn native_defense_classifier_is_exact(function: &syn::ItemFn) -> bool {
 
     let mut variants = BTreeSet::new();
     let arms_are_exact = classifier.arms.iter().all(|arm| {
-        arm.attrs.is_empty()
+        (arm.attrs.is_empty()
+            || attributes_are_exact_cfg_feature(&arm.attrs, "normalization-resilience"))
             && arm.guard.is_none()
             && collect_exact_native_review_patterns(&arm.pat, &mut variants)
             && expression_is_exact_defense_class(&arm.body, "DifferentialRead")
@@ -990,6 +996,7 @@ fn native_defense_classifier_is_exact(function: &syn::ItemFn) -> bool {
                 "XssStructuralQueryPair".to_owned(),
                 "XssAttributeBoundaryQueryPair".to_owned(),
                 "XssScriptLexicalBoundaryQueryPair".to_owned(),
+                "NormalizationResilienceQueryPair".to_owned(),
             ])
 }
 
@@ -1017,6 +1024,7 @@ fn collect_exact_native_review_patterns(
                 "XssStructuralQueryPair",
                 "XssAttributeBoundaryQueryPair",
                 "XssScriptLexicalBoundaryQueryPair",
+                "NormalizationResilienceQueryPair",
             ] {
                 if syn_path_is_exact(&pattern.path, &["NativeWebReviewActionKind", variant]) {
                     return variants.insert(variant.to_owned());
@@ -7918,6 +7926,10 @@ impl<'ast> Visit<'ast> for OwnershipVisitor<'_> {
                 )
                 | (
                     "crates/venom-scanner/src/web_runtime/web_assessment.rs",
+                    "normalization_transform_catalog"
+                )
+                | (
+                    "crates/venom-scanner/src/web_runtime/web_assessment.rs",
                     "discovery"
                 )
                 | (
@@ -7937,6 +7949,10 @@ impl<'ast> Visit<'ast> for OwnershipVisitor<'_> {
             && module == "assessment_report"
         {
             attributes_are_exact_cfg_feature(&item.attrs, "reporting")
+        } else if self.source == "crates/venom-scanner/src/web_runtime/web_assessment.rs"
+            && module == "normalization_transform_catalog"
+        {
+            attributes_are_exact_cfg_feature(&item.attrs, "normalization-resilience")
         } else {
             item.attrs.is_empty()
         };
@@ -9840,12 +9856,33 @@ mod tests {
                 "crates/venom-scanner/src/web_runtime.rs",
                 "mod web_review_execution;",
             ),
+            (
+                "crates/venom-scanner/src/web_runtime/web_assessment.rs",
+                "#[cfg(feature = \"normalization-resilience\")] mod normalization_transform_catalog;",
+            ),
         ] {
             assert!(
                 inspect_bounded_source(source_name, source)
                     .unwrap()
                     .is_empty(),
                 "canonical bounded submodule was rejected: {source}"
+            );
+        }
+
+        for source in [
+            "mod normalization_transform_catalog;",
+            "#[cfg(feature = \"scanning\")] mod normalization_transform_catalog;",
+            "#[cfg(feature = \"normalization-resilience\")] pub mod normalization_transform_catalog;",
+        ] {
+            let violations = inspect_bounded_source(
+                "crates/venom-scanner/src/web_runtime/web_assessment.rs",
+                source,
+            )
+            .unwrap()
+            .join("\n");
+            assert!(
+                violations.contains("unregistered external submodule"),
+                "normalization catalog feature boundary unexpectedly passed: {source}: {violations}"
             );
         }
 
@@ -10706,7 +10743,9 @@ mod tests {
     #[test]
     fn atomic_paired_comparison_has_one_canonical_construction_authority() {
         let source =
-            include_str!("../../../crates/venom-scanner/src/web_runtime/assessment_item.rs");
+            include_str!("../../../crates/venom-scanner/src/web_runtime/assessment_item.rs")
+                .replace("\r\n", "\n");
+        let source = source.as_str();
 
         for (mutation, needle) in [
             (
@@ -10784,7 +10823,9 @@ mod tests {
     #[test]
     fn assessment_item_projection_context_and_factory_authority_are_pinned() {
         let source =
-            include_str!("../../../crates/venom-scanner/src/web_runtime/assessment_item.rs");
+            include_str!("../../../crates/venom-scanner/src/web_runtime/assessment_item.rs")
+                .replace("\r\n", "\n");
+        let source = source.as_str();
 
         for forbidden_input in [
             "DecisionExecutionFailureReceipt",
@@ -10940,8 +10981,12 @@ mod tests {
     #[test]
     fn assessment_projection_knowledge_authority_and_exact_outcome_identity_are_pinned() {
         let item_source =
-            include_str!("../../../crates/venom-scanner/src/web_runtime/assessment_item.rs");
-        let knowledge_source = include_str!("../../../crates/venom-scanner/src/knowledge.rs");
+            include_str!("../../../crates/venom-scanner/src/web_runtime/assessment_item.rs")
+                .replace("\r\n", "\n");
+        let item_source = item_source.as_str();
+        let knowledge_source =
+            include_str!("../../../crates/venom-scanner/src/knowledge.rs").replace("\r\n", "\n");
+        let knowledge_source = knowledge_source.as_str();
 
         let extra_constructor_input = item_source.replacen(
             "pub(crate) fn new(knowledge: &KnowledgeBase, stable_scope_id: StableAssessmentScopeId)",
@@ -11031,9 +11076,13 @@ mod tests {
     #[test]
     fn assessment_item_set_and_report_consumption_are_closed() {
         let item_source =
-            include_str!("../../../crates/venom-scanner/src/web_runtime/assessment_item.rs");
+            include_str!("../../../crates/venom-scanner/src/web_runtime/assessment_item.rs")
+                .replace("\r\n", "\n");
+        let item_source = item_source.as_str();
         let report_source =
-            include_str!("../../../crates/venom-scanner/src/web_runtime/assessment_report.rs");
+            include_str!("../../../crates/venom-scanner/src/web_runtime/assessment_report.rs")
+                .replace("\r\n", "\n");
+        let report_source = report_source.as_str();
 
         let live_violations = inspect_assessment_report_boundary(report_source)
             .unwrap()
@@ -11295,7 +11344,9 @@ mod tests {
     #[test]
     fn assessment_projection_preflight_and_confirmed_confidence_order_are_pinned() {
         let item_source =
-            include_str!("../../../crates/venom-scanner/src/web_runtime/assessment_item.rs");
+            include_str!("../../../crates/venom-scanner/src/web_runtime/assessment_item.rs")
+                .replace("\r\n", "\n");
+        let item_source = item_source.as_str();
 
         let late_outcome_preflight = item_source
             .replacen(

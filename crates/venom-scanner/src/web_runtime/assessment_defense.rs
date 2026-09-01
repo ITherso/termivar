@@ -276,6 +276,13 @@ impl CommittedAssessmentDefenseTransition {
         self.candidate_block_status_appeared
     }
 
+    /// Returns whether a complete, non-blocked control became newly blocked
+    /// only for its matched active candidate.
+    #[cfg(feature = "normalization-resilience")]
+    pub(crate) const fn suppression_newly_blocking(&self) -> bool {
+        self.suppression_newly_blocking
+    }
+
     pub(crate) const fn newly_rate_limited(&self) -> bool {
         self.newly_rate_limited
     }
@@ -308,6 +315,40 @@ impl CommittedAssessmentDefenseLedger {
 
     pub(crate) fn transitions(&self) -> &[CommittedAssessmentDefenseTransition] {
         &self.transitions
+    }
+
+    /// Returns one unambiguous passive/active defense pair for an exact case.
+    ///
+    /// This is a typed lookup over already committed observations. It performs
+    /// no response interpretation and returns no value when either stage is
+    /// absent or duplicated.
+    #[cfg(feature = "normalization-resilience")]
+    pub(crate) fn exact_observation_pair(
+        &self,
+        case: &VerificationCase,
+    ) -> Option<(
+        &CommittedAssessmentDefenseObservation,
+        &CommittedAssessmentDefenseObservation,
+    )> {
+        let mut passive = self
+            .observations
+            .iter()
+            .filter(|observation| observation.case() == case)
+            .filter(|observation| observation.stage() == DecisionExecutionStage::Passive);
+        let control = passive.next()?;
+        if passive.next().is_some() {
+            return None;
+        }
+        let mut active = self
+            .observations
+            .iter()
+            .filter(|observation| observation.case() == case)
+            .filter(|observation| observation.stage() == DecisionExecutionStage::Active);
+        let candidate = active.next()?;
+        if active.next().is_some() {
+            return None;
+        }
+        Some((control, candidate))
     }
 
     /// Replays one receipt atomically. `require_projection` is true for every
@@ -625,6 +666,10 @@ const fn native_interaction_class(kind: NativeWebReviewActionKind) -> DefenseInt
         | NativeWebReviewActionKind::XssStructuralQueryPair
         | NativeWebReviewActionKind::XssAttributeBoundaryQueryPair
         | NativeWebReviewActionKind::XssScriptLexicalBoundaryQueryPair => {
+            DefenseInteractionClass::DifferentialRead
+        },
+        #[cfg(feature = "normalization-resilience")]
+        NativeWebReviewActionKind::NormalizationResilienceQueryPair => {
             DefenseInteractionClass::DifferentialRead
         },
     }

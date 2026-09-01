@@ -89,6 +89,13 @@ fn plan(
             NativeReviewProjectionKind::XssStructuralBoundary => {
                 AssessmentItemTarget::query_parameter(QUERY_PARAMETER).unwrap()
             },
+            #[cfg(feature = "normalization-resilience")]
+            NativeReviewProjectionKind::NormalizationHtmlTextTokenCase
+            | NativeReviewProjectionKind::NormalizationAttributeValueInterTokenTab
+            | NativeReviewProjectionKind::NormalizationUriAttributeInterTokenTab
+            | NativeReviewProjectionKind::NormalizationEventHandlerAttributeInterTokenTab => {
+                AssessmentItemTarget::query_parameter(QUERY_PARAMETER).unwrap()
+            },
         },
         control_evidence_ids: control
             .iter()
@@ -247,6 +254,14 @@ fn closed_capability_mapping_never_projects_confirmed() {
         NativeReviewProjectionKind::EventHandlerReflection,
         NativeReviewProjectionKind::ScriptElementReflection,
         NativeReviewProjectionKind::EmbeddedHtmlReflection,
+        #[cfg(feature = "normalization-resilience")]
+        NativeReviewProjectionKind::NormalizationHtmlTextTokenCase,
+        #[cfg(feature = "normalization-resilience")]
+        NativeReviewProjectionKind::NormalizationAttributeValueInterTokenTab,
+        #[cfg(feature = "normalization-resilience")]
+        NativeReviewProjectionKind::NormalizationUriAttributeInterTokenTab,
+        #[cfg(feature = "normalization-resilience")]
+        NativeReviewProjectionKind::NormalizationEventHandlerAttributeInterTokenTab,
     ] {
         let item = project_one(kind);
         assert_ne!(item.disposition(), AssessmentDisposition::Confirmed);
@@ -267,6 +282,59 @@ fn closed_capability_mapping_never_projects_confirmed() {
             },
         }
     }
+}
+
+#[cfg(feature = "normalization-resilience")]
+#[test]
+fn normalization_projection_kinds_are_exact_differential_knowledge_only_reviews() {
+    for (kind, expected_capability) in [
+        (
+            NativeReviewProjectionKind::NormalizationHtmlTextTokenCase,
+            "web.review.normalization-resilience.xss.html-text-boundary.html-token-case@1",
+        ),
+        (
+            NativeReviewProjectionKind::NormalizationAttributeValueInterTokenTab,
+            "web.review.normalization-resilience.xss.attribute-value-boundary.html-inter-token-tab@1",
+        ),
+        (
+            NativeReviewProjectionKind::NormalizationUriAttributeInterTokenTab,
+            "web.review.normalization-resilience.xss.uri-attribute-boundary.html-inter-token-tab@1",
+        ),
+        (
+            NativeReviewProjectionKind::NormalizationEventHandlerAttributeInterTokenTab,
+            "web.review.normalization-resilience.xss.event-handler-attribute-boundary.html-inter-token-tab@1",
+        ),
+    ] {
+        let item = project_one(kind);
+        assert_eq!(item.capability_id(), expected_capability);
+        assert_eq!(item.disposition(), AssessmentDisposition::NeedsReview);
+        assert!(matches!(item.basis(), AssessmentBasis::Differential(_)));
+        assert_eq!(item.basis().case_reference(), None);
+        assert_eq!(item.cwe(), None);
+        assert_eq!(item.severity(), None);
+        assert_ne!(item.disposition(), AssessmentDisposition::Confirmed);
+        assert!(!item.capability_id().contains("bypass-confirmed"));
+    }
+}
+
+#[cfg(feature = "normalization-resilience")]
+#[test]
+fn normalization_item_identity_binds_parent_family_and_is_rerun_stable() {
+    let kinds = [
+        NativeReviewProjectionKind::NormalizationAttributeValueInterTokenTab,
+        NativeReviewProjectionKind::NormalizationUriAttributeInterTokenTab,
+        NativeReviewProjectionKind::NormalizationEventHandlerAttributeInterTokenTab,
+    ];
+    let first = kinds.map(project_one);
+    let replayed = kinds.map(project_one);
+    for (original, replay) in first.iter().zip(&replayed) {
+        assert_eq!(original.fingerprint(), replay.fingerprint());
+    }
+    let fingerprints = first
+        .iter()
+        .map(|item| item.fingerprint())
+        .collect::<BTreeSet<_>>();
+    assert_eq!(fingerprints.len(), kinds.len());
 }
 
 #[test]

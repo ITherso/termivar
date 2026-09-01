@@ -47,6 +47,7 @@ const CLI_SCAN_FIELDS: &[&str] = &[
     "enforce_defense",
     "explain",
     "format",
+    "normalization_resilience",
     "profile",
     "report_format",
     "report_output",
@@ -527,6 +528,7 @@ fn inspect_cli_auth_surface(source: &str) -> Result<Vec<String>, syn::Error> {
         ("explain", "bool", None),
         ("profile", "Option", Some("CliScanProfile")),
         ("enforce_defense", "bool", None),
+        ("normalization_resilience", "bool", None),
         ("report_format", "Option", Some("CliReportFormat")),
         ("report_output", "Option", Some("PathBuf")),
     ]

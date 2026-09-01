@@ -178,6 +178,29 @@ default — enabling it is a per-release decision.
 policy suppression, transport failures, and other outcomes, so downstream
 learning never gives them the same weight.
 
+## Normalization-resilience consumer (separate opt-in)
+
+The non-default normalization-resilience runtime may consume an already
+committed `DefenseState`/`DefenseTransition` pair, but it does not change this
+module's authority. The defense domain still does not generate payloads, add
+actions, dispatch requests, or raise utility.
+
+Eligibility requires a clean/non-blocking parent control and a newly blocking,
+candidate-specific canonical transition on the exact subject and parameter.
+Standing blocks, control-only blocks, rate limiting/`429`, timeouts, incomplete
+or truncated responses, and fingerprint-only evidence create no normalization
+child. A strong/probable product fingerprint may be retained as context or a
+tie-break hint after compatibility is established; it never enables a
+transform, changes a budget, or raises claim authority.
+
+When separately compiled and explicitly enabled for `web-review`, the consumer
+selects at most one depth-one typed HTML transform. It reuses the committed
+parent evidence and runs a transformed candidate plus distinct replay under the
+same broker. A positive result requires both legs to reproduce the parent's
+exact inert application semantics, remains `NeedsReview` / `KnowledgeOnly`, and
+is not a generic or product-specific WAF-bypass claim. See
+[Normalization-resilience review](normalization-resilience.md).
+
 ## Boundaries
 
 `DefenseState::observe` is a pure function of its inputs: identical

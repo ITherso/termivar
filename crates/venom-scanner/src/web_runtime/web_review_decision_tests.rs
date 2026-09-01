@@ -109,6 +109,11 @@ fn expected_strategy(kind: NativeWebReviewActionKind) -> PayloadStrategyRef {
             XSS_JAVASCRIPT_LEXICAL_BOUNDARY_QUERY_PAIR_ID,
             XSS_JAVASCRIPT_LEXICAL_BOUNDARY_QUERY_PAIR_REVISION,
         ),
+        #[cfg(feature = "normalization-resilience")]
+        NativeWebReviewActionKind::NormalizationResilienceQueryPair => (
+            NORMALIZATION_RESILIENCE_QUERY_PAIR_ID,
+            NORMALIZATION_RESILIENCE_QUERY_PAIR_REVISION,
+        ),
     };
     PayloadStrategyRef::new(id, revision).unwrap()
 }

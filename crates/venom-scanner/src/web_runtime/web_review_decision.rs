@@ -45,6 +45,11 @@ use crate::{
     DecisionLoop,
 };
 
+#[cfg(feature = "normalization-resilience")]
+use crate::payload_strategies::normalization_resilience_query_pair::{
+    NORMALIZATION_RESILIENCE_QUERY_PAIR_ID, NORMALIZATION_RESILIENCE_QUERY_PAIR_REVISION,
+};
+
 #[cfg(test)]
 pub(crate) const NATIVE_WEB_REVIEW_REASONING_RULE_COUNT: usize = 1;
 #[cfg(test)]
@@ -283,6 +288,11 @@ fn payload_strategy_ref(
         NativeWebReviewActionKind::XssScriptLexicalBoundaryQueryPair => (
             XSS_JAVASCRIPT_LEXICAL_BOUNDARY_QUERY_PAIR_ID,
             XSS_JAVASCRIPT_LEXICAL_BOUNDARY_QUERY_PAIR_REVISION,
+        ),
+        #[cfg(feature = "normalization-resilience")]
+        NativeWebReviewActionKind::NormalizationResilienceQueryPair => (
+            NORMALIZATION_RESILIENCE_QUERY_PAIR_ID,
+            NORMALIZATION_RESILIENCE_QUERY_PAIR_REVISION,
         ),
     };
     PayloadStrategyRef::new(id, revision)

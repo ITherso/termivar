@@ -268,3 +268,40 @@ fn help_exposes_primary_product_and_only_enabled_optional_commands() {
         "deprecated alias should remain discoverable"
     );
 }
+
+#[test]
+fn normalization_resilience_help_and_default_boundary_follow_the_feature() {
+    let help = venom()
+        .args(["scan", "--help"])
+        .output()
+        .expect("failed to run scan help");
+    assert!(help.status.success());
+    let stdout = String::from_utf8(help.stdout).unwrap();
+    assert_eq!(
+        stdout.contains("--normalization-resilience"),
+        cfg!(feature = "normalization-resilience")
+    );
+}
+
+#[cfg(feature = "normalization-resilience")]
+#[test]
+fn normalization_resilience_rejects_non_review_profiles_before_transport() {
+    let server = serve(GENERIC_OK);
+    for arguments in [
+        vec!["scan", "--normalization-resilience", server.url.as_str()],
+        vec![
+            "scan",
+            "--profile",
+            "baseline",
+            "--normalization-resilience",
+            server.url.as_str(),
+        ],
+    ] {
+        let output = venom()
+            .args(arguments)
+            .output()
+            .expect("failed to run invalid normalization-resilience command");
+        assert!(!output.status.success());
+    }
+    assert_eq!(server.connections.load(Ordering::SeqCst), 0);
+}

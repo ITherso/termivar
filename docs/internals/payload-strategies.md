@@ -14,7 +14,10 @@ derive one bounded artifact.
 > it through the host request broker. No standard profile enables a payload
 > binding by default, so normal runtime execution dispatches no payload
 > artifacts unless a host explicitly opts in with
-> `HttpEvidenceExecutor::with_payload_binding`.
+> `HttpEvidenceExecutor::with_payload_binding`. The non-default
+> `normalization-resilience` feature adds a third, closed strategy used only by
+> the explicitly enabled `web-review` normalization child; it is absent from
+> default builds and cannot be selected by ordinary planner actions.
 
 ## Registered built-in strategies
 
@@ -44,6 +47,28 @@ wants to test, for example `Bearer <token>`. Both legs require a non-empty,
 header-safe seed and fail closed (`DerivationFailed`) otherwise, and the strategy
 never introduces control characters, so a derived credential is always a valid
 header value.
+
+### `web.review.normalization-resilience@1` (non-default)
+
+This feature-gated strategy derives one transformed candidate and one distinct
+transformed replay from a typed, scanner-owned HTML probe seed. The inherited
+pair vocabulary maps the passive/control role to the transformed candidate and
+the active/candidate role to its replay because the original XSS parent control
+and canonical candidate are already committed and are not resent.
+
+V1 supports only `xss.html-token-case@1` for the HTML-text boundary and
+`xss.html-inter-token-tab@1` for source/DOM-anchored ordinary, URI, and
+event-handler attribute boundaries. The former changes only scanner-owned tag
+and attribute-name case; the latter changes one scanner-owned syntactic
+separator to a horizontal tab. Both preserve scanner identity values and
+target-controlled text. Percent decode-depth-one/two entries remain
+metadata-only because the generic URL path does not itself prove an exact
+application decode layer.
+
+The strategy emits no raw request shape, header, command, or script channel.
+Its artifacts remain bounded and redacted under the standard receipt contract.
+Exact application-semantic verification and replay belong to the assessment
+observer/ledger; successful derivation or delivery is never a positive result.
 
 ## Executor wiring
 
@@ -160,6 +185,13 @@ splitting, case/whitespace mutation, and double encoding) were removed.
 routes its output through `PayloadArtifact`, so encoded bytes inherit the same
 per-turn byte bound and raw-value redaction as any other artifact. No encoding
 helper is registered as a runtime strategy or allowed to issue a request.
+
+The normalization-resilience catalog deliberately keeps one- and two-layer
+percent representations metadata-only. Repeating a neutral encoder does not
+prove URL serialization, parameter-shape preservation, application decode
+depth, or semantic equivalence. The two executable HTML transforms instead use
+a typed probe serializer and the parent's existing inert DOM verifier. See
+[Normalization-resilience review](normalization-resilience.md).
 
 ## Differential analysis
 

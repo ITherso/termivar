@@ -535,6 +535,10 @@ struct NativeWebReviewRuntimeConfig {
     ssti_query_parameter: Option<String>,
     xss_query_parameter: Option<String>,
     xss_selection: Option<web_assessment::XssProbeSelection>,
+    #[cfg(feature = "normalization-resilience")]
+    normalization_query_parameter: Option<String>,
+    #[cfg(feature = "normalization-resilience")]
+    normalization_selection: Option<web_assessment::NormalizationTransformSelection>,
     structural_only: bool,
 }
 
@@ -709,6 +713,10 @@ impl StandardWebDecisionRuntimeBuilder {
             ssti_query_parameter,
             xss_query_parameter: None,
             xss_selection: None,
+            #[cfg(feature = "normalization-resilience")]
+            normalization_query_parameter: None,
+            #[cfg(feature = "normalization-resilience")]
+            normalization_selection: None,
             structural_only: false,
         });
         self
@@ -732,6 +740,10 @@ impl StandardWebDecisionRuntimeBuilder {
             ssti_query_parameter,
             xss_query_parameter: None,
             xss_selection: None,
+            #[cfg(feature = "normalization-resilience")]
+            normalization_query_parameter: None,
+            #[cfg(feature = "normalization-resilience")]
+            normalization_selection: None,
             structural_only: true,
         });
         self
@@ -762,6 +774,46 @@ impl StandardWebDecisionRuntimeBuilder {
             ssti_query_parameter: None,
             xss_query_parameter: Some(query_parameter),
             xss_selection: Some(selection),
+            #[cfg(feature = "normalization-resilience")]
+            normalization_query_parameter: None,
+            #[cfg(feature = "normalization-resilience")]
+            normalization_selection: None,
+            structural_only: true,
+        });
+        self
+    }
+
+    /// Composes one explicitly selected normalization transformed-candidate /
+    /// replay pair under the existing exact-origin broker authority.
+    ///
+    /// Parent control and canonical-candidate requests are not repeated. The
+    /// caller must build the observer from a committed
+    /// [`assessment_review::NormalizationParentEvidence`] contract.
+    #[cfg(feature = "normalization-resilience")]
+    pub(in crate::web_runtime) fn with_native_normalization_resilience_review(
+        mut self,
+        seeds: NativeWebReviewSeeds,
+        observer: Arc<dyn CompleteHttpResponseObserver>,
+        query_parameter: String,
+        selection: web_assessment::NormalizationTransformSelection,
+    ) -> Self {
+        self.assessment_defense_projection = true;
+        self.additional_suppressed_actions.extend(
+            StandardWebActionKind::all()
+                .into_iter()
+                .map(|kind| kind.action_id().to_owned()),
+        );
+        self.native_web_review = Some(NativeWebReviewRuntimeConfig {
+            seeds,
+            observer,
+            redirect_query_parameter: None,
+            reflection_query_parameter: None,
+            sql_query_parameter: None,
+            ssti_query_parameter: None,
+            xss_query_parameter: None,
+            xss_selection: None,
+            normalization_query_parameter: Some(query_parameter),
+            normalization_selection: Some(selection),
             structural_only: true,
         });
         self
@@ -884,45 +936,104 @@ impl StandardWebDecisionRuntimeBuilder {
         let installation = profile.install(knowledge, &mut decision_loop, &mut executors)?;
 
         let native_executor_profile = match self.native_web_review {
-            Some(config) => Some(
-                if let (Some(parameter), Some(selection)) =
-                    (config.xss_query_parameter, config.xss_selection)
-                {
-                    NativeWebReviewExecutorProfile::new_structural_only(
-                        requests.clone(),
-                        self.target.clone(),
-                        config.seeds,
-                        config.observer,
-                        NativeWebReviewQueryParameters::xss_only(parameter, selection),
-                    )
-                } else if config.structural_only {
-                    NativeWebReviewExecutorProfile::new_structural_only(
-                        requests.clone(),
-                        self.target.clone(),
-                        config.seeds,
-                        config.observer,
-                        NativeWebReviewQueryParameters::structural(
-                            config.reflection_query_parameter,
-                            config.sql_query_parameter,
-                            config.ssti_query_parameter,
-                        ),
-                    )
-                } else {
-                    NativeWebReviewExecutorProfile::new(
-                        requests.clone(),
-                        self.target.clone(),
-                        config.seeds,
-                        config.observer,
-                        NativeWebReviewQueryParameters::full(
-                            config.redirect_query_parameter,
-                            config.reflection_query_parameter,
-                            config.sql_query_parameter,
-                            config.ssti_query_parameter,
-                        ),
-                    )
-                }
-                .map_err(|_| StandardWebDecisionRuntimeError::NativeWebReviewExecutionProfile)?,
-            ),
+            Some(config) => {
+                let profile = {
+                    #[cfg(feature = "normalization-resilience")]
+                    {
+                        if let (Some(parameter), Some(selection)) = (
+                            config.normalization_query_parameter,
+                            config.normalization_selection,
+                        ) {
+                            NativeWebReviewExecutorProfile::new_structural_only(
+                                requests.clone(),
+                                self.target.clone(),
+                                config.seeds,
+                                config.observer,
+                                NativeWebReviewQueryParameters::normalization_only(
+                                    parameter, selection,
+                                ),
+                            )
+                        } else if let (Some(parameter), Some(selection)) =
+                            (config.xss_query_parameter, config.xss_selection)
+                        {
+                            NativeWebReviewExecutorProfile::new_structural_only(
+                                requests.clone(),
+                                self.target.clone(),
+                                config.seeds,
+                                config.observer,
+                                NativeWebReviewQueryParameters::xss_only(parameter, selection),
+                            )
+                        } else if config.structural_only {
+                            NativeWebReviewExecutorProfile::new_structural_only(
+                                requests.clone(),
+                                self.target.clone(),
+                                config.seeds,
+                                config.observer,
+                                NativeWebReviewQueryParameters::structural(
+                                    config.reflection_query_parameter,
+                                    config.sql_query_parameter,
+                                    config.ssti_query_parameter,
+                                ),
+                            )
+                        } else {
+                            NativeWebReviewExecutorProfile::new(
+                                requests.clone(),
+                                self.target.clone(),
+                                config.seeds,
+                                config.observer,
+                                NativeWebReviewQueryParameters::full(
+                                    config.redirect_query_parameter,
+                                    config.reflection_query_parameter,
+                                    config.sql_query_parameter,
+                                    config.ssti_query_parameter,
+                                ),
+                            )
+                        }
+                    }
+                    #[cfg(not(feature = "normalization-resilience"))]
+                    {
+                        if let (Some(parameter), Some(selection)) =
+                            (config.xss_query_parameter, config.xss_selection)
+                        {
+                            NativeWebReviewExecutorProfile::new_structural_only(
+                                requests.clone(),
+                                self.target.clone(),
+                                config.seeds,
+                                config.observer,
+                                NativeWebReviewQueryParameters::xss_only(parameter, selection),
+                            )
+                        } else if config.structural_only {
+                            NativeWebReviewExecutorProfile::new_structural_only(
+                                requests.clone(),
+                                self.target.clone(),
+                                config.seeds,
+                                config.observer,
+                                NativeWebReviewQueryParameters::structural(
+                                    config.reflection_query_parameter,
+                                    config.sql_query_parameter,
+                                    config.ssti_query_parameter,
+                                ),
+                            )
+                        } else {
+                            NativeWebReviewExecutorProfile::new(
+                                requests.clone(),
+                                self.target.clone(),
+                                config.seeds,
+                                config.observer,
+                                NativeWebReviewQueryParameters::full(
+                                    config.redirect_query_parameter,
+                                    config.reflection_query_parameter,
+                                    config.sql_query_parameter,
+                                    config.ssti_query_parameter,
+                                ),
+                            )
+                        }
+                    }
+                };
+                Some(profile.map_err(|_| {
+                    StandardWebDecisionRuntimeError::NativeWebReviewExecutionProfile
+                })?)
+            },
             None => None,
         };
         let native_review_actions = native_executor_profile

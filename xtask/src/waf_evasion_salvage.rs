@@ -552,12 +552,16 @@ fn required_component_contract(id: &str) -> Option<ComponentContract> {
             ComponentStatus::Superseded,
             ModernDestination::PayloadArtifact,
         ),
-        "relocated.raw-normalization-helpers"
-        | "waf.case-variation"
-        | "waf.whitespace-variation" => (
+        "relocated.raw-normalization-helpers" => (
             Disposition::RewriteFromContract,
             Priority::P0,
             ComponentStatus::Planned,
+            ModernDestination::NormalizationResilience,
+        ),
+        "waf.case-variation" | "waf.whitespace-variation" => (
+            Disposition::RewriteFromContract,
+            Priority::P0,
+            ComponentStatus::Restored,
             ModernDestination::NormalizationResilience,
         ),
         "waf.header-body-fingerprint" => (
@@ -1620,10 +1624,18 @@ mod tests {
         } else {
             Vec::new()
         };
-        let current_replacement_paths = if status == ComponentStatus::Superseded {
-            vec!["crates/venom-scanner/src/defense/state.rs".to_owned()]
-        } else {
-            Vec::new()
+        let current_replacement_paths = match status {
+            ComponentStatus::Superseded => {
+                vec!["crates/venom-scanner/src/defense/state.rs".to_owned()]
+            },
+            ComponentStatus::Restored => vec![
+                "crates/venom-scanner/src/web_runtime/web_assessment/normalization_transform_catalog.rs"
+                    .to_owned(),
+            ],
+            ComponentStatus::Planned
+            | ComponentStatus::MetadataOnly
+            | ComponentStatus::Rejected
+            | ComponentStatus::Archived => Vec::new(),
         };
         HistoricalComponent {
             id: id.to_owned(),
@@ -1899,11 +1911,11 @@ mod tests {
 
     #[test]
     fn rejected_status_requires_terminal_disposition_priority_and_prohibition() {
-        let mut component = fixture_component("waf.case-variation");
+        let mut component = fixture_component("relocated.raw-normalization-helpers");
         component.status = ComponentStatus::Rejected;
         assert!(validate_component(&component, "fixture.rs").is_err());
 
-        let mut component = fixture_component("waf.case-variation");
+        let mut component = fixture_component("relocated.raw-normalization-helpers");
         component.status = ComponentStatus::Rejected;
         component.disposition = Disposition::RejectBlindDispatcher;
         component.priority = Priority::Never;
@@ -1911,14 +1923,14 @@ mod tests {
             vec![ProhibitedRestorationBehavior::BlindDispatch];
         assert!(validate_component(&component, "fixture.rs").is_ok());
 
-        let mut component = fixture_component("waf.case-variation");
+        let mut component = fixture_component("relocated.raw-normalization-helpers");
         component.disposition = Disposition::RejectMisleadingClaim;
         assert!(validate_component(&component, "fixture.rs").is_err());
     }
 
     #[test]
     fn superseded_metadata_archived_and_planned_statuses_fail_closed() {
-        let mut superseded = fixture_component("waf.case-variation");
+        let mut superseded = fixture_component("relocated.raw-normalization-helpers");
         superseded.status = ComponentStatus::Superseded;
         superseded.disposition = Disposition::SupersededByCurrentRuntime;
         assert!(validate_component(&superseded, "fixture.rs").is_err());
@@ -1926,31 +1938,31 @@ mod tests {
             vec!["crates/venom-scanner/src/defense/state.rs".to_owned()];
         assert!(validate_component(&superseded, "fixture.rs").is_ok());
 
-        let mut metadata = fixture_component("waf.case-variation");
+        let mut metadata = fixture_component("relocated.raw-normalization-helpers");
         metadata.status = ComponentStatus::MetadataOnly;
         assert!(validate_component(&metadata, "fixture.rs").is_err());
         metadata.disposition = Disposition::ImportMetadataOnly;
         assert!(validate_component(&metadata, "fixture.rs").is_ok());
 
-        let mut archived = fixture_component("waf.case-variation");
+        let mut archived = fixture_component("relocated.raw-normalization-helpers");
         archived.status = ComponentStatus::Archived;
         assert!(validate_component(&archived, "fixture.rs").is_err());
         archived.disposition = Disposition::ArchiveReference;
         archived.modern_destination = ModernDestination::DocumentationOnly;
         assert!(validate_component(&archived, "fixture.rs").is_ok());
 
-        let mut planned = fixture_component("waf.case-variation");
+        let mut planned = fixture_component("relocated.raw-normalization-helpers");
         planned.priority = Priority::Never;
         assert!(validate_component(&planned, "fixture.rs").is_err());
     }
 
     #[test]
     fn restored_status_requires_actionable_disposition_and_current_replacement() {
-        let mut component = fixture_component("waf.case-variation");
+        let mut component = fixture_component("relocated.raw-normalization-helpers");
         component.status = ComponentStatus::Restored;
         assert!(validate_component(&component, "fixture.rs").is_err());
 
-        let mut component = fixture_component("waf.case-variation");
+        let mut component = fixture_component("relocated.raw-normalization-helpers");
         component.status = ComponentStatus::Restored;
         component.current_replacement_paths =
             vec!["crates/venom-scanner/src/payload_strategies/encoding.rs".to_owned()];

@@ -42,8 +42,12 @@ ledger, its generated report, and local Git objects. It maps historical
 fingerprinting to the existing observation-only `defense` domain and neutral
 encoding to the existing payload-strategy boundary where applicable. It does
 not restore `waf.rs`, retired adaptive modules, a generic evasion dispatcher,
-or any request path. No classification enables a transform, sends a request,
-or raises finding authority.
+or their request paths. Only the classified HTML token-case and inter-token
+whitespace concepts are marked restored by the separately reviewed,
+feature-gated normalization-resilience runtime. Every rejected blind,
+request-shape, framing, rate-limit, and misleading-claim component remains
+rejected; ledger status itself never authorizes execution or raises claim
+authority.
 
 `venom-artifact` is not part of either scan runtime. Its Preview library scans
 bounded caller-supplied byte slices or `Read` streams and emits exact/wildcard
@@ -90,6 +94,7 @@ venom scan <target> --profile web-review
       -> one bounded root-or-discovered parser-driven reflection-context pair
       -> one DOM reflection parse + bounded attribute/JavaScript source-anchor passes
       -> at most one assessment-wide evidence-capable XSS structural family
+      -> optional explicit normalization-resilience child from committed parent evidence
       -> one bounded root-or-discovered SQL structural review with exact replay
       -> one bounded root-or-discovered SSTI arithmetic review with independent replay
       -> optional exact-root anonymous/authorized API visibility pair
@@ -161,6 +166,25 @@ three-request ceiling—regardless of catalog size; metadata growth does not add
 per-family HTML/JavaScript parses or requests. Lexical boundary evidence remains
 KnowledgeOnly and can project at most `NeedsReview`; no JavaScript or browser is
 executed.
+
+The non-default `normalization-resilience` scanner/CLI feature adds no work by
+itself. A feature-enabled operator must also pass
+`--normalization-resilience` with explicit `--profile web-review`. The runtime
+accepts only committed XSS parent evidence where the control is open and the
+canonical candidate created a new candidate-specific defensive block; a
+standing block, `429`, timeout, truncation, fingerprint alone, or canonical
+semantic success is ineligible. It selects at most one depth-one typed family:
+`xss.html-token-case@1` for HTML-text or
+`xss.html-inter-token-tab@1` for an ordinary, URI, or event-handler attribute
+boundary. Percent decode-depth-one/two are metadata-only. Parent requests are
+not resent; one child bootstrap plus transformed candidate and distinct replay
+uses exactly three child requests and one active verification through the same
+broker and budget. Both transformed responses must avoid the canonical block
+and reproduce the parent's exact inert DOM semantics. A fingerprint is only a
+compatible-metadata hint, and the resulting defensive normalization gap is
+`NeedsReview` / `KnowledgeOnly`, never a WAF-bypass or XSS confirmation. See
+[Normalization-resilience review](normalization-resilience.md).
+
 At most one deterministic query name across the assessment receives SQL
 structural review. Two independent matched quote-balance pairs must reproduce
 both a status-class and normalized body-structure change. Error text and
@@ -228,6 +252,11 @@ Composition is selection-specific:
   library API. `StandardWebDecisionRuntime` alone does not compose it;
   `WebAssessmentRuntime` records observation/shadow planning, with enforcement
   separately opt-in and monotonic.
+- **Normalization resilience** (`normalization-resilience`, opt-in) is a
+  separately enabled `web-review` child that consumes committed defense and XSS
+  parent evidence. It cannot add work from a fingerprint or status alone,
+  selects one typed depth-one HTML transform, and requires candidate/replay
+  semantic proof before a knowledge-only review item.
 - **Lua execution** (`lua`, opt-in) is a bounded registry and fresh-VM executor
   for an explicit library host. It uses cooperative in-process controls, not
   process isolation, with no
@@ -375,6 +404,7 @@ The following matrix separates build availability from actual execution:
 | Deterministic stack (`web_runtime`, `decision_runner`, `runtime_budget`, `http_evidence`, `planner`, `rules`, `knowledge`, `experience`, `verification`, `adaptive`, `web_*`, `api_evidence`, `api_observation`, `api_reasoning`) | scanner default (`core`, `scanning`) | Surface B; no-profile/`baseline` use the single-resource primitive, explicit `web-review` adds the origin orchestrator; API reasoning remains host opt-in | yes, profile-dependent | implemented and tested Preview |
 | `semantic` | scanner default | host library and explicit `web-review` post-commit composition | `web-review` only | implemented and tested Preview |
 | `defense` | scanner default | host library and explicit `web-review` observation/shadow; enforcement requires `--enforce-defense` | `web-review` only | implemented and tested Preview; cannot add or intensify actions |
+| normalization-resilience review | scanner and CLI opt-in (`normalization-resilience`) plus explicit runtime flag | one eligible `web-review` parent may produce one transformed candidate/replay child under the shared broker | no | Preview; max one transform/depth one, three child requests/one active verification, `NeedsReview` / `KnowledgeOnly` only |
 | `phases/*`, `legacy_discovery`, `runner`, `context`, `sdk` | opt-in (`legacy-scanner`) | Surface A; phases 2–4 use bounded passive discovery, phases 5–9 use separate bounded active verification, and phase-one/custom raw I/O remains possible | no | Legacy runtime / `ScannerSdk` facade; whole-run accounting remains `Unmetered` |
 | `advanced_detection`, `anomaly` | opt-in (`detection`) | no repository product caller; validated/catalogued caller records plus text matching only | no | Experimental; no deviation computation, response classification, or finding production |
 | `api`, `api_gateway`, `auth`, `cache`, `config`, `config_loader`, `metrics`, `post_exploitation`, `persistence`, `realtime`, `dashboard` | opt-in (`platform-models`) | no repository product caller | no | Experimental records, catalogs, and in-memory utilities; no API/auth/persistence/realtime execution path, and caller-owned collections are not uniformly capacity-bounded |
@@ -416,7 +446,8 @@ inspect/modify HTTP.
 ## Not implemented
 
 The following must not be described as shipped product behavior: a Relation
-Engine, Planes, a Knowledge Graph, a Machine Scanner, a bound API listener, a
+Engine, Planes, a Knowledge Graph, a Machine Scanner, a generic or
+product-specific WAF-bypass engine, a bound API listener, a
 supported/configurable MITM proxy, a Lua process-isolation service, a
 distributed transport/control plane, or cloud deployment. The `knowledge`
 module is an evidence/hypothesis store, not a knowledge graph.

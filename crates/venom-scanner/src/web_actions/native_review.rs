@@ -14,7 +14,11 @@ use serde::{Deserialize, Serialize};
 use crate::planner::{RiskScore, VerificationTarget};
 
 /// Number of actions in the native low-risk web-review catalog.
+#[cfg(not(feature = "normalization-resilience"))]
 pub const NATIVE_WEB_REVIEW_ACTION_COUNT: usize = 10;
+/// Number of actions when the explicitly enabled normalization review is built.
+#[cfg(feature = "normalization-resilience")]
+pub const NATIVE_WEB_REVIEW_ACTION_COUNT: usize = 11;
 
 /// Hard per-case request count declared by every native web-review action.
 pub const NATIVE_WEB_REVIEW_REQUESTS_PER_CASE: usize = 2;
@@ -69,6 +73,9 @@ pub enum NativeWebReviewActionKind {
     XssAttributeBoundaryQueryPair,
     /// One source-anchored non-executing JavaScript lexical-boundary comparison.
     XssScriptLexicalBoundaryQueryPair,
+    /// One transformed inert candidate followed by one distinct transformed replay.
+    #[cfg(feature = "normalization-resilience")]
+    NormalizationResilienceQueryPair,
 }
 
 /// The only request surface an action may vary between its matched legs.
@@ -114,6 +121,8 @@ impl NativeWebReviewActionKind {
             Self::XssStructuralQueryPair,
             Self::XssAttributeBoundaryQueryPair,
             Self::XssScriptLexicalBoundaryQueryPair,
+            #[cfg(feature = "normalization-resilience")]
+            Self::NormalizationResilienceQueryPair,
         ]
     }
 
@@ -131,6 +140,10 @@ impl NativeWebReviewActionKind {
             Self::XssAttributeBoundaryQueryPair => "web.review.xss.attribute-boundary-query-pair@1",
             Self::XssScriptLexicalBoundaryQueryPair => {
                 "web.review.xss.script-lexical-boundary-query-pair@1"
+            },
+            #[cfg(feature = "normalization-resilience")]
+            Self::NormalizationResilienceQueryPair => {
+                "web.review.normalization-resilience.query-pair@1"
             },
         }
     }
@@ -160,6 +173,10 @@ impl NativeWebReviewActionKind {
             Self::XssScriptLexicalBoundaryQueryPair => {
                 "web.review.probe.xss-script-lexical-boundary-query-pair@1"
             },
+            #[cfg(feature = "normalization-resilience")]
+            Self::NormalizationResilienceQueryPair => {
+                "web.review.probe.normalization-resilience-query-pair@1"
+            },
         }
     }
 
@@ -176,6 +193,8 @@ impl NativeWebReviewActionKind {
             Self::XssStructuralQueryPair => "xss-structural-query-pair",
             Self::XssAttributeBoundaryQueryPair => "xss-attribute-boundary-query-pair",
             Self::XssScriptLexicalBoundaryQueryPair => "xss-script-lexical-boundary-query-pair",
+            #[cfg(feature = "normalization-resilience")]
+            Self::NormalizationResilienceQueryPair => "normalization-resilience-query-pair",
         }
     }
 
@@ -196,6 +215,10 @@ impl NativeWebReviewActionKind {
             | Self::XssStructuralQueryPair
             | Self::XssAttributeBoundaryQueryPair
             | Self::XssScriptLexicalBoundaryQueryPair => {
+                NativeWebReviewDifferentialInput::SingleQueryParameter
+            },
+            #[cfg(feature = "normalization-resilience")]
+            Self::NormalizationResilienceQueryPair => {
                 NativeWebReviewDifferentialInput::SingleQueryParameter
             },
         }
@@ -235,6 +258,8 @@ impl NativeWebReviewActionKind {
             | Self::XssStructuralQueryPair
             | Self::XssAttributeBoundaryQueryPair
             | Self::XssScriptLexicalBoundaryQueryPair => 7,
+            #[cfg(feature = "normalization-resilience")]
+            Self::NormalizationResilienceQueryPair => 7,
         };
         RiskScore::from_percent(percent).expect("native web-review risk is a valid constant")
     }
@@ -328,6 +353,13 @@ mod tests {
                 "web.review.probe.xss-script-lexical-boundary-query-pair@1",
                 "xss-script-lexical-boundary-query-pair",
             ),
+            #[cfg(feature = "normalization-resilience")]
+            (
+                NativeWebReviewActionKind::NormalizationResilienceQueryPair,
+                "web.review.normalization-resilience.query-pair@1",
+                "web.review.probe.normalization-resilience-query-pair@1",
+                "normalization-resilience-query-pair",
+            ),
         ];
 
         assert_eq!(
@@ -354,7 +386,20 @@ mod tests {
 
     #[test]
     fn every_native_action_is_low_risk_and_irrevocably_knowledge_only() {
-        let expected_risk_basis_points = [500, 800, 500, 700, 700, 700, 700, 700, 700, 700];
+        let expected_risk_basis_points = [
+            500,
+            800,
+            500,
+            700,
+            700,
+            700,
+            700,
+            700,
+            700,
+            700,
+            #[cfg(feature = "normalization-resilience")]
+            700,
+        ];
 
         for (kind, expected_risk) in NativeWebReviewActionKind::all()
             .into_iter()

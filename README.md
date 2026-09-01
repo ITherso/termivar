@@ -94,7 +94,8 @@ Execution decisions are deterministic and model-independent. Venom does not requ
 | Output | Unchanged no-profile text/`--explain`/`decision-scan/v1`; explicit profile audits; and bounded JSON, CSV, HTML, or Markdown assessment reports for completed `web-review` runs |
 | Exploit foundation | Independent Preview `venom-exploit` manifest/catalog library plus a disconnected non-default orchestration API. Only a five-step in-memory canary fixture exercises host-minted grants, typed permits/receipts, impact verification, and cleanup verification; there is no real exploit, production adapter, or scanner/CLI/API/proxy integration |
 | Artifact signatures | Independent Preview `venom-artifact` library scans bounded caller-supplied buffers/readers for exact/wildcard signatures with overlapping deterministic observations. Explicit local regular-file access is available only through the non-default CLI `artifact-adapter`; matches are not malware or vulnerability verdicts |
-| Historical salvage inventories | Two strict repository ledgers and local-Git `xtask` checks preserve separate source epochs: the deleted 38-file pre-workspace scanner tree and the 13-file/39-component post-workspace WAF/evasion quarantine wave. Only the first epoch's detector byte-pattern component is restored in `venom-artifact`; the second ledger adds no runtime capability, restores no source, and grants no execution or claim authority |
+| Normalization resilience | Non-default Preview scanner/CLI feature plus explicit `--normalization-resilience` on `web-review`. V1 selects at most one typed depth-one HTML representation, reuses committed XSS/defense evidence, and requires transformed candidate plus distinct replay to reproduce the same inert parser semantics. It is `NeedsReview` / `KnowledgeOnly` only, not a generic or product-specific WAF-bypass claim |
+| Historical salvage inventories | Two strict repository ledgers and local-Git `xtask` checks preserve separate source epochs: the deleted 38-file pre-workspace scanner tree and the 13-file/39-component post-workspace WAF/evasion quarantine wave. The detector byte-pattern component is restored in `venom-artifact`; only the historical HTML token-case and inter-token whitespace concepts are marked restored by the separately reviewed normalization runtime. Historical source itself remains non-authoritative |
 
 The standard web profile currently has conservative, claim-specific behavior:
 
@@ -118,6 +119,8 @@ the `decision-scan/v1` machine-output contract. Two strict built-in
 ```bash
 cargo run -p venom-cli --locked -- scan https://authorized.example.test --profile baseline
 cargo run -p venom-cli --locked -- scan https://authorized.example.test --profile web-review
+cargo run -p venom-cli --locked --features normalization-resilience -- \
+  scan https://authorized.example.test --profile web-review --normalization-resilience
 ```
 
 `baseline` runs the same conservative single-resource decision primitive and
@@ -214,6 +217,23 @@ incomplete rather than silently successful.
 Stable item identity preserves `authorized-root@1` for `/` and gives eligible
 discovered exact-origin resources an opaque `discovered-resource@1` identity
 derived from non-secret canonical structure and parameter names, never values.
+
+Normalization-resilience review is an additional double opt-in: the CLI and
+scanner must be compiled with the non-default `normalization-resilience`
+feature, and the operator must pass `--normalization-resilience` with the
+explicit `web-review` profile. V1 can select only
+`xss.html-token-case@1` for HTML-text boundaries or
+`xss.html-inter-token-tab@1` for ordinary, URI, and event-handler attribute
+boundaries. Percent decode-depth-one/two entries remain metadata-only. The
+already committed parent control/canonical evidence is reused; one selected
+child spends exactly one bootstrap, one transformed candidate, and one
+distinct transformed replay request, with one active verification. Both
+transformed legs must avoid the candidate-specific canonical block and
+reproduce the parent's exact inert DOM semantics. A status change alone is
+insufficient, a defense-product fingerprint is only a compatible-candidate
+tie-break/context hint, and the maximum projection is `NeedsReview` under
+`KnowledgeOnly` authority. See the
+[normalization-resilience contract](docs/internals/normalization-resilience.md).
 
 An additional explicit `web-review` option can compare the exact origin root
 once as anonymous and once with a host-supplied `Authorization` context. Use
@@ -350,6 +370,7 @@ See the [runtime map](docs/internals/runtime-map.md) for the exact module and co
 - A repeated SQL timing differential, exact text reflection, or template-arithmetic result still requires claim-specific review; none is an exploit or vulnerability verdict.
 - Delivering an OOB callback URL to the target is not evidence that the target made the callback. HTTP 200, 401, or 403 is only the probe response.
 - JSON/GraphQL fingerprints and paired visibility differences remain observations or review hypotheses unless a dedicated verifier says otherwise.
+- A canonical defensive block followed by a transformed success status is not a WAF bypass. Normalization resilience requires the same inert application semantics and a distinct replay, remains `NeedsReview` / `KnowledgeOnly`, and makes no product-specific claim.
 
 ## Runtime surfaces
 
@@ -365,6 +386,7 @@ See the [runtime map](docs/internals/runtime-map.md) for the exact module and co
 | Distributed coordination | Experimental, opt-in | Implemented deterministic, bounded in-process task/worker/result state machines for explicit library hosts; no transport, authentication, serialization, persistence, ambient clock, background work, or multi-node control plane |
 | Exploit foundation | Preview, disconnected | Default manifest/catalog library plus a non-default host orchestration API with non-deserializable host-minted grants, deterministic plans, typed permits/receipts, and a redacted run report. Only the in-memory `venom-canary` integration fixture executes; no real exploit, production target/network/process/filesystem adapter, CLI/API/scanner caller, package authenticity, or sandbox is implemented |
 | `venom artifact scan-file` | Preview, opt-in | Absent from default builds; `artifact-adapter` scans one explicitly selected local regular file with one strict signature manifest. It is read-only, non-recursive, and emits observations rather than malware or vulnerability verdicts |
+| `venom scan ... --normalization-resilience` | Preview, opt-in | Absent from default builds and invalid outside explicit `web-review`. It selects at most one depth-one typed HTML transform, uses three child requests/one active verification, requires candidate and replay semantic evidence, and can emit only `NeedsReview` / `KnowledgeOnly` |
 | `venom api` | Unsupported, opt-in | Absent from default builds; the `api-adapter` feature reports that no listener is implemented |
 | `venom proxy` | Experimental, opt-in | Absent from default builds; `proxy-adapter` exposes an explicit fixed-upstream TCP relay with no `CONNECT`, TLS termination, certificate generation, or HTTP inspection |
 
@@ -385,6 +407,10 @@ experimental relay require `api-adapter` and `proxy-adapter`.
 
 The separate local-file artifact command requires `artifact-adapter`; it does
 not participate in `venom scan` and does not add a scanner network action.
+The normalization runtime similarly requires the non-default
+`normalization-resilience` feature and its explicit `web-review` flag; compiling
+the feature alone does not activate a transform, and the default CLI help and
+no-profile `decision-scan/v1` path remain unchanged.
 
 ## Quality and robustness
 
@@ -430,7 +456,7 @@ workflow record close neither the external gates nor the product gaps above.
 ```text
 crates/       Rust workspace crates: core, scanner, exploit metadata, CLI, API adapter, proxy relay
 exploit-packs/ Repository-owned bounded manifest metadata; no payloads or executable code
-salvage/      Machine-readable historical capability dispositions; no restored source or runtime
+salvage/      Machine-readable historical capability dispositions; ledger status is never runtime authority
 docs/         Architecture, operating guides, ADRs, and contributor internals
 fuzz/         cargo-fuzz harnesses and reviewed seed corpora
 templates/    Scanner SDK and plugin starter templates
@@ -471,6 +497,7 @@ tag and accepted cross-version baseline exist, pin a reviewed full commit.
 - [Distribution and installation](docs/DISTRIBUTION.md)
 - [Architecture](docs/architecture.md)
 - [Runtime map: what actually runs](docs/internals/runtime-map.md)
+- [Normalization-resilience review](docs/internals/normalization-resilience.md)
 - [Historical scanner salvage](docs/history/historical-scanner-salvage.md)
 - [Post-workspace WAF/evasion salvage](docs/history/post-workspace-waf-evasion-salvage.md)
 - [Historical salvage policy](docs/adr/0025-record-historical-scanner-salvage.md)

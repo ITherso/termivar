@@ -67,6 +67,8 @@ mod attribute_boundary_matcher;
 mod attribute_source_context;
 mod discovery;
 mod javascript_source_context;
+#[cfg(feature = "normalization-resilience")]
+mod normalization_transform_catalog;
 mod reflection_context;
 mod semantic;
 mod xss_probe_catalog;
@@ -82,6 +84,14 @@ pub(super) use javascript_source_context::{
     cross_validate_javascript_reflection_source, match_exact_xss_javascript_boundary_document,
     validate_exact_xss_javascript_boundary_candidate, ExactJavaScriptBoundaryMatch,
     JavaScriptScriptKind, JavaScriptSourceResult,
+};
+#[cfg(feature = "normalization-resilience")]
+pub(super) use normalization_transform_catalog::{
+    select_normalization_transform, NormalizationTransformRef, NormalizationTransformSelection,
+};
+#[cfg(all(feature = "normalization-resilience", test))]
+pub(super) use normalization_transform_catalog::{
+    NORMALIZATION_V1_MAX_CHILD_ACTIVE_VERIFICATIONS, NORMALIZATION_V1_MAX_CHILD_REQUESTS,
 };
 pub(super) use reflection_context::{
     classify_exact_html_reflection, match_exact_xss_html_boundary_document,
@@ -1507,6 +1517,8 @@ pub struct WebAssessmentRuntimeBuilder {
     cancellation: CancellationToken,
     defense_enforcement: bool,
     low_risk_differential_review: bool,
+    #[cfg(feature = "normalization-resilience")]
+    normalization_resilience: bool,
     root_authorization_context: Option<WebAssessmentRootAuthorizationContext>,
 }
 
@@ -1519,6 +1531,8 @@ impl WebAssessmentRuntimeBuilder {
             cancellation: CancellationToken::new(),
             defense_enforcement: false,
             low_risk_differential_review: false,
+            #[cfg(feature = "normalization-resilience")]
+            normalization_resilience: false,
             root_authorization_context: None,
         }
     }
@@ -1546,6 +1560,17 @@ impl WebAssessmentRuntimeBuilder {
     /// every review leg is composed through the assessment's shared broker.
     pub fn enable_low_risk_differential_review(mut self) -> Self {
         self.low_risk_differential_review = true;
+        self
+    }
+    /// Explicitly enables the bounded normalization-resilience child review.
+    ///
+    /// This policy is separate from the stable scan-profile wire contract. It
+    /// can consume only an already-committed, candidate-specific defensive
+    /// transition from an enabled structural review and shares that review's
+    /// exact-origin broker, cancellation token, and runtime budget.
+    #[cfg(feature = "normalization-resilience")]
+    pub fn enable_normalization_resilience(mut self) -> Self {
+        self.normalization_resilience = true;
         self
     }
     /// Adds one anonymous/authorized JSON comparison for the exact origin root.
@@ -1681,9 +1706,13 @@ impl WebAssessmentRuntimeBuilder {
             initial_reasons,
             started: false,
             defense_enforcement: self.defense_enforcement,
+            #[cfg(feature = "normalization-resilience")]
+            normalization_resilience: self.normalization_resilience,
             native_review,
             non_root_structural_review: None,
             xss_structural_review: None,
+            #[cfg(feature = "normalization-resilience")]
+            normalization_review: None,
             root_api_visibility,
             committed_api_visibility: None,
             defense_audit: WebAssessmentDefenseAudit::new(if self.defense_enforcement {
@@ -1708,9 +1737,13 @@ pub struct WebAssessmentRuntime {
     initial_reasons: BTreeSet<WebAssessmentIncompleteReason>,
     started: bool,
     defense_enforcement: bool,
+    #[cfg(feature = "normalization-resilience")]
+    normalization_resilience: bool,
     native_review: Option<AssessmentNativeReviewRuntime>,
     non_root_structural_review: Option<AssessmentNativeReviewRuntime>,
     xss_structural_review: Option<AssessmentNativeReviewRuntime>,
+    #[cfg(feature = "normalization-resilience")]
+    normalization_review: Option<AssessmentNativeReviewRuntime>,
     root_api_visibility: Option<RootApiVisibilityRuntime>,
     committed_api_visibility: Option<CommittedAssessmentApiVisibility>,
     defense_audit: WebAssessmentDefenseAudit,
@@ -2097,6 +2130,8 @@ impl WebAssessmentRuntime {
                             .filter(|review| review.target == subject.url)
                     };
                 let mut pending_xss_review = None;
+                #[cfg(feature = "normalization-resilience")]
+                let mut pending_normalization_review = None;
                 if let Some(review) = selected_review {
                     let native_review_complete =
                         replay_native_review(&standard, review, self.authority.knowledge());
@@ -2201,15 +2236,21 @@ impl WebAssessmentRuntime {
                                 self.authority.knowledge(),
                                 self.defense_enforcement,
                             );
-                            let defense_valid = match (xss_defense.as_ref(), replay) {
+                            let replayed_defense = match (xss_defense.as_ref(), replay) {
                                 (Some(expected), Ok(replayed))
                                     if replayed.exact_audit_eq(expected) =>
                                 {
-                                    self.defense_audit.append_controller(&replayed).is_ok()
+                                    replayed
                                 },
-                                _ => false,
+                                _ => {
+                                    return Err(WebAssessmentRuntimeError::NativeReviewComposition);
+                                },
                             };
-                            if !defense_valid {
+                            if self
+                                .defense_audit
+                                .append_controller(&replayed_defense)
+                                .is_err()
+                            {
                                 return Err(WebAssessmentRuntimeError::NativeReviewComposition);
                             }
                             match replay_native_review(
@@ -2217,7 +2258,35 @@ impl WebAssessmentRuntime {
                                 &mut review,
                                 self.authority.knowledge(),
                             ) {
-                                Ok(true) if !review.ledger.has_incomplete_xss_observation() => {},
+                                Ok(true) if !review.ledger.has_incomplete_xss_observation() =>
+                                {
+                                    #[cfg(feature = "normalization-resilience")]
+                                    if self.normalization_resilience
+                                        && self.normalization_review.is_none()
+                                    {
+                                        let parent = review
+                                            .ledger
+                                            .normalization_parent_evidence(
+                                                replayed_defense.ledger(),
+                                            )
+                                            .map_err(|_| {
+                                                WebAssessmentRuntimeError::NativeReviewComposition
+                                            })?;
+                                        if let Some(parent) = parent {
+                                            if let Some(selection) = select_normalization_transform(
+                                                parent.selection(),
+                                                None,
+                                            ) {
+                                                pending_normalization_review = Some((
+                                                    review.target.clone(),
+                                                    review.seeds.clone(),
+                                                    parent,
+                                                    selection,
+                                                ));
+                                            }
+                                        }
+                                    }
+                                },
                                 Ok(_) => {
                                     reasons.insert(
                                         WebAssessmentIncompleteReason::DifferentialReviewIncomplete,
@@ -2235,6 +2304,120 @@ impl WebAssessmentRuntime {
                         },
                     }
                     self.xss_structural_review = Some(review);
+                }
+                #[cfg(feature = "normalization-resilience")]
+                if let Some((target, seeds, parent, selection)) = pending_normalization_review {
+                    let observer = Arc::new(
+                        AssessmentReviewObserverSet::new_normalization(
+                            target.clone(),
+                            seeds.clone(),
+                            selection.clone(),
+                            &parent,
+                        )
+                        .map_err(|_| WebAssessmentRuntimeError::NativeReviewComposition)?,
+                    );
+                    let ledger = CommittedAssessmentReviewLedger::new_normalization(
+                        target.clone(),
+                        seeds.clone(),
+                        selection.clone(),
+                        &parent,
+                    )
+                    .map_err(|_| WebAssessmentRuntimeError::NativeReviewComposition)?;
+                    let mut review = AssessmentNativeReviewRuntime {
+                        target: target.clone(),
+                        seeds: seeds.clone(),
+                        redirect_query_parameter: None,
+                        reflection_query_parameter: None,
+                        sql_query_parameter: None,
+                        ssti_query_parameter: None,
+                        observer: observer.clone(),
+                        ledger,
+                        enabled_actions: vec![
+                            NativeWebReviewActionKind::NormalizationResilienceQueryPair,
+                        ],
+                    };
+                    let response_observer: Arc<dyn CompleteHttpResponseObserver> = observer;
+                    let normalization_builder = StandardWebDecisionRuntime::builder(target)
+                        .with_native_normalization_resilience_review(
+                            seeds,
+                            response_observer,
+                            parent.query_parameter().to_owned(),
+                            selection,
+                        )
+                        .with_assessment_defense_enforcement(self.defense_enforcement);
+                    let mut normalization_runtime = compose_child(normalization_builder)?;
+                    let normalization_result = normalization_runtime.analyze().await;
+                    let normalization_defense = normalization_runtime
+                        .assessment_defense_controller()
+                        .cloned();
+                    let normalization_planner = normalization_runtime.assessment_planner().clone();
+                    match normalization_result {
+                        Ok(normalization_report) => {
+                            let replayed_defense = match (
+                                normalization_defense.as_ref(),
+                                replay_standard_defense(
+                                    &normalization_report,
+                                    &normalization_planner,
+                                    self.authority.knowledge(),
+                                    self.defense_enforcement,
+                                ),
+                            ) {
+                                (Some(expected), Ok(replayed))
+                                    if replayed.exact_audit_eq(expected) =>
+                                {
+                                    replayed
+                                },
+                                _ => {
+                                    return Err(WebAssessmentRuntimeError::NativeReviewComposition);
+                                },
+                            };
+                            if self
+                                .defense_audit
+                                .append_controller(&replayed_defense)
+                                .is_err()
+                            {
+                                return Err(WebAssessmentRuntimeError::NativeReviewComposition);
+                            }
+                            match replay_native_review(
+                                &normalization_report,
+                                &mut review,
+                                self.authority.knowledge(),
+                            ) {
+                                Ok(true) => match review
+                                    .ledger
+                                    .finalize_normalization(replayed_defense.ledger())
+                                    .map_err(|_| {
+                                        WebAssessmentRuntimeError::NativeReviewComposition
+                                    })? {
+                                    super::assessment_review::NormalizationReviewOutcome::Incomplete => {
+                                        reasons.insert(
+                                            WebAssessmentIncompleteReason::DifferentialReviewIncomplete,
+                                        );
+                                    },
+                                    super::assessment_review::NormalizationReviewOutcome::SemanticNormalizationGapObserved
+                                    | super::assessment_review::NormalizationReviewOutcome::VariantStillBlocked
+                                    | super::assessment_review::NormalizationReviewOutcome::VariantAcceptedSemanticsUnknown
+                                    | super::assessment_review::NormalizationReviewOutcome::ReplayMismatch => {},
+                                },
+                                Ok(false) => {
+                                    reasons.insert(
+                                        WebAssessmentIncompleteReason::DifferentialReviewIncomplete,
+                                    );
+                                },
+                                Err(()) => {
+                                    return Err(
+                                        WebAssessmentRuntimeError::NativeReviewComposition,
+                                    );
+                                },
+                            }
+                        },
+                        Err(_) => {
+                            reasons.insert(
+                                WebAssessmentIncompleteReason::DifferentialReviewIncomplete,
+                            );
+                        },
+                    }
+                    self.normalization_review = Some(review);
                 }
                 classify_standard_completion(&standard, &mut reasons);
                 let cancelled_at_subject_boundary = self.authority.cancellation().is_cancelled();
@@ -2532,11 +2715,21 @@ impl WebAssessmentRuntime {
                 });
             },
         }
+        #[cfg(not(feature = "normalization-resilience"))]
         let review_ledgers = self
             .native_review
             .iter()
             .chain(self.non_root_structural_review.iter())
             .chain(self.xss_structural_review.iter())
+            .map(|review| &review.ledger)
+            .collect::<Vec<_>>();
+        #[cfg(feature = "normalization-resilience")]
+        let review_ledgers = self
+            .native_review
+            .iter()
+            .chain(self.non_root_structural_review.iter())
+            .chain(self.xss_structural_review.iter())
+            .chain(self.normalization_review.iter())
             .map(|review| &review.ledger)
             .collect::<Vec<_>>();
         let assessment_projection = match project_assessment_items(

@@ -234,6 +234,27 @@ evidence cannot be upgraded to `Confirmed`.
 
 For example, collecting PHP-style form-control names or Sanctum-compatible cookie names is KnowledgeOnly. The action can succeed while its motivating technology hypothesis remains Supported rather than Confirmed.
 
+## Optional normalization-resilience review
+
+The normalization review is absent from default builds. Compile the matching
+CLI feature and opt in at runtime only for an authorized `web-review` target:
+
+```bash
+cargo run -p venom-cli --locked --features normalization-resilience -- \
+  scan https://authorized.example.test \
+  --profile web-review \
+  --normalization-resilience
+```
+
+The flag is rejected with no profile or with `baseline`. V1 may select one
+typed HTML token-case or horizontal-tab representation only after the canonical
+inert XSS candidate created candidate-specific defensive engagement. It reuses
+the parent pair, sends one transformed candidate and one distinct replay under
+the same shared budget, and requires both to reproduce the same inert DOM
+semantics. Its ceiling is `NeedsReview` / `KnowledgeOnly`; a `403` followed by a
+`200`, or a WAF fingerprint by itself, is not a bypass result. See the
+[normalization-resilience contract](internals/normalization-resilience.md).
+
 ## Optional CLI adapters
 
 Default builds expose none of `artifact`, `api`, or `proxy`. They can be

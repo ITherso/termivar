@@ -28,6 +28,8 @@ pub mod cors_origin_pair;
 pub mod encoding;
 pub mod external_url_query_pair;
 pub mod http_header_control_pair;
+#[cfg(feature = "normalization-resilience")]
+pub(crate) mod normalization_resilience_query_pair;
 pub mod reflection_marker_query_pair;
 pub mod sql_quote_balance_query_pair;
 pub mod ssti_arithmetic_expression_pair;
@@ -51,6 +53,8 @@ pub use http_header_control_pair::{
     HttpHeaderControlPairStrategy, HTTP_HEADER_CONTROL_PAIR_HEADER_NAME,
     HTTP_HEADER_CONTROL_PAIR_ID, HTTP_HEADER_CONTROL_PAIR_REVISION,
 };
+#[cfg(feature = "normalization-resilience")]
+pub(crate) use normalization_resilience_query_pair::NormalizationResilienceQueryPairStrategy;
 pub use reflection_marker_query_pair::{
     ReflectionMarkerQueryPairStrategy, REFLECTION_MARKER_QUERY_PAIR_ID,
     REFLECTION_MARKER_QUERY_PAIR_REVISION,
@@ -85,6 +89,8 @@ pub use xss_structural_query_pair::{
 pub fn standard_payload_strategies() -> Result<PayloadStrategyRegistry, PayloadStrategyError> {
     let mut registry = PayloadStrategyRegistry::new();
     registry.register(Arc::new(HttpHeaderControlPairStrategy::new()))?;
+    #[cfg(feature = "normalization-resilience")]
+    registry.register(Arc::new(NormalizationResilienceQueryPairStrategy::new()))?;
     registry.register(Arc::new(ApiAuthorizationContextPairStrategy::new()))?;
     registry.register(Arc::new(CorsOriginPairStrategy::new()))?;
     registry.register(Arc::new(ExternalUrlQueryPairStrategy::new()))?;
@@ -160,7 +166,23 @@ mod tests {
         )
         .unwrap();
 
+        #[cfg(not(feature = "normalization-resilience"))]
         assert_eq!(registry.len(), 10);
+        #[cfg(feature = "normalization-resilience")]
+        {
+            use normalization_resilience_query_pair::{
+                NORMALIZATION_RESILIENCE_QUERY_PAIR_ID,
+                NORMALIZATION_RESILIENCE_QUERY_PAIR_REVISION,
+            };
+
+            let normalization = PayloadStrategyRef::new(
+                NORMALIZATION_RESILIENCE_QUERY_PAIR_ID,
+                NORMALIZATION_RESILIENCE_QUERY_PAIR_REVISION,
+            )
+            .unwrap();
+            assert_eq!(registry.len(), 11);
+            assert!(registry.contains(&normalization));
+        }
         assert!(registry.contains(&header_pair));
         assert!(registry.contains(&authorization_pair));
         assert!(registry.contains(&cors_origin_pair));

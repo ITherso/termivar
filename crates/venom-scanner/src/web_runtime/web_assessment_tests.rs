@@ -1214,6 +1214,392 @@ async fn single_quoted_script_boundary_is_bounded_needs_review_and_report_safe()
     }
 }
 
+#[cfg(feature = "normalization-resilience")]
+const NORMALIZATION_RESILIENCE_SECRET: &str =
+    "VENOM-NORMALIZATION-RESILIENCE-MUST-NOT-LEAK-SECRET-123";
+#[cfg(feature = "normalization-resilience")]
+const HTML_TOKEN_CASE_NORMALIZATION_CAPABILITY: &str =
+    "web.review.normalization-resilience.xss.html-text-boundary.html-token-case@1";
+
+#[cfg(feature = "normalization-resilience")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NormalizationFixtureMode {
+    Positive,
+    AcceptedWithoutSemantics,
+    StandingBlock,
+    RateLimit,
+    CanonicalAllowed,
+    ReplayMismatch,
+}
+
+#[cfg(feature = "normalization-resilience")]
+fn normalization_query_value(request: &RecordedRequest) -> Option<String> {
+    Url::parse(&format!("http://fixture{}", request.target))
+        .ok()?
+        .query_pairs()
+        .find_map(|(name, value)| (name == "item").then(|| value.into_owned()))
+}
+
+#[cfg(feature = "normalization-resilience")]
+async fn run_normalization_fixture(
+    mode: NormalizationFixtureMode,
+) -> (LocalServer, WebAssessmentRuntime, WebAssessmentRunReport) {
+    let transformed_legs = Arc::new(AtomicUsize::new(0));
+    let transformed_legs_for_server = transformed_legs.clone();
+    let server = serve(move |request| {
+        let Some(value) = normalization_query_value(request) else {
+            return FixtureReply::Response(FixtureResponse::html("matched control"));
+        };
+        if value.starts_with("venom-reflection-candidate-") {
+            return FixtureReply::Response(FixtureResponse::html(format!("<p>{value}</p>")));
+        }
+        if value.starts_with("venom-xss-control-") {
+            return FixtureReply::Response(if mode == NormalizationFixtureMode::StandingBlock {
+                FixtureResponse::new(
+                    "403 Forbidden",
+                    Some("text/html"),
+                    "candidate-specific policy block",
+                )
+            } else {
+                FixtureResponse::html("matched control")
+            });
+        }
+        if value.starts_with("<span data-venom-xss-boundary-token=") {
+            return FixtureReply::Response(match mode {
+                NormalizationFixtureMode::CanonicalAllowed => FixtureResponse::html(value),
+                NormalizationFixtureMode::RateLimit => {
+                    FixtureResponse::new("429 Too Many Requests", Some("text/html"), "slow down")
+                },
+                NormalizationFixtureMode::Positive
+                | NormalizationFixtureMode::AcceptedWithoutSemantics
+                | NormalizationFixtureMode::StandingBlock
+                | NormalizationFixtureMode::ReplayMismatch => FixtureResponse::new(
+                    "403 Forbidden",
+                    Some("text/html"),
+                    "candidate-specific policy block",
+                ),
+            });
+        }
+        if value.starts_with("<SPAN DATA-VENOM-XSS-BOUNDARY-TOKEN=") {
+            let ordinal = transformed_legs_for_server.fetch_add(1, Ordering::SeqCst);
+            let body = match mode {
+                NormalizationFixtureMode::Positive => value,
+                NormalizationFixtureMode::ReplayMismatch if ordinal == 0 => value,
+                NormalizationFixtureMode::AcceptedWithoutSemantics
+                | NormalizationFixtureMode::ReplayMismatch => {
+                    "accepted without equivalent application semantics".to_owned()
+                },
+                NormalizationFixtureMode::StandingBlock
+                | NormalizationFixtureMode::RateLimit
+                | NormalizationFixtureMode::CanonicalAllowed => value,
+            };
+            return FixtureReply::Response(FixtureResponse::html(body));
+        }
+        FixtureReply::Response(FixtureResponse::html("matched control"))
+    })
+    .await;
+    let mut runtime = WebAssessmentRuntime::builder(
+        server.url(&format!("/?item={NORMALIZATION_RESILIENCE_SECRET}")),
+    )
+    .enable_low_risk_differential_review()
+    .enable_normalization_resilience()
+    .build()
+    .unwrap();
+    let report = runtime.analyze().await.unwrap();
+    assert_report_reconciles(&report);
+    (server, runtime, report)
+}
+
+#[cfg(feature = "normalization-resilience")]
+fn normalization_items(report: &WebAssessmentRunReport) -> Vec<&AssessmentItem> {
+    report
+        .assessment_items()
+        .iter()
+        .filter(|item| {
+            item.capability_id()
+                .starts_with("web.review.normalization-resilience.")
+        })
+        .collect()
+}
+
+#[cfg(feature = "normalization-resilience")]
+fn assert_no_normalization_child(
+    server_requests: &[RecordedRequest],
+    runtime: &WebAssessmentRuntime,
+    report: &WebAssessmentRunReport,
+) {
+    assert!(runtime.normalization_review.is_none());
+    assert!(normalization_items(report).is_empty());
+    assert_eq!(
+        server_requests
+            .iter()
+            .filter_map(normalization_query_value)
+            .filter(|value| value.starts_with("<SPAN DATA-VENOM-XSS-BOUNDARY-TOKEN="))
+            .count(),
+        0
+    );
+    assert_eq!(
+        report
+            .transport()
+            .receipts()
+            .iter()
+            .filter(|receipt| {
+                receipt.action_id()
+                    == NativeWebReviewActionKind::NormalizationResilienceQueryPair.action_id()
+            })
+            .count(),
+        0
+    );
+}
+
+#[cfg(feature = "normalization-resilience")]
+#[tokio::test]
+async fn html_token_case_normalization_gap_is_replayed_bounded_and_report_safe() {
+    let (server, runtime, report) =
+        run_normalization_fixture(NormalizationFixtureMode::Positive).await;
+    assert_eq!(report.completion(), &WebAssessmentCompletion::Complete);
+
+    let items = normalization_items(&report);
+    assert_eq!(items.len(), 1);
+    let item = items[0];
+    assert_eq!(
+        item.capability_id(),
+        HTML_TOKEN_CASE_NORMALIZATION_CAPABILITY
+    );
+    assert_eq!(item.disposition(), AssessmentDisposition::NeedsReview);
+    assert!(matches!(item.basis(), AssessmentBasis::Differential(_)));
+    assert_eq!(item.severity(), None);
+    assert_eq!(
+        NativeWebReviewActionKind::NormalizationResilienceQueryPair.verification_target(),
+        crate::planner::VerificationTarget::KnowledgeOnly
+    );
+    assert!(report
+        .assessment_items()
+        .iter()
+        .all(|item| item.disposition() != AssessmentDisposition::Confirmed));
+
+    let initial_actions = enabled_native_web_review_actions(true, false, true, true, true, None);
+    let xss_actions = runtime
+        .xss_structural_review
+        .as_ref()
+        .expect("the HTML-text parent must own one structural child")
+        .enabled_actions
+        .as_slice();
+    assert_eq!(
+        xss_actions,
+        &[NativeWebReviewActionKind::XssStructuralQueryPair]
+    );
+    let normalization_actions = runtime
+        .normalization_review
+        .as_ref()
+        .expect("the exact candidate-specific parent must own one normalization child")
+        .enabled_actions
+        .as_slice();
+    assert_eq!(
+        normalization_actions,
+        &[NativeWebReviewActionKind::NormalizationResilienceQueryPair]
+    );
+
+    let initial_requests = 1 + initial_actions.len() * NATIVE_WEB_REVIEW_REQUESTS_PER_CASE;
+    let parent_requests = 1 + xss_actions.len() * NATIVE_WEB_REVIEW_REQUESTS_PER_CASE;
+    let normalization_requests =
+        1 + normalization_actions.len() * NATIVE_WEB_REVIEW_REQUESTS_PER_CASE;
+    assert_eq!(
+        parent_requests,
+        usize::from(xss_probe_catalog::XSS_V1_MAX_TOTAL_REQUESTS)
+    );
+    assert_eq!(
+        normalization_requests,
+        usize::from(NORMALIZATION_V1_MAX_CHILD_REQUESTS)
+    );
+    let expected_requests = initial_requests + parent_requests + normalization_requests;
+    let expected_active = initial_actions.len()
+        + xss_actions.len() * NATIVE_WEB_REVIEW_ACTIVE_REQUESTS_PER_CASE
+        + normalization_actions.len() * NATIVE_WEB_REVIEW_ACTIVE_REQUESTS_PER_CASE;
+    assert_eq!(
+        normalization_actions.len() * NATIVE_WEB_REVIEW_ACTIVE_REQUESTS_PER_CASE,
+        usize::from(NORMALIZATION_V1_MAX_CHILD_ACTIVE_VERIFICATIONS)
+    );
+    assert_eq!(
+        usize::from(report.usage().active_verifications()),
+        expected_active
+    );
+    assert_eq!(
+        usize::try_from(report.usage().total_requests()).unwrap(),
+        expected_requests
+    );
+
+    let action_id = NativeWebReviewActionKind::NormalizationResilienceQueryPair.action_id();
+    let action_receipts = report
+        .transport()
+        .receipts()
+        .iter()
+        .filter(|receipt| receipt.action_id() == action_id)
+        .collect::<Vec<_>>();
+    assert_eq!(action_receipts.len(), NATIVE_WEB_REVIEW_REQUESTS_PER_CASE);
+    assert_eq!(
+        action_receipts
+            .iter()
+            .filter(|receipt| receipt.stage() == DecisionExecutionStage::Active)
+            .count(),
+        NATIVE_WEB_REVIEW_ACTIVE_REQUESTS_PER_CASE
+    );
+
+    let requests = server.requests().await;
+    assert_eq!(requests.len(), expected_requests);
+    assert!(requests.iter().all(|request| request.path() == "/"));
+    assert!(requests
+        .iter()
+        .all(|request| request.host() == requests[0].host()));
+    let values = requests
+        .iter()
+        .filter_map(normalization_query_value)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        values
+            .iter()
+            .filter(|value| value.starts_with("venom-xss-control-"))
+            .count(),
+        1,
+        "the committed parent control must not be resent"
+    );
+    assert_eq!(
+        values
+            .iter()
+            .filter(|value| value.starts_with("<span data-venom-xss-boundary-token="))
+            .count(),
+        1,
+        "the committed canonical parent candidate must not be resent"
+    );
+    let transformed = values
+        .iter()
+        .filter(|value| value.starts_with("<SPAN DATA-VENOM-XSS-BOUNDARY-TOKEN="))
+        .collect::<Vec<_>>();
+    assert_eq!(transformed.len(), 2);
+    assert_ne!(transformed[0], transformed[1]);
+    let transformed_identities = transformed
+        .iter()
+        .map(|value| {
+            value
+                .strip_prefix("<SPAN DATA-VENOM-XSS-BOUNDARY-TOKEN=\"")
+                .and_then(|value| value.strip_suffix("\"></SPAN>"))
+                .filter(|value| {
+                    value.len() == 32
+                        && value
+                            .bytes()
+                            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+                })
+                .expect("the typed serializer must retain one bounded opaque identity")
+                .to_owned()
+        })
+        .collect::<Vec<_>>();
+    assert_ne!(transformed_identities[0], transformed_identities[1]);
+    let report_debug = format!("{report:?}");
+    assert!(!report_debug.contains(NORMALIZATION_RESILIENCE_SECRET));
+    for identity in &transformed_identities {
+        assert!(!report_debug.contains(identity));
+    }
+    assert!(requests
+        .iter()
+        .all(|request| !request.target.contains(NORMALIZATION_RESILIENCE_SECRET)));
+
+    #[cfg(feature = "reporting")]
+    {
+        let capability = item.capability_id();
+        let product =
+            ReportGenerator::compose_assessment(report, ScanProfileV1::web_review().unwrap())
+                .unwrap();
+        for format in [
+            ReportFormat::Json,
+            ReportFormat::Csv,
+            ReportFormat::Html,
+            ReportFormat::Markdown,
+        ] {
+            let rendered = ReportGenerator::generate_assessment(&product, format).unwrap();
+            assert!(!rendered.contains(NORMALIZATION_RESILIENCE_SECRET));
+            assert!(!rendered.contains("<SPAN DATA-VENOM-XSS-BOUNDARY-TOKEN="));
+            assert!(!rendered.contains("<span data-venom-xss-boundary-token="));
+            assert!(rendered.contains(capability));
+            assert!(rendered.contains("needs_review"));
+            assert!(!rendered.contains("WafBypassConfirmed"));
+            assert!(!rendered.contains("waf-bypass-confirmed"));
+            for identity in &transformed_identities {
+                assert!(!rendered.contains(identity));
+            }
+        }
+    }
+}
+
+#[cfg(feature = "normalization-resilience")]
+#[tokio::test]
+async fn accepted_normalization_without_application_semantics_projects_no_item() {
+    let (server, runtime, report) =
+        run_normalization_fixture(NormalizationFixtureMode::AcceptedWithoutSemantics).await;
+    assert_eq!(report.completion(), &WebAssessmentCompletion::Complete);
+    assert!(runtime.normalization_review.is_some());
+    assert!(normalization_items(&report).is_empty());
+    assert_eq!(
+        server
+            .requests()
+            .await
+            .iter()
+            .filter_map(normalization_query_value)
+            .filter(|value| value.starts_with("<SPAN DATA-VENOM-XSS-BOUNDARY-TOKEN="))
+            .count(),
+        NATIVE_WEB_REVIEW_REQUESTS_PER_CASE
+    );
+}
+
+#[cfg(feature = "normalization-resilience")]
+#[tokio::test]
+async fn standing_parent_block_dispatches_no_normalization_child() {
+    let (server, runtime, report) =
+        run_normalization_fixture(NormalizationFixtureMode::StandingBlock).await;
+    let requests = server.requests().await;
+    assert_no_normalization_child(&requests, &runtime, &report);
+}
+
+#[cfg(feature = "normalization-resilience")]
+#[tokio::test]
+async fn parent_rate_limit_dispatches_no_normalization_child() {
+    let (server, runtime, report) =
+        run_normalization_fixture(NormalizationFixtureMode::RateLimit).await;
+    let requests = server.requests().await;
+    assert_no_normalization_child(&requests, &runtime, &report);
+}
+
+#[cfg(feature = "normalization-resilience")]
+#[tokio::test]
+async fn canonical_semantic_success_dispatches_no_normalization_child() {
+    let (server, runtime, report) =
+        run_normalization_fixture(NormalizationFixtureMode::CanonicalAllowed).await;
+    let requests = server.requests().await;
+    assert_no_normalization_child(&requests, &runtime, &report);
+    assert!(report
+        .assessment_items()
+        .iter()
+        .any(|item| item.capability_id() == "web.review.xss.structural-boundary@1"));
+}
+
+#[cfg(feature = "normalization-resilience")]
+#[tokio::test]
+async fn normalization_replay_semantic_mismatch_projects_no_item() {
+    let (server, runtime, report) =
+        run_normalization_fixture(NormalizationFixtureMode::ReplayMismatch).await;
+    assert!(runtime.normalization_review.is_some());
+    assert!(normalization_items(&report).is_empty());
+    assert_eq!(
+        server
+            .requests()
+            .await
+            .iter()
+            .filter_map(normalization_query_value)
+            .filter(|value| value.starts_with("<SPAN DATA-VENOM-XSS-BOUNDARY-TOKEN="))
+            .count(),
+        NATIVE_WEB_REVIEW_REQUESTS_PER_CASE
+    );
+}
+
 #[tokio::test]
 async fn native_review_budget_exhaustion_is_typed_incomplete_not_empty_success() {
     let server = serve(|_| FixtureReply::Response(FixtureResponse::html("bounded"))).await;
