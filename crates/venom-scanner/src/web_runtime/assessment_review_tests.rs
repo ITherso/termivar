@@ -2428,6 +2428,8 @@ mod scanner_corpus_conformance {
         XssReview,
         #[cfg(feature = "normalization-resilience")]
         NormalizationReview,
+        #[cfg(feature = "graphql-review")]
+        GraphqlReview,
         ApiReasoning,
     }
 
@@ -3429,24 +3431,152 @@ mod scanner_corpus_conformance {
         ConformanceResult::UnsupportedByCurrentRuntime
     }
 
+    #[cfg(feature = "graphql-review")]
     fn run_graphql_metadata(case: &FixtureCase) -> ConformanceResult {
-        let Some(_expected) = case.expected.graphql_evidence else {
+        let Some(expected) = case.expected.graphql_evidence else {
             return ConformanceResult::FixtureInvalid;
         };
         let Ok(reasoning) = api_reasoning(case) else {
             return ConformanceResult::SemanticMismatch(SemanticMismatch::ApiReasoning);
         };
-        if !reasoning.json
+        if !matches!(
+            expected,
+            GraphqlExpectation::BatchMetadataOnly | GraphqlExpectation::GetQueryMetadataOnly
+        ) || !reasoning.json
             || !reasoning.graphql
             || case.support != SupportLevel::MetadataOnly
             || case.expected.maximum_authority != Some(MaximumAuthorityExpectation::KnowledgeOnly)
         {
             return ConformanceResult::SemanticMismatch(SemanticMismatch::ApiReasoning);
         }
-        // V1 corpus data records future protocol shapes only. The current API
-        // reasoner consumes already-normalized evidence and owns no executor or
-        // bounded GraphQL envelope classifier, so this harness never upgrades
-        // a body fixture into an execution claim.
+        // These two catalog families remain metadata-only in GraphQL V1. Their
+        // shape is valid evidence taxonomy but creates no request obligation.
+        ConformanceResult::UnsupportedByCurrentRuntime
+    }
+
+    #[cfg(feature = "graphql-review")]
+    fn run_graphql(case: &FixtureCase) -> ConformanceResult {
+        use crate::graphql_review::{
+            select_graphql_endpoint, GraphqlEndpointHint, GraphqlErrorCategory,
+            GraphqlFallbackPolicy, GraphqlOperationSet, GraphqlResponseClassification,
+            GraphqlResponseClassifier, GraphqlResponseInput,
+        };
+
+        let Some(expected) = case.expected.graphql_evidence else {
+            return ConformanceResult::FixtureInvalid;
+        };
+        if matches!(
+            expected,
+            GraphqlExpectation::BatchMetadataOnly | GraphqlExpectation::GetQueryMetadataOnly
+        ) {
+            return run_graphql_metadata(case);
+        }
+        if case.support != SupportLevel::Current
+            || case.expected.maximum_authority != Some(MaximumAuthorityExpectation::KnowledgeOnly)
+        {
+            return ConformanceResult::SemanticMismatch(SemanticMismatch::GraphqlReview);
+        }
+        let Ok(reasoning) = api_reasoning(case) else {
+            return ConformanceResult::SemanticMismatch(SemanticMismatch::ApiReasoning);
+        };
+        if !reasoning.json || !reasoning.graphql {
+            return ConformanceResult::SemanticMismatch(SemanticMismatch::ApiReasoning);
+        }
+
+        let Ok(origin) = Url::parse(&case.request.origin) else {
+            return ConformanceResult::FixtureInvalid;
+        };
+        let Ok(endpoint_url) = origin.join(&case.request.path) else {
+            return ConformanceResult::FixtureInvalid;
+        };
+        let Ok(Some(hint)) = GraphqlEndpointHint::exact_path(endpoint_url) else {
+            return ConformanceResult::FixtureInvalid;
+        };
+        let Ok(Some(endpoint)) =
+            select_graphql_endpoint(&origin, [hint], GraphqlFallbackPolicy::Disabled)
+        else {
+            return ConformanceResult::FixtureInvalid;
+        };
+        let Ok(operations) = GraphqlOperationSet::v1(&endpoint) else {
+            return ConformanceResult::FixtureInvalid;
+        };
+        let operation = match expected {
+            GraphqlExpectation::IntrospectionAvailable
+            | GraphqlExpectation::IntrospectionRestricted
+            | GraphqlExpectation::PartialDataWithErrors => operations.candidate(),
+            GraphqlExpectation::ExactEnvelope
+            | GraphqlExpectation::TypenameControl
+            | GraphqlExpectation::GenericJson
+            | GraphqlExpectation::GraphqlLikeHtml
+            | GraphqlExpectation::MalformedEnvelope
+            | GraphqlExpectation::DepthLimited => operations.control(),
+            GraphqlExpectation::BatchMetadataOnly | GraphqlExpectation::GetQueryMetadataOnly => {
+                return ConformanceResult::FixtureInvalid;
+            },
+        };
+        let Ok(body) = fixture_body(
+            case.response.body_file.as_ref(),
+            case.response.inline_body.as_ref(),
+        ) else {
+            return ConformanceResult::FixtureInvalid;
+        };
+        let classification = GraphqlResponseClassifier::default().classify(GraphqlResponseInput {
+            media_type: Some(&case.response.media_type),
+            body: &body,
+            complete: case.response.completion == CompletionState::Complete,
+            truncated: case.response.truncated,
+            operation,
+        });
+        let classification_matches = match expected {
+            GraphqlExpectation::ExactEnvelope | GraphqlExpectation::TypenameControl => {
+                classification == GraphqlResponseClassification::ExactControlEnvelope
+            },
+            GraphqlExpectation::IntrospectionAvailable => matches!(
+                classification,
+                GraphqlResponseClassification::ExactIntrospectionEnvelope(_)
+            ),
+            GraphqlExpectation::IntrospectionRestricted => {
+                classification
+                    == GraphqlResponseClassification::StructuredGraphqlErrors(
+                        GraphqlErrorCategory::IntrospectionRestricted,
+                    )
+            },
+            GraphqlExpectation::GenericJson => {
+                classification == GraphqlResponseClassification::GenericJson
+            },
+            GraphqlExpectation::GraphqlLikeHtml => {
+                classification == GraphqlResponseClassification::Html
+            },
+            GraphqlExpectation::MalformedEnvelope => {
+                classification == GraphqlResponseClassification::MalformedJson
+            },
+            GraphqlExpectation::PartialDataWithErrors => {
+                classification == GraphqlResponseClassification::Ambiguous
+            },
+            GraphqlExpectation::DepthLimited => {
+                classification == GraphqlResponseClassification::Incomplete
+            },
+            GraphqlExpectation::BatchMetadataOnly | GraphqlExpectation::GetQueryMetadataOnly => {
+                false
+            },
+        };
+        let disposition_matches = match expected {
+            GraphqlExpectation::ExactEnvelope
+            | GraphqlExpectation::TypenameControl
+            | GraphqlExpectation::IntrospectionAvailable
+            | GraphqlExpectation::IntrospectionRestricted => {
+                case.expected.maximum_disposition == Some(DispositionExpectation::Informational)
+            },
+            _ => case.expected.maximum_disposition.is_none(),
+        };
+        if !classification_matches || !disposition_matches {
+            return ConformanceResult::SemanticMismatch(SemanticMismatch::GraphqlReview);
+        }
+        terminal_result(case)
+    }
+
+    #[cfg(not(feature = "graphql-review"))]
+    fn run_graphql(_case: &FixtureCase) -> ConformanceResult {
         ConformanceResult::UnsupportedByCurrentRuntime
     }
 
@@ -3477,6 +3607,10 @@ mod scanner_corpus_conformance {
         if case.expected.normalization_outcome.is_some() {
             return ConformanceResult::UnsupportedByCurrentRuntime;
         }
+        #[cfg(not(feature = "graphql-review"))]
+        if case.category == CaseCategory::ApiGraphql {
+            return ConformanceResult::UnsupportedByCurrentRuntime;
+        }
         terminal_result(case)
     }
 
@@ -3488,7 +3622,7 @@ mod scanner_corpus_conformance {
             CaseCategory::Ssti => run_ssti(case),
             CaseCategory::Xss => run_xss(case),
             CaseCategory::Normalization => run_normalization(case),
-            CaseCategory::ApiGraphql => run_graphql_metadata(case),
+            CaseCategory::ApiGraphql => run_graphql(case),
         }
     }
 

@@ -19,6 +19,8 @@ use url::Url;
 use venom_core::{ConfidenceScore, EntityId, KnowledgePredicate};
 
 use super::*;
+#[cfg(feature = "graphql-review")]
+use crate::graphql_review::{MAX_GRAPHQL_ITEM_EVIDENCE_REFERENCES, MAX_GRAPHQL_RESPONSE_BYTES};
 use crate::web_actions::{
     NATIVE_WEB_REVIEW_ACTIVE_REQUESTS_PER_CASE, NATIVE_WEB_REVIEW_REQUESTS_PER_CASE,
 };
@@ -89,11 +91,992 @@ async fn default_assessment_does_not_dispatch_native_review_mutations() {
     }));
 }
 
+#[cfg(feature = "graphql-review")]
+#[derive(Clone, Copy)]
+enum GraphqlFixtureMode {
+    Available,
+    Restricted,
+    GenericJson,
+    Html,
+    ReplayMismatch,
+}
+
+#[cfg(feature = "graphql-review")]
+const GRAPHQL_REVIEW_SECRET: &str = "GRAPHQL-REVIEW-MUST-NOT-LEAK-SECRET-1F92A7";
+#[cfg(feature = "graphql-review")]
+const GRAPHQL_ROOT_NAME_SECRET: &str = "GraphqlRootSecret1F92A7";
+
+#[cfg(feature = "graphql-review")]
+fn graphql_fixture_reply(mode: GraphqlFixtureMode, request: &RecordedRequest) -> FixtureReply {
+    if request.method != "POST" {
+        return FixtureReply::Response(FixtureResponse::html("graphql fixture root"));
+    }
+    let query = serde_json::from_slice::<serde_json::Value>(request.body())
+        .ok()
+        .and_then(|value| {
+            let object = value.as_object()?;
+            (object.len() == 1)
+                .then(|| object.get("query").and_then(serde_json::Value::as_str))
+                .flatten()
+                .map(str::to_owned)
+        });
+    let Some(query) = query else {
+        return FixtureReply::Response(FixtureResponse::new(
+            "400 Bad Request",
+            Some("application/json"),
+            "{}",
+        ));
+    };
+
+    if matches!(mode, GraphqlFixtureMode::Html) {
+        return FixtureReply::Response(FixtureResponse::html("not graphql"));
+    }
+    if matches!(mode, GraphqlFixtureMode::GenericJson) {
+        return FixtureReply::Response(FixtureResponse::new(
+            "200 OK",
+            Some("application/json"),
+            r#"{"ok":true}"#,
+        ));
+    }
+    if query.contains("VenomGraphqlControlV1") {
+        return FixtureReply::Response(FixtureResponse::new(
+            "200 OK",
+            Some("application/graphql-response+json"),
+            r#"{"data":{"venomControlV1":"Query"}}"#,
+        ));
+    }
+    if matches!(mode, GraphqlFixtureMode::Restricted) {
+        return FixtureReply::Response(FixtureResponse::new(
+            "200 OK",
+            Some("application/graphql-response+json"),
+            format!(
+                r#"{{"errors":[{{"message":"introspection is disabled: {GRAPHQL_REVIEW_SECRET}"}}]}}"#
+            ),
+        ));
+    }
+    if query.contains("VenomGraphqlCandidateV1") {
+        return FixtureReply::Response(FixtureResponse::new(
+            "200 OK",
+            Some("application/graphql-response+json"),
+            format!(
+                r#"{{"data":{{"venomCandidateV1":"{GRAPHQL_ROOT_NAME_SECRET}","__schema":{{"queryType":{{"name":"{GRAPHQL_ROOT_NAME_SECRET}"}},"mutationType":null,"subscriptionType":null}}}}}}"#
+            ),
+        ));
+    }
+    if query.contains("VenomGraphqlReplayV1") {
+        let (media_type, body) = if matches!(mode, GraphqlFixtureMode::ReplayMismatch) {
+            ("application/json", r#"{"ok":true}"#)
+        } else {
+            (
+                "application/graphql-response+json",
+                r#"{"data":{"venomReplayV1":"GraphqlRootSecret1F92A7","__schema":{"queryType":{"name":"GraphqlRootSecret1F92A7"},"mutationType":null,"subscriptionType":null}}}"#,
+            )
+        };
+        return FixtureReply::Response(FixtureResponse::new("200 OK", Some(media_type), body));
+    }
+    FixtureReply::Response(FixtureResponse::new(
+        "400 Bad Request",
+        Some("application/json"),
+        "{}",
+    ))
+}
+
+#[cfg(feature = "graphql-review")]
+async fn run_graphql_fixture(
+    mode: GraphqlFixtureMode,
+    enabled: bool,
+) -> (WebAssessmentRunReport, Vec<RecordedRequest>) {
+    let server = serve(move |request| graphql_fixture_reply(mode, request)).await;
+    let mut builder = WebAssessmentRuntime::builder(server.url("/"));
+    if enabled {
+        builder = builder.enable_graphql_review();
+    }
+    let mut runtime = builder.build().unwrap();
+    let report = runtime.analyze().await.unwrap();
+    let requests = server.requests().await;
+    (report, requests)
+}
+
+#[cfg(feature = "graphql-review")]
+fn graphql_items(report: &WebAssessmentRunReport) -> BTreeMap<&str, &AssessmentItem> {
+    report
+        .assessment_items()
+        .iter()
+        .filter(|item| item.capability_id().starts_with("graphql."))
+        .map(|item| (item.capability_id(), item))
+        .collect()
+}
+
+#[cfg(feature = "graphql-review")]
+fn graphql_posts(requests: &[RecordedRequest]) -> Vec<&RecordedRequest> {
+    requests
+        .iter()
+        .filter(|request| request.method == "POST" && request.path() == "/graphql")
+        .collect()
+}
+
+#[cfg(feature = "graphql-review")]
+#[tokio::test]
+async fn graphql_review_happy_path_is_three_anonymous_posts_and_two_informational_items() {
+    let (report, requests) = run_graphql_fixture(GraphqlFixtureMode::Available, true).await;
+    assert_report_reconciles(&report);
+    assert_eq!(report.completion(), &WebAssessmentCompletion::Complete);
+
+    let posts = graphql_posts(&requests);
+    assert_eq!(posts.len(), 3);
+    assert_eq!(report.usage().total_requests(), 4);
+    assert_eq!(report.usage().active_verifications(), 1);
+    assert_eq!(
+        report.usage().request_body_bytes(),
+        posts
+            .iter()
+            .map(|request| u64::try_from(request.body().len()).unwrap())
+            .sum::<u64>()
+    );
+    let expected_host =
+        &report.authorized_root().url()[url::Position::BeforeHost..url::Position::AfterPort];
+    for request in &posts {
+        assert_eq!(request.host(), expected_host);
+        assert_eq!(
+            request.headers.get("content-type").map(String::as_str),
+            Some("application/json")
+        );
+        assert_eq!(
+            request.headers.get("accept").map(String::as_str),
+            Some("application/graphql-response+json, application/json")
+        );
+        assert!(!request.headers.contains_key("authorization"));
+        assert!(!request.headers.contains_key("cookie"));
+    }
+    assert!(posts
+        .windows(2)
+        .all(|pair| pair[0].body() != pair[1].body()));
+    let operation_names = [
+        "VenomGraphqlControlV1",
+        "VenomGraphqlCandidateV1",
+        "VenomGraphqlReplayV1",
+    ];
+    for (request, operation) in posts.iter().zip(operation_names) {
+        let body = std::str::from_utf8(request.body()).unwrap();
+        assert!(body.contains(operation));
+        assert!(body.contains("\"query\":"));
+        assert!(!body.contains("\"variables\""));
+        assert!(!body.contains("\"operationName\""));
+    }
+
+    let dispatches = report
+        .transport()
+        .receipts()
+        .iter()
+        .filter(|receipt| receipt.action_id().starts_with("web.review.graphql."))
+        .collect::<Vec<_>>();
+    assert_eq!(dispatches.len(), 3);
+    assert_eq!(dispatches[0].action_id(), "web.review.graphql.control");
+    assert_eq!(
+        dispatches[1].action_id(),
+        "web.review.graphql.introspection"
+    );
+    assert_eq!(
+        dispatches[2].action_id(),
+        "web.review.graphql.introspection-replay"
+    );
+    assert_eq!(dispatches[0].stage(), DecisionExecutionStage::Passive);
+    assert_eq!(dispatches[1].stage(), DecisionExecutionStage::Passive);
+    assert_eq!(dispatches[2].stage(), DecisionExecutionStage::Active);
+    let defense = report
+        .defense()
+        .observations()
+        .iter()
+        .filter(|observation| observation.case_id().starts_with("case:web.graphql."))
+        .map(|observation| (observation.case_id(), observation.stage()))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        defense,
+        [
+            ("case:web.graphql.control", DecisionExecutionStage::Passive,),
+            (
+                "case:web.graphql.introspection",
+                DecisionExecutionStage::Passive,
+            ),
+            (
+                "case:web.graphql.introspection-replay",
+                DecisionExecutionStage::Active,
+            ),
+        ]
+    );
+
+    let items = graphql_items(&report);
+    assert_eq!(items.len(), 2);
+    for capability in [
+        "graphql.surface-observed@1",
+        "graphql.anonymous-root-introspection@1",
+    ] {
+        let item = items.get(capability).unwrap();
+        assert_eq!(item.disposition(), AssessmentDisposition::Informational);
+        assert!(matches!(item.basis(), AssessmentBasis::Observation(_)));
+        assert_eq!(item.basis().case_reference(), None);
+    }
+}
+
+#[cfg(feature = "graphql-review")]
+#[tokio::test]
+async fn graphql_transport_persists_presence_and_replay_match_but_no_root_name_digest() {
+    let server =
+        serve(|request| graphql_fixture_reply(GraphqlFixtureMode::Available, request)).await;
+    let endpoint = server.url("/graphql");
+    let reliability = ConfidenceScore::from_percent(73).unwrap();
+    let policy = HttpEvidencePolicy::for_origin(server.url("/"))
+        .unwrap()
+        .with_reliability(reliability)
+        .unwrap();
+    let mut runtime = WebAssessmentRuntime::builder(server.url("/"))
+        .http_policy(policy)
+        .enable_graphql_review()
+        .build()
+        .unwrap();
+    let report = runtime.analyze().await.unwrap();
+    assert_eq!(report.completion(), &WebAssessmentCompletion::Complete);
+
+    let subject = EntityId::new(format!("graphql-endpoint:{endpoint}")).unwrap();
+    let evidence = runtime.authority.knowledge().evidence_for_subject(&subject);
+    let property = |name| KnowledgePredicate::new("web.graphql.transport", name).unwrap();
+    assert!(!evidence.is_empty());
+    assert!(evidence
+        .iter()
+        .all(|observation| observation.subject() == &subject
+            && observation.reliability() == reliability));
+    assert!(evidence
+        .iter()
+        .all(|item| item.predicate() != &property("root_identity_digest")));
+    assert!(evidence.iter().any(|item| {
+        item.predicate() == &property("query_root_present")
+            && item.value() == &venom_core::EvidenceValue::Boolean(true)
+    }));
+    let replay_matches = evidence
+        .iter()
+        .filter(|item| item.predicate() == &property("replay_matches_candidate_roots"))
+        .collect::<Vec<_>>();
+    assert_eq!(replay_matches.len(), 1);
+    assert_eq!(
+        replay_matches[0].value(),
+        &venom_core::EvidenceValue::Boolean(true)
+    );
+
+    let classifications = evidence
+        .iter()
+        .filter(|item| item.predicate() == &property("classification"))
+        .collect::<Vec<_>>();
+    assert_eq!(classifications.len(), 3);
+    for classification in classifications {
+        let derivation = classification.origin().derivation().unwrap();
+        assert_eq!(
+            derivation.algorithm().name(),
+            "web.graphql.transport-classification"
+        );
+        assert_eq!(derivation.algorithm().version(), 1);
+        assert!(derivation.parents().iter().all(|parent| {
+            runtime
+                .authority
+                .knowledge()
+                .evidence(parent)
+                .is_some_and(|evidence| {
+                    evidence.subject() == &subject && evidence.reliability() == reliability
+                })
+        }));
+        for required in [
+            HttpEvidencePredicate::REQUEST_URL,
+            HttpEvidencePredicate::RESPONSE_STATUS,
+            HttpEvidencePredicate::RESPONSE_FINAL_URL,
+            HttpEvidencePredicate::RESPONSE_BODY_TRUNCATED,
+            HttpEvidencePredicate::RESPONSE_BODY_SHA256,
+        ] {
+            assert!(derivation.parents().iter().any(|parent| {
+                runtime
+                    .authority
+                    .knowledge()
+                    .evidence(parent)
+                    .is_some_and(|evidence| evidence.predicate() == &required.into_knowledge())
+            }));
+        }
+    }
+
+    let media_predicate = HttpEvidencePredicate::RESPONSE_MEDIA_TYPE.into_knowledge();
+    assert_eq!(
+        evidence
+            .iter()
+            .filter(|item| item.predicate() == &media_predicate)
+            .count(),
+        3,
+        "each broker receipt owns exactly one media observation; API reasoning adds none"
+    );
+    let path = evidence
+        .iter()
+        .find(|item| {
+            item.predicate() == &HttpEvidencePredicate::REQUEST_PATH_SEGMENT.into_knowledge()
+        })
+        .unwrap();
+    assert_eq!(
+        path.origin().derivation().unwrap().algorithm().name(),
+        "web.graphql.api-path-segment"
+    );
+    assert_eq!(path.reliability(), reliability);
+
+    let items = graphql_items(&report);
+    let surface_evidence = match items["graphql.surface-observed@1"].basis() {
+        AssessmentBasis::Observation(basis) => basis.evidence().len(),
+        _ => unreachable!(),
+    };
+    let introspection_evidence = match items["graphql.anonymous-root-introspection@1"].basis() {
+        AssessmentBasis::Observation(basis) => basis.evidence().len(),
+        _ => unreachable!(),
+    };
+    assert_eq!(surface_evidence, 1);
+    assert_eq!(introspection_evidence, MAX_GRAPHQL_ITEM_EVIDENCE_REFERENCES);
+}
+
+#[cfg(feature = "graphql-review")]
+#[tokio::test]
+async fn equivalent_graphql_reruns_have_stable_unique_item_identity() {
+    let server =
+        serve(|request| graphql_fixture_reply(GraphqlFixtureMode::Available, request)).await;
+    let mut first_runtime = WebAssessmentRuntime::builder(server.url("/"))
+        .enable_graphql_review()
+        .build()
+        .unwrap();
+    let first = first_runtime.analyze().await.unwrap();
+    let mut second_runtime = WebAssessmentRuntime::builder(server.url("/"))
+        .enable_graphql_review()
+        .build()
+        .unwrap();
+    let second = second_runtime.analyze().await.unwrap();
+
+    let identities = |report: &WebAssessmentRunReport| {
+        graphql_items(report)
+            .into_iter()
+            .map(|(capability, item)| (capability.to_owned(), item.fingerprint().to_owned()))
+            .collect::<BTreeMap<_, _>>()
+    };
+    let first_identities = identities(&first);
+    let second_identities = identities(&second);
+    assert_eq!(first_identities.len(), 2);
+    assert_eq!(first_identities, second_identities);
+    assert_eq!(
+        first_identities.values().collect::<BTreeSet<_>>().len(),
+        first_identities.len()
+    );
+}
+
+#[cfg(feature = "graphql-review")]
+#[tokio::test]
+async fn more_than_thirty_two_discovered_graphql_hints_remain_bounded_runtime_input() {
+    let links = (0..40)
+        .map(|index| format!(r#"<a href="/g{index:02}/graphql">candidate</a>"#))
+        .collect::<String>();
+    let server = serve(move |request| {
+        if request.method == "POST" {
+            graphql_fixture_reply(GraphqlFixtureMode::Available, request)
+        } else if request.path() == "/" {
+            FixtureReply::Response(FixtureResponse::html(links.clone()))
+        } else {
+            FixtureReply::Response(FixtureResponse::html("candidate surface"))
+        }
+    })
+    .await;
+    let mut runtime = WebAssessmentRuntime::builder(server.url("/"))
+        .enable_graphql_review()
+        .build()
+        .unwrap();
+    let report = runtime.analyze().await.unwrap();
+
+    assert_report_reconciles(&report);
+    assert_eq!(report.completion(), &WebAssessmentCompletion::Complete);
+    let requests = server.requests().await;
+    let posts = requests
+        .iter()
+        .filter(|request| request.method == "POST")
+        .collect::<Vec<_>>();
+    assert_eq!(posts.len(), 3);
+    assert!(posts.iter().all(|request| request.path() == "/g00/graphql"));
+    assert_eq!(graphql_items(&report).len(), 2);
+}
+
+#[cfg(feature = "graphql-review")]
+#[tokio::test]
+async fn enforced_root_rate_limit_dispatches_zero_graphql_posts() {
+    let server = serve(move |_| {
+        FixtureReply::Response(FixtureResponse::new(
+            "429 Too Many Requests",
+            Some("text/html"),
+            "<html><body>slow down</body></html>",
+        ))
+    })
+    .await;
+    let mut runtime = WebAssessmentRuntime::builder(server.url("/"))
+        .enable_defense_enforcement()
+        .enable_graphql_review()
+        .build()
+        .unwrap();
+    let report = runtime.analyze().await.unwrap();
+    let requests = server.requests().await;
+
+    assert!(graphql_posts(&requests).is_empty());
+    assert!(report
+        .transport()
+        .receipts()
+        .iter()
+        .all(|receipt| !receipt.action_id().starts_with("web.review.graphql.")));
+    assert!(report
+        .defense()
+        .observations()
+        .iter()
+        .any(|observation| observation.status() == 429 && observation.rate_limit_observed()));
+    assert!(graphql_items(&report).is_empty());
+}
+
+#[cfg(feature = "graphql-review")]
+#[tokio::test]
+async fn enforced_candidate_block_or_rate_limit_suppresses_graphql_replay() {
+    for (status, rate_limited) in [("403 Forbidden", false), ("429 Too Many Requests", true)] {
+        let server = serve(move |request| {
+            if request.method != "POST" {
+                return FixtureReply::Response(FixtureResponse::html("graphql fixture root"));
+            }
+            if request
+                .body()
+                .windows(b"VenomGraphqlControlV1".len())
+                .any(|window| window == b"VenomGraphqlControlV1")
+            {
+                return graphql_fixture_reply(GraphqlFixtureMode::Available, request);
+            }
+            FixtureReply::Response(FixtureResponse::new(
+                status,
+                Some("application/graphql-response+json"),
+                r#"{"errors":[{"message":"introspection is disabled"}]}"#,
+            ))
+        })
+        .await;
+        let mut runtime = WebAssessmentRuntime::builder(server.url("/"))
+            .enable_defense_enforcement()
+            .enable_graphql_review()
+            .build()
+            .unwrap();
+        let report = runtime.analyze().await.unwrap();
+        let requests = server.requests().await;
+
+        assert_eq!(graphql_posts(&requests).len(), 2);
+        assert!(requests.iter().all(|request| !request
+            .body()
+            .windows(b"VenomGraphqlReplayV1".len())
+            .any(|window| window == b"VenomGraphqlReplayV1")));
+        let graphql_defense = report
+            .defense()
+            .observations()
+            .iter()
+            .filter(|observation| observation.case_id().starts_with("case:web.graphql."))
+            .collect::<Vec<_>>();
+        assert_eq!(graphql_defense.len(), 2);
+        assert_eq!(
+            graphql_defense[1].status(),
+            if rate_limited { 429 } else { 403 }
+        );
+        assert_eq!(graphql_defense[1].rate_limit_observed(), rate_limited);
+        assert_eq!(graphql_items(&report).len(), 1);
+        assert!(graphql_items(&report).contains_key("graphql.surface-observed@1"));
+    }
+}
+
+#[cfg(feature = "graphql-review")]
+#[tokio::test]
+async fn enforced_control_backoff_suppresses_candidate_before_differential_read() {
+    let server = serve(move |request| {
+        if request.method == "POST"
+            && request
+                .body()
+                .windows(b"VenomGraphqlControlV1".len())
+                .any(|window| window == b"VenomGraphqlControlV1")
+        {
+            return FixtureReply::Response(
+                FixtureResponse::new(
+                    "200 OK",
+                    Some("application/graphql-response+json"),
+                    r#"{"data":{"venomControlV1":"Query"}}"#,
+                )
+                .with_header("Retry-After", "5"),
+            );
+        }
+        graphql_fixture_reply(GraphqlFixtureMode::Available, request)
+    })
+    .await;
+
+    let mut enforced = WebAssessmentRuntime::builder(server.url("/"))
+        .enable_defense_enforcement()
+        .enable_graphql_review()
+        .build()
+        .unwrap();
+    let enforced_report = enforced.analyze().await.unwrap();
+    let enforced_requests = server.requests().await;
+    assert_report_reconciles(&enforced_report);
+    assert_eq!(graphql_posts(&enforced_requests).len(), 1);
+    assert_eq!(enforced_report.usage().active_verifications(), 0);
+    let enforced_items = graphql_items(&enforced_report);
+    assert_eq!(enforced_items.len(), 1);
+    assert!(enforced_items.contains_key("graphql.surface-observed@1"));
+    assert!(enforced_report.defense().observations().iter().any(|item| {
+        item.case_id() == "case:web.graphql.control" && item.rate_limit_observed()
+    }));
+
+    let before_observation = enforced_requests.len();
+    let mut observation_only = WebAssessmentRuntime::builder(server.url("/"))
+        .enable_graphql_review()
+        .build()
+        .unwrap();
+    let observation_report = observation_only.analyze().await.unwrap();
+    let all_requests = server.requests().await;
+    assert_report_reconciles(&observation_report);
+    assert_eq!(graphql_posts(&all_requests[before_observation..]).len(), 3);
+    assert_eq!(observation_report.usage().active_verifications(), 1);
+    assert_eq!(graphql_items(&observation_report).len(), 2);
+}
+
+#[cfg(feature = "graphql-review")]
+#[tokio::test]
+async fn graphql_restricted_and_replay_mismatch_project_endpoint_only() {
+    for mode in [
+        GraphqlFixtureMode::Restricted,
+        GraphqlFixtureMode::ReplayMismatch,
+    ] {
+        let (report, requests) = run_graphql_fixture(mode, true).await;
+        assert_report_reconciles(&report);
+        assert_eq!(graphql_posts(&requests).len(), 3);
+        assert_eq!(report.usage().active_verifications(), 1);
+        let items = graphql_items(&report);
+        assert_eq!(items.len(), 1);
+        assert!(items.contains_key("graphql.surface-observed@1"));
+        assert!(!items.contains_key("graphql.anonymous-root-introspection@1"));
+    }
+}
+
+#[cfg(feature = "graphql-review")]
+#[tokio::test]
+async fn generic_json_and_html_never_become_graphql_items() {
+    for mode in [GraphqlFixtureMode::GenericJson, GraphqlFixtureMode::Html] {
+        let (report, requests) = run_graphql_fixture(mode, true).await;
+        assert_report_reconciles(&report);
+        assert_eq!(graphql_posts(&requests).len(), 1);
+        assert_eq!(report.usage().active_verifications(), 0);
+        assert!(graphql_items(&report).is_empty());
+    }
+}
+
+#[cfg(feature = "graphql-review")]
+#[tokio::test]
+async fn graphql_review_flag_off_dispatches_no_graphql_request() {
+    let (report, requests) = run_graphql_fixture(GraphqlFixtureMode::Available, false).await;
+    assert_report_reconciles(&report);
+    assert!(graphql_posts(&requests).is_empty());
+    assert!(report
+        .transport()
+        .receipts()
+        .iter()
+        .all(|receipt| !receipt.action_id().starts_with("web.review.graphql.")));
+    assert_eq!(report.usage().active_verifications(), 0);
+    assert!(graphql_items(&report).is_empty());
+}
+
+#[cfg(all(feature = "graphql-review", feature = "reporting"))]
+#[tokio::test]
+async fn graphql_reports_redact_structured_errors_and_schema_root_names() {
+    for mode in [
+        GraphqlFixtureMode::Available,
+        GraphqlFixtureMode::Restricted,
+    ] {
+        let (report, _) = run_graphql_fixture(mode, true).await;
+        let debug = format!("{report:?}");
+        assert!(!debug.contains(GRAPHQL_REVIEW_SECRET));
+        assert!(!debug.contains(GRAPHQL_ROOT_NAME_SECRET));
+
+        let product =
+            ReportGenerator::compose_assessment(report, ScanProfileV1::web_review().unwrap())
+                .unwrap();
+        for format in [
+            ReportFormat::Json,
+            ReportFormat::Csv,
+            ReportFormat::Html,
+            ReportFormat::Markdown,
+        ] {
+            let rendered = ReportGenerator::generate_assessment(&product, format).unwrap();
+            assert!(!rendered.contains(GRAPHQL_REVIEW_SECRET));
+            assert!(!rendered.contains(GRAPHQL_ROOT_NAME_SECRET));
+            assert!(!rendered.contains("introspection is disabled"));
+        }
+    }
+}
+
+#[cfg(feature = "graphql-review")]
+#[tokio::test]
+async fn graphql_redirect_is_not_followed_or_retargeted() {
+    let redirected = serve(|_| {
+        FixtureReply::Response(FixtureResponse::new(
+            "200 OK",
+            Some("application/graphql-response+json"),
+            r#"{"data":{"venomControlV1":"Query"}}"#,
+        ))
+    })
+    .await;
+    let location = redirected.url("/graphql").to_string();
+    let server = serve(move |request| {
+        if request.method == "POST" {
+            FixtureReply::Response(
+                FixtureResponse::new(
+                    "302 Found",
+                    Some("application/graphql-response+json"),
+                    r#"{"data":{"venomControlV1":"Query"}}"#,
+                )
+                .with_header("Location", &location),
+            )
+        } else {
+            FixtureReply::Response(FixtureResponse::html("graphql fixture root"))
+        }
+    })
+    .await;
+    let mut runtime = WebAssessmentRuntime::builder(server.url("/graphql"))
+        .enable_graphql_review()
+        .build()
+        .unwrap();
+    let report = runtime.analyze().await.unwrap();
+    assert_eq!(graphql_posts(&server.requests().await).len(), 1);
+    assert_eq!(redirected.hit_count("/graphql").await, 0);
+    assert!(graphql_items(&report).is_empty());
+}
+
+#[cfg(feature = "graphql-review")]
+#[tokio::test]
+async fn graphql_replay_stall_honors_host_cancellation_without_completed_items() {
+    let replay_started = Arc::new(Notify::new());
+    let observed_replay = replay_started.clone();
+    let server = serve(move |request| {
+        if request
+            .body()
+            .windows(b"VenomGraphqlReplayV1".len())
+            .any(|window| window == b"VenomGraphqlReplayV1")
+        {
+            observed_replay.notify_one();
+            FixtureReply::Stall
+        } else {
+            graphql_fixture_reply(GraphqlFixtureMode::Available, request)
+        }
+    })
+    .await;
+    let cancellation = CancellationToken::new();
+    let cancel = cancellation.clone();
+    let canceller = tokio::spawn(async move {
+        replay_started.notified().await;
+        cancel.cancel();
+    });
+    let mut runtime = WebAssessmentRuntime::builder(server.url("/"))
+        .cancellation_token(cancellation)
+        .enable_graphql_review()
+        .build()
+        .unwrap();
+    let report = runtime.analyze().await.unwrap();
+    canceller.await.unwrap();
+
+    assert_report_reconciles(&report);
+    assert!(report
+        .completion()
+        .reasons()
+        .contains(&WebAssessmentIncompleteReason::HostCancellation));
+    assert!(report
+        .completion()
+        .reasons()
+        .contains(&WebAssessmentIncompleteReason::GraphqlReviewIncomplete));
+    assert_eq!(graphql_posts(&server.requests().await).len(), 3);
+    assert_eq!(report.usage().active_verifications(), 1);
+    assert_eq!(
+        report
+            .defense()
+            .observations()
+            .iter()
+            .filter(|observation| observation.case_id().starts_with("case:web.graphql."))
+            .map(WebAssessmentDefenseObservation::case_id)
+            .collect::<Vec<_>>(),
+        ["case:web.graphql.control", "case:web.graphql.introspection",]
+    );
+    assert!(graphql_items(&report).is_empty());
+}
+
+#[cfg(feature = "graphql-review")]
+#[tokio::test]
+async fn graphql_replay_stall_honors_wall_deadline_without_completed_items() {
+    let server = serve(|request| {
+        if request
+            .body()
+            .windows(b"VenomGraphqlReplayV1".len())
+            .any(|window| window == b"VenomGraphqlReplayV1")
+        {
+            FixtureReply::Stall
+        } else {
+            graphql_fixture_reply(GraphqlFixtureMode::Available, request)
+        }
+    })
+    .await;
+    let limits = WebAssessmentLimits::default()
+        .with_max_wall_time(Duration::from_millis(500))
+        .unwrap();
+    let mut runtime = WebAssessmentRuntime::builder(server.url("/"))
+        .limits(limits)
+        .enable_graphql_review()
+        .build()
+        .unwrap();
+    let report = runtime.analyze().await.unwrap();
+
+    assert_report_reconciles(&report);
+    assert!(report
+        .completion()
+        .reasons()
+        .contains(&WebAssessmentIncompleteReason::WallTimeLimit));
+    assert!(report
+        .completion()
+        .reasons()
+        .contains(&WebAssessmentIncompleteReason::GraphqlReviewIncomplete));
+    assert_eq!(graphql_posts(&server.requests().await).len(), 3);
+    assert_eq!(report.usage().active_verifications(), 1);
+    assert!(graphql_items(&report).is_empty());
+}
+
+#[cfg(feature = "graphql-review")]
+#[tokio::test]
+async fn host_narrowed_zero_active_budget_is_not_widened_by_graphql_opt_in() {
+    let server =
+        serve(|request| graphql_fixture_reply(GraphqlFixtureMode::Available, request)).await;
+    let limits = WebAssessmentLimits::default()
+        .with_max_active_verifications(0)
+        .unwrap();
+    let mut runtime = WebAssessmentRuntime::builder(server.url("/"))
+        .limits(limits)
+        .enable_graphql_review()
+        .build()
+        .unwrap();
+    let report = runtime.analyze().await.unwrap();
+
+    assert_report_reconciles(&report);
+    assert_eq!(report.runtime_active_verification_limit(), 0);
+    assert_eq!(report.usage().active_verifications(), 0);
+    assert!(report
+        .completion()
+        .reasons()
+        .contains(&WebAssessmentIncompleteReason::ActiveVerificationLimit));
+    assert!(report
+        .completion()
+        .reasons()
+        .contains(&WebAssessmentIncompleteReason::GraphqlReviewIncomplete));
+    assert_eq!(graphql_posts(&server.requests().await).len(), 2);
+    assert!(graphql_items(&report).is_empty());
+}
+
+#[cfg(feature = "graphql-review")]
+#[tokio::test]
+async fn graphql_response_retention_stays_clamped_below_a_wider_host_limit() {
+    let oversized = vec![b'x'; MAX_GRAPHQL_RESPONSE_BYTES + 1];
+    let server = serve(move |request| {
+        if request.method == "POST" {
+            FixtureReply::Response(FixtureResponse::new(
+                "200 OK",
+                Some("application/graphql-response+json"),
+                oversized.clone(),
+            ))
+        } else {
+            FixtureReply::Response(FixtureResponse::html("graphql fixture root"))
+        }
+    })
+    .await;
+    let limits = WebAssessmentLimits::default()
+        .with_max_response_body_bytes(MAX_GRAPHQL_RESPONSE_BYTES * 2)
+        .unwrap();
+    let mut runtime = WebAssessmentRuntime::builder(server.url("/"))
+        .limits(limits)
+        .enable_graphql_review()
+        .build()
+        .unwrap();
+    let report = runtime.analyze().await.unwrap();
+
+    assert_report_reconciles(&report);
+    assert!(report
+        .completion()
+        .reasons()
+        .contains(&WebAssessmentIncompleteReason::GraphqlReviewIncomplete));
+    assert_eq!(graphql_posts(&server.requests().await).len(), 1);
+    let receipt = report
+        .transport()
+        .receipts()
+        .iter()
+        .find(|receipt| receipt.action_id() == "web.review.graphql.control")
+        .unwrap();
+    // The broker charges one bounded look-ahead byte to prove truncation.
+    assert_eq!(
+        receipt.response_bytes(),
+        u64::try_from(MAX_GRAPHQL_RESPONSE_BYTES + 1).unwrap()
+    );
+    assert!(graphql_items(&report).is_empty());
+}
+
 const PRIVATE_AUTHORIZATION_SENTINEL: &str = "Bearer PRIVATE_AUTHORIZATION_SENTINEL";
 
 fn root_authorization_context() -> WebAssessmentRootAuthorizationContext {
     WebAssessmentRootAuthorizationContext::new(PRIVATE_AUTHORIZATION_SENTINEL.as_bytes().to_vec())
         .unwrap()
+}
+
+#[cfg(feature = "graphql-review")]
+#[tokio::test]
+async fn graphql_review_coexists_with_authorization_comparison_but_remains_anonymous() {
+    let server = serve(|request| {
+        if request.headers.get("accept").map(String::as_str) == Some("application/json") {
+            FixtureReply::Response(FixtureResponse::new(
+                "200 OK",
+                Some("application/json"),
+                r#"{"id":1}"#,
+            ))
+        } else {
+            graphql_fixture_reply(GraphqlFixtureMode::Available, request)
+        }
+    })
+    .await;
+    let mut runtime = WebAssessmentRuntime::builder(server.url("/"))
+        .with_root_authorization_context(root_authorization_context())
+        .enable_graphql_review()
+        .build()
+        .unwrap();
+    let report = runtime.analyze().await.unwrap();
+    assert_report_reconciles(&report);
+    assert_eq!(report.completion(), &WebAssessmentCompletion::Complete);
+
+    let requests = server.requests().await;
+    let posts = graphql_posts(&requests);
+    assert_eq!(posts.len(), 3);
+    assert!(posts.iter().all(|request| {
+        !request.headers.contains_key("authorization") && !request.headers.contains_key("cookie")
+    }));
+    assert_eq!(
+        report
+            .transport()
+            .receipts()
+            .iter()
+            .filter(|receipt| receipt.action_id().starts_with("web.review.graphql."))
+            .count(),
+        3
+    );
+    assert_eq!(
+        report
+            .transport()
+            .receipts()
+            .iter()
+            .filter(|receipt| {
+                receipt.action_id().starts_with("web.review.graphql.")
+                    && receipt.stage() == DecisionExecutionStage::Active
+            })
+            .count(),
+        1
+    );
+    assert_eq!(graphql_items(&report).len(), 2);
+    assert_eq!(
+        requests
+            .iter()
+            .filter(|request| request.headers.contains_key("authorization"))
+            .count(),
+        1
+    );
+}
+
+#[cfg(feature = "graphql-review")]
+#[tokio::test]
+async fn cli_equivalent_low_risk_auth_and_graphql_share_the_exact_optional_allowance() {
+    let server = serve(|request| {
+        if request.method == "POST" {
+            return graphql_fixture_reply(GraphqlFixtureMode::Available, request);
+        }
+        if request.headers.get("accept").map(String::as_str) == Some("application/json") {
+            return FixtureReply::Response(FixtureResponse::new(
+                "200 OK",
+                Some("application/json"),
+                r#"{"id":1}"#,
+            ));
+        }
+        if let Some(origin) = request.headers.get("origin") {
+            return FixtureReply::Response(
+                FixtureResponse::html("cors candidate")
+                    .with_header("Access-Control-Allow-Origin", origin)
+                    .with_header("Access-Control-Allow-Credentials", "true")
+                    .with_header("Vary", "Origin"),
+            );
+        }
+        if request.target.starts_with("/review?") {
+            let request_url = Url::parse(&format!("http://fixture{}", request.target)).unwrap();
+            let candidate = request_url
+                .query_pairs()
+                .find_map(|(name, value)| (name == "input").then(|| value.into_owned()))
+                .unwrap();
+            return FixtureReply::Response(FixtureResponse::html(format!(
+                "<script>const value = '{candidate}'</script>"
+            )));
+        }
+        FixtureReply::Response(FixtureResponse::html(
+            r#"<a href="/review?input=host-value">review</a>"#,
+        ))
+    })
+    .await;
+    let mut runtime = WebAssessmentRuntime::builder(server.url("/"))
+        .enable_low_risk_differential_review()
+        .with_root_authorization_context(root_authorization_context())
+        .enable_graphql_review()
+        .build()
+        .unwrap();
+
+    let base_closed_active = DEFAULT_WEB_ASSESSMENT_MAX_ACTIVE_VERIFICATIONS;
+    let graphql_active = GRAPHQL_REVIEW_ACTIVE_VERIFICATION_ALLOWANCE;
+    assert_eq!(base_closed_active, 10);
+    assert_eq!(graphql_active, 1);
+    assert_eq!(runtime.runtime_active_verification_limit, 11);
+    assert_eq!(
+        runtime
+            .authority
+            .request_accounting()
+            .budget()
+            .max_active_verifications(),
+        base_closed_active + graphql_active
+    );
+
+    let report = runtime.analyze().await.unwrap();
+    assert_report_reconciles(&report);
+    assert_eq!(report.completion(), &WebAssessmentCompletion::Complete);
+    assert_eq!(report.runtime_active_verification_limit(), 11);
+    let root_native = enabled_native_web_review_actions(true, false, false, false, false, None);
+    let non_root_native = enabled_native_web_review_actions(false, false, true, true, true, None);
+    let xss_child = runtime
+        .xss_structural_review
+        .as_ref()
+        .expect("the discovered script context selects one bounded XSS child")
+        .enabled_actions
+        .len();
+    let auth_pair_active = 2_usize;
+    let graphql_replay_active = usize::from(GRAPHQL_REVIEW_ACTIVE_VERIFICATION_ALLOWANCE);
+    let expected_active = root_native.len()
+        + non_root_native.len()
+        + xss_child
+        + auth_pair_active
+        + graphql_replay_active;
+    assert_eq!(expected_active, 10);
+    assert_eq!(
+        usize::from(report.usage().active_verifications()),
+        expected_active
+    );
+    assert_eq!(graphql_posts(&server.requests().await).len(), 3);
+    assert_eq!(graphql_items(&report).len(), 2);
+    #[cfg(feature = "reporting")]
+    {
+        ReportGenerator::compose_assessment(report, ScanProfileV1::web_review().unwrap())
+            .expect("the feature-local allowance remains compatible with profile-v1 reporting");
+    }
 }
 
 #[tokio::test]
@@ -2154,6 +3137,7 @@ struct RecordedRequest {
     method: String,
     target: String,
     headers: BTreeMap<String, String>,
+    body: Vec<u8>,
 }
 
 impl RecordedRequest {
@@ -2163,6 +3147,10 @@ impl RecordedRequest {
 
     fn host(&self) -> &str {
         self.headers.get("host").map(String::as_str).unwrap_or("")
+    }
+
+    fn body(&self) -> &[u8] {
+        &self.body
     }
 }
 
@@ -2274,19 +3262,36 @@ async fn serve(
                 break;
             };
             let mut bytes = Vec::new();
+            let mut invalid = false;
             loop {
                 let mut chunk = [0_u8; 1_024];
                 let Ok(read) = stream.read(&mut chunk).await else {
+                    invalid = true;
                     break;
                 };
                 if read == 0 {
                     break;
                 }
                 bytes.extend_from_slice(&chunk[..read]);
-                if bytes.windows(4).any(|window| window == b"\r\n\r\n") || bytes.len() >= 64 * 1_024
-                {
+                if bytes.len() > MAX_FIXTURE_REQUEST_BYTES {
+                    invalid = true;
                     break;
                 }
+                match complete_request_len(&bytes) {
+                    Ok(Some(expected)) if bytes.len() >= expected => {
+                        bytes.truncate(expected);
+                        break;
+                    },
+                    Ok(_) => {},
+                    Err(()) => {
+                        invalid = true;
+                        break;
+                    },
+                }
+            }
+            if invalid {
+                let _ = stream.shutdown().await;
+                continue;
             }
             let Some(request) = parse_request(&bytes) else {
                 let _ = stream.shutdown().await;
@@ -2314,23 +3319,63 @@ async fn serve(
     }
 }
 
+const MAX_FIXTURE_REQUEST_BYTES: usize = 64 * 1_024;
+
+fn complete_request_len(bytes: &[u8]) -> Result<Option<usize>, ()> {
+    let Some(header_end) = bytes.windows(4).position(|window| window == b"\r\n\r\n") else {
+        return Ok(None);
+    };
+    let headers = std::str::from_utf8(&bytes[..header_end]).map_err(|_| ())?;
+    let mut content_length = None;
+    for line in headers.split("\r\n").skip(1) {
+        let Some((name, value)) = line.split_once(':') else {
+            return Err(());
+        };
+        if name.trim().eq_ignore_ascii_case("content-length") {
+            if content_length.is_some() {
+                return Err(());
+            }
+            content_length = Some(value.trim().parse::<usize>().map_err(|_| ())?);
+        }
+    }
+    let expected = header_end
+        .checked_add(4)
+        .and_then(|value| value.checked_add(content_length.unwrap_or(0)))
+        .ok_or(())?;
+    if expected > MAX_FIXTURE_REQUEST_BYTES {
+        return Err(());
+    }
+    Ok(Some(expected))
+}
+
 fn parse_request(bytes: &[u8]) -> Option<RecordedRequest> {
-    let request = String::from_utf8_lossy(bytes);
+    let header_end = bytes.windows(4).position(|window| window == b"\r\n\r\n")?;
+    let request = std::str::from_utf8(&bytes[..header_end]).ok()?;
     let mut lines = request.split("\r\n");
     let mut request_line = lines.next()?.split_whitespace();
     let method = request_line.next()?.to_owned();
     let target = request_line.next()?.to_owned();
     let mut headers = BTreeMap::new();
-    for line in lines.take_while(|line| !line.is_empty()) {
-        let Some((name, value)) = line.split_once(':') else {
-            continue;
-        };
-        headers.insert(name.trim().to_ascii_lowercase(), value.trim().to_owned());
+    for line in lines {
+        let (name, value) = line.split_once(':')?;
+        if headers
+            .insert(name.trim().to_ascii_lowercase(), value.trim().to_owned())
+            .is_some()
+        {
+            return None;
+        }
     }
+    let body_bytes = headers
+        .get("content-length")
+        .map_or(Some(0), |value| value.parse::<usize>().ok())?;
+    let body_start = header_end.checked_add(4)?;
+    let body_end = body_start.checked_add(body_bytes)?;
+    let body = bytes.get(body_start..body_end)?.to_vec();
     Some(RecordedRequest {
         method,
         target,
         headers,
+        body,
     })
 }
 
@@ -2691,7 +3736,15 @@ fn assert_report_reconciles(report: &WebAssessmentRunReport) {
             .count()
     );
     assert_eq!(usage.retained_forms(), report.forms().len());
-    assert_eq!(usage.request_body_bytes(), 0);
+    assert_eq!(
+        usage.request_body_bytes(),
+        report
+            .transport()
+            .receipts()
+            .iter()
+            .map(|receipt| receipt.request_body_bytes())
+            .sum::<u64>()
+    );
     assert_transport_reconciles(usage, report.transport());
 
     let unique_urls: BTreeSet<_> = report
@@ -3070,7 +4123,7 @@ fn limits_defaults_and_compiled_ceilings_are_coherent() {
     assert_eq!(zero_capable.max_total_requests(), 0);
     assert_eq!(zero_capable.max_wall_time(), Duration::ZERO);
 
-    let budget = defaults.runtime_budget();
+    let budget = defaults.runtime_budget(0);
     assert_eq!(
         budget.max_request_body_bytes(),
         DEFAULT_MAX_REQUEST_BODY_BYTES

@@ -446,10 +446,67 @@ fn validate_required_component_contracts(ledger: &SalvageLedger) -> TaskResult {
             ),
         ),
     ]);
+    if actual != expected {
+        return Err("detector.rs must retain its exact four-way salvage split".into());
+    }
+
+    let api = ledger
+        .files
+        .iter()
+        .find(|file| file.path == "src/scanner/api_scanner.rs")
+        .ok_or("api_scanner.rs is missing from the salvage ledger")?;
+    let actual = api
+        .components
+        .iter()
+        .map(|component| {
+            (
+                component.id.as_str(),
+                (
+                    component.disposition,
+                    component.priority,
+                    component.status,
+                    component.modern_destination,
+                    component.modern_implementation.as_deref(),
+                ),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    let expected = BTreeMap::from([
+        (
+            "api.protocol-taxonomy",
+            (
+                Disposition::RewriteFromContract,
+                Priority::P1,
+                ComponentStatus::Restored,
+                ModernDestination::ApiAssessment,
+                Some("venom_scanner::graphql_review (web.review.graphql.introspection-pair@1)"),
+            ),
+        ),
+        (
+            "api.protocol-taxonomy.remaining",
+            (
+                Disposition::RewriteFromContract,
+                Priority::P1,
+                ComponentStatus::Planned,
+                ModernDestination::ApiAssessment,
+                None,
+            ),
+        ),
+        (
+            "api.unconditional-tests",
+            (
+                Disposition::RejectFabricatedBehavior,
+                Priority::Never,
+                ComponentStatus::Rejected,
+                ModernDestination::None,
+                None,
+            ),
+        ),
+    ]);
     if actual == expected {
         Ok(())
     } else {
-        Err("detector.rs must retain its exact four-way salvage split".into())
+        Err("api_scanner.rs must retain its exact GraphQL/rest and rejection split".into())
     }
 }
 
@@ -1384,6 +1441,40 @@ mod tests {
     }
 
     #[test]
+    fn required_api_protocol_split_is_exact_and_fail_closed() {
+        let root = super::super::workspace_root();
+        let source = fs::read(root.join(LEDGER_RELATIVE_PATH)).expect("read repository ledger");
+        let mut fixture = parse_ledger(&source).expect("parse repository ledger");
+        validate_required_component_contracts(&fixture).expect("required API protocol split");
+
+        let api = fixture
+            .files
+            .iter_mut()
+            .find(|file| file.path == "src/scanner/api_scanner.rs")
+            .expect("API scanner record");
+        api.components
+            .iter_mut()
+            .find(|component| component.id == "api.protocol-taxonomy")
+            .expect("GraphQL protocol component")
+            .modern_implementation = Some("venom_scanner::legacy_api_scanner".to_owned());
+        assert!(validate_required_component_contracts(&fixture).is_err());
+
+        let source = fs::read(root.join(LEDGER_RELATIVE_PATH)).expect("read repository ledger");
+        let mut fixture = parse_ledger(&source).expect("parse repository ledger");
+        fixture
+            .files
+            .iter_mut()
+            .find(|file| file.path == "src/scanner/api_scanner.rs")
+            .expect("API scanner record")
+            .components
+            .iter_mut()
+            .find(|component| component.id == "api.unconditional-tests")
+            .expect("fabricated API test component")
+            .status = ComponentStatus::Planned;
+        assert!(validate_required_component_contracts(&fixture).is_err());
+    }
+
+    #[test]
     fn high_priority_summary_counts_only_actionable_components() {
         let mut fixture = ledger();
         fixture.files[0].components[0].priority = Priority::P0;
@@ -1540,7 +1631,7 @@ mod tests {
     #[test]
     fn local_repository_contract_requires_no_git_history() {
         const EXPECTED_DIGEST: &str =
-            "salvage-sha256:cd706569ed6044cc99b97bb55322a6651b271fa233a66651cd8b477625e63843";
+            "salvage-sha256:5449610451c2eb3efab4c21166c12d3ffe36ade87aa7c6fd436e67bacded7e58";
 
         let repository = super::super::workspace_root();
         let temporary = TempDir::new().expect("temporary directory");

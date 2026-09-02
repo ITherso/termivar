@@ -4,6 +4,15 @@ use reqwest::{
     Client,
 };
 
+#[cfg(feature = "graphql-review")]
+use reqwest::{
+    header::{ACCEPT, CONTENT_TYPE},
+    Method,
+};
+
+#[cfg(feature = "graphql-review")]
+use crate::graphql_review::MAX_GRAPHQL_REQUEST_JSON_BYTES;
+
 use crate::{
     runtime_budget::{RequestAccountingBroker, RequestAccountingLease, TransportDispatchOutcome},
     DecisionActionOrigin, DecisionExecutionFailureKind, DecisionExecutionLimits,
@@ -11,6 +20,9 @@ use crate::{
 };
 
 use super::{elapsed_ms, CollectedHttpResponse, HttpEvidenceError, HttpEvidencePolicy, HttpProbe};
+
+#[cfg(feature = "graphql-review")]
+const GRAPHQL_RESPONSE_ACCEPT: &str = "application/graphql-response+json, application/json";
 
 /// Internal transport failure that preserves host budget denial separately
 /// from HTTP policy and network failures.
@@ -143,6 +155,27 @@ impl HttpRequestBroker {
         // Provider resolution, policy validation, and request construction are
         // deliberately complete before a transport dispatch is accounted.
         let request = self.build_request(probe)?;
+        self.collect_built_request(action_id, stage, origin, limits, request)
+            .await
+    }
+
+    /// Dispatches one fixed-shape, anonymous GraphQL JSON request through the
+    /// assessment's existing exact-origin and accounting authority.
+    ///
+    /// This deliberately is not a general POST surface: callers cannot add
+    /// headers, credentials, cookies, query parameters, or an opaque body.
+    #[cfg(feature = "graphql-review")]
+    pub(crate) async fn collect_anonymous_graphql_json_for_runtime(
+        &self,
+        action_id: &str,
+        stage: DecisionExecutionStage,
+        origin: Option<DecisionActionOrigin>,
+        limits: DecisionExecutionLimits,
+        target: &url::Url,
+        body: &[u8],
+    ) -> Result<CollectedHttpResponse, HttpRequestBrokerError> {
+        self.validate_target(target)?;
+        let request = self.build_anonymous_graphql_json_request(target, body)?;
         self.collect_built_request(action_id, stage, origin, limits, request)
             .await
     }
@@ -336,6 +369,24 @@ impl HttpRequestBroker {
         }
         request.build().map_err(HttpEvidenceError::Request)
     }
+
+    #[cfg(feature = "graphql-review")]
+    fn build_anonymous_graphql_json_request(
+        &self,
+        target: &url::Url,
+        body: &[u8],
+    ) -> Result<reqwest::Request, HttpEvidenceError> {
+        if body.len() > MAX_GRAPHQL_REQUEST_JSON_BYTES {
+            return Err(HttpEvidenceError::GraphqlReviewRequestBodyLimit);
+        }
+        self.client
+            .request(Method::POST, target.clone())
+            .header(CONTENT_TYPE, "application/json")
+            .header(ACCEPT, GRAPHQL_RESPONSE_ACCEPT)
+            .body(body.to_vec())
+            .build()
+            .map_err(HttpEvidenceError::Request)
+    }
 }
 
 fn finish_accounting(
@@ -381,5 +432,46 @@ mod tests {
 
         assert_eq!(metered_request_body_bytes(&bodyless).unwrap(), 0);
         assert_eq!(metered_request_body_bytes(&buffered).unwrap(), 9);
+    }
+
+    #[cfg(feature = "graphql-review")]
+    #[test]
+    fn graphql_review_request_has_one_closed_anonymous_protocol_shape() {
+        let target = url::Url::parse("https://example.test/graphql").unwrap();
+        let broker = HttpRequestBroker::new_unmetered(
+            HttpEvidencePolicy::for_origin(target.clone()).unwrap(),
+        )
+        .unwrap();
+        let body = br#"{"query":"query VenomControl { v: __typename }"}"#;
+        let request = broker
+            .build_anonymous_graphql_json_request(&target, body)
+            .unwrap();
+
+        assert_eq!(request.method(), Method::POST);
+        assert_eq!(request.url(), &target);
+        assert_eq!(
+            request.headers().get(CONTENT_TYPE).unwrap(),
+            "application/json"
+        );
+        assert_eq!(
+            request.headers().get(ACCEPT).unwrap(),
+            GRAPHQL_RESPONSE_ACCEPT
+        );
+        assert!(request
+            .headers()
+            .get(reqwest::header::AUTHORIZATION)
+            .is_none());
+        assert!(request.headers().get(reqwest::header::COOKIE).is_none());
+        assert_eq!(
+            request.body().and_then(reqwest::Body::as_bytes),
+            Some(body.as_slice())
+        );
+        assert!(matches!(
+            broker.build_anonymous_graphql_json_request(
+                &target,
+                &vec![b'x'; MAX_GRAPHQL_REQUEST_JSON_BYTES + 1]
+            ),
+            Err(HttpEvidenceError::GraphqlReviewRequestBodyLimit)
+        ));
     }
 }

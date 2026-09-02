@@ -4,8 +4,8 @@ revision = 1
 category = "api-graphql"
 purpose = "Describe parser-limit incompleteness without performing depth or complexity probing."
 provenance = "generated-boundary"
-support = "metadata-only"
-tags = ["graphql", "limit", "metadata"]
+support = "current"
+tags = ["boundary", "graphql", "limit"]
 
 [request]
 method = "post"
@@ -13,7 +13,7 @@ origin = "https://api.example.test"
 path = "/graphql"
 role = "bootstrap"
 body_media_type = "application/json"
-inline_body = '''{"query":"query CorpusLimit { fixtureLimit: __typename }"}'''
+inline_body = '''{"query":"query VenomGraphqlControlV1 { venomControlV1: __typename }"}'''
 
 [response]
 status = 200
@@ -26,4 +26,4 @@ body_file = "bodies/graphql-depth-limited.txt"
 [expected]
 graphql_evidence = "depth-limited"
 maximum_authority = "knowledge-only"
-incompleteness = "future-metadata-only"
+incompleteness = "response-incomplete"

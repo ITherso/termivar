@@ -5,6 +5,12 @@ formats, GraphQL surface signals, and already-paired visibility comparisons.
 It installs ontology definitions and Bayesian rules only. It performs no
 network I/O and contains no planner, executor, credential, or verifier.
 
+The separately feature-gated [GraphQL surface review](graphql-review.md) does
+not move transport into this profile. Its scanner runtime owns endpoint
+selection, up to three anonymous broker requests, bounded response
+classification, replay, and informational projection; committed normalized
+observations may then be consumed here like other HTTP/API evidence.
+
 ```text
 HTTP evidence ----------------------+
                                     |
@@ -94,6 +100,14 @@ hypothesis. GraphQL requires the exact normalized
 `application/graphql-response+json` media type, an exact `graphql` path-segment
 signal, or an explicit host-paired GraphQL comparison. The reasoner does not
 search raw `Content-Type` or URL strings.
+
+An explicitly enabled GraphQL review adds stronger correlated protocol
+evidence, but its conclusions remain conservative. A complete aliased
+`__typename` control can establish an observed GraphQL surface. Anonymous
+schema-root introspection is retained only after a distinct candidate and
+replay both satisfy the bounded response contract. Neither observation is a
+vulnerability or authorization claim, and the reasoner still cannot dispatch
+the requests or raise either item above `Informational` / `KnowledgeOnly`.
 
 A visibility difference is also not a vulnerability. UI/API differences may
 be intentional product behavior, and authorization-context differences often

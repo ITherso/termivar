@@ -153,6 +153,11 @@ pub enum HttpEvidenceError {
     #[error("HTTP request body length is unavailable to the accounting broker")]
     UnmeteredRequestBody,
 
+    /// The opt-in GraphQL review attempted to exceed its fixed JSON request bound.
+    #[cfg(feature = "graphql-review")]
+    #[error("GraphQL review request body exceeds its compiled byte limit")]
+    GraphqlReviewRequestBodyLimit,
+
     /// A request header could alter destination or message framing.
     #[error("HTTP request header {name} is forbidden by evidence policy")]
     ForbiddenRequestHeader { name: String },
@@ -219,6 +224,10 @@ pub(crate) fn execution_failure_kind(error: &HttpEvidenceError) -> DecisionExecu
         | HttpEvidenceError::UnsupportedScheme { .. } => {
             DecisionExecutionFailureKind::NotApplicable
         },
+        #[cfg(feature = "graphql-review")]
+        HttpEvidenceError::GraphqlReviewRequestBodyLimit => {
+            DecisionExecutionFailureKind::BlockedByPolicy
+        },
         HttpEvidenceError::EmbeddedCredentials
         | HttpEvidenceError::ForbiddenRequestHeader { .. }
         | HttpEvidenceError::UnmeteredRequestBody
@@ -251,7 +260,7 @@ pub(crate) fn execution_failure_kind(error: &HttpEvidenceError) -> DecisionExecu
     }
 }
 
-fn into_decision_executor_error(error: HttpEvidenceError) -> DecisionExecutorError {
+pub(crate) fn into_decision_executor_error(error: HttpEvidenceError) -> DecisionExecutorError {
     DecisionExecutorError::with_kind(execution_failure_kind(&error), error.to_string())
 }
 
@@ -1470,6 +1479,246 @@ fn append_rate_limit_evidence(
         )?);
     }
     Ok(())
+}
+
+/// Projects one already-collected fixed GraphQL POST into the same bounded HTTP
+/// and defense evidence vocabulary used by the standard executor.
+///
+/// The caller supplies only its closed GraphQL classification observations;
+/// raw response bytes and headers remain inside this module. The decision
+/// runner still validates and atomically commits the complete returned batch.
+#[cfg(feature = "graphql-review")]
+pub(crate) fn project_graphql_transport_response(
+    executor_id: &str,
+    decision: &DecisionExecutionRequest,
+    requested_url: &Url,
+    response: CollectedHttpResponse,
+    reliability: ConfidenceScore,
+    mut graphql_observations: Vec<Evidence>,
+    graphql_classification: Evidence,
+) -> Result<Vec<Evidence>, HttpEvidenceError> {
+    if response.final_url != *requested_url {
+        return Err(HttpEvidenceError::AssessmentObserverInvariant {
+            invariant: "GraphQL transport changed the exact requested target",
+        });
+    }
+    let source = |method: &str| {
+        EvidenceSource::new(executor_id, method)
+            .and_then(|source| source.with_correlation_id(decision.case().id()))
+    };
+    let observation = |kind, predicate, value, method: &str| {
+        Ok::<_, HttpEvidenceError>(Evidence::new(
+            decision.case().subject().clone(),
+            kind,
+            predicate,
+            value,
+            source(method)?,
+            reliability,
+        ))
+    };
+    let media_type = normalized_media_type(&response.headers);
+    let rate_limit_advertised = [
+        "retry-after",
+        "ratelimit-limit",
+        "ratelimit-remaining",
+        "ratelimit-reset",
+        "x-ratelimit-limit",
+        "x-ratelimit-remaining",
+        "x-ratelimit-reset",
+    ]
+    .into_iter()
+    .any(|name| response.headers.contains_key(name));
+    let mut evidence = vec![
+        observation(
+            EvidenceKind::Http,
+            HttpEvidencePredicate::REQUEST_METHOD.into(),
+            EvidenceValue::Text("POST".to_owned()),
+            "request-method",
+        )?,
+        observation(
+            EvidenceKind::Http,
+            HttpEvidencePredicate::REQUEST_URL.into(),
+            EvidenceValue::Text(requested_url.to_string()),
+            "request-url",
+        )?,
+        observation(
+            EvidenceKind::Http,
+            HttpEvidencePredicate::RESPONSE_STATUS.into(),
+            EvidenceValue::Unsigned(u64::from(response.status.as_u16())),
+            "response-status",
+        )?,
+        observation(
+            EvidenceKind::Http,
+            HttpEvidencePredicate::RESPONSE_FINAL_URL.into(),
+            EvidenceValue::Text(response.final_url.to_string()),
+            "response-final-url",
+        )?,
+        observation(
+            EvidenceKind::Http,
+            HttpEvidencePredicate::RESPONSE_VERSION.into(),
+            EvidenceValue::Text(response.version.clone()),
+            "response-version",
+        )?,
+        observation(
+            EvidenceKind::Timing,
+            HttpEvidencePredicate::TIMING_TTFB_MS.into(),
+            EvidenceValue::Unsigned(response.ttfb_ms),
+            "time-to-first-byte",
+        )?,
+        observation(
+            EvidenceKind::Timing,
+            HttpEvidencePredicate::TIMING_TOTAL_MS.into(),
+            EvidenceValue::Unsigned(response.total_ms),
+            "total-response-time",
+        )?,
+        observation(
+            EvidenceKind::Content,
+            HttpEvidencePredicate::RESPONSE_BODY_BYTES_OBSERVED.into(),
+            EvidenceValue::Unsigned(u64::try_from(response.body.len()).unwrap_or(u64::MAX)),
+            "response-body-size",
+        )?,
+        observation(
+            EvidenceKind::Content,
+            HttpEvidencePredicate::RESPONSE_BODY_TRUNCATED.into(),
+            EvidenceValue::Boolean(response.body_truncated),
+            "response-body-truncation",
+        )?,
+        observation(
+            EvidenceKind::Content,
+            HttpEvidencePredicate::RESPONSE_BODY_SHA256.into(),
+            EvidenceValue::Text(format!("{:x}", Sha256::digest(&response.body))),
+            "response-body-sha256",
+        )?,
+        observation(
+            EvidenceKind::RateLimit,
+            HttpEvidencePredicate::RATE_LIMIT_DETECTED.into(),
+            EvidenceValue::Boolean(response.status == StatusCode::TOO_MANY_REQUESTS),
+            "rate-limit-status",
+        )?,
+        observation(
+            EvidenceKind::RateLimit,
+            HttpEvidencePredicate::RATE_LIMIT_ADVERTISED.into(),
+            EvidenceValue::Boolean(rate_limit_advertised),
+            "rate-limit-headers",
+        )?,
+    ];
+    if let Some(media_type) = media_type {
+        evidence.push(observation(
+            EvidenceKind::Http,
+            HttpEvidencePredicate::RESPONSE_MEDIA_TYPE.into(),
+            EvidenceValue::Text(media_type.clone()),
+            "response-media-type",
+        )?);
+        evidence.push(observation(
+            EvidenceKind::Http,
+            HttpEvidencePredicate::RESPONSE_MEDIA_TYPE_JSON_COMPATIBLE.into(),
+            EvidenceValue::Boolean(json_compatible_media_type(&media_type)),
+            "response-media-type-json-compatibility",
+        )?);
+    }
+    let classification_predicate =
+        KnowledgePredicate::new("web.graphql.transport", "classification")?;
+    if graphql_observations
+        .iter()
+        .chain(std::iter::once(&graphql_classification))
+        .any(|item| {
+            item.subject() != decision.case().subject()
+                || item.source().component() != executor_id
+                || item.source().correlation_id() != Some(decision.case().id())
+                || item.reliability() != reliability
+                || !item.origin().is_direct()
+        })
+        || graphql_classification.predicate() != &classification_predicate
+        || graphql_observations
+            .iter()
+            .any(|item| item.predicate() == &classification_predicate)
+    {
+        return Err(HttpEvidenceError::AssessmentObserverInvariant {
+            invariant: "GraphQL observations must preserve executor provenance",
+        });
+    }
+    let graphql_parent_ids = graphql_observations
+        .iter()
+        .map(|item| item.id().clone())
+        .collect::<Vec<_>>();
+    evidence.append(&mut graphql_observations);
+
+    let classification_http_parents = [
+        HttpEvidencePredicate::REQUEST_URL,
+        HttpEvidencePredicate::RESPONSE_STATUS,
+        HttpEvidencePredicate::RESPONSE_FINAL_URL,
+        HttpEvidencePredicate::RESPONSE_BODY_TRUNCATED,
+        HttpEvidencePredicate::RESPONSE_BODY_SHA256,
+    ];
+    let mut classification_parents = graphql_parent_ids;
+    for descriptor in classification_http_parents {
+        let predicate = descriptor.into_knowledge();
+        let mut matching = evidence
+            .iter()
+            .filter(|item| item.predicate() == &predicate);
+        let Some(parent) = matching.next() else {
+            return Err(HttpEvidenceError::AssessmentObserverInvariant {
+                invariant: "GraphQL classification is missing transport provenance",
+            });
+        };
+        if matching.next().is_some() {
+            return Err(HttpEvidenceError::AssessmentObserverInvariant {
+                invariant: "GraphQL classification transport provenance is ambiguous",
+            });
+        }
+        classification_parents.push(parent.id().clone());
+    }
+    let classification_derivation = EvidenceDerivation::new(
+        classification_parents,
+        DerivationAlgorithm::new("web.graphql.transport-classification", 1)?,
+    )?;
+    evidence.push(graphql_classification.derived_from(classification_derivation));
+
+    // POST expects a response body, so its bounded defense body semantics are
+    // identical to the GET branch; no request-method behavior is inferred.
+    let signal = bounded_assessment_defense_signal(
+        response.status.as_u16(),
+        HttpProbeMethod::Get,
+        &response.headers,
+        response.body_complete,
+        &response.body,
+    );
+    let parent_predicates = [
+        HttpEvidencePredicate::REQUEST_METHOD,
+        HttpEvidencePredicate::REQUEST_URL,
+        HttpEvidencePredicate::RESPONSE_STATUS,
+        HttpEvidencePredicate::RESPONSE_FINAL_URL,
+        HttpEvidencePredicate::RESPONSE_BODY_BYTES_OBSERVED,
+        HttpEvidencePredicate::RESPONSE_BODY_TRUNCATED,
+        HttpEvidencePredicate::RESPONSE_BODY_SHA256,
+        HttpEvidencePredicate::RATE_LIMIT_DETECTED,
+        HttpEvidencePredicate::RATE_LIMIT_ADVERTISED,
+    ];
+    let mut parents = Vec::with_capacity(parent_predicates.len());
+    for descriptor in parent_predicates {
+        let predicate = descriptor.into_knowledge();
+        let mut matching = evidence
+            .iter()
+            .filter(|item| item.predicate() == &predicate);
+        let Some(parent) = matching.next() else {
+            return Err(HttpEvidenceError::AssessmentDefenseProjectionInvariant);
+        };
+        if matching.next().is_some() {
+            return Err(HttpEvidenceError::AssessmentDefenseProjectionInvariant);
+        }
+        parents.push(parent.id().clone());
+    }
+    evidence.extend(project_assessment_defense_signal(
+        &signal,
+        AssessmentDefenseProjectionContext {
+            subject: decision.case().subject(),
+            case_id: decision.case().id(),
+            executor_id,
+            reliability,
+            parents,
+        },
+    )?);
+    Ok(evidence)
 }
 
 /// Reduces raw transport material to a closed, bounded signal vocabulary.

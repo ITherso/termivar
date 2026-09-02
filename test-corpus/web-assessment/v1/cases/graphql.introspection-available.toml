@@ -2,10 +2,10 @@ schema = "security-assessment-fixture/v1"
 id = "graphql.introspection-available"
 revision = 1
 category = "api-graphql"
-purpose = "Describe bounded schema-root introspection metadata without enabling GraphQL execution in this corpus change."
+purpose = "Exercise the exact bounded schema-root introspection envelope used by GraphQL review."
 provenance = "current-authored"
-support = "metadata-only"
-tags = ["graphql", "introspection", "metadata"]
+support = "current"
+tags = ["graphql", "introspection", "protocol"]
 
 [request]
 method = "post"
@@ -13,7 +13,7 @@ origin = "https://api.example.test"
 path = "/graphql"
 role = "bootstrap"
 body_media_type = "application/json"
-inline_body = '''{"query":"query CorpusCandidate { fixtureCandidate: __typename __schema { queryType { name } mutationType { name } subscriptionType { name } } }"}'''
+inline_body = '''{"query":"query VenomGraphqlCandidateV1 { venomCandidateV1: __typename __schema { queryType { name } mutationType { name } subscriptionType { name } } }"}'''
 
 [[request.headers]]
 name = "accept"
@@ -35,4 +35,3 @@ body_file = "bodies/graphql-introspection.json"
 graphql_evidence = "introspection-available"
 maximum_disposition = "informational"
 maximum_authority = "knowledge-only"
-incompleteness = "future-metadata-only"

@@ -33,7 +33,10 @@ Git objects for the deleted 38-file tree. Only the historical detector's
 byte-pattern component is now marked `Restored` by the separate
 `venom-artifact` domain. The historical request/response fixture component is
 restored only as the sanitized repository conformance corpus; synthetic
-vulnerabilities remain rejected. Its unsafe mmap adapter, fabricated
+vulnerabilities remain rejected. Only the bounded GraphQL subset of the
+historical API protocol taxonomy is restored by the explicit GraphQL review;
+REST, gRPC, SOAP, and fabricated unconditional API tests remain outside this
+runtime. Its unsafe mmap adapter, fabricated
 request-path finding logic, and unsupported optimization claims remain
 rejected.
 
@@ -109,6 +112,7 @@ venom scan <target> --profile web-review
       -> one bounded root-or-discovered SQL structural review with exact replay
       -> one bounded root-or-discovered SSTI arithmetic review with independent replay
       -> optional exact-root anonymous/authorized API visibility pair
+      -> optional anonymous GraphQL control/introspection/replay child
       -> central bounded assessment renderer on complete execution
 ```
 
@@ -196,6 +200,17 @@ compatible-metadata hint, and the resulting defensive normalization gap is
 `NeedsReview` / `KnowledgeOnly`, never a WAF-bypass or XSS confirmation. See
 [Normalization-resilience review](normalization-resilience.md).
 
+The non-default `graphql-review` scanner/CLI feature also adds no work by
+itself. A feature-enabled operator must pass `--graphql-review` with explicit
+`--profile web-review`. V1 selects at most one exact-origin endpoint and sends
+up to three anonymous POST/JSON requests through the shared broker: an
+aliased `__typename` control, a bounded schema-root introspection candidate,
+and a distinct replay. The complete candidate/replay path consumes one active
+verification; fail-closed earlier outcomes stop without it. The review follows
+no redirect and does not read credentials. Complete correlated surface and
+replayed-introspection results are `Informational` / `KnowledgeOnly` only. See
+[GraphQL surface review](graphql-review.md).
+
 At most one deterministic query name across the assessment receives SQL
 structural review. Two independent matched quote-balance pairs must reproduce
 both a status-class and normalized body-structure change. Error text and
@@ -268,6 +283,10 @@ Composition is selection-specific:
   parent evidence. It cannot add work from a fingerprint or status alone,
   selects one typed depth-one HTML transform, and requires candidate/replay
   semantic proof before a knowledge-only review item.
+- **GraphQL surface review** (`graphql-review`, opt-in) is a separately enabled
+  anonymous `web-review` child. It selects one exact-origin endpoint at most,
+  executes the fixed three-request control/candidate/replay protocol, and can
+  produce only informational knowledge observations.
 - **Lua execution** (`lua`, opt-in) is a bounded registry and fresh-VM executor
   for an explicit library host. It uses cooperative in-process controls, not
   process isolation, with no
@@ -416,6 +435,7 @@ The following matrix separates build availability from actual execution:
 | `semantic` | scanner default | host library and explicit `web-review` post-commit composition | `web-review` only | implemented and tested Preview |
 | `defense` | scanner default | host library and explicit `web-review` observation/shadow; enforcement requires `--enforce-defense` | `web-review` only | implemented and tested Preview; cannot add or intensify actions |
 | normalization-resilience review | scanner and CLI opt-in (`normalization-resilience`) plus explicit runtime flag | one eligible `web-review` parent may produce one transformed candidate/replay child under the shared broker | no | Preview; max one transform/depth one, three child requests/one active verification, `NeedsReview` / `KnowledgeOnly` only |
+| GraphQL surface review | scanner and CLI opt-in (`graphql-review`) plus explicit runtime flag | one exact-origin endpoint may receive an anonymous `__typename` control, bounded schema-root candidate, and distinct replay through the shared broker | no | Preview; max one endpoint, three requests/one active verification, `Informational` / `KnowledgeOnly` only |
 | `phases/*`, `legacy_discovery`, `runner`, `context`, `sdk` | opt-in (`legacy-scanner`) | Surface A; phases 2–4 use bounded passive discovery, phases 5–9 use separate bounded active verification, and phase-one/custom raw I/O remains possible | no | Legacy runtime / `ScannerSdk` facade; whole-run accounting remains `Unmetered` |
 | `advanced_detection`, `anomaly` | opt-in (`detection`) | no repository product caller; validated/catalogued caller records plus text matching only | no | Experimental; no deviation computation, response classification, or finding production |
 | `api`, `api_gateway`, `auth`, `cache`, `config`, `config_loader`, `metrics`, `post_exploitation`, `persistence`, `realtime`, `dashboard` | opt-in (`platform-models`) | no repository product caller | no | Experimental records, catalogs, and in-memory utilities; no API/auth/persistence/realtime execution path, and caller-owned collections are not uniformly capacity-bounded |

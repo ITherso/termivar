@@ -130,6 +130,7 @@ fn scan_profile_flags_conflict(
     explain: bool,
     enforce_defense: bool,
     normalization_resilience: bool,
+    graphql_review: bool,
 ) -> Option<&'static str> {
     if profile.is_some() && explain {
         Some("`--explain` is available only when no explicit `--profile` is selected")
@@ -137,6 +138,8 @@ fn scan_profile_flags_conflict(
         Some("`--enforce-defense` requires `--profile web-review`")
     } else if normalization_resilience && profile != Some(CliScanProfile::WebReview) {
         Some("`--normalization-resilience` requires `--profile web-review`")
+    } else if graphql_review && profile != Some(CliScanProfile::WebReview) {
+        Some("`--graphql-review` requires `--profile web-review`")
     } else {
         None
     }
@@ -241,6 +244,12 @@ enum Commands {
         #[cfg(feature = "normalization-resilience")]
         #[arg(long, requires = "profile")]
         normalization_resilience: bool,
+        /// Explicitly enable the bounded anonymous GraphQL surface review. This
+        /// option is compiled only with `graphql-review` and is valid only with
+        /// `--profile web-review`.
+        #[cfg(feature = "graphql-review")]
+        #[arg(long, requires = "profile")]
+        graphql_review: bool,
         /// Select the centralized typed assessment renderer. Valid only with
         /// `--profile web-review`. Without this option, text maps to Markdown
         /// and JSON maps to JSON for completed web-review reports.
@@ -324,6 +333,7 @@ struct DeterministicScanInvocation {
     profile: Option<CliScanProfile>,
     enforce_defense: bool,
     normalization_resilience: bool,
+    graphql_review: bool,
     report_format: Option<CliReportFormat>,
     report_output: Option<PathBuf>,
     auth_env: Option<OsString>,
@@ -341,6 +351,7 @@ async fn run_deterministic_scan(
         profile,
         enforce_defense,
         normalization_resilience,
+        graphql_review,
         report_format,
         report_output,
         auth_env,
@@ -356,9 +367,13 @@ async fn run_deterministic_scan(
             )
             .exit();
     }
-    if let Some(message) =
-        scan_profile_flags_conflict(profile, explain, enforce_defense, normalization_resilience)
-    {
+    if let Some(message) = scan_profile_flags_conflict(
+        profile,
+        explain,
+        enforce_defense,
+        normalization_resilience,
+        graphql_review,
+    ) {
         use clap::CommandFactory;
         Cli::command()
             .error(clap::error::ErrorKind::ArgumentConflict, message)
@@ -417,8 +432,11 @@ async fn run_deterministic_scan(
             matches!(format, OutputFormat::Json),
             report_format.map(Into::into),
             report_output.is_some(),
-            root_authorization_context,
-            normalization_resilience,
+            assessment_scan::ProfileScanRuntimeOptions {
+                root_authorization_context,
+                normalization_resilience,
+                graphql_review,
+            },
         )
         .await?;
         let (rendered, report_artifact, post_render_failure) = execution.into_parts();
@@ -739,6 +757,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             enforce_defense,
             #[cfg(feature = "normalization-resilience")]
             normalization_resilience,
+            #[cfg(feature = "graphql-review")]
+            graphql_review,
             report_format,
             report_output,
             auth_env,
@@ -747,6 +767,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }) => {
             #[cfg(not(feature = "normalization-resilience"))]
             let normalization_resilience = false;
+            #[cfg(not(feature = "graphql-review"))]
+            let graphql_review = false;
             run_deterministic_scan(DeterministicScanInvocation {
                 target,
                 format,
@@ -754,6 +776,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 profile,
                 enforce_defense,
                 normalization_resilience,
+                graphql_review,
                 report_format,
                 report_output,
                 auth_env,
@@ -816,6 +839,8 @@ mod tests {
                 enforce_defense,
                 #[cfg(feature = "normalization-resilience")]
                 normalization_resilience,
+                #[cfg(feature = "graphql-review")]
+                graphql_review,
                 report_format,
                 report_output,
                 auth_env,
@@ -829,6 +854,8 @@ mod tests {
                 assert!(!enforce_defense);
                 #[cfg(feature = "normalization-resilience")]
                 assert!(!normalization_resilience);
+                #[cfg(feature = "graphql-review")]
+                assert!(!graphql_review);
                 assert_eq!(report_format, None);
                 assert_eq!(report_output, None);
                 assert_eq!(auth_env, None);
@@ -852,6 +879,8 @@ mod tests {
                 enforce_defense,
                 #[cfg(feature = "normalization-resilience")]
                 normalization_resilience,
+                #[cfg(feature = "graphql-review")]
+                graphql_review,
                 report_format,
                 report_output,
                 auth_env,
@@ -868,6 +897,8 @@ mod tests {
                 assert!(!enforce_defense);
                 #[cfg(feature = "normalization-resilience")]
                 assert!(!normalization_resilience);
+                #[cfg(feature = "graphql-review")]
+                assert!(!graphql_review);
                 assert_eq!(report_format, None);
                 assert_eq!(report_output, None);
                 assert_eq!(auth_env, None);
@@ -998,22 +1029,33 @@ mod tests {
         ])
         .is_err());
         assert_eq!(
-            scan_profile_flags_conflict(Some(CliScanProfile::Baseline), false, true, false),
+            scan_profile_flags_conflict(Some(CliScanProfile::Baseline), false, true, false, false,),
             Some("`--enforce-defense` requires `--profile web-review`")
         );
         assert_eq!(
-            scan_profile_flags_conflict(Some(CliScanProfile::WebReview), false, true, false),
+            scan_profile_flags_conflict(Some(CliScanProfile::WebReview), false, true, false, false,),
             None
         );
-        assert!(
-            scan_profile_flags_conflict(Some(CliScanProfile::Baseline), true, false, false)
-                .is_some()
+        assert!(scan_profile_flags_conflict(
+            Some(CliScanProfile::Baseline),
+            true,
+            false,
+            false,
+            false,
+        )
+        .is_some());
+        assert!(scan_profile_flags_conflict(
+            Some(CliScanProfile::WebReview),
+            true,
+            false,
+            false,
+            false,
+        )
+        .is_some());
+        assert_eq!(
+            scan_profile_flags_conflict(None, false, false, false, false),
+            None
         );
-        assert!(
-            scan_profile_flags_conflict(Some(CliScanProfile::WebReview), true, false, false)
-                .is_some()
-        );
-        assert_eq!(scan_profile_flags_conflict(None, false, false, false), None);
     }
 
     #[cfg(feature = "normalization-resilience")]
@@ -1045,7 +1087,7 @@ mod tests {
             })
         ));
         assert_eq!(
-            scan_profile_flags_conflict(Some(CliScanProfile::Baseline), false, false, true),
+            scan_profile_flags_conflict(Some(CliScanProfile::Baseline), false, false, true, false,),
             Some("`--normalization-resilience` requires `--profile web-review`")
         );
 
@@ -1067,7 +1109,7 @@ mod tests {
             })
         ));
         assert_eq!(
-            scan_profile_flags_conflict(Some(CliScanProfile::WebReview), false, false, true),
+            scan_profile_flags_conflict(Some(CliScanProfile::WebReview), false, false, true, false,),
             None
         );
     }
@@ -1081,6 +1123,94 @@ mod tests {
             "--profile",
             "web-review",
             "--normalization-resilience",
+            "https://example.test/",
+        ])
+        .is_err());
+    }
+
+    #[cfg(feature = "graphql-review")]
+    #[test]
+    fn graphql_review_is_an_explicit_web_review_only_option() {
+        use clap::CommandFactory as _;
+
+        let mut command = Cli::command();
+        let help = command
+            .find_subcommand_mut("scan")
+            .unwrap()
+            .render_long_help()
+            .to_string();
+        assert!(help.contains("--graphql-review"));
+        assert!(Cli::try_parse_from([
+            "venom",
+            "scan",
+            "--graphql-review",
+            "https://example.test/",
+        ])
+        .is_err());
+
+        let baseline = Cli::try_parse_from([
+            "venom",
+            "scan",
+            "--profile",
+            "baseline",
+            "--graphql-review",
+            "https://example.test/",
+        ])
+        .expect("the semantic profile guard runs before runtime dispatch");
+        assert!(matches!(
+            baseline.command,
+            Some(Commands::Scan {
+                profile: Some(CliScanProfile::Baseline),
+                graphql_review: true,
+                ..
+            })
+        ));
+        assert_eq!(
+            scan_profile_flags_conflict(Some(CliScanProfile::Baseline), false, false, false, true,),
+            Some("`--graphql-review` requires `--profile web-review`")
+        );
+
+        let review = Cli::try_parse_from([
+            "venom",
+            "scan",
+            "--profile",
+            "web-review",
+            "--graphql-review",
+            "https://example.test/",
+        ])
+        .unwrap();
+        assert!(matches!(
+            review.command,
+            Some(Commands::Scan {
+                profile: Some(CliScanProfile::WebReview),
+                graphql_review: true,
+                ..
+            })
+        ));
+        assert_eq!(
+            scan_profile_flags_conflict(Some(CliScanProfile::WebReview), false, false, false, true,),
+            None
+        );
+    }
+
+    #[cfg(not(feature = "graphql-review"))]
+    #[test]
+    fn default_cli_does_not_parse_the_graphql_review_option() {
+        use clap::CommandFactory as _;
+
+        let mut command = Cli::command();
+        let help = command
+            .find_subcommand_mut("scan")
+            .unwrap()
+            .render_long_help()
+            .to_string();
+        assert!(!help.contains("--graphql-review"));
+        assert!(Cli::try_parse_from([
+            "venom",
+            "scan",
+            "--profile",
+            "web-review",
+            "--graphql-review",
             "https://example.test/",
         ])
         .is_err());

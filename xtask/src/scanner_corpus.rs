@@ -650,10 +650,39 @@ fn validate_case(source_path: &str, case: &FixtureCase) -> TaskResult {
         return Err("request and response roles must match".into());
     }
     validate_expected(&case.expected)?;
+    validate_graphql_support_contract(case)?;
     if case.support == SupportLevel::MetadataOnly
         && case.expected.incompleteness != Some(IncompletenessExpectation::FutureMetadataOnly)
     {
         return Err("metadata-only cases must declare future-metadata-only incompleteness".into());
+    }
+    Ok(())
+}
+
+fn validate_graphql_support_contract(case: &FixtureCase) -> TaskResult {
+    if case.category != CaseCategory::ApiGraphql {
+        return Ok(());
+    }
+    let expectation = case
+        .expected
+        .graphql_evidence
+        .ok_or("API/GraphQL cases require an explicit GraphQL expectation")?;
+    let metadata_only = matches!(
+        expectation,
+        GraphqlExpectation::BatchMetadataOnly | GraphqlExpectation::GetQueryMetadataOnly
+    );
+    if metadata_only {
+        if case.support != SupportLevel::MetadataOnly
+            || case.expected.incompleteness != Some(IncompletenessExpectation::FutureMetadataOnly)
+        {
+            return Err(
+                "GraphQL batching and GET-query fixtures must remain future metadata-only".into(),
+            );
+        }
+    } else if case.support != SupportLevel::Current
+        || case.expected.incompleteness == Some(IncompletenessExpectation::FutureMetadataOnly)
+    {
+        return Err("executable GraphQL V1 fixtures must use current support".into());
     }
     Ok(())
 }
@@ -2520,6 +2549,31 @@ mod tests {
         );
         case.expected.incompleteness = Some(IncompletenessExpectation::FutureMetadataOnly);
         validate_case("cases/future-case.toml", &case).expect("metadata-only contract");
+    }
+
+    #[test]
+    fn graphql_v1_support_contract_keeps_only_batch_and_get_metadata_only() {
+        let mut case = valid_case("graphql-current");
+        case.category = CaseCategory::ApiGraphql;
+        case.expected.http_media = None;
+        case.expected.graphql_evidence = Some(GraphqlExpectation::TypenameControl);
+        case.expected.maximum_authority = Some(MaximumAuthorityExpectation::KnowledgeOnly);
+        validate_graphql_support_contract(&case).expect("bounded GraphQL control is current");
+
+        case.support = SupportLevel::MetadataOnly;
+        case.expected.incompleteness = Some(IncompletenessExpectation::FutureMetadataOnly);
+        assert!(validate_graphql_support_contract(&case).is_err());
+
+        case.expected.graphql_evidence = Some(GraphqlExpectation::BatchMetadataOnly);
+        validate_graphql_support_contract(&case).expect("batching remains metadata-only");
+        case.support = SupportLevel::Current;
+        case.expected.incompleteness = None;
+        assert!(validate_graphql_support_contract(&case).is_err());
+
+        case.support = SupportLevel::MetadataOnly;
+        case.expected.incompleteness = Some(IncompletenessExpectation::FutureMetadataOnly);
+        case.expected.graphql_evidence = Some(GraphqlExpectation::GetQueryMetadataOnly);
+        validate_graphql_support_contract(&case).expect("GET query remains metadata-only");
     }
 
     #[test]

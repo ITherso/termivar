@@ -27,6 +27,10 @@ use crate::{
     KnowledgeWrite, HTTP_EVIDENCE_EXECUTOR_ID,
 };
 
+#[cfg(feature = "graphql-review")]
+use super::graphql_runtime::{
+    project_graphql_items, register_graphql_subject, CommittedGraphqlReview,
+};
 use super::{
     assessment_api_visibility::{project_api_visibility_item, CommittedAssessmentApiVisibility},
     assessment_item::{
@@ -1057,6 +1061,8 @@ struct PlannedPassiveAssessmentItem {
 struct AssessmentReviewProjectionSources<'a> {
     native: &'a [&'a CommittedAssessmentReviewLedger],
     api_visibility: Option<&'a CommittedAssessmentApiVisibility>,
+    #[cfg(feature = "graphql-review")]
+    graphql: Option<&'a CommittedGraphqlReview>,
 }
 
 /// Test adapter that projects only the explicitly authorized root.
@@ -1070,6 +1076,8 @@ pub(crate) fn project_passive_assessment_items(
         ledger,
         &[],
         None,
+        #[cfg(feature = "graphql-review")]
+        None,
         knowledge,
         authorized_root,
         std::slice::from_ref(authorized_root),
@@ -1082,6 +1090,7 @@ pub(crate) fn project_assessment_items(
     ledger: &CommittedAssessmentPassiveLedger,
     review: &[&CommittedAssessmentReviewLedger],
     api_visibility: Option<&CommittedAssessmentApiVisibility>,
+    #[cfg(feature = "graphql-review")] graphql: Option<&CommittedGraphqlReview>,
     knowledge: &KnowledgeBase,
     authorized_root: &WebAssessmentSubject,
     assessment_subjects: &[WebAssessmentSubject],
@@ -1157,6 +1166,8 @@ pub(crate) fn project_assessment_items(
         AssessmentReviewProjectionSources {
             native: review,
             api_visibility,
+            #[cfg(feature = "graphql-review")]
+            graphql,
         },
         knowledge,
         root_subject,
@@ -1189,6 +1200,8 @@ fn project_passive_assessment_items_for_root(
         AssessmentReviewProjectionSources {
             native: &[],
             api_visibility: None,
+            #[cfg(feature = "graphql-review")]
+            graphql: None,
         },
         knowledge,
         root_subject,
@@ -1207,6 +1220,8 @@ fn project_assessment_items_for_subjects(
     stable_subjects: Vec<(EntityId, StableAssessmentSubjectId, Vec<String>)>,
     https: bool,
 ) -> Result<PassiveAssessmentItemProjection, PassiveAssessmentItemProjectionError> {
+    #[cfg(feature = "graphql-review")]
+    let graphql_scope = scope.clone();
     let mut context = AssessmentProjectionContext::new(knowledge, scope);
     let stable_subject_ids = stable_subjects
         .iter()
@@ -1214,6 +1229,10 @@ fn project_assessment_items_for_subjects(
         .collect::<std::collections::BTreeSet<_>>();
     for (subject, stable_id, query_parameter_names) in stable_subjects {
         context.register_subject(subject, stable_id, query_parameter_names)?;
+    }
+    #[cfg(feature = "graphql-review")]
+    if let Some(graphql) = reviews.graphql {
+        register_graphql_subject(&mut context, &graphql_scope, graphql)?;
     }
 
     let mut planned_items = Vec::new();
@@ -1271,6 +1290,10 @@ fn project_assessment_items_for_subjects(
         (reviews.api_visibility, root_subject.as_ref())
     {
         project_api_visibility_item(&mut context, knowledge, root_subject, api_visibility)?;
+    }
+    #[cfg(feature = "graphql-review")]
+    if let Some(graphql) = reviews.graphql {
+        project_graphql_items(&mut context, knowledge, graphql)?;
     }
     Ok(PassiveAssessmentItemProjection {
         items: context.finish(),

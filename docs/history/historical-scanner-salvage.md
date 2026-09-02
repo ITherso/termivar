@@ -10,13 +10,13 @@ This report is generated from `salvage/historical-scanner/ledger.toml`. Historic
 | Pre-deletion snapshot | ede3d9e5b1098434a771ae6ca3cb530941e22210 |
 | Physical deletion | 28bfb2d8ae3a4f707b7423cac65b6be8e11085b6 |
 | Current replacement baseline | cbca14d10db4ee641308f3b3e290bf75d937c8a7 |
-| Semantic ledger digest | salvage-sha256:cd706569ed6044cc99b97bb55322a6651b271fa233a66651cd8b477625e63843 |
+| Semantic ledger digest | salvage-sha256:5449610451c2eb3efab4c21166c12d3ffe36ade87aa7c6fd436e67bacded7e58 |
 
 ## Classification summary
 
 - Historical files: 38
-- Classified components: 74
-- P0/P1 recovery candidates: 11
+- Classified components: 75
+- P0/P1 recovery candidates: 12
 
 | Disposition | Components |
 | --- | ---: |
@@ -27,7 +27,7 @@ This report is generated from `salvage/historical-scanner/ledger.toml`. Historic
 | reject-fabricated-behavior | 9 |
 | reject-misleading-claim | 18 |
 | reject-unsafe-adapter | 5 |
-| rewrite-from-contract | 11 |
+| rewrite-from-contract | 12 |
 | superseded-by-current-runtime | 10 |
 
 ## Historical file inventory
@@ -81,7 +81,8 @@ This report is generated from `salvage/historical-scanner/ledger.toml`. Historic
 | `analyzer.vulnerability-threshold` | `src/scanner/analyzer.rs` | reject-misleading-claim | never | rejected | none | misleading-claim, automatic-severity |
 | `anomaly.attack-classification` | `src/scanner/anomaly_detector.rs` | reject-misleading-claim | never | rejected | none | misleading-claim, automatic-severity |
 | `anomaly.feature-statistics` | `src/scanner/anomaly_detector.rs` | rewrite-from-contract | p2 | planned | future-venom-ml | unbounded-io, raw-sensitive-evidence |
-| `api.protocol-taxonomy` | `src/scanner/api_scanner.rs` | rewrite-from-contract | p1 | planned | venom-scanner:api-assessment | legacy-runtime-coupling, random-identity |
+| `api.protocol-taxonomy` | `src/scanner/api_scanner.rs` | rewrite-from-contract | p1 | restored | venom-scanner:api-assessment | legacy-runtime-coupling, random-identity |
+| `api.protocol-taxonomy.remaining` | `src/scanner/api_scanner.rs` | rewrite-from-contract | p1 | planned | venom-scanner:api-assessment | legacy-runtime-coupling, random-identity |
 | `api.unconditional-tests` | `src/scanner/api_scanner.rs` | reject-fabricated-behavior | never | rejected | none | fabricated-finding, unconditional-success, random-identity, automatic-severity |
 | `baseline.direct-collector` | `src/scanner/baseline.rs` | superseded-by-current-runtime | p3 | superseded | venom-scanner:web-assessment | direct-network-authority, unbounded-io, legacy-runtime-coupling |
 | `baseline.fingerprint-vocabulary` | `src/scanner/baseline.rs` | rewrite-from-contract | p2 | planned | venom-scanner:web-assessment | raw-sensitive-evidence, misleading-claim |
@@ -154,7 +155,8 @@ This report is generated from `salvage/historical-scanner/ledger.toml`. Historic
 
 ## P0/P1 recovery roadmap
 
-- `api.protocol-taxonomy` → `venom-scanner:api-assessment` (planned): Rebuild from typed protocol evidence rather than preserve the scaffold.
+- `api.protocol-taxonomy` → `venom-scanner:api-assessment` (restored; implementation `venom_scanner::graphql_review (web.review.graphql.introspection-pair@1)`): Only anonymous bounded GraphQL surface and schema-root introspection review was rebuilt from typed evidence; no legacy scaffold was restored.
+- `api.protocol-taxonomy.remaining` → `venom-scanner:api-assessment` (planned): REST, gRPC, SOAP, and generic service review remain future typed capabilities and were not restored by GraphQL V1.
 - `business-logic.workflow-taxonomy` → `venom-scanner:authz` (planned): Only metadata can be imported before real workflow authority exists.
 - `detector.byte-pattern` → `venom-artifact` (restored; implementation `venom_artifact::ArtifactScanner (venom.artifact-signature-scan/v1)`): Venom Artifact V1 cleanly reimplements the bounded exact/wildcard matcher and does not copy the historical monolith.
 - `idor.reference-mutation` → `venom-scanner:authz` (planned): Authorization review must be rebuilt around identity and authority, not response similarity alone.

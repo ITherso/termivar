@@ -50,6 +50,12 @@ GraphQL from a substring in raw `Content-Type` or request-URL evidence.
 likelihoods and must not turn a zero-confidence producer signal into Bayesian
 support.
 
+The opt-in [GraphQL surface review](graphql-review.md) uses these same
+normalized media/path observations when ranking one exact-origin endpoint. Its
+operation correlation and bounded response-envelope classifier remain runtime
+contracts rather than new stringly predicates. Generic JSON therefore still
+cannot become GraphQL merely because the active review was enabled.
+
 The response-header namespace remains open. Producers that validate and
 lowercase a header name may use
 `HttpEvidencePredicate::response_header(name)` instead of adding a constant for
@@ -216,3 +222,7 @@ The shared vocabulary lives in `venom-core` because both producers and
 reasoners depend inward on it. It defines names, typed values, validation, and
 raw-value-free comparison evidence. It does not contain an HTTP client, parser,
 planner, verifier, credential provider, or execution policy.
+
+GraphQL review keeps request dispatch and response classification in the
+feature-gated scanner runtime. The predicate vocabulary neither selects an
+endpoint nor authorizes a request.

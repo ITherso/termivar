@@ -41,6 +41,20 @@ Metadata-only cases validate their fixture contract without pretending that a
 runtime capability exists. Unsupported, incomplete, and mismatched cases stay
 explicit; they are not silently treated as passes.
 
+## GraphQL V1 cases
+
+The GraphQL subset exercises the production bounded classifier for a control
+envelope, available and restricted root introspection, malformed JSON, partial
+data with errors, and parser-limit incompleteness. Existing generic-JSON and
+GraphQL-like-HTML cases remain current negative controls: neither can establish
+a GraphQL surface. Batch-shaped responses and GET-query support remain
+metadata-only because GraphQL V1 executes only the fixed anonymous POST/JSON
+control, candidate, and replay protocol.
+
+These cases do not send requests from the corpus harness. They validate the
+same production operation and response contracts used by the explicitly
+enabled runtime. See [GraphQL surface review](graphql-review.md).
+
 ## What passing means
 
 Passing proves that the checked-in bounded cases agree with the current typed

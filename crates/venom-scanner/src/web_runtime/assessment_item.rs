@@ -42,6 +42,10 @@ const SUBJECT_IDENTITY_DOMAIN: &[u8] = b"venom.assessment-subject.identity.v1\0"
 const DISCOVERED_SUBJECT_IDENTITY_DOMAIN: &[u8] =
     b"venom.assessment-subject.discovered-resource.v1\0";
 const DISCOVERED_SUBJECT_IDENTITY_VERSION: &str = "discovered-resource@1";
+#[cfg(feature = "graphql-review")]
+const GRAPHQL_SUBJECT_IDENTITY_DOMAIN: &[u8] = b"venom.assessment-subject.anonymous-graphql.v1\0";
+#[cfg(feature = "graphql-review")]
+const GRAPHQL_SUBJECT_IDENTITY_VERSION: &str = "anonymous-graphql-endpoint@1";
 const MAX_STABLE_SUBJECT_ID_BYTES: usize = 256;
 const MAX_QUERY_PARAMETER_NAME_BYTES: usize = 256;
 const MAX_PROJECTION_SUBJECTS: usize = 1_024;
@@ -275,6 +279,50 @@ impl StableAssessmentSubjectId {
         }
         Self::new(format!(
             "{DISCOVERED_SUBJECT_IDENTITY_VERSION}:{:x}",
+            digest.finalize()
+        ))
+    }
+
+    /// Derives the stable identity for one anonymous POST-only GraphQL endpoint.
+    ///
+    /// The identity binds only non-secret structural values: the exact-origin
+    /// scope, canonical path, protocol, strategy revision, and anonymous
+    /// context. Operation aliases, bodies, response values, and schema names
+    /// never enter this identity.
+    #[cfg(feature = "graphql-review")]
+    pub(crate) fn from_anonymous_graphql_endpoint(
+        stable_scope_id: &StableAssessmentScopeId,
+        canonical_url: &Url,
+    ) -> Result<Self, AssessmentItemProjectionError> {
+        let exact_origin = canonical_url.origin().ascii_serialization();
+        if !StableAssessmentScopeId::from_exact_origin(&exact_origin)
+            .is_ok_and(|expected| expected == *stable_scope_id)
+            || !matches!(canonical_url.scheme(), "http" | "https")
+            || canonical_url.host().is_none()
+            || !canonical_url.username().is_empty()
+            || canonical_url.password().is_some()
+            || canonical_url.path().is_empty()
+            || canonical_url.query().is_some()
+            || canonical_url.fragment().is_some()
+            || canonical_url.as_str().len() > MAX_PROJECTION_SUBJECT_ID_BYTES
+        {
+            return Err(AssessmentItemProjectionError::InvalidStableSubjectIdentity);
+        }
+
+        let mut digest = Sha256::new();
+        digest.update(GRAPHQL_SUBJECT_IDENTITY_DOMAIN);
+        digest_field(&mut digest, GRAPHQL_SUBJECT_IDENTITY_VERSION);
+        digest_field(&mut digest, stable_scope_id.as_str());
+        digest_field(&mut digest, "POST");
+        digest_field(&mut digest, canonical_url.path());
+        digest_field(&mut digest, "graphql");
+        digest_field(
+            &mut digest,
+            crate::graphql_review::GRAPHQL_REVIEW_STRATEGY_ID,
+        );
+        digest_field(&mut digest, "anonymous");
+        Self::new(format!(
+            "{GRAPHQL_SUBJECT_IDENTITY_VERSION}:{:x}",
             digest.finalize()
         ))
     }

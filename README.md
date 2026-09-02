@@ -95,8 +95,9 @@ Execution decisions are deterministic and model-independent. Venom does not requ
 | Exploit foundation | Independent Preview `venom-exploit` manifest/catalog library plus a disconnected non-default orchestration API. Only a five-step in-memory canary fixture exercises host-minted grants, typed permits/receipts, impact verification, and cleanup verification; there is no real exploit, production adapter, or scanner/CLI/API/proxy integration |
 | Artifact signatures | Independent Preview `venom-artifact` library scans bounded caller-supplied buffers/readers for exact/wildcard signatures with overlapping deterministic observations. Explicit local regular-file access is available only through the non-default CLI `artifact-adapter`; matches are not malware or vulnerability verdicts |
 | Normalization resilience | Non-default Preview scanner/CLI feature plus explicit `--normalization-resilience` on `web-review`. V1 selects at most one typed depth-one HTML representation, reuses committed XSS/defense evidence, and requires transformed candidate plus distinct replay to reproduce the same inert parser semantics. It is `NeedsReview` / `KnowledgeOnly` only, not a generic or product-specific WAF-bypass claim |
+| GraphQL surface review | Non-default Preview scanner/CLI feature plus explicit `--graphql-review` on `web-review`. V1 selects at most one exact-origin endpoint and performs up to three anonymous bounded POST/JSON requests: an aliased `__typename` control, schema-root introspection candidate, and distinct replay. Results are `Informational` / `KnowledgeOnly`, not vulnerability or authorization claims |
 | Scanner conformance corpus | Repository-only `security-assessment-fixture/v1` data provides 50 sanitized request/response cases and deterministic `xtask scanner-corpus` checks. It adds no runtime request or claim, and conformance is not an empirical accuracy result |
-| Historical salvage inventories | Two strict repository ledgers and local-Git `xtask` checks preserve separate source epochs: the deleted 38-file pre-workspace scanner tree and the 13-file/39-component post-workspace WAF/evasion quarantine wave. The detector byte-pattern component is restored in `venom-artifact`, the sanitized fixture component is restored only as repository conformance data, and the historical HTML token-case/inter-token whitespace concepts are restored by the separately reviewed normalization runtime. Historical source itself remains non-authoritative |
+| Historical salvage inventories | Two strict repository ledgers and local-Git `xtask` checks preserve separate source epochs: the deleted 38-file pre-workspace scanner tree and the 13-file/39-component post-workspace WAF/evasion quarantine wave. The detector byte-pattern component is restored in `venom-artifact`, the sanitized fixture component is restored only as repository conformance data, the bounded GraphQL taxonomy subset is restored by the explicit GraphQL review, and the historical HTML token-case/inter-token whitespace concepts are restored by the separately reviewed normalization runtime. Historical source itself remains non-authoritative |
 
 The standard web profile currently has conservative, claim-specific behavior:
 
@@ -122,6 +123,8 @@ cargo run -p venom-cli --locked -- scan https://authorized.example.test --profil
 cargo run -p venom-cli --locked -- scan https://authorized.example.test --profile web-review
 cargo run -p venom-cli --locked --features normalization-resilience -- \
   scan https://authorized.example.test --profile web-review --normalization-resilience
+cargo run -p venom-cli --locked --features graphql-review -- \
+  scan https://authorized.example.test --profile web-review --graphql-review
 ```
 
 `baseline` runs the same conservative single-resource decision primitive and
@@ -235,6 +238,22 @@ insufficient, a defense-product fingerprint is only a compatible-candidate
 tie-break/context hint, and the maximum projection is `NeedsReview` under
 `KnowledgeOnly` authority. See the
 [normalization-resilience contract](docs/internals/normalization-resilience.md).
+
+GraphQL surface review is also double opt-in: compile the non-default
+`graphql-review` scanner/CLI feature and pass `--graphql-review` with explicit
+`web-review`. V1 deterministically selects at most one exact-origin endpoint
+from committed media/path/reference evidence or the bounded `/graphql`
+runtime fallback. The closed selector also models `/api/graphql` for a future
+explicit fallback policy, but V1 runtime does not probe both paths. It sends up
+to three anonymous POST/JSON requests
+through the existing broker: an aliased `__typename` control, a bounded
+schema-root introspection candidate, and a distinct replay. It retains only
+root-presence booleans and correlated evidence. A complete surface or replayed
+introspection observation is `Informational` under `KnowledgeOnly` authority;
+it is not a vulnerability, schema-leak, or authorization-bypass claim. V1 has
+no mutation, full schema enumeration, batching, depth/complexity probe,
+credential use, redirect follow, or WebSocket transport. See the
+[GraphQL review contract](docs/internals/graphql-review.md).
 
 An additional explicit `web-review` option can compare the exact origin root
 once as anonymous and once with a host-supplied `Authorization` context. Use
@@ -388,6 +407,7 @@ See the [runtime map](docs/internals/runtime-map.md) for the exact module and co
 | Exploit foundation | Preview, disconnected | Default manifest/catalog library plus a non-default host orchestration API with non-deserializable host-minted grants, deterministic plans, typed permits/receipts, and a redacted run report. Only the in-memory `venom-canary` integration fixture executes; no real exploit, production target/network/process/filesystem adapter, CLI/API/scanner caller, package authenticity, or sandbox is implemented |
 | `venom artifact scan-file` | Preview, opt-in | Absent from default builds; `artifact-adapter` scans one explicitly selected local regular file with one strict signature manifest. It is read-only, non-recursive, and emits observations rather than malware or vulnerability verdicts |
 | `venom scan ... --normalization-resilience` | Preview, opt-in | Absent from default builds and invalid outside explicit `web-review`. It selects at most one depth-one typed HTML transform, uses three child requests/one active verification, requires candidate and replay semantic evidence, and can emit only `NeedsReview` / `KnowledgeOnly` |
+| `venom scan ... --graphql-review` | Preview, opt-in | Absent from default builds and invalid outside explicit `web-review`. It selects at most one exact-origin endpoint, uses up to three anonymous POST/JSON requests (the complete candidate/replay path uses one active verification), and emits only `Informational` / `KnowledgeOnly` observations |
 | `venom api` | Unsupported, opt-in | Absent from default builds; the `api-adapter` feature reports that no listener is implemented |
 | `venom proxy` | Experimental, opt-in | Absent from default builds; `proxy-adapter` exposes an explicit fixed-upstream TCP relay with no `CONNECT`, TLS termination, certificate generation, or HTTP inspection |
 
@@ -412,6 +432,9 @@ The normalization runtime similarly requires the non-default
 `normalization-resilience` feature and its explicit `web-review` flag; compiling
 the feature alone does not activate a transform, and the default CLI help and
 no-profile `decision-scan/v1` path remain unchanged.
+The GraphQL runtime likewise requires `graphql-review` plus its explicit
+`web-review` flag; it is anonymous and does not alter default CLI help,
+no-profile execution, or the transport-neutral API reasoner.
 
 ## Quality and robustness
 
@@ -500,6 +523,7 @@ tag and accepted cross-version baseline exist, pin a reviewed full commit.
 - [Architecture](docs/architecture.md)
 - [Runtime map: what actually runs](docs/internals/runtime-map.md)
 - [Scanner conformance corpus](docs/internals/scanner-conformance-corpus.md)
+- [GraphQL surface review](docs/internals/graphql-review.md)
 - [Normalization-resilience review](docs/internals/normalization-resilience.md)
 - [Historical scanner salvage](docs/history/historical-scanner-salvage.md)
 - [Post-workspace WAF/evasion salvage](docs/history/post-workspace-waf-evasion-salvage.md)

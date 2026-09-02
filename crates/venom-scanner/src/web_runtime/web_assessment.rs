@@ -23,6 +23,16 @@ use venom_core::{
     EvidenceOrigin, EvidenceSource, EvidenceValue, HttpEvidencePredicate, PredicateDescriptor,
 };
 
+#[cfg(feature = "graphql-review")]
+use crate::graphql_review::MAX_GRAPHQL_ACTIVE_VERIFICATIONS;
+#[cfg(feature = "graphql-review")]
+use crate::DefenseInteractionClass;
+
+#[cfg(feature = "graphql-review")]
+use super::graphql_runtime::{
+    execute_graphql_review, graphql_endpoint_hints, CommittedGraphqlReview, GraphqlRuntimeResult,
+    GraphqlRuntimeStop,
+};
 use super::{
     assessment_api_visibility::{
         build_root_api_visibility_runtime, CommittedAssessmentApiVisibility,
@@ -46,7 +56,8 @@ use super::{
 #[cfg(feature = "reporting")]
 use super::{
     assessment_report::{
-        AssessmentRunReport, AssessmentRunReportError, CompletedWebAssessmentTruth,
+        AssessmentRunReport, AssessmentRunReportError, AssessmentRuntimeLimits,
+        CompletedWebAssessmentTruth,
     },
     scan_profile::ScanProfileV1,
 };
@@ -155,6 +166,10 @@ pub const HARD_MAX_WEB_ASSESSMENT_WALL_TIME: Duration = Duration::from_secs(3_60
 pub const DEFAULT_WEB_ASSESSMENT_MAX_ACTIVE_VERIFICATIONS: u16 = 10;
 /// Compiled maximum active verification dispatches.
 pub const HARD_MAX_WEB_ASSESSMENT_ACTIVE_VERIFICATIONS: u16 = 64;
+/// Exact feature-local allowance reserved by an explicitly enabled GraphQL child.
+#[cfg(feature = "graphql-review")]
+pub(crate) const GRAPHQL_REVIEW_ACTIVE_VERIFICATION_ALLOWANCE: u16 =
+    MAX_GRAPHQL_ACTIVE_VERIFICATIONS as u16;
 /// Assessment subjects execute sequentially under one shared authority.
 pub const WEB_ASSESSMENT_CONCURRENCY: usize = 1;
 
@@ -474,12 +489,16 @@ impl WebAssessmentLimits {
     // existing RuntimeBudget defaults for request-body bytes (256 KiB),
     // same-action attempts (3), and consecutive no-progress turns (4); this
     // assessment contract narrows only the explicitly exposed dimensions.
-    fn runtime_budget(self) -> RuntimeBudget {
+    fn runtime_budget(self, optional_active_verifications: u16) -> RuntimeBudget {
+        let active_verifications = self
+            .max_active_verifications
+            .checked_add(optional_active_verifications)
+            .expect("compiled optional active-verification allowances fit u16");
         RuntimeBudget::default()
             .with_max_total_requests(self.max_total_requests)
             .with_max_response_bytes(self.max_total_response_bytes)
             .with_max_wall_time(self.max_wall_time)
-            .with_max_active_verifications(self.max_active_verifications)
+            .with_max_active_verifications(active_verifications)
     }
 }
 
@@ -869,6 +888,10 @@ pub enum WebAssessmentIncompleteReason {
     /// The explicitly supplied authorization-context pair did not produce one
     /// complete canonical comparison suitable for product projection.
     ApiVisibilityReviewIncomplete,
+    /// The explicitly enabled anonymous GraphQL child did not complete its
+    /// bounded correlated protocol review.
+    #[cfg(feature = "graphql-review")]
+    GraphqlReviewIncomplete,
 }
 
 /// Whether every retained subject and eligible document completed within bounds.
@@ -1194,6 +1217,7 @@ pub struct WebAssessmentRunReport {
     run_started_at: SystemTime,
     authorized_root: WebAssessmentSubject,
     limits: WebAssessmentLimits,
+    runtime_active_verification_limit: u16,
     subjects: Vec<WebAssessmentSubjectReport>,
     forms: Vec<WebAssessmentForm>,
     semantics: SemanticExtractionResult,
@@ -1213,6 +1237,10 @@ impl fmt::Debug for WebAssessmentRunReport {
         debug
             .field("authorized_root", &"<redacted>")
             .field("limits", &self.limits)
+            .field(
+                "runtime_active_verification_limit",
+                &self.runtime_active_verification_limit,
+            )
             .field("subject_count", &self.subjects.len())
             .field("form_count", &self.forms.len())
             .field("semantics", &"<redacted>")
@@ -1245,9 +1273,14 @@ impl WebAssessmentRunReport {
     pub fn authorized_root(&self) -> &WebAssessmentSubject {
         &self.authorized_root
     }
-    /// Returns the exact checked limits that governed this assessment.
+    /// Returns the profile-owned base limits that governed this assessment.
+    /// Feature-local additive authority, when present, is exposed separately.
     pub const fn limits(&self) -> WebAssessmentLimits {
         self.limits
+    }
+    /// Returns the actual shared active-verification ceiling used at startup.
+    pub const fn runtime_active_verification_limit(&self) -> u16 {
+        self.runtime_active_verification_limit
     }
     pub fn subjects(&self) -> &[WebAssessmentSubjectReport] {
         &self.subjects
@@ -1303,7 +1336,7 @@ impl WebAssessmentRunReport {
         let truth = CompletedWebAssessmentTruth::new(
             self.run_started_at,
             &self.authorized_root,
-            self.limits,
+            AssessmentRuntimeLimits::new(self.limits, self.runtime_active_verification_limit),
             self.usage,
             &self.completion,
             self.defense.mode(),
@@ -1519,6 +1552,8 @@ pub struct WebAssessmentRuntimeBuilder {
     low_risk_differential_review: bool,
     #[cfg(feature = "normalization-resilience")]
     normalization_resilience: bool,
+    #[cfg(feature = "graphql-review")]
+    graphql_review: bool,
     root_authorization_context: Option<WebAssessmentRootAuthorizationContext>,
 }
 
@@ -1533,6 +1568,8 @@ impl WebAssessmentRuntimeBuilder {
             low_risk_differential_review: false,
             #[cfg(feature = "normalization-resilience")]
             normalization_resilience: false,
+            #[cfg(feature = "graphql-review")]
+            graphql_review: false,
             root_authorization_context: None,
         }
     }
@@ -1573,6 +1610,16 @@ impl WebAssessmentRuntimeBuilder {
         self.normalization_resilience = true;
         self
     }
+    /// Explicitly enables one bounded, anonymous GraphQL surface review.
+    ///
+    /// The child is separate from the stable scan-profile wire contract. It
+    /// uses only scanner-owned POST bodies, the existing exact-origin broker,
+    /// and the assessment's shared request and active-verification budget.
+    #[cfg(feature = "graphql-review")]
+    pub fn enable_graphql_review(mut self) -> Self {
+        self.graphql_review = true;
+        self
+    }
     /// Adds one anonymous/authorized JSON comparison for the exact origin root.
     ///
     /// The context is consumed during build and can neither be cloned nor
@@ -1611,10 +1658,29 @@ impl WebAssessmentRuntimeBuilder {
         }
         .restricted_for_web_assessment(&root.url, self.limits.max_response_body_bytes())?;
         let discovery_policy = policy.clone();
+        let optional_active_verifications = {
+            #[cfg(feature = "graphql-review")]
+            {
+                u16::from(
+                    self.graphql_review
+                        && self.limits.max_active_verifications()
+                            == DEFAULT_WEB_ASSESSMENT_MAX_ACTIVE_VERIFICATIONS,
+                ) * GRAPHQL_REVIEW_ACTIVE_VERIFICATION_ALLOWANCE
+            }
+            #[cfg(not(feature = "graphql-review"))]
+            {
+                0
+            }
+        };
+        let runtime_active_verification_limit = self
+            .limits
+            .max_active_verifications()
+            .checked_add(optional_active_verifications)
+            .expect("compiled optional active-verification allowances fit u16");
         let authority = SharedWebRuntimeAuthority::new_exact_origin(
             &root.url,
             policy,
-            self.limits.runtime_budget(),
+            self.limits.runtime_budget(optional_active_verifications),
             self.cancellation,
         )?;
         let root_subject = WebAssessmentSubject {
@@ -1697,6 +1763,7 @@ impl WebAssessmentRuntimeBuilder {
         }
         Ok(WebAssessmentRuntime {
             limits: self.limits,
+            runtime_active_verification_limit,
             semantic_limits,
             semantic_evidence: AssessmentSemanticEvidence::default(),
             authority,
@@ -1708,6 +1775,8 @@ impl WebAssessmentRuntimeBuilder {
             defense_enforcement: self.defense_enforcement,
             #[cfg(feature = "normalization-resilience")]
             normalization_resilience: self.normalization_resilience,
+            #[cfg(feature = "graphql-review")]
+            graphql_review: self.graphql_review,
             native_review,
             non_root_structural_review: None,
             xss_structural_review: None,
@@ -1715,6 +1784,10 @@ impl WebAssessmentRuntimeBuilder {
             normalization_review: None,
             root_api_visibility,
             committed_api_visibility: None,
+            #[cfg(feature = "graphql-review")]
+            committed_graphql_review: None,
+            #[cfg(feature = "graphql-review")]
+            graphql_parent_defense: None,
             defense_audit: WebAssessmentDefenseAudit::new(if self.defense_enforcement {
                 WebAssessmentDefenseMode::Enforced
             } else {
@@ -1728,6 +1801,7 @@ impl WebAssessmentRuntimeBuilder {
 /// Single-use deterministic assessment of one authorized exact origin.
 pub struct WebAssessmentRuntime {
     limits: WebAssessmentLimits,
+    runtime_active_verification_limit: u16,
     semantic_limits: SemanticExtractionLimits,
     semantic_evidence: AssessmentSemanticEvidence,
     authority: SharedWebRuntimeAuthority,
@@ -1739,6 +1813,8 @@ pub struct WebAssessmentRuntime {
     defense_enforcement: bool,
     #[cfg(feature = "normalization-resilience")]
     normalization_resilience: bool,
+    #[cfg(feature = "graphql-review")]
+    graphql_review: bool,
     native_review: Option<AssessmentNativeReviewRuntime>,
     non_root_structural_review: Option<AssessmentNativeReviewRuntime>,
     xss_structural_review: Option<AssessmentNativeReviewRuntime>,
@@ -1746,6 +1822,10 @@ pub struct WebAssessmentRuntime {
     normalization_review: Option<AssessmentNativeReviewRuntime>,
     root_api_visibility: Option<RootApiVisibilityRuntime>,
     committed_api_visibility: Option<CommittedAssessmentApiVisibility>,
+    #[cfg(feature = "graphql-review")]
+    committed_graphql_review: Option<CommittedGraphqlReview>,
+    #[cfg(feature = "graphql-review")]
+    graphql_parent_defense: Option<AssessmentDefenseController>,
     defense_audit: WebAssessmentDefenseAudit,
     passive_ledger: CommittedAssessmentPassiveLedger,
 }
@@ -2104,6 +2184,10 @@ impl WebAssessmentRuntime {
                 );
                 let defense_valid = match (defense.as_ref(), replay) {
                     (Some(expected), Ok(replayed)) if replayed.exact_audit_eq(expected) => {
+                        #[cfg(feature = "graphql-review")]
+                        if subject.origin == WebAssessmentSubjectOrigin::AuthorizedRoot {
+                            self.graphql_parent_defense = Some(replayed.clone());
+                        }
                         self.defense_audit.append_controller(&replayed).is_ok()
                     },
                     _ => false,
@@ -2715,6 +2799,110 @@ impl WebAssessmentRuntime {
                 });
             },
         }
+        #[cfg(feature = "graphql-review")]
+        if self.graphql_review {
+            if !reasons.is_empty() {
+                reasons.insert(WebAssessmentIncompleteReason::GraphqlReviewIncomplete);
+            } else {
+                let root_subject = EntityId::new(format!("endpoint:{}", self.root.url()))
+                    .map_err(|_| WebAssessmentRuntimeError::NativeReviewComposition)?;
+                let parent_defense = self
+                    .graphql_parent_defense
+                    .as_ref()
+                    .ok_or(WebAssessmentRuntimeError::NativeReviewComposition)?;
+                if !parent_defense.permits_optional_interaction(
+                    &root_subject,
+                    DefenseInteractionClass::DifferentialRead,
+                ) {
+                    // Enforced standing defense or rate limiting can only
+                    // remove this optional child; it never creates a request.
+                } else {
+                    let hints = graphql_endpoint_hints(
+                        self.root.url(),
+                        self.authority.knowledge(),
+                        subject_reports
+                            .iter()
+                            .filter(|report| report.was_executed())
+                            .map(|report| report.subject().url().clone()),
+                        forms.iter().map(|form| form.action().clone()),
+                    );
+                    match execute_graphql_review(
+                        &self.authority,
+                        self.root.url(),
+                        hints,
+                        self.limits.max_response_body_bytes(),
+                        self.defense_enforcement,
+                    )
+                    .await
+                    {
+                        Ok(GraphqlRuntimeResult::NotEligible) => {},
+                        Ok(GraphqlRuntimeResult::Complete(completed)) => {
+                            let replayed = completed
+                                .replay_defense(
+                                    self.authority.knowledge(),
+                                    self.defense_enforcement,
+                                )
+                                .map_err(|_| WebAssessmentRuntimeError::NativeReviewComposition)?;
+                            if !completed.defense().exact_audit_eq(&replayed)
+                                || self.defense_audit.append_controller(&replayed).is_err()
+                            {
+                                return Err(WebAssessmentRuntimeError::NativeReviewComposition);
+                            }
+                            if completed.review().outcome()
+                                == crate::graphql_review::GraphqlReviewOutcome::Incomplete
+                            {
+                                reasons
+                                    .insert(WebAssessmentIncompleteReason::GraphqlReviewIncomplete);
+                            } else {
+                                self.committed_graphql_review = Some(completed.into_review());
+                            }
+                        },
+                        Ok(GraphqlRuntimeResult::Stopped(stopped)) => {
+                            let replayed = stopped
+                                .replay_defense(
+                                    self.authority.knowledge(),
+                                    self.defense_enforcement,
+                                )
+                                .map_err(|_| WebAssessmentRuntimeError::NativeReviewComposition)?;
+                            if !stopped.defense().exact_audit_eq(&replayed)
+                                || self.defense_audit.append_controller(&replayed).is_err()
+                            {
+                                return Err(WebAssessmentRuntimeError::NativeReviewComposition);
+                            }
+                            match stopped.stop() {
+                                GraphqlRuntimeStop::Cancelled => {
+                                    reasons.insert(WebAssessmentIncompleteReason::HostCancellation);
+                                },
+                                GraphqlRuntimeStop::RuntimeLimit(dimension) => {
+                                    reasons.insert(reason_for_runtime_dimension(dimension));
+                                },
+                                GraphqlRuntimeStop::TransportIncomplete => {},
+                            }
+                            reasons.insert(WebAssessmentIncompleteReason::GraphqlReviewIncomplete);
+                        },
+                        Err(_) => {
+                            let current_subject = subject_reports.pop().unwrap_or_else(|| {
+                                WebAssessmentSubjectReport::pending(self.root.clone())
+                            });
+                            let completed_subjects = subject_reports
+                                .into_iter()
+                                .filter(WebAssessmentSubjectReport::was_executed)
+                                .collect();
+                            return Err(WebAssessmentRuntimeError::ProjectionInvariant {
+                                receipt: Box::new(self.failure_receipt(
+                                    &known_subjects,
+                                    completed_subjects,
+                                    forms,
+                                    current_subject,
+                                    failed_reasons(&reasons),
+                                    started_at,
+                                )),
+                            });
+                        },
+                    }
+                }
+            }
+        }
         #[cfg(not(feature = "normalization-resilience"))]
         let review_ledgers = self
             .native_review
@@ -2736,6 +2924,8 @@ impl WebAssessmentRuntime {
             &self.passive_ledger,
             &review_ledgers,
             self.committed_api_visibility.as_ref(),
+            #[cfg(feature = "graphql-review")]
+            self.committed_graphql_review.as_ref(),
             self.authority.knowledge(),
             &self.root,
             &subject_reports
@@ -2789,6 +2979,7 @@ impl WebAssessmentRuntime {
             run_started_at,
             authorized_root: self.root.clone(),
             limits: self.limits,
+            runtime_active_verification_limit: self.runtime_active_verification_limit,
             subjects: subject_reports,
             forms,
             semantics,

@@ -37,6 +37,16 @@ impl CollectedHttpResponse {
         self.body_truncated
     }
 
+    #[cfg(feature = "graphql-review")]
+    pub(crate) fn body_complete(&self) -> bool {
+        self.body_complete && !self.body_truncated
+    }
+
+    #[cfg(feature = "graphql-review")]
+    pub(crate) fn normalized_media_type(&self) -> Option<String> {
+        normalized_media_type(&self.headers)
+    }
+
     pub(crate) fn has_json_compatible_media_type(&self) -> bool {
         normalized_media_type(&self.headers)
             .as_deref()

@@ -1,1 +1,1 @@
-{"data":{"fixtureCandidate":"Query","__schema":{"queryType":{"name":"FixtureQuery"},"mutationType":null,"subscriptionType":null}}}
+{"data":{"venomCandidateV1":"FixtureQuery","__schema":{"queryType":{"name":"FixtureQuery"},"mutationType":null,"subscriptionType":null}}}

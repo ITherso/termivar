@@ -3,7 +3,7 @@ corpus_id = "web-assessment-conformance"
 revision = 1
 title = "Web assessment conformance corpus"
 summary = "Sanitized deterministic request and response cases for current scanner contracts and explicit future protocol metadata."
-corpus_digest = "corpus-sha256:6d1affaa94042a3fce67f4f91d1eb8115646e895416efe9d17fb1153bc1d273c"
+corpus_digest = "corpus-sha256:1f29ef7566c28f2c8f06f5bd850882e96988f311bb32d775c52e896719348a80"
 case_files = [
   "cases/defense.candidate-specific-block.toml",
   "cases/defense.challenge-body.toml",

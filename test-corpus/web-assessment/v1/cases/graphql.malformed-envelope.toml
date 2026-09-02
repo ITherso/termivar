@@ -4,7 +4,7 @@ revision = 1
 category = "api-graphql"
 purpose = "Fail closed on a malformed JSON body even when the response media type is GraphQL-compatible."
 provenance = "generated-boundary"
-support = "metadata-only"
+support = "current"
 tags = ["boundary", "graphql", "malformed"]
 
 [request]
@@ -13,7 +13,7 @@ origin = "https://api.example.test"
 path = "/graphql"
 role = "bootstrap"
 body_media_type = "application/json"
-inline_body = '''{"query":"query CorpusMalformed { fixtureMalformed: __typename }"}'''
+inline_body = '''{"query":"query VenomGraphqlControlV1 { venomControlV1: __typename }"}'''
 
 [response]
 status = 200
@@ -26,4 +26,3 @@ body_file = "bodies/graphql-malformed.txt"
 [expected]
 graphql_evidence = "malformed-envelope"
 maximum_authority = "knowledge-only"
-incompleteness = "future-metadata-only"

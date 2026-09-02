@@ -5,7 +5,7 @@ deletion_commit = "28bfb2d8ae3a4f707b7423cac65b6be8e11085b6"
 historical_source_root = "src/scanner"
 expected_file_count = 38
 algorithm_version = "venom.historical-scanner-salvage-digest/v1"
-ledger_digest = "salvage-sha256:cd706569ed6044cc99b97bb55322a6651b271fa233a66651cd8b477625e63843"
+ledger_digest = "salvage-sha256:5449610451c2eb3efab4c21166c12d3ffe36ade87aa7c6fd436e67bacded7e58"
 current_replacement_baseline_sha = "cbca14d10db4ee641308f3b3e290bf75d937c8a7"
 
 [[files]]
@@ -117,17 +117,32 @@ notes = "Modeled REST, GraphQL, gRPC, SOAP, and generic services but used no pro
 
 [[files.components]]
 id = "api.protocol-taxonomy"
-symbol = "APIType, APIEndpoint, GraphQL, gRPC, SOAP, and REST models"
+symbol = "APIType::GraphQL and related endpoint and parameter models"
 disposition = "rewrite-from-contract"
 priority = "p1"
-historical_behavior = "Enumerated API protocol families, endpoint shapes, parameters, and candidate tests."
+historical_behavior = "Modeled GraphQL endpoints, parameters, and candidate protocol tests without transport execution."
 old_runtime_reachability = "unreachable"
-reusable_value = "Protocol taxonomy and candidate assessment families."
+reusable_value = "GraphQL protocol taxonomy and a bounded candidate assessment family."
+prohibited_behaviors = ["legacy-runtime-coupling", "random-identity"]
+modern_destination = "venom-scanner:api-assessment"
+prerequisites = ["protocol-specific transport authority", "matched evidence contracts"]
+status = "restored"
+modern_implementation = "venom_scanner::graphql_review (web.review.graphql.introspection-pair@1)"
+rationale = "Only anonymous bounded GraphQL surface and schema-root introspection review was rebuilt from typed evidence; no legacy scaffold was restored."
+
+[[files.components]]
+id = "api.protocol-taxonomy.remaining"
+symbol = "APIType::REST, APIType::GRPC, APIType::SOAP, and generic service models"
+disposition = "rewrite-from-contract"
+priority = "p1"
+historical_behavior = "Modeled REST, gRPC, SOAP, and generic service endpoint shapes and candidate tests without protocol transport."
+old_runtime_reachability = "unreachable"
+reusable_value = "Non-GraphQL protocol taxonomy and candidate assessment families."
 prohibited_behaviors = ["legacy-runtime-coupling", "random-identity"]
 modern_destination = "venom-scanner:api-assessment"
 prerequisites = ["protocol-specific transport authority", "matched evidence contracts"]
 status = "planned"
-rationale = "Rebuild from typed protocol evidence rather than preserve the scaffold."
+rationale = "REST, gRPC, SOAP, and generic service review remain future typed capabilities and were not restored by GraphQL V1."
 
 [[files.components]]
 id = "api.unconditional-tests"

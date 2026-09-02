@@ -44,6 +44,22 @@ const ASSESSMENT_RUN_TARGET_DOMAIN: &[u8] = b"venom.assessment-run.target.v1\0";
 const WEB_ASSESSMENT_RUN_STEP_ID: &str = "web-review";
 const WEB_ASSESSMENT_STOP_DETAIL: &str = "bounded web assessment completed";
 
+/// Runtime-only extension of the profile limits for explicitly enabled child work.
+#[derive(Clone, Copy)]
+pub(crate) struct AssessmentRuntimeLimits {
+    profile: WebAssessmentLimits,
+    active_verification_limit: u16,
+}
+
+impl AssessmentRuntimeLimits {
+    pub(super) const fn new(profile: WebAssessmentLimits, active_verification_limit: u16) -> Self {
+        Self {
+            profile,
+            active_verification_limit,
+        }
+    }
+}
+
 /// Checked bridge between one completed origin assessment and its product
 /// report envelope.
 ///
@@ -67,15 +83,18 @@ impl CompletedWebAssessmentTruth {
     pub(crate) fn new(
         run_started_at: SystemTime,
         authorized_root: &WebAssessmentSubject,
-        limits: WebAssessmentLimits,
+        runtime_limits: AssessmentRuntimeLimits,
         usage: WebAssessmentUsage,
         completion: &WebAssessmentCompletion,
         defense_mode: WebAssessmentDefenseMode,
         profile: ScanProfileV1,
     ) -> Result<Self, AssessmentRunReportError> {
-        validate_completed_assessment_truth(
+        let limits = runtime_limits.profile;
+        let runtime_active_verification_limit = runtime_limits.active_verification_limit;
+        validate_completed_assessment_truth_with_active_limit(
             authorized_root,
             limits,
+            runtime_active_verification_limit,
             AssessmentUsageTruth::from(usage),
             completion,
             defense_mode,
@@ -88,7 +107,11 @@ impl CompletedWebAssessmentTruth {
             authorized_origin: authorized_root.url().origin().ascii_serialization(),
             target_identity: assessment_target_identity(authorized_root.url()),
             target,
-            expected_accounting: expected_run_accounting(limits, usage),
+            expected_accounting: expected_run_accounting_with_active_limit(
+                limits,
+                runtime_active_verification_limit,
+                usage,
+            ),
             expected_elapsed_ms: usage.elapsed_ms,
             profile,
         })
@@ -413,9 +436,30 @@ impl From<WebAssessmentUsage> for AssessmentUsageTruth {
     }
 }
 
+#[cfg(test)]
 fn validate_completed_assessment_truth(
     authorized_root: &WebAssessmentSubject,
     limits: WebAssessmentLimits,
+    usage: AssessmentUsageTruth,
+    completion: &WebAssessmentCompletion,
+    defense_mode: WebAssessmentDefenseMode,
+    profile: &ScanProfileV1,
+) -> Result<(), AssessmentRunReportError> {
+    validate_completed_assessment_truth_with_active_limit(
+        authorized_root,
+        limits,
+        limits.max_active_verifications(),
+        usage,
+        completion,
+        defense_mode,
+        profile,
+    )
+}
+
+fn validate_completed_assessment_truth_with_active_limit(
+    authorized_root: &WebAssessmentSubject,
+    limits: WebAssessmentLimits,
+    runtime_active_verification_limit: u16,
     usage: AssessmentUsageTruth,
     completion: &WebAssessmentCompletion,
     defense_mode: WebAssessmentDefenseMode,
@@ -463,7 +507,9 @@ fn validate_completed_assessment_truth(
         || usage.retained_unique_url_bytes < root.as_str().len()
         || usage.retained_unique_url_bytes > limits.max_retained_url_bytes()
         || usage.total_requests > limits.max_total_requests()
-        || usage.active_verifications > limits.max_active_verifications()
+        || runtime_active_verification_limit < limits.max_active_verifications()
+        || runtime_active_verification_limit > limits.max_active_verifications().saturating_add(1)
+        || usage.active_verifications > runtime_active_verification_limit
         || usage.request_body_bytes > request_body_limit
         || usage.response_bytes > limits.max_total_response_bytes()
         || usage.elapsed_ms > u64::try_from(limits.max_wall_time().as_millis()).unwrap_or(u64::MAX)
@@ -473,15 +519,24 @@ fn validate_completed_assessment_truth(
     Ok(())
 }
 
+#[cfg(test)]
 fn expected_run_accounting(
     limits: WebAssessmentLimits,
+    usage: AssessmentUsageTruth,
+) -> RunAccounting {
+    expected_run_accounting_with_active_limit(limits, limits.max_active_verifications(), usage)
+}
+
+fn expected_run_accounting_with_active_limit(
+    limits: WebAssessmentLimits,
+    runtime_active_verification_limit: u16,
     usage: AssessmentUsageTruth,
 ) -> RunAccounting {
     let budget = RuntimeBudget::default()
         .with_max_total_requests(limits.max_total_requests())
         .with_max_response_bytes(limits.max_total_response_bytes())
         .with_max_wall_time(limits.max_wall_time())
-        .with_max_active_verifications(limits.max_active_verifications());
+        .with_max_active_verifications(runtime_active_verification_limit);
     RunAccounting::new(
         ResourceAccounting::metered(
             u64::from(budget.max_total_requests()),

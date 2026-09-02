@@ -2,9 +2,9 @@ schema = "security-assessment-fixture/v1"
 id = "graphql.partial-data-errors"
 revision = 1
 category = "api-graphql"
-purpose = "Keep partial data with structured errors conservative until an exact response contract exists."
+purpose = "Exercise the fail-closed partial-data-with-errors response contract."
 provenance = "current-authored"
-support = "metadata-only"
+support = "current"
 tags = ["errors", "graphql", "partial"]
 
 [request]
@@ -13,7 +13,7 @@ origin = "https://api.example.test"
 path = "/graphql"
 role = "bootstrap"
 body_media_type = "application/json"
-inline_body = '''{"query":"query CorpusPartial { fixturePartial: __typename __schema { queryType { name } } }"}'''
+inline_body = '''{"query":"query VenomGraphqlCandidateV1 { venomCandidateV1: __typename __schema { queryType { name } mutationType { name } subscriptionType { name } } }"}'''
 
 [response]
 status = 200
@@ -26,4 +26,3 @@ body_file = "bodies/graphql-partial.json"
 [expected]
 graphql_evidence = "partial-data-with-errors"
 maximum_authority = "knowledge-only"
-incompleteness = "future-metadata-only"

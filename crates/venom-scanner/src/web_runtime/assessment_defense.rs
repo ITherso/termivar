@@ -579,6 +579,26 @@ impl AssessmentDefenseController {
         Ok(suppressed)
     }
 
+    /// Applies the same monotonic assessment policy to one closed child
+    /// interaction that is executed outside the standard planner catalog.
+    ///
+    /// This is used by explicitly enabled, fixed-shape protocol children. It
+    /// does not add an action or authority: observation-only mode always
+    /// permits, while enforcement omits optional work unless policy says
+    /// `Allow` (both deprioritization and suppression therefore fail closed).
+    #[cfg(feature = "graphql-review")]
+    pub(crate) fn permits_optional_interaction(
+        &self,
+        subject: &EntityId,
+        class: DefenseInteractionClass,
+    ) -> bool {
+        !self.enforcement_enabled
+            || assessment_interaction_decision(
+                self.ledger.signal_for_subject(subject).response(),
+                class,
+            ) == InteractionDecision::Allow
+    }
+
     pub(crate) fn shadow_from_policy_baseline(
         &self,
         baseline: AttackPlan,
@@ -947,7 +967,8 @@ fn base_record_shape(descriptor: PredicateDescriptor, item: &Evidence) -> bool {
     match descriptor {
         HttpEvidencePredicate::REQUEST_METHOD => matches!(
             item.value(),
-            EvidenceValue::Text(value) if matches!(value.as_str(), "GET" | "HEAD" | "OPTIONS")
+            EvidenceValue::Text(value)
+                if matches!(value.as_str(), "GET" | "HEAD" | "OPTIONS" | "POST")
         ),
         HttpEvidencePredicate::REQUEST_URL | HttpEvidencePredicate::RESPONSE_FINAL_URL => {
             matches!(item.value(), EvidenceValue::Text(value) if url::Url::parse(value).is_ok())

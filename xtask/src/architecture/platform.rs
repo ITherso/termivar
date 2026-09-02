@@ -25,6 +25,7 @@ const DEFAULT_SCANNER_FEATURES: &[&str] = &["core", "scanning"];
 const EXACT_CORE_FEATURES: &[&str] = &["default", "legacy-contracts"];
 const QUARANTINED_FEATURES: &[&str] = &[
     "distributed",
+    "graphql-review",
     "legacy-scanner",
     "lua",
     "normalization-resilience",
@@ -41,6 +42,7 @@ const EXACT_SCANNER_FEATURES: &[&str] = &[
     "distributed",
     "enterprise",
     "full",
+    "graphql-review",
     "legacy-scanner",
     "lua",
     "minimal",
@@ -60,6 +62,7 @@ const FULL_AGGREGATE_FEATURES: &[&str] = &[
     "core",
     "detection",
     "distributed",
+    "graphql-review",
     "legacy-scanner",
     "lua",
     "ml",
@@ -77,6 +80,7 @@ const ENTERPRISE_AGGREGATE_FEATURES: &[&str] = &[
     "core",
     "detection",
     "distributed",
+    "graphql-review",
     "legacy-scanner",
     "lua",
     "ml",
@@ -164,6 +168,7 @@ const EXACT_MODULE_GATES: &[(&str, &str)] = &[
     ("distributed", "feature=\"distributed\""),
     ("event_bus", "feature=\"legacy-scanner\""),
     ("error", "feature=\"legacy-scanner\""),
+    ("graphql_review", "feature=\"graphql-review\""),
     ("legacy_discovery", "feature=\"legacy-scanner\""),
     ("logging", "feature=\"legacy-scanner\""),
     (
@@ -186,6 +191,12 @@ const EXACT_MODULE_GATES: &[(&str, &str)] = &[
 ];
 
 const FORBIDDEN_SCANNER_MODULES: &[&str] = &["waf"];
+
+const GRAPHQL_REVIEW_CORE_SOURCE: &str = "crates/venom-scanner/src/graphql_review.rs";
+const GRAPHQL_REVIEW_RUNTIME_SOURCE: &str =
+    "crates/venom-scanner/src/web_runtime/graphql_runtime.rs";
+const GRAPHQL_REVIEW_BROKER_SOURCE: &str =
+    "crates/venom-scanner/src/http_evidence/request_broker.rs";
 
 const RETIRED_ADAPTIVE_MODULES: &[&str] = &["payloads", "scoring", "strategy"];
 
@@ -893,6 +904,10 @@ pub(super) fn check(workspace_root: &Path) -> Result<Vec<String>, Box<dyn Error>
     )?);
     let web_runtime_source =
         fs::read_to_string(workspace_root.join("crates/venom-scanner/src/web_runtime.rs"))?;
+    violations.extend(graphql_review_contract_violations(
+        workspace_root,
+        &web_runtime_source,
+    )?);
     violations.extend(private_natural_child_module_violations(
         &web_runtime_source,
         "scan_profile",
@@ -1102,6 +1117,7 @@ fn cli_feature_violations(
             "legacy-scanner",
             &["dep:reqwest", "venom-scanner/legacy-scanner"][..],
         ),
+        ("graphql-review", &["venom-scanner/graphql-review"][..]),
         (
             "normalization-resilience",
             &["venom-scanner/normalization-resilience"][..],
@@ -1255,6 +1271,20 @@ fn exact_raw_feature_closures() -> Vec<(&'static str, &'static [&'static str])> 
         (
             "scanning",
             &[
+                "scanning",
+                "core",
+                "dep:async-trait",
+                "dep:html5ever",
+                "dep:markup5ever_rcdom",
+                "dep:reqwest",
+                "dep:tokio",
+                "dep:tokio-util",
+            ],
+        ),
+        (
+            "graphql-review",
+            &[
+                "graphql-review",
                 "scanning",
                 "core",
                 "dep:async-trait",
@@ -1448,6 +1478,182 @@ fn module_gate_violations(source: &str) -> Result<Vec<String>, syn::Error> {
         }
     }
     Ok(violations)
+}
+
+fn graphql_review_contract_violations(
+    workspace_root: &Path,
+    web_runtime_source: &str,
+) -> Result<Vec<String>, Box<dyn Error>> {
+    let core = fs::read_to_string(workspace_root.join(GRAPHQL_REVIEW_CORE_SOURCE))?;
+    let runtime = fs::read_to_string(workspace_root.join(GRAPHQL_REVIEW_RUNTIME_SOURCE))?;
+    let broker = fs::read_to_string(workspace_root.join(GRAPHQL_REVIEW_BROKER_SOURCE))?;
+    let mut violations = graphql_review_source_contract_violations(&core, &runtime, &broker);
+    violations.extend(graphql_runtime_module_gate_violations(web_runtime_source)?);
+    Ok(violations)
+}
+
+fn graphql_runtime_module_gate_violations(source: &str) -> Result<Vec<String>, syn::Error> {
+    let syntax = syn::parse_file(source)?;
+    let matches = syntax
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Mod(module) if module.ident == "graphql_runtime" => Some(module),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    match matches.as_slice() {
+        [module]
+            if matches!(module.vis, Visibility::Inherited)
+                && module.content.is_none()
+                && cfg_predicates(module) == ["feature=\"graphql-review\"".to_owned()] =>
+        {
+            Ok(Vec::new())
+        },
+        _ => Ok(vec![
+            "GraphQL runtime must remain one private out-of-line module behind exact cfg(feature=\"graphql-review\")"
+                .to_owned(),
+        ]),
+    }
+}
+
+fn graphql_review_source_contract_violations(
+    core: &str,
+    runtime: &str,
+    broker: &str,
+) -> Vec<String> {
+    let mut violations = Vec::new();
+    for (name, exact) in [
+        (
+            "selected endpoint",
+            "pub(crate) const MAX_GRAPHQL_SELECTED_ENDPOINTS: usize = 1;",
+        ),
+        (
+            "child request",
+            "pub(crate) const MAX_GRAPHQL_CHILD_REQUESTS: usize = 3;",
+        ),
+        (
+            "active verification",
+            "pub(crate) const MAX_GRAPHQL_ACTIVE_VERIFICATIONS: usize = 1;",
+        ),
+    ] {
+        if !core.contains(exact) {
+            violations.push(format!(
+                "GraphQL V1 {name} ceiling must remain pinned by `{exact}`"
+            ));
+        }
+    }
+
+    let compact_core = squash_ascii_whitespace(core);
+    for exact in [
+        "&format!(\"query{CONTROL_OPERATION_NAME}{{{CONTROL_ALIAS}:__typename}}\")",
+        "&format!(\"query{CANDIDATE_OPERATION_NAME}{{{CANDIDATE_ALIAS}:__typename__schema{{queryType{{name}}mutationType{{name}}subscriptionType{{name}}}}}}\")",
+        "&format!(\"query{REPLAY_OPERATION_NAME}{{{REPLAY_ALIAS}:__typename__schema{{queryType{{name}}mutationType{{name}}subscriptionType{{name}}}}}}\")",
+        "serde_json::json!({\"query\":query})",
+    ] {
+        if !compact_core.contains(exact) {
+            violations.push(
+                "GraphQL V1 operations must remain the exact typed read-only control/introspection/replay trio"
+                    .to_owned(),
+            );
+            break;
+        }
+    }
+    for exact in [
+        "catalog_entry(JsonArrayBatching,\"graphql.json-array-batching\",MetadataOnly,)",
+        "catalog_entry(FullSchemaEnumeration,\"graphql.full-schema\",MetadataOnly)",
+        "catalog_entry(Subscriptions,\"graphql.subscriptions\",MetadataOnly)",
+        "catalog_entry(MutationCsrf,\"graphql.mutation-csrf\",MetadataOnly)",
+        "catalog_entry(AuthorizationContext,\"graphql.authorization-context\",MetadataOnly,)",
+    ] {
+        if !compact_core.contains(exact) {
+            violations.push(format!(
+                "GraphQL V1 dangerous or credential-bearing family must remain metadata-only: `{exact}`"
+            ));
+        }
+    }
+    for forbidden in [
+        "reqwest::",
+        "std::net",
+        "tokio::net",
+        "TcpStream",
+        "TcpListener",
+        "Command::new",
+        "WebSocket",
+    ] {
+        if core.contains(forbidden) {
+            violations.push(format!(
+                "transport-neutral GraphQL core must not acquire direct transport/process/WebSocket authority: `{forbidden}`"
+            ));
+        }
+    }
+
+    if runtime
+        .matches("collect_anonymous_graphql_json_for_runtime")
+        .count()
+        != 1
+        || !runtime.contains("GraphqlOperationSet::v1")
+    {
+        violations.push(
+            "GraphQL runtime must execute the one fixed operation set through one shared anonymous broker seam"
+                .to_owned(),
+        );
+    }
+    for forbidden in [
+        "reqwest::",
+        "Client::new",
+        "HttpRequestBroker::new",
+        "AuthorizationInput",
+        ".bearer_auth(",
+        ".basic_auth(",
+        "WebSocket",
+    ] {
+        if runtime.contains(forbidden) {
+            violations.push(format!(
+                "GraphQL runtime must not create transport, credential, or WebSocket authority: `{forbidden}`"
+            ));
+        }
+    }
+
+    let compact_broker = squash_ascii_whitespace(broker);
+    let exact_broker_shape = [
+        "fnbuild_anonymous_graphql_json_request",
+        ".request(Method::POST,target.clone())",
+        ".header(CONTENT_TYPE,\"application/json\")",
+        ".header(ACCEPT,GRAPHQL_RESPONSE_ACCEPT)",
+        ".body(body.to_vec())",
+    ];
+    if exact_broker_shape
+        .iter()
+        .any(|exact| !compact_broker.contains(exact))
+    {
+        violations.push(
+            "shared GraphQL broker seam must remain bounded anonymous POST JSON with the closed Accept header"
+                .to_owned(),
+        );
+    }
+    for forbidden in [
+        ".bearer_auth(",
+        ".basic_auth(",
+        ".header(AUTHORIZATION",
+        ".header(reqwest::header::AUTHORIZATION",
+        ".header(COOKIE",
+        ".header(reqwest::header::COOKIE",
+    ] {
+        if compact_broker.contains(forbidden) {
+            violations.push(format!(
+                "shared GraphQL POST seam must remain anonymous and cookie-free: `{forbidden}`"
+            ));
+        }
+    }
+    violations
+}
+
+fn squash_ascii_whitespace(source: &str) -> String {
+    source
+        .chars()
+        .filter(|character| !character.is_ascii_whitespace())
+        .collect()
 }
 
 fn core_surface_violations(workspace_root: &Path) -> Result<Vec<String>, Box<dyn Error>> {
@@ -2946,7 +3152,7 @@ fn assessment_bridge_body_is_exact(block: &syn::Block) -> bool {
         })
         && truth_arguments
             .next()
-            .is_some_and(|argument| assessment_bridge_self_field(argument, "limits"))
+            .is_some_and(assessment_bridge_exact_runtime_limits)
         && truth_arguments
             .next()
             .is_some_and(|argument| assessment_bridge_self_field(argument, "usage"))
@@ -2978,6 +3184,22 @@ fn assessment_bridge_body_is_exact(block: &syn::Block) -> bool {
         .is_some_and(|argument| assessment_bridge_self_field(argument, "assessment_items"))
         && reporting_expression_path_key(arguments.next().expect("checked length")).as_deref()
             == Some("truth")
+}
+
+fn assessment_bridge_exact_runtime_limits(expression: &syn::Expr) -> bool {
+    let syn::Expr::Call(call) = expression else {
+        return false;
+    };
+    reporting_expression_path_key(call.func.as_ref()).as_deref()
+        == Some("AssessmentRuntimeLimits::new")
+        && call.args.len() == 2
+        && call
+            .args
+            .first()
+            .is_some_and(|argument| assessment_bridge_self_field(argument, "limits"))
+        && call.args.iter().nth(1).is_some_and(|argument| {
+            assessment_bridge_self_field(argument, "runtime_active_verification_limit")
+        })
 }
 
 fn assessment_bridge_self_field(expression: &syn::Expr, expected: &str) -> bool {
@@ -5743,8 +5965,8 @@ struct ReportingSourceVisitor {
     inside_test_module: usize,
 }
 
-const EXACT_REPORTING_PRODUCTION_TOKEN_BYTES: usize = 48_537;
-const EXACT_REPORTING_PRODUCTION_FINGERPRINT: u128 = 0xa7e8_6395_492c_37d9_ba90_4a62_bc03_d480;
+const EXACT_REPORTING_PRODUCTION_TOKEN_BYTES: usize = 48_559;
+const EXACT_REPORTING_PRODUCTION_FINGERPRINT: u128 = 0x1460_0604_db9f_1af6_59d2_9032_4a82_cde2;
 
 fn reporting_production_body_inventory_violations(source: &str) -> Vec<String> {
     let Ok(syntax) = syn::parse_file(source) else {
@@ -6909,6 +7131,7 @@ mod tests {
             .map(str::to_owned)
             .collect(),
         );
+        features.insert("graphql-review".to_owned(), vec!["scanning".to_owned()]);
         features.insert(
             "normalization-resilience".to_owned(),
             vec!["scanning".to_owned()],
@@ -6991,6 +7214,147 @@ mod tests {
         );
         features.insert("research".to_owned(), vec!["full".to_owned()]);
         features
+    }
+
+    #[test]
+    fn graphql_review_is_non_default_and_uses_the_exact_feature_edges() {
+        let mut features = valid_feature_map();
+        assert!(feature_violations(&features).is_empty());
+        assert!(!raw_feature_closure(&features, "default").contains("graphql-review"));
+        assert_eq!(
+            features.get("graphql-review").unwrap(),
+            &["scanning".to_owned()]
+        );
+
+        features.remove("graphql-review");
+        assert!(feature_violations(&features)
+            .iter()
+            .any(|violation| violation.contains("graphql-review")));
+
+        let (mut cli_features, dependencies) = valid_cli_contract();
+        assert!(cli_feature_violations(&cli_features, &dependencies).is_empty());
+        cli_features
+            .get_mut("default")
+            .unwrap()
+            .push("graphql-review".to_owned());
+        assert!(cli_feature_violations(&cli_features, &dependencies)
+            .iter()
+            .any(|violation| violation.contains("default features must remain empty")));
+    }
+
+    #[test]
+    fn graphql_review_architecture_is_bounded_anonymous_and_shared_transport_only() {
+        let core = include_str!("../../../crates/venom-scanner/src/graphql_review.rs");
+        let runtime =
+            include_str!("../../../crates/venom-scanner/src/web_runtime/graphql_runtime.rs");
+        let broker =
+            include_str!("../../../crates/venom-scanner/src/http_evidence/request_broker.rs");
+        let web_runtime = include_str!("../../../crates/venom-scanner/src/web_runtime.rs");
+        assert!(graphql_review_source_contract_violations(core, runtime, broker).is_empty());
+        assert!(graphql_runtime_module_gate_violations(web_runtime)
+            .unwrap()
+            .is_empty());
+
+        for (from, to, expected) in [
+            (
+                "MAX_GRAPHQL_SELECTED_ENDPOINTS: usize = 1",
+                "MAX_GRAPHQL_SELECTED_ENDPOINTS: usize = 2",
+                "selected endpoint",
+            ),
+            (
+                "MAX_GRAPHQL_CHILD_REQUESTS: usize = 3",
+                "MAX_GRAPHQL_CHILD_REQUESTS: usize = 4",
+                "child request",
+            ),
+            (
+                "MAX_GRAPHQL_ACTIVE_VERIFICATIONS: usize = 1",
+                "MAX_GRAPHQL_ACTIVE_VERIFICATIONS: usize = 2",
+                "active verification",
+            ),
+        ] {
+            let mutation = core.replacen(from, to, 1);
+            assert!(
+                graphql_review_source_contract_violations(&mutation, runtime, broker)
+                    .iter()
+                    .any(|violation| violation.contains(expected))
+            );
+        }
+
+        let direct_transport = format!("{runtime}\nfn escaped() {{ reqwest::Client::new(); }}");
+        assert!(
+            graphql_review_source_contract_violations(core, &direct_transport, broker)
+                .iter()
+                .any(|violation| violation.contains("must not create transport"))
+        );
+        let credentialed_broker = format!(
+            "{broker}\nfn escaped(request: reqwest::RequestBuilder) {{ let _ = request.header(AUTHORIZATION, \"secret\"); }}"
+        );
+        assert!(
+            graphql_review_source_contract_violations(core, runtime, &credentialed_broker)
+                .iter()
+                .any(|violation| violation.contains("anonymous and cookie-free"))
+        );
+        let websocket_core = format!("{core}\nstruct WebSocket;");
+        assert!(
+            graphql_review_source_contract_violations(&websocket_core, runtime, broker)
+                .iter()
+                .any(|violation| violation.contains("WebSocket authority"))
+        );
+
+        let ungated_runtime = web_runtime.replace(
+            "#[cfg(feature = \"graphql-review\")]\nmod graphql_runtime;",
+            "mod graphql_runtime;",
+        );
+        assert!(graphql_runtime_module_gate_violations(&ungated_runtime)
+            .unwrap()
+            .iter()
+            .any(|violation| violation.contains("exact cfg")));
+    }
+
+    #[test]
+    fn graphql_future_dangerous_families_cannot_become_executable_or_expand_queries() {
+        let core = include_str!("../../../crates/venom-scanner/src/graphql_review.rs");
+        let runtime =
+            include_str!("../../../crates/venom-scanner/src/web_runtime/graphql_runtime.rs");
+        let broker =
+            include_str!("../../../crates/venom-scanner/src/http_evidence/request_broker.rs");
+        let compact = squash_ascii_whitespace(core);
+        for marker in [
+            "catalog_entry(JsonArrayBatching,\"graphql.json-array-batching\",MetadataOnly,)",
+            "catalog_entry(FullSchemaEnumeration,\"graphql.full-schema\",MetadataOnly)",
+            "catalog_entry(Subscriptions,\"graphql.subscriptions\",MetadataOnly)",
+            "catalog_entry(MutationCsrf,\"graphql.mutation-csrf\",MetadataOnly)",
+            "catalog_entry(AuthorizationContext,\"graphql.authorization-context\",MetadataOnly,)",
+        ] {
+            let mutation =
+                compact.replacen(marker, &marker.replace("MetadataOnly", "Executable"), 1);
+            assert!(
+                graphql_review_source_contract_violations(&mutation, runtime, broker)
+                    .iter()
+                    .any(|violation| violation.contains("must remain metadata-only"))
+            );
+        }
+
+        let mutation_operation = core.replacen(
+            "query {CONTROL_OPERATION_NAME}",
+            "mutation {CONTROL_OPERATION_NAME}",
+            1,
+        );
+        assert!(
+            graphql_review_source_contract_violations(&mutation_operation, runtime, broker)
+                .iter()
+                .any(|violation| violation.contains("exact typed read-only"))
+        );
+        let full_schema = core.replacen(
+            "queryType {{ name }} mutationType",
+            "types {{ name }} queryType {{ name }} mutationType",
+            1,
+        );
+        assert!(
+            graphql_review_source_contract_violations(&full_schema, runtime, broker)
+                .iter()
+                .any(|violation| violation.contains("exact typed read-only"))
+        );
     }
 
     #[test]
@@ -7829,7 +8193,10 @@ mod tests {
                     let truth = CompletedWebAssessmentTruth::new(
                         self.run_started_at,
                         &self.authorized_root,
-                        self.limits,
+                        AssessmentRuntimeLimits::new(
+                            self.limits,
+                            self.runtime_active_verification_limit,
+                        ),
                         self.usage,
                         &self.completion,
                         self.defense.mode(),
@@ -7862,6 +8229,7 @@ mod tests {
             typed_assessment_bridge.replace("self.run_started_at", "SystemTime::now()"),
             typed_assessment_bridge.replace("&self.authorized_root", "&caller_root"),
             typed_assessment_bridge.replace("self.limits", "WebAssessmentLimits::default()"),
+            typed_assessment_bridge.replace("self.runtime_active_verification_limit", "u16::MAX"),
             typed_assessment_bridge.replace("self.usage", "WebAssessmentUsage::default()"),
             typed_assessment_bridge.replace("&self.completion", "&completion"),
             typed_assessment_bridge.replace(
@@ -8881,6 +9249,10 @@ mod tests {
                     "dep:reqwest".to_owned(),
                     "venom-scanner/legacy-scanner".to_owned(),
                 ],
+            ),
+            (
+                "graphql-review".to_owned(),
+                vec!["venom-scanner/graphql-review".to_owned()],
             ),
             (
                 "normalization-resilience".to_owned(),

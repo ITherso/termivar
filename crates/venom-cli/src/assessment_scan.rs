@@ -309,15 +309,26 @@ enum AssessmentItemsReport {
 /// `format_is_json` deliberately avoids coupling this module to the CLI-local
 /// `OutputFormat` enum. The absence-of-`--profile` compatibility path must never
 /// call this function.
+#[derive(Default)]
+pub(crate) struct ProfileScanRuntimeOptions {
+    pub(crate) root_authorization_context: Option<WebAssessmentRootAuthorizationContext>,
+    pub(crate) normalization_resilience: bool,
+    pub(crate) graphql_review: bool,
+}
+
 pub(crate) async fn run_profile_scan(
     target: Url,
     profile: ScanProfileV1,
     format_is_json: bool,
     report_format: Option<ReportFormat>,
     report_to_file: bool,
-    root_authorization_context: Option<WebAssessmentRootAuthorizationContext>,
-    normalization_resilience: bool,
+    runtime_options: ProfileScanRuntimeOptions,
 ) -> Result<AssessmentScanExecution, Box<dyn Error>> {
+    let ProfileScanRuntimeOptions {
+        root_authorization_context,
+        normalization_resilience,
+        graphql_review,
+    } = runtime_options;
     let target_origin = target.origin().ascii_serialization();
     match (profile.profile(), profile.scope()) {
         (BuiltInScanProfile::Baseline, ScanProfileScope::SingleResource) => {
@@ -325,6 +336,13 @@ pub(crate) async fn run_profile_scan(
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::InvalidInput,
                     "normalization-resilience review requires the web-review profile",
+                )
+                .into());
+            }
+            if graphql_review {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "GraphQL review requires the web-review profile",
                 )
                 .into());
             }
@@ -349,6 +367,7 @@ pub(crate) async fn run_profile_scan(
                     report_to_file,
                     root_authorization_context,
                     normalization_resilience,
+                    graphql_review,
                 },
             )
             .await
@@ -396,6 +415,7 @@ struct WebReviewRunOptions {
     report_to_file: bool,
     root_authorization_context: Option<WebAssessmentRootAuthorizationContext>,
     normalization_resilience: bool,
+    graphql_review: bool,
 }
 
 async fn run_web_review(
@@ -410,6 +430,7 @@ async fn run_web_review(
         report_to_file,
         root_authorization_context,
         normalization_resilience,
+        graphql_review,
     } = options;
     let mut builder = WebAssessmentRuntime::builder(target).limits(profile.web_assessment_limits());
     if profile.defense_enforcement_enabled() {
@@ -428,6 +449,20 @@ async fn run_web_review(
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
                 "normalization-resilience runtime support is not compiled",
+            )
+            .into());
+        }
+    }
+    if graphql_review {
+        #[cfg(feature = "graphql-review")]
+        {
+            builder = builder.enable_graphql_review();
+        }
+        #[cfg(not(feature = "graphql-review"))]
+        {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "GraphQL review runtime support is not compiled",
             )
             .into());
         }
@@ -1018,6 +1053,8 @@ fn incomplete_reason_code(reason: &WebAssessmentIncompleteReason) -> &'static st
         WebAssessmentIncompleteReason::ApiVisibilityReviewIncomplete => {
             "api_visibility_review_incomplete"
         },
+        #[cfg(feature = "graphql-review")]
+        WebAssessmentIncompleteReason::GraphqlReviewIncomplete => "graphql_review_incomplete",
         _ => "other",
     }
 }
@@ -1198,14 +1235,37 @@ mod tests {
             false,
             None,
             false,
-            None,
-            true,
+            ProfileScanRuntimeOptions {
+                normalization_resilience: true,
+                ..ProfileScanRuntimeOptions::default()
+            },
         )
         .await
         .expect_err("normalization resilience is web-review only");
         assert_eq!(
             error.to_string(),
             "normalization-resilience review requires the web-review profile"
+        );
+    }
+
+    #[tokio::test]
+    async fn baseline_rejects_graphql_review_before_transport() {
+        let error = run_profile_scan(
+            Url::parse("https://example.test/").unwrap(),
+            ScanProfileV1::baseline().unwrap(),
+            false,
+            None,
+            false,
+            ProfileScanRuntimeOptions {
+                graphql_review: true,
+                ..ProfileScanRuntimeOptions::default()
+            },
+        )
+        .await
+        .expect_err("GraphQL review is web-review only");
+        assert_eq!(
+            error.to_string(),
+            "GraphQL review requires the web-review profile"
         );
     }
 
@@ -1417,6 +1477,11 @@ mod tests {
         for (reason, expected) in incomplete {
             assert_eq!(incomplete_reason_code(&reason), expected);
         }
+        #[cfg(feature = "graphql-review")]
+        assert_eq!(
+            incomplete_reason_code(&WebAssessmentIncompleteReason::GraphqlReviewIncomplete),
+            "graphql_review_incomplete"
+        );
 
         let stops = [
             (DecisionStopReason::ObjectiveComplete, "objective_complete"),

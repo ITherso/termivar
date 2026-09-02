@@ -55,6 +55,8 @@ mod assessment_report;
 mod assessment_review;
 mod assessment_review_projection;
 mod authority;
+#[cfg(feature = "graphql-review")]
+mod graphql_runtime;
 mod scan_profile;
 mod web_assessment;
 mod web_review_decision;

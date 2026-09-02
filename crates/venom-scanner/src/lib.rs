@@ -46,6 +46,8 @@ pub mod defense;
 #[cfg(feature = "legacy-scanner")]
 pub mod error;
 pub mod experience;
+#[cfg(feature = "graphql-review")]
+pub(crate) mod graphql_review;
 pub mod knowledge;
 #[cfg(feature = "legacy-scanner")]
 mod legacy_discovery;

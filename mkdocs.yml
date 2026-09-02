@@ -50,6 +50,7 @@ nav:
       - API predicate vocabulary: internals/api-predicates.md
       - API visibility evidence: internals/api-evidence.md
       - API reasoning: internals/api-reasoning.md
+      - GraphQL surface review: internals/graphql-review.md
       - Standard web decision profile: internals/web-decision.md
       - Standard web decision runtime: internals/web-runtime.md
       - Web reasoning: internals/web-reasoning.md

@@ -296,6 +296,19 @@ JSON/GraphQL fingerprints and reviewable visibility boundaries. It performs no
 requests, does not combine independent observations into a pair, and never
 declares a vulnerability.
 
+GraphQL surface review preserves that boundary. The non-default scanner/CLI
+`graphql-review` feature and explicit `--graphql-review --profile web-review`
+runtime choice create one anonymous scanner child; the reasoner does not create
+it. The child deterministically selects at most one exact-origin endpoint and
+uses the existing redirect-disabled broker and `RuntimeBudget` for an aliased
+`__typename` control, bounded schema-root introspection candidate, and distinct
+replay—up to three POST/JSON requests; the complete candidate/replay path uses
+one active verification. Committed
+typed protocol observations may feed existing API reasoning, but projections
+remain `Informational` / `KnowledgeOnly`. There is no mutation, full schema
+enumeration, authorization testing, depth/complexity probing, second client, or
+WebSocket transport. See [GraphQL surface review](internals/graphql-review.md).
+
 HTTP execution emits normalized protocol observations for API reasoning:
 validated lowercase media-type essences, an explicit JSON-compatibility flag,
 and bounded path segments. A host-paired comparison becomes an

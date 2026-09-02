@@ -69,6 +69,7 @@ const BOUNDED_RUNTIME_SOURCES: &[&str] = &[
     "crates/venom-scanner/src/web_planning.rs",
     "crates/venom-scanner/src/web_reasoning.rs",
     "crates/venom-scanner/src/web_runtime.rs",
+    GRAPHQL_RUNTIME_SOURCE,
     NATIVE_REVIEW_DECISION_SOURCE,
     NATIVE_REVIEW_EXECUTION_SOURCE,
     "crates/venom-scanner/src/web_runtime/authority.rs",
@@ -96,6 +97,7 @@ const NATIVE_REVIEW_DECISION_SOURCE: &str =
     "crates/venom-scanner/src/web_runtime/web_review_decision.rs";
 const NATIVE_REVIEW_EXECUTION_SOURCE: &str =
     "crates/venom-scanner/src/web_runtime/web_review_execution.rs";
+const GRAPHQL_RUNTIME_SOURCE: &str = "crates/venom-scanner/src/web_runtime/graphql_runtime.rs";
 const ATTRIBUTE_SOURCE_CONTEXT_SOURCE: &str =
     "crates/venom-scanner/src/web_runtime/web_assessment/attribute_source_context.rs";
 const ATTRIBUTE_BOUNDARY_MATCHER_SOURCE: &str =
@@ -2805,7 +2807,7 @@ fn inspect_assessment_item_projection(source: &str) -> Result<Vec<String>, syn::
         ),
         (
             "digest_field(&mut digest, stable_scope_id.as_str());",
-            3,
+            4,
             "assessment scope fingerprint framing",
         ),
         (
@@ -4325,7 +4327,7 @@ fn inspect_assessment_report_boundary(source: &str) -> Result<Vec<String>, syn::
             && block_references_all(
                 &method.block,
                 &[
-                    "validate_completed_assessment_truth",
+                    "validate_completed_assessment_truth_with_active_limit",
                     "AssessmentUsageTruth",
                     "run_started_at",
                     "target",
@@ -4333,20 +4335,20 @@ fn inspect_assessment_report_boundary(source: &str) -> Result<Vec<String>, syn::
                     "origin",
                     "ascii_serialization",
                     "assessment_target_identity",
-                    "expected_run_accounting",
+                    "expected_run_accounting_with_active_limit",
                     "elapsed_ms",
                     "profile",
                 ],
             )
             && statement_reference_precedes(
                 &method.block,
-                "validate_completed_assessment_truth",
+                "validate_completed_assessment_truth_with_active_limit",
                 "assessment_target_identity",
             )
             && statement_reference_precedes(
                 &method.block,
-                "validate_completed_assessment_truth",
-                "expected_run_accounting",
+                "validate_completed_assessment_truth_with_active_limit",
+                "expected_run_accounting_with_active_limit",
             )
             && !block_invokes_exact_function(&method.block, &["SystemTime", "now"])
     });
@@ -4560,7 +4562,7 @@ fn completed_truth_constructor_inputs_are_exact(method: &syn::ImplItemFn) -> boo
     inputs.len() == 7
         && is_plain_ident(inputs[0], "SystemTime")
         && is_borrowed_ident(inputs[1], "WebAssessmentSubject")
-        && is_plain_ident(inputs[2], "WebAssessmentLimits")
+        && is_plain_ident(inputs[2], "AssessmentRuntimeLimits")
         && is_plain_ident(inputs[3], "WebAssessmentUsage")
         && is_borrowed_ident(inputs[4], "WebAssessmentCompletion")
         && is_plain_ident(inputs[5], "WebAssessmentDefenseMode")
@@ -4769,7 +4771,7 @@ fn inspect_assessment_report_truth_validators(syntax: &syn::File) -> Vec<String>
     }
 
     let assessment_truth = validators
-        .get("validate_completed_assessment_truth")
+        .get("validate_completed_assessment_truth_with_active_limit")
         .is_some_and(|function| {
             matches!(function.vis, syn::Visibility::Inherited)
                 && block_references_all(
@@ -4811,7 +4813,9 @@ fn inspect_assessment_report_truth_validators(syntax: &syn::File) -> Vec<String>
                         "total_requests",
                         "max_total_requests",
                         "active_verifications",
+                        "runtime_active_verification_limit",
                         "max_active_verifications",
+                        "saturating_add",
                         "request_body_bytes",
                         "max_request_body_bytes",
                         "response_bytes",
@@ -7910,6 +7914,7 @@ impl<'ast> Visit<'ast> for OwnershipVisitor<'_> {
                     "crates/venom-scanner/src/web_runtime.rs",
                     "assessment_defense"
                 )
+                | ("crates/venom-scanner/src/web_runtime.rs", "graphql_runtime")
                 | ("crates/venom-scanner/src/web_runtime.rs", "scan_profile")
                 | ("crates/venom-scanner/src/web_runtime.rs", "web_assessment")
                 | (
@@ -7949,6 +7954,10 @@ impl<'ast> Visit<'ast> for OwnershipVisitor<'_> {
             && module == "assessment_report"
         {
             attributes_are_exact_cfg_feature(&item.attrs, "reporting")
+        } else if self.source == "crates/venom-scanner/src/web_runtime.rs"
+            && module == "graphql_runtime"
+        {
+            attributes_are_exact_cfg_feature(&item.attrs, "graphql-review")
         } else if self.source == "crates/venom-scanner/src/web_runtime/web_assessment.rs"
             && module == "normalization_transform_catalog"
         {
@@ -9855,6 +9864,10 @@ mod tests {
             (
                 "crates/venom-scanner/src/web_runtime.rs",
                 "mod web_review_execution;",
+            ),
+            (
+                "crates/venom-scanner/src/web_runtime.rs",
+                "#[cfg(feature = \"graphql-review\")] mod graphql_runtime;",
             ),
             (
                 "crates/venom-scanner/src/web_runtime/web_assessment.rs",
