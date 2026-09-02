@@ -2169,13 +2169,14 @@ mod scanner_corpus_conformance {
     const CASE_SCHEMA: &str = "security-assessment-fixture/v1";
     const MAX_CASE_BYTES: u64 = 64 * 1024;
     const MAX_BODY_BYTES: u64 = 512 * 1024;
-    const REFLECTION_MARKER_PLACEHOLDER: &str = "{{CORPUS_REFLECTION_MARKER}}";
-    const XSS_CANDIDATE_PLACEHOLDER: &str = "{{CORPUS_XSS_CANDIDATE}}";
-    const XSS_CANDIDATE_ESCAPED_PLACEHOLDER: &str = "{{CORPUS_XSS_CANDIDATE_HTML_ESCAPED}}";
-    const SSTI_EXPECTED_PLACEHOLDER: &str = "{{CORPUS_SSTI_EXPECTED}}";
-    const SSTI_CANDIDATE_PLACEHOLDER: &str = "{{CORPUS_SSTI_CANDIDATE}}";
+    const REFLECTION_MARKER_PLACEHOLDER: &str = "VENOM_FIXTURE_SLOT_REFLECTION_MARKER_V1";
+    const XSS_CANDIDATE_PLACEHOLDER: &str = "VENOM_FIXTURE_SLOT_XSS_CANDIDATE_V1";
+    const XSS_CANDIDATE_ESCAPED_PLACEHOLDER: &str =
+        "VENOM_FIXTURE_SLOT_XSS_CANDIDATE_HTML_ESCAPED_V1";
+    const SSTI_EXPECTED_PLACEHOLDER: &str = "VENOM_FIXTURE_SLOT_SSTI_EXPECTED_V1";
+    const SSTI_CANDIDATE_PLACEHOLDER: &str = "VENOM_FIXTURE_SLOT_SSTI_CANDIDATE_V1";
     #[cfg(feature = "normalization-resilience")]
-    const NORMALIZATION_ARTIFACT_PLACEHOLDER: &str = "{{CORPUS_NORMALIZATION_ARTIFACT}}";
+    const NORMALIZATION_ARTIFACT_PLACEHOLDER: &str = "VENOM_FIXTURE_SLOT_NORMALIZATION_ARTIFACT_V1";
     #[cfg(feature = "normalization-resilience")]
     const NORMALIZATION_CANDIDATE_ID: &str = "0123456789abcdef0123456789abcdef";
     #[cfg(feature = "normalization-resilience")]
@@ -2540,7 +2541,7 @@ mod scanner_corpus_conformance {
     fn rendered_source_body(case: &FixtureCase, marker: &str) -> Result<String, ()> {
         let template = body_text(source_body(case)?)?;
         let rendered = template.replace(REFLECTION_MARKER_PLACEHOLDER, marker);
-        if rendered.contains("{{CORPUS_") {
+        if rendered.contains("VENOM_FIXTURE_SLOT_") {
             return Err(());
         }
         Ok(rendered)
@@ -2560,7 +2561,7 @@ mod scanner_corpus_conformance {
         let rendered = template
             .replace(XSS_CANDIDATE_ESCAPED_PLACEHOLDER, &html_escape(candidate))
             .replace(XSS_CANDIDATE_PLACEHOLDER, candidate);
-        if rendered.contains("{{CORPUS_") {
+        if rendered.contains("VENOM_FIXTURE_SLOT_") {
             return Err(());
         }
         Ok(rendered)
@@ -2575,7 +2576,7 @@ mod scanner_corpus_conformance {
         let rendered = template
             .replace(SSTI_EXPECTED_PLACEHOLDER, &probe.expected_value())
             .replace(SSTI_CANDIDATE_PLACEHOLDER, &probe.candidate_value());
-        if rendered.contains("{{CORPUS_") {
+        if rendered.contains("VENOM_FIXTURE_SLOT_") {
             return Err(());
         }
         Ok(rendered.into_bytes())
@@ -3384,7 +3385,9 @@ mod scanner_corpus_conformance {
             NORMALIZATION_ARTIFACT_PLACEHOLDER,
             std::str::from_utf8(replay.as_bytes()).unwrap_or_default(),
         );
-        if candidate_body.contains("{{CORPUS_") || replay_body.contains("{{CORPUS_") {
+        if candidate_body.contains("VENOM_FIXTURE_SLOT_")
+            || replay_body.contains("VENOM_FIXTURE_SLOT_")
+        {
             return ConformanceResult::FixtureInvalid;
         }
         let candidate_semantic =
