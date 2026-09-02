@@ -9762,6 +9762,7 @@ mod tests {
             #[cfg(feature = "distributed")] mod distributed;
             #[cfg(feature = "legacy-scanner")] pub mod event_bus;
             #[cfg(feature = "legacy-scanner")] pub mod error;
+            #[cfg(feature = "graphql-review")] pub(crate) mod graphql_review;
             #[cfg(feature = "legacy-scanner")] mod legacy_discovery;
             #[cfg(feature = "legacy-scanner")] pub mod logging;
             #[cfg(any(feature = "platform-models", feature = "lua"))] mod lua_config;
