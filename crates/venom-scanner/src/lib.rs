@@ -107,6 +107,20 @@ pub mod web_decision;
 #[cfg(feature = "scanning")]
 pub mod web_runtime;
 
+#[cfg(feature = "scanning")]
+impl web_runtime::BuiltInScanProfile {
+    /// Parses an exact, case-sensitive built-in identifier without trimming.
+    pub fn parse_id(
+        value: &str,
+    ) -> std::result::Result<Self, web_runtime::BuiltInScanProfileParseError> {
+        match value {
+            web_runtime::BASELINE_SCAN_PROFILE_ID => Ok(Self::Baseline),
+            web_runtime::WEB_REVIEW_SCAN_PROFILE_ID => Ok(Self::WebReview),
+            _ => Err(web_runtime::BuiltInScanProfileParseError),
+        }
+    }
+}
+
 // Experimental detection and deviation records (feature: detection)
 #[cfg(feature = "detection")]
 pub mod advanced_detection;

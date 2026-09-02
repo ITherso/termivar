@@ -68,15 +68,6 @@ impl<'de> Deserialize<'de> for BuiltInScanProfile {
 }
 
 impl BuiltInScanProfile {
-    /// Parses an exact, case-sensitive built-in identifier without trimming.
-    pub fn parse_id(value: &str) -> Result<Self, BuiltInScanProfileParseError> {
-        match value {
-            BASELINE_SCAN_PROFILE_ID => Ok(Self::Baseline),
-            WEB_REVIEW_SCAN_PROFILE_ID => Ok(Self::WebReview),
-            _ => Err(BuiltInScanProfileParseError),
-        }
-    }
-
     /// Returns the stable wire identifier.
     pub const fn id(self) -> &'static str {
         match self {
