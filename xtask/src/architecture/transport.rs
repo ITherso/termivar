@@ -11546,7 +11546,21 @@ mod tests {
             .unwrap()
             .join("\n");
         assert!(
-            violations.contains("feature-gated redacted authorization audit"),
+            violations.contains("feature-gated redacted authorization and OpenAPI audits"),
+            "{violations}"
+        );
+
+        let missing_openapi_audit = report_source.replacen(
+            "    #[cfg(feature = \"openapi-review\")]\n    openapi_review: Option<WebAssessmentOpenApiAudit>,\n",
+            "",
+            1,
+        );
+        assert_ne!(missing_openapi_audit, report_source);
+        let violations = inspect_assessment_report_boundary(&missing_openapi_audit)
+            .unwrap()
+            .join("\n");
+        assert!(
+            violations.contains("feature-gated redacted authorization and OpenAPI audits"),
             "{violations}"
         );
 
@@ -11560,7 +11574,21 @@ mod tests {
             .unwrap()
             .join("\n");
         assert!(
-            violations.contains("feature-gated authorization audit"),
+            violations.contains("feature-gated authorization and OpenAPI audits"),
+            "{violations}"
+        );
+
+        let unvalidated_openapi_audit = report_source.replacen(
+            "        #[cfg(feature = \"openapi-review\")]\n        validate_openapi_audit(openapi_review.as_ref(), &items)?;",
+            "        #[cfg(feature = \"openapi-review\")]\n        let _ = openapi_review.as_ref();",
+            1,
+        );
+        assert_ne!(unvalidated_openapi_audit, report_source);
+        let violations = inspect_assessment_report_boundary(&unvalidated_openapi_audit)
+            .unwrap()
+            .join("\n");
+        assert!(
+            violations.contains("feature-gated authorization and OpenAPI audits"),
             "{violations}"
         );
 
@@ -11942,6 +11970,8 @@ mod tests {
                 run_started_at: SystemTime,
                 #[cfg(feature = "authorization-review")]
                 authorization_review: Option<WebAssessmentAuthorizationAudit>,
+                #[cfg(feature = "openapi-review")]
+                openapi_review: Option<WebAssessmentOpenApiAudit>,
                 transport: TransportDispatchAudit,
                 defense: WebAssessmentDefenseAudit,
             }

@@ -108,7 +108,7 @@ fn protected_type_cross_source_violations(
         (
             workspace_root.join("crates/venom-cli/src"),
             CLI_MAIN_SOURCE,
-            &["Cli", "Commands", "DeterministicScanInvocation"][..],
+            &["Cli", "Commands", "ScanArgs"][..],
         ),
         (
             workspace_root.join("crates/venom-scanner/src"),
@@ -605,8 +605,34 @@ fn inspect_cli_auth_surface(source: &str) -> Result<Vec<String>, syn::Error> {
         );
         return Ok(violations);
     };
-    let Fields::Named(scan_fields) = &scan.fields else {
-        violations.push("CLI Scan command must retain named fields".to_owned());
+    let scan_is_boxed = matches!(&scan.fields, Fields::Unnamed(fields)
+        if fields.unnamed.len() == 1
+            && is_one_argument_type(&fields.unnamed[0].ty, "Box", "ScanArgs"));
+    if !scan_is_boxed || !exact_command_attribute(&scan.attrs, "visible_alias=\"decision-scan\"") {
+        violations.push(
+            "CLI Scan command must retain the exact Box<ScanArgs> payload and decision-scan alias"
+                .to_owned(),
+        );
+    }
+
+    let scan_args = syntax.items.iter().find_map(|item| match item {
+        Item::Struct(item) if item.ident == "ScanArgs" => Some(item),
+        _ => None,
+    });
+    let Some(scan_args) = scan_args else {
+        violations.push("CLI ScanArgs must remain a private typed argument payload".to_owned());
+        return Ok(violations);
+    };
+    if !matches!(scan_args.vis, Visibility::Inherited)
+        || derive_identifiers(&scan_args.attrs) != BTreeSet::from(["Args".to_owned()])
+    {
+        violations.push(
+            "CLI ScanArgs must remain a private clap::Args payload without exposing derives"
+                .to_owned(),
+        );
+    }
+    let Fields::Named(scan_fields) = &scan_args.fields else {
+        violations.push("CLI ScanArgs must retain exact named fields".to_owned());
         return Ok(violations);
     };
     let fields = scan_fields
@@ -761,7 +787,7 @@ fn inspect_cli_auth_surface(source: &str) -> Result<Vec<String>, syn::Error> {
         );
     }
 
-    for type_name in ["Cli", "Commands", "DeterministicScanInvocation"] {
+    for type_name in ["Cli", "Commands", "ScanArgs"] {
         if item_has_sensitive_derive(&syntax, type_name)
             || !explicit_trait_impls(&syntax, type_name).is_empty()
         {
@@ -769,44 +795,6 @@ fn inspect_cli_auth_surface(source: &str) -> Result<Vec<String>, syn::Error> {
                 "CLI secret-carrying surface {type_name} must not implement Clone, Debug, display, serialization, conversion, borrowing, or other exposing traits"
             ));
         }
-    }
-
-    let invocation = syntax.items.iter().find_map(|item| match item {
-        Item::Struct(item) if item.ident == "DeterministicScanInvocation" => Some(item),
-        _ => None,
-    });
-    if invocation.is_none_or(|item| {
-        !matches!(item.vis, Visibility::Inherited)
-            || !named_field_has_type(&item.fields, "auth_env", "Option", Some("OsString"))
-            || !named_field_has_type(&item.fields, "auth_file", "Option", Some("PathBuf"))
-            || !named_field_has_type(&item.fields, "auth_stdin", "bool", None)
-            || !named_field_has_type(
-                &item.fields,
-                "authorization_review_policy",
-                "Option",
-                Some("PathBuf"),
-            )
-            || !named_field_has_type(
-                &item.fields,
-                "authz_primary_env",
-                "Option",
-                Some("OsString"),
-            )
-            || !named_field_has_type(
-                &item.fields,
-                "authz_primary_file",
-                "Option",
-                Some("PathBuf"),
-            )
-            || !named_field_has_type(&item.fields, "authz_primary_stdin", "bool", None)
-            || !named_field_has_type(&item.fields, "authz_peer_env", "Option", Some("OsString"))
-            || !named_field_has_type(&item.fields, "authz_peer_file", "Option", Some("PathBuf"))
-            || !named_field_has_type(&item.fields, "authz_peer_stdin", "bool", None)
-    }) {
-        violations.push(
-            "DeterministicScanInvocation must privately carry only policy and out-of-band source selectors"
-                .to_owned(),
-        );
     }
 
     if !compact
@@ -1225,6 +1213,17 @@ fn exact_arg_attribute(attributes: &[Attribute], expected: &str) -> bool {
     args == [expected]
 }
 
+fn exact_command_attribute(attributes: &[Attribute], expected: &str) -> bool {
+    let commands = attributes
+        .iter()
+        .filter_map(|attribute| match &attribute.meta {
+            Meta::List(list) if list.path.is_ident("command") => Some(compact_tokens(&list.tokens)),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    commands == [expected]
+}
+
 fn exact_cfg_feature_attribute(attributes: &[Attribute], feature: &str) -> bool {
     let predicates = attributes
         .iter()
@@ -1265,19 +1264,6 @@ fn item_has_sensitive_derive(syntax: &syn::File, type_name: &str) -> bool {
                 "Clone" | "Copy" | "Debug" | "Serialize" | "Deserialize" | "Display"
             )
         })
-    })
-}
-
-fn named_field_has_type(fields: &Fields, name: &str, outer: &str, inner: Option<&str>) -> bool {
-    let Fields::Named(fields) = fields else {
-        return false;
-    };
-    fields.named.iter().any(|field| {
-        field.ident.as_ref().is_some_and(|ident| ident == name)
-            && inner.map_or_else(
-                || is_plain_type(&field.ty, outer),
-                |inner| is_one_argument_type(&field.ty, outer, inner),
-            )
     })
 }
 
@@ -1607,13 +1593,13 @@ mod tests {
                 "exact root and resource-review",
             ),
             (
-                "        auth_stdin: bool,",
-                "        auth_stdin: bool,\n        credential: String,",
+                "    auth_stdin: bool,",
+                "    auth_stdin: bool,\n    credential: String,",
                 "field inventory and types must remain exact",
             ),
             (
-                "        #[cfg(feature = \"openapi-review\")]\n        #[arg(long, requires = \"profile\")]\n        openapi_review: bool,",
-                "        #[arg(long, requires = \"profile\")]\n        openapi_review: bool,",
+                "    #[cfg(feature = \"openapi-review\")]\n    #[arg(long, requires = \"profile\")]\n    openapi_review: bool,",
+                "    #[arg(long, requires = \"profile\")]\n    openapi_review: bool,",
                 "must remain an exact cfg-gated bool",
             ),
             (
@@ -1635,6 +1621,16 @@ mod tests {
                 "#[derive(Subcommand)]\nenum Commands",
                 "#[derive(Subcommand, Debug)]\nenum Commands",
                 "must not implement Clone, Debug",
+            ),
+            (
+                "    Scan(Box<ScanArgs>),",
+                "    Scan(ScanArgs),",
+                "exact Box<ScanArgs> payload",
+            ),
+            (
+                "#[derive(Args)]\nstruct ScanArgs",
+                "#[derive(Args, Debug)]\nstruct ScanArgs",
+                "without exposing derives",
             ),
         ] {
             assert_mutation_fails(
@@ -1687,8 +1683,8 @@ mod tests {
 
         assert_mutation_fails(
             CLI_MAIN,
-            "        authz_peer_stdin: bool,",
-            "        authz_peer_stdin: bool,\n        credential: String,",
+            "    authz_peer_stdin: bool,",
+            "    authz_peer_stdin: bool,\n    credential: String,",
             |source| inspect_cli_auth_surface(source).unwrap(),
             "field inventory and types must remain exact",
         );

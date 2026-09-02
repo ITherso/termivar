@@ -9780,6 +9780,8 @@ mod tests {
                         truth,
                         #[cfg(feature = "authorization-review")]
                         self.authorization_review,
+                        #[cfg(feature = "openapi-review")]
+                        self.openapi_review,
                     )
                 }
             }
@@ -9797,7 +9799,7 @@ mod tests {
             ),
             typed_assessment_bridge.replace("#[cfg(feature = \"reporting\")]", ""),
             typed_assessment_bridge.replace(
-                "AssessmentRunReport::from_completed_truth(\n                        self.assessment_items,\n                        truth,\n                        #[cfg(feature = \"authorization-review\")]\n                        self.authorization_review,\n                    )",
+                "AssessmentRunReport::from_completed_truth(\n                        self.assessment_items,\n                        truth,\n                        #[cfg(feature = \"authorization-review\")]\n                        self.authorization_review,\n                        #[cfg(feature = \"openapi-review\")]\n                        self.openapi_review,\n                    )",
                 "render(self.assessment_items)",
             ),
             typed_assessment_bridge.replace(
@@ -9830,6 +9832,8 @@ mod tests {
                 "self.authorization_review,",
                 "forged_authorization_review,",
             ),
+            typed_assessment_bridge
+                .replace("self.openapi_review,", "forged_openapi_review,"),
         ] {
             assert!(!reporting_cross_file_source_violations(
                 "web_runtime/web_assessment.rs",
@@ -10299,6 +10303,8 @@ mod tests {
                 AssessmentBasis, AssessmentRunReport, AssessmentRunReportError, ScanProfileV1,
                 WebAssessmentRunReport,
             };
+            #[cfg(all(feature = "scanning", feature = "openapi-review"))]
+            use crate::web_runtime::{OpenApiRuntimeOutcome, OPENAPI_REVIEW_CAPABILITY_ID};
             #[cfg(all(feature = "scanning", feature = "authorization-review"))]
             use crate::{
                 authorization_review::{
@@ -10645,7 +10651,35 @@ mod tests {
                 #[cfg(feature = "authorization-review")]
                 #[serde(skip_serializing_if = "Option::is_none")]
                 authorization_review: Option<AssessmentAuthorizationAuditDocument>,
+                #[cfg(feature = "openapi-review")]
+                #[serde(skip_serializing_if = "Option::is_none")]
+                openapi_review: Option<AssessmentOpenApiAuditDocument>,
                 items: Vec<AssessmentItemDocument<'a>>,
+            }
+            #[cfg(all(feature = "scanning", feature = "openapi-review"))]
+            #[derive(Serialize)]
+            struct AssessmentOpenApiAuditDocument {
+                schema: &'static str,
+                capability_id: &'static str,
+                outcome: &'static str,
+                candidate_source: crate::web_runtime::OpenApiCandidateSource,
+                request_count: u8,
+                active_verification_count: u8,
+                version: Option<&'static str>,
+                semantic_digest: Option<String>,
+                path_count: u32,
+                operation_count: u32,
+                get_operation_count: u32,
+                write_operation_count: u32,
+                path_parameter_count: u32,
+                query_parameter_count: u32,
+                explicit_auth_operation_count: u32,
+                anonymous_operation_count: u32,
+                url_like_operation_count: u32,
+                multipart_operation_count: u32,
+                deprecated_operation_count: u32,
+                replay_matched: bool,
+                item_projected: bool,
             }
             #[cfg(all(feature = "scanning", feature = "authorization-review"))]
             #[derive(Serialize)]

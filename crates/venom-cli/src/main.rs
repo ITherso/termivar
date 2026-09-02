@@ -25,7 +25,7 @@ mod assessment_scan;
 mod auth_input;
 mod decision_scan;
 
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 use std::{ffi::OsString, path::PathBuf};
 use url::Url;
 #[cfg(feature = "proxy-adapter")]
@@ -229,157 +229,160 @@ struct Cli {
     command: Option<Commands>,
 }
 
+#[derive(Args)]
+struct ScanArgs {
+    /// Authorized HTTP(S) target origin. Only scan targets you own or may test.
+    target: Url,
+    /// Output format. `text` (default) is the human-readable report; `json` is
+    /// the versioned machine-readable document with full diagnostics.
+    #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
+    format: OutputFormat,
+    /// Print the full explainable decision chain (hypotheses, planned/excluded
+    /// actions with reasons, dispatched actions, outcomes). Text format only —
+    /// `--format json` already contains full diagnostics. Off by default; the
+    /// default text output is unchanged.
+    #[arg(long)]
+    explain: bool,
+    /// Select an explicit versioned product profile. With no profile, the
+    /// existing conservative single-resource command and wire schema remain
+    /// unchanged.
+    #[arg(long, value_enum)]
+    profile: Option<CliScanProfile>,
+    /// Apply monotonic defense suppression. Valid only with
+    /// `--profile web-review`; observation and shadow planning remain enabled
+    /// without this flag.
+    #[arg(long, requires = "profile")]
+    enforce_defense: bool,
+    /// Explicitly enable the bounded normalization-resilience review. This
+    /// option is compiled only with `normalization-resilience` and is valid
+    /// only with `--profile web-review`.
+    #[cfg(feature = "normalization-resilience")]
+    #[arg(long, requires = "profile")]
+    normalization_resilience: bool,
+    /// Explicitly enable the bounded anonymous GraphQL surface review. This
+    /// option is compiled only with `graphql-review` and is valid only with
+    /// `--profile web-review`.
+    #[cfg(feature = "graphql-review")]
+    #[arg(long, requires = "profile")]
+    graphql_review: bool,
+    /// Explicitly enable the bounded OpenAPI-described surface review.
+    /// This option is compiled only with `openapi-review` and is valid only
+    /// with `--profile web-review`.
+    #[cfg(feature = "openapi-review")]
+    #[arg(long, requires = "profile")]
+    openapi_review: bool,
+    /// Select the centralized typed assessment renderer. Valid only with
+    /// `--profile web-review`. Without this option, text maps to Markdown
+    /// and JSON maps to JSON for completed web-review reports.
+    #[arg(long, value_enum, requires = "profile")]
+    report_format: Option<CliReportFormat>,
+    /// Atomically create a new report file instead of writing a completed
+    /// report to stdout. Existing files are never overwritten. Incomplete
+    /// or started-failure runs emit their typed diagnostic audit to stdout.
+    /// Publication requires same-directory hard-link support and does not
+    /// promise crash-durable directory metadata.
+    #[arg(long, requires = "report_format")]
+    report_output: Option<PathBuf>,
+    /// Read the complete authorized-root `Authorization` header value from
+    /// this environment variable. The variable name and value are redacted.
+    #[arg(
+        long,
+        value_name = "ENV_VAR",
+        requires = "profile",
+        conflicts_with_all = ["auth_file", "auth_stdin"]
+    )]
+    auth_env: Option<OsString>,
+    /// Read the complete authorized-root `Authorization` header value from
+    /// a bounded file. The path and value are redacted.
+    #[arg(
+        long,
+        value_name = "PATH",
+        requires = "profile",
+        conflicts_with_all = ["auth_env", "auth_stdin"]
+    )]
+    auth_file: Option<PathBuf>,
+    /// Read the complete authorized-root `Authorization` header value from
+    /// standard input through EOF. At most one terminal LF or CRLF is removed.
+    #[arg(
+        long,
+        requires = "profile",
+        conflicts_with_all = ["auth_env", "auth_file"]
+    )]
+    auth_stdin: bool,
+    /// Read a strict bounded `security.authorization-review-policy/v1`
+    /// policy from one regular file. This option is compiled only with
+    /// `authorization-review` and requires two distinct principal sources.
+    #[cfg(feature = "authorization-review")]
+    #[arg(
+        long,
+        value_name = "FILE",
+        requires = "profile",
+        conflicts_with_all = ["auth_env", "auth_file", "auth_stdin"]
+    )]
+    authorization_review_policy: Option<PathBuf>,
+    /// Read the primary principal's complete Authorization value from an
+    /// environment variable. Its name and value are redacted.
+    #[cfg(feature = "authorization-review")]
+    #[arg(
+        long,
+        value_name = "ENV_VAR",
+        requires = "authorization_review_policy",
+        conflicts_with_all = ["authz_primary_file", "authz_primary_stdin"]
+    )]
+    authz_primary_env: Option<OsString>,
+    /// Read the primary principal's complete Authorization value from a
+    /// bounded regular file. Its path and value are redacted.
+    #[cfg(feature = "authorization-review")]
+    #[arg(
+        long,
+        value_name = "FILE",
+        requires = "authorization_review_policy",
+        conflicts_with_all = ["authz_primary_env", "authz_primary_stdin"]
+    )]
+    authz_primary_file: Option<PathBuf>,
+    /// Read the primary principal's complete Authorization value from stdin.
+    #[cfg(feature = "authorization-review")]
+    #[arg(
+        long,
+        requires = "authorization_review_policy",
+        conflicts_with_all = ["authz_primary_env", "authz_primary_file", "authz_peer_stdin"]
+    )]
+    authz_primary_stdin: bool,
+    /// Read the peer principal's complete Authorization value from an
+    /// environment variable. Its name and value are redacted.
+    #[cfg(feature = "authorization-review")]
+    #[arg(
+        long,
+        value_name = "ENV_VAR",
+        requires = "authorization_review_policy",
+        conflicts_with_all = ["authz_peer_file", "authz_peer_stdin"]
+    )]
+    authz_peer_env: Option<OsString>,
+    /// Read the peer principal's complete Authorization value from a bounded
+    /// regular file. Its path and value are redacted.
+    #[cfg(feature = "authorization-review")]
+    #[arg(
+        long,
+        value_name = "FILE",
+        requires = "authorization_review_policy",
+        conflicts_with_all = ["authz_peer_env", "authz_peer_stdin"]
+    )]
+    authz_peer_file: Option<PathBuf>,
+    /// Read the peer principal's complete Authorization value from stdin.
+    #[cfg(feature = "authorization-review")]
+    #[arg(
+        long,
+        requires = "authorization_review_policy",
+        conflicts_with_all = ["authz_peer_env", "authz_peer_file", "authz_primary_stdin"]
+    )]
+    authz_peer_stdin: bool,
+}
+
 #[derive(Subcommand)]
 enum Commands {
     /// Run the bounded deterministic scanner against an authorized origin.
     #[command(visible_alias = "decision-scan")]
-    Scan {
-        /// Authorized HTTP(S) target origin. Only scan targets you own or may test.
-        target: Url,
-        /// Output format. `text` (default) is the human-readable report; `json` is
-        /// the versioned machine-readable document with full diagnostics.
-        #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
-        format: OutputFormat,
-        /// Print the full explainable decision chain (hypotheses, planned/excluded
-        /// actions with reasons, dispatched actions, outcomes). Text format only —
-        /// `--format json` already contains full diagnostics. Off by default; the
-        /// default text output is unchanged.
-        #[arg(long)]
-        explain: bool,
-        /// Select an explicit versioned product profile. With no profile, the
-        /// existing conservative single-resource command and wire schema remain
-        /// unchanged.
-        #[arg(long, value_enum)]
-        profile: Option<CliScanProfile>,
-        /// Apply monotonic defense suppression. Valid only with
-        /// `--profile web-review`; observation and shadow planning remain enabled
-        /// without this flag.
-        #[arg(long, requires = "profile")]
-        enforce_defense: bool,
-        /// Explicitly enable the bounded normalization-resilience review. This
-        /// option is compiled only with `normalization-resilience` and is valid
-        /// only with `--profile web-review`.
-        #[cfg(feature = "normalization-resilience")]
-        #[arg(long, requires = "profile")]
-        normalization_resilience: bool,
-        /// Explicitly enable the bounded anonymous GraphQL surface review. This
-        /// option is compiled only with `graphql-review` and is valid only with
-        /// `--profile web-review`.
-        #[cfg(feature = "graphql-review")]
-        #[arg(long, requires = "profile")]
-        graphql_review: bool,
-        /// Explicitly enable the bounded OpenAPI-described surface review.
-        /// This option is compiled only with `openapi-review` and is valid only
-        /// with `--profile web-review`.
-        #[cfg(feature = "openapi-review")]
-        #[arg(long, requires = "profile")]
-        openapi_review: bool,
-        /// Select the centralized typed assessment renderer. Valid only with
-        /// `--profile web-review`. Without this option, text maps to Markdown
-        /// and JSON maps to JSON for completed web-review reports.
-        #[arg(long, value_enum, requires = "profile")]
-        report_format: Option<CliReportFormat>,
-        /// Atomically create a new report file instead of writing a completed
-        /// report to stdout. Existing files are never overwritten. Incomplete
-        /// or started-failure runs emit their typed diagnostic audit to stdout.
-        /// Publication requires same-directory hard-link support and does not
-        /// promise crash-durable directory metadata.
-        #[arg(long, requires = "report_format")]
-        report_output: Option<PathBuf>,
-        /// Read the complete authorized-root `Authorization` header value from
-        /// this environment variable. The variable name and value are redacted.
-        #[arg(
-            long,
-            value_name = "ENV_VAR",
-            requires = "profile",
-            conflicts_with_all = ["auth_file", "auth_stdin"]
-        )]
-        auth_env: Option<OsString>,
-        /// Read the complete authorized-root `Authorization` header value from
-        /// a bounded file. The path and value are redacted.
-        #[arg(
-            long,
-            value_name = "PATH",
-            requires = "profile",
-            conflicts_with_all = ["auth_env", "auth_stdin"]
-        )]
-        auth_file: Option<PathBuf>,
-        /// Read the complete authorized-root `Authorization` header value from
-        /// standard input through EOF. At most one terminal LF or CRLF is removed.
-        #[arg(
-            long,
-            requires = "profile",
-            conflicts_with_all = ["auth_env", "auth_file"]
-        )]
-        auth_stdin: bool,
-        /// Read a strict bounded `security.authorization-review-policy/v1`
-        /// policy from one regular file. This option is compiled only with
-        /// `authorization-review` and requires two distinct principal sources.
-        #[cfg(feature = "authorization-review")]
-        #[arg(
-            long,
-            value_name = "FILE",
-            requires = "profile",
-            conflicts_with_all = ["auth_env", "auth_file", "auth_stdin"]
-        )]
-        authorization_review_policy: Option<PathBuf>,
-        /// Read the primary principal's complete Authorization value from an
-        /// environment variable. Its name and value are redacted.
-        #[cfg(feature = "authorization-review")]
-        #[arg(
-            long,
-            value_name = "ENV_VAR",
-            requires = "authorization_review_policy",
-            conflicts_with_all = ["authz_primary_file", "authz_primary_stdin"]
-        )]
-        authz_primary_env: Option<OsString>,
-        /// Read the primary principal's complete Authorization value from a
-        /// bounded regular file. Its path and value are redacted.
-        #[cfg(feature = "authorization-review")]
-        #[arg(
-            long,
-            value_name = "FILE",
-            requires = "authorization_review_policy",
-            conflicts_with_all = ["authz_primary_env", "authz_primary_stdin"]
-        )]
-        authz_primary_file: Option<PathBuf>,
-        /// Read the primary principal's complete Authorization value from stdin.
-        #[cfg(feature = "authorization-review")]
-        #[arg(
-            long,
-            requires = "authorization_review_policy",
-            conflicts_with_all = ["authz_primary_env", "authz_primary_file", "authz_peer_stdin"]
-        )]
-        authz_primary_stdin: bool,
-        /// Read the peer principal's complete Authorization value from an
-        /// environment variable. Its name and value are redacted.
-        #[cfg(feature = "authorization-review")]
-        #[arg(
-            long,
-            value_name = "ENV_VAR",
-            requires = "authorization_review_policy",
-            conflicts_with_all = ["authz_peer_file", "authz_peer_stdin"]
-        )]
-        authz_peer_env: Option<OsString>,
-        /// Read the peer principal's complete Authorization value from a bounded
-        /// regular file. Its path and value are redacted.
-        #[cfg(feature = "authorization-review")]
-        #[arg(
-            long,
-            value_name = "FILE",
-            requires = "authorization_review_policy",
-            conflicts_with_all = ["authz_peer_env", "authz_peer_stdin"]
-        )]
-        authz_peer_file: Option<PathBuf>,
-        /// Read the peer principal's complete Authorization value from stdin.
-        #[cfg(feature = "authorization-review")]
-        #[arg(
-            long,
-            requires = "authorization_review_policy",
-            conflicts_with_all = ["authz_peer_env", "authz_peer_file", "authz_primary_stdin"]
-        )]
-        authz_peer_stdin: bool,
-    },
+    Scan(Box<ScanArgs>),
     /// Run the historical mixed-authority, whole-run-unmetered heuristic pipeline.
     #[cfg(feature = "legacy-scanner")]
     LegacyScan {
@@ -417,47 +420,18 @@ enum Commands {
     },
 }
 
-struct DeterministicScanInvocation {
-    target: Url,
-    format: OutputFormat,
-    explain: bool,
-    profile: Option<CliScanProfile>,
-    enforce_defense: bool,
-    normalization_resilience: bool,
-    graphql_review: bool,
-    openapi_review: bool,
-    report_format: Option<CliReportFormat>,
-    report_output: Option<PathBuf>,
-    auth_env: Option<OsString>,
-    auth_file: Option<PathBuf>,
-    auth_stdin: bool,
-    #[cfg(feature = "authorization-review")]
-    authorization_review_policy: Option<PathBuf>,
-    #[cfg(feature = "authorization-review")]
-    authz_primary_env: Option<OsString>,
-    #[cfg(feature = "authorization-review")]
-    authz_primary_file: Option<PathBuf>,
-    #[cfg(feature = "authorization-review")]
-    authz_primary_stdin: bool,
-    #[cfg(feature = "authorization-review")]
-    authz_peer_env: Option<OsString>,
-    #[cfg(feature = "authorization-review")]
-    authz_peer_file: Option<PathBuf>,
-    #[cfg(feature = "authorization-review")]
-    authz_peer_stdin: bool,
-}
-
-async fn run_deterministic_scan(
-    invocation: DeterministicScanInvocation,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let DeterministicScanInvocation {
+async fn run_deterministic_scan(invocation: ScanArgs) -> Result<(), Box<dyn std::error::Error>> {
+    let ScanArgs {
         target,
         format,
         explain,
         profile,
         enforce_defense,
+        #[cfg(feature = "normalization-resilience")]
         normalization_resilience,
+        #[cfg(feature = "graphql-review")]
         graphql_review,
+        #[cfg(feature = "openapi-review")]
         openapi_review,
         report_format,
         report_output,
@@ -479,6 +453,12 @@ async fn run_deterministic_scan(
         #[cfg(feature = "authorization-review")]
         authz_peer_stdin,
     } = invocation;
+    #[cfg(not(feature = "normalization-resilience"))]
+    let normalization_resilience = false;
+    #[cfg(not(feature = "graphql-review"))]
+    let graphql_review = false;
+    #[cfg(not(feature = "openapi-review"))]
+    let openapi_review = false;
     if scan_flags_conflict(format, explain) {
         use clap::CommandFactory;
         Cli::command()
@@ -924,75 +904,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
 
     match cli.command {
-        Some(Commands::Scan {
-            target,
-            format,
-            explain,
-            profile,
-            enforce_defense,
-            #[cfg(feature = "normalization-resilience")]
-            normalization_resilience,
-            #[cfg(feature = "graphql-review")]
-            graphql_review,
-            #[cfg(feature = "openapi-review")]
-            openapi_review,
-            report_format,
-            report_output,
-            auth_env,
-            auth_file,
-            auth_stdin,
-            #[cfg(feature = "authorization-review")]
-            authorization_review_policy,
-            #[cfg(feature = "authorization-review")]
-            authz_primary_env,
-            #[cfg(feature = "authorization-review")]
-            authz_primary_file,
-            #[cfg(feature = "authorization-review")]
-            authz_primary_stdin,
-            #[cfg(feature = "authorization-review")]
-            authz_peer_env,
-            #[cfg(feature = "authorization-review")]
-            authz_peer_file,
-            #[cfg(feature = "authorization-review")]
-            authz_peer_stdin,
-        }) => {
-            #[cfg(not(feature = "normalization-resilience"))]
-            let normalization_resilience = false;
-            #[cfg(not(feature = "graphql-review"))]
-            let graphql_review = false;
-            #[cfg(not(feature = "openapi-review"))]
-            let openapi_review = false;
-            run_deterministic_scan(DeterministicScanInvocation {
-                target,
-                format,
-                explain,
-                profile,
-                enforce_defense,
-                normalization_resilience,
-                graphql_review,
-                openapi_review,
-                report_format,
-                report_output,
-                auth_env,
-                auth_file,
-                auth_stdin,
-                #[cfg(feature = "authorization-review")]
-                authorization_review_policy,
-                #[cfg(feature = "authorization-review")]
-                authz_primary_env,
-                #[cfg(feature = "authorization-review")]
-                authz_primary_file,
-                #[cfg(feature = "authorization-review")]
-                authz_primary_stdin,
-                #[cfg(feature = "authorization-review")]
-                authz_peer_env,
-                #[cfg(feature = "authorization-review")]
-                authz_peer_file,
-                #[cfg(feature = "authorization-review")]
-                authz_peer_stdin,
-            })
-            .await?;
-        },
+        Some(Commands::Scan(args)) => run_deterministic_scan(*args).await?,
         #[cfg(feature = "legacy-scanner")]
         Some(Commands::LegacyScan {
             target,
@@ -1035,70 +947,51 @@ mod tests {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
 
+    fn parsed_scan_args(cli: &Cli) -> &ScanArgs {
+        match cli.command.as_ref() {
+            Some(Commands::Scan(args)) => args,
+            _ => panic!("expected the deterministic scan command"),
+        }
+    }
+
+    #[test]
+    fn scan_command_payload_growth_is_heap_indirected() {
+        assert_eq!(
+            std::mem::size_of::<Box<ScanArgs>>(),
+            std::mem::size_of::<usize>()
+        );
+        assert!(std::mem::size_of::<Commands>() < std::mem::size_of::<ScanArgs>());
+    }
+
     #[test]
     fn scan_selects_the_deterministic_command() {
         let cli = Cli::try_parse_from(["venom", "scan", "https://example.test"]).unwrap();
-        match cli.command {
-            Some(Commands::Scan {
-                target,
-                format,
-                explain,
-                profile,
-                enforce_defense,
-                #[cfg(feature = "normalization-resilience")]
-                normalization_resilience,
-                #[cfg(feature = "graphql-review")]
-                graphql_review,
-                #[cfg(feature = "openapi-review")]
-                openapi_review,
-                report_format,
-                report_output,
-                auth_env,
-                auth_file,
-                auth_stdin,
-                #[cfg(feature = "authorization-review")]
-                authorization_review_policy,
-                #[cfg(feature = "authorization-review")]
-                authz_primary_env,
-                #[cfg(feature = "authorization-review")]
-                authz_primary_file,
-                #[cfg(feature = "authorization-review")]
-                authz_primary_stdin,
-                #[cfg(feature = "authorization-review")]
-                authz_peer_env,
-                #[cfg(feature = "authorization-review")]
-                authz_peer_file,
-                #[cfg(feature = "authorization-review")]
-                authz_peer_stdin,
-            }) => {
-                assert_eq!(target.as_str(), "https://example.test/");
-                assert_eq!(format, OutputFormat::Text);
-                assert!(!explain);
-                assert_eq!(profile, None);
-                assert!(!enforce_defense);
-                #[cfg(feature = "normalization-resilience")]
-                assert!(!normalization_resilience);
-                #[cfg(feature = "graphql-review")]
-                assert!(!graphql_review);
-                #[cfg(feature = "openapi-review")]
-                assert!(!openapi_review);
-                assert_eq!(report_format, None);
-                assert_eq!(report_output, None);
-                assert_eq!(auth_env, None);
-                assert_eq!(auth_file, None);
-                assert!(!auth_stdin);
-                #[cfg(feature = "authorization-review")]
-                {
-                    assert_eq!(authorization_review_policy, None);
-                    assert_eq!(authz_primary_env, None);
-                    assert_eq!(authz_primary_file, None);
-                    assert!(!authz_primary_stdin);
-                    assert_eq!(authz_peer_env, None);
-                    assert_eq!(authz_peer_file, None);
-                    assert!(!authz_peer_stdin);
-                }
-            },
-            _ => panic!("expected the deterministic scan command"),
+        let args = parsed_scan_args(&cli);
+        assert_eq!(args.target.as_str(), "https://example.test/");
+        assert_eq!(args.format, OutputFormat::Text);
+        assert!(!args.explain);
+        assert_eq!(args.profile, None);
+        assert!(!args.enforce_defense);
+        #[cfg(feature = "normalization-resilience")]
+        assert!(!args.normalization_resilience);
+        #[cfg(feature = "graphql-review")]
+        assert!(!args.graphql_review);
+        #[cfg(feature = "openapi-review")]
+        assert!(!args.openapi_review);
+        assert_eq!(args.report_format, None);
+        assert_eq!(args.report_output, None);
+        assert_eq!(args.auth_env, None);
+        assert_eq!(args.auth_file, None);
+        assert!(!args.auth_stdin);
+        #[cfg(feature = "authorization-review")]
+        {
+            assert_eq!(args.authorization_review_policy, None);
+            assert_eq!(args.authz_primary_env, None);
+            assert_eq!(args.authz_primary_file, None);
+            assert!(!args.authz_primary_stdin);
+            assert_eq!(args.authz_peer_env, None);
+            assert_eq!(args.authz_peer_file, None);
+            assert!(!args.authz_peer_stdin);
         }
         assert!(DETERMINISTIC_SCAN_WARNING.contains("bounded deterministic"));
     }
@@ -1106,70 +999,39 @@ mod tests {
     #[test]
     fn decision_scan_is_an_alias_to_the_same_command_variant() {
         let cli = Cli::try_parse_from(["venom", "decision-scan", "https://example.test/"]).unwrap();
-        match cli.command {
-            Some(Commands::Scan {
-                target,
-                format,
-                explain,
-                profile,
-                enforce_defense,
-                #[cfg(feature = "normalization-resilience")]
-                normalization_resilience,
-                #[cfg(feature = "graphql-review")]
-                graphql_review,
-                #[cfg(feature = "openapi-review")]
-                openapi_review,
-                report_format,
-                report_output,
-                auth_env,
-                auth_file,
-                auth_stdin,
-                #[cfg(feature = "authorization-review")]
-                authorization_review_policy,
-                #[cfg(feature = "authorization-review")]
-                authz_primary_env,
-                #[cfg(feature = "authorization-review")]
-                authz_primary_file,
-                #[cfg(feature = "authorization-review")]
-                authz_primary_stdin,
-                #[cfg(feature = "authorization-review")]
-                authz_peer_env,
-                #[cfg(feature = "authorization-review")]
-                authz_peer_file,
-                #[cfg(feature = "authorization-review")]
-                authz_peer_stdin,
-            }) => {
-                assert_eq!(target.as_str(), "https://example.test/");
-                assert_eq!(format, OutputFormat::Text, "text is the default format");
-                assert!(
-                    !explain,
-                    "explain must default off so the default output is unchanged"
-                );
-                assert_eq!(profile, None);
-                assert!(!enforce_defense);
-                #[cfg(feature = "normalization-resilience")]
-                assert!(!normalization_resilience);
-                #[cfg(feature = "graphql-review")]
-                assert!(!graphql_review);
-                #[cfg(feature = "openapi-review")]
-                assert!(!openapi_review);
-                assert_eq!(report_format, None);
-                assert_eq!(report_output, None);
-                assert_eq!(auth_env, None);
-                assert_eq!(auth_file, None);
-                assert!(!auth_stdin);
-                #[cfg(feature = "authorization-review")]
-                {
-                    assert_eq!(authorization_review_policy, None);
-                    assert_eq!(authz_primary_env, None);
-                    assert_eq!(authz_primary_file, None);
-                    assert!(!authz_primary_stdin);
-                    assert_eq!(authz_peer_env, None);
-                    assert_eq!(authz_peer_file, None);
-                    assert!(!authz_peer_stdin);
-                }
-            },
-            _ => panic!("expected the deterministic scan command"),
+        let args = parsed_scan_args(&cli);
+        assert_eq!(args.target.as_str(), "https://example.test/");
+        assert_eq!(
+            args.format,
+            OutputFormat::Text,
+            "text is the default format"
+        );
+        assert!(
+            !args.explain,
+            "explain must default off so the default output is unchanged"
+        );
+        assert_eq!(args.profile, None);
+        assert!(!args.enforce_defense);
+        #[cfg(feature = "normalization-resilience")]
+        assert!(!args.normalization_resilience);
+        #[cfg(feature = "graphql-review")]
+        assert!(!args.graphql_review);
+        #[cfg(feature = "openapi-review")]
+        assert!(!args.openapi_review);
+        assert_eq!(args.report_format, None);
+        assert_eq!(args.report_output, None);
+        assert_eq!(args.auth_env, None);
+        assert_eq!(args.auth_file, None);
+        assert!(!args.auth_stdin);
+        #[cfg(feature = "authorization-review")]
+        {
+            assert_eq!(args.authorization_review_policy, None);
+            assert_eq!(args.authz_primary_env, None);
+            assert_eq!(args.authz_primary_file, None);
+            assert!(!args.authz_primary_stdin);
+            assert_eq!(args.authz_peer_env, None);
+            assert_eq!(args.authz_peer_file, None);
+            assert!(!args.authz_peer_stdin);
         }
     }
 
@@ -1186,20 +1048,8 @@ mod tests {
             "https://example.test/",
         ])
         .unwrap();
-        assert!(matches!(
-            primary.command,
-            Some(Commands::Scan {
-                format: OutputFormat::Json,
-                ..
-            })
-        ));
-        assert!(matches!(
-            cli.command,
-            Some(Commands::Scan {
-                format: OutputFormat::Json,
-                ..
-            })
-        ));
+        assert_eq!(parsed_scan_args(&primary).format, OutputFormat::Json);
+        assert_eq!(parsed_scan_args(&cli).format, OutputFormat::Json);
     }
 
     #[test]
@@ -1216,12 +1066,10 @@ mod tests {
     fn scan_accepts_the_explain_flag() {
         let cli =
             Cli::try_parse_from(["venom", "scan", "--explain", "https://example.test/"]).unwrap();
-        match cli.command {
-            Some(Commands::Scan { explain, .. }) => {
-                assert!(explain, "--explain must enable the explain view");
-            },
-            _ => panic!("expected the deterministic scan command"),
-        }
+        assert!(
+            parsed_scan_args(&cli).explain,
+            "--explain must enable the explain view"
+        );
     }
 
     #[test]
@@ -1235,14 +1083,9 @@ mod tests {
                 "https://example.test/",
             ])
             .unwrap();
-            assert!(matches!(
-                baseline.command,
-                Some(Commands::Scan {
-                    profile: Some(CliScanProfile::Baseline),
-                    enforce_defense: false,
-                    ..
-                })
-            ));
+            let baseline = parsed_scan_args(&baseline);
+            assert_eq!(baseline.profile, Some(CliScanProfile::Baseline));
+            assert!(!baseline.enforce_defense);
 
             let review = Cli::try_parse_from([
                 "venom",
@@ -1253,14 +1096,9 @@ mod tests {
                 "https://example.test/",
             ])
             .unwrap();
-            assert!(matches!(
-                review.command,
-                Some(Commands::Scan {
-                    profile: Some(CliScanProfile::WebReview),
-                    enforce_defense: true,
-                    ..
-                })
-            ));
+            let review = parsed_scan_args(&review);
+            assert_eq!(review.profile, Some(CliScanProfile::WebReview));
+            assert!(review.enforce_defense);
         }
 
         for rejected in [
@@ -1358,14 +1196,9 @@ mod tests {
             "https://example.test/",
         ])
         .expect("the semantic profile guard runs before runtime dispatch");
-        assert!(matches!(
-            baseline.command,
-            Some(Commands::Scan {
-                profile: Some(CliScanProfile::Baseline),
-                normalization_resilience: true,
-                ..
-            })
-        ));
+        let baseline = parsed_scan_args(&baseline);
+        assert_eq!(baseline.profile, Some(CliScanProfile::Baseline));
+        assert!(baseline.normalization_resilience);
         assert_eq!(
             scan_profile_flags_conflict(
                 Some(CliScanProfile::Baseline),
@@ -1387,14 +1220,9 @@ mod tests {
             "https://example.test/",
         ])
         .unwrap();
-        assert!(matches!(
-            review.command,
-            Some(Commands::Scan {
-                profile: Some(CliScanProfile::WebReview),
-                normalization_resilience: true,
-                ..
-            })
-        ));
+        let review = parsed_scan_args(&review);
+        assert_eq!(review.profile, Some(CliScanProfile::WebReview));
+        assert!(review.normalization_resilience);
         assert_eq!(
             scan_profile_flags_conflict(
                 Some(CliScanProfile::WebReview),
@@ -1451,14 +1279,9 @@ mod tests {
             "https://example.test/",
         ])
         .expect("the semantic profile guard runs before runtime dispatch");
-        assert!(matches!(
-            baseline.command,
-            Some(Commands::Scan {
-                profile: Some(CliScanProfile::Baseline),
-                graphql_review: true,
-                ..
-            })
-        ));
+        let baseline = parsed_scan_args(&baseline);
+        assert_eq!(baseline.profile, Some(CliScanProfile::Baseline));
+        assert!(baseline.graphql_review);
         assert_eq!(
             scan_profile_flags_conflict(
                 Some(CliScanProfile::Baseline),
@@ -1480,14 +1303,9 @@ mod tests {
             "https://example.test/",
         ])
         .unwrap();
-        assert!(matches!(
-            review.command,
-            Some(Commands::Scan {
-                profile: Some(CliScanProfile::WebReview),
-                graphql_review: true,
-                ..
-            })
-        ));
+        let review = parsed_scan_args(&review);
+        assert_eq!(review.profile, Some(CliScanProfile::WebReview));
+        assert!(review.graphql_review);
         assert_eq!(
             scan_profile_flags_conflict(
                 Some(CliScanProfile::WebReview),
@@ -1564,14 +1382,9 @@ mod tests {
             "https://example.test/",
         ])
         .unwrap();
-        assert!(matches!(
-            review.command,
-            Some(Commands::Scan {
-                profile: Some(CliScanProfile::WebReview),
-                openapi_review: true,
-                ..
-            })
-        ));
+        let review = parsed_scan_args(&review);
+        assert_eq!(review.profile, Some(CliScanProfile::WebReview));
+        assert!(review.openapi_review);
     }
 
     #[cfg(not(feature = "openapi-review"))]
@@ -1649,16 +1462,11 @@ mod tests {
             "https://example.test/",
         ])
         .unwrap();
-        assert!(matches!(
-            baseline.command,
-            Some(Commands::Scan {
-                profile: Some(CliScanProfile::Baseline),
-                authorization_review_policy: Some(_),
-                authz_primary_env: Some(_),
-                authz_peer_file: Some(_),
-                ..
-            })
-        ));
+        let baseline = parsed_scan_args(&baseline);
+        assert_eq!(baseline.profile, Some(CliScanProfile::Baseline));
+        assert!(baseline.authorization_review_policy.is_some());
+        assert!(baseline.authz_primary_env.is_some());
+        assert!(baseline.authz_peer_file.is_some());
         assert_eq!(
             scan_resource_authorization_flags_conflict(Some(CliScanProfile::Baseline), false, true,),
             Some("resource authorization review requires `--profile web-review`")
@@ -1678,16 +1486,11 @@ mod tests {
             "https://example.test/",
         ])
         .unwrap();
-        assert!(matches!(
-            review.command,
-            Some(Commands::Scan {
-                profile: Some(CliScanProfile::WebReview),
-                authorization_review_policy: Some(_),
-                authz_primary_env: Some(_),
-                authz_peer_file: Some(_),
-                ..
-            })
-        ));
+        let review = parsed_scan_args(&review);
+        assert_eq!(review.profile, Some(CliScanProfile::WebReview));
+        assert!(review.authorization_review_policy.is_some());
+        assert!(review.authz_primary_env.is_some());
+        assert!(review.authz_peer_file.is_some());
         assert_eq!(
             scan_resource_authorization_flags_conflict(
                 Some(CliScanProfile::WebReview),
@@ -1821,15 +1624,10 @@ mod tests {
             "https://example.test/",
         ])
         .unwrap();
-        assert!(matches!(
-            cli.command,
-            Some(Commands::Scan {
-                profile: Some(CliScanProfile::WebReview),
-                report_format: Some(CliReportFormat::Html),
-                report_output: Some(_),
-                ..
-            })
-        ));
+        let args = parsed_scan_args(&cli);
+        assert_eq!(args.profile, Some(CliScanProfile::WebReview));
+        assert_eq!(args.report_format, Some(CliReportFormat::Html));
+        assert!(args.report_output.is_some());
         assert_eq!(
             scan_report_flags_conflict(
                 Some(CliScanProfile::Baseline),
