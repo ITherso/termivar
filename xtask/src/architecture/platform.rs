@@ -104,6 +104,7 @@ const FEATURE_OWNED_DEPENDENCIES: &[&str] = &[
     "reqwest",
     "tokio",
     "tokio-util",
+    "toml",
     "uuid",
 ];
 
@@ -158,6 +159,7 @@ const EXACT_MODULE_GATES: &[(&str, &str)] = &[
     ("api", "feature=\"platform-models\""),
     ("api_gateway", "feature=\"platform-models\""),
     ("auth", "feature=\"platform-models\""),
+    ("authorization_review", "feature=\"scanning\""),
     ("cache", "feature=\"platform-models\""),
     ("compliance", "feature=\"compliance\""),
     ("config", "feature=\"platform-models\""),
@@ -1265,6 +1267,7 @@ fn exact_raw_feature_closures() -> Vec<(&'static str, &'static [&'static str])> 
                 "dep:reqwest",
                 "dep:tokio",
                 "dep:tokio-util",
+                "dep:toml",
             ],
         ),
         ("core", &["core"]),
@@ -1279,6 +1282,7 @@ fn exact_raw_feature_closures() -> Vec<(&'static str, &'static [&'static str])> 
                 "dep:reqwest",
                 "dep:tokio",
                 "dep:tokio-util",
+                "dep:toml",
             ],
         ),
         (
@@ -1293,6 +1297,7 @@ fn exact_raw_feature_closures() -> Vec<(&'static str, &'static [&'static str])> 
                 "dep:reqwest",
                 "dep:tokio",
                 "dep:tokio-util",
+                "dep:toml",
             ],
         ),
         (
@@ -1307,6 +1312,7 @@ fn exact_raw_feature_closures() -> Vec<(&'static str, &'static [&'static str])> 
                 "dep:reqwest",
                 "dep:tokio",
                 "dep:tokio-util",
+                "dep:toml",
             ],
         ),
         (
@@ -1322,6 +1328,7 @@ fn exact_raw_feature_closures() -> Vec<(&'static str, &'static [&'static str])> 
                 "dep:reqwest",
                 "dep:tokio",
                 "dep:tokio-util",
+                "dep:toml",
                 "dep:chrono",
                 "dep:dashmap",
                 "dep:futures",
@@ -7126,6 +7133,7 @@ mod tests {
                 "dep:reqwest",
                 "dep:tokio",
                 "dep:tokio-util",
+                "dep:toml",
             ]
             .into_iter()
             .map(str::to_owned)
@@ -9750,6 +9758,7 @@ mod tests {
             #[cfg(feature = "platform-models")] pub mod api;
             #[cfg(feature = "platform-models")] pub mod api_gateway;
             #[cfg(feature = "platform-models")] pub mod auth;
+            #[cfg(feature = "scanning")] pub mod authorization_review;
             #[cfg(feature = "platform-models")] pub mod cache;
             #[cfg(feature = "compliance")] pub mod compliance;
             #[cfg(feature = "platform-models")] pub mod config;

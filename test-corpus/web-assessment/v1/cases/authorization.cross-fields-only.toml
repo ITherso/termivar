@@ -1,0 +1,36 @@
+schema = "security-assessment-fixture/v1"
+id = "authorization.cross-fields-only"
+revision = 1
+category = "authorization"
+purpose = "Prove that matching selected field shape without matching selected values is insufficient."
+provenance = "generated-boundary"
+support = "current"
+tags = ["authorization", "fields", "negative", "resources"]
+
+[request]
+method = "get"
+origin = "https://api.example.test"
+path = "/api/accounts/fixture-fields-only"
+role = "bootstrap"
+
+[response]
+status = 200
+media_type = "application/json"
+role = "bootstrap"
+completion = "complete"
+truncated = false
+body_file = "bodies/authorization-resource-a.json"
+
+[authorization]
+resource = "/api/accounts/fixture-fields-only"
+resource_handle = "fixture-fields-only"
+expectation = "primary-only"
+method = "GET"
+comparison = { selected_paths = ["/data/account"], ignored_paths = [], unordered_array_paths = [], max_diff_paths = 16 }
+primary_candidate = { status = 200, media_type = "application/json", completion = "complete", truncated = false, state = "complete-json", body_file = "bodies/authorization-resource-a.json" }
+peer_candidate = { status = 200, media_type = "application/json", completion = "complete", truncated = false, state = "complete-json", body_file = "bodies/authorization-resource-b.json" }
+primary_replay = { status = 200, media_type = "application/json", completion = "complete", truncated = false, state = "complete-json", body_file = "bodies/authorization-resource-a.json" }
+peer_replay = { status = 200, media_type = "application/json", completion = "complete", truncated = false, state = "complete-json", body_file = "bodies/authorization-resource-b.json" }
+
+[expected]
+authorization_outcome = "cross-fields-equivalent-only"

@@ -1,8 +1,9 @@
 # Scanner conformance corpus
 
-The scanner conformance corpus is repository-only test data. It contains a
-bounded set of 30–50 sanitized request/response cases for deterministic checks
-of current scanner semantics and explicitly identified future protocol cases.
+The scanner conformance corpus is repository-only test data. It contains 73
+sanitized request/response cases for deterministic checks of current scanner
+semantics and explicitly identified future protocol cases. Twenty-two cases
+exercise the transport-neutral four-view authorization differential contract.
 It is not loaded by `venom scan` and grants no network, execution, or claim
 authority.
 
@@ -54,6 +55,21 @@ control, candidate, and replay protocol.
 These cases do not send requests from the corpus harness. They validate the
 same production operation and response contracts used by the explicitly
 enabled runtime. See [GraphQL surface review](graphql-review.md).
+
+## Authorization differential cases
+
+The authorization subset supplies four safe synthetic response views—primary
+candidate, peer candidate, primary replay, and peer replay—to the production
+authorization policy and comparator. It covers stable equivalence, independent
+principal instability, 401/403/404 peer outcomes, status- and fields-only
+matches, value-sensitive differences, missing or null selections, ignored
+volatile fields, ordered and explicitly unordered arrays, malformed or
+truncated JSON, redirect, HTML challenge, and rate limiting.
+
+These cases contain no real credentials or target data and dispatch no
+requests. Stable equivalence is conformance evidence for the pure comparator,
+not a labelled vulnerability or proof that an operator-declared policy is
+correct. See [Authorization differential review foundation](authorization-differential-review.md).
 
 ## What passing means
 

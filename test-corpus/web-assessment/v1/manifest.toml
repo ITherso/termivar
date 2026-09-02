@@ -3,8 +3,31 @@ corpus_id = "web-assessment-conformance"
 revision = 1
 title = "Web assessment conformance corpus"
 summary = "Sanitized deterministic request and response cases for current scanner contracts and explicit future protocol metadata."
-corpus_digest = "corpus-sha256:1f29ef7566c28f2c8f06f5bd850882e96988f311bb32d775c52e896719348a80"
+corpus_digest = "corpus-sha256:bec92b2e15ba4b89016272d7b5f602873fac924c5d977d42b5143a4b1b1df7bc"
 case_files = [
+  "cases/authorization.cross-fields-only.toml",
+  "cases/authorization.cross-resources-different.toml",
+  "cases/authorization.cross-status-different.toml",
+  "cases/authorization.generic-json-error.toml",
+  "cases/authorization.html-challenge.toml",
+  "cases/authorization.ignored-volatile.toml",
+  "cases/authorization.malformed-json.toml",
+  "cases/authorization.ordered-array-different.toml",
+  "cases/authorization.peer-401.toml",
+  "cases/authorization.peer-403.toml",
+  "cases/authorization.peer-404.toml",
+  "cases/authorization.peer-unstable.toml",
+  "cases/authorization.primary-baseline-invalid.toml",
+  "cases/authorization.primary-unstable.toml",
+  "cases/authorization.rate-limited.toml",
+  "cases/authorization.redirect-observed.toml",
+  "cases/authorization.second-round-mismatch.toml",
+  "cases/authorization.selected-missing-peer.toml",
+  "cases/authorization.selected-missing-primary.toml",
+  "cases/authorization.selected-null.toml",
+  "cases/authorization.stable-equivalence.toml",
+  "cases/authorization.truncated-json.toml",
+  "cases/authorization.unordered-array-equivalent.toml",
   "cases/defense.candidate-specific-block.toml",
   "cases/defense.challenge-body.toml",
   "cases/defense.fingerprint-only.toml",

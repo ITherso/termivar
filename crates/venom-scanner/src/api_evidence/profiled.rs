@@ -415,6 +415,29 @@ impl ApiVisibilityComparator {
         status: u16,
         snapshot: &Value,
     ) -> Result<ProfiledApiVisibilityView, ProfiledApiVisibilityError> {
+        self.capture_profiled_view_with_material(
+            profile,
+            context_id,
+            resource_scope_id,
+            surface,
+            status,
+            snapshot,
+        )
+        .map(|(view, _)| view)
+    }
+
+    /// Captures the existing view plus value-free selected-material truth for
+    /// an in-crate policy that must reject effectively empty projections.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn capture_profiled_view_with_material(
+        &self,
+        profile: &ApiComparisonProfile,
+        context_id: impl Into<String>,
+        resource_scope_id: impl Into<String>,
+        surface: ApiSurfaceKind,
+        status: u16,
+        snapshot: &Value,
+    ) -> Result<(ProfiledApiVisibilityView, bool), ProfiledApiVisibilityError> {
         let context_id = opaque_handle(context_id, "context id")?;
         let resource_scope_id = opaque_handle(resource_scope_id, "resource scope id")?;
         if !(100..=599).contains(&status) {
@@ -426,19 +449,23 @@ impl ApiVisibilityComparator {
         let _ = canonical_signatures(snapshot, self.limits())?;
 
         let canonical = ProfiledCanonicalState::new(profile, self.limits()).capture(snapshot)?;
-        Ok(ProfiledApiVisibilityView {
-            context_id,
-            resource_scope_id,
-            surface,
-            status,
-            resource_signature: canonical.resource,
-            field_signature: canonical.fields,
-            path_index: canonical.path_index,
-            limits: self.limits(),
-            comparator_version: CURRENT_API_COMPARISON_ALGORITHM_VERSION,
-            canonicalization_version: CURRENT_API_VISIBILITY_CANONICALIZATION_VERSION,
-            projection_policy_id: profile.projection_policy_id(),
-        })
+        let material_selected_value = canonical.material_selected_value;
+        Ok((
+            ProfiledApiVisibilityView {
+                context_id,
+                resource_scope_id,
+                surface,
+                status,
+                resource_signature: canonical.resource,
+                field_signature: canonical.fields,
+                path_index: canonical.path_index,
+                limits: self.limits(),
+                comparator_version: CURRENT_API_COMPARISON_ALGORITHM_VERSION,
+                canonicalization_version: CURRENT_API_VISIBILITY_CANONICALIZATION_VERSION,
+                projection_policy_id: profile.projection_policy_id(),
+            },
+            material_selected_value,
+        ))
     }
 
     /// Compares two profiled views and emits a replayable metadata envelope.

@@ -1,0 +1,36 @@
+schema = "security-assessment-fixture/v1"
+id = "authorization.generic-json-error"
+revision = 1
+category = "authorization"
+purpose = "Reject a repeated successful generic JSON error envelope as selected-resource equivalence."
+provenance = "generated-boundary"
+support = "current"
+tags = ["authorization", "error-envelope", "negative", "replay"]
+
+[request]
+method = "get"
+origin = "https://api.example.test"
+path = "/api/accounts/fixture-generic-error"
+role = "bootstrap"
+
+[response]
+status = 200
+media_type = "application/json"
+role = "bootstrap"
+completion = "complete"
+truncated = false
+body_file = "bodies/authorization-generic-error.json"
+
+[authorization]
+resource = "/api/accounts/fixture-generic-error"
+resource_handle = "fixture-generic-error"
+expectation = "primary-only"
+method = "GET"
+comparison = { selected_paths = ["/error"], ignored_paths = [], unordered_array_paths = [], max_diff_paths = 16 }
+primary_candidate = { status = 200, media_type = "application/json", completion = "complete", truncated = false, state = "complete-json", body_file = "bodies/authorization-generic-error.json" }
+peer_candidate = { status = 200, media_type = "application/json", completion = "complete", truncated = false, state = "complete-json", body_file = "bodies/authorization-generic-error.json" }
+primary_replay = { status = 200, media_type = "application/json", completion = "complete", truncated = false, state = "complete-json", body_file = "bodies/authorization-generic-error.json" }
+peer_replay = { status = 200, media_type = "application/json", completion = "complete", truncated = false, state = "complete-json", body_file = "bodies/authorization-generic-error.json" }
+
+[expected]
+authorization_outcome = "generic-json-error-envelope"

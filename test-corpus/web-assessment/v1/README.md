@@ -9,6 +9,11 @@ contains no client evidence, and makes no vulnerability or accuracy claim.
 Historical-sanitized cases were re-authored from useful fixture concepts; no
 historical finding, severity, identity, or raw target data was copied.
 
+The 73-case V1 inventory includes 23 four-view authorization differential
+cases. Those cases exercise the pure policy/comparison foundation with safe
+reserved identities and synthetic JSON only; they perform no requests and do
+not label an equivalence fixture as a proven authorization vulnerability.
+
 Validate the corpus and its generated inventory with:
 
 ```text

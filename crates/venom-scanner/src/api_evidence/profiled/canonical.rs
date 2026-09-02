@@ -24,6 +24,7 @@ pub(super) struct ProfiledCanonicalResult {
     pub(super) resource: [u8; 32],
     pub(super) fields: [u8; 32],
     pub(super) path_index: BTreeMap<PathDigest, PathFingerprint>,
+    pub(super) material_selected_value: bool,
 }
 
 pub(super) struct ProfiledCanonicalState<'a> {
@@ -32,6 +33,7 @@ pub(super) struct ProfiledCanonicalState<'a> {
     resource_written: u64,
     fields_written: u64,
     path_index: BTreeMap<PathDigest, PathFingerprint>,
+    material_selected_value: bool,
 }
 
 impl<'a> ProfiledCanonicalState<'a> {
@@ -42,6 +44,7 @@ impl<'a> ProfiledCanonicalState<'a> {
             resource_written: 0,
             fields_written: 0,
             path_index: BTreeMap::new(),
+            material_selected_value: false,
         }
     }
 
@@ -68,6 +71,7 @@ impl<'a> ProfiledCanonicalState<'a> {
             resource,
             fields,
             path_index: self.path_index,
+            material_selected_value: self.material_selected_value,
         })
     }
 
@@ -92,14 +96,20 @@ impl<'a> ProfiledCanonicalState<'a> {
                 .or_insert_with(|| PathFingerprint::new(type_mask, scalar_value_digest));
         }
 
+        let selected_here = self.profile.is_selected_root(actual_path);
+        let mut material_here = false;
         let node = match value {
             Value::Null => self.scalar_node(b"null", b"null", None)?,
-            Value::Bool(value) => self.scalar_node(
-                b"bool",
-                b"bool",
-                Some(if *value { b"true" } else { b"false" }),
-            )?,
+            Value::Bool(value) => {
+                material_here = true;
+                self.scalar_node(
+                    b"bool",
+                    b"bool",
+                    Some(if *value { b"true" } else { b"false" }),
+                )?
+            },
             Value::Number(value) => {
+                material_here = true;
                 let rendered = value.to_string();
                 let field_type = if value.is_i64() || value.is_u64() {
                     b"integer".as_slice()
@@ -109,6 +119,7 @@ impl<'a> ProfiledCanonicalState<'a> {
                 self.scalar_node(b"number", field_type, Some(rendered.as_bytes()))?
             },
             Value::String(value) => {
+                material_here = true;
                 self.scalar_node(b"string", b"string", Some(value.as_bytes()))?
             },
             Value::Array(values) => {
@@ -122,6 +133,7 @@ impl<'a> ProfiledCanonicalState<'a> {
                     structural_path.pop();
                     actual_path.pop();
                 }
+                material_here = !children.is_empty();
                 self.array_node(children, self.profile.is_unordered_array(actual_path))?
             },
             Value::Object(values) => {
@@ -137,9 +149,13 @@ impl<'a> ProfiledCanonicalState<'a> {
                     structural_path.pop();
                     actual_path.pop();
                 }
+                material_here = !children.is_empty();
                 self.object_node(children)?
             },
         };
+        if selected_here && material_here {
+            self.material_selected_value = true;
+        }
         Ok(Some(node))
     }
 

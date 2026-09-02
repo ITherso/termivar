@@ -1,0 +1,36 @@
+schema = "security-assessment-fixture/v1"
+id = "authorization.redirect-observed"
+revision = 1
+category = "authorization"
+purpose = "Record a redirect without following or retargeting the selected authorization resource."
+provenance = "current-authored"
+support = "current"
+tags = ["authorization", "negative", "redirect"]
+
+[request]
+method = "get"
+origin = "https://api.example.test"
+path = "/api/accounts/fixture-redirect"
+role = "bootstrap"
+
+[response]
+status = 302
+media_type = "application/json"
+role = "bootstrap"
+completion = "complete"
+truncated = false
+body_file = "bodies/authorization-redirect.json"
+
+[authorization]
+resource = "/api/accounts/fixture-redirect"
+resource_handle = "fixture-redirect"
+expectation = "primary-only"
+method = "GET"
+comparison = { selected_paths = ["/data/account"], ignored_paths = [], unordered_array_paths = [], max_diff_paths = 16 }
+primary_candidate = { status = 302, media_type = "application/json", completion = "complete", truncated = false, state = "redirect", body_file = "bodies/authorization-redirect.json" }
+peer_candidate = { status = 200, media_type = "application/json", completion = "complete", truncated = false, state = "complete-json", body_file = "bodies/authorization-resource-a.json" }
+primary_replay = { status = 200, media_type = "application/json", completion = "complete", truncated = false, state = "complete-json", body_file = "bodies/authorization-resource-a.json" }
+peer_replay = { status = 200, media_type = "application/json", completion = "complete", truncated = false, state = "complete-json", body_file = "bodies/authorization-resource-a.json" }
+
+[expected]
+authorization_outcome = "redirect-observed"

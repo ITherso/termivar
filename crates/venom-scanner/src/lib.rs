@@ -87,6 +87,9 @@ pub mod sdk;
 pub mod adaptive;
 
 #[cfg(feature = "scanning")]
+pub mod authorization_review;
+
+#[cfg(feature = "scanning")]
 pub mod decision_loop;
 
 #[cfg(feature = "scanning")]

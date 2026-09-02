@@ -1,0 +1,37 @@
+schema = "security-assessment-fixture/v1"
+id = "authorization.truncated-json"
+revision = 1
+category = "authorization"
+purpose = "Treat a truncated selected-resource view as incomplete rather than empty or equivalent success."
+provenance = "generated-boundary"
+support = "current"
+tags = ["authorization", "incomplete", "truncated"]
+
+[request]
+method = "get"
+origin = "https://api.example.test"
+path = "/api/accounts/fixture-truncated"
+role = "bootstrap"
+
+[response]
+status = 200
+media_type = "application/json"
+role = "bootstrap"
+completion = "incomplete"
+truncated = true
+body_file = "bodies/authorization-malformed.txt"
+
+[authorization]
+resource = "/api/accounts/fixture-truncated"
+resource_handle = "fixture-truncated-json"
+expectation = "primary-only"
+method = "GET"
+comparison = { selected_paths = ["/data/account"], ignored_paths = [], unordered_array_paths = [], max_diff_paths = 16 }
+primary_candidate = { status = 200, media_type = "application/json", completion = "incomplete", truncated = true, state = "truncated", body_file = "bodies/authorization-malformed.txt" }
+peer_candidate = { status = 200, media_type = "application/json", completion = "complete", truncated = false, state = "complete-json", body_file = "bodies/authorization-resource-a.json" }
+primary_replay = { status = 200, media_type = "application/json", completion = "complete", truncated = false, state = "complete-json", body_file = "bodies/authorization-resource-a.json" }
+peer_replay = { status = 200, media_type = "application/json", completion = "complete", truncated = false, state = "complete-json", body_file = "bodies/authorization-resource-a.json" }
+
+[expected]
+authorization_outcome = "truncated"
+incompleteness = "body-truncated"

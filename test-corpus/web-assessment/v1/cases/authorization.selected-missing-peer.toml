@@ -1,0 +1,36 @@
+schema = "security-assessment-fixture/v1"
+id = "authorization.selected-missing-peer"
+revision = 1
+category = "authorization"
+purpose = "Fail closed when a selected resource path is absent from a peer response."
+provenance = "generated-boundary"
+support = "current"
+tags = ["authorization", "missing", "peer", "selected-path"]
+
+[request]
+method = "get"
+origin = "https://api.example.test"
+path = "/api/accounts/fixture-missing-peer"
+role = "bootstrap"
+
+[response]
+status = 200
+media_type = "application/json"
+role = "bootstrap"
+completion = "complete"
+truncated = false
+body_file = "bodies/authorization-resource-a.json"
+
+[authorization]
+resource = "/api/accounts/fixture-missing-peer"
+resource_handle = "fixture-missing-peer"
+expectation = "primary-only"
+method = "GET"
+comparison = { selected_paths = ["/data/account"], ignored_paths = [], unordered_array_paths = [], max_diff_paths = 16 }
+primary_candidate = { status = 200, media_type = "application/json", completion = "complete", truncated = false, state = "complete-json", body_file = "bodies/authorization-resource-a.json" }
+peer_candidate = { status = 200, media_type = "application/json", completion = "complete", truncated = false, state = "complete-json", body_file = "bodies/authorization-selected-missing.json" }
+primary_replay = { status = 200, media_type = "application/json", completion = "complete", truncated = false, state = "complete-json", body_file = "bodies/authorization-resource-a.json" }
+peer_replay = { status = 200, media_type = "application/json", completion = "complete", truncated = false, state = "complete-json", body_file = "bodies/authorization-selected-missing.json" }
+
+[expected]
+authorization_outcome = "selected-path-missing"

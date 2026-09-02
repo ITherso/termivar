@@ -2192,6 +2192,7 @@ mod scanner_corpus_conformance {
         Xss,
         Normalization,
         ApiGraphql,
+        Authorization,
     }
 
     #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
@@ -2280,6 +2281,47 @@ mod scanner_corpus_conformance {
 
     #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
     #[serde(rename_all = "kebab-case")]
+    enum AuthorizationOutcomeExpectation {
+        PrimaryBaselineInvalid,
+        PrimaryUnstable,
+        PeerDenied,
+        PeerUnstable,
+        CrossStatusDifferent,
+        CrossFieldsEquivalentOnly,
+        CrossResourcesDifferent,
+        StableCrossPrincipalEquivalence,
+        DefensiveInterference,
+        RateLimited,
+        RedirectObserved,
+        UnsupportedMedia,
+        MalformedJson,
+        GenericJsonErrorEnvelope,
+        SelectedPathMissing,
+        Truncated,
+        Incomplete,
+        BudgetExhausted,
+        Cancelled,
+    }
+
+    #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+    #[serde(rename_all = "kebab-case")]
+    enum AuthorizationBodyState {
+        CompleteJson,
+        UnsupportedMedia,
+        Html,
+        Redirect,
+        RateLimited,
+        ServerError,
+        MalformedJson,
+        Truncated,
+        Incomplete,
+        BudgetExhausted,
+        Cancelled,
+        DefensiveInterference,
+    }
+
+    #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+    #[serde(rename_all = "kebab-case")]
     enum IncompletenessExpectation {
         BodyTruncated,
         ResponseIncomplete,
@@ -2345,7 +2387,42 @@ mod scanner_corpus_conformance {
         parent_case: Option<String>,
         request: FixtureRequest,
         response: FixtureResponse,
+        #[serde(default)]
+        authorization: Option<AuthorizationFixture>,
         expected: ExpectedSemantics,
+    }
+
+    #[derive(Deserialize)]
+    struct AuthorizationFixture {
+        resource: String,
+        resource_handle: String,
+        expectation: String,
+        method: String,
+        comparison: AuthorizationComparisonFixture,
+        primary_candidate: AuthorizationViewFixture,
+        peer_candidate: AuthorizationViewFixture,
+        primary_replay: AuthorizationViewFixture,
+        peer_replay: AuthorizationViewFixture,
+    }
+
+    #[derive(Deserialize)]
+    struct AuthorizationComparisonFixture {
+        selected_paths: Vec<String>,
+        #[serde(default)]
+        ignored_paths: Vec<String>,
+        #[serde(default)]
+        unordered_array_paths: Vec<String>,
+        max_diff_paths: u16,
+    }
+
+    #[derive(Deserialize)]
+    struct AuthorizationViewFixture {
+        status: u16,
+        media_type: String,
+        completion: CompletionState,
+        truncated: bool,
+        state: AuthorizationBodyState,
+        body_file: String,
     }
 
     #[derive(Deserialize)]
@@ -2409,6 +2486,8 @@ mod scanner_corpus_conformance {
         #[serde(default)]
         graphql_evidence: Option<GraphqlExpectation>,
         #[serde(default)]
+        authorization_outcome: Option<AuthorizationOutcomeExpectation>,
+        #[serde(default)]
         assessment_capability: Option<String>,
         #[serde(default)]
         maximum_disposition: Option<DispositionExpectation>,
@@ -2430,6 +2509,7 @@ mod scanner_corpus_conformance {
         NormalizationReview,
         #[cfg(feature = "graphql-review")]
         GraphqlReview,
+        AuthorizationReview,
         ApiReasoning,
     }
 
@@ -3580,6 +3660,259 @@ mod scanner_corpus_conformance {
         ConformanceResult::UnsupportedByCurrentRuntime
     }
 
+    fn authorization_policy_source(fixture: &AuthorizationFixture) -> String {
+        let strings = |values: &[String]| {
+            values
+                .iter()
+                .map(|value| toml::Value::String(value.clone()).to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        format!(
+            "schema = \"security.authorization-review-policy/v1\"\n\
+             resource = {}\n\
+             resource_handle = {}\n\
+             expectation = {}\n\
+             method = \"GET\"\n\
+             [comparison]\n\
+             selected_paths = [{}]\n\
+             ignored_paths = [{}]\n\
+             unordered_array_paths = [{}]\n\
+             max_diff_paths = {}\n",
+            toml::Value::String(fixture.resource.clone()),
+            toml::Value::String(fixture.resource_handle.clone()),
+            toml::Value::String(fixture.expectation.clone()),
+            strings(&fixture.comparison.selected_paths),
+            strings(&fixture.comparison.ignored_paths),
+            strings(&fixture.comparison.unordered_array_paths),
+            fixture.comparison.max_diff_paths,
+        )
+    }
+
+    fn authorization_view(
+        policy: &crate::authorization_review::AuthorizationReviewPolicy,
+        role: crate::authorization_review::AuthorizationViewRole,
+        fixture: &AuthorizationViewFixture,
+        receipt_byte: u8,
+    ) -> Result<crate::authorization_review::AuthorizationReviewView, ()> {
+        use crate::authorization_review::{
+            AuthorizationReviewBodyState, AuthorizationReviewMediaClass, AuthorizationReviewView,
+            AuthorizationViewReceiptId,
+        };
+
+        let state = match fixture.state {
+            AuthorizationBodyState::CompleteJson => AuthorizationReviewBodyState::CompleteJson,
+            AuthorizationBodyState::UnsupportedMedia => {
+                AuthorizationReviewBodyState::UnsupportedMedia
+            },
+            AuthorizationBodyState::Html => AuthorizationReviewBodyState::Html,
+            AuthorizationBodyState::Redirect => AuthorizationReviewBodyState::Redirect,
+            AuthorizationBodyState::RateLimited => AuthorizationReviewBodyState::RateLimited,
+            AuthorizationBodyState::ServerError => AuthorizationReviewBodyState::ServerError,
+            AuthorizationBodyState::MalformedJson => AuthorizationReviewBodyState::MalformedJson,
+            AuthorizationBodyState::Truncated => AuthorizationReviewBodyState::Truncated,
+            AuthorizationBodyState::Incomplete => AuthorizationReviewBodyState::Incomplete,
+            AuthorizationBodyState::BudgetExhausted => {
+                AuthorizationReviewBodyState::BudgetExhausted
+            },
+            AuthorizationBodyState::Cancelled => AuthorizationReviewBodyState::Cancelled,
+            AuthorizationBodyState::DefensiveInterference => {
+                AuthorizationReviewBodyState::DefensiveInterference
+            },
+        };
+        let receipt = AuthorizationViewReceiptId::from_digest([receipt_byte; 32]);
+        if state != AuthorizationReviewBodyState::CompleteJson {
+            let media_class = match fixture.state {
+                AuthorizationBodyState::Html => AuthorizationReviewMediaClass::Html,
+                AuthorizationBodyState::UnsupportedMedia => AuthorizationReviewMediaClass::Other,
+                AuthorizationBodyState::BudgetExhausted | AuthorizationBodyState::Cancelled => {
+                    AuthorizationReviewMediaClass::Missing
+                },
+                _ if json_compatible_media_type(&fixture.media_type) => {
+                    AuthorizationReviewMediaClass::JsonCompatible
+                },
+                _ => AuthorizationReviewMediaClass::Other,
+            };
+            let status = match fixture.state {
+                AuthorizationBodyState::BudgetExhausted | AuthorizationBodyState::Cancelled => None,
+                _ => Some(fixture.status),
+            };
+            return AuthorizationReviewView::terminal(
+                policy,
+                role,
+                status,
+                media_class,
+                state,
+                receipt,
+            )
+            .map_err(|_| ());
+        }
+        if fixture.completion != CompletionState::Complete
+            || fixture.truncated
+            || !json_compatible_media_type(&fixture.media_type)
+        {
+            return Err(());
+        }
+        let body = fixture_body(Some(&fixture.body_file), None)?;
+        let snapshot = serde_json::from_slice(&body).map_err(|_| ())?;
+        AuthorizationReviewView::capture_json(policy, role, fixture.status, &snapshot, receipt)
+            .map_err(|_| ())
+    }
+
+    fn run_authorization(case: &FixtureCase) -> ConformanceResult {
+        use crate::authorization_review::{
+            AuthorizationDifferentialResult, AuthorizationPrincipalPair,
+            AuthorizationReviewOutcome, AuthorizationReviewPolicy, AuthorizationViewRole,
+            PeerAuthorizationPrincipal, PrimaryAuthorizationPrincipal,
+        };
+
+        let Some(fixture) = case.authorization.as_ref() else {
+            return ConformanceResult::FixtureInvalid;
+        };
+        if fixture.expectation != "primary-only" || fixture.method != "GET" {
+            return ConformanceResult::FixtureInvalid;
+        }
+        let Ok(origin) = Url::parse(&case.request.origin) else {
+            return ConformanceResult::FixtureInvalid;
+        };
+        let source = authorization_policy_source(fixture);
+        let Ok(policy) = AuthorizationReviewPolicy::parse_toml(&origin, source.as_bytes()) else {
+            return ConformanceResult::FixtureInvalid;
+        };
+        let Ok(primary) = PrimaryAuthorizationPrincipal::new("Fixture primary context") else {
+            return ConformanceResult::FixtureInvalid;
+        };
+        let Ok(peer) = PeerAuthorizationPrincipal::new("Fixture peer context") else {
+            return ConformanceResult::FixtureInvalid;
+        };
+        let Ok(pair) = AuthorizationPrincipalPair::new(primary, peer) else {
+            return ConformanceResult::FixtureInvalid;
+        };
+        let Ok(primary_candidate) = authorization_view(
+            &policy,
+            AuthorizationViewRole::PrimaryCandidate,
+            &fixture.primary_candidate,
+            1,
+        ) else {
+            return ConformanceResult::FixtureInvalid;
+        };
+        let Ok(peer_candidate) = authorization_view(
+            &policy,
+            AuthorizationViewRole::PeerCandidate,
+            &fixture.peer_candidate,
+            2,
+        ) else {
+            return ConformanceResult::FixtureInvalid;
+        };
+        let Ok(primary_replay) = authorization_view(
+            &policy,
+            AuthorizationViewRole::PrimaryReplay,
+            &fixture.primary_replay,
+            3,
+        ) else {
+            return ConformanceResult::FixtureInvalid;
+        };
+        let Ok(peer_replay) = authorization_view(
+            &policy,
+            AuthorizationViewRole::PeerReplay,
+            &fixture.peer_replay,
+            4,
+        ) else {
+            return ConformanceResult::FixtureInvalid;
+        };
+        let Ok(result) = AuthorizationDifferentialResult::compare(
+            &policy,
+            pair.into_proof(),
+            [
+                &primary_candidate,
+                &peer_candidate,
+                &primary_replay,
+                &peer_replay,
+            ],
+        ) else {
+            return ConformanceResult::FixtureInvalid;
+        };
+        let expected = match case.expected.authorization_outcome {
+            Some(AuthorizationOutcomeExpectation::PrimaryBaselineInvalid) => {
+                AuthorizationReviewOutcome::PrimaryBaselineInvalid
+            },
+            Some(AuthorizationOutcomeExpectation::PrimaryUnstable) => {
+                AuthorizationReviewOutcome::PrimaryUnstable
+            },
+            Some(AuthorizationOutcomeExpectation::PeerDenied) => {
+                AuthorizationReviewOutcome::PeerDenied
+            },
+            Some(AuthorizationOutcomeExpectation::PeerUnstable) => {
+                AuthorizationReviewOutcome::PeerUnstable
+            },
+            Some(AuthorizationOutcomeExpectation::CrossStatusDifferent) => {
+                AuthorizationReviewOutcome::CrossStatusDifferent
+            },
+            Some(AuthorizationOutcomeExpectation::CrossFieldsEquivalentOnly) => {
+                AuthorizationReviewOutcome::CrossFieldsEquivalentOnly
+            },
+            Some(AuthorizationOutcomeExpectation::CrossResourcesDifferent) => {
+                AuthorizationReviewOutcome::CrossResourcesDifferent
+            },
+            Some(AuthorizationOutcomeExpectation::StableCrossPrincipalEquivalence) => {
+                AuthorizationReviewOutcome::StableCrossPrincipalEquivalence
+            },
+            Some(AuthorizationOutcomeExpectation::DefensiveInterference) => {
+                AuthorizationReviewOutcome::DefensiveInterference
+            },
+            Some(AuthorizationOutcomeExpectation::RateLimited) => {
+                AuthorizationReviewOutcome::RateLimited
+            },
+            Some(AuthorizationOutcomeExpectation::RedirectObserved) => {
+                AuthorizationReviewOutcome::RedirectObserved
+            },
+            Some(AuthorizationOutcomeExpectation::UnsupportedMedia) => {
+                AuthorizationReviewOutcome::UnsupportedMedia
+            },
+            Some(AuthorizationOutcomeExpectation::MalformedJson) => {
+                AuthorizationReviewOutcome::MalformedJson
+            },
+            Some(AuthorizationOutcomeExpectation::GenericJsonErrorEnvelope) => {
+                AuthorizationReviewOutcome::GenericJsonErrorEnvelope
+            },
+            Some(AuthorizationOutcomeExpectation::SelectedPathMissing) => {
+                AuthorizationReviewOutcome::SelectedPathMissing
+            },
+            Some(AuthorizationOutcomeExpectation::Truncated) => {
+                AuthorizationReviewOutcome::Truncated
+            },
+            Some(AuthorizationOutcomeExpectation::Incomplete) => {
+                AuthorizationReviewOutcome::Incomplete
+            },
+            Some(AuthorizationOutcomeExpectation::BudgetExhausted) => {
+                AuthorizationReviewOutcome::BudgetExhausted
+            },
+            Some(AuthorizationOutcomeExpectation::Cancelled) => {
+                AuthorizationReviewOutcome::Cancelled
+            },
+            None => return ConformanceResult::FixtureInvalid,
+        };
+        if result.outcome() != expected {
+            return ConformanceResult::SemanticMismatch(SemanticMismatch::AuthorizationReview);
+        }
+        let positive = expected == AuthorizationReviewOutcome::StableCrossPrincipalEquivalence;
+        let claim_matches = if positive {
+            case.expected.assessment_capability.as_deref()
+                == Some("authorization.resource-cross-principal-equivalence")
+                && case.expected.maximum_disposition == Some(DispositionExpectation::NeedsReview)
+                && case.expected.maximum_authority
+                    == Some(MaximumAuthorityExpectation::KnowledgeOnly)
+        } else {
+            case.expected.assessment_capability.is_none()
+                && case.expected.maximum_disposition.is_none()
+                && case.expected.maximum_authority.is_none()
+        };
+        if !claim_matches {
+            return ConformanceResult::SemanticMismatch(SemanticMismatch::AuthorizationReview);
+        }
+        terminal_result(case)
+    }
+
     fn terminal_result(case: &FixtureCase) -> ConformanceResult {
         if case.support == SupportLevel::MetadataOnly {
             return ConformanceResult::UnsupportedByCurrentRuntime;
@@ -3623,13 +3956,14 @@ mod scanner_corpus_conformance {
             CaseCategory::Xss => run_xss(case),
             CaseCategory::Normalization => run_normalization(case),
             CaseCategory::ApiGraphql => run_graphql(case),
+            CaseCategory::Authorization => run_authorization(case),
         }
     }
 
     #[test]
     fn versioned_scanner_corpus_dispatches_through_current_production_semantics() {
         let cases = load_cases().expect("the checked scanner corpus must be structurally valid");
-        assert_eq!(cases.len(), 50, "V1 corpus inventory changed unexpectedly");
+        assert_eq!(cases.len(), 73, "V1 corpus inventory changed unexpectedly");
         let by_id = cases
             .iter()
             .map(|case| (case.id.as_str(), case))
@@ -3661,6 +3995,7 @@ mod scanner_corpus_conformance {
                 CaseCategory::Ssti,
                 CaseCategory::Xss,
                 CaseCategory::ApiGraphql,
+                CaseCategory::Authorization,
             ])
         );
         assert!(outcomes.get("pass").copied().unwrap_or_default() > 0);

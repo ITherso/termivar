@@ -1,0 +1,36 @@
+schema = "security-assessment-fixture/v1"
+id = "authorization.primary-baseline-invalid"
+revision = 1
+category = "authorization"
+purpose = "Reject a four-view comparison when the primary principal never establishes a successful baseline."
+provenance = "generated-boundary"
+support = "current"
+tags = ["authorization", "negative", "primary"]
+
+[request]
+method = "get"
+origin = "https://api.example.test"
+path = "/api/accounts/fixture-primary-invalid"
+role = "bootstrap"
+
+[response]
+status = 401
+media_type = "application/json"
+role = "bootstrap"
+completion = "complete"
+truncated = false
+body_file = "bodies/authorization-denied.json"
+
+[authorization]
+resource = "/api/accounts/fixture-primary-invalid"
+resource_handle = "fixture-primary-invalid"
+expectation = "primary-only"
+method = "GET"
+comparison = { selected_paths = ["/data/account"], ignored_paths = [], unordered_array_paths = [], max_diff_paths = 16 }
+primary_candidate = { status = 401, media_type = "application/json", completion = "complete", truncated = false, state = "complete-json", body_file = "bodies/authorization-denied.json" }
+peer_candidate = { status = 200, media_type = "application/json", completion = "complete", truncated = false, state = "complete-json", body_file = "bodies/authorization-resource-a.json" }
+primary_replay = { status = 401, media_type = "application/json", completion = "complete", truncated = false, state = "complete-json", body_file = "bodies/authorization-denied.json" }
+peer_replay = { status = 200, media_type = "application/json", completion = "complete", truncated = false, state = "complete-json", body_file = "bodies/authorization-resource-a.json" }
+
+[expected]
+authorization_outcome = "primary-baseline-invalid"

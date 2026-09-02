@@ -1,0 +1,39 @@
+schema = "security-assessment-fixture/v1"
+id = "authorization.unordered-array-equivalent"
+revision = 1
+category = "authorization"
+purpose = "Treat one explicitly configured selected array as unordered while preserving resource comparison."
+provenance = "current-authored"
+support = "current"
+tags = ["array", "authorization", "positive", "unordered"]
+
+[request]
+method = "get"
+origin = "https://api.example.test"
+path = "/api/accounts/fixture-unordered"
+role = "bootstrap"
+
+[response]
+status = 200
+media_type = "application/json"
+role = "bootstrap"
+completion = "complete"
+truncated = false
+body_file = "bodies/authorization-resource-a.json"
+
+[authorization]
+resource = "/api/accounts/fixture-unordered"
+resource_handle = "fixture-unordered-array"
+expectation = "primary-only"
+method = "GET"
+comparison = { selected_paths = ["/data/account"], ignored_paths = [], unordered_array_paths = ["/data/account/roles"], max_diff_paths = 16 }
+primary_candidate = { status = 200, media_type = "application/json", completion = "complete", truncated = false, state = "complete-json", body_file = "bodies/authorization-resource-a.json" }
+peer_candidate = { status = 200, media_type = "application/json", completion = "complete", truncated = false, state = "complete-json", body_file = "bodies/authorization-resource-a-reordered.json" }
+primary_replay = { status = 200, media_type = "application/json", completion = "complete", truncated = false, state = "complete-json", body_file = "bodies/authorization-resource-a-reordered.json" }
+peer_replay = { status = 200, media_type = "application/json", completion = "complete", truncated = false, state = "complete-json", body_file = "bodies/authorization-resource-a.json" }
+
+[expected]
+authorization_outcome = "stable-cross-principal-equivalence"
+assessment_capability = "authorization.resource-cross-principal-equivalence"
+maximum_disposition = "needs-review"
+maximum_authority = "knowledge-only"

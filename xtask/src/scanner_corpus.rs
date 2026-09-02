@@ -49,6 +49,11 @@ const MAX_QUERY_VALUE_BYTES: usize = 512;
 const MAX_TAGS: usize = 24;
 const MAX_TAG_BYTES: usize = 48;
 const MAX_INLINE_BODY_BYTES: usize = 8 * 1024;
+const MAX_AUTHORIZATION_SELECTED_PATHS: usize = 8;
+const MAX_AUTHORIZATION_IGNORED_PATHS: usize = 16;
+const MAX_AUTHORIZATION_UNORDERED_PATHS: usize = 8;
+const MAX_AUTHORIZATION_POINTER_BYTES: usize = 256;
+const MAX_AUTHORIZATION_DIFF_PATHS: u16 = 32;
 
 const REQUEST_HEADER_ALLOWLIST: &[&str] = &["accept", "content-type", "user-agent", "x-fixture-id"];
 const RESPONSE_HEADER_ALLOWLIST: &[&str] = &[
@@ -143,7 +148,45 @@ struct FixtureCase {
     equivalent_to: Option<String>,
     request: FixtureRequest,
     response: FixtureResponse,
+    #[serde(default)]
+    authorization: Option<AuthorizationFixture>,
     expected: ExpectedSemantics,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct AuthorizationFixture {
+    resource: String,
+    resource_handle: String,
+    expectation: AuthorizationPolicyExpectation,
+    method: AuthorizationMethod,
+    comparison: AuthorizationComparisonFixture,
+    primary_candidate: AuthorizationViewFixture,
+    peer_candidate: AuthorizationViewFixture,
+    primary_replay: AuthorizationViewFixture,
+    peer_replay: AuthorizationViewFixture,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct AuthorizationComparisonFixture {
+    selected_paths: Vec<String>,
+    #[serde(default)]
+    ignored_paths: Vec<String>,
+    #[serde(default)]
+    unordered_array_paths: Vec<String>,
+    max_diff_paths: u16,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct AuthorizationViewFixture {
+    status: u16,
+    media_type: String,
+    completion: CompletionState,
+    truncated: bool,
+    state: AuthorizationBodyState,
+    body_file: String,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -233,6 +276,8 @@ struct ExpectedSemantics {
     #[serde(default)]
     graphql_evidence: Option<GraphqlExpectation>,
     #[serde(default)]
+    authorization_outcome: Option<AuthorizationOutcomeExpectation>,
+    #[serde(default)]
     assessment_capability: Option<String>,
     #[serde(default)]
     maximum_disposition: Option<DispositionExpectation>,
@@ -263,7 +308,8 @@ wire_enum!(CaseCategory {
     Ssti => "ssti",
     Xss => "xss",
     Normalization => "normalization",
-    ApiGraphql => "api-graphql"
+    ApiGraphql => "api-graphql",
+    Authorization => "authorization"
 });
 wire_enum!(Provenance {
     CurrentAuthored => "current-authored",
@@ -357,6 +403,55 @@ wire_enum!(GraphqlExpectation {
     DepthLimited => "depth-limited",
     BatchMetadataOnly => "batch-metadata-only",
     GetQueryMetadataOnly => "get-query-metadata-only"
+});
+wire_enum!(AuthorizationPolicyExpectation { PrimaryOnly => "primary-only" });
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+enum AuthorizationMethod {
+    #[serde(rename = "GET")]
+    Get,
+}
+
+impl AuthorizationMethod {
+    const fn wire(self) -> &'static str {
+        match self {
+            Self::Get => "GET",
+        }
+    }
+}
+wire_enum!(AuthorizationBodyState {
+    CompleteJson => "complete-json",
+    UnsupportedMedia => "unsupported-media",
+    Html => "html",
+    Redirect => "redirect",
+    RateLimited => "rate-limited",
+    ServerError => "server-error",
+    MalformedJson => "malformed-json",
+    Truncated => "truncated",
+    Incomplete => "incomplete",
+    BudgetExhausted => "budget-exhausted",
+    Cancelled => "cancelled",
+    DefensiveInterference => "defensive-interference"
+});
+wire_enum!(AuthorizationOutcomeExpectation {
+    PrimaryBaselineInvalid => "primary-baseline-invalid",
+    PrimaryUnstable => "primary-unstable",
+    PeerDenied => "peer-denied",
+    PeerUnstable => "peer-unstable",
+    CrossStatusDifferent => "cross-status-different",
+    CrossFieldsEquivalentOnly => "cross-fields-equivalent-only",
+    CrossResourcesDifferent => "cross-resources-different",
+    StableCrossPrincipalEquivalence => "stable-cross-principal-equivalence",
+    DefensiveInterference => "defensive-interference",
+    RateLimited => "rate-limited",
+    RedirectObserved => "redirect-observed",
+    UnsupportedMedia => "unsupported-media",
+    MalformedJson => "malformed-json",
+    GenericJsonErrorEnvelope => "generic-json-error-envelope",
+    SelectedPathMissing => "selected-path-missing",
+    Truncated => "truncated",
+    Incomplete => "incomplete",
+    BudgetExhausted => "budget-exhausted",
+    Cancelled => "cancelled"
 });
 wire_enum!(DispositionExpectation {
     Informational => "informational",
@@ -609,6 +704,7 @@ fn validate_case(source_path: &str, case: &FixtureCase) -> TaskResult {
     }
     validate_request(&case.request)?;
     validate_response(&case.response)?;
+    validate_authorization_contract(case)?;
     if case.response.source_body_file.is_some() && case.category != CaseCategory::Xss {
         return Err("source-body fixtures are limited to XSS source-context conformance".into());
     }
@@ -685,6 +781,249 @@ fn validate_graphql_support_contract(case: &FixtureCase) -> TaskResult {
         return Err("executable GraphQL V1 fixtures must use current support".into());
     }
     Ok(())
+}
+
+fn validate_authorization_contract(case: &FixtureCase) -> TaskResult {
+    let is_authorization = case.category == CaseCategory::Authorization;
+    if !is_authorization {
+        if case.authorization.is_some() || case.expected.authorization_outcome.is_some() {
+            return Err(
+                "authorization fixture data is limited to the authorization category".into(),
+            );
+        }
+        return Ok(());
+    }
+
+    let fixture = case
+        .authorization
+        .as_ref()
+        .ok_or("authorization cases require an exact four-view fixture")?;
+    if case.expected.authorization_outcome.is_none() {
+        return Err("authorization cases require a typed authorization outcome".into());
+    }
+    if case.support != SupportLevel::Current {
+        return Err("authorization differential fixtures must use current support".into());
+    }
+    if case.request.method != HttpMethod::Get
+        || fixture.method != AuthorizationMethod::Get
+        || fixture.expectation != AuthorizationPolicyExpectation::PrimaryOnly
+    {
+        return Err("authorization V1 fixtures require primary-only GET semantics".into());
+    }
+    validate_request_path(&fixture.resource)?;
+    if fixture.resource != case.request.path {
+        return Err("authorization fixture resource must match the request path".into());
+    }
+    validate_token(
+        &fixture.resource_handle,
+        "authorization resource handle",
+        128,
+    )?;
+    validate_authorization_comparison(&fixture.comparison)?;
+    for view in authorization_views(fixture) {
+        validate_authorization_view(view)?;
+    }
+
+    let positive = case.expected.authorization_outcome
+        == Some(AuthorizationOutcomeExpectation::StableCrossPrincipalEquivalence);
+    if positive {
+        if case.expected.assessment_capability.as_deref()
+            != Some("authorization.resource-cross-principal-equivalence")
+            || case.expected.maximum_disposition != Some(DispositionExpectation::NeedsReview)
+            || case.expected.maximum_authority != Some(MaximumAuthorityExpectation::KnowledgeOnly)
+            || case.expected.incompleteness.is_some()
+        {
+            return Err(
+                "positive authorization equivalence requires a complete bounded review claim contract"
+                    .into(),
+            );
+        }
+    } else if case.expected.assessment_capability.is_some()
+        || case.expected.maximum_disposition.is_some()
+        || case.expected.maximum_authority.is_some()
+    {
+        return Err("non-positive authorization outcomes cannot declare an assessment item".into());
+    }
+    Ok(())
+}
+
+fn validate_authorization_comparison(comparison: &AuthorizationComparisonFixture) -> TaskResult {
+    if comparison.selected_paths.is_empty()
+        || comparison.selected_paths.len() > MAX_AUTHORIZATION_SELECTED_PATHS
+        || comparison.ignored_paths.len() > MAX_AUTHORIZATION_IGNORED_PATHS
+        || comparison.unordered_array_paths.len() > MAX_AUTHORIZATION_UNORDERED_PATHS
+        || comparison.max_diff_paths == 0
+        || comparison.max_diff_paths > MAX_AUTHORIZATION_DIFF_PATHS
+    {
+        return Err("authorization comparison profile is outside its hard limits".into());
+    }
+    let selected = validate_authorization_pointers(&comparison.selected_paths, "selected")?;
+    let ignored = validate_authorization_pointers(&comparison.ignored_paths, "ignored")?;
+    let unordered =
+        validate_authorization_pointers(&comparison.unordered_array_paths, "unordered")?;
+    if selected.iter().any(|path| path.is_empty()) {
+        return Err("authorization selected paths must be non-root exact JSON Pointers".into());
+    }
+    if has_redundant_pointer_subtrees(&selected) || has_redundant_pointer_subtrees(&ignored) {
+        return Err("authorization comparison paths contain redundant subtrees".into());
+    }
+    if ignored.iter().any(|path| {
+        !selected
+            .iter()
+            .any(|selected| strict_pointer_descendant(path, selected))
+    }) {
+        return Err("authorization ignored paths must be inside a selected subtree".into());
+    }
+    if unordered.iter().any(|path| {
+        !selected
+            .iter()
+            .any(|selected| path == selected || strict_pointer_descendant(path, selected))
+    }) {
+        return Err("authorization unordered-array paths must be inside a selected subtree".into());
+    }
+    if unordered.iter().any(|unordered| {
+        ignored
+            .iter()
+            .any(|ignored| unordered == ignored || strict_pointer_descendant(unordered, ignored))
+    }) {
+        return Err("authorization unordered-array paths cannot be hidden by ignored paths".into());
+    }
+    Ok(())
+}
+
+fn validate_authorization_pointers(values: &[String], label: &str) -> TaskResult<BTreeSet<String>> {
+    let mut unique = BTreeSet::new();
+    for value in values {
+        validate_text(
+            value,
+            "authorization JSON Pointer",
+            MAX_AUTHORIZATION_POINTER_BYTES,
+        )?;
+        if pointer_has_wildcard_segment(value) || !valid_exact_json_pointer(value) {
+            return Err(
+                format!("authorization {label} path is not an exact RFC 6901 pointer").into(),
+            );
+        }
+        if !unique.insert(value.clone()) {
+            return Err(format!("authorization {label} paths must be unique").into());
+        }
+    }
+    Ok(unique)
+}
+
+fn valid_exact_json_pointer(value: &str) -> bool {
+    if value.is_empty() {
+        return true;
+    }
+    if !value.starts_with('/') {
+        return false;
+    }
+    let bytes = value.as_bytes();
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'~' {
+            if !matches!(bytes.get(index + 1), Some(b'0' | b'1')) {
+                return false;
+            }
+            index += 2;
+        } else {
+            index += 1;
+        }
+    }
+    true
+}
+
+fn pointer_has_wildcard_segment(value: &str) -> bool {
+    value.split('/').skip(1).any(|token| token == "*")
+}
+
+fn strict_pointer_descendant(path: &str, ancestor: &str) -> bool {
+    path.len() > ancestor.len()
+        && path.starts_with(ancestor)
+        && path.as_bytes().get(ancestor.len()) == Some(&b'/')
+}
+
+fn has_redundant_pointer_subtrees(paths: &BTreeSet<String>) -> bool {
+    paths.iter().enumerate().any(|(index, left)| {
+        paths.iter().skip(index + 1).any(|right| {
+            strict_pointer_descendant(left, right) || strict_pointer_descendant(right, left)
+        })
+    })
+}
+
+fn authorization_views(fixture: &AuthorizationFixture) -> [&AuthorizationViewFixture; 4] {
+    [
+        &fixture.primary_candidate,
+        &fixture.peer_candidate,
+        &fixture.primary_replay,
+        &fixture.peer_replay,
+    ]
+}
+
+fn validate_authorization_view(view: &AuthorizationViewFixture) -> TaskResult {
+    if !(100..=599).contains(&view.status) {
+        return Err("authorization view status is outside the HTTP range".into());
+    }
+    validate_text(
+        &view.media_type,
+        "authorization view media type",
+        MAX_MEDIA_TYPE_BYTES,
+    )?;
+    validate_relative_reference(&view.body_file, MAX_PATH_BYTES)?;
+    if !view.body_file.starts_with("bodies/") {
+        return Err("authorization view body references must stay under bodies/".into());
+    }
+    let json_media = json_compatible_fixture_media_type(&view.media_type);
+    let html_media = html_fixture_media_type(&view.media_type);
+    let complete_response = view.completion == CompletionState::Complete && !view.truncated;
+    let coherent = match view.state {
+        AuthorizationBodyState::CompleteJson => complete_response && json_media,
+        AuthorizationBodyState::UnsupportedMedia => complete_response && !json_media && !html_media,
+        AuthorizationBodyState::Html => complete_response && html_media,
+        AuthorizationBodyState::Redirect => complete_response && (300..=399).contains(&view.status),
+        AuthorizationBodyState::RateLimited => complete_response && view.status == 429,
+        AuthorizationBodyState::ServerError => {
+            complete_response && (500..=599).contains(&view.status)
+        },
+        AuthorizationBodyState::MalformedJson => complete_response && json_media,
+        AuthorizationBodyState::Truncated => {
+            view.completion == CompletionState::Incomplete && view.truncated && json_media
+        },
+        AuthorizationBodyState::Incomplete => {
+            view.completion == CompletionState::Incomplete && !view.truncated
+        },
+        AuthorizationBodyState::DefensiveInterference => complete_response,
+        // These pre-response states carry neither response status nor body in
+        // production. The current corpus view schema intentionally cannot
+        // fabricate them from mandatory response fields.
+        AuthorizationBodyState::BudgetExhausted | AuthorizationBodyState::Cancelled => false,
+    };
+    if !coherent {
+        return Err(
+            "authorization view state, status, media, and completion do not reconcile".into(),
+        );
+    }
+    Ok(())
+}
+
+fn json_compatible_fixture_media_type(value: &str) -> bool {
+    let essence = value
+        .split(';')
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase();
+    essence == "application/json" || essence.ends_with("+json")
+}
+
+fn html_fixture_media_type(value: &str) -> bool {
+    let essence = value
+        .split(';')
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase();
+    matches!(essence.as_str(), "text/html" | "application/xhtml+xml")
 }
 
 fn validate_request(request: &FixtureRequest) -> TaskResult {
@@ -828,6 +1167,7 @@ fn validate_expected(expected: &ExpectedSemantics) -> TaskResult {
         expected.xss_relation.is_some(),
         expected.normalization_outcome.is_some(),
         expected.graphql_evidence.is_some(),
+        expected.authorization_outcome.is_some(),
         expected.assessment_capability.is_some(),
         expected.maximum_disposition.is_some(),
         expected.maximum_authority.is_some(),
@@ -969,16 +1309,22 @@ fn validate_semantic_duplicates(
 fn referenced_bodies(cases: &[LoadedCase]) -> TaskResult<BTreeSet<String>> {
     let mut bodies = BTreeSet::new();
     for loaded in cases {
-        for body in [
+        let ordinary = [
             loaded.case.request.body_file.as_ref(),
             loaded.case.response.body_file.as_ref(),
             loaded.case.response.control_body_file.as_ref(),
             loaded.case.response.replay_body_file.as_ref(),
             loaded.case.response.source_body_file.as_ref(),
-        ]
-        .into_iter()
-        .flatten()
-        {
+        ];
+        let authorization = loaded
+            .case
+            .authorization
+            .as_ref()
+            .map(authorization_views)
+            .into_iter()
+            .flatten()
+            .map(|view| &view.body_file);
+        for body in ordinary.into_iter().flatten().chain(authorization) {
             validate_relative_reference(body, MAX_PATH_BYTES)?;
             if !bodies.insert(body.clone()) {
                 // Sharing a sanitized body is intentional and does not make it dangling.
@@ -989,16 +1335,24 @@ fn referenced_bodies(cases: &[LoadedCase]) -> TaskResult<BTreeSet<String>> {
 }
 
 fn case_references_body(case: &FixtureCase, path: &str) -> bool {
-    [
+    let ordinary = [
         case.request.body_file.as_deref(),
         case.response.body_file.as_deref(),
         case.response.control_body_file.as_deref(),
         case.response.replay_body_file.as_deref(),
         case.response.source_body_file.as_deref(),
-    ]
-    .into_iter()
-    .flatten()
-    .any(|candidate| candidate == path)
+    ];
+    ordinary
+        .into_iter()
+        .flatten()
+        .any(|candidate| candidate == path)
+        || case
+            .authorization
+            .as_ref()
+            .map(authorization_views)
+            .into_iter()
+            .flatten()
+            .any(|view| view.body_file == path)
 }
 
 fn validate_origin(value: &str, loopback_fixture: bool) -> TaskResult {
@@ -1160,7 +1514,6 @@ fn validate_safe_fixture_bytes(bytes: &[u8]) -> TaskResult {
     let text = std::str::from_utf8(bytes).map_err(|_| "corpus fixture text must be UTF-8")?;
     let decoded = decode_policy_escapes(text);
     let lower = decoded.to_ascii_lowercase();
-    let private_key_marker = ["-----begin ", "private key-----"].concat();
     let dangerous = [
         "alert(",
         "document.cookie",
@@ -1172,7 +1525,7 @@ fn validate_safe_fixture_bytes(bytes: &[u8]) -> TaskResult {
         "reverse shell",
     ];
     if decoded.contains(REDACTION_SENTINEL)
-        || lower.contains(&private_key_marker)
+        || contains_private_key_marker(&lower)
         || dangerous.iter().any(|marker| lower.contains(marker))
         || contains_secret_assignment(&lower)
         || contains_jwt_shaped_token(&decoded)
@@ -1277,6 +1630,24 @@ fn validate_case_decoded_safety(case: &FixtureCase) -> TaskResult {
         .chain(case.response.control_body_file.as_deref())
         .chain(case.response.replay_body_file.as_deref())
         .chain(case.response.source_body_file.as_deref())
+        .chain(case.authorization.as_ref().into_iter().flat_map(|fixture| {
+            [fixture.resource.as_str(), fixture.resource_handle.as_str()]
+                .into_iter()
+                .chain(fixture.comparison.selected_paths.iter().map(String::as_str))
+                .chain(fixture.comparison.ignored_paths.iter().map(String::as_str))
+                .chain(
+                    fixture
+                        .comparison
+                        .unordered_array_paths
+                        .iter()
+                        .map(String::as_str),
+                )
+                .chain(
+                    authorization_views(fixture)
+                        .into_iter()
+                        .flat_map(|view| [view.media_type.as_str(), view.body_file.as_str()]),
+                )
+        }))
         .chain(case.expected.assessment_capability.as_deref())
     {
         validate_safe_fixture_bytes(value.as_bytes())?;
@@ -1307,29 +1678,52 @@ fn validate_case_decoded_safety(case: &FixtureCase) -> TaskResult {
 }
 
 fn contains_secret_assignment(lower: &str) -> bool {
+    let compact = lower
+        .chars()
+        .filter(|character| {
+            !character.is_ascii_whitespace() && !matches!(character, '"' | '\'' | '\\')
+        })
+        .collect::<String>();
     [
-        "authorization: bearer ",
-        "authorization = bearer ",
-        "authorization: basic ",
+        "authorization:bearer",
+        "authorization=bearer",
+        "authorization:basic",
+        "authorization=basic",
+        "api_key:",
         "api_key=",
-        "api_key =",
         "api-key:",
+        "api-key=",
+        "apikey:",
         "apikey=",
-        "apikey =",
+        "access_token:",
         "access_token=",
-        "access_token =",
+        "client_secret:",
         "client_secret=",
-        "client_secret =",
+        "secret_key:",
         "secret_key=",
-        "secret_key =",
+        "session_id:",
         "session_id=",
-        "session_id =",
+        "csrf_token:",
         "csrf_token=",
-        "csrf_token =",
+        "password:",
         "password=",
-        "password =",
         "cookie:",
+        "cookie=",
         "set-cookie:",
+        "set-cookie=",
+    ]
+    .iter()
+    .any(|marker| compact.contains(marker))
+}
+
+fn contains_private_key_marker(lower: &str) -> bool {
+    [
+        "-----begin private key-----",
+        "-----begin encrypted private key-----",
+        "-----begin rsa private key-----",
+        "-----begin dsa private key-----",
+        "-----begin ec private key-----",
+        "-----begin openssh private key-----",
     ]
     .iter()
     .any(|marker| lower.contains(marker))
@@ -1550,7 +1944,74 @@ fn digest_case(writer: &mut DigestWriter, case: &FixtureCase, bodies: &BTreeMap<
         None,
         bodies,
     );
+    digest_authorization(writer, case.authorization.as_ref(), bodies);
     digest_expected(writer, &case.expected);
+}
+
+fn digest_authorization(
+    writer: &mut DigestWriter,
+    fixture: Option<&AuthorizationFixture>,
+    bodies: &BTreeMap<String, String>,
+) {
+    let Some(fixture) = fixture else {
+        writer.optional("authorization.resource", None);
+        return;
+    };
+    writer.optional("authorization.resource", Some(&fixture.resource));
+    writer.field("authorization.resource_handle", &fixture.resource_handle);
+    writer.field("authorization.expectation", fixture.expectation.wire());
+    writer.field("authorization.method", fixture.method.wire());
+    let mut selected = fixture.comparison.selected_paths.iter().collect::<Vec<_>>();
+    selected.sort_unstable();
+    for path in selected {
+        writer.field("authorization.comparison.selected", path);
+    }
+    let mut ignored = fixture.comparison.ignored_paths.iter().collect::<Vec<_>>();
+    ignored.sort_unstable();
+    for path in ignored {
+        writer.field("authorization.comparison.ignored", path);
+    }
+    let mut unordered = fixture
+        .comparison
+        .unordered_array_paths
+        .iter()
+        .collect::<Vec<_>>();
+    unordered.sort_unstable();
+    for path in unordered {
+        writer.field("authorization.comparison.unordered", path);
+    }
+    writer.number(
+        "authorization.comparison.max_diff_paths",
+        u64::from(fixture.comparison.max_diff_paths),
+    );
+    for (label, view) in [
+        ("primary_candidate", &fixture.primary_candidate),
+        ("peer_candidate", &fixture.peer_candidate),
+        ("primary_replay", &fixture.primary_replay),
+        ("peer_replay", &fixture.peer_replay),
+    ] {
+        writer.number(
+            &format!("authorization.{label}.status"),
+            u64::from(view.status),
+        );
+        writer.field(
+            &format!("authorization.{label}.media_type"),
+            &view.media_type,
+        );
+        writer.field(
+            &format!("authorization.{label}.completion"),
+            view.completion.wire(),
+        );
+        writer.boolean(&format!("authorization.{label}.truncated"), view.truncated);
+        writer.field(&format!("authorization.{label}.state"), view.state.wire());
+        digest_body(
+            writer,
+            &format!("authorization.{label}.body"),
+            Some(&view.body_file),
+            None,
+            bodies,
+        );
+    }
 }
 
 fn digest_headers(writer: &mut DigestWriter, prefix: &str, headers: &[FixtureHeader]) {
@@ -1622,6 +2083,10 @@ fn digest_expected(writer: &mut DigestWriter, expected: &ExpectedSemantics) {
     writer.optional(
         "expected.graphql_evidence",
         expected.graphql_evidence.map(|value| value.wire()),
+    );
+    writer.optional(
+        "expected.authorization_outcome",
+        expected.authorization_outcome.map(|value| value.wire()),
     );
     writer.optional(
         "expected.assessment_capability",
@@ -1711,6 +2176,7 @@ fn case_semantic_fingerprint(
         None,
         body_digests,
     );
+    digest_authorization(&mut writer, case.authorization.as_ref(), body_digests);
     digest_expected(&mut writer, &case.expected);
     writer.finish()
 }
@@ -2021,6 +2487,7 @@ mod tests {
                 replay_body_file: None,
                 source_body_file: None,
             },
+            authorization: None,
             expected: ExpectedSemantics {
                 http_media: Some(HttpMediaExpectation::Json),
                 maximum_disposition: Some(DispositionExpectation::Informational),
@@ -2028,6 +2495,45 @@ mod tests {
                 ..ExpectedSemantics::default()
             },
         }
+    }
+
+    fn valid_authorization_case(id: &str) -> FixtureCase {
+        let view = AuthorizationViewFixture {
+            status: 200,
+            media_type: "application/json".to_owned(),
+            completion: CompletionState::Complete,
+            truncated: false,
+            state: AuthorizationBodyState::CompleteJson,
+            body_file: "bodies/authorization-primary.json".to_owned(),
+        };
+        let mut case = valid_case(id);
+        case.category = CaseCategory::Authorization;
+        case.request.path = "/api/accounts/42".to_owned();
+        case.request.role = ExchangeRole::Bootstrap;
+        case.response.role = ExchangeRole::Bootstrap;
+        case.expected.http_media = None;
+        case.expected.authorization_outcome =
+            Some(AuthorizationOutcomeExpectation::StableCrossPrincipalEquivalence);
+        case.expected.assessment_capability =
+            Some("authorization.resource-cross-principal-equivalence".to_owned());
+        case.expected.maximum_disposition = Some(DispositionExpectation::NeedsReview);
+        case.authorization = Some(AuthorizationFixture {
+            resource: "/api/accounts/42".to_owned(),
+            resource_handle: "account-self-profile".to_owned(),
+            expectation: AuthorizationPolicyExpectation::PrimaryOnly,
+            method: AuthorizationMethod::Get,
+            comparison: AuthorizationComparisonFixture {
+                selected_paths: vec!["/data/account".to_owned()],
+                ignored_paths: vec!["/data/account/updated_at".to_owned()],
+                unordered_array_paths: Vec::new(),
+                max_diff_paths: 16,
+            },
+            primary_candidate: view.clone(),
+            peer_candidate: view.clone(),
+            primary_replay: view.clone(),
+            peer_replay: view,
+        });
+        case
     }
 
     fn validated(cases: Vec<FixtureCase>) -> ValidatedCorpus {
@@ -2313,6 +2819,21 @@ mod tests {
     }
 
     #[test]
+    fn quoted_secret_assignments_are_rejected() {
+        for value in [
+            [r#"{"authoriz"#, r#"ation":"Bearer opaque-value"}"#].concat(),
+            [r#"authoriz"#, r#"ation = "Basic opaque-value""#].concat(),
+            [r#"{"coo"#, r#"kie":"session=opaque-value"}"#].concat(),
+            [r#"{"api_"#, r#"key":"opaque-value"}"#].concat(),
+        ] {
+            assert_error_contains(
+                validate_safe_fixture_bytes(value.as_bytes()),
+                "safety policy",
+            );
+        }
+    }
+
+    #[test]
     fn explicit_redaction_sentinel_is_rejected() {
         assert_error_contains(
             validate_safe_fixture_bytes(REDACTION_SENTINEL.as_bytes()),
@@ -2362,11 +2883,13 @@ mod tests {
 
     #[test]
     fn private_key_marker_is_rejected_without_embedding_key_material() {
-        let value = ["-----BEGIN ", "PRIVATE KEY", "-----"].concat();
-        assert_error_contains(
-            validate_safe_fixture_bytes(value.as_bytes()),
-            "safety policy",
-        );
+        for kind in ["", "ENCRYPTED ", "RSA ", "DSA ", "EC ", "OPENSSH "] {
+            let value = ["-----BEGIN ", kind, "PRIVATE KEY", "-----"].concat();
+            assert_error_contains(
+                validate_safe_fixture_bytes(value.as_bytes()),
+                "safety policy",
+            );
+        }
     }
 
     #[test]
@@ -2574,6 +3097,282 @@ mod tests {
         case.expected.incompleteness = Some(IncompletenessExpectation::FutureMetadataOnly);
         case.expected.graphql_evidence = Some(GraphqlExpectation::GetQueryMetadataOnly);
         validate_graphql_support_contract(&case).expect("GET query remains metadata-only");
+    }
+
+    #[test]
+    fn authorization_fixture_requires_exact_four_view_current_contract() {
+        let case = valid_authorization_case("authorization-valid");
+        validate_case("cases/authorization-valid.toml", &case)
+            .expect("bounded authorization fixture");
+
+        let mut missing = valid_authorization_case("authorization-missing");
+        missing.authorization = None;
+        assert_error_contains(
+            validate_case("cases/authorization-missing.toml", &missing),
+            "four-view",
+        );
+
+        let mut wrong_category = valid_case("authorization-wrong-category");
+        wrong_category.authorization = case.authorization;
+        assert_error_contains(
+            validate_case("cases/authorization-wrong-category.toml", &wrong_category),
+            "limited to the authorization category",
+        );
+    }
+
+    #[test]
+    fn authorization_profile_rejects_root_wildcard_and_duplicate_selected_paths() {
+        for selected in [
+            vec![String::new()],
+            vec!["/data/*".to_owned()],
+            vec!["/data/account".to_owned(), "/data/account".to_owned()],
+        ] {
+            let comparison = AuthorizationComparisonFixture {
+                selected_paths: selected,
+                ignored_paths: Vec::new(),
+                unordered_array_paths: Vec::new(),
+                max_diff_paths: 16,
+            };
+            assert!(validate_authorization_comparison(&comparison).is_err());
+        }
+
+        let literal_asterisk = AuthorizationComparisonFixture {
+            selected_paths: vec!["/data/account*".to_owned()],
+            ignored_paths: Vec::new(),
+            unordered_array_paths: Vec::new(),
+            max_diff_paths: 16,
+        };
+        validate_authorization_comparison(&literal_asterisk)
+            .expect("an asterisk inside a literal token is not the wildcard segment");
+    }
+
+    #[test]
+    fn authorization_profile_rejects_invalid_pointer_and_outside_paths() {
+        let mut comparison = AuthorizationComparisonFixture {
+            selected_paths: vec!["/data/account".to_owned()],
+            ignored_paths: vec!["/metadata/time".to_owned()],
+            unordered_array_paths: Vec::new(),
+            max_diff_paths: 16,
+        };
+        assert_error_contains(
+            validate_authorization_comparison(&comparison),
+            "inside a selected subtree",
+        );
+        comparison.ignored_paths.clear();
+        comparison.unordered_array_paths = vec!["/metadata/roles".to_owned()];
+        assert_error_contains(
+            validate_authorization_comparison(&comparison),
+            "inside a selected subtree",
+        );
+        comparison.unordered_array_paths.clear();
+        comparison.selected_paths = vec!["/data/~2invalid".to_owned()];
+        assert_error_contains(validate_authorization_comparison(&comparison), "RFC 6901");
+    }
+
+    #[test]
+    fn authorization_profile_matches_production_subtree_conflicts() {
+        let redundant_selected = AuthorizationComparisonFixture {
+            selected_paths: vec!["/data".to_owned(), "/data/account".to_owned()],
+            ignored_paths: Vec::new(),
+            unordered_array_paths: Vec::new(),
+            max_diff_paths: 16,
+        };
+        assert_error_contains(
+            validate_authorization_comparison(&redundant_selected),
+            "redundant subtrees",
+        );
+
+        let redundant_ignored = AuthorizationComparisonFixture {
+            selected_paths: vec!["/data/account".to_owned()],
+            ignored_paths: vec![
+                "/data/account/volatile".to_owned(),
+                "/data/account/volatile/time".to_owned(),
+            ],
+            unordered_array_paths: Vec::new(),
+            max_diff_paths: 16,
+        };
+        assert_error_contains(
+            validate_authorization_comparison(&redundant_ignored),
+            "redundant subtrees",
+        );
+
+        let unordered_hidden = AuthorizationComparisonFixture {
+            selected_paths: vec!["/data/account".to_owned()],
+            ignored_paths: vec!["/data/account/roles".to_owned()],
+            unordered_array_paths: vec!["/data/account/roles".to_owned()],
+            max_diff_paths: 16,
+        };
+        assert_error_contains(
+            validate_authorization_comparison(&unordered_hidden),
+            "cannot be hidden",
+        );
+    }
+
+    #[test]
+    fn authorization_profile_limits_and_claim_semantics_fail_closed() {
+        let mut case = valid_authorization_case("authorization-limits");
+        case.authorization
+            .as_mut()
+            .unwrap()
+            .comparison
+            .max_diff_paths = 0;
+        assert_error_contains(
+            validate_case("cases/authorization-limits.toml", &case),
+            "hard limits",
+        );
+
+        let mut negative = valid_authorization_case("authorization-negative");
+        negative.expected.authorization_outcome = Some(AuthorizationOutcomeExpectation::PeerDenied);
+        assert_error_contains(
+            validate_case("cases/authorization-negative.toml", &negative),
+            "cannot declare an assessment item",
+        );
+
+        negative.expected.assessment_capability = None;
+        negative.expected.maximum_disposition = None;
+        negative.expected.maximum_authority = None;
+        validate_case("cases/authorization-negative.toml", &negative)
+            .expect("negative authorization fixture makes no claim");
+
+        let mut incomplete_positive = valid_authorization_case("authorization-incomplete-positive");
+        incomplete_positive.expected.incompleteness =
+            Some(IncompletenessExpectation::ResponseIncomplete);
+        assert_error_contains(
+            validate_case(
+                "cases/authorization-incomplete-positive.toml",
+                &incomplete_positive,
+            ),
+            "complete bounded review claim contract",
+        );
+    }
+
+    #[test]
+    fn authorization_view_truncation_contract_is_typed() {
+        let mut view = valid_authorization_case("authorization-view")
+            .authorization
+            .unwrap()
+            .primary_candidate;
+        view.state = AuthorizationBodyState::Truncated;
+        view.truncated = true;
+        assert_error_contains(validate_authorization_view(&view), "do not reconcile");
+        view.completion = CompletionState::Incomplete;
+        validate_authorization_view(&view).expect("typed truncated view");
+    }
+
+    #[test]
+    fn authorization_view_states_require_coherent_response_metadata() {
+        let base = valid_authorization_case("authorization-view-state")
+            .authorization
+            .unwrap()
+            .primary_candidate;
+
+        for (state, status, media_type, completion, truncated) in [
+            (
+                AuthorizationBodyState::CompleteJson,
+                200,
+                "application/json",
+                CompletionState::Complete,
+                false,
+            ),
+            (
+                AuthorizationBodyState::UnsupportedMedia,
+                200,
+                "application/octet-stream",
+                CompletionState::Complete,
+                false,
+            ),
+            (
+                AuthorizationBodyState::Html,
+                403,
+                "text/html",
+                CompletionState::Complete,
+                false,
+            ),
+            (
+                AuthorizationBodyState::Redirect,
+                302,
+                "application/json",
+                CompletionState::Complete,
+                false,
+            ),
+            (
+                AuthorizationBodyState::RateLimited,
+                429,
+                "application/json",
+                CompletionState::Complete,
+                false,
+            ),
+            (
+                AuthorizationBodyState::ServerError,
+                503,
+                "application/json",
+                CompletionState::Complete,
+                false,
+            ),
+            (
+                AuthorizationBodyState::MalformedJson,
+                200,
+                "application/json",
+                CompletionState::Complete,
+                false,
+            ),
+            (
+                AuthorizationBodyState::Truncated,
+                200,
+                "application/json",
+                CompletionState::Incomplete,
+                true,
+            ),
+            (
+                AuthorizationBodyState::Incomplete,
+                200,
+                "application/json",
+                CompletionState::Incomplete,
+                false,
+            ),
+            (
+                AuthorizationBodyState::DefensiveInterference,
+                403,
+                "text/html",
+                CompletionState::Complete,
+                false,
+            ),
+        ] {
+            let mut view = base.clone();
+            view.state = state;
+            view.status = status;
+            view.media_type = media_type.to_owned();
+            view.completion = completion;
+            view.truncated = truncated;
+            validate_authorization_view(&view).expect("coherent authorization response state");
+        }
+
+        for state in [
+            AuthorizationBodyState::BudgetExhausted,
+            AuthorizationBodyState::Cancelled,
+        ] {
+            let mut view = base.clone();
+            view.state = state;
+            assert_error_contains(validate_authorization_view(&view), "do not reconcile");
+        }
+
+        for (state, status, media_type) in [
+            (AuthorizationBodyState::RateLimited, 200, "application/json"),
+            (AuthorizationBodyState::Redirect, 200, "application/json"),
+            (AuthorizationBodyState::ServerError, 200, "application/json"),
+            (AuthorizationBodyState::Html, 403, "application/json"),
+            (
+                AuthorizationBodyState::UnsupportedMedia,
+                200,
+                "application/json",
+            ),
+        ] {
+            let mut view = base.clone();
+            view.state = state;
+            view.status = status;
+            view.media_type = media_type.to_owned();
+            assert_error_contains(validate_authorization_view(&view), "do not reconcile");
+        }
     }
 
     #[test]

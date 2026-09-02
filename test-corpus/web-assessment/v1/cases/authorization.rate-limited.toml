@@ -1,0 +1,36 @@
+schema = "security-assessment-fixture/v1"
+id = "authorization.rate-limited"
+revision = 1
+category = "authorization"
+purpose = "Treat rate limiting as interference and create no authorization equivalence claim."
+provenance = "current-authored"
+support = "current"
+tags = ["authorization", "negative", "rate-limit"]
+
+[request]
+method = "get"
+origin = "https://api.example.test"
+path = "/api/accounts/fixture-rate-limit"
+role = "bootstrap"
+
+[response]
+status = 429
+media_type = "application/json"
+role = "bootstrap"
+completion = "complete"
+truncated = false
+body_file = "bodies/authorization-rate-limit.json"
+
+[authorization]
+resource = "/api/accounts/fixture-rate-limit"
+resource_handle = "fixture-rate-limit"
+expectation = "primary-only"
+method = "GET"
+comparison = { selected_paths = ["/data/account"], ignored_paths = [], unordered_array_paths = [], max_diff_paths = 16 }
+primary_candidate = { status = 429, media_type = "application/json", completion = "complete", truncated = false, state = "rate-limited", body_file = "bodies/authorization-rate-limit.json" }
+peer_candidate = { status = 200, media_type = "application/json", completion = "complete", truncated = false, state = "complete-json", body_file = "bodies/authorization-resource-a.json" }
+primary_replay = { status = 200, media_type = "application/json", completion = "complete", truncated = false, state = "complete-json", body_file = "bodies/authorization-resource-a.json" }
+peer_replay = { status = 200, media_type = "application/json", completion = "complete", truncated = false, state = "complete-json", body_file = "bodies/authorization-resource-a.json" }
+
+[expected]
+authorization_outcome = "rate-limited"

@@ -49,6 +49,7 @@ nav:
       - Derived-evidence lineage: internals/derived-evidence-lineage.md
       - API predicate vocabulary: internals/api-predicates.md
       - API visibility evidence: internals/api-evidence.md
+      - Authorization differential review: internals/authorization-differential-review.md
       - API reasoning: internals/api-reasoning.md
       - GraphQL surface review: internals/graphql-review.md
       - Standard web decision profile: internals/web-decision.md

@@ -56,7 +56,8 @@ rejected; ledger status itself never authorizes execution or raises claim
 authority.
 
 The [scanner conformance corpus](scanner-conformance-corpus.md) is also outside
-every product runtime. Its 50 sanitized cases use the internal
+every product runtime. Its 73 sanitized cases, including 23 four-view
+authorization differentials, use the internal
 `security-assessment-fixture/v1` schema and are checked by the deterministic
 `xtask scanner-corpus` command. Validation and the conformance harness perform
 no network requests, add no scanner action or executor, and change no report

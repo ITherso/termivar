@@ -1,0 +1,36 @@
+schema = "security-assessment-fixture/v1"
+id = "authorization.selected-null"
+revision = 1
+category = "authorization"
+purpose = "Treat a null-only selected subtree as absent material rather than equivalent resource evidence."
+provenance = "generated-boundary"
+support = "current"
+tags = ["authorization", "null", "selected-path"]
+
+[request]
+method = "get"
+origin = "https://api.example.test"
+path = "/api/accounts/fixture-null"
+role = "bootstrap"
+
+[response]
+status = 200
+media_type = "application/json"
+role = "bootstrap"
+completion = "complete"
+truncated = false
+body_file = "bodies/authorization-selected-null.json"
+
+[authorization]
+resource = "/api/accounts/fixture-null"
+resource_handle = "fixture-selected-null"
+expectation = "primary-only"
+method = "GET"
+comparison = { selected_paths = ["/data/account"], ignored_paths = [], unordered_array_paths = [], max_diff_paths = 16 }
+primary_candidate = { status = 200, media_type = "application/json", completion = "complete", truncated = false, state = "complete-json", body_file = "bodies/authorization-selected-null.json" }
+peer_candidate = { status = 200, media_type = "application/json", completion = "complete", truncated = false, state = "complete-json", body_file = "bodies/authorization-selected-null.json" }
+primary_replay = { status = 200, media_type = "application/json", completion = "complete", truncated = false, state = "complete-json", body_file = "bodies/authorization-selected-null.json" }
+peer_replay = { status = 200, media_type = "application/json", completion = "complete", truncated = false, state = "complete-json", body_file = "bodies/authorization-selected-null.json" }
+
+[expected]
+authorization_outcome = "selected-path-missing"

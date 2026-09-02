@@ -328,6 +328,16 @@ impl ApiComparisonProfile {
             .iter()
             .any(|pattern| pattern.matches_exactly(path))
     }
+
+    pub(super) fn is_selected_root(&self, path: &[String]) -> bool {
+        if self.selected_paths.is_empty() {
+            path.is_empty()
+        } else {
+            self.selected_paths
+                .iter()
+                .any(|pattern| pattern.matches_exactly(path))
+        }
+    }
 }
 
 impl Default for ApiComparisonProfile {

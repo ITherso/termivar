@@ -1,0 +1,36 @@
+schema = "security-assessment-fixture/v1"
+id = "authorization.html-challenge"
+revision = 1
+category = "authorization"
+purpose = "Reject an HTML challenge page as unsupported authorization-comparison media."
+provenance = "current-authored"
+support = "current"
+tags = ["authorization", "challenge", "html", "negative"]
+
+[request]
+method = "get"
+origin = "https://api.example.test"
+path = "/api/accounts/fixture-challenge"
+role = "bootstrap"
+
+[response]
+status = 403
+media_type = "text/html"
+role = "bootstrap"
+completion = "complete"
+truncated = false
+body_file = "bodies/authorization-challenge.html"
+
+[authorization]
+resource = "/api/accounts/fixture-challenge"
+resource_handle = "fixture-html-challenge"
+expectation = "primary-only"
+method = "GET"
+comparison = { selected_paths = ["/data/account"], ignored_paths = [], unordered_array_paths = [], max_diff_paths = 16 }
+primary_candidate = { status = 403, media_type = "text/html", completion = "complete", truncated = false, state = "html", body_file = "bodies/authorization-challenge.html" }
+peer_candidate = { status = 403, media_type = "text/html", completion = "complete", truncated = false, state = "html", body_file = "bodies/authorization-challenge.html" }
+primary_replay = { status = 403, media_type = "text/html", completion = "complete", truncated = false, state = "html", body_file = "bodies/authorization-challenge.html" }
+peer_replay = { status = 403, media_type = "text/html", completion = "complete", truncated = false, state = "html", body_file = "bodies/authorization-challenge.html" }
+
+[expected]
+authorization_outcome = "unsupported-media"

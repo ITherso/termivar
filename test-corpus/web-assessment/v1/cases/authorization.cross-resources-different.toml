@@ -1,0 +1,36 @@
+schema = "security-assessment-fixture/v1"
+id = "authorization.cross-resources-different"
+revision = 1
+category = "authorization"
+purpose = "Distinguish stable cross-principal representations whose selected resource structures differ."
+provenance = "generated-boundary"
+support = "current"
+tags = ["authorization", "different", "resources"]
+
+[request]
+method = "get"
+origin = "https://api.example.test"
+path = "/api/accounts/fixture-resource-different"
+role = "bootstrap"
+
+[response]
+status = 200
+media_type = "application/json"
+role = "bootstrap"
+completion = "complete"
+truncated = false
+body_file = "bodies/authorization-resource-a.json"
+
+[authorization]
+resource = "/api/accounts/fixture-resource-different"
+resource_handle = "fixture-resource-different"
+expectation = "primary-only"
+method = "GET"
+comparison = { selected_paths = ["/data/account"], ignored_paths = [], unordered_array_paths = [], max_diff_paths = 16 }
+primary_candidate = { status = 200, media_type = "application/json", completion = "complete", truncated = false, state = "complete-json", body_file = "bodies/authorization-resource-a.json" }
+peer_candidate = { status = 200, media_type = "application/json", completion = "complete", truncated = false, state = "complete-json", body_file = "bodies/authorization-resource-shape-b.json" }
+primary_replay = { status = 200, media_type = "application/json", completion = "complete", truncated = false, state = "complete-json", body_file = "bodies/authorization-resource-a.json" }
+peer_replay = { status = 200, media_type = "application/json", completion = "complete", truncated = false, state = "complete-json", body_file = "bodies/authorization-resource-shape-b.json" }
+
+[expected]
+authorization_outcome = "cross-resources-different"

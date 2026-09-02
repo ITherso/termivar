@@ -1,0 +1,39 @@
+schema = "security-assessment-fixture/v1"
+id = "authorization.stable-equivalence"
+revision = 1
+category = "authorization"
+purpose = "Exercise stable selected-resource equivalence across two principal contexts and independent replays."
+provenance = "current-authored"
+support = "current"
+tags = ["authorization", "four-view", "positive", "replay"]
+
+[request]
+method = "get"
+origin = "https://api.example.test"
+path = "/api/accounts/fixture-stable"
+role = "bootstrap"
+
+[response]
+status = 200
+media_type = "application/json"
+role = "bootstrap"
+completion = "complete"
+truncated = false
+body_file = "bodies/authorization-resource-a.json"
+
+[authorization]
+resource = "/api/accounts/fixture-stable"
+resource_handle = "fixture-stable-account"
+expectation = "primary-only"
+method = "GET"
+comparison = { selected_paths = ["/data/account"], ignored_paths = [], unordered_array_paths = [], max_diff_paths = 16 }
+primary_candidate = { status = 200, media_type = "application/json", completion = "complete", truncated = false, state = "complete-json", body_file = "bodies/authorization-resource-a.json" }
+peer_candidate = { status = 200, media_type = "application/json", completion = "complete", truncated = false, state = "complete-json", body_file = "bodies/authorization-resource-a.json" }
+primary_replay = { status = 200, media_type = "application/json", completion = "complete", truncated = false, state = "complete-json", body_file = "bodies/authorization-resource-a.json" }
+peer_replay = { status = 200, media_type = "application/json", completion = "complete", truncated = false, state = "complete-json", body_file = "bodies/authorization-resource-a.json" }
+
+[expected]
+authorization_outcome = "stable-cross-principal-equivalence"
+assessment_capability = "authorization.resource-cross-principal-equivalence"
+maximum_disposition = "needs-review"
+maximum_authority = "knowledge-only"
