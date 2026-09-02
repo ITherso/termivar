@@ -19,6 +19,8 @@ mod native_review;
 
 #[cfg(all(feature = "scanning", feature = "authorization-review"))]
 pub(crate) use native_review::authorization_review_phase_terminal_predicate;
+#[cfg(all(feature = "scanning", feature = "openapi-review"))]
+pub(crate) use native_review::openapi_review_phase_terminal_predicate;
 #[cfg(feature = "scanning")]
 pub(crate) use native_review::{
     native_web_review_response_marker_predicate, NATIVE_WEB_REVIEW_EVIDENCE_NAMESPACE,

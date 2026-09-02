@@ -360,6 +360,7 @@ pub(crate) struct ProfileScanRuntimeOptions {
     pub(crate) root_authorization_context: Option<WebAssessmentRootAuthorizationContext>,
     pub(crate) normalization_resilience: bool,
     pub(crate) graphql_review: bool,
+    pub(crate) openapi_review: bool,
     #[cfg(feature = "authorization-review")]
     pub(crate) resource_authorization_review:
         Option<(AuthorizationReviewPolicy, AuthorizationPrincipalPair)>,
@@ -377,6 +378,7 @@ pub(crate) async fn run_profile_scan(
         root_authorization_context,
         normalization_resilience,
         graphql_review,
+        openapi_review,
         #[cfg(feature = "authorization-review")]
         resource_authorization_review,
     } = runtime_options;
@@ -394,6 +396,13 @@ pub(crate) async fn run_profile_scan(
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::InvalidInput,
                     "GraphQL review requires the web-review profile",
+                )
+                .into());
+            }
+            if openapi_review {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "OpenAPI review requires the web-review profile",
                 )
                 .into());
             }
@@ -427,6 +436,7 @@ pub(crate) async fn run_profile_scan(
                     root_authorization_context,
                     normalization_resilience,
                     graphql_review,
+                    openapi_review,
                     #[cfg(feature = "authorization-review")]
                     resource_authorization_review,
                 },
@@ -477,6 +487,7 @@ struct WebReviewRunOptions {
     root_authorization_context: Option<WebAssessmentRootAuthorizationContext>,
     normalization_resilience: bool,
     graphql_review: bool,
+    openapi_review: bool,
     #[cfg(feature = "authorization-review")]
     resource_authorization_review: Option<(AuthorizationReviewPolicy, AuthorizationPrincipalPair)>,
 }
@@ -494,6 +505,7 @@ async fn run_web_review(
         root_authorization_context,
         normalization_resilience,
         graphql_review,
+        openapi_review,
         #[cfg(feature = "authorization-review")]
         resource_authorization_review,
     } = options;
@@ -528,6 +540,20 @@ async fn run_web_review(
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
                 "GraphQL review runtime support is not compiled",
+            )
+            .into());
+        }
+    }
+    if openapi_review {
+        #[cfg(feature = "openapi-review")]
+        {
+            builder = builder.enable_openapi_review();
+        }
+        #[cfg(not(feature = "openapi-review"))]
+        {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "OpenAPI review runtime support is not compiled",
             )
             .into());
         }
@@ -1130,6 +1156,8 @@ fn incomplete_reason_code(reason: &WebAssessmentIncompleteReason) -> &'static st
         },
         #[cfg(feature = "graphql-review")]
         WebAssessmentIncompleteReason::GraphqlReviewIncomplete => "graphql_review_incomplete",
+        #[cfg(feature = "openapi-review")]
+        WebAssessmentIncompleteReason::OpenApiReviewIncomplete => "openapi_review_incomplete",
         #[cfg(feature = "authorization-review")]
         WebAssessmentIncompleteReason::AuthorizationReviewIncomplete => {
             "authorization_review_incomplete"
@@ -1382,6 +1410,27 @@ mod tests {
         assert_eq!(
             error.to_string(),
             "GraphQL review requires the web-review profile"
+        );
+    }
+
+    #[tokio::test]
+    async fn baseline_rejects_openapi_review_before_transport() {
+        let error = run_profile_scan(
+            Url::parse("https://example.test/").unwrap(),
+            ScanProfileV1::baseline().unwrap(),
+            false,
+            None,
+            false,
+            ProfileScanRuntimeOptions {
+                openapi_review: true,
+                ..ProfileScanRuntimeOptions::default()
+            },
+        )
+        .await
+        .expect_err("OpenAPI review is web-review only");
+        assert_eq!(
+            error.to_string(),
+            "OpenAPI review requires the web-review profile"
         );
     }
 

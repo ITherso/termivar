@@ -1,5 +1,16 @@
 # Architecture
 
+## OpenAPI surface review boundary
+
+The separately non-default `openapi-review` feature requires explicit
+`--openapi-review --profile web-review`. Its single native action remains in
+the same `WebAssessmentRuntime`, exact-origin authority, redirect-disabled
+client, broker, budget, evidence registry, and final report. It selects one
+document at most and uses a bodyless GET candidate plus exact replay. The
+transport-neutral catalog cannot grant execution authority, and described API
+operations are not dispatched. See
+[OpenAPI surface review](internals/openapi-surface-review.md).
+
 This document defines dependency direction and runtime ownership for the unreleased Venom `0.10.0-alpha.1` source line. It is a design contract, not a production-readiness claim.
 
 The editable diagrams.net source is [architecture.drawio](architecture.drawio). A presentation- and print-friendly export is available as [architecture.svg](images/architecture.svg).

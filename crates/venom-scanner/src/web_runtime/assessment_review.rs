@@ -167,6 +167,8 @@ pub(crate) const fn native_review_active_verifier_rule_id(
         NativeWebReviewActionKind::ResourceAuthorizationDifferential => {
             AUTHORIZATION_ACTIVE_VERIFIER_RULE_ID
         },
+        #[cfg(feature = "openapi-review")]
+        NativeWebReviewActionKind::OpenApiDocumentReplay => "web.review.verify.openapi-replay@1",
     }
 }
 
@@ -929,6 +931,8 @@ impl AssessmentReviewObserverSet {
             },
             #[cfg(feature = "authorization-review")]
             (NativeWebReviewActionKind::ResourceAuthorizationDifferential, _) => None,
+            #[cfg(feature = "openapi-review")]
+            (NativeWebReviewActionKind::OpenApiDocumentReplay, _) => None,
         }
     }
 
@@ -1102,6 +1106,8 @@ impl AssessmentReviewObserverSet {
             },
             #[cfg(feature = "authorization-review")]
             NativeWebReviewActionKind::ResourceAuthorizationDifferential => return Vec::new(),
+            #[cfg(feature = "openapi-review")]
+            NativeWebReviewActionKind::OpenApiDocumentReplay => return Vec::new(),
         }
         records
     }
@@ -1303,6 +1309,10 @@ fn native_review_strategy_ref(kind: NativeWebReviewActionKind) -> PayloadStrateg
         #[cfg(feature = "authorization-review")]
         NativeWebReviewActionKind::ResourceAuthorizationDifferential => {
             unreachable!("authorization review owns no generic payload strategy")
+        },
+        #[cfg(feature = "openapi-review")]
+        NativeWebReviewActionKind::OpenApiDocumentReplay => {
+            unreachable!("OpenAPI review owns no generic payload strategy")
         },
     };
     PayloadStrategyRef::new(id, revision)
@@ -1783,6 +1793,10 @@ fn review_source_method(
         #[cfg(feature = "authorization-review")]
         (NativeWebReviewActionKind::ResourceAuthorizationDifferential, _) => {
             "authorization-review-invalid-generic-source"
+        },
+        #[cfg(feature = "openapi-review")]
+        (NativeWebReviewActionKind::OpenApiDocumentReplay, _) => {
+            "openapi-review-invalid-generic-source"
         },
     }
 }
@@ -3217,6 +3231,10 @@ fn parse_review_receipt(
         NativeWebReviewActionKind::ResourceAuthorizationDifferential => {
             return Err(AssessmentReviewLedgerError::EvidenceProjection);
         },
+        #[cfg(feature = "openapi-review")]
+        NativeWebReviewActionKind::OpenApiDocumentReplay => {
+            return Err(AssessmentReviewLedgerError::EvidenceProjection);
+        },
     };
     Ok(CommittedAssessmentReviewObservation {
         kind,
@@ -3506,6 +3524,8 @@ fn requested_url_value_matches_with_sql(
         },
         #[cfg(feature = "authorization-review")]
         (NativeWebReviewActionKind::ResourceAuthorizationDifferential, _) => false,
+        #[cfg(feature = "openapi-review")]
+        (NativeWebReviewActionKind::OpenApiDocumentReplay, _) => false,
     }
 }
 
@@ -3557,6 +3577,8 @@ const fn is_xss_response_action(kind: NativeWebReviewActionKind) -> bool {
         | NativeWebReviewActionKind::SstiStructuralQueryReplayPair => false,
         #[cfg(feature = "authorization-review")]
         NativeWebReviewActionKind::ResourceAuthorizationDifferential => false,
+        #[cfg(feature = "openapi-review")]
+        NativeWebReviewActionKind::OpenApiDocumentReplay => false,
     }
 }
 
@@ -3627,6 +3649,8 @@ fn expected_properties(kind: NativeWebReviewActionKind) -> &'static [ReviewPrope
         NativeWebReviewActionKind::NormalizationResilienceQueryPair => &XSS_REVIEW_PROPERTIES,
         #[cfg(feature = "authorization-review")]
         NativeWebReviewActionKind::ResourceAuthorizationDifferential => &[],
+        #[cfg(feature = "openapi-review")]
+        NativeWebReviewActionKind::OpenApiDocumentReplay => &[],
     }
 }
 

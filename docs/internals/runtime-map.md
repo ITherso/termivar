@@ -1,5 +1,16 @@
 # Runtime map (what actually runs)
 
+## OpenAPI surface review
+
+The non-default `openapi-review` scanner/CLI feature adds no work by itself.
+With explicit `--openapi-review --profile web-review`, one native action may
+select one exact-origin JSON document and dispatch a bodyless GET candidate plus
+an exact replay through the shared broker. The complete optional child costs at
+most two requests and one logical active verification. Only replayed OpenAPI
+3.0/3.1 JSON may produce the `Informational` / `KnowledgeOnly`
+`api.openapi-contract-observed@1` item. YAML and Swagger 2.0 create no runtime
+item, and described operations are not executed.
+
 > This page describes the executable truth of the current main-line source, not
 > aspirations. A compiled module is not necessarily part of a product runtime.
 > This unreleased source state uses package version `0.10.0-alpha.1`; the published
@@ -33,10 +44,11 @@ Git objects for the deleted 38-file tree. Only the historical detector's
 byte-pattern component is now marked `Restored` by the separate
 `venom-artifact` domain. The historical request/response fixture component is
 restored only as the sanitized repository conformance corpus; synthetic
-vulnerabilities remain rejected. Only the bounded GraphQL subset of the
-historical API protocol taxonomy is restored by the explicit GraphQL review;
-REST, gRPC, SOAP, and fabricated unconditional API tests remain outside this
-runtime. Its unsafe mmap adapter, fabricated
+  vulnerabilities remain rejected. Bounded GraphQL review and the independently
+  rebuilt OpenAPI contract/replay subset now cover two parts of the historical
+  protocol taxonomy without restoring it wholesale; REST operation execution,
+  gRPC, SOAP, and fabricated unconditional API tests remain outside this runtime.
+  Its unsafe mmap adapter, fabricated
 request-path finding logic, and unsupported optimization claims remain
 rejected.
 

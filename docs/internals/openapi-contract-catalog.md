@@ -99,3 +99,12 @@ agreement with the bounded parser/catalog contract, not live endpoint coverage
 or scanner accuracy. See the
 [scanner conformance corpus](scanner-conformance-corpus.md) for the repository
 harness boundary and the [runtime map](runtime-map.md) for executable truth.
+
+## Optional live consumer
+
+The separately feature-gated [OpenAPI surface review](openapi-surface-review.md)
+is the V1 network consumer of this catalog. Catalog membership alone never
+causes work: explicit `--openapi-review` under `web-review` selects at most one
+exact-origin document, and a positive observation requires a complete candidate
+and exact replay with the same semantic document identity. The review does not
+execute any described operation.

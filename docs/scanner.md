@@ -1,5 +1,17 @@
 # Scanner
 
+## Optional OpenAPI surface review
+
+The non-default `openapi-review` feature adds one explicit
+`--openapi-review` option to `web-review`. It selects at most one exact-origin
+JSON document, using the fixed `/openapi.json` fallback only because the
+operator opted in. The candidate and exact replay are anonymous bodyless GETs
+through the existing broker and together consume at most two requests and one
+logical active verification. Only replayed bounded OpenAPI 3.0/3.1 JSON can
+project `api.openapi-contract-observed@1` as `Informational` / `KnowledgeOnly`.
+YAML is unsupported in V1, Swagger 2.0 remains metadata-only, redirects are not
+followed, and declared operations are never executed.
+
 `venom-scanner` contains the default deterministic evidence/reasoning/runtime stack plus feature-gated historical scan contracts, optional analysis modules, plugins, events, persistence models, and bounded report rendering.
 
 ## Default deterministic runtime

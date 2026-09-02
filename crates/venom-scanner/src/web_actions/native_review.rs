@@ -14,23 +14,10 @@ use serde::{Deserialize, Serialize};
 use crate::planner::{RiskScore, VerificationTarget};
 
 /// Number of actions in the native low-risk web-review catalog.
-#[cfg(not(any(feature = "normalization-resilience", feature = "authorization-review")))]
-pub const NATIVE_WEB_REVIEW_ACTION_COUNT: usize = 10;
-/// Number of actions when exactly one optional native review is built.
-#[cfg(any(
-    all(
-        feature = "normalization-resilience",
-        not(feature = "authorization-review")
-    ),
-    all(
-        feature = "authorization-review",
-        not(feature = "normalization-resilience")
-    )
-))]
-pub const NATIVE_WEB_REVIEW_ACTION_COUNT: usize = 11;
-/// Number of actions when both optional native reviews are built.
-#[cfg(all(feature = "normalization-resilience", feature = "authorization-review"))]
-pub const NATIVE_WEB_REVIEW_ACTION_COUNT: usize = 12;
+pub const NATIVE_WEB_REVIEW_ACTION_COUNT: usize = 10
+    + cfg!(feature = "normalization-resilience") as usize
+    + cfg!(feature = "authorization-review") as usize
+    + cfg!(feature = "openapi-review") as usize;
 
 /// Hard per-case request count declared by every native web-review action.
 pub const NATIVE_WEB_REVIEW_REQUESTS_PER_CASE: usize = 2;
@@ -61,6 +48,12 @@ pub(crate) fn native_web_review_response_marker_predicate() -> venom_core::Knowl
 pub(crate) fn authorization_review_phase_terminal_predicate() -> venom_core::KnowledgePredicate {
     venom_core::KnowledgePredicate::new("web.authorization-review.transport", "phase-terminal")
         .expect("the authorization terminal predicate is a valid static identity")
+}
+
+#[cfg(all(feature = "scanning", feature = "openapi-review"))]
+pub(crate) fn openapi_review_phase_terminal_predicate() -> venom_core::KnowledgePredicate {
+    venom_core::KnowledgePredicate::new("web.openapi-review.transport", "phase-terminal")
+        .expect("the OpenAPI terminal predicate is a valid static identity")
 }
 
 const CONTROL_CANDIDATE_LEGS: [NativeWebReviewRequestLeg; NATIVE_WEB_REVIEW_REQUESTS_PER_CASE] = [
@@ -99,6 +92,9 @@ pub enum NativeWebReviewActionKind {
     /// Compare one exact JSON resource across two principal contexts and replays.
     #[cfg(feature = "authorization-review")]
     ResourceAuthorizationDifferential,
+    /// Fetch one exact-origin OpenAPI JSON candidate and independently replay it.
+    #[cfg(feature = "openapi-review")]
+    OpenApiDocumentReplay,
 }
 
 /// The only request surface an action may vary between its matched legs.
@@ -113,6 +109,9 @@ pub enum NativeWebReviewDifferentialInput {
     /// The fixed resource request changes only the validated principal credential.
     #[cfg(feature = "authorization-review")]
     AuthorizationHeader,
+    /// Replay the identical bounded GET request without mutating target input.
+    #[cfg(feature = "openapi-review")]
+    ExactRequestReplay,
 }
 
 /// Ordered request roles for one native web-review case.
@@ -151,6 +150,8 @@ impl NativeWebReviewActionKind {
             Self::NormalizationResilienceQueryPair,
             #[cfg(feature = "authorization-review")]
             Self::ResourceAuthorizationDifferential,
+            #[cfg(feature = "openapi-review")]
+            Self::OpenApiDocumentReplay,
         ]
     }
 
@@ -177,6 +178,8 @@ impl NativeWebReviewActionKind {
             Self::ResourceAuthorizationDifferential => {
                 "web.review.authorization.resource-differential"
             },
+            #[cfg(feature = "openapi-review")]
+            Self::OpenApiDocumentReplay => "web.review.openapi.document-replay@1",
         }
     }
 
@@ -211,6 +214,8 @@ impl NativeWebReviewActionKind {
             },
             #[cfg(feature = "authorization-review")]
             Self::ResourceAuthorizationDifferential => "http.authorization-resource-review",
+            #[cfg(feature = "openapi-review")]
+            Self::OpenApiDocumentReplay => "http.openapi-review",
         }
     }
 
@@ -231,6 +236,8 @@ impl NativeWebReviewActionKind {
             Self::NormalizationResilienceQueryPair => "normalization-resilience-query-pair",
             #[cfg(feature = "authorization-review")]
             Self::ResourceAuthorizationDifferential => "authorization-resource-differential",
+            #[cfg(feature = "openapi-review")]
+            Self::OpenApiDocumentReplay => "openapi-document-replay",
         }
     }
 
@@ -261,6 +268,8 @@ impl NativeWebReviewActionKind {
             Self::ResourceAuthorizationDifferential => {
                 NativeWebReviewDifferentialInput::AuthorizationHeader
             },
+            #[cfg(feature = "openapi-review")]
+            Self::OpenApiDocumentReplay => NativeWebReviewDifferentialInput::ExactRequestReplay,
         }
     }
 
@@ -309,6 +318,8 @@ impl NativeWebReviewActionKind {
             Self::NormalizationResilienceQueryPair => 7,
             #[cfg(feature = "authorization-review")]
             Self::ResourceAuthorizationDifferential => 6,
+            #[cfg(feature = "openapi-review")]
+            Self::OpenApiDocumentReplay => 2,
         };
         RiskScore::from_percent(percent).expect("native web-review risk is a valid constant")
     }
@@ -416,6 +427,13 @@ mod tests {
                 "http.authorization-resource-review",
                 "authorization-resource-differential",
             ),
+            #[cfg(feature = "openapi-review")]
+            (
+                NativeWebReviewActionKind::OpenApiDocumentReplay,
+                "web.review.openapi.document-replay@1",
+                "http.openapi-review",
+                "openapi-document-replay",
+            ),
         ];
 
         assert_eq!(
@@ -457,6 +475,8 @@ mod tests {
             700,
             #[cfg(feature = "authorization-review")]
             600,
+            #[cfg(feature = "openapi-review")]
+            200,
         ];
 
         for (kind, expected_risk) in NativeWebReviewActionKind::all()

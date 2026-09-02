@@ -30,6 +30,7 @@ const QUARANTINED_FEATURES: &[&str] = &[
     "legacy-scanner",
     "lua",
     "normalization-resilience",
+    "openapi-review",
     "platform-models",
     "plugins",
     "reporting",
@@ -51,6 +52,7 @@ const EXACT_SCANNER_FEATURES: &[&str] = &[
     "ml",
     "monitoring",
     "normalization-resilience",
+    "openapi-review",
     "platform-models",
     "plugins",
     "reporting",
@@ -71,6 +73,7 @@ const FULL_AGGREGATE_FEATURES: &[&str] = &[
     "ml",
     "monitoring",
     "normalization-resilience",
+    "openapi-review",
     "platform-models",
     "plugins",
     "reporting",
@@ -90,6 +93,7 @@ const ENTERPRISE_AGGREGATE_FEATURES: &[&str] = &[
     "ml",
     "monitoring",
     "normalization-resilience",
+    "openapi-review",
     "platform-models",
     "plugins",
     "reporting",
@@ -201,6 +205,8 @@ const FORBIDDEN_SCANNER_MODULES: &[&str] = &["waf"];
 const GRAPHQL_REVIEW_CORE_SOURCE: &str = "crates/venom-scanner/src/graphql_review.rs";
 const GRAPHQL_REVIEW_RUNTIME_SOURCE: &str =
     "crates/venom-scanner/src/web_runtime/graphql_runtime.rs";
+const OPENAPI_REVIEW_RUNTIME_SOURCE: &str =
+    "crates/venom-scanner/src/web_runtime/openapi_runtime.rs";
 const GRAPHQL_REVIEW_BROKER_SOURCE: &str =
     "crates/venom-scanner/src/http_evidence/request_broker.rs";
 const RESOURCE_AUTHORIZATION_RUNTIME_SOURCE: &str =
@@ -925,6 +931,10 @@ pub(super) fn check(workspace_root: &Path) -> Result<Vec<String>, Box<dyn Error>
         workspace_root,
         &web_runtime_source,
     )?);
+    violations.extend(openapi_review_contract_violations(
+        workspace_root,
+        &web_runtime_source,
+    )?);
     violations.extend(resource_authorization_review_contract_violations(
         workspace_root,
         &web_runtime_source,
@@ -1139,6 +1149,7 @@ fn cli_feature_violations(
             &["dep:reqwest", "venom-scanner/legacy-scanner"][..],
         ),
         ("graphql-review", &["venom-scanner/graphql-review"][..]),
+        ("openapi-review", &["venom-scanner/openapi-review"][..]),
         (
             "authorization-review",
             &["venom-scanner/authorization-review"][..],
@@ -1312,6 +1323,21 @@ fn exact_raw_feature_closures() -> Vec<(&'static str, &'static [&'static str])> 
             "graphql-review",
             &[
                 "graphql-review",
+                "scanning",
+                "core",
+                "dep:async-trait",
+                "dep:html5ever",
+                "dep:markup5ever_rcdom",
+                "dep:reqwest",
+                "dep:tokio",
+                "dep:tokio-util",
+                "dep:toml",
+            ],
+        ),
+        (
+            "openapi-review",
+            &[
+                "openapi-review",
                 "scanning",
                 "core",
                 "dep:async-trait",
@@ -1534,6 +1560,19 @@ fn graphql_review_contract_violations(
     let broker = fs::read_to_string(workspace_root.join(GRAPHQL_REVIEW_BROKER_SOURCE))?;
     let mut violations = graphql_review_source_contract_violations(&core, &runtime, &broker);
     violations.extend(graphql_runtime_module_gate_violations(web_runtime_source)?);
+    Ok(violations)
+}
+
+fn openapi_review_contract_violations(
+    workspace_root: &Path,
+    web_runtime_source: &str,
+) -> Result<Vec<String>, Box<dyn Error>> {
+    let runtime = fs::read_to_string(workspace_root.join(OPENAPI_REVIEW_RUNTIME_SOURCE))?;
+    let actions = fs::read_to_string(workspace_root.join(NATIVE_WEB_REVIEW_ACTION_SOURCE))?;
+    let broker = fs::read_to_string(workspace_root.join(GRAPHQL_REVIEW_BROKER_SOURCE))?;
+    let mut violations =
+        openapi_review_source_contract_violations(&runtime, &actions, &broker, web_runtime_source);
+    violations.extend(openapi_runtime_module_gate_violations(web_runtime_source)?);
     Ok(violations)
 }
 
@@ -2029,6 +2068,228 @@ fn named_braced_item_source<'a>(source: &'a str, signature: &str) -> Option<&'a 
         }
     }
     None
+}
+
+fn openapi_runtime_module_gate_violations(source: &str) -> Result<Vec<String>, syn::Error> {
+    let syntax = syn::parse_file(source)?;
+    let matches = syntax
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Mod(module) if module.ident == "openapi_runtime" => Some(module),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    match matches.as_slice() {
+        [module]
+            if matches!(module.vis, Visibility::Inherited)
+                && module.content.is_none()
+                && cfg_predicates(module) == ["feature=\"openapi-review\"".to_owned()] =>
+        {
+            Ok(Vec::new())
+        },
+        _ => Ok(vec![
+            "OpenAPI review runtime must remain one private out-of-line module behind exact cfg(feature=\"openapi-review\")"
+                .to_owned(),
+        ]),
+    }
+}
+
+fn openapi_review_source_contract_violations(
+    runtime: &str,
+    actions: &str,
+    broker: &str,
+    web_runtime: &str,
+) -> Vec<String> {
+    let mut violations = Vec::new();
+    let compact_runtime = squash_ascii_whitespace(runtime);
+    let compact_actions = squash_ascii_whitespace(actions);
+    let compact_web_runtime = squash_ascii_whitespace(web_runtime);
+
+    for (name, exact) in [
+        (
+            "selected document",
+            "pubconstMAX_OPENAPI_REVIEW_DOCUMENTS:usize=1;",
+        ),
+        ("request", "pubconstMAX_OPENAPI_REVIEW_REQUESTS:usize=2;"),
+        (
+            "active verification",
+            "pubconstMAX_OPENAPI_REVIEW_ACTIVE_VERIFICATIONS:usize=1;",
+        ),
+    ] {
+        if !compact_runtime.contains(exact) {
+            violations.push(format!(
+                "OpenAPI review V1 {name} ceiling must remain pinned by `{exact}`"
+            ));
+        }
+    }
+
+    require_markers(
+        &mut violations,
+        &compact_runtime,
+        &[
+            "pubconstOPENAPI_REVIEW_ACTION_ID:&str=\"web.review.openapi.document-replay@1\";",
+            "pubconstOPENAPI_REVIEW_CAPABILITY_ID:&str=\"api.openapi-contract-observed@1\";",
+            "AssessmentCapabilityDescriptor::informational(",
+            "OpenApiRuntimeBinding",
+            "install_into_parent_registry",
+            "forstagein[DecisionExecutionStage::Passive,DecisionExecutionStage::Active,]",
+            "registry.route_action(stage,OPENAPI_REVIEW_ACTION_ID,OPENAPI_EXECUTOR_ID)",
+            "constMAX_OPENAPI_CANDIDATE_HINTS:usize=64;",
+            "constMAX_OPENAPI_CANDIDATE_URL_BYTES:usize=8*1024;",
+            "constMAX_OPENAPI_CANDIDATE_PATH_BYTES:usize=1024;",
+            "committed_discovery_hints(&self.knowledge,&self.subject)",
+            "select_openapi_candidate(&selected.url,hints)",
+            "origin.join(\"/openapi.json\")",
+            "url.origin()==origin.origin()",
+            "HttpProbe::new(candidate.url.clone(),HttpProbeMethod::Get)",
+            ".with_header(\"accept\",OPENAPI_ACCEPT)",
+            "self.requests.collect_for_runtime(",
+            "request.case().payload_strategy().is_some()",
+            "request.case().applies_hypothesis_transition()",
+            "parse_openapi_document(response.body(),&candidate.url)",
+            "response.body_truncated()",
+            "response.body_complete()",
+            "project_assessment_defense_signal(",
+            "TransportDispatchAudit",
+            "transport.omitted_receipt_count()!=0",
+            "openapi_transport_prefix_is_valid(&receipts)",
+            "captured_openapi_prefix_reconciles(&state,&receipts)",
+            "receipt.response_bytes()!=leg.response_bytes",
+            "forced_outcome.or_else(",
+            "r.action_id()==OPENAPI_REVIEW_ACTION_ID",
+            "TransportDispatchOutcome::Completed",
+            "AssessmentItemTarget::openapi_document(",
+        ],
+        "OpenAPI review lost its one-document, two-GET, parent-native informational contract",
+    );
+    if compact_runtime.matches(".collect_for_runtime(").count() != 1 {
+        violations.push(
+            "OpenAPI review must retain exactly one shared-broker dispatch implementation for both replay legs"
+                .to_owned(),
+        );
+    }
+
+    require_markers(
+        &mut violations,
+        &compact_actions,
+        &[
+            "#[cfg(feature=\"openapi-review\")]OpenApiDocumentReplay,",
+            "Self::OpenApiDocumentReplay=>\"web.review.openapi.document-replay@1\"",
+            "Self::OpenApiDocumentReplay=>\"http.openapi-review\"",
+            "Self::OpenApiDocumentReplay=>NativeWebReviewDifferentialInput::ExactRequestReplay",
+            "VerificationTarget::KnowledgeOnly",
+        ],
+        "native action catalog lost the single bounded KnowledgeOnly OpenAPI replay action",
+    );
+
+    require_markers(
+        &mut violations,
+        &compact_web_runtime,
+        &[
+            "pub(incrate::web_runtime)fnwith_openapi_review(",
+            "openapi_runtime::OpenApiRuntimeBinding::new(config,requests.clone(),subject.clone(),knowledge.clone(),)",
+            "NativeWebReviewActionKind::OpenApiDocumentReplay",
+            "binding.install_into_parent_registry(&mutexecutors)",
+        ],
+        "the parent StandardWebDecisionRuntime must own and route the single OpenAPI replay executor",
+    );
+    if compact_web_runtime
+        .matches("openapi_runtime::OpenApiRuntimeBinding::new(")
+        .count()
+        != 1
+    {
+        violations.push(
+            "StandardWebDecisionRuntime must compose exactly one OpenAPI runtime binding"
+                .to_owned(),
+        );
+    }
+
+    reject_markers(
+        &mut violations,
+        runtime,
+        &[
+            "reqwest::",
+            "Client::new",
+            "HttpRequestBroker::new",
+            "RequestAccountingBroker",
+            "RuntimeBudget",
+            "StandardWebDecisionRuntime::builder",
+            "WebAssessmentRuntime::builder",
+            "DecisionExecutorRegistry::new",
+            "DecisionRunnerAdapter::new",
+            "HttpProbeMethod::Head",
+            "HttpProbeMethod::Post",
+            "HttpProbeMethod::Put",
+            "HttpProbeMethod::Patch",
+            "HttpProbeMethod::Delete",
+            "Method::POST",
+            "Method::PUT",
+            "Method::PATCH",
+            "Method::DELETE",
+            ".with_body(",
+            "query_pairs_mut",
+            "path_segments_mut",
+            "set_query(",
+            "set_path(",
+            "set_host(",
+            "set_port(",
+            "set_scheme(",
+            "AUTHORIZATION",
+            "COOKIE",
+            "bearer_auth",
+            "basic_auth",
+            ".servers()",
+            "OpenApiOperation",
+            "execute_operation",
+            "dispatch_operation",
+            "AssessmentCapabilityDescriptor::differential_review",
+            "AssessmentDisposition::NeedsReview",
+            "AssessmentDisposition::Confirmed",
+            "Liminvar",
+            "liminvar",
+        ],
+        "OpenAPI review must not own transport/accounting, mutate or execute described operations, retain credential authority, elevate claims, or rebrand the product",
+    );
+
+    let broker_builder = named_function_source(broker, "build").unwrap_or_default();
+    let compact_broker = squash_ascii_whitespace(broker_builder);
+    require_markers(
+        &mut violations,
+        &compact_broker,
+        &[
+            ".redirect(RedirectPolicy::none())",
+            ".retry(reqwest::retry::never())",
+        ],
+        "the shared broker used by OpenAPI review must remain redirect-disabled and retry-free",
+    );
+
+    for structure in [
+        named_struct_source(runtime, "WebAssessmentOpenApiAudit"),
+        named_struct_source(runtime, "CommittedOpenApiReview"),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        reject_markers(
+            &mut violations,
+            structure,
+            &[
+                "credential",
+                "authorization_header",
+                "cookie",
+                "raw_body",
+                "document_body",
+                "source_body",
+                "query_value",
+                "request_headers",
+                "response_headers",
+            ],
+            "OpenAPI audit and committed review must not retain raw documents, headers, credentials, cookies, or query values",
+        );
+    }
+
+    violations
 }
 
 fn graphql_runtime_module_gate_violations(source: &str) -> Result<Vec<String>, syn::Error> {
@@ -3716,7 +3977,7 @@ fn assessment_bridge_body_is_exact(block: &syn::Block) -> bool {
     };
     if reporting_expression_path_key(report_call.func.as_ref()).as_deref()
         != Some("AssessmentRunReport::from_completed_truth")
-        || report_call.args.len() != 3
+        || report_call.args.len() != 4
     {
         return false;
     }
@@ -3728,6 +3989,9 @@ fn assessment_bridge_body_is_exact(block: &syn::Block) -> bool {
             == Some("truth")
         && arguments.next().is_some_and(|argument| {
             assessment_bridge_authorization_field(argument, "authorization_review")
+        })
+        && arguments.next().is_some_and(|argument| {
+            assessment_bridge_feature_field(argument, "openapi_review", "openapi-review")
         })
 }
 
@@ -3758,12 +4022,18 @@ fn assessment_bridge_self_field(expression: &syn::Expr, expected: &str) -> bool 
 }
 
 fn assessment_bridge_authorization_field(expression: &syn::Expr, expected: &str) -> bool {
-    matches!(expression, syn::Expr::Field(field)
-        if field.attrs.len() == 1
-            && field.attrs[0].path().is_ident("cfg")
-            && cfg_predicate(&field.attrs[0]).as_deref()
-                == Some("feature=\"authorization-review\"")
-            && assessment_bridge_self_field(expression, expected))
+    assessment_bridge_feature_field(expression, expected, "authorization-review")
+}
+
+fn assessment_bridge_feature_field(expression: &syn::Expr, expected: &str, feature: &str) -> bool {
+    let syn::Expr::Field(field) = expression else {
+        return false;
+    };
+    let expected_cfg = format!("feature=\"{feature}\"");
+    field.attrs.len() == 1
+        && field.attrs[0].path().is_ident("cfg")
+        && cfg_predicate(&field.attrs[0]).as_deref() == Some(expected_cfg.as_str())
+        && assessment_bridge_self_field(expression, expected)
 }
 
 fn assessment_bridge_borrowed_self_field(expression: &syn::Expr, expected: &str) -> bool {
@@ -3975,7 +4245,38 @@ const EXACT_REPORTING_DOCUMENT_STRUCTS: &[ReportingDocumentShape] = &[
                 "authorization_review",
                 "Option<AssessmentAuthorizationAuditDocument>",
             ),
+            ("openapi_review", "Option<AssessmentOpenApiAuditDocument>"),
             ("items", "Vec<AssessmentItemDocument<'a>>"),
+        ],
+    ),
+    (
+        "AssessmentOpenApiAuditDocument",
+        &[],
+        &[
+            ("schema", "&'static str"),
+            ("capability_id", "&'static str"),
+            ("outcome", "&'static str"),
+            (
+                "candidate_source",
+                "crate::web_runtime::OpenApiCandidateSource",
+            ),
+            ("request_count", "u8"),
+            ("active_verification_count", "u8"),
+            ("version", "Option<&'static str>"),
+            ("semantic_digest", "Option<String>"),
+            ("path_count", "u32"),
+            ("operation_count", "u32"),
+            ("get_operation_count", "u32"),
+            ("write_operation_count", "u32"),
+            ("path_parameter_count", "u32"),
+            ("query_parameter_count", "u32"),
+            ("explicit_auth_operation_count", "u32"),
+            ("anonymous_operation_count", "u32"),
+            ("url_like_operation_count", "u32"),
+            ("multipart_operation_count", "u32"),
+            ("deprecated_operation_count", "u32"),
+            ("replay_matched", "bool"),
+            ("item_projected", "bool"),
         ],
     ),
     (
@@ -4108,11 +4409,16 @@ fn reporting_serde_skip_option_is_none(attribute: &Attribute) -> bool {
         })
 }
 
-fn reporting_authorization_audit_field_attributes_are_exact(attributes: &[Attribute]) -> bool {
+fn reporting_audit_field_attributes_are_exact(attributes: &[Attribute], feature: &str) -> bool {
+    let expected = match feature {
+        "authorization-review" => "feature=\"authorization-review\"",
+        "openapi-review" => "feature=\"openapi-review\"",
+        _ => return false,
+    };
     attributes.len() == 2
         && attributes.iter().any(|attribute| {
             attribute.path().is_ident("cfg")
-                && cfg_predicate(attribute).as_deref() == Some("feature=\"authorization-review\"")
+                && cfg_predicate(attribute).as_deref() == Some(expected)
         })
         && attributes.iter().any(reporting_serde_skip_option_is_none)
 }
@@ -4139,6 +4445,7 @@ fn reporting_document_contract_violations(source: &str) -> Result<Vec<String>, s
             name.as_str(),
             "AssessmentDocument"
                 | "AssessmentAuthorizationAuditDocument"
+                | "AssessmentOpenApiAuditDocument"
                 | "AssessmentItemDocument"
                 | "AssessmentBasisLinkageDocument"
                 | "AssessmentRemediationDocument"
@@ -4170,10 +4477,14 @@ fn reporting_document_contract_violations(source: &str) -> Result<Vec<String>, s
                     )
                 })
                 .collect();
-            let expected_cfg = if name == "AssessmentAuthorizationAuditDocument" {
-                "all(feature=\"scanning\",feature=\"authorization-review\")"
-            } else {
-                "feature=\"scanning\""
+            let expected_cfg = match name.as_str() {
+                "AssessmentAuthorizationAuditDocument" => {
+                    "all(feature=\"scanning\",feature=\"authorization-review\")"
+                },
+                "AssessmentOpenApiAuditDocument" => {
+                    "all(feature=\"scanning\",feature=\"openapi-review\")"
+                },
+                _ => "feature=\"scanning\"",
             };
             if cfg_attributes.len() != 1
                 || !cfg_attributes[0].path().is_ident("cfg")
@@ -4212,12 +4523,18 @@ fn reporting_document_contract_violations(source: &str) -> Result<Vec<String>, s
                 .iter()
                 .map(|field| {
                     let field_name = field.ident.as_ref()?.to_string();
-                    let attributes_are_exact =
-                        if name == "AssessmentDocument" && field_name == "authorization_review" {
-                            reporting_authorization_audit_field_attributes_are_exact(&field.attrs)
-                        } else {
-                            field.attrs.is_empty()
-                        };
+                    let attributes_are_exact = if name == "AssessmentDocument"
+                        && field_name == "authorization_review"
+                    {
+                        reporting_audit_field_attributes_are_exact(
+                            &field.attrs,
+                            "authorization-review",
+                        )
+                    } else if name == "AssessmentDocument" && field_name == "openapi_review" {
+                        reporting_audit_field_attributes_are_exact(&field.attrs, "openapi-review")
+                    } else {
+                        field.attrs.is_empty()
+                    };
                     if !attributes_are_exact || !matches!(field.vis, Visibility::Inherited) {
                         return None;
                     }
@@ -6570,8 +6887,8 @@ struct ReportingSourceVisitor {
     inside_test_module: usize,
 }
 
-const EXACT_REPORTING_PRODUCTION_TOKEN_BYTES: usize = 56_278;
-const EXACT_REPORTING_PRODUCTION_FINGERPRINT: u128 = 0x52b9_0204_8dc9_db43_e780_a1e5_1388_afe7;
+const EXACT_REPORTING_PRODUCTION_TOKEN_BYTES: usize = 63_078;
+const EXACT_REPORTING_PRODUCTION_FINGERPRINT: u128 = 0x5066_9961_5900_eb5b_93eb_3591_4555_ffdb;
 
 fn reporting_production_body_inventory_violations(source: &str) -> Vec<String> {
     let Ok(syntax) = syn::parse_file(source) else {
@@ -6642,6 +6959,8 @@ const EXACT_REPORTING_SOURCE_IMPORTS: &[&str] = &[
     "crate::web_runtime::AssessmentRunReport",
     "crate::web_runtime::AssessmentRunReportError",
     "crate::web_runtime::MAX_AUTHORIZATION_REVIEW_REQUESTS",
+    "crate::web_runtime::OPENAPI_REVIEW_CAPABILITY_ID",
+    "crate::web_runtime::OpenApiRuntimeOutcome",
     "crate::web_runtime::RESOURCE_AUTHORIZATION_REVIEW_CAPABILITY_ID",
     "crate::web_runtime::ScanProfileV1",
     "crate::web_runtime::WebAssessmentRunReport",
@@ -6661,6 +6980,7 @@ const EXACT_REPORTING_SOURCE_IMPORTS: &[&str] = &[
 ];
 
 const ALLOWED_REPORTING_QUALIFIED_PATHS: &[&str] = &[
+    "AssessmentOpenApiAuditDocument::from_audit",
     "AssessmentAuthorizationAuditDocument::from_audit",
     "AssessmentBasis::Differential",
     "AssessmentBasis::Observation",
@@ -6689,6 +7009,23 @@ const ALLOWED_REPORTING_QUALIFIED_PATHS: &[&str] = &[
     "AuthorizationReviewOutcome::StableCrossPrincipalEquivalence",
     "AuthorizationReviewOutcome::Truncated",
     "AuthorizationReviewOutcome::UnsupportedMedia",
+    "OpenApiRuntimeOutcome::BudgetExhausted",
+    "OpenApiRuntimeOutcome::Cancelled",
+    "OpenApiRuntimeOutcome::DefensiveInterference",
+    "OpenApiRuntimeOutcome::DocumentObserved",
+    "OpenApiRuntimeOutcome::HttpError",
+    "OpenApiRuntimeOutcome::Incomplete",
+    "OpenApiRuntimeOutcome::LimitExceeded",
+    "OpenApiRuntimeOutcome::Malformed",
+    "OpenApiRuntimeOutcome::NotEligible",
+    "OpenApiRuntimeOutcome::RateLimited",
+    "OpenApiRuntimeOutcome::RedirectObserved",
+    "OpenApiRuntimeOutcome::ReplayMismatch",
+    "OpenApiRuntimeOutcome::Swagger20MetadataOnly",
+    "OpenApiRuntimeOutcome::TooLarge",
+    "OpenApiRuntimeOutcome::Truncated",
+    "OpenApiRuntimeOutcome::UnsupportedMedia",
+    "OpenApiRuntimeOutcome::UnsupportedVersion",
     "OutcomeDocument::from_outcome",
     "OutcomeStatus::Blocked",
     "OutcomeStatus::ConfirmedNegative",
@@ -6743,10 +7080,14 @@ const ALLOWED_REPORTING_QUALIFIED_PATHS: &[&str] = &[
     "crate::web_runtime::AssessmentRunReport",
     "crate::web_runtime::AssessmentRunReportError",
     "crate::web_runtime::MAX_AUTHORIZATION_REVIEW_REQUESTS",
+    "crate::web_runtime::OPENAPI_REVIEW_CAPABILITY_ID",
+    "crate::web_runtime::OpenApiCandidateSource",
+    "crate::web_runtime::OpenApiRuntimeOutcome",
     "crate::web_runtime::RESOURCE_AUTHORIZATION_REVIEW_CAPABILITY_ID",
     "crate::web_runtime::ScanProfileV1",
     "crate::web_runtime::WebAssessmentRunReport",
     "crate::web_runtime::WebAssessmentAuthorizationAudit",
+    "crate::web_runtime::WebAssessmentOpenApiAudit",
     "crate::authorization_review::AuthorizationReviewOutcome",
     "crate::authorization_review::HARD_MAX_AUTHORIZATION_REVIEW_IGNORED_PATHS",
     "crate::authorization_review::HARD_MAX_AUTHORIZATION_REVIEW_SELECTED_PATHS",
@@ -6767,6 +7108,7 @@ const ALLOWED_REPORTING_QUALIFIED_PATHS: &[&str] = &[
     "std::fmt",
     "std::io",
     "std::str::from_utf8",
+    "str::to_owned",
     "u16::MAX",
     "u32::from",
     "u64::try_from",
@@ -6789,6 +7131,7 @@ const ALLOWED_REPORTING_FUNCTION_CALLS: &[&str] = &[
     "AssessmentBasisLinkageDocument::from_basis",
     "AssessmentDocument::from_report",
     "AssessmentItemDocument::from_item",
+    "AssessmentOpenApiAuditDocument::from_audit",
     "AssessmentAuthorizationAuditDocument::from_audit",
     "Err",
     "Ok",
@@ -6811,6 +7154,7 @@ const ALLOWED_REPORTING_FUNCTION_CALLS: &[&str] = &[
     "is_bidi_control",
     "longest_backtick_run",
     "optional_bool_token",
+    "openapi_outcome",
     "push_visible_codepoint",
     "render_csv",
     "render_assessment_csv",
@@ -6850,8 +7194,10 @@ const ALLOWED_REPORTING_FUNCTION_CALLS: &[&str] = &[
 const ALLOWED_REPORTING_METHOD_CALLS: &[&str] = &[
     "accounting",
     "action_id",
+    "active_verification_count",
     "all",
     "and_then",
+    "anonymous_operation_count",
     "as_deref",
     "as_str",
     "authorized_origin",
@@ -6859,6 +7205,7 @@ const ALLOWED_REPORTING_METHOD_CALLS: &[&str] = &[
     "basis",
     "bytes",
     "candidate",
+    "candidate_source",
     "capability_id",
     "case_reference",
     "category",
@@ -6878,17 +7225,20 @@ const ALLOWED_REPORTING_METHOD_CALLS: &[&str] = &[
     "cross_resources_equivalent",
     "dimensions",
     "disposition",
+    "deprecated_operation_count",
     "duration_ms",
     "ends_with",
     "enumerate",
     "evidence_ids",
     "evidence",
     "evidence_count",
+    "explicit_auth_operation_count",
     "extend_from_slice",
     "find",
     "filter",
     "fingerprint",
     "finish",
+    "get_operation_count",
     "id",
     "ignored_path_count",
     "into_iter",
@@ -6914,13 +7264,18 @@ const ALLOWED_REPORTING_METHOD_CALLS: &[&str] = &[
     "max",
     "metadata",
     "mode",
+    "multipart_operation_count",
     "ok_or",
     "ok",
+    "openapi_review_audit",
+    "operation_count",
     "ordinal",
     "outcomes",
     "outcome",
     "outcome_reference",
     "paired_comparison",
+    "path_count",
+    "path_parameter_count",
     "parts_per_million",
     "peer_stable",
     "policy_id",
@@ -6930,9 +7285,11 @@ const ALLOWED_REPORTING_METHOD_CALLS: &[&str] = &[
     "push_str",
     "profile",
     "primary_stable",
+    "query_parameter_count",
     "redacted_summary",
     "remaining",
     "reference_count",
+    "replay_matched",
     "remediation",
     "request_body_bytes",
     "request_count",
@@ -6942,6 +7299,7 @@ const ALLOWED_REPORTING_METHOD_CALLS: &[&str] = &[
     "run_report",
     "schema",
     "selected_path_count",
+    "semantic_digest",
     "severity",
     "started_at",
     "stage",
@@ -6961,9 +7319,12 @@ const ALLOWED_REPORTING_METHOD_CALLS: &[&str] = &[
     "try_reserve",
     "unwrap_or",
     "unwrap_or_else",
+    "url_like_operation_count",
     "validate",
+    "version",
     "verification_outcome",
     "wall_time_ms",
+    "write_operation_count",
     "write_str",
 ];
 
@@ -7008,6 +7369,14 @@ fn reporting_source_import_violations(source: &str) -> Result<Vec<String>, syn::
                     | "crate::web_runtime::RESOURCE_AUTHORIZATION_REVIEW_CAPABILITY_ID"
             )
             });
+        let openapi_import = !paths.is_empty()
+            && paths.iter().all(|path| {
+                matches!(
+                    path.as_str(),
+                    "crate::web_runtime::OpenApiRuntimeOutcome"
+                        | "crate::web_runtime::OPENAPI_REVIEW_CAPABILITY_ID"
+                )
+            });
         let attributes_are_exact = if assessment_import {
             item.attrs.len() == 1
                 && item.attrs[0].path().is_ident("cfg")
@@ -7017,12 +7386,17 @@ fn reporting_source_import_violations(source: &str) -> Result<Vec<String>, syn::
                 && item.attrs[0].path().is_ident("cfg")
                 && cfg_predicate(&item.attrs[0]).as_deref()
                     == Some("all(feature=\"scanning\",feature=\"authorization-review\")")
+        } else if openapi_import {
+            item.attrs.len() == 1
+                && item.attrs[0].path().is_ident("cfg")
+                && cfg_predicate(&item.attrs[0]).as_deref()
+                    == Some("all(feature=\"scanning\",feature=\"openapi-review\")")
         } else {
             item.attrs.is_empty()
         };
         if !matches!(item.vis, Visibility::Inherited) || !attributes_are_exact {
             violations.push(
-                "reporting production imports must remain private; only the exact web-assessment and authorization-audit imports may use their pinned feature gates"
+                "reporting production imports must remain private; only the exact web-assessment, authorization-audit, and OpenAPI-audit imports may use their pinned feature gates"
                     .to_owned(),
             );
         }
@@ -7090,11 +7464,13 @@ impl<'ast> Visit<'ast> for ReportingSourceVisitor {
                 cfg.as_deref(),
                 Some("feature=\"scanning\"")
                     | Some("feature=\"authorization-review\"")
+                    | Some("feature=\"openapi-review\"")
                     | Some("all(feature=\"scanning\",feature=\"authorization-review\")")
+                    | Some("all(feature=\"scanning\",feature=\"openapi-review\")")
             );
         if matches!(attribute_name.as_str(), "cfg" | "cfg_attr") && !exact_feature_gate {
             self.violations.insert(
-                "reporting production source may contain only the exact scanning and authorization-audit feature gates"
+                "reporting production source may contain only the exact scanning, authorization-audit, and OpenAPI-audit feature gates"
                     .to_owned(),
             );
         }
@@ -7817,6 +8193,7 @@ mod tests {
             vec!["scanning".to_owned()],
         );
         features.insert("graphql-review".to_owned(), vec!["scanning".to_owned()]);
+        features.insert("openapi-review".to_owned(), vec!["scanning".to_owned()]);
         features.insert(
             "normalization-resilience".to_owned(),
             vec!["scanning".to_owned()],
@@ -7922,6 +8299,32 @@ mod tests {
             .get_mut("default")
             .unwrap()
             .push("graphql-review".to_owned());
+        assert!(cli_feature_violations(&cli_features, &dependencies)
+            .iter()
+            .any(|violation| violation.contains("default features must remain empty")));
+    }
+
+    #[test]
+    fn openapi_review_is_non_default_and_uses_the_exact_feature_edges() {
+        let mut features = valid_feature_map();
+        assert!(feature_violations(&features).is_empty());
+        assert!(!raw_feature_closure(&features, "default").contains("openapi-review"));
+        assert_eq!(
+            features.get("openapi-review").unwrap(),
+            &["scanning".to_owned()]
+        );
+
+        features.remove("openapi-review");
+        assert!(feature_violations(&features)
+            .iter()
+            .any(|violation| violation.contains("openapi-review")));
+
+        let (mut cli_features, dependencies) = valid_cli_contract();
+        assert!(cli_feature_violations(&cli_features, &dependencies).is_empty());
+        cli_features
+            .get_mut("default")
+            .unwrap()
+            .push("openapi-review".to_owned());
         assert!(cli_feature_violations(&cli_features, &dependencies)
             .iter()
             .any(|violation| violation.contains("default features must remain empty")));
@@ -8306,6 +8709,107 @@ mod tests {
                 .iter()
                 .any(|violation| violation.contains("authorization-review"))
         );
+    }
+
+    #[test]
+    fn openapi_review_architecture_is_one_bounded_informational_native_child() {
+        let runtime =
+            include_str!("../../../crates/venom-scanner/src/web_runtime/openapi_runtime.rs");
+        let actions =
+            include_str!("../../../crates/venom-scanner/src/web_actions/native_review.rs");
+        let broker =
+            include_str!("../../../crates/venom-scanner/src/http_evidence/request_broker.rs");
+        let web_runtime = include_str!("../../../crates/venom-scanner/src/web_runtime.rs");
+
+        let violations =
+            openapi_review_source_contract_violations(runtime, actions, broker, web_runtime);
+        assert!(violations.is_empty(), "{violations:#?}");
+        assert!(openapi_runtime_module_gate_violations(web_runtime)
+            .unwrap()
+            .is_empty());
+
+        for (from, to, expected) in [
+            (
+                "MAX_OPENAPI_REVIEW_DOCUMENTS: usize = 1",
+                "MAX_OPENAPI_REVIEW_DOCUMENTS: usize = 2",
+                "selected document ceiling",
+            ),
+            (
+                "MAX_OPENAPI_REVIEW_REQUESTS: usize = 2",
+                "MAX_OPENAPI_REVIEW_REQUESTS: usize = 3",
+                "request ceiling",
+            ),
+            (
+                "MAX_OPENAPI_REVIEW_ACTIVE_VERIFICATIONS: usize = 1",
+                "MAX_OPENAPI_REVIEW_ACTIVE_VERIFICATIONS: usize = 2",
+                "active verification ceiling",
+            ),
+        ] {
+            let mutation = runtime.replacen(from, to, 1);
+            assert!(openapi_review_source_contract_violations(
+                &mutation,
+                actions,
+                broker,
+                web_runtime,
+            )
+            .iter()
+            .any(|violation| violation.contains(expected)));
+        }
+
+        for forbidden in [
+            "fn second_client() { reqwest::Client::new(); }",
+            "fn second_broker() { HttpRequestBroker::new_metered(policy(), accounting()); }",
+            "fn second_budget() { let _ = RuntimeBudget::new(); }",
+            "fn second_runner() { let _ = DecisionRunnerAdapter::new(DecisionExecutorRegistry::new()); }",
+            "fn write_probe() { let _ = HttpProbeMethod::Post; }",
+            "fn credentialed_probe() { let _ = AUTHORIZATION; }",
+            "fn execute_described_operation(document: &OpenApiDocument) { for operation in document.operations() { dispatch_operation(operation); } }",
+            "const PARTIAL_REBRAND: &str = \"Liminvar\";",
+            "fn claim() { let _ = AssessmentDisposition::Confirmed; }",
+        ] {
+            let mutation = format!("{runtime}\n{forbidden}");
+            assert!(
+                !openapi_review_source_contract_violations(
+                    &mutation,
+                    actions,
+                    broker,
+                    web_runtime,
+                )
+                .is_empty(),
+                "OpenAPI review architecture mutation unexpectedly passed: {forbidden}"
+            );
+        }
+
+        let write_method = runtime.replacen("HttpProbeMethod::Get", "HttpProbeMethod::Post", 1);
+        assert!(openapi_review_source_contract_violations(
+            &write_method,
+            actions,
+            broker,
+            web_runtime,
+        )
+        .iter()
+        .any(|violation| violation.contains("two-GET")));
+
+        let second_dispatch = format!(
+            "{runtime}\nfn duplicate_dispatch(binding: &OpenApiDecisionExecutor) {{ let _ = binding.requests.collect_for_runtime(); }}"
+        );
+        assert!(openapi_review_source_contract_violations(
+            &second_dispatch,
+            actions,
+            broker,
+            web_runtime,
+        )
+        .iter()
+        .any(|violation| violation.contains("exactly one shared-broker dispatch")));
+
+        let ungated = web_runtime.replace(
+            "#[cfg(feature = \"openapi-review\")]\nmod openapi_runtime;",
+            "mod openapi_runtime;",
+        );
+        assert!(openapi_runtime_module_gate_violations(&ungated)
+            .unwrap()
+            .iter()
+            .any(|violation| violation.contains("exact cfg")));
     }
 
     #[test]
@@ -10381,6 +10885,10 @@ mod tests {
             (
                 "graphql-review".to_owned(),
                 vec!["venom-scanner/graphql-review".to_owned()],
+            ),
+            (
+                "openapi-review".to_owned(),
+                vec!["venom-scanner/openapi-review".to_owned()],
             ),
             (
                 "normalization-resilience".to_owned(),

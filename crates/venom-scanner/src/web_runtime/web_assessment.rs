@@ -40,6 +40,11 @@ use super::graphql_runtime::{
     execute_graphql_review, graphql_endpoint_hints, CommittedGraphqlReview, GraphqlRuntimeResult,
     GraphqlRuntimeStop,
 };
+#[cfg(feature = "openapi-review")]
+use super::openapi_runtime::{
+    select_openapi_candidate, CommittedOpenApiReview, OpenApiReviewConfig, OpenApiRuntimeOutcome,
+    OpenApiRuntimeResult, WebAssessmentOpenApiAudit, MAX_OPENAPI_REVIEW_ACTIVE_VERIFICATIONS,
+};
 #[cfg(feature = "authorization-review")]
 use super::resource_authorization_runtime::{
     CommittedResourceAuthorizationReview, ResourceAuthorizationReviewConfig,
@@ -914,6 +919,9 @@ pub enum WebAssessmentIncompleteReason {
     /// complete its bounded comparison.
     #[cfg(feature = "authorization-review")]
     AuthorizationReviewIncomplete,
+    /// The explicitly enabled OpenAPI document/replay pair did not complete.
+    #[cfg(feature = "openapi-review")]
+    OpenApiReviewIncomplete,
 }
 
 /// Whether every retained subject and eligible document completed within bounds.
@@ -1247,6 +1255,8 @@ pub struct WebAssessmentRunReport {
     defense: WebAssessmentDefenseAudit,
     #[cfg(feature = "authorization-review")]
     authorization_review: Option<WebAssessmentAuthorizationAudit>,
+    #[cfg(feature = "openapi-review")]
+    openapi_review: Option<WebAssessmentOpenApiAudit>,
     assessment_items: AssessmentItemSet,
     assessment_projection_incompleteness: PassiveAssessmentProjectionIncompleteness,
     completion: WebAssessmentCompletion,
@@ -1329,6 +1339,10 @@ impl WebAssessmentRunReport {
     pub const fn authorization_review_audit(&self) -> Option<&WebAssessmentAuthorizationAudit> {
         self.authorization_review.as_ref()
     }
+    #[cfg(feature = "openapi-review")]
+    pub const fn openapi_review_audit(&self) -> Option<&WebAssessmentOpenApiAudit> {
+        self.openapi_review.as_ref()
+    }
     /// Returns claim-safe items derived only from committed assessment truth.
     pub fn assessment_items(&self) -> &[AssessmentItem] {
         self.assessment_items.items()
@@ -1384,6 +1398,8 @@ impl WebAssessmentRunReport {
             truth,
             #[cfg(feature = "authorization-review")]
             self.authorization_review,
+            #[cfg(feature = "openapi-review")]
+            self.openapi_review,
         )
     }
 }
@@ -1618,6 +1634,8 @@ pub struct WebAssessmentRuntimeBuilder {
     graphql_review: bool,
     #[cfg(feature = "authorization-review")]
     resource_authorization_review: Option<(AuthorizationReviewPolicy, AuthorizationPrincipalPair)>,
+    #[cfg(feature = "openapi-review")]
+    openapi_review: bool,
     root_authorization_context: Option<WebAssessmentRootAuthorizationContext>,
 }
 
@@ -1636,6 +1654,8 @@ impl WebAssessmentRuntimeBuilder {
             graphql_review: false,
             #[cfg(feature = "authorization-review")]
             resource_authorization_review: None,
+            #[cfg(feature = "openapi-review")]
+            openapi_review: false,
             root_authorization_context: None,
         }
     }
@@ -1684,6 +1704,12 @@ impl WebAssessmentRuntimeBuilder {
     #[cfg(feature = "graphql-review")]
     pub fn enable_graphql_review(mut self) -> Self {
         self.graphql_review = true;
+        self
+    }
+    /// Explicitly enables one exact-origin OpenAPI JSON document/replay review.
+    #[cfg(feature = "openapi-review")]
+    pub fn enable_openapi_review(mut self) -> Self {
+        self.openapi_review = true;
         self
     }
     /// Adds one explicitly selected, four-view resource authorization review.
@@ -1776,6 +1802,17 @@ impl WebAssessmentRuntimeBuilder {
                     ) * AUTHORIZATION_REVIEW_ACTIVE_VERIFICATION_ALLOWANCE,
                 )
                 .expect("compiled authorization allowance fits u16");
+            #[cfg(feature = "openapi-review")]
+            let allowance = allowance
+                .checked_add(
+                    u16::from(
+                        self.openapi_review
+                            && self.limits.max_active_verifications()
+                                == DEFAULT_WEB_ASSESSMENT_MAX_ACTIVE_VERIFICATIONS,
+                    ) * u16::try_from(MAX_OPENAPI_REVIEW_ACTIVE_VERIFICATIONS)
+                        .expect("OpenAPI active-verification allowance fits u16"),
+                )
+                .expect("compiled OpenAPI allowance fits u16");
             allowance
         };
         let runtime_active_verification_limit = self
@@ -1890,6 +1927,12 @@ impl WebAssessmentRuntimeBuilder {
             graphql_review: self.graphql_review,
             #[cfg(feature = "authorization-review")]
             resource_authorization_review,
+            #[cfg(feature = "openapi-review")]
+            openapi_review: self.openapi_review.then(|| {
+                OpenApiReviewConfig::new(
+                    select_openapi_candidate(&root.url, []).expect("fixed exact-origin fallback"),
+                )
+            }),
             native_review,
             non_root_structural_review: None,
             xss_structural_review: None,
@@ -1903,6 +1946,10 @@ impl WebAssessmentRuntimeBuilder {
             committed_resource_authorization_review: None,
             #[cfg(feature = "authorization-review")]
             authorization_review_audit: None,
+            #[cfg(feature = "openapi-review")]
+            committed_openapi_review: None,
+            #[cfg(feature = "openapi-review")]
+            openapi_review_audit: None,
             #[cfg(feature = "graphql-review")]
             optional_child_parent_defense: None,
             defense_audit: WebAssessmentDefenseAudit::new(if self.defense_enforcement {
@@ -1935,6 +1982,8 @@ pub struct WebAssessmentRuntime {
     graphql_review: bool,
     #[cfg(feature = "authorization-review")]
     resource_authorization_review: Option<ResourceAuthorizationReviewConfig>,
+    #[cfg(feature = "openapi-review")]
+    openapi_review: Option<OpenApiReviewConfig>,
     native_review: Option<AssessmentNativeReviewRuntime>,
     non_root_structural_review: Option<AssessmentNativeReviewRuntime>,
     xss_structural_review: Option<AssessmentNativeReviewRuntime>,
@@ -1946,8 +1995,12 @@ pub struct WebAssessmentRuntime {
     committed_graphql_review: Option<CommittedGraphqlReview>,
     #[cfg(feature = "authorization-review")]
     committed_resource_authorization_review: Option<CommittedResourceAuthorizationReview>,
+    #[cfg(feature = "openapi-review")]
+    committed_openapi_review: Option<CommittedOpenApiReview>,
     #[cfg(feature = "authorization-review")]
     authorization_review_audit: Option<WebAssessmentAuthorizationAudit>,
+    #[cfg(feature = "openapi-review")]
+    openapi_review_audit: Option<WebAssessmentOpenApiAudit>,
     #[cfg(feature = "graphql-review")]
     optional_child_parent_defense: Option<AssessmentDefenseController>,
     defense_audit: WebAssessmentDefenseAudit,
@@ -2255,6 +2308,15 @@ impl WebAssessmentRuntime {
                 } else {
                     builder
                 };
+                #[cfg(feature = "openapi-review")]
+                let builder = if subject.origin == WebAssessmentSubjectOrigin::AuthorizedRoot {
+                    match self.openapi_review.take() {
+                        Some(config) => builder.with_openapi_review(config),
+                        None => builder,
+                    }
+                } else {
+                    builder
+                };
                 let mut runtime = match compose_child(builder) {
                     Ok(runtime) => runtime,
                     Err(source) => {
@@ -2294,6 +2356,8 @@ impl WebAssessmentRuntime {
                 let standard_result = runtime.analyze().await;
                 #[cfg(feature = "authorization-review")]
                 let resource_authorization_binding = runtime.take_resource_authorization_review();
+                #[cfg(feature = "openapi-review")]
+                let openapi_binding = runtime.take_openapi_review();
                 let defense = runtime.assessment_defense_controller().cloned();
                 let planner = runtime.assessment_planner().clone();
                 let standard = match standard_result {
@@ -2384,6 +2448,55 @@ impl WebAssessmentRuntime {
                             reasons.insert(
                                 WebAssessmentIncompleteReason::AuthorizationReviewIncomplete,
                             );
+                        },
+                        Err(_) => {
+                            let parts = standard.into_assessment_parts();
+                            return Err(WebAssessmentRuntimeError::ProjectionInvariant {
+                                receipt: Box::new(self.failure_receipt(
+                                    &known_subjects,
+                                    subject_reports,
+                                    forms,
+                                    WebAssessmentSubjectReport::complete(subject, parts),
+                                    failed_reasons(&reasons),
+                                    started_at,
+                                )),
+                            });
+                        },
+                    }
+                }
+                #[cfg(feature = "openapi-review")]
+                if let Some(binding) = openapi_binding {
+                    let forced_outcome = if self.authority.cancellation().is_cancelled() {
+                        Some(OpenApiRuntimeOutcome::Cancelled)
+                    } else if standard.limit_exceeded().is_some() {
+                        Some(OpenApiRuntimeOutcome::BudgetExhausted)
+                    } else {
+                        None
+                    };
+                    let forced_runtime_limit = standard.limit_exceeded().cloned();
+                    match binding.finalize(
+                        self.authority.knowledge(),
+                        standard.transport(),
+                        forced_outcome,
+                        forced_runtime_limit,
+                    ) {
+                        Ok(OpenApiRuntimeResult::Complete(committed)) => {
+                            self.openapi_review_audit = Some(committed.audit().clone());
+                            self.committed_openapi_review = Some(committed);
+                        },
+                        Ok(OpenApiRuntimeResult::Stopped {
+                            audit,
+                            runtime_limit,
+                        }) => {
+                            let outcome = audit.outcome();
+                            self.openapi_review_audit = Some(audit);
+                            if let Some(limit) = runtime_limit {
+                                reasons.insert(reason_for_runtime_dimension(limit.dimension()));
+                            }
+                            if outcome == OpenApiRuntimeOutcome::Cancelled {
+                                reasons.insert(WebAssessmentIncompleteReason::HostCancellation);
+                            }
+                            reasons.insert(WebAssessmentIncompleteReason::OpenApiReviewIncomplete);
                         },
                         Err(_) => {
                             let parts = standard.into_assessment_parts();
@@ -3148,6 +3261,8 @@ impl WebAssessmentRuntime {
                 graphql: self.committed_graphql_review.as_ref(),
                 #[cfg(feature = "authorization-review")]
                 authorization: self.committed_resource_authorization_review.as_ref(),
+                #[cfg(feature = "openapi-review")]
+                openapi: self.committed_openapi_review.as_ref(),
             },
             self.authority.knowledge(),
             &self.root,
@@ -3211,6 +3326,8 @@ impl WebAssessmentRuntime {
             defense: self.defense_audit.clone(),
             #[cfg(feature = "authorization-review")]
             authorization_review: self.authorization_review_audit.clone(),
+            #[cfg(feature = "openapi-review")]
+            openapi_review: self.openapi_review_audit.clone(),
             assessment_items,
             assessment_projection_incompleteness,
             completion,

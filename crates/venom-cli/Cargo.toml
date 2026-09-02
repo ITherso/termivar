@@ -26,6 +26,7 @@ proxy-adapter = ["dep:venom-proxy"]
 artifact-adapter = ["dep:venom-artifact"]
 normalization-resilience = ["venom-scanner/normalization-resilience"]
 graphql-review = ["venom-scanner/graphql-review"]
+openapi-review = ["venom-scanner/openapi-review"]
 authorization-review = ["venom-scanner/authorization-review"]
 
 [dependencies]

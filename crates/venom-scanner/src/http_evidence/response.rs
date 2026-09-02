@@ -28,7 +28,11 @@ impl CollectedHttpResponse {
         self.status.as_u16()
     }
 
-    #[cfg(any(feature = "legacy-scanner", feature = "authorization-review"))]
+    #[cfg(any(
+        feature = "legacy-scanner",
+        feature = "authorization-review",
+        feature = "openapi-review"
+    ))]
     pub(crate) fn final_url(&self) -> &Url {
         &self.final_url
     }
@@ -46,12 +50,20 @@ impl CollectedHttpResponse {
         self.body_truncated
     }
 
-    #[cfg(any(feature = "graphql-review", feature = "authorization-review"))]
+    #[cfg(any(
+        feature = "graphql-review",
+        feature = "authorization-review",
+        feature = "openapi-review"
+    ))]
     pub(crate) fn body_complete(&self) -> bool {
         self.body_complete && !self.body_truncated
     }
 
-    #[cfg(any(feature = "graphql-review", feature = "authorization-review"))]
+    #[cfg(any(
+        feature = "graphql-review",
+        feature = "authorization-review",
+        feature = "openapi-review"
+    ))]
     pub(crate) fn normalized_media_type(&self) -> Option<String> {
         normalized_media_type(&self.headers)
     }
@@ -81,5 +93,16 @@ impl CollectedHttpResponse {
         } else {
             AuthorizationResponseDefense::Clear
         }
+    }
+
+    #[cfg(feature = "openapi-review")]
+    pub(crate) fn openapi_defense_signal(&self) -> crate::web_runtime::AssessmentDefenseSignal {
+        super::bounded_assessment_defense_signal(
+            self.status(),
+            crate::HttpProbeMethod::Get,
+            &self.headers,
+            self.body_complete,
+            &self.body,
+        )
     }
 }

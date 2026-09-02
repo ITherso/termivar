@@ -36,6 +36,8 @@ use crate::web_runtime::assessment_passive::{
     CommittedAssessmentPassiveLedger, CommittedAssessmentPassiveObservation,
     CommittedPassiveMediaClass, ASSESSMENT_PASSIVE_NAMESPACE,
 };
+#[cfg(feature = "openapi-review")]
+use crate::web_runtime::openapi_runtime::{OpenApiCandidateSource, OpenApiRuntimeOutcome};
 use crate::web_runtime::{AssessmentBasis, AssessmentDisposition};
 #[cfg(feature = "reporting")]
 use crate::web_runtime::{BuiltInScanProfile, ASSESSMENT_RUN_REPORT_SCHEMA};
@@ -981,6 +983,375 @@ fn resource_authorization_rejects_non_loopback_cleartext_transport() {
         ));
         assert!(!format!("{error:?}").contains(raw_target));
     }
+}
+
+#[cfg(feature = "openapi-review")]
+#[derive(Clone, Copy)]
+enum OpenApiFixtureMode {
+    Stable30,
+    StableJsonSuffix,
+    Stable31Text,
+    ReorderedReplay,
+    SemanticMismatch,
+    Malformed,
+    GenericJson,
+    Html,
+    Yaml,
+    UnsupportedVersion,
+    NotFound,
+    ServerError,
+    Redirect,
+    RateLimited,
+    RateLimitAdvertised,
+    Challenge,
+}
+
+#[cfg(feature = "openapi-review")]
+const OPENAPI_30_DOCUMENT: &str = r#"{"openapi":"3.0.3","info":{"title":"fixture","version":"1"},"paths":{"/items":{"get":{"responses":{"200":{"description":"ok"}}}}}}"#;
+#[cfg(feature = "openapi-review")]
+const OPENAPI_31_DOCUMENT: &str = r#"{"openapi":"3.1.0","info":{"title":"fixture","version":"1"},"paths":{"/items":{"get":{"responses":{"200":{"description":"ok"}}}}}}"#;
+
+#[cfg(feature = "openapi-review")]
+async fn run_openapi_fixture(
+    mode: OpenApiFixtureMode,
+    enabled: bool,
+) -> (WebAssessmentRunReport, Vec<RecordedRequest>) {
+    let openapi_hits = Arc::new(AtomicUsize::new(0));
+    let hits = openapi_hits.clone();
+    let server = serve(move |request| {
+        if request.path() != "/openapi.json" {
+            return FixtureReply::Response(FixtureResponse::html("fixture root"));
+        }
+        let hit = hits.fetch_add(1, Ordering::SeqCst);
+        let response = match mode {
+            OpenApiFixtureMode::Stable30 => {
+                FixtureResponse::new("200 OK", Some("application/json"), OPENAPI_30_DOCUMENT)
+            },
+            OpenApiFixtureMode::StableJsonSuffix => FixtureResponse::new(
+                "200 OK",
+                Some("application/vnd.example.openapi+json"),
+                OPENAPI_30_DOCUMENT,
+            ),
+            OpenApiFixtureMode::Stable31Text => {
+                FixtureResponse::new("200 OK", Some("text/plain"), OPENAPI_31_DOCUMENT)
+            },
+            OpenApiFixtureMode::ReorderedReplay if hit > 0 => FixtureResponse::new(
+                "200 OK",
+                Some("application/json"),
+                r#"{"paths":{"/items":{"get":{"responses":{"200":{"description":"ok"}}}}},"info":{"version":"1","title":"fixture"},"openapi":"3.0.3"}"#,
+            ),
+            OpenApiFixtureMode::ReorderedReplay => {
+                FixtureResponse::new("200 OK", Some("application/json"), OPENAPI_30_DOCUMENT)
+            },
+            OpenApiFixtureMode::SemanticMismatch if hit > 0 => {
+                FixtureResponse::new("200 OK", Some("application/json"), OPENAPI_31_DOCUMENT)
+            },
+            OpenApiFixtureMode::SemanticMismatch => {
+                FixtureResponse::new("200 OK", Some("application/json"), OPENAPI_30_DOCUMENT)
+            },
+            OpenApiFixtureMode::Malformed => {
+                FixtureResponse::new("200 OK", Some("application/json"), "{")
+            },
+            OpenApiFixtureMode::GenericJson => {
+                FixtureResponse::new("200 OK", Some("application/json"), r#"{"ok":true}"#)
+            },
+            OpenApiFixtureMode::Html => FixtureResponse::html("not a contract"),
+            OpenApiFixtureMode::Yaml => FixtureResponse::new(
+                "200 OK",
+                Some("application/yaml"),
+                "openapi: 3.1.0\npaths: {}\n",
+            ),
+            OpenApiFixtureMode::UnsupportedVersion => FixtureResponse::new(
+                "200 OK",
+                Some("application/json"),
+                r#"{"openapi":"4.0.0","info":{"title":"fixture","version":"1"},"paths":{}}"#,
+            ),
+            OpenApiFixtureMode::NotFound => FixtureResponse::new(
+                "404 Not Found",
+                Some("application/json"),
+                OPENAPI_30_DOCUMENT,
+            ),
+            OpenApiFixtureMode::ServerError => FixtureResponse::new(
+                "500 Internal Server Error",
+                Some("application/json"),
+                OPENAPI_30_DOCUMENT,
+            ),
+            OpenApiFixtureMode::Redirect => FixtureResponse::new(
+                "302 Found",
+                Some("text/plain"),
+                "redirect disabled",
+            )
+            .with_header("Location", "https://elsewhere.invalid/openapi.json"),
+            OpenApiFixtureMode::RateLimited => {
+                FixtureResponse::new("429 Too Many Requests", Some("text/plain"), "slow down")
+            },
+            OpenApiFixtureMode::RateLimitAdvertised => FixtureResponse::new(
+                "200 OK",
+                Some("application/json"),
+                OPENAPI_30_DOCUMENT,
+            )
+            .with_header("RateLimit-Limit", "10"),
+            OpenApiFixtureMode::Challenge => FixtureResponse::new(
+                "403 Forbidden",
+                Some("text/html"),
+                "checking your browser before accessing this site",
+            ),
+        };
+        FixtureReply::Response(response)
+    })
+    .await;
+    let mut builder = WebAssessmentRuntime::builder(server.url("/"));
+    if enabled {
+        builder = builder.enable_openapi_review();
+    }
+    let mut runtime = builder.build().unwrap();
+    let report = runtime.analyze().await.unwrap();
+    let requests = server.requests().await;
+    (report, requests)
+}
+
+#[cfg(feature = "openapi-review")]
+fn openapi_requests(requests: &[RecordedRequest]) -> Vec<&RecordedRequest> {
+    requests
+        .iter()
+        .filter(|request| request.path() == "/openapi.json")
+        .collect()
+}
+
+#[cfg(feature = "openapi-review")]
+#[tokio::test]
+async fn openapi_review_stable_json_and_text_are_two_anonymous_bodyless_gets() {
+    for mode in [
+        OpenApiFixtureMode::Stable30,
+        OpenApiFixtureMode::StableJsonSuffix,
+        OpenApiFixtureMode::Stable31Text,
+    ] {
+        let (report, requests) = run_openapi_fixture(mode, true).await;
+        assert_report_reconciles(&report);
+        let openapi = openapi_requests(&requests);
+        assert_eq!(openapi.len(), 2);
+        assert_eq!(report.usage().total_requests(), 3);
+        assert_eq!(report.usage().active_verifications(), 1);
+        for request in openapi {
+            assert_eq!(request.method, "GET");
+            assert!(request.body().is_empty());
+            assert_eq!(
+                request.headers.get("accept").map(String::as_str),
+                Some("application/vnd.oai.openapi+json, application/json, application/yaml, application/x-yaml, text/yaml, text/plain")
+            );
+            assert!(!request.headers.contains_key("authorization"));
+            assert!(!request.headers.contains_key("cookie"));
+        }
+        let item = report
+            .assessment_items()
+            .iter()
+            .find(|item| item.capability_id() == "api.openapi-contract-observed@1")
+            .unwrap();
+        assert_eq!(item.disposition(), AssessmentDisposition::Informational);
+        assert!(matches!(item.basis(), AssessmentBasis::Observation(_)));
+        let audit = report.openapi_review_audit().unwrap();
+        assert_eq!(audit.request_count(), 2);
+        assert_eq!(audit.active_verification_count(), 1);
+        assert!(audit.replay_matched());
+        assert!(audit.item_projected());
+        let debug = format!("{audit:?}");
+        assert!(!debug.contains("/items"));
+        assert!(!debug.contains("example.test"));
+    }
+}
+
+#[cfg(feature = "openapi-review")]
+#[tokio::test]
+async fn openapi_review_matches_reordered_semantics_and_rejects_mismatch() {
+    let (matched, _) = run_openapi_fixture(OpenApiFixtureMode::ReorderedReplay, true).await;
+    assert!(matched
+        .assessment_items()
+        .iter()
+        .any(|item| item.capability_id() == "api.openapi-contract-observed@1"));
+    let (mismatch, _) = run_openapi_fixture(OpenApiFixtureMode::SemanticMismatch, true).await;
+    assert!(!mismatch
+        .assessment_items()
+        .iter()
+        .any(|item| item.capability_id() == "api.openapi-contract-observed@1"));
+    assert_eq!(
+        mismatch.openapi_review_audit().unwrap().outcome(),
+        OpenApiRuntimeOutcome::ReplayMismatch
+    );
+}
+
+#[cfg(feature = "openapi-review")]
+#[tokio::test]
+async fn openapi_review_fails_closed_for_unsupported_or_defensive_responses() {
+    for mode in [
+        OpenApiFixtureMode::Malformed,
+        OpenApiFixtureMode::GenericJson,
+        OpenApiFixtureMode::Html,
+        OpenApiFixtureMode::Yaml,
+        OpenApiFixtureMode::UnsupportedVersion,
+        OpenApiFixtureMode::NotFound,
+        OpenApiFixtureMode::ServerError,
+        OpenApiFixtureMode::Redirect,
+        OpenApiFixtureMode::RateLimited,
+        OpenApiFixtureMode::RateLimitAdvertised,
+        OpenApiFixtureMode::Challenge,
+    ] {
+        let (report, requests) = run_openapi_fixture(mode, true).await;
+        assert!(!report
+            .assessment_items()
+            .iter()
+            .any(|item| item.capability_id() == "api.openapi-contract-observed@1"));
+        assert_eq!(openapi_requests(&requests).len(), 1);
+        assert!(report.openapi_review_audit().is_some());
+    }
+}
+
+#[cfg(feature = "openapi-review")]
+#[tokio::test]
+async fn openapi_review_flag_off_dispatches_no_document_request() {
+    let (report, requests) = run_openapi_fixture(OpenApiFixtureMode::Stable30, false).await;
+    assert!(openapi_requests(&requests).is_empty());
+    assert!(report.openapi_review_audit().is_none());
+    assert!(!report
+        .assessment_items()
+        .iter()
+        .any(|item| item.capability_id() == "api.openapi-contract-observed@1"));
+}
+
+#[cfg(feature = "openapi-review")]
+#[tokio::test]
+async fn openapi_review_reuses_one_committed_root_discovery_candidate_for_replay() {
+    let server = serve(|request| {
+        let response = match request.path() {
+            "/" => FixtureResponse::new(
+                "200 OK",
+                Some("text/html"),
+                r#"<html><body><a href="/swagger.json">API contract</a></body></html>"#,
+            ),
+            "/swagger.json" => {
+                FixtureResponse::new("200 OK", Some("application/json"), OPENAPI_30_DOCUMENT)
+            },
+            "/openapi.json" => FixtureResponse::new(
+                "404 Not Found",
+                Some("application/json"),
+                r#"{"error":"fallback must not be selected"}"#,
+            ),
+            _ => FixtureResponse::new("404 Not Found", Some("text/plain"), "not found"),
+        };
+        FixtureReply::Response(response)
+    })
+    .await;
+
+    let mut runtime = WebAssessmentRuntime::builder(server.url("/"))
+        .enable_openapi_review()
+        .build()
+        .unwrap();
+    let report = runtime.analyze().await.unwrap();
+    assert_report_reconciles(&report);
+
+    let requests = server.requests().await;
+    let review_requests = requests
+        .iter()
+        .filter(|request| {
+            request.headers.get("accept").map(String::as_str)
+                == Some("application/vnd.oai.openapi+json, application/json, application/yaml, application/x-yaml, text/yaml, text/plain")
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(review_requests.len(), 2);
+    assert!(review_requests
+        .iter()
+        .all(|request| request.path() == "/swagger.json"));
+    assert!(!requests
+        .iter()
+        .any(|request| request.path() == "/openapi.json"));
+    assert_eq!(
+        report.openapi_review_audit().unwrap().candidate_source(),
+        OpenApiCandidateSource::DiscoveredSwaggerJson
+    );
+    assert!(report
+        .assessment_items()
+        .iter()
+        .any(|item| item.capability_id() == "api.openapi-contract-observed@1"));
+}
+
+#[cfg(feature = "openapi-review")]
+#[tokio::test]
+async fn openapi_review_budget_stop_preserves_the_dispatched_candidate() {
+    let server = serve(|request| {
+        FixtureReply::Response(if request.path() == "/openapi.json" {
+            FixtureResponse::new("200 OK", Some("application/json"), OPENAPI_30_DOCUMENT)
+        } else {
+            FixtureResponse::html("fixture root")
+        })
+    })
+    .await;
+    let limits = WebAssessmentLimits::default()
+        .with_max_total_requests(2)
+        .unwrap();
+    let mut runtime = WebAssessmentRuntime::builder(server.url("/"))
+        .limits(limits)
+        .enable_openapi_review()
+        .build()
+        .unwrap();
+    let report = runtime.analyze().await.unwrap();
+
+    let audit = report.openapi_review_audit().unwrap();
+    assert_eq!(audit.outcome(), OpenApiRuntimeOutcome::BudgetExhausted);
+    assert_eq!(audit.request_count(), 1);
+    assert!(!audit.item_projected());
+    assert_eq!(server.hit_count("/openapi.json").await, 1);
+    assert_eq!(report.usage().total_requests(), 2);
+    assert!(report
+        .completion()
+        .reasons()
+        .contains(&WebAssessmentIncompleteReason::TotalRequestLimit));
+    assert!(report
+        .completion()
+        .reasons()
+        .contains(&WebAssessmentIncompleteReason::OpenApiReviewIncomplete));
+}
+
+#[cfg(feature = "openapi-review")]
+#[tokio::test]
+async fn openapi_review_stalled_candidate_honors_shared_cancellation() {
+    let openapi_started = Arc::new(Notify::new());
+    let observed = Arc::clone(&openapi_started);
+    let server = serve(move |request| {
+        if request.path() == "/openapi.json" {
+            observed.notify_one();
+            FixtureReply::Stall
+        } else {
+            FixtureReply::Response(FixtureResponse::html("fixture root"))
+        }
+    })
+    .await;
+    let cancellation = CancellationToken::new();
+    let cancel = cancellation.clone();
+    let canceller = tokio::spawn(async move {
+        openapi_started.notified().await;
+        cancel.cancel();
+    });
+    let mut runtime = WebAssessmentRuntime::builder(server.url("/"))
+        .cancellation_token(cancellation)
+        .enable_openapi_review()
+        .build()
+        .unwrap();
+    let report = runtime.analyze().await.unwrap();
+    canceller.await.unwrap();
+
+    let audit = report.openapi_review_audit().unwrap();
+    assert_eq!(audit.outcome(), OpenApiRuntimeOutcome::Cancelled);
+    assert_eq!(audit.request_count(), 1);
+    assert!(!audit.item_projected());
+    assert_eq!(server.hit_count("/openapi.json").await, 1);
+    assert_eq!(report.usage().active_verifications(), 0);
+    assert!(report
+        .completion()
+        .reasons()
+        .contains(&WebAssessmentIncompleteReason::HostCancellation));
+    assert!(report
+        .completion()
+        .reasons()
+        .contains(&WebAssessmentIncompleteReason::OpenApiReviewIncomplete));
 }
 
 #[cfg(feature = "graphql-review")]

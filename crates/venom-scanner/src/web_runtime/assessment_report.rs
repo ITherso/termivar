@@ -21,6 +21,11 @@ use venom_core::{
     RunStepStatus, RunStopCode, RunStopReason,
 };
 
+#[cfg(feature = "openapi-review")]
+use super::openapi_runtime::{
+    OpenApiRuntimeOutcome, WebAssessmentOpenApiAudit, MAX_OPENAPI_REVIEW_REQUESTS,
+    OPENAPI_REVIEW_CAPABILITY_ID,
+};
 #[cfg(feature = "authorization-review")]
 use super::resource_authorization_runtime::{
     WebAssessmentAuthorizationAudit, MAX_AUTHORIZATION_REVIEW_REQUESTS,
@@ -166,6 +171,8 @@ pub struct AssessmentRunReport {
     items: Vec<AssessmentItem>,
     #[cfg(feature = "authorization-review")]
     authorization_review: Option<WebAssessmentAuthorizationAudit>,
+    #[cfg(feature = "openapi-review")]
+    openapi_review: Option<WebAssessmentOpenApiAudit>,
 }
 
 impl AssessmentRunReport {
@@ -177,6 +184,7 @@ impl AssessmentRunReport {
         #[cfg(feature = "authorization-review")] authorization_review: Option<
             WebAssessmentAuthorizationAudit,
         >,
+        #[cfg(feature = "openapi-review")] openapi_review: Option<WebAssessmentOpenApiAudit>,
     ) -> Result<Self, AssessmentRunReportError> {
         let run_report = build_run_report(&truth)?;
         Self::new_validated(
@@ -185,6 +193,8 @@ impl AssessmentRunReport {
             truth,
             #[cfg(feature = "authorization-review")]
             authorization_review,
+            #[cfg(feature = "openapi-review")]
+            openapi_review,
         )
     }
 
@@ -200,6 +210,8 @@ impl AssessmentRunReport {
             truth,
             #[cfg(feature = "authorization-review")]
             None,
+            #[cfg(feature = "openapi-review")]
+            None,
         )
     }
 
@@ -210,6 +222,7 @@ impl AssessmentRunReport {
         #[cfg(feature = "authorization-review")] authorization_review: Option<
             WebAssessmentAuthorizationAudit,
         >,
+        #[cfg(feature = "openapi-review")] openapi_review: Option<WebAssessmentOpenApiAudit>,
     ) -> Result<Self, AssessmentRunReportError> {
         validate_run_identity(&run_report, truth.target_identity)?;
         validate_run_completion(&run_report)?;
@@ -229,6 +242,8 @@ impl AssessmentRunReport {
         validate_and_canonicalize_items(truth.profile.profile(), &mut items)?;
         #[cfg(feature = "authorization-review")]
         validate_authorization_audit(authorization_review.as_ref(), &items)?;
+        #[cfg(feature = "openapi-review")]
+        validate_openapi_audit(openapi_review.as_ref(), &items)?;
 
         Ok(Self {
             run_report,
@@ -237,6 +252,8 @@ impl AssessmentRunReport {
             items,
             #[cfg(feature = "authorization-review")]
             authorization_review,
+            #[cfg(feature = "openapi-review")]
+            openapi_review,
         })
     }
 
@@ -274,6 +291,39 @@ impl AssessmentRunReport {
     pub const fn authorization_review_audit(&self) -> Option<&WebAssessmentAuthorizationAudit> {
         self.authorization_review.as_ref()
     }
+    #[cfg(feature = "openapi-review")]
+    pub const fn openapi_review_audit(&self) -> Option<&WebAssessmentOpenApiAudit> {
+        self.openapi_review.as_ref()
+    }
+}
+
+#[cfg(feature = "openapi-review")]
+fn validate_openapi_audit(
+    audit: Option<&WebAssessmentOpenApiAudit>,
+    items: &[AssessmentItem],
+) -> Result<(), AssessmentRunReportError> {
+    let projected = items
+        .iter()
+        .filter(|item| item.capability_id() == OPENAPI_REVIEW_CAPABILITY_ID)
+        .count();
+    if projected > 1 {
+        return Err(AssessmentRunReportError::OpenApiAuditMismatch);
+    }
+    let Some(audit) = audit else {
+        return if projected == 0 {
+            Ok(())
+        } else {
+            Err(AssessmentRunReportError::OpenApiAuditMismatch)
+        };
+    };
+    if usize::from(audit.request_count()) > MAX_OPENAPI_REVIEW_REQUESTS
+        || audit.active_verification_count() > 1
+        || audit.item_projected() != (projected == 1)
+        || (audit.outcome() == OpenApiRuntimeOutcome::DocumentObserved) != (projected == 1)
+    {
+        return Err(AssessmentRunReportError::OpenApiAuditMismatch);
+    }
+    Ok(())
 }
 
 impl fmt::Debug for AssessmentRunReport {
@@ -394,6 +444,10 @@ pub enum AssessmentRunReportError {
     #[cfg(feature = "authorization-review")]
     #[error("authorization review audit does not match projected item truth")]
     AuthorizationAuditMismatch,
+    /// The optional OpenAPI audit disagreed with projected item truth.
+    #[cfg(feature = "openapi-review")]
+    #[error("OpenAPI review audit does not match projected item truth")]
+    OpenApiAuditMismatch,
 }
 
 fn build_run_report(
@@ -594,6 +648,8 @@ fn validate_completed_assessment_truth_with_active_limit(
         #[cfg(feature = "graphql-review")]
         let allowance = allowance.saturating_add(1);
         #[cfg(feature = "authorization-review")]
+        let allowance = allowance.saturating_add(1);
+        #[cfg(feature = "openapi-review")]
         let allowance = allowance.saturating_add(1);
         allowance
     };
@@ -1091,7 +1147,11 @@ mod tests {
         );
     }
 
-    #[cfg(all(feature = "graphql-review", feature = "authorization-review"))]
+    #[cfg(all(
+        feature = "graphql-review",
+        feature = "authorization-review",
+        feature = "openapi-review"
+    ))]
     #[test]
     fn independently_enabled_optional_children_have_an_exact_additive_active_allowance() {
         let runtime =
@@ -1100,9 +1160,9 @@ mod tests {
                 .unwrap();
         let root = runtime.authorized_root();
         let limits = WebAssessmentLimits::default();
-        let expected = limits.max_active_verifications().checked_add(2).unwrap();
+        let expected = limits.max_active_verifications().checked_add(3).unwrap();
         let usage = AssessmentUsageTruth {
-            active_verifications: 2,
+            active_verifications: 3,
             ..usage_truth(root.url().as_str())
         };
         let profile = ScanProfileV1::web_review().unwrap();
@@ -1110,7 +1170,7 @@ mod tests {
         assert_eq!(
             validate_completed_assessment_truth_with_active_limit(
                 root,
-                AssessmentRuntimeLimits::new(limits, expected, 2),
+                AssessmentRuntimeLimits::new(limits, expected, 3),
                 usage,
                 &WebAssessmentCompletion::Complete,
                 WebAssessmentDefenseMode::ObservationOnly,
@@ -1121,7 +1181,7 @@ mod tests {
         assert_eq!(
             validate_completed_assessment_truth_with_active_limit(
                 root,
-                AssessmentRuntimeLimits::new(limits, expected - 1, 2),
+                AssessmentRuntimeLimits::new(limits, expected - 1, 3),
                 usage,
                 &WebAssessmentCompletion::Complete,
                 WebAssessmentDefenseMode::ObservationOnly,
@@ -1132,7 +1192,7 @@ mod tests {
         assert_eq!(
             validate_completed_assessment_truth_with_active_limit(
                 root,
-                AssessmentRuntimeLimits::new(limits, expected + 1, 3),
+                AssessmentRuntimeLimits::new(limits, expected + 1, 4),
                 usage,
                 &WebAssessmentCompletion::Complete,
                 WebAssessmentDefenseMode::ObservationOnly,

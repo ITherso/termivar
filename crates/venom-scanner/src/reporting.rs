@@ -5,6 +5,8 @@ use crate::web_runtime::{
     AssessmentBasis, AssessmentRunReport, AssessmentRunReportError, ScanProfileV1,
     WebAssessmentRunReport,
 };
+#[cfg(all(feature = "scanning", feature = "openapi-review"))]
+use crate::web_runtime::{OpenApiRuntimeOutcome, OPENAPI_REVIEW_CAPABILITY_ID};
 #[cfg(all(feature = "scanning", feature = "authorization-review"))]
 use crate::{
     authorization_review::{
@@ -869,6 +871,54 @@ fn render_assessment_csv(
             ],
         )?;
     }
+    #[cfg(feature = "openapi-review")]
+    if let Some(audit) = &document.openapi_review {
+        let request_count = audit.request_count.to_string();
+        let summary = audit.summary();
+        write_assessment_csv_row(
+            &mut output,
+            [
+                "openapi_review_audit",
+                audit.schema,
+                "",
+                "",
+                "",
+                "",
+                audit.outcome,
+                "",
+                "",
+                "",
+                audit.capability_id,
+                "",
+                "",
+                if audit.item_projected {
+                    "informational"
+                } else {
+                    ""
+                },
+                if audit.item_projected {
+                    "observation"
+                } else {
+                    ""
+                },
+                "",
+                "",
+                "",
+                &request_count,
+                &summary,
+                "api-surface",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+            ],
+        )?;
+    }
     for item in &document.items {
         let confidence_ppm = item.confidence_ppm.to_string();
         let evidence_count = item.evidence_count.to_string();
@@ -967,6 +1017,18 @@ code{overflow-wrap:anywhere}.empty{font-style:italic}</style></head><body><main>
         }
         output.push_str("</dl></section>")?;
     }
+    #[cfg(feature = "openapi-review")]
+    if let Some(audit) = &document.openapi_review {
+        output.push_str("<section><h2>OpenAPI review audit</h2><dl class=\"meta\">")?;
+        for (label, value) in audit.metadata() {
+            output.push_str("<dt>")?;
+            write_html_text(&mut output, label)?;
+            output.push_str("</dt><dd><code>")?;
+            write_html_text(&mut output, &value)?;
+            output.push_str("</code></dd>")?;
+        }
+        output.push_str("</dl></section>")?;
+    }
     output.push_str("<section><h2>Assessment items</h2>")?;
     if document.items.is_empty() {
         output.push_str("<p class=\"empty\">No assessment items.</p>")?;
@@ -1038,6 +1100,15 @@ fn render_assessment_markdown(
             output.push_char('\n')?;
         }
     }
+    #[cfg(feature = "openapi-review")]
+    if let Some(audit) = &document.openapi_review {
+        output.push_str("\n## OpenAPI review audit\n\n")?;
+        for (label, value) in audit.metadata() {
+            output.push_fmt(format_args!("- {label}: "))?;
+            write_markdown_code_span(&mut output, &value)?;
+            output.push_char('\n')?;
+        }
+    }
     output.push_str("\n## Assessment items\n\n")?;
     if document.items.is_empty() {
         output.push_str("No assessment items.\n")?;
@@ -1082,6 +1153,9 @@ struct AssessmentDocument<'a> {
     #[cfg(feature = "authorization-review")]
     #[serde(skip_serializing_if = "Option::is_none")]
     authorization_review: Option<AssessmentAuthorizationAuditDocument>,
+    #[cfg(feature = "openapi-review")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    openapi_review: Option<AssessmentOpenApiAuditDocument>,
     items: Vec<AssessmentItemDocument<'a>>,
 }
 
@@ -1103,6 +1177,10 @@ impl<'a> AssessmentDocument<'a> {
             authorization_review: report
                 .authorization_review_audit()
                 .map(AssessmentAuthorizationAuditDocument::from_audit),
+            #[cfg(feature = "openapi-review")]
+            openapi_review: report
+                .openapi_review_audit()
+                .map(AssessmentOpenApiAuditDocument::from_audit),
             items: report
                 .items()
                 .iter()
@@ -1135,10 +1213,121 @@ impl<'a> AssessmentDocument<'a> {
         if let Some(audit) = &self.authorization_review {
             audit.validate(&self.items)?;
         }
+        #[cfg(feature = "openapi-review")]
+        if let Some(audit) = &self.openapi_review {
+            audit.validate(&self.items)?;
+        }
         for item in &self.items {
             item.validate()?;
         }
         Ok(())
+    }
+}
+
+#[cfg(all(feature = "scanning", feature = "openapi-review"))]
+#[derive(Serialize)]
+struct AssessmentOpenApiAuditDocument {
+    schema: &'static str,
+    capability_id: &'static str,
+    outcome: &'static str,
+    candidate_source: crate::web_runtime::OpenApiCandidateSource,
+    request_count: u8,
+    active_verification_count: u8,
+    version: Option<&'static str>,
+    semantic_digest: Option<String>,
+    path_count: u32,
+    operation_count: u32,
+    get_operation_count: u32,
+    write_operation_count: u32,
+    path_parameter_count: u32,
+    query_parameter_count: u32,
+    explicit_auth_operation_count: u32,
+    anonymous_operation_count: u32,
+    url_like_operation_count: u32,
+    multipart_operation_count: u32,
+    deprecated_operation_count: u32,
+    replay_matched: bool,
+    item_projected: bool,
+}
+#[cfg(all(feature = "scanning", feature = "openapi-review"))]
+impl AssessmentOpenApiAuditDocument {
+    fn from_audit(a: &crate::web_runtime::WebAssessmentOpenApiAudit) -> Self {
+        Self {
+            schema: "security.openapi-review-audit/v1",
+            capability_id: OPENAPI_REVIEW_CAPABILITY_ID,
+            outcome: openapi_outcome(a.outcome()),
+            candidate_source: a.candidate_source(),
+            request_count: a.request_count(),
+            active_verification_count: a.active_verification_count(),
+            version: a.version(),
+            semantic_digest: a.semantic_digest().map(str::to_owned),
+            path_count: a.path_count(),
+            operation_count: a.operation_count(),
+            get_operation_count: a.get_operation_count(),
+            write_operation_count: a.write_operation_count(),
+            path_parameter_count: a.path_parameter_count(),
+            query_parameter_count: a.query_parameter_count(),
+            explicit_auth_operation_count: a.explicit_auth_operation_count(),
+            anonymous_operation_count: a.anonymous_operation_count(),
+            url_like_operation_count: a.url_like_operation_count(),
+            multipart_operation_count: a.multipart_operation_count(),
+            deprecated_operation_count: a.deprecated_operation_count(),
+            replay_matched: a.replay_matched(),
+            item_projected: a.item_projected(),
+        }
+    }
+    fn validate(&self, items: &[AssessmentItemDocument<'_>]) -> Result<(), ReportError> {
+        let count = items
+            .iter()
+            .filter(|i| i.capability_id == OPENAPI_REVIEW_CAPABILITY_ID)
+            .count();
+        if self.request_count > 2
+            || self.active_verification_count > 1
+            || count > 1
+            || self.item_projected != (count == 1)
+            || self.replay_matched != self.item_projected
+        {
+            return Err(ReportError::Serialization);
+        }
+        Ok(())
+    }
+    fn summary(&self) -> String {
+        format!("source={};version={};digest={};paths={};operations={};get={};write={};path_parameters={};query_parameters={};explicit_auth={};anonymous={};url_like={};multipart={};deprecated={};replay_matched={};item_projected={}",self.candidate_source.as_str(),self.version.unwrap_or("none"),self.semantic_digest.as_deref().unwrap_or("none"),self.path_count,self.operation_count,self.get_operation_count,self.write_operation_count,self.path_parameter_count,self.query_parameter_count,self.explicit_auth_operation_count,self.anonymous_operation_count,self.url_like_operation_count,self.multipart_operation_count,self.deprecated_operation_count,self.replay_matched,self.item_projected)
+    }
+    fn metadata(&self) -> Vec<(&'static str, String)> {
+        vec![
+            ("Audit schema", self.schema.into()),
+            ("Capability", self.capability_id.into()),
+            ("Outcome", self.outcome.into()),
+            ("Request count", self.request_count.to_string()),
+            (
+                "Active verification count",
+                self.active_verification_count.to_string(),
+            ),
+            ("Summary", self.summary()),
+        ]
+    }
+}
+#[cfg(all(feature = "scanning", feature = "openapi-review"))]
+const fn openapi_outcome(o: OpenApiRuntimeOutcome) -> &'static str {
+    match o {
+        OpenApiRuntimeOutcome::NotEligible => "not_eligible",
+        OpenApiRuntimeOutcome::DocumentObserved => "document_observed",
+        OpenApiRuntimeOutcome::Swagger20MetadataOnly => "swagger_20_metadata_only",
+        OpenApiRuntimeOutcome::UnsupportedVersion => "unsupported_version",
+        OpenApiRuntimeOutcome::ReplayMismatch => "replay_mismatch",
+        OpenApiRuntimeOutcome::UnsupportedMedia => "unsupported_media",
+        OpenApiRuntimeOutcome::Malformed => "malformed",
+        OpenApiRuntimeOutcome::LimitExceeded => "limit_exceeded",
+        OpenApiRuntimeOutcome::TooLarge => "too_large",
+        OpenApiRuntimeOutcome::RedirectObserved => "redirect_observed",
+        OpenApiRuntimeOutcome::RateLimited => "rate_limited",
+        OpenApiRuntimeOutcome::DefensiveInterference => "defensive_interference",
+        OpenApiRuntimeOutcome::HttpError => "http_error",
+        OpenApiRuntimeOutcome::Truncated => "truncated",
+        OpenApiRuntimeOutcome::Incomplete => "incomplete",
+        OpenApiRuntimeOutcome::BudgetExhausted => "budget_exhausted",
+        OpenApiRuntimeOutcome::Cancelled => "cancelled",
     }
 }
 
@@ -1968,6 +2157,8 @@ mod tests {
             item_count: 1,
             #[cfg(feature = "authorization-review")]
             authorization_review: None,
+            #[cfg(feature = "openapi-review")]
+            openapi_review: None,
             items: vec![AssessmentItemDocument {
                 schema: crate::web_runtime::ASSESSMENT_ITEM_SCHEMA,
                 capability_id: text,
@@ -2058,6 +2249,46 @@ mod tests {
             verification_stage: Some("active"),
         });
         document.item_count = 3;
+        document
+    }
+
+    #[cfg(all(feature = "scanning", feature = "openapi-review"))]
+    fn observed_openapi_assessment_document() -> AssessmentDocument<'static> {
+        let mut document = observation_assessment_document(OPENAPI_REVIEW_CAPABILITY_ID);
+        document.items[0].title = "OpenAPI contract observed";
+        document.items[0].fingerprint = "assessment-openapi-fingerprint-v1:0001";
+        document.items[0].redacted_summary =
+            "A bounded OpenAPI contract was reproduced by one anonymous GET replay.";
+        document.items[0].category = "api-surface";
+        document.items[0].remediation = AssessmentRemediationDocument {
+            id: "api.openapi-contract-review@1",
+            summary: "Confirm that publishing this OpenAPI contract matches deployment policy.",
+        };
+        document.openapi_review = Some(AssessmentOpenApiAuditDocument {
+            schema: "security.openapi-review-audit/v1",
+            capability_id: OPENAPI_REVIEW_CAPABILITY_ID,
+            outcome: openapi_outcome(OpenApiRuntimeOutcome::DocumentObserved),
+            candidate_source: crate::web_runtime::OpenApiCandidateSource::DiscoveredOpenApiJson,
+            request_count: 2,
+            active_verification_count: 1,
+            version: Some("3.1.0"),
+            semantic_digest: Some(
+                "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_owned(),
+            ),
+            path_count: 3,
+            operation_count: 5,
+            get_operation_count: 2,
+            write_operation_count: 3,
+            path_parameter_count: 1,
+            query_parameter_count: 2,
+            explicit_auth_operation_count: 3,
+            anonymous_operation_count: 2,
+            url_like_operation_count: 1,
+            multipart_operation_count: 1,
+            deprecated_operation_count: 1,
+            replay_matched: true,
+            item_projected: true,
+        });
         document
     }
 
@@ -2162,6 +2393,135 @@ mod tests {
         let markdown =
             render_assessment_with_limit(&document, ReportFormat::Markdown, usize::MAX).unwrap();
         assert!(!markdown.contains("Resource authorization review audit"));
+    }
+
+    #[cfg(all(feature = "scanning", feature = "openapi-review"))]
+    #[test]
+    fn openapi_reporting_absent_audit_adds_no_wire_field_row_or_section() {
+        let document = complete_assessment_document();
+        assert!(document.openapi_review.is_none());
+
+        let json = render_assessment_with_limit(&document, ReportFormat::Json, usize::MAX).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert!(parsed.get("openapi_review").is_none());
+
+        let csv = render_assessment_with_limit(&document, ReportFormat::Csv, usize::MAX).unwrap();
+        assert!(!csv.contains("openapi_review_audit"));
+
+        let html = render_assessment_with_limit(&document, ReportFormat::Html, usize::MAX).unwrap();
+        assert!(!html.contains("OpenAPI review audit"));
+
+        let markdown =
+            render_assessment_with_limit(&document, ReportFormat::Markdown, usize::MAX).unwrap();
+        assert!(!markdown.contains("OpenAPI review audit"));
+    }
+
+    #[cfg(all(feature = "scanning", feature = "openapi-review"))]
+    #[test]
+    fn openapi_reporting_positive_audit_is_minimized_and_redacted_in_every_format() {
+        let document = observed_openapi_assessment_document();
+        let json = render_assessment_with_limit(&document, ReportFormat::Json, usize::MAX).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let audit = parsed["openapi_review"].as_object().unwrap();
+        assert_eq!(audit["outcome"], "document_observed");
+        assert_eq!(audit["request_count"], 2);
+        assert_eq!(audit["active_verification_count"], 1);
+        assert_eq!(audit["item_projected"], true);
+        let audit_keys = audit
+            .keys()
+            .map(String::as_str)
+            .collect::<std::collections::BTreeSet<_>>();
+        let expected_audit_keys = [
+            "schema",
+            "capability_id",
+            "outcome",
+            "candidate_source",
+            "request_count",
+            "active_verification_count",
+            "version",
+            "semantic_digest",
+            "path_count",
+            "operation_count",
+            "get_operation_count",
+            "write_operation_count",
+            "path_parameter_count",
+            "query_parameter_count",
+            "explicit_auth_operation_count",
+            "anonymous_operation_count",
+            "url_like_operation_count",
+            "multipart_operation_count",
+            "deprecated_operation_count",
+            "replay_matched",
+            "item_projected",
+        ]
+        .into_iter()
+        .collect();
+        assert_eq!(audit_keys, expected_audit_keys);
+        for forbidden_key in [
+            "document",
+            "raw_document",
+            "server",
+            "servers",
+            "example",
+            "examples",
+            "request",
+            "response",
+            "headers",
+            "cookies",
+            "authorization",
+        ] {
+            assert!(!audit.contains_key(forbidden_key));
+        }
+
+        for format in ReportGenerator::available_formats() {
+            let rendered = render_assessment_with_limit(&document, *format, usize::MAX).unwrap();
+            assert!(rendered.contains(OPENAPI_REVIEW_CAPABILITY_ID));
+            assert!(rendered.contains("document_observed"));
+            for sentinel in [
+                "RAW-OPENAPI-DOCUMENT-MUST-NOT-LEAK-4E5A91",
+                "https://private-openapi-server.example.test/secret",
+                "OPENAPI-EXAMPLE-VALUE-MUST-NOT-LEAK-13C8D7",
+                "Bearer OPENAPI-AUTH-MUST-NOT-LEAK-98A02F",
+                "session=OPENAPI-COOKIE-MUST-NOT-LEAK-79BD10",
+            ] {
+                assert!(!rendered.contains(sentinel), "{format:?} leaked {sentinel}");
+            }
+        }
+    }
+
+    #[cfg(all(feature = "scanning", feature = "openapi-review"))]
+    #[test]
+    fn openapi_reporting_outcome_tokens_are_exhaustive_and_stable() {
+        for (outcome, token) in [
+            (OpenApiRuntimeOutcome::NotEligible, "not_eligible"),
+            (OpenApiRuntimeOutcome::DocumentObserved, "document_observed"),
+            (
+                OpenApiRuntimeOutcome::Swagger20MetadataOnly,
+                "swagger_20_metadata_only",
+            ),
+            (
+                OpenApiRuntimeOutcome::UnsupportedVersion,
+                "unsupported_version",
+            ),
+            (OpenApiRuntimeOutcome::ReplayMismatch, "replay_mismatch"),
+            (OpenApiRuntimeOutcome::UnsupportedMedia, "unsupported_media"),
+            (OpenApiRuntimeOutcome::Malformed, "malformed"),
+            (OpenApiRuntimeOutcome::LimitExceeded, "limit_exceeded"),
+            (OpenApiRuntimeOutcome::TooLarge, "too_large"),
+            (OpenApiRuntimeOutcome::RedirectObserved, "redirect_observed"),
+            (OpenApiRuntimeOutcome::RateLimited, "rate_limited"),
+            (
+                OpenApiRuntimeOutcome::DefensiveInterference,
+                "defensive_interference",
+            ),
+            (OpenApiRuntimeOutcome::HttpError, "http_error"),
+            (OpenApiRuntimeOutcome::Truncated, "truncated"),
+            (OpenApiRuntimeOutcome::Incomplete, "incomplete"),
+            (OpenApiRuntimeOutcome::BudgetExhausted, "budget_exhausted"),
+            (OpenApiRuntimeOutcome::Cancelled, "cancelled"),
+        ] {
+            assert_eq!(openapi_outcome(outcome), token);
+        }
     }
 
     #[cfg(feature = "scanning")]

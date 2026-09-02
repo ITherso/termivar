@@ -101,7 +101,7 @@ impl AssessmentDefenseSignal {
         }
     }
 
-    #[cfg(any(test, feature = "authorization-review"))]
+    #[cfg(any(test, feature = "authorization-review", feature = "openapi-review"))]
     pub(crate) fn state(&self) -> &DefenseState {
         &self.state
     }
@@ -371,6 +371,7 @@ impl CommittedAssessmentDefenseLedger {
         if require_projection
             && parsed.is_none()
             && !authorization_no_response_terminal_receipt(receipt)?
+            && !openapi_no_response_terminal_receipt(receipt)?
         {
             return Err(());
         }
@@ -704,6 +705,10 @@ const fn native_interaction_class(kind: NativeWebReviewActionKind) -> DefenseInt
         },
         #[cfg(feature = "authorization-review")]
         NativeWebReviewActionKind::ResourceAuthorizationDifferential => {
+            DefenseInteractionClass::DifferentialRead
+        },
+        #[cfg(feature = "openapi-review")]
+        NativeWebReviewActionKind::OpenApiDocumentReplay => {
             DefenseInteractionClass::DifferentialRead
         },
     }
@@ -1061,7 +1066,7 @@ impl BaseEvidence {
     }
 }
 
-#[cfg(feature = "authorization-review")]
+#[cfg(any(feature = "authorization-review", feature = "openapi-review"))]
 fn unique_direct_before<'a>(
     receipt: &'a DecisionEvidenceReceipt,
     first_defense: usize,
@@ -1125,6 +1130,35 @@ fn authorization_no_response_terminal_receipt(
         "phase-terminal",
     )?;
     Ok(item.value() == &EvidenceValue::Boolean(true))
+}
+
+#[cfg(feature = "openapi-review")]
+fn openapi_no_response_terminal_receipt(receipt: &DecisionEvidenceReceipt) -> Result<bool, ()> {
+    if receipt.case().action_id() != super::openapi_runtime::OPENAPI_REVIEW_ACTION_ID {
+        return Ok(false);
+    }
+    if receipt.executor_id() != "http.openapi-review"
+        || receipt
+            .evidence()
+            .iter()
+            .any(|item| item.predicate().namespace() == ASSESSMENT_DEFENSE_NAMESPACE)
+    {
+        return Err(());
+    }
+    let predicate = crate::web_actions::openapi_review_phase_terminal_predicate();
+    let item = unique_direct_before(
+        receipt,
+        receipt.evidence().len(),
+        &predicate,
+        EvidenceKind::Custom("openapi-review".to_owned()),
+        "phase-terminal",
+    )?;
+    Ok(item.value() == &EvidenceValue::Boolean(true))
+}
+
+#[cfg(not(feature = "openapi-review"))]
+fn openapi_no_response_terminal_receipt(_receipt: &DecisionEvidenceReceipt) -> Result<bool, ()> {
+    Ok(false)
 }
 
 #[cfg(not(feature = "authorization-review"))]

@@ -67,6 +67,7 @@ const CLI_SCAN_FIELDS: &[&str] = &[
     "format",
     "graphql_review",
     "normalization_resilience",
+    "openapi_review",
     "profile",
     "report_format",
     "report_output",
@@ -626,6 +627,7 @@ fn inspect_cli_auth_surface(source: &str) -> Result<Vec<String>, syn::Error> {
         ("enforce_defense", "bool", None),
         ("graphql_review", "bool", None),
         ("normalization_resilience", "bool", None),
+        ("openapi_review", "bool", None),
         ("authorization_review_policy", "Option", Some("PathBuf")),
         ("authz_primary_env", "Option", Some("OsString")),
         ("authz_primary_file", "Option", Some("PathBuf")),
@@ -747,6 +749,16 @@ fn inspect_cli_auth_surface(source: &str) -> Result<Vec<String>, syn::Error> {
                 "CLI `{name}` must remain absent outside the exact non-default authorization-review feature"
             ));
         }
+    }
+    if fields.get("openapi_review").is_none_or(|field| {
+        !is_plain_type(&field.ty, "bool")
+            || !exact_cfg_feature_attribute(&field.attrs, "openapi-review")
+            || !exact_arg_attribute(&field.attrs, "long,requires=\"profile\"")
+    }) {
+        violations.push(
+            "CLI `openapi_review` must remain an exact cfg-gated bool requiring the explicit scan profile"
+                .to_owned(),
+        );
     }
 
     for type_name in ["Cli", "Commands", "DeterministicScanInvocation"] {
@@ -1598,6 +1610,11 @@ mod tests {
                 "        auth_stdin: bool,",
                 "        auth_stdin: bool,\n        credential: String,",
                 "field inventory and types must remain exact",
+            ),
+            (
+                "        #[cfg(feature = \"openapi-review\")]\n        #[arg(long, requires = \"profile\")]\n        openapi_review: bool,",
+                "        #[arg(long, requires = \"profile\")]\n        openapi_review: bool,",
+                "must remain an exact cfg-gated bool",
             ),
             (
                 "conflicts_with_all = [\"auth_file\", \"auth_stdin\"]",

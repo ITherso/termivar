@@ -58,10 +58,19 @@ pub(crate) const NATIVE_WEB_REVIEW_PASSIVE_RULE_COUNT: usize =
         1
     } else {
         0
+    } + if cfg!(feature = "openapi-review") {
+        2
+    } else {
+        0
     };
 #[cfg(test)]
 pub(crate) const NATIVE_WEB_REVIEW_ACTIVE_RULE_COUNT: usize = NATIVE_WEB_REVIEW_ACTION_COUNT
     + if cfg!(feature = "authorization-review") {
+        1
+    } else {
+        0
+    }
+    + if cfg!(feature = "openapi-review") {
         1
     } else {
         0
@@ -159,6 +168,13 @@ impl NativeWebReviewDecisionProfile {
                     VerificationStage::Active,
                 )?);
             }
+            #[cfg(feature = "openapi-review")]
+            if kind == NativeWebReviewActionKind::OpenApiDocumentReplay {
+                active_rules.push(build_openapi_terminal_rule(
+                    kind,
+                    VerificationStage::Active,
+                )?);
+            }
             active_rules.push(build_active_rule(kind)?);
         }
         #[cfg(feature = "authorization-review")]
@@ -170,6 +186,18 @@ impl NativeWebReviewDecisionProfile {
             .collect::<Result<Vec<_>, _>>()?;
         #[cfg(not(feature = "authorization-review"))]
         let passive_rules = Vec::new();
+        #[cfg(feature = "openapi-review")]
+        let mut passive_rules = passive_rules;
+        #[cfg(feature = "openapi-review")]
+        if enabled_actions.contains(&NativeWebReviewActionKind::OpenApiDocumentReplay) {
+            passive_rules.push(build_openapi_terminal_rule(
+                NativeWebReviewActionKind::OpenApiDocumentReplay,
+                VerificationStage::Passive,
+            )?);
+            passive_rules.push(build_openapi_passive_progress_rule(
+                NativeWebReviewActionKind::OpenApiDocumentReplay,
+            )?);
+        }
         debug_assert_eq!(actions.len(), enabled_actions.len());
         #[cfg(feature = "authorization-review")]
         let authorization_count = usize::from(
@@ -177,10 +205,19 @@ impl NativeWebReviewDecisionProfile {
         );
         #[cfg(not(feature = "authorization-review"))]
         let authorization_count = 0;
-        debug_assert_eq!(passive_rules.len(), authorization_count);
+        #[cfg(feature = "openapi-review")]
+        let openapi_count = usize::from(
+            enabled_actions.contains(&NativeWebReviewActionKind::OpenApiDocumentReplay),
+        );
+        #[cfg(not(feature = "openapi-review"))]
+        let openapi_count = 0;
+        debug_assert_eq!(
+            passive_rules.len(),
+            authorization_count + (2 * openapi_count)
+        );
         debug_assert_eq!(
             active_rules.len(),
-            enabled_actions.len() + authorization_count
+            enabled_actions.len() + authorization_count + openapi_count
         );
         Ok(Self {
             reasoning_rule: (!enabled_actions.is_empty())
@@ -308,6 +345,10 @@ fn build_action(
     if kind == NativeWebReviewActionKind::ResourceAuthorizationDifferential {
         return Ok(action);
     }
+    #[cfg(feature = "openapi-review")]
+    if kind == NativeWebReviewActionKind::OpenApiDocumentReplay {
+        return Ok(action);
+    }
     Ok(action.with_payload_strategy(payload_strategy_ref(kind)?))
 }
 
@@ -356,6 +397,10 @@ fn payload_strategy_ref(
         NativeWebReviewActionKind::ResourceAuthorizationDifferential => {
             return Err(PayloadStrategyError::DerivationFailed);
         },
+        #[cfg(feature = "openapi-review")]
+        NativeWebReviewActionKind::OpenApiDocumentReplay => {
+            return Err(PayloadStrategyError::DerivationFailed);
+        },
     };
     PayloadStrategyRef::new(id, revision)
 }
@@ -390,6 +435,57 @@ fn build_authorization_terminal_rule(
         OutcomeStatus::Blocked,
         Probability::from_percent(99).map_err(RuleEngineError::from)?,
         "Authorization review stopped before replay after defensive, rate-limit, or incomplete transport evidence",
+    )?
+    .scoped_to_action(kind.action_id())?
+    .with_case_correlated_evidence()
+}
+
+#[cfg(feature = "openapi-review")]
+fn build_openapi_terminal_rule(
+    kind: NativeWebReviewActionKind,
+    stage: VerificationStage,
+) -> Result<VerificationRule, VerificationError> {
+    let stage_slug = match stage {
+        VerificationStage::Passive => "passive",
+        VerificationStage::Active => "active",
+        _ => {
+            return Err(VerificationError::EmptyValue {
+                field: "OpenAPI review verification stage",
+            })
+        },
+    };
+    VerificationRule::new(
+        format!("web.review.verify.{stage_slug}.openapi-terminal@1"),
+        stage,
+        1_000,
+        Expression::equals(
+            KnowledgeLayer::Evidence,
+            crate::web_actions::openapi_review_phase_terminal_predicate(),
+            EvidenceValue::Boolean(true),
+        ),
+        OutcomeStatus::Blocked,
+        Probability::from_percent(99).map_err(RuleEngineError::from)?,
+        "OpenAPI review stopped after a terminal bounded transport or document outcome",
+    )?
+    .scoped_to_action(kind.action_id())?
+    .with_case_correlated_evidence()
+}
+
+#[cfg(feature = "openapi-review")]
+fn build_openapi_passive_progress_rule(
+    kind: NativeWebReviewActionKind,
+) -> Result<VerificationRule, VerificationError> {
+    VerificationRule::new(
+        "web.review.verify.passive.openapi-candidate-observed@1",
+        VerificationStage::Passive,
+        500,
+        Expression::exists(
+            KnowledgeLayer::Evidence,
+            native_web_review_response_marker_predicate(),
+        ),
+        OutcomeStatus::NeedsReview,
+        Probability::from_percent(99).map_err(RuleEngineError::from)?,
+        "The bounded OpenAPI candidate was observed and requires an independent active replay",
     )?
     .scoped_to_action(kind.action_id())?
     .with_case_correlated_evidence()

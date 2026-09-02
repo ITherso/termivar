@@ -1,5 +1,18 @@
 # Standard web decision runtime
 
+## Optional OpenAPI document replay
+
+When both the non-default `openapi-review` feature and explicit runtime option
+are present, the parent web assessment installs
+`web.review.openapi.document-replay@1` as one native action. It owns no nested
+runtime or client: selection, the anonymous bodyless GET candidate, exact
+replay, evidence, and projection reuse the parent exact-origin authority,
+redirect-disabled broker, budget, cancellation, completeness lifecycle, and
+final report. At most one document is selected; the complete action costs two
+requests and one logical active verification. A semantic replay mismatch or any
+unsupported, malformed, incomplete, truncated, redirected, or over-limit
+response produces no item.
+
 `StandardWebDecisionRuntime` is the host-facing composition API for one authorized HTTP target. It owns the standard knowledge base, decision loop, executor registry, experience store, and session so a caller does not have to wire those components manually.
 
 ```text

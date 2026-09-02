@@ -5,6 +5,13 @@ compares two views that the host has already authorized and paired; the
 decision layer turns the resulting immutable observation into reviewable
 hypotheses.
 
+The explicitly enabled OpenAPI review follows the same separation. Its native
+executor commits bounded HTTP media and replayed document-catalog evidence to
+the parent assessment's shared knowledge base. The existing transport-neutral
+API reasoning rules may consume that committed evidence, but the reasoner never
+selects a document, dispatches a request, materializes a parameter, or executes
+an operation described by the contract.
+
 ```text
 authorized baseline JSON ----+
                              +--> ApiVisibilityComparator

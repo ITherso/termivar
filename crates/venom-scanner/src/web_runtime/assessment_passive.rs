@@ -31,6 +31,8 @@ use crate::{
 use super::graphql_runtime::{
     project_graphql_items, register_graphql_subject, CommittedGraphqlReview,
 };
+#[cfg(feature = "openapi-review")]
+use super::openapi_runtime::{project_openapi_item, CommittedOpenApiReview};
 #[cfg(feature = "authorization-review")]
 use super::resource_authorization_runtime::{
     project_resource_authorization_item, CommittedResourceAuthorizationReview,
@@ -1069,6 +1071,8 @@ pub(crate) struct AssessmentReviewProjectionSources<'a> {
     pub(crate) graphql: Option<&'a CommittedGraphqlReview>,
     #[cfg(feature = "authorization-review")]
     pub(crate) authorization: Option<&'a CommittedResourceAuthorizationReview>,
+    #[cfg(feature = "openapi-review")]
+    pub(crate) openapi: Option<&'a CommittedOpenApiReview>,
 }
 
 /// Test adapter that projects only the explicitly authorized root.
@@ -1087,6 +1091,8 @@ pub(crate) fn project_passive_assessment_items(
             graphql: None,
             #[cfg(feature = "authorization-review")]
             authorization: None,
+            #[cfg(feature = "openapi-review")]
+            openapi: None,
         },
         knowledge,
         authorized_root,
@@ -1207,6 +1213,8 @@ fn project_passive_assessment_items_for_root(
             graphql: None,
             #[cfg(feature = "authorization-review")]
             authorization: None,
+            #[cfg(feature = "openapi-review")]
+            openapi: None,
         },
         knowledge,
         root_subject,
@@ -1302,6 +1310,10 @@ fn project_assessment_items_for_subjects(
     #[cfg(feature = "authorization-review")]
     if let Some(authorization) = reviews.authorization {
         project_resource_authorization_item(&mut context, knowledge, authorization)?;
+    }
+    #[cfg(feature = "openapi-review")]
+    if let Some(openapi) = reviews.openapi {
+        project_openapi_item(&mut context, knowledge, openapi)?;
     }
     Ok(PassiveAssessmentItemProjection {
         items: context.finish(),
