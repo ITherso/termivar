@@ -1,0 +1,26 @@
+schema = "security-assessment-fixture/v1"
+id = "openapi.oversized-document"
+revision = 1
+category = "api-openapi"
+purpose = "Generate exactly one byte beyond the compiled OpenAPI document ceiling."
+provenance = "generated-boundary"
+support = "current"
+tags = ["boundary", "openapi", "size"]
+
+[request]
+method = "get"
+origin = "https://api.example.test"
+path = "/corpus/openapi/oversized.json"
+role = "bootstrap"
+
+[response]
+status = 200
+media_type = "application/json"
+role = "bootstrap"
+completion = "complete"
+truncated = false
+inline_body = '''generated-openapi-document-size-plus-one'''
+
+[expected]
+openapi_outcome = "too-large"
+openapi_generated_input = "document-size-plus-one"

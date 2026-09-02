@@ -1,0 +1,28 @@
+schema = "security-assessment-fixture/v1"
+id = "openapi.multiple-methods-same-path"
+revision = 1
+category = "api-openapi"
+purpose = "Catalog multiple HTTP operations without multiplying the path count."
+provenance = "current-authored"
+support = "current"
+tags = ["catalog", "methods", "openapi"]
+
+[request]
+method = "get"
+origin = "https://api.example.test"
+path = "/corpus/openapi/multiple-methods.json"
+role = "bootstrap"
+
+[response]
+status = 200
+media_type = "application/json"
+role = "bootstrap"
+completion = "complete"
+truncated = false
+inline_body = '''{"openapi":"3.1.0","paths":{"/items":{"get":{"responses":{}},"post":{"responses":{}},"delete":{"responses":{}}}}}'''
+
+[expected]
+openapi_outcome = "document"
+openapi_version = "openapi-3.1"
+openapi_path_count = 1
+openapi_operation_count = 3

@@ -1,0 +1,25 @@
+schema = "security-assessment-fixture/v1"
+id = "openapi.malformed-document"
+revision = 1
+category = "api-openapi"
+purpose = "Fail closed on a malformed OpenAPI JSON document."
+provenance = "generated-boundary"
+support = "current"
+tags = ["malformed", "negative", "openapi"]
+
+[request]
+method = "get"
+origin = "https://api.example.test"
+path = "/corpus/openapi/malformed.json"
+role = "bootstrap"
+
+[response]
+status = 200
+media_type = "application/json"
+role = "bootstrap"
+completion = "complete"
+truncated = false
+inline_body = '''{"openapi":"3.1.0","paths":'''
+
+[expected]
+openapi_outcome = "malformed"

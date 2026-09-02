@@ -18,6 +18,7 @@ on:
       - "crates/venom-scanner/src/web_runtime.rs"
       - "crates/venom-scanner/src/http_evidence.rs"
       - "crates/venom-scanner/src/http_evidence/form_controls.rs"
+      - "crates/venom-scanner/src/openapi_review.rs"
       - ".github/workflows/fuzz.yml"
   schedule:
     - cron: "43 3 * * 1"
@@ -58,7 +59,7 @@ jobs:
           CARGO_PROFILE_RELEASE_STRIP: "none"
         shell: bash
         run: |
-          for target in html_form_controls expression_semantics declarative_policy_wire decision_loop_authority; do
+          for target in json_parser html_form_controls expression_semantics declarative_policy_wire decision_loop_authority; do
             cargo fuzz build "$target"
           done
 

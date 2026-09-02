@@ -218,6 +218,11 @@ const MODULE_POLICIES: &[ModulePolicy] = &[
         allowed_external: &["sha2"],
     },
     ModulePolicy {
+        source: "openapi_review.rs",
+        allowed_internal: &[],
+        allowed_external: &["serde_json", "sha2", "url"],
+    },
+    ModulePolicy {
         source: "api_observation.rs",
         allowed_internal: &["knowledge", "rules"],
         allowed_external: &["sha2"],
@@ -524,9 +529,175 @@ fn module_boundary_violations(workspace_root: &Path) -> Result<Vec<String>, Box<
             &source,
             &nested_modules,
         )?);
+        if policy.source == "openapi_review.rs" {
+            violations.extend(openapi_foundation_contract_violations(&source)?);
+        }
     }
 
     Ok(violations)
+}
+
+const OPENAPI_METADATA_CANDIDATE_TAGS: &[&str] = &[
+    "AuthorizationReviewCandidate",
+    "SqlInputCandidate",
+    "SsrfUrlCandidate",
+    "UploadCandidate",
+    "OAuthCandidate",
+    "BinaryResponse",
+];
+
+const OPENAPI_AUTHORITY_PATH_SEGMENTS: &[&str] = &[
+    "action",
+    "broker",
+    "budget",
+    "client",
+    "command",
+    "executor",
+    "hyper",
+    "net",
+    "network",
+    "process",
+    "reqwest",
+    "runtime",
+    "socket",
+    "tcpstream",
+    "tcplistener",
+    "tokio",
+    "udpsocket",
+    "ureq",
+];
+
+fn openapi_foundation_contract_violations(source: &str) -> Result<Vec<String>, syn::Error> {
+    let syntax = syn::parse_file(source)?;
+    let mut violations = Vec::new();
+    let candidate_enums = syntax
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Enum(item) if item.ident == "OpenApiCandidateTag" => Some(item),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+
+    match candidate_enums.as_slice() {
+        [candidate_enum] => {
+            let variants = candidate_enum
+                .variants
+                .iter()
+                .map(|variant| ident_name(&variant.ident))
+                .collect::<BTreeSet<_>>();
+            for required in OPENAPI_METADATA_CANDIDATE_TAGS {
+                if !variants.contains(*required) {
+                    violations.push(format!(
+                        "OpenAPI candidate tag `{required}` must remain explicit metadata"
+                    ));
+                }
+            }
+            if candidate_enum
+                .variants
+                .iter()
+                .any(|variant| !matches!(variant.fields, syn::Fields::Unit))
+            {
+                violations.push(
+                    "OpenAPI candidate tags must remain fieldless metadata-only classifications"
+                        .to_owned(),
+                );
+            }
+        },
+        _ => violations.push(
+            "OpenAPI foundation must declare exactly one OpenApiCandidateTag metadata enum"
+                .to_owned(),
+        ),
+    }
+
+    let mut authority = OpenApiAuthorityVisitor::default();
+    authority.visit_file(&syntax);
+    for identifier in authority.identifiers {
+        violations.push(format!(
+            "transport-neutral OpenAPI foundation must not import or own network/runtime/action/client/broker/budget authority: `{identifier}`"
+        ));
+    }
+    Ok(violations)
+}
+
+#[derive(Default)]
+struct OpenApiAuthorityVisitor {
+    identifiers: BTreeSet<String>,
+}
+
+impl OpenApiAuthorityVisitor {
+    fn inspect_owned_type(&mut self, identifier: &proc_macro2::Ident) {
+        let normalized = normalize_identifier(&identifier.to_string()).to_ascii_lowercase();
+        if OPENAPI_AUTHORITY_PATH_SEGMENTS
+            .iter()
+            .any(|forbidden| normalized.ends_with(forbidden))
+        {
+            self.identifiers.insert(identifier.to_string());
+        }
+    }
+}
+
+impl<'ast> Visit<'ast> for OpenApiAuthorityVisitor {
+    fn visit_item(&mut self, item: &'ast Item) {
+        if has_cfg_test(item_attributes(item)) {
+            return;
+        }
+        visit::visit_item(self, item);
+    }
+
+    fn visit_item_enum(&mut self, item: &'ast syn::ItemEnum) {
+        self.inspect_owned_type(&item.ident);
+        visit::visit_item_enum(self, item);
+    }
+
+    fn visit_item_struct(&mut self, item: &'ast syn::ItemStruct) {
+        self.inspect_owned_type(&item.ident);
+        visit::visit_item_struct(self, item);
+    }
+
+    fn visit_item_trait(&mut self, item: &'ast syn::ItemTrait) {
+        self.inspect_owned_type(&item.ident);
+        visit::visit_item_trait(self, item);
+    }
+
+    fn visit_item_trait_alias(&mut self, item: &'ast syn::ItemTraitAlias) {
+        self.inspect_owned_type(&item.ident);
+        visit::visit_item_trait_alias(self, item);
+    }
+
+    fn visit_item_type(&mut self, item: &'ast syn::ItemType) {
+        self.inspect_owned_type(&item.ident);
+        visit::visit_item_type(self, item);
+    }
+
+    fn visit_item_union(&mut self, item: &'ast syn::ItemUnion) {
+        self.inspect_owned_type(&item.ident);
+        visit::visit_item_union(self, item);
+    }
+
+    fn visit_item_use(&mut self, item: &'ast ItemUse) {
+        let mut paths = Vec::new();
+        collect_use_paths(&item.tree, Vec::new(), &mut paths);
+        for (segments, _, _) in paths {
+            for segment in segments {
+                let identifier = normalize_identifier(&segment).to_ascii_lowercase();
+                if OPENAPI_AUTHORITY_PATH_SEGMENTS.contains(&identifier.as_str()) {
+                    self.identifiers.insert(segment);
+                }
+            }
+        }
+        visit::visit_item_use(self, item);
+    }
+
+    fn visit_path(&mut self, path: &'ast SynPath) {
+        for segment in &path.segments {
+            let identifier = normalize_identifier(&segment.ident.to_string()).to_ascii_lowercase();
+            if OPENAPI_AUTHORITY_PATH_SEGMENTS.contains(&identifier.as_str()) {
+                self.identifiers.insert(segment.ident.to_string());
+            }
+        }
+        visit::visit_path(self, path);
+    }
 }
 
 fn validate_module_wiring(
@@ -1536,6 +1707,55 @@ mod tests {
             .parent()
             .expect("xtask must live under the workspace root");
         check(workspace_root).unwrap();
+    }
+
+    #[test]
+    fn openapi_foundation_is_transport_neutral_and_candidate_tags_are_metadata_only() {
+        let source = include_str!("../../crates/venom-scanner/src/openapi_review.rs");
+        assert!(openapi_foundation_contract_violations(source)
+            .unwrap()
+            .is_empty());
+
+        for mutation in [
+            format!("{source}\nuse std::net::TcpStream;"),
+            format!("{source}\nstruct OpenApiClient;"),
+            format!("{source}\ntype ReviewBudget = usize;"),
+        ] {
+            assert!(!openapi_foundation_contract_violations(&mutation)
+                .unwrap()
+                .is_empty());
+        }
+
+        let executable_tag = source.replacen(
+            "    BinaryResponse,",
+            "    BinaryResponse { action: String },",
+            1,
+        );
+        assert!(openapi_foundation_contract_violations(&executable_tag)
+            .unwrap()
+            .iter()
+            .any(|violation| violation.contains("metadata-only")));
+    }
+
+    #[test]
+    fn openapi_module_policy_rejects_scanner_runtime_and_unapproved_crates() {
+        let policy = MODULE_POLICIES
+            .iter()
+            .find(|policy| policy.source == "openapi_review.rs")
+            .expect("OpenAPI foundation must have an architecture module policy");
+        let source = include_str!("../../crates/venom-scanner/src/openapi_review.rs");
+        assert!(inspect_module_source(policy, source).unwrap().is_empty());
+
+        for (dependency, expected) in [
+            ("use crate::web_runtime::SharedWebRuntime;", "web_runtime"),
+            ("use reqwest::Client;", "reqwest"),
+        ] {
+            let mutation = format!("{source}\n{dependency}");
+            assert!(inspect_module_source(policy, &mutation)
+                .unwrap()
+                .iter()
+                .any(|violation| violation.contains(expected)));
+        }
     }
 
     #[test]

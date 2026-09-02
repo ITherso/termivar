@@ -1,0 +1,31 @@
+schema = "security-assessment-fixture/v1"
+id = "openapi.oauth2-metadata"
+revision = 1
+category = "api-openapi"
+purpose = "Reduce OAuth2 declarations to non-secret protocol metadata."
+provenance = "current-authored"
+support = "current"
+tags = ["oauth2", "openapi", "security-scheme"]
+
+[request]
+method = "get"
+origin = "https://api.example.test"
+path = "/corpus/openapi/oauth2.json"
+role = "bootstrap"
+
+[response]
+status = 200
+media_type = "application/json"
+role = "bootstrap"
+completion = "complete"
+truncated = false
+inline_body = '''{"openapi":"3.1.0","components":{"securitySchemes":{"FixtureOauth":{"type":"oauth2","flows":{"authorizationCode":{"authorizationUrl":"https://identity.example.test/authorize","tokenUrl":"https://identity.example.test/token","scopes":{"fixture-read":"Read fixture metadata"}}}}}},"paths":{"/profile":{"get":{"security":[{"FixtureOauth":["fixture-read"]}],"responses":{}}}}}'''
+
+[expected]
+openapi_outcome = "document"
+openapi_version = "openapi-3.1"
+openapi_path_count = 1
+openapi_operation_count = 1
+openapi_required_security_schemes = ["oauth2"]
+openapi_required_effective_security_schemes = ["oauth2"]
+openapi_required_candidate_tags = ["oauth-candidate"]

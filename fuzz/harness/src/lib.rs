@@ -12,6 +12,36 @@ pub use semantic::{
     MAX_EXPRESSION_FUZZ_NODES, MAX_SEMANTIC_FUZZ_INPUT_BYTES, MAX_SEMANTIC_FUZZ_STRING_BYTES,
 };
 
+/// Maximum byte buffer accepted by the OpenAPI contract-catalog harness.
+pub const MAX_OPENAPI_FUZZ_INPUT_BYTES: usize =
+    venom_scanner::openapi_review::MAX_OPENAPI_DOCUMENT_BYTES;
+
+/// Exercises the exact bounded, transport-neutral OpenAPI parser on arbitrary bytes.
+pub fn check_openapi_review(data: &[u8]) {
+    use venom_scanner::openapi_review::OpenApiDocument;
+
+    if data.len() > MAX_OPENAPI_FUZZ_INPUT_BYTES {
+        return;
+    }
+
+    let first = OpenApiDocument::parse_json(data);
+    let repeated = OpenApiDocument::parse_json(data);
+    assert_eq!(
+        first, repeated,
+        "identical OpenAPI input must be deterministic"
+    );
+
+    if let Ok(document) = first {
+        let operations = document.catalog().operations();
+        assert!(operations.windows(2).all(|pair| {
+            (pair[0].path(), pair[0].method()) <= (pair[1].path(), pair[1].method())
+        }));
+        assert!(operations.iter().all(|operation| {
+            operation.source_document_identity() == document.semantic_digest()
+        }));
+    }
+}
+
 // Compile the exact private production extractor into this fuzz-only crate.
 // The scanner wires the same source as `http_evidence::form_controls`; this
 // keeps the normal production API private while avoiding a copied harness.

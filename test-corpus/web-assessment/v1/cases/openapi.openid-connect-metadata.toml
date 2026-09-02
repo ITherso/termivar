@@ -1,0 +1,31 @@
+schema = "security-assessment-fixture/v1"
+id = "openapi.openid-connect-metadata"
+revision = 1
+category = "api-openapi"
+purpose = "Reduce OpenID Connect declarations to non-secret protocol metadata."
+provenance = "current-authored"
+support = "current"
+tags = ["openid-connect", "openapi", "security-scheme"]
+
+[request]
+method = "get"
+origin = "https://api.example.test"
+path = "/corpus/openapi/openid-connect.json"
+role = "bootstrap"
+
+[response]
+status = 200
+media_type = "application/json"
+role = "bootstrap"
+completion = "complete"
+truncated = false
+inline_body = '''{"openapi":"3.1.0","components":{"securitySchemes":{"FixtureOidc":{"type":"openIdConnect","openIdConnectUrl":"https://identity.example.test/.well-known/openid-configuration"}}},"paths":{"/profile":{"get":{"security":[{"FixtureOidc":[]}],"responses":{}}}}}'''
+
+[expected]
+openapi_outcome = "document"
+openapi_version = "openapi-3.1"
+openapi_path_count = 1
+openapi_operation_count = 1
+openapi_required_security_schemes = ["openid-connect"]
+openapi_required_effective_security_schemes = ["openid-connect"]
+openapi_required_candidate_tags = ["oauth-candidate"]

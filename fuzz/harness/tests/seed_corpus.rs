@@ -75,6 +75,24 @@ fn bounded_decision_loop_authority_models_cover_numeric_edges() {
     }
 }
 
+#[test]
+fn bounded_openapi_regression_inputs_satisfy_the_semantic_oracle() {
+    for seed in [
+        &b""[..],
+        &b"{"[..],
+        &br#"{"openapi":"3.1.0","paths":{}}"#[..],
+        &br#"{"openapi":"3.0.3","paths":{"/items/{id}":{"get":{"parameters":[{"name":"id","in":"path","required":true,"schema":{"type":"string","format":"uuid"}}],"responses":{"200":{"content":{"application/json":{}}}}}}}}"#[..],
+        &br#"{"openapi":"3.1.0","openapi":"3.0.3","paths":{}}"#[..],
+        &br#"{"openapi":"3.1.0","servers":[{"url":"https://{tenant}.example.test","variables":{"tenant":{"default":"api"}}}],"components":{"securitySchemes":{"bearer":{"type":"http","scheme":"bearer"}}},"security":[{"bearer":[]}],"paths":{"/items":{"post":{"requestBody":{"content":{"application/problem+json":{}}},"responses":{"2XX":{},"default":{}}}}}}"#[..],
+    ] {
+        assert!(
+            seed.len() <= venom_fuzz_harness::MAX_OPENAPI_FUZZ_INPUT_BYTES,
+            "OpenAPI regression seed exceeds the harness input bound"
+        );
+        venom_fuzz_harness::check_openapi_review(seed);
+    }
+}
+
 fn replay_json_corpus(
     directory: &str,
     minimum_seed_count: usize,

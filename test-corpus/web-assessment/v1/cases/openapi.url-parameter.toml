@@ -1,0 +1,30 @@
+schema = "security-assessment-fixture/v1"
+id = "openapi.url-parameter"
+revision = 1
+category = "api-openapi"
+purpose = "Classify a URL-formatted query parameter as inert SSRF review candidate metadata."
+provenance = "current-authored"
+support = "current"
+tags = ["openapi", "parameter", "url"]
+
+[request]
+method = "get"
+origin = "https://api.example.test"
+path = "/corpus/openapi/url-parameter.json"
+role = "bootstrap"
+
+[response]
+status = 200
+media_type = "application/json"
+role = "bootstrap"
+completion = "complete"
+truncated = false
+inline_body = '''{"openapi":"3.1.0","paths":{"/preview":{"get":{"parameters":[{"name":"target","in":"query","schema":{"type":"string","format":"url"}}],"responses":{}}}}}'''
+
+[expected]
+openapi_outcome = "document"
+openapi_version = "openapi-3.1"
+openapi_path_count = 1
+openapi_operation_count = 1
+openapi_required_parameter_locations = ["query"]
+openapi_required_candidate_tags = ["parameterized", "ssrf-url-candidate"]

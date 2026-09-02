@@ -1,0 +1,30 @@
+schema = "security-assessment-fixture/v1"
+id = "openapi.cookie-parameter"
+revision = 1
+category = "api-openapi"
+purpose = "Classify a cookie parameter as inert contract metadata only."
+provenance = "current-authored"
+support = "current"
+tags = ["cookie", "openapi", "parameter"]
+
+[request]
+method = "get"
+origin = "https://api.example.test"
+path = "/corpus/openapi/cookie-parameter.json"
+role = "bootstrap"
+
+[response]
+status = 200
+media_type = "application/json"
+role = "bootstrap"
+completion = "complete"
+truncated = false
+inline_body = '''{"openapi":"3.1.0","paths":{"/items":{"get":{"parameters":[{"name":"fixturePreference","in":"cookie","schema":{"type":"string"}}],"responses":{}}}}}'''
+
+[expected]
+openapi_outcome = "document"
+openapi_version = "openapi-3.1"
+openapi_path_count = 1
+openapi_operation_count = 1
+openapi_required_parameter_locations = ["cookie"]
+openapi_required_candidate_tags = ["parameterized"]

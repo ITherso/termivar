@@ -1,0 +1,31 @@
+schema = "security-assessment-fixture/v1"
+id = "openapi.operation-security-override"
+revision = 1
+category = "api-openapi"
+purpose = "Prefer an operation security declaration over inherited root security metadata."
+provenance = "current-authored"
+support = "current"
+tags = ["openapi", "override", "security"]
+
+[request]
+method = "get"
+origin = "https://api.example.test"
+path = "/corpus/openapi/security-override.json"
+role = "bootstrap"
+
+[response]
+status = 200
+media_type = "application/json"
+role = "bootstrap"
+completion = "complete"
+truncated = false
+inline_body = '''{"openapi":"3.1.0","components":{"securitySchemes":{"BearerAuth":{"type":"http","scheme":"bearer"},"HeaderKey":{"type":"apiKey","in":"header","name":"X-Fixture-Key"}}},"security":[{"BearerAuth":[]}],"paths":{"/profile":{"get":{"security":[{"HeaderKey":[]}],"responses":{}}}}}'''
+
+[expected]
+openapi_outcome = "document"
+openapi_version = "openapi-3.1"
+openapi_path_count = 1
+openapi_operation_count = 1
+openapi_required_security_schemes = ["api-key-header", "http-bearer"]
+openapi_required_effective_security_schemes = ["api-key-header"]
+openapi_required_candidate_tags = ["authorization-review-candidate", "declares-security"]

@@ -1,0 +1,29 @@
+schema = "security-assessment-fixture/v1"
+id = "openapi.cross-origin-server"
+revision = 1
+category = "api-openapi"
+purpose = "Classify a reserved cross-origin server as metadata without expanding authority."
+provenance = "current-authored"
+support = "current"
+tags = ["cross-origin", "openapi", "server"]
+
+[request]
+method = "get"
+origin = "https://api.example.test"
+path = "/corpus/openapi/cross-origin-server.json"
+role = "bootstrap"
+
+[response]
+status = 200
+media_type = "application/json"
+role = "bootstrap"
+completion = "complete"
+truncated = false
+inline_body = '''{"openapi":"3.1.0","servers":[{"url":"https://edge.example.test/v1"}],"paths":{}}'''
+
+[expected]
+openapi_outcome = "document"
+openapi_version = "openapi-3.1"
+openapi_path_count = 0
+openapi_operation_count = 0
+openapi_required_server_kinds = ["cross-origin"]

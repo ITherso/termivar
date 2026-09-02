@@ -56,13 +56,24 @@ rejected; ledger status itself never authorizes execution or raises claim
 authority.
 
 The [scanner conformance corpus](scanner-conformance-corpus.md) is also outside
-every product runtime. Its 73 sanitized cases, including 23 four-view
+every product runtime. Its 103 sanitized cases, including 23 four-view
 authorization differentials, use the internal
 `security-assessment-fixture/v1` schema and are checked by the deterministic
 `xtask scanner-corpus` command. Validation and the conformance harness perform
 no network requests, add no scanner action or executor, and change no report
 claim. Passing these repository cases demonstrates agreement with checked-in
 contracts only; it is not an empirical scanner-accuracy measurement.
+
+The [OpenAPI contract catalog](openapi-contract-catalog.md) is a
+transport-neutral foundation rather than a product runtime. It accepts only
+caller-supplied JSON bytes for OpenAPI 3.0/3.1, applies a strict 2 MiB document
+ceiling plus bounded depth, nodes, members, arrays, strings, paths, and
+operations, and produces deterministic metadata in memory. It does not locate
+or fetch a contract, resolve an external reference, contact a declared server,
+construct or dispatch a request, consume credentials, execute content, write
+evidence, or create a report, finding, or claim. YAML is future/unsupported;
+Swagger/OpenAPI 2.0 is metadata-only and produces no operation catalog. Neither
+label implies parser, network, or execution authority.
 
 `venom-artifact` is not part of either scan runtime. Its Preview library scans
 bounded caller-supplied byte slices or `Read` streams and emits exact/wildcard

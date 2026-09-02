@@ -19,10 +19,10 @@ scoped_source_paths = [
 ]
 expected_scoped_file_count = 13
 algorithm_version = "venom.post-workspace-waf-evasion-salvage-digest/v1"
-ledger_digest = "waf-evasion-salvage-sha256:5abf0acc79963ced0d3236a42421d2b54c51c3f9be04e55495ec505dda51a672"
+ledger_digest = "waf-evasion-salvage-sha256:d49916b5f6633fd6585fdad887bd775ccde6894f270f1670513c9e5ba6b040a7"
 current_replacement_baseline_sha = "e1e4077d159d6df5cdca8e274ecd40b40bb2f9c5"
 prior_salvage_ledger = "salvage/historical-scanner/ledger.toml"
-prior_salvage_digest = "salvage-sha256:5449610451c2eb3efab4c21166c12d3ffe36ade87aa7c6fd436e67bacded7e58"
+prior_salvage_digest = "salvage-sha256:c2e4fec16f5d044ea2007f134ed18389f2b6890c621159d3554bafcf4be8e333"
 separate_source_epoch = true
 
 [[files]]

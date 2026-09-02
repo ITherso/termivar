@@ -1,0 +1,29 @@
+schema = "security-assessment-fixture/v1"
+id = "openapi.json-request-response-media"
+revision = 1
+category = "api-openapi"
+purpose = "Catalog JSON request and response media without retaining schemas or examples."
+provenance = "current-authored"
+support = "current"
+tags = ["json", "media", "openapi"]
+
+[request]
+method = "get"
+origin = "https://api.example.test"
+path = "/corpus/openapi/json-media.json"
+role = "bootstrap"
+
+[response]
+status = 200
+media_type = "application/json"
+role = "bootstrap"
+completion = "complete"
+truncated = false
+inline_body = '''{"openapi":"3.1.0","paths":{"/items":{"post":{"requestBody":{"content":{"application/json":{"schema":{"type":"object"}}}},"responses":{"200":{"description":"ok","content":{"application/json":{"schema":{"type":"object"}}}}}}}}}'''
+
+[expected]
+openapi_outcome = "document"
+openapi_version = "openapi-3.1"
+openapi_path_count = 1
+openapi_operation_count = 1
+openapi_required_candidate_tags = ["body-bearing", "json-request", "json-response"]

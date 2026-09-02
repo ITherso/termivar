@@ -1,0 +1,29 @@
+schema = "security-assessment-fixture/v1"
+id = "openapi.single-get-path"
+revision = 1
+category = "api-openapi"
+purpose = "Catalog one read-only GET operation from one path."
+provenance = "current-authored"
+support = "current"
+tags = ["catalog", "get", "openapi"]
+
+[request]
+method = "get"
+origin = "https://api.example.test"
+path = "/corpus/openapi/single-get.json"
+role = "bootstrap"
+
+[response]
+status = 200
+media_type = "application/json"
+role = "bootstrap"
+completion = "complete"
+truncated = false
+inline_body = '''{"openapi":"3.1.0","paths":{"/items":{"get":{"responses":{"200":{"description":"ok"}}}}}}'''
+
+[expected]
+openapi_outcome = "document"
+openapi_version = "openapi-3.1"
+openapi_path_count = 1
+openapi_operation_count = 1
+openapi_required_candidate_tags = ["read-only"]

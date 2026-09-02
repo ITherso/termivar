@@ -5,7 +5,7 @@ deletion_commit = "28bfb2d8ae3a4f707b7423cac65b6be8e11085b6"
 historical_source_root = "src/scanner"
 expected_file_count = 38
 algorithm_version = "venom.historical-scanner-salvage-digest/v1"
-ledger_digest = "salvage-sha256:5449610451c2eb3efab4c21166c12d3ffe36ade87aa7c6fd436e67bacded7e58"
+ledger_digest = "salvage-sha256:c2e4fec16f5d044ea2007f134ed18389f2b6890c621159d3554bafcf4be8e333"
 current_replacement_baseline_sha = "cbca14d10db4ee641308f3b3e290bf75d937c8a7"
 
 [[files]]
@@ -142,7 +142,7 @@ prohibited_behaviors = ["legacy-runtime-coupling", "random-identity"]
 modern_destination = "venom-scanner:api-assessment"
 prerequisites = ["protocol-specific transport authority", "matched evidence contracts"]
 status = "planned"
-rationale = "REST, gRPC, SOAP, and generic service review remain future typed capabilities and were not restored by GraphQL V1."
+rationale = "The bounded transport-neutral OpenAPI 3.0/3.1 contract catalog independently rebuilds the REST/OpenAPI metadata subset from current evidence contracts. Described-operation REST execution, gRPC, SOAP, and generic service capabilities remain planned; no legacy scaffold or unconditional test was restored."
 
 [[files.components]]
 id = "api.unconditional-tests"

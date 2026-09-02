@@ -1,0 +1,28 @@
+schema = "security-assessment-fixture/v1"
+id = "openapi.minimal-3-0-json"
+revision = 1
+category = "api-openapi"
+purpose = "Parse a minimal OpenAPI 3.0 JSON document into an empty bounded catalog."
+provenance = "current-authored"
+support = "current"
+tags = ["json", "openapi", "version-3-0"]
+
+[request]
+method = "get"
+origin = "https://api.example.test"
+path = "/corpus/openapi/minimal-3-0.json"
+role = "bootstrap"
+
+[response]
+status = 200
+media_type = "application/json"
+role = "bootstrap"
+completion = "complete"
+truncated = false
+inline_body = '''{"openapi":"3.0.3","info":{"title":"Fixture","version":"1"},"paths":{}}'''
+
+[expected]
+openapi_outcome = "document"
+openapi_version = "openapi-3.0"
+openapi_path_count = 0
+openapi_operation_count = 0

@@ -10,7 +10,7 @@ This report is generated from `salvage/historical-scanner/ledger.toml`. Historic
 | Pre-deletion snapshot | ede3d9e5b1098434a771ae6ca3cb530941e22210 |
 | Physical deletion | 28bfb2d8ae3a4f707b7423cac65b6be8e11085b6 |
 | Current replacement baseline | cbca14d10db4ee641308f3b3e290bf75d937c8a7 |
-| Semantic ledger digest | salvage-sha256:5449610451c2eb3efab4c21166c12d3ffe36ade87aa7c6fd436e67bacded7e58 |
+| Semantic ledger digest | salvage-sha256:c2e4fec16f5d044ea2007f134ed18389f2b6890c621159d3554bafcf4be8e333 |
 
 ## Classification summary
 
@@ -156,7 +156,7 @@ This report is generated from `salvage/historical-scanner/ledger.toml`. Historic
 ## P0/P1 recovery roadmap
 
 - `api.protocol-taxonomy` → `venom-scanner:api-assessment` (restored; implementation `venom_scanner::graphql_review (web.review.graphql.introspection-pair@1)`): Only anonymous bounded GraphQL surface and schema-root introspection review was rebuilt from typed evidence; no legacy scaffold was restored.
-- `api.protocol-taxonomy.remaining` → `venom-scanner:api-assessment` (planned): REST, gRPC, SOAP, and generic service review remain future typed capabilities and were not restored by GraphQL V1.
+- `api.protocol-taxonomy.remaining` → `venom-scanner:api-assessment` (planned): The bounded transport-neutral OpenAPI 3.0/3.1 contract catalog independently rebuilds the REST/OpenAPI metadata subset from current evidence contracts. Described-operation REST execution, gRPC, SOAP, and generic service capabilities remain planned; no legacy scaffold or unconditional test was restored.
 - `business-logic.workflow-taxonomy` → `venom-scanner:authz` (planned): Only metadata can be imported before real workflow authority exists.
 - `detector.byte-pattern` → `venom-artifact` (restored; implementation `venom_artifact::ArtifactScanner (venom.artifact-signature-scan/v1)`): Venom Artifact V1 cleanly reimplements the bounded exact/wildcard matcher and does not copy the historical monolith.
 - `idor.reference-mutation` → `venom-scanner:authz` (planned): Authorization review must be rebuilt around identity and authority, not response similarity alone.

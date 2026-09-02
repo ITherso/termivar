@@ -1,0 +1,31 @@
+schema = "security-assessment-fixture/v1"
+id = "openapi.root-security-inherited"
+revision = 1
+category = "api-openapi"
+purpose = "Apply root security metadata to an operation that declares no override."
+provenance = "current-authored"
+support = "current"
+tags = ["inheritance", "openapi", "security"]
+
+[request]
+method = "get"
+origin = "https://api.example.test"
+path = "/corpus/openapi/root-security.json"
+role = "bootstrap"
+
+[response]
+status = 200
+media_type = "application/json"
+role = "bootstrap"
+completion = "complete"
+truncated = false
+inline_body = '''{"openapi":"3.1.0","components":{"securitySchemes":{"BearerAuth":{"type":"http","scheme":"bearer"}}},"security":[{"BearerAuth":[]}],"paths":{"/profile":{"get":{"responses":{}}}}}'''
+
+[expected]
+openapi_outcome = "document"
+openapi_version = "openapi-3.1"
+openapi_path_count = 1
+openapi_operation_count = 1
+openapi_required_security_schemes = ["http-bearer"]
+openapi_required_effective_security_schemes = ["http-bearer"]
+openapi_required_candidate_tags = ["authorization-review-candidate", "declares-security"]

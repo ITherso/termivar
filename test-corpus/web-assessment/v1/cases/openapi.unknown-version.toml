@@ -1,0 +1,25 @@
+schema = "security-assessment-fixture/v1"
+id = "openapi.unknown-version"
+revision = 1
+category = "api-openapi"
+purpose = "Classify an unknown OpenAPI version without treating it as a supported document."
+provenance = "generated-boundary"
+support = "current"
+tags = ["negative", "openapi", "version"]
+
+[request]
+method = "get"
+origin = "https://api.example.test"
+path = "/corpus/openapi/unknown-version.json"
+role = "bootstrap"
+
+[response]
+status = 200
+media_type = "application/json"
+role = "bootstrap"
+completion = "complete"
+truncated = false
+inline_body = '''{"openapi":"4.0.0","paths":{}}'''
+
+[expected]
+openapi_outcome = "unsupported-version"

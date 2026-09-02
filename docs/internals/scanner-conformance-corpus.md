@@ -1,6 +1,6 @@
 # Scanner conformance corpus
 
-The scanner conformance corpus is repository-only test data. It contains 73
+The scanner conformance corpus is repository-only test data. It contains 103
 sanitized request/response cases for deterministic checks of current scanner
 semantics and explicitly identified future protocol cases. Twenty-three cases
 exercise the transport-neutral four-view authorization differential contract.
@@ -55,6 +55,22 @@ control, candidate, and replay protocol.
 These cases do not send requests from the corpus harness. They validate the
 same production operation and response contracts used by the explicitly
 enabled runtime. See [GraphQL surface review](graphql-review.md).
+
+## OpenAPI contract catalog cases
+
+The OpenAPI subset exercises the transport-neutral JSON parser and deterministic
+catalog for OpenAPI 3.0 and 3.1 documents. It covers supported operation
+metadata, source-order independence, malformed and unsupported inputs, and the
+compiled document, structure, and catalog limits. Input is capped at 2 MiB;
+depth, nodes, aggregate object members, arrays, strings, paths, and operations
+are bounded as documented in the
+[OpenAPI contract catalog](openapi-contract-catalog.md).
+
+Cases supply sanitized bytes directly. The harness does not discover or fetch a
+contract, resolve an external reference, contact a declared server, construct
+or dispatch a request, use credentials, execute a payload, or emit evidence,
+reports, findings, or claims. YAML remains a future unsupported input, while
+Swagger/OpenAPI 2.0 is metadata-only and cannot produce an operation catalog.
 
 ## Authorization differential cases
 

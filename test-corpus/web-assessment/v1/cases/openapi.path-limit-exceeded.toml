@@ -1,0 +1,26 @@
+schema = "security-assessment-fixture/v1"
+id = "openapi.path-limit-exceeded"
+revision = 1
+category = "api-openapi"
+purpose = "Generate one more path than the bounded OpenAPI catalog permits."
+provenance = "generated-boundary"
+support = "current"
+tags = ["boundary", "catalog", "openapi"]
+
+[request]
+method = "get"
+origin = "https://api.example.test"
+path = "/corpus/openapi/path-limit.json"
+role = "bootstrap"
+
+[response]
+status = 200
+media_type = "application/json"
+role = "bootstrap"
+completion = "complete"
+truncated = false
+inline_body = '''generated-openapi-path-limit-plus-one'''
+
+[expected]
+openapi_outcome = "limit-exceeded"
+openapi_generated_input = "path-limit-plus-one"

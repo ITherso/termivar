@@ -276,6 +276,28 @@ struct ExpectedSemantics {
     #[serde(default)]
     graphql_evidence: Option<GraphqlExpectation>,
     #[serde(default)]
+    openapi_outcome: Option<OpenApiExpectation>,
+    #[serde(default)]
+    openapi_version: Option<OpenApiVersionExpectation>,
+    #[serde(default)]
+    openapi_path_count: Option<u32>,
+    #[serde(default)]
+    openapi_operation_count: Option<u32>,
+    #[serde(default)]
+    openapi_required_parameter_locations: Vec<OpenApiParameterLocationExpectation>,
+    #[serde(default)]
+    openapi_required_security_schemes: Vec<OpenApiSecuritySchemeExpectation>,
+    #[serde(default)]
+    openapi_required_effective_security_schemes: Vec<OpenApiSecuritySchemeExpectation>,
+    #[serde(default)]
+    openapi_required_server_kinds: Vec<OpenApiServerKindExpectation>,
+    #[serde(default)]
+    openapi_required_candidate_tags: Vec<OpenApiCandidateTagExpectation>,
+    #[serde(default)]
+    openapi_digest_matches: Option<String>,
+    #[serde(default)]
+    openapi_generated_input: Option<OpenApiGeneratedInputExpectation>,
+    #[serde(default)]
     authorization_outcome: Option<AuthorizationOutcomeExpectation>,
     #[serde(default)]
     assessment_capability: Option<String>,
@@ -309,6 +331,7 @@ wire_enum!(CaseCategory {
     Xss => "xss",
     Normalization => "normalization",
     ApiGraphql => "api-graphql",
+    ApiOpenapi => "api-openapi",
     Authorization => "authorization"
 });
 wire_enum!(Provenance {
@@ -403,6 +426,110 @@ wire_enum!(GraphqlExpectation {
     DepthLimited => "depth-limited",
     BatchMetadataOnly => "batch-metadata-only",
     GetQueryMetadataOnly => "get-query-metadata-only"
+});
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+enum OpenApiExpectation {
+    #[serde(rename = "document")]
+    Document,
+    #[serde(rename = "swagger-2.0-metadata-only")]
+    Swagger20MetadataOnly,
+    #[serde(rename = "yaml-metadata-only")]
+    YamlMetadataOnly,
+    #[serde(rename = "unsupported-version")]
+    UnsupportedVersion,
+    #[serde(rename = "malformed")]
+    Malformed,
+    #[serde(rename = "limit-exceeded")]
+    LimitExceeded,
+    #[serde(rename = "too-large")]
+    TooLarge,
+}
+
+impl OpenApiExpectation {
+    const fn wire(self) -> &'static str {
+        match self {
+            Self::Document => "document",
+            Self::Swagger20MetadataOnly => "swagger-2.0-metadata-only",
+            Self::YamlMetadataOnly => "yaml-metadata-only",
+            Self::UnsupportedVersion => "unsupported-version",
+            Self::Malformed => "malformed",
+            Self::LimitExceeded => "limit-exceeded",
+            Self::TooLarge => "too-large",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+enum OpenApiVersionExpectation {
+    #[serde(rename = "openapi-3.0")]
+    OpenApi30,
+    #[serde(rename = "openapi-3.1")]
+    OpenApi31,
+}
+
+impl OpenApiVersionExpectation {
+    const fn wire(self) -> &'static str {
+        match self {
+            Self::OpenApi30 => "openapi-3.0",
+            Self::OpenApi31 => "openapi-3.1",
+        }
+    }
+}
+wire_enum!(OpenApiParameterLocationExpectation {
+    Query => "query",
+    Header => "header",
+    Path => "path",
+    Cookie => "cookie"
+});
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+enum OpenApiSecuritySchemeExpectation {
+    #[serde(rename = "api-key-query")]
+    ApiKeyQuery,
+    #[serde(rename = "api-key-header")]
+    ApiKeyHeader,
+    #[serde(rename = "http-bearer")]
+    HttpBearer,
+    #[serde(rename = "oauth2")]
+    Oauth2,
+    #[serde(rename = "openid-connect")]
+    OpenIdConnect,
+}
+
+impl OpenApiSecuritySchemeExpectation {
+    const fn wire(self) -> &'static str {
+        match self {
+            Self::ApiKeyQuery => "api-key-query",
+            Self::ApiKeyHeader => "api-key-header",
+            Self::HttpBearer => "http-bearer",
+            Self::Oauth2 => "oauth2",
+            Self::OpenIdConnect => "openid-connect",
+        }
+    }
+}
+wire_enum!(OpenApiServerKindExpectation {
+    ExactOrigin => "exact-origin",
+    Relative => "relative",
+    CrossOrigin => "cross-origin",
+    Templated => "templated"
+});
+wire_enum!(OpenApiCandidateTagExpectation {
+    ReadOnly => "read-only",
+    BodyBearing => "body-bearing",
+    Parameterized => "parameterized",
+    DeclaresSecurity => "declares-security",
+    DeclaresAnonymousAccess => "declares-anonymous-access",
+    JsonRequest => "json-request",
+    JsonResponse => "json-response",
+    Deprecated => "deprecated",
+    AuthorizationReviewCandidate => "authorization-review-candidate",
+    SqlInputCandidate => "sql-input-candidate",
+    SsrfUrlCandidate => "ssrf-url-candidate",
+    UploadCandidate => "upload-candidate",
+    OauthCandidate => "oauth-candidate"
+});
+wire_enum!(OpenApiGeneratedInputExpectation {
+    DocumentSizePlusOne => "document-size-plus-one",
+    PathLimitPlusOne => "path-limit-plus-one"
 });
 wire_enum!(AuthorizationPolicyExpectation { PrimaryOnly => "primary-only" });
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
@@ -617,7 +744,7 @@ fn validate_tree_file_name(path: &str) -> TaskResult {
     let allowed = matches!(path, "manifest.toml" | "INVENTORY.md" | "README.md")
         || (path.starts_with("cases/") && path.ends_with(".toml"))
         || (path.starts_with("bodies/")
-            && [".json", ".html", ".txt", ".xml"]
+            && [".json", ".html", ".txt", ".xml", ".yaml"]
                 .iter()
                 .any(|extension| path.ends_with(extension)));
     if !allowed {
@@ -747,6 +874,7 @@ fn validate_case(source_path: &str, case: &FixtureCase) -> TaskResult {
     }
     validate_expected(&case.expected)?;
     validate_graphql_support_contract(case)?;
+    validate_openapi_support_contract(case)?;
     if case.support == SupportLevel::MetadataOnly
         && case.expected.incompleteness != Some(IncompletenessExpectation::FutureMetadataOnly)
     {
@@ -779,6 +907,157 @@ fn validate_graphql_support_contract(case: &FixtureCase) -> TaskResult {
         || case.expected.incompleteness == Some(IncompletenessExpectation::FutureMetadataOnly)
     {
         return Err("executable GraphQL V1 fixtures must use current support".into());
+    }
+    Ok(())
+}
+
+fn validate_openapi_support_contract(case: &FixtureCase) -> TaskResult {
+    let fields_present = case.expected.openapi_outcome.is_some()
+        || case.expected.openapi_version.is_some()
+        || case.expected.openapi_path_count.is_some()
+        || case.expected.openapi_operation_count.is_some()
+        || !case
+            .expected
+            .openapi_required_parameter_locations
+            .is_empty()
+        || !case.expected.openapi_required_security_schemes.is_empty()
+        || !case
+            .expected
+            .openapi_required_effective_security_schemes
+            .is_empty()
+        || !case.expected.openapi_required_server_kinds.is_empty()
+        || !case.expected.openapi_required_candidate_tags.is_empty()
+        || case.expected.openapi_digest_matches.is_some()
+        || case.expected.openapi_generated_input.is_some();
+    if case.category != CaseCategory::ApiOpenapi {
+        if fields_present {
+            return Err("OpenAPI expectations are limited to the API/OpenAPI category".into());
+        }
+        return Ok(());
+    }
+
+    let outcome = case
+        .expected
+        .openapi_outcome
+        .ok_or("API/OpenAPI cases require an explicit OpenAPI outcome")?;
+    for (label, values) in [
+        (
+            "OpenAPI parameter-location expectations",
+            case.expected
+                .openapi_required_parameter_locations
+                .iter()
+                .map(|value| value.wire())
+                .collect::<Vec<_>>(),
+        ),
+        (
+            "OpenAPI security-scheme expectations",
+            case.expected
+                .openapi_required_security_schemes
+                .iter()
+                .map(|value| value.wire())
+                .collect::<Vec<_>>(),
+        ),
+        (
+            "OpenAPI effective-security expectations",
+            case.expected
+                .openapi_required_effective_security_schemes
+                .iter()
+                .map(|value| value.wire())
+                .collect::<Vec<_>>(),
+        ),
+        (
+            "OpenAPI server-kind expectations",
+            case.expected
+                .openapi_required_server_kinds
+                .iter()
+                .map(|value| value.wire())
+                .collect::<Vec<_>>(),
+        ),
+        (
+            "OpenAPI candidate-tag expectations",
+            case.expected
+                .openapi_required_candidate_tags
+                .iter()
+                .map(|value| value.wire())
+                .collect::<Vec<_>>(),
+        ),
+    ] {
+        if values.iter().collect::<BTreeSet<_>>().len() != values.len() {
+            return Err(format!("{label} must be unique").into());
+        }
+    }
+    if let Some(case_id) = &case.expected.openapi_digest_matches {
+        validate_id(case_id, "OpenAPI digest comparison case")?;
+        if case_id == &case.id {
+            return Err("OpenAPI semantic digest cannot be compared with the same case".into());
+        }
+    }
+    let metadata_only = matches!(
+        outcome,
+        OpenApiExpectation::Swagger20MetadataOnly | OpenApiExpectation::YamlMetadataOnly
+    );
+    if metadata_only {
+        if case.support != SupportLevel::MetadataOnly
+            || case.expected.incompleteness != Some(IncompletenessExpectation::FutureMetadataOnly)
+            || case.expected.openapi_version.is_some()
+            || case.expected.openapi_path_count.is_some()
+            || case.expected.openapi_operation_count.is_some()
+        {
+            return Err(
+                "OpenAPI YAML and Swagger 2.0 fixtures must remain future metadata-only".into(),
+            );
+        }
+        return Ok(());
+    }
+
+    if case.support != SupportLevel::Current
+        || case.expected.incompleteness == Some(IncompletenessExpectation::FutureMetadataOnly)
+    {
+        return Err("executable OpenAPI V1 fixtures must use current support".into());
+    }
+    let complete = outcome == OpenApiExpectation::Document;
+    let complete_shape = case.expected.openapi_version.is_some()
+        && case.expected.openapi_path_count.is_some()
+        && case.expected.openapi_operation_count.is_some();
+    if complete != complete_shape {
+        return Err(
+            "complete OpenAPI documents require exact version, path, and operation expectations"
+                .into(),
+        );
+    }
+    let has_catalog_expectations = !case
+        .expected
+        .openapi_required_parameter_locations
+        .is_empty()
+        || !case.expected.openapi_required_security_schemes.is_empty()
+        || !case
+            .expected
+            .openapi_required_effective_security_schemes
+            .is_empty()
+        || !case.expected.openapi_required_server_kinds.is_empty()
+        || !case.expected.openapi_required_candidate_tags.is_empty()
+        || case.expected.openapi_digest_matches.is_some();
+    if !complete && has_catalog_expectations {
+        return Err("non-document OpenAPI outcomes cannot declare catalog expectations".into());
+    }
+    match (outcome, case.expected.openapi_generated_input) {
+        (
+            OpenApiExpectation::TooLarge,
+            Some(OpenApiGeneratedInputExpectation::DocumentSizePlusOne),
+        )
+        | (
+            OpenApiExpectation::LimitExceeded,
+            Some(OpenApiGeneratedInputExpectation::PathLimitPlusOne),
+        )
+        | (OpenApiExpectation::Document, None)
+        | (OpenApiExpectation::UnsupportedVersion, None)
+        | (OpenApiExpectation::Malformed, None)
+        | (OpenApiExpectation::LimitExceeded, None) => {},
+        _ => {
+            return Err(
+                "OpenAPI generated-boundary input must match its exact typed outcome".into(),
+            )
+        },
     }
     Ok(())
 }
@@ -1167,6 +1446,19 @@ fn validate_expected(expected: &ExpectedSemantics) -> TaskResult {
         expected.xss_relation.is_some(),
         expected.normalization_outcome.is_some(),
         expected.graphql_evidence.is_some(),
+        expected.openapi_outcome.is_some(),
+        expected.openapi_version.is_some(),
+        expected.openapi_path_count.is_some(),
+        expected.openapi_operation_count.is_some(),
+        !expected.openapi_required_parameter_locations.is_empty(),
+        !expected.openapi_required_security_schemes.is_empty(),
+        !expected
+            .openapi_required_effective_security_schemes
+            .is_empty(),
+        !expected.openapi_required_server_kinds.is_empty(),
+        !expected.openapi_required_candidate_tags.is_empty(),
+        expected.openapi_digest_matches.is_some(),
+        expected.openapi_generated_input.is_some(),
         expected.authorization_outcome.is_some(),
         expected.assessment_capability.is_some(),
         expected.maximum_disposition.is_some(),
@@ -1216,6 +1508,21 @@ fn validate_case_relationships(
     }
     for loaded in cases {
         let case = &loaded.case;
+        if let Some(expected_id) = case.expected.openapi_digest_matches.as_deref() {
+            let expected_case = ids
+                .get(expected_id)
+                .copied()
+                .ok_or("OpenAPI digest comparison references an unknown case")?;
+            if case.category != CaseCategory::ApiOpenapi
+                || expected_case.category != CaseCategory::ApiOpenapi
+                || case.expected.openapi_outcome != Some(OpenApiExpectation::Document)
+                || expected_case.expected.openapi_outcome != Some(OpenApiExpectation::Document)
+            {
+                return Err(
+                    "OpenAPI digest comparisons require two complete OpenAPI document cases".into(),
+                );
+            }
+        }
         match case.request.role {
             ExchangeRole::Bootstrap | ExchangeRole::Control if case.parent_case.is_some() => {
                 return Err("bootstrap/control cases cannot name a parent case".into())
@@ -1648,6 +1955,7 @@ fn validate_case_decoded_safety(case: &FixtureCase) -> TaskResult {
                         .flat_map(|view| [view.media_type.as_str(), view.body_file.as_str()]),
                 )
         }))
+        .chain(case.expected.openapi_digest_matches.as_deref())
         .chain(case.expected.assessment_capability.as_deref())
     {
         validate_safe_fixture_bytes(value.as_bytes())?;
@@ -2083,6 +2391,75 @@ fn digest_expected(writer: &mut DigestWriter, expected: &ExpectedSemantics) {
     writer.optional(
         "expected.graphql_evidence",
         expected.graphql_evidence.map(|value| value.wire()),
+    );
+    writer.optional(
+        "expected.openapi_outcome",
+        expected.openapi_outcome.map(|value| value.wire()),
+    );
+    writer.optional(
+        "expected.openapi_version",
+        expected.openapi_version.map(|value| value.wire()),
+    );
+    writer.optional_number(
+        "expected.openapi_path_count",
+        expected.openapi_path_count.map(u64::from),
+    );
+    writer.optional_number(
+        "expected.openapi_operation_count",
+        expected.openapi_operation_count.map(u64::from),
+    );
+    let mut parameter_locations = expected
+        .openapi_required_parameter_locations
+        .iter()
+        .map(|value| value.wire())
+        .collect::<Vec<_>>();
+    parameter_locations.sort_unstable();
+    for value in parameter_locations {
+        writer.field("expected.openapi_required_parameter_location", value);
+    }
+    let mut security_schemes = expected
+        .openapi_required_security_schemes
+        .iter()
+        .map(|value| value.wire())
+        .collect::<Vec<_>>();
+    security_schemes.sort_unstable();
+    for value in security_schemes {
+        writer.field("expected.openapi_required_security_scheme", value);
+    }
+    let mut effective_security = expected
+        .openapi_required_effective_security_schemes
+        .iter()
+        .map(|value| value.wire())
+        .collect::<Vec<_>>();
+    effective_security.sort_unstable();
+    for value in effective_security {
+        writer.field("expected.openapi_required_effective_security_scheme", value);
+    }
+    let mut server_kinds = expected
+        .openapi_required_server_kinds
+        .iter()
+        .map(|value| value.wire())
+        .collect::<Vec<_>>();
+    server_kinds.sort_unstable();
+    for value in server_kinds {
+        writer.field("expected.openapi_required_server_kind", value);
+    }
+    let mut candidate_tags = expected
+        .openapi_required_candidate_tags
+        .iter()
+        .map(|value| value.wire())
+        .collect::<Vec<_>>();
+    candidate_tags.sort_unstable();
+    for value in candidate_tags {
+        writer.field("expected.openapi_required_candidate_tag", value);
+    }
+    writer.optional(
+        "expected.openapi_digest_matches",
+        expected.openapi_digest_matches.as_deref(),
+    );
+    writer.optional(
+        "expected.openapi_generated_input",
+        expected.openapi_generated_input.map(|value| value.wire()),
     );
     writer.optional(
         "expected.authorization_outcome",
@@ -2536,6 +2913,23 @@ mod tests {
         case
     }
 
+    fn valid_openapi_case(id: &str) -> FixtureCase {
+        let mut case = valid_case(id);
+        case.category = CaseCategory::ApiOpenapi;
+        case.request.role = ExchangeRole::Bootstrap;
+        case.response.role = ExchangeRole::Bootstrap;
+        case.response.inline_body =
+            Some(r#"{"openapi":"3.1.0","paths":{"/items":{"get":{"responses":{}}}}}"#.to_owned());
+        case.expected = ExpectedSemantics {
+            openapi_outcome: Some(OpenApiExpectation::Document),
+            openapi_version: Some(OpenApiVersionExpectation::OpenApi31),
+            openapi_path_count: Some(1),
+            openapi_operation_count: Some(1),
+            ..ExpectedSemantics::default()
+        };
+        case
+    }
+
     fn validated(cases: Vec<FixtureCase>) -> ValidatedCorpus {
         ValidatedCorpus {
             manifest_source: Vec::new(),
@@ -2593,6 +2987,35 @@ mod tests {
             .expect("workspace root");
         if root.join(MANIFEST_PATH).is_file() {
             run(root, false).expect("checked-in corpus");
+        }
+    }
+
+    #[test]
+    fn checked_in_openapi_cases_parse_with_the_strict_fixture_schema() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("workspace root")
+            .join(CORPUS_ROOT)
+            .join("cases");
+        if !root.is_dir() {
+            return;
+        }
+        let mut paths = fs::read_dir(root)
+            .expect("case directory")
+            .map(|entry| entry.expect("case entry").path())
+            .filter(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with("openapi.") && name.ends_with(".toml"))
+            })
+            .collect::<Vec<_>>();
+        paths.sort();
+        assert_eq!(paths.len(), 30, "OpenAPI V1 corpus matrix changed");
+        for path in paths {
+            let source = fs::read_to_string(&path).expect("OpenAPI fixture source");
+            toml::from_str::<FixtureCase>(&source).unwrap_or_else(|error| {
+                panic!("{} failed strict parsing: {error}", path.display())
+            });
         }
     }
 
@@ -3097,6 +3520,74 @@ mod tests {
         case.expected.incompleteness = Some(IncompletenessExpectation::FutureMetadataOnly);
         case.expected.graphql_evidence = Some(GraphqlExpectation::GetQueryMetadataOnly);
         validate_graphql_support_contract(&case).expect("GET query remains metadata-only");
+    }
+
+    #[test]
+    fn openapi_support_contract_separates_current_and_metadata_only_documents() {
+        let mut case = valid_openapi_case("openapi-current");
+        validate_openapi_support_contract(&case).expect("bounded JSON document is current");
+
+        case.support = SupportLevel::MetadataOnly;
+        case.expected.incompleteness = Some(IncompletenessExpectation::FutureMetadataOnly);
+        assert!(validate_openapi_support_contract(&case).is_err());
+
+        case.expected.openapi_outcome = Some(OpenApiExpectation::Swagger20MetadataOnly);
+        case.expected.openapi_version = None;
+        case.expected.openapi_path_count = None;
+        case.expected.openapi_operation_count = None;
+        validate_openapi_support_contract(&case).expect("Swagger 2.0 remains metadata-only");
+
+        case.expected.openapi_outcome = Some(OpenApiExpectation::YamlMetadataOnly);
+        validate_openapi_support_contract(&case).expect("YAML remains metadata-only");
+    }
+
+    #[test]
+    fn openapi_generated_boundaries_require_the_exact_typed_outcome() {
+        let mut case = valid_openapi_case("openapi-generated-boundary");
+        case.expected.openapi_version = None;
+        case.expected.openapi_path_count = None;
+        case.expected.openapi_operation_count = None;
+        case.expected.openapi_outcome = Some(OpenApiExpectation::TooLarge);
+        case.expected.openapi_generated_input =
+            Some(OpenApiGeneratedInputExpectation::DocumentSizePlusOne);
+        validate_openapi_support_contract(&case).expect("document byte boundary");
+
+        case.expected.openapi_generated_input =
+            Some(OpenApiGeneratedInputExpectation::PathLimitPlusOne);
+        assert!(validate_openapi_support_contract(&case).is_err());
+        case.expected.openapi_outcome = Some(OpenApiExpectation::LimitExceeded);
+        validate_openapi_support_contract(&case).expect("path catalog boundary");
+    }
+
+    #[test]
+    fn openapi_expectation_sets_are_unique_and_digest_order_independent() {
+        let mut first = valid_openapi_case("openapi-ordering");
+        first.expected.openapi_required_candidate_tags = vec![
+            OpenApiCandidateTagExpectation::ReadOnly,
+            OpenApiCandidateTagExpectation::DeclaresAnonymousAccess,
+        ];
+        let mut second = first.clone();
+        second.expected.openapi_required_candidate_tags.reverse();
+        assert_eq!(
+            semantic_digest(&validated(vec![first.clone()])),
+            semantic_digest(&validated(vec![second]))
+        );
+
+        first
+            .expected
+            .openapi_required_candidate_tags
+            .push(OpenApiCandidateTagExpectation::ReadOnly);
+        assert_error_contains(validate_openapi_support_contract(&first), "must be unique");
+    }
+
+    #[test]
+    fn openapi_fields_are_rejected_outside_the_openapi_category() {
+        let mut case = valid_case("http-with-openapi-field");
+        case.expected.openapi_outcome = Some(OpenApiExpectation::Malformed);
+        assert_error_contains(
+            validate_openapi_support_contract(&case),
+            "limited to the API/OpenAPI category",
+        );
     }
 
     #[test]

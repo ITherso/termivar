@@ -1631,7 +1631,7 @@ mod tests {
     #[test]
     fn local_repository_contract_requires_no_git_history() {
         const EXPECTED_DIGEST: &str =
-            "salvage-sha256:5449610451c2eb3efab4c21166c12d3ffe36ade87aa7c6fd436e67bacded7e58";
+            "salvage-sha256:c2e4fec16f5d044ea2007f134ed18389f2b6890c621159d3554bafcf4be8e333";
 
         let repository = super::super::workspace_root();
         let temporary = TempDir::new().expect("temporary directory");

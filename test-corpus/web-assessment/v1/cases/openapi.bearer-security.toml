@@ -1,0 +1,31 @@
+schema = "security-assessment-fixture/v1"
+id = "openapi.bearer-security"
+revision = 1
+category = "api-openapi"
+purpose = "Classify bearer security declarations without loading a credential."
+provenance = "current-authored"
+support = "current"
+tags = ["bearer", "openapi", "security"]
+
+[request]
+method = "get"
+origin = "https://api.example.test"
+path = "/corpus/openapi/bearer-security.json"
+role = "bootstrap"
+
+[response]
+status = 200
+media_type = "application/json"
+role = "bootstrap"
+completion = "complete"
+truncated = false
+inline_body = '''{"openapi":"3.1.0","components":{"securitySchemes":{"BearerAuth":{"type":"http","scheme":"bearer"}}},"paths":{"/profile":{"get":{"security":[{"BearerAuth":[]}],"responses":{}}}}}'''
+
+[expected]
+openapi_outcome = "document"
+openapi_version = "openapi-3.1"
+openapi_path_count = 1
+openapi_operation_count = 1
+openapi_required_security_schemes = ["http-bearer"]
+openapi_required_effective_security_schemes = ["http-bearer"]
+openapi_required_candidate_tags = ["authorization-review-candidate", "declares-security"]

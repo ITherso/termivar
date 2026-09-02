@@ -1,0 +1,29 @@
+schema = "security-assessment-fixture/v1"
+id = "openapi.vendor-extensions-ignored"
+revision = 1
+category = "api-openapi"
+purpose = "Prove ignored vendor extensions cannot alter the reduced semantic digest."
+provenance = "generated-boundary"
+support = "current"
+tags = ["digest", "openapi", "vendor-extension"]
+
+[request]
+method = "get"
+origin = "https://api.example.test"
+path = "/corpus/openapi/vendor-extension.json"
+role = "bootstrap"
+
+[response]
+status = 200
+media_type = "application/json"
+role = "bootstrap"
+completion = "complete"
+truncated = false
+inline_body = '''{"openapi":"3.0.3","info":{"title":"Fixture","version":"1"},"x-fixture-note":{"ignored":true},"paths":{}}'''
+
+[expected]
+openapi_outcome = "document"
+openapi_version = "openapi-3.0"
+openapi_path_count = 0
+openapi_operation_count = 0
+openapi_digest_matches = "openapi.minimal-3-0-json"

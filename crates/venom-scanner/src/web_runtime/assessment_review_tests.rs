@@ -2192,6 +2192,7 @@ mod scanner_corpus_conformance {
         Xss,
         Normalization,
         ApiGraphql,
+        ApiOpenapi,
         Authorization,
     }
 
@@ -2277,6 +2278,82 @@ mod scanner_corpus_conformance {
         DepthLimited,
         BatchMetadataOnly,
         GetQueryMetadataOnly,
+    }
+
+    #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+    #[serde(rename_all = "kebab-case")]
+    enum OpenApiExpectation {
+        Document,
+        #[serde(rename = "swagger-2.0-metadata-only")]
+        Swagger20MetadataOnly,
+        YamlMetadataOnly,
+        UnsupportedVersion,
+        Malformed,
+        LimitExceeded,
+        TooLarge,
+    }
+
+    #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+    #[serde(rename_all = "kebab-case")]
+    enum OpenApiVersionExpectation {
+        #[serde(rename = "openapi-3.0")]
+        OpenApi30,
+        #[serde(rename = "openapi-3.1")]
+        OpenApi31,
+    }
+
+    #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+    #[serde(rename_all = "kebab-case")]
+    enum OpenApiParameterLocationExpectation {
+        Query,
+        Header,
+        Path,
+        Cookie,
+    }
+
+    #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+    #[serde(rename_all = "kebab-case")]
+    enum OpenApiSecuritySchemeExpectation {
+        ApiKeyQuery,
+        ApiKeyHeader,
+        HttpBearer,
+        Oauth2,
+        #[serde(rename = "openid-connect")]
+        OpenIdConnect,
+    }
+
+    #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+    #[serde(rename_all = "kebab-case")]
+    enum OpenApiServerKindExpectation {
+        ExactOrigin,
+        Relative,
+        CrossOrigin,
+        Templated,
+    }
+
+    #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+    #[serde(rename_all = "kebab-case")]
+    enum OpenApiCandidateTagExpectation {
+        ReadOnly,
+        BodyBearing,
+        Parameterized,
+        DeclaresSecurity,
+        DeclaresAnonymousAccess,
+        JsonRequest,
+        JsonResponse,
+        Deprecated,
+        AuthorizationReviewCandidate,
+        SqlInputCandidate,
+        SsrfUrlCandidate,
+        UploadCandidate,
+        OauthCandidate,
+    }
+
+    #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+    #[serde(rename_all = "kebab-case")]
+    enum OpenApiGeneratedInputExpectation {
+        DocumentSizePlusOne,
+        PathLimitPlusOne,
     }
 
     #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
@@ -2486,6 +2563,28 @@ mod scanner_corpus_conformance {
         #[serde(default)]
         graphql_evidence: Option<GraphqlExpectation>,
         #[serde(default)]
+        openapi_outcome: Option<OpenApiExpectation>,
+        #[serde(default)]
+        openapi_version: Option<OpenApiVersionExpectation>,
+        #[serde(default)]
+        openapi_path_count: Option<u32>,
+        #[serde(default)]
+        openapi_operation_count: Option<u32>,
+        #[serde(default)]
+        openapi_required_parameter_locations: Vec<OpenApiParameterLocationExpectation>,
+        #[serde(default)]
+        openapi_required_security_schemes: Vec<OpenApiSecuritySchemeExpectation>,
+        #[serde(default)]
+        openapi_required_effective_security_schemes: Vec<OpenApiSecuritySchemeExpectation>,
+        #[serde(default)]
+        openapi_required_server_kinds: Vec<OpenApiServerKindExpectation>,
+        #[serde(default)]
+        openapi_required_candidate_tags: Vec<OpenApiCandidateTagExpectation>,
+        #[serde(default)]
+        openapi_digest_matches: Option<String>,
+        #[serde(default)]
+        openapi_generated_input: Option<OpenApiGeneratedInputExpectation>,
+        #[serde(default)]
         authorization_outcome: Option<AuthorizationOutcomeExpectation>,
         #[serde(default)]
         assessment_capability: Option<String>,
@@ -2509,6 +2608,7 @@ mod scanner_corpus_conformance {
         NormalizationReview,
         #[cfg(feature = "graphql-review")]
         GraphqlReview,
+        OpenApiReview,
         AuthorizationReview,
         ApiReasoning,
     }
@@ -3660,6 +3760,265 @@ mod scanner_corpus_conformance {
         ConformanceResult::UnsupportedByCurrentRuntime
     }
 
+    fn openapi_body(case: &FixtureCase) -> Result<Vec<u8>, ()> {
+        use crate::openapi_review::{MAX_OPENAPI_DOCUMENT_BYTES, MAX_OPENAPI_PATHS};
+
+        match case.expected.openapi_generated_input {
+            Some(OpenApiGeneratedInputExpectation::DocumentSizePlusOne) => {
+                Ok(vec![b' '; MAX_OPENAPI_DOCUMENT_BYTES + 1])
+            },
+            Some(OpenApiGeneratedInputExpectation::PathLimitPlusOne) => {
+                let mut source = String::from("{\"openapi\":\"3.1.0\",\"paths\":{");
+                for index in 0..=MAX_OPENAPI_PATHS {
+                    if index != 0 {
+                        source.push(',');
+                    }
+                    source.push_str(&format!("\"/generated/{index}\":{{}}"));
+                }
+                source.push_str("}}");
+                Ok(source.into_bytes())
+            },
+            None => fixture_body(
+                case.response.body_file.as_ref(),
+                case.response.inline_body.as_ref(),
+            ),
+        }
+    }
+
+    fn openapi_document_contract_matches(
+        case: &FixtureCase,
+        document: &crate::openapi_review::OpenApiDocument,
+    ) -> bool {
+        use crate::openapi_review::{
+            OpenApiCandidateTag, OpenApiParameterLocation, OpenApiSecuritySchemeKind,
+            OpenApiServerKind, OpenApiVersion,
+        };
+
+        let version_matches = matches!(
+            (case.expected.openapi_version, document.version()),
+            (
+                Some(OpenApiVersionExpectation::OpenApi30),
+                Some(OpenApiVersion::OpenApi30),
+            ) | (
+                Some(OpenApiVersionExpectation::OpenApi31),
+                Some(OpenApiVersion::OpenApi31),
+            )
+        );
+        let count_matches = usize::try_from(case.expected.openapi_path_count.unwrap_or(u32::MAX))
+            .is_ok_and(|expected| expected == document.path_count())
+            && usize::try_from(case.expected.openapi_operation_count.unwrap_or(u32::MAX))
+                .is_ok_and(|expected| expected == document.operation_count());
+        if !version_matches || !count_matches {
+            return false;
+        }
+
+        let operations = document.catalog().operations();
+        let parameter_locations = operations
+            .iter()
+            .flat_map(|operation| operation.parameters())
+            .map(|parameter| parameter.location())
+            .collect::<BTreeSet<_>>();
+        let declared_security = document
+            .security_schemes()
+            .iter()
+            .copied()
+            .collect::<BTreeSet<_>>();
+        let effective_security = operations
+            .iter()
+            .flat_map(|operation| operation.security().scheme_kinds())
+            .copied()
+            .collect::<BTreeSet<_>>();
+        let server_kinds = document
+            .servers()
+            .iter()
+            .chain(operations.iter().flat_map(|operation| operation.servers()))
+            .map(|server| server.kind())
+            .collect::<BTreeSet<_>>();
+        let candidate_tags = operations
+            .iter()
+            .flat_map(|operation| operation.candidate_tags())
+            .copied()
+            .collect::<BTreeSet<_>>();
+
+        case.expected
+            .openapi_required_parameter_locations
+            .iter()
+            .all(|expected| {
+                parameter_locations.contains(&match expected {
+                    OpenApiParameterLocationExpectation::Query => OpenApiParameterLocation::Query,
+                    OpenApiParameterLocationExpectation::Header => OpenApiParameterLocation::Header,
+                    OpenApiParameterLocationExpectation::Path => OpenApiParameterLocation::Path,
+                    OpenApiParameterLocationExpectation::Cookie => OpenApiParameterLocation::Cookie,
+                })
+            })
+            && case
+                .expected
+                .openapi_required_security_schemes
+                .iter()
+                .all(|expected| {
+                    declared_security.contains(&match expected {
+                        OpenApiSecuritySchemeExpectation::ApiKeyQuery => {
+                            OpenApiSecuritySchemeKind::ApiKeyQuery
+                        },
+                        OpenApiSecuritySchemeExpectation::ApiKeyHeader => {
+                            OpenApiSecuritySchemeKind::ApiKeyHeader
+                        },
+                        OpenApiSecuritySchemeExpectation::HttpBearer => {
+                            OpenApiSecuritySchemeKind::HttpBearer
+                        },
+                        OpenApiSecuritySchemeExpectation::Oauth2 => {
+                            OpenApiSecuritySchemeKind::OAuth2
+                        },
+                        OpenApiSecuritySchemeExpectation::OpenIdConnect => {
+                            OpenApiSecuritySchemeKind::OpenIdConnect
+                        },
+                    })
+                })
+            && case
+                .expected
+                .openapi_required_effective_security_schemes
+                .iter()
+                .all(|expected| {
+                    effective_security.contains(&match expected {
+                        OpenApiSecuritySchemeExpectation::ApiKeyQuery => {
+                            OpenApiSecuritySchemeKind::ApiKeyQuery
+                        },
+                        OpenApiSecuritySchemeExpectation::ApiKeyHeader => {
+                            OpenApiSecuritySchemeKind::ApiKeyHeader
+                        },
+                        OpenApiSecuritySchemeExpectation::HttpBearer => {
+                            OpenApiSecuritySchemeKind::HttpBearer
+                        },
+                        OpenApiSecuritySchemeExpectation::Oauth2 => {
+                            OpenApiSecuritySchemeKind::OAuth2
+                        },
+                        OpenApiSecuritySchemeExpectation::OpenIdConnect => {
+                            OpenApiSecuritySchemeKind::OpenIdConnect
+                        },
+                    })
+                })
+            && case
+                .expected
+                .openapi_required_server_kinds
+                .iter()
+                .all(|expected| {
+                    server_kinds.contains(&match expected {
+                        OpenApiServerKindExpectation::ExactOrigin => OpenApiServerKind::ExactOrigin,
+                        OpenApiServerKindExpectation::Relative => OpenApiServerKind::Relative,
+                        OpenApiServerKindExpectation::CrossOrigin => OpenApiServerKind::CrossOrigin,
+                        OpenApiServerKindExpectation::Templated => OpenApiServerKind::Templated,
+                    })
+                })
+            && case
+                .expected
+                .openapi_required_candidate_tags
+                .iter()
+                .all(|expected| {
+                    candidate_tags.contains(&match expected {
+                        OpenApiCandidateTagExpectation::ReadOnly => OpenApiCandidateTag::ReadOnly,
+                        OpenApiCandidateTagExpectation::BodyBearing => {
+                            OpenApiCandidateTag::BodyBearing
+                        },
+                        OpenApiCandidateTagExpectation::Parameterized => {
+                            OpenApiCandidateTag::Parameterized
+                        },
+                        OpenApiCandidateTagExpectation::DeclaresSecurity => {
+                            OpenApiCandidateTag::DeclaresSecurity
+                        },
+                        OpenApiCandidateTagExpectation::DeclaresAnonymousAccess => {
+                            OpenApiCandidateTag::DeclaresAnonymousAccess
+                        },
+                        OpenApiCandidateTagExpectation::JsonRequest => {
+                            OpenApiCandidateTag::JsonRequest
+                        },
+                        OpenApiCandidateTagExpectation::JsonResponse => {
+                            OpenApiCandidateTag::JsonResponse
+                        },
+                        OpenApiCandidateTagExpectation::Deprecated => {
+                            OpenApiCandidateTag::Deprecated
+                        },
+                        OpenApiCandidateTagExpectation::AuthorizationReviewCandidate => {
+                            OpenApiCandidateTag::AuthorizationReviewCandidate
+                        },
+                        OpenApiCandidateTagExpectation::SqlInputCandidate => {
+                            OpenApiCandidateTag::SqlInputCandidate
+                        },
+                        OpenApiCandidateTagExpectation::SsrfUrlCandidate => {
+                            OpenApiCandidateTag::SsrfUrlCandidate
+                        },
+                        OpenApiCandidateTagExpectation::UploadCandidate => {
+                            OpenApiCandidateTag::UploadCandidate
+                        },
+                        OpenApiCandidateTagExpectation::OauthCandidate => {
+                            OpenApiCandidateTag::OAuthCandidate
+                        },
+                    })
+                })
+    }
+
+    fn run_openapi(case: &FixtureCase, cases: &BTreeMap<&str, &FixtureCase>) -> ConformanceResult {
+        use crate::openapi_review::{parse_openapi_document, OpenApiParseOutcome};
+
+        let Some(expected) = case.expected.openapi_outcome else {
+            return ConformanceResult::FixtureInvalid;
+        };
+        if expected == OpenApiExpectation::YamlMetadataOnly {
+            return ConformanceResult::UnsupportedByCurrentRuntime;
+        }
+        let Ok(origin) = Url::parse(&case.request.origin) else {
+            return ConformanceResult::FixtureInvalid;
+        };
+        let Ok(body) = openapi_body(case) else {
+            return ConformanceResult::FixtureInvalid;
+        };
+        let outcome = parse_openapi_document(&body, &origin);
+        let matches = match (expected, &outcome) {
+            (OpenApiExpectation::Document, OpenApiParseOutcome::Complete(document)) => {
+                if !openapi_document_contract_matches(case, document) {
+                    return ConformanceResult::SemanticMismatch(SemanticMismatch::OpenApiReview);
+                }
+                if let Some(other_id) = case.expected.openapi_digest_matches.as_deref() {
+                    let Some(other) = cases.get(other_id).copied() else {
+                        return ConformanceResult::FixtureInvalid;
+                    };
+                    let Ok(other_origin) = Url::parse(&other.request.origin) else {
+                        return ConformanceResult::FixtureInvalid;
+                    };
+                    let Ok(other_body) = openapi_body(other) else {
+                        return ConformanceResult::FixtureInvalid;
+                    };
+                    let OpenApiParseOutcome::Complete(other_document) =
+                        parse_openapi_document(&other_body, &other_origin)
+                    else {
+                        return ConformanceResult::FixtureInvalid;
+                    };
+                    document.semantic_digest() == other_document.semantic_digest()
+                } else {
+                    let repeated = parse_openapi_document(&body, &origin);
+                    matches!(
+                        repeated,
+                        OpenApiParseOutcome::Complete(ref repeated_document)
+                            if document.semantic_digest() == repeated_document.semantic_digest()
+                    )
+                }
+            },
+            (
+                OpenApiExpectation::Swagger20MetadataOnly,
+                OpenApiParseOutcome::Swagger20MetadataOnly,
+            ) => return ConformanceResult::UnsupportedByCurrentRuntime,
+            (OpenApiExpectation::UnsupportedVersion, OpenApiParseOutcome::UnsupportedVersion)
+            | (OpenApiExpectation::Malformed, OpenApiParseOutcome::Malformed)
+            | (OpenApiExpectation::LimitExceeded, OpenApiParseOutcome::LimitExceeded)
+            | (OpenApiExpectation::TooLarge, OpenApiParseOutcome::TooLarge) => true,
+            _ => false,
+        };
+        if matches {
+            terminal_result(case)
+        } else {
+            ConformanceResult::SemanticMismatch(SemanticMismatch::OpenApiReview)
+        }
+    }
+
     fn authorization_policy_source(fixture: &AuthorizationFixture) -> String {
         let strings = |values: &[String]| {
             values
@@ -3956,6 +4315,7 @@ mod scanner_corpus_conformance {
             CaseCategory::Xss => run_xss(case),
             CaseCategory::Normalization => run_normalization(case),
             CaseCategory::ApiGraphql => run_graphql(case),
+            CaseCategory::ApiOpenapi => run_openapi(case, cases),
             CaseCategory::Authorization => run_authorization(case),
         }
     }
@@ -3963,7 +4323,7 @@ mod scanner_corpus_conformance {
     #[test]
     fn versioned_scanner_corpus_dispatches_through_current_production_semantics() {
         let cases = load_cases().expect("the checked scanner corpus must be structurally valid");
-        assert_eq!(cases.len(), 73, "V1 corpus inventory changed unexpectedly");
+        assert_eq!(cases.len(), 103, "V1 corpus inventory changed unexpectedly");
         let by_id = cases
             .iter()
             .map(|case| (case.id.as_str(), case))
@@ -3995,6 +4355,7 @@ mod scanner_corpus_conformance {
                 CaseCategory::Ssti,
                 CaseCategory::Xss,
                 CaseCategory::ApiGraphql,
+                CaseCategory::ApiOpenapi,
                 CaseCategory::Authorization,
             ])
         );

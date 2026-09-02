@@ -57,6 +57,7 @@ pub mod logging;
 mod lua_config;
 #[cfg(feature = "platform-models")]
 pub mod metrics;
+pub mod openapi_review;
 pub mod payload_strategies;
 pub mod payload_strategy;
 pub mod planner;
