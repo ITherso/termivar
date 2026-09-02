@@ -15,7 +15,7 @@ clap = { workspace = true, features = ["derive"] }
 proc-macro2 = "1"
 serde = { workspace = true, features = ["derive"] }
 sha2 = { workspace = true }
-syn = { version = "2", features = ["full", "visit"] }
+syn = { version = "3", features = ["full", "visit"] }
 toml = { workspace = true }
 url = "2.5"
 venom-exploit = { path = "../crates/venom-exploit", version = "=0.10.0-alpha.1" }
