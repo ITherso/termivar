@@ -21,6 +21,11 @@ use venom_core::{
     RunStepStatus, RunStopCode, RunStopReason,
 };
 
+#[cfg(feature = "authorization-review")]
+use super::resource_authorization_runtime::{
+    WebAssessmentAuthorizationAudit, MAX_AUTHORIZATION_REVIEW_REQUESTS,
+    RESOURCE_AUTHORIZATION_REVIEW_CAPABILITY_ID,
+};
 use super::{
     assessment_item::{
         AssessmentItem, AssessmentItemSet, AssessmentSubjectInventoryEntry,
@@ -31,6 +36,11 @@ use super::{
         WebAssessmentCompletion, WebAssessmentDefenseMode, WebAssessmentLimits,
         WebAssessmentMethod, WebAssessmentSubject, WebAssessmentSubjectOrigin, WebAssessmentUsage,
     },
+};
+#[cfg(feature = "authorization-review")]
+use crate::authorization_review::{
+    AuthorizationReviewOutcome, HARD_MAX_AUTHORIZATION_REVIEW_IGNORED_PATHS,
+    HARD_MAX_AUTHORIZATION_REVIEW_SELECTED_PATHS,
 };
 use crate::RuntimeBudget;
 
@@ -49,13 +59,19 @@ const WEB_ASSESSMENT_STOP_DETAIL: &str = "bounded web assessment completed";
 pub(crate) struct AssessmentRuntimeLimits {
     profile: WebAssessmentLimits,
     active_verification_limit: u16,
+    optional_active_verification_allowance: u16,
 }
 
 impl AssessmentRuntimeLimits {
-    pub(super) const fn new(profile: WebAssessmentLimits, active_verification_limit: u16) -> Self {
+    pub(super) const fn new(
+        profile: WebAssessmentLimits,
+        active_verification_limit: u16,
+        optional_active_verification_allowance: u16,
+    ) -> Self {
         Self {
             profile,
             active_verification_limit,
+            optional_active_verification_allowance,
         }
     }
 }
@@ -93,8 +109,7 @@ impl CompletedWebAssessmentTruth {
         let runtime_active_verification_limit = runtime_limits.active_verification_limit;
         validate_completed_assessment_truth_with_active_limit(
             authorized_root,
-            limits,
-            runtime_active_verification_limit,
+            runtime_limits,
             AssessmentUsageTruth::from(usage),
             completion,
             defense_mode,
@@ -149,6 +164,8 @@ pub struct AssessmentRunReport {
     profile: ScanProfileV1,
     subjects: Vec<AssessmentSubjectInventoryEntry>,
     items: Vec<AssessmentItem>,
+    #[cfg(feature = "authorization-review")]
+    authorization_review: Option<WebAssessmentAuthorizationAudit>,
 }
 
 impl AssessmentRunReport {
@@ -157,9 +174,18 @@ impl AssessmentRunReport {
     pub(crate) fn from_completed_truth(
         items: AssessmentItemSet,
         truth: CompletedWebAssessmentTruth,
+        #[cfg(feature = "authorization-review")] authorization_review: Option<
+            WebAssessmentAuthorizationAudit,
+        >,
     ) -> Result<Self, AssessmentRunReportError> {
         let run_report = build_run_report(&truth)?;
-        Self::new_validated(run_report, items, truth)
+        Self::new_validated(
+            run_report,
+            items,
+            truth,
+            #[cfg(feature = "authorization-review")]
+            authorization_review,
+        )
     }
 
     #[cfg(test)]
@@ -168,13 +194,22 @@ impl AssessmentRunReport {
         items: AssessmentItemSet,
         truth: CompletedWebAssessmentTruth,
     ) -> Result<Self, AssessmentRunReportError> {
-        Self::new_validated(run_report, items, truth)
+        Self::new_validated(
+            run_report,
+            items,
+            truth,
+            #[cfg(feature = "authorization-review")]
+            None,
+        )
     }
 
     fn new_validated(
         run_report: RunReport,
         items: AssessmentItemSet,
         truth: CompletedWebAssessmentTruth,
+        #[cfg(feature = "authorization-review")] authorization_review: Option<
+            WebAssessmentAuthorizationAudit,
+        >,
     ) -> Result<Self, AssessmentRunReportError> {
         validate_run_identity(&run_report, truth.target_identity)?;
         validate_run_completion(&run_report)?;
@@ -192,12 +227,16 @@ impl AssessmentRunReport {
         let (subjects, mut items) = items.into_parts();
         validate_subject_inventory(&subjects, &items)?;
         validate_and_canonicalize_items(truth.profile.profile(), &mut items)?;
+        #[cfg(feature = "authorization-review")]
+        validate_authorization_audit(authorization_review.as_ref(), &items)?;
 
         Ok(Self {
             run_report,
             profile: truth.profile,
             subjects,
             items,
+            #[cfg(feature = "authorization-review")]
+            authorization_review,
         })
     }
 
@@ -229,19 +268,63 @@ impl AssessmentRunReport {
     pub fn item_count(&self) -> usize {
         self.items.len()
     }
+
+    /// Returns the optional redaction-safe resource-authorization audit.
+    #[cfg(feature = "authorization-review")]
+    pub const fn authorization_review_audit(&self) -> Option<&WebAssessmentAuthorizationAudit> {
+        self.authorization_review.as_ref()
+    }
 }
 
 impl fmt::Debug for AssessmentRunReport {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("AssessmentRunReport")
+        let mut debug = formatter.debug_struct("AssessmentRunReport");
+        debug
             .field("schema", &ASSESSMENT_RUN_REPORT_SCHEMA)
             .field("run_report", &"<redacted>")
             .field("profile", &self.profile.profile().id())
             .field("subject_count", &self.subjects.len())
-            .field("item_count", &self.items.len())
-            .finish()
+            .field("item_count", &self.items.len());
+        #[cfg(feature = "authorization-review")]
+        debug.field(
+            "authorization_review_audit_present",
+            &self.authorization_review.is_some(),
+        );
+        debug.finish()
     }
+}
+
+#[cfg(feature = "authorization-review")]
+fn validate_authorization_audit(
+    audit: Option<&WebAssessmentAuthorizationAudit>,
+    items: &[AssessmentItem],
+) -> Result<(), AssessmentRunReportError> {
+    let projected_count = items
+        .iter()
+        .filter(|item| item.capability_id() == RESOURCE_AUTHORIZATION_REVIEW_CAPABILITY_ID)
+        .count();
+    if projected_count > 1 {
+        return Err(AssessmentRunReportError::AuthorizationAuditMismatch);
+    }
+    let Some(audit) = audit else {
+        return if projected_count == 0 {
+            Ok(())
+        } else {
+            Err(AssessmentRunReportError::AuthorizationAuditMismatch)
+        };
+    };
+    let positive = audit.outcome() == AuthorizationReviewOutcome::StableCrossPrincipalEquivalence;
+    if audit.selected_path_count() == 0
+        || usize::from(audit.selected_path_count()) > HARD_MAX_AUTHORIZATION_REVIEW_SELECTED_PATHS
+        || usize::from(audit.ignored_path_count()) > HARD_MAX_AUTHORIZATION_REVIEW_IGNORED_PATHS
+        || usize::from(audit.request_count()) > MAX_AUTHORIZATION_REVIEW_REQUESTS
+        || audit.item_projected() != (projected_count == 1)
+        || positive != audit.item_projected()
+        || (positive && usize::from(audit.request_count()) != MAX_AUTHORIZATION_REVIEW_REQUESTS)
+    {
+        return Err(AssessmentRunReportError::AuthorizationAuditMismatch);
+    }
+    Ok(())
 }
 
 /// Invalid relationship in a typed assessment-run envelope.
@@ -307,6 +390,10 @@ pub enum AssessmentRunReportError {
     /// An item reference did not belong to the consumed subject inventory.
     #[error("assessment item subject reference is outside its projection inventory")]
     SubjectReferenceMismatch,
+    /// The optional authorization audit disagreed with projected item truth.
+    #[cfg(feature = "authorization-review")]
+    #[error("authorization review audit does not match projected item truth")]
+    AuthorizationAuditMismatch,
 }
 
 fn build_run_report(
@@ -447,8 +534,7 @@ fn validate_completed_assessment_truth(
 ) -> Result<(), AssessmentRunReportError> {
     validate_completed_assessment_truth_with_active_limit(
         authorized_root,
-        limits,
-        limits.max_active_verifications(),
+        AssessmentRuntimeLimits::new(limits, limits.max_active_verifications(), 0),
         usage,
         completion,
         defense_mode,
@@ -458,13 +544,16 @@ fn validate_completed_assessment_truth(
 
 fn validate_completed_assessment_truth_with_active_limit(
     authorized_root: &WebAssessmentSubject,
-    limits: WebAssessmentLimits,
-    runtime_active_verification_limit: u16,
+    runtime_limits: AssessmentRuntimeLimits,
     usage: AssessmentUsageTruth,
     completion: &WebAssessmentCompletion,
     defense_mode: WebAssessmentDefenseMode,
     profile: &ScanProfileV1,
 ) -> Result<(), AssessmentRunReportError> {
+    let limits = runtime_limits.profile;
+    let runtime_active_verification_limit = runtime_limits.active_verification_limit;
+    let optional_active_verification_allowance =
+        runtime_limits.optional_active_verification_allowance;
     if profile.profile() != BuiltInScanProfile::WebReview {
         return Err(AssessmentRunReportError::BaselineItemsForbidden);
     }
@@ -500,6 +589,18 @@ fn validate_completed_assessment_truth_with_active_limit(
     }
 
     let request_body_limit = RuntimeBudget::default().max_request_body_bytes();
+    let compiled_optional_allowance = {
+        let allowance = 0_u16;
+        #[cfg(feature = "graphql-review")]
+        let allowance = allowance.saturating_add(1);
+        #[cfg(feature = "authorization-review")]
+        let allowance = allowance.saturating_add(1);
+        allowance
+    };
+    let expected_active_limit = limits
+        .max_active_verifications()
+        .checked_add(optional_active_verification_allowance)
+        .ok_or(AssessmentRunReportError::AssessmentUsageMismatch)?;
     if usage.retained_subjects == 0
         || usage.executed_subjects != usage.retained_subjects
         || usage.retained_subjects > limits.max_subjects()
@@ -507,8 +608,8 @@ fn validate_completed_assessment_truth_with_active_limit(
         || usage.retained_unique_url_bytes < root.as_str().len()
         || usage.retained_unique_url_bytes > limits.max_retained_url_bytes()
         || usage.total_requests > limits.max_total_requests()
-        || runtime_active_verification_limit < limits.max_active_verifications()
-        || runtime_active_verification_limit > limits.max_active_verifications().saturating_add(1)
+        || optional_active_verification_allowance > compiled_optional_allowance
+        || runtime_active_verification_limit != expected_active_limit
         || usage.active_verifications > runtime_active_verification_limit
         || usage.request_body_bytes > request_body_limit
         || usage.response_bytes > limits.max_total_response_bytes()
@@ -985,6 +1086,57 @@ mod tests {
                 &WebAssessmentCompletion::Complete,
                 WebAssessmentDefenseMode::ObservationOnly,
                 &web_review,
+            ),
+            Err(AssessmentRunReportError::AssessmentUsageMismatch)
+        );
+    }
+
+    #[cfg(all(feature = "graphql-review", feature = "authorization-review"))]
+    #[test]
+    fn independently_enabled_optional_children_have_an_exact_additive_active_allowance() {
+        let runtime =
+            WebAssessmentRuntime::builder(Url::parse("https://example.test/review").unwrap())
+                .build()
+                .unwrap();
+        let root = runtime.authorized_root();
+        let limits = WebAssessmentLimits::default();
+        let expected = limits.max_active_verifications().checked_add(2).unwrap();
+        let usage = AssessmentUsageTruth {
+            active_verifications: 2,
+            ..usage_truth(root.url().as_str())
+        };
+        let profile = ScanProfileV1::web_review().unwrap();
+
+        assert_eq!(
+            validate_completed_assessment_truth_with_active_limit(
+                root,
+                AssessmentRuntimeLimits::new(limits, expected, 2),
+                usage,
+                &WebAssessmentCompletion::Complete,
+                WebAssessmentDefenseMode::ObservationOnly,
+                &profile,
+            ),
+            Ok(())
+        );
+        assert_eq!(
+            validate_completed_assessment_truth_with_active_limit(
+                root,
+                AssessmentRuntimeLimits::new(limits, expected - 1, 2),
+                usage,
+                &WebAssessmentCompletion::Complete,
+                WebAssessmentDefenseMode::ObservationOnly,
+                &profile,
+            ),
+            Err(AssessmentRunReportError::AssessmentUsageMismatch)
+        );
+        assert_eq!(
+            validate_completed_assessment_truth_with_active_limit(
+                root,
+                AssessmentRuntimeLimits::new(limits, expected + 1, 3),
+                usage,
+                &WebAssessmentCompletion::Complete,
+                WebAssessmentDefenseMode::ObservationOnly,
+                &profile,
             ),
             Err(AssessmentRunReportError::AssessmentUsageMismatch)
         );

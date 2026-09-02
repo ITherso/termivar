@@ -321,9 +321,13 @@ fn resolve_resource(
     }
     let authority = HttpEvidencePolicy::for_origin(authorized_origin.clone())
         .map_err(|_| AuthorizationReviewPolicyError::InvalidResource)?;
+    let mut origin_root = authorized_origin.clone();
+    origin_root.set_path("/");
+    origin_root.set_query(None);
+    origin_root.set_fragment(None);
     let resource = match Url::parse(raw) {
         Ok(resource) => resource,
-        Err(ParseError::RelativeUrlWithoutBase) => authorized_origin
+        Err(ParseError::RelativeUrlWithoutBase) => origin_root
             .join(raw)
             .map_err(|_| AuthorizationReviewPolicyError::InvalidResource)?,
         Err(_) => return Err(AuthorizationReviewPolicyError::InvalidResource),
@@ -565,6 +569,20 @@ mod tests {
         assert!(!rendered.contains(QUERY_SECRET));
         assert!(!rendered.contains("account-self-profile"));
         assert!(!rendered.contains("/data/account"));
+    }
+
+    #[test]
+    fn relative_resource_is_resolved_from_the_exact_origin_root() {
+        let nested = Url::parse("https://example.test/nested/base/?opaque=ignored").unwrap();
+        let policy = AuthorizationReviewPolicy::parse_toml(
+            &nested,
+            source("api/accounts/42", &["/data/account"], &[], &[]).as_bytes(),
+        )
+        .unwrap();
+        assert_eq!(
+            policy.execution_resource().as_str(),
+            "https://example.test/api/accounts/42"
+        );
     }
 
     #[test]

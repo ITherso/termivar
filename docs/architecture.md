@@ -309,6 +309,33 @@ remain `Informational` / `KnowledgeOnly`. There is no mutation, full schema
 enumeration, authorization testing, depth/complexity probing, second client, or
 WebSocket transport. See [GraphQL surface review](internals/graphql-review.md).
 
+Resource authorization review follows the same single-scanner rule. The
+non-default scanner/CLI `authorization-review` feature and one explicit
+`security.authorization-review-policy/v1` file add exactly one native action
+to `WebAssessmentRuntime`. The operator supplies one exact-origin JSON `GET`
+resource plus distinct primary and peer credentials through the existing
+bounded env/file/stdin input boundary. The action uses the parent broker,
+`RuntimeBudget`, exact-origin authority, cancellation, deadline, evidence
+registry, completeness lifecycle, and final report for four ordered views:
+primary candidate, peer candidate, primary replay, and peer replay. Those four
+dispatches are one logical active verification: the lease is charged when the
+primary replay begins, while the peer replay is passive-accounted in the same
+active decision phase.
+
+No separate authorization scanner, nested Standard runtime, direct client,
+capability-owned authority or budget, detached pass, or independently finalized
+report exists. The only principal-varying request material is the complete
+`Authorization` header; requests are bodyless `GET`, carry no cookies, disable
+redirects and retries, and never mutate or enumerate identifiers. Positive
+projection requires both role replays and both cross-principal rounds to match
+in `Status`, `Fields`, and value-sensitive `Resources`. At most one
+`authorization.resource-cross-principal-equivalence@1` item can be emitted,
+with `NeedsReview` disposition and `KnowledgeOnly` authority. It is not a
+confirmed IDOR, BOLA, authorization bypass, or secure-negative result. The
+existing exact-root authorization-context compatibility path retains its
+public types, two-request accounting, evidence identity, and report shape. See
+[Resource authorization differential review](internals/authorization-differential-review.md).
+
 HTTP execution emits normalized protocol observations for API reasoning:
 validated lowercase media-type essences, an explicit JSON-compatibility flag,
 and bounded path segments. A host-paired comparison becomes an

@@ -2,7 +2,7 @@
 
 The scanner conformance corpus is repository-only test data. It contains 73
 sanitized request/response cases for deterministic checks of current scanner
-semantics and explicitly identified future protocol cases. Twenty-two cases
+semantics and explicitly identified future protocol cases. Twenty-three cases
 exercise the transport-neutral four-view authorization differential contract.
 It is not loaded by `venom scan` and grants no network, execution, or claim
 authority.
@@ -69,7 +69,9 @@ truncated JSON, redirect, HTML challenge, and rate limiting.
 These cases contain no real credentials or target data and dispatch no
 requests. Stable equivalence is conformance evidence for the pure comparator,
 not a labelled vulnerability or proof that an operator-declared policy is
-correct. See [Authorization differential review foundation](authorization-differential-review.md).
+correct. The same pure contract is used by the explicitly enabled resource
+authorization runtime; corpus cases themselves still issue no requests. See
+[Authorization differential review](authorization-differential-review.md).
 
 ## What passing means
 

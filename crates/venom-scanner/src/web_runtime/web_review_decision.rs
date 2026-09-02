@@ -53,7 +53,12 @@ use crate::payload_strategies::normalization_resilience_query_pair::{
 #[cfg(test)]
 pub(crate) const NATIVE_WEB_REVIEW_REASONING_RULE_COUNT: usize = 1;
 #[cfg(test)]
-pub(crate) const NATIVE_WEB_REVIEW_ACTIVE_RULE_COUNT: usize = NATIVE_WEB_REVIEW_ACTION_COUNT;
+pub(crate) const NATIVE_WEB_REVIEW_ACTIVE_RULE_COUNT: usize = NATIVE_WEB_REVIEW_ACTION_COUNT
+    + if cfg!(feature = "authorization-review") {
+        1
+    } else {
+        0
+    };
 #[cfg(test)]
 pub(crate) const WEB_REVIEW_ELIGIBLE_PREDICATE: &str = "web.review.eligible";
 
@@ -86,6 +91,7 @@ pub(crate) enum NativeWebReviewDecisionError {
 pub(crate) struct NativeWebReviewDecisionInstallReport {
     pub(crate) reasoning_rules_inserted: usize,
     pub(crate) actions_inserted: usize,
+    pub(crate) passive_rules_inserted: usize,
     pub(crate) active_rules_inserted: usize,
 }
 
@@ -95,6 +101,7 @@ pub(crate) struct NativeWebReviewDecisionProfile {
     reasoning_rule: Option<ReasoningRule>,
     enabled_actions: Vec<NativeWebReviewActionKind>,
     actions: Vec<AttackAction>,
+    passive_rules: Vec<VerificationRule>,
     active_rules: Vec<VerificationRule>,
 }
 
@@ -136,19 +143,45 @@ impl NativeWebReviewDecisionProfile {
             .copied()
             .map(build_action)
             .collect::<Result<Vec<_>, _>>()?;
-        let active_rules = enabled_actions
+        let mut active_rules = Vec::new();
+        for kind in enabled_actions.iter().copied() {
+            #[cfg(feature = "authorization-review")]
+            if kind == NativeWebReviewActionKind::ResourceAuthorizationDifferential {
+                active_rules.push(build_authorization_terminal_rule(
+                    kind,
+                    VerificationStage::Active,
+                )?);
+            }
+            active_rules.push(build_active_rule(kind)?);
+        }
+        #[cfg(feature = "authorization-review")]
+        let passive_rules = enabled_actions
             .iter()
             .copied()
-            .map(build_active_rule)
+            .filter(|kind| *kind == NativeWebReviewActionKind::ResourceAuthorizationDifferential)
+            .map(|kind| build_authorization_terminal_rule(kind, VerificationStage::Passive))
             .collect::<Result<Vec<_>, _>>()?;
+        #[cfg(not(feature = "authorization-review"))]
+        let passive_rules = Vec::new();
         debug_assert_eq!(actions.len(), enabled_actions.len());
-        debug_assert_eq!(active_rules.len(), enabled_actions.len());
+        #[cfg(feature = "authorization-review")]
+        let authorization_count = usize::from(
+            enabled_actions.contains(&NativeWebReviewActionKind::ResourceAuthorizationDifferential),
+        );
+        #[cfg(not(feature = "authorization-review"))]
+        let authorization_count = 0;
+        debug_assert_eq!(passive_rules.len(), authorization_count);
+        debug_assert_eq!(
+            active_rules.len(),
+            enabled_actions.len() + authorization_count
+        );
         Ok(Self {
             reasoning_rule: (!enabled_actions.is_empty())
                 .then(build_eligibility_rule)
                 .transpose()?,
             enabled_actions,
             actions,
+            passive_rules,
             active_rules,
         })
     }
@@ -182,6 +215,16 @@ impl NativeWebReviewDecisionProfile {
         }
 
         let mut active_rules_inserted = 0;
+        let mut passive_rules_inserted = 0;
+        for rule in &self.passive_rules {
+            passive_rules_inserted += usize::from(matches!(
+                prospective
+                    .verification_mut()
+                    .passive_mut()
+                    .register(rule.clone())?,
+                VerifierWrite::Inserted
+            ));
+        }
         for rule in &self.active_rules {
             active_rules_inserted += usize::from(matches!(
                 prospective
@@ -196,6 +239,7 @@ impl NativeWebReviewDecisionProfile {
         Ok(NativeWebReviewDecisionInstallReport {
             reasoning_rules_inserted,
             actions_inserted,
+            passive_rules_inserted,
             active_rules_inserted,
         })
     }
@@ -234,7 +278,7 @@ fn build_action(
 ) -> Result<AttackAction, NativeWebReviewDecisionError> {
     let predicate = eligible_predicate();
     let value = EvidenceValue::Boolean(true);
-    Ok(AttackAction::new(
+    let action = AttackAction::new(
         kind.action_id(),
         kind.executor_id(),
         Expression::equals(KnowledgeLayer::Hypothesis, predicate.clone(), value.clone()),
@@ -245,12 +289,19 @@ fn build_action(
             RequiredStrength::Any,
         ),
         BenefitScore::from_percent(20)?,
-        ActionCost::new(2)?,
+        ActionCost::new(
+            u32::try_from(kind.maximum_requests_per_case())
+                .expect("native request counts fit the planner cost domain"),
+        )?,
         kind.risk(),
         BTreeSet::new(),
     )?
-    .with_payload_strategy(payload_strategy_ref(kind)?)
-    .with_verification_target(kind.verification_target()))
+    .with_verification_target(kind.verification_target());
+    #[cfg(feature = "authorization-review")]
+    if kind == NativeWebReviewActionKind::ResourceAuthorizationDifferential {
+        return Ok(action);
+    }
+    Ok(action.with_payload_strategy(payload_strategy_ref(kind)?))
 }
 
 fn payload_strategy_ref(
@@ -294,8 +345,47 @@ fn payload_strategy_ref(
             NORMALIZATION_RESILIENCE_QUERY_PAIR_ID,
             NORMALIZATION_RESILIENCE_QUERY_PAIR_REVISION,
         ),
+        #[cfg(feature = "authorization-review")]
+        NativeWebReviewActionKind::ResourceAuthorizationDifferential => {
+            return Err(PayloadStrategyError::DerivationFailed);
+        },
     };
     PayloadStrategyRef::new(id, revision)
+}
+
+#[cfg(feature = "authorization-review")]
+fn build_authorization_terminal_rule(
+    kind: NativeWebReviewActionKind,
+    stage: VerificationStage,
+) -> Result<VerificationRule, VerificationError> {
+    debug_assert_eq!(
+        kind,
+        NativeWebReviewActionKind::ResourceAuthorizationDifferential
+    );
+    let stage_slug = match stage {
+        VerificationStage::Passive => "passive",
+        VerificationStage::Active => "active",
+        _ => {
+            return Err(VerificationError::EmptyValue {
+                field: "authorization review verification stage",
+            });
+        },
+    };
+    VerificationRule::new(
+        format!("web.review.verify.{stage_slug}.authorization-resource-terminal@1"),
+        stage,
+        1_000,
+        Expression::equals(
+            KnowledgeLayer::Evidence,
+            crate::web_actions::authorization_review_phase_terminal_predicate(),
+            EvidenceValue::Boolean(true),
+        ),
+        OutcomeStatus::Blocked,
+        Probability::from_percent(99).map_err(RuleEngineError::from)?,
+        "Authorization review stopped before replay after defensive, rate-limit, or incomplete transport evidence",
+    )?
+    .scoped_to_action(kind.action_id())?
+    .with_case_correlated_evidence()
 }
 
 fn build_active_rule(

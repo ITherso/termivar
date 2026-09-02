@@ -283,6 +283,33 @@ fn normalization_resilience_help_and_default_boundary_follow_the_feature() {
     );
 }
 
+#[test]
+fn resource_authorization_help_and_default_boundary_follow_the_feature() {
+    let help = venom()
+        .args(["scan", "--help"])
+        .output()
+        .expect("failed to run scan help");
+    assert!(help.status.success());
+    let stdout = String::from_utf8(help.stdout).unwrap();
+    for flag in [
+        "--authorization-review-policy",
+        "--authz-primary-env",
+        "--authz-primary-file",
+        "--authz-primary-stdin",
+        "--authz-peer-env",
+        "--authz-peer-file",
+        "--authz-peer-stdin",
+    ] {
+        assert_eq!(
+            stdout.contains(flag),
+            cfg!(feature = "authorization-review"),
+            "unexpected feature boundary for {flag}"
+        );
+    }
+    assert!(!stdout.contains("--authz-primary-value"));
+    assert!(!stdout.contains("--authz-peer-value"));
+}
+
 #[cfg(feature = "normalization-resilience")]
 #[test]
 fn normalization_resilience_rejects_non_review_profiles_before_transport() {

@@ -15,6 +15,20 @@ use crate::{
     HttpEvidencePolicy, KnowledgeBase, RuntimeBudget,
 };
 
+/// Returns whether credentials may be dispatched to this exact target.
+///
+/// Authenticated transport requires HTTPS except for numeric-IP loopback HTTP
+/// fixtures. Hostname-based localhost and every other cleartext origin fail
+/// closed before secret material reaches transport.
+pub(crate) fn authenticated_transport_is_allowed(target: &Url) -> bool {
+    target.scheme() == "https"
+        || (target.scheme() == "http"
+            && target.host().is_some_and(|host| {
+                matches!(host, url::Host::Ipv4(ip) if ip.is_loopback())
+                    || matches!(host, url::Host::Ipv6(ip) if ip.is_loopback())
+            }))
+}
+
 /// One immutable wall-clock origin and absolute deadline shared by all subjects.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct SharedWebRuntimeTiming {

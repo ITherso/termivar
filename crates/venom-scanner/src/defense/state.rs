@@ -123,6 +123,42 @@ impl DefenseState {
         }
     }
 
+    /// Builds the authorization-review projection from the exact retained
+    /// status plus an independently typed challenge/rate-limit classification.
+    /// A denial status alone is an authorization outcome, not defensive
+    /// interference, so it remains observable without becoming execution
+    /// suppression authority.
+    #[cfg(feature = "authorization-review")]
+    pub(crate) fn from_authorization_projection(
+        status: u16,
+        challenged: bool,
+        rate_limited: bool,
+    ) -> Self {
+        let status_signal = if rate_limited {
+            DefenseStatusSignal::RateLimited
+        } else if challenged {
+            DefenseStatusSignal::classify(status)
+        } else {
+            DefenseStatusSignal::Normal
+        };
+        let posture = if challenged {
+            DefensePosture::Blocking
+        } else if rate_limited {
+            DefensePosture::Suspected
+        } else {
+            DefensePosture::Open
+        };
+        Self {
+            status,
+            status_signal,
+            challenged,
+            rate_limited,
+            rate_limit_headers_present: false,
+            fingerprint: None,
+            posture,
+        }
+    }
+
     /// Observes the defensive posture of one response.
     ///
     /// `headers` is a transport-neutral `(name, value)` list matched

@@ -1812,7 +1812,7 @@ mod tests {
     #[test]
     fn exact_control_envelope_requires_only_the_correlated_alias() {
         let operations = operations();
-        let body = format!(r#"{{"data":{{"{}":"Query"}}}}"#, CONTROL_ALIAS);
+        let body = format!(r#"{{"data":{{"{CONTROL_ALIAS}":"Query"}}}}"#);
         assert_eq!(
             classify(
                 operations.control(),

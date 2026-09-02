@@ -170,6 +170,21 @@ fn scan_authorization_flags_conflict(
     }
 }
 
+#[cfg(feature = "authorization-review")]
+fn scan_resource_authorization_flags_conflict(
+    profile: Option<CliScanProfile>,
+    root_authorization_selected: bool,
+    resource_authorization_selected: bool,
+) -> Option<&'static str> {
+    if root_authorization_selected && resource_authorization_selected {
+        Some("resource authorization review cannot be combined with root authorization-context review")
+    } else if resource_authorization_selected && profile != Some(CliScanProfile::WebReview) {
+        Some("resource authorization review requires `--profile web-review`")
+    } else {
+        None
+    }
+}
+
 fn is_exact_origin_root(target: &Url) -> bool {
     matches!(target.scheme(), "http" | "https")
         && target.username().is_empty()
@@ -288,6 +303,73 @@ enum Commands {
             conflicts_with_all = ["auth_env", "auth_file"]
         )]
         auth_stdin: bool,
+        /// Read a strict bounded `security.authorization-review-policy/v1`
+        /// policy from one regular file. This option is compiled only with
+        /// `authorization-review` and requires two distinct principal sources.
+        #[cfg(feature = "authorization-review")]
+        #[arg(
+            long,
+            value_name = "FILE",
+            requires = "profile",
+            conflicts_with_all = ["auth_env", "auth_file", "auth_stdin"]
+        )]
+        authorization_review_policy: Option<PathBuf>,
+        /// Read the primary principal's complete Authorization value from an
+        /// environment variable. Its name and value are redacted.
+        #[cfg(feature = "authorization-review")]
+        #[arg(
+            long,
+            value_name = "ENV_VAR",
+            requires = "authorization_review_policy",
+            conflicts_with_all = ["authz_primary_file", "authz_primary_stdin"]
+        )]
+        authz_primary_env: Option<OsString>,
+        /// Read the primary principal's complete Authorization value from a
+        /// bounded regular file. Its path and value are redacted.
+        #[cfg(feature = "authorization-review")]
+        #[arg(
+            long,
+            value_name = "FILE",
+            requires = "authorization_review_policy",
+            conflicts_with_all = ["authz_primary_env", "authz_primary_stdin"]
+        )]
+        authz_primary_file: Option<PathBuf>,
+        /// Read the primary principal's complete Authorization value from stdin.
+        #[cfg(feature = "authorization-review")]
+        #[arg(
+            long,
+            requires = "authorization_review_policy",
+            conflicts_with_all = ["authz_primary_env", "authz_primary_file", "authz_peer_stdin"]
+        )]
+        authz_primary_stdin: bool,
+        /// Read the peer principal's complete Authorization value from an
+        /// environment variable. Its name and value are redacted.
+        #[cfg(feature = "authorization-review")]
+        #[arg(
+            long,
+            value_name = "ENV_VAR",
+            requires = "authorization_review_policy",
+            conflicts_with_all = ["authz_peer_file", "authz_peer_stdin"]
+        )]
+        authz_peer_env: Option<OsString>,
+        /// Read the peer principal's complete Authorization value from a bounded
+        /// regular file. Its path and value are redacted.
+        #[cfg(feature = "authorization-review")]
+        #[arg(
+            long,
+            value_name = "FILE",
+            requires = "authorization_review_policy",
+            conflicts_with_all = ["authz_peer_env", "authz_peer_stdin"]
+        )]
+        authz_peer_file: Option<PathBuf>,
+        /// Read the peer principal's complete Authorization value from stdin.
+        #[cfg(feature = "authorization-review")]
+        #[arg(
+            long,
+            requires = "authorization_review_policy",
+            conflicts_with_all = ["authz_peer_env", "authz_peer_file", "authz_primary_stdin"]
+        )]
+        authz_peer_stdin: bool,
     },
     /// Run the historical mixed-authority, whole-run-unmetered heuristic pipeline.
     #[cfg(feature = "legacy-scanner")]
@@ -339,6 +421,20 @@ struct DeterministicScanInvocation {
     auth_env: Option<OsString>,
     auth_file: Option<PathBuf>,
     auth_stdin: bool,
+    #[cfg(feature = "authorization-review")]
+    authorization_review_policy: Option<PathBuf>,
+    #[cfg(feature = "authorization-review")]
+    authz_primary_env: Option<OsString>,
+    #[cfg(feature = "authorization-review")]
+    authz_primary_file: Option<PathBuf>,
+    #[cfg(feature = "authorization-review")]
+    authz_primary_stdin: bool,
+    #[cfg(feature = "authorization-review")]
+    authz_peer_env: Option<OsString>,
+    #[cfg(feature = "authorization-review")]
+    authz_peer_file: Option<PathBuf>,
+    #[cfg(feature = "authorization-review")]
+    authz_peer_stdin: bool,
 }
 
 async fn run_deterministic_scan(
@@ -357,6 +453,20 @@ async fn run_deterministic_scan(
         auth_env,
         auth_file,
         auth_stdin,
+        #[cfg(feature = "authorization-review")]
+        authorization_review_policy,
+        #[cfg(feature = "authorization-review")]
+        authz_primary_env,
+        #[cfg(feature = "authorization-review")]
+        authz_primary_file,
+        #[cfg(feature = "authorization-review")]
+        authz_primary_stdin,
+        #[cfg(feature = "authorization-review")]
+        authz_peer_env,
+        #[cfg(feature = "authorization-review")]
+        authz_peer_file,
+        #[cfg(feature = "authorization-review")]
+        authz_peer_stdin,
     } = invocation;
     if scan_flags_conflict(format, explain) {
         use clap::CommandFactory;
@@ -387,6 +497,28 @@ async fn run_deterministic_scan(
             .error(clap::error::ErrorKind::ArgumentConflict, message)
             .exit();
     }
+    #[cfg(feature = "authorization-review")]
+    let root_authorization_selected = auth_env.is_some() || auth_file.is_some() || auth_stdin;
+    #[cfg(feature = "authorization-review")]
+    let resource_authorization_selected = authorization_review_policy.is_some()
+        || authz_primary_env.is_some()
+        || authz_primary_file.is_some()
+        || authz_primary_stdin
+        || authz_peer_env.is_some()
+        || authz_peer_file.is_some()
+        || authz_peer_stdin;
+    #[cfg(feature = "authorization-review")]
+    if let Some(message) = scan_resource_authorization_flags_conflict(
+        profile,
+        root_authorization_selected,
+        resource_authorization_selected,
+    ) {
+        use clap::CommandFactory;
+        Cli::command()
+            .error(clap::error::ErrorKind::ArgumentConflict, message)
+            .exit();
+    }
+
     let authorization_source =
         auth_input::AuthorizationInputSource::select(auth_env, auth_file, auth_stdin)?;
     if let Some(message) =
@@ -411,6 +543,30 @@ async fn run_deterministic_scan(
         )
         .into());
     }
+    #[cfg(feature = "authorization-review")]
+    let resource_authorization_input = auth_input::AuthorizationReviewInput::select(
+        authorization_review_policy,
+        auth_input::AuthorizationSourceOptions::new(
+            authz_primary_env,
+            authz_primary_file,
+            authz_primary_stdin,
+        ),
+        auth_input::AuthorizationSourceOptions::new(
+            authz_peer_env,
+            authz_peer_file,
+            authz_peer_stdin,
+        ),
+    )?;
+    #[cfg(feature = "authorization-review")]
+    if resource_authorization_input.is_some()
+        && !authorization_context_transport_is_allowed(&target)
+    {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "resource authorization review requires HTTPS; numeric loopback HTTP is allowed only for local fixtures",
+        )
+        .into());
+    }
 
     if let Some(selected_profile) = profile {
         let mut profile =
@@ -424,6 +580,10 @@ async fn run_deterministic_scan(
         let root_authorization_context = authorization_source
             .map(auth_input::AuthorizationInputSource::load)
             .transpose()?;
+        #[cfg(feature = "authorization-review")]
+        let resource_authorization_review = resource_authorization_input
+            .map(|input| input.load(&target))
+            .transpose()?;
 
         eprintln!("{DETERMINISTIC_SCAN_WARNING}");
         let execution = assessment_scan::run_profile_scan(
@@ -436,6 +596,8 @@ async fn run_deterministic_scan(
                 root_authorization_context,
                 normalization_resilience,
                 graphql_review,
+                #[cfg(feature = "authorization-review")]
+                resource_authorization_review,
             },
         )
         .await?;
@@ -764,6 +926,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             auth_env,
             auth_file,
             auth_stdin,
+            #[cfg(feature = "authorization-review")]
+            authorization_review_policy,
+            #[cfg(feature = "authorization-review")]
+            authz_primary_env,
+            #[cfg(feature = "authorization-review")]
+            authz_primary_file,
+            #[cfg(feature = "authorization-review")]
+            authz_primary_stdin,
+            #[cfg(feature = "authorization-review")]
+            authz_peer_env,
+            #[cfg(feature = "authorization-review")]
+            authz_peer_file,
+            #[cfg(feature = "authorization-review")]
+            authz_peer_stdin,
         }) => {
             #[cfg(not(feature = "normalization-resilience"))]
             let normalization_resilience = false;
@@ -782,6 +958,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 auth_env,
                 auth_file,
                 auth_stdin,
+                #[cfg(feature = "authorization-review")]
+                authorization_review_policy,
+                #[cfg(feature = "authorization-review")]
+                authz_primary_env,
+                #[cfg(feature = "authorization-review")]
+                authz_primary_file,
+                #[cfg(feature = "authorization-review")]
+                authz_primary_stdin,
+                #[cfg(feature = "authorization-review")]
+                authz_peer_env,
+                #[cfg(feature = "authorization-review")]
+                authz_peer_file,
+                #[cfg(feature = "authorization-review")]
+                authz_peer_stdin,
             })
             .await?;
         },
@@ -846,6 +1036,20 @@ mod tests {
                 auth_env,
                 auth_file,
                 auth_stdin,
+                #[cfg(feature = "authorization-review")]
+                authorization_review_policy,
+                #[cfg(feature = "authorization-review")]
+                authz_primary_env,
+                #[cfg(feature = "authorization-review")]
+                authz_primary_file,
+                #[cfg(feature = "authorization-review")]
+                authz_primary_stdin,
+                #[cfg(feature = "authorization-review")]
+                authz_peer_env,
+                #[cfg(feature = "authorization-review")]
+                authz_peer_file,
+                #[cfg(feature = "authorization-review")]
+                authz_peer_stdin,
             }) => {
                 assert_eq!(target.as_str(), "https://example.test/");
                 assert_eq!(format, OutputFormat::Text);
@@ -861,6 +1065,16 @@ mod tests {
                 assert_eq!(auth_env, None);
                 assert_eq!(auth_file, None);
                 assert!(!auth_stdin);
+                #[cfg(feature = "authorization-review")]
+                {
+                    assert_eq!(authorization_review_policy, None);
+                    assert_eq!(authz_primary_env, None);
+                    assert_eq!(authz_primary_file, None);
+                    assert!(!authz_primary_stdin);
+                    assert_eq!(authz_peer_env, None);
+                    assert_eq!(authz_peer_file, None);
+                    assert!(!authz_peer_stdin);
+                }
             },
             _ => panic!("expected the deterministic scan command"),
         }
@@ -886,6 +1100,20 @@ mod tests {
                 auth_env,
                 auth_file,
                 auth_stdin,
+                #[cfg(feature = "authorization-review")]
+                authorization_review_policy,
+                #[cfg(feature = "authorization-review")]
+                authz_primary_env,
+                #[cfg(feature = "authorization-review")]
+                authz_primary_file,
+                #[cfg(feature = "authorization-review")]
+                authz_primary_stdin,
+                #[cfg(feature = "authorization-review")]
+                authz_peer_env,
+                #[cfg(feature = "authorization-review")]
+                authz_peer_file,
+                #[cfg(feature = "authorization-review")]
+                authz_peer_stdin,
             }) => {
                 assert_eq!(target.as_str(), "https://example.test/");
                 assert_eq!(format, OutputFormat::Text, "text is the default format");
@@ -904,6 +1132,16 @@ mod tests {
                 assert_eq!(auth_env, None);
                 assert_eq!(auth_file, None);
                 assert!(!auth_stdin);
+                #[cfg(feature = "authorization-review")]
+                {
+                    assert_eq!(authorization_review_policy, None);
+                    assert_eq!(authz_primary_env, None);
+                    assert_eq!(authz_primary_file, None);
+                    assert!(!authz_primary_stdin);
+                    assert_eq!(authz_peer_env, None);
+                    assert_eq!(authz_peer_file, None);
+                    assert!(!authz_peer_stdin);
+                }
             },
             _ => panic!("expected the deterministic scan command"),
         }
@@ -1211,6 +1449,200 @@ mod tests {
             "--profile",
             "web-review",
             "--graphql-review",
+            "https://example.test/",
+        ])
+        .is_err());
+    }
+
+    #[cfg(feature = "authorization-review")]
+    #[test]
+    fn resource_authorization_review_has_only_explicit_web_review_inputs() {
+        use clap::CommandFactory as _;
+
+        let mut command = Cli::command();
+        let help = command
+            .find_subcommand_mut("scan")
+            .unwrap()
+            .render_long_help()
+            .to_string();
+        for flag in [
+            "--authorization-review-policy",
+            "--authz-primary-env",
+            "--authz-primary-file",
+            "--authz-primary-stdin",
+            "--authz-peer-env",
+            "--authz-peer-file",
+            "--authz-peer-stdin",
+        ] {
+            assert!(help.contains(flag), "missing feature-gated flag {flag}");
+        }
+        assert!(!help.contains("--authz-primary-value"));
+        assert!(!help.contains("--authz-peer-value"));
+
+        assert!(Cli::try_parse_from([
+            "venom",
+            "scan",
+            "--authorization-review-policy",
+            "private-policy.toml",
+            "--authz-primary-env",
+            "PRIVATE_PRIMARY_ENV",
+            "--authz-peer-file",
+            "private-peer-file",
+            "https://example.test/",
+        ])
+        .is_err());
+
+        let baseline = Cli::try_parse_from([
+            "venom",
+            "scan",
+            "--profile",
+            "baseline",
+            "--authorization-review-policy",
+            "private-policy.toml",
+            "--authz-primary-env",
+            "PRIVATE_PRIMARY_ENV",
+            "--authz-peer-file",
+            "private-peer-file",
+            "https://example.test/",
+        ])
+        .unwrap();
+        assert!(matches!(
+            baseline.command,
+            Some(Commands::Scan {
+                profile: Some(CliScanProfile::Baseline),
+                authorization_review_policy: Some(_),
+                authz_primary_env: Some(_),
+                authz_peer_file: Some(_),
+                ..
+            })
+        ));
+        assert_eq!(
+            scan_resource_authorization_flags_conflict(Some(CliScanProfile::Baseline), false, true,),
+            Some("resource authorization review requires `--profile web-review`")
+        );
+
+        let review = Cli::try_parse_from([
+            "venom",
+            "scan",
+            "--profile",
+            "web-review",
+            "--authorization-review-policy",
+            "private-policy.toml",
+            "--authz-primary-env",
+            "PRIVATE_PRIMARY_ENV",
+            "--authz-peer-file",
+            "private-peer-file",
+            "https://example.test/",
+        ])
+        .unwrap();
+        assert!(matches!(
+            review.command,
+            Some(Commands::Scan {
+                profile: Some(CliScanProfile::WebReview),
+                authorization_review_policy: Some(_),
+                authz_primary_env: Some(_),
+                authz_peer_file: Some(_),
+                ..
+            })
+        ));
+        assert_eq!(
+            scan_resource_authorization_flags_conflict(
+                Some(CliScanProfile::WebReview),
+                false,
+                true,
+            ),
+            None
+        );
+    }
+
+    #[cfg(feature = "authorization-review")]
+    #[test]
+    fn resource_authorization_review_rejects_ambiguous_secret_workflows() {
+        assert!(Cli::try_parse_from([
+            "venom",
+            "scan",
+            "--profile",
+            "web-review",
+            "--auth-env",
+            "ROOT_PRIVATE_ENV",
+            "--authorization-review-policy",
+            "private-policy.toml",
+            "--authz-primary-env",
+            "PRIMARY_PRIVATE_ENV",
+            "--authz-peer-env",
+            "PEER_PRIVATE_ENV",
+            "https://example.test/",
+        ])
+        .is_err());
+        assert!(Cli::try_parse_from([
+            "venom",
+            "scan",
+            "--profile",
+            "web-review",
+            "--authorization-review-policy",
+            "private-policy.toml",
+            "--authz-primary-stdin",
+            "--authz-peer-stdin",
+            "https://example.test/",
+        ])
+        .is_err());
+        assert!(Cli::try_parse_from([
+            "venom",
+            "scan",
+            "--profile",
+            "web-review",
+            "--authorization-review-policy",
+            "private-policy.toml",
+            "--authz-primary-env",
+            "PRIMARY_ONE",
+            "--authz-primary-file",
+            "primary-two",
+            "--authz-peer-env",
+            "PEER_ONE",
+            "https://example.test/",
+        ])
+        .is_err());
+        assert_eq!(
+            scan_resource_authorization_flags_conflict(
+                Some(CliScanProfile::WebReview),
+                true,
+                true,
+            ),
+            Some(
+                "resource authorization review cannot be combined with root authorization-context review"
+            )
+        );
+    }
+
+    #[cfg(not(feature = "authorization-review"))]
+    #[test]
+    fn default_cli_does_not_expose_resource_authorization_inputs() {
+        use clap::CommandFactory as _;
+
+        let mut command = Cli::command();
+        let help = command
+            .find_subcommand_mut("scan")
+            .unwrap()
+            .render_long_help()
+            .to_string();
+        for flag in [
+            "--authorization-review-policy",
+            "--authz-primary-env",
+            "--authz-primary-file",
+            "--authz-primary-stdin",
+            "--authz-peer-env",
+            "--authz-peer-file",
+            "--authz-peer-stdin",
+        ] {
+            assert!(!help.contains(flag), "default CLI exposed {flag}");
+        }
+        assert!(Cli::try_parse_from([
+            "venom",
+            "scan",
+            "--profile",
+            "web-review",
+            "--authorization-review-policy",
+            "review.toml",
             "https://example.test/",
         ])
         .is_err());

@@ -5,6 +5,14 @@ use crate::web_runtime::{
     AssessmentBasis, AssessmentRunReport, AssessmentRunReportError, ScanProfileV1,
     WebAssessmentRunReport,
 };
+#[cfg(all(feature = "scanning", feature = "authorization-review"))]
+use crate::{
+    authorization_review::{
+        AuthorizationReviewOutcome, HARD_MAX_AUTHORIZATION_REVIEW_IGNORED_PATHS,
+        HARD_MAX_AUTHORIZATION_REVIEW_SELECTED_PATHS,
+    },
+    web_runtime::{MAX_AUTHORIZATION_REVIEW_REQUESTS, RESOURCE_AUTHORIZATION_REVIEW_CAPABILITY_ID},
+};
 use serde::Serialize;
 use std::{error::Error, fmt, io};
 use venom_core::{
@@ -804,6 +812,63 @@ fn render_assessment_csv(
             "",
         ],
     )?;
+    #[cfg(feature = "authorization-review")]
+    if let Some(audit) = &document.authorization_review {
+        let request_count = audit.request_count.to_string();
+        let summary = format!(
+            "policy_id={};selected_path_count={};ignored_path_count={};primary_stable={};peer_stable={};cross_resources_equivalent={};item_projected={}",
+            audit.policy_id,
+            audit.selected_path_count,
+            audit.ignored_path_count,
+            optional_bool_token(audit.primary_stable),
+            optional_bool_token(audit.peer_stable),
+            optional_bool_token(audit.cross_resources_equivalent),
+            audit.item_projected,
+        );
+        write_assessment_csv_row(
+            &mut output,
+            [
+                "authorization_review_audit",
+                audit.schema,
+                "",
+                "",
+                "",
+                "",
+                audit.outcome,
+                "",
+                "",
+                "",
+                audit.capability_id,
+                "",
+                "",
+                if audit.item_projected {
+                    "needs_review"
+                } else {
+                    ""
+                },
+                if audit.item_projected {
+                    "differential"
+                } else {
+                    ""
+                },
+                "",
+                "",
+                "",
+                &request_count,
+                &summary,
+                "authorization-review",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+            ],
+        )?;
+    }
     for item in &document.items {
         let confidence_ppm = item.confidence_ppm.to_string();
         let evidence_count = item.evidence_count.to_string();
@@ -888,7 +953,21 @@ code{overflow-wrap:anywhere}.empty{font-style:italic}</style></head><body><main>
         write_html_text(&mut output, &value)?;
         output.push_str("</code></dd>")?;
     }
-    output.push_str("</dl><section><h2>Assessment items</h2>")?;
+    output.push_str("</dl>")?;
+    #[cfg(feature = "authorization-review")]
+    if let Some(audit) = &document.authorization_review {
+        output
+            .push_str("<section><h2>Resource authorization review audit</h2><dl class=\"meta\">")?;
+        for (label, value) in audit.metadata() {
+            output.push_str("<dt>")?;
+            write_html_text(&mut output, label)?;
+            output.push_str("</dt><dd><code>")?;
+            write_html_text(&mut output, &value)?;
+            output.push_str("</code></dd>")?;
+        }
+        output.push_str("</dl></section>")?;
+    }
+    output.push_str("<section><h2>Assessment items</h2>")?;
     if document.items.is_empty() {
         output.push_str("<p class=\"empty\">No assessment items.</p>")?;
     } else {
@@ -950,6 +1029,15 @@ fn render_assessment_markdown(
         write_markdown_code_span(&mut output, &value)?;
         output.push_char('\n')?;
     }
+    #[cfg(feature = "authorization-review")]
+    if let Some(audit) = &document.authorization_review {
+        output.push_str("\n## Resource authorization review audit\n\n")?;
+        for (label, value) in audit.metadata() {
+            output.push_fmt(format_args!("- {label}: "))?;
+            write_markdown_code_span(&mut output, &value)?;
+            output.push_char('\n')?;
+        }
+    }
     output.push_str("\n## Assessment items\n\n")?;
     if document.items.is_empty() {
         output.push_str("No assessment items.\n")?;
@@ -991,6 +1079,9 @@ struct AssessmentDocument<'a> {
     status: &'static str,
     subject_count: u64,
     item_count: u64,
+    #[cfg(feature = "authorization-review")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    authorization_review: Option<AssessmentAuthorizationAuditDocument>,
     items: Vec<AssessmentItemDocument<'a>>,
 }
 
@@ -1008,6 +1099,10 @@ impl<'a> AssessmentDocument<'a> {
                 .map_err(|_| ReportError::Serialization)?,
             item_count: u64::try_from(report.item_count())
                 .map_err(|_| ReportError::Serialization)?,
+            #[cfg(feature = "authorization-review")]
+            authorization_review: report
+                .authorization_review_audit()
+                .map(AssessmentAuthorizationAuditDocument::from_audit),
             items: report
                 .items()
                 .iter()
@@ -1036,10 +1131,129 @@ impl<'a> AssessmentDocument<'a> {
         {
             return Err(ReportError::Serialization);
         }
+        #[cfg(feature = "authorization-review")]
+        if let Some(audit) = &self.authorization_review {
+            audit.validate(&self.items)?;
+        }
         for item in &self.items {
             item.validate()?;
         }
         Ok(())
+    }
+}
+
+#[cfg(all(feature = "scanning", feature = "authorization-review"))]
+#[derive(Serialize)]
+struct AssessmentAuthorizationAuditDocument {
+    schema: &'static str,
+    capability_id: &'static str,
+    policy_id: String,
+    selected_path_count: u8,
+    ignored_path_count: u8,
+    request_count: u8,
+    outcome: &'static str,
+    primary_stable: Option<bool>,
+    peer_stable: Option<bool>,
+    cross_resources_equivalent: Option<bool>,
+    item_projected: bool,
+}
+
+#[cfg(all(feature = "scanning", feature = "authorization-review"))]
+impl AssessmentAuthorizationAuditDocument {
+    fn from_audit(audit: &crate::web_runtime::WebAssessmentAuthorizationAudit) -> Self {
+        Self {
+            schema: "security.authorization-review-audit/v1",
+            capability_id: RESOURCE_AUTHORIZATION_REVIEW_CAPABILITY_ID,
+            policy_id: audit.policy_id().to_string(),
+            selected_path_count: audit.selected_path_count(),
+            ignored_path_count: audit.ignored_path_count(),
+            request_count: audit.request_count(),
+            outcome: authorization_review_outcome_token(audit.outcome()),
+            primary_stable: audit.primary_stable(),
+            peer_stable: audit.peer_stable(),
+            cross_resources_equivalent: audit.cross_resources_equivalent(),
+            item_projected: audit.item_projected(),
+        }
+    }
+
+    fn validate(&self, items: &[AssessmentItemDocument<'_>]) -> Result<(), ReportError> {
+        let projected_count = items
+            .iter()
+            .filter(|item| item.capability_id == RESOURCE_AUTHORIZATION_REVIEW_CAPABILITY_ID)
+            .count();
+        let positive = self.outcome == "stable_cross_principal_equivalence";
+        if self.schema != "security.authorization-review-audit/v1"
+            || self.capability_id != RESOURCE_AUTHORIZATION_REVIEW_CAPABILITY_ID
+            || !self.policy_id.starts_with("authorization-policy-sha256:")
+            || self.selected_path_count == 0
+            || usize::from(self.selected_path_count) > HARD_MAX_AUTHORIZATION_REVIEW_SELECTED_PATHS
+            || usize::from(self.ignored_path_count) > HARD_MAX_AUTHORIZATION_REVIEW_IGNORED_PATHS
+            || usize::from(self.request_count) > MAX_AUTHORIZATION_REVIEW_REQUESTS
+            || projected_count > 1
+            || self.item_projected != (projected_count == 1)
+            || positive != self.item_projected
+            || (positive && usize::from(self.request_count) != MAX_AUTHORIZATION_REVIEW_REQUESTS)
+        {
+            return Err(ReportError::Serialization);
+        }
+        Ok(())
+    }
+
+    fn metadata(&self) -> [(&'static str, String); 11] {
+        [
+            ("Audit schema", self.schema.to_owned()),
+            ("Capability", self.capability_id.to_owned()),
+            ("Policy ID", self.policy_id.clone()),
+            ("Selected path count", self.selected_path_count.to_string()),
+            ("Ignored path count", self.ignored_path_count.to_string()),
+            ("Request count", self.request_count.to_string()),
+            ("Outcome", self.outcome.to_owned()),
+            ("Primary stable", optional_bool_token(self.primary_stable)),
+            ("Peer stable", optional_bool_token(self.peer_stable)),
+            (
+                "Cross resources equivalent",
+                optional_bool_token(self.cross_resources_equivalent),
+            ),
+            ("Item projected", self.item_projected.to_string()),
+        ]
+    }
+}
+
+#[cfg(all(feature = "scanning", feature = "authorization-review"))]
+fn optional_bool_token(value: Option<bool>) -> String {
+    match value {
+        Some(true) => "true".to_owned(),
+        Some(false) => "false".to_owned(),
+        None => "not available".to_owned(),
+    }
+}
+
+#[cfg(all(feature = "scanning", feature = "authorization-review"))]
+const fn authorization_review_outcome_token(outcome: AuthorizationReviewOutcome) -> &'static str {
+    match outcome {
+        AuthorizationReviewOutcome::NotEligible => "not_eligible",
+        AuthorizationReviewOutcome::PrimaryBaselineInvalid => "primary_baseline_invalid",
+        AuthorizationReviewOutcome::PrimaryUnstable => "primary_unstable",
+        AuthorizationReviewOutcome::PeerDenied => "peer_denied",
+        AuthorizationReviewOutcome::PeerUnstable => "peer_unstable",
+        AuthorizationReviewOutcome::CrossStatusDifferent => "cross_status_different",
+        AuthorizationReviewOutcome::CrossFieldsEquivalentOnly => "cross_fields_equivalent_only",
+        AuthorizationReviewOutcome::CrossResourcesDifferent => "cross_resources_different",
+        AuthorizationReviewOutcome::StableCrossPrincipalEquivalence => {
+            "stable_cross_principal_equivalence"
+        },
+        AuthorizationReviewOutcome::DefensiveInterference => "defensive_interference",
+        AuthorizationReviewOutcome::RateLimited => "rate_limited",
+        AuthorizationReviewOutcome::RedirectObserved => "redirect_observed",
+        AuthorizationReviewOutcome::UnsupportedMedia => "unsupported_media",
+        AuthorizationReviewOutcome::MalformedJson => "malformed_json",
+        AuthorizationReviewOutcome::GenericJsonErrorEnvelope => "generic_json_error_envelope",
+        AuthorizationReviewOutcome::SelectedPathMissing => "selected_path_missing",
+        AuthorizationReviewOutcome::Truncated => "truncated",
+        AuthorizationReviewOutcome::Incomplete => "incomplete",
+        AuthorizationReviewOutcome::BudgetExhausted => "budget_exhausted",
+        AuthorizationReviewOutcome::Cancelled => "cancelled",
+        AuthorizationReviewOutcome::ContractMismatch => "contract_mismatch",
     }
 }
 
@@ -1752,6 +1966,8 @@ mod tests {
             status: "complete",
             subject_count: 1,
             item_count: 1,
+            #[cfg(feature = "authorization-review")]
+            authorization_review: None,
             items: vec![AssessmentItemDocument {
                 schema: crate::web_runtime::ASSESSMENT_ITEM_SCHEMA,
                 capability_id: text,
@@ -1925,6 +2141,27 @@ mod tests {
                 assert!(rendered.contains(token), "{format:?} omitted {token}");
             }
         }
+    }
+
+    #[cfg(all(feature = "scanning", feature = "authorization-review"))]
+    #[test]
+    fn absent_authorization_audit_adds_no_wire_field_row_or_section() {
+        let document = complete_assessment_document();
+        assert!(document.authorization_review.is_none());
+
+        let json = render_assessment_with_limit(&document, ReportFormat::Json, usize::MAX).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert!(parsed.get("authorization_review").is_none());
+
+        let csv = render_assessment_with_limit(&document, ReportFormat::Csv, usize::MAX).unwrap();
+        assert!(!csv.contains("authorization_review_audit"));
+
+        let html = render_assessment_with_limit(&document, ReportFormat::Html, usize::MAX).unwrap();
+        assert!(!html.contains("Resource authorization review audit"));
+
+        let markdown =
+            render_assessment_with_limit(&document, ReportFormat::Markdown, usize::MAX).unwrap();
+        assert!(!markdown.contains("Resource authorization review audit"));
     }
 
     #[cfg(feature = "scanning")]

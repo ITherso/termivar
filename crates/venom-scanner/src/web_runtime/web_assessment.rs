@@ -28,10 +28,23 @@ use crate::graphql_review::MAX_GRAPHQL_ACTIVE_VERIFICATIONS;
 #[cfg(feature = "graphql-review")]
 use crate::DefenseInteractionClass;
 
+#[cfg(feature = "authorization-review")]
+use super::authority::authenticated_transport_is_allowed;
+#[cfg(feature = "authorization-review")]
+use crate::authorization_review::{
+    AuthorizationPrincipalPair, AuthorizationReviewOutcome, AuthorizationReviewPolicy,
+};
+
 #[cfg(feature = "graphql-review")]
 use super::graphql_runtime::{
     execute_graphql_review, graphql_endpoint_hints, CommittedGraphqlReview, GraphqlRuntimeResult,
     GraphqlRuntimeStop,
+};
+#[cfg(feature = "authorization-review")]
+use super::resource_authorization_runtime::{
+    CommittedResourceAuthorizationReview, ResourceAuthorizationReviewConfig,
+    ResourceAuthorizationRuntimeResult, WebAssessmentAuthorizationAudit,
+    MAX_AUTHORIZATION_REVIEW_ACTIVE_VERIFICATIONS,
 };
 use super::{
     assessment_api_visibility::{
@@ -44,8 +57,9 @@ use super::{
     assessment_item::{AssessmentItem, AssessmentItemSet},
     assessment_passive::{
         project_assessment_items, project_assessment_passive_response,
-        AssessmentPassiveProjectionContext, CommittedAssessmentPassiveLedger,
-        PassiveAssessmentProjectionIncompleteness, ASSESSMENT_PASSIVE_NAMESPACE,
+        AssessmentPassiveProjectionContext, AssessmentReviewProjectionSources,
+        CommittedAssessmentPassiveLedger, PassiveAssessmentProjectionIncompleteness,
+        ASSESSMENT_PASSIVE_NAMESPACE,
     },
     assessment_review::{AssessmentReviewObserverSet, CommittedAssessmentReviewLedger},
     web_review_execution::enabled_native_web_review_actions,
@@ -170,6 +184,10 @@ pub const HARD_MAX_WEB_ASSESSMENT_ACTIVE_VERIFICATIONS: u16 = 64;
 #[cfg(feature = "graphql-review")]
 pub(crate) const GRAPHQL_REVIEW_ACTIVE_VERIFICATION_ALLOWANCE: u16 =
     MAX_GRAPHQL_ACTIVE_VERIFICATIONS as u16;
+/// Exact feature-local allowance reserved by one resource authorization child.
+#[cfg(feature = "authorization-review")]
+pub(crate) const AUTHORIZATION_REVIEW_ACTIVE_VERIFICATION_ALLOWANCE: u16 =
+    MAX_AUTHORIZATION_REVIEW_ACTIVE_VERIFICATIONS as u16;
 /// Assessment subjects execute sequentially under one shared authority.
 pub const WEB_ASSESSMENT_CONCURRENCY: usize = 1;
 
@@ -892,6 +910,10 @@ pub enum WebAssessmentIncompleteReason {
     /// bounded correlated protocol review.
     #[cfg(feature = "graphql-review")]
     GraphqlReviewIncomplete,
+    /// The explicitly enabled four-view resource authorization child did not
+    /// complete its bounded comparison.
+    #[cfg(feature = "authorization-review")]
+    AuthorizationReviewIncomplete,
 }
 
 /// Whether every retained subject and eligible document completed within bounds.
@@ -1218,10 +1240,13 @@ pub struct WebAssessmentRunReport {
     authorized_root: WebAssessmentSubject,
     limits: WebAssessmentLimits,
     runtime_active_verification_limit: u16,
+    runtime_optional_active_verification_allowance: u16,
     subjects: Vec<WebAssessmentSubjectReport>,
     forms: Vec<WebAssessmentForm>,
     semantics: SemanticExtractionResult,
     defense: WebAssessmentDefenseAudit,
+    #[cfg(feature = "authorization-review")]
+    authorization_review: Option<WebAssessmentAuthorizationAudit>,
     assessment_items: AssessmentItemSet,
     assessment_projection_incompleteness: PassiveAssessmentProjectionIncompleteness,
     completion: WebAssessmentCompletion,
@@ -1244,7 +1269,10 @@ impl fmt::Debug for WebAssessmentRunReport {
             .field("subject_count", &self.subjects.len())
             .field("form_count", &self.forms.len())
             .field("semantics", &"<redacted>")
-            .field("defense", &self.defense)
+            .field("defense", &self.defense);
+        #[cfg(feature = "authorization-review")]
+        debug.field("authorization_review", &self.authorization_review);
+        debug
             .field("assessment_items", &self.assessment_items)
             .field(
                 "unprojected_subject_count",
@@ -1296,6 +1324,11 @@ impl WebAssessmentRunReport {
     pub fn defense(&self) -> &WebAssessmentDefenseAudit {
         &self.defense
     }
+    /// Returns the optional redaction-safe four-view authorization audit.
+    #[cfg(feature = "authorization-review")]
+    pub const fn authorization_review_audit(&self) -> Option<&WebAssessmentAuthorizationAudit> {
+        self.authorization_review.as_ref()
+    }
     /// Returns claim-safe items derived only from committed assessment truth.
     pub fn assessment_items(&self) -> &[AssessmentItem] {
         self.assessment_items.items()
@@ -1336,13 +1369,22 @@ impl WebAssessmentRunReport {
         let truth = CompletedWebAssessmentTruth::new(
             self.run_started_at,
             &self.authorized_root,
-            AssessmentRuntimeLimits::new(self.limits, self.runtime_active_verification_limit),
+            AssessmentRuntimeLimits::new(
+                self.limits,
+                self.runtime_active_verification_limit,
+                self.runtime_optional_active_verification_allowance,
+            ),
             self.usage,
             &self.completion,
             self.defense.mode(),
             profile,
         )?;
-        AssessmentRunReport::from_completed_truth(self.assessment_items, truth)
+        AssessmentRunReport::from_completed_truth(
+            self.assessment_items,
+            truth,
+            #[cfg(feature = "authorization-review")]
+            self.authorization_review,
+        )
     }
 }
 
@@ -1465,6 +1507,15 @@ pub enum WebAssessmentRuntimeError {
     RootAuthorizationContextRequiresOriginRoot,
     #[error("root API authorization-context review could not be composed safely")]
     ApiVisibilityComposition,
+    #[cfg(feature = "authorization-review")]
+    #[error("resource authorization review could not be composed safely")]
+    AuthorizationReviewComposition,
+    #[cfg(feature = "authorization-review")]
+    #[error("resource authorization review conflicts with root authorization context")]
+    AuthorizationReviewConflict,
+    #[cfg(feature = "authorization-review")]
+    #[error("resource authorization review requires protected authenticated transport")]
+    InsecureAuthorizationReviewTransport,
     #[error(transparent)]
     Standard(#[from] StandardWebDecisionRuntimeError),
     #[error("web assessment failed after it started")]
@@ -1510,6 +1561,17 @@ impl fmt::Debug for WebAssessmentRuntimeError {
             Self::ApiVisibilityComposition => {
                 formatter.write_str("WebAssessmentRuntimeError::ApiVisibilityComposition")
             },
+            #[cfg(feature = "authorization-review")]
+            Self::AuthorizationReviewComposition => {
+                formatter.write_str("WebAssessmentRuntimeError::AuthorizationReviewComposition")
+            },
+            #[cfg(feature = "authorization-review")]
+            Self::AuthorizationReviewConflict => {
+                formatter.write_str("WebAssessmentRuntimeError::AuthorizationReviewConflict")
+            },
+            #[cfg(feature = "authorization-review")]
+            Self::InsecureAuthorizationReviewTransport => formatter
+                .write_str("WebAssessmentRuntimeError::InsecureAuthorizationReviewTransport"),
             Self::Standard(_) => {
                 formatter.write_str("WebAssessmentRuntimeError::Standard(<redacted>)")
             },
@@ -1554,6 +1616,8 @@ pub struct WebAssessmentRuntimeBuilder {
     normalization_resilience: bool,
     #[cfg(feature = "graphql-review")]
     graphql_review: bool,
+    #[cfg(feature = "authorization-review")]
+    resource_authorization_review: Option<(AuthorizationReviewPolicy, AuthorizationPrincipalPair)>,
     root_authorization_context: Option<WebAssessmentRootAuthorizationContext>,
 }
 
@@ -1570,6 +1634,8 @@ impl WebAssessmentRuntimeBuilder {
             normalization_resilience: false,
             #[cfg(feature = "graphql-review")]
             graphql_review: false,
+            #[cfg(feature = "authorization-review")]
+            resource_authorization_review: None,
             root_authorization_context: None,
         }
     }
@@ -1620,6 +1686,20 @@ impl WebAssessmentRuntimeBuilder {
         self.graphql_review = true;
         self
     }
+    /// Adds one explicitly selected, four-view resource authorization review.
+    ///
+    /// The policy and move-only principals are consumed by this builder. The
+    /// child remains part of this assessment's exact-origin authority and
+    /// cannot create a separately finalized report.
+    #[cfg(feature = "authorization-review")]
+    pub fn with_resource_authorization_review(
+        mut self,
+        policy: AuthorizationReviewPolicy,
+        principals: AuthorizationPrincipalPair,
+    ) -> Self {
+        self.resource_authorization_review = Some((policy, principals));
+        self
+    }
     /// Adds one anonymous/authorized JSON comparison for the exact origin root.
     ///
     /// The context is consumed during build and can neither be cloned nor
@@ -1633,6 +1713,11 @@ impl WebAssessmentRuntimeBuilder {
         self
     }
     pub fn build(self) -> Result<WebAssessmentRuntime, WebAssessmentRuntimeError> {
+        #[cfg(feature = "authorization-review")]
+        if self.root_authorization_context.is_some() && self.resource_authorization_review.is_some()
+        {
+            return Err(WebAssessmentRuntimeError::AuthorizationReviewConflict);
+        }
         if self.root_authorization_context.is_some()
             && (!self.target.username().is_empty()
                 || self.target.password().is_some()
@@ -1649,6 +1734,17 @@ impl WebAssessmentRuntimeBuilder {
         HttpProbe::new(self.target.clone(), HttpProbeMethod::Get)?;
         let root = canonicalize_root(&self.target, self.limits)
             .ok_or(WebAssessmentRuntimeError::InvalidCanonicalTarget)?;
+        #[cfg(feature = "authorization-review")]
+        if self
+            .resource_authorization_review
+            .as_ref()
+            .is_some_and(|(policy, _)| {
+                !authenticated_transport_is_allowed(&root.url)
+                    || !authenticated_transport_is_allowed(policy.execution_resource())
+            })
+        {
+            return Err(WebAssessmentRuntimeError::InsecureAuthorizationReviewTransport);
+        }
         if root.url.as_str().len() > self.limits.max_retained_url_bytes() {
             return Err(WebAssessmentRuntimeError::RootRetentionLimit);
         }
@@ -1659,18 +1755,28 @@ impl WebAssessmentRuntimeBuilder {
         .restricted_for_web_assessment(&root.url, self.limits.max_response_body_bytes())?;
         let discovery_policy = policy.clone();
         let optional_active_verifications = {
+            let allowance = 0_u16;
             #[cfg(feature = "graphql-review")]
-            {
-                u16::from(
-                    self.graphql_review
-                        && self.limits.max_active_verifications()
-                            == DEFAULT_WEB_ASSESSMENT_MAX_ACTIVE_VERIFICATIONS,
-                ) * GRAPHQL_REVIEW_ACTIVE_VERIFICATION_ALLOWANCE
-            }
-            #[cfg(not(feature = "graphql-review"))]
-            {
-                0
-            }
+            let allowance = allowance
+                .checked_add(
+                    u16::from(
+                        self.graphql_review
+                            && self.limits.max_active_verifications()
+                                == DEFAULT_WEB_ASSESSMENT_MAX_ACTIVE_VERIFICATIONS,
+                    ) * GRAPHQL_REVIEW_ACTIVE_VERIFICATION_ALLOWANCE,
+                )
+                .expect("compiled GraphQL allowance fits u16");
+            #[cfg(feature = "authorization-review")]
+            let allowance = allowance
+                .checked_add(
+                    u16::from(
+                        self.resource_authorization_review.is_some()
+                            && self.limits.max_active_verifications()
+                                == DEFAULT_WEB_ASSESSMENT_MAX_ACTIVE_VERIFICATIONS,
+                    ) * AUTHORIZATION_REVIEW_ACTIVE_VERIFICATION_ALLOWANCE,
+                )
+                .expect("compiled authorization allowance fits u16");
+            allowance
         };
         let runtime_active_verification_limit = self
             .limits
@@ -1705,6 +1811,10 @@ impl WebAssessmentRuntimeBuilder {
                 .map_err(|_| WebAssessmentRuntimeError::ApiVisibilityComposition)
             })
             .transpose()?;
+        #[cfg(feature = "authorization-review")]
+        let resource_authorization_review = self
+            .resource_authorization_review
+            .map(|(policy, principals)| ResourceAuthorizationReviewConfig::new(policy, principals));
         let native_review = if self.low_risk_differential_review {
             let seeds = NativeWebReviewSeeds::from_authorized_origin(&root.url)?;
             let redirect_query_parameter =
@@ -1764,6 +1874,7 @@ impl WebAssessmentRuntimeBuilder {
         Ok(WebAssessmentRuntime {
             limits: self.limits,
             runtime_active_verification_limit,
+            runtime_optional_active_verification_allowance: optional_active_verifications,
             semantic_limits,
             semantic_evidence: AssessmentSemanticEvidence::default(),
             authority,
@@ -1777,6 +1888,8 @@ impl WebAssessmentRuntimeBuilder {
             normalization_resilience: self.normalization_resilience,
             #[cfg(feature = "graphql-review")]
             graphql_review: self.graphql_review,
+            #[cfg(feature = "authorization-review")]
+            resource_authorization_review,
             native_review,
             non_root_structural_review: None,
             xss_structural_review: None,
@@ -1786,8 +1899,12 @@ impl WebAssessmentRuntimeBuilder {
             committed_api_visibility: None,
             #[cfg(feature = "graphql-review")]
             committed_graphql_review: None,
+            #[cfg(feature = "authorization-review")]
+            committed_resource_authorization_review: None,
+            #[cfg(feature = "authorization-review")]
+            authorization_review_audit: None,
             #[cfg(feature = "graphql-review")]
-            graphql_parent_defense: None,
+            optional_child_parent_defense: None,
             defense_audit: WebAssessmentDefenseAudit::new(if self.defense_enforcement {
                 WebAssessmentDefenseMode::Enforced
             } else {
@@ -1802,6 +1919,7 @@ impl WebAssessmentRuntimeBuilder {
 pub struct WebAssessmentRuntime {
     limits: WebAssessmentLimits,
     runtime_active_verification_limit: u16,
+    runtime_optional_active_verification_allowance: u16,
     semantic_limits: SemanticExtractionLimits,
     semantic_evidence: AssessmentSemanticEvidence,
     authority: SharedWebRuntimeAuthority,
@@ -1815,6 +1933,8 @@ pub struct WebAssessmentRuntime {
     normalization_resilience: bool,
     #[cfg(feature = "graphql-review")]
     graphql_review: bool,
+    #[cfg(feature = "authorization-review")]
+    resource_authorization_review: Option<ResourceAuthorizationReviewConfig>,
     native_review: Option<AssessmentNativeReviewRuntime>,
     non_root_structural_review: Option<AssessmentNativeReviewRuntime>,
     xss_structural_review: Option<AssessmentNativeReviewRuntime>,
@@ -1824,8 +1944,12 @@ pub struct WebAssessmentRuntime {
     committed_api_visibility: Option<CommittedAssessmentApiVisibility>,
     #[cfg(feature = "graphql-review")]
     committed_graphql_review: Option<CommittedGraphqlReview>,
+    #[cfg(feature = "authorization-review")]
+    committed_resource_authorization_review: Option<CommittedResourceAuthorizationReview>,
+    #[cfg(feature = "authorization-review")]
+    authorization_review_audit: Option<WebAssessmentAuthorizationAudit>,
     #[cfg(feature = "graphql-review")]
-    graphql_parent_defense: Option<AssessmentDefenseController>,
+    optional_child_parent_defense: Option<AssessmentDefenseController>,
     defense_audit: WebAssessmentDefenseAudit,
     passive_ledger: CommittedAssessmentPassiveLedger,
 }
@@ -1907,6 +2031,7 @@ fn replay_standard_defense(
     )
 }
 
+#[cfg(test)]
 fn is_native_review_action(action_id: &str) -> bool {
     NativeWebReviewActionKind::all()
         .into_iter()
@@ -1920,7 +2045,11 @@ fn replay_native_review(
 ) -> Result<bool, ()> {
     for turn in report.turns() {
         if let StandardWebDecisionRuntimeTurn::Outcome { evidence, decision } = turn {
-            if is_native_review_action(evidence.case().action_id()) {
+            if review
+                .enabled_actions
+                .iter()
+                .any(|kind| kind.action_id() == evidence.case().action_id())
+            {
                 review
                     .ledger
                     .ingest_outcome(evidence, decision, knowledge)
@@ -2117,6 +2246,15 @@ impl WebAssessmentRuntime {
                 } else {
                     builder
                 };
+                #[cfg(feature = "authorization-review")]
+                let builder = if subject.origin == WebAssessmentSubjectOrigin::AuthorizedRoot {
+                    match self.resource_authorization_review.take() {
+                        Some(config) => builder.with_resource_authorization_review(config),
+                        None => builder,
+                    }
+                } else {
+                    builder
+                };
                 let mut runtime = match compose_child(builder) {
                     Ok(runtime) => runtime,
                     Err(source) => {
@@ -2154,6 +2292,8 @@ impl WebAssessmentRuntime {
                     });
                 }
                 let standard_result = runtime.analyze().await;
+                #[cfg(feature = "authorization-review")]
+                let resource_authorization_binding = runtime.take_resource_authorization_review();
                 let defense = runtime.assessment_defense_controller().cloned();
                 let planner = runtime.assessment_planner().clone();
                 let standard = match standard_result {
@@ -2186,7 +2326,7 @@ impl WebAssessmentRuntime {
                     (Some(expected), Ok(replayed)) if replayed.exact_audit_eq(expected) => {
                         #[cfg(feature = "graphql-review")]
                         if subject.origin == WebAssessmentSubjectOrigin::AuthorizedRoot {
-                            self.graphql_parent_defense = Some(replayed.clone());
+                            self.optional_child_parent_defense = Some(replayed.clone());
                         }
                         self.defense_audit.append_controller(&replayed).is_ok()
                     },
@@ -2205,6 +2345,61 @@ impl WebAssessmentRuntime {
                         )),
                     });
                 }
+                #[cfg(feature = "authorization-review")]
+                let mut authorization_hard_stop = false;
+                #[cfg(feature = "authorization-review")]
+                if let Some(binding) = resource_authorization_binding {
+                    let forced_outcome = if self.authority.cancellation().is_cancelled() {
+                        Some(AuthorizationReviewOutcome::Cancelled)
+                    } else if standard.limit_exceeded().is_some() {
+                        Some(AuthorizationReviewOutcome::BudgetExhausted)
+                    } else {
+                        None
+                    };
+                    let forced_runtime_limit = standard.limit_exceeded().cloned();
+                    match binding.finalize(
+                        self.authority.knowledge(),
+                        standard.transport(),
+                        forced_outcome,
+                        forced_runtime_limit,
+                    ) {
+                        Ok(ResourceAuthorizationRuntimeResult::Complete(committed)) => {
+                            let committed = *committed;
+                            self.authorization_review_audit = Some(committed.audit().clone());
+                            self.committed_resource_authorization_review = Some(committed);
+                        },
+                        Ok(ResourceAuthorizationRuntimeResult::Stopped {
+                            audit,
+                            runtime_limit,
+                        }) => {
+                            let outcome = audit.outcome();
+                            self.authorization_review_audit = Some(audit);
+                            authorization_hard_stop = true;
+                            if let Some(limit) = runtime_limit {
+                                reasons.insert(reason_for_runtime_dimension(limit.dimension()));
+                            }
+                            if outcome == AuthorizationReviewOutcome::Cancelled {
+                                reasons.insert(WebAssessmentIncompleteReason::HostCancellation);
+                            }
+                            reasons.insert(
+                                WebAssessmentIncompleteReason::AuthorizationReviewIncomplete,
+                            );
+                        },
+                        Err(_) => {
+                            let parts = standard.into_assessment_parts();
+                            return Err(WebAssessmentRuntimeError::ProjectionInvariant {
+                                receipt: Box::new(self.failure_receipt(
+                                    &known_subjects,
+                                    subject_reports,
+                                    forms,
+                                    WebAssessmentSubjectReport::complete(subject, parts),
+                                    failed_reasons(&reasons),
+                                    started_at,
+                                )),
+                            });
+                        },
+                    }
+                }
                 let selected_review =
                     if subject.origin == WebAssessmentSubjectOrigin::AuthorizedRoot {
                         self.native_review.as_mut()
@@ -2213,6 +2408,10 @@ impl WebAssessmentRuntime {
                             .as_mut()
                             .filter(|review| review.target == subject.url)
                     };
+                #[cfg(feature = "authorization-review")]
+                let allow_structural_followup = !authorization_hard_stop;
+                #[cfg(not(feature = "authorization-review"))]
+                let allow_structural_followup = true;
                 let mut pending_xss_review = None;
                 #[cfg(feature = "normalization-resilience")]
                 let mut pending_normalization_review = None;
@@ -2221,7 +2420,7 @@ impl WebAssessmentRuntime {
                         replay_native_review(&standard, review, self.authority.knowledge());
                     match native_review_complete {
                         Ok(true) => {
-                            if self.xss_structural_review.is_none() {
+                            if allow_structural_followup && self.xss_structural_review.is_none() {
                                 pending_xss_review = review
                                     .ledger
                                     .xss_selection_inputs()
@@ -2504,6 +2703,22 @@ impl WebAssessmentRuntime {
                     self.normalization_review = Some(review);
                 }
                 classify_standard_completion(&standard, &mut reasons);
+                #[cfg(feature = "authorization-review")]
+                if authorization_hard_stop
+                    && matches!(
+                        standard.terminal(),
+                        DecisionLoopCommand::Halt {
+                            reason: DecisionStopReason::AdaptationLimit
+                        }
+                    )
+                {
+                    // The higher-priority authorization terminal rule uses a
+                    // parent-owned Halt directive only to suppress later
+                    // actions. Its typed audit already records the target or
+                    // transport outcome, so the generic adaptation label would
+                    // be synthetic. Real runtime limits remain classified.
+                    reasons.remove(&WebAssessmentIncompleteReason::AdaptationLimit);
+                }
                 let cancelled_at_subject_boundary = self.authority.cancellation().is_cancelled();
                 let wall_time_reached_at_subject_boundary =
                     started_at.elapsed() >= self.limits.max_wall_time();
@@ -2523,6 +2738,10 @@ impl WebAssessmentRuntime {
                                 | DecisionStopReason::RuntimeBudgetLimit
                         }
                     );
+                #[cfg(feature = "authorization-review")]
+                {
+                    should_stop |= authorization_hard_stop;
+                }
                 let projection = projection_from_committed_bootstrap(
                     standard.bootstrap(),
                     self.authority.knowledge(),
@@ -2807,7 +3026,7 @@ impl WebAssessmentRuntime {
                 let root_subject = EntityId::new(format!("endpoint:{}", self.root.url()))
                     .map_err(|_| WebAssessmentRuntimeError::NativeReviewComposition)?;
                 let parent_defense = self
-                    .graphql_parent_defense
+                    .optional_child_parent_defense
                     .as_ref()
                     .ok_or(WebAssessmentRuntimeError::NativeReviewComposition)?;
                 if !parent_defense.permits_optional_interaction(
@@ -2922,10 +3141,14 @@ impl WebAssessmentRuntime {
             .collect::<Vec<_>>();
         let assessment_projection = match project_assessment_items(
             &self.passive_ledger,
-            &review_ledgers,
-            self.committed_api_visibility.as_ref(),
-            #[cfg(feature = "graphql-review")]
-            self.committed_graphql_review.as_ref(),
+            AssessmentReviewProjectionSources {
+                native: &review_ledgers,
+                api_visibility: self.committed_api_visibility.as_ref(),
+                #[cfg(feature = "graphql-review")]
+                graphql: self.committed_graphql_review.as_ref(),
+                #[cfg(feature = "authorization-review")]
+                authorization: self.committed_resource_authorization_review.as_ref(),
+            },
             self.authority.knowledge(),
             &self.root,
             &subject_reports
@@ -2980,10 +3203,14 @@ impl WebAssessmentRuntime {
             authorized_root: self.root.clone(),
             limits: self.limits,
             runtime_active_verification_limit: self.runtime_active_verification_limit,
+            runtime_optional_active_verification_allowance: self
+                .runtime_optional_active_verification_allowance,
             subjects: subject_reports,
             forms,
             semantics,
             defense: self.defense_audit.clone(),
+            #[cfg(feature = "authorization-review")]
+            authorization_review: self.authorization_review_audit.clone(),
             assessment_items,
             assessment_projection_incompleteness,
             completion,

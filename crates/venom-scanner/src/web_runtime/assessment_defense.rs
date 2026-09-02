@@ -22,6 +22,13 @@ use crate::{
 };
 use crate::{DecisionEvidenceReceipt, DecisionExecutionStage, KnowledgeBase, VerificationCase};
 
+#[cfg(feature = "authorization-review")]
+use super::resource_authorization_runtime::{
+    AUTHORIZATION_DEFENSE_CHALLENGE_PREDICATE, AUTHORIZATION_DEFENSE_RATE_LIMIT_PREDICATE,
+    AUTHORIZATION_DEFENSE_SCOPE_PREDICATE, AUTHORIZATION_DEFENSE_STATUS_PREDICATE,
+    AUTHORIZATION_NO_RESPONSE_TERMINAL_PREDICATE, RESOURCE_AUTHORIZATION_REVIEW_ACTION_ID,
+};
+
 use crate::defense::{
     assessment_interaction_decision, shadow_planning::defense_aware_shadow_plan_from_current,
     DefenseAwareShadowPlan, DefenseFingerprint, DefenseInteractionClass, DefensePosture,
@@ -94,7 +101,7 @@ impl AssessmentDefenseSignal {
         }
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "authorization-review"))]
     pub(crate) fn state(&self) -> &DefenseState {
         &self.state
     }
@@ -361,7 +368,10 @@ impl CommittedAssessmentDefenseLedger {
     ) -> Result<Option<&CommittedAssessmentDefenseObservation>, ()> {
         validate_receipt_storage(receipt, knowledge)?;
         let parsed = parse_receipt(receipt)?;
-        if require_projection && parsed.is_none() {
+        if require_projection
+            && parsed.is_none()
+            && !authorization_no_response_terminal_receipt(receipt)?
+        {
             return Err(());
         }
         let receipt_key = receipt_key(receipt);
@@ -692,6 +702,10 @@ const fn native_interaction_class(kind: NativeWebReviewActionKind) -> DefenseInt
         NativeWebReviewActionKind::NormalizationResilienceQueryPair => {
             DefenseInteractionClass::DifferentialRead
         },
+        #[cfg(feature = "authorization-review")]
+        NativeWebReviewActionKind::ResourceAuthorizationDifferential => {
+            DefenseInteractionClass::DifferentialRead
+        },
     }
 }
 
@@ -736,6 +750,13 @@ fn parse_receipt(
         return Err(());
     }
     let defense: Vec<_> = receipt.evidence()[first_defense..].iter().collect();
+    #[cfg(feature = "authorization-review")]
+    let base = if receipt.case().action_id() == RESOURCE_AUTHORIZATION_REVIEW_ACTION_ID {
+        BaseEvidence::parse_authorization(receipt, first_defense)?
+    } else {
+        BaseEvidence::parse(receipt, first_defense)?
+    };
+    #[cfg(not(feature = "authorization-review"))]
     let base = BaseEvidence::parse(receipt, first_defense)?;
     let mut canonical_parents = base.parent_ids.clone();
     canonical_parents.sort();
@@ -780,6 +801,27 @@ fn parse_receipt(
         return Err(());
     }
 
+    #[cfg(feature = "authorization-review")]
+    let authorization_receipt =
+        receipt.case().action_id() == RESOURCE_AUTHORIZATION_REVIEW_ACTION_ID;
+    #[cfg(not(feature = "authorization-review"))]
+    let authorization_receipt = false;
+    #[cfg(feature = "authorization-review")]
+    let state = if authorization_receipt {
+        if rate_limit_headers || fingerprint.is_some() {
+            return Err(());
+        }
+        DefenseState::from_authorization_projection(base.status, challenged, rate_limited)
+    } else {
+        DefenseState::from_assessment_projection(
+            base.status,
+            challenged,
+            rate_limited,
+            rate_limit_headers,
+            fingerprint,
+        )
+    };
+    #[cfg(not(feature = "authorization-review"))]
     let state = DefenseState::from_assessment_projection(
         base.status,
         challenged,
@@ -798,14 +840,18 @@ fn parse_receipt(
         || challenged != state.is_challenged()
         || rate_limited != state.is_rate_limited()
         || rate_limit_headers != state.has_rate_limit_headers()
-        || base.rate_detected != (base.status == 429)
-        || rate_limited != (base.rate_detected || base.rate_advertised)
-        || rate_limit_headers != base.rate_advertised
+        || (!authorization_receipt && base.rate_detected != (base.status == 429))
+        || (!authorization_receipt && rate_limited != (base.rate_detected || base.rate_advertised))
+        || (!authorization_receipt && rate_limit_headers != base.rate_advertised)
+        || (authorization_receipt
+            && (base.rate_advertised || base.rate_detected != rate_limited || rate_limit_headers))
         || (base.request_method == "HEAD"
             && body_coverage != AssessmentDefenseBodyCoverage::MetadataOnly)
         || (body_coverage == AssessmentDefenseBodyCoverage::CompleteUtf8Prefix
             && base.body_truncated)
-        || (base.body_bytes > MAX_FINGERPRINT_BODY_SCAN_BYTES as u64 && !input_limit_reached)
+        || (!authorization_receipt
+            && base.body_bytes > MAX_FINGERPRINT_BODY_SCAN_BYTES as u64
+            && !input_limit_reached)
     {
         return Err(());
     }
@@ -936,6 +982,156 @@ impl BaseEvidence {
             parent_ids: parents,
         })
     }
+
+    #[cfg(feature = "authorization-review")]
+    fn parse_authorization(
+        receipt: &DecisionEvidenceReceipt,
+        first_defense: usize,
+    ) -> Result<Self, ()> {
+        const NAMESPACE: &str = "web.authorization-review.transport";
+        const COMPONENT: &str = "http.authorization-resource-review";
+        if receipt.executor_id() != COMPONENT
+            || receipt.case().action_id() != RESOURCE_AUTHORIZATION_REVIEW_ACTION_ID
+        {
+            return Err(());
+        }
+        let body = unique_direct_before(
+            receipt,
+            first_defense,
+            &HttpEvidencePredicate::RESPONSE_BODY_BYTES_OBSERVED.into_knowledge(),
+            EvidenceKind::Content,
+            "response-body-size",
+        )?;
+        let EvidenceValue::Unsigned(body_bytes) = body.value() else {
+            return Err(());
+        };
+        let custom = |name: &'static str| -> Result<&Evidence, ()> {
+            unique_direct_before(
+                receipt,
+                first_defense,
+                &KnowledgePredicate::new(NAMESPACE, name).map_err(|_| ())?,
+                EvidenceKind::Custom("authorization-review-defense-base".to_owned()),
+                "defense-base",
+            )
+        };
+        let status_item = custom(AUTHORIZATION_DEFENSE_STATUS_PREDICATE)?;
+        let challenge_item = custom(AUTHORIZATION_DEFENSE_CHALLENGE_PREDICATE)?;
+        let rate_item = custom(AUTHORIZATION_DEFENSE_RATE_LIMIT_PREDICATE)?;
+        let scope_item = custom(AUTHORIZATION_DEFENSE_SCOPE_PREDICATE)?;
+        let EvidenceValue::Unsigned(status) = status_item.value() else {
+            return Err(());
+        };
+        let status = u16::try_from(*status).map_err(|_| ())?;
+        let EvidenceValue::Boolean(challenged) = challenge_item.value() else {
+            return Err(());
+        };
+        let EvidenceValue::Boolean(rate_limited) = rate_item.value() else {
+            return Err(());
+        };
+        let EvidenceValue::Text(scope) = scope_item.value() else {
+            return Err(());
+        };
+        const SCOPE_PREFIX: &str = "authorization-resource-sha256:";
+        if !scope.starts_with(SCOPE_PREFIX)
+            || scope.len() != SCOPE_PREFIX.len() + 64
+            || !scope[SCOPE_PREFIX.len()..]
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+            || !(100..=599).contains(&status)
+            || (*challenged && *rate_limited)
+            || (status == 429 && !*rate_limited)
+        {
+            return Err(());
+        }
+        Ok(Self {
+            request_method: "GET".to_owned(),
+            status,
+            body_bytes: *body_bytes,
+            body_truncated: false,
+            rate_detected: *rate_limited,
+            rate_advertised: false,
+            parent_ids: vec![
+                body.id().clone(),
+                status_item.id().clone(),
+                challenge_item.id().clone(),
+                rate_item.id().clone(),
+                scope_item.id().clone(),
+            ],
+        })
+    }
+}
+
+#[cfg(feature = "authorization-review")]
+fn unique_direct_before<'a>(
+    receipt: &'a DecisionEvidenceReceipt,
+    first_defense: usize,
+    predicate: &KnowledgePredicate,
+    kind: EvidenceKind,
+    method: &'static str,
+) -> Result<&'a Evidence, ()> {
+    let mut matching = receipt
+        .evidence()
+        .iter()
+        .enumerate()
+        .filter(|(_, item)| item.predicate() == predicate);
+    let Some((index, item)) = matching.next() else {
+        return Err(());
+    };
+    if matching.next().is_some()
+        || index >= first_defense
+        || !item.origin().is_direct()
+        || item.kind() != &kind
+        || item.source().component() != receipt.executor_id()
+        || item.source().method() != method
+        || item.source().correlation_id() != Some(receipt.case().id())
+        || item.subject() != receipt.case().subject()
+    {
+        return Err(());
+    }
+    Ok(item)
+}
+
+#[cfg(feature = "authorization-review")]
+fn authorization_no_response_terminal_receipt(
+    receipt: &DecisionEvidenceReceipt,
+) -> Result<bool, ()> {
+    if receipt.case().action_id() != RESOURCE_AUTHORIZATION_REVIEW_ACTION_ID {
+        return Ok(false);
+    }
+    if receipt.executor_id() != "http.authorization-resource-review"
+        || receipt.evidence().iter().any(|item| {
+            item.predicate().namespace() == ASSESSMENT_DEFENSE_NAMESPACE
+                || matches!(
+                    item.predicate().name(),
+                    AUTHORIZATION_DEFENSE_STATUS_PREDICATE
+                        | AUTHORIZATION_DEFENSE_CHALLENGE_PREDICATE
+                        | AUTHORIZATION_DEFENSE_RATE_LIMIT_PREDICATE
+                        | AUTHORIZATION_DEFENSE_SCOPE_PREDICATE
+                )
+        })
+    {
+        return Err(());
+    }
+    let predicate = KnowledgePredicate::new(
+        "web.authorization-review.transport",
+        AUTHORIZATION_NO_RESPONSE_TERMINAL_PREDICATE,
+    )
+    .map_err(|_| ())?;
+    let item = unique_direct_before(
+        receipt,
+        receipt.evidence().len(),
+        &predicate,
+        EvidenceKind::Custom("authorization-review-phase".to_owned()),
+        "phase-terminal",
+    )?;
+    Ok(item.value() == &EvidenceValue::Boolean(true))
+}
+
+#[cfg(not(feature = "authorization-review"))]
+fn authorization_no_response_terminal_receipt(
+    _receipt: &DecisionEvidenceReceipt,
+) -> Result<bool, ()> {
+    Ok(false)
 }
 
 fn base_record_shape(descriptor: PredicateDescriptor, item: &Evidence) -> bool {

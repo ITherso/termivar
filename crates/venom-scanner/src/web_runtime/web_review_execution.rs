@@ -200,6 +200,8 @@ pub(crate) fn enabled_native_web_review_actions(
             NativeWebReviewActionKind::NormalizationResilienceQueryPair => {
                 xss_action == Some(*kind)
             },
+            #[cfg(feature = "authorization-review")]
+            NativeWebReviewActionKind::ResourceAuthorizationDifferential => false,
         })
         .collect()
 }
@@ -703,6 +705,10 @@ fn payload_strategy_reference(
             NORMALIZATION_RESILIENCE_QUERY_PAIR_ID,
             NORMALIZATION_RESILIENCE_QUERY_PAIR_REVISION,
         ),
+        #[cfg(feature = "authorization-review")]
+        NativeWebReviewActionKind::ResourceAuthorizationDifferential => {
+            return Err(PayloadStrategyError::DerivationFailed);
+        },
     };
     PayloadStrategyRef::new(id, revision)
 }

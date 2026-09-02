@@ -24,6 +24,7 @@ use syn::{
 const DEFAULT_SCANNER_FEATURES: &[&str] = &["core", "scanning"];
 const EXACT_CORE_FEATURES: &[&str] = &["default", "legacy-contracts"];
 const QUARANTINED_FEATURES: &[&str] = &[
+    "authorization-review",
     "distributed",
     "graphql-review",
     "legacy-scanner",
@@ -35,6 +36,7 @@ const QUARANTINED_FEATURES: &[&str] = &[
 ];
 
 const EXACT_SCANNER_FEATURES: &[&str] = &[
+    "authorization-review",
     "compliance",
     "core",
     "default",
@@ -58,6 +60,7 @@ const EXACT_SCANNER_FEATURES: &[&str] = &[
 ];
 
 const FULL_AGGREGATE_FEATURES: &[&str] = &[
+    "authorization-review",
     "compliance",
     "core",
     "detection",
@@ -76,6 +79,7 @@ const FULL_AGGREGATE_FEATURES: &[&str] = &[
 ];
 
 const ENTERPRISE_AGGREGATE_FEATURES: &[&str] = &[
+    "authorization-review",
     "compliance",
     "core",
     "detection",
@@ -199,6 +203,17 @@ const GRAPHQL_REVIEW_RUNTIME_SOURCE: &str =
     "crates/venom-scanner/src/web_runtime/graphql_runtime.rs";
 const GRAPHQL_REVIEW_BROKER_SOURCE: &str =
     "crates/venom-scanner/src/http_evidence/request_broker.rs";
+const RESOURCE_AUTHORIZATION_RUNTIME_SOURCE: &str =
+    "crates/venom-scanner/src/web_runtime/resource_authorization_runtime.rs";
+const NATIVE_WEB_REVIEW_ACTION_SOURCE: &str =
+    "crates/venom-scanner/src/web_actions/native_review.rs";
+const WEB_REVIEW_DECISION_SOURCE: &str =
+    "crates/venom-scanner/src/web_runtime/web_review_decision.rs";
+const WEB_ASSESSMENT_RUNTIME_SOURCE: &str =
+    "crates/venom-scanner/src/web_runtime/web_assessment.rs";
+const ASSESSMENT_REPORT_SOURCE: &str = "crates/venom-scanner/src/web_runtime/assessment_report.rs";
+const ASSESSMENT_ITEM_SOURCE: &str = "crates/venom-scanner/src/web_runtime/assessment_item.rs";
+const RUNTIME_BUDGET_SOURCE: &str = "crates/venom-scanner/src/runtime_budget.rs";
 
 const RETIRED_ADAPTIVE_MODULES: &[&str] = &["payloads", "scoring", "strategy"];
 
@@ -910,6 +925,10 @@ pub(super) fn check(workspace_root: &Path) -> Result<Vec<String>, Box<dyn Error>
         workspace_root,
         &web_runtime_source,
     )?);
+    violations.extend(resource_authorization_review_contract_violations(
+        workspace_root,
+        &web_runtime_source,
+    )?);
     violations.extend(private_natural_child_module_violations(
         &web_runtime_source,
         "scan_profile",
@@ -1121,6 +1140,10 @@ fn cli_feature_violations(
         ),
         ("graphql-review", &["venom-scanner/graphql-review"][..]),
         (
+            "authorization-review",
+            &["venom-scanner/authorization-review"][..],
+        ),
+        (
             "normalization-resilience",
             &["venom-scanner/normalization-resilience"][..],
         ),
@@ -1289,6 +1312,21 @@ fn exact_raw_feature_closures() -> Vec<(&'static str, &'static [&'static str])> 
             "graphql-review",
             &[
                 "graphql-review",
+                "scanning",
+                "core",
+                "dep:async-trait",
+                "dep:html5ever",
+                "dep:markup5ever_rcdom",
+                "dep:reqwest",
+                "dep:tokio",
+                "dep:tokio-util",
+                "dep:toml",
+            ],
+        ),
+        (
+            "authorization-review",
+            &[
+                "authorization-review",
                 "scanning",
                 "core",
                 "dep:async-trait",
@@ -1499,6 +1537,500 @@ fn graphql_review_contract_violations(
     Ok(violations)
 }
 
+fn resource_authorization_review_contract_violations(
+    workspace_root: &Path,
+    web_runtime_source: &str,
+) -> Result<Vec<String>, Box<dyn Error>> {
+    let runtime = fs::read_to_string(workspace_root.join(RESOURCE_AUTHORIZATION_RUNTIME_SOURCE))?;
+    let broker = fs::read_to_string(workspace_root.join(GRAPHQL_REVIEW_BROKER_SOURCE))?;
+    let assessment = fs::read_to_string(workspace_root.join(WEB_ASSESSMENT_RUNTIME_SOURCE))?;
+    let report = fs::read_to_string(workspace_root.join(ASSESSMENT_REPORT_SOURCE))?;
+    let item = fs::read_to_string(workspace_root.join(ASSESSMENT_ITEM_SOURCE))?;
+    let budget = fs::read_to_string(workspace_root.join(RUNTIME_BUDGET_SOURCE))?;
+    let actions = fs::read_to_string(workspace_root.join(NATIVE_WEB_REVIEW_ACTION_SOURCE))?;
+    let decision = fs::read_to_string(workspace_root.join(WEB_REVIEW_DECISION_SOURCE))?;
+    let mut violations =
+        resource_authorization_review_source_contract_violations(ResourceAuthorizationSources {
+            runtime: &runtime,
+            broker: &broker,
+            assessment: &assessment,
+            report: &report,
+            item: &item,
+            budget: &budget,
+            web_runtime: web_runtime_source,
+            actions: &actions,
+            decision: &decision,
+        });
+    violations.extend(resource_authorization_runtime_module_gate_violations(
+        web_runtime_source,
+    )?);
+    Ok(violations)
+}
+
+fn resource_authorization_runtime_module_gate_violations(
+    source: &str,
+) -> Result<Vec<String>, syn::Error> {
+    let syntax = syn::parse_file(source)?;
+    let matches = syntax
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Mod(module) if module.ident == "resource_authorization_runtime" => Some(module),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    match matches.as_slice() {
+        [module]
+            if matches!(module.vis, Visibility::Inherited)
+                && module.content.is_none()
+                && cfg_predicates(module) == ["feature=\"authorization-review\"".to_owned()] =>
+        {
+            Ok(Vec::new())
+        },
+        _ => Ok(vec![
+            "resource authorization runtime must remain one private out-of-line module behind exact cfg(feature=\"authorization-review\")"
+                .to_owned(),
+        ]),
+    }
+}
+
+#[derive(Clone, Copy)]
+struct ResourceAuthorizationSources<'a> {
+    runtime: &'a str,
+    broker: &'a str,
+    assessment: &'a str,
+    report: &'a str,
+    item: &'a str,
+    budget: &'a str,
+    web_runtime: &'a str,
+    actions: &'a str,
+    decision: &'a str,
+}
+
+fn require_markers(violations: &mut Vec<String>, source: &str, markers: &[&str], contract: &str) {
+    for marker in markers {
+        if !source.contains(marker) {
+            violations.push(format!("{contract}: missing `{marker}`"));
+        }
+    }
+}
+
+fn reject_markers(violations: &mut Vec<String>, source: &str, markers: &[&str], contract: &str) {
+    for marker in markers {
+        if source.contains(marker) {
+            violations.push(format!("{contract}: `{marker}`"));
+        }
+    }
+}
+
+fn resource_authorization_review_source_contract_violations(
+    sources: ResourceAuthorizationSources<'_>,
+) -> Vec<String> {
+    let ResourceAuthorizationSources {
+        runtime,
+        broker,
+        assessment,
+        report,
+        item,
+        budget,
+        web_runtime,
+        actions,
+        decision,
+    } = sources;
+    let mut violations = Vec::new();
+    let compact_runtime = squash_ascii_whitespace(runtime);
+    let compact_assessment = squash_ascii_whitespace(assessment);
+    let compact_report = squash_ascii_whitespace(report);
+    let compact_item = squash_ascii_whitespace(item);
+    let compact_budget = squash_ascii_whitespace(budget);
+    let compact_web_runtime = squash_ascii_whitespace(web_runtime);
+    let compact_actions = squash_ascii_whitespace(actions);
+    let compact_decision = squash_ascii_whitespace(decision);
+    for (name, exact) in [
+        (
+            "selected resource",
+            "pubconstMAX_AUTHORIZATION_REVIEW_RESOURCES:usize=1;",
+        ),
+        (
+            "request",
+            "pubconstMAX_AUTHORIZATION_REVIEW_REQUESTS:usize=4;",
+        ),
+        (
+            "active verification",
+            "pubconstMAX_AUTHORIZATION_REVIEW_ACTIVE_VERIFICATIONS:usize=1;",
+        ),
+    ] {
+        if !compact_runtime.contains(exact) {
+            violations.push(format!(
+                "resource authorization V1 {name} ceiling must remain pinned by `{exact}`"
+            ));
+        }
+    }
+    require_markers(
+        &mut violations,
+        &compact_runtime,
+        &[
+        "\"web.review.authorization.resource-differential\"",
+        "\"authorization.resource-cross-principal-equivalence@1\"",
+        "\"Unexpectedcross-principalresourceequivalenceobserved\"",
+        "ResourceAuthorizationRuntimeBinding",
+        "install_into_parent_registry",
+        "forstagein[DecisionExecutionStage::Passive,DecisionExecutionStage::Active,]",
+        ".route_action(stage,RESOURCE_AUTHORIZATION_REVIEW_ACTION_ID,RESOURCE_AUTHORIZATION_EXECUTOR_ID,)",
+        "registry.len()==before.saturating_add(1)",
+        "registry.contains(RESOURCE_AUTHORIZATION_EXECUTOR_ID)",
+        "DecisionExecutionStage::Passive=>[AuthorizationViewRole::PrimaryCandidate,AuthorizationViewRole::PeerCandidate,]",
+        "DecisionExecutionStage::Active=>[AuthorizationViewRole::PrimaryReplay,AuthorizationViewRole::PeerReplay,]",
+        "lettransport_stage=ifrole==AuthorizationViewRole::PrimaryReplay{DecisionExecutionStage::Active}else{DecisionExecutionStage::Passive};",
+        "letorigin=(transport_stage==DecisionExecutionStage::Passive).then_some(DecisionActionOrigin::Planned);",
+        "fnfinalize(",
+        "AssessmentCapabilityDescriptor::differential_review(",
+        ".isolated()",
+        "collect_authorized_json_get_for_runtime(",
+        "request.case().action_id()!=RESOURCE_AUTHORIZATION_REVIEW_ACTION_ID",
+        "request.case().applies_hypothesis_transition()",
+        "request.case().payload_strategy().is_some()",
+        "request.delay_ms().is_some()",
+        "context.project_differential(",
+        ],
+        "resource authorization runtime lost its one-action, four-view, shared-authority contract",
+    );
+
+    require_markers(
+        &mut violations,
+        &compact_item,
+        &[
+        "Self::Differential(_)=>AssessmentDisposition::NeedsReview",
+        "AssessmentClaimPolicy::DifferentialReview",
+        "if!capability.allows_differential_review()",
+        "AssessmentBasis::Differential(",
+        ],
+        "resource authorization item must remain a transition-free differential capped at NeedsReview / KnowledgeOnly",
+    );
+
+    require_markers(
+        &mut violations,
+        &compact_actions,
+        &[
+        "authorization_review_phase_terminal_predicate",
+        "KnowledgePredicate::new(\"web.authorization-review.transport\",\"phase-terminal\")",
+        "#[cfg(feature=\"authorization-review\")]ResourceAuthorizationDifferential,",
+        "Self::ResourceAuthorizationDifferential=>{\"web.review.authorization.resource-differential\"}",
+        "Self::ResourceAuthorizationDifferential=>\"http.authorization-resource-review\"",
+        "ifmatches!(self,Self::ResourceAuthorizationDifferential){return4;}",
+        "VerificationTarget::KnowledgeOnly",
+        ],
+        "native web-review catalog lost the single bounded KnowledgeOnly authorization action",
+    );
+
+    require_markers(
+        &mut violations,
+        &compact_decision,
+        &[
+        "active_rules.push(build_authorization_terminal_rule(",
+        ".map(|kind|build_authorization_terminal_rule(kind,VerificationStage::Passive))",
+        ],
+        "authorization review must install action-scoped terminal verification for both native stages",
+    );
+    let terminal_verification =
+        named_function_source(decision, "build_authorization_terminal_rule")
+            .map(squash_ascii_whitespace)
+            .unwrap_or_default();
+    require_markers(
+        &mut violations,
+        &terminal_verification,
+        &[
+            "authorization_review_phase_terminal_predicate()",
+            "OutcomeStatus::Blocked",
+            ".scoped_to_action(kind.action_id())?",
+            ".with_case_correlated_evidence()",
+        ],
+        "authorization terminal evidence must become one correlated action-scoped Blocked outcome",
+    );
+
+    require_markers(
+        &mut violations,
+        &compact_web_runtime,
+        &[
+            "pub(incrate::web_runtime)fnwith_resource_authorization_review(",
+        "authority.authorize_target(config.execution_resource())",
+        "native_review_actions.push(crate::web_actions::NativeWebReviewActionKind::ResourceAuthorizationDifferential,)",
+        "binding.install_into_parent_registry(&mutexecutors)",
+        "letmutexecutors=DecisionExecutorRegistry::new();",
+        "runner:DecisionRunnerAdapter::new(executors),",
+        ],
+        "the parent StandardWebDecisionRuntime must own and route the one authorization action/executor",
+    );
+    if compact_web_runtime
+        .matches("letmutexecutors=DecisionExecutorRegistry::new();")
+        .count()
+        != 1
+        || compact_web_runtime
+            .matches("runner:DecisionRunnerAdapter::new(executors),")
+            .count()
+            != 1
+    {
+        violations.push(
+            "StandardWebDecisionRuntime must retain exactly one parent-owned executor registry and runner"
+                .to_owned(),
+        );
+    }
+    let terminal_adaptation = named_function_source(
+        web_runtime,
+        "resource_authorization_terminal_adaptation_rule",
+    )
+    .map(squash_ascii_whitespace)
+    .unwrap_or_default();
+    require_markers(
+        &mut violations,
+        &terminal_adaptation,
+        &[
+        "OutcomeSelector::any_stage(BTreeSet::from([OutcomeStatus::Blocked]))?",
+        "authorization_review_phase_terminal_predicate()",
+        "EvidenceValue::Boolean(true)",
+        "PipelineDirective::Halt",
+        "1_000",
+        ],
+        "the parent runtime must turn only authorization phase-terminal Blocked evidence into priority-1000 Halt",
+    );
+    let terminal_predicate = named_function_source(web_runtime, "is_terminal")
+        .map(squash_ascii_whitespace)
+        .unwrap_or_default();
+    require_markers(
+        &mut violations,
+        &terminal_predicate,
+        &["DecisionLoopCommand::Halt{..}"],
+        "authorization Halt must terminate the parent decision loop before another native action",
+    );
+    require_markers(
+        &mut violations,
+        &compact_web_runtime,
+        &[
+            "ifis_terminal(&command){breakcommand.clone();}",
+            "resource_authorization_terminal_adaptation_rule()",
+        ],
+        "authorization Halt must be installed in and terminate the parent decision loop before another native action",
+    );
+    require_markers(
+        &mut violations,
+        &compact_assessment,
+        &[
+        ".with_resource_authorization_review(",
+        ".finalize(",
+        "committed_resource_authorization_review",
+        "authorization_review_audit",
+        "authorization_hard_stop=true",
+        "letallow_structural_followup=!authorization_hard_stop;",
+        "ifallow_structural_followup&&self.xss_structural_review.is_none()",
+        "should_stop|=authorization_hard_stop;",
+        ],
+        "WebAssessmentRuntime must compose and purely finalize the native authorization action in its one report lifecycle",
+    );
+    reject_markers(
+        &mut violations,
+        assessment,
+        &[
+        "execute_resource_authorization_review",
+        "resource_authorization_runner",
+        "DecisionExecutorRegistry::new",
+        "DecisionRunnerAdapter::new",
+        "collect_authorized_json_get_for_runtime",
+        ],
+        "WebAssessmentRuntime must not dispatch a detached post-loop authorization pass or own a second runner",
+    );
+
+    let exact_audit = "pubstructWebAssessmentAuthorizationAudit{policy_id:AuthorizationReviewPolicyId,selected_path_count:u8,ignored_path_count:u8,request_count:u8,outcome:AuthorizationReviewOutcome,primary_stable:Option<bool>,peer_stable:Option<bool>,cross_resources_equivalent:Option<bool>,item_projected:bool,}";
+    require_markers(
+        &mut violations,
+        &compact_runtime,
+        &[exact_audit],
+        "resource authorization audit must remain redacted, bounded, and embedded in the one assessment report",
+    );
+    let report_contract = format!("{compact_assessment}{compact_report}");
+    require_markers(
+        &mut violations,
+        &report_contract,
+        &[
+            "pubconstfnauthorization_review_audit(&self)->Option<&WebAssessmentAuthorizationAudit>",
+            "validate_authorization_audit(authorization_review.as_ref(),&items)?;",
+            "ifprojected_count>1",
+            "positive!=audit.item_projected()",
+            "positive&&usize::from(audit.request_count())!=MAX_AUTHORIZATION_REVIEW_REQUESTS",
+        ],
+        "resource authorization audit must remain redacted, bounded, and embedded in the one assessment report",
+    );
+    if let Some(audit) = named_struct_source(runtime, "WebAssessmentAuthorizationAudit") {
+        reject_markers(
+            &mut violations,
+            audit,
+            &[
+                "credential",
+                "authorization_header",
+                "credential_digest",
+                "source_path",
+                "resource_url",
+                "resource_handle",
+                "query_value",
+                "json_body",
+                "raw_error",
+            ],
+            "resource authorization audit must not retain secret or raw target material",
+        );
+    }
+    let report_sources = format!("{runtime}{assessment}{report}");
+    reject_markers(
+        &mut violations,
+        &report_sources,
+        &[
+            "AuthorizationRunReport",
+            "ResourceAuthorizationReport",
+            "AuthorizationAssessmentReport",
+        ],
+        "resource authorization review must not create a separately finalized report",
+    );
+
+    if !compact_budget.contains("pubconstDEFAULT_MAX_SAME_ACTION_ATTEMPTS:u16=3;")
+        || !compact_assessment.contains("RuntimeBudget::default()")
+        || runtime.contains("with_max_same_action_attempts(4)")
+        || assessment.contains("with_max_same_action_attempts(4)")
+        || web_runtime.contains(".max_same_action_attempts(4)")
+        || web_runtime.contains("with_max_same_action_attempts(4)")
+    {
+        violations.push(
+            "resource authorization review must not widen the global same-action-attempt ceiling; unrelated actions retain RuntimeBudget default 3"
+                .to_owned(),
+        );
+    }
+    if compact_runtime
+        .matches("collect_authorized_json_get_for_runtime(")
+        .count()
+        != 1
+    {
+        violations.push(
+            "resource authorization runtime must retain one broker dispatch implementation for all four roles"
+                .to_owned(),
+        );
+    }
+    reject_markers(
+        &mut violations,
+        runtime,
+        &[
+        "reqwest::",
+        "Client::new",
+        "HttpRequestBroker::new",
+        "StandardWebDecisionRuntime::builder",
+        "WebAssessmentRuntime::builder",
+        "DecisionExecutorRegistry::new",
+        "DecisionRunnerAdapter::new",
+        "RuntimeBudget::new",
+        "KnowledgeBase::new",
+        "Method::POST",
+        "Method::PUT",
+        "Method::PATCH",
+        "Method::DELETE",
+        "query_pairs_mut",
+        "path_segments_mut",
+        "set_query(",
+        "set_path(",
+        "set_host(",
+        "set_port(",
+        "set_scheme(",
+        "increment_id",
+        "decrement_id",
+        "mutate_identifier",
+        "enumerate_resource",
+        "fuzz_identifier",
+        "brute_force",
+        "wordlist",
+        "Uuid::",
+        "uuid::",
+        "Liminvar",
+        "liminvar",
+        "Confirmed",
+        "project_verifier",
+        "from_verifier",
+        "with_hypothesis_transition",
+        ],
+        "resource authorization child must not acquire a second runtime/authority, mutate resources, use write methods, or confirm a claim",
+    );
+
+    let Some(method) = named_function_source(broker, "collect_authorized_json_get_for_runtime")
+    else {
+        violations
+            .push("shared broker is missing the closed resource authorization GET seam".to_owned());
+        return violations;
+    };
+    let compact_method = squash_ascii_whitespace(method);
+    require_markers(
+        &mut violations,
+        &compact_method,
+        &[
+        ".request(Method::GET,target.clone())",
+        ".header(ACCEPT,\"application/json\")",
+        ".header(AUTHORIZATION,authorization)",
+        "self.collect_built_request(action_id,stage,origin,limits,request)",
+        ],
+        "shared authorization broker seam must remain exact bodyless JSON GET with only the role credential",
+    );
+    reject_markers(
+        &mut violations,
+        &compact_method,
+        &[
+        "Method::POST",
+        "Method::PUT",
+        "Method::PATCH",
+        "Method::DELETE",
+        ".body(",
+        ".query(",
+        ".bearer_auth(",
+        ".basic_auth(",
+        ".header(COOKIE",
+        ".header(reqwest::header::COOKIE",
+        "Client::new",
+        ],
+        "shared authorization broker seam must remain GET-only, bodyless, cookie-free, and non-evasive",
+    );
+    let broker_builder = named_function_source(broker, "build").unwrap_or_default();
+    let compact_broker = squash_ascii_whitespace(broker_builder);
+    require_markers(
+        &mut violations,
+        &compact_broker,
+        &[
+            ".redirect(RedirectPolicy::none())",
+            ".retry(reqwest::retry::never())",
+        ],
+        "the shared broker used by resource authorization review must remain redirect-disabled and retry-free",
+    );
+    violations
+}
+
+fn named_function_source<'a>(source: &'a str, name: &str) -> Option<&'a str> {
+    named_braced_item_source(source, &format!("fn {name}"))
+}
+
+fn named_struct_source<'a>(source: &'a str, name: &str) -> Option<&'a str> {
+    named_braced_item_source(source, &format!("pub struct {name}"))
+}
+
+fn named_braced_item_source<'a>(source: &'a str, signature: &str) -> Option<&'a str> {
+    let start = source.find(signature)?;
+    let body = start.checked_add(source[start..].find('{')?)?;
+    let mut depth = 0_usize;
+    for (offset, character) in source[body..].char_indices() {
+        match character {
+            '{' => depth = depth.checked_add(1)?,
+            '}' => {
+                depth = depth.checked_sub(1)?;
+                if depth == 0 {
+                    return Some(&source[start..=body + offset]);
+                }
+            },
+            _ => {},
+        }
+    }
+    None
+}
+
 fn graphql_runtime_module_gate_violations(source: &str) -> Result<Vec<String>, syn::Error> {
     let syntax = syn::parse_file(source)?;
     let matches = syntax
@@ -1622,7 +2154,9 @@ fn graphql_review_source_contract_violations(
         }
     }
 
-    let compact_broker = squash_ascii_whitespace(broker);
+    let graphql_broker =
+        named_function_source(broker, "build_anonymous_graphql_json_request").unwrap_or_default();
+    let compact_broker = squash_ascii_whitespace(graphql_broker);
     let exact_broker_shape = [
         "fnbuild_anonymous_graphql_json_request",
         ".request(Method::POST,target.clone())",
@@ -2177,6 +2711,7 @@ fn reporting_reexport_violations(source: &str) -> Result<Vec<String>, syn::Error
                     .to_owned(),
             );
         }
+
         if item.leading_colon.is_some()
             || use_tree_root_ident(&item.tree).as_deref() != Some("reporting")
         {
@@ -3181,7 +3716,7 @@ fn assessment_bridge_body_is_exact(block: &syn::Block) -> bool {
     };
     if reporting_expression_path_key(report_call.func.as_ref()).as_deref()
         != Some("AssessmentRunReport::from_completed_truth")
-        || report_call.args.len() != 2
+        || report_call.args.len() != 3
     {
         return false;
     }
@@ -3191,6 +3726,9 @@ fn assessment_bridge_body_is_exact(block: &syn::Block) -> bool {
         .is_some_and(|argument| assessment_bridge_self_field(argument, "assessment_items"))
         && reporting_expression_path_key(arguments.next().expect("checked length")).as_deref()
             == Some("truth")
+        && arguments.next().is_some_and(|argument| {
+            assessment_bridge_authorization_field(argument, "authorization_review")
+        })
 }
 
 fn assessment_bridge_exact_runtime_limits(expression: &syn::Expr) -> bool {
@@ -3199,13 +3737,16 @@ fn assessment_bridge_exact_runtime_limits(expression: &syn::Expr) -> bool {
     };
     reporting_expression_path_key(call.func.as_ref()).as_deref()
         == Some("AssessmentRuntimeLimits::new")
-        && call.args.len() == 2
+        && call.args.len() == 3
         && call
             .args
             .first()
             .is_some_and(|argument| assessment_bridge_self_field(argument, "limits"))
         && call.args.iter().nth(1).is_some_and(|argument| {
             assessment_bridge_self_field(argument, "runtime_active_verification_limit")
+        })
+        && call.args.iter().nth(2).is_some_and(|argument| {
+            assessment_bridge_self_field(argument, "runtime_optional_active_verification_allowance")
         })
 }
 
@@ -3214,6 +3755,15 @@ fn assessment_bridge_self_field(expression: &syn::Expr, expected: &str) -> bool 
         if reporting_expression_path_key(field.base.as_ref()).as_deref() == Some("self")
             && matches!(&field.member, syn::Member::Named(member)
                 if semantic_ident_name(member) == expected))
+}
+
+fn assessment_bridge_authorization_field(expression: &syn::Expr, expected: &str) -> bool {
+    matches!(expression, syn::Expr::Field(field)
+        if field.attrs.len() == 1
+            && field.attrs[0].path().is_ident("cfg")
+            && cfg_predicate(&field.attrs[0]).as_deref()
+                == Some("feature=\"authorization-review\"")
+            && assessment_bridge_self_field(expression, expected))
 }
 
 fn assessment_bridge_borrowed_self_field(expression: &syn::Expr, expected: &str) -> bool {
@@ -3421,7 +3971,28 @@ const EXACT_REPORTING_DOCUMENT_STRUCTS: &[ReportingDocumentShape] = &[
             ("status", "&'static str"),
             ("subject_count", "u64"),
             ("item_count", "u64"),
+            (
+                "authorization_review",
+                "Option<AssessmentAuthorizationAuditDocument>",
+            ),
             ("items", "Vec<AssessmentItemDocument<'a>>"),
+        ],
+    ),
+    (
+        "AssessmentAuthorizationAuditDocument",
+        &[],
+        &[
+            ("schema", "&'static str"),
+            ("capability_id", "&'static str"),
+            ("policy_id", "String"),
+            ("selected_path_count", "u8"),
+            ("ignored_path_count", "u8"),
+            ("request_count", "u8"),
+            ("outcome", "&'static str"),
+            ("primary_stable", "Option<bool>"),
+            ("peer_stable", "Option<bool>"),
+            ("cross_resources_equivalent", "Option<bool>"),
+            ("item_projected", "bool"),
         ],
     ),
     (
@@ -3529,6 +4100,23 @@ const EXACT_REPORTING_DOCUMENT_STRUCTS: &[ReportingDocumentShape] = &[
     ),
 ];
 
+fn reporting_serde_skip_option_is_none(attribute: &Attribute) -> bool {
+    attribute.path().is_ident("serde")
+        && attribute.meta.require_list().is_ok_and(|list| {
+            squash_ascii_whitespace(&list.tokens.to_string())
+                == "skip_serializing_if=\"Option::is_none\""
+        })
+}
+
+fn reporting_authorization_audit_field_attributes_are_exact(attributes: &[Attribute]) -> bool {
+    attributes.len() == 2
+        && attributes.iter().any(|attribute| {
+            attribute.path().is_ident("cfg")
+                && cfg_predicate(attribute).as_deref() == Some("feature=\"authorization-review\"")
+        })
+        && attributes.iter().any(reporting_serde_skip_option_is_none)
+}
+
 fn reporting_document_contract_violations(source: &str) -> Result<Vec<String>, syn::Error> {
     let syntax = syn::parse_file(source)?;
     let expected: BTreeMap<_, _> = EXACT_REPORTING_DOCUMENT_STRUCTS
@@ -3550,6 +4138,7 @@ fn reporting_document_contract_violations(source: &str) -> Result<Vec<String>, s
         let assessment_document = matches!(
             name.as_str(),
             "AssessmentDocument"
+                | "AssessmentAuthorizationAuditDocument"
                 | "AssessmentItemDocument"
                 | "AssessmentBasisLinkageDocument"
                 | "AssessmentRemediationDocument"
@@ -3581,12 +4170,17 @@ fn reporting_document_contract_violations(source: &str) -> Result<Vec<String>, s
                     )
                 })
                 .collect();
+            let expected_cfg = if name == "AssessmentAuthorizationAuditDocument" {
+                "all(feature=\"scanning\",feature=\"authorization-review\")"
+            } else {
+                "feature=\"scanning\""
+            };
             if cfg_attributes.len() != 1
                 || !cfg_attributes[0].path().is_ident("cfg")
-                || cfg_predicate(cfg_attributes[0]).as_deref() != Some("feature=\"scanning\"")
+                || cfg_predicate(cfg_attributes[0]).as_deref() != Some(expected_cfg)
             {
                 violations.push(format!(
-                    "reporting private assessment document type `{name}` must have exactly cfg(feature = \"scanning\")"
+                    "reporting private assessment document type `{name}` must have exactly cfg({expected_cfg})"
                 ));
             }
         }
@@ -3617,13 +4211,17 @@ fn reporting_document_contract_violations(source: &str) -> Result<Vec<String>, s
                 .named
                 .iter()
                 .map(|field| {
-                    if !field.attrs.is_empty() || !matches!(field.vis, Visibility::Inherited) {
+                    let field_name = field.ident.as_ref()?.to_string();
+                    let attributes_are_exact =
+                        if name == "AssessmentDocument" && field_name == "authorization_review" {
+                            reporting_authorization_audit_field_attributes_are_exact(&field.attrs)
+                        } else {
+                            field.attrs.is_empty()
+                        };
+                    if !attributes_are_exact || !matches!(field.vis, Visibility::Inherited) {
                         return None;
                     }
-                    Some((
-                        field.ident.as_ref()?.to_string(),
-                        reporting_type_key(&field.ty)?,
-                    ))
+                    Some((field_name, reporting_type_key(&field.ty)?))
                 })
                 .collect(),
             Fields::Unnamed(_) | Fields::Unit => None,
@@ -5972,8 +6570,8 @@ struct ReportingSourceVisitor {
     inside_test_module: usize,
 }
 
-const EXACT_REPORTING_PRODUCTION_TOKEN_BYTES: usize = 48_537;
-const EXACT_REPORTING_PRODUCTION_FINGERPRINT: u128 = 0xa7e8_6395_492c_37d9_ba90_4a62_bc03_d480;
+const EXACT_REPORTING_PRODUCTION_TOKEN_BYTES: usize = 56_278;
+const EXACT_REPORTING_PRODUCTION_FINGERPRINT: u128 = 0x52b9_0204_8dc9_db43_e780_a1e5_1388_afe7;
 
 fn reporting_production_body_inventory_violations(source: &str) -> Vec<String> {
     let Ok(syntax) = syn::parse_file(source) else {
@@ -6037,9 +6635,14 @@ fn reporting_production_body_inventory_violations(source: &str) -> Vec<String> {
 }
 
 const EXACT_REPORTING_SOURCE_IMPORTS: &[&str] = &[
+    "crate::authorization_review::AuthorizationReviewOutcome",
+    "crate::authorization_review::HARD_MAX_AUTHORIZATION_REVIEW_IGNORED_PATHS",
+    "crate::authorization_review::HARD_MAX_AUTHORIZATION_REVIEW_SELECTED_PATHS",
     "crate::web_runtime::AssessmentBasis",
     "crate::web_runtime::AssessmentRunReport",
     "crate::web_runtime::AssessmentRunReportError",
+    "crate::web_runtime::MAX_AUTHORIZATION_REVIEW_REQUESTS",
+    "crate::web_runtime::RESOURCE_AUTHORIZATION_REVIEW_CAPABILITY_ID",
     "crate::web_runtime::ScanProfileV1",
     "crate::web_runtime::WebAssessmentRunReport",
     "serde::Serialize",
@@ -6058,12 +6661,34 @@ const EXACT_REPORTING_SOURCE_IMPORTS: &[&str] = &[
 ];
 
 const ALLOWED_REPORTING_QUALIFIED_PATHS: &[&str] = &[
+    "AssessmentAuthorizationAuditDocument::from_audit",
     "AssessmentBasis::Differential",
     "AssessmentBasis::Observation",
     "AssessmentBasis::Verifier",
     "AssessmentBasisLinkageDocument::from_basis",
     "AssessmentDocument::from_report",
     "AssessmentItemDocument::from_item",
+    "AuthorizationReviewOutcome::BudgetExhausted",
+    "AuthorizationReviewOutcome::Cancelled",
+    "AuthorizationReviewOutcome::ContractMismatch",
+    "AuthorizationReviewOutcome::CrossFieldsEquivalentOnly",
+    "AuthorizationReviewOutcome::CrossResourcesDifferent",
+    "AuthorizationReviewOutcome::CrossStatusDifferent",
+    "AuthorizationReviewOutcome::DefensiveInterference",
+    "AuthorizationReviewOutcome::GenericJsonErrorEnvelope",
+    "AuthorizationReviewOutcome::Incomplete",
+    "AuthorizationReviewOutcome::MalformedJson",
+    "AuthorizationReviewOutcome::NotEligible",
+    "AuthorizationReviewOutcome::PeerDenied",
+    "AuthorizationReviewOutcome::PeerUnstable",
+    "AuthorizationReviewOutcome::PrimaryBaselineInvalid",
+    "AuthorizationReviewOutcome::PrimaryUnstable",
+    "AuthorizationReviewOutcome::RateLimited",
+    "AuthorizationReviewOutcome::RedirectObserved",
+    "AuthorizationReviewOutcome::SelectedPathMissing",
+    "AuthorizationReviewOutcome::StableCrossPrincipalEquivalence",
+    "AuthorizationReviewOutcome::Truncated",
+    "AuthorizationReviewOutcome::UnsupportedMedia",
     "OutcomeDocument::from_outcome",
     "OutcomeStatus::Blocked",
     "OutcomeStatus::ConfirmedNegative",
@@ -6117,8 +6742,14 @@ const ALLOWED_REPORTING_QUALIFIED_PATHS: &[&str] = &[
     "crate::web_runtime::AssessmentItem",
     "crate::web_runtime::AssessmentRunReport",
     "crate::web_runtime::AssessmentRunReportError",
+    "crate::web_runtime::MAX_AUTHORIZATION_REVIEW_REQUESTS",
+    "crate::web_runtime::RESOURCE_AUTHORIZATION_REVIEW_CAPABILITY_ID",
     "crate::web_runtime::ScanProfileV1",
     "crate::web_runtime::WebAssessmentRunReport",
+    "crate::web_runtime::WebAssessmentAuthorizationAudit",
+    "crate::authorization_review::AuthorizationReviewOutcome",
+    "crate::authorization_review::HARD_MAX_AUTHORIZATION_REVIEW_IGNORED_PATHS",
+    "crate::authorization_review::HARD_MAX_AUTHORIZATION_REVIEW_SELECTED_PATHS",
     "fmt::Arguments",
     "fmt::Display",
     "fmt::Error",
@@ -6139,6 +6770,7 @@ const ALLOWED_REPORTING_QUALIFIED_PATHS: &[&str] = &[
     "u16::MAX",
     "u32::from",
     "u64::try_from",
+    "usize::from",
     "venom_core::OutcomeStatus",
     "venom_core::ResourceAccounting",
     "venom_core::ResourceAccountingMode",
@@ -6157,6 +6789,7 @@ const ALLOWED_REPORTING_FUNCTION_CALLS: &[&str] = &[
     "AssessmentBasisLinkageDocument::from_basis",
     "AssessmentDocument::from_report",
     "AssessmentItemDocument::from_item",
+    "AssessmentAuthorizationAuditDocument::from_audit",
     "Err",
     "Ok",
     "RawJsonWriter::new",
@@ -6170,12 +6803,14 @@ const ALLOWED_REPORTING_FUNCTION_CALLS: &[&str] = &[
     "accounting_mode_token",
     "assessment_basis_token",
     "assessment_reference_list",
+    "authorization_review_outcome_token",
     "char::from",
     "disposition_token",
     "fmt::write",
     "io::Error::other",
     "is_bidi_control",
     "longest_backtick_run",
+    "optional_bool_token",
     "push_visible_codepoint",
     "render_csv",
     "render_assessment_csv",
@@ -6196,6 +6831,7 @@ const ALLOWED_REPORTING_FUNCTION_CALLS: &[&str] = &[
     "stop_code_token",
     "u32::from",
     "u64::try_from",
+    "usize::from",
     "visible_text",
     "valid_opaque_assessment_reference",
     "write_assessment_csv_row",
@@ -6219,6 +6855,7 @@ const ALLOWED_REPORTING_METHOD_CALLS: &[&str] = &[
     "as_deref",
     "as_str",
     "authorized_origin",
+    "authorization_review_audit",
     "basis",
     "bytes",
     "candidate",
@@ -6235,8 +6872,10 @@ const ALLOWED_REPORTING_METHOD_CALLS: &[&str] = &[
     "confidence",
     "contains",
     "consumed",
+    "count",
     "control",
     "cwe",
+    "cross_resources_equivalent",
     "dimensions",
     "disposition",
     "duration_ms",
@@ -6247,9 +6886,11 @@ const ALLOWED_REPORTING_METHOD_CALLS: &[&str] = &[
     "evidence_count",
     "extend_from_slice",
     "find",
+    "filter",
     "fingerprint",
     "finish",
     "id",
+    "ignored_path_count",
     "into_iter",
     "into_assessment_report",
     "is_control",
@@ -6262,6 +6903,7 @@ const ALLOWED_REPORTING_METHOD_CALLS: &[&str] = &[
     "is_whitespace",
     "iter",
     "item_count",
+    "item_projected",
     "items",
     "join",
     "len",
@@ -6276,24 +6918,30 @@ const ALLOWED_REPORTING_METHOD_CALLS: &[&str] = &[
     "ok",
     "ordinal",
     "outcomes",
+    "outcome",
     "outcome_reference",
     "paired_comparison",
     "parts_per_million",
+    "peer_stable",
+    "policy_id",
     "push",
     "push_char",
     "push_fmt",
     "push_str",
     "profile",
+    "primary_stable",
     "redacted_summary",
     "remaining",
     "reference_count",
     "remediation",
     "request_body_bytes",
+    "request_count",
     "requests",
     "required_metadata",
     "response_body_bytes",
     "run_report",
     "schema",
+    "selected_path_count",
     "severity",
     "started_at",
     "stage",
@@ -6319,7 +6967,7 @@ const ALLOWED_REPORTING_METHOD_CALLS: &[&str] = &[
     "write_str",
 ];
 
-const ALLOWED_REPORTING_MACROS: &[&str] = &["format_args", "matches", "vec"];
+const ALLOWED_REPORTING_MACROS: &[&str] = &["format", "format_args", "matches", "vec"];
 const ALLOWED_REPORTING_ATTRIBUTES: &[&str] = &["derive", "doc", "non_exhaustive"];
 
 fn reporting_source_import_violations(source: &str) -> Result<Vec<String>, syn::Error> {
@@ -6349,16 +6997,32 @@ fn reporting_source_import_violations(source: &str) -> Result<Vec<String>, syn::
                         | "crate::web_runtime::WebAssessmentRunReport"
                 )
             });
+        let authorization_import = !paths.is_empty()
+            && paths.iter().all(|path| {
+                matches!(
+                path.as_str(),
+                "crate::authorization_review::AuthorizationReviewOutcome"
+                    | "crate::authorization_review::HARD_MAX_AUTHORIZATION_REVIEW_IGNORED_PATHS"
+                    | "crate::authorization_review::HARD_MAX_AUTHORIZATION_REVIEW_SELECTED_PATHS"
+                    | "crate::web_runtime::MAX_AUTHORIZATION_REVIEW_REQUESTS"
+                    | "crate::web_runtime::RESOURCE_AUTHORIZATION_REVIEW_CAPABILITY_ID"
+            )
+            });
         let attributes_are_exact = if assessment_import {
             item.attrs.len() == 1
                 && item.attrs[0].path().is_ident("cfg")
                 && cfg_predicate(&item.attrs[0]).as_deref() == Some("feature=\"scanning\"")
+        } else if authorization_import {
+            item.attrs.len() == 1
+                && item.attrs[0].path().is_ident("cfg")
+                && cfg_predicate(&item.attrs[0]).as_deref()
+                    == Some("all(feature=\"scanning\",feature=\"authorization-review\")")
         } else {
             item.attrs.is_empty()
         };
         if !matches!(item.vis, Visibility::Inherited) || !attributes_are_exact {
             violations.push(
-                "reporting production imports must remain private; only the exact web-assessment import may use cfg(feature = \"scanning\")"
+                "reporting production imports must remain private; only the exact web-assessment and authorization-audit imports may use their pinned feature gates"
                     .to_owned(),
             );
         }
@@ -6420,16 +7084,24 @@ impl<'ast> Visit<'ast> for ReportingSourceVisitor {
             syn::visit::visit_attribute(self, attribute);
             return;
         }
-        let exact_scanning_gate = attribute_name == "cfg"
-            && cfg_predicate(attribute).as_deref() == Some("feature=\"scanning\"");
-        if matches!(attribute_name.as_str(), "cfg" | "cfg_attr") && !exact_scanning_gate {
+        let cfg = cfg_predicate(attribute);
+        let exact_feature_gate = attribute_name == "cfg"
+            && matches!(
+                cfg.as_deref(),
+                Some("feature=\"scanning\"")
+                    | Some("feature=\"authorization-review\"")
+                    | Some("all(feature=\"scanning\",feature=\"authorization-review\")")
+            );
+        if matches!(attribute_name.as_str(), "cfg" | "cfg_attr") && !exact_feature_gate {
             self.violations.insert(
-                "reporting production source may contain only the exact cfg(feature = \"scanning\") assessment-composition gate"
+                "reporting production source may contain only the exact scanning and authorization-audit feature gates"
                     .to_owned(),
             );
         }
+        let exact_redaction_attribute = reporting_serde_skip_option_is_none(attribute);
         if !ALLOWED_REPORTING_ATTRIBUTES.contains(&attribute_name.as_str())
             && !matches!(attribute_name.as_str(), "cfg" | "cfg_attr")
+            && !exact_redaction_attribute
         {
             self.violations.insert(format!(
                 "reporting production attribute `{attribute_name}` is outside the exact allowlist"
@@ -6694,7 +7366,8 @@ fn inspect_reporting_path(segments: &[String], violations: &mut BTreeSet<String>
     };
     let key = segments.join("::");
     let exact_internal_assessment_path = ALLOWED_REPORTING_QUALIFIED_PATHS.contains(&key.as_str())
-        && key.starts_with("crate::web_runtime::");
+        && (key.starts_with("crate::web_runtime::")
+            || key.starts_with("crate::authorization_review::"));
     if (root == "crate" || root == "super" || (root == "self" && segments.len() > 1))
         && !exact_internal_assessment_path
     {
@@ -7139,6 +7812,10 @@ mod tests {
             .map(str::to_owned)
             .collect(),
         );
+        features.insert(
+            "authorization-review".to_owned(),
+            vec!["scanning".to_owned()],
+        );
         features.insert("graphql-review".to_owned(), vec!["scanning".to_owned()]);
         features.insert(
             "normalization-resilience".to_owned(),
@@ -7251,6 +7928,387 @@ mod tests {
     }
 
     #[test]
+    fn resource_authorization_review_is_non_default_and_uses_exact_feature_edges() {
+        let mut features = valid_feature_map();
+        assert!(feature_violations(&features).is_empty());
+        assert!(!raw_feature_closure(&features, "default").contains("authorization-review"));
+        assert_eq!(
+            features.get("authorization-review").unwrap(),
+            &["scanning".to_owned()]
+        );
+
+        features.remove("authorization-review");
+        assert!(feature_violations(&features)
+            .iter()
+            .any(|violation| violation.contains("authorization-review")));
+
+        let mut features = valid_feature_map();
+        features
+            .get_mut("default")
+            .unwrap()
+            .push("authorization-review".to_owned());
+        assert!(feature_violations(&features)
+            .iter()
+            .any(|violation| violation.contains("default features")));
+    }
+
+    #[test]
+    fn resource_authorization_review_is_one_bounded_shared_runtime_capability() {
+        let runtime = include_str!(
+            "../../../crates/venom-scanner/src/web_runtime/resource_authorization_runtime.rs"
+        );
+        let broker =
+            include_str!("../../../crates/venom-scanner/src/http_evidence/request_broker.rs");
+        let assessment =
+            include_str!("../../../crates/venom-scanner/src/web_runtime/web_assessment.rs");
+        let report =
+            include_str!("../../../crates/venom-scanner/src/web_runtime/assessment_report.rs");
+        let item = include_str!("../../../crates/venom-scanner/src/web_runtime/assessment_item.rs");
+        let budget = include_str!("../../../crates/venom-scanner/src/runtime_budget.rs");
+        let web_runtime = include_str!("../../../crates/venom-scanner/src/web_runtime.rs");
+        let actions =
+            include_str!("../../../crates/venom-scanner/src/web_actions/native_review.rs");
+        let decision =
+            include_str!("../../../crates/venom-scanner/src/web_runtime/web_review_decision.rs");
+        let sources = ResourceAuthorizationSources {
+            runtime,
+            broker,
+            assessment,
+            report,
+            item,
+            budget,
+            web_runtime,
+            actions,
+            decision,
+        };
+        let violations = resource_authorization_review_source_contract_violations(sources);
+        assert!(violations.is_empty(), "{violations:#?}");
+        assert!(
+            resource_authorization_runtime_module_gate_violations(web_runtime)
+                .unwrap()
+                .is_empty()
+        );
+
+        for (from, to, needle) in [
+            (
+                "MAX_AUTHORIZATION_REVIEW_RESOURCES: usize = 1",
+                "MAX_AUTHORIZATION_REVIEW_RESOURCES: usize = 2",
+                "selected resource ceiling",
+            ),
+            (
+                "MAX_AUTHORIZATION_REVIEW_REQUESTS: usize = 4",
+                "MAX_AUTHORIZATION_REVIEW_REQUESTS: usize = 5",
+                "request ceiling",
+            ),
+            (
+                "MAX_AUTHORIZATION_REVIEW_ACTIVE_VERIFICATIONS: usize = 1",
+                "MAX_AUTHORIZATION_REVIEW_ACTIVE_VERIFICATIONS: usize = 2",
+                "active verification ceiling",
+            ),
+        ] {
+            let expanded = runtime.replace(from, to);
+            assert!(resource_authorization_review_source_contract_violations(
+                ResourceAuthorizationSources {
+                    runtime: &expanded,
+                    ..sources
+                }
+            )
+            .iter()
+            .any(|violation| violation.contains(needle)));
+        }
+
+        for forbidden in [
+            "fn second_runtime() { reqwest::Client::new(); }",
+            "fn mutate_resource(target: &mut url::Url) { target.query_pairs_mut(); }",
+            "fn enumerate() { enumerate_resource(); }",
+            "const CLAIM: &str = \"Confirmed\";",
+            "const PARTIAL_REBRAND: &str = \"Liminvar\";",
+            "fn second_scanner() { let _ = WebAssessmentRuntime::builder(); }",
+            "fn second_broker() { let _ = HttpRequestBroker::new_metered(policy, accounting); }",
+            "fn second_budget() { let _ = RuntimeBudget::new(); }",
+            "fn second_registry() { let _ = DecisionExecutorRegistry::new(); }",
+            "fn second_runner(registry: DecisionExecutorRegistry) { let _ = DecisionRunnerAdapter::new(registry); }",
+        ] {
+            let mutation = format!("{runtime}\n{forbidden}");
+            assert!(
+                !resource_authorization_review_source_contract_violations(
+                    ResourceAuthorizationSources {
+                        runtime: &mutation,
+                        ..sources
+                    }
+                )
+                .is_empty(),
+                "resource authorization architecture mutation unexpectedly passed: {forbidden}"
+            );
+        }
+
+        let write_method = broker.replacen(
+            ".request(Method::GET, target.clone())",
+            ".request(Method::POST, target.clone())",
+            1,
+        );
+        assert!(resource_authorization_review_source_contract_violations(
+            ResourceAuthorizationSources {
+                broker: &write_method,
+                ..sources
+            }
+        )
+        .iter()
+        .any(|violation| violation.contains("GET-only")));
+
+        let missing_broker_seam = broker.replacen(
+            "fn collect_authorized_json_get_for_runtime",
+            "fn collect_authorized_json_get_unbound",
+            1,
+        );
+        assert!(resource_authorization_review_source_contract_violations(
+            ResourceAuthorizationSources {
+                broker: &missing_broker_seam,
+                ..sources
+            }
+        )
+        .iter()
+        .any(|violation| violation.contains("missing the closed")));
+
+        let credential_cookie = broker.replacen(
+            ".header(AUTHORIZATION, authorization)",
+            ".header(AUTHORIZATION, authorization).header(COOKIE, \"session=secret\")",
+            1,
+        );
+        assert!(resource_authorization_review_source_contract_violations(
+            ResourceAuthorizationSources {
+                broker: &credential_cookie,
+                ..sources
+            }
+        )
+        .iter()
+        .any(|violation| violation.contains("cookie-free")));
+
+        let request_body = broker.replacen(
+            ".header(AUTHORIZATION, authorization)",
+            ".header(AUTHORIZATION, authorization).body(\"forbidden\")",
+            1,
+        );
+        assert!(resource_authorization_review_source_contract_violations(
+            ResourceAuthorizationSources {
+                broker: &request_body,
+                ..sources
+            }
+        )
+        .iter()
+        .any(|violation| violation.contains("bodyless")));
+
+        let redirecting = broker.replacen(
+            ".redirect(RedirectPolicy::none())",
+            ".redirect(RedirectPolicy::limited(1))",
+            1,
+        );
+        assert!(resource_authorization_review_source_contract_violations(
+            ResourceAuthorizationSources {
+                broker: &redirecting,
+                ..sources
+            }
+        )
+        .iter()
+        .any(|violation| violation.contains("redirect-disabled")));
+
+        let widened_budget = budget.replace(
+            "DEFAULT_MAX_SAME_ACTION_ATTEMPTS: u16 = 3",
+            "DEFAULT_MAX_SAME_ACTION_ATTEMPTS: u16 = 4",
+        );
+        assert!(resource_authorization_review_source_contract_violations(
+            ResourceAuthorizationSources {
+                budget: &widened_budget,
+                ..sources
+            }
+        )
+        .iter()
+        .any(|violation| violation.contains("default 3")));
+
+        let child_owned_runner = format!(
+            "{runtime}\nfn forbidden() {{ let _ = DecisionRunnerAdapter::new(DecisionExecutorRegistry::new()); }}"
+        );
+        assert!(resource_authorization_review_source_contract_violations(
+            ResourceAuthorizationSources {
+                runtime: &child_owned_runner,
+                ..sources
+            }
+        )
+        .iter()
+        .any(|violation| violation.contains("second runtime/authority")));
+
+        let widened_web_runtime = format!(
+            "{web_runtime}\nfn forbidden_budget(builder: StandardWebDecisionRuntimeBuilder) {{ let _ = builder.max_same_action_attempts(4); }}"
+        );
+        assert!(resource_authorization_review_source_contract_violations(
+            ResourceAuthorizationSources {
+                web_runtime: &widened_web_runtime,
+                ..sources
+            }
+        )
+        .iter()
+        .any(|violation| violation.contains("default 3")));
+
+        let duplicate_parent_registry = format!(
+            "{web_runtime}\nfn forbidden_registry() {{ let mut executors = DecisionExecutorRegistry::new(); let runner = DecisionRunnerAdapter::new(executors); }}"
+        );
+        assert!(resource_authorization_review_source_contract_violations(
+            ResourceAuthorizationSources {
+                web_runtime: &duplicate_parent_registry,
+                ..sources
+            }
+        )
+        .iter()
+        .any(|violation| violation.contains("exactly one parent-owned")));
+
+        let non_halting_parent = web_runtime.replace(
+            "PipelineDirective::Halt,",
+            "PipelineDirective::Replan { suppress_current_action: true },",
+        );
+        assert!(resource_authorization_review_source_contract_violations(
+            ResourceAuthorizationSources {
+                web_runtime: &non_halting_parent,
+                ..sources
+            }
+        )
+        .iter()
+        .any(|violation| violation.contains("priority-1000 Halt")));
+
+        let non_blocking_terminal =
+            decision.replace("OutcomeStatus::Blocked,", "OutcomeStatus::Unknown,");
+        assert!(resource_authorization_review_source_contract_violations(
+            ResourceAuthorizationSources {
+                decision: &non_blocking_terminal,
+                ..sources
+            }
+        )
+        .iter()
+        .any(|violation| violation.contains("action-scoped Blocked")));
+
+        let continued_optional_work = assessment.replace(
+            "authorization_hard_stop = true;",
+            "authorization_hard_stop = false;",
+        );
+        assert!(resource_authorization_review_source_contract_violations(
+            ResourceAuthorizationSources {
+                assessment: &continued_optional_work,
+                ..sources
+            }
+        )
+        .iter()
+        .any(|violation| violation.contains("one report lifecycle")));
+
+        for (from, to, expected) in [
+            (
+                "install_into_parent_registry",
+                "install_into_child_registry",
+                "one-action",
+            ),
+            (
+                "collect_authorized_json_get_for_runtime",
+                "collect_authorized_json_get_detached",
+                "one-action",
+            ),
+            (".route_action(", ".forget_action(", "one-action"),
+        ] {
+            let mutation = runtime.replacen(from, to, 1);
+            assert!(resource_authorization_review_source_contract_violations(
+                ResourceAuthorizationSources {
+                    runtime: &mutation,
+                    ..sources
+                }
+            )
+            .iter()
+            .any(|violation| violation.contains(expected)));
+        }
+
+        let double_charged_replay = runtime.replacen(
+            "if role == AuthorizationViewRole::PrimaryReplay",
+            "if matches!(role, AuthorizationViewRole::PrimaryReplay | AuthorizationViewRole::PeerReplay)",
+            1,
+        );
+        assert!(resource_authorization_review_source_contract_violations(
+            ResourceAuthorizationSources {
+                runtime: &double_charged_replay,
+                ..sources
+            }
+        )
+        .iter()
+        .any(|violation| violation.contains("one-action")));
+
+        let widened_native_action = actions.replacen("return 4;", "return 5;", 1);
+        assert!(resource_authorization_review_source_contract_violations(
+            ResourceAuthorizationSources {
+                actions: &widened_native_action,
+                ..sources
+            }
+        )
+        .iter()
+        .any(|violation| violation.contains("single bounded")));
+
+        let detached_dispatch = format!(
+            "{assessment}\nfn forbidden_detached_dispatch() {{ execute_resource_authorization_review(); }}"
+        );
+        assert!(resource_authorization_review_source_contract_violations(
+            ResourceAuthorizationSources {
+                assessment: &detached_dispatch,
+                ..sources
+            }
+        )
+        .iter()
+        .any(|violation| violation.contains("detached post-loop")));
+
+        let detached_report = format!("{report}\nstruct AuthorizationAssessmentReport;");
+        assert!(resource_authorization_review_source_contract_violations(
+            ResourceAuthorizationSources {
+                report: &detached_report,
+                ..sources
+            }
+        )
+        .iter()
+        .any(|violation| violation.contains("separately finalized")));
+
+        let leaky_audit = runtime.replacen(
+            "    item_projected: bool,",
+            "    item_projected: bool,\n    credential: String,",
+            1,
+        );
+        assert!(resource_authorization_review_source_contract_violations(
+            ResourceAuthorizationSources {
+                runtime: &leaky_audit,
+                ..sources
+            }
+        )
+        .iter()
+        .any(|violation| violation.contains("audit")));
+
+        let escalated_item = item.replacen(
+            "Self::Differential(_) => AssessmentDisposition::NeedsReview",
+            "Self::Differential(_) => AssessmentDisposition::Confirmed",
+            1,
+        );
+        assert!(resource_authorization_review_source_contract_violations(
+            ResourceAuthorizationSources {
+                item: &escalated_item,
+                ..sources
+            }
+        )
+        .iter()
+        .any(|violation| violation.contains("NeedsReview / KnowledgeOnly")));
+
+        let ungated = web_runtime.replace(
+            "#[cfg(feature = \"authorization-review\")]\nmod resource_authorization_runtime;",
+            "mod resource_authorization_runtime;",
+        );
+        assert!(
+            resource_authorization_runtime_module_gate_violations(&ungated)
+                .unwrap()
+                .iter()
+                .any(|violation| violation.contains("authorization-review"))
+        );
+    }
+
+    #[test]
     fn graphql_review_architecture_is_bounded_anonymous_and_shared_transport_only() {
         let core = include_str!("../../../crates/venom-scanner/src/graphql_review.rs");
         let runtime =
@@ -7294,8 +8352,10 @@ mod tests {
                 .iter()
                 .any(|violation| violation.contains("must not create transport"))
         );
-        let credentialed_broker = format!(
-            "{broker}\nfn escaped(request: reqwest::RequestBuilder) {{ let _ = request.header(AUTHORIZATION, \"secret\"); }}"
+        let credentialed_broker = broker.replacen(
+            ".header(ACCEPT, GRAPHQL_RESPONSE_ACCEPT)",
+            ".header(ACCEPT, GRAPHQL_RESPONSE_ACCEPT)\n            .header(AUTHORIZATION, \"secret\")",
+            1,
         );
         assert!(
             graphql_review_source_contract_violations(core, runtime, &credentialed_broker)
@@ -8204,13 +9264,19 @@ mod tests {
                         AssessmentRuntimeLimits::new(
                             self.limits,
                             self.runtime_active_verification_limit,
+                            self.runtime_optional_active_verification_allowance,
                         ),
                         self.usage,
                         &self.completion,
                         self.defense.mode(),
                         profile,
                     )?;
-                    AssessmentRunReport::from_completed_truth(self.assessment_items, truth)
+                    AssessmentRunReport::from_completed_truth(
+                        self.assessment_items,
+                        truth,
+                        #[cfg(feature = "authorization-review")]
+                        self.authorization_review,
+                    )
                 }
             }
         "#;
@@ -8227,7 +9293,7 @@ mod tests {
             ),
             typed_assessment_bridge.replace("#[cfg(feature = \"reporting\")]", ""),
             typed_assessment_bridge.replace(
-                "AssessmentRunReport::from_completed_truth(self.assessment_items, truth)",
+                "AssessmentRunReport::from_completed_truth(\n                        self.assessment_items,\n                        truth,\n                        #[cfg(feature = \"authorization-review\")]\n                        self.authorization_review,\n                    )",
                 "render(self.assessment_items)",
             ),
             typed_assessment_bridge.replace(
@@ -8238,6 +9304,10 @@ mod tests {
             typed_assessment_bridge.replace("&self.authorized_root", "&caller_root"),
             typed_assessment_bridge.replace("self.limits", "WebAssessmentLimits::default()"),
             typed_assessment_bridge.replace("self.runtime_active_verification_limit", "u16::MAX"),
+            typed_assessment_bridge.replace(
+                "self.runtime_optional_active_verification_allowance",
+                "u16::MAX",
+            ),
             typed_assessment_bridge.replace("self.usage", "WebAssessmentUsage::default()"),
             typed_assessment_bridge.replace("&self.completion", "&completion"),
             typed_assessment_bridge.replace(
@@ -8245,12 +9315,16 @@ mod tests {
                 "WebAssessmentDefenseMode::ObservationOnly",
             ),
             typed_assessment_bridge.replace(
-                "AssessmentRunReport::from_completed_truth(self.assessment_items, truth)",
-                "AssessmentRunReport::from_completed_truth(forged_items, truth)",
+                "self.assessment_items,\n                        truth,",
+                "forged_items,\n                        truth,",
             ),
             typed_assessment_bridge.replace(
-                "AssessmentRunReport::from_completed_truth(self.assessment_items, truth)",
-                "AssessmentRunReport::from_completed_truth(self.assessment_items, forged_truth)",
+                "self.assessment_items,\n                        truth,",
+                "self.assessment_items,\n                        forged_truth,",
+            ),
+            typed_assessment_bridge.replace(
+                "self.authorization_review,",
+                "forged_authorization_review,",
             ),
         ] {
             assert!(!reporting_cross_file_source_violations(
@@ -8721,6 +9795,18 @@ mod tests {
                 AssessmentBasis, AssessmentRunReport, AssessmentRunReportError, ScanProfileV1,
                 WebAssessmentRunReport,
             };
+            #[cfg(all(feature = "scanning", feature = "authorization-review"))]
+            use crate::{
+                authorization_review::{
+                    AuthorizationReviewOutcome,
+                    HARD_MAX_AUTHORIZATION_REVIEW_IGNORED_PATHS,
+                    HARD_MAX_AUTHORIZATION_REVIEW_SELECTED_PATHS,
+                },
+                web_runtime::{
+                    MAX_AUTHORIZATION_REVIEW_REQUESTS,
+                    RESOURCE_AUTHORIZATION_REVIEW_CAPABILITY_ID,
+                },
+            };
         "#
     }
 
@@ -8903,7 +9989,7 @@ mod tests {
 
         let cfg_path = "#[cfg(tokio::fs)] fn disabled_authority() {}";
         let violations = reporting_source_violations(cfg_path).unwrap();
-        for marker in ["exact cfg(feature", "tokio"] {
+        for marker in ["exact scanning", "tokio"] {
             assert!(
                 violations
                     .iter()
@@ -9052,7 +10138,25 @@ mod tests {
                 status: &'static str,
                 subject_count: u64,
                 item_count: u64,
+                #[cfg(feature = "authorization-review")]
+                #[serde(skip_serializing_if = "Option::is_none")]
+                authorization_review: Option<AssessmentAuthorizationAuditDocument>,
                 items: Vec<AssessmentItemDocument<'a>>,
+            }
+            #[cfg(all(feature = "scanning", feature = "authorization-review"))]
+            #[derive(Serialize)]
+            struct AssessmentAuthorizationAuditDocument {
+                schema: &'static str,
+                capability_id: &'static str,
+                policy_id: String,
+                selected_path_count: u8,
+                ignored_path_count: u8,
+                request_count: u8,
+                outcome: &'static str,
+                primary_stable: Option<bool>,
+                peer_stable: Option<bool>,
+                cross_resources_equivalent: Option<bool>,
+                item_projected: bool,
             }
             #[cfg(feature = "scanning")]
             #[derive(Serialize)]
@@ -9190,6 +10294,18 @@ mod tests {
                 .any(|violation| violation.contains("AssessmentItemDocument")
                     && violation.contains("exactly cfg"))
         );
+
+        let broadened_audit_field = source.replace(
+            "#[cfg(feature = \"authorization-review\")]\n                #[serde(skip_serializing_if = \"Option::is_none\")]\n                authorization_review",
+            "#[cfg(any(feature = \"authorization-review\", feature = \"graphql-review\"))]\n                #[serde(skip_serializing_if = \"Option::is_none\")]\n                authorization_review",
+        );
+        assert!(
+            reporting_document_contract_violations(&broadened_audit_field)
+                .unwrap()
+                .iter()
+                .any(|violation| violation.contains("AssessmentDocument")
+                    && violation.contains("fields must remain exactly"))
+        );
     }
 
     #[test]
@@ -9257,6 +10373,10 @@ mod tests {
                     "dep:reqwest".to_owned(),
                     "venom-scanner/legacy-scanner".to_owned(),
                 ],
+            ),
+            (
+                "authorization-review".to_owned(),
+                vec!["venom-scanner/authorization-review".to_owned()],
             ),
             (
                 "graphql-review".to_owned(),
@@ -9342,6 +10462,14 @@ mod tests {
         assert!(cli_feature_violations(&features, &dependencies)
             .iter()
             .any(|violation| violation.contains("proxy-adapter") && violation.contains("exactly")));
+
+        let (mut features, dependencies) = valid_cli_contract();
+        features.get_mut("authorization-review").unwrap().clear();
+        assert!(cli_feature_violations(&features, &dependencies)
+            .iter()
+            .any(|violation| {
+                violation.contains("authorization-review") && violation.contains("exactly")
+            }));
     }
 
     #[test]

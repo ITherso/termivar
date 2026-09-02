@@ -26,7 +26,7 @@ fn request_broker(root: &Url) -> HttpRequestBroker {
     HttpRequestBroker::new_unmetered(policy).unwrap()
 }
 
-fn expected_strategy(kind: NativeWebReviewActionKind) -> PayloadStrategyRef {
+fn expected_strategy(kind: NativeWebReviewActionKind) -> Option<PayloadStrategyRef> {
     let (id, revision) = match kind {
         NativeWebReviewActionKind::CorsPolicyPair => {
             (CORS_ORIGIN_PAIR_ID, CORS_ORIGIN_PAIR_REVISION)
@@ -65,8 +65,10 @@ fn expected_strategy(kind: NativeWebReviewActionKind) -> PayloadStrategyRef {
             NORMALIZATION_RESILIENCE_QUERY_PAIR_ID,
             NORMALIZATION_RESILIENCE_QUERY_PAIR_REVISION,
         ),
+        #[cfg(feature = "authorization-review")]
+        NativeWebReviewActionKind::ResourceAuthorizationDifferential => return None,
     };
-    PayloadStrategyRef::new(id, revision).unwrap()
+    Some(PayloadStrategyRef::new(id, revision).unwrap())
 }
 
 fn profile_without_observer(
@@ -91,7 +93,7 @@ fn case(root: &Url, case_id: &str, kind: NativeWebReviewActionKind) -> Verificat
         "hypothesis:web-review",
     )
     .unwrap()
-    .with_payload_strategy(Some(expected_strategy(kind)))
+    .with_payload_strategy(expected_strategy(kind))
 }
 
 fn html_xss_selection() -> XssProbeSelection {

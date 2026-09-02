@@ -11,6 +11,10 @@ use std::error::Error;
 
 use serde::Serialize;
 use url::Url;
+#[cfg(feature = "authorization-review")]
+use venom_scanner::authorization_review::{
+    AuthorizationPrincipalPair, AuthorizationReviewOutcome, AuthorizationReviewPolicy,
+};
 use venom_scanner::web_runtime::{
     BuiltInScanProfile, ScanProfileScope, ScanProfileV1, WebAssessmentCompletion,
     WebAssessmentDefenseAudit, WebAssessmentDefenseBodyCoverage, WebAssessmentDefenseMode,
@@ -18,6 +22,10 @@ use venom_scanner::web_runtime::{
     WebAssessmentIncompleteReason, WebAssessmentMethod, WebAssessmentRootAuthorizationContext,
     WebAssessmentRunReport, WebAssessmentRuntime, WebAssessmentSubject, WebAssessmentSubjectOrigin,
     WebAssessmentSubjectReport, WebAssessmentUsage,
+};
+#[cfg(feature = "authorization-review")]
+use venom_scanner::web_runtime::{
+    WebAssessmentAuthorizationAudit, RESOURCE_AUTHORIZATION_REVIEW_CAPABILITY_ID,
 };
 use venom_scanner::{
     DecisionLoopCommand, DecisionStopReason, ReportFormat, ReportGenerator, RuntimeBudgetDimension,
@@ -184,8 +192,46 @@ struct ExactOriginReport {
     defense: DefenseSummary,
     usage: ExactOriginUsage,
     transport: TransportSummary,
+    #[cfg(feature = "authorization-review")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    authorization_review_audit: Option<AuthorizationReviewAuditRecord>,
     #[serde(skip_serializing_if = "Option::is_none")]
     failure_inventory: Option<FailureInventory>,
+}
+
+#[cfg(feature = "authorization-review")]
+#[derive(Serialize)]
+struct AuthorizationReviewAuditRecord {
+    schema: &'static str,
+    capability_id: &'static str,
+    policy_id: String,
+    selected_path_count: u8,
+    ignored_path_count: u8,
+    request_count: u8,
+    outcome: &'static str,
+    primary_stable: Option<bool>,
+    peer_stable: Option<bool>,
+    cross_resources_equivalent: Option<bool>,
+    item_projected: bool,
+}
+
+#[cfg(feature = "authorization-review")]
+impl AuthorizationReviewAuditRecord {
+    fn from_audit(audit: &WebAssessmentAuthorizationAudit) -> Self {
+        Self {
+            schema: "security.authorization-review-audit/v1",
+            capability_id: RESOURCE_AUTHORIZATION_REVIEW_CAPABILITY_ID,
+            policy_id: audit.policy_id().to_string(),
+            selected_path_count: audit.selected_path_count(),
+            ignored_path_count: audit.ignored_path_count(),
+            request_count: audit.request_count(),
+            outcome: authorization_review_outcome_code(audit.outcome()),
+            primary_stable: audit.primary_stable(),
+            peer_stable: audit.peer_stable(),
+            cross_resources_equivalent: audit.cross_resources_equivalent(),
+            item_projected: audit.item_projected(),
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -314,6 +360,9 @@ pub(crate) struct ProfileScanRuntimeOptions {
     pub(crate) root_authorization_context: Option<WebAssessmentRootAuthorizationContext>,
     pub(crate) normalization_resilience: bool,
     pub(crate) graphql_review: bool,
+    #[cfg(feature = "authorization-review")]
+    pub(crate) resource_authorization_review:
+        Option<(AuthorizationReviewPolicy, AuthorizationPrincipalPair)>,
 }
 
 pub(crate) async fn run_profile_scan(
@@ -328,6 +377,8 @@ pub(crate) async fn run_profile_scan(
         root_authorization_context,
         normalization_resilience,
         graphql_review,
+        #[cfg(feature = "authorization-review")]
+        resource_authorization_review,
     } = runtime_options;
     let target_origin = target.origin().ascii_serialization();
     match (profile.profile(), profile.scope()) {
@@ -343,6 +394,14 @@ pub(crate) async fn run_profile_scan(
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::InvalidInput,
                     "GraphQL review requires the web-review profile",
+                )
+                .into());
+            }
+            #[cfg(feature = "authorization-review")]
+            if resource_authorization_review.is_some() {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "resource authorization review requires the web-review profile",
                 )
                 .into());
             }
@@ -368,6 +427,8 @@ pub(crate) async fn run_profile_scan(
                     root_authorization_context,
                     normalization_resilience,
                     graphql_review,
+                    #[cfg(feature = "authorization-review")]
+                    resource_authorization_review,
                 },
             )
             .await
@@ -416,6 +477,8 @@ struct WebReviewRunOptions {
     root_authorization_context: Option<WebAssessmentRootAuthorizationContext>,
     normalization_resilience: bool,
     graphql_review: bool,
+    #[cfg(feature = "authorization-review")]
+    resource_authorization_review: Option<(AuthorizationReviewPolicy, AuthorizationPrincipalPair)>,
 }
 
 async fn run_web_review(
@@ -431,6 +494,8 @@ async fn run_web_review(
         root_authorization_context,
         normalization_resilience,
         graphql_review,
+        #[cfg(feature = "authorization-review")]
+        resource_authorization_review,
     } = options;
     let mut builder = WebAssessmentRuntime::builder(target).limits(profile.web_assessment_limits());
     if profile.defense_enforcement_enabled() {
@@ -469,6 +534,10 @@ async fn run_web_review(
     }
     if let Some(context) = root_authorization_context {
         builder = builder.with_root_authorization_context(context);
+    }
+    #[cfg(feature = "authorization-review")]
+    if let Some((policy, principals)) = resource_authorization_review {
+        builder = builder.with_resource_authorization_review(policy, principals);
     }
     let mut runtime = builder.build()?;
     match runtime.analyze().await {
@@ -682,6 +751,10 @@ fn document_from_web_review_report(
             defense: defense_summary(report.defense()),
             usage: exact_origin_usage(report.usage()),
             transport: transport_summary(report.transport()),
+            #[cfg(feature = "authorization-review")]
+            authorization_review_audit: report
+                .authorization_review_audit()
+                .map(AuthorizationReviewAuditRecord::from_audit),
             failure_inventory: None,
         })),
     }
@@ -747,6 +820,8 @@ fn document_from_web_review_failure(
             defense: defense_summary(receipt.defense()),
             usage: exact_origin_usage(receipt.usage()),
             transport: transport_summary(receipt.transport()),
+            #[cfg(feature = "authorization-review")]
+            authorization_review_audit: None,
             failure_inventory: Some(FailureInventory {
                 consistent: receipt.inventory_consistent(),
                 unrepresented_ledger_subjects: receipt.unrepresented_ledger_subjects(),
@@ -1055,6 +1130,40 @@ fn incomplete_reason_code(reason: &WebAssessmentIncompleteReason) -> &'static st
         },
         #[cfg(feature = "graphql-review")]
         WebAssessmentIncompleteReason::GraphqlReviewIncomplete => "graphql_review_incomplete",
+        #[cfg(feature = "authorization-review")]
+        WebAssessmentIncompleteReason::AuthorizationReviewIncomplete => {
+            "authorization_review_incomplete"
+        },
+        _ => "other",
+    }
+}
+
+#[cfg(feature = "authorization-review")]
+const fn authorization_review_outcome_code(outcome: AuthorizationReviewOutcome) -> &'static str {
+    match outcome {
+        AuthorizationReviewOutcome::NotEligible => "not_eligible",
+        AuthorizationReviewOutcome::PrimaryBaselineInvalid => "primary_baseline_invalid",
+        AuthorizationReviewOutcome::PrimaryUnstable => "primary_unstable",
+        AuthorizationReviewOutcome::PeerDenied => "peer_denied",
+        AuthorizationReviewOutcome::PeerUnstable => "peer_unstable",
+        AuthorizationReviewOutcome::CrossStatusDifferent => "cross_status_different",
+        AuthorizationReviewOutcome::CrossFieldsEquivalentOnly => "cross_fields_equivalent_only",
+        AuthorizationReviewOutcome::CrossResourcesDifferent => "cross_resources_different",
+        AuthorizationReviewOutcome::StableCrossPrincipalEquivalence => {
+            "stable_cross_principal_equivalence"
+        },
+        AuthorizationReviewOutcome::DefensiveInterference => "defensive_interference",
+        AuthorizationReviewOutcome::RateLimited => "rate_limited",
+        AuthorizationReviewOutcome::RedirectObserved => "redirect_observed",
+        AuthorizationReviewOutcome::UnsupportedMedia => "unsupported_media",
+        AuthorizationReviewOutcome::MalformedJson => "malformed_json",
+        AuthorizationReviewOutcome::GenericJsonErrorEnvelope => "generic_json_error_envelope",
+        AuthorizationReviewOutcome::SelectedPathMissing => "selected_path_missing",
+        AuthorizationReviewOutcome::Truncated => "truncated",
+        AuthorizationReviewOutcome::Incomplete => "incomplete",
+        AuthorizationReviewOutcome::BudgetExhausted => "budget_exhausted",
+        AuthorizationReviewOutcome::Cancelled => "cancelled",
+        AuthorizationReviewOutcome::ContractMismatch => "contract_mismatch",
         _ => "other",
     }
 }
@@ -1202,6 +1311,13 @@ fn render_text(document: &WebAssessmentDocument) -> String {
                 report.usage.response_bytes,
                 report.usage.elapsed_ms
             ));
+            #[cfg(feature = "authorization-review")]
+            if let Some(audit) = &report.authorization_review_audit {
+                lines.push(format!(
+                    "authorization review audit: policy={} requests={} outcome={} item_projected={}",
+                    audit.policy_id, audit.request_count, audit.outcome, audit.item_projected
+                ));
+            }
         },
     }
     lines.join("\n")
@@ -1266,6 +1382,53 @@ mod tests {
         assert_eq!(
             error.to_string(),
             "GraphQL review requires the web-review profile"
+        );
+    }
+
+    #[cfg(feature = "authorization-review")]
+    #[tokio::test]
+    async fn baseline_rejects_resource_authorization_review_before_transport() {
+        use venom_scanner::authorization_review::{
+            PeerAuthorizationPrincipal, PrimaryAuthorizationPrincipal,
+        };
+
+        let target = Url::parse("https://example.test/").unwrap();
+        let policy = AuthorizationReviewPolicy::parse_toml(
+            &target,
+            br#"schema = "security.authorization-review-policy/v1"
+resource = "/api/account"
+resource_handle = "account-self"
+expectation = "primary-only"
+method = "GET"
+[comparison]
+selected_paths = ["/data/account"]
+ignored_paths = []
+unordered_array_paths = []
+max_diff_paths = 8
+"#,
+        )
+        .unwrap();
+        let principals = AuthorizationPrincipalPair::new(
+            PrimaryAuthorizationPrincipal::new("Bearer primary").unwrap(),
+            PeerAuthorizationPrincipal::new("Bearer peer").unwrap(),
+        )
+        .unwrap();
+        let error = run_profile_scan(
+            target,
+            ScanProfileV1::baseline().unwrap(),
+            false,
+            None,
+            false,
+            ProfileScanRuntimeOptions {
+                resource_authorization_review: Some((policy, principals)),
+                ..ProfileScanRuntimeOptions::default()
+            },
+        )
+        .await
+        .expect_err("resource authorization review is web-review only");
+        assert_eq!(
+            error.to_string(),
+            "resource authorization review requires the web-review profile"
         );
     }
 
@@ -1482,6 +1645,11 @@ mod tests {
             incomplete_reason_code(&WebAssessmentIncompleteReason::GraphqlReviewIncomplete),
             "graphql_review_incomplete"
         );
+        #[cfg(feature = "authorization-review")]
+        assert_eq!(
+            incomplete_reason_code(&WebAssessmentIncompleteReason::AuthorizationReviewIncomplete),
+            "authorization_review_incomplete"
+        );
 
         let stops = [
             (DecisionStopReason::ObjectiveComplete, "objective_complete"),
@@ -1651,6 +1819,8 @@ mod tests {
                     retained_dispatch_receipts: 2,
                     omitted_dispatch_receipts: 0,
                 },
+                #[cfg(feature = "authorization-review")]
+                authorization_review_audit: None,
                 failure_inventory: None,
             })),
         };
@@ -1667,5 +1837,12 @@ mod tests {
         assert!(rendered.contains("usage: requests=2 active_verifications=1"));
         assert!(!rendered.contains(SECRET));
         assert!(!rendered.contains("https://example.test/private"));
+        #[cfg(feature = "authorization-review")]
+        {
+            let serialized = serde_json::to_value(&document).unwrap();
+            assert!(serialized["assessment"]["report"]
+                .get("authorization_review_audit")
+                .is_none());
+        }
     }
 }

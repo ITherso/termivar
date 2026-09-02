@@ -129,6 +129,9 @@ const XSS_SCRIPT_ACTIVE_VERIFIER_RULE_ID: &str =
 #[cfg(feature = "normalization-resilience")]
 const NORMALIZATION_ACTIVE_VERIFIER_RULE_ID: &str =
     "web.review.verify.active.normalization-resilience-query-pair.pair-complete@1";
+#[cfg(feature = "authorization-review")]
+const AUTHORIZATION_ACTIVE_VERIFIER_RULE_ID: &str =
+    "web.review.verify.active.authorization-resource-differential.pair-complete@1";
 
 /// Returns the one verifier identity authorized to classify pair completion.
 ///
@@ -159,6 +162,10 @@ pub(crate) const fn native_review_active_verifier_rule_id(
         #[cfg(feature = "normalization-resilience")]
         NativeWebReviewActionKind::NormalizationResilienceQueryPair => {
             NORMALIZATION_ACTIVE_VERIFIER_RULE_ID
+        },
+        #[cfg(feature = "authorization-review")]
+        NativeWebReviewActionKind::ResourceAuthorizationDifferential => {
+            AUTHORIZATION_ACTIVE_VERIFIER_RULE_ID
         },
     }
 }
@@ -920,6 +927,8 @@ impl AssessmentReviewObserverSet {
                     DecisionExecutionStage::Active => &contract.candidate_url,
                 })
             },
+            #[cfg(feature = "authorization-review")]
+            (NativeWebReviewActionKind::ResourceAuthorizationDifferential, _) => None,
         }
     }
 
@@ -1091,6 +1100,8 @@ impl AssessmentReviewObserverSet {
             NativeWebReviewActionKind::NormalizationResilienceQueryPair => {
                 self.append_xss_projection(observation, &mut records);
             },
+            #[cfg(feature = "authorization-review")]
+            NativeWebReviewActionKind::ResourceAuthorizationDifferential => return Vec::new(),
         }
         records
     }
@@ -1289,6 +1300,10 @@ fn native_review_strategy_ref(kind: NativeWebReviewActionKind) -> PayloadStrateg
             NORMALIZATION_RESILIENCE_QUERY_PAIR_ID,
             NORMALIZATION_RESILIENCE_QUERY_PAIR_REVISION,
         ),
+        #[cfg(feature = "authorization-review")]
+        NativeWebReviewActionKind::ResourceAuthorizationDifferential => {
+            unreachable!("authorization review owns no generic payload strategy")
+        },
     };
     PayloadStrategyRef::new(id, revision)
         .expect("native review strategies have valid static references")
@@ -1765,6 +1780,10 @@ fn review_source_method(
             NativeWebReviewActionKind::NormalizationResilienceQueryPair,
             DecisionExecutionStage::Active,
         ) => "normalization-transformed-replay-response",
+        #[cfg(feature = "authorization-review")]
+        (NativeWebReviewActionKind::ResourceAuthorizationDifferential, _) => {
+            "authorization-review-invalid-generic-source"
+        },
     }
 }
 
@@ -3194,6 +3213,10 @@ fn parse_review_receipt(
                 )?)?,
             }
         },
+        #[cfg(feature = "authorization-review")]
+        NativeWebReviewActionKind::ResourceAuthorizationDifferential => {
+            return Err(AssessmentReviewLedgerError::EvidenceProjection);
+        },
     };
     Ok(CommittedAssessmentReviewObservation {
         kind,
@@ -3481,6 +3504,8 @@ fn requested_url_value_matches_with_sql(
                 DecisionExecutionStage::Active => url == contract.candidate_url,
             })
         },
+        #[cfg(feature = "authorization-review")]
+        (NativeWebReviewActionKind::ResourceAuthorizationDifferential, _) => false,
     }
 }
 
@@ -3530,6 +3555,8 @@ const fn is_xss_response_action(kind: NativeWebReviewActionKind) -> bool {
         | NativeWebReviewActionKind::SqlStructuralQueryReplayPair
         | NativeWebReviewActionKind::SstiStructuralQueryPair
         | NativeWebReviewActionKind::SstiStructuralQueryReplayPair => false,
+        #[cfg(feature = "authorization-review")]
+        NativeWebReviewActionKind::ResourceAuthorizationDifferential => false,
     }
 }
 
@@ -3598,6 +3625,8 @@ fn expected_properties(kind: NativeWebReviewActionKind) -> &'static [ReviewPrope
         | NativeWebReviewActionKind::XssScriptLexicalBoundaryQueryPair => &XSS_REVIEW_PROPERTIES,
         #[cfg(feature = "normalization-resilience")]
         NativeWebReviewActionKind::NormalizationResilienceQueryPair => &XSS_REVIEW_PROPERTIES,
+        #[cfg(feature = "authorization-review")]
+        NativeWebReviewActionKind::ResourceAuthorizationDifferential => &[],
     }
 }
 

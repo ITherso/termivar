@@ -586,6 +586,315 @@ fn insecure_domain_http_is_rejected_before_the_authorization_source_is_read() {
     assert!(!stderr.contains("input source is unavailable"));
 }
 
+#[cfg(feature = "authorization-review")]
+fn authorization_review_policy(resource: &str) -> String {
+    format!(
+        r#"schema = "security.authorization-review-policy/v1"
+resource = "{resource}"
+resource_handle = "private-account"
+expectation = "primary-only"
+method = "GET"
+
+[comparison]
+selected_paths = ["/data/account"]
+ignored_paths = []
+unordered_array_paths = []
+max_diff_paths = 8
+"#
+    )
+}
+
+#[cfg(feature = "authorization-review")]
+#[test]
+fn resource_authorization_cli_rejects_incomplete_or_ambiguous_inputs_before_network() {
+    let server = serve(|_| ok_json(r#"{"data":{"account":{"id":1}}}"#));
+    let policy = unique_report_path("authz-policy.toml");
+    let primary = unique_report_path("authz-primary.txt");
+    let peer = unique_report_path("authz-peer.txt");
+    std::fs::write(&policy, authorization_review_policy("/resource")).unwrap();
+    std::fs::write(
+        &primary,
+        "Bearer PRIMARY-AUTHORIZATION-MUST-NOT-LEAK-7C3A19\n",
+    )
+    .unwrap();
+    std::fs::write(&peer, "Bearer PEER-AUTHORIZATION-MUST-NOT-LEAK-82FD44\r\n").unwrap();
+    let policy_text = policy.to_string_lossy().into_owned();
+    let primary_text = primary.to_string_lossy().into_owned();
+    let peer_text = peer.to_string_lossy().into_owned();
+
+    let cases = [
+        vec![
+            "scan",
+            "--profile",
+            "baseline",
+            "--authorization-review-policy",
+            policy_text.as_str(),
+            "--authz-primary-file",
+            primary_text.as_str(),
+            "--authz-peer-file",
+            peer_text.as_str(),
+            server.url.as_str(),
+        ],
+        vec![
+            "scan",
+            "--profile",
+            "web-review",
+            "--authorization-review-policy",
+            policy_text.as_str(),
+            "--authz-primary-file",
+            primary_text.as_str(),
+            server.url.as_str(),
+        ],
+        vec![
+            "scan",
+            "--profile",
+            "web-review",
+            "--auth-file",
+            primary_text.as_str(),
+            "--authorization-review-policy",
+            policy_text.as_str(),
+            "--authz-primary-file",
+            primary_text.as_str(),
+            "--authz-peer-file",
+            peer_text.as_str(),
+            server.url.as_str(),
+        ],
+        vec![
+            "scan",
+            "--profile",
+            "web-review",
+            "--authorization-review-policy",
+            policy_text.as_str(),
+            "--authz-primary-stdin",
+            "--authz-peer-stdin",
+            server.url.as_str(),
+        ],
+        vec![
+            "scan",
+            "--profile",
+            "web-review",
+            "--auth-stdin",
+            "--authorization-review-policy",
+            policy_text.as_str(),
+            "--authz-primary-env",
+            "PRIVATE_PRIMARY_ENV",
+            "--authz-peer-file",
+            peer_text.as_str(),
+            server.url.as_str(),
+        ],
+    ];
+    for arguments in cases {
+        let output = venom().args(arguments).output().unwrap();
+        assert!(!output.status.success());
+        assert!(output.stdout.is_empty());
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        for secret in [
+            "PRIMARY-AUTHORIZATION-MUST-NOT-LEAK-7C3A19",
+            "PEER-AUTHORIZATION-MUST-NOT-LEAK-82FD44",
+        ] {
+            assert!(!stderr.contains(secret));
+        }
+        for source_identifier in [
+            policy_text.as_str(),
+            primary_text.as_str(),
+            peer_text.as_str(),
+            "PRIVATE_PRIMARY_ENV",
+        ] {
+            assert!(!stderr.contains(source_identifier));
+        }
+    }
+    assert_eq!(server.connections.load(Ordering::SeqCst), 0);
+
+    std::fs::remove_file(policy).unwrap();
+    std::fs::remove_file(primary).unwrap();
+    std::fs::remove_file(peer).unwrap();
+}
+
+#[cfg(feature = "authorization-review")]
+#[test]
+fn resource_authorization_cli_rejects_equal_credentials_and_unsafe_transport() {
+    const SECRET: &str = "Bearer PRIMARY-AUTHORIZATION-MUST-NOT-LEAK-7C3A19";
+    let policy = unique_report_path("authz-policy.toml");
+    let primary = unique_report_path("authz-primary.txt");
+    let peer = unique_report_path("authz-peer.txt");
+    std::fs::write(&policy, authorization_review_policy("/resource")).unwrap();
+    std::fs::write(&primary, format!("{SECRET}\n")).unwrap();
+    std::fs::write(&peer, format!("{SECRET}\r\n")).unwrap();
+    let policy_text = policy.to_string_lossy().into_owned();
+    let primary_text = primary.to_string_lossy().into_owned();
+    let peer_text = peer.to_string_lossy().into_owned();
+
+    let equal = venom()
+        .args([
+            "scan",
+            "--profile",
+            "web-review",
+            "--authorization-review-policy",
+            policy_text.as_str(),
+            "--authz-primary-file",
+            primary_text.as_str(),
+            "--authz-peer-file",
+            peer_text.as_str(),
+            "https://example.test/",
+        ])
+        .output()
+        .unwrap();
+    assert!(!equal.status.success());
+    let rendered = format!(
+        "{}{}",
+        String::from_utf8_lossy(&equal.stdout),
+        String::from_utf8_lossy(&equal.stderr)
+    );
+    assert!(
+        rendered.contains("PrincipalsNotDistinct")
+            || rendered.contains("requires distinct principal credentials")
+    );
+    assert!(!rendered.contains(SECRET));
+    assert!(!rendered.contains(policy_text.as_str()));
+    assert!(!rendered.contains(primary_text.as_str()));
+    assert!(!rendered.contains(peer_text.as_str()));
+
+    let unsafe_transport = venom()
+        .args([
+            "scan",
+            "--profile",
+            "web-review",
+            "--authorization-review-policy",
+            "missing-private-policy",
+            "--authz-primary-file",
+            "missing-private-primary",
+            "--authz-peer-file",
+            "missing-private-peer",
+            "http://localhost/",
+        ])
+        .output()
+        .unwrap();
+    assert!(!unsafe_transport.status.success());
+    let stderr = String::from_utf8_lossy(&unsafe_transport.stderr);
+    assert!(stderr.contains("requires HTTPS"));
+    assert!(!stderr.contains("missing-private"));
+
+    std::fs::remove_file(policy).unwrap();
+    std::fs::remove_file(primary).unwrap();
+    std::fs::remove_file(peer).unwrap();
+}
+
+#[cfg(feature = "authorization-review")]
+#[test]
+fn incomplete_resource_authorization_audit_is_rendered_and_fully_redacted() {
+    const PRIMARY_SECRET: &str = "PRIMARY-AUTHORIZATION-MUST-NOT-LEAK-7C3A19";
+    const PEER_SECRET: &str = "PEER-AUTHORIZATION-MUST-NOT-LEAK-82FD44";
+    const QUERY_SECRET: &str = "RESOURCE-QUERY-MUST-NOT-LEAK-51A9BC";
+    const HANDLE_SECRET: &str = "PRIVATE-RESOURCE-HANDLE-MUST-NOT-LEAK-346E2A";
+    const SELECTED_PATH: &str = "/data/account";
+
+    let server = serve_request(|target, request| {
+        if !target.starts_with("/resource") {
+            return ok_html("fixture root", "");
+        }
+        let is_peer = request.lines().any(|line| {
+            line.split_once(':').is_some_and(|(name, value)| {
+                name.eq_ignore_ascii_case("authorization") && value.trim().ends_with(PEER_SECRET)
+            })
+        });
+        if is_peer {
+            let body = r#"{"error":"rate limited"}"#;
+            return format!(
+                "HTTP/1.1 429 Too Many Requests\r\nContent-Type: application/json\r\nRetry-After: 60\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            )
+            .into_bytes();
+        }
+        ok_json(r#"{"data":{"account":{"id":"42"}}}"#)
+    });
+    let policy = unique_report_path("authz-incomplete-policy.toml");
+    let primary = unique_report_path("authz-incomplete-primary.txt");
+    let peer = unique_report_path("authz-incomplete-peer.txt");
+    std::fs::write(
+        &policy,
+        format!(
+            r#"schema = "security.authorization-review-policy/v1"
+resource = "/resource?opaque={QUERY_SECRET}"
+resource_handle = "{HANDLE_SECRET}"
+expectation = "primary-only"
+method = "GET"
+
+[comparison]
+selected_paths = ["{SELECTED_PATH}"]
+ignored_paths = []
+unordered_array_paths = []
+max_diff_paths = 8
+"#
+        ),
+    )
+    .unwrap();
+    std::fs::write(&primary, format!("Bearer {PRIMARY_SECRET}\n")).unwrap();
+    std::fs::write(&peer, format!("Bearer {PEER_SECRET}\n")).unwrap();
+    let policy_text = policy.to_string_lossy().into_owned();
+    let primary_text = primary.to_string_lossy().into_owned();
+    let peer_text = peer.to_string_lossy().into_owned();
+
+    for format in ["json", "text"] {
+        let output = venom()
+            .args([
+                "scan",
+                "--profile",
+                "web-review",
+                "--format",
+                format,
+                "--authorization-review-policy",
+                policy_text.as_str(),
+                "--authz-primary-file",
+                primary_text.as_str(),
+                "--authz-peer-file",
+                peer_text.as_str(),
+                server.url.as_str(),
+            ])
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        let stdout = String::from_utf8(output.stdout).unwrap();
+        assert!(stdout.contains("authorization_review_incomplete"));
+        assert!(stdout.contains("rate_limited"));
+        if format == "json" {
+            let value: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+            let audit = &value["assessment"]["report"]["authorization_review_audit"];
+            assert_eq!(audit["request_count"], 2);
+            assert_eq!(audit["outcome"], "rate_limited");
+            assert_eq!(audit["item_projected"], false);
+        } else {
+            assert!(stdout.contains("requests=2 outcome=rate_limited"));
+        }
+        let combined = format!("{stdout}{}", String::from_utf8_lossy(&output.stderr));
+        for secret in [
+            PRIMARY_SECRET,
+            PEER_SECRET,
+            QUERY_SECRET,
+            HANDLE_SECRET,
+            SELECTED_PATH,
+            policy_text.as_str(),
+            primary_text.as_str(),
+            peer_text.as_str(),
+        ] {
+            assert!(!combined.contains(secret));
+        }
+    }
+    assert_eq!(
+        server
+            .requests
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|target| target.starts_with("/resource"))
+            .count(),
+        4
+    );
+
+    std::fs::remove_file(policy).unwrap();
+    std::fs::remove_file(primary).unwrap();
+    std::fs::remove_file(peer).unwrap();
+}
+
 #[test]
 fn non_regular_authorization_file_is_rejected_before_network_dispatch() {
     let server = serve(|_| ok_html("must not be requested", ""));

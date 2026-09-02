@@ -96,6 +96,7 @@ Execution decisions are deterministic and model-independent. Venom does not requ
 | Artifact signatures | Independent Preview `venom-artifact` library scans bounded caller-supplied buffers/readers for exact/wildcard signatures with overlapping deterministic observations. Explicit local regular-file access is available only through the non-default CLI `artifact-adapter`; matches are not malware or vulnerability verdicts |
 | Normalization resilience | Non-default Preview scanner/CLI feature plus explicit `--normalization-resilience` on `web-review`. V1 selects at most one typed depth-one HTML representation, reuses committed XSS/defense evidence, and requires transformed candidate plus distinct replay to reproduce the same inert parser semantics. It is `NeedsReview` / `KnowledgeOnly` only, not a generic or product-specific WAF-bypass claim |
 | GraphQL surface review | Non-default Preview scanner/CLI feature plus explicit `--graphql-review` on `web-review`. V1 selects at most one exact-origin endpoint and performs up to three anonymous bounded POST/JSON requests: an aliased `__typename` control, schema-root introspection candidate, and distinct replay. Results are `Informational` / `KnowledgeOnly`, not vulnerability or authorization claims |
+| Resource authorization review | Non-default Preview scanner/CLI `authorization-review` feature plus one explicit policy file and two out-of-band credential sources on `web-review`. V1 compares one exact-origin JSON resource as primary candidate, peer candidate, primary replay, and peer replay through the assessment's existing broker and budget. Stable selected-resource equivalence can produce only `NeedsReview` / `KnowledgeOnly`, not an IDOR, BOLA, or authorization-bypass confirmation |
 | Scanner conformance corpus | Repository-only `security-assessment-fixture/v1` data provides 73 sanitized request/response cases, including 23 four-view authorization differentials, with deterministic `xtask scanner-corpus` checks. It adds no runtime request or claim, and conformance is not an empirical accuracy result |
 | Historical salvage inventories | Two strict repository ledgers and local-Git `xtask` checks preserve separate source epochs: the deleted 38-file pre-workspace scanner tree and the 13-file/39-component post-workspace WAF/evasion quarantine wave. The detector byte-pattern component is restored in `venom-artifact`, the sanitized fixture component is restored only as repository conformance data, the bounded GraphQL taxonomy subset is restored by the explicit GraphQL review, and the historical HTML token-case/inter-token whitespace concepts are restored by the separately reviewed normalization runtime. Historical source itself remains non-authoritative |
 
@@ -125,6 +126,11 @@ cargo run -p venom-cli --locked --features normalization-resilience -- \
   scan https://authorized.example.test --profile web-review --normalization-resilience
 cargo run -p venom-cli --locked --features graphql-review -- \
   scan https://authorized.example.test --profile web-review --graphql-review
+cargo run -p venom-cli --locked --features authorization-review -- \
+  scan https://authorized.example.test --profile web-review \
+  --authorization-review-policy ./review.toml \
+  --authz-primary-env PRIMARY_AUTH_CONTEXT \
+  --authz-peer-env PEER_AUTH_CONTEXT
 ```
 
 `baseline` runs the same conservative single-resource decision primitive and
@@ -273,6 +279,26 @@ the initial native review pass, one context-selected XSS structural family, and
 two for this optional pair. Lower library-host
 limits still fail closed.
 
+Resource authorization review is a separate non-default `authorization-review`
+capability inside the same `WebAssessmentRuntime`. The policy file selects one
+exact-origin, bodyless `GET` JSON resource, declares the `primary-only`
+expectation, and supplies bounded exact RFC 6901 comparison paths. Primary and
+peer `Authorization` values come only from one environment, regular-file, or
+stdin source per role; there is no raw credential-value argument, and V1
+rejects combining this review with the existing root authorization-context
+option. The one native action dispatches, in order, primary candidate, peer
+candidate, primary replay, and peer replay through the parent broker, budget,
+cancellation, deadline, and exact-origin authority. It uses at most four
+requests and one logical active verification. The active lease is charged when
+the primary replay begins, while the peer replay is passive-accounted within
+that same decision phase. A positive observation requires
+both principals to be independently stable and both cross-principal rounds to
+match in status, fields, and value-sensitive resource fingerprints. The
+resulting `authorization.resource-cross-principal-equivalence@1` item is at
+most `NeedsReview` under `KnowledgeOnly`; it does not validate the operator's
+policy assertion or confirm IDOR, BOLA, exploitability, or business impact. See
+the [authorization differential review contract](docs/internals/authorization-differential-review.md).
+
 ## Try the deterministic runtime
 
 Requirements: Rust 1.88 or newer, Git, and an authorized reachable HTTP(S) origin.
@@ -408,6 +434,7 @@ See the [runtime map](docs/internals/runtime-map.md) for the exact module and co
 | `venom artifact scan-file` | Preview, opt-in | Absent from default builds; `artifact-adapter` scans one explicitly selected local regular file with one strict signature manifest. It is read-only, non-recursive, and emits observations rather than malware or vulnerability verdicts |
 | `venom scan ... --normalization-resilience` | Preview, opt-in | Absent from default builds and invalid outside explicit `web-review`. It selects at most one depth-one typed HTML transform, uses three child requests/one active verification, requires candidate and replay semantic evidence, and can emit only `NeedsReview` / `KnowledgeOnly` |
 | `venom scan ... --graphql-review` | Preview, opt-in | Absent from default builds and invalid outside explicit `web-review`. It selects at most one exact-origin endpoint, uses up to three anonymous POST/JSON requests (the complete candidate/replay path uses one active verification), and emits only `Informational` / `KnowledgeOnly` observations |
+| `venom scan ... --authorization-review-policy FILE` | Preview, opt-in | Absent from default builds and invalid outside explicit `web-review`. It compares one exact-origin JSON resource under two distinct out-of-band authorization contexts and independent replays, using four requests and one logical active verification. Stable equivalence can emit only `NeedsReview` / `KnowledgeOnly` |
 | `venom api` | Unsupported, opt-in | Absent from default builds; the `api-adapter` feature reports that no listener is implemented |
 | `venom proxy` | Experimental, opt-in | Absent from default builds; `proxy-adapter` exposes an explicit fixed-upstream TCP relay with no `CONNECT`, TLS termination, certificate generation, or HTTP inspection |
 
@@ -435,6 +462,10 @@ no-profile `decision-scan/v1` path remain unchanged.
 The GraphQL runtime likewise requires `graphql-review` plus its explicit
 `web-review` flag; it is anonymous and does not alter default CLI help,
 no-profile execution, or the transport-neutral API reasoner.
+Resource authorization review similarly requires the non-default
+`authorization-review` feature, an explicit `web-review` policy file, and two
+distinct credentials loaded through the existing out-of-band input boundary.
+It adds no independent scanner, client, budget, authority, or final report.
 
 ## Quality and robustness
 
@@ -523,6 +554,7 @@ tag and accepted cross-version baseline exist, pin a reviewed full commit.
 - [Architecture](docs/architecture.md)
 - [Runtime map: what actually runs](docs/internals/runtime-map.md)
 - [Scanner conformance corpus](docs/internals/scanner-conformance-corpus.md)
+- [Authorization differential review](docs/internals/authorization-differential-review.md)
 - [GraphQL surface review](docs/internals/graphql-review.md)
 - [Normalization-resilience review](docs/internals/normalization-resilience.md)
 - [Historical scanner salvage](docs/history/historical-scanner-salvage.md)

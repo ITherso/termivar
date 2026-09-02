@@ -1,4 +1,4 @@
-# Authorization differential review foundation
+# Resource authorization differential review
 
 Authorization Differential Foundation V1 is a transport-neutral contract for
 comparing one operator-selected JSON resource across two distinct authenticated
@@ -7,11 +7,40 @@ an IDOR or BOLA scanner: the operator supplies the resource and declares the
 expected relation, while the foundation only validates policy and classifies
 already captured response views.
 
-This foundation performs no network I/O, installs no scanner action, reads no
-credential source, and produces no `AssessmentItem`. It is test infrastructure
-and a shared pure comparison boundary. The resource-level runtime integration
-is a separate increment; until that integration lands, this document does not
-describe a shipped scan option.
+The policy, principal, response-reduction, and comparison foundation remains
+transport-neutral. The non-default `authorization-review` integration uses it
+as exactly one optional native capability inside the existing
+`WebAssessmentRuntime`; it is not an independently operating authorization
+scanner. The integration performs only the bounded network work described
+below and projects through the assessment's existing evidence, completeness,
+and report lifecycle.
+
+## Build and explicit opt-in
+
+The scanner and CLI must be compiled with `authorization-review`. The operator
+must then select explicit `web-review`, one policy file, and exactly one source
+for each principal:
+
+```text
+venom scan https://authorized.example.test \
+  --profile web-review \
+  --authorization-review-policy ./review.toml \
+  --authz-primary-env PRIMARY_AUTH_CONTEXT \
+  --authz-peer-env PEER_AUTH_CONTEXT
+```
+
+Each environment/file/stdin value is a complete `Authorization` header value;
+the CLI does not assume `Bearer`. The existing bounded secret-input module is
+the sole loader. There is no raw credential-value argument. File inputs must be
+regular non-symlink files, and at most one of the two roles may use stdin. V1
+rejects combining this workflow with the existing exact-root
+`--auth-env`/`--auth-file`/`--auth-stdin` comparison so principal roles and
+accounting cannot become ambiguous. The policy path, secret-source names, and
+credential values are redacted from diagnostics.
+
+The option is rejected for `baseline` and with no explicit profile. Compiling
+the feature alone adds no action or request, and the default CLI help,
+`venom scan`, and `decision-scan/v1` remain unchanged.
 
 ## Policy contract
 
@@ -192,18 +221,73 @@ report shape do not change. Shared pure validation or comparison internals may
 be reused, but the foundation does not create a second canonicalization or JSON
 comparison implementation.
 
-## Future runtime composition
+## Native runtime composition
 
-A later reviewed increment may compose one optional resource-level child into
-the existing `WebAssessmentRuntime`. That integration must use the parent
-exact-origin authority, broker, `RuntimeBudget`, response accounting,
-cancellation, deadline, action/executor lifecycle, evidence registry,
-completeness accounting, stable identities, and final report. It must not
-create an independent authorization scanner, transport, budget, authority,
-evidence store, URL normalizer, or detached post-scan report.
+The feature registers one optional native action,
+`web.review.authorization.resource-differential`. It reuses the parent
+assessment's `SharedWebRuntimeAuthority`, exact-origin policy, request broker,
+`RuntimeBudget`, response-byte accounting, cancellation token, deadline,
+executor/action catalog, defense validation, evidence registry, completeness
+lifecycle, stable identities, and final `AssessmentReport`. It does not create
+an independent authorization runtime, client, broker, budget, evidence store,
+URL normalizer, detached post-scan pass, or separately finalized report.
 
-The foundation does not guess or mutate identifiers, enumerate resources,
-change methods, test writes, carry cookies, follow redirects, evade defensive
-controls, or invoke exploit orchestration. A future positive projection is
-bounded to `NeedsReview` under `KnowledgeOnly` authority and must never become
-`Confirmed`.
+The action selects one resource at most and executes one bodyless `GET`
+template in this exact order:
+
+1. `PrimaryCandidate`
+2. `PeerCandidate`
+3. `PrimaryReplay`
+4. `PeerReplay`
+
+The two candidate legs are collected by the action's passive stage. The single
+logical active-verification lease is charged when `PrimaryReplay` begins;
+`PeerReplay` remains part of the same active decision phase but is
+passive-accounted, so the four-view review cannot charge the logical active
+verification twice. This is not a second action or a detached child runner.
+
+Each leg carries only fixed `Accept: application/json` plus the exact role's
+`Authorization` header. Candidate and replay use distinct scanner-owned
+correlation identities without changing the resource. Redirects and implicit
+retries remain disabled; there is no cookie jar, request body, method override,
+custom header mutation, or query mutation. Primary and peer connection state
+is isolated through the broker's governed isolation mechanism while accounting
+remains shared. The full child is capped at one selected resource, four request
+leases, and one logical active verification. An exhausted per-leg lease keeps
+already charged evidence but makes the review incomplete and prevents a
+positive item. This capability-specific four-leg plan does not widen the
+authority-wide `RuntimeBudget` same-action-attempt default of three for
+unrelated actions.
+
+Only complete JSON-compatible responses are reduced to the raw-value-free
+views. Redirects, rate limiting, challenge/defense interference, server errors,
+malformed JSON, unsupported media, truncation, cancellation, or transport and
+budget incompleteness cannot produce a positive projection. Normalization
+resilience is never applied to credentials or authorization headers.
+
+## Projection and audit
+
+`StableCrossPrincipalEquivalence` may project at most one
+`authorization.resource-cross-principal-equivalence@1` item titled
+“Unexpected cross-principal resource equivalence observed.” The disposition is
+`NeedsReview` and its authority is `KnowledgeOnly`; no path can produce
+`Confirmed`. Stable item identity binds the stable assessment/resource scope,
+exact-origin identity, policy semantic identity, capability and algorithm
+revision. It excludes credentials and their digests/sources, raw URLs and
+query values, JSON values and bodies, operation order, timestamps, and random
+identifiers.
+
+The composed assessment may include one redaction-safe authorization audit:
+policy identity, bounded profile counts, request count, outcome class,
+primary/peer stability, cross-resource equivalence, and projection state. It
+contains no credential material,
+source/path name, raw resource URL or handle, JSON Pointer text, selected
+scalar, body, or raw error. Shared evidence identifiers are registered once.
+Missing action, executor, defense, ledger, projection, or accounting parity
+fails closed as incomplete execution.
+
+The review does not guess or mutate identifiers, enumerate resources, change
+methods, test writes, carry cookies, follow redirects, evade defensive
+controls, or invoke exploit orchestration. Absence of equivalence is not proof
+that authorization is secure, and stable equivalence does not validate the
+operator's policy assertion or establish exploitability or business impact.

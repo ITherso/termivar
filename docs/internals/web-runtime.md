@@ -190,6 +190,49 @@ collection, cancellation, or limit exhaustion halts later discovery and keeps
 the assessment incomplete. The capability has no verifier transition and can
 never produce `Confirmed`.
 
+#### Resource authorization differential
+
+The non-default `authorization-review` feature composes one policy-selected
+resource comparison as the native action
+`web.review.authorization.resource-differential` inside the existing
+`WebAssessmentRuntime`. It does not invoke `run_api_visibility_pair`, create a
+second Standard runtime, or finalize a detached report. The feature-enabled
+builder accepts one validated `security.authorization-review-policy/v1` value
+and one move-only primary/peer principal pair; the CLI supplies those values
+only after profile, policy-file, transport, source-conflict, and report-output
+preflight.
+
+The action dispatches primary candidate, peer candidate, primary replay, and
+peer replay against the same exact resource. All four bodyless `GET` legs use
+the parent redirect-disabled request broker, exact-origin authority,
+`RuntimeBudget`, response accounting, cancellation, and deadline, while the
+broker isolates principal connection state. The only principal-varying header
+is `Authorization`; there is no cookie, request body, arbitrary header, method
+change, identifier mutation, or implicit retry. The child is capped at one
+resource, four requests, and one logical active verification: the passive
+stage collects both candidate views, then the active decision phase charges
+its sole logical active-verification lease when the primary replay begins. The
+peer replay is passive-accounted within that same phase, through the same
+registered action and executor.
+
+Complete JSON responses are reduced immediately through the shared API
+comparison foundation. A positive item requires independent primary and peer
+stability and both cross-principal rounds to match across `Status`, `Fields`,
+and value-sensitive `Resources`. The committed observer/ledger truth and all
+request/accounting receipts must reconcile before the common projection can
+emit one `authorization.resource-cross-principal-equivalence@1` item. Its
+maximum is `NeedsReview` / `KnowledgeOnly`. Redirect, defense or rate-limit
+interference, unsupported media, malformed or truncated JSON, cancellation,
+budget exhaustion, or any missing lifecycle entry fails closed and cannot
+produce a completed item set.
+
+The resulting redaction-safe audit is part of the same composed assessment
+report. It exposes typed outcome and bounded accounting only—not credentials or
+credential digests/sources, raw URLs or query values, the clear resource
+handle, JSON Pointer text, scalar values, bodies, or raw errors. The existing
+two-leg exact-root authorization-context compatibility workflow remains
+unchanged and cannot be enabled in the same V1 run.
+
 ## Runtime safety envelope
 
 The runtime checks limits in a stable order before execution: wall time; advisory broker preflight for total requests, remaining response bytes, and active verifications; then attempts for the semantic action. Only the semantic attempt is reserved before an optional scheduler delay. A delay cancellation therefore consumes an action attempt but not a request. The shared host-owned request broker repeats the resource checks atomically, charges the exact buffered request-body length, and records the request immediately before `reqwest::Client::execute`, so a transport error or timeout after dispatch remains charged. An opaque request body whose length cannot be measured is rejected before dispatch.

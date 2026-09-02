@@ -28,6 +28,8 @@ use venom_core::{
 use crate::decision_runner::ContinuationAuthority;
 use crate::http_evidence::CompleteHttpResponseObserver;
 use crate::planner::ActionSuppressionContext;
+#[cfg(feature = "authorization-review")]
+use crate::rules::{Expression, KnowledgeLayer};
 use crate::{
     AdaptationLimits, AdaptationRule, AdaptivePipelineError, BenefitScore, DecisionActionOrigin,
     DecisionEvidenceReceipt, DecisionExecutionClass, DecisionExecutionFailureReceipt,
@@ -57,6 +59,8 @@ mod assessment_review_projection;
 mod authority;
 #[cfg(feature = "graphql-review")]
 mod graphql_runtime;
+#[cfg(feature = "authorization-review")]
+mod resource_authorization_runtime;
 mod scan_profile;
 mod web_assessment;
 mod web_review_decision;
@@ -101,6 +105,12 @@ pub use assessment_report::{
     MAX_ASSESSMENT_RUN_ITEMS,
 };
 
+#[cfg(feature = "authorization-review")]
+pub use resource_authorization_runtime::{
+    WebAssessmentAuthorizationAudit, MAX_AUTHORIZATION_REVIEW_ACTIVE_VERIFICATIONS,
+    MAX_AUTHORIZATION_REVIEW_REQUESTS, MAX_AUTHORIZATION_REVIEW_RESOURCES,
+    RESOURCE_AUTHORIZATION_REVIEW_ACTION_ID, RESOURCE_AUTHORIZATION_REVIEW_CAPABILITY_ID,
+};
 #[cfg(feature = "scanning")]
 pub use scan_profile::{
     BuiltInScanProfile, BuiltInScanProfileParseError, ScanProfileCapabilitiesV1,
@@ -188,6 +198,11 @@ pub enum StandardWebDecisionRuntimeError {
     /// The closed native review executor and payload catalog failed validation.
     #[error("native web-review execution profile could not be composed")]
     NativeWebReviewExecutionProfile,
+
+    /// The bounded authorization action/executor could not join the parent runtime.
+    #[cfg(feature = "authorization-review")]
+    #[error("resource authorization review could not be composed")]
+    ResourceAuthorizationReviewComposition,
 
     /// An executor lookup, request, evidence commit, or runner transition failed.
     #[error(transparent)]
@@ -526,6 +541,9 @@ pub struct StandardWebDecisionRuntimeBuilder {
     assessment_defense_projection: bool,
     assessment_defense_enforcement: bool,
     native_web_review: Option<NativeWebReviewRuntimeConfig>,
+    #[cfg(feature = "authorization-review")]
+    resource_authorization_review:
+        Option<resource_authorization_runtime::ResourceAuthorizationReviewConfig>,
 }
 
 struct NativeWebReviewRuntimeConfig {
@@ -572,6 +590,8 @@ impl StandardWebDecisionRuntimeBuilder {
             assessment_defense_projection: false,
             assessment_defense_enforcement: false,
             native_web_review: None,
+            #[cfg(feature = "authorization-review")]
+            resource_authorization_review: None,
         }
     }
 
@@ -686,6 +706,18 @@ impl StandardWebDecisionRuntimeBuilder {
     pub(crate) fn with_assessment_defense_enforcement(mut self, enabled: bool) -> Self {
         self.assessment_defense_projection = true;
         self.assessment_defense_enforcement = enabled;
+        self
+    }
+
+    /// Installs the one resource-authorization action into this parent subject
+    /// runtime. The config remains move-only and no secondary runner is built.
+    #[cfg(feature = "authorization-review")]
+    pub(in crate::web_runtime) fn with_resource_authorization_review(
+        mut self,
+        config: resource_authorization_runtime::ResourceAuthorizationReviewConfig,
+    ) -> Self {
+        self.assessment_defense_projection = true;
+        self.resource_authorization_review = Some(config);
         self
     }
 
@@ -907,11 +939,18 @@ impl StandardWebDecisionRuntimeBuilder {
             self.planning_budget,
             RiskScore::from_percent(self.risk_limit_percent)?,
         );
+        #[cfg(feature = "authorization-review")]
+        let max_action_cycles = self.max_action_cycles.saturating_add(
+            u32::from(self.resource_authorization_review.is_some())
+                * resource_authorization_runtime::AUTHORIZATION_REVIEW_ACTION_CYCLE_ALLOWANCE,
+        );
+        #[cfg(not(feature = "authorization-review"))]
+        let max_action_cycles = self.max_action_cycles;
         let config = DecisionLoopConfig::new(
             planning,
             self.adaptation_limits,
             ExperiencePolicy::new(self.experience_failure_limit)?,
-            self.max_action_cycles,
+            max_action_cycles,
         )?;
         let subject = EntityId::new(format!("endpoint:{}", self.target))?;
         Ok(StandardWebDecisionRuntimePreflight { config, subject })
@@ -936,6 +975,26 @@ impl StandardWebDecisionRuntimeBuilder {
             StandardWebDecisionProfile::new_with_request_broker(requests.clone())?
         };
         let installation = profile.install(knowledge, &mut decision_loop, &mut executors)?;
+
+        #[cfg(feature = "authorization-review")]
+        let resource_authorization_review = self
+            .resource_authorization_review
+            .map(|config| {
+                authority
+                    .authorize_target(config.execution_resource())
+                    .map_err(|_| {
+                        StandardWebDecisionRuntimeError::ResourceAuthorizationReviewComposition
+                    })?;
+                resource_authorization_runtime::ResourceAuthorizationRuntimeBinding::new(
+                    config,
+                    requests.clone(),
+                    subject.clone(),
+                )
+                .map_err(|_| {
+                    StandardWebDecisionRuntimeError::ResourceAuthorizationReviewComposition
+                })
+            })
+            .transpose()?;
 
         let native_executor_profile = match self.native_web_review {
             Some(config) => {
@@ -1038,10 +1097,17 @@ impl StandardWebDecisionRuntimeBuilder {
             },
             None => None,
         };
-        let native_review_actions = native_executor_profile
+        let native_executor_actions = native_executor_profile
             .as_ref()
             .map(|profile| profile.actions().collect::<Vec<_>>())
             .unwrap_or_default();
+        let mut native_review_actions = native_executor_actions.clone();
+        #[cfg(feature = "authorization-review")]
+        if resource_authorization_review.is_some() {
+            native_review_actions.push(
+                crate::web_actions::NativeWebReviewActionKind::ResourceAuthorizationDifferential,
+            );
+        }
         if !native_review_actions.is_empty() {
             let profile =
                 NativeWebReviewDecisionProfile::for_actions(native_review_actions.iter().copied())
@@ -1052,7 +1118,15 @@ impl StandardWebDecisionRuntimeBuilder {
                 .map_err(|_| StandardWebDecisionRuntimeError::NativeWebReviewDecisionProfile)?;
             debug_assert_eq!(report.reasoning_rules_inserted, 1);
             debug_assert_eq!(report.actions_inserted, native_review_actions.len());
-            debug_assert_eq!(report.active_rules_inserted, native_review_actions.len());
+            #[cfg(feature = "authorization-review")]
+            let authorization_count = usize::from(resource_authorization_review.is_some());
+            #[cfg(not(feature = "authorization-review"))]
+            let authorization_count = 0;
+            debug_assert_eq!(report.passive_rules_inserted, authorization_count);
+            debug_assert_eq!(
+                report.active_rules_inserted,
+                native_review_actions.len() + authorization_count
+            );
         }
 
         // Surface-B multi-objective continuation: install continuation rules ONLY
@@ -1062,6 +1136,16 @@ impl StandardWebDecisionRuntimeBuilder {
             decision_loop
                 .adaptive_mut()
                 .register(rule)
+                .map_err(DecisionLoopError::Adaptive)?;
+        }
+        #[cfg(feature = "authorization-review")]
+        if resource_authorization_review.is_some() {
+            decision_loop
+                .adaptive_mut()
+                .register(
+                    resource_authorization_terminal_adaptation_rule()
+                        .map_err(DecisionLoopError::Adaptive)?,
+                )
                 .map_err(DecisionLoopError::Adaptive)?;
         }
         let api_reasoning_installation = if self.api_reasoning_enabled {
@@ -1090,11 +1174,23 @@ impl StandardWebDecisionRuntimeBuilder {
         executors.register(Arc::new(http_evidence))?;
 
         if let Some(profile) = native_executor_profile {
-            debug_assert_eq!(profile.actions().collect::<Vec<_>>(), native_review_actions);
+            debug_assert_eq!(
+                profile.actions().collect::<Vec<_>>(),
+                native_executor_actions
+            );
             let report = profile
                 .install(&mut executors)
                 .map_err(|_| StandardWebDecisionRuntimeError::NativeWebReviewExecutionProfile)?;
-            debug_assert_eq!(report.executors_inserted(), native_review_actions.len());
+            debug_assert_eq!(report.executors_inserted(), native_executor_actions.len());
+        }
+
+        #[cfg(feature = "authorization-review")]
+        if let Some(binding) = resource_authorization_review.as_ref() {
+            binding
+                .install_into_parent_registry(&mut executors)
+                .map_err(|_| {
+                    StandardWebDecisionRuntimeError::ResourceAuthorizationReviewComposition
+                })?;
         }
 
         let mut unsupported_actions: BTreeSet<_> = StandardWebActionKind::all()
@@ -1120,6 +1216,8 @@ impl StandardWebDecisionRuntimeBuilder {
             assessment_defense: self
                 .assessment_defense_projection
                 .then(|| AssessmentDefenseController::new(self.assessment_defense_enforcement)),
+            #[cfg(feature = "authorization-review")]
+            resource_authorization_review,
         })
     }
 }
@@ -1160,6 +1258,9 @@ pub struct StandardWebDecisionRuntime {
     usage: RuntimeUsage,
     started: bool,
     assessment_defense: Option<AssessmentDefenseController>,
+    #[cfg(feature = "authorization-review")]
+    resource_authorization_review:
+        Option<resource_authorization_runtime::ResourceAuthorizationRuntimeBinding>,
 }
 
 impl StandardWebDecisionRuntime {
@@ -1276,6 +1377,13 @@ impl StandardWebDecisionRuntime {
 
     pub(crate) fn assessment_planner(&self) -> &crate::AttackPlanner {
         self.decision_loop.planner()
+    }
+
+    #[cfg(feature = "authorization-review")]
+    pub(in crate::web_runtime) fn take_resource_authorization_review(
+        &mut self,
+    ) -> Option<resource_authorization_runtime::ResourceAuthorizationRuntimeBinding> {
+        self.resource_authorization_review.take()
     }
 
     /// Collects bootstrap evidence and drives commands to a terminal state.
@@ -2179,6 +2287,24 @@ fn standard_web_continuation_rules() -> Result<Vec<AdaptationRule>, AdaptivePipe
             u16::MAX,
         )?,
     ])
+}
+
+#[cfg(feature = "authorization-review")]
+fn resource_authorization_terminal_adaptation_rule() -> Result<AdaptationRule, AdaptivePipelineError>
+{
+    AdaptationRule::new(
+        "web.authorization-review.stop-after-terminal-phase@1",
+        OutcomeSelector::any_stage(BTreeSet::from([OutcomeStatus::Blocked]))?,
+        1_000,
+        Some(Expression::equals(
+            KnowledgeLayer::Evidence,
+            crate::web_actions::authorization_review_phase_terminal_predicate(),
+            EvidenceValue::Boolean(true),
+        )),
+        PipelineDirective::Halt,
+        "stop optional network work after authorization review defense, rate-limit, or incomplete transport evidence",
+        1,
+    )
 }
 
 fn outcome_made_progress(

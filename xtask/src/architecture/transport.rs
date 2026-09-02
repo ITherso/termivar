@@ -70,6 +70,7 @@ const BOUNDED_RUNTIME_SOURCES: &[&str] = &[
     "crates/venom-scanner/src/web_reasoning.rs",
     "crates/venom-scanner/src/web_runtime.rs",
     GRAPHQL_RUNTIME_SOURCE,
+    RESOURCE_AUTHORIZATION_RUNTIME_SOURCE,
     NATIVE_REVIEW_DECISION_SOURCE,
     NATIVE_REVIEW_EXECUTION_SOURCE,
     "crates/venom-scanner/src/web_runtime/authority.rs",
@@ -98,6 +99,8 @@ const NATIVE_REVIEW_DECISION_SOURCE: &str =
 const NATIVE_REVIEW_EXECUTION_SOURCE: &str =
     "crates/venom-scanner/src/web_runtime/web_review_execution.rs";
 const GRAPHQL_RUNTIME_SOURCE: &str = "crates/venom-scanner/src/web_runtime/graphql_runtime.rs";
+const RESOURCE_AUTHORIZATION_RUNTIME_SOURCE: &str =
+    "crates/venom-scanner/src/web_runtime/resource_authorization_runtime.rs";
 const ATTRIBUTE_SOURCE_CONTEXT_SOURCE: &str =
     "crates/venom-scanner/src/web_runtime/web_assessment/attribute_source_context.rs";
 const ATTRIBUTE_BOUNDARY_MATCHER_SOURCE: &str =
@@ -441,8 +444,8 @@ fn inspect_native_review_execution_broker_boundary(
     Ok(violations.into_iter().collect())
 }
 
-const EXACT_NATIVE_REVIEW_EXECUTION_TOKEN_BYTES: usize = 28_744;
-const EXACT_NATIVE_REVIEW_EXECUTION_FINGERPRINT: u128 = 0xc5ab_9d1a_17b6_1d45_86d7_714d_89df_4fd1;
+const EXACT_NATIVE_REVIEW_EXECUTION_TOKEN_BYTES: usize = 29_032;
+const EXACT_NATIVE_REVIEW_EXECUTION_FINGERPRINT: u128 = 0xe681_2082_9748_815c_aaeb_a928_7c03_24ec;
 
 fn native_review_execution_fingerprint_violations(source: &str, syntax: &syn::File) -> Vec<String> {
     let exact_tests = matches!(syntax.items.last(), Some(Item::Mod(module))
@@ -970,12 +973,12 @@ fn native_defense_classifier_is_exact(function: &syn::ItemFn) -> bool {
     let mut variants = BTreeSet::new();
     let arms_are_exact = classifier.arms.iter().all(|arm| {
         (arm.attrs.is_empty()
-            || attributes_are_exact_cfg_feature(&arm.attrs, "normalization-resilience"))
+            || attributes_are_exact_cfg_feature(&arm.attrs, "normalization-resilience")
+            || attributes_are_exact_cfg_feature(&arm.attrs, "authorization-review"))
             && arm.guard.is_none()
             && collect_exact_native_review_patterns(&arm.pat, &mut variants)
             && expression_is_exact_defense_class(&arm.body, "DifferentialRead")
     });
-
     matches!(function.vis, syn::Visibility::Inherited)
         && function.sig.constness.is_some()
         && function.sig.asyncness.is_none()
@@ -999,6 +1002,7 @@ fn native_defense_classifier_is_exact(function: &syn::ItemFn) -> bool {
                 "XssAttributeBoundaryQueryPair".to_owned(),
                 "XssScriptLexicalBoundaryQueryPair".to_owned(),
                 "NormalizationResilienceQueryPair".to_owned(),
+                "ResourceAuthorizationDifferential".to_owned(),
             ])
 }
 
@@ -1027,6 +1031,7 @@ fn collect_exact_native_review_patterns(
                 "XssAttributeBoundaryQueryPair",
                 "XssScriptLexicalBoundaryQueryPair",
                 "NormalizationResilienceQueryPair",
+                "ResourceAuthorizationDifferential",
             ] {
                 if syn_path_is_exact(&pattern.path, &["NativeWebReviewActionKind", variant]) {
                     return variants.insert(variant.to_owned());
@@ -2022,18 +2027,31 @@ fn inspect_web_assessment_models(source: &str) -> Result<Vec<String>, syn::Error
                             .as_ref()
                             .is_some_and(|ident| ident_name(ident) == "run_started_at")
                     });
-                    if run_started_at.is_none_or(|field| {
-                        !is_plain_ident(&field.ty, "SystemTime")
-                            || !attributes_are_exact_cfg_feature(&field.attrs, "reporting")
-                    }) || item.fields.iter().any(|field| {
+                    let authorization_review = item.fields.iter().find(|field| {
                         field
                             .ident
                             .as_ref()
-                            .is_none_or(|ident| ident_name(ident) != "run_started_at")
-                            && !field.attrs.is_empty()
+                            .is_some_and(|ident| ident_name(ident) == "authorization_review")
+                    });
+                    if run_started_at.is_none_or(|field| {
+                        !is_plain_ident(&field.ty, "SystemTime")
+                            || !attributes_are_exact_cfg_feature(&field.attrs, "reporting")
+                    }) || authorization_review.is_none_or(|field| {
+                        !is_generic_of_idents(
+                            &field.ty,
+                            "Option",
+                            &["WebAssessmentAuthorizationAudit"],
+                        ) || !attributes_are_exact_cfg_feature(&field.attrs, "authorization-review")
+                    }) || item.fields.iter().any(|field| {
+                        field.ident.as_ref().is_none_or(|ident| {
+                            !matches!(
+                                ident_name(ident).as_str(),
+                                "run_started_at" | "authorization_review"
+                            )
+                        }) && !field.attrs.is_empty()
                     }) {
                         violations.push(
-                            "WebAssessmentRunReport must retain exactly one private cfg(reporting) SystemTime run_started_at field and no other conditional fields"
+                            "WebAssessmentRunReport must retain exactly one private cfg(reporting) SystemTime run_started_at field, one private cfg(authorization-review) redacted audit field, and no other conditional fields"
                                 .to_owned(),
                         );
                     }
@@ -4366,7 +4384,7 @@ fn inspect_assessment_report_boundary(source: &str) -> Result<Vec<String>, syn::
     let report_shape_is_exact = report.is_some_and(|item| {
         matches!(item.vis, syn::Visibility::Public(_))
             && private_named_fields(item).is_some_and(|fields| {
-                fields.len() == 4
+                fields.len() == 5
                     && fields
                         .get("run_report")
                         .is_some_and(|field| is_plain_ident(field, "RunReport"))
@@ -4379,11 +4397,17 @@ fn inspect_assessment_report_boundary(source: &str) -> Result<Vec<String>, syn::
                     && fields.get("items").is_some_and(|field| {
                         is_generic_of_idents(field, "Vec", &["AssessmentItem"])
                     })
+                    && fields.get("authorization_review").is_some_and(|field| {
+                        is_generic_of_idents(field, "Option", &["WebAssessmentAuthorizationAudit"])
+                    })
+            })
+            && private_named_field(item, "authorization_review").is_some_and(|field| {
+                attributes_are_exact_cfg_feature(&field.attrs, "authorization-review")
             })
     });
     if !report_shape_is_exact {
         violations.push(
-            "AssessmentRunReport must privately retain the validated run/profile, consumed subject inventory, and typed items"
+            "AssessmentRunReport must privately retain the validated run/profile, consumed subject inventory, typed items, and exact feature-gated redacted authorization audit"
                 .to_owned(),
         );
     }
@@ -4419,7 +4443,7 @@ fn inspect_assessment_report_boundary(source: &str) -> Result<Vec<String>, syn::
                     .iter()
                     .all(|attribute| attribute.path().is_ident("doc"))
                 && method.sig.receiver().is_none()
-                && typed_input_types(method) == ["AssessmentItemSet", "CompletedWebAssessmentTruth"]
+                && assessment_report_constructor_inputs_are_exact(method, false)
                 && matches!(&method.sig.output, syn::ReturnType::Type(_, output)
                     if is_result_of(output, "Self", "AssessmentRunReportError"))
                 && block_references_all(&method.block, &["build_run_report", "new_validated"])
@@ -4427,7 +4451,7 @@ fn inspect_assessment_report_boundary(source: &str) -> Result<Vec<String>, syn::
         });
     if !completed_constructor {
         violations.push(
-            "AssessmentRunReport::from_completed_truth must consume only AssessmentItemSet plus runtime-owned completion truth, build the generic envelope internally, and then validate it"
+            "AssessmentRunReport::from_completed_truth must consume AssessmentItemSet plus runtime-owned completion truth and only the exact feature-gated authorization audit, build the generic envelope internally, and then validate it"
                 .to_owned(),
         );
     }
@@ -4455,12 +4479,7 @@ fn inspect_assessment_report_boundary(source: &str) -> Result<Vec<String>, syn::
         matches!(method.vis, syn::Visibility::Inherited)
             && method.attrs.is_empty()
             && method.sig.receiver().is_none()
-            && typed_input_types(method)
-                == [
-                    "RunReport",
-                    "AssessmentItemSet",
-                    "CompletedWebAssessmentTruth",
-                ]
+            && assessment_report_constructor_inputs_are_exact(method, true)
             && matches!(&method.sig.output, syn::ReturnType::Type(_, output)
                     if is_result_of(output, "Self", "AssessmentRunReportError"))
             && block_references_all(
@@ -4477,6 +4496,7 @@ fn inspect_assessment_report_boundary(source: &str) -> Result<Vec<String>, syn::
                     "into_parts",
                     "validate_subject_inventory",
                     "validate_and_canonicalize_items",
+                    "validate_authorization_audit",
                     "profile",
                 ],
             )
@@ -4504,10 +4524,11 @@ fn inspect_assessment_report_boundary(source: &str) -> Result<Vec<String>, syn::
                 "validate_and_canonicalize_items",
                 "Self",
             )
+            && statement_reference_precedes(&method.block, "validate_authorization_audit", "Self")
     });
     if !validator {
         violations.push(
-            "AssessmentRunReport::new_validated must remain private and validate run identity/completion/accounting, the exact root subject, inventory, and items before construction"
+            "AssessmentRunReport::new_validated must remain private and validate run identity/completion/accounting, the exact root subject, inventory, items, and feature-gated authorization audit before construction"
                 .to_owned(),
         );
     }
@@ -5182,7 +5203,9 @@ fn inspect_production_verifier_descriptors(
     let mut visitor = DescriptorVisitor {
         allow_differential_review: matches!(
             source_name,
-            ASSESSMENT_REVIEW_PROJECTION_SOURCE | ASSESSMENT_API_VISIBILITY_SOURCE
+            ASSESSMENT_REVIEW_PROJECTION_SOURCE
+                | ASSESSMENT_API_VISIBILITY_SOURCE
+                | RESOURCE_AUTHORIZATION_RUNTIME_SOURCE
         ),
         ..DescriptorVisitor::default()
     };
@@ -5190,7 +5213,7 @@ fn inspect_production_verifier_descriptors(
     let mut violations = Vec::new();
     if visitor.invalid_initializers != 0 {
         violations.push(format!(
-            "{source_name} defines a production AssessmentCapabilityDescriptor outside its exact constructor allowlist; differential_review is restricted to {ASSESSMENT_REVIEW_PROJECTION_SOURCE} and {ASSESSMENT_API_VISIBILITY_SOURCE}"
+            "{source_name} defines a production AssessmentCapabilityDescriptor outside its exact constructor allowlist; differential_review is restricted to {ASSESSMENT_REVIEW_PROJECTION_SOURCE}, {ASSESSMENT_API_VISIBILITY_SOURCE}, and {RESOURCE_AUTHORIZATION_RUNTIME_SOURCE}"
         ));
     }
     if visitor.verifier_transitions != 0 {
@@ -5641,6 +5664,47 @@ fn typed_input_types(method: &syn::ImplItemFn) -> Vec<String> {
             syn::FnArg::Receiver(_) => None,
         })
         .collect()
+}
+
+fn assessment_report_constructor_inputs_are_exact(
+    method: &syn::ImplItemFn,
+    includes_run_report: bool,
+) -> bool {
+    let typed = method
+        .sig
+        .inputs
+        .iter()
+        .filter_map(|argument| match argument {
+            syn::FnArg::Typed(argument) => Some(argument),
+            syn::FnArg::Receiver(_) => None,
+        })
+        .collect::<Vec<_>>();
+    let expected_prefix = if includes_run_report {
+        [
+            "RunReport",
+            "AssessmentItemSet",
+            "CompletedWebAssessmentTruth",
+        ]
+        .as_slice()
+    } else {
+        ["AssessmentItemSet", "CompletedWebAssessmentTruth"].as_slice()
+    };
+    typed.len() == expected_prefix.len() + 1
+        && typed
+            .iter()
+            .take(expected_prefix.len())
+            .zip(expected_prefix)
+            .all(|(argument, expected)| {
+                argument.attrs.is_empty() && is_plain_ident(&argument.ty, expected)
+            })
+        && typed.last().is_some_and(|argument| {
+            attributes_are_exact_cfg_feature(&argument.attrs, "authorization-review")
+                && is_generic_of_idents(
+                    &argument.ty,
+                    "Option",
+                    &["WebAssessmentAuthorizationAudit"],
+                )
+        })
 }
 
 fn type_last_identifier(item_type: &syn::Type) -> Option<String> {
@@ -7915,6 +7979,10 @@ impl<'ast> Visit<'ast> for OwnershipVisitor<'_> {
                     "assessment_defense"
                 )
                 | ("crates/venom-scanner/src/web_runtime.rs", "graphql_runtime")
+                | (
+                    "crates/venom-scanner/src/web_runtime.rs",
+                    "resource_authorization_runtime"
+                )
                 | ("crates/venom-scanner/src/web_runtime.rs", "scan_profile")
                 | ("crates/venom-scanner/src/web_runtime.rs", "web_assessment")
                 | (
@@ -7958,6 +8026,10 @@ impl<'ast> Visit<'ast> for OwnershipVisitor<'_> {
             && module == "graphql_runtime"
         {
             attributes_are_exact_cfg_feature(&item.attrs, "graphql-review")
+        } else if self.source == "crates/venom-scanner/src/web_runtime.rs"
+            && module == "resource_authorization_runtime"
+        {
+            attributes_are_exact_cfg_feature(&item.attrs, "authorization-review")
         } else if self.source == "crates/venom-scanner/src/web_runtime/web_assessment.rs"
             && module == "normalization_transform_catalog"
         {
@@ -9870,6 +9942,10 @@ mod tests {
                 "#[cfg(feature = \"graphql-review\")] mod graphql_runtime;",
             ),
             (
+                "crates/venom-scanner/src/web_runtime.rs",
+                "#[cfg(feature = \"authorization-review\")] mod resource_authorization_runtime;",
+            ),
+            (
                 "crates/venom-scanner/src/web_runtime/web_assessment.rs",
                 "#[cfg(feature = \"normalization-resilience\")] mod normalization_transform_catalog;",
             ),
@@ -9896,6 +9972,21 @@ mod tests {
             assert!(
                 violations.contains("unregistered external submodule"),
                 "normalization catalog feature boundary unexpectedly passed: {source}: {violations}"
+            );
+        }
+
+        for source in [
+            "mod resource_authorization_runtime;",
+            "#[cfg(feature = \"scanning\")] mod resource_authorization_runtime;",
+            "#[cfg(feature = \"authorization-review\")] pub mod resource_authorization_runtime;",
+        ] {
+            let violations =
+                inspect_bounded_source("crates/venom-scanner/src/web_runtime.rs", source)
+                    .unwrap()
+                    .join("\n");
+            assert!(
+                violations.contains("unregistered external submodule"),
+                "resource authorization runtime feature boundary unexpectedly passed: {source}: {violations}"
             );
         }
 
@@ -11174,7 +11265,35 @@ mod tests {
             .unwrap()
             .join("\n");
         assert!(
-            violations.contains("from_completed_truth must consume only AssessmentItemSet"),
+            violations.contains("from_completed_truth must consume AssessmentItemSet"),
+            "{violations}"
+        );
+
+        let missing_authorization_audit = report_source.replacen(
+            "    #[cfg(feature = \"authorization-review\")]\n    authorization_review: Option<WebAssessmentAuthorizationAudit>,\n",
+            "",
+            1,
+        );
+        assert_ne!(missing_authorization_audit, report_source);
+        let violations = inspect_assessment_report_boundary(&missing_authorization_audit)
+            .unwrap()
+            .join("\n");
+        assert!(
+            violations.contains("feature-gated redacted authorization audit"),
+            "{violations}"
+        );
+
+        let unvalidated_authorization_audit = report_source.replacen(
+            "        #[cfg(feature = \"authorization-review\")]\n        validate_authorization_audit(authorization_review.as_ref(), &items)?;",
+            "        #[cfg(feature = \"authorization-review\")]\n        let _ = authorization_review.as_ref();",
+            1,
+        );
+        assert_ne!(unvalidated_authorization_audit, report_source);
+        let violations = inspect_assessment_report_boundary(&unvalidated_authorization_audit)
+            .unwrap()
+            .join("\n");
+        assert!(
+            violations.contains("feature-gated authorization audit"),
             "{violations}"
         );
 
@@ -11503,6 +11622,12 @@ mod tests {
             false,
         )
         .is_empty());
+        assert!(inspect_production_verifier_descriptors(
+            RESOURCE_AUTHORIZATION_RUNTIME_SOURCE,
+            &differential,
+            false,
+        )
+        .is_empty());
         let violations =
             inspect_production_verifier_descriptors("foreign_projection.rs", &differential, false)
                 .join("\n");
@@ -11548,6 +11673,8 @@ mod tests {
             pub struct WebAssessmentRunReport {
                 #[cfg(feature = "reporting")]
                 run_started_at: SystemTime,
+                #[cfg(feature = "authorization-review")]
+                authorization_review: Option<WebAssessmentAuthorizationAudit>,
                 transport: TransportDispatchAudit,
                 defense: WebAssessmentDefenseAudit,
             }

@@ -59,6 +59,8 @@ pub use policy::{
 };
 pub use probe::{HttpProbe, HttpProbeMethod, HttpProbeProvider, SubjectHttpProbeProvider};
 pub(crate) use request_broker::{HttpRequestBroker, HttpRequestBrokerError};
+#[cfg(feature = "authorization-review")]
+pub(crate) use response::AuthorizationResponseDefense;
 pub(crate) use response::CollectedHttpResponse;
 #[cfg(test)]
 pub(crate) use review_response::{
@@ -1724,7 +1726,7 @@ pub(crate) fn project_graphql_transport_response(
 /// Reduces raw transport material to a closed, bounded signal vocabulary.
 /// Returned header values are fixed literals; no response value or cookie
 /// value is retained, hashed, or exposed to the assessment ledger.
-fn bounded_assessment_defense_signal(
+pub(crate) fn bounded_assessment_defense_signal(
     status: u16,
     method: HttpProbeMethod,
     headers: &HeaderMap,

@@ -323,6 +323,35 @@ finding, verifier success, planner outcome, Experience update, or endpoint
 decision-loop command. See
 [ADR 0013](../adr/0013-runtime-owned-api-visibility-pairs.md).
 
+## Four-view resource authorization workflow
+
+The non-default resource authorization review reuses the same value-sensitive,
+raw-value-free `ApiVisibilityComparator` view reduction, but it is not another
+`run_api_visibility_pair` facade. One optional native action inside
+`WebAssessmentRuntime` captures four views for one operator-selected
+exact-origin JSON resource: primary candidate, peer candidate, primary replay,
+and peer replay. It computes primary stability, peer stability, and two
+cross-principal comparisons over `Status`, `Fields`, and `Resources` without an
+additional request or a second JSON canonicalizer.
+
+The strict `security.authorization-review-policy/v1` profile requires bounded
+exact JSON Pointer selections. Complete bodies exist only long enough to build
+the four bounded view receipts. The retained contract excludes raw JSON,
+canonical JSON bytes, scalar values, response bodies, credential material, raw
+resource URLs, and clear selected paths. Four distinct response receipts, one
+policy identity, one exact resource scope, complete path presence, and
+correlation equality are mandatory.
+
+`StableCrossPrincipalEquivalence` requires both roles to be independently
+stable and both cross-principal rounds to be value-equivalent. Status or field
+shape alone is insufficient. This state can project one
+`NeedsReview` / `KnowledgeOnly` observation under the operator-declared
+`primary-only` policy; it is not an IDOR, BOLA, broken-access-control, or data
+exposure confirmation. Peer denial or non-equivalence creates no “secure”
+finding. The transport-neutral API reasoner remains incapable of dispatching
+these requests; the existing assessment executor owns them through the shared
+broker.
+
 ## Commit and reasoning receipts
 
 `ingest_api_visibility_observation` verifies the caller's expected resource

@@ -2,6 +2,15 @@ use reqwest::{header::HeaderMap, StatusCode, Url};
 
 use super::{json_compatible_media_type, normalized_media_type};
 
+/// Closed defensive interpretation used by the explicit authorization child.
+#[cfg(feature = "authorization-review")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AuthorizationResponseDefense {
+    Clear,
+    RateLimited,
+    Challenge,
+}
+
 pub(crate) struct CollectedHttpResponse {
     pub(super) status: StatusCode,
     pub(super) final_url: Url,
@@ -19,7 +28,7 @@ impl CollectedHttpResponse {
         self.status.as_u16()
     }
 
-    #[cfg(feature = "legacy-scanner")]
+    #[cfg(any(feature = "legacy-scanner", feature = "authorization-review"))]
     pub(crate) fn final_url(&self) -> &Url {
         &self.final_url
     }
@@ -37,12 +46,12 @@ impl CollectedHttpResponse {
         self.body_truncated
     }
 
-    #[cfg(feature = "graphql-review")]
+    #[cfg(any(feature = "graphql-review", feature = "authorization-review"))]
     pub(crate) fn body_complete(&self) -> bool {
         self.body_complete && !self.body_truncated
     }
 
-    #[cfg(feature = "graphql-review")]
+    #[cfg(any(feature = "graphql-review", feature = "authorization-review"))]
     pub(crate) fn normalized_media_type(&self) -> Option<String> {
         normalized_media_type(&self.headers)
     }
@@ -51,5 +60,26 @@ impl CollectedHttpResponse {
         normalized_media_type(&self.headers)
             .as_deref()
             .is_some_and(json_compatible_media_type)
+    }
+
+    /// Reuses the current bounded defense observer without exposing response
+    /// headers or body bytes outside the HTTP evidence boundary. A fingerprint
+    /// alone is deliberately not execution authority or interference.
+    #[cfg(feature = "authorization-review")]
+    pub(crate) fn authorization_response_defense(&self) -> AuthorizationResponseDefense {
+        let signal = super::bounded_assessment_defense_signal(
+            self.status(),
+            crate::HttpProbeMethod::Get,
+            &self.headers,
+            self.body_complete,
+            &self.body,
+        );
+        if signal.state().is_rate_limited() {
+            AuthorizationResponseDefense::RateLimited
+        } else if signal.state().is_challenged() {
+            AuthorizationResponseDefense::Challenge
+        } else {
+            AuthorizationResponseDefense::Clear
+        }
     }
 }

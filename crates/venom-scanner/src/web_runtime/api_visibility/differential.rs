@@ -14,6 +14,7 @@ use venom_core::{
     ResourceScopeId,
 };
 
+use crate::web_runtime::authority::authenticated_transport_is_allowed;
 use crate::{
     ApiComparisonProfile, ApiObservationCommitReceipt, ApiObservationError, ApiObservationReceipt,
     ApiVisibilityReview, CanonicalizationVersion, ComparisonAlgorithmVersion, HttpEvidenceError,
@@ -803,15 +804,6 @@ fn primary_context_headers_differ(
 
 fn is_auth_context_header(name: &str) -> bool {
     PRIMARY_AUTH_CONTEXT_HEADERS.contains(&name) || SUPPORTING_AUTH_CONTEXT_HEADERS.contains(&name)
-}
-
-fn authenticated_transport_is_allowed(target: &url::Url) -> bool {
-    target.scheme() == "https"
-        || (target.scheme() == "http"
-            && target.host().is_some_and(|host| {
-                matches!(host, url::Host::Ipv4(ip) if ip.is_loopback())
-                    || matches!(host, url::Host::Ipv6(ip) if ip.is_loopback())
-            }))
 }
 
 fn request_template_digest(

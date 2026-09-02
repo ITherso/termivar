@@ -19,6 +19,11 @@ use url::Url;
 use venom_core::{ConfidenceScore, EntityId, KnowledgePredicate};
 
 use super::*;
+#[cfg(feature = "authorization-review")]
+use crate::authorization_review::{
+    AuthorizationPrincipalPair, AuthorizationReviewPolicy, PeerAuthorizationPrincipal,
+    PrimaryAuthorizationPrincipal,
+};
 #[cfg(feature = "graphql-review")]
 use crate::graphql_review::{MAX_GRAPHQL_ITEM_EVIDENCE_REFERENCES, MAX_GRAPHQL_RESPONSE_BYTES};
 use crate::web_actions::{
@@ -34,6 +39,13 @@ use crate::web_runtime::assessment_passive::{
 use crate::web_runtime::{AssessmentBasis, AssessmentDisposition};
 #[cfg(feature = "reporting")]
 use crate::web_runtime::{BuiltInScanProfile, ASSESSMENT_RUN_REPORT_SCHEMA};
+#[cfg(feature = "authorization-review")]
+use crate::web_runtime::{
+    MAX_AUTHORIZATION_REVIEW_REQUESTS, RESOURCE_AUTHORIZATION_REVIEW_ACTION_ID,
+    RESOURCE_AUTHORIZATION_REVIEW_CAPABILITY_ID,
+};
+#[cfg(feature = "authorization-review")]
+use crate::DecisionActionOrigin;
 use crate::{
     defense::MAX_FINGERPRINT_BODY_SCAN_BYTES,
     http_evidence::{
@@ -89,6 +101,886 @@ async fn default_assessment_does_not_dispatch_native_review_mutations() {
             !is_native_review_action(evidence.case().action_id()),
         StandardWebDecisionRuntimeTurn::Planning(_) => true,
     }));
+}
+
+#[cfg(feature = "authorization-review")]
+const AUTHORIZATION_PRIMARY_SECRET: &str = "PRIMARY-AUTHORIZATION-MUST-NOT-LEAK-7C3A19";
+#[cfg(feature = "authorization-review")]
+const AUTHORIZATION_PEER_SECRET: &str = "PEER-AUTHORIZATION-MUST-NOT-LEAK-82FD44";
+#[cfg(feature = "authorization-review")]
+const AUTHORIZATION_QUERY_SECRET: &str = "RESOURCE-QUERY-MUST-NOT-LEAK-51A9BC";
+#[cfg(feature = "authorization-review")]
+const AUTHORIZATION_RESOURCE_HANDLE_SECRET: &str = "PRIVATE-RESOURCE-HANDLE-MUST-NOT-LEAK-346E2A";
+
+#[cfg(feature = "authorization-review")]
+#[derive(Clone, Copy)]
+enum AuthorizationFixtureMode {
+    Equivalent,
+    PeerDenied,
+    PeerNotFound,
+    PrimaryInvalid,
+    PrimaryUnstable,
+    PeerUnstable,
+    FieldShapeOnly,
+    ReplayMismatch,
+    HtmlChallenge,
+    Redirect,
+    MalformedJson,
+    OversizedJson,
+    AggregateBeyondFingerprintScan,
+    TransportClose,
+    RateLimited,
+    ReplayRateLimited,
+}
+
+#[cfg(feature = "authorization-review")]
+fn authorization_policy(origin: &Url) -> AuthorizationReviewPolicy {
+    AuthorizationReviewPolicy::parse_toml(
+        origin,
+        format!(
+            r#"schema = "security.authorization-review-policy/v1"
+resource = "/api/account?opaque={AUTHORIZATION_QUERY_SECRET}"
+resource_handle = "{AUTHORIZATION_RESOURCE_HANDLE_SECRET}"
+expectation = "primary-only"
+method = "GET"
+[comparison]
+selected_paths = ["/data/account"]
+ignored_paths = ["/data/account/updated_at"]
+unordered_array_paths = []
+max_diff_paths = 8
+"#
+        )
+        .as_bytes(),
+    )
+    .unwrap()
+}
+
+#[cfg(feature = "authorization-review")]
+fn authorization_principals() -> AuthorizationPrincipalPair {
+    AuthorizationPrincipalPair::new(
+        PrimaryAuthorizationPrincipal::new(format!("Bearer {AUTHORIZATION_PRIMARY_SECRET}"))
+            .unwrap(),
+        PeerAuthorizationPrincipal::new(format!("Bearer {AUTHORIZATION_PEER_SECRET}")).unwrap(),
+    )
+    .unwrap()
+}
+
+#[cfg(feature = "authorization-review")]
+async fn run_authorization_fixture(
+    mode: AuthorizationFixtureMode,
+) -> (WebAssessmentRunReport, Vec<RecordedRequest>) {
+    run_authorization_fixture_with_limits(mode, WebAssessmentLimits::default()).await
+}
+
+#[cfg(feature = "authorization-review")]
+async fn run_authorization_fixture_with_limits(
+    mode: AuthorizationFixtureMode,
+    limits: WebAssessmentLimits,
+) -> (WebAssessmentRunReport, Vec<RecordedRequest>) {
+    run_authorization_fixture_with_options(mode, limits, false).await
+}
+
+#[cfg(feature = "authorization-review")]
+async fn run_authorization_fixture_with_options(
+    mode: AuthorizationFixtureMode,
+    limits: WebAssessmentLimits,
+    defense_enforcement: bool,
+) -> (WebAssessmentRunReport, Vec<RecordedRequest>) {
+    let primary_requests = Arc::new(AtomicUsize::new(0));
+    let primary_count = Arc::clone(&primary_requests);
+    let peer_requests = Arc::new(AtomicUsize::new(0));
+    let peer_count = Arc::clone(&peer_requests);
+    let server = serve(move |request| {
+        if request.path() != "/api/account" {
+            return FixtureReply::Response(FixtureResponse::html("fixture root"));
+        }
+        let authorization = request
+            .headers
+            .get("authorization")
+            .map(String::as_str)
+            .unwrap_or("");
+        if matches!(mode, AuthorizationFixtureMode::TransportClose) {
+            return FixtureReply::CloseWithoutResponse;
+        }
+        let is_peer = authorization.ends_with(AUTHORIZATION_PEER_SECRET);
+        let primary_ordinal = (!is_peer).then(|| primary_count.fetch_add(1, Ordering::SeqCst));
+        let peer_ordinal = is_peer.then(|| peer_count.fetch_add(1, Ordering::SeqCst));
+        if is_peer && matches!(mode, AuthorizationFixtureMode::PeerDenied) {
+            return FixtureReply::Response(FixtureResponse::new(
+                "403 Forbidden",
+                Some("application/json"),
+                r#"{"error":"denied"}"#,
+            ));
+        }
+        if is_peer && matches!(mode, AuthorizationFixtureMode::PeerNotFound) {
+            return FixtureReply::Response(FixtureResponse::new(
+                "404 Not Found",
+                Some("application/json"),
+                r#"{"error":"not found"}"#,
+            ));
+        }
+        if !is_peer && matches!(mode, AuthorizationFixtureMode::PrimaryInvalid) {
+            return FixtureReply::Response(FixtureResponse::new(
+                "401 Unauthorized",
+                Some("application/json"),
+                r#"{"error":"unauthorized"}"#,
+            ));
+        }
+        if is_peer && matches!(mode, AuthorizationFixtureMode::RateLimited) {
+            return FixtureReply::Response(
+                FixtureResponse::new(
+                    "429 Too Many Requests",
+                    Some("application/json"),
+                    r#"{"error":"rate limited"}"#,
+                )
+                .with_header("Retry-After", "60"),
+            );
+        }
+        if !is_peer
+            && primary_ordinal == Some(1)
+            && matches!(mode, AuthorizationFixtureMode::ReplayRateLimited)
+        {
+            return FixtureReply::Response(
+                FixtureResponse::new(
+                    "429 Too Many Requests",
+                    Some("application/json"),
+                    r#"{"error":"rate limited"}"#,
+                )
+                .with_header("Retry-After", "60"),
+            );
+        }
+        if matches!(mode, AuthorizationFixtureMode::HtmlChallenge) {
+            return FixtureReply::Response(FixtureResponse::new(
+                "403 Forbidden",
+                Some("text/html"),
+                "<html><body>checking your browser</body></html>",
+            ));
+        }
+        if matches!(mode, AuthorizationFixtureMode::Redirect) {
+            return FixtureReply::Response(
+                FixtureResponse::new("302 Found", Some("text/plain"), "redirect")
+                    .with_header("Location", "/elsewhere"),
+            );
+        }
+        if matches!(mode, AuthorizationFixtureMode::MalformedJson) {
+            return FixtureReply::Response(FixtureResponse::new(
+                "200 OK",
+                Some("application/json"),
+                "{not-json",
+            ));
+        }
+        let account = if (!is_peer
+            && matches!(mode, AuthorizationFixtureMode::PrimaryUnstable)
+            && primary_ordinal == Some(1))
+            || (is_peer
+                && matches!(mode, AuthorizationFixtureMode::PeerUnstable)
+                && peer_ordinal == Some(1))
+            || (is_peer
+            && (matches!(mode, AuthorizationFixtureMode::FieldShapeOnly)
+                || (matches!(mode, AuthorizationFixtureMode::ReplayMismatch)
+                    && peer_ordinal == Some(1))))
+        {
+            "43"
+        } else {
+            "42"
+        };
+        let padding = match mode {
+            AuthorizationFixtureMode::OversizedJson => "x".repeat(256),
+            AuthorizationFixtureMode::AggregateBeyondFingerprintScan => {
+                "x".repeat(MAX_FINGERPRINT_BODY_SCAN_BYTES / 2 + 64)
+            },
+            _ => String::new(),
+        };
+        let response = FixtureResponse::new(
+            "200 OK",
+            Some("application/json"),
+            format!(
+                r#"{{"data":{{"account":{{"id":"{account}","name":"safe fixture","padding":"{padding}","updated_at":"volatile"}}}}}}"#
+            ),
+        );
+        let response = if matches!(mode, AuthorizationFixtureMode::Equivalent)
+            && !is_peer
+            && primary_ordinal == Some(0)
+        {
+            response.with_header("Set-Cookie", "must-not-replay=secret; HttpOnly")
+        } else {
+            response
+        };
+        FixtureReply::Response(response)
+    })
+    .await;
+    let policy = authorization_policy(&server.origin);
+    let mut builder = WebAssessmentRuntime::builder(server.url("/"))
+        .limits(limits)
+        .with_resource_authorization_review(policy, authorization_principals());
+    if defense_enforcement {
+        builder = builder.enable_defense_enforcement();
+    }
+    let mut runtime = builder.build().unwrap();
+    let report = runtime.analyze().await.unwrap();
+    (report, server.requests().await)
+}
+
+#[cfg(feature = "authorization-review")]
+#[tokio::test]
+async fn resource_authorization_positive_is_four_ordered_gets_one_active_and_one_review_item() {
+    let (report, requests) = run_authorization_fixture(AuthorizationFixtureMode::Equivalent).await;
+    assert_report_reconciles(&report);
+    assert_eq!(report.completion(), &WebAssessmentCompletion::Complete);
+    let resource_requests = requests
+        .iter()
+        .filter(|request| request.path() == "/api/account")
+        .collect::<Vec<_>>();
+    assert_eq!(resource_requests.len(), MAX_AUTHORIZATION_REVIEW_REQUESTS);
+    assert!(resource_requests.iter().all(|request| {
+        request.method == "GET"
+            && request.body().is_empty()
+            && request.headers.get("accept").map(String::as_str) == Some("application/json")
+            && request.target.contains(AUTHORIZATION_QUERY_SECRET)
+    }));
+    let primary = format!("Bearer {AUTHORIZATION_PRIMARY_SECRET}");
+    let peer = format!("Bearer {AUTHORIZATION_PEER_SECRET}");
+    assert_eq!(
+        resource_requests
+            .iter()
+            .map(|request| request.headers["authorization"].as_str())
+            .collect::<Vec<_>>(),
+        [
+            primary.as_str(),
+            peer.as_str(),
+            primary.as_str(),
+            peer.as_str()
+        ]
+    );
+    let principal_neutral_headers = resource_requests
+        .iter()
+        .map(|request| {
+            let mut headers = request.headers.clone();
+            assert!(headers.remove("authorization").is_some());
+            for forbidden in [
+                "cookie",
+                "origin",
+                "x-forwarded-for",
+                "x-real-ip",
+                "x-http-method-override",
+            ] {
+                assert!(!headers.contains_key(forbidden));
+            }
+            headers
+        })
+        .collect::<Vec<_>>();
+    assert!(principal_neutral_headers
+        .windows(2)
+        .all(|pair| pair[0] == pair[1]));
+    assert_eq!(report.usage().total_requests(), 5);
+    assert_eq!(report.usage().active_verifications(), 1);
+    let authorization_dispatches = report
+        .transport()
+        .receipts()
+        .iter()
+        .filter(|receipt| receipt.action_id() == RESOURCE_AUTHORIZATION_REVIEW_ACTION_ID)
+        .map(|receipt| (receipt.stage(), receipt.origin()))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        authorization_dispatches,
+        [
+            (
+                DecisionExecutionStage::Passive,
+                Some(DecisionActionOrigin::Planned),
+            ),
+            (
+                DecisionExecutionStage::Passive,
+                Some(DecisionActionOrigin::Planned),
+            ),
+            (DecisionExecutionStage::Active, None),
+            (
+                DecisionExecutionStage::Passive,
+                Some(DecisionActionOrigin::Planned),
+            ),
+        ]
+    );
+    let audit = report.authorization_review_audit().unwrap();
+    assert_eq!(audit.request_count(), 4);
+    assert_eq!(
+        audit.outcome(),
+        crate::authorization_review::AuthorizationReviewOutcome::StableCrossPrincipalEquivalence
+    );
+    assert!(audit.item_projected());
+    let items = report
+        .assessment_items()
+        .iter()
+        .filter(|item| item.capability_id() == RESOURCE_AUTHORIZATION_REVIEW_CAPABILITY_ID)
+        .collect::<Vec<_>>();
+    assert_eq!(items.len(), 1);
+    assert_eq!(
+        items[0].title(),
+        "Unexpected cross-principal resource equivalence observed"
+    );
+    assert_eq!(items[0].disposition(), AssessmentDisposition::NeedsReview);
+    assert!(matches!(items[0].basis(), AssessmentBasis::Differential(_)));
+    assert_eq!(items[0].severity(), None);
+    let rendered = format!(
+        "{report:?}{:?}{:?}",
+        report.assessment_items(),
+        report.transport()
+    );
+    assert_no_secret(
+        &rendered,
+        &[
+            AUTHORIZATION_PRIMARY_SECRET,
+            AUTHORIZATION_PEER_SECRET,
+            AUTHORIZATION_QUERY_SECRET,
+            AUTHORIZATION_RESOURCE_HANDLE_SECRET,
+        ],
+    );
+}
+
+#[cfg(feature = "authorization-review")]
+#[tokio::test]
+async fn resource_authorization_item_identity_is_independent_of_credential_bytes() {
+    let server = serve(|request| {
+        if request.path() == "/api/account" {
+            FixtureReply::Response(FixtureResponse::new(
+                "200 OK",
+                Some("application/json"),
+                r#"{"data":{"account":{"id":"42","name":"stable"}}}"#,
+            ))
+        } else {
+            FixtureReply::Response(FixtureResponse::html("fixture root"))
+        }
+    })
+    .await;
+    let first_pair = authorization_principals();
+    let second_pair = AuthorizationPrincipalPair::new(
+        PrimaryAuthorizationPrincipal::new("Bearer ALTERNATE-PRIMARY-71D9").unwrap(),
+        PeerAuthorizationPrincipal::new("Bearer ALTERNATE-PEER-4A82").unwrap(),
+    )
+    .unwrap();
+    let mut fingerprints = Vec::new();
+    for principals in [first_pair, second_pair] {
+        let mut runtime = WebAssessmentRuntime::builder(server.url("/"))
+            .with_resource_authorization_review(authorization_policy(&server.origin), principals)
+            .build()
+            .unwrap();
+        let report = runtime.analyze().await.unwrap();
+        let item = report
+            .assessment_items()
+            .iter()
+            .find(|item| item.capability_id() == RESOURCE_AUTHORIZATION_REVIEW_CAPABILITY_ID)
+            .unwrap();
+        fingerprints.push(item.fingerprint().to_owned());
+    }
+    assert_eq!(fingerprints.len(), 2);
+    assert_eq!(fingerprints[0], fingerprints[1]);
+}
+
+#[cfg(feature = "authorization-review")]
+#[tokio::test]
+async fn authorization_action_has_one_exact_cycle_beyond_the_full_root_review_set() {
+    let server = serve(|request| {
+        if request.path() == "/api/account" {
+            FixtureReply::Response(FixtureResponse::new(
+                "200 OK",
+                Some("application/json"),
+                r#"{"data":{"account":{"id":"42","name":"stable"}}}"#,
+            ))
+        } else {
+            FixtureReply::Response(FixtureResponse::html("bounded fixture"))
+        }
+    })
+    .await;
+    let mut runtime = WebAssessmentRuntime::builder(server.url("/?return_to=host-value"))
+        .enable_low_risk_differential_review()
+        .with_resource_authorization_review(
+            authorization_policy(&server.origin),
+            authorization_principals(),
+        )
+        .build()
+        .unwrap();
+    let report = runtime.analyze().await.unwrap();
+    let requests = server.requests().await;
+    assert_eq!(
+        requests
+            .iter()
+            .filter(|request| request.path() == "/api/account")
+            .count(),
+        4
+    );
+    assert_eq!(
+        report.authorization_review_audit().unwrap().request_count(),
+        4
+    );
+    assert!(report
+        .assessment_items()
+        .iter()
+        .any(|item| item.capability_id() == RESOURCE_AUTHORIZATION_REVIEW_CAPABILITY_ID));
+    assert!(!report
+        .completion()
+        .reasons()
+        .contains(&WebAssessmentIncompleteReason::ActionCycleLimit));
+    assert!(!report
+        .completion()
+        .reasons()
+        .contains(&WebAssessmentIncompleteReason::DifferentialReviewIncomplete));
+}
+
+#[cfg(all(feature = "authorization-review", feature = "reporting"))]
+#[tokio::test]
+async fn resource_authorization_audit_is_present_and_redacted_in_every_report_format() {
+    let (report, _) = run_authorization_fixture(AuthorizationFixtureMode::Equivalent).await;
+    let composed =
+        ReportGenerator::compose_assessment(report, ScanProfileV1::web_review().unwrap()).unwrap();
+    for format in [
+        ReportFormat::Json,
+        ReportFormat::Csv,
+        ReportFormat::Html,
+        ReportFormat::Markdown,
+    ] {
+        let rendered = ReportGenerator::generate_assessment(&composed, format).unwrap();
+        assert!(rendered.contains("stable_cross_principal_equivalence"));
+        assert!(rendered.contains("authorization-policy-sha256:"));
+        for forbidden_claim in [
+            "IDOR Confirmed",
+            "BOLA Confirmed",
+            "Authorization Bypass Confirmed",
+            "Broken Access Control Confirmed",
+        ] {
+            assert!(!rendered.contains(forbidden_claim));
+        }
+        assert_no_secret(
+            &rendered,
+            &[
+                AUTHORIZATION_PRIMARY_SECRET,
+                AUTHORIZATION_PEER_SECRET,
+                AUTHORIZATION_QUERY_SECRET,
+                AUTHORIZATION_RESOURCE_HANDLE_SECRET,
+                "/data/account",
+            ],
+        );
+    }
+}
+
+#[cfg(feature = "authorization-review")]
+#[tokio::test]
+async fn resource_authorization_negative_relationships_never_project_an_item() {
+    for (mode, expected, expected_requests) in [
+        (
+            AuthorizationFixtureMode::PeerDenied,
+            crate::authorization_review::AuthorizationReviewOutcome::PeerDenied,
+            4,
+        ),
+        (
+            AuthorizationFixtureMode::PeerNotFound,
+            crate::authorization_review::AuthorizationReviewOutcome::PeerDenied,
+            4,
+        ),
+        (
+            AuthorizationFixtureMode::PrimaryInvalid,
+            crate::authorization_review::AuthorizationReviewOutcome::PrimaryBaselineInvalid,
+            4,
+        ),
+        (
+            AuthorizationFixtureMode::PrimaryUnstable,
+            crate::authorization_review::AuthorizationReviewOutcome::PrimaryUnstable,
+            4,
+        ),
+        (
+            AuthorizationFixtureMode::PeerUnstable,
+            crate::authorization_review::AuthorizationReviewOutcome::PeerUnstable,
+            4,
+        ),
+        (
+            AuthorizationFixtureMode::FieldShapeOnly,
+            crate::authorization_review::AuthorizationReviewOutcome::CrossFieldsEquivalentOnly,
+            4,
+        ),
+        (
+            AuthorizationFixtureMode::ReplayMismatch,
+            crate::authorization_review::AuthorizationReviewOutcome::PeerUnstable,
+            4,
+        ),
+        (
+            AuthorizationFixtureMode::HtmlChallenge,
+            crate::authorization_review::AuthorizationReviewOutcome::DefensiveInterference,
+            1,
+        ),
+        (
+            AuthorizationFixtureMode::Redirect,
+            crate::authorization_review::AuthorizationReviewOutcome::RedirectObserved,
+            1,
+        ),
+        (
+            AuthorizationFixtureMode::MalformedJson,
+            crate::authorization_review::AuthorizationReviewOutcome::MalformedJson,
+            1,
+        ),
+        (
+            AuthorizationFixtureMode::RateLimited,
+            crate::authorization_review::AuthorizationReviewOutcome::RateLimited,
+            2,
+        ),
+    ] {
+        let (report, requests) = run_authorization_fixture(mode).await;
+        assert_eq!(
+            report.authorization_review_audit().unwrap().outcome(),
+            expected
+        );
+        assert!(!report
+            .authorization_review_audit()
+            .unwrap()
+            .item_projected());
+        assert!(report
+            .assessment_items()
+            .iter()
+            .all(|item| item.capability_id() != RESOURCE_AUTHORIZATION_REVIEW_CAPABILITY_ID));
+        assert_eq!(
+            requests
+                .iter()
+                .filter(|request| request.path() == "/api/account")
+                .count(),
+            expected_requests
+        );
+        assert_eq!(
+            usize::from(report.authorization_review_audit().unwrap().request_count()),
+            expected_requests
+        );
+    }
+}
+
+#[cfg(feature = "authorization-review")]
+#[tokio::test]
+async fn peer_denial_status_is_not_reclassified_as_defense_under_either_policy_mode() {
+    for enforced in [false, true] {
+        for mode in [
+            AuthorizationFixtureMode::PeerDenied,
+            AuthorizationFixtureMode::PeerNotFound,
+        ] {
+            let (report, requests) = run_authorization_fixture_with_options(
+                mode,
+                WebAssessmentLimits::default(),
+                enforced,
+            )
+            .await;
+            assert_eq!(
+                report.authorization_review_audit().unwrap().outcome(),
+                crate::authorization_review::AuthorizationReviewOutcome::PeerDenied
+            );
+            assert_eq!(
+                requests
+                    .iter()
+                    .filter(|request| request.path() == "/api/account")
+                    .count(),
+                4
+            );
+            assert!(report
+                .assessment_items()
+                .iter()
+                .all(|item| item.capability_id() != RESOURCE_AUTHORIZATION_REVIEW_CAPABILITY_ID));
+        }
+    }
+}
+
+#[cfg(feature = "authorization-review")]
+#[tokio::test]
+async fn two_response_phase_bytes_may_exceed_single_fingerprint_scan_limit() {
+    let (report, requests) =
+        run_authorization_fixture(AuthorizationFixtureMode::AggregateBeyondFingerprintScan).await;
+    assert_report_reconciles(&report);
+    let audit = report.authorization_review_audit().unwrap();
+    assert_eq!(
+        audit.outcome(),
+        crate::authorization_review::AuthorizationReviewOutcome::StableCrossPrincipalEquivalence
+    );
+    assert_eq!(audit.request_count(), 4);
+    assert_eq!(
+        requests
+            .iter()
+            .filter(|request| request.path() == "/api/account")
+            .count(),
+        4
+    );
+}
+
+#[cfg(feature = "authorization-review")]
+#[tokio::test]
+async fn replay_phase_charges_one_active_verification_when_its_first_leg_starts() {
+    let (report, requests) =
+        run_authorization_fixture(AuthorizationFixtureMode::ReplayRateLimited).await;
+    let audit = report.authorization_review_audit().unwrap();
+    assert_eq!(
+        audit.outcome(),
+        crate::authorization_review::AuthorizationReviewOutcome::RateLimited
+    );
+    assert_eq!(audit.request_count(), 3);
+    assert_eq!(report.usage().active_verifications(), 1);
+    assert_eq!(
+        requests
+            .iter()
+            .filter(|request| request.path() == "/api/account")
+            .count(),
+        3
+    );
+}
+
+#[cfg(all(feature = "authorization-review", feature = "graphql-review"))]
+#[tokio::test]
+async fn authorization_terminal_defense_stops_replay_and_later_graphql_work() {
+    for rate_limited in [false, true] {
+        let server = serve(move |request| {
+            if request.path() == "/api/account" {
+                let is_peer = request
+                    .headers
+                    .get("authorization")
+                    .is_some_and(|value| value.ends_with(AUTHORIZATION_PEER_SECRET));
+                if rate_limited && !is_peer {
+                    return FixtureReply::Response(FixtureResponse::new(
+                        "200 OK",
+                        Some("application/json"),
+                        r#"{"data":{"account":{"id":"42"}}}"#,
+                    ));
+                }
+                return if rate_limited {
+                    FixtureReply::Response(
+                        FixtureResponse::new(
+                            "429 Too Many Requests",
+                            Some("application/json"),
+                            r#"{"error":"rate limited"}"#,
+                        )
+                        .with_header("Retry-After", "60"),
+                    )
+                } else {
+                    FixtureReply::Response(FixtureResponse::new(
+                        "403 Forbidden",
+                        Some("text/html"),
+                        "<html><body>checking your browser</body></html>",
+                    ))
+                };
+            }
+            if request.method == "POST" {
+                return graphql_fixture_reply(GraphqlFixtureMode::Available, request);
+            }
+            FixtureReply::Response(FixtureResponse::html("fixture root"))
+        })
+        .await;
+        let mut runtime = WebAssessmentRuntime::builder(server.url("/"))
+            .enable_low_risk_differential_review()
+            .with_resource_authorization_review(
+                authorization_policy(&server.origin),
+                authorization_principals(),
+            )
+            .enable_graphql_review()
+            .build()
+            .unwrap();
+        let report = runtime.analyze().await.unwrap();
+        let requests = server.requests().await;
+        let audit = report.authorization_review_audit().unwrap();
+        assert_eq!(
+            audit.outcome(),
+            if rate_limited {
+                crate::authorization_review::AuthorizationReviewOutcome::RateLimited
+            } else {
+                crate::authorization_review::AuthorizationReviewOutcome::DefensiveInterference
+            }
+        );
+        assert_eq!(audit.request_count(), if rate_limited { 2 } else { 1 });
+        assert!(graphql_posts(&requests).is_empty());
+        assert!(report.subjects()[0].turns().iter().any(|turn| matches!(
+            turn,
+            StandardWebDecisionRuntimeTurn::Outcome { evidence, .. }
+                if is_native_review_action(evidence.case().action_id())
+                    && evidence.case().action_id()
+                        != RESOURCE_AUTHORIZATION_REVIEW_ACTION_ID
+        )));
+        assert!(!report
+            .completion()
+            .reasons()
+            .contains(&WebAssessmentIncompleteReason::DifferentialReviewIncomplete));
+        assert!(!report
+            .completion()
+            .reasons()
+            .contains(&WebAssessmentIncompleteReason::SubjectExecutionIncomplete));
+        assert!(report
+            .completion()
+            .reasons()
+            .contains(&WebAssessmentIncompleteReason::AuthorizationReviewIncomplete));
+        assert!(report
+            .assessment_items()
+            .iter()
+            .all(|item| item.capability_id() != RESOURCE_AUTHORIZATION_REVIEW_CAPABILITY_ID));
+    }
+}
+
+#[cfg(feature = "authorization-review")]
+#[tokio::test]
+async fn resource_authorization_truncation_is_incomplete_and_projects_no_item() {
+    let limits = WebAssessmentLimits::default()
+        .with_max_response_body_bytes(64)
+        .unwrap();
+    let (report, requests) =
+        run_authorization_fixture_with_limits(AuthorizationFixtureMode::OversizedJson, limits)
+            .await;
+    let audit = report.authorization_review_audit().unwrap();
+    assert_eq!(
+        audit.outcome(),
+        crate::authorization_review::AuthorizationReviewOutcome::Truncated
+    );
+    assert_eq!(audit.request_count(), 1);
+    assert!(!audit.item_projected());
+    assert!(report
+        .completion()
+        .reasons()
+        .contains(&WebAssessmentIncompleteReason::AuthorizationReviewIncomplete));
+    assert!(report
+        .assessment_items()
+        .iter()
+        .all(|item| item.capability_id() != RESOURCE_AUTHORIZATION_REVIEW_CAPABILITY_ID));
+    assert_eq!(
+        requests
+            .iter()
+            .filter(|request| request.path() == "/api/account")
+            .count(),
+        1
+    );
+}
+
+#[cfg(feature = "authorization-review")]
+#[tokio::test]
+async fn resource_authorization_budget_stop_reports_actual_dispatched_legs() {
+    let limits = WebAssessmentLimits::default()
+        .with_max_total_requests(3)
+        .unwrap();
+    let (report, requests) =
+        run_authorization_fixture_with_limits(AuthorizationFixtureMode::Equivalent, limits).await;
+    let audit = report.authorization_review_audit().unwrap();
+    assert_eq!(
+        audit.outcome(),
+        crate::authorization_review::AuthorizationReviewOutcome::BudgetExhausted
+    );
+    assert_eq!(audit.request_count(), 2);
+    assert!(!audit.item_projected());
+    assert_eq!(report.usage().total_requests(), 3);
+    assert!(report
+        .completion()
+        .reasons()
+        .contains(&WebAssessmentIncompleteReason::TotalRequestLimit));
+    assert!(report
+        .completion()
+        .reasons()
+        .contains(&WebAssessmentIncompleteReason::AuthorizationReviewIncomplete));
+    assert_eq!(
+        requests
+            .iter()
+            .filter(|request| request.path() == "/api/account")
+            .count(),
+        2
+    );
+}
+
+#[cfg(feature = "authorization-review")]
+#[tokio::test]
+async fn resource_authorization_transport_stop_keeps_the_dispatched_request_in_audit() {
+    let (report, requests) =
+        run_authorization_fixture(AuthorizationFixtureMode::TransportClose).await;
+    let audit = report.authorization_review_audit().unwrap();
+    assert_eq!(
+        audit.outcome(),
+        crate::authorization_review::AuthorizationReviewOutcome::Incomplete
+    );
+    assert_eq!(audit.request_count(), 1);
+    assert!(!audit.item_projected());
+    assert!(report
+        .completion()
+        .reasons()
+        .contains(&WebAssessmentIncompleteReason::AuthorizationReviewIncomplete));
+    assert_eq!(
+        requests
+            .iter()
+            .filter(|request| request.path() == "/api/account")
+            .count(),
+        1
+    );
+    assert_no_secret(
+        &format!("{report:?}{audit:?}"),
+        &[
+            AUTHORIZATION_PRIMARY_SECRET,
+            AUTHORIZATION_PEER_SECRET,
+            AUTHORIZATION_QUERY_SECRET,
+            AUTHORIZATION_RESOURCE_HANDLE_SECRET,
+        ],
+    );
+}
+
+#[cfg(feature = "authorization-review")]
+#[tokio::test]
+async fn resource_authorization_stalled_leg_honors_shared_cancellation() {
+    let authorization_started = Arc::new(Notify::new());
+    let observed = Arc::clone(&authorization_started);
+    let server = serve(move |request| {
+        if request.path() == "/api/account" {
+            observed.notify_one();
+            FixtureReply::Stall
+        } else {
+            FixtureReply::Response(FixtureResponse::html("fixture root"))
+        }
+    })
+    .await;
+    let cancellation = CancellationToken::new();
+    let cancel = cancellation.clone();
+    let canceller = tokio::spawn(async move {
+        authorization_started.notified().await;
+        cancel.cancel();
+    });
+    let policy = authorization_policy(&server.origin);
+    let mut runtime = WebAssessmentRuntime::builder(server.url("/"))
+        .cancellation_token(cancellation)
+        .with_resource_authorization_review(policy, authorization_principals())
+        .build()
+        .unwrap();
+    let report = runtime.analyze().await.unwrap();
+    canceller.await.unwrap();
+
+    let audit = report.authorization_review_audit().unwrap();
+    assert_eq!(
+        audit.outcome(),
+        crate::authorization_review::AuthorizationReviewOutcome::Cancelled
+    );
+    assert_eq!(audit.request_count(), 1);
+    assert!(!audit.item_projected());
+    assert_eq!(server.hit_count("/api/account").await, 1);
+    assert_eq!(report.usage().active_verifications(), 0);
+    assert!(report
+        .completion()
+        .reasons()
+        .contains(&WebAssessmentIncompleteReason::HostCancellation));
+    assert!(report
+        .completion()
+        .reasons()
+        .contains(&WebAssessmentIncompleteReason::AuthorizationReviewIncomplete));
+}
+
+#[cfg(feature = "authorization-review")]
+#[test]
+fn resource_authorization_rejects_non_loopback_cleartext_transport() {
+    for raw_target in [
+        "http://example.test/",
+        "http://localhost/",
+        "http://192.0.2.1/",
+    ] {
+        let target = Url::parse(raw_target).unwrap();
+        let policy = authorization_policy(&target);
+        let error = match WebAssessmentRuntime::builder(target)
+            .with_resource_authorization_review(policy, authorization_principals())
+            .build()
+        {
+            Err(error) => error,
+            Ok(_) => panic!("non-loopback cleartext authorization review must fail closed"),
+        };
+        assert!(matches!(
+            error,
+            WebAssessmentRuntimeError::InsecureAuthorizationReviewTransport
+        ));
+        assert!(!format!("{error:?}").contains(raw_target));
+    }
 }
 
 #[cfg(feature = "graphql-review")]

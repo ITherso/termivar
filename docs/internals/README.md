@@ -87,7 +87,7 @@ Bounded manifest bytes --> venom-exploit validation --> sealed metadata catalog
 - [Scanner conformance corpus](scanner-conformance-corpus.md): strict repository-only sanitized request/response cases, deterministic validation, and the boundary between contract checks and empirical accuracy.
 - [API predicate vocabulary](api-predicates.md): canonical and normalized HTTP/API predicates plus atomic evidence/resource-scope observation bundles.
 - [API visibility evidence](api-evidence.md): bounded JSON comparison, broker-backed authorization-context pairs, atomic ingestion receipts, and resource-scoped review projections.
-- [Authorization differential review foundation](authorization-differential-review.md): strict primary-only policy, move-only principal roles, four raw-value-free JSON views, replay stability, and transport-free outcome classification.
+- [Authorization differential review](authorization-differential-review.md): strict primary-only policy, move-only principal roles, four raw-value-free JSON views, replay stability, and the optional single-runtime resource integration.
 - [API reasoning](api-reasoning.md): deterministic JSON/GraphQL fingerprinting, capped API evidence contributions, and review-only visibility-boundary hypotheses.
 - [GraphQL surface review](graphql-review.md): explicit anonymous opt-in, deterministic one-endpoint selection, bounded three-request introspection/replay, and informational claim authority.
 - [Standard web decision profile](web-decision.md): one-shot composition, installation transaction, and layer boundaries.

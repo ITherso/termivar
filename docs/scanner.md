@@ -165,6 +165,39 @@ slots: seven for the initial native review pass, one for the assessment-wide
 context-selected XSS structural family, and two for this optional pair; any
 lower host-selected ceiling still fails closed.
 
+### Optional resource authorization review
+
+Resource authorization review requires the non-default scanner/CLI
+`authorization-review` feature, explicit `--profile web-review`, one
+`--authorization-review-policy` file, and exactly one primary and one peer
+credential source. Each role accepts an environment, regular-file, or stdin
+source through the existing bounded secret loader; no raw credential-value
+argument exists, and two stdin sources or a concurrent root authorization
+review are rejected before network I/O.
+
+The strict `security.authorization-review-policy/v1` contract selects one
+exact-origin bodyless `GET` JSON resource and at least one non-root RFC 6901
+path under the sole executable `primary-only` expectation. The capability is
+one native action inside `WebAssessmentRuntime`, not a second scanner. It uses
+the parent exact-origin authority, redirect-disabled broker, `RuntimeBudget`,
+cancellation, deadline, evidence registry, completeness lifecycle, and final
+report for four ordered requests: primary candidate, peer candidate, primary
+replay, and peer replay. The four legs consume one logical active verification.
+That lease is charged when the primary replay begins; the peer replay is
+passive-accounted inside the same active decision phase.
+
+Positive evidence requires stable successful primary and peer replays plus
+equivalence in `Status`, `Fields`, and value-sensitive `Resources` for both
+cross-principal rounds. Status or field shape alone is insufficient. A denied,
+different, unstable, missing-path, malformed, truncated, redirected,
+rate-limited, or defensively challenged response produces no positive item and
+no claim that access control is secure. At most one
+`authorization.resource-cross-principal-equivalence@1` item may be projected,
+with `NeedsReview` disposition and `KnowledgeOnly` authority. The review never
+mutates or enumerates identifiers, sends a write method, carries cookies, or
+confirms IDOR, BOLA, or authorization bypass. See
+[Authorization differential review](internals/authorization-differential-review.md).
+
 Stable item identity preserves `authorized-root@1` for the exact origin root
 and assigns eligible discovered exact-origin subjects a deterministic opaque
 `discovered-resource@1` identity. Its digest preimage uses only the stable
@@ -327,6 +360,7 @@ multi-node contract. See [Distributed coordination](distributed.md).
 | `core` | Transport-neutral evidence, knowledge, planning, and verification contracts | Preview |
 | `scanning` | Deterministic evidence, reasoning, planning, execution, verification, and bounded runtime | Preview |
 | `normalization-resilience` | Non-default, explicit `web-review` normalization child for one typed HTML transform with candidate/replay semantic proof; maximum `NeedsReview` / `KnowledgeOnly` | Preview |
+| `authorization-review` | Non-default, explicit `web-review` four-view comparison of one operator-selected exact-origin JSON resource; maximum `NeedsReview` / `KnowledgeOnly` | Preview |
 | `legacy-scanner` | Historical ordered runner, context, phases, and Scanner SDK; separate bounded discovery and active-verification slices within an otherwise unmetered run | Legacy |
 | `platform-models` | Unwired API/auth/dashboard/persistence/post-exploitation/realtime library models | Experimental |
 | `reporting` | Bounded generic `RunReport` renderer; with `scanning`, also the central typed assessment renderer used by completed CLI `web-review` runs. No renderer-owned I/O, persistence, or verdict generation | Preview |

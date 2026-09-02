@@ -39,11 +39,29 @@ const AUTH_ERROR_VARIANTS: &[&str] = &[
     "ValueTooLarge",
     "InvalidValue",
 ];
-const CLI_AUTH_FIELDS: &[&str] = &["auth_env", "auth_file", "auth_stdin"];
-const CLI_SCAN_FIELDS: &[&str] = &[
+const CLI_AUTH_FIELDS: &[&str] = &[
+    "authorization_review_policy",
     "auth_env",
     "auth_file",
     "auth_stdin",
+    "authz_peer_env",
+    "authz_peer_file",
+    "authz_peer_stdin",
+    "authz_primary_env",
+    "authz_primary_file",
+    "authz_primary_stdin",
+];
+const CLI_SCAN_FIELDS: &[&str] = &[
+    "authorization_review_policy",
+    "auth_env",
+    "auth_file",
+    "auth_stdin",
+    "authz_peer_env",
+    "authz_peer_file",
+    "authz_peer_stdin",
+    "authz_primary_env",
+    "authz_primary_file",
+    "authz_primary_stdin",
     "enforce_defense",
     "explain",
     "format",
@@ -78,7 +96,13 @@ fn protected_type_cross_source_violations(
         (
             workspace_root.join("crates/venom-cli/src"),
             AUTH_INPUT_SOURCE,
-            &["AuthorizationInputSource", "AuthorizationInputError"][..],
+            &[
+                "AuthorizationInputSource",
+                "AuthorizationInputError",
+                "AuthorizationReviewInput",
+                "AuthorizationReviewInputError",
+                "AuthorizationSourceOptions",
+            ][..],
         ),
         (
             workspace_root.join("crates/venom-cli/src"),
@@ -360,10 +384,10 @@ fn inspect_auth_input_contract(source: &str) -> Result<Vec<String>, syn::Error> 
 
     let methods = inherent_methods(&syntax, "AuthorizationInputSource");
     if methods.keys().map(String::as_str).collect::<BTreeSet<_>>()
-        != BTreeSet::from(["load", "select"])
+        != BTreeSet::from(["load", "read_bytes", "select"])
     {
         violations.push(format!(
-            "AuthorizationInputSource method inventory must remain exactly select and consuming load; observed {:?}",
+            "AuthorizationInputSource method inventory must remain exactly select, consuming load, and private consuming byte transfer; observed {:?}",
             methods.keys().collect::<Vec<_>>()
         ));
     }
@@ -477,7 +501,78 @@ fn inspect_auth_input_contract(source: &str) -> Result<Vec<String>, syn::Error> 
         }
     }
 
+    violations.extend(inspect_authorization_review_input_contract(
+        &syntax, &compact,
+    ));
+
     Ok(violations)
+}
+
+fn inspect_authorization_review_input_contract(syntax: &syn::File, compact: &str) -> Vec<String> {
+    let mut violations = Vec::new();
+    for (type_name, methods, debug_marker) in [
+        (
+            "AuthorizationSourceOptions",
+            &["new"][..],
+            "formatter.write_str(\"AuthorizationSourceOptions(<redacted>)\")",
+        ),
+        (
+            "AuthorizationReviewInput",
+            &["load", "select"][..],
+            "formatter.debug_struct(\"AuthorizationReviewInput\").field(\"policy_file\",&\"<redacted>\").field(\"primary\",&\"<redacted>\").field(\"peer\",&\"<redacted>\").finish()",
+        ),
+    ] {
+        let item = syntax.items.iter().find_map(|item| match item {
+            Item::Struct(item) if item.ident == type_name => Some(item),
+            _ => None,
+        });
+        let inherent = inherent_methods(syntax, type_name);
+        let observed_methods = inherent
+            .keys()
+            .map(String::as_str)
+            .collect::<BTreeSet<_>>();
+        if item.is_none_or(|item| !is_pub_crate(&item.vis) || has_derive_attribute(&item.attrs))
+            || observed_methods != methods.iter().copied().collect()
+            || explicit_trait_impls(syntax, type_name) != BTreeSet::from(["Debug".to_owned()])
+            || !compact.contains(debug_marker)
+        {
+            violations.push(format!(
+                "{type_name} must remain underived, crate-private, move-only, and expose only its exact value-free redacted Debug/method surface"
+            ));
+        }
+    }
+    for marker in [
+        "pub(crate)structAuthorizationSourceOptions{environment:Option<OsString>,file:Option<PathBuf>,stdin:bool,}",
+        "pub(crate)structAuthorizationReviewInput{policy_file:PathBuf,primary:AuthorizationInputSource,peer:AuthorizationInputSource,}",
+        "letboth_stdin=primary.stdin&&peer.stdin;",
+        "ifboth_stdin{returnErr(AuthorizationReviewInputError::AmbiguousStdin);}",
+        "read_bounded_regular_file(self.policy_file,HARD_MAX_AUTHORIZATION_REVIEW_POLICY_BYTES)",
+        "AuthorizationReviewPolicy::parse_toml(target,&policy_source)",
+        "self.primary.read_bytes()",
+        "self.peer.read_bytes()",
+        "PrimaryAuthorizationPrincipal::new(bytes)",
+        "PeerAuthorizationPrincipal::new(bytes)",
+        "AuthorizationPrincipalPair::new(primary,peer)",
+    ] {
+        if !compact.contains(marker) {
+            violations.push(format!(
+                "authorization-review CLI must reuse the sole bounded credential loader and preserve bounded policy parsing, stdin isolation, and distinct role construction: missing `{marker}`"
+            ));
+        }
+    }
+    for secret_shape in [
+        "authorization:Option<String>",
+        "credential:String",
+        "token:String",
+        "cookie:String",
+    ] {
+        if compact.contains(secret_shape) {
+            violations.push(format!(
+                "authorization-review CLI must not add a raw credential or cookie field `{secret_shape}`"
+            ));
+        }
+    }
+    violations
 }
 
 fn inspect_cli_auth_surface(source: &str) -> Result<Vec<String>, syn::Error> {
@@ -531,6 +626,13 @@ fn inspect_cli_auth_surface(source: &str) -> Result<Vec<String>, syn::Error> {
         ("enforce_defense", "bool", None),
         ("graphql_review", "bool", None),
         ("normalization_resilience", "bool", None),
+        ("authorization_review_policy", "Option", Some("PathBuf")),
+        ("authz_primary_env", "Option", Some("OsString")),
+        ("authz_primary_file", "Option", Some("PathBuf")),
+        ("authz_primary_stdin", "bool", None),
+        ("authz_peer_env", "Option", Some("OsString")),
+        ("authz_peer_file", "Option", Some("PathBuf")),
+        ("authz_peer_stdin", "bool", None),
         ("report_format", "Option", Some("CliReportFormat")),
         ("report_output", "Option", Some("PathBuf")),
     ]
@@ -560,7 +662,7 @@ fn inspect_cli_auth_surface(source: &str) -> Result<Vec<String>, syn::Error> {
             .collect()
     {
         violations.push(format!(
-            "CLI Scan may expose only --auth-env, --auth-file, and --auth-stdin authorization inputs; observed {observed_auth_fields:?}"
+            "CLI Scan may expose only the exact root and resource-review out-of-band authorization inputs; observed {observed_auth_fields:?}"
         ));
     }
     for (name, expected_type, expected_arg) in [
@@ -579,6 +681,41 @@ fn inspect_cli_auth_surface(source: &str) -> Result<Vec<String>, syn::Error> {
             ("bool", None),
             "long,requires=\"profile\",conflicts_with_all=[\"auth_env\",\"auth_file\"]",
         ),
+        (
+            "authorization_review_policy",
+            ("Option", Some("PathBuf")),
+            "long,value_name=\"FILE\",requires=\"profile\",conflicts_with_all=[\"auth_env\",\"auth_file\",\"auth_stdin\"]",
+        ),
+        (
+            "authz_primary_env",
+            ("Option", Some("OsString")),
+            "long,value_name=\"ENV_VAR\",requires=\"authorization_review_policy\",conflicts_with_all=[\"authz_primary_file\",\"authz_primary_stdin\"]",
+        ),
+        (
+            "authz_primary_file",
+            ("Option", Some("PathBuf")),
+            "long,value_name=\"FILE\",requires=\"authorization_review_policy\",conflicts_with_all=[\"authz_primary_env\",\"authz_primary_stdin\"]",
+        ),
+        (
+            "authz_primary_stdin",
+            ("bool", None),
+            "long,requires=\"authorization_review_policy\",conflicts_with_all=[\"authz_primary_env\",\"authz_primary_file\",\"authz_peer_stdin\"]",
+        ),
+        (
+            "authz_peer_env",
+            ("Option", Some("OsString")),
+            "long,value_name=\"ENV_VAR\",requires=\"authorization_review_policy\",conflicts_with_all=[\"authz_peer_file\",\"authz_peer_stdin\"]",
+        ),
+        (
+            "authz_peer_file",
+            ("Option", Some("PathBuf")),
+            "long,value_name=\"FILE\",requires=\"authorization_review_policy\",conflicts_with_all=[\"authz_peer_env\",\"authz_peer_stdin\"]",
+        ),
+        (
+            "authz_peer_stdin",
+            ("bool", None),
+            "long,requires=\"authorization_review_policy\",conflicts_with_all=[\"authz_peer_env\",\"authz_peer_file\",\"authz_primary_stdin\"]",
+        ),
     ] {
         let exact = fields.get(name).is_some_and(|field| {
             let type_matches = match expected_type {
@@ -590,6 +727,24 @@ fn inspect_cli_auth_surface(source: &str) -> Result<Vec<String>, syn::Error> {
         if !exact {
             violations.push(format!(
                 "CLI `{name}` must retain its exact out-of-band type, profile requirement, and pairwise source conflicts"
+            ));
+        }
+    }
+    for name in [
+        "authorization_review_policy",
+        "authz_primary_env",
+        "authz_primary_file",
+        "authz_primary_stdin",
+        "authz_peer_env",
+        "authz_peer_file",
+        "authz_peer_stdin",
+    ] {
+        if fields
+            .get(name)
+            .is_none_or(|field| !exact_cfg_feature_attribute(&field.attrs, "authorization-review"))
+        {
+            violations.push(format!(
+                "CLI `{name}` must remain absent outside the exact non-default authorization-review feature"
             ));
         }
     }
@@ -613,9 +768,31 @@ fn inspect_cli_auth_surface(source: &str) -> Result<Vec<String>, syn::Error> {
             || !named_field_has_type(&item.fields, "auth_env", "Option", Some("OsString"))
             || !named_field_has_type(&item.fields, "auth_file", "Option", Some("PathBuf"))
             || !named_field_has_type(&item.fields, "auth_stdin", "bool", None)
+            || !named_field_has_type(
+                &item.fields,
+                "authorization_review_policy",
+                "Option",
+                Some("PathBuf"),
+            )
+            || !named_field_has_type(
+                &item.fields,
+                "authz_primary_env",
+                "Option",
+                Some("OsString"),
+            )
+            || !named_field_has_type(
+                &item.fields,
+                "authz_primary_file",
+                "Option",
+                Some("PathBuf"),
+            )
+            || !named_field_has_type(&item.fields, "authz_primary_stdin", "bool", None)
+            || !named_field_has_type(&item.fields, "authz_peer_env", "Option", Some("OsString"))
+            || !named_field_has_type(&item.fields, "authz_peer_file", "Option", Some("PathBuf"))
+            || !named_field_has_type(&item.fields, "authz_peer_stdin", "bool", None)
     }) {
         violations.push(
-            "DeterministicScanInvocation must privately carry only out-of-band source identifiers and the stdin selector"
+            "DeterministicScanInvocation must privately carry only policy and out-of-band source selectors"
                 .to_owned(),
         );
     }
@@ -629,6 +806,21 @@ fn inspect_cli_auth_surface(source: &str) -> Result<Vec<String>, syn::Error> {
     {
         violations.push(
             "CLI must select the three mutually exclusive authorization sources exactly once without reading them"
+                .to_owned(),
+        );
+    }
+    if !compact.contains("auth_input::AuthorizationReviewInput::select(authorization_review_policy,auth_input::AuthorizationSourceOptions::new(authz_primary_env,authz_primary_file,authz_primary_stdin,),auth_input::AuthorizationSourceOptions::new(authz_peer_env,authz_peer_file,authz_peer_stdin,),)?")
+        || compact
+            .matches("auth_input::AuthorizationReviewInput::select(")
+            .count()
+            != 1
+        || compact
+            .matches("auth_input::AuthorizationSourceOptions::new(")
+            .count()
+            != 2
+    {
+        violations.push(
+            "CLI must select one policy plus exactly one primary and peer out-of-band source without reading them"
                 .to_owned(),
         );
     }
@@ -663,13 +855,17 @@ fn inspect_cli_auth_surface(source: &str) -> Result<Vec<String>, syn::Error> {
         "scan_flags_conflict",
         "scan_profile_flags_conflict",
         "scan_report_flags_conflict",
+        "scan_resource_authorization_flags_conflict",
         "select",
         "scan_authorization_flags_conflict",
         "is_exact_origin_root",
         "authorization_context_transport_is_allowed",
+        "select",
+        "authorization_context_transport_is_allowed",
         "for_builtin",
         "with_defense_enforcement_enabled",
         "preflight_report_output",
+        "load",
         "load",
         "DETERMINISTIC_SCAN_WARNING",
         "run_profile_scan",
@@ -679,10 +875,15 @@ fn inspect_cli_auth_surface(source: &str) -> Result<Vec<String>, syn::Error> {
             .iter()
             .filter(|name| name.as_str() == "load")
             .count()
-            != 1
+            != 2
+        || ordered
+            .iter()
+            .filter(|name| name.as_str() == "select")
+            .count()
+            != 2
     {
         violations.push(format!(
-            "CLI authorization source load must occur exactly once after flag, root, transport, profile, defense, and report preflights and before warning/network execution; observed {ordered:?}"
+            "CLI authorization sources must be selected without I/O and loaded exactly once each after flag, transport, profile, defense, and report preflights and before warning/network execution; observed {ordered:?}"
         ));
     }
 
@@ -1012,6 +1213,17 @@ fn exact_arg_attribute(attributes: &[Attribute], expected: &str) -> bool {
     args == [expected]
 }
 
+fn exact_cfg_feature_attribute(attributes: &[Attribute], feature: &str) -> bool {
+    let predicates = attributes
+        .iter()
+        .filter_map(|attribute| match &attribute.meta {
+            Meta::List(list) if list.path.is_ident("cfg") => Some(compact_tokens(&list.tokens)),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    predicates == [format!("feature=\"{feature}\"")]
+}
+
 fn compact_tokens(tokens: &TokenStream) -> String {
     tokens
         .to_string()
@@ -1132,25 +1344,29 @@ fn environment_reader_is_exact(compact: &str) -> bool {
 }
 
 fn regular_file_open_is_exact(compact: &str) -> bool {
-    [
-        "fs::symlink_metadata(&path).map_err(|_|AuthorizationInputError::SourceUnavailable)?",
-        "if!metadata.file_type().is_file()",
-        "returnErr(AuthorizationInputError::SourceNotRegularFile);",
-        "File::open(path).map_err(|_|AuthorizationInputError::SourceUnavailable)?",
-        "file.metadata().map_err(|_|AuthorizationInputError::SourceUnavailable)?",
-        "if!opened_metadata.is_file()",
-        "Ok(file)",
-    ]
-    .iter()
-    .all(|marker| compact.contains(marker))
+    compact
+        .matches("file.metadata().map_err(|_|AuthorizationInputError::SourceUnavailable)?")
+        .count()
+        == 2
+        && [
+            "fs::symlink_metadata(&path).map_err(|_|AuthorizationInputError::SourceUnavailable)?",
+            "if!metadata.file_type().is_file()",
+            "returnErr(AuthorizationInputError::SourceNotRegularFile);",
+            "File::open(path).map_err(|_|AuthorizationInputError::SourceUnavailable)?",
+            "file.metadata().map_err(|_|AuthorizationInputError::SourceUnavailable)?",
+            "if!opened_metadata.is_file()",
+            "Ok(file)",
+        ]
+        .iter()
+        .all(|marker| compact.contains(marker))
 }
 
 fn source_dispatch_is_exact(compact: &str) -> bool {
     [
-        "Self::Environment(name)=>read_environment(name)?",
+        "Self::Environment(name)=>read_environment(name)",
         "Self::File(path)=>{letmutfile=open_regular_file(path)?;",
-        "read_bounded_line_source(&mutfile)?",
-        "Self::Stdin=>{letstdin=io::stdin();letmutinput=stdin.lock();read_bounded_line_source(&mutinput)?}",
+        "read_bounded_line_source(&mutfile)}",
+        "Self::Stdin=>{letstdin=io::stdin();letmutinput=stdin.lock();read_bounded_line_source(&mutinput)}",
     ]
     .iter()
     .all(|marker| compact.contains(marker))
@@ -1161,6 +1377,7 @@ fn ordered_boundary_references(function: &ItemFn) -> Vec<String> {
         "scan_flags_conflict",
         "scan_profile_flags_conflict",
         "scan_report_flags_conflict",
+        "scan_resource_authorization_flags_conflict",
         "select",
         "scan_authorization_flags_conflict",
         "is_exact_origin_root",
@@ -1254,7 +1471,10 @@ mod tests {
         let mutated = original.replacen(from, to, 1);
         assert_ne!(mutated, original, "stale mutation marker: {from}");
         let violations = inspect(&mutated).join("\n");
-        assert!(violations.contains(needle), "{violations}");
+        assert!(
+            violations.contains(needle),
+            "mutation `{from}` did not produce `{needle}`: {violations}"
+        );
     }
 
     #[test]
@@ -1372,7 +1592,7 @@ mod tests {
             (
                 "auth_env: Option<OsString>,",
                 "authorization: Option<String>,",
-                "may expose only --auth-env",
+                "exact root and resource-review",
             ),
             (
                 "        auth_stdin: bool,",
@@ -1408,6 +1628,60 @@ mod tests {
                 needle,
             );
         }
+    }
+
+    #[test]
+    fn resource_review_policy_roles_and_raw_value_absence_are_mutation_locked() {
+        for (from, to, needle) in [
+            (
+                "pub(crate) struct AuthorizationReviewInput {",
+                "#[derive(Clone)]\npub(crate) struct AuthorizationReviewInput {",
+                "underived",
+            ),
+            (
+                ".field(\"policy_file\", &\"<redacted>\")",
+                ".field(\"policy_file\", &self.policy_file)",
+                "value-free redacted Debug",
+            ),
+            (
+                "let both_stdin = primary.stdin && peer.stdin;",
+                "let both_stdin = false;",
+                "stdin isolation",
+            ),
+            (
+                "formatter.write_str(\"AuthorizationSourceOptions(<redacted>)\")",
+                "formatter.write_str(\"AuthorizationSourceOptions(visible)\")",
+                "value-free redacted Debug",
+            ),
+            (
+                "AuthorizationPrincipalPair::new(primary, peer)",
+                "AuthorizationPrincipalPair::from_unchecked(primary, peer)",
+                "distinct role construction",
+            ),
+        ] {
+            assert_mutation_fails(
+                AUTH_INPUT,
+                from,
+                to,
+                |source| inspect_auth_input_contract(source).unwrap(),
+                needle,
+            );
+        }
+
+        assert_mutation_fails(
+            CLI_MAIN,
+            "        authz_peer_stdin: bool,",
+            "        authz_peer_stdin: bool,\n        credential: String,",
+            |source| inspect_cli_auth_surface(source).unwrap(),
+            "field inventory and types must remain exact",
+        );
+        assert_mutation_fails(
+            CLI_MAIN,
+            "conflicts_with_all = [\"authz_peer_env\", \"authz_peer_file\", \"authz_primary_stdin\"]",
+            "conflicts_with_all = [\"authz_peer_env\", \"authz_peer_file\"]",
+            |source| inspect_cli_auth_surface(source).unwrap(),
+            "exact out-of-band type",
+        );
     }
 
     #[test]

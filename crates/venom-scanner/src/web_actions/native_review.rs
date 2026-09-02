@@ -14,11 +14,23 @@ use serde::{Deserialize, Serialize};
 use crate::planner::{RiskScore, VerificationTarget};
 
 /// Number of actions in the native low-risk web-review catalog.
-#[cfg(not(feature = "normalization-resilience"))]
+#[cfg(not(any(feature = "normalization-resilience", feature = "authorization-review")))]
 pub const NATIVE_WEB_REVIEW_ACTION_COUNT: usize = 10;
-/// Number of actions when the explicitly enabled normalization review is built.
-#[cfg(feature = "normalization-resilience")]
+/// Number of actions when exactly one optional native review is built.
+#[cfg(any(
+    all(
+        feature = "normalization-resilience",
+        not(feature = "authorization-review")
+    ),
+    all(
+        feature = "authorization-review",
+        not(feature = "normalization-resilience")
+    )
+))]
 pub const NATIVE_WEB_REVIEW_ACTION_COUNT: usize = 11;
+/// Number of actions when both optional native reviews are built.
+#[cfg(all(feature = "normalization-resilience", feature = "authorization-review"))]
+pub const NATIVE_WEB_REVIEW_ACTION_COUNT: usize = 12;
 
 /// Hard per-case request count declared by every native web-review action.
 pub const NATIVE_WEB_REVIEW_REQUESTS_PER_CASE: usize = 2;
@@ -41,6 +53,14 @@ pub(crate) fn native_web_review_response_marker_predicate() -> venom_core::Knowl
         NATIVE_WEB_REVIEW_RESPONSE_MARKER,
     )
     .expect("the native review marker predicate is a valid static identity")
+}
+
+/// Marker used by the authorization action to stop before replay after a
+/// rate-limit, defensive challenge, or incomplete passive pair.
+#[cfg(all(feature = "scanning", feature = "authorization-review"))]
+pub(crate) fn authorization_review_phase_terminal_predicate() -> venom_core::KnowledgePredicate {
+    venom_core::KnowledgePredicate::new("web.authorization-review.transport", "phase-terminal")
+        .expect("the authorization terminal predicate is a valid static identity")
 }
 
 const CONTROL_CANDIDATE_LEGS: [NativeWebReviewRequestLeg; NATIVE_WEB_REVIEW_REQUESTS_PER_CASE] = [
@@ -76,6 +96,9 @@ pub enum NativeWebReviewActionKind {
     /// One transformed inert candidate followed by one distinct transformed replay.
     #[cfg(feature = "normalization-resilience")]
     NormalizationResilienceQueryPair,
+    /// Compare one exact JSON resource across two principal contexts and replays.
+    #[cfg(feature = "authorization-review")]
+    ResourceAuthorizationDifferential,
 }
 
 /// The only request surface an action may vary between its matched legs.
@@ -87,6 +110,9 @@ pub enum NativeWebReviewDifferentialInput {
     OriginHeader,
     /// The active candidate adds one bounded query parameter.
     SingleQueryParameter,
+    /// The fixed resource request changes only the validated principal credential.
+    #[cfg(feature = "authorization-review")]
+    AuthorizationHeader,
 }
 
 /// Ordered request roles for one native web-review case.
@@ -123,6 +149,8 @@ impl NativeWebReviewActionKind {
             Self::XssScriptLexicalBoundaryQueryPair,
             #[cfg(feature = "normalization-resilience")]
             Self::NormalizationResilienceQueryPair,
+            #[cfg(feature = "authorization-review")]
+            Self::ResourceAuthorizationDifferential,
         ]
     }
 
@@ -144,6 +172,10 @@ impl NativeWebReviewActionKind {
             #[cfg(feature = "normalization-resilience")]
             Self::NormalizationResilienceQueryPair => {
                 "web.review.normalization-resilience.query-pair@1"
+            },
+            #[cfg(feature = "authorization-review")]
+            Self::ResourceAuthorizationDifferential => {
+                "web.review.authorization.resource-differential"
             },
         }
     }
@@ -177,6 +209,8 @@ impl NativeWebReviewActionKind {
             Self::NormalizationResilienceQueryPair => {
                 "web.review.probe.normalization-resilience-query-pair@1"
             },
+            #[cfg(feature = "authorization-review")]
+            Self::ResourceAuthorizationDifferential => "http.authorization-resource-review",
         }
     }
 
@@ -195,6 +229,8 @@ impl NativeWebReviewActionKind {
             Self::XssScriptLexicalBoundaryQueryPair => "xss-script-lexical-boundary-query-pair",
             #[cfg(feature = "normalization-resilience")]
             Self::NormalizationResilienceQueryPair => "normalization-resilience-query-pair",
+            #[cfg(feature = "authorization-review")]
+            Self::ResourceAuthorizationDifferential => "authorization-resource-differential",
         }
     }
 
@@ -221,10 +257,17 @@ impl NativeWebReviewActionKind {
             Self::NormalizationResilienceQueryPair => {
                 NativeWebReviewDifferentialInput::SingleQueryParameter
             },
+            #[cfg(feature = "authorization-review")]
+            Self::ResourceAuthorizationDifferential => {
+                NativeWebReviewDifferentialInput::AuthorizationHeader
+            },
         }
     }
 
-    /// Returns the complete, fixed request order for one case.
+    /// Returns the fixed passive/active decision phases for one case.
+    ///
+    /// A phase may own more than one broker-accounted wire leg when its closed
+    /// action contract declares that exact relationship.
     pub const fn request_legs(
         self,
     ) -> &'static [NativeWebReviewRequestLeg; NATIVE_WEB_REVIEW_REQUESTS_PER_CASE] {
@@ -234,6 +277,10 @@ impl NativeWebReviewActionKind {
 
     /// Returns the maximum requests this action may issue for one case.
     pub const fn maximum_requests_per_case(self) -> usize {
+        #[cfg(feature = "authorization-review")]
+        if matches!(self, Self::ResourceAuthorizationDifferential) {
+            return 4;
+        }
         self.request_legs().len()
     }
 
@@ -260,6 +307,8 @@ impl NativeWebReviewActionKind {
             | Self::XssScriptLexicalBoundaryQueryPair => 7,
             #[cfg(feature = "normalization-resilience")]
             Self::NormalizationResilienceQueryPair => 7,
+            #[cfg(feature = "authorization-review")]
+            Self::ResourceAuthorizationDifferential => 6,
         };
         RiskScore::from_percent(percent).expect("native web-review risk is a valid constant")
     }
@@ -360,6 +409,13 @@ mod tests {
                 "web.review.probe.normalization-resilience-query-pair@1",
                 "normalization-resilience-query-pair",
             ),
+            #[cfg(feature = "authorization-review")]
+            (
+                NativeWebReviewActionKind::ResourceAuthorizationDifferential,
+                "web.review.authorization.resource-differential",
+                "http.authorization-resource-review",
+                "authorization-resource-differential",
+            ),
         ];
 
         assert_eq!(
@@ -399,6 +455,8 @@ mod tests {
             700,
             #[cfg(feature = "normalization-resilience")]
             700,
+            #[cfg(feature = "authorization-review")]
+            600,
         ];
 
         for (kind, expected_risk) in NativeWebReviewActionKind::all()
@@ -423,6 +481,16 @@ mod tests {
 
         for kind in NativeWebReviewActionKind::all() {
             assert_eq!(kind.request_legs(), &expected_legs);
+            #[cfg(feature = "authorization-review")]
+            if kind == NativeWebReviewActionKind::ResourceAuthorizationDifferential {
+                assert_eq!(kind.maximum_requests_per_case(), 4);
+            } else {
+                assert_eq!(
+                    kind.maximum_requests_per_case(),
+                    NATIVE_WEB_REVIEW_REQUESTS_PER_CASE
+                );
+            }
+            #[cfg(not(feature = "authorization-review"))]
             assert_eq!(
                 kind.maximum_requests_per_case(),
                 NATIVE_WEB_REVIEW_REQUESTS_PER_CASE

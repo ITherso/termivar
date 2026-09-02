@@ -114,6 +114,7 @@ venom scan <target> --profile web-review
       -> one bounded root-or-discovered SSTI arithmetic review with independent replay
       -> optional exact-root anonymous/authorized API visibility pair
       -> optional anonymous GraphQL control/introspection/replay child
+      -> optional one-resource primary/peer authorization differential with independent replays
       -> central bounded assessment renderer on complete execution
 ```
 
@@ -230,6 +231,26 @@ difference is one opaque atomic evidence reference with maximum disposition
 `NeedsReview`. Partial collection or a lower exhausted limit is typed
 incomplete and cannot be reported as empty success.
 
+The non-default `authorization-review` scanner/CLI feature adds one optional
+native action inside this same assessment runtime only when an operator passes
+a strict policy file and two distinct out-of-band credentials with explicit
+`web-review`. It selects exactly one exact-origin bodyless `GET` JSON resource
+and dispatches primary candidate, peer candidate, primary replay, and peer
+replay through the parent broker and budget. All four legs are one logical
+active verification, charged when the primary replay begins; the peer replay
+is passive-accounted inside the same active decision phase. Credentials, query values, the clear resource handle,
+and selected JSON scalar values do not enter evidence, item identity, audit, or
+rendered reports.
+
+Both roles must be independently replay-stable, and both cross-principal rounds
+must match `Status`, `Fields`, and value-sensitive `Resources` under the exact
+policy profile before the runtime can emit one
+`authorization.resource-cross-principal-equivalence@1` item. Its maximum is
+`NeedsReview` / `KnowledgeOnly`. Non-equivalence is not a secure-negative
+claim. There is no identifier mutation or enumeration, write method, cookie,
+redirect follow, second runtime, detached pass, or independent report. The
+existing exact-root anonymous/authorized compatibility path remains unchanged.
+
 The stable item-identity authority preserves `authorized-root@1` for the exact
 origin root and registers eligible discovered exact-origin subjects with an
 opaque `discovered-resource@1` digest over canonical structure. The identity
@@ -288,6 +309,11 @@ Composition is selection-specific:
   anonymous `web-review` child. It selects one exact-origin endpoint at most,
   executes the fixed three-request control/candidate/replay protocol, and can
   produce only informational knowledge observations.
+- **Resource authorization review** (`authorization-review`, opt-in) is one
+  native action in the existing `web-review` runtime. It compares one exact
+  selected JSON resource across primary/peer candidate and replay views, using
+  four requests and one active verification; its sole positive projection is
+  bounded to `NeedsReview` / `KnowledgeOnly`.
 - **Lua execution** (`lua`, opt-in) is a bounded registry and fresh-VM executor
   for an explicit library host. It uses cooperative in-process controls, not
   process isolation, with no
@@ -437,6 +463,7 @@ The following matrix separates build availability from actual execution:
 | `defense` | scanner default | host library and explicit `web-review` observation/shadow; enforcement requires `--enforce-defense` | `web-review` only | implemented and tested Preview; cannot add or intensify actions |
 | normalization-resilience review | scanner and CLI opt-in (`normalization-resilience`) plus explicit runtime flag | one eligible `web-review` parent may produce one transformed candidate/replay child under the shared broker | no | Preview; max one transform/depth one, three child requests/one active verification, `NeedsReview` / `KnowledgeOnly` only |
 | GraphQL surface review | scanner and CLI opt-in (`graphql-review`) plus explicit runtime flag | one exact-origin endpoint may receive an anonymous `__typename` control, bounded schema-root candidate, and distinct replay through the shared broker | no | Preview; max one endpoint, three requests/one active verification, `Informational` / `KnowledgeOnly` only |
+| Resource authorization review | scanner and CLI opt-in (`authorization-review`) plus explicit policy and two out-of-band credentials | one exact-origin JSON resource receives primary/peer candidate and independent replay legs through the assessment's shared broker | no | Preview; max one resource, four requests/one active verification, one `NeedsReview` / `KnowledgeOnly` item at most |
 | `phases/*`, `legacy_discovery`, `runner`, `context`, `sdk` | opt-in (`legacy-scanner`) | Surface A; phases 2–4 use bounded passive discovery, phases 5–9 use separate bounded active verification, and phase-one/custom raw I/O remains possible | no | Legacy runtime / `ScannerSdk` facade; whole-run accounting remains `Unmetered` |
 | `advanced_detection`, `anomaly` | opt-in (`detection`) | no repository product caller; validated/catalogued caller records plus text matching only | no | Experimental; no deviation computation, response classification, or finding production |
 | `api`, `api_gateway`, `auth`, `cache`, `config`, `config_loader`, `metrics`, `post_exploitation`, `persistence`, `realtime`, `dashboard` | opt-in (`platform-models`) | no repository product caller | no | Experimental records, catalogs, and in-memory utilities; no API/auth/persistence/realtime execution path, and caller-owned collections are not uniformly capacity-bounded |

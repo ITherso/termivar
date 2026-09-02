@@ -31,6 +31,10 @@ use crate::{
 use super::graphql_runtime::{
     project_graphql_items, register_graphql_subject, CommittedGraphqlReview,
 };
+#[cfg(feature = "authorization-review")]
+use super::resource_authorization_runtime::{
+    project_resource_authorization_item, CommittedResourceAuthorizationReview,
+};
 use super::{
     assessment_api_visibility::{project_api_visibility_item, CommittedAssessmentApiVisibility},
     assessment_item::{
@@ -1058,11 +1062,13 @@ struct PlannedPassiveAssessmentItem {
     evidence_ids: Vec<EvidenceId>,
 }
 
-struct AssessmentReviewProjectionSources<'a> {
-    native: &'a [&'a CommittedAssessmentReviewLedger],
-    api_visibility: Option<&'a CommittedAssessmentApiVisibility>,
+pub(crate) struct AssessmentReviewProjectionSources<'a> {
+    pub(crate) native: &'a [&'a CommittedAssessmentReviewLedger],
+    pub(crate) api_visibility: Option<&'a CommittedAssessmentApiVisibility>,
     #[cfg(feature = "graphql-review")]
-    graphql: Option<&'a CommittedGraphqlReview>,
+    pub(crate) graphql: Option<&'a CommittedGraphqlReview>,
+    #[cfg(feature = "authorization-review")]
+    pub(crate) authorization: Option<&'a CommittedResourceAuthorizationReview>,
 }
 
 /// Test adapter that projects only the explicitly authorized root.
@@ -1074,10 +1080,14 @@ pub(crate) fn project_passive_assessment_items(
 ) -> Result<PassiveAssessmentItemProjection, PassiveAssessmentItemProjectionError> {
     project_assessment_items(
         ledger,
-        &[],
-        None,
-        #[cfg(feature = "graphql-review")]
-        None,
+        AssessmentReviewProjectionSources {
+            native: &[],
+            api_visibility: None,
+            #[cfg(feature = "graphql-review")]
+            graphql: None,
+            #[cfg(feature = "authorization-review")]
+            authorization: None,
+        },
         knowledge,
         authorized_root,
         std::slice::from_ref(authorized_root),
@@ -1088,9 +1098,7 @@ pub(crate) fn project_passive_assessment_items(
 /// one context-owned item/reference space.
 pub(crate) fn project_assessment_items(
     ledger: &CommittedAssessmentPassiveLedger,
-    review: &[&CommittedAssessmentReviewLedger],
-    api_visibility: Option<&CommittedAssessmentApiVisibility>,
-    #[cfg(feature = "graphql-review")] graphql: Option<&CommittedGraphqlReview>,
+    reviews: AssessmentReviewProjectionSources<'_>,
     knowledge: &KnowledgeBase,
     authorized_root: &WebAssessmentSubject,
     assessment_subjects: &[WebAssessmentSubject],
@@ -1163,12 +1171,7 @@ pub(crate) fn project_assessment_items(
     }
     project_assessment_items_for_subjects(
         ledger,
-        AssessmentReviewProjectionSources {
-            native: review,
-            api_visibility,
-            #[cfg(feature = "graphql-review")]
-            graphql,
-        },
+        reviews,
         knowledge,
         root_subject,
         scope,
@@ -1202,6 +1205,8 @@ fn project_passive_assessment_items_for_root(
             api_visibility: None,
             #[cfg(feature = "graphql-review")]
             graphql: None,
+            #[cfg(feature = "authorization-review")]
+            authorization: None,
         },
         knowledge,
         root_subject,
@@ -1234,7 +1239,6 @@ fn project_assessment_items_for_subjects(
     if let Some(graphql) = reviews.graphql {
         register_graphql_subject(&mut context, &graphql_scope, graphql)?;
     }
-
     let mut planned_items = Vec::new();
     let mut incompleteness = PassiveAssessmentProjectionIncompleteness {
         root_subject_identity_unavailable: root_subject.is_none(),
@@ -1294,6 +1298,10 @@ fn project_assessment_items_for_subjects(
     #[cfg(feature = "graphql-review")]
     if let Some(graphql) = reviews.graphql {
         project_graphql_items(&mut context, knowledge, graphql)?;
+    }
+    #[cfg(feature = "authorization-review")]
+    if let Some(authorization) = reviews.authorization {
+        project_resource_authorization_item(&mut context, knowledge, authorization)?;
     }
     Ok(PassiveAssessmentItemProjection {
         items: context.finish(),

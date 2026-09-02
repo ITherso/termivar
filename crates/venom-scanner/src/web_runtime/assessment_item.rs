@@ -352,6 +352,8 @@ impl fmt::Debug for StableAssessmentSubjectId {
 pub(crate) enum AssessmentItemTarget {
     Subject,
     QueryParameter(String),
+    #[cfg(feature = "authorization-review")]
+    AuthorizationResource(String),
 }
 
 impl AssessmentItemTarget {
@@ -371,6 +373,17 @@ impl AssessmentItemTarget {
         }
         Ok(Self::QueryParameter(name))
     }
+
+    #[cfg(feature = "authorization-review")]
+    pub(crate) fn authorization_resource(
+        identity: impl Into<String>,
+    ) -> Result<Self, AssessmentItemProjectionError> {
+        let identity = identity.into();
+        if !valid_stable_product_identity(&identity) {
+            return Err(AssessmentItemProjectionError::InvalidStableSubjectIdentity);
+        }
+        Ok(Self::AuthorizationResource(identity))
+    }
 }
 
 impl fmt::Debug for AssessmentItemTarget {
@@ -379,6 +392,10 @@ impl fmt::Debug for AssessmentItemTarget {
             Self::Subject => formatter.write_str("AssessmentItemTarget::Subject"),
             Self::QueryParameter(_) => {
                 formatter.write_str("AssessmentItemTarget::QueryParameter(<name-only>)")
+            },
+            #[cfg(feature = "authorization-review")]
+            Self::AuthorizationResource(_) => {
+                formatter.write_str("AssessmentItemTarget::AuthorizationResource(<stable-digest>)")
             },
         }
     }
@@ -1857,6 +1874,11 @@ fn assessment_fingerprint(
         AssessmentItemTarget::QueryParameter(name) => {
             digest_field(&mut digest, "query_parameter");
             digest_field(&mut digest, name);
+        },
+        #[cfg(feature = "authorization-review")]
+        AssessmentItemTarget::AuthorizationResource(identity) => {
+            digest_field(&mut digest, "authorization_resource");
+            digest_field(&mut digest, identity);
         },
     }
     format!("sha256:{:x}", digest.finalize())

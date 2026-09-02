@@ -75,7 +75,7 @@ fn review_response_marker(correlation_id: &str, component: &str) -> Evidence {
     )
 }
 
-fn expected_strategy(kind: NativeWebReviewActionKind) -> PayloadStrategyRef {
+fn expected_strategy(kind: NativeWebReviewActionKind) -> Option<PayloadStrategyRef> {
     let (id, revision) = match kind {
         NativeWebReviewActionKind::CorsPolicyPair => {
             (CORS_ORIGIN_PAIR_ID, CORS_ORIGIN_PAIR_REVISION)
@@ -114,8 +114,10 @@ fn expected_strategy(kind: NativeWebReviewActionKind) -> PayloadStrategyRef {
             NORMALIZATION_RESILIENCE_QUERY_PAIR_ID,
             NORMALIZATION_RESILIENCE_QUERY_PAIR_REVISION,
         ),
+        #[cfg(feature = "authorization-review")]
+        NativeWebReviewActionKind::ResourceAuthorizationDifferential => return None,
     };
-    PayloadStrategyRef::new(id, revision).unwrap()
+    Some(PayloadStrategyRef::new(id, revision).unwrap())
 }
 
 #[test]
@@ -139,19 +141,25 @@ fn profile_definitions_are_deterministic_exact_and_knowledge_only() {
             .find(|action| action.id() == kind.action_id())
             .unwrap();
         assert_eq!(action.executor(), kind.executor_id());
-        assert_eq!(action.payload_strategy(), Some(&expected_strategy(kind)));
+        assert_eq!(action.payload_strategy(), expected_strategy(kind).as_ref());
         assert_eq!(
             action.verification_target(),
             &VerificationTarget::KnowledgeOnly
         );
-        assert_eq!(action.cost().units(), 2);
+        assert_eq!(
+            action.cost().units(),
+            u32::try_from(kind.maximum_requests_per_case()).unwrap()
+        );
         assert_eq!(action.risk(), kind.risk());
         assert!(action.prerequisites().is_empty());
 
         let rule = first
             .active_rules
             .iter()
-            .find(|rule| rule.action_id() == Some(kind.action_id()))
+            .find(|rule| {
+                rule.action_id() == Some(kind.action_id())
+                    && rule.outcome() == OutcomeStatus::Success
+            })
             .unwrap();
         assert_eq!(rule.stage(), VerificationStage::Active);
         assert_eq!(rule.outcome(), OutcomeStatus::Success);
@@ -396,7 +404,7 @@ fn passive_is_unknown_and_only_fresh_case_correlated_review_marker_succeeds() {
         let hypothesis_id = format!("hypothesis:web-review:{index}");
         let case = VerificationCase::new(&case_id, subject(), kind.action_id(), &hypothesis_id)
             .unwrap()
-            .with_payload_strategy(Some(expected_strategy(kind)))
+            .with_payload_strategy(expected_strategy(kind))
             .without_hypothesis_transition();
         let knowledge = KnowledgeBase::new();
         let mut hypothesis = Hypothesis::with_id(

@@ -4,11 +4,13 @@ use reqwest::{
     Client,
 };
 
+#[cfg(any(feature = "graphql-review", feature = "authorization-review"))]
+use reqwest::{header::ACCEPT, Method};
+
+#[cfg(feature = "authorization-review")]
+use reqwest::header::AUTHORIZATION;
 #[cfg(feature = "graphql-review")]
-use reqwest::{
-    header::{ACCEPT, CONTENT_TYPE},
-    Method,
-};
+use reqwest::header::CONTENT_TYPE;
 
 #[cfg(feature = "graphql-review")]
 use crate::graphql_review::MAX_GRAPHQL_REQUEST_JSON_BYTES;
@@ -176,6 +178,39 @@ impl HttpRequestBroker {
     ) -> Result<CollectedHttpResponse, HttpRequestBrokerError> {
         self.validate_target(target)?;
         let request = self.build_anonymous_graphql_json_request(target, body)?;
+        self.collect_built_request(action_id, stage, origin, limits, request)
+            .await
+    }
+
+    /// Dispatches one fixed bodyless authenticated JSON GET under the parent
+    /// assessment's exact-origin policy and shared accounting authority.
+    ///
+    /// The complete `Authorization` value comes from the already validated,
+    /// move-only principal contract. No arbitrary header map, body, cookie, or
+    /// alternate method is accepted by this seam.
+    #[cfg(feature = "authorization-review")]
+    pub(crate) async fn collect_authorized_json_get_for_runtime(
+        &self,
+        action_id: &str,
+        stage: DecisionExecutionStage,
+        origin: Option<DecisionActionOrigin>,
+        limits: DecisionExecutionLimits,
+        target: &url::Url,
+        authorization: &str,
+    ) -> Result<CollectedHttpResponse, HttpRequestBrokerError> {
+        self.validate_target(target)?;
+        let authorization = HeaderValue::from_str(authorization).map_err(|_| {
+            HttpEvidenceError::InvalidHeaderValue {
+                name: "authorization".to_owned(),
+            }
+        })?;
+        let request = self
+            .client
+            .request(Method::GET, target.clone())
+            .header(ACCEPT, "application/json")
+            .header(AUTHORIZATION, authorization)
+            .build()
+            .map_err(HttpEvidenceError::Request)?;
         self.collect_built_request(action_id, stage, origin, limits, request)
             .await
     }
