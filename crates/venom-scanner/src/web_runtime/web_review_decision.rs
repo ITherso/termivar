@@ -53,6 +53,13 @@ use crate::payload_strategies::normalization_resilience_query_pair::{
 #[cfg(test)]
 pub(crate) const NATIVE_WEB_REVIEW_REASONING_RULE_COUNT: usize = 1;
 #[cfg(test)]
+pub(crate) const NATIVE_WEB_REVIEW_PASSIVE_RULE_COUNT: usize =
+    if cfg!(feature = "authorization-review") {
+        1
+    } else {
+        0
+    };
+#[cfg(test)]
 pub(crate) const NATIVE_WEB_REVIEW_ACTIVE_RULE_COUNT: usize = NATIVE_WEB_REVIEW_ACTION_COUNT
     + if cfg!(feature = "authorization-review") {
         1

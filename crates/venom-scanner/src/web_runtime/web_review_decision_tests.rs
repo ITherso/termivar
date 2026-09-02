@@ -75,6 +75,21 @@ fn review_response_marker(correlation_id: &str, component: &str) -> Evidence {
     )
 }
 
+#[cfg(feature = "authorization-review")]
+fn authorization_terminal_marker(correlation_id: &str) -> Evidence {
+    Evidence::new(
+        subject(),
+        EvidenceKind::Custom("authorization-review-phase".to_owned()),
+        crate::web_actions::authorization_review_phase_terminal_predicate(),
+        EvidenceValue::Boolean(true),
+        EvidenceSource::new("web.review.test-executor", "phase-terminal")
+            .unwrap()
+            .with_correlation_id(correlation_id)
+            .unwrap(),
+        ConfidenceScore::MAX,
+    )
+}
+
 fn expected_strategy(kind: NativeWebReviewActionKind) -> Option<PayloadStrategyRef> {
     let (id, revision) = match kind {
         NativeWebReviewActionKind::CorsPolicyPair => {
@@ -257,6 +272,10 @@ fn install_is_atomic_and_idempotent() {
         first.active_rules_inserted,
         NATIVE_WEB_REVIEW_ACTIVE_RULE_COUNT
     );
+    assert_eq!(
+        first.passive_rules_inserted,
+        NATIVE_WEB_REVIEW_PASSIVE_RULE_COUNT
+    );
     assert_eq!(second, NativeWebReviewDecisionInstallReport::default());
     assert_eq!(
         decision_loop.rules().len(),
@@ -266,11 +285,119 @@ fn install_is_atomic_and_idempotent() {
         decision_loop.planner().len(),
         NATIVE_WEB_REVIEW_ACTION_COUNT
     );
-    assert_eq!(decision_loop.verification().passive().len(), 0);
+    assert_eq!(
+        decision_loop.verification().passive().len(),
+        NATIVE_WEB_REVIEW_PASSIVE_RULE_COUNT
+    );
     assert_eq!(
         decision_loop.verification().active().len(),
         NATIVE_WEB_REVIEW_ACTIVE_RULE_COUNT
     );
+}
+
+#[cfg(feature = "authorization-review")]
+#[test]
+fn authorization_passive_terminal_rule_is_exact_action_and_case_scoped() {
+    const RULE_ID: &str = "web.review.verify.passive.authorization-resource-terminal@1";
+    const CASE_ID: &str = "case:authorization-terminal";
+    const OTHER_CASE_ID: &str = "case:authorization-terminal-other";
+    const HYPOTHESIS_ID: &str = "hypothesis:authorization-terminal";
+
+    let authorization = NativeWebReviewActionKind::ResourceAuthorizationDifferential;
+    let profile = NativeWebReviewDecisionProfile::for_actions([authorization]).unwrap();
+    assert_eq!(profile.passive_rules.len(), 1);
+    let rule = &profile.passive_rules[0];
+    assert_eq!(rule.id(), RULE_ID);
+    assert_eq!(rule.stage(), VerificationStage::Passive);
+    assert_eq!(rule.outcome(), OutcomeStatus::Blocked);
+    assert_eq!(rule.action_id(), Some(authorization.action_id()));
+    assert!(rule.requires_case_correlated_evidence());
+    assert_eq!(
+        rule.condition(),
+        &Expression::equals(
+            KnowledgeLayer::Evidence,
+            crate::web_actions::authorization_review_phase_terminal_predicate(),
+            EvidenceValue::Boolean(true),
+        )
+    );
+    assert_ne!(rule.outcome(), OutcomeStatus::Success);
+    assert_eq!(rule.outcome().hypothesis_state(), None);
+
+    let mut decision_loop = decision_loop();
+    let first = profile.install(&mut decision_loop).unwrap();
+    assert_eq!(first.passive_rules_inserted, 1);
+    assert_eq!(decision_loop.verification().passive().len(), 1);
+
+    let knowledge = KnowledgeBase::new();
+    let mut hypothesis = Hypothesis::with_id(
+        HYPOTHESIS_ID,
+        subject(),
+        eligible_predicate(),
+        EvidenceValue::Boolean(true),
+        Probability::from_percent(99).unwrap(),
+    )
+    .unwrap();
+    hypothesis.set_strength(HypothesisStrength::Weak);
+    hypothesis.set_state(HypothesisState::Supported);
+    knowledge.upsert_hypothesis(hypothesis).unwrap();
+
+    let authorization_case =
+        VerificationCase::new(CASE_ID, subject(), authorization.action_id(), HYPOTHESIS_ID)
+            .unwrap()
+            .without_hypothesis_transition();
+    let without_terminal = decision_loop
+        .verification()
+        .passive()
+        .verify(&knowledge, &authorization_case)
+        .unwrap();
+    assert_eq!(without_terminal.outcome().status(), OutcomeStatus::Unknown);
+
+    let terminal = authorization_terminal_marker(CASE_ID);
+    let terminal_id = terminal.id().clone();
+    knowledge.insert_evidence(terminal).unwrap();
+    let blocked = decision_loop
+        .verification()
+        .passive()
+        .verify(&knowledge, &authorization_case)
+        .unwrap();
+    assert_eq!(blocked.outcome().status(), OutcomeStatus::Blocked);
+    assert_eq!(blocked.outcome().verifier_rule_id(), Some(RULE_ID));
+    assert!(blocked.outcome().evidence_ids().contains(&terminal_id));
+    assert_eq!(blocked.apply(&knowledge).unwrap(), None);
+    assert_eq!(
+        knowledge.hypothesis(HYPOTHESIS_ID).unwrap().state(),
+        HypothesisState::Supported
+    );
+
+    let other_action_case = VerificationCase::new(
+        CASE_ID,
+        subject(),
+        NativeWebReviewActionKind::CorsPolicyPair.action_id(),
+        HYPOTHESIS_ID,
+    )
+    .unwrap()
+    .without_hypothesis_transition();
+    let other_action = decision_loop
+        .verification()
+        .passive()
+        .verify(&knowledge, &other_action_case)
+        .unwrap();
+    assert_eq!(other_action.outcome().status(), OutcomeStatus::Unknown);
+
+    let other_case = VerificationCase::new(
+        OTHER_CASE_ID,
+        subject(),
+        authorization.action_id(),
+        HYPOTHESIS_ID,
+    )
+    .unwrap()
+    .without_hypothesis_transition();
+    let uncorrelated = decision_loop
+        .verification()
+        .passive()
+        .verify(&knowledge, &other_case)
+        .unwrap();
+    assert_eq!(uncorrelated.outcome().status(), OutcomeStatus::Unknown);
 }
 
 #[test]
