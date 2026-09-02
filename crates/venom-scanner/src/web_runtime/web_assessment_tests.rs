@@ -1157,6 +1157,42 @@ async fn openapi_review_stable_json_and_text_are_two_anonymous_bodyless_gets() {
         let debug = format!("{audit:?}");
         assert!(!debug.contains("/items"));
         assert!(!debug.contains("example.test"));
+
+        #[cfg(feature = "reporting")]
+        {
+            let product =
+                ReportGenerator::compose_assessment(report, ScanProfileV1::web_review().unwrap())
+                    .unwrap();
+            let rendered =
+                ReportGenerator::generate_assessment(&product, ReportFormat::Json).unwrap();
+            let document: serde_json::Value = serde_json::from_str(&rendered).unwrap();
+            let rendered_audit = document["openapi_review"].as_object().unwrap();
+            assert_eq!(rendered_audit["outcome"], "document_observed");
+            assert_eq!(rendered_audit["request_count"], 2);
+            assert_eq!(rendered_audit["active_verification_count"], 1);
+            assert_eq!(rendered_audit["replay_matched"], true);
+            assert_eq!(rendered_audit["item_projected"], true);
+            let openapi_items = document["items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|item| {
+                    item["capability_id"].as_str() == Some("api.openapi-contract-observed@1")
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(openapi_items.len(), 1);
+            assert_eq!(openapi_items[0]["disposition"], "informational");
+            assert_eq!(openapi_items[0]["claim_basis"], "observation");
+            for forbidden in [
+                "RAW-OPENAPI-DOCUMENT-MUST-NOT-LEAK-4E5A91",
+                "https://private-openapi-server.example.test/secret",
+                "OPENAPI-EXAMPLE-VALUE-MUST-NOT-LEAK-13C8D7",
+                "Bearer OPENAPI-AUTH-MUST-NOT-LEAK-98A02F",
+                "session=OPENAPI-COOKIE-MUST-NOT-LEAK-79BD10",
+            ] {
+                assert!(!rendered.contains(forbidden));
+            }
+        }
     }
 }
 

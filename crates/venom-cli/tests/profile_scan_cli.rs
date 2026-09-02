@@ -197,6 +197,62 @@ fn explicit_profiles_emit_the_additive_schema_and_exact_scope() {
     }));
 }
 
+#[cfg(feature = "openapi-review")]
+#[test]
+fn openapi_review_executes_through_boxed_scan_and_renders_the_composed_audit() {
+    const DOCUMENT: &str = r#"{"openapi":"3.1.0","info":{"title":"fixture","version":"1"},"paths":{"/items":{"get":{"responses":{"200":{"description":"ok"}}}}}}"#;
+    let server = serve(|target| {
+        if target == "/openapi.json" {
+            ok_json(DOCUMENT)
+        } else {
+            ok_html("fixture root", "")
+        }
+    });
+    let output = venom()
+        .args([
+            "scan",
+            "--profile",
+            "web-review",
+            "--format",
+            "json",
+            "--openapi-review",
+            &server.url,
+        ])
+        .output()
+        .expect("failed to run OpenAPI review");
+
+    assert!(
+        output.status.success(),
+        "OpenAPI review failed with {:?}:\n{}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let value = parse_stdout(&output);
+    assert_eq!(value["openapi_review"]["outcome"], "document_observed");
+    assert_eq!(value["openapi_review"]["request_count"], 2);
+    assert_eq!(value["openapi_review"]["active_verification_count"], 1);
+    assert_eq!(value["openapi_review"]["replay_matched"], true);
+    assert_eq!(value["openapi_review"]["item_projected"], true);
+    let openapi_items = value["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|item| item["capability_id"] == "api.openapi-contract-observed@1")
+        .collect::<Vec<_>>();
+    assert_eq!(openapi_items.len(), 1);
+    assert_eq!(openapi_items[0]["disposition"], "informational");
+    assert_eq!(openapi_items[0]["claim_basis"], "observation");
+
+    let requests = server.requests.lock().unwrap();
+    assert_eq!(
+        requests
+            .iter()
+            .filter(|target| target.as_str() == "/openapi.json")
+            .count(),
+        2
+    );
+}
+
 #[test]
 fn completed_web_review_uses_the_central_renderer_for_every_format() {
     let server = serve_request(|target, request| {

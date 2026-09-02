@@ -1699,6 +1699,11 @@ max_diff_paths = 8
             incomplete_reason_code(&WebAssessmentIncompleteReason::AuthorizationReviewIncomplete),
             "authorization_review_incomplete"
         );
+        #[cfg(feature = "openapi-review")]
+        assert_eq!(
+            incomplete_reason_code(&WebAssessmentIncompleteReason::OpenApiReviewIncomplete),
+            "openapi_review_incomplete"
+        );
 
         let stops = [
             (DecisionStopReason::ObjectiveComplete, "objective_complete"),
