@@ -32,25 +32,25 @@ The latest release under the former Venom name is **v0.9.0-alpha**, but its bina
 
 | Gate | Current evidence | Exit criterion | Tracking | Target milestone |
 | --- | --- | --- | --- | --- |
-| Stable SDK and plugin contracts | Pinned `termivar-core` patch gate, Scanner construction ADR/migration, and four same-revision current-head consumer fixtures; no accepted Scanner/plugin cross-version baseline | Public contracts documented, baselined across accepted versions, and protected by compatibility and deprecation policy | [#4](https://github.com/ITherso/venom/issues/4) | v1.0 |
-| Repeatable performance baseline | Historical Criterion microbaseline plus one controlled endpoint workflow run with intra-run variance; thresholds remain null | Repeat comparable 100/1,000-endpoint and 10,000-request CPU, RAM, latency, and throughput runs on a pinned hardware class and review inter-run variance before accepting a baseline | [#5](https://github.com/ITherso/venom/issues/5) | v1.0 |
+| Stable SDK and plugin contracts | Pinned `termivar-core` patch gate, Scanner construction ADR/migration, and four same-revision current-head consumer fixtures; no accepted Scanner/plugin cross-version baseline | Public contracts documented, baselined across accepted versions, and protected by compatibility and deprecation policy | [#4](https://github.com/ITherso/termivar/issues/4) | v1.0 |
+| Repeatable performance baseline | Historical Criterion microbaseline plus one controlled endpoint workflow run with intra-run variance; thresholds remain null | Repeat comparable 100/1,000-endpoint and 10,000-request CPU, RAM, latency, and throughput runs on a pinned hardware class and review inter-run variance before accepting a baseline | [#5](https://github.com/ITherso/termivar/issues/5) | v1.0 |
 | Fuzzing maturity | Scheduled bounded campaigns and committed baseline | Expand corpus/coverage, retain crash artifacts, and document a repeatable triage path | Backlog | v1.0 |
-| Security readiness | CodeQL, `cargo audit`, `cargo deny`, private reporting policy | Close audit-readiness gaps and publish the scope/outcome of an independent review | [#6](https://github.com/ITherso/venom/issues/6) | v1.0 |
-| Distributed deployment semantics | Bounded process-local coordinator with explicit revisions/time, fenced leases, fixed retry/recovery policy, and bounded result retention | Define authenticated transport and wire compatibility, durability/restart reconciliation, coordinator epochs, background operation, and production evidence | [#7](https://github.com/ITherso/venom/issues/7) | v1.1 |
-| Adoption evidence | Examples and generated starters are internal evidence only | Validate a version-pinned integration with at least one independent downstream user or project, including compatibility feedback and a documented external result | [#63](https://github.com/ITherso/venom/issues/63) | v1.0 |
-| Upgrade lifecycle | Pre-stable plugin policy | Define supported release lines, deprecation windows, and migration requirements | [#8](https://github.com/ITherso/venom/issues/8) | v1.0 |
+| Security readiness | CodeQL, `cargo audit`, `cargo deny`, private reporting policy | Close audit-readiness gaps and publish the scope/outcome of an independent review | [#6](https://github.com/ITherso/termivar/issues/6) | v1.0 |
+| Distributed deployment semantics | Bounded process-local coordinator with explicit revisions/time, fenced leases, fixed retry/recovery policy, and bounded result retention | Define authenticated transport and wire compatibility, durability/restart reconciliation, coordinator epochs, background operation, and production evidence | [#7](https://github.com/ITherso/termivar/issues/7) | v1.1 |
+| Adoption evidence | Examples and generated starters are internal evidence only | Validate a version-pinned integration with at least one independent downstream user or project, including compatibility feedback and a documented external result | [#63](https://github.com/ITherso/termivar/issues/63) | v1.0 |
+| Upgrade lifecycle | Pre-stable plugin policy | Define supported release lines, deprecation windows, and migration requirements | [#8](https://github.com/ITherso/termivar/issues/8) | v1.0 |
 
 ## Active blockers
 
 The following conditions block a stable v1.0 claim:
 
-1. Scanner SDK and plugin contracts still lack an accepted stable baseline and compatibility window; the core-only gate does not close this blocker ([#4](https://github.com/ITherso/venom/issues/4)).
+1. Scanner SDK and plugin contracts still lack an accepted stable baseline and compatibility window; the core-only gate does not close this blocker ([#4](https://github.com/ITherso/termivar/issues/4)).
 2. Only one controlled endpoint-scale workflow record exists; there is no
    repeatable accepted baseline or reviewed inter-run variance
-   ([#5](https://github.com/ITherso/venom/issues/5)).
-3. No independent security assessment ([#6](https://github.com/ITherso/venom/issues/6)).
-4. Insufficient independent external adoption evidence for a version-pinned SDK or plugin integration ([#63](https://github.com/ITherso/venom/issues/63)).
-5. No documented upgrade and deprecation lifecycle for stable consumers ([#8](https://github.com/ITherso/venom/issues/8)).
+   ([#5](https://github.com/ITherso/termivar/issues/5)).
+3. No independent security assessment ([#6](https://github.com/ITherso/termivar/issues/6)).
+4. Insufficient independent external adoption evidence for a version-pinned SDK or plugin integration ([#63](https://github.com/ITherso/termivar/issues/63)).
+5. No documented upgrade and deprecation lifecycle for stable consumers ([#8](https://github.com/ITherso/termivar/issues/8)).
 
 Distributed multi-node production readiness is tracked separately for v1.1 and does not block a focused single-node v1.0 SDK release if its Experimental, in-process-only status remains explicit.
 

@@ -7,8 +7,8 @@ authors.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "Composable scanner SDK, execution pipeline, plugins, and reporting for Termivar"
-homepage = "https://github.com/ITherso/venom"
-documentation = "https://itherso.github.io/venom/rust/termivar_scanner/"
+homepage = "https://github.com/ITherso/termivar"
+documentation = "https://itherso.github.io/termivar/rust/termivar_scanner/"
 keywords = ["security", "scanner", "pentesting", "sdk", "async"]
 categories = ["development-tools", "network-programming"]
 

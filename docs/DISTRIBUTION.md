@@ -14,7 +14,7 @@ channel.
 Requirements: Rust 1.88 or newer and Git.
 
 ```bash
-git clone https://github.com/ITherso/venom.git termivar
+git clone https://github.com/ITherso/termivar.git termivar
 cd termivar
 REVIEWED_COMMIT="REPLACE_WITH_THE_REVIEWED_FULL_COMMIT_SHA"
 test "$REVIEWED_COMMIT" != "REPLACE_WITH_THE_REVIEWED_FULL_COMMIT_SHA"
@@ -95,6 +95,6 @@ scanner, malware verifier, or distribution channel.
 
 ## Reporting problems
 
-- [GitHub issues](https://github.com/ITherso/venom/issues)
-- [GitHub discussions](https://github.com/ITherso/venom/discussions)
-- [Security policy](https://github.com/ITherso/venom/blob/main/SECURITY.md)
+- [GitHub issues](https://github.com/ITherso/termivar/issues)
+- [GitHub discussions](https://github.com/ITherso/termivar/discussions)
+- [Security policy](https://github.com/ITherso/termivar/blob/main/SECURITY.md)

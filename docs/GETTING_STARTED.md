@@ -22,7 +22,7 @@ Docker is optional. PostgreSQL, Redis, Node.js, and a browser are not required t
 ## Build from source
 
 ```bash
-git clone https://github.com/ITherso/venom.git termivar
+git clone https://github.com/ITherso/termivar.git termivar
 cd termivar
 REVIEWED_COMMIT="REPLACE_WITH_THE_REVIEWED_FULL_COMMIT_SHA"
 test "$REVIEWED_COMMIT" != "REPLACE_WITH_THE_REVIEWED_FULL_COMMIT_SHA"
@@ -324,12 +324,12 @@ contracts.
 
 ## Next steps
 
-- [Root project overview](https://github.com/ITherso/venom#readme)
+- [Root project overview](https://github.com/ITherso/termivar#readme)
 - [Runtime map](internals/runtime-map.md)
 - [Architecture](architecture.md)
 - [Decision runner](internals/decision-runner.md)
 - [Web execution](internals/web-execution.md)
 - [Web verification](internals/web-verification.md)
-- [Feature lifecycle](https://github.com/ITherso/venom/blob/main/FEATURES.md)
-- [Project status](https://github.com/ITherso/venom/blob/main/PROJECT_STATUS.md)
-- [Security policy](https://github.com/ITherso/venom/blob/main/SECURITY.md)
+- [Feature lifecycle](https://github.com/ITherso/termivar/blob/main/FEATURES.md)
+- [Project status](https://github.com/ITherso/termivar/blob/main/PROJECT_STATUS.md)
+- [Security policy](https://github.com/ITherso/termivar/blob/main/SECURITY.md)

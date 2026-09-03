@@ -8,7 +8,7 @@ at runtime. The current Preview API line is `0.2.0`.
 Termivar ships no detector plugins. The six former SQL, XSS, LFI, XXE, SSRF, and
 SSTI marker types were removed from the production namespace because substring
 matches did not verify vulnerabilities. The harmless types under
-[`examples/plugin-fixtures/`](https://github.com/ITherso/venom/tree/main/examples/plugin-fixtures) exist only
+[`examples/plugin-fixtures/`](https://github.com/ITherso/termivar/tree/main/examples/plugin-fixtures) exist only
 to exercise this trait boundary.
 
 Compatibility is defined in the [Plugin API and SemVer policy](plugin-api-policy.md).
@@ -86,8 +86,8 @@ The generated crate includes a complete registration/execution test using a
 local, no-I/O host context. See its source for the exact constructors on the
 current Preview API line:
 
-- [`templates/termivar-plugin/src/lib.rs`](https://github.com/ITherso/venom/blob/main/templates/termivar-plugin/src/lib.rs)
-- [`examples/custom_plugin.rs`](https://github.com/ITherso/venom/blob/main/examples/custom_plugin.rs)
+- [`templates/termivar-plugin/src/lib.rs`](https://github.com/ITherso/termivar/blob/main/templates/termivar-plugin/src/lib.rs)
+- [`examples/custom_plugin.rs`](https://github.com/ITherso/termivar/blob/main/examples/custom_plugin.rs)
 
 Hosts must construct authorization, budgets, request policy, cancellation,
 redaction, and correlation explicitly. Do not synthesize those values inside a

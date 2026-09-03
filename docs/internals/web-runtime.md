@@ -77,7 +77,7 @@ change, incident response, or shutdown. Host cancellation is reported as
 `Halt { reason: CancelledByHost }`; it is distinct from the complete-runtime
 wall deadline and from an individual request timeout.
 
-The runnable [`decision_scan`](https://github.com/ITherso/venom/blob/main/examples/decision_scan.rs) example accepts an explicitly supplied target URL and prints the selected actions, verified outcomes, terminal command, and learned experience count.
+The runnable [`decision_scan`](https://github.com/ITherso/termivar/blob/main/examples/decision_scan.rs) example accepts an explicitly supplied target URL and prints the selected actions, verified outcomes, terminal command, and learned experience count.
 
 ## Defaults and policy ownership
 

@@ -7,8 +7,8 @@ authors.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "Experimental Axum HTTP adapter for the Termivar framework"
-homepage = "https://github.com/ITherso/venom"
-documentation = "https://itherso.github.io/venom/rust/termivar_api/"
+homepage = "https://github.com/ITherso/termivar"
+documentation = "https://itherso.github.io/termivar/rust/termivar_api/"
 keywords = ["security", "http", "axum", "api"]
 categories = ["web-programming::http-server"]
 

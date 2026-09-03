@@ -1,10 +1,10 @@
 # Termivar
 
-[![CI](https://github.com/ITherso/venom/actions/workflows/tests.yml/badge.svg?branch=main)](https://github.com/ITherso/venom/actions/workflows/tests.yml)
-[![Docs](https://github.com/ITherso/venom/actions/workflows/docs.yml/badge.svg?branch=main)](https://itherso.github.io/venom/)
-[![Coverage](https://codecov.io/gh/ITherso/venom/branch/main/graph/badge.svg)](https://codecov.io/gh/ITherso/venom)
+[![CI](https://github.com/ITherso/termivar/actions/workflows/tests.yml/badge.svg?branch=main)](https://github.com/ITherso/termivar/actions/workflows/tests.yml)
+[![Docs](https://github.com/ITherso/termivar/actions/workflows/docs.yml/badge.svg?branch=main)](https://itherso.github.io/termivar/)
+[![Coverage](https://codecov.io/gh/ITherso/termivar/branch/main/graph/badge.svg)](https://codecov.io/gh/ITherso/termivar)
 [![MSRV](https://img.shields.io/badge/MSRV-1.88-orange?logo=rust)](Cargo.toml)
-[![License](https://img.shields.io/github/license/ITherso/venom)](LICENSE)
+[![License](https://img.shields.io/github/license/ITherso/termivar)](LICENSE)
 
 **Deterministic security testing. Evidence before verdicts.**
 
@@ -331,7 +331,7 @@ the [authorization differential review contract](docs/internals/authorization-di
 Requirements: Rust 1.88 or newer, Git, and an authorized reachable HTTP(S) origin.
 
 ```bash
-git clone https://github.com/ITherso/venom.git termivar
+git clone https://github.com/ITherso/termivar.git termivar
 cd termivar
 REVIEWED_COMMIT="REPLACE_WITH_THE_REVIEWED_FULL_COMMIT_SHA"
 test "$REVIEWED_COMMIT" != "REPLACE_WITH_THE_REVIEWED_FULL_COMMIT_SHA"
@@ -503,7 +503,7 @@ It adds no independent scanner, client, budget, authority, or final report.
 | Tests | Unit, integration, doc, security, template, and architecture jobs in [CI](.github/workflows/tests.yml) | Passing CI is not production readiness |
 | Rust compatibility | MSRV 1.88 plus stable, beta, and nightly | Pre-stable APIs may still change |
 | Cross-platform runtime smoke | Focused Rust 1.88 default-CLI and loopback checks on Ubuntu, Windows, and macOS | A small hosted-runner smoke matrix is not platform certification or broad all-feature support |
-| Coverage | Final integration evidence covers 36,716/41,744 in-scope source lines (87.96%); pinned Tarpaulin's LLVM backend enforces the accepted [exact baseline](docs/reports/coverage/6edc4d925739.md) and the same exact ratio on coverable changed lines, while `venom.coverage.v2` binds a normalized line-state digest | Coverage is a scoped navigation signal, not proof of test adequacy; the advisory [Codecov](https://codecov.io/gh/ITherso/venom) upload is best-effort and tokenless availability is not enforced |
+| Coverage | Final integration evidence covers 36,716/41,744 in-scope source lines (87.96%); pinned Tarpaulin's LLVM backend enforces the accepted [exact baseline](docs/reports/coverage/6edc4d925739.md) and the same exact ratio on coverable changed lines, while `venom.coverage.v2` binds a normalized line-state digest | Coverage is a scoped navigation signal, not proof of test adequacy; the advisory [Codecov](https://codecov.io/gh/ITherso/termivar) upload is best-effort and tokenless availability is not enforced |
 | Safe Rust / boundaries | Workspace crates forbid unsafe code; architecture checks enforce dependency and transport ownership | Static boundaries do not prove semantic correctness |
 | Public API compatibility | Blocking SemVer comparison for `termivar-core` plus four isolated [current-head consumer fixtures](docs/public-api-compatibility.md) | Same-revision compilation is not cross-version compatibility, a stable ABI, or external adoption; Scanner SDK and plugin baselines remain open |
 | Security scanning | RustSec, cargo-deny, Semgrep CE, Trivy, Dependabot, and scoped CodeQL | Automated scanners have false positives and false negatives |
@@ -525,12 +525,12 @@ The latest published tag, **v0.9.0-alpha**, is historical and predates this sour
 | Stable-release gate | Current truth |
 | --- | --- |
 | Internal deterministic CI | Implemented and green on the reviewed integration stack; this is not an external assessment |
-| Independent security audit | Open: [#6](https://github.com/ITherso/venom/issues/6) |
-| Independent version-pinned adoption | Open: [#63](https://github.com/ITherso/venom/issues/63); maintainer fixtures do not count |
-| Scanner SDK/plugin compatibility and deprecation baseline | Open: [#4](https://github.com/ITherso/venom/issues/4) and [#8](https://github.com/ITherso/venom/issues/8) |
-| Repeatable endpoint-performance baseline | Open: [#5](https://github.com/ITherso/venom/issues/5); one workflow record is not a threshold or SLA |
+| Independent security audit | Open: [#6](https://github.com/ITherso/termivar/issues/6) |
+| Independent version-pinned adoption | Open: [#63](https://github.com/ITherso/termivar/issues/63); maintainer fixtures do not count |
+| Scanner SDK/plugin compatibility and deprecation baseline | Open: [#4](https://github.com/ITherso/termivar/issues/4) and [#8](https://github.com/ITherso/termivar/issues/8) |
+| Repeatable endpoint-performance baseline | Open: [#5](https://github.com/ITherso/termivar/issues/5); one workflow record is not a threshold or SLA |
 | Supported API listener / MITM proxy | Absent |
-| Durable authenticated distributed control plane | Absent: [#7](https://github.com/ITherso/venom/issues/7); only process-local state machines exist |
+| Durable authenticated distributed control plane | Absent: [#7](https://github.com/ITherso/termivar/issues/7); only process-local state machines exist |
 
 The committed same-revision fixtures, internal gates, and first endpoint
 workflow record close neither the external gates nor the product gaps above.
@@ -602,8 +602,8 @@ tag and accepted cross-version baseline exist, pin a reviewed full commit.
 - [`decision-scan/v1` JSON](docs/internals/decision-scan-json-v1.md)
 - [Fuzzing](docs/fuzzing.md)
 - [Security policy](SECURITY.md)
-- [Documentation site](https://itherso.github.io/venom/)
-- [Rust API documentation](https://itherso.github.io/venom/rust/termivar_scanner/)
+- [Documentation site](https://itherso.github.io/termivar/)
+- [Rust API documentation](https://itherso.github.io/termivar/rust/termivar_scanner/)
 
 ## Roadmap
 
@@ -620,7 +620,7 @@ Roadmap items are intentions, not delivery guarantees. Deterministic execution r
 
 ## Contributing
 
-Read [CONTRIBUTING.md](CONTRIBUTING.md) and the [Code of Conduct](CODE_OF_CONDUCT.md), or start with a scoped [`good first issue`](https://github.com/ITherso/venom/labels/good%20first%20issue). Keep dependencies pointed inward and run formatting, Clippy, and tests before opening a pull request. Report vulnerabilities privately according to [SECURITY.md](SECURITY.md).
+Read [CONTRIBUTING.md](CONTRIBUTING.md) and the [Code of Conduct](CODE_OF_CONDUCT.md), or start with a scoped [`good first issue`](https://github.com/ITherso/termivar/labels/good%20first%20issue). Keep dependencies pointed inward and run formatting, Clippy, and tests before opening a pull request. Report vulnerabilities privately according to [SECURITY.md](SECURITY.md).
 
 ## License
 

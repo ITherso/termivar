@@ -115,14 +115,14 @@ fn metadata_violations(version: &str, changelog: &str, security: &str) -> Vec<St
     }
 
     let release_link =
-        format!("[{version}]: https://github.com/ITherso/venom/releases/tag/v{version}");
+        format!("[{version}]: https://github.com/ITherso/termivar/releases/tag/v{version}");
     if !changelog.lines().any(|line| line == release_link) {
         violations.push(format!(
             "CHANGELOG.md must define the exact `{release_link}` reference"
         ));
     }
     let compare_link =
-        format!("[Unreleased]: https://github.com/ITherso/venom/compare/v{version}...HEAD");
+        format!("[Unreleased]: https://github.com/ITherso/termivar/compare/v{version}...HEAD");
     if !changelog.lines().any(|line| line == compare_link) {
         violations.push(format!(
             "CHANGELOG.md must advance the Unreleased comparison to `v{version}`"
@@ -158,7 +158,7 @@ mod tests {
 
     fn changelog() -> String {
         format!(
-            "# Changelog\n\n## [Unreleased]\n\n## [{VERSION}] - 2026-08-14\n\n### Changed\n\n- Reviewed release.\n\n[Unreleased]: https://github.com/ITherso/venom/compare/v{VERSION}...HEAD\n[{VERSION}]: https://github.com/ITherso/venom/releases/tag/v{VERSION}\n"
+            "# Changelog\n\n## [Unreleased]\n\n## [{VERSION}] - 2026-08-14\n\n### Changed\n\n- Reviewed release.\n\n[Unreleased]: https://github.com/ITherso/termivar/compare/v{VERSION}...HEAD\n[{VERSION}]: https://github.com/ITherso/termivar/releases/tag/v{VERSION}\n"
         )
     }
 
@@ -196,7 +196,7 @@ mod tests {
     fn current_scanner_transition_requires_upgrade_guidance() {
         let version = "0.10.0-alpha.1";
         let changelog = format!(
-            "## [{version}] - 2026-08-14\n\n### Changed\n\n- Changed.\n\n[Unreleased]: https://github.com/ITherso/venom/compare/v{version}...HEAD\n[{version}]: https://github.com/ITherso/venom/releases/tag/v{version}\n"
+            "## [{version}] - 2026-08-14\n\n### Changed\n\n- Changed.\n\n[Unreleased]: https://github.com/ITherso/termivar/compare/v{version}...HEAD\n[{version}]: https://github.com/ITherso/termivar/releases/tag/v{version}\n"
         );
         let security = format!("| `v{version}` | Yes | Current release |\n");
         assert!(metadata_violations(version, &changelog, &security)
@@ -208,7 +208,7 @@ mod tests {
     fn current_scanner_transition_accepts_the_required_migration_note() {
         let version = "0.10.0-alpha.1";
         let changelog = format!(
-            "## [{version}] - 2026-08-14\n\n### Upgrade notes\n\n- Follow [the ScanContext migration](docs/migrations/scan-context-construction.md).\n\n[Unreleased]: https://github.com/ITherso/venom/compare/v{version}...HEAD\n[{version}]: https://github.com/ITherso/venom/releases/tag/v{version}\n"
+            "## [{version}] - 2026-08-14\n\n### Upgrade notes\n\n- Follow [the ScanContext migration](docs/migrations/scan-context-construction.md).\n\n[Unreleased]: https://github.com/ITherso/termivar/compare/v{version}...HEAD\n[{version}]: https://github.com/ITherso/termivar/releases/tag/v{version}\n"
         );
         let security = format!("| `v{version}` | Yes | Current release |\n");
         assert!(metadata_violations(version, &changelog, &security).is_empty());

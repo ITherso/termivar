@@ -1,5 +1,5 @@
 #![forbid(unsafe_code)]
-//! Deterministic semantic oracles shared by Venom-owned fuzz targets.
+//! Deterministic semantic oracles shared by Termivar-owned fuzz targets.
 
 use std::collections::BTreeSet;
 

@@ -6,10 +6,10 @@ The unreleased Termivar `0.10.0-alpha.1` source line is primarily a Rust library
 
 | Crate | Purpose | Generated documentation |
 | --- | --- | --- |
-| `termivar-core` | Default transport-neutral evidence, reasoning, ontology, outcome, predicate, and run-report contracts; opt-in pre-quarantine compatibility facade | [Open rustdoc](https://itherso.github.io/venom/rust/termivar_core/) |
-| `termivar-scanner` | Scanner SDK, phase/plugin and execution contracts, deterministic reasoning profiles, and reports | [Open rustdoc](https://itherso.github.io/venom/rust/termivar_scanner/) |
-| `termivar-api` | Library health router; the CLI listener adapter is unsupported | [Open rustdoc](https://itherso.github.io/venom/rust/termivar_api/) |
-| `termivar-proxy` | Experimental fixed-upstream TCP relay; no HTTP/TLS interception | [Open rustdoc](https://itherso.github.io/venom/rust/termivar_proxy/) |
+| `termivar-core` | Default transport-neutral evidence, reasoning, ontology, outcome, predicate, and run-report contracts; opt-in pre-quarantine compatibility facade | [Open rustdoc](https://itherso.github.io/termivar/rust/termivar_core/) |
+| `termivar-scanner` | Scanner SDK, phase/plugin and execution contracts, deterministic reasoning profiles, and reports | [Open rustdoc](https://itherso.github.io/termivar/rust/termivar_scanner/) |
+| `termivar-api` | Library health router; the CLI listener adapter is unsupported | [Open rustdoc](https://itherso.github.io/termivar/rust/termivar_api/) |
+| `termivar-proxy` | Experimental fixed-upstream TCP relay; no HTTP/TLS interception | [Open rustdoc](https://itherso.github.io/termivar/rust/termivar_proxy/) |
 
 The documentation workflow builds every public crate with all features and treats rustdoc warnings and broken intra-doc links as errors.
 
@@ -27,7 +27,7 @@ termivar-scanner = { path = "/path/to/reviewed/termivar/crates/termivar-scanner"
 No published package currently represents the remediated source contract. Pin
 and review a source checkout before using this compatibility API.
 
-They can then start with [`ScannerSdk`](https://itherso.github.io/venom/rust/termivar_scanner/sdk/struct.ScannerSdk.html) and implement [`ScanPhase`](https://itherso.github.io/venom/rust/termivar_scanner/contracts/trait.ScanPhase.html):
+They can then start with [`ScannerSdk`](https://itherso.github.io/termivar/rust/termivar_scanner/sdk/struct.ScannerSdk.html) and implement [`ScanPhase`](https://itherso.github.io/termivar/rust/termivar_scanner/contracts/trait.ScanPhase.html):
 
 ```rust
 use termivar_scanner::ScannerSdk;
@@ -42,12 +42,12 @@ and the generated starter project.
 
 ## Deterministic API reasoning
 
-[`PredicateDescriptor`](https://itherso.github.io/venom/rust/termivar_core/predicates/struct.PredicateDescriptor.html)
+[`PredicateDescriptor`](https://itherso.github.io/termivar/rust/termivar_core/predicates/struct.PredicateDescriptor.html)
 and the HTTP/API vocabulary in `termivar-core` give evidence producers and
 reasoning profiles one canonical predicate contract without replacing the open
 `KnowledgePredicate` wire format.
 
-[`StandardApiReasoning`](https://itherso.github.io/venom/rust/termivar_scanner/api_reasoning/struct.StandardApiReasoning.html)
+[`StandardApiReasoning`](https://itherso.github.io/termivar/rust/termivar_scanner/api_reasoning/struct.StandardApiReasoning.html)
 is an opt-in, transport-neutral profile. It produces explainable hypotheses for
 JSON-compatible responses and GraphQL signals. The HTTP evidence boundary
 normalizes a validated media-type essence, a JSON-compatible media-type flag,
@@ -56,17 +56,17 @@ JSON rule has the stable identity `api.response.json.media-type`; it does not
 search raw header or URL text.
 
 A visibility-boundary hypothesis requires one host-created
-[`ApiVisibilityComparison`](https://itherso.github.io/venom/rust/termivar_core/predicates/struct.ApiVisibilityComparison.html)
+[`ApiVisibilityComparison`](https://itherso.github.io/termivar/rust/termivar_core/predicates/struct.ApiVisibilityComparison.html)
 that compares the same logical resource. Its recommended `to_observation()`
 path returns an
-[`ApiVisibilityObservation`](https://itherso.github.io/venom/rust/termivar_core/predicates/struct.ApiVisibilityObservation.html)
+[`ApiVisibilityObservation`](https://itherso.github.io/termivar/rust/termivar_core/predicates/struct.ApiVisibilityObservation.html)
 containing the evidence and its stable, evidence-backed
 `api.visibility.resource-scope` relation. Hosts can commit both records through
 `KnowledgeBase::insert_evidence_with_relation`; identity and linkage conflicts
 are checked before either record is written.
 
 Hosts that start from authorized JSON values can use
-[`ApiVisibilityComparator`](https://itherso.github.io/venom/rust/termivar_scanner/api_evidence/struct.ApiVisibilityComparator.html)
+[`ApiVisibilityComparator`](https://itherso.github.io/termivar/rust/termivar_scanner/api_evidence/struct.ApiVisibilityComparator.html)
 to capture bounded, raw-value-free views and classify one explicit status,
 field-shape, or resource-content dimension. The comparator never owns a network
 client and retains signatures rather than response bodies. Its output remains
@@ -85,13 +85,13 @@ Comparator v3 distinguishes equivalence, bounded path summaries, and
 differences without a representable path summary. The current reader rejects
 persisted v2 profiles and envelopes instead of reinterpreting them.
 
-[`ingest_api_visibility_observation`](https://itherso.github.io/venom/rust/termivar_scanner/api_observation/fn.ingest_api_visibility_observation.html)
+[`ingest_api_visibility_observation`](https://itherso.github.io/termivar/rust/termivar_scanner/api_observation/fn.ingest_api_visibility_observation.html)
 validates the caller's expected resource, atomically commits evidence plus its
 scope relation, applies installed rules to the isolated comparison subject, and
 returns typed commit/reasoning receipts. A post-commit reasoning failure carries
 the observation commit receipt. Rule conclusions are themselves preflighted
 and written as one hypothesis batch. Resource-oriented consumers can use
-[`api_visibility_reviews_for_resource`](https://itherso.github.io/venom/rust/termivar_scanner/api_observation/fn.api_visibility_reviews_for_resource.html)
+[`api_visibility_reviews_for_resource`](https://itherso.github.io/termivar/rust/termivar_scanner/api_observation/fn.api_visibility_reviews_for_resource.html)
 without merging comparison subjects. Projection uses an explicit cursor query,
 counts rejected relations against its scan budget, and enforces a compiled
 per-page ceiling so a resource cannot trigger an unbounded clone or scan.
@@ -104,8 +104,8 @@ hypothesis is `UnresolvedDifference`, and only an exact weak/supported,
 evidence-bound hypothesis is `AwaitHumanReview`. This disposition is not a
 `DecisionLoopCommand`, is not serialized into the existing review wire shape,
 and never declares broken access control or another vulnerability.
-See [`ApiVisibilityReviewQuery`](https://itherso.github.io/venom/rust/termivar_scanner/api_observation/struct.ApiVisibilityReviewQuery.html)
-and [`ApiVisibilityReviewPage`](https://itherso.github.io/venom/rust/termivar_scanner/api_observation/struct.ApiVisibilityReviewPage.html)
+See [`ApiVisibilityReviewQuery`](https://itherso.github.io/termivar/rust/termivar_scanner/api_observation/struct.ApiVisibilityReviewQuery.html)
+and [`ApiVisibilityReviewPage`](https://itherso.github.io/termivar/rust/termivar_scanner/api_observation/struct.ApiVisibilityReviewPage.html)
 for cursor and page metadata. The legacy continuation is an opaque relation ID;
 the host must keep it associated with the same resource. It is neither an
 authenticated transport token nor a point-in-time snapshot under concurrent
@@ -207,7 +207,7 @@ exact weak, supported visibility-boundary hypothesis—never a vulnerability
 verdict or decision-loop success.
 
 The runnable
-[`api_visibility_review`](https://github.com/ITherso/venom/blob/main/examples/api_visibility_review.rs)
+[`api_visibility_review`](https://github.com/ITherso/termivar/blob/main/examples/api_visibility_review.rs)
 example demonstrates the typed runtime workflow without performing network
 I/O.
 

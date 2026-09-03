@@ -7,8 +7,8 @@ authors.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "Transport-neutral reasoning, evidence, ontology, and run-report contracts for Termivar"
-homepage = "https://github.com/ITherso/venom"
-documentation = "https://itherso.github.io/venom/rust/termivar_core/"
+homepage = "https://github.com/ITherso/termivar"
+documentation = "https://itherso.github.io/termivar/rust/termivar_core/"
 keywords = ["security", "reasoning", "evidence"]
 categories = ["development-tools"]
 

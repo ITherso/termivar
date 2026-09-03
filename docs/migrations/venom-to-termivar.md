@@ -61,9 +61,10 @@ across the directory move; it does not treat the rename as new covered code.
 
 ## Repository boundary
 
-Package metadata continues to point to `ITherso/venom` until the separate
-public-repository migration is completed. After that transition, developers
-can update an existing checkout with:
+The repository moved in place from `ITherso/venom` to `ITherso/termivar` after
+the public identity migration landed. GitHub preserves the former URL as a
+redirect; historical evidence may therefore retain that original URL without
+changing its provenance. Developers can update an existing checkout with:
 
 ```bash
 git remote set-url origin https://github.com/ITherso/termivar.git

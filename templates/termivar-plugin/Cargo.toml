@@ -8,7 +8,7 @@ license = "MIT"
 
 [dependencies]
 async-trait = "0.1"
-termivar-scanner = { git = "https://github.com/ITherso/venom", branch = "main", default-features = false, features = ["plugins"] }
+termivar-scanner = { git = "https://github.com/ITherso/termivar", branch = "main", default-features = false, features = ["plugins"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

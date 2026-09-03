@@ -62,7 +62,7 @@ important limits:
 
 See [Repository health](repository-health.md) for the configured controls and
 known gaps, [Code quality](CODE_QUALITY.md) for the local verification commands,
-and [Security policy](https://github.com/ITherso/venom/blob/main/SECURITY.md) for
+and [Security policy](https://github.com/ITherso/termivar/blob/main/SECURITY.md) for
 private vulnerability reporting.
 
 ## Using the Experimental models responsibly

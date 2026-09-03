@@ -1,8 +1,8 @@
 site_name: Termivar Documentation
 site_description: Architecture and operating documentation for Termivar
-site_url: https://itherso.github.io/venom/
-repo_url: https://github.com/ITherso/venom
-repo_name: ITherso/venom
+site_url: https://itherso.github.io/termivar/
+repo_url: https://github.com/ITherso/termivar
+repo_name: ITherso/termivar
 docs_dir: docs
 theme:
   name: readthedocs
@@ -67,7 +67,7 @@ nav:
       - Distribution: DISTRIBUTION.md
       - Deployment blueprint (experimental): experimental/deployment-blueprint.md
   - Project:
-      - Project status: https://github.com/ITherso/venom/blob/main/PROJECT_STATUS.md
+      - Project status: https://github.com/ITherso/termivar/blob/main/PROJECT_STATUS.md
       - Contributing: CONTRIBUTING.md
       - Contributors: contributors.md
       - Architecture decisions: adr/README.md

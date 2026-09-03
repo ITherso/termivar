@@ -2,7 +2,8 @@
 //!
 //! This deliberately does not assert that the repository contains no `venom`
 //! text. Historical salvage, stable wire identifiers, digest domains, migration
-//! notes, and the pre-rename repository URL remain valid compatibility data.
+//! notes, and historical links through the former repository redirect remain
+//! valid compatibility data.
 //! The gate covers machine-readable package, crate-directory, template, and
 //! CLI identities plus path-classified current public text. Provenance trees
 //! and exact compatibility phrases remain outside the current-brand ban.
@@ -62,6 +63,8 @@ const CURRENT_PUBLIC_TREES: &[&str] = &[
     "web",
 ];
 
+const CURRENT_PRODUCT_RUST_TEXT_FILES: &[&str] = &["fuzz/harness/src/lib.rs"];
+
 const PUBLIC_SCAN_EXCLUDED_PREFIXES: &[&str] = &[
     "docs/history",
     "docs/migrations",
@@ -84,6 +87,8 @@ const README_FORMER_NAME_NOTE: &str = "Termivar was formerly developed under the
 const COMPATIBILITY_FORMER_NAME_PHRASE: &str = "accepted previous Venom revision";
 const PROJECT_STATUS_FORMER_NAME_PHRASE: &str = "release under the former Venom name";
 const CHANGELOG_RENAME_PHRASE: &str = "Venom to Termivar.";
+const FORMER_REPOSITORY_URL: &str = "https://github.com/ITherso/venom";
+const FORMER_PAGES_URL: &str = "https://itherso.github.io/venom/";
 
 const FORMER_CLI_FORMS: &[&str] = &[
     "venom scan",
@@ -199,6 +204,10 @@ pub(super) fn check(workspace_root: &Path) -> Result<Vec<String>, Box<dyn Error>
     let starter_task =
         fs::read_to_string(workspace_root.join(".github/ISSUE_TEMPLATE/starter-task.yml"))?;
     violations.extend(starter_task_brand_violations(&starter_task));
+    for path in CURRENT_PRODUCT_RUST_TEXT_FILES {
+        let source = fs::read_to_string(workspace_root.join(path))?;
+        violations.extend(current_rust_brand_violations(path, &source));
+    }
     violations.extend(public_brand_violations(workspace_root)?);
     Ok(violations)
 }
@@ -362,8 +371,55 @@ fn public_text_brand_violations(path: &str, source: &str) -> Vec<String> {
                 "current public `{path}:{line_number}` retains a former active cache or host example"
             ));
         }
+        for (offset, _) in reviewable.match_indices(FORMER_REPOSITORY_URL) {
+            let suffix = &reviewable[offset + FORMER_REPOSITORY_URL.len()..];
+            if !is_historical_repository_suffix(suffix) {
+                violations.push(format!(
+                    "current public `{path}:{line_number}` retains a non-historical former repository URL"
+                ));
+            }
+        }
+        if reviewable.contains(FORMER_PAGES_URL) {
+            violations.push(format!(
+                "current public `{path}:{line_number}` retains the former Pages URL"
+            ));
+        }
     }
     violations
+}
+
+fn is_historical_repository_suffix(suffix: &str) -> bool {
+    bounded_ascii_digits(suffix, "/actions/runs/")
+        || bounded_ascii_digits(suffix, "/pull/")
+        || bounded_ascii_hex(suffix, "/commit/", 40)
+        || suffix
+            .strip_prefix("/releases/tag/v0.9.0-alpha")
+            .is_some_and(starts_with_url_boundary)
+}
+
+fn bounded_ascii_digits(value: &str, prefix: &str) -> bool {
+    let Some(value) = value.strip_prefix(prefix) else {
+        return false;
+    };
+    let length = value.bytes().take_while(u8::is_ascii_digit).count();
+    length > 0 && starts_with_url_boundary(&value[length..])
+}
+
+fn bounded_ascii_hex(value: &str, prefix: &str, exact_length: usize) -> bool {
+    let Some(value) = value.strip_prefix(prefix) else {
+        return false;
+    };
+    value.len() >= exact_length
+        && value[..exact_length]
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit())
+        && starts_with_url_boundary(&value[exact_length..])
+}
+
+fn starts_with_url_boundary(value: &str) -> bool {
+    value.chars().next().is_none_or(|character| {
+        !character.is_ascii_alphanumeric() && character != '-' && character != '_'
+    })
 }
 
 fn contains_former_brand_word(source: &str) -> bool {
@@ -470,6 +526,16 @@ fn starter_task_brand_violations(source: &str) -> Vec<String> {
     violations
 }
 
+fn current_rust_brand_violations(path: &str, source: &str) -> Vec<String> {
+    if contains_former_brand_word(source) {
+        vec![format!(
+            "current Rust source `{path}` still uses Venom as the active product name"
+        )]
+    } else {
+        Vec::new()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -495,6 +561,23 @@ mod tests {
             starter_task_brand_violations("- [ ] `cargo test -p venom-core` passes.").len(),
             2
         );
+    }
+
+    #[test]
+    fn current_fuzz_docs_reject_former_brand_without_banning_sentinels() {
+        assert_eq!(
+            current_rust_brand_violations(
+                "fuzz/harness/src/lib.rs",
+                "//! Oracles shared by Venom-owned fuzz targets."
+            )
+            .len(),
+            1
+        );
+        assert!(current_rust_brand_violations(
+            "fuzz/harness/src/lib.rs",
+            "//! Oracles shared by Termivar.\nconst X: &str = \"VENOM_VALUE_SECRET\";"
+        )
+        .is_empty());
     }
 
     #[test]
@@ -554,15 +637,41 @@ mod tests {
     }
 
     #[test]
-    fn stable_wire_digest_and_repository_identities_remain_accepted() {
+    fn stable_wire_and_digest_identities_remain_accepted() {
         let source = concat!(
             "`venom.scan-profile/v1` remains stable.\n",
             "`venom-rendered-assessment/v1` remains stable.\n",
             "digest domain `venom.assessment-item/v1` remains stable.\n",
-            "https://github.com/ITherso/venom remains the pre-rename repository.\n",
-            "https://itherso.github.io/venom/ remains the pre-rename Pages URL.\n",
         );
         assert!(public_text_brand_violations("docs/reporting.md", source).is_empty());
+    }
+
+    #[test]
+    fn former_repository_links_are_limited_to_historical_evidence() {
+        for source in [
+            "https://github.com/ITherso/venom/actions/runs/33292247976",
+            "https://github.com/ITherso/venom/pull/53",
+            "https://github.com/ITherso/venom/commit/f7d5120741ae1c2328e1b82b6cec50664a947528",
+            "https://github.com/ITherso/venom/releases/tag/v0.9.0-alpha",
+        ] {
+            assert!(
+                public_text_brand_violations("docs/quality-metrics.md", source).is_empty(),
+                "{source}"
+            );
+        }
+
+        for source in [
+            "https://github.com/ITherso/venom",
+            "https://github.com/ITherso/venom/issues/6",
+            "https://github.com/ITherso/venom/blob/main/README.md",
+            "https://itherso.github.io/venom/",
+        ] {
+            assert_eq!(
+                public_text_brand_violations("docs/scanner.md", source).len(),
+                1,
+                "{source}"
+            );
+        }
     }
 
     #[test]

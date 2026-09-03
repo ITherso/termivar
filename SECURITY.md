@@ -16,7 +16,7 @@ Support means the maintainers will assess valid reports; it does not imply a pro
 
 Do not open a public issue for a suspected vulnerability.
 
-Use [GitHub private vulnerability reporting](https://github.com/ITherso/venom/security/advisories/new). Include:
+Use [GitHub private vulnerability reporting](https://github.com/ITherso/termivar/security/advisories/new). Include:
 
 - affected version or commit;
 - affected component and configuration;

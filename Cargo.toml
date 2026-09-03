@@ -18,7 +18,7 @@ edition = "2021"
 rust-version = "1.88"
 authors = ["ITherso <e268792@metu.edu.tr>"]
 license = "MIT"
-repository = "https://github.com/ITherso/venom"
+repository = "https://github.com/ITherso/termivar"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

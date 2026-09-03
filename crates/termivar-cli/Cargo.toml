@@ -7,7 +7,7 @@ authors.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "Command-line composition layer for the Termivar security-testing framework"
-homepage = "https://github.com/ITherso/venom"
+homepage = "https://github.com/ITherso/termivar"
 keywords = ["security", "scanner", "pentesting", "cli"]
 categories = ["command-line-utilities"]
 

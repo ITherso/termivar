@@ -120,7 +120,7 @@ line, and review of its default features. Security-sensitive changes also need
 negative tests for denied, malformed, oversized, and partially failed inputs.
 
 Do not report vulnerabilities in a public issue. Follow the private process in
-the repository [Security Policy](https://github.com/ITherso/venom/blob/main/SECURITY.md).
+the repository [Security Policy](https://github.com/ITherso/termivar/blob/main/SECURITY.md).
 
 ## Metrics
 
@@ -154,4 +154,4 @@ not a test-adequacy claim. See [Coverage evidence](reports/coverage/README.md),
 - The architecture, formatting, Clippy, and relevant test gates pass.
 
 Current release blockers and missing evidence are tracked in
-[`PROJECT_STATUS.md`](https://github.com/ITherso/venom/blob/main/PROJECT_STATUS.md).
+[`PROJECT_STATUS.md`](https://github.com/ITherso/termivar/blob/main/PROJECT_STATUS.md).

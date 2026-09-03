@@ -286,5 +286,5 @@ All notable changes to Termivar are recorded here. Releases use the categories f
 
 - This alpha has not completed an independent security audit and is not production-ready.
 
-[Unreleased]: https://github.com/ITherso/venom/compare/v0.9.0-alpha...HEAD
+[Unreleased]: https://github.com/ITherso/termivar/compare/v0.9.0-alpha...HEAD
 [0.9.0-alpha]: https://github.com/ITherso/venom/releases/tag/v0.9.0-alpha

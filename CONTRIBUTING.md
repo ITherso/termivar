@@ -9,7 +9,7 @@ container build and runtime contract; repository tests do not require database
 or cache services.
 
 ```bash
-git clone https://github.com/ITherso/venom.git termivar
+git clone https://github.com/ITherso/termivar.git termivar
 cd termivar
 cargo test --workspace --locked
 ```
@@ -33,11 +33,11 @@ boundary through an ADR. The architecture command enforces this rule.
 
 ## First contribution
 
-Start with a scoped [`good first issue`](https://github.com/ITherso/venom/labels/good%20first%20issue). Comment before implementation, keep the first pull request to one observable outcome, and ask for scope clarification on the issue if an acceptance criterion is ambiguous.
+Start with a scoped [`good first issue`](https://github.com/ITherso/termivar/labels/good%20first%20issue). Comment before implementation, keep the first pull request to one observable outcome, and ask for scope clarification on the issue if an acceptance criterion is ambiguous.
 
 Good first contributions usually add focused contract tests, correct an evidence-backed documentation gap, improve a generator example, or reduce a specific lint without changing architecture. New scan techniques, public API redesigns, and distributed execution changes need a design discussion first.
 
-Use [GitHub Discussions](https://github.com/ITherso/venom/discussions) for usage questions, design proposals, and contributor help. Use Issues for reproducible bugs and accepted, scoped work. Never use either public channel for a vulnerability; follow the private reporting process below.
+Use [GitHub Discussions](https://github.com/ITherso/termivar/discussions) for usage questions, design proposals, and contributor help. Use Issues for reproducible bugs and accepted, scoped work. Never use either public channel for a vulnerability; follow the private reporting process below.
 
 ## Coding style
 
