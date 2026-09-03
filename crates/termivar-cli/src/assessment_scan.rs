@@ -14,6 +14,8 @@ use serde::Serialize;
 use termivar_scanner::authorization_review::{
     AuthorizationPrincipalPair, AuthorizationReviewOutcome, AuthorizationReviewPolicy,
 };
+#[cfg(feature = "rest-review")]
+use termivar_scanner::rest_review::RestDocumentedResponseClass;
 use termivar_scanner::web_runtime::{
     BuiltInScanProfile, ScanProfileScope, ScanProfileV1, WebAssessmentCompletion,
     WebAssessmentDefenseAudit, WebAssessmentDefenseBodyCoverage, WebAssessmentDefenseMode,
@@ -21,6 +23,14 @@ use termivar_scanner::web_runtime::{
     WebAssessmentIncompleteReason, WebAssessmentMethod, WebAssessmentRootAuthorizationContext,
     WebAssessmentRunReport, WebAssessmentRuntime, WebAssessmentSubject, WebAssessmentSubjectOrigin,
     WebAssessmentSubjectReport, WebAssessmentUsage,
+};
+#[cfg(feature = "openapi-review")]
+use termivar_scanner::web_runtime::{
+    OpenApiRuntimeOutcome, WebAssessmentOpenApiAudit, OPENAPI_REVIEW_CAPABILITY_ID,
+};
+#[cfg(feature = "rest-review")]
+use termivar_scanner::web_runtime::{
+    RestObservedMediaClass, RestRuntimeOutcome, WebAssessmentRestAudit, REST_REVIEW_CAPABILITY_ID,
 };
 #[cfg(feature = "authorization-review")]
 use termivar_scanner::web_runtime::{
@@ -195,6 +205,12 @@ struct ExactOriginReport {
     #[cfg(feature = "authorization-review")]
     #[serde(skip_serializing_if = "Option::is_none")]
     authorization_review_audit: Option<AuthorizationReviewAuditRecord>,
+    #[cfg(feature = "openapi-review")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    openapi_review_audit: Option<OpenApiReviewAuditRecord>,
+    #[cfg(feature = "rest-review")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    rest_review_audit: Option<RestReviewAuditRecord>,
     #[serde(skip_serializing_if = "Option::is_none")]
     failure_inventory: Option<FailureInventory>,
 }
@@ -229,6 +245,107 @@ impl AuthorizationReviewAuditRecord {
             primary_stable: audit.primary_stable(),
             peer_stable: audit.peer_stable(),
             cross_resources_equivalent: audit.cross_resources_equivalent(),
+            item_projected: audit.item_projected(),
+        }
+    }
+}
+
+#[cfg(feature = "openapi-review")]
+#[derive(Serialize)]
+struct OpenApiReviewAuditRecord {
+    schema: &'static str,
+    capability_id: &'static str,
+    outcome: &'static str,
+    candidate_source: &'static str,
+    request_count: u8,
+    active_verification_count: u8,
+    version: Option<&'static str>,
+    semantic_digest: Option<String>,
+    path_count: u32,
+    operation_count: u32,
+    get_operation_count: u32,
+    write_operation_count: u32,
+    path_parameter_count: u32,
+    query_parameter_count: u32,
+    explicit_auth_operation_count: u32,
+    anonymous_operation_count: u32,
+    url_like_operation_count: u32,
+    multipart_operation_count: u32,
+    deprecated_operation_count: u32,
+    replay_matched: bool,
+    item_projected: bool,
+}
+
+#[cfg(feature = "openapi-review")]
+impl OpenApiReviewAuditRecord {
+    fn from_audit(audit: &WebAssessmentOpenApiAudit) -> Self {
+        Self {
+            schema: "security.openapi-review-audit/v1",
+            capability_id: OPENAPI_REVIEW_CAPABILITY_ID,
+            outcome: openapi_review_outcome_code(audit.outcome()),
+            candidate_source: audit.candidate_source().as_str(),
+            request_count: audit.request_count(),
+            active_verification_count: audit.active_verification_count(),
+            version: audit.version(),
+            semantic_digest: audit.semantic_digest().map(str::to_owned),
+            path_count: audit.path_count(),
+            operation_count: audit.operation_count(),
+            get_operation_count: audit.get_operation_count(),
+            write_operation_count: audit.write_operation_count(),
+            path_parameter_count: audit.path_parameter_count(),
+            query_parameter_count: audit.query_parameter_count(),
+            explicit_auth_operation_count: audit.explicit_auth_operation_count(),
+            anonymous_operation_count: audit.anonymous_operation_count(),
+            url_like_operation_count: audit.url_like_operation_count(),
+            multipart_operation_count: audit.multipart_operation_count(),
+            deprecated_operation_count: audit.deprecated_operation_count(),
+            replay_matched: audit.replay_matched(),
+            item_projected: audit.item_projected(),
+        }
+    }
+}
+
+#[cfg(feature = "rest-review")]
+#[derive(Serialize)]
+struct RestReviewAuditRecord {
+    schema: &'static str,
+    capability_id: &'static str,
+    enabled: bool,
+    method: &'static str,
+    outcome: &'static str,
+    request_count: u8,
+    active_verification_count: u8,
+    eligible_operation_count: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    selected_operation_identity: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    documented_response: Option<&'static str>,
+    observed_media: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    status_class: Option<u8>,
+    replay_stable: bool,
+    item_projected: bool,
+}
+
+#[cfg(feature = "rest-review")]
+impl RestReviewAuditRecord {
+    fn from_audit(audit: &WebAssessmentRestAudit) -> Self {
+        Self {
+            schema: "security.rest-readonly-review-audit/v1",
+            capability_id: REST_REVIEW_CAPABILITY_ID,
+            enabled: true,
+            method: "get",
+            outcome: rest_review_outcome_code(audit.outcome()),
+            request_count: audit.request_count(),
+            active_verification_count: audit.active_verification_count(),
+            eligible_operation_count: audit.eligible_operation_count(),
+            selected_operation_identity: audit.selected_operation_identity().map(str::to_owned),
+            documented_response: audit
+                .documented_response()
+                .map(rest_documented_response_code),
+            observed_media: rest_observed_media_code(audit.observed_media()),
+            status_class: audit.status_class(),
+            replay_stable: audit.replay_stable(),
             item_projected: audit.item_projected(),
         }
     }
@@ -814,6 +931,14 @@ fn document_from_web_review_report(
             authorization_review_audit: report
                 .authorization_review_audit()
                 .map(AuthorizationReviewAuditRecord::from_audit),
+            #[cfg(feature = "openapi-review")]
+            openapi_review_audit: report
+                .openapi_review_audit()
+                .map(OpenApiReviewAuditRecord::from_audit),
+            #[cfg(feature = "rest-review")]
+            rest_review_audit: report
+                .rest_review_audit()
+                .map(RestReviewAuditRecord::from_audit),
             failure_inventory: None,
         })),
     }
@@ -881,6 +1006,10 @@ fn document_from_web_review_failure(
             transport: transport_summary(receipt.transport()),
             #[cfg(feature = "authorization-review")]
             authorization_review_audit: None,
+            #[cfg(feature = "openapi-review")]
+            openapi_review_audit: None,
+            #[cfg(feature = "rest-review")]
+            rest_review_audit: None,
             failure_inventory: Some(FailureInventory {
                 consistent: receipt.inventory_consistent(),
                 unrepresented_ledger_subjects: receipt.unrepresented_ledger_subjects(),
@@ -1231,6 +1360,70 @@ const fn authorization_review_outcome_code(outcome: AuthorizationReviewOutcome) 
     }
 }
 
+#[cfg(feature = "openapi-review")]
+const fn openapi_review_outcome_code(outcome: OpenApiRuntimeOutcome) -> &'static str {
+    match outcome {
+        OpenApiRuntimeOutcome::NotEligible => "not_eligible",
+        OpenApiRuntimeOutcome::DocumentObserved => "document_observed",
+        OpenApiRuntimeOutcome::Swagger20MetadataOnly => "swagger_20_metadata_only",
+        OpenApiRuntimeOutcome::UnsupportedVersion => "unsupported_version",
+        OpenApiRuntimeOutcome::ReplayMismatch => "replay_mismatch",
+        OpenApiRuntimeOutcome::UnsupportedMedia => "unsupported_media",
+        OpenApiRuntimeOutcome::Malformed => "malformed",
+        OpenApiRuntimeOutcome::LimitExceeded => "limit_exceeded",
+        OpenApiRuntimeOutcome::TooLarge => "too_large",
+        OpenApiRuntimeOutcome::RedirectObserved => "redirect_observed",
+        OpenApiRuntimeOutcome::RateLimited => "rate_limited",
+        OpenApiRuntimeOutcome::DefensiveInterference => "defensive_interference",
+        OpenApiRuntimeOutcome::HttpError => "http_error",
+        OpenApiRuntimeOutcome::Truncated => "truncated",
+        OpenApiRuntimeOutcome::Incomplete => "incomplete",
+        OpenApiRuntimeOutcome::BudgetExhausted => "budget_exhausted",
+        OpenApiRuntimeOutcome::Cancelled => "cancelled",
+    }
+}
+
+#[cfg(feature = "rest-review")]
+const fn rest_review_outcome_code(outcome: RestRuntimeOutcome) -> &'static str {
+    match outcome {
+        RestRuntimeOutcome::NotEligible => "not_eligible",
+        RestRuntimeOutcome::SurfaceObserved => "surface_observed",
+        RestRuntimeOutcome::ReplayMismatch => "replay_mismatch",
+        RestRuntimeOutcome::CompleteNonJson => "complete_non_json",
+        RestRuntimeOutcome::Redirect => "redirect",
+        RestRuntimeOutcome::AuthenticationRequired => "authentication_required",
+        RestRuntimeOutcome::Forbidden => "forbidden",
+        RestRuntimeOutcome::NotFound => "not_found",
+        RestRuntimeOutcome::RateLimited => "rate_limited",
+        RestRuntimeOutcome::DefensiveInterference => "defensive_interference",
+        RestRuntimeOutcome::ServerError => "server_error",
+        RestRuntimeOutcome::UnsupportedMedia => "unsupported_media",
+        RestRuntimeOutcome::Truncated => "truncated",
+        RestRuntimeOutcome::Incomplete => "incomplete",
+        RestRuntimeOutcome::Cancelled => "cancelled",
+        RestRuntimeOutcome::BudgetExhausted => "budget_exhausted",
+    }
+}
+
+#[cfg(feature = "rest-review")]
+const fn rest_documented_response_code(response: RestDocumentedResponseClass) -> &'static str {
+    match response {
+        RestDocumentedResponseClass::JsonCompatible => "json_compatible",
+        RestDocumentedResponseClass::Unknown => "unknown",
+        _ => "other",
+    }
+}
+
+#[cfg(feature = "rest-review")]
+const fn rest_observed_media_code(media: RestObservedMediaClass) -> &'static str {
+    match media {
+        RestObservedMediaClass::JsonCompatible => "json_compatible",
+        RestObservedMediaClass::Text => "text",
+        RestObservedMediaClass::Unsupported => "unsupported",
+        RestObservedMediaClass::Unknown => "unknown",
+    }
+}
+
 fn stop_reason_code(reason: DecisionStopReason) -> &'static str {
     match reason {
         DecisionStopReason::ObjectiveComplete => "objective_complete",
@@ -1379,6 +1572,30 @@ fn render_text(document: &WebAssessmentDocument) -> String {
                 lines.push(format!(
                     "authorization review audit: policy={} requests={} outcome={} item_projected={}",
                     audit.policy_id, audit.request_count, audit.outcome, audit.item_projected
+                ));
+            }
+            #[cfg(feature = "openapi-review")]
+            if let Some(audit) = &report.openapi_review_audit {
+                lines.push(format!(
+                    "OpenAPI review audit: source={} requests={} active_verifications={} outcome={} replay_matched={} item_projected={}",
+                    audit.candidate_source,
+                    audit.request_count,
+                    audit.active_verification_count,
+                    audit.outcome,
+                    audit.replay_matched,
+                    audit.item_projected
+                ));
+            }
+            #[cfg(feature = "rest-review")]
+            if let Some(audit) = &report.rest_review_audit {
+                lines.push(format!(
+                    "REST review audit: eligible_operations={} requests={} active_verifications={} outcome={} replay_stable={} item_projected={}",
+                    audit.eligible_operation_count,
+                    audit.request_count,
+                    audit.active_verification_count,
+                    audit.outcome,
+                    audit.replay_stable,
+                    audit.item_projected
                 ));
             }
         },
@@ -1846,6 +2063,85 @@ max_diff_paths = 8
         for (status, expected) in outcomes {
             assert_eq!(outcome_status_code(status), expected);
         }
+
+        #[cfg(feature = "openapi-review")]
+        for (outcome, expected) in [
+            (OpenApiRuntimeOutcome::NotEligible, "not_eligible"),
+            (OpenApiRuntimeOutcome::DocumentObserved, "document_observed"),
+            (
+                OpenApiRuntimeOutcome::Swagger20MetadataOnly,
+                "swagger_20_metadata_only",
+            ),
+            (
+                OpenApiRuntimeOutcome::UnsupportedVersion,
+                "unsupported_version",
+            ),
+            (OpenApiRuntimeOutcome::ReplayMismatch, "replay_mismatch"),
+            (OpenApiRuntimeOutcome::UnsupportedMedia, "unsupported_media"),
+            (OpenApiRuntimeOutcome::Malformed, "malformed"),
+            (OpenApiRuntimeOutcome::LimitExceeded, "limit_exceeded"),
+            (OpenApiRuntimeOutcome::TooLarge, "too_large"),
+            (OpenApiRuntimeOutcome::RedirectObserved, "redirect_observed"),
+            (OpenApiRuntimeOutcome::RateLimited, "rate_limited"),
+            (
+                OpenApiRuntimeOutcome::DefensiveInterference,
+                "defensive_interference",
+            ),
+            (OpenApiRuntimeOutcome::HttpError, "http_error"),
+            (OpenApiRuntimeOutcome::Truncated, "truncated"),
+            (OpenApiRuntimeOutcome::Incomplete, "incomplete"),
+            (OpenApiRuntimeOutcome::BudgetExhausted, "budget_exhausted"),
+            (OpenApiRuntimeOutcome::Cancelled, "cancelled"),
+        ] {
+            assert_eq!(openapi_review_outcome_code(outcome), expected);
+        }
+
+        #[cfg(feature = "rest-review")]
+        {
+            for (outcome, expected) in [
+                (RestRuntimeOutcome::NotEligible, "not_eligible"),
+                (RestRuntimeOutcome::SurfaceObserved, "surface_observed"),
+                (RestRuntimeOutcome::ReplayMismatch, "replay_mismatch"),
+                (RestRuntimeOutcome::CompleteNonJson, "complete_non_json"),
+                (RestRuntimeOutcome::Redirect, "redirect"),
+                (
+                    RestRuntimeOutcome::AuthenticationRequired,
+                    "authentication_required",
+                ),
+                (RestRuntimeOutcome::Forbidden, "forbidden"),
+                (RestRuntimeOutcome::NotFound, "not_found"),
+                (RestRuntimeOutcome::RateLimited, "rate_limited"),
+                (
+                    RestRuntimeOutcome::DefensiveInterference,
+                    "defensive_interference",
+                ),
+                (RestRuntimeOutcome::ServerError, "server_error"),
+                (RestRuntimeOutcome::UnsupportedMedia, "unsupported_media"),
+                (RestRuntimeOutcome::Truncated, "truncated"),
+                (RestRuntimeOutcome::Incomplete, "incomplete"),
+                (RestRuntimeOutcome::Cancelled, "cancelled"),
+                (RestRuntimeOutcome::BudgetExhausted, "budget_exhausted"),
+            ] {
+                assert_eq!(rest_review_outcome_code(outcome), expected);
+            }
+            for (response, expected) in [
+                (
+                    RestDocumentedResponseClass::JsonCompatible,
+                    "json_compatible",
+                ),
+                (RestDocumentedResponseClass::Unknown, "unknown"),
+            ] {
+                assert_eq!(rest_documented_response_code(response), expected);
+            }
+            for (media, expected) in [
+                (RestObservedMediaClass::JsonCompatible, "json_compatible"),
+                (RestObservedMediaClass::Text, "text"),
+                (RestObservedMediaClass::Unsupported, "unsupported"),
+                (RestObservedMediaClass::Unknown, "unknown"),
+            ] {
+                assert_eq!(rest_observed_media_code(media), expected);
+            }
+        }
     }
 
     #[test]
@@ -1958,6 +2254,47 @@ max_diff_paths = 8
                 },
                 #[cfg(feature = "authorization-review")]
                 authorization_review_audit: None,
+                #[cfg(feature = "openapi-review")]
+                openapi_review_audit: Some(OpenApiReviewAuditRecord {
+                    schema: "security.openapi-review-audit/v1",
+                    capability_id: "api.openapi-contract-observed@1",
+                    outcome: "http_error",
+                    candidate_source: "conventional_openapi_json",
+                    request_count: 1,
+                    active_verification_count: 0,
+                    version: None,
+                    semantic_digest: None,
+                    path_count: 0,
+                    operation_count: 0,
+                    get_operation_count: 0,
+                    write_operation_count: 0,
+                    path_parameter_count: 0,
+                    query_parameter_count: 0,
+                    explicit_auth_operation_count: 0,
+                    anonymous_operation_count: 0,
+                    url_like_operation_count: 0,
+                    multipart_operation_count: 0,
+                    deprecated_operation_count: 0,
+                    replay_matched: false,
+                    item_projected: false,
+                }),
+                #[cfg(feature = "rest-review")]
+                rest_review_audit: Some(RestReviewAuditRecord {
+                    schema: "security.rest-readonly-review-audit/v1",
+                    capability_id: "api.rest-readonly-surface-observed@1",
+                    enabled: true,
+                    method: "get",
+                    outcome: "not_eligible",
+                    request_count: 0,
+                    active_verification_count: 0,
+                    eligible_operation_count: 0,
+                    selected_operation_identity: None,
+                    documented_response: None,
+                    observed_media: "unknown",
+                    status_class: None,
+                    replay_stable: false,
+                    item_projected: false,
+                }),
                 failure_inventory: None,
             })),
         };
@@ -1972,6 +2309,14 @@ max_diff_paths = 8
         ));
         assert!(!rendered.contains("assessment item: subject="));
         assert!(rendered.contains("usage: requests=2 active_verifications=1"));
+        #[cfg(feature = "openapi-review")]
+        assert!(rendered.contains(
+            "OpenAPI review audit: source=conventional_openapi_json requests=1 active_verifications=0 outcome=http_error replay_matched=false item_projected=false"
+        ));
+        #[cfg(feature = "rest-review")]
+        assert!(rendered.contains(
+            "REST review audit: eligible_operations=0 requests=0 active_verifications=0 outcome=not_eligible replay_stable=false item_projected=false"
+        ));
         assert!(!rendered.contains(SECRET));
         assert!(!rendered.contains("https://example.test/private"));
         #[cfg(feature = "authorization-review")]

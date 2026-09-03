@@ -253,6 +253,127 @@ fn openapi_review_executes_through_boxed_scan_and_renders_the_composed_audit() {
     );
 }
 
+#[cfg(feature = "openapi-review")]
+#[test]
+fn incomplete_openapi_review_exposes_actionable_redacted_diagnostics() {
+    const PRIVATE_BODY: &str = "OPENAPI-ERROR-BODY-MUST-NOT-LEAK-2D79F4";
+    let server = serve(|target| {
+        if target == "/openapi.json" {
+            let body = format!(r#"{{"error":"{PRIVATE_BODY}"}}"#);
+            format!(
+                "HTTP/1.1 404 Not Found\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            )
+            .into_bytes()
+        } else {
+            ok_html("fixture root", "")
+        }
+    });
+
+    let mut arguments = vec![
+        "scan",
+        "--profile",
+        "web-review",
+        "--format",
+        "json",
+        "--openapi-review",
+    ];
+    #[cfg(feature = "rest-review")]
+    arguments.push("--rest-review");
+    arguments.push(&server.url);
+    let json = termivar()
+        .args(arguments)
+        .output()
+        .expect("failed to run incomplete OpenAPI/REST review");
+    assert!(!json.status.success(), "terminal review must fail closed");
+    let value = parse_stdout(&json);
+    assert_eq!(value["schema_version"], "web-assessment/v2");
+    assert_eq!(value["disposition"], "incomplete");
+    assert!(value["incomplete_reasons"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|reason| reason == "human_review_required"));
+
+    let report = &value["assessment"]["report"];
+    assert_eq!(
+        report["subjects"][0]["decision"]["terminal"]["command"],
+        "await_human_review"
+    );
+    let openapi = &report["openapi_review_audit"];
+    assert_eq!(openapi["schema"], "security.openapi-review-audit/v1");
+    assert_eq!(openapi["capability_id"], "api.openapi-contract-observed@1");
+    assert_eq!(openapi["candidate_source"], "conventional_openapi_json");
+    assert_eq!(openapi["outcome"], "http_error");
+    assert_eq!(openapi["request_count"], 1);
+    assert_eq!(openapi["active_verification_count"], 0);
+    assert_eq!(openapi["replay_matched"], false);
+    assert_eq!(openapi["item_projected"], false);
+
+    #[cfg(feature = "rest-review")]
+    {
+        let rest = &report["rest_review_audit"];
+        assert_eq!(rest["schema"], "security.rest-readonly-review-audit/v1");
+        assert_eq!(
+            rest["capability_id"],
+            "api.rest-readonly-surface-observed@1"
+        );
+        assert_eq!(rest["outcome"], "not_eligible");
+        assert_eq!(rest["eligible_operation_count"], 0);
+        assert_eq!(rest["request_count"], 0);
+        assert_eq!(rest["active_verification_count"], 0);
+        assert_eq!(rest["replay_stable"], false);
+        assert_eq!(rest["item_projected"], false);
+        assert!(rest.get("selected_operation_identity").is_none());
+    }
+
+    let json_stdout = String::from_utf8(json.stdout).unwrap();
+    let json_stderr = String::from_utf8(json.stderr).unwrap();
+    assert!(!json_stdout.contains(PRIVATE_BODY));
+    assert!(!json_stderr.contains(PRIVATE_BODY));
+    assert!(!json_stdout.contains("/openapi.json"));
+
+    let mut text_arguments = vec![
+        "scan",
+        "--profile",
+        "web-review",
+        "--format",
+        "text",
+        "--openapi-review",
+    ];
+    #[cfg(feature = "rest-review")]
+    text_arguments.push("--rest-review");
+    text_arguments.push(&server.url);
+    let text = termivar()
+        .args(text_arguments)
+        .output()
+        .expect("failed to render incomplete OpenAPI/REST text review");
+    assert!(!text.status.success(), "terminal review must fail closed");
+    let text_stdout = String::from_utf8(text.stdout).unwrap();
+    let text_stderr = String::from_utf8(text.stderr).unwrap();
+    assert!(text_stdout.contains("incomplete reasons: human_review_required"));
+    assert!(text_stdout.contains(
+        "OpenAPI review audit: source=conventional_openapi_json requests=1 active_verifications=0 outcome=http_error replay_matched=false item_projected=false"
+    ));
+    #[cfg(feature = "rest-review")]
+    assert!(text_stdout.contains(
+        "REST review audit: eligible_operations=0 requests=0 active_verifications=0 outcome=not_eligible replay_stable=false item_projected=false"
+    ));
+    assert!(!text_stdout.contains(PRIVATE_BODY));
+    assert!(!text_stderr.contains(PRIVATE_BODY));
+    assert!(!text_stdout.contains("/openapi.json"));
+
+    let requests = server.requests.lock().unwrap();
+    assert_eq!(
+        requests
+            .iter()
+            .filter(|target| target.as_str() == "/openapi.json")
+            .count(),
+        2
+    );
+    assert!(!requests.iter().any(|target| target == "/status"));
+}
+
 #[test]
 fn completed_web_review_uses_the_central_renderer_for_every_format() {
     let server = serve_request(|target, request| {
@@ -400,6 +521,14 @@ fn incomplete_web_review_emits_diagnostic_and_never_creates_report_output() {
         value["assessment"]["report"]["assessment_items"]["projection_status"],
         "unavailable"
     );
+    #[cfg(feature = "openapi-review")]
+    assert!(value["assessment"]["report"]
+        .get("openapi_review_audit")
+        .is_none());
+    #[cfg(feature = "rest-review")]
+    assert!(value["assessment"]["report"]
+        .get("rest_review_audit")
+        .is_none());
 }
 
 #[test]
