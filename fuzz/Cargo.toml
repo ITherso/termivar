@@ -81,3 +81,10 @@ path = "fuzz_targets/decision_loop_authority.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "oast_correlation"
+path = "fuzz_targets/oast_correlation.rs"
+test = false
+doc = false
+bench = false

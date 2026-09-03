@@ -45,6 +45,7 @@ hex = "0.4"
 axum = { version = "0.7", default-features = false }
 futures = "0.3"
 sha2 = "0.10"
+zeroize = "1.9"
 html5ever = "0.39"
 markup5ever_rcdom = "0.39"
 tempfile = "3.8"

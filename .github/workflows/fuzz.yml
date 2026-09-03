@@ -19,6 +19,7 @@ on:
       - "crates/termivar-scanner/src/http_evidence.rs"
       - "crates/termivar-scanner/src/http_evidence/form_controls.rs"
       - "crates/termivar-scanner/src/openapi_review.rs"
+      - "crates/termivar-scanner/src/oast.rs"
       - ".github/workflows/fuzz.yml"
   schedule:
     - cron: "43 3 * * 1"
@@ -59,7 +60,7 @@ jobs:
           CARGO_PROFILE_RELEASE_STRIP: "none"
         shell: bash
         run: |
-          for target in json_parser html_form_controls expression_semantics declarative_policy_wire decision_loop_authority; do
+          for target in json_parser html_form_controls expression_semantics declarative_policy_wire decision_loop_authority oast_correlation; do
             cargo fuzz build "$target"
           done
 
@@ -98,6 +99,9 @@ jobs:
             input_timeout: 2
           - target: decision_loop_authority
             max_len: 16384
+            input_timeout: 2
+          - target: oast_correlation
+            max_len: 4096
             input_timeout: 2
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6

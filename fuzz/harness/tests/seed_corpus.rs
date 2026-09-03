@@ -93,6 +93,47 @@ fn bounded_openapi_regression_inputs_satisfy_the_semantic_oracle() {
     }
 }
 
+#[test]
+fn bounded_oast_regression_inputs_satisfy_the_semantic_oracle() {
+    for scenario in 0_u8..12 {
+        for boundary in [0_u8, 1, 31, 32, 63, 64, 127, u8::MAX] {
+            let seed = structured_oast_seed(scenario, boundary);
+            assert_eq!(seed.len(), 80, "structured OAST seed shape drifted");
+            assert!(seed[1..33].iter().any(|byte| *byte != 0));
+            assert!(seed[33..65].iter().any(|byte| *byte != 0));
+            assert_ne!(&seed[1..33], &seed[33..65]);
+            assert!(seed.len() <= termivar_fuzz_harness::MAX_OAST_FUZZ_INPUT_BYTES);
+            termivar_fuzz_harness::check_oast_correlation(&seed);
+        }
+    }
+}
+
+fn structured_oast_seed(scenario: u8, boundary: u8) -> Vec<u8> {
+    let mut seed = vec![0_u8; 80];
+    seed[0] = scenario;
+    for (index, byte) in seed[1..33].iter_mut().enumerate() {
+        *byte = boundary
+            .wrapping_add(scenario)
+            .wrapping_add((index as u8).wrapping_mul(17));
+    }
+    for (index, byte) in seed[33..65].iter_mut().enumerate() {
+        *byte = boundary
+            .wrapping_mul(3)
+            .wrapping_add(scenario.wrapping_mul(11))
+            .wrapping_add((index as u8).wrapping_mul(29))
+            ^ 0xa7;
+    }
+
+    // Populate the exact timing and limit selector bytes consumed by OastModel.
+    for (index, byte) in seed[65..80].iter_mut().enumerate() {
+        *byte = boundary
+            .rotate_left((index % 8) as u32)
+            .wrapping_add(scenario.wrapping_mul(13))
+            .wrapping_add(index as u8);
+    }
+    seed
+}
+
 fn replay_json_corpus(
     directory: &str,
     minimum_seed_count: usize,

@@ -91,6 +91,7 @@ Bounded manifest bytes --> termivar-exploit validation --> sealed metadata catal
 - [API reasoning](api-reasoning.md): deterministic JSON/GraphQL fingerprinting, capped API evidence contributions, and review-only visibility-boundary hypotheses.
 - [GraphQL surface review](graphql-review.md): explicit anonymous opt-in, deterministic one-endpoint selection, bounded three-request introspection/replay, and informational claim authority.
 - [OpenAPI surface review](openapi-surface-review.md): explicit anonymous opt-in, deterministic one-document selection, bounded bodyless GET/replay, and informational contract observation.
+- [OAST correlation foundation](oast-correlation.md): provider-neutral host-minted token binding, bounded caller-driven polls, typed DNS/HTTP events, replay suppression, and redacted receipts without network execution.
 - [Standard web decision profile](web-decision.md): one-shot composition, installation transaction, and layer boundaries.
 - [Standard web decision runtime](web-runtime.md): target builder, bootstrap evidence, executable-plan filtering, resource budgets, and complete session driving.
 - [Web reasoning](web-reasoning.md): standard ontology, explainable fingerprint rules, and Bayesian weak/strong hypotheses.

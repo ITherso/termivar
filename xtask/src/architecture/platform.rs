@@ -30,6 +30,7 @@ const QUARANTINED_FEATURES: &[&str] = &[
     "legacy-scanner",
     "lua",
     "normalization-resilience",
+    "oast-correlation",
     "openapi-review",
     "rest-review",
     "platform-models",
@@ -53,6 +54,7 @@ const EXACT_SCANNER_FEATURES: &[&str] = &[
     "ml",
     "monitoring",
     "normalization-resilience",
+    "oast-correlation",
     "openapi-review",
     "rest-review",
     "platform-models",
@@ -75,6 +77,7 @@ const FULL_AGGREGATE_FEATURES: &[&str] = &[
     "ml",
     "monitoring",
     "normalization-resilience",
+    "oast-correlation",
     "openapi-review",
     "rest-review",
     "platform-models",
@@ -96,6 +99,7 @@ const ENTERPRISE_AGGREGATE_FEATURES: &[&str] = &[
     "ml",
     "monitoring",
     "normalization-resilience",
+    "oast-correlation",
     "openapi-review",
     "rest-review",
     "platform-models",
@@ -118,6 +122,7 @@ const FEATURE_OWNED_DEPENDENCIES: &[&str] = &[
     "tokio-util",
     "toml",
     "uuid",
+    "zeroize",
 ];
 
 const REQUIRED_SCANNER_DEPENDENCIES: &[&str] = &[
@@ -197,6 +202,7 @@ const EXACT_MODULE_GATES: &[(&str, &str)] = &[
     ("metrics", "feature=\"platform-models\""),
     ("ml", "feature=\"ml\""),
     ("monitoring", "feature=\"monitoring\""),
+    ("oast", "feature=\"oast-correlation\""),
     ("persistence", "feature=\"platform-models\""),
     ("plugin", "feature=\"plugins\""),
     ("post_exploitation", "feature=\"platform-models\""),
@@ -311,6 +317,7 @@ const EXPECTED_QUARANTINED_PUBLIC_MODULES: &[&str] = &[
     "metrics",
     "ml",
     "monitoring",
+    "oast",
     "persistence",
     "plugin",
     "post_exploitation",
@@ -326,6 +333,7 @@ const QUARANTINED_PUBLIC_FEATURES: &[&str] = &[
     "lua",
     "ml",
     "monitoring",
+    "oast-correlation",
     "platform-models",
     "plugins",
     "reporting",
@@ -457,6 +465,13 @@ const QUARANTINED_PUBLIC_SURFACES: &[SurfaceContract] = &[
         lifecycle: Lifecycle::Experimental,
         implementation: ImplementationClaim::Scaffold,
         host: HostContract::Library("measurement comparison API"),
+    },
+    SurfaceContract {
+        module: "oast",
+        feature: "oast-correlation",
+        lifecycle: Lifecycle::Preview,
+        implementation: ImplementationClaim::Implemented,
+        host: HostContract::Library("transport-neutral OAST correlation API"),
     },
     SurfaceContract {
         module: "compliance",
@@ -1465,6 +1480,10 @@ fn exact_raw_feature_closures() -> Vec<(&'static str, &'static [&'static str])> 
         ("ml", &["ml"]),
         ("distributed", &["distributed"]),
         ("monitoring", &["monitoring"]),
+        (
+            "oast-correlation",
+            &["oast-correlation", "core", "dep:zeroize"],
+        ),
         ("compliance", &["compliance"]),
         ("threat-intel", &["threat-intel"]),
         (
@@ -8679,6 +8698,10 @@ mod tests {
         features.insert("ml".to_owned(), Vec::new());
         features.insert("distributed".to_owned(), Vec::new());
         features.insert("monitoring".to_owned(), Vec::new());
+        features.insert(
+            "oast-correlation".to_owned(),
+            vec!["core".to_owned(), "dep:zeroize".to_owned()],
+        );
         features.insert("compliance".to_owned(), Vec::new());
         features.insert("threat-intel".to_owned(), Vec::new());
         features.insert(
@@ -8726,6 +8749,68 @@ mod tests {
         );
         features.insert("research".to_owned(), vec!["full".to_owned()]);
         features
+    }
+
+    #[test]
+    fn oast_correlation_is_non_default_core_only_and_in_both_aggregates() {
+        let features = valid_feature_map();
+        assert!(feature_violations(&features).is_empty());
+        assert_eq!(
+            features.get("oast-correlation").unwrap(),
+            &["core".to_owned(), "dep:zeroize".to_owned()]
+        );
+        assert!(!raw_feature_closure(&features, "default").contains("oast-correlation"));
+        assert!(features
+            .get("full")
+            .unwrap()
+            .iter()
+            .any(|feature| feature == "oast-correlation"));
+        assert!(features
+            .get("enterprise")
+            .unwrap()
+            .iter()
+            .any(|feature| feature == "oast-correlation"));
+
+        let mut widened = valid_feature_map();
+        widened
+            .get_mut("oast-correlation")
+            .unwrap()
+            .push("scanning".to_owned());
+        assert!(feature_violations(&widened)
+            .iter()
+            .any(|violation| { violation.contains("`oast-correlation` raw feature closure") }));
+
+        let mut missing_zeroize = valid_feature_map();
+        missing_zeroize
+            .get_mut("oast-correlation")
+            .unwrap()
+            .retain(|member| member != "dep:zeroize");
+        assert!(feature_violations(&missing_zeroize)
+            .iter()
+            .any(|violation| {
+                violation.contains("`oast-correlation` raw feature closure")
+                    && violation.contains("dep:zeroize")
+            }));
+
+        let mut default_enabled = valid_feature_map();
+        default_enabled
+            .get_mut("default")
+            .unwrap()
+            .push("oast-correlation".to_owned());
+        assert!(feature_violations(&default_enabled)
+            .iter()
+            .any(|violation| violation.contains("`default` raw feature closure")));
+
+        for aggregate in ["full", "enterprise"] {
+            let mut missing = valid_feature_map();
+            missing
+                .get_mut(aggregate)
+                .unwrap()
+                .retain(|feature| feature != "oast-correlation");
+            assert!(feature_violations(&missing).iter().any(|violation| {
+                violation.contains(&format!("compatibility alias `{aggregate}`"))
+            }));
+        }
     }
 
     #[test]
@@ -11842,12 +11927,24 @@ mod tests {
             })
             .collect();
         assert!(scanner_dependency_violations(&dependencies).is_empty());
+        assert!(dependencies
+            .get("zeroize")
+            .is_some_and(|dependency| dependency.optional));
 
         dependencies.get_mut("mlua").unwrap().optional = false;
         assert_eq!(
             scanner_dependency_violations(&dependencies),
             vec![
                 "termivar-scanner feature-owned dependency `mlua` must remain present and optional"
+            ]
+        );
+
+        dependencies.get_mut("mlua").unwrap().optional = true;
+        dependencies.get_mut("zeroize").unwrap().optional = false;
+        assert_eq!(
+            scanner_dependency_violations(&dependencies),
+            vec![
+                "termivar-scanner feature-owned dependency `zeroize` must remain present and optional"
             ]
         );
     }
@@ -12202,6 +12299,7 @@ mod tests {
             #[cfg(feature = "platform-models")] pub mod metrics;
             #[cfg(feature = "ml")] pub mod ml;
             #[cfg(feature = "monitoring")] pub mod monitoring;
+            #[cfg(feature = "oast-correlation")] pub mod oast;
             #[cfg(feature = "platform-models")] pub mod persistence;
             #[cfg(feature = "plugins")] pub mod plugin;
             #[cfg(feature = "platform-models")] pub mod post_exploitation;
@@ -12231,6 +12329,14 @@ mod tests {
             .iter()
             .any(|violation| violation.contains("module `dashboard`")
                 && violation.contains("missing")));
+
+        let oast_violations = module_gate_violations(
+            r#"#[cfg(any(feature = "oast-correlation", feature = "scanning"))] pub mod oast;"#,
+        )
+        .unwrap();
+        assert!(oast_violations.iter().any(|violation| {
+            violation.contains("module `oast`") && violation.contains("exact cfg")
+        }));
     }
 
     #[test]
@@ -12426,6 +12532,13 @@ mod tests {
                     Lifecycle::Experimental,
                     ImplementationClaim::Scaffold,
                     HostContract::Library("measurement comparison API"),
+                ),
+                (
+                    "oast",
+                    "oast-correlation",
+                    Lifecycle::Preview,
+                    ImplementationClaim::Implemented,
+                    HostContract::Library("transport-neutral OAST correlation API"),
                 ),
                 (
                     "compliance",

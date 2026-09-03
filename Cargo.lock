@@ -1917,6 +1917,7 @@ dependencies = [
  "toml",
  "url",
  "uuid",
+ "zeroize",
 ]
 
 [[package]]

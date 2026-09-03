@@ -4,6 +4,15 @@ All notable changes to Termivar are recorded here. Releases use the categories f
 
 ## [Unreleased]
 
+### Added
+
+- Added a non-default, provider-neutral OAST correlation foundation with
+  host-minted move-only tokens, exact verification-case binding, bounded
+  caller-driven polling, DNS/HTTP event taxonomy, deterministic duplicate
+  suppression, expiry/cancellation, and raw-value-free receipts. It performs
+  no network I/O, registers no scanner action, emits no finding, and dispatches
+  no SSRF or XXE payload.
+
 ### Changed
 
 - Advanced the post-`v0.10.0-alpha.1` development line to

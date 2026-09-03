@@ -1,9 +1,10 @@
 # Fuzzing
 
-The `fuzz/` package contains four Termivar-owned semantic targets plus five bounded
+The `fuzz/` package contains five Termivar-owned semantic targets plus five bounded
 upstream-parser targets. `html_form_controls`, `expression_semantics`, and
 `declarative_policy_wire` exercise extraction and declarative-policy contracts;
-`decision_loop_authority` exercises adaptive planner authority. The parser
+`decision_loop_authority` exercises adaptive planner authority, and
+`oast_correlation` exercises the transport-free correlation state machine. The parser
 targets are dependency-level signals and must not be reported as Termivar
 decision-runtime coverage.
 
@@ -16,14 +17,16 @@ cargo fuzz run html_form_controls
 cargo fuzz run expression_semantics
 cargo fuzz run declarative_policy_wire
 cargo fuzz run decision_loop_authority
+cargo fuzz run oast_correlation
 ```
 
-Every pull request replays the committed semantic corpora and compiles all
-Termivar-owned targets. The `Scheduled Fuzzing` workflow runs all nine targets in
-bounded weekly campaigns and when fuzz harnesses change on `main`. Every target
-uploads its libFuzzer log and a structured campaign summary for 90 days;
-failures also retain crash artifacts. This provides regression pressure, not
-proof of parser or decision-runtime safety.
+Every pull request replays the committed semantic corpora, runs the deterministic
+structured OAST regression matrix, and compiles all Termivar-owned targets. The
+`Scheduled Fuzzing` workflow runs all ten targets in bounded weekly campaigns
+and when fuzz harnesses change on `main`. Every target uploads its libFuzzer log
+and a structured campaign summary for 90 days; failures also retain crash
+artifacts. This provides regression pressure, not proof of parser or
+decision-runtime safety.
 
 Run fuzzing on a dedicated machine or bounded CI job. Start with a small, non-sensitive seed corpus. Crashes must preserve the minimized input and exact commit SHA.
 
@@ -35,6 +38,7 @@ Run fuzzing on a dedicated machine or bounded CI job. Start with a small, non-se
 | `expression_semantics` | Termivar | Exact TextList truth table, truthful contributing evidence IDs, deterministic evaluation, and bounded expression round trips |
 | `declarative_policy_wire` | Termivar | One-field semantic corruption rejects or reconstructs an exactly equivalent historical policy |
 | `decision_loop_authority` | Termivar | Adaptive scheduling cannot bypass registration, host suppression, requirements, risk, budget, prerequisites, executor identity, or claim policy; errors are atomic |
+| `oast_correlation` | Termivar | Host-minted token reuse, exact case/correlation binding, protocol grants, expiry/cancellation, bounded poll permits, opaque event-key replay suppression, and atomic batch failure semantics |
 | `http_parser` | Upstream | `httparse` request parser survival |
 | `json_parser` | Upstream | `serde_json` value parser survival |
 | `yaml_parser` | Upstream-only dependency | `serde_yaml` value parser survival |
@@ -82,6 +86,19 @@ outstanding action after that action is absent from the planner registry. It
 also rejects a legacy/default replay that would broaden a currently registered
 KnowledgeOnly action into hypothesis-transition authority.
 
+`oast_correlation` converts a structured prefix of an input of at most 4 KiB
+into one of twelve pure, provider-neutral scenarios. The input independently
+selects the token and event-key bytes, monotonic schedule, expiry slack,
+authority limits, and poll budget. An expectation table defined independently
+from the implementation requires the exact error variant, registration and poll
+counters, active or terminal state and time, accepted/unique/duplicate counts,
+atomic failure behavior, and reduced receipt semantics for each scenario. A
+second run must reproduce that same expected observation. The scenarios cover
+token reuse, wrong case/correlation routing, protocol grants, expiry,
+cancellation, spent poll permits, duplicate keys, conflicting protocol
+families for one event key, and unique-event limits. The harness performs no
+network, provider, clock, random, reporting, or scanner-runtime work.
+
 ## Semantic corpus and reproduction
 
 Reviewed seeds under `fuzz/corpus/html_form_controls/` include the minimized
@@ -107,6 +124,10 @@ Motivation and KnowledgeOnly dispatch, context-free schedule/retry, prospective
 motivation rejection, active host suppression, and a legacy/default replay that
 references an action no longer registered with the planner or broadens a
 KnowledgeOnly case into hypothesis-transition authority.
+The harness replay also constructs 96 deterministic, owned 80-byte OAST seeds:
+all twelve scenarios crossed with eight boundary patterns. Every seed populates
+the complete token, event key, timing, and bound-selector prefix consumed by the
+OAST model rather than relying on fallback bytes.
 Generated hash-named files in every corpus remain ignored until reviewed.
 
 Replay all committed seeds without libFuzzer:
@@ -125,6 +146,8 @@ cargo fuzz run expression_semantics artifacts/expression_semantics/<artifact>
 cargo fuzz tmin declarative_policy_wire artifacts/declarative_policy_wire/<artifact>
 cargo fuzz run decision_loop_authority artifacts/decision_loop_authority/<artifact>
 cargo fuzz tmin decision_loop_authority artifacts/decision_loop_authority/<artifact>
+cargo fuzz run oast_correlation artifacts/oast_correlation/<artifact>
+cargo fuzz tmin oast_correlation artifacts/oast_correlation/<artifact>
 ```
 
 Scheduled campaigns use an explicit 60-second budget and 1024-MiB RSS limit with

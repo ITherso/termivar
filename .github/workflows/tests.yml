@@ -161,7 +161,7 @@ jobs:
         run: |
           set -euo pipefail
           for feature in \
-            core scanning normalization-resilience legacy-scanner platform-models reporting detection ml \
+            core scanning normalization-resilience oast-correlation legacy-scanner platform-models reporting detection ml \
             distributed monitoring compliance threat-intel plugins lua
           do
             cargo test --locked -p termivar-scanner --no-default-features --features "$feature" --lib --tests

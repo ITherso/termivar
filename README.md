@@ -99,6 +99,7 @@ Execution decisions are deterministic and model-independent. Termivar does not r
 | Execution | Exact-origin, redirect-disabled transport actions through one metered request broker; a tested zero-I/O `LocalKnowledge` library contract |
 | Output | Unchanged no-profile text/`--explain`/`decision-scan/v1`; explicit profile audits; and bounded JSON, CSV, HTML, or Markdown assessment reports for completed `web-review` runs |
 | Exploit foundation | Independent Preview `termivar-exploit` manifest/catalog library plus a disconnected non-default orchestration API. Only a five-step in-memory canary fixture exercises host-minted grants, typed permits/receipts, impact verification, and cleanup verification; there is no real exploit, production adapter, or scanner/CLI/API/proxy integration |
+| OAST correlation foundation | Non-default provider-neutral `termivar-scanner` library contracts consume host-minted tokens, bind one exact verification case, meter caller-driven polls, classify reduced DNS/HTTP events, suppress replays, and return redacted receipts. V1 has no provider adapter, network I/O, scanner action, target payload, report item, or SSRF conclusion |
 | Artifact signatures | Independent Preview `termivar-artifact` library scans bounded caller-supplied buffers/readers for exact/wildcard signatures with overlapping deterministic observations. Explicit local regular-file access is available only through the non-default CLI `artifact-adapter`; matches are not malware or vulnerability verdicts |
 | Normalization resilience | Non-default Preview scanner/CLI feature plus explicit `--normalization-resilience` on `web-review`. V1 selects at most one typed depth-one HTML representation, reuses committed XSS/defense evidence, and requires transformed candidate plus distinct replay to reproduce the same inert parser semantics. It is `NeedsReview` / `KnowledgeOnly` only, not a generic or product-specific WAF-bypass claim |
 | GraphQL surface review | Non-default Preview scanner/CLI feature plus explicit `--graphql-review` on `web-review`. V1 selects at most one exact-origin endpoint and performs up to three anonymous bounded POST/JSON requests: an aliased `__typename` control, schema-root introspection candidate, and distinct replay. Results are `Informational` / `KnowledgeOnly`, not vulnerability or authorization claims |
@@ -591,6 +592,7 @@ tag and accepted cross-version baseline exist, pin a reviewed full commit.
 - [GraphQL surface review](docs/internals/graphql-review.md)
 - [OpenAPI surface review](docs/internals/openapi-surface-review.md)
 - [REST read-only review](docs/internals/rest-readonly-review.md)
+- [OAST correlation foundation](docs/internals/oast-correlation.md)
 - [Normalization-resilience review](docs/internals/normalization-resilience.md)
 - [Historical scanner salvage](docs/history/historical-scanner-salvage.md)
 - [Post-workspace WAF/evasion salvage](docs/history/post-workspace-waf-evasion-salvage.md)

@@ -9,4 +9,4 @@ html5ever = "0.39"
 markup5ever_rcdom = "0.39"
 serde_json = "1"
 termivar-core = { path = "../../crates/termivar-core" }
-termivar-scanner = { path = "../../crates/termivar-scanner", default-features = false, features = ["scanning"] }
+termivar-scanner = { path = "../../crates/termivar-scanner", default-features = false, features = ["scanning", "oast-correlation"] }

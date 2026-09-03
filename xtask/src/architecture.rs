@@ -22,6 +22,7 @@ mod cli_secret;
 mod deployment;
 mod domain_modularization;
 mod exploit;
+mod oast;
 mod platform;
 mod plugin;
 mod reachability;
@@ -69,6 +70,8 @@ const PRELUDE_ROOTS: &[&str] = &[
     "TryInto",
     "Vec",
 ];
+const OAST_MODULE: &str = "oast";
+const OAST_MODULE_FEATURE_GATE: &str = "feature=\"oast-correlation\"";
 
 #[derive(Clone, Copy)]
 struct ModulePolicy {
@@ -217,6 +220,11 @@ const MODULE_POLICIES: &[ModulePolicy] = &[
         source: "api_evidence/profiled/policy.rs",
         allowed_internal: &["api_evidence"],
         allowed_external: &["sha2"],
+    },
+    ModulePolicy {
+        source: "oast.rs",
+        allowed_internal: &["verification"],
+        allowed_external: &["sha2", "zeroize"],
     },
     ModulePolicy {
         source: "openapi_review.rs",
@@ -531,10 +539,17 @@ fn module_boundary_violations(workspace_root: &Path) -> Result<Vec<String>, Box<
             &source,
             &nested_modules,
         )?);
-        if policy.source == "openapi_review.rs" {
-            violations.extend(openapi_foundation_contract_violations(&source)?);
+        match policy.source {
+            "oast.rs" => violations.extend(oast::foundation_contract_violations(&source)?),
+            "openapi_review.rs" => {
+                violations.extend(openapi_foundation_contract_violations(&source)?)
+            },
+            _ => {},
         }
     }
+
+    violations.extend(oast::library_wiring_violations(&library_source)?);
+    violations.extend(oast::repository_consumer_violations(&source_root)?);
 
     Ok(violations)
 }
@@ -745,7 +760,13 @@ fn validate_module_wiring(
                 "lib.rs must expose protected module {module} as pub mod {module};"
             ));
         }
-        if !declaration.attrs.is_empty() {
+        if module == OAST_MODULE {
+            if !has_exact_cfg_attribute(&declaration.attrs, OAST_MODULE_FEATURE_GATE) {
+                violations.push(format!(
+                    "lib.rs protected module {module} must use exactly #[cfg(feature = \"oast-correlation\")] pub mod {module};"
+                ));
+            }
+        } else if !declaration.attrs.is_empty() {
             violations.push(format!(
                 "lib.rs protected module {module} cannot have attributes; use exactly pub mod {module};"
             ));
@@ -753,6 +774,23 @@ fn validate_module_wiring(
     }
 
     Ok(violations)
+}
+
+fn has_exact_cfg_attribute(attributes: &[Attribute], expected: &str) -> bool {
+    let [attribute] = attributes else {
+        return false;
+    };
+    if !attribute.path().is_ident("cfg") {
+        return false;
+    }
+    attribute.meta.require_list().is_ok_and(|list| {
+        list.tokens
+            .to_string()
+            .chars()
+            .filter(|character| !character.is_whitespace())
+            .collect::<String>()
+            == expected
+    })
 }
 
 fn validate_module_policy_registry(policies: &[ModulePolicy]) -> Vec<String> {
