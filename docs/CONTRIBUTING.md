@@ -5,11 +5,14 @@ The canonical contribution policy lives in the repository-root [CONTRIBUTING.md]
 ## Local verification
 
 ```bash
-cargo fmt --all -- --check
+cargo +1.88.0 fmt --all -- --check
 cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 cargo test --workspace --all-features --locked
 cargo xtask docs
 ```
+
+Termivar pins repository formatting to Rust `1.88.0` rustfmt. Stable, beta,
+nightly, and MSRV compiler compatibility remain separate CI contracts.
 
 Changes to a public contract must document compatibility impact. Changes to dependency direction, execution ownership, or component boundaries must update an existing [architecture decision record](adr/README.md) or add a new one.
 

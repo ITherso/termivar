@@ -55,7 +55,7 @@ jobs:
           test "$tag_version" = "$workspace_version"
           cargo run --locked -p xtask -- release-metadata "$tag_version"
       - name: Check formatting
-        run: cargo fmt --all -- --check
+        run: cargo +1.88.0 fmt --all -- --check
       - name: Verify architecture boundaries
         run: cargo run --locked -p xtask -- architecture
       - name: Run Clippy

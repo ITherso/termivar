@@ -51,13 +51,16 @@ Use [GitHub Discussions](https://github.com/ITherso/termivar/discussions) for us
 Before opening a pull request, run:
 
 ```bash
-cargo fmt --all -- --check
+cargo +1.88.0 fmt --all -- --check
 cargo xtask architecture
 cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 cargo test --workspace --all-features --locked
 ```
 
-Formatting is defined by `rustfmt.toml`; lint behavior is defined by `clippy.toml` and CI. Do not hand-format around these tools.
+Formatting is defined by `rustfmt.toml` and the Rust `1.88.0` rustfmt binary so
+pull-request and release formatting are deterministic. Compiler compatibility
+is tested separately on stable, beta, nightly, and the MSRV. Lint behavior is
+defined by `clippy.toml` and CI. Do not hand-format around these tools.
 
 ## Branch naming
 
@@ -86,7 +89,7 @@ Keep commits reviewable and do not mix refactors with unrelated behavior changes
 ## Pull request checklist
 
 - [ ] The change is focused and the description explains why it is needed.
-- [ ] `cargo fmt`, Clippy, and relevant tests pass.
+- [ ] `cargo +1.88.0 fmt --all -- --check`, Clippy, and relevant tests pass.
 - [ ] New behavior has unit, integration, or doc-test coverage.
 - [ ] Public API changes follow [the SemVer policy](docs/plugin-api-policy.md).
 - [ ] Architecture changes update or add an [ADR](docs/adr/README.md).

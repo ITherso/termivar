@@ -330,10 +330,7 @@ fn release_note_text_violations(version: &str, note: &str) -> Vec<String> {
             "termivar is independently audited",
             "completed independent audit",
         ),
-        (
-            "termivar is a burp suite replacement",
-            "Burp Suite parity",
-        ),
+        ("termivar is a burp suite replacement", "Burp Suite parity"),
         ("termivar replaces burp suite", "Burp Suite parity"),
         ("provides generic waf bypass", "generic WAF bypass"),
         ("supports generic waf bypass", "generic WAF bypass"),
@@ -442,7 +439,10 @@ mod tests {
     #[test]
     fn unsafe_release_version_tokens_fail_before_path_construction() {
         for version in ["", "release", "../0.10.0", "0.10.0/notes", "0.10.0 alpha"] {
-            assert!(validate_version_token(version).is_err(), "accepted `{version}`");
+            assert!(
+                validate_version_token(version).is_err(),
+                "accepted `{version}`"
+            );
         }
         assert!(validate_version_token(CURRENT_RELEASE).is_ok());
     }
@@ -488,9 +488,11 @@ mod tests {
         assert!(metadata_violations(CURRENT_RELEASE, &empty, &security())
             .iter()
             .any(|violation| violation.contains("### Security") && violation.contains("entry")));
-        assert!(metadata_violations(CURRENT_RELEASE, &empty_added, &security())
-            .iter()
-            .any(|violation| violation.contains("### Added") && violation.contains("entry")));
+        assert!(
+            metadata_violations(CURRENT_RELEASE, &empty_added, &security())
+                .iter()
+                .any(|violation| violation.contains("### Added") && violation.contains("entry"))
+        );
     }
 
     #[test]
@@ -511,9 +513,11 @@ mod tests {
             "- Follow [ScanContext](docs/migrations/scan-context-construction.md) and [the identity migration](docs/migrations/venom-to-termivar.md).",
             "- Upgrade guidance is listed below.\n\n### Added\n\n- Follow [ScanContext](docs/migrations/scan-context-construction.md) and [the identity migration](docs/migrations/venom-to-termivar.md).",
         );
-        assert!(metadata_violations(CURRENT_RELEASE, &guidance_outside_upgrade, &security())
-            .iter()
-            .any(|violation| violation.contains("Upgrade notes must link")));
+        assert!(
+            metadata_violations(CURRENT_RELEASE, &guidance_outside_upgrade, &security())
+                .iter()
+                .any(|violation| violation.contains("Upgrade notes must link"))
+        );
     }
 
     #[test]

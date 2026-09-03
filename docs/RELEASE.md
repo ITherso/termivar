@@ -23,12 +23,15 @@ string.
 - no GitHub Release already exists for the tag; the workflow creates each
   release once and refuses asset replacement.
 
-`cargo xtask release` runs the local architecture, formatting, lint, workspace
-test, and release-build preflight. CI adds dependency policy, security,
-documentation, compatibility, and the four-platform build matrix on `main`
-without publishing a release. On a version tag, CI additionally runs
-`cargo xtask release-metadata <version>` and refuses publication until the
-version has a dated changelog section, release/comparison links, and a current
+`cargo xtask release` runs the local architecture, canonical Rust `1.88.0`
+rustfmt, lint, workspace test, and release-build preflight. The formatting
+contract is `cargo +1.88.0 fmt --all -- --check`; compiler compatibility is
+tested separately on stable, beta, nightly, and the MSRV. CI adds dependency
+policy, security, documentation, compatibility, and the four-platform build
+matrix on `main` without publishing a release. On a version tag, CI
+additionally runs `cargo xtask release-metadata <version>` and refuses
+publication until the version has a dated changelog section, release/comparison
+links, and a current
 supported-version row. Human review remains responsible for the completeness
 and accuracy of the prose. Release binaries use the exact MSRV toolchain
 rather than a floating `stable` channel. An annotated version tag can publish

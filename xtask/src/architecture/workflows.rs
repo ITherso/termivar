@@ -19,6 +19,9 @@ use std::{collections::BTreeSet, error::Error, fs, io, path::Path};
 use cargo_metadata::MetadataCommand;
 
 const RELEASE_WORKFLOW: &str = ".github/workflows/release.yml";
+const CANONICAL_FORMAT_GATE: &str = "run: cargo +1.88.0 fmt --all -- --check";
+const RELEASE_FORMAT_STEP: &str =
+    "      - name: Check formatting\n        run: cargo +1.88.0 fmt --all -- --check";
 const METADATA_GATE: &str = "cargo run --locked -p xtask -- release-metadata \"$tag_version\"";
 const INITIAL_TAG_TYPE_GATE: &str = "test \"$(git cat-file -t \"$GITHUB_REF\")\" = tag";
 const MAIN_ANCESTRY_GATE: &str = "git merge-base --is-ancestor \"$GITHUB_SHA\" origin/main";
@@ -64,6 +67,26 @@ const RELEASE_NOTES_FLAG_GATE: &str = "--notes-file \"$notes_file\" \\";
 const RELEASE_TITLE_GATE: &str = "--title \"Termivar $GITHUB_REF_NAME\" \\";
 const RELEASE_PRERELEASE_GATE: &str = "--prerelease";
 const TESTS_WORKFLOW: &str = ".github/workflows/tests.yml";
+const EXPECTED_SECURITY_JOB: &str = r#"  security-tests:
+    name: Security Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+        with:
+          toolchain: stable
+          components: clippy
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      - name: Install canonical Rust 1.88.0 formatter
+        run: rustup toolchain install 1.88.0 --profile minimal --component rustfmt --no-self-update
+      - name: Check canonical formatting
+        run: cargo +1.88.0 fmt --all -- --check
+      - name: Install cargo-audit
+        run: cargo install cargo-audit
+      - name: Run security audit
+        run: cargo audit
+      - name: Run clippy (security lints)
+        run: cargo +stable clippy --workspace --all-targets --all-features --locked -- -D warnings"#;
 const COVERAGE_BASELINE_POINTER: &str = "docs/reports/coverage/accepted-baseline.txt";
 const EXPECTED_WORKFLOW_TRIGGERS: &str =
     "on:\n  push:\n    branches: [ main, develop ]\n  pull_request:\n    branches: [ main, develop, 'agent/**' ]";
@@ -133,6 +156,7 @@ pub(super) fn check(workspace_root: &Path) -> Result<Vec<String>, Box<dyn Error>
 
     let mut violations = workflow_pin_violations(&files);
     violations.extend(release_workflow_policy_violations(&files));
+    violations.extend(security_workflow_policy_violations(&files));
     let baseline_accepted = workspace_root.join(COVERAGE_BASELINE_POINTER).is_file();
     violations.extend(coverage_workflow_policy_violations(
         &files,
@@ -140,6 +164,46 @@ pub(super) fn check(workspace_root: &Path) -> Result<Vec<String>, Box<dyn Error>
     ));
     violations.extend(coverage_build_input_policy_violations(workspace_root)?);
     Ok(violations)
+}
+
+fn security_workflow_policy_violations(files: &[(String, String)]) -> Vec<String> {
+    let Some((_, contents)) = files.iter().find(|(path, _)| path == TESTS_WORKFLOW) else {
+        return vec![format!(
+            "{TESTS_WORKFLOW}: reviewed Security Tests workflow is missing"
+        )];
+    };
+    let normalized = contents.replace("\r\n", "\n");
+    let jobs = named_job_blocks(&normalized, "security-tests");
+    if jobs.len() != 1 || jobs[0] != EXPECTED_SECURITY_JOB {
+        return vec![format!(
+            "{TESTS_WORKFLOW}: `Security Tests` must match the reviewed contract exactly; it installs canonical Rust 1.88.0 rustfmt, checks the whole workspace without suppression, and retains current-stable Clippy with `-D warnings`"
+        )];
+    }
+    Vec::new()
+}
+
+fn named_job_blocks(contents: &str, job_id: &str) -> Vec<String> {
+    let lines: Vec<_> = contents.lines().collect();
+    let Some((jobs_start, jobs_end)) = top_level_block_bounds(&lines, "jobs") else {
+        return Vec::new();
+    };
+    let marker = format!("  {job_id}:");
+    let mut blocks = Vec::new();
+    for start in (jobs_start + 1..jobs_end).filter(|index| lines[*index] == marker) {
+        let end = (start + 1..jobs_end)
+            .find(|index| {
+                let line = lines[*index];
+                line.starts_with("  ") && !line.starts_with("    ") && line.ends_with(':')
+            })
+            .unwrap_or(jobs_end);
+        blocks.push(
+            lines[start..end]
+                .join("\n")
+                .trim_end_matches('\n')
+                .to_owned(),
+        );
+    }
+    blocks
 }
 
 fn expected_coverage_job(baseline_accepted: bool) -> String {
@@ -319,8 +383,24 @@ fn release_workflow_policy_violations(files: &[(String, String)]) -> Vec<String>
             "{RELEASE_WORKFLOW}: reviewed release workflow is missing"
         )];
     };
-    let lines: Vec<_> = contents.lines().map(str::trim).collect();
+    let normalized = contents.replace("\r\n", "\n");
+    let lines: Vec<_> = normalized.lines().map(str::trim).collect();
     let mut violations = Vec::new();
+    let release_gate_jobs = named_job_blocks(&normalized, "test-before-release");
+    if release_gate_jobs.len() != 1 || !release_gate_jobs[0].contains(RELEASE_FORMAT_STEP) {
+        violations.push(format!(
+            "{RELEASE_WORKFLOW}: Release gates must run canonical Rust 1.88.0 formatting with `{CANONICAL_FORMAT_GATE}`"
+        ));
+    }
+    if release_gate_jobs.iter().any(|job| {
+        job.lines()
+            .map(str::trim)
+            .any(|line| line.starts_with("continue-on-error:"))
+    }) {
+        violations.push(format!(
+            "{RELEASE_WORKFLOW}: Release gates must not suppress failures with `continue-on-error`"
+        ));
+    }
     for (required, purpose) in [
         (INITIAL_TAG_TYPE_GATE, "reject lightweight release tags"),
         (
@@ -836,6 +916,7 @@ mod tests {
 
     fn reviewed_release_workflow_fixture() -> String {
         let mut lines = vec![
+            RELEASE_FORMAT_STEP.to_owned(),
             INITIAL_TAG_TYPE_GATE.to_owned(),
             MAIN_ANCESTRY_GATE.to_owned(),
             VERSION_EQUALITY_GATE.to_owned(),
@@ -872,7 +953,11 @@ mod tests {
             RELEASE_TITLE_GATE.to_owned(),
             RELEASE_PRERELEASE_GATE.to_owned(),
         ]);
-        lines.join("\n")
+        format!("jobs:\n  test-before-release:\n{}\n", lines.join("\n"))
+    }
+
+    fn reviewed_security_workflow_fixture() -> String {
+        format!("jobs:\n{EXPECTED_SECURITY_JOB}\n")
     }
 
     #[test]
@@ -883,6 +968,94 @@ mod tests {
             contents.to_owned(),
         )]);
         assert!(violations.is_empty(), "{violations:?}");
+    }
+
+    #[test]
+    fn repository_security_job_matches_the_reviewed_formatter_and_clippy_contract() {
+        let contents = include_str!("../../../.github/workflows/tests.yml");
+        let violations = security_workflow_policy_violations(&[(
+            TESTS_WORKFLOW.to_owned(),
+            contents.to_owned(),
+        )]);
+        assert!(violations.is_empty(), "{violations:?}");
+    }
+
+    #[test]
+    fn security_tests_rejects_formatter_and_clippy_contract_mutations() {
+        let path = TESTS_WORKFLOW.to_owned();
+        let valid = reviewed_security_workflow_fixture();
+        assert!(security_workflow_policy_violations(&[(path.clone(), valid.clone())]).is_empty());
+        assert_eq!(security_workflow_policy_violations(&[]).len(), 1);
+        assert_eq!(
+            security_workflow_policy_violations(&[(
+                path.clone(),
+                "name: Tests\n\njobs:\n  unit:\n    name: Unit Tests\n".to_owned(),
+            )])
+            .len(),
+            1
+        );
+
+        let mutations = [
+            valid.replacen(
+                "      - name: Install canonical Rust 1.88.0 formatter\n        run: rustup toolchain install 1.88.0 --profile minimal --component rustfmt --no-self-update\n",
+                "",
+                1,
+            ),
+            valid.replacen("cargo +1.88.0 fmt", "cargo +stable fmt", 1),
+            valid.replacen("fmt --all -- --check", "fmt -p xtask -- --check", 1),
+            valid.replacen(
+                CANONICAL_FORMAT_GATE,
+                &format!("{CANONICAL_FORMAT_GATE}\n        continue-on-error: true"),
+                1,
+            ),
+            valid.replacen("name: Security Tests", "name: Security Checks", 1),
+            valid.replacen(
+                "cargo +stable clippy --workspace --all-targets --all-features --locked -- -D warnings",
+                "cargo clippy --workspace --all-targets --all-features --locked -- -D warnings",
+                1,
+            ),
+        ];
+        for mutation in mutations {
+            let violations = security_workflow_policy_violations(&[(path.clone(), mutation)]);
+            assert_eq!(violations.len(), 1, "{violations:?}");
+            assert!(violations[0].contains("Security Tests"), "{violations:?}");
+        }
+    }
+
+    #[test]
+    fn release_workflow_requires_the_same_unsuppressed_canonical_formatter() {
+        let path = RELEASE_WORKFLOW.to_owned();
+        let valid = reviewed_release_workflow_fixture();
+        assert!(release_workflow_policy_violations(&[(path.clone(), valid.clone())]).is_empty());
+
+        let ambient = valid.replacen("cargo +1.88.0 fmt", "cargo fmt", 1);
+        let violations = release_workflow_policy_violations(&[(path.clone(), ambient)]);
+        assert_eq!(violations.len(), 1, "{violations:?}");
+        assert!(violations[0].contains("canonical Rust 1.88.0"));
+
+        let one_crate = valid.replacen("fmt --all -- --check", "fmt -p xtask -- --check", 1);
+        let violations = release_workflow_policy_violations(&[(path.clone(), one_crate)]);
+        assert_eq!(violations.len(), 1, "{violations:?}");
+        assert!(violations[0].contains("canonical Rust 1.88.0"));
+
+        let suppressed = valid.replacen(
+            CANONICAL_FORMAT_GATE,
+            &format!("{CANONICAL_FORMAT_GATE}\n        continue-on-error: true"),
+            1,
+        );
+        let violations = release_workflow_policy_violations(&[(path, suppressed)]);
+        assert_eq!(violations.len(), 1, "{violations:?}");
+        assert!(violations[0].contains("must not suppress"));
+
+        let misplaced = format!(
+            "{}\n  release-docs:\n{}\n",
+            valid.replacen(RELEASE_FORMAT_STEP, "", 1),
+            RELEASE_FORMAT_STEP
+        );
+        let violations =
+            release_workflow_policy_violations(&[(RELEASE_WORKFLOW.to_owned(), misplaced)]);
+        assert_eq!(violations.len(), 1, "{violations:?}");
+        assert!(violations[0].contains("canonical Rust 1.88.0"));
     }
 
     #[test]

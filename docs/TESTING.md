@@ -310,7 +310,7 @@ runner-local values into the README as capacity claims.
 At minimum:
 
 ```bash
-cargo fmt --all -- --check
+cargo +1.88.0 fmt --all -- --check
 cargo xtask architecture
 cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 cargo test --workspace --all-features --locked

@@ -274,7 +274,7 @@ module as executable product behavior.
 ## Validate a checkout
 
 ```bash
-cargo fmt --all -- --check
+cargo +1.88.0 fmt --all -- --check
 cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 cargo test --workspace --all-features --locked
 cargo xtask architecture

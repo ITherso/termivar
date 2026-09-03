@@ -46,11 +46,15 @@ release and CI commands rather than a global `RUSTFLAGS` environment override.
 Before submitting a change, run:
 
 ```bash
-cargo fmt --all -- --check
+cargo +1.88.0 fmt --all -- --check
 cargo xtask architecture
 cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 cargo test --workspace --all-features --locked
 ```
+
+The Rust `1.88.0` rustfmt output is the canonical repository format. Compiler
+compatibility is validated independently on stable, beta, nightly, and the
+MSRV.
 
 `cargo xtask release` runs the maintained local preflight and builds the release
 CLI. GitHub Actions remains authoritative for the cross-platform result.

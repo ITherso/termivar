@@ -21,6 +21,7 @@ type TaskResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 
 const RELEASE_CLI_PACKAGE: &str = "termivar-cli";
 const RELEASE_BUNDLE_FEATURE: &str = "release-bundle";
+const RELEASE_FORMAT_ARGS: &[&str] = &["+1.88.0", "fmt", "--all", "--", "--check"];
 const RELEASE_BUILD_ARGS: &[&str] = &[
     "build",
     "--release",
@@ -141,7 +142,7 @@ fn release_preflight(root: &Path) -> TaskResult {
     let version = workspace_release_version(root)?;
     release_metadata::check(root, &version)?;
     architecture_preflight(root)?;
-    run(root, "cargo", &["fmt", "--all", "--", "--check"])?;
+    run(root, "cargo", RELEASE_FORMAT_ARGS)?;
     run(
         root,
         "cargo",
@@ -296,6 +297,15 @@ mod tests {
             ]
         );
         assert!(!RELEASE_BUILD_ARGS.contains(&"--all-features"));
+    }
+
+    #[test]
+    fn release_preflight_uses_the_canonical_formatter_without_installing_it() {
+        assert_eq!(
+            RELEASE_FORMAT_ARGS,
+            ["+1.88.0", "fmt", "--all", "--", "--check"]
+        );
+        assert!(!RELEASE_FORMAT_ARGS.contains(&"install"));
     }
 
     #[test]
