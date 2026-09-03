@@ -1,7 +1,7 @@
 # Shared predicate vocabulary
 
-Venom's evidence producers and deterministic reasoners share one typed
-predicate vocabulary from `venom-core`. The vocabulary prevents a producer and
+Termivar's evidence producers and deterministic reasoners share one typed
+predicate vocabulary from `termivar-core`. The vocabulary prevents a producer and
 consumer from silently assigning different meanings to duplicated string
 literals while retaining the existing `KnowledgePredicate` wire format.
 
@@ -188,7 +188,7 @@ it has no authority to prove that they describe the same resource or
 authorization context. The host must establish that equivalence before it
 constructs `ApiVisibilityComparison`.
 
-`venom-scanner::ApiVisibilityComparator` is an optional pure producer for hosts
+`termivar-scanner::ApiVisibilityComparator` is an optional pure producer for hosts
 that already hold two authorized `serde_json::Value` views. It canonicalizes
 them under explicit hard ceilings and emits this same comparison contract. It
 does not authorize, fetch, retain, or independently pair responses. See
@@ -218,7 +218,7 @@ predicate has a standard name.
 
 ## Ownership boundary
 
-The shared vocabulary lives in `venom-core` because both producers and
+The shared vocabulary lives in `termivar-core` because both producers and
 reasoners depend inward on it. It defines names, typed values, validation, and
 raw-value-free comparison evidence. It does not contain an HTTP client, parser,
 planner, verifier, credential provider, or execution policy.

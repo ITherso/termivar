@@ -1,10 +1,10 @@
 # Fuzzing
 
-The `fuzz/` package contains four Venom-owned semantic targets plus five bounded
+The `fuzz/` package contains four Termivar-owned semantic targets plus five bounded
 upstream-parser targets. `html_form_controls`, `expression_semantics`, and
 `declarative_policy_wire` exercise extraction and declarative-policy contracts;
 `decision_loop_authority` exercises adaptive planner authority. The parser
-targets are dependency-level signals and must not be reported as Venom
+targets are dependency-level signals and must not be reported as Termivar
 decision-runtime coverage.
 
 ## Setup
@@ -19,7 +19,7 @@ cargo fuzz run decision_loop_authority
 ```
 
 Every pull request replays the committed semantic corpora and compiles all
-Venom-owned targets. The `Scheduled Fuzzing` workflow runs all nine targets in
+Termivar-owned targets. The `Scheduled Fuzzing` workflow runs all nine targets in
 bounded weekly campaigns and when fuzz harnesses change on `main`. Every target
 uploads its libFuzzer log and a structured campaign summary for 90 days;
 failures also retain crash artifacts. This provides regression pressure, not
@@ -31,10 +31,10 @@ Run fuzzing on a dedicated machine or bounded CI job. Start with a small, non-se
 
 | Target | Ownership | Contract |
 | --- | --- | --- |
-| `html_form_controls` | Venom | Bounded HTML sample to exact, names-only, sorted and deduplicated form-control observations |
-| `expression_semantics` | Venom | Exact TextList truth table, truthful contributing evidence IDs, deterministic evaluation, and bounded expression round trips |
-| `declarative_policy_wire` | Venom | One-field semantic corruption rejects or reconstructs an exactly equivalent historical policy |
-| `decision_loop_authority` | Venom | Adaptive scheduling cannot bypass registration, host suppression, requirements, risk, budget, prerequisites, executor identity, or claim policy; errors are atomic |
+| `html_form_controls` | Termivar | Bounded HTML sample to exact, names-only, sorted and deduplicated form-control observations |
+| `expression_semantics` | Termivar | Exact TextList truth table, truthful contributing evidence IDs, deterministic evaluation, and bounded expression round trips |
+| `declarative_policy_wire` | Termivar | One-field semantic corruption rejects or reconstructs an exactly equivalent historical policy |
+| `decision_loop_authority` | Termivar | Adaptive scheduling cannot bypass registration, host suppression, requirements, risk, budget, prerequisites, executor identity, or claim policy; errors are atomic |
 | `http_parser` | Upstream | `httparse` request parser survival |
 | `json_parser` | Upstream | `serde_json` value parser survival |
 | `yaml_parser` | Upstream-only dependency | `serde_yaml` value parser survival |
@@ -52,7 +52,7 @@ must classify the 64-KiB parse boundary exactly, remain deterministic, and
 return sorted/deduplicated non-empty observations. The target also protects the
 names-only privacy boundary and accepts at most 64 KiB of raw input.
 
-`expression_semantics` builds bounded typed evidence through public Venom APIs.
+`expression_semantics` builds bounded typed evidence through public Termivar APIs.
 Its independent oracle requires complete, case-sensitive TextList element
 equality; scalar text, padded names, case changes, and substring-only values do
 not contribute. Repeated evaluation and accepted expression serialization must

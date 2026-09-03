@@ -11,7 +11,7 @@ separately from a plugin crate's package version through
 - Patch releases preserve source compatibility and may add defaulted trait
   methods or non-exhaustive variants.
 - Registration rejects an incompatible API line before plugin execution.
-- Plugin crates should pin a Venom release tag or commit; tracking `main` is for
+- Plugin crates should pin a Termivar release tag or commit; tracking `main` is for
   development only.
 
 Public plugin enums and data types use `#[non_exhaustive]` where downstream
@@ -19,7 +19,7 @@ exhaustive matching would freeze the Preview contract. Consumers must use
 constructors/defaults where provided and include wildcard match arms.
 
 `PLUGIN_API_VERSION` negotiation covers only `Plugin` registration. It does not
-establish source compatibility for the rest of `venom-scanner`, `ScanContext`,
+establish source compatibility for the rest of `termivar-scanner`, `ScanContext`,
 or a Rust dynamic-library ABI. Scanner context construction follows
 [ADR 0007](adr/0007-scan-context-construction-boundary.md), and the scanner's
 blocking compatibility baseline remains pending in
@@ -40,7 +40,7 @@ idempotency and charge every broker dispatch. See
 
 ## Stable API target
 
-Before `1.0`, Venom must publish capability declarations, compatibility tests
+Before `1.0`, Termivar must publish capability declarations, compatibility tests
 across released SDK versions, a scanner/plugin compatibility baseline, and an
 isolation/trust model. A stable major release will reserve breaking changes for
 major versions and publish a deprecation window for supported plugin API lines.

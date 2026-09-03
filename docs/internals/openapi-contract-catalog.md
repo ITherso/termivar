@@ -3,7 +3,7 @@
 The OpenAPI contract catalog is a transport-neutral, in-memory metadata
 foundation for caller-supplied API contracts. V1 accepts JSON documents in the
 OpenAPI 3.0.x and 3.1.x families and reduces supported declarations to a
-deterministic operation catalog. It is not loaded by `venom scan`, does not
+deterministic operation catalog. It is not loaded by `termivar scan`, does not
 discover contracts, and is not a scanner action, request planner, or executor.
 
 ## Input and version contract

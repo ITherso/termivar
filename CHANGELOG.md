@@ -1,6 +1,6 @@
 # Changelog
 
-All notable changes to Venom are recorded here. Releases use the categories from [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and follow Semantic Versioning.
+All notable changes to Termivar are recorded here. Releases use the categories from [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and follow Semantic Versioning.
 
 ## [Unreleased]
 
@@ -53,7 +53,7 @@ All notable changes to Venom are recorded here. Releases use the categories from
   no-follow behavior. This is a portability smoke layer, not platform
   certification or a duplicate all-feature matrix.
 - Four separately tested current-head consumers under one dedicated lockfile
-  for default `venom-core`, deterministic assessment/reporting, the Legacy
+  for default `termivar-core`, deterministic assessment/reporting, the Legacy
   `ScannerSdk` facade, and evidence-only plugin API 0.2. Separate package
   invocations avoid feature unification; they prove same-revision source
   compilation only, not cross-version compatibility, a stable ABI, or external
@@ -76,7 +76,7 @@ All notable changes to Venom are recorded here. Releases use the categories from
 - A deterministic, public-API demonstration test (`defense_aware_planning_demo`) that shows the defense-aware planning arc end to end for one fixed scenario: the enforcement-off plan, the side-effect-free shadow delta with supporting evidence and stable explanation codes, and the enforcement-on plan with distinct `DefenseSuppressed` exclusions. It asserts the guarantees — disabled leaves the plan untouched, shadow and enforcement agree on what to suppress, and a suppressed action never becomes a plan step so it never reaches an executor — and renders a readable side-by-side summary.
 - A default-off `defense::enforcement` layer (`DefensePlanningPolicy`, off by default) that lets observed defense change the real plan only when explicitly enabled. `defense_aware_plan` reuses the shadow layer to decide suppressions and applies them through a new, distinct `ExclusionReason::DefenseSuppressed` so defense suppression never conflates with adaptive/operator `PolicySuppressed`. While disabled it produces the planner's plan byte for byte; a defense-suppressed action never becomes a plan step, so it never reaches an executor. Defense still never adds an action or raises utility (graded numeric penalties are deferred).
 - A side-effect-free `defense::shadow_planning` layer that computes a defense-aware shadow plan and an explainable delta against the current plan through the planner's read-only `plan_snapshot_with_suppressed` seam. It issues no request and mutates no planner, runtime, knowledge, or experience state, and never reorders the real plan. Defense evidence never adds an action or raises utility; it only allows, deprioritizes, or suppresses existing candidates via a single monotonic mapping keyed on `DefenseResponse` and a typed `DefenseInteractionClass` (no string matching). Recommendations reuse `defense::policy::recommend`, aggregated per resource with corroboration (a single standing block is downgraded), scoped to the exact resource, with a stable-coded delta referencing supporting evidence.
-- A projection-only `defense::projection` adapter that turns observed defense state and control/candidate transitions into provenance-carrying `venom_core::Evidence` under the `defense.*` predicate namespace, deterministically and idempotently. It emits observations only — never a `Fact` or hypothesis, so a single block or a bare status never becomes a confirmed-WAF claim — and returns nothing for a non-response, so timeouts and connection failures are never learned as defense. Evidence ids are a versioned SHA-256 digest of the canonical projection identity (`defense/<sha256>`), so raw resource, receipt, correlation, and producer values stay in their provenance fields and never leak into an id. It selects no payload, issues no request, and does not touch the planner, executor, or runtime configuration.
+- A projection-only `defense::projection` adapter that turns observed defense state and control/candidate transitions into provenance-carrying `termivar_core::Evidence` under the `defense.*` predicate namespace, deterministically and idempotently. It emits observations only — never a `Fact` or hypothesis, so a single block or a bare status never becomes a confirmed-WAF claim — and returns nothing for a non-response, so timeouts and connection failures are never learned as defense. Evidence ids are a versioned SHA-256 digest of the canonical projection identity (`defense/<sha256>`), so raw resource, receipt, correlation, and producer values stay in their provenance fields and never leak into an id. It selects no payload, issues no request, and does not touch the planner, executor, or runtime configuration.
 - Focused architecture, runner, scanner, plugin, Lua, distributed, anomaly, benchmark, profiling, and fuzzing documentation.
 - Editable Draw.io architecture and crate dependency diagrams.
 - Criterion microbenchmark target and cargo-fuzz harnesses.
@@ -104,7 +104,7 @@ All notable changes to Venom are recorded here. Releases use the categories from
 - Typed post-reasoning planning receipts with snapshot revisions and before/after session transitions.
 - Transport-neutral executor failure kinds and immutable pre-commit receipts carrying the exact case, action, stage, origin, delay, resource limits, executor, and diagnostic.
 - A host-owned HTTP request broker with atomic dispatch and active-verification accounting shared by every built-in standard-runtime executor.
-- A pinned `venom-core` public API compatibility command and dedicated CI gate against the `v0.9.0-alpha` source baseline.
+- A pinned `termivar-core` public API compatibility command and dedicated CI gate against the historical `venom-core` package at the `v0.9.0-alpha` source baseline.
 - A `ScanContext` construction ADR and migration guide for the next Scanner Preview release.
 - A virtual-workspace layout gate that rejects uncompiled Rust source at the repository root.
 - An additive, versioned API visibility comparator envelope with projection profiles, volatile-path filtering, explicit unordered-array semantics, and bounded redacted path explanations.
@@ -138,7 +138,12 @@ All notable changes to Venom are recorded here. Releases use the categories from
 
 ### Changed
 
-- Preserved the no-profile `venom scan` behavior and `decision-scan/v1` wire
+- Renamed the current product, workspace packages, Rust crates, CLI binary,
+  active performance environment variables, and cache/container identity from
+  Venom to Termivar. Historical provenance and stable wire, schema, digest,
+  evidence, and capability identities intentionally retain their existing
+  values; no second CLI or scanner implementation was introduced.
+- Preserved the no-profile `termivar scan` behavior and `decision-scan/v1` wire
   contract while making profile selection additive. Explicit `baseline` uses
   `web-assessment/v1`; completed `web-review` uses the central typed assessment
   renderer, and no explicit profile silently enables origin discovery.
@@ -168,24 +173,24 @@ All notable changes to Venom are recorded here. Releases use the categories from
 - Removed the false legacy WAF detector and attack-shaped evasion dispatcher. The remaining payload-encoding helper supports only explicit percent/hex byte encoding through the bounded, redacted `PayloadArtifact` contract.
 - Quarantined unwired API/auth/dashboard/persistence/realtime models, the bounded report renderer, native plugins, Lua, distributed coordination, and the legacy scanner behind independent opt-in features; the default scanner feature closure is now only `core + scanning`, and optional dependencies follow those boundaries.
 - Replaced the legacy `ScanFinding`-based report and synthetic risk/severity aggregation with a bounded renderer over the constructor-validated `RunReport` contract. It preserves stop classification codes without exposing private stop-reason detail, performs format encoding but no redaction, and requires callers to pre-redact projected target, authorized-origin, step/outcome action-identifier, and outcome-summary fields. The `reporting` feature now closes over `core` only; `VulnerabilityReport`, `risk_score`, `severity_stats`, and `phase_stats` are intentionally removed on this unreleased alpha line.
-- Reduced default `venom-core` to transport-neutral reasoning and run-report contracts. The complete historical configuration, error, event, raw finding, vulnerability, result, and HTTP facade remains available only through `legacy-contracts` so the pinned all-features compatibility gate stays strict without reintroducing those records into default builds.
+- Reduced default `termivar-core` to transport-neutral reasoning and run-report contracts. The complete historical configuration, error, event, raw finding, vulnerability, result, and HTTP facade remains available only through `legacy-contracts` so the pinned all-features compatibility gate stays strict without reintroducing those records into default builds.
 - Replaced the false `AsyncMitmProxy`/certificate surface with an honestly named fixed-upstream TCP relay, removed unused HTTP/TLS dependencies, and made the CLI require an explicit validated upstream socket instead of silently choosing `127.0.0.1:80`.
 - Removed the repository installer until a remediated release tag exists. The historical `v0.9.0-alpha` binaries predate the bounded default runtime and are not presented as an installation path for this source state.
 - Made container publication an explicit manual action with commit-scoped development tags, removed unused PostgreSQL/Redis test services, and added CI checks for the inert non-root CLI image.
 - Removed the historical root Compose stack and gated its return while deployment remains unsupported; the stack coupled the CLI to unused services, default credentials, disabled security, and nonexistent listener health semantics.
 - Replaced the original loose `target`/`payload` plugin invocation and plugin-authored `ScanFinding` output with a host-owned bounded context and observation recorder. The Preview API line changes intentionally; plugin observations require host reasoning and verification before any finding projection.
 - Removed the six substring-matching SQL, XSS, LFI, XXE, SSRF, and SSTI types from the production plugin namespace. Harmless INFO-only marker fixtures now exercise the trait boundary under `examples/plugin-fixtures/`, and stock profile scaffolds no longer name nonexistent detector plugins.
-- Made `venom scan` the default bounded deterministic runtime, retained `decision-scan` as a deprecated compatibility alias with the unchanged `decision-scan/v1` wire contract, and moved the historical mixed-authority heuristic runner behind the non-default `legacy-scanner` feature as acknowledged `legacy-scan`.
+- Made `termivar scan` the default bounded deterministic runtime, retained `decision-scan` as a deprecated compatibility alias with the unchanged `decision-scan/v1` wire contract, and moved the historical mixed-authority heuristic runner behind the non-default `legacy-scanner` feature as acknowledged `legacy-scan`.
 - Removed unsupported API and experimental proxy adapters from default CLI builds; their commands now require explicit `api-adapter` or `proxy-adapter` features, and the API adapter fails nonzero instead of implying that a listener started.
-- Changed the repository container's default command to `venom --help`; it no longer starts an experimental network listener by default.
+- Changed the repository container's default command to `termivar --help`; it no longer starts an experimental network listener by default.
 - Reframed the public README and linked onboarding, distribution, architecture, and profile guidance around the deterministic decision runtime, explicitly separating the opt-in legacy runner, unsupported adapters, and library-only surfaces.
 - Replaced the long-form promotional README with a concise project guide.
 - Standardized the historical pre-release baseline as `0.9.0-alpha` before advancing the remediated source line.
 - Replaced absolute completion claims with scoped lifecycle labels. Default
-  `venom-core` is a Stable candidate rather than a promise; deterministic APIs
+  `termivar-core` is a Stable candidate rather than a promise; deterministic APIs
   and plugin API 0.2 are Preview, `ScannerSdk` is Legacy, and Lua/distributed
   host surfaces are Experimental.
-- Moved shared event and finding contracts into `venom-core` while preserving scanner re-exports.
+- Moved shared event and finding contracts into `termivar-core` while preserving scanner re-exports.
 - Documented the plugin system as a source-level preview instead of implying dynamic discovery.
 - Moved the editable Draw.io architecture source directly under `docs/` for discoverability.
 - Made plugin API compatibility explicit with version negotiation and non-exhaustive public types.
@@ -195,13 +200,13 @@ All notable changes to Venom are recorded here. Releases use the categories from
 - Classified built-in HTTP applicability, policy, transport, and internal executor failures without parsing diagnostics or turning operational failures into verifier outcomes.
 - Separated semantic action attempts from actual transport dispatches; retries, timeouts, redirects, partial bodies, and pre-dispatch failures now report their real resource use.
 - Moved standard web action identities into a transport-neutral catalog so verification no longer depends on HTTP execution or the `scanning` feature.
-- Replaced duplicated HTTP and web predicate literals with the canonical `venom-core` vocabulary.
+- Replaced duplicated HTTP and web predicate literals with the canonical `termivar-core` vocabulary.
 - Made API fingerprinting consume normalized media-type and path-segment evidence; the JSON rule identity is `api.response.json.media-type`.
 - Limited each standard API calibration to one matching contribution to reduce retry-driven posterior inflation; existing profiles retain the default independent-contribution behavior.
 - Rejected zero-reliability HTTP evidence policies so fixed rule likelihoods cannot promote a no-confidence observation.
 - Made rule-produced hypothesis writes batch-atomic and preserved verifier-owned terminal states under the same knowledge-base lock.
 - Made planning-session changes error-atomic and snapshot-CAS guarded; planner, command-construction, and stale-knowledge failures no longer partially halt or advance a session.
-- `ScanContext` now owns an evidence-driven `KnowledgeBase`, is non-exhaustive, and exposes reasoning state through `knowledge()`. This is an intentional Preview source transition from the v0.9 struct-literal contract; consumers must use constructors and the accessor. `venom-scanner` remains outside the blocking compatibility gate until the next Preview baseline.
+- `ScanContext` now owns an evidence-driven `KnowledgeBase`, is non-exhaustive, and exposes reasoning state through `knowledge()`. This is an intentional Preview source transition from the v0.9 struct-literal contract; consumers must use constructors and the accessor. `termivar-scanner` remains outside the blocking compatibility gate until the next Preview baseline.
 - Removed the uncompiled pre-workspace monolith and its obsolete completion/deployment reports; Git history remains the migration archive.
 - Made repository-size metrics count only tracked Rust files owned by workspace packages and moved warning denial from global environment overrides into explicit Clippy/release gates.
 - Replaced stale testing, observability, and code-quality claims with documentation of the currently compiled contracts and CI evidence.

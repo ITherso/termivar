@@ -26,11 +26,11 @@
       <root>
         <mxCell id="0" />
         <mxCell id="1" parent="0" />
-        <mxCell id="c-cli" value="venom-cli" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="1"><mxGeometry x="420" y="60" width="140" height="60" as="geometry" /></mxCell>
-        <mxCell id="c-api" value="venom-api&#xa;(optional adapter)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="1"><mxGeometry x="230" y="190" width="140" height="60" as="geometry" /></mxCell>
-        <mxCell id="c-proxy" value="venom-proxy&#xa;(optional adapter)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="1"><mxGeometry x="420" y="190" width="140" height="60" as="geometry" /></mxCell>
-        <mxCell id="c-scanner" value="venom-scanner" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="1"><mxGeometry x="610" y="190" width="140" height="60" as="geometry" /></mxCell>
-        <mxCell id="c-core" value="venom-core&#xa;Reasoning / Outcomes / Reports" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1"><mxGeometry x="420" y="340" width="140" height="60" as="geometry" /></mxCell>
+        <mxCell id="c-cli" value="termivar-cli" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="1"><mxGeometry x="420" y="60" width="140" height="60" as="geometry" /></mxCell>
+        <mxCell id="c-api" value="termivar-api&#xa;(optional adapter)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="1"><mxGeometry x="230" y="190" width="140" height="60" as="geometry" /></mxCell>
+        <mxCell id="c-proxy" value="termivar-proxy&#xa;(optional adapter)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="1"><mxGeometry x="420" y="190" width="140" height="60" as="geometry" /></mxCell>
+        <mxCell id="c-scanner" value="termivar-scanner" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="1"><mxGeometry x="610" y="190" width="140" height="60" as="geometry" /></mxCell>
+        <mxCell id="c-core" value="termivar-core&#xa;Reasoning / Outcomes / Reports" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1"><mxGeometry x="420" y="340" width="140" height="60" as="geometry" /></mxCell>
         <mxCell id="ce1" value="optional" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;dashed=1;endArrow=block;" edge="1" parent="1" source="c-cli" target="c-api"><mxGeometry relative="1" as="geometry" /></mxCell>
         <mxCell id="ce2" value="optional" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;dashed=1;endArrow=block;" edge="1" parent="1" source="c-cli" target="c-proxy"><mxGeometry relative="1" as="geometry" /></mxCell>
         <mxCell id="ce3" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" edge="1" parent="1" source="c-cli" target="c-scanner"><mxGeometry relative="1" as="geometry" /></mxCell>

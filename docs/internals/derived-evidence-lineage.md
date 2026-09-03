@@ -1,6 +1,6 @@
 # Derived-evidence lineage
 
-Venom records immutable [`Evidence`]. Some records are **derived**: computed from
+Termivar records immutable [`Evidence`]. Some records are **derived**: computed from
 other evidence records rather than observed first-hand. This page defines how a
 derived record identifies the exact source record(s) that justify it.
 

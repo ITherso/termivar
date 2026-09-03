@@ -1,6 +1,6 @@
 # Deployment blueprint (non-deployable design sketch)
 
-> **Status: non-deployable architecture sketch.** The unreleased Venom
+> **Status: non-deployable architecture sketch.** The unreleased Termivar
 > `0.10.0-alpha.1` source line has **no
 > supported deployment surface**. This document preserves the *intent* of a
 > future orchestrated deployment. It is prose and tables only — deliberately not
@@ -22,8 +22,8 @@ provide:
 
 | Removed surface | What it claimed | Product reality today |
 | --- | --- | --- |
-| `docker-compose.yml` | A default proxy on port 8080 plus PostgreSQL, Redis, Prometheus, Grafana with `admin` credentials, and security-disabled Elasticsearch. | The default image runs `venom --help`, opens no listener, and needs none of those services. The root Compose file was removed rather than preserved as a misleading deployment example. |
-| `k8s/deployment.yaml` | A `venom-proxy` Deployment whose liveness/readiness probes hit `GET /health` on the API port (3000), with an HPA, PVC, RBAC, and injected database/Redis secrets. | `venom api` **does not bind a network listener** (`venom_api::start_api` returns an unsupported-adapter error without binding or printing a startup claim). The container's default command is inert CLI help, not an API server on 3000. The probes could never pass. |
+| `docker-compose.yml` | A default proxy on port 8080 plus PostgreSQL, Redis, Prometheus, Grafana with `admin` credentials, and security-disabled Elasticsearch. | The default image runs `termivar --help`, opens no listener, and needs none of those services. The root Compose file was removed rather than preserved as a misleading deployment example. |
+| `k8s/deployment.yaml` | A historical `venom-proxy` Deployment whose liveness/readiness probes hit `GET /health` on the API port (3000), with an HPA, PVC, RBAC, and injected database/Redis secrets. | `termivar api` **does not bind a network listener** (`termivar_api::start_api` returns an unsupported-adapter error without binding or printing a startup claim). The container's default command is inert CLI help, not an API server on 3000. The probes could never pass. |
 | `k8s/services.yaml` | PostgreSQL and Redis `StatefulSet`s, an Ingress, and a `NetworkPolicy` the workload depends on. | The scanner/proxy code does not integrate a PostgreSQL or Redis runtime dependency. These were aspirational. |
 | `helm/Chart.yaml`, `helm/values.yaml` | A versioned (`1.0.0`) chart with 3 replicas, autoscaling, ingress+TLS, and PostgreSQL/Redis subchart dependencies. | The chart had **no `templates/` directory and no vendored `charts/`**, so it could not render. Its subchart dependencies were never resolvable in-repo. |
 | `terraform/main.tf`, `variables.tf`, `prod.tfvars` | An AWS stack composing local `./modules/vpc`, `./modules/eks`, `./modules/rds`, and `./modules/elasticache`. | **None of those module directories exist**, so `terraform init` fails immediately. The configuration was never applyable. |

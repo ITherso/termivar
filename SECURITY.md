@@ -1,6 +1,6 @@
 # Security Policy
 
-Venom is security-testing software. Its alpha releases may contain defects that affect confidentiality, integrity, availability, or scan accuracy. Use Venom only on systems you own or are explicitly authorized to test.
+Termivar is security-testing software. Its alpha releases may contain defects that affect confidentiality, integrity, availability, or scan accuracy. Use Termivar only on systems you own or are explicitly authorized to test.
 
 ## Supported versions
 
@@ -83,6 +83,6 @@ Reports about the following are particularly useful:
 - request smuggling or parser differentials;
 - secret exposure in logs or reports;
 - malicious scan target responses causing code execution, denial of service, or data exposure;
-- dependency vulnerabilities with a demonstrated impact on Venom.
+- dependency vulnerabilities with a demonstrated impact on Termivar.
 
 General hardening suggestions, unsupported-version bugs, and scan findings against third-party targets should use normal project discussions after removing sensitive data.

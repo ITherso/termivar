@@ -1,6 +1,6 @@
 # Artifact signature scanning
 
-`venom-artifact` is a separate, non-published Preview library for deterministic
+`termivar-artifact` is a separate, non-published Preview library for deterministic
 byte-pattern observations. It is independent from the web scanner and exploit
 domains and has no network, process, browser, or filesystem authority.
 
@@ -52,7 +52,7 @@ them:
 ## Repository catalog
 
 The repository ships only a harmless lab canary pack under
-`artifact-signatures/lab/venom-canary`. Validate repository metadata with:
+`artifact-signatures/lab/termivar-canary`. Validate repository metadata with:
 
 ```console
 cargo run --locked -p xtask -- artifact-catalog
@@ -68,9 +68,9 @@ The library does not open paths. An explicit non-default CLI feature owns the
 local read-only boundary:
 
 ```console
-cargo run --locked -p venom-cli --features artifact-adapter -- \
+cargo run --locked -p termivar-cli --features artifact-adapter -- \
   artifact scan-file \
-  --signatures artifact-signatures/lab/venom-canary/signatures.toml \
+  --signatures artifact-signatures/lab/termivar-canary/signatures.toml \
   --input ./authorized-sample.bin \
   --format json
 ```
@@ -78,7 +78,7 @@ cargo run --locked -p venom-cli --features artifact-adapter -- \
 The adapter accepts one explicitly selected regular file and one signature
 manifest. It performs no recursion, glob expansion, directory scan, process
 memory acquisition, network request, file write, or automatic invocation from
-`venom scan`. JSON output omits the input path and matched bytes. A completed
+`termivar scan`. JSON output omits the input path and matched bytes. A completed
 scan exits successfully whether or not observations exist; invalid or incomplete
 execution is nonzero.
 

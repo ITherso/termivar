@@ -1,7 +1,7 @@
 # Artifact signature packs
 
 This directory contains repository-owned metadata for the Preview
-`venom-artifact` domain. V1 packs use the strict
+`termivar-artifact` domain. V1 packs use the strict
 `venom.artifact-signatures/v1` schema and contain only bounded signature
 descriptions and exact/wildcard byte patterns. They contain no executable
 content, target paths, credentials, exploit payloads, or verdict policy.

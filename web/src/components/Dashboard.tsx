@@ -38,7 +38,7 @@ const Dashboard: React.FC = () => {
   return (
     <div className="dashboard">
       <header className="dashboard-header">
-        <h1>VENOM Dashboard</h1>
+        <h1>Termivar Dashboard</h1>
         <div className="header-info">
           <span className="version">0.10.0-alpha.1 Preview</span>
           <span className="last-update">Illustrative static data</span>
@@ -103,7 +103,7 @@ const Dashboard: React.FC = () => {
       </div>
 
       <footer className="dashboard-footer">
-        <p>VENOM 0.10.0-alpha.1 Dashboard Preview</p>
+        <p>Termivar 0.10.0-alpha.1 Dashboard Preview</p>
         <p>Static sample data · No Rust API connection · No authentication · Not production-ready</p>
       </footer>
     </div>

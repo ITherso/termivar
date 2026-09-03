@@ -1,5 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1600" height="980" viewBox="0 0 1600 980" role="img" aria-labelledby="title desc">
-  <title id="title">Venom architecture</title>
+  <title id="title">Termivar architecture</title>
   <desc id="desc">Legacy scan flow and a parallel host-owned plugin observation boundary, followed by the inward Cargo crate dependency direction.</desc>
   <defs>
     <linearGradient id="background" x1="0" y1="0" x2="1" y2="1">
@@ -35,7 +35,7 @@
   </defs>
 
   <rect width="1600" height="980" rx="28" fill="url(#background)"/>
-  <text class="title" x="70" y="74">Venom Architecture</text>
+  <text class="title" x="70" y="74">Termivar Architecture</text>
   <text class="subtitle" x="70" y="108">0.10.0-alpha.1 source · legacy scan flow and inward crate dependencies</text>
 
   <rect class="panel" x="50" y="145" width="1500" height="475" rx="22"/>
@@ -96,19 +96,19 @@
   <text class="box-copy" x="202" y="830" text-anchor="middle">future web / dashboard / compliance</text>
 
   <rect class="crate" x="390" y="770" width="210" height="86" rx="16"/>
-  <text class="box-title" x="495" y="805" text-anchor="middle">venom-cli / adapters</text>
+  <text class="box-title" x="495" y="805" text-anchor="middle">termivar-cli / adapters</text>
   <text class="box-copy" x="495" y="830" text-anchor="middle">composition / optional shells</text>
 
   <rect class="crate" x="670" y="770" width="210" height="86" rx="16"/>
-  <text class="box-title" x="775" y="805" text-anchor="middle">venom-scanner</text>
+  <text class="box-title" x="775" y="805" text-anchor="middle">termivar-scanner</text>
   <text class="box-copy" x="775" y="830" text-anchor="middle">SDK / runner / detection</text>
 
   <rect class="crate" x="950" y="770" width="210" height="86" rx="16"/>
-  <text class="box-title" x="1055" y="805" text-anchor="middle">venom-proxy</text>
+  <text class="box-title" x="1055" y="805" text-anchor="middle">termivar-proxy</text>
   <text class="box-copy" x="1055" y="830" text-anchor="middle">experimental TCP relay</text>
 
   <rect class="core" filter="url(#shadow)" x="1230" y="757" width="245" height="112" rx="16"/>
-  <text class="box-title" x="1352" y="797" text-anchor="middle">venom-core</text>
+  <text class="box-title" x="1352" y="797" text-anchor="middle">termivar-core</text>
   <text class="box-copy" x="1352" y="824" text-anchor="middle">evidence / reasoning / outcomes</text>
   <text class="box-copy" x="1352" y="846" text-anchor="middle">ontology / predicates / reports</text>
 

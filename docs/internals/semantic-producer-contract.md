@@ -26,10 +26,10 @@ These are the predicates that are actually emitted by runtime producers in this 
 
 | EvidenceKind | predicate.namespace | predicate.name | EvidenceValue | actual producer | source method | entity output | persisted fields | contract class | notes |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| `Http` | `http.request` | `url` | `Text` | `crates/venom-scanner/src/http_evidence.rs::to_evidence` | `request-url` | `endpoint` (`url` attr) | `source_evidence_ids` | `production_backed` | URL is normalized to `(http|https)` endpoint and canonicalized (query/fragment removed). |
-| `Http` | `http.request` | `method` | `Text` | `crates/venom-scanner/src/http_evidence.rs::to_evidence` | `request-method` | `endpoint` (`method` attr) | `source_evidence_ids` | `production_backed` | Method is token-validated and uppercased in extractor. |
-| `Http` | `http.header` | `<normalized-name>` | `Text` | `crates/venom-scanner/src/http_evidence.rs::to_evidence` | `response-header:<normalized-name>` | `header` (`name` attr) | `source_evidence_ids` | `production_backed` | Header value intentionally not persisted. |
-| `Authentication` | `http.cookie` | `name` | `Text` | `crates/venom-scanner/src/http_evidence.rs::to_evidence` | `response-set-cookie-name` | _ignored_ | _ignored_ | `production_backed` | Cookie names are intentionally ignored and do not create entities. |
+| `Http` | `http.request` | `url` | `Text` | `crates/termivar-scanner/src/http_evidence.rs::to_evidence` | `request-url` | `endpoint` (`url` attr) | `source_evidence_ids` | `production_backed` | URL is normalized to `(http|https)` endpoint and canonicalized (query/fragment removed). |
+| `Http` | `http.request` | `method` | `Text` | `crates/termivar-scanner/src/http_evidence.rs::to_evidence` | `request-method` | `endpoint` (`method` attr) | `source_evidence_ids` | `production_backed` | Method is token-validated and uppercased in extractor. |
+| `Http` | `http.header` | `<normalized-name>` | `Text` | `crates/termivar-scanner/src/http_evidence.rs::to_evidence` | `response-header:<normalized-name>` | `header` (`name` attr) | `source_evidence_ids` | `production_backed` | Header value intentionally not persisted. |
+| `Authentication` | `http.cookie` | `name` | `Text` | `crates/termivar-scanner/src/http_evidence.rs::to_evidence` | `response-set-cookie-name` | _ignored_ | _ignored_ | `production_backed` | Cookie names are intentionally ignored and do not create entities. |
 
 **Extractor persistence behavior**
 
@@ -99,7 +99,7 @@ allowlist — cookie names arrive via `http.cookie` and are intentionally ignore
 
 ## Golden fixtures used for contract verification
 
-The following fixtures live under `crates/venom-scanner/tests/fixtures/semantic/`:
+The following fixtures live under `crates/termivar-scanner/tests/fixtures/semantic/`:
 
 - `rest_request_url_and_method.json`
 - `response_header_concepts.json`
@@ -111,7 +111,7 @@ The following fixtures live under `crates/venom-scanner/tests/fixtures/semantic/
 - `technology_product_and_version_gap.json`
 - `bounded_truncation_receipt.json`
 
-`crates/venom-scanner/tests/semantic_golden_fixtures.rs` checks:
+`crates/termivar-scanner/tests/semantic_golden_fixtures.rs` checks:
 
 - `contract_class` presence and expected class per fixture name;
 - order-independent extraction;

@@ -1,9 +1,9 @@
 # Benchmarks
 
-Venom uses Criterion for repeatable microbenchmarks. Run:
+Termivar uses Criterion for repeatable microbenchmarks. Run:
 
 ```bash
-cargo bench -p venom-scanner --bench scanner_benchmarks
+cargo bench -p termivar-scanner --bench scanner_benchmarks
 # or
 cargo xtask benchmark
 ```

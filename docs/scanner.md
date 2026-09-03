@@ -32,11 +32,11 @@ uses no credentials or cookies, and does not chain the route into SQL, SSTI,
 XSS, authorization, SSRF, or upload review. See
 [REST read-only review](internals/rest-readonly-review.md).
 
-`venom-scanner` contains the default deterministic evidence/reasoning/runtime stack plus feature-gated historical scan contracts, optional analysis modules, plugins, events, persistence models, and bounded report rendering.
+`termivar-scanner` contains the default deterministic evidence/reasoning/runtime stack plus feature-gated historical scan contracts, optional analysis modules, plugins, events, persistence models, and bounded report rendering.
 
 ## Default deterministic runtime
 
-Default builds expose one `venom scan` product with three deliberately distinct
+Default builds expose one `termivar scan` product with three deliberately distinct
 selection states:
 
 - With no `--profile`, `StandardWebDecisionRuntime` keeps the conservative

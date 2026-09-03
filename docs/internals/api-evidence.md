@@ -1,6 +1,6 @@
 # API visibility evidence
 
-Venom separates API observation from API interpretation. The evidence layer
+Termivar separates API observation from API interpretation. The evidence layer
 compares two views that the host has already authorized and paired; the
 decision layer turns the resulting immutable observation into reviewable
 hypotheses.
@@ -81,7 +81,7 @@ JSON numbers are encoded through the pinned `serde_json` implementation. Their
 canonical text and the resulting fingerprints are deterministic for this
 comparator/toolchain contract, but are not promised as permanent cross-version
 wire hashes. Hosts that persist signatures for replay must pin dependencies and
-record the Venom comparator version.
+record the Termivar comparator version.
 
 ## Profiled comparator v3
 
@@ -105,11 +105,11 @@ attaches unrelated body paths, while a real difference without a representable
 path summary remains explicit rather than being mistaken for equivalence.
 Persisted v2 profiles and envelopes are deliberately rejected rather than
 silently reinterpreted under v3 semantics. Hosts that must replay historical v2
-records need the matching older Venom binary or an explicit offline migration.
+records need the matching pre-rebrand binary or an explicit offline migration.
 See [ADR 0011](../adr/0011-version-api-explanation-semantics.md).
 
 Profiles support selected subtrees, ignored subtrees, and explicitly unordered
-arrays. Paths use RFC 6901 escaping. A segment equal to `*` is Venom's bounded
+arrays. Paths use RFC 6901 escaping. A segment equal to `*` is Termivar's bounded
 wildcard extension, primarily for structural array paths such as
 `/data/edges/*/node/id`. Empty selection means the complete document. Ignore
 rules take precedence, and construction rejects a selected path already hidden
@@ -117,10 +117,10 @@ by an ignored ancestor. Input order and duplicates do not change the policy ID.
 
 ```rust
 use serde_json::json;
-use venom_core::{
+use termivar_core::{
     ApiSurfaceKind, ApiVisibilityDimension, ApiVisibilityPairKind,
 };
-use venom_scanner::{
+use termivar_scanner::{
     ApiComparisonProfile, ApiVisibilityComparator, JsonPathPattern,
 };
 
@@ -184,11 +184,11 @@ persisted report cannot silently downgrade to a differently projected replay.
 
 ```rust
 use serde_json::json;
-use venom_core::{
+use termivar_core::{
     ApiSurfaceKind, ApiVisibilityDimension, ApiVisibilityPairKind,
     ConfidenceScore, EntityId,
 };
-use venom_scanner::{
+use termivar_scanner::{
     ApiVisibilityComparator, ApiVisibilityReviewQuery, KnowledgeBase,
     RuleEngine, StandardApiReasoning, api_visibility_reviews_for_resource,
     ingest_api_visibility_observation,
@@ -469,7 +469,7 @@ changing the serialized review record:
 
 This is a review-read-model state, not a target-scoped decision-loop command and
 not a vulnerability verdict. Golden fixtures under
-`crates/venom-scanner/tests/fixtures/api_authorization/` lock UI/API,
+`crates/termivar-scanner/tests/fixtures/api_authorization/` lock UI/API,
 anonymous/authenticated, owner/unrelated-user, and read/write-capability
 behavior through the full transport-neutral comparison and reasoning path.
 Their expected projection-policy, comparison-subject, path, and serialized

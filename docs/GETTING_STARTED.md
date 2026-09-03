@@ -22,17 +22,17 @@ Docker is optional. PostgreSQL, Redis, Node.js, and a browser are not required t
 ## Build from source
 
 ```bash
-git clone https://github.com/ITherso/venom.git
-cd venom
+git clone https://github.com/ITherso/venom.git termivar
+cd termivar
 REVIEWED_COMMIT="REPLACE_WITH_THE_REVIEWED_FULL_COMMIT_SHA"
 test "$REVIEWED_COMMIT" != "REPLACE_WITH_THE_REVIEWED_FULL_COMMIT_SHA"
 git checkout --detach "$REVIEWED_COMMIT"
 test "$(git rev-parse HEAD)" = "$REVIEWED_COMMIT"
-cargo build --locked -p venom-cli
-cargo run -p venom-cli --locked -- --help
+cargo build --locked -p termivar-cli
+cargo run -p termivar-cli --locked -- --help
 ```
 
-The root manifest is a virtual workspace. The CLI package is `venom-cli`; its binary is named `venom`.
+The root manifest is a virtual workspace. The CLI package is `termivar-cli`; its binary is named `termivar`.
 
 ## Run the deterministic runtime
 
@@ -41,7 +41,7 @@ command. With no explicit profile it retains the conservative single-resource
 behavior and compatibility output:
 
 ```bash
-cargo run -p venom-cli --locked -- scan https://authorized.example.test
+cargo run -p termivar-cli --locked -- scan https://authorized.example.test
 ```
 
 `example.test` is a reserved placeholder and will not normally resolve. Replace it with an exact origin you own or have explicit permission to assess.
@@ -60,7 +60,7 @@ It emits operational decisions and outcomes, not deterministic-runtime findings 
 ### Explain mode
 
 ```bash
-cargo run -p venom-cli --locked -- scan https://authorized.example.test --explain
+cargo run -p termivar-cli --locked -- scan https://authorized.example.test --explain
 ```
 
 The expanded text includes hypotheses, selected and excluded actions, dispatches, outcomes, and terminal reasoning.
@@ -68,7 +68,7 @@ The expanded text includes hypotheses, selected and excluded actions, dispatches
 ### JSON diagnostics
 
 ```bash
-cargo run -p venom-cli --locked -- scan https://authorized.example.test --format json
+cargo run -p termivar-cli --locked -- scan https://authorized.example.test --format json
 ```
 
 The JSON document retains the historically named schema [`decision-scan/v1`](internals/decision-scan-json-v1.md). It already carries full diagnostics, so `--format json` and `--explain` cannot be combined. `decision-scan` remains a deprecated, discoverable command alias for `scan`; it runs the same implementation and produces identical stdout and stderr. Selecting no profile is the compatibility state; neither new profile silently changes this wire document.
@@ -79,8 +79,8 @@ The strict `venom.scan-profile/v1` contract implements exactly two named
 profiles:
 
 ```bash
-cargo run -p venom-cli --locked -- scan https://authorized.example.test --profile baseline
-cargo run -p venom-cli --locked -- scan https://authorized.example.test --profile web-review
+cargo run -p termivar-cli --locked -- scan https://authorized.example.test --profile baseline
+cargo run -p termivar-cli --locked -- scan https://authorized.example.test --profile web-review
 ```
 
 `baseline` explicitly selects the same conservative single-resource decision
@@ -113,10 +113,10 @@ complete `Authorization` header value into a secret source out of band, then
 name that source rather than placing the value in process arguments:
 
 ```bash
-cargo run -p venom-cli --locked -- scan https://authorized.example.test \
-  --profile web-review --report-format json --auth-env VENOM_AUTH_CONTEXT
-cargo run -p venom-cli --locked -- scan https://authorized.example.test \
-  --profile web-review --report-format json --auth-file /secure/path/venom-auth-context
+cargo run -p termivar-cli --locked -- scan https://authorized.example.test \
+  --profile web-review --report-format json --auth-env TERMIVAR_AUTH_CONTEXT
+cargo run -p termivar-cli --locked -- scan https://authorized.example.test \
+  --profile web-review --report-format json --auth-file /secure/path/termivar-auth-context
 ```
 
 `--auth-stdin` reads through EOF and is also supported; the invoking host must
@@ -126,7 +126,7 @@ scanner's compiled 4 KiB payload-artifact ceiling, and consumed only after
 profile, exact-root, authenticated-transport, and obvious report-output
 validation. Credentialed review requires HTTPS, with numeric-IP loopback HTTP
 reserved for deterministic local fixtures.
-Venom does not expose a raw `--authorization` option. It sends an anonymous
+Termivar does not expose a raw `--authorization` option. It sends an anonymous
 control and an authorized candidate through the same global assessment
 authority. Equal JSON visibility emits no item; a complete difference is one
 atomic `NeedsReview` comparison, not confirmation of broken authorization.
@@ -144,9 +144,9 @@ the profile was explicitly selected. Choose another central renderer with
 `--report-format`:
 
 ```bash
-cargo run -p venom-cli --locked -- scan https://authorized.example.test \
+cargo run -p termivar-cli --locked -- scan https://authorized.example.test \
   --profile web-review --report-format csv
-cargo run -p venom-cli --locked -- scan https://authorized.example.test \
+cargo run -p termivar-cli --locked -- scan https://authorized.example.test \
   --profile web-review --report-format html --report-output assessment.html
 ```
 
@@ -157,7 +157,7 @@ overwrites an existing destination, and returns nonzero if the filesystem
 cannot provide those semantics. The file contents are synchronized before
 publication, but directory-metadata crash durability is best effort.
 
-If a `web-review` run is incomplete or fails after starting, Venom emits a
+If a `web-review` run is incomplete or fails after starting, Termivar emits a
 redacted `web-assessment/v2` diagnostic audit to stdout, marks assessment items
 unavailable, returns nonzero, and creates no report artifact. It never presents
 a partial or truncated report as completed output.
@@ -170,10 +170,10 @@ For a network-isolated smoke run, serve a temporary directory on loopback in one
 python3 -m http.server 8088 --bind 127.0.0.1
 ```
 
-Then run Venom in another terminal:
+Then run Termivar in another terminal:
 
 ```bash
-cargo run -p venom-cli --locked -- scan http://127.0.0.1:8088
+cargo run -p termivar-cli --locked -- scan http://127.0.0.1:8088
 ```
 
 This proves command wiring and output shape; it is not a meaningful security assessment.
@@ -183,7 +183,7 @@ This proves command wiring and output shape; it is not a meaningful security ass
 The historical ordered runner is not present in a default build. To use it, compile the explicit feature and acknowledge its heuristic claim boundary:
 
 ```bash
-cargo run -p venom-cli --locked --features legacy-scanner -- legacy-scan \
+cargo run -p termivar-cli --locked --features legacy-scanner -- legacy-scan \
   https://authorized.example.test --acknowledge-legacy-heuristics
 ```
 
@@ -240,7 +240,7 @@ The normalization review is absent from default builds. Compile the matching
 CLI feature and opt in at runtime only for an authorized `web-review` target:
 
 ```bash
-cargo run -p venom-cli --locked --features normalization-resilience -- \
+cargo run -p termivar-cli --locked --features normalization-resilience -- \
   scan https://authorized.example.test \
   --profile web-review \
   --normalization-resilience
@@ -260,9 +260,9 @@ semantics. Its ceiling is `NeedsReview` / `KnowledgeOnly`; a `403` followed by a
 Default builds expose none of `artifact`, `api`, or `proxy`. They can be
 compiled as explicit adapters, but they are not scan alternatives:
 
-- `cargo run -p venom-cli --locked --features artifact-adapter -- artifact scan-file --signatures artifact-signatures/lab/venom-canary/signatures.toml --input ./authorized-sample.bin --format json` performs one bounded read-only scan of one explicit regular file. It does not recurse, acquire process memory, write files, issue network requests, or turn observations into malware/vulnerability verdicts.
-- `cargo run -p venom-cli --locked --features api-adapter -- api --addr 127.0.0.1:8080` is unsupported and exits nonzero: the library has a health router, but no listener is implemented.
-- `cargo run -p venom-cli --locked --features proxy-adapter -- proxy --addr 127.0.0.1:8081 --upstream 127.0.0.1:9081` starts an experimental TCP relay to the explicitly selected upstream. It does not implement HTTP `CONNECT`, TLS termination, generated certificates, or request inspection.
+- `cargo run -p termivar-cli --locked --features artifact-adapter -- artifact scan-file --signatures artifact-signatures/lab/termivar-canary/signatures.toml --input ./authorized-sample.bin --format json` performs one bounded read-only scan of one explicit regular file. It does not recurse, acquire process memory, write files, issue network requests, or turn observations into malware/vulnerability verdicts.
+- `cargo run -p termivar-cli --locked --features api-adapter -- api --addr 127.0.0.1:8080` is unsupported and exits nonzero: the library has a health router, but no listener is implemented.
+- `cargo run -p termivar-cli --locked --features proxy-adapter -- proxy --addr 127.0.0.1:8081 --upstream 127.0.0.1:9081` starts an experimental TCP relay to the explicitly selected upstream. It does not implement HTTP `CONNECT`, TLS termination, generated certificates, or request inspection.
 
 Lua execution and distributed coordination are implemented Experimental,
 opt-in host-library APIs with no repository runtime caller. Dashboard,
@@ -299,7 +299,7 @@ with a [validated JSON record](reports/benchmarks/27321ef-endpoint-assessment.js
 It is one runner-local measurement set, not an SLA, accepted repeatable
 baseline, or capacity certification.
 
-## Extend Venom
+## Extend Termivar
 
 The deterministic assessment/reporting surface and native plugin API 0.2 are
 Preview. `ScannerSdk` and its ordered phase runner are a Legacy facade. The
@@ -309,13 +309,13 @@ change those lifecycle labels:
 ```bash
 cargo install cargo-generate
 cargo xtask generate scanner my-scanner
-cargo xtask generate plugin my-venom-plugin
+cargo xtask generate plugin my-termivar-plugin
 ```
 
 They are source-level, opt-in library integrations, not runtime-loaded
 extensions for the default deterministic `scan`. The scanner starter uses the
 Legacy phase facade; new product capability belongs in the deterministic
-runtime rather than that runner. Venom ships no stock detector plugins; the
+runtime rather than that runner. Termivar ships no stock detector plugins; the
 generated Preview plugin records an INFO-only trait-boundary observation
 through host-owned policy and makes no security claim. Read the
 [Scanner SDK](sdk.md), [plugin guide](plugin.md), and

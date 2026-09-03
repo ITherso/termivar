@@ -1,6 +1,6 @@
 # Code quality
 
-Venom treats quality claims as release evidence, not marketing language. Passing
+Termivar treats quality claims as release evidence, not marketing language. Passing
 CI means that the declared checks passed for one commit; it does not make the
 alpha production-ready or prove that a scanner result is correct.
 
@@ -8,11 +8,11 @@ alpha production-ready or prove that a scanner result is correct.
 
 ```text
 crates/
-├─ venom-core/src/          transport-neutral contracts and types
-├─ venom-scanner/src/       runtime, reasoning, phases, and plugins
-├─ venom-proxy/src/         experimental fixed-upstream TCP relay
-├─ venom-api/src/           health router / unsupported listener hook
-└─ venom-cli/src/           composition root
+├─ termivar-core/src/          transport-neutral contracts and types
+├─ termivar-scanner/src/       runtime, reasoning, phases, and plugins
+├─ termivar-proxy/src/         experimental fixed-upstream TCP relay
+├─ termivar-api/src/           health router / unsupported listener hook
+└─ termivar-cli/src/           composition root
 examples/src/               compiled SDK examples
 xtask/src/                  repository maintenance commands
 ```
@@ -59,9 +59,9 @@ Use a narrower command while iterating, but do not substitute it for the
 relevant workspace gate:
 
 ```bash
-cargo test -p venom-core
-cargo test -p venom-scanner --no-default-features --lib --locked
-cargo test -p venom-scanner --all-features runtime_budget
+cargo test -p termivar-core
+cargo test -p termivar-scanner --no-default-features --lib --locked
+cargo test -p termivar-scanner --all-features runtime_budget
 ```
 
 See [Testing](TESTING.md) for loopback integration tests, deterministic reasoning

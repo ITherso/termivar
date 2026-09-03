@@ -1,6 +1,6 @@
 # Contributors
 
-Venom is preparing for its first merged contribution from outside the original maintainer account. Contributor counts are based on merged Git history; bots, issue authors, and unmerged pull requests are not presented as contributors.
+Termivar is preparing for its first merged contribution from outside the original maintainer account. Contributor counts are based on merged Git history; bots, issue authors, and unmerged pull requests are not presented as contributors.
 
 ## Start here
 

@@ -5,7 +5,7 @@ existing `WebAssessmentRuntime`. It is excluded from default scanner and CLI
 features. The operator must compile `rest-review` and pass all of:
 
 ```text
-venom scan TARGET --profile web-review --openapi-review --rest-review
+termivar scan TARGET --profile web-review --openapi-review --rest-review
 ```
 
 The CLI rejects `--rest-review` outside explicit `web-review` and rejects it

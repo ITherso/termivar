@@ -4,7 +4,7 @@ The scanner conformance corpus is repository-only test data. It contains 103
 sanitized request/response cases for deterministic checks of current scanner
 semantics and explicitly identified future protocol cases. Twenty-three cases
 exercise the transport-neutral four-view authorization differential contract.
-It is not loaded by `venom scan` and grants no network, execution, or claim
+It is not loaded by `termivar scan` and grants no network, execution, or claim
 authority.
 
 ## Case contract

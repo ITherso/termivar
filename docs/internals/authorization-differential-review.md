@@ -22,7 +22,7 @@ must then select explicit `web-review`, one policy file, and exactly one source
 for each principal:
 
 ```text
-venom scan https://authorized.example.test \
+termivar scan https://authorized.example.test \
   --profile web-review \
   --authorization-review-policy ./review.toml \
   --authz-primary-env PRIMARY_AUTH_CONTEXT \
@@ -40,7 +40,7 @@ credential values are redacted from diagnostics.
 
 The option is rejected for `baseline` and with no explicit profile. Compiling
 the feature alone adds no action or request, and the default CLI help,
-`venom scan`, and `decision-scan/v1` remain unchanged.
+`termivar scan`, and `decision-scan/v1` remain unchanged.
 
 ## Policy contract
 

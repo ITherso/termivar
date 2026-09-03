@@ -13,7 +13,7 @@ recovery, consensus, or exactly-once delivery.
 
 | Concern | Current contract |
 | --- | --- |
-| Build | Explicit `venom-scanner` feature `distributed` |
+| Build | Explicit `termivar-scanner` feature `distributed` |
 | Host boundary | Root exports such as `WorkerPool`, `TaskQueue`, `TaskLease`, and `ResultAggregator` |
 | Ordering | `BTreeMap`/`BTreeSet` state and stable tie-breaking |
 | Time | Monotonic logical seconds supplied by the caller |
@@ -21,7 +21,7 @@ recovery, consensus, or exactly-once delivery.
 | Ownership | Worker generation, task generation, attempt, lease ID, and lease expiry |
 | Mutation | Expected-revision commands with error-atomic failure |
 | Retention | Configured and absolute record/byte ceilings; no eviction |
-| Default runtime | No participation in `venom scan`, `legacy-scan`, plugins, or Lua |
+| Default runtime | No participation in `termivar scan`, `legacy-scan`, plugins, or Lua |
 
 ## Tasks, workers, and logical time
 

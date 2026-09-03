@@ -3,6 +3,7 @@
 Termivar is the current product identity. Venom is the former project name.
 This alpha-stage migration changes the current package, crate, and executable
 names without duplicating the scanner or changing assessment behavior.
+The current name is pronounced “TER-mi-var.”
 
 ## Current identity mapping
 
@@ -66,6 +67,8 @@ can update an existing checkout with:
 
 ```bash
 git remote set-url origin https://github.com/ITherso/termivar.git
+# SSH alternative:
+git remote set-url origin git@github.com:ITherso/termivar.git
 ```
 
 No package publication, release, website, or second scanner implementation is

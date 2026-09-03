@@ -71,7 +71,7 @@ Explicit host --> TaskQueue <--> WorkerPool --> WorkerNode
       |              `--> CompletionReceipt --> ResultAggregator
       `--> LuaScriptRegistry --> fresh bounded Lua VM
 
-Bounded manifest bytes --> venom-exploit validation --> sealed metadata catalog
+Bounded manifest bytes --> termivar-exploit validation --> sealed metadata catalog
                                                         (no execution runtime)
 ```
 

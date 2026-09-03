@@ -1,6 +1,6 @@
 # Deterministic scan JSON output — schema `decision-scan/v1`
 
-`venom scan <target> --format json` prints a single JSON document to **stdout**;
+`termivar scan <target> --format json` prints a single JSON document to **stdout**;
 the `[ALPHA]` warning and any error go to **stderr**. The deprecated, discoverable
 `decision-scan` command alias runs the same implementation and produces identical
 stdout and stderr. The document is

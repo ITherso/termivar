@@ -1,7 +1,7 @@
 # GraphQL surface review
 
 GraphQL Surface Review V1 is a non-default, anonymous protocol review for an
-explicit `web-review` scan. Both `venom-scanner` and `venom-cli` use the
+explicit `web-review` scan. Both `termivar-scanner` and `termivar-cli` use the
 `graphql-review` feature, and the operator must also pass `--graphql-review`.
 The feature is absent from default builds; a feature-enabled CLI rejects the
 flag without an explicit `web-review` profile or with `baseline`.

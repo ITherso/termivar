@@ -1,15 +1,15 @@
 # API reference
 
-The unreleased Venom `0.10.0-alpha.1` source line is primarily a Rust library framework. The generated Rust API documentation is the source of truth for public types, traits, feature gates, and examples.
+The unreleased Termivar `0.10.0-alpha.1` source line is primarily a Rust library framework. The generated Rust API documentation is the source of truth for public types, traits, feature gates, and examples.
 
 ## Rust crates
 
 | Crate | Purpose | Generated documentation |
 | --- | --- | --- |
-| `venom-core` | Default transport-neutral evidence, reasoning, ontology, outcome, predicate, and run-report contracts; opt-in pre-quarantine compatibility facade | [Open rustdoc](https://itherso.github.io/venom/rust/venom_core/) |
-| `venom-scanner` | Scanner SDK, phase/plugin and execution contracts, deterministic reasoning profiles, and reports | [Open rustdoc](https://itherso.github.io/venom/rust/venom_scanner/) |
-| `venom-api` | Library health router; the CLI listener adapter is unsupported | [Open rustdoc](https://itherso.github.io/venom/rust/venom_api/) |
-| `venom-proxy` | Experimental fixed-upstream TCP relay; no HTTP/TLS interception | [Open rustdoc](https://itherso.github.io/venom/rust/venom_proxy/) |
+| `termivar-core` | Default transport-neutral evidence, reasoning, ontology, outcome, predicate, and run-report contracts; opt-in pre-quarantine compatibility facade | [Open rustdoc](https://itherso.github.io/venom/rust/termivar_core/) |
+| `termivar-scanner` | Scanner SDK, phase/plugin and execution contracts, deterministic reasoning profiles, and reports | [Open rustdoc](https://itherso.github.io/venom/rust/termivar_scanner/) |
+| `termivar-api` | Library health router; the CLI listener adapter is unsupported | [Open rustdoc](https://itherso.github.io/venom/rust/termivar_api/) |
+| `termivar-proxy` | Experimental fixed-upstream TCP relay; no HTTP/TLS interception | [Open rustdoc](https://itherso.github.io/venom/rust/termivar_proxy/) |
 
 The documentation workflow builds every public crate with all features and treats rustdoc warnings and broken intra-doc links as errors.
 
@@ -21,16 +21,16 @@ surface must enable `legacy-scanner` explicitly:
 
 ```toml
 [dependencies]
-venom-scanner = { path = "/path/to/reviewed/venom/crates/venom-scanner", default-features = false, features = ["legacy-scanner"] }
+termivar-scanner = { path = "/path/to/reviewed/termivar/crates/termivar-scanner", default-features = false, features = ["legacy-scanner"] }
 ```
 
 No published package currently represents the remediated source contract. Pin
 and review a source checkout before using this compatibility API.
 
-They can then start with [`ScannerSdk`](https://itherso.github.io/venom/rust/venom_scanner/sdk/struct.ScannerSdk.html) and implement [`ScanPhase`](https://itherso.github.io/venom/rust/venom_scanner/contracts/trait.ScanPhase.html):
+They can then start with [`ScannerSdk`](https://itherso.github.io/venom/rust/termivar_scanner/sdk/struct.ScannerSdk.html) and implement [`ScanPhase`](https://itherso.github.io/venom/rust/termivar_scanner/contracts/trait.ScanPhase.html):
 
 ```rust
-use venom_scanner::ScannerSdk;
+use termivar_scanner::ScannerSdk;
 
 let scanner = ScannerSdk::builder()
     // .phase(MyAuthorizedPhase)
@@ -42,12 +42,12 @@ and the generated starter project.
 
 ## Deterministic API reasoning
 
-[`PredicateDescriptor`](https://itherso.github.io/venom/rust/venom_core/predicates/struct.PredicateDescriptor.html)
-and the HTTP/API vocabulary in `venom-core` give evidence producers and
+[`PredicateDescriptor`](https://itherso.github.io/venom/rust/termivar_core/predicates/struct.PredicateDescriptor.html)
+and the HTTP/API vocabulary in `termivar-core` give evidence producers and
 reasoning profiles one canonical predicate contract without replacing the open
 `KnowledgePredicate` wire format.
 
-[`StandardApiReasoning`](https://itherso.github.io/venom/rust/venom_scanner/api_reasoning/struct.StandardApiReasoning.html)
+[`StandardApiReasoning`](https://itherso.github.io/venom/rust/termivar_scanner/api_reasoning/struct.StandardApiReasoning.html)
 is an opt-in, transport-neutral profile. It produces explainable hypotheses for
 JSON-compatible responses and GraphQL signals. The HTTP evidence boundary
 normalizes a validated media-type essence, a JSON-compatible media-type flag,
@@ -56,17 +56,17 @@ JSON rule has the stable identity `api.response.json.media-type`; it does not
 search raw header or URL text.
 
 A visibility-boundary hypothesis requires one host-created
-[`ApiVisibilityComparison`](https://itherso.github.io/venom/rust/venom_core/predicates/struct.ApiVisibilityComparison.html)
+[`ApiVisibilityComparison`](https://itherso.github.io/venom/rust/termivar_core/predicates/struct.ApiVisibilityComparison.html)
 that compares the same logical resource. Its recommended `to_observation()`
 path returns an
-[`ApiVisibilityObservation`](https://itherso.github.io/venom/rust/venom_core/predicates/struct.ApiVisibilityObservation.html)
+[`ApiVisibilityObservation`](https://itherso.github.io/venom/rust/termivar_core/predicates/struct.ApiVisibilityObservation.html)
 containing the evidence and its stable, evidence-backed
 `api.visibility.resource-scope` relation. Hosts can commit both records through
 `KnowledgeBase::insert_evidence_with_relation`; identity and linkage conflicts
 are checked before either record is written.
 
 Hosts that start from authorized JSON values can use
-[`ApiVisibilityComparator`](https://itherso.github.io/venom/rust/venom_scanner/api_evidence/struct.ApiVisibilityComparator.html)
+[`ApiVisibilityComparator`](https://itherso.github.io/venom/rust/termivar_scanner/api_evidence/struct.ApiVisibilityComparator.html)
 to capture bounded, raw-value-free views and classify one explicit status,
 field-shape, or resource-content dimension. The comparator never owns a network
 client and retains signatures rather than response bodies. Its output remains
@@ -85,13 +85,13 @@ Comparator v3 distinguishes equivalence, bounded path summaries, and
 differences without a representable path summary. The current reader rejects
 persisted v2 profiles and envelopes instead of reinterpreting them.
 
-[`ingest_api_visibility_observation`](https://itherso.github.io/venom/rust/venom_scanner/api_observation/fn.ingest_api_visibility_observation.html)
+[`ingest_api_visibility_observation`](https://itherso.github.io/venom/rust/termivar_scanner/api_observation/fn.ingest_api_visibility_observation.html)
 validates the caller's expected resource, atomically commits evidence plus its
 scope relation, applies installed rules to the isolated comparison subject, and
 returns typed commit/reasoning receipts. A post-commit reasoning failure carries
 the observation commit receipt. Rule conclusions are themselves preflighted
 and written as one hypothesis batch. Resource-oriented consumers can use
-[`api_visibility_reviews_for_resource`](https://itherso.github.io/venom/rust/venom_scanner/api_observation/fn.api_visibility_reviews_for_resource.html)
+[`api_visibility_reviews_for_resource`](https://itherso.github.io/venom/rust/termivar_scanner/api_observation/fn.api_visibility_reviews_for_resource.html)
 without merging comparison subjects. Projection uses an explicit cursor query,
 counts rejected relations against its scan budget, and enforces a compiled
 per-page ceiling so a resource cannot trigger an unbounded clone or scan.
@@ -104,8 +104,8 @@ hypothesis is `UnresolvedDifference`, and only an exact weak/supported,
 evidence-bound hypothesis is `AwaitHumanReview`. This disposition is not a
 `DecisionLoopCommand`, is not serialized into the existing review wire shape,
 and never declares broken access control or another vulnerability.
-See [`ApiVisibilityReviewQuery`](https://itherso.github.io/venom/rust/venom_scanner/api_observation/struct.ApiVisibilityReviewQuery.html)
-and [`ApiVisibilityReviewPage`](https://itherso.github.io/venom/rust/venom_scanner/api_observation/struct.ApiVisibilityReviewPage.html)
+See [`ApiVisibilityReviewQuery`](https://itherso.github.io/venom/rust/termivar_scanner/api_observation/struct.ApiVisibilityReviewQuery.html)
+and [`ApiVisibilityReviewPage`](https://itherso.github.io/venom/rust/termivar_scanner/api_observation/struct.ApiVisibilityReviewPage.html)
 for cursor and page metadata. The legacy continuation is an opaque relation ID;
 the host must keep it associated with the same resource. It is neither an
 authenticated transport token nor a point-in-time snapshot under concurrent
@@ -215,13 +215,13 @@ See [API visibility evidence](internals/api-evidence.md) for canonicalization,
 native collection limits, receipts, partial-commit semantics, replay behavior,
 and trust boundaries.
 
-This reasoning surface is separate from the `venom-api` application transport.
+This reasoning surface is separate from the `termivar-api` application transport.
 Recognizing a GraphQL-shaped target does not expose or implement a GraphQL
-server endpoint in Venom.
+server endpoint in Termivar.
 
 ## Implemented HTTP surface
 
-The current `venom-api` crate exposes one implemented route:
+The current `termivar-api` crate exposes one implemented route:
 
 ```http
 GET /health
@@ -232,7 +232,7 @@ Content-Type: text/plain
 OK
 ```
 
-`venom_api::router()` returns the Axum router containing this route. `venom_api::start_api()` is currently a startup hook and does **not** bind a listener. Authentication, scan-management endpoints, teams, exports, compliance endpoints, rate limits, webhooks, and GraphQL are not implemented contracts in this alpha release.
+`termivar_api::router()` returns the Axum router containing this route. `termivar_api::start_api()` is currently a startup hook and does **not** bind a listener. Authentication, scan-management endpoints, teams, exports, compliance endpoints, rate limits, webhooks, and GraphQL are not implemented contracts in this alpha release.
 
 This explicit boundary prevents example payloads from being mistaken for shipped behavior. New HTTP endpoints require routing tests, request/response types, error semantics, authorization rules, and rustdoc examples before they are documented here.
 

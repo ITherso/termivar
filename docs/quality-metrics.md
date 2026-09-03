@@ -1,6 +1,6 @@
 # Quality metrics
 
-Venom publishes measurements as CI artifacts instead of embedding hand-maintained numbers in the README.
+Termivar publishes measurements as CI artifacts instead of embedding hand-maintained numbers in the README.
 
 Evidence-backed release baselines are committed under `docs/reports/benchmarks/`. The latest published record is [commit `f7d5120`](reports/benchmarks/f7d5120.md), with raw values in [JSON](reports/benchmarks/f7d5120.json).
 
@@ -85,7 +85,7 @@ and HTML extraction boundaries in [PR #53](https://github.com/ITherso/venom/pull
 classified by behavior; serious semantic gaps became focused deterministic
 regressions and were rerun in narrowed campaigns.
 
-Those pull-request records are scoped evidence for their exact revisions. Venom
+Those pull-request records are scoped evidence for their exact revisions. Termivar
 does not have a committed mutation workflow, an aggregate workspace score, or a
 claim that every mutation-relevant function has been exercised.
 
@@ -105,7 +105,7 @@ campaign evidence must not be represented as complete mutation coverage.
 ## Reproduce microbenchmarks
 
 ```bash
-cargo bench -p venom-scanner --bench scanner_benchmarks
+cargo bench -p termivar-scanner --bench scanner_benchmarks
 ```
 
 See [Benchmarks](benchmarks.md) for the controlled release-baseline schema and [Profiling](profiling.md) for flamegraph guidance.

@@ -1,6 +1,6 @@
-# Contributing to Venom
+# Contributing to Termivar
 
-Venom welcomes focused changes that preserve its crate boundaries and authorized-security-testing purpose. By participating, you agree to follow the [Code of Conduct](CODE_OF_CONDUCT.md).
+Termivar welcomes focused changes that preserve its crate boundaries and authorized-security-testing purpose. By participating, you agree to follow the [Code of Conduct](CODE_OF_CONDUCT.md).
 
 ## Development setup
 
@@ -9,8 +9,8 @@ container build and runtime contract; repository tests do not require database
 or cache services.
 
 ```bash
-git clone https://github.com/ITherso/venom.git
-cd venom
+git clone https://github.com/ITherso/venom.git termivar
+cd termivar
 cargo test --workspace --locked
 ```
 
@@ -42,7 +42,7 @@ Use [GitHub Discussions](https://github.com/ITherso/venom/discussions) for usage
 ## Coding style
 
 - Workspace crates forbid unsafe Rust. Do not add an `unsafe` block; any proposed exception requires an explicit lint-policy and architecture change before implementation.
-- Keep dependencies directed toward `venom-core`; entry-point and product crates must not leak into lower layers.
+- Keep dependencies directed toward `termivar-core`; entry-point and product crates must not leak into lower layers.
 - Keep runner, phase, plugin, event, report, and transport responsibilities separate.
 - Use async I/O on runtime paths and never block a Tokio worker thread.
 - Return structured errors and findings; do not hide failures in logging alone.
@@ -101,4 +101,4 @@ Do not open a public issue for a vulnerability. Follow [SECURITY.md](SECURITY.md
 
 ## License
 
-Venom is licensed under the [MIT License](LICENSE). Unless stated otherwise, contributions submitted to this repository are accepted under the same terms.
+Termivar is licensed under the [MIT License](LICENSE). Unless stated otherwise, contributions submitted to this repository are accepted under the same terms.

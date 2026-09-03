@@ -214,7 +214,7 @@ The decision runner remains single-subject and is not used for paired ingress.
 ## Usage
 
 ```rust
-use venom_scanner::{KnowledgeBase, RuleEngine, StandardApiReasoning};
+use termivar_scanner::{KnowledgeBase, RuleEngine, StandardApiReasoning};
 
 let knowledge = KnowledgeBase::new();
 let mut rules = RuleEngine::new();

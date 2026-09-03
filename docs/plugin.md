@@ -5,7 +5,7 @@ them with `PluginRegistry`. The API is a source-level Rust **Preview**, not a
 stable dynamic ABI, and the stock CLI does not discover arbitrary plugin crates
 at runtime. The current Preview API line is `0.2.0`.
 
-Venom ships no detector plugins. The six former SQL, XSS, LFI, XXE, SSRF, and
+Termivar ships no detector plugins. The six former SQL, XSS, LFI, XXE, SSRF, and
 SSTI marker types were removed from the production namespace because substring
 matches did not verify vulnerabilities. The harmless types under
 [`examples/plugin-fixtures/`](https://github.com/ITherso/venom/tree/main/examples/plugin-fixtures) exist only
@@ -21,14 +21,14 @@ and expand the repository template:
 
 ```bash
 cargo install cargo-generate
-cargo xtask generate plugin my-venom-plugin
-cd my-venom-plugin
+cargo xtask generate plugin my-termivar-plugin
+cd my-termivar-plugin
 cargo test
 ```
 
 The template records one fixed INFO observation to demonstrate the API. It is
 not a detector and makes no security claim. During alpha the generated
-dependency tracks Venom `main`; pin it to a tag or commit before publishing.
+dependency tracks Termivar `main`; pin it to a tag or commit before publishing.
 
 ## Host-owned execution
 
@@ -86,7 +86,7 @@ The generated crate includes a complete registration/execution test using a
 local, no-I/O host context. See its source for the exact constructors on the
 current Preview API line:
 
-- [`templates/venom-plugin/src/lib.rs`](https://github.com/ITherso/venom/blob/main/templates/venom-plugin/src/lib.rs)
+- [`templates/termivar-plugin/src/lib.rs`](https://github.com/ITherso/venom/blob/main/templates/termivar-plugin/src/lib.rs)
 - [`examples/custom_plugin.rs`](https://github.com/ITherso/venom/blob/main/examples/custom_plugin.rs)
 
 Hosts must construct authorization, budgets, request policy, cancellation,

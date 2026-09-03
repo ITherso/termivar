@@ -1,6 +1,6 @@
 # Release process
 
-Venom follows Semantic Versioning. Pre-release identifiers such as `-alpha`
+Termivar follows Semantic Versioning. Pre-release identifiers such as `-alpha`
 communicate stability; they are part of the version, not a separate status
 string.
 
@@ -9,7 +9,7 @@ string.
 - workspace version and CLI output agree;
 - changelog entry is reviewed and complete;
 - architecture, formatting, lint, unit, integration, security, and compatibility checks pass;
-- the pinned `venom-core` public API compatibility job passes;
+- the pinned `termivar-core` public API compatibility job passes;
 - every published crate either passes its blocking compatibility baseline or
   carries an explicitly documented pre-v1 break, version transition, and
   upgrade note;
@@ -46,8 +46,9 @@ cargo +1.93.0 install cargo-semver-checks --version 0.50.0 --locked
 cargo +1.93.0 xtask semver
 ```
 
-The command requires exactly `cargo-semver-checks 0.50.0` and checks only
-`venom-core` against the immutable `v0.9.0-alpha` source commit. CI pins Rust
+The command requires exactly `cargo-semver-checks 0.50.0` and checks only the
+current `termivar-core` API against the historical `venom-core` package at the
+immutable `v0.9.0-alpha` source commit. CI pins Rust
 1.93.0 for the analysis job. See
 [Repository health](repository-health.md#public-api-compatibility-scope) for
 the current scope and the documented scanner exception.
@@ -61,7 +62,7 @@ The current scanner shape has selected the new pre-1.0 minor source identity
    the [migration guide](migrations/scan-context-construction.md);
 3. create the release and annotated tag only after every release check passes;
 4. resolve that tag to its immutable peeled commit; and
-5. add the blocking `venom-scanner` baseline in a later change.
+5. add the blocking `termivar-scanner` baseline in a later change.
 
 Do not baseline the scanner against mutable `main` or describe the current
 transition as patch-compatible with `v0.9.0-alpha`.
@@ -69,7 +70,7 @@ transition as patch-compatible with `v0.9.0-alpha`.
 ## Release notes template
 
 ```markdown
-# Venom vX.Y.Z
+# Termivar vX.Y.Z
 
 ## Added
 

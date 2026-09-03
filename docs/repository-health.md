@@ -18,7 +18,7 @@ independent security assurance.
 | Source coverage | Enforced, scoped | Rust `1.88.0` and the explicit LLVM backend of `cargo-tarpaulin 0.37.2` enforce the accepted exact 21,439/24,842 aggregate and changed-line ratio for tracked Rust files under `crates/*/src/**` and `xtask/src/**`; `venom.coverage.v2` binds a normalized line-state digest, changed-file presence is fail-closed, and advisory Codecov upload remains best-effort |
 | MSRV | Configured in CI | Workspace packages declare Rust `1.88`; the compatibility matrix also exercises stable, beta, and nightly |
 | Cross-platform runtime smoke | Configured in CI | A focused Rust `1.88.0` matrix builds the default CLI and exercises CLI metadata, one deterministic loopback scan, atomic report paths, core wire stability, exact-origin authority, and redirect observation on Ubuntu, Windows, and macOS; it is not platform certification, all-features evidence, or a release-readiness claim |
-| SemVer | Configured for `venom-core` | `cargo xtask semver` compares the all-features core API with the recorded `v0.9.0-alpha` baseline using a patch-compatibility threshold |
+| SemVer | Configured for `termivar-core` | `cargo xtask semver` compares the all-features core API with the recorded former-name `v0.9.0-alpha` baseline using a patch-compatibility threshold |
 | Current-head downstream consumers | Configured in CI | One dedicated lockfile supports four separate package tests for default core, deterministic assessment/reporting, the Legacy Scanner SDK facade, and plugin API 0.2 against the same checkout; this is not cross-version or external-adoption evidence |
 | Endpoint-scale evidence | Initial controlled record | The loopback-only real-runtime harness recorded fixed 100-endpoint, 1,000-endpoint, and 10,000-request workloads for source `27321ef` in workflow run `33292247976`; this is not an accepted repeatable baseline, SLA, capacity claim, or regression threshold |
 | Architecture boundaries | Configured in CI | `cargo xtask architecture` checks virtual-root source, workspace edges, protected imports, transport-free reasoning, and responsibility ownership behind ten modular root source facades |
@@ -50,7 +50,8 @@ threshold.
 
 The configured `Public API Compatibility` CI job runs
 `cargo-semver-checks 0.50.0` through `cargo xtask semver`. It compares only
-`venom-core`, with all features enabled, against commit
+the current `termivar-core`, with all features enabled, against the historical
+`venom-core` package at commit
 `9f65c661028af2d7129caeee640f9b6185c357ca`, the commit referenced by the
 annotated `v0.9.0-alpha` tag. The explicit patch comparison mode makes a
 detected breaking change fail even though the unreleased workspace has moved
@@ -66,7 +67,7 @@ This is deliberately a core-contract gate, not a workspace-wide stability
 claim. [ADR 0007](adr/0007-scan-context-construction-boundary.md) makes
 `ScanContext` constructor-owned, non-exhaustive, and responsible for a private
 knowledge base. That transition is intentionally source-incompatible with the
-tagged `v0.9.0-alpha` struct-literal contract. `venom-scanner` therefore remains
+tagged `v0.9.0-alpha` struct-literal contract. `termivar-scanner` therefore remains
 Preview and outside the blocking job until the next Preview release provides
 an immutable post-transition baseline. The CLI, API, and proxy crates are not
 covered by this check.

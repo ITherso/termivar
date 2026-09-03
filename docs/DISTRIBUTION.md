@@ -5,7 +5,7 @@ repository only. It has no matching prebuilt release artifact, package-manager
 repository, container registry, cloud marketplace, or orchestrated deployment
 channel.
 
-> Venom is not production-ready. Review and pin the source commit, read the
+> Termivar is not production-ready. Review and pin the source commit, read the
 > [runtime map](internals/runtime-map.md), and use the resulting binary only
 > against systems you own or are explicitly authorized to test.
 
@@ -14,17 +14,17 @@ channel.
 Requirements: Rust 1.88 or newer and Git.
 
 ```bash
-git clone https://github.com/ITherso/venom.git
-cd venom
+git clone https://github.com/ITherso/venom.git termivar
+cd termivar
 REVIEWED_COMMIT="REPLACE_WITH_THE_REVIEWED_FULL_COMMIT_SHA"
 test "$REVIEWED_COMMIT" != "REPLACE_WITH_THE_REVIEWED_FULL_COMMIT_SHA"
 git checkout --detach "$REVIEWED_COMMIT"
 test "$(git rev-parse HEAD)" = "$REVIEWED_COMMIT"
-cargo build --locked --release -p venom-cli
-./target/release/venom --help
+cargo build --locked --release -p termivar-cli
+./target/release/termivar --help
 ```
 
-On Windows, the binary is `target\release\venom.exe`.
+On Windows, the binary is `target\release\termivar.exe`.
 
 PostgreSQL, Redis, Node.js, a dashboard, and an API service are not required by the CLI scan commands.
 
@@ -46,11 +46,11 @@ current product.
 The repository Dockerfile is built in CI and can package the current CLI locally:
 
 ```bash
-docker build -t venom:local .
-docker run --rm venom:local --help
+docker build -t termivar:local .
+docker run --rm termivar:local --help
 ```
 
-The image's default command is `venom --help`; it does not open a listener or contact a target. Pass an explicit deterministic `scan` command and an authorized reachable origin when using the image for an assessment. The non-default API and proxy adapters are not compiled into this image.
+The image's default command is `termivar --help`; it does not open a listener or contact a target. Pass an explicit deterministic `scan` command and an authorized reachable origin when using the image for an assessment. The non-default API and proxy adapters are not compiled into this image.
 
 Repository workflows do not publish a supported image to Docker Hub or GHCR,
 and no `latest`, `slim`, or `full` image contract is promised. A maintainer may
@@ -62,7 +62,7 @@ manual artifact is not an installation channel or a release image.
 The following installation/deployment claims are **not** supported for this source state:
 
 - Homebrew, Apt/PPA, Pacman/AUR, Snap, Chocolatey, Scoop, or crates.io packages;
-- `get.venom.dev` quick-install scripts;
+- quick-install scripts from a vanity domain;
 - Docker Hub or GitHub Container Registry images;
 - Kubernetes, Helm, Terraform, Docker Compose, or a PostgreSQL/Redis service stack;
 - AWS, Azure, or GCP marketplace images;
@@ -79,13 +79,13 @@ The non-deployable [deployment blueprint](experimental/deployment-blueprint.md) 
 ## Verify the source-built binary
 
 ```bash
-venom --version
-venom --help
-venom scan --help
+termivar --version
+termivar --help
+termivar scan --help
 ```
 
 The supported CLI truth is documented in [Getting Started](GETTING_STARTED.md).
-`venom scan` is the bounded deterministic Preview, while `decision-scan` is its
+`termivar scan` is the bounded deterministic Preview, while `decision-scan` is its
 deprecated compatibility alias. The mixed-authority `legacy-scan` (whose
 complete run remains `Unmetered`), Preview local-file `artifact`, unsupported
 `api`, and experimental `proxy` adapters are absent from default builds and

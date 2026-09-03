@@ -1,4 +1,4 @@
-# Venom
+# Termivar
 
 [![CI](https://github.com/ITherso/venom/actions/workflows/tests.yml/badge.svg?branch=main)](https://github.com/ITherso/venom/actions/workflows/tests.yml)
 [![Docs](https://github.com/ITherso/venom/actions/workflows/docs.yml/badge.svg?branch=main)](https://itherso.github.io/venom/)
@@ -6,12 +6,18 @@
 [![MSRV](https://img.shields.io/badge/MSRV-1.88-orange?logo=rust)](Cargo.toml)
 [![License](https://img.shields.io/github/license/ITherso/venom)](LICENSE)
 
-Venom is an experimental Rust security-testing project centered on a deterministic decision runtime that turns bounded web observations into typed evidence, hypotheses, risk-aware plans, and verifier-scoped outcomes.
+**Deterministic security testing. Evidence before verdicts.**
+
+Termivar is a bounded, evidence-driven security assessment platform with deterministic execution, explicit authority, typed evidence, and claim-safe reporting.
+
+Termivar was formerly developed under the name Venom. Historical schema,
+digest, compatibility, and provenance identifiers may retain the former name
+where changing them would break deterministic identity or historical integrity.
 
 > [!WARNING]
 > **This remediated `0.10.0-alpha.1` source state is unreleased and not production-ready.** The historical `v0.9.0-alpha` binaries predate the bounded default runtime documented here and are not an installation path for this behavior. Build a reviewed, pinned commit from source and use it only on systems you own or are explicitly authorized to test. The default `scan` command is bounded, but it still makes network requests. The separately compiled `legacy-scan` has distinct bounded discovery and verification authorities, but phase one and custom extensions can still perform direct I/O outside `RuntimeBudget`, so its whole-run accounting is `Unmetered`. Preview and Experimental contracts may change.
 
-**Why an action ran is not what it proved.** Venom keeps the evidence that motivates an action separate from the evidence that may change a hypothesis. An action can return `Success` after completing a knowledge-gathering objective without confirming its motivating hypothesis.
+**Why an action ran is not what it proved.** Termivar keeps the evidence that motivates an action separate from the evidence that may change a hypothesis. An action can return `Success` after completing a knowledge-gathering objective without confirming its motivating hypothesis.
 
 ```mermaid
 flowchart LR
@@ -48,10 +54,10 @@ surfaces and are not silently inserted into `scan`.
 
 | Invocation | Authorized network envelope | Product output | Native assessment ceiling |
 | --- | --- | --- | --- |
-| `venom scan TARGET` | One decision subject under one exact-origin authority with no discovery crawl; 16 requests, 60 seconds, 1 MiB cumulative delivered-response threshold; redirects disabled | Text/`--explain` or unchanged `decision-scan/v1` JSON | No `AssessmentItem` projection |
-| `venom scan TARGET --profile baseline` | The same conservative single-resource primitive and limits | Additive `web-assessment/v1` profile audit; assessment-report and authorization-context flags are rejected | No native review item |
-| `venom scan TARGET --profile web-review` | Bounded exact-origin BFS under one budget, broker, cancellation authority, and scope policy | Completed `venom-rendered-assessment/v1`, or nonzero `web-assessment/v2` incompleteness with no partial file | `NeedsReview` |
-| `venom legacy-scan ... --acknowledge-legacy-heuristics` | Separate bounded passive and active authorities, but phase-one/custom I/O keeps whole-run accounting `Unmetered` | Legacy compatibility observations and allowlisted verifier projections | `NeedsReview` |
+| `termivar scan TARGET` | One decision subject under one exact-origin authority with no discovery crawl; 16 requests, 60 seconds, 1 MiB cumulative delivered-response threshold; redirects disabled | Text/`--explain` or unchanged `decision-scan/v1` JSON | No `AssessmentItem` projection |
+| `termivar scan TARGET --profile baseline` | The same conservative single-resource primitive and limits | Additive `web-assessment/v1` profile audit; assessment-report and authorization-context flags are rejected | No native review item |
+| `termivar scan TARGET --profile web-review` | Bounded exact-origin BFS under one budget, broker, cancellation authority, and scope policy | Completed `venom-rendered-assessment/v1`, or nonzero `web-assessment/v2` incompleteness with no partial file | `NeedsReview` |
+| `termivar legacy-scan ... --acknowledge-legacy-heuristics` | Separate bounded passive and active authorities, but phase-one/custom I/O keeps whole-run accounting `Unmetered` | Legacy compatibility observations and allowlisted verifier projections | `NeedsReview` |
 
 The default command is therefore not a crawler. Origin discovery, passive
 policy review, matched differential review, semantic extraction, and defense
@@ -62,14 +68,14 @@ host-defined legacy extensions retain their separately documented raw-client
 authority.
 
 > [!NOTE]
-> Venom has no supported API listener, `CONNECT`/TLS-intercepting MITM proxy,
+> Termivar has no supported API listener, `CONNECT`/TLS-intercepting MITM proxy,
 > or durable multi-node control plane. The optional proxy adapter is only a
 > fixed-upstream TCP relay, and distributed coordination remains an in-process
 > host-library state machine.
 
-## Why Venom is different
+## Why Termivar is different
 
-Venom uses a deliberately narrow claim vocabulary:
+Termivar uses a deliberately narrow claim vocabulary:
 
 | Term | Meaning in the deterministic runtime |
 | --- | --- |
@@ -80,7 +86,7 @@ Venom uses a deliberately narrow claim vocabulary:
 
 This distinction carries practical consequences: an observation is not a vulnerability, same-origin is not authorization, a bounded sample is not a complete inventory, and a successful action is not automatically a reportable finding.
 
-Execution decisions are deterministic and model-independent. Venom does not require an LLM to select, authorize, or verify actions.
+Execution decisions are deterministic and model-independent. Termivar does not require an LLM to select, authorize, or verify actions.
 
 ## What works today
 
@@ -92,19 +98,19 @@ Execution decisions are deterministic and model-independent. Venom does not requ
 | Continuation | Multi-objective replanning, Experience-based suppression, bounded counters, and host-policy-checked adaptive authority |
 | Execution | Exact-origin, redirect-disabled transport actions through one metered request broker; a tested zero-I/O `LocalKnowledge` library contract |
 | Output | Unchanged no-profile text/`--explain`/`decision-scan/v1`; explicit profile audits; and bounded JSON, CSV, HTML, or Markdown assessment reports for completed `web-review` runs |
-| Exploit foundation | Independent Preview `venom-exploit` manifest/catalog library plus a disconnected non-default orchestration API. Only a five-step in-memory canary fixture exercises host-minted grants, typed permits/receipts, impact verification, and cleanup verification; there is no real exploit, production adapter, or scanner/CLI/API/proxy integration |
-| Artifact signatures | Independent Preview `venom-artifact` library scans bounded caller-supplied buffers/readers for exact/wildcard signatures with overlapping deterministic observations. Explicit local regular-file access is available only through the non-default CLI `artifact-adapter`; matches are not malware or vulnerability verdicts |
+| Exploit foundation | Independent Preview `termivar-exploit` manifest/catalog library plus a disconnected non-default orchestration API. Only a five-step in-memory canary fixture exercises host-minted grants, typed permits/receipts, impact verification, and cleanup verification; there is no real exploit, production adapter, or scanner/CLI/API/proxy integration |
+| Artifact signatures | Independent Preview `termivar-artifact` library scans bounded caller-supplied buffers/readers for exact/wildcard signatures with overlapping deterministic observations. Explicit local regular-file access is available only through the non-default CLI `artifact-adapter`; matches are not malware or vulnerability verdicts |
 | Normalization resilience | Non-default Preview scanner/CLI feature plus explicit `--normalization-resilience` on `web-review`. V1 selects at most one typed depth-one HTML representation, reuses committed XSS/defense evidence, and requires transformed candidate plus distinct replay to reproduce the same inert parser semantics. It is `NeedsReview` / `KnowledgeOnly` only, not a generic or product-specific WAF-bypass claim |
 | GraphQL surface review | Non-default Preview scanner/CLI feature plus explicit `--graphql-review` on `web-review`. V1 selects at most one exact-origin endpoint and performs up to three anonymous bounded POST/JSON requests: an aliased `__typename` control, schema-root introspection candidate, and distinct replay. Results are `Informational` / `KnowledgeOnly`, not vulnerability or authorization claims |
 | OpenAPI surface review | Non-default Preview scanner/CLI feature plus explicit `--openapi-review` on `web-review`. V1 selects at most one exact-origin document from a bounded committed discovery reference or the single `/openapi.json` fallback, then performs a candidate GET plus an exact replay through the shared broker. A correlated OpenAPI 3.0/3.1 JSON contract observation is `Informational` / `KnowledgeOnly`; it is not endpoint reachability, authorization, or vulnerability proof |
 | REST read-only review | Non-default Preview scanner/CLI feature plus explicit `--openapi-review --rest-review` on `web-review`. From the same assessment's replay-stable OpenAPI catalog, V1 selects at most one anonymous, bodyless, exact-origin `GET` with zero required inputs and sends exactly a candidate plus replay (two requests, one active verification). Stable `Status`, `Fields`, and `Resources` may yield only `Informational` / `KnowledgeOnly`; there is no write, credential, parameter materialization, or vulnerability-family chaining |
 | Resource authorization review | Non-default Preview scanner/CLI `authorization-review` feature plus one explicit policy file and two out-of-band credential sources on `web-review`. V1 compares one exact-origin JSON resource as primary candidate, peer candidate, primary replay, and peer replay through the assessment's existing broker and budget. Stable selected-resource equivalence can produce only `NeedsReview` / `KnowledgeOnly`, not an IDOR, BOLA, or authorization-bypass confirmation |
 | Scanner conformance corpus | Repository-only `security-assessment-fixture/v1` data provides 103 sanitized request/response cases, including 23 four-view authorization differentials and 30 bounded OpenAPI contract cases, with deterministic `xtask scanner-corpus` checks. It adds no runtime request or claim, and conformance is not an empirical accuracy result |
-| Historical salvage inventories | Two strict repository ledgers and local-Git `xtask` checks preserve separate source epochs: the deleted 38-file pre-workspace scanner tree and the 13-file/39-component post-workspace WAF/evasion quarantine wave. The detector byte-pattern component is restored in `venom-artifact`, the sanitized fixture component is restored only as repository conformance data, bounded GraphQL and OpenAPI/REST contract subsets have been independently rebuilt while the broader protocol taxonomy remains planned, and the historical HTML token-case/inter-token whitespace concepts are restored by the separately reviewed normalization runtime. Historical source itself remains non-authoritative |
+| Historical salvage inventories | Two strict repository ledgers and local-Git `xtask` checks preserve separate source epochs: the deleted 38-file pre-workspace scanner tree and the 13-file/39-component post-workspace WAF/evasion quarantine wave. The detector byte-pattern component is restored in `termivar-artifact`, the sanitized fixture component is restored only as repository conformance data, bounded GraphQL and OpenAPI/REST contract subsets have been independently rebuilt while the broader protocol taxonomy remains planned, and the historical HTML token-case/inter-token whitespace concepts are restored by the separately reviewed normalization runtime. Historical source itself remains non-authoritative |
 
 The standard web profile currently has conservative, claim-specific behavior:
 
-| Capability | What Venom can conclude |
+| Capability | What Termivar can conclude |
 | --- | --- |
 | Nginx / Apache | A version-bearing server disclosure can directly confirm the matching technology hypothesis; a bare product token cannot |
 | HTTP Basic / Bearer | A matching authentication challenge can confirm the corresponding boundary |
@@ -122,19 +128,19 @@ the `decision-scan/v1` machine-output contract. Two strict built-in
 `venom.scan-profile/v1` profiles are available:
 
 ```bash
-cargo run -p venom-cli --locked -- scan https://authorized.example.test --profile baseline
-cargo run -p venom-cli --locked -- scan https://authorized.example.test --profile web-review
-cargo run -p venom-cli --locked --features normalization-resilience -- \
+cargo run -p termivar-cli --locked -- scan https://authorized.example.test --profile baseline
+cargo run -p termivar-cli --locked -- scan https://authorized.example.test --profile web-review
+cargo run -p termivar-cli --locked --features normalization-resilience -- \
   scan https://authorized.example.test --profile web-review --normalization-resilience
-cargo run -p venom-cli --locked --features graphql-review -- \
+cargo run -p termivar-cli --locked --features graphql-review -- \
   scan https://authorized.example.test --profile web-review --graphql-review
 
-cargo run -p venom-cli --locked --features openapi-review -- \
+cargo run -p termivar-cli --locked --features openapi-review -- \
   scan https://authorized.example.test --profile web-review --openapi-review
-cargo run -p venom-cli --locked --features rest-review -- \
+cargo run -p termivar-cli --locked --features rest-review -- \
   scan https://authorized.example.test --profile web-review \
   --openapi-review --rest-review
-cargo run -p venom-cli --locked --features authorization-review -- \
+cargo run -p termivar-cli --locked --features authorization-review -- \
   scan https://authorized.example.test --profile web-review \
   --authorization-review-policy ./review.toml \
   --authz-primary-env PRIMARY_AUTH_CONTEXT \
@@ -325,13 +331,13 @@ the [authorization differential review contract](docs/internals/authorization-di
 Requirements: Rust 1.88 or newer, Git, and an authorized reachable HTTP(S) origin.
 
 ```bash
-git clone https://github.com/ITherso/venom.git
-cd venom
+git clone https://github.com/ITherso/venom.git termivar
+cd termivar
 REVIEWED_COMMIT="REPLACE_WITH_THE_REVIEWED_FULL_COMMIT_SHA"
 test "$REVIEWED_COMMIT" != "REPLACE_WITH_THE_REVIEWED_FULL_COMMIT_SHA"
 git checkout --detach "$REVIEWED_COMMIT"
 test "$(git rev-parse HEAD)" = "$REVIEWED_COMMIT"
-cargo run -p venom-cli --locked -- scan https://authorized.example.test
+cargo run -p termivar-cli --locked -- scan https://authorized.example.test
 ```
 
 `example.test` is a reserved placeholder. Replace it with an origin you own or are explicitly permitted to assess.
@@ -339,8 +345,8 @@ cargo run -p venom-cli --locked -- scan https://authorized.example.test
 Inspect the decision chain or consume structured diagnostics:
 
 ```bash
-cargo run -p venom-cli --locked -- scan https://authorized.example.test --explain
-cargo run -p venom-cli --locked -- scan https://authorized.example.test --format json
+cargo run -p termivar-cli --locked -- scan https://authorized.example.test --explain
+cargo run -p termivar-cli --locked -- scan https://authorized.example.test --format json
 ```
 
 `--explain` expands the text report. JSON already contains the full diagnostics and uses the documented, historically named [`decision-scan/v1`](docs/internals/decision-scan-json-v1.md) schema, so the two flags cannot be combined. The deprecated, discoverable `decision-scan` compatibility alias accepts the same options and produces identical stdout and stderr.
@@ -353,15 +359,15 @@ Markdown and `--format json` selects JSON. An explicit report format can select
 any supported encoding:
 
 ```bash
-cargo run -p venom-cli --locked -- scan https://authorized.example.test \
+cargo run -p termivar-cli --locked -- scan https://authorized.example.test \
   --profile web-review --report-format csv
-cargo run -p venom-cli --locked -- scan https://authorized.example.test \
+cargo run -p termivar-cli --locked -- scan https://authorized.example.test \
   --profile web-review --report-format html --report-output assessment.html
-cargo run -p venom-cli --locked -- scan https://authorized.example.test \
-  --profile web-review --report-format json --auth-env VENOM_AUTH_CONTEXT
+cargo run -p termivar-cli --locked -- scan https://authorized.example.test \
+  --profile web-review --report-format json --auth-env TERMIVAR_AUTH_CONTEXT
 ```
 
-Populate `VENOM_AUTH_CONTEXT` through the host's secret-management mechanism,
+Populate `TERMIVAR_AUTH_CONTEXT` through the host's secret-management mechanism,
 not as a literal command argument. Authorization-context review requires the
 exact origin root (`/`) and an authenticated transport, except for numeric-IP
 loopback HTTP fixtures. Obvious report-output errors and target/profile policy
@@ -386,7 +392,7 @@ to stdout, returns nonzero, and creates no requested report artifact.
 The historical ordered runner is absent from default builds. It can be compiled explicitly and requires acknowledgement at invocation:
 
 ```bash
-cargo run -p venom-cli --locked --features legacy-scanner -- legacy-scan \
+cargo run -p termivar-cli --locked --features legacy-scanner -- legacy-scan \
   https://authorized.example.test --acknowledge-legacy-heuristics
 ```
 
@@ -424,7 +430,7 @@ allowlisted verifier bridge can project the `NeedsReview` outcomes above. See
 
 See the [runtime map](docs/internals/runtime-map.md) for the exact module and command inventory.
 
-## What Venom does not claim
+## What Termivar does not claim
 
 - An observed Nginx or Apache version is not, by itself, a vulnerability.
 - Named HTML controls do not confirm PHP, and control values are never copied into form-control evidence.
@@ -443,23 +449,23 @@ See the [runtime map](docs/internals/runtime-map.md) for the exact module and co
 
 | Surface | Status | Current boundary |
 | --- | --- | --- |
-| `venom scan` | Preview | No-profile conservative single-resource runtime keeps text, explain, and `decision-scan/v1`; explicit `baseline` and exact-origin `web-review` are additive profile-v1 surfaces; exploit catalogs are disconnected |
-| `venom decision-scan` | Deprecated alias | Compatibility name for the same deterministic command and engine; the wire schema remains `decision-scan/v1` |
-| `venom legacy-scan` | Legacy alpha, opt-in | Historical mixed-authority pipeline: phases 2–4 share bounded passive discovery, phases 5–9 share separate bounded active verification, and phase-one/custom raw I/O keeps the whole run `Unmetered`; requires `legacy-scanner` and explicit acknowledgement |
+| `termivar scan` | Preview | No-profile conservative single-resource runtime keeps text, explain, and `decision-scan/v1`; explicit `baseline` and exact-origin `web-review` are additive profile-v1 surfaces; exploit catalogs are disconnected |
+| `termivar decision-scan` | Deprecated alias | Compatibility name for the same deterministic command and engine; the wire schema remains `decision-scan/v1` |
+| `termivar legacy-scan` | Legacy alpha, opt-in | Historical mixed-authority pipeline: phases 2–4 share bounded passive discovery, phases 5–9 share separate bounded active verification, and phase-one/custom raw I/O keeps the whole run `Unmetered`; requires `legacy-scanner` and explicit acknowledgement |
 | Scanner SDK | Legacy, opt-in | Historical source-level phase-composition facade behind `legacy-scanner`; it is covered by a same-revision compile fixture, not an accepted stable SDK baseline |
 | Native plugin API 0.2 | Preview, opt-in | Source-linked host extensions receive a host-owned bounded context and record evidence-only observations, not findings. No stock detector plugins ship, and plugins are not merged into the default runtime |
 | Run-report renderer | Preview, opt-in | Standalone `reporting` renders a host-pre-redacted `RunReport`; `scanning + reporting` also composes completed runtime-owned web-review truth into typed assessment reports, and the CLI uses that central renderer for completed web-review output. The renderer performs no I/O, persistence, risk synthesis, or verdict invention |
 | Lua execution | Experimental, opt-in | Implemented bounded, cooperative in-process Lua 5.4 registry/executor for explicit library hosts; no standard libraries, process isolation, plugin bridge, scanner phase, or repository CLI caller |
 | Distributed coordination | Experimental, opt-in | Implemented deterministic, bounded in-process task/worker/result state machines for explicit library hosts; no transport, authentication, serialization, persistence, ambient clock, background work, or multi-node control plane |
-| Exploit foundation | Preview, disconnected | Default manifest/catalog library plus a non-default host orchestration API with non-deserializable host-minted grants, deterministic plans, typed permits/receipts, and a redacted run report. Only the in-memory `venom-canary` integration fixture executes; no real exploit, production target/network/process/filesystem adapter, CLI/API/scanner caller, package authenticity, or sandbox is implemented |
-| `venom artifact scan-file` | Preview, opt-in | Absent from default builds; `artifact-adapter` scans one explicitly selected local regular file with one strict signature manifest. It is read-only, non-recursive, and emits observations rather than malware or vulnerability verdicts |
-| `venom scan ... --normalization-resilience` | Preview, opt-in | Absent from default builds and invalid outside explicit `web-review`. It selects at most one depth-one typed HTML transform, uses three child requests/one active verification, requires candidate and replay semantic evidence, and can emit only `NeedsReview` / `KnowledgeOnly` |
-| `venom scan ... --graphql-review` | Preview, opt-in | Absent from default builds and invalid outside explicit `web-review`. It selects at most one exact-origin endpoint, uses up to three anonymous POST/JSON requests (the complete candidate/replay path uses one active verification), and emits only `Informational` / `KnowledgeOnly` observations |
-| `venom scan ... --openapi-review` | Preview, opt-in | Absent from default builds and invalid outside explicit `web-review`. It selects at most one exact-origin JSON document, uses two anonymous bodyless GETs and one logical active verification, and emits only an `Informational` / `KnowledgeOnly` contract observation after exact replay |
-| `venom scan ... --openapi-review --rest-review` | Preview, opt-in | Absent from default builds and invalid outside explicit `web-review`. A replay-stable same-run OpenAPI catalog may select one anonymous bodyless exact-origin zero-input GET at most; candidate plus replay use two requests and one active verification and emit only `Informational` / `KnowledgeOnly` surface evidence |
-| `venom scan ... --authorization-review-policy FILE` | Preview, opt-in | Absent from default builds and invalid outside explicit `web-review`. It compares one exact-origin JSON resource under two distinct out-of-band authorization contexts and independent replays, using four requests and one logical active verification. Stable equivalence can emit only `NeedsReview` / `KnowledgeOnly` |
-| `venom api` | Unsupported, opt-in | Absent from default builds; the `api-adapter` feature reports that no listener is implemented |
-| `venom proxy` | Experimental, opt-in | Absent from default builds; `proxy-adapter` exposes an explicit fixed-upstream TCP relay with no `CONNECT`, TLS termination, certificate generation, or HTTP inspection |
+| Exploit foundation | Preview, disconnected | Default manifest/catalog library plus a non-default host orchestration API with non-deserializable host-minted grants, deterministic plans, typed permits/receipts, and a redacted run report. Only the in-memory `termivar-canary` integration fixture executes; no real exploit, production target/network/process/filesystem adapter, CLI/API/scanner caller, package authenticity, or sandbox is implemented |
+| `termivar artifact scan-file` | Preview, opt-in | Absent from default builds; `artifact-adapter` scans one explicitly selected local regular file with one strict signature manifest. It is read-only, non-recursive, and emits observations rather than malware or vulnerability verdicts |
+| `termivar scan ... --normalization-resilience` | Preview, opt-in | Absent from default builds and invalid outside explicit `web-review`. It selects at most one depth-one typed HTML transform, uses three child requests/one active verification, requires candidate and replay semantic evidence, and can emit only `NeedsReview` / `KnowledgeOnly` |
+| `termivar scan ... --graphql-review` | Preview, opt-in | Absent from default builds and invalid outside explicit `web-review`. It selects at most one exact-origin endpoint, uses up to three anonymous POST/JSON requests (the complete candidate/replay path uses one active verification), and emits only `Informational` / `KnowledgeOnly` observations |
+| `termivar scan ... --openapi-review` | Preview, opt-in | Absent from default builds and invalid outside explicit `web-review`. It selects at most one exact-origin JSON document, uses two anonymous bodyless GETs and one logical active verification, and emits only an `Informational` / `KnowledgeOnly` contract observation after exact replay |
+| `termivar scan ... --openapi-review --rest-review` | Preview, opt-in | Absent from default builds and invalid outside explicit `web-review`. A replay-stable same-run OpenAPI catalog may select one anonymous bodyless exact-origin zero-input GET at most; candidate plus replay use two requests and one active verification and emit only `Informational` / `KnowledgeOnly` surface evidence |
+| `termivar scan ... --authorization-review-policy FILE` | Preview, opt-in | Absent from default builds and invalid outside explicit `web-review`. It compares one exact-origin JSON resource under two distinct out-of-band authorization contexts and independent replays, using four requests and one logical active verification. Stable equivalence can emit only `NeedsReview` / `KnowledgeOnly` |
+| `termivar api` | Unsupported, opt-in | Absent from default builds; the `api-adapter` feature reports that no listener is implemented |
+| `termivar proxy` | Experimental, opt-in | Absent from default builds; `proxy-adapter` exposes an explicit fixed-upstream TCP relay with no `CONNECT`, TLS termination, certificate generation, or HTTP inspection |
 
 Lua and distributed coordination are implemented Experimental host-library
 surfaces, but no repository runtime calls them. Dashboard, monitoring,
@@ -477,7 +483,7 @@ bounded renderer used by library hosts. The CLI's unsupported API hook and
 experimental relay require `api-adapter` and `proxy-adapter`.
 
 The separate local-file artifact command requires `artifact-adapter`; it does
-not participate in `venom scan` and does not add a scanner network action.
+not participate in `termivar scan` and does not add a scanner network action.
 The normalization runtime similarly requires the non-default
 `normalization-resilience` feature and its explicit `web-review` flag; compiling
 the feature alone does not activate a transform, and the default CLI help and
@@ -499,7 +505,7 @@ It adds no independent scanner, client, budget, authority, or final report.
 | Cross-platform runtime smoke | Focused Rust 1.88 default-CLI and loopback checks on Ubuntu, Windows, and macOS | A small hosted-runner smoke matrix is not platform certification or broad all-feature support |
 | Coverage | Final integration evidence covers 36,716/41,744 in-scope source lines (87.96%); pinned Tarpaulin's LLVM backend enforces the accepted [exact baseline](docs/reports/coverage/6edc4d925739.md) and the same exact ratio on coverable changed lines, while `venom.coverage.v2` binds a normalized line-state digest | Coverage is a scoped navigation signal, not proof of test adequacy; the advisory [Codecov](https://codecov.io/gh/ITherso/venom) upload is best-effort and tokenless availability is not enforced |
 | Safe Rust / boundaries | Workspace crates forbid unsafe code; architecture checks enforce dependency and transport ownership | Static boundaries do not prove semantic correctness |
-| Public API compatibility | Blocking SemVer comparison for `venom-core` plus four isolated [current-head consumer fixtures](docs/public-api-compatibility.md) | Same-revision compilation is not cross-version compatibility, a stable ABI, or external adoption; Scanner SDK and plugin baselines remain open |
+| Public API compatibility | Blocking SemVer comparison for `termivar-core` plus four isolated [current-head consumer fixtures](docs/public-api-compatibility.md) | Same-revision compilation is not cross-version compatibility, a stable ABI, or external adoption; Scanner SDK and plugin baselines remain open |
 | Security scanning | RustSec, cargo-deny, Semgrep CE, Trivy, Dependabot, and scoped CodeQL | Automated scanners have false positives and false negatives |
 | Fuzzing | PR seed replay and compile checks; bounded scheduled/manual campaigns for four product-semantic and five parser targets | Time-bounded fuzzing is not a safety proof |
 | Mutation testing | Scoped, evidenced campaigns for selected policy, planner, runtime, and extraction contracts | No permanent mutation farm or project-wide score |
@@ -552,7 +558,7 @@ The root `Cargo.toml` is a virtual workspace manifest. Runtime ownership and fea
 Both generated starters compile in CI, but they do not share one lifecycle.
 The Scanner SDK starter exercises the historical Legacy facade; the native
 plugin starter targets the evidence-only Preview API 0.2 line. The plugin
-starter is an INFO-only trait-boundary fixture: Venom ships no stock detector
+starter is an INFO-only trait-boundary fixture: Termivar ships no stock detector
 plugins, and plugin observations still require host reasoning and verification
 before any finding projection. The four separately tested current-head
 consumers share one dedicated lockfile and provide same-revision compile
@@ -561,7 +567,7 @@ evidence only; see [Public API compatibility status](docs/public-api-compatibili
 ```bash
 cargo install cargo-generate
 cargo xtask generate scanner my-scanner
-cargo xtask generate plugin my-venom-plugin
+cargo xtask generate plugin my-termivar-plugin
 ```
 
 See the [Scanner SDK guide](docs/sdk.md), [Plugin development](docs/plugin.md),
@@ -597,7 +603,7 @@ tag and accepted cross-version baseline exist, pin a reviewed full commit.
 - [Fuzzing](docs/fuzzing.md)
 - [Security policy](SECURITY.md)
 - [Documentation site](https://itherso.github.io/venom/)
-- [Rust API documentation](https://itherso.github.io/venom/rust/venom_scanner/)
+- [Rust API documentation](https://itherso.github.io/venom/rust/termivar_scanner/)
 
 ## Roadmap
 
@@ -618,4 +624,4 @@ Read [CONTRIBUTING.md](CONTRIBUTING.md) and the [Code of Conduct](CODE_OF_CONDUC
 
 ## License
 
-Venom is licensed under the [MIT License](LICENSE). Contributions are accepted under the same terms unless explicitly stated otherwise.
+Termivar is licensed under the [MIT License](LICENSE). Contributions are accepted under the same terms unless explicitly stated otherwise.

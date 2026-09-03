@@ -23,15 +23,15 @@ This is **same-revision source-compatibility evidence only**. It does not:
 
 | Public surface | Feature closure | Lifecycle | Current evidence and boundary |
 |---|---|---|---|
-| Default `venom-core` evidence, reasoning, ontology, outcome, predicate, and typed `RunReport` contracts | `venom-core` with no features | Stable candidate | The core consumer builds validated identity, confidence, unknown-outcome, and stop-reason values. “Stable candidate” is an inventory classification, not an accepted compatibility baseline. |
-| Historical `venom-core` configuration, event, raw HTTP/result, and stringly finding records | `venom-core/legacy-contracts` | Legacy | Quarantined behind a non-default feature and intentionally absent from the core consumer. New integrations should not adopt it. |
-| Standard single-subject decision runtime and bounded exact-origin `WebAssessmentRuntime` | `venom-scanner/scanning` | Preview | The deterministic consumer builds the opt-in `web-review` runtime from its checked profile but never calls `analyze`; therefore the fixture sends no request. |
-| `venom.scan-profile/v1`, `AssessmentItem`, and runtime-owned `AssessmentRunReport` projection | `venom-scanner/scanning` plus `reporting` for the completed report | Preview | The consumer checks the versioned profile/capability surface and compiles a renderer function that accepts only an already completed typed assessment report. It cannot manufacture runtime completion truth. |
-| Bounded JSON, CSV, HTML, and Markdown report renderers | `venom-scanner/reporting` | Preview | The deterministic consumer compiles `ReportGenerator::generate_assessment` and verifies format negotiation. Rendering does not author findings or upgrade dispositions. |
-| `ScannerSdk`, `ScannerBuilder`, `ScanPhase`, and the ordered legacy runner | `venom-scanner/legacy-scanner` | Legacy facade | A dedicated consumer proves only that an empty historical scanner can be built through the public facade at the same revision. The feature still admits historical phase contracts and raw compatibility-client authority; it is not the default deterministic product or a stable SDK baseline. |
-| Native plugin API `0.2` (`Plugin`, registry, limits, host context, broker, and observation recorder) | `venom-scanner/plugins` | Preview | The plugin consumer registers an API-0.2 implementation without executing it. Its `execute` signature can stage a `PluginObservation`; it cannot return a finding, severity, verifier outcome, or confirmation. Native plugins are trusted in-process code, not a sandbox. |
-| Lua host surface | `venom-scanner/lua` | Experimental | Bounded, process-local and explicitly enabled. It is not composed into the default scan and is outside the current-head consumer set. |
-| Process-local distributed coordinator | `venom-scanner/distributed` | Experimental | No durable transport, persistence, or real distributed control plane is claimed. It is outside the current-head consumer set. |
+| Default `termivar-core` evidence, reasoning, ontology, outcome, predicate, and typed `RunReport` contracts | `termivar-core` with no features | Stable candidate | The core consumer builds validated identity, confidence, unknown-outcome, and stop-reason values. “Stable candidate” is an inventory classification, not an accepted compatibility baseline. |
+| Historical configuration, event, raw HTTP/result, and stringly finding records | `termivar-core/legacy-contracts` | Legacy | Quarantined behind a non-default feature and intentionally absent from the core consumer. New integrations should not adopt it. |
+| Standard single-subject decision runtime and bounded exact-origin `WebAssessmentRuntime` | `termivar-scanner/scanning` | Preview | The deterministic consumer builds the opt-in `web-review` runtime from its checked profile but never calls `analyze`; therefore the fixture sends no request. |
+| `venom.scan-profile/v1`, `AssessmentItem`, and runtime-owned `AssessmentRunReport` projection | `termivar-scanner/scanning` plus `reporting` for the completed report | Preview | The consumer checks the versioned profile/capability surface and compiles a renderer function that accepts only an already completed typed assessment report. It cannot manufacture runtime completion truth. |
+| Bounded JSON, CSV, HTML, and Markdown report renderers | `termivar-scanner/reporting` | Preview | The deterministic consumer compiles `ReportGenerator::generate_assessment` and verifies format negotiation. Rendering does not author findings or upgrade dispositions. |
+| `ScannerSdk`, `ScannerBuilder`, `ScanPhase`, and the ordered legacy runner | `termivar-scanner/legacy-scanner` | Legacy facade | A dedicated consumer proves only that an empty historical scanner can be built through the public facade at the same revision. The feature still admits historical phase contracts and raw compatibility-client authority; it is not the default deterministic product or a stable SDK baseline. |
+| Native plugin API `0.2` (`Plugin`, registry, limits, host context, broker, and observation recorder) | `termivar-scanner/plugins` | Preview | The plugin consumer registers an API-0.2 implementation without executing it. Its `execute` signature can stage a `PluginObservation`; it cannot return a finding, severity, verifier outcome, or confirmation. Native plugins are trusted in-process code, not a sandbox. |
+| Lua host surface | `termivar-scanner/lua` | Experimental | Bounded, process-local and explicitly enabled. It is not composed into the default scan and is outside the current-head consumer set. |
+| Process-local distributed coordinator | `termivar-scanner/distributed` | Experimental | No durable transport, persistence, or real distributed control plane is claimed. It is outside the current-head consumer set. |
 | Platform/service models, detection/ML records, monitoring, compliance, and threat-intelligence catalogs | Their explicit non-default features | Experimental or legacy compatibility surface | These opt-in library records do not make an API listener, dashboard, durable service, feed runtime, or production detector part of the default product. They are outside the current-head consumer set. |
 
 `ScannerSdk` therefore remains a **Legacy facade**, while the deterministic
@@ -43,10 +43,10 @@ runtime, typed assessment/report contracts, and plugin API 0.2 remain
 Run these commands from `compat/current-head/`:
 
 ```text
-cargo test --locked -p venom-current-head-core-consumer
-cargo test --locked -p venom-current-head-deterministic-assessment-consumer
-cargo test --locked -p venom-current-head-scanner-sdk-consumer
-cargo test --locked -p venom-current-head-plugin-api-0-2-consumer
+cargo test --locked -p termivar-current-head-core-consumer
+cargo test --locked -p termivar-current-head-deterministic-assessment-consumer
+cargo test --locked -p termivar-current-head-scanner-sdk-consumer
+cargo test --locked -p termivar-current-head-plugin-api-0-2-consumer
 ```
 
 Each command isolates one declared feature closure. The nested `Cargo.lock`

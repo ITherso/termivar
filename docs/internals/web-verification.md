@@ -4,7 +4,7 @@
 
 The verifier consumes discovery capability identities from the transport-neutral
 `web_actions` catalog. It does not import `web_execution`, an HTTP client, or a
-runner, and the profile remains available when `venom-scanner` is built without
+runner, and the profile remains available when `termivar-scanner` is built without
 the `scanning` feature.
 
 ```text

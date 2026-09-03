@@ -30,13 +30,13 @@ Enable only `reporting` for a host that already owns a `RunReport`:
 
 ```toml
 [dependencies]
-venom-scanner = { path = "/path/to/reviewed/venom/crates/venom-scanner", default-features = false, features = ["reporting"] }
+termivar-scanner = { path = "/path/to/reviewed/termivar/crates/termivar-scanner", default-features = false, features = ["reporting"] }
 ```
 
 ```rust,ignore
-use venom_scanner::{ReportFormat, ReportGenerator, RunReport};
+use termivar_scanner::{ReportFormat, ReportGenerator, RunReport};
 
-fn render(report: &RunReport) -> Result<String, venom_scanner::ReportError> {
+fn render(report: &RunReport) -> Result<String, termivar_scanner::ReportError> {
     ReportGenerator::generate(report, ReportFormat::Json)
 }
 ```
@@ -53,12 +53,12 @@ runtime-owned assessment truth:
 
 ```toml
 [dependencies]
-venom-scanner = { path = "/path/to/reviewed/venom/crates/venom-scanner", default-features = false, features = ["scanning", "reporting"] }
+termivar-scanner = { path = "/path/to/reviewed/termivar/crates/termivar-scanner", default-features = false, features = ["scanning", "reporting"] }
 ```
 
 ```rust,ignore
-use venom_scanner::{ReportFormat, ReportGenerator};
-use venom_scanner::web_runtime::{ScanProfileV1, WebAssessmentRunReport};
+use termivar_scanner::{ReportFormat, ReportGenerator};
+use termivar_scanner::web_runtime::{ScanProfileV1, WebAssessmentRunReport};
 
 fn render_assessment(
     runtime_report: WebAssessmentRunReport,
@@ -99,15 +99,15 @@ Completed `--profile web-review` runs always use the typed assessment renderer:
 
 ```bash
 # Default text selection maps to Markdown.
-venom scan <AUTHORIZED_TARGET> --profile web-review
+termivar scan <AUTHORIZED_TARGET> --profile web-review
 
 # Existing --format json maps to the additive assessment JSON schema only
 # because web-review was explicitly selected.
-venom scan <AUTHORIZED_TARGET> --profile web-review --format json
+termivar scan <AUTHORIZED_TARGET> --profile web-review --format json
 
 # Select any central renderer explicitly.
-venom scan <AUTHORIZED_TARGET> --profile web-review --report-format csv
-venom scan <AUTHORIZED_TARGET> --profile web-review \
+termivar scan <AUTHORIZED_TARGET> --profile web-review --report-format csv
+termivar scan <AUTHORIZED_TARGET> --profile web-review \
   --report-format html --report-output assessment.html
 ```
 

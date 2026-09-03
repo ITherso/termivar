@@ -1,10 +1,10 @@
 # Scan profiles
 
-Venom implements exactly two built-in product profiles selected by name:
+Termivar implements exactly two built-in product profiles selected by name:
 
 ```text
-venom scan --profile baseline <TARGET>
-venom scan --profile web-review <TARGET>
+termivar scan --profile baseline <TARGET>
+termivar scan --profile web-review <TARGET>
 ```
 
 - `baseline` preserves the conservative single-resource scan behavior and uses
@@ -43,7 +43,7 @@ The historical `enterprise`, `cloud`, `aggressive`, and `stealth` profile
 samples were removed because those names do not represent executable product
 behavior.
 
-Custom profile files are not supported. Venom does not load TOML files from
+Custom profile files are not supported. Termivar does not load TOML files from
 this directory and defines no custom-file precedence, override, or merge
 semantics.
 

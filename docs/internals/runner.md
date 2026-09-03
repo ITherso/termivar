@@ -45,7 +45,7 @@ must never inspect a concrete phase or plugin type.
 
 `ScannerSdk` is the public composition layer above the runner. It creates the
 context, HTTP client, telemetry channel, cancellation token, and event bus, then
-returns the shared `venom_core::RunReport` contract.
+returns the shared `termivar_core::RunReport` contract.
 
 ## Current constraints
 

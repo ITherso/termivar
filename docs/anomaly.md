@@ -15,5 +15,5 @@ responsible for authorization, input normalization, evidence provenance,
 controlled repetition, and any downstream review policy.
 
 The same feature also exposes validated signal-definition and caller-scored
-technique catalogs. Those catalogs store records; Venom does not apply a
+technique catalogs. Those catalogs store records; Termivar does not apply a
 transformation or automatically inspect a response against a definition.

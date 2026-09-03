@@ -1,6 +1,6 @@
 # Testing
 
-Venom tests the declared Cargo workspace. The repository root is a virtual
+Termivar tests the declared Cargo workspace. The repository root is a virtual
 manifest and intentionally contains no Rust target of its own. Test counts are
 not hand-maintained in documentation; CI results and coverage artifacts are the
 source of truth.
@@ -10,12 +10,12 @@ source of truth.
 | Layer | Location or command | Purpose |
 | --- | --- | --- |
 | Unit and contract tests | `crates/*/src/` | Local invariants, public contracts, and deterministic reasoning |
-| Scanner integration tests | `crates/venom-scanner/tests/` | Feature combinations and cross-module behavior |
+| Scanner integration tests | `crates/termivar-scanner/tests/` | Feature combinations and cross-module behavior |
 | Architecture policy | `cargo xtask architecture` | Workspace edges, virtual-root and example-target ownership, protected imports, transport-free compilation, and modular-facade responsibility ownership |
 | SDK examples | `examples/` | Compiling consumer-facing usage |
 | Template smoke tests | `templates/` in CI | Generated scanner and plugin projects compile independently |
 | Current-head consumers | `compat/current-head/` | One dedicated lockfile with separate package tests for core, deterministic assessment/reporting, Legacy `ScannerSdk`, and plugin API 0.2 |
-| Benchmarks | `crates/venom-scanner/benches/` | Criterion regression signals |
+| Benchmarks | `crates/termivar-scanner/benches/` | Criterion regression signals |
 | Endpoint evidence | `endpoint_assessment` bench plus `scripts/run-endpoint-performance.sh` | Real-runtime, loopback-only fixed workloads with strict JSON/Markdown evidence |
 | Fuzz targets | `fuzz/` | Bounded parser campaigns outside the main workspace |
 | Dashboard tests | `web/` | Server-render smoke, typecheck, lint, and production-build checks; no browser interaction or accessibility suite is currently configured |
@@ -32,15 +32,15 @@ Run the checks most likely to catch an architectural regression:
 
 ```bash
 cargo xtask architecture
-cargo test -p venom-scanner --no-default-features --lib --locked
+cargo test -p termivar-scanner --no-default-features --lib --locked
 ```
 
 Focus on one package or one test name while iterating:
 
 ```bash
-cargo test -p venom-core
-cargo test -p venom-scanner --all-features runtime_budget
-cargo test --locked -p venom-scanner --no-default-features --features legacy-scanner --test integration_tests
+cargo test -p termivar-core
+cargo test -p termivar-scanner --all-features runtime_budget
+cargo test --locked -p termivar-scanner --no-default-features --features legacy-scanner --test integration_tests
 ```
 
 Public examples must compile as documentation tests where applicable:
@@ -74,7 +74,7 @@ must use loopback fixtures with deterministic responses and bounded timeouts.
 
 The Tests workflow has a small `Runtime Smoke` matrix on `ubuntu-latest`,
 `windows-latest`, and `macos-latest`, all using the declared Rust `1.88.0`
-toolchain. Each runner builds the default `venom-cli`, executes the built
+toolchain. Each runner builds the default `termivar-cli`, executes the built
 binary with `--version` and `--help`, and runs the real process-level default
 scan against a deterministic `127.0.0.1` fixture. It also exercises atomic
 `--report-output` create/no-clobber behavior through an explicitly selected
@@ -91,7 +91,7 @@ tests bind to loopback; the job never scans a public target.
 ## Current-head downstream compile fixtures
 
 The `Downstream Current-Head Compile` job tests four separately resolved
-feature closures from `compat/current-head/`: default `venom-core`, the
+feature closures from `compat/current-head/`: default `termivar-core`, the
 deterministic assessment/reporting Preview, the Legacy `ScannerSdk` facade,
 and plugin API 0.2. Run the packages independently so Cargo cannot unify their
 features and make a narrower consumer appear to compile against a broader
@@ -208,7 +208,7 @@ MSRV failures are release blockers. Beta and nightly expose upcoming compiler
 changes; investigate failures before deciding whether an upstream regression
 is involved.
 
-The scheduled fuzz workflow runs bounded Venom HTML/declarative-semantic targets
+The scheduled fuzz workflow runs bounded Termivar HTML/declarative-semantic targets
 plus HTTP, JSON, YAML, XML, and text dependency-parser campaigns. See
 [Fuzzing](fuzzing.md) for reproduction and artifact policy.
 

@@ -88,7 +88,7 @@ strategy selection is the next, separate step.
 ## Evidence projection
 
 `defense::projection` adapts the observation contracts above into immutable
-`venom_core::Evidence` a knowledge store can retain with full provenance. It is
+`termivar_core::Evidence` a knowledge store can retain with full provenance. It is
 strictly projection-only:
 
 - `project_defense_state` / `project_defense_transition` return `Vec<Evidence>`;

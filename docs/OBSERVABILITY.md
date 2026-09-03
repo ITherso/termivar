@@ -3,7 +3,7 @@
 Observability-adjacent APIs in the current source have separate, opt-in
 lifecycle contracts. They provide in-process logging, counters, scan profiles,
 and benchmark records; the default scanner does not compile those model
-modules. Venom does not currently provide a stable Prometheus exporter,
+modules. Termivar does not currently provide a stable Prometheus exporter,
 OpenTelemetry pipeline, remote telemetry service, health-check server, or
 Sentry integration.
 
@@ -11,9 +11,9 @@ Sentry integration.
 
 | Module | Availability | Responsibility |
 | --- | --- | --- |
-| `venom_scanner::logging` | `legacy-scanner` feature (Legacy) | Console-oriented `LogEntry`, `LogLevel`, and `Logger` types |
-| `venom_scanner::metrics` | `platform-models` feature (Experimental) | Process-local atomic counters and snapshots |
-| `venom_scanner::monitoring` | `monitoring` feature (Experimental) | Caller-supplied in-memory phase/resource profiles and comparisons; no telemetry collection |
+| `termivar_scanner::logging` | `legacy-scanner` feature (Legacy) | Console-oriented `LogEntry`, `LogLevel`, and `Logger` types |
+| `termivar_scanner::metrics` | `platform-models` feature (Experimental) | Process-local atomic counters and snapshots |
+| `termivar_scanner::monitoring` | `monitoring` feature (Experimental) | Caller-supplied in-memory phase/resource profiles and comparisons; no telemetry collection |
 | Criterion suite | Repository tooling | Repeatable microbenchmark samples and regression artifacts |
 | Quality Metrics workflow | CI | Compile time, binary size, and runner peak-memory artifacts |
 
@@ -28,11 +28,11 @@ coherent in-process accounting authority.
 
 ```toml
 [dependencies]
-venom-scanner = { path = "/path/to/reviewed/venom/crates/venom-scanner", default-features = false, features = ["platform-models"] }
+termivar-scanner = { path = "/path/to/reviewed/termivar/crates/termivar-scanner", default-features = false, features = ["platform-models"] }
 ```
 
 ```rust
-use venom_scanner::MetricsCollector;
+use termivar_scanner::MetricsCollector;
 
 let metrics = MetricsCollector::new();
 metrics.record_request(128);
@@ -59,11 +59,11 @@ formatted entries to standard output:
 
 ```toml
 [dependencies]
-venom-scanner = { path = "/path/to/reviewed/venom/crates/venom-scanner", default-features = false, features = ["legacy-scanner"] }
+termivar-scanner = { path = "/path/to/reviewed/termivar/crates/termivar-scanner", default-features = false, features = ["legacy-scanner"] }
 ```
 
 ```rust
-use venom_scanner::{LogEntry, LogLevel, Logger};
+use termivar_scanner::{LogEntry, LogLevel, Logger};
 
 let logger = Logger::new(LogLevel::Info);
 logger.log(
@@ -87,12 +87,12 @@ Enable the optional in-memory profile types with:
 
 ```toml
 [dependencies]
-venom-scanner = { path = "/path/to/reviewed/venom/crates/venom-scanner", default-features = false, features = ["monitoring"] }
+termivar-scanner = { path = "/path/to/reviewed/termivar/crates/termivar-scanner", default-features = false, features = ["monitoring"] }
 ```
 
 The feature exposes `PhaseProfile`, `ResourceMetrics`, `ScanProfile`,
 `PerformanceAnalyzer`, `BenchmarkSuite`, and related value types. Values are
-caller-supplied observations; Venom does not sample operating-system CPU or RAM
+caller-supplied observations; Termivar does not sample operating-system CPU or RAM
 usage on behalf of the host.
 
 ## CI evidence
@@ -122,4 +122,4 @@ A future exporter must define and test:
 
 Until those requirements are implemented, deployment examples must not claim
 that `/metrics`, `/health`, `/ready`, remote telemetry, or distributed tracing
-are built-in Venom endpoints.
+are built-in Termivar endpoints.

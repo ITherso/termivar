@@ -1,6 +1,6 @@
 # Plugin trait fixtures
 
-These fixtures exercise Venom's source-level `Plugin` boundary. They are not
+These fixtures exercise Termivar's source-level `Plugin` boundary. They are not
 detectors, scanners, payload libraries, or vulnerability claims.
 
 Each fixture records at most one fixed, inert INFO marker observation when a

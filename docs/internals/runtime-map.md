@@ -35,11 +35,11 @@ not chained into SQL, SSTI, XSS, authorization, SSRF, or upload review.
 The historical audit and its final dispositions are kept separately in the
 [runtime-truth remediation closure](../audits/runtime-truth-remediation-closure.md).
 
-Venom has one default scan runtime, one separately compiled historical runner,
+Termivar has one default scan runtime, one separately compiled historical runner,
 and optional host/adapter surfaces. A capability in one surface does not silently
 participate in another.
 
-The separate, non-published `venom-exploit` workspace crate remains outside all
+The separate, non-published `termivar-exploit` workspace crate remains outside all
 product runtimes. Its default Preview surface owns bounded
 `venom.exploit-manifest/v1` metadata, deterministic catalog selection,
 applicability/risk declarations, authorization requirements, and lifecycle
@@ -47,18 +47,18 @@ vocabulary. Its non-default `orchestration` feature adds an explicit host
 library for deterministic planning, host-minted non-deserializable grants,
 sealed source-linked implementation bindings, narrow step permits, validated
 receipts, impact/cleanup accounting, and `venom.exploit-run/v1` reports. Only a
-wholly in-memory `venom-canary` integration fixture exercises that surface.
+wholly in-memory `termivar-canary` integration fixture exercises that surface.
 There is no production target, network, process, browser, filesystem, or
 external-callback adapter; no scanner/CLI/API/proxy dependency edge; and no
 route from an `AssessmentItem` to an exploit. Repository pack validation is an
-explicit `xtask` operation and does not participate in `venom scan`.
+explicit `xtask` operation and does not participate in `termivar scan`.
 
 The [historical scanner salvage ledger](../history/historical-scanner-salvage.md)
 is repository evidence, not runtime authority. The explicit `xtask
 scanner-salvage` check reads only the strict ledger, generated report, and local
 Git objects for the deleted 38-file tree. Only the historical detector's
 byte-pattern component is now marked `Restored` by the separate
-`venom-artifact` domain. The historical request/response fixture component is
+`termivar-artifact` domain. The historical request/response fixture component is
 restored only as the sanitized repository conformance corpus; synthetic
   vulnerabilities remain rejected. Bounded GraphQL review and the independently
   rebuilt OpenAPI contract/replay subset now cover two parts of the historical
@@ -103,7 +103,7 @@ evidence, or create a report, finding, or claim. YAML is future/unsupported;
 Swagger/OpenAPI 2.0 is metadata-only and produces no operation catalog. Neither
 label implies parser, network, or execution authority.
 
-`venom-artifact` is not part of either scan runtime. Its Preview library scans
+`termivar-artifact` is not part of either scan runtime. Its Preview library scans
 bounded caller-supplied byte slices or `Read` streams and emits exact/wildcard
 match observations with deterministic offsets and completion truth. The
 non-default CLI `artifact-adapter` owns the only repository file-access edge:
@@ -114,15 +114,15 @@ vulnerability verdict.
 
 ## Default deterministic scan runtime (Surface B)
 
-`venom scan <target>` is the canonical CLI path. With no explicit profile, it
+`termivar scan <target>` is the canonical CLI path. With no explicit profile, it
 composes `StandardWebDecisionRuntime` with the unchanged conservative
 single-resource policy and routes every built-in request through its
-runtime-owned, redirect-disabled, metered broker. `venom decision-scan` is a
+runtime-owned, redirect-disabled, metered broker. `termivar decision-scan` is a
 deprecated Clap alias for the same command variant and implementation; it is
 not a second engine.
 
 ```text
-venom scan <target>  (or deprecated decision-scan alias)
+termivar scan <target>  (or deprecated decision-scan alias)
   -> StandardWebDecisionRuntime
       -> RuntimeBudget
           -> Evidence
@@ -132,11 +132,11 @@ venom scan <target>  (or deprecated decision-scan alias)
           -> Passive / active verification
           -> Experience and bounded continuation
 
-venom scan <target> --profile baseline
+termivar scan <target> --profile baseline
   -> the same StandardWebDecisionRuntime primitive
   -> additive web-assessment/v1 profile audit
 
-venom scan <target> --profile web-review
+termivar scan <target> --profile web-review
   -> WebAssessmentRuntime
       -> one RuntimeBudget / request broker / cancellation / exact-origin policy
       -> stable bounded discovery
@@ -374,7 +374,7 @@ Composition is selection-specific:
 - **Distributed coordination** (`distributed`, opt-in) is a bounded,
   deterministic process-local task/worker/result state machine for an explicit
   library host. It is not a transport service or multi-node control plane.
-- **Exploit foundation** (`venom-exploit`, independent Preview crate) validates
+- **Exploit foundation** (`termivar-exploit`, independent Preview crate) validates
   host-supplied bounded metadata and repository-owned lab manifests. Its
   non-default orchestration API requires an exact host-minted grant before a
   prepared plan can produce step permits. Catalog membership, applicability,
@@ -388,11 +388,11 @@ Composition is selection-specific:
 
 The ordered context, runner, Scanner SDK, and phase modules are absent from the
 default scanner and CLI feature sets. A host must compile
-`venom-cli/legacy-scanner`, invoke `legacy-scan`, and pass the required
+`termivar-cli/legacy-scanner`, invoke `legacy-scan`, and pass the required
 `--acknowledge-legacy-heuristics` flag:
 
 ```text
-cargo run -p venom-cli --locked --features legacy-scanner -- legacy-scan \
+cargo run -p termivar-cli --locked --features legacy-scanner -- legacy-scan \
   <authorized-target> --acknowledge-legacy-heuristics
     -> ScanContext
         -> ScanRunner
@@ -480,7 +480,7 @@ The active slice has these claim semantics:
   marker before a knowledge-only `NeedsReview` outcome is eligible. XXE remains
   inert even when the compatibility OOB string is set.
 - Phase nine dispatches nothing by default. An SDK host may configure a
-  validated bare DNS OOB domain; Venom then delivers a nonce-bearing callback
+  validated bare DNS OOB domain; Termivar then delivers a nonce-bearing callback
   URL only through already observed parameters at the authorized origin and
   records the target request's status as typed probe evidence. It has no
   callback collector or verifier, so HTTP 200, 401, or 403 produces no SSRF
@@ -498,18 +498,18 @@ exhaustion. See
 
 ## Optional adapters and platform shell (Surface C)
 
-Default `venom-cli` features are empty, so the binary exposes neither `api` nor
+Default `termivar-cli` features are empty, so the binary exposes neither `api` nor
 `proxy` unless explicitly compiled:
 
-- `api-adapter` adds `venom api`. The command returns a typed nonzero error
-  because `venom-api::start_api` does not bind. The library's `router()` value
+- `api-adapter` adds `termivar api`. The command returns a typed nonzero error
+  because `termivar-api::start_api` does not bind. The library's `router()` value
   contains only `GET /health` for an application-owned host.
-- `proxy-adapter` adds `venom proxy`. It starts the experimental
+- `proxy-adapter` adds `termivar proxy`. It starts the experimental
   fixed-upstream TCP relay described below.
 
 The following matrix separates build availability from actual execution:
 
-| Module / group | Build availability | Execution participation | Default `venom scan` | Support status |
+| Module / group | Build availability | Execution participation | Default `termivar scan` | Support status |
 | --- | --- | --- | --- | --- |
 | Deterministic stack (`web_runtime`, `decision_runner`, `runtime_budget`, `http_evidence`, `planner`, `rules`, `knowledge`, `experience`, `verification`, `adaptive`, `web_*`, `api_evidence`, `api_observation`, `api_reasoning`) | scanner default (`core`, `scanning`) | Surface B; no-profile/`baseline` use the single-resource primitive, explicit `web-review` adds the origin orchestrator; API reasoning remains host opt-in | yes, profile-dependent | implemented and tested Preview |
 | `semantic` | scanner default | host library and explicit `web-review` post-commit composition | `web-review` only | implemented and tested Preview |
@@ -529,8 +529,8 @@ The following matrix separates build availability from actual execution:
 | `threat_intelligence` | opt-in (`threat-intel`) | no default path | no | Experimental / scaffold |
 | `plugin` | opt-in (`plugins`) | host-owned; `PluginDecisionExecutor` can forward registry observations when a host supplies the execution request | no | source-level extension Preview; no stock detector plugins or dynamic loading |
 | `lua_engine` | opt-in (`lua`) | explicit host-owned approved-root registry/executor; no repository product/runtime caller | no | implemented and tested Experimental; fresh text-only no-standard-library Lua 5.4 VMs with cooperative per-execution/registry limits, not process isolation |
-| `venom-api` / `venom api` | CLI opt-in (`api-adapter`) | command fails closed; router is host-owned | no | unsupported listener |
-| `venom-proxy` / `venom proxy` | CLI opt-in (`proxy-adapter`) | explicit adapter | no | Experimental fixed-upstream TCP relay |
+| `termivar-api` / `termivar api` | CLI opt-in (`api-adapter`) | command fails closed; router is host-owned | no | unsupported listener |
+| `termivar-proxy` / `termivar proxy` | CLI opt-in (`proxy-adapter`) | explicit adapter | no | Experimental fixed-upstream TCP relay |
 | Deployment (Compose / Helm / Terraform / Kubernetes) | absent | none | no | unsupported; see the [deployment blueprint](../experimental/deployment-blueprint.md) |
 
 The default scanner crate feature closure is exactly `core` plus `scanning`.
@@ -549,8 +549,8 @@ default feature from silently restoring either host surface.
 
 ### The proxy is a TCP relay, not a MITM proxy
 
-With `proxy-adapter`, `venom proxy --addr <LISTEN> --upstream <UPSTREAM>` starts
-`venom-proxy::FixedUpstreamTcpRelay`. Both socket addresses are explicit; there
+With `proxy-adapter`, `termivar proxy --addr <LISTEN> --upstream <UPSTREAM>` starts
+`termivar-proxy::FixedUpstreamTcpRelay`. Both socket addresses are explicit; there
 is no implicit destination. The handler accepts a client TCP connection, opens
 the configured upstream connection, and copies bytes in both directions. It
 does not parse `CONNECT`, terminate TLS, generate/present certificates, or
@@ -568,8 +568,8 @@ module is an evidence/hypothesis store, not a knowledge graph.
 ## How to reproduce the inventory
 
 The feature and module inventory comes from
-`crates/venom-scanner/Cargo.toml`, `crates/venom-scanner/src/lib.rs`,
-`crates/venom-cli/Cargo.toml`, and `crates/venom-cli/src/main.rs`. Numeric module
+`crates/termivar-scanner/Cargo.toml`, `crates/termivar-scanner/src/lib.rs`,
+`crates/termivar-cli/Cargo.toml`, and `crates/termivar-cli/src/main.rs`. Numeric module
 counts are intentionally omitted because they drift; generate any count against
 a named commit with an explicit command.
 

@@ -1,7 +1,7 @@
 # Normalization-resilience review
 
 Normalization resilience is a non-default Preview capability for reviewing a
-small set of equivalent representations of Venom's existing inert XSS
+small set of equivalent representations of Termivar's existing inert XSS
 structural probes. It is not a generic WAF-bypass engine. A positive result
 means only that a transformed representation reproduced the same inert
 application-parser structure while the canonical candidate produced
@@ -17,8 +17,8 @@ a product-specific firewall-bypass claim.
 Both compile-time and run-time opt-in are required:
 
 ```text
-venom-cli feature: normalization-resilience
-venom-scanner feature: normalization-resilience
+termivar-cli feature: normalization-resilience
+termivar-scanner feature: normalization-resilience
 runtime flag:       --normalization-resilience
 required profile:   --profile web-review
 ```
@@ -26,7 +26,7 @@ required profile:   --profile web-review
 For example, from a reviewed checkout:
 
 ```bash
-cargo run --locked -p venom-cli --features normalization-resilience -- \
+cargo run --locked -p termivar-cli --features normalization-resilience -- \
   scan https://authorized.example.test \
   --profile web-review \
   --normalization-resilience

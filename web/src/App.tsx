@@ -54,7 +54,7 @@ const App: React.FC = () => {
     <div className="app-container">
       <nav className={`sidebar ${sidebarOpen ? 'open' : 'closed'}`} aria-label="Preview sections">
         <div className="sidebar-header">
-          <h2>VENOM</h2>
+          <h2>Termivar</h2>
           <button
             type="button"
             className="sidebar-toggle"

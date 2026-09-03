@@ -1,7 +1,7 @@
 # Compliance-oriented capabilities
 
 The current source provides Experimental data models that can help an integrator
-organize compliance-oriented evidence. Venom is not certified, independently
+organize compliance-oriented evidence. Termivar is not certified, independently
 audited, or a substitute for legal, privacy, or assurance work. Whether a
 deployment meets a law, regulation, contractual obligation, or control
 framework depends on the entire deployed system and the operating

@@ -22,23 +22,23 @@ registry, completeness lifecycle, and final report. It emits at most
 or body, uses no credential/cookie, and does not chain to SQL, SSTI, XSS,
 authorization, SSRF, or upload review.
 
-This document defines dependency direction and runtime ownership for the unreleased Venom `0.10.0-alpha.1` source line. It is a design contract, not a production-readiness claim.
+This document defines dependency direction and runtime ownership for the unreleased Termivar `0.10.0-alpha.1` source line. It is a design contract, not a production-readiness claim.
 
 The editable diagrams.net source is [architecture.drawio](architecture.drawio). A presentation- and print-friendly export is available as [architecture.svg](images/architecture.svg).
 
-![Venom runtime and crate architecture](images/architecture.svg)
+![Termivar runtime and crate architecture](images/architecture.svg)
 
 ## Current workspace
 
 | Crate | Responsibility | May depend on |
 | --- | --- | --- |
-| `venom-core` | Default transport-neutral evidence, reasoning, ontology, outcome, predicate, and run-report contracts; the pre-quarantine facade is feature-gated | External libraries only |
-| `venom-scanner` | Phase/plugin traits, deterministic reasoning, runner, detection, opt-in bounded report rendering, and Experimental host-owned Lua/coordination execution | `venom-core` |
-| `venom-exploit` | Preview, non-published exploit manifest/catalog plus disconnected non-default authorized orchestration contracts; only an in-memory lab fixture executes | `venom-core` only where shared opaque identity/evidence contracts are required |
-| `venom-artifact` | Preview, non-published exact/wildcard buffer and bounded-reader signature observations; no path, network, process, exploit, or verdict authority | External libraries only |
-| `venom-proxy` | Experimental fixed-upstream TCP relay; no HTTP/TLS interception | External libraries only |
-| `venom-api` | Library health router and its local unsupported-listener error | External libraries only |
-| `venom-cli` | Composition root and command routing | `venom-scanner` by default; `venom-api`, `venom-proxy`, and `venom-artifact` only through explicit adapter features |
+| `termivar-core` | Default transport-neutral evidence, reasoning, ontology, outcome, predicate, and run-report contracts; the pre-quarantine facade is feature-gated | External libraries only |
+| `termivar-scanner` | Phase/plugin traits, deterministic reasoning, runner, detection, opt-in bounded report rendering, and Experimental host-owned Lua/coordination execution | `termivar-core` |
+| `termivar-exploit` | Preview, non-published exploit manifest/catalog plus disconnected non-default authorized orchestration contracts; only an in-memory lab fixture executes | `termivar-core` only where shared opaque identity/evidence contracts are required |
+| `termivar-artifact` | Preview, non-published exact/wildcard buffer and bounded-reader signature observations; no path, network, process, exploit, or verdict authority | External libraries only |
+| `termivar-proxy` | Experimental fixed-upstream TCP relay; no HTTP/TLS interception | External libraries only |
+| `termivar-api` | Library health router and its local unsupported-listener error | External libraries only |
+| `termivar-cli` | Composition root and command routing | `termivar-scanner` by default; `termivar-api`, `termivar-proxy`, and `termivar-artifact` only through explicit adapter features |
 
 `xtask` is repository tooling rather than a runtime layer. It may orchestrate
 workspace commands but application crates must not depend on it. Its
@@ -60,26 +60,26 @@ a Cargo target, so example source cannot silently fall outside compilation.
 
 ```mermaid
 flowchart TD
-    CLI[venom-cli] --> Scanner[venom-scanner]
-    CLI -. "api-adapter" .-> API[venom-api]
-    CLI -. "proxy-adapter" .-> Proxy[venom-proxy]
-    CLI -. "artifact-adapter" .-> Artifact["venom-artifact<br/>bounded observations"]
-    Scanner --> Core["venom-core<br/>Evidence / Reasoning / Outcomes / Reports"]
-    Exploit["venom-exploit<br/>Preview metadata + opt-in lab orchestration"] --> Core
+    CLI[termivar-cli] --> Scanner[termivar-scanner]
+    CLI -. "api-adapter" .-> API[termivar-api]
+    CLI -. "proxy-adapter" .-> Proxy[termivar-proxy]
+    CLI -. "artifact-adapter" .-> Artifact["termivar-artifact<br/>bounded observations"]
+    Scanner --> Core["termivar-core<br/>Evidence / Reasoning / Outcomes / Reports"]
+    Exploit["termivar-exploit<br/>Preview metadata + opt-in lab orchestration"] --> Core
 ```
 
-`venom-artifact` is a separate artifact-observation domain. Its library accepts
+`termivar-artifact` is a separate artifact-observation domain. Its library accepts
 caller-supplied bytes or bounded readers and owns no filesystem path, network,
 process, browser, or exploit authority. Only the CLI's non-default
 `artifact-adapter` may open one explicitly selected local regular file for a
-read-only scan; it performs no recursion and does not alter `venom scan`.
+read-only scan; it performs no recursion and does not alter `termivar scan`.
 Signature matches are deterministic observations, never malware verdicts,
 vulnerabilities, or severity assignments. Repository signature discovery is an
 explicit non-scanning `xtask artifact-catalog` operation.
 
-`venom-exploit` is an independent workspace domain rather than part of the
-scanner product graph. `venom-scanner`, `venom-cli`, `venom-api`, and
-`venom-proxy` do not depend on it. Its V1 default library accepts bounded
+`termivar-exploit` is an independent workspace domain rather than part of the
+scanner product graph. `termivar-scanner`, `termivar-cli`, `termivar-api`, and
+`termivar-proxy` do not depend on it. Its V1 default library accepts bounded
 manifest bytes and performs deterministic validation and catalog queries. A
 non-default Preview feature adds host-minted grants, sealed deterministic plans,
 typed permits/receipts, and separate impact/cleanup lifecycle accounting. Only
@@ -88,23 +88,23 @@ production target/network/process/browser/filesystem adapter, CLI command, or
 authority derived from metadata. Source-linked implementations are cooperative
 trusted code, not sandboxed third-party code. Repository-owned pack file
 discovery belongs to `xtask`, not the library. The historical
-`venom_scanner::post_exploitation` metadata scaffold remains separately
+`termivar_scanner::post_exploitation` metadata scaffold remains separately
 quarantined behind `platform-models` and is not imported or expanded by this
 domain.
 
 The pre-quarantine `Config`, shared `Error`, lifecycle-event, `ScanFinding`, raw
-HTTP, vulnerability, and scan-result records remain in `venom-core` only behind
+HTTP, vulnerability, and scan-result records remain in `termivar-core` only behind
 its non-default `legacy-contracts` feature for the pinned alpha compatibility
-baseline. `venom-scanner` forwards that feature only for `legacy-scanner` and
+baseline. `termivar-scanner` forwards that feature only for `legacy-scanner` and
 `platform-models`; the default decision runtime and the `reporting` feature
 cannot import those records. The scanner owns behavior such as `EventBus`,
 `ScanRunner`, `ScanPhase`, and `Plugin`. `ScanFinding` is a legacy phase
 compatibility contract; the Preview plugin and reporting contracts do not
 accept it.
-`venom-api` owns its small adapter error locally and has no workspace-crate
+`termivar-api` owns its small adapter error locally and has no workspace-crate
 dependency.
 
-No lower-level crate may depend on `venom-cli` or `venom-api`. A cycle between workspace crates is a release blocker.
+No lower-level crate may depend on `termivar-cli` or `termivar-api`. A cycle between workspace crates is a release blocker.
 
 ## Runtime ownership
 
@@ -192,11 +192,11 @@ Dashboard, distributed orchestration, compliance, and web application concerns s
 ```mermaid
 flowchart TD
     Product["Optional product layer<br/>Dashboard / Distributed / Compliance / Web"] --> App["CLI / application composition"]
-    App --> Scanner[venom-scanner]
-    Scanner --> Core["venom-core<br/>Evidence / Reasoning / Outcomes / Reports"]
+    App --> Scanner[termivar-scanner]
+    Scanner --> Core["termivar-core<br/>Evidence / Reasoning / Outcomes / Reports"]
 ```
 
-This target supports separate open-source and commercial distributions without making `venom-core` or `venom-scanner` aware of product policy. No placeholder `venom-enterprise` crate should be created until ownership, licensing, and stable interfaces are defined.
+This target supports separate open-source and commercial distributions without making `termivar-core` or `termivar-scanner` aware of product policy. No placeholder `termivar-enterprise` crate should be created until ownership, licensing, and stable interfaces are defined.
 
 ## Boundary rules
 
@@ -222,7 +222,7 @@ This target supports separate open-source and commercial distributions without m
 
 ## Reasoning and runtime boundary
 
-The decision engine remains inside `venom-scanner` during alpha, but its module
+The decision engine remains inside `termivar-scanner` during alpha, but its module
 direction is treated as an extraction boundary rather than an informal style
 preference.
 
@@ -230,15 +230,15 @@ preference.
 flowchart TD
     Runtime["Scanner runtime / HTTP / plugins"] --> PlanVerify["Planning / verification / domain profiles"]
     PlanVerify --> Contracts["Knowledge / rules / experience / semantic actions"]
-    Contracts --> Core["venom-core"]
+    Contracts --> Core["termivar-core"]
 ```
 
 | Protected layer | Modules | May import |
 | --- | --- | --- |
-| Evidence preparation | `api_evidence` | `venom-core` plus bounded JSON/hash libraries; never network, runtime, planner, or knowledge state |
-| Reasoning state | `experience`, `rules` | `venom-core`; `rules` may also use `knowledge` |
+| Evidence preparation | `api_evidence` | `termivar-core` plus bounded JSON/hash libraries; never network, runtime, planner, or knowledge state |
+| Reasoning state | `experience`, `rules` | `termivar-core`; `rules` may also use `knowledge` |
 | Payload derivation contract | `payload_strategy` | Bounded collections, serialization, and hashing only; never knowledge, runtime state, clocks, randomness, or transport |
-| Planning and verification | `planner`, `verification` | `knowledge`, `rules`, `payload_strategy`, `venom-core` |
+| Planning and verification | `planner`, `verification` | `knowledge`, `rules`, `payload_strategy`, `termivar-core` |
 | Semantic action, ingestion, and domain profiles | `web_actions`, `web_reasoning`, `api_reasoning`, `api_observation`, `web_planning`, `web_verification` | The lower rows above; never execution or HTTP modules |
 | Execution and composition | `decision_runner`, `http_evidence`, `web_execution`, `web_runtime` | All inward contracts needed to perform and account for work |
 
@@ -311,7 +311,7 @@ callback conclusion.
 verification, and execution are sibling consumers; an executor's HTTP method or
 client policy never defines what the verifier is allowed to reason about.
 
-`venom-core::predicates` owns the canonical HTTP observations, web conclusions,
+`termivar-core::predicates` owns the canonical HTTP observations, web conclusions,
 API conclusions, and atomic paired-visibility contract shared by producers and
 reasoners. `api_reasoning` consumes those transport-neutral contracts to infer
 JSON/GraphQL fingerprints and reviewable visibility boundaries. It performs no
@@ -433,7 +433,7 @@ standard-runtime transport ownership, prevents migrated discovery and
 verification phases from reacquiring direct I/O or crossing each other's
 authority seam, freezes the remaining built-in legacy direct-I/O inventory,
 verifies canonical `lib.rs` module and external-root wiring, and compiles
-`venom-scanner` with no default features. For Lua and distributed coordination,
+`termivar-scanner` with no default features. For Lua and distributed coordination,
 it also pins independent raw feature closures, private modules and exact root
 reexports, public symbol/constant inventories, private ownership snapshots,
 ordered/integer-only state, absence of ambient filesystem/network/process/time
@@ -499,7 +499,7 @@ repeatable baseline, or regression threshold.
 
 Before adding an edge, ask:
 
-- Is the type transport-neutral and behavior-free enough for `venom-core`?
+- Is the type transport-neutral and behavior-free enough for `termivar-core`?
 - Can the behavior live behind an existing trait?
 - Does any API, dashboard, database, or deployment type leak into scanner logic?
 - Can the module be tested without starting the CLI, API, proxy, or web panel?
@@ -516,7 +516,7 @@ Before adding an edge, ask:
   separate bounded active-verification authority; the directory phase still
   requires the explicit `--legacy-directory-fuzz` option.
 - Dashboard, compliance, and the implemented Experimental distributed and Lua
-  host APIs still live in `venom-scanner`; neither execution API has a
+  host APIs still live in `termivar-scanner`; neither execution API has a
   repository runtime caller, stable compatibility baseline, or production
   deployment contract.
 - Several optional modules expose broad APIs that require stability review.

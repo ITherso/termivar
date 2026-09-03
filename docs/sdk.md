@@ -3,7 +3,7 @@
 `ScannerSdk` is the opt-in **Legacy facade** for applications that compose the
 historical ordered phase runner. It is not the Preview deterministic assessment
 SDK and is not a v1 compatibility baseline. Hosts supply `ScanPhase`
-implementations; Venom owns ordering, per-phase timeouts, cancellation context,
+implementations; Termivar owns ordering, per-phase timeouts, cancellation context,
 lifecycle events, and the typed run-report boundary.
 
 ## Generate a scanner
@@ -16,7 +16,7 @@ cargo test
 ```
 
 The generated project contains a complete custom phase and an executable
-scanner using this Legacy facade. During alpha it tracks Venom `main`; pin and
+scanner using this Legacy facade. During alpha it tracks Termivar `main`; pin and
 review an exact commit before distribution. Generating a project does not make
 the facade stable or move it into the default deterministic product.
 
@@ -24,7 +24,7 @@ the facade stable or move it into the default deterministic product.
 
 ```rust
 use async_trait::async_trait;
-use venom_scanner::{Result, ScanContext, ScanFinding, ScanPhase, ScannerSdk};
+use termivar_scanner::{Result, ScanContext, ScanFinding, ScanPhase, ScannerSdk};
 
 struct Headers;
 
@@ -57,7 +57,7 @@ assert_eq!(report.outcomes()[0].confidence().parts_per_million(), 0);
 
 - A phase owns historical heuristic behavior and returns compatibility records.
 - The SDK owns execution policy and shared runtime context.
-- The public SDK result is `venom_core::RunReport`; phase errors, timeouts,
+- The public SDK result is `termivar_core::RunReport`; phase errors, timeouts,
   cancellation, and panics while polling phase execution remain visible as
   typed step state.
 - Raw phase descriptions/evidence and telemetry do not cross the public report

@@ -1,7 +1,7 @@
 # Lua execution
 
 Lua is an opt-in, Experimental and implemented host-library contract. Build
-`venom-scanner` with the independent `lua` feature to obtain a bounded script
+`termivar-scanner` with the independent `lua` feature to obtain a bounded script
 registry and executor. The feature is absent from default, `scanning`,
 `legacy-scanner`, `plugins`, and CLI builds; no repository command or plugin
 path registers or executes Lua.

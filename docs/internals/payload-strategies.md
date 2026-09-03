@@ -1,6 +1,6 @@
 # Payload strategy boundary
 
-Venom does not make the planner a payload generator. The planner selects a
+Termivar does not make the planner a payload generator. The planner selects a
 semantic action and, when required, an exact strategy ID and revision. A native
 capability executor is the only component that may resolve that reference and
 derive one bounded artifact.

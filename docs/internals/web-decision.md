@@ -1,6 +1,6 @@
 # Standard web decision profile
 
-`StandardWebDecisionProfile` is the one-shot host boundary for Venom's deterministic web decision stack. It composes the standard reasoning, planning, discovery execution, and verification profiles without merging their responsibilities.
+`StandardWebDecisionProfile` is the one-shot host boundary for Termivar's deterministic web decision stack. It composes the standard reasoning, planning, discovery execution, and verification profiles without merging their responsibilities.
 
 ```text
 immutable HTTP evidence
@@ -66,4 +66,4 @@ This is a setup transaction, not a runtime transaction. It does not roll back ev
 
 The individual profiles remain public for specialized hosts. Use the composite profile when the standard stack should be installed as one reviewed unit; use the individual profiles when a host deliberately replaces a layer.
 
-Applications that want Venom to own target-scoped bootstrap, session state, command driving, and experience can use the higher-level [standard web decision runtime](web-runtime.md).
+Applications that want Termivar to own target-scoped bootstrap, session state, command driving, and experience can use the higher-level [standard web decision runtime](web-runtime.md).
