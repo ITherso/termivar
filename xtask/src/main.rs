@@ -9,6 +9,7 @@ mod scanner_salvage;
 mod semver;
 mod waf_evasion_salvage;
 
+use cargo_metadata::MetadataCommand;
 use clap::{Parser, Subcommand, ValueEnum};
 use std::{
     env,
@@ -17,6 +18,18 @@ use std::{
 };
 
 type TaskResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
+
+const RELEASE_CLI_PACKAGE: &str = "termivar-cli";
+const RELEASE_BUNDLE_FEATURE: &str = "release-bundle";
+const RELEASE_BUILD_ARGS: &[&str] = &[
+    "build",
+    "--release",
+    "--locked",
+    "-p",
+    RELEASE_CLI_PACKAGE,
+    "--features",
+    RELEASE_BUNDLE_FEATURE,
+];
 
 #[derive(Debug, Parser)]
 #[command(name = "cargo xtask")]
@@ -125,6 +138,8 @@ fn workspace_root() -> PathBuf {
 }
 
 fn release_preflight(root: &Path) -> TaskResult {
+    let version = workspace_release_version(root)?;
+    release_metadata::check(root, &version)?;
     architecture_preflight(root)?;
     run(root, "cargo", &["fmt", "--all", "--", "--check"])?;
     run(
@@ -135,6 +150,7 @@ fn release_preflight(root: &Path) -> TaskResult {
             "--workspace",
             "--all-targets",
             "--all-features",
+            "--locked",
             "--",
             "-D",
             "warnings",
@@ -145,13 +161,23 @@ fn release_preflight(root: &Path) -> TaskResult {
         "cargo",
         &["test", "--workspace", "--all-features", "--locked"],
     )?;
-    run(
-        root,
-        "cargo",
-        &["build", "--release", "--locked", "-p", "termivar-cli"],
-    )?;
+    run(root, "cargo", RELEASE_BUILD_ARGS)?;
     println!("release preflight passed; no tag or artifact was published");
     Ok(())
+}
+
+fn workspace_release_version(root: &Path) -> TaskResult<String> {
+    let metadata = MetadataCommand::new()
+        .manifest_path(root.join("Cargo.toml"))
+        .no_deps()
+        .other_options(vec!["--locked".to_owned()])
+        .exec()?;
+    let package = metadata
+        .workspace_packages()
+        .into_iter()
+        .find(|package| package.name.as_str() == RELEASE_CLI_PACKAGE)
+        .ok_or("termivar-cli is absent from release workspace metadata")?;
+    Ok(package.version.to_string())
 }
 
 fn architecture_preflight(root: &Path) -> TaskResult {
@@ -253,6 +279,23 @@ mod tests {
         assert!(validate_project_name("custom-scanner").is_ok());
         assert!(validate_project_name("Custom Scanner").is_err());
         assert!(validate_project_name("../scanner").is_err());
+    }
+
+    #[test]
+    fn release_preflight_builds_the_reviewed_non_default_bundle() {
+        assert_eq!(
+            RELEASE_BUILD_ARGS,
+            [
+                "build",
+                "--release",
+                "--locked",
+                "-p",
+                "termivar-cli",
+                "--features",
+                "release-bundle",
+            ]
+        );
+        assert!(!RELEASE_BUILD_ARGS.contains(&"--all-features"));
     }
 
     #[test]

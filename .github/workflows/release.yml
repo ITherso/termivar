@@ -202,7 +202,62 @@ jobs:
           targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
       - name: Build release binary
-        run: cargo build --locked --release --target ${{ matrix.target }} -p termivar-cli
+        run: cargo build --locked --release --target ${{ matrix.target }} -p termivar-cli --features release-bundle
+      - name: Smoke release binary (Unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          release_binary="target/${{ matrix.target }}/release/${{ matrix.binary }}"
+          version_output=$("$release_binary" --version)
+          test "$version_output" = "termivar 0.10.0-alpha.1"
+          help_output=$("$release_binary" --help)
+          scan_help=$("$release_binary" scan --help)
+          grep -Fq "Termivar" <<<"$help_output"
+          grep -Eq '^  artifact[[:space:]]' <<<"$help_output"
+          for flag in \
+            --normalization-resilience \
+            --graphql-review \
+            --openapi-review \
+            --rest-review \
+            --authorization-review-policy; do
+            grep -Fq -- "$flag" <<<"$scan_help"
+          done
+          if grep -Eq '^  (legacy-scan|api|proxy)[[:space:]]' <<<"$help_output"; then
+            echo "release binary exposes a quarantined adapter command" >&2
+            exit 1
+          fi
+      - name: Smoke release binary (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $releaseBinary = "target/${{ matrix.target }}/release/${{ matrix.binary }}"
+          $versionOutput = ((& $releaseBinary --version) | Out-String).Trim()
+          if ($versionOutput -ne "termivar 0.10.0-alpha.1") {
+            throw "unexpected release binary identity"
+          }
+          $helpOutput = ((& $releaseBinary --help) | Out-String)
+          $scanHelp = ((& $releaseBinary scan --help) | Out-String)
+          if (-not $helpOutput.Contains("Termivar")) {
+            throw "release help does not identify Termivar"
+          }
+          if ($helpOutput -notmatch '(?m)^  artifact\s') {
+            throw "release help is missing the artifact command"
+          }
+          foreach ($flag in @(
+            "--normalization-resilience",
+            "--graphql-review",
+            "--openapi-review",
+            "--rest-review",
+            "--authorization-review-policy"
+          )) {
+            if (-not $scanHelp.Contains($flag)) {
+              throw "release scan help is missing an approved option"
+            }
+          }
+          if ($helpOutput -match '(?m)^  (legacy-scan|api|proxy)\s') {
+            throw "release binary exposes a quarantined adapter command"
+          }
       - name: Package Unix archive
         if: runner.os != 'Windows'
         shell: bash
@@ -263,13 +318,12 @@ jobs:
             echo "refusing to replace the existing release for $GITHUB_REF_NAME" >&2
             exit 1
           fi
-          release_flags=(--latest)
-          if [[ "$GITHUB_REF_NAME" == *-* ]]; then
-            release_flags=(--prerelease)
-          fi
+          notes_file=".github/release-notes/${GITHUB_REF_NAME}.md"
+          test -f "$notes_file"
+          test ! -L "$notes_file"
           gh release create "$GITHUB_REF_NAME" \
             release-assets/termivar-* SHA256SUMS \
             --verify-tag \
-            --generate-notes \
+            --notes-file "$notes_file" \
             --title "Termivar $GITHUB_REF_NAME" \
-            "${release_flags[@]}"
+            --prerelease

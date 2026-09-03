@@ -4,6 +4,25 @@ All notable changes to Termivar are recorded here. Releases use the categories f
 
 ## [Unreleased]
 
+## [0.10.0-alpha.1] - 2026-09-03
+
+### Upgrade notes
+
+- The current product name is Termivar, formerly Venom. The CLI binary changed
+  from `venom` to `termivar`, the first-party package prefix changed from
+  `venom-*` to `termivar-*`, and the Rust crate prefix changed from `venom_*`
+  to `termivar_*`. No legacy `venom` binary alias is shipped.
+- Active performance environment variables changed from `VENOM_PERF_*` to
+  `TERMIVAR_PERF_*`, and the active cache/container identity changed from
+  `.venom` to `.termivar`.
+- Stable wire, schema, and digest identities may intentionally retain the
+  former Venom name to preserve deterministic compatibility. Historical
+  provenance likewise retains the name that was current when it was recorded.
+- Integrators constructing scan state must follow the required
+  [`ScanContext` migration guidance](docs/migrations/scan-context-construction.md).
+  The complete product identity mapping and compatibility boundaries are in
+  the [Venom-to-Termivar migration guide](docs/migrations/venom-to-termivar.md).
+
 ### Added
 
 - Bounded HTML attribute source intelligence and quote-aware structural XSS
@@ -286,5 +305,6 @@ All notable changes to Termivar are recorded here. Releases use the categories f
 
 - This alpha has not completed an independent security audit and is not production-ready.
 
-[Unreleased]: https://github.com/ITherso/termivar/compare/v0.9.0-alpha...HEAD
+[Unreleased]: https://github.com/ITherso/termivar/compare/v0.10.0-alpha.1...HEAD
+[0.10.0-alpha.1]: https://github.com/ITherso/termivar/compare/v0.9.0-alpha...v0.10.0-alpha.1
 [0.9.0-alpha]: https://github.com/ITherso/venom/releases/tag/v0.9.0-alpha

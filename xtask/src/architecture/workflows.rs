@@ -14,18 +14,55 @@
 //! inside a YAML block scalar (`run: |`, `run: >`) is treated as literal script,
 //! not as workflow keys. This check reads only tracked files and does no network.
 
-use std::{error::Error, fs, io, path::Path};
+use std::{collections::BTreeSet, error::Error, fs, io, path::Path};
 
 use cargo_metadata::MetadataCommand;
 
 const RELEASE_WORKFLOW: &str = ".github/workflows/release.yml";
 const METADATA_GATE: &str = "cargo run --locked -p xtask -- release-metadata \"$tag_version\"";
+const INITIAL_TAG_TYPE_GATE: &str = "test \"$(git cat-file -t \"$GITHUB_REF\")\" = tag";
+const MAIN_ANCESTRY_GATE: &str = "git merge-base --is-ancestor \"$GITHUB_SHA\" origin/main";
+const VERSION_EQUALITY_GATE: &str = "test \"$tag_version\" = \"$workspace_version\"";
+const RELEASE_BUILD_GATE: &str = "run: cargo build --locked --release --target ${{ matrix.target }} -p termivar-cli --features release-bundle";
+const UNIX_SMOKE_VERSION_GATE: &str = "test \"$version_output\" = \"termivar 0.10.0-alpha.1\"";
+const WINDOWS_SMOKE_VERSION_GATE: &str = "if ($versionOutput -ne \"termivar 0.10.0-alpha.1\") {";
+const UNIX_QUARANTINE_SMOKE_GATE: &str =
+    "if grep -Eq '^  (legacy-scan|api|proxy)[[:space:]]' <<<\"$help_output\"; then";
+const WINDOWS_QUARANTINE_SMOKE_GATE: &str =
+    "if ($helpOutput -match '(?m)^  (legacy-scan|api|proxy)\\s') {";
+const RELEASE_SMOKE_OPTIONS: &[&str] = &[
+    "--normalization-resilience",
+    "--graphql-review",
+    "--openapi-review",
+    "--rest-review",
+    "--authorization-review-policy",
+];
+const RELEASE_TARGETS: &[&str] = &[
+    "x86_64-unknown-linux-gnu",
+    "x86_64-pc-windows-msvc",
+    "x86_64-apple-darwin",
+    "aarch64-apple-darwin",
+];
+const PROVENANCE_GATE: &str =
+    "uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d # v4.2.1";
+const UNIX_STAGE_GATE: &str =
+    "cp \"target/${{ matrix.target }}/release/${{ matrix.binary }}\" dist/stage/termivar";
+const UNIX_ARCHIVE_GATE: &str = "tar -C dist/stage -czf \"dist/termivar-${GITHUB_REF_NAME}-${{ matrix.target }}.tar.gz\" termivar";
+const WINDOWS_STAGE_GATE: &str = "Copy-Item \"target/${{ matrix.target }}/release/${{ matrix.binary }}\" \"dist/stage/termivar.exe\"";
+const WINDOWS_ARCHIVE_GATE: &str = "Compress-Archive -Path \"dist/stage/termivar.exe\" -DestinationPath \"dist/termivar-$env:GITHUB_REF_NAME-${{ matrix.target }}.zip\"";
 const TAG_FETCH_GATE: &str = "git fetch --force --no-tags origin \"refs/tags/${GITHUB_REF_NAME}:refs/tags/${GITHUB_REF_NAME}\"";
 const TAG_TYPE_GATE: &str = "test \"$(git cat-file -t \"refs/tags/${GITHUB_REF_NAME}\")\" = tag";
 const TAG_COMMIT_GATE: &str =
     "test \"$(git rev-parse \"refs/tags/${GITHUB_REF_NAME}^{commit}\")\" = \"$(git rev-parse \"${GITHUB_SHA}^{commit}\")\"";
 const CHECKSUM_GATE: &str = "sha256sum termivar-* | sort -k2 > ../SHA256SUMS";
+const RELEASE_ABSENCE_GATE: &str = "if gh release view \"$GITHUB_REF_NAME\" >/dev/null 2>&1; then";
+const RELEASE_NOTES_PATH_GATE: &str = "notes_file=\".github/release-notes/${GITHUB_REF_NAME}.md\"";
+const RELEASE_NOTES_FILE_GATE: &str = "test -f \"$notes_file\"";
+const RELEASE_NOTES_LINK_GATE: &str = "test ! -L \"$notes_file\"";
 const RELEASE_CREATE_GATE: &str = "gh release create \"$GITHUB_REF_NAME\" \\";
+const RELEASE_NOTES_FLAG_GATE: &str = "--notes-file \"$notes_file\" \\";
+const RELEASE_TITLE_GATE: &str = "--title \"Termivar $GITHUB_REF_NAME\" \\";
+const RELEASE_PRERELEASE_GATE: &str = "--prerelease";
 const TESTS_WORKFLOW: &str = ".github/workflows/tests.yml";
 const COVERAGE_BASELINE_POINTER: &str = "docs/reports/coverage/accepted-baseline.txt";
 const EXPECTED_WORKFLOW_TRIGGERS: &str =
@@ -284,9 +321,92 @@ fn release_workflow_policy_violations(files: &[(String, String)]) -> Vec<String>
     };
     let lines: Vec<_> = contents.lines().map(str::trim).collect();
     let mut violations = Vec::new();
-    if !lines.contains(&METADATA_GATE) {
+    for (required, purpose) in [
+        (INITIAL_TAG_TYPE_GATE, "reject lightweight release tags"),
+        (
+            MAIN_ANCESTRY_GATE,
+            "require the tagged commit to descend from main",
+        ),
+        (
+            VERSION_EQUALITY_GATE,
+            "bind the tag version to the workspace version",
+        ),
+        (
+            METADATA_GATE,
+            "run the exact changelog/support metadata gate",
+        ),
+    ] {
+        if !lines.contains(&required) {
+            violations.push(format!(
+                "{RELEASE_WORKFLOW}: tag publication must {purpose} with `{required}`"
+            ));
+        }
+    }
+
+    let release_builds: Vec<_> = lines
+        .iter()
+        .copied()
+        .filter(|line| line.starts_with("run: cargo build") && line.contains("-p termivar-cli"))
+        .collect();
+    if release_builds != [RELEASE_BUILD_GATE] {
         violations.push(format!(
-            "{RELEASE_WORKFLOW}: tag publication must run the exact changelog/support metadata gate `{METADATA_GATE}`"
+            "{RELEASE_WORKFLOW}: distributable binaries must use exactly `{RELEASE_BUILD_GATE}` and never `--all-features`; found {release_builds:?}"
+        ));
+    }
+
+    for (required, purpose) in [
+        (
+            UNIX_SMOKE_VERSION_GATE,
+            "verify the Unix binary identity and version",
+        ),
+        (
+            WINDOWS_SMOKE_VERSION_GATE,
+            "verify the Windows binary identity and version",
+        ),
+        (
+            UNIX_QUARANTINE_SMOKE_GATE,
+            "reject quarantined commands in Unix help",
+        ),
+        (
+            WINDOWS_QUARANTINE_SMOKE_GATE,
+            "reject quarantined commands in Windows help",
+        ),
+        (PROVENANCE_GATE, "retain build-provenance generation"),
+        (UNIX_STAGE_GATE, "stage only the Termivar Unix binary"),
+        (
+            UNIX_ARCHIVE_GATE,
+            "package one Termivar-rooted Unix archive",
+        ),
+        (WINDOWS_STAGE_GATE, "stage only the Termivar Windows binary"),
+        (
+            WINDOWS_ARCHIVE_GATE,
+            "package one Termivar-rooted Windows archive",
+        ),
+    ] {
+        if !lines.contains(&required) {
+            violations.push(format!(
+                "{RELEASE_WORKFLOW}: release workflow must {purpose} with `{required}`"
+            ));
+        }
+    }
+    for option in RELEASE_SMOKE_OPTIONS {
+        let count = lines.iter().filter(|line| line.contains(option)).count();
+        if count != 2 {
+            violations.push(format!(
+                "{RELEASE_WORKFLOW}: `{option}` must be checked once by each native release-binary smoke test, found {count} checks"
+            ));
+        }
+    }
+
+    let declared_targets: Vec<_> = lines
+        .iter()
+        .filter_map(|line| line.strip_prefix("target: "))
+        .collect();
+    let actual_target_set: BTreeSet<_> = declared_targets.iter().copied().collect();
+    let expected_targets: BTreeSet<_> = RELEASE_TARGETS.iter().copied().collect();
+    if declared_targets.len() != RELEASE_TARGETS.len() || actual_target_set != expected_targets {
+        violations.push(format!(
+            "{RELEASE_WORKFLOW}: release target matrix must remain exactly {expected_targets:?}, found {declared_targets:?}"
         ));
     }
 
@@ -299,7 +419,35 @@ fn release_workflow_policy_violations(files: &[(String, String)]) -> Vec<String>
             "bind the fetched tag to the normalized triggering commit",
         ),
         (CHECKSUM_GATE, "checksum the verified build artifacts"),
+        (
+            RELEASE_ABSENCE_GATE,
+            "refuse to replace an existing release",
+        ),
+        (
+            RELEASE_NOTES_PATH_GATE,
+            "bind publication to the triggering tag's curated note",
+        ),
+        (
+            RELEASE_NOTES_FILE_GATE,
+            "require the curated note to be a repository file",
+        ),
+        (
+            RELEASE_NOTES_LINK_GATE,
+            "reject a symlinked curated release note",
+        ),
         (RELEASE_CREATE_GATE, "create the GitHub Release"),
+        (
+            RELEASE_NOTES_FLAG_GATE,
+            "publish the exact curated release body",
+        ),
+        (
+            RELEASE_TITLE_GATE,
+            "use the reviewed Termivar release title",
+        ),
+        (
+            RELEASE_PRERELEASE_GATE,
+            "publish the release as a prerelease",
+        ),
     ] {
         let Some(offset) = lines[next_line..].iter().position(|line| *line == required) else {
             violations.push(format!(
@@ -308,6 +456,14 @@ fn release_workflow_policy_violations(files: &[(String, String)]) -> Vec<String>
             break;
         };
         next_line += offset + 1;
+    }
+
+    for forbidden in ["--generate-notes", "--latest"] {
+        if lines.iter().any(|line| line.contains(forbidden)) {
+            violations.push(format!(
+                "{RELEASE_WORKFLOW}: release publication must not use `{forbidden}`"
+            ));
+        }
     }
 
     violations
@@ -678,23 +834,70 @@ mod tests {
         workflow_pin_violations(&[("wf.yml".to_owned(), contents.to_owned())])
     }
 
+    fn reviewed_release_workflow_fixture() -> String {
+        let mut lines = vec![
+            INITIAL_TAG_TYPE_GATE.to_owned(),
+            MAIN_ANCESTRY_GATE.to_owned(),
+            VERSION_EQUALITY_GATE.to_owned(),
+            METADATA_GATE.to_owned(),
+            RELEASE_BUILD_GATE.to_owned(),
+            UNIX_SMOKE_VERSION_GATE.to_owned(),
+            WINDOWS_SMOKE_VERSION_GATE.to_owned(),
+            UNIX_QUARANTINE_SMOKE_GATE.to_owned(),
+            WINDOWS_QUARANTINE_SMOKE_GATE.to_owned(),
+        ];
+        for option in RELEASE_SMOKE_OPTIONS {
+            lines.push(format!("unix smoke {option}"));
+            lines.push(format!("windows smoke {option}"));
+        }
+        for target in RELEASE_TARGETS {
+            lines.push(format!("target: {target}"));
+        }
+        lines.extend([
+            PROVENANCE_GATE.to_owned(),
+            UNIX_STAGE_GATE.to_owned(),
+            UNIX_ARCHIVE_GATE.to_owned(),
+            WINDOWS_STAGE_GATE.to_owned(),
+            WINDOWS_ARCHIVE_GATE.to_owned(),
+            TAG_FETCH_GATE.to_owned(),
+            TAG_TYPE_GATE.to_owned(),
+            TAG_COMMIT_GATE.to_owned(),
+            CHECKSUM_GATE.to_owned(),
+            RELEASE_ABSENCE_GATE.to_owned(),
+            RELEASE_NOTES_PATH_GATE.to_owned(),
+            RELEASE_NOTES_FILE_GATE.to_owned(),
+            RELEASE_NOTES_LINK_GATE.to_owned(),
+            RELEASE_CREATE_GATE.to_owned(),
+            RELEASE_NOTES_FLAG_GATE.to_owned(),
+            RELEASE_TITLE_GATE.to_owned(),
+            RELEASE_PRERELEASE_GATE.to_owned(),
+        ]);
+        lines.join("\n")
+    }
+
+    #[test]
+    fn repository_release_workflow_matches_the_reviewed_release_contract() {
+        let contents = include_str!("../../../.github/workflows/release.yml");
+        let violations = release_workflow_policy_violations(&[(
+            RELEASE_WORKFLOW.to_owned(),
+            contents.to_owned(),
+        )]);
+        assert!(violations.is_empty(), "{violations:?}");
+    }
+
     #[test]
     fn release_workflow_requires_the_tag_metadata_gate() {
         let path = ".github/workflows/release.yml".to_owned();
-        let publication = [
-            TAG_FETCH_GATE,
-            TAG_TYPE_GATE,
-            TAG_COMMIT_GATE,
-            CHECKSUM_GATE,
-            RELEASE_CREATE_GATE,
-        ]
-        .join("\n  ");
-        let valid = format!("run: |\n  {METADATA_GATE}\n  {publication}\n");
+        let valid = reviewed_release_workflow_fixture();
         assert!(release_workflow_policy_violations(&[(path.clone(), valid.to_owned())]).is_empty());
 
         for invalid in [
-            format!("run: |\n  # {METADATA_GATE}\n  {publication}\n"),
-            format!("name: document this command: {METADATA_GATE}\n  {publication}\n"),
+            valid.replacen(METADATA_GATE, &format!("# {METADATA_GATE}"), 1),
+            valid.replacen(
+                METADATA_GATE,
+                &format!("name: document this command: {METADATA_GATE}"),
+                1,
+            ),
         ] {
             let violations = release_workflow_policy_violations(&[(path.clone(), invalid)]);
             assert_eq!(violations.len(), 1, "{violations:?}");
@@ -705,25 +908,11 @@ mod tests {
     #[test]
     fn release_workflow_reverifies_tag_identity_before_checksums_and_publication() {
         let path = ".github/workflows/release.yml".to_owned();
-        let valid = [
-            METADATA_GATE,
-            TAG_FETCH_GATE,
-            TAG_TYPE_GATE,
-            TAG_COMMIT_GATE,
-            CHECKSUM_GATE,
-            RELEASE_CREATE_GATE,
-        ]
-        .join("\n");
+        let valid = reviewed_release_workflow_fixture();
         assert!(release_workflow_policy_violations(&[(path.clone(), valid)]).is_empty());
 
-        let missing_commit = [
-            METADATA_GATE,
-            TAG_FETCH_GATE,
-            TAG_TYPE_GATE,
-            CHECKSUM_GATE,
-            RELEASE_CREATE_GATE,
-        ]
-        .join("\n");
+        let valid = reviewed_release_workflow_fixture();
+        let missing_commit = valid.replacen(&format!("{TAG_COMMIT_GATE}\n"), "", 1);
         let violations = release_workflow_policy_violations(&[(path.clone(), missing_commit)]);
         assert_eq!(violations.len(), 1, "{violations:?}");
         assert!(
@@ -731,18 +920,68 @@ mod tests {
             "{violations:?}"
         );
 
-        let reordered = [
-            METADATA_GATE,
-            RELEASE_CREATE_GATE,
-            TAG_FETCH_GATE,
-            TAG_TYPE_GATE,
-            TAG_COMMIT_GATE,
-            CHECKSUM_GATE,
-        ]
-        .join("\n");
+        let valid = reviewed_release_workflow_fixture();
+        let without_create = valid.replacen(&format!("{RELEASE_CREATE_GATE}\n"), "", 1);
+        let reordered = format!("{RELEASE_CREATE_GATE}\n{without_create}");
         let violations = release_workflow_policy_violations(&[(path, reordered)]);
         assert_eq!(violations.len(), 1, "{violations:?}");
         assert!(violations[0].contains("create the GitHub Release"));
+    }
+
+    #[test]
+    fn release_workflow_builds_and_smokes_only_the_reviewed_bundle() {
+        let path = RELEASE_WORKFLOW.to_owned();
+        let valid = reviewed_release_workflow_fixture();
+        assert!(release_workflow_policy_violations(&[(path.clone(), valid.clone())]).is_empty());
+
+        let all_features = valid.replacen("--features release-bundle", "--all-features", 1);
+        assert!(
+            release_workflow_policy_violations(&[(path.clone(), all_features)])
+                .iter()
+                .any(|violation| violation.contains("never `--all-features`"))
+        );
+
+        let missing_smoke = valid.replacen("unix smoke --graphql-review\n", "", 1);
+        assert!(
+            release_workflow_policy_violations(&[(path.clone(), missing_smoke)])
+                .iter()
+                .any(|violation| violation.contains("--graphql-review"))
+        );
+
+        let missing_target = valid.replacen("target: aarch64-apple-darwin\n", "", 1);
+        assert!(
+            release_workflow_policy_violations(&[(path, missing_target)])
+                .iter()
+                .any(|violation| violation.contains("target matrix"))
+        );
+    }
+
+    #[test]
+    fn release_workflow_uses_create_once_curated_prerelease_notes() {
+        let path = RELEASE_WORKFLOW.to_owned();
+        let valid = reviewed_release_workflow_fixture();
+        assert!(release_workflow_policy_violations(&[(path.clone(), valid.clone())]).is_empty());
+
+        let generated = valid.replacen(RELEASE_NOTES_FLAG_GATE, "--generate-notes \\", 1);
+        let violations = release_workflow_policy_violations(&[(path.clone(), generated)]);
+        assert!(violations
+            .iter()
+            .any(|violation| violation.contains("curated release body")));
+        assert!(violations
+            .iter()
+            .any(|violation| violation.contains("must not use `--generate-notes`")));
+
+        let replace_existing = valid.replacen(&format!("{RELEASE_ABSENCE_GATE}\n"), "", 1);
+        assert!(
+            release_workflow_policy_violations(&[(path.clone(), replace_existing)])
+                .iter()
+                .any(|violation| violation.contains("refuse to replace"))
+        );
+
+        let latest = format!("{valid}\n--latest");
+        assert!(release_workflow_policy_violations(&[(path, latest)])
+            .iter()
+            .any(|violation| violation.contains("must not use `--latest`")));
     }
 
     fn coverage_violations(contents: &str) -> Vec<String> {

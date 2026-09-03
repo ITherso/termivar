@@ -29,6 +29,14 @@ graphql-review = ["termivar-scanner/graphql-review"]
 openapi-review = ["termivar-scanner/openapi-review"]
 rest-review = ["openapi-review", "termivar-scanner/rest-review"]
 authorization-review = ["termivar-scanner/authorization-review"]
+release-bundle = [
+    "artifact-adapter",
+    "normalization-resilience",
+    "graphql-review",
+    "openapi-review",
+    "rest-review",
+    "authorization-review",
+]
 
 [dependencies]
 termivar-core = { version = "0.10.0-alpha.1", path = "../termivar-core" }

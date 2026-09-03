@@ -1176,6 +1176,17 @@ fn cli_feature_violations(
             "normalization-resilience",
             &["termivar-scanner/normalization-resilience"][..],
         ),
+        (
+            "release-bundle",
+            &[
+                "artifact-adapter",
+                "normalization-resilience",
+                "graphql-review",
+                "openapi-review",
+                "rest-review",
+                "authorization-review",
+            ][..],
+        ),
         ("proxy-adapter", &["dep:termivar-proxy"][..]),
     ] {
         let actual: BTreeSet<_> = features
@@ -11620,6 +11631,17 @@ mod tests {
                 "proxy-adapter".to_owned(),
                 vec!["dep:termivar-proxy".to_owned()],
             ),
+            (
+                "release-bundle".to_owned(),
+                vec![
+                    "artifact-adapter".to_owned(),
+                    "normalization-resilience".to_owned(),
+                    "graphql-review".to_owned(),
+                    "openapi-review".to_owned(),
+                    "rest-review".to_owned(),
+                    "authorization-review".to_owned(),
+                ],
+            ),
         ]);
         let optional = DependencyContract {
             optional: true,
@@ -11699,6 +11721,42 @@ mod tests {
             .any(|violation| {
                 violation.contains("authorization-review") && violation.contains("exactly")
             }));
+    }
+
+    #[test]
+    fn cli_release_bundle_is_non_default_and_exactly_bounded() {
+        let (mut features, dependencies) = valid_cli_contract();
+        assert!(cli_feature_violations(&features, &dependencies).is_empty());
+        assert!(features.get("default").unwrap().is_empty());
+        assert_eq!(
+            features.get("release-bundle").unwrap().as_slice(),
+            [
+                "artifact-adapter".to_owned(),
+                "normalization-resilience".to_owned(),
+                "graphql-review".to_owned(),
+                "openapi-review".to_owned(),
+                "rest-review".to_owned(),
+                "authorization-review".to_owned(),
+            ]
+        );
+        for excluded in ["legacy-scanner", "api-adapter", "proxy-adapter"] {
+            assert!(features
+                .get("release-bundle")
+                .unwrap()
+                .iter()
+                .all(|feature| feature != excluded));
+        }
+
+        features
+            .get_mut("release-bundle")
+            .unwrap()
+            .push("legacy-scanner".to_owned());
+        assert!(
+            cli_feature_violations(&features, &dependencies)
+                .iter()
+                .any(|violation| violation.contains("release-bundle")
+                    && violation.contains("exactly"))
+        );
     }
 
     #[test]
