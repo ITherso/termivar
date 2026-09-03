@@ -204,6 +204,8 @@ pub(crate) fn enabled_native_web_review_actions(
             NativeWebReviewActionKind::ResourceAuthorizationDifferential => false,
             #[cfg(feature = "openapi-review")]
             NativeWebReviewActionKind::OpenApiDocumentReplay => false,
+            #[cfg(feature = "rest-review")]
+            NativeWebReviewActionKind::RestReadOnlyReplay => false,
         })
         .collect()
 }
@@ -713,6 +715,10 @@ fn payload_strategy_reference(
         },
         #[cfg(feature = "openapi-review")]
         NativeWebReviewActionKind::OpenApiDocumentReplay => {
+            return Err(PayloadStrategyError::DerivationFailed);
+        },
+        #[cfg(feature = "rest-review")]
+        NativeWebReviewActionKind::RestReadOnlyReplay => {
             return Err(PayloadStrategyError::DerivationFailed);
         },
     };

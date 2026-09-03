@@ -71,6 +71,7 @@ const BOUNDED_RUNTIME_SOURCES: &[&str] = &[
     "crates/venom-scanner/src/web_runtime.rs",
     GRAPHQL_RUNTIME_SOURCE,
     OPENAPI_RUNTIME_SOURCE,
+    REST_RUNTIME_SOURCE,
     RESOURCE_AUTHORIZATION_RUNTIME_SOURCE,
     NATIVE_REVIEW_DECISION_SOURCE,
     NATIVE_REVIEW_EXECUTION_SOURCE,
@@ -101,6 +102,7 @@ const NATIVE_REVIEW_EXECUTION_SOURCE: &str =
     "crates/venom-scanner/src/web_runtime/web_review_execution.rs";
 const GRAPHQL_RUNTIME_SOURCE: &str = "crates/venom-scanner/src/web_runtime/graphql_runtime.rs";
 const OPENAPI_RUNTIME_SOURCE: &str = "crates/venom-scanner/src/web_runtime/openapi_runtime.rs";
+const REST_RUNTIME_SOURCE: &str = "crates/venom-scanner/src/web_runtime/rest_runtime.rs";
 const RESOURCE_AUTHORIZATION_RUNTIME_SOURCE: &str =
     "crates/venom-scanner/src/web_runtime/resource_authorization_runtime.rs";
 const ATTRIBUTE_SOURCE_CONTEXT_SOURCE: &str =
@@ -632,8 +634,8 @@ fn inspect_native_review_execution_broker_boundary(
     Ok(violations.into_iter().collect())
 }
 
-const EXACT_NATIVE_REVIEW_EXECUTION_TOKEN_BYTES: usize = 29_284;
-const EXACT_NATIVE_REVIEW_EXECUTION_FINGERPRINT: u128 = 0x8b00_6815_80ce_557f_d9cb_32c1_d5c5_5303;
+const EXACT_NATIVE_REVIEW_EXECUTION_TOKEN_BYTES: usize = 29_524;
+const EXACT_NATIVE_REVIEW_EXECUTION_FINGERPRINT: u128 = 0x7c93_b64f_b37a_027f_15a9_4239_2298_b920;
 
 fn native_review_execution_fingerprint_violations(source: &str, syntax: &syn::File) -> Vec<String> {
     let exact_tests = matches!(syntax.items.last(), Some(Item::Mod(module))
@@ -689,8 +691,8 @@ fn native_review_execution_fingerprint_violations(source: &str, syntax: &syn::Fi
     }
 }
 
-const EXACT_OPENAPI_RUNTIME_TOKEN_BYTES: usize = 35_954;
-const EXACT_OPENAPI_RUNTIME_FINGERPRINT: u128 = 0xad2c_19ce_c0c8_9c0f_0a1a_f6b1_f687_1d6e;
+const EXACT_OPENAPI_RUNTIME_TOKEN_BYTES: usize = 38_267;
+const EXACT_OPENAPI_RUNTIME_FINGERPRINT: u128 = 0x9711_b1ee_5468_1092_b3f1_725c_2816_7895;
 
 fn openapi_runtime_fingerprint_violations(source: &str, syntax: &syn::File) -> Vec<String> {
     if !matches!(syntax.items.last(), Some(Item::Mod(module))
@@ -1199,7 +1201,8 @@ fn native_defense_classifier_is_exact(function: &syn::ItemFn) -> bool {
         (arm.attrs.is_empty()
             || attributes_are_exact_cfg_feature(&arm.attrs, "normalization-resilience")
             || attributes_are_exact_cfg_feature(&arm.attrs, "authorization-review")
-            || attributes_are_exact_cfg_feature(&arm.attrs, "openapi-review"))
+            || attributes_are_exact_cfg_feature(&arm.attrs, "openapi-review")
+            || attributes_are_exact_cfg_feature(&arm.attrs, "rest-review"))
             && arm.guard.is_none()
             && collect_exact_native_review_patterns(&arm.pat, &mut variants)
             && expression_is_exact_defense_class(&arm.body, "DifferentialRead")
@@ -1228,6 +1231,7 @@ fn native_defense_classifier_is_exact(function: &syn::ItemFn) -> bool {
                 "XssScriptLexicalBoundaryQueryPair".to_owned(),
                 "NormalizationResilienceQueryPair".to_owned(),
                 "OpenApiDocumentReplay".to_owned(),
+                "RestReadOnlyReplay".to_owned(),
                 "ResourceAuthorizationDifferential".to_owned(),
             ])
 }
@@ -1258,6 +1262,7 @@ fn collect_exact_native_review_patterns(
                 "XssScriptLexicalBoundaryQueryPair",
                 "NormalizationResilienceQueryPair",
                 "OpenApiDocumentReplay",
+                "RestReadOnlyReplay",
                 "ResourceAuthorizationDifferential",
             ] {
                 if syn_path_is_exact(&pattern.path, &["NativeWebReviewActionKind", variant]) {
@@ -2266,6 +2271,12 @@ fn inspect_web_assessment_models(source: &str) -> Result<Vec<String>, syn::Error
                             .as_ref()
                             .is_some_and(|ident| ident_name(ident) == "openapi_review")
                     });
+                    let rest_review = item.fields.iter().find(|field| {
+                        field
+                            .ident
+                            .as_ref()
+                            .is_some_and(|ident| ident_name(ident) == "rest_review")
+                    });
                     if run_started_at.is_none_or(|field| {
                         !is_plain_ident(&field.ty, "SystemTime")
                             || !attributes_are_exact_cfg_feature(&field.attrs, "reporting")
@@ -2278,16 +2289,22 @@ fn inspect_web_assessment_models(source: &str) -> Result<Vec<String>, syn::Error
                     }) || openapi_review.is_none_or(|field| {
                         !is_generic_of_idents(&field.ty, "Option", &["WebAssessmentOpenApiAudit"])
                             || !attributes_are_exact_cfg_feature(&field.attrs, "openapi-review")
+                    }) || rest_review.is_none_or(|field| {
+                        !is_generic_of_idents(&field.ty, "Option", &["WebAssessmentRestAudit"])
+                            || !attributes_are_exact_cfg_feature(&field.attrs, "rest-review")
                     }) || item.fields.iter().any(|field| {
                         field.ident.as_ref().is_none_or(|ident| {
                             !matches!(
                                 ident_name(ident).as_str(),
-                                "run_started_at" | "authorization_review" | "openapi_review"
+                                "run_started_at"
+                                    | "authorization_review"
+                                    | "openapi_review"
+                                    | "rest_review"
                             )
                         }) && !field.attrs.is_empty()
                     }) {
                         violations.push(
-                            "WebAssessmentRunReport must retain exactly one private cfg(reporting) SystemTime run_started_at field, exact private cfg(authorization-review) and cfg(openapi-review) redacted audit fields, and no other conditional fields"
+                            "WebAssessmentRunReport must retain exactly one private cfg(reporting) SystemTime run_started_at field, exact private feature-gated authorization, OpenAPI, and REST redacted audit fields, and no other conditional fields"
                                 .to_owned(),
                         );
                     }
@@ -4620,7 +4637,7 @@ fn inspect_assessment_report_boundary(source: &str) -> Result<Vec<String>, syn::
     let report_shape_is_exact = report.is_some_and(|item| {
         matches!(item.vis, syn::Visibility::Public(_))
             && private_named_fields(item).is_some_and(|fields| {
-                fields.len() == 6
+                fields.len() == 7
                     && fields
                         .get("run_report")
                         .is_some_and(|field| is_plain_ident(field, "RunReport"))
@@ -4639,6 +4656,9 @@ fn inspect_assessment_report_boundary(source: &str) -> Result<Vec<String>, syn::
                     && fields.get("openapi_review").is_some_and(|field| {
                         is_generic_of_idents(field, "Option", &["WebAssessmentOpenApiAudit"])
                     })
+                    && fields.get("rest_review").is_some_and(|field| {
+                        is_generic_of_idents(field, "Option", &["WebAssessmentRestAudit"])
+                    })
             })
             && private_named_field(item, "authorization_review").is_some_and(|field| {
                 attributes_are_exact_cfg_feature(&field.attrs, "authorization-review")
@@ -4646,10 +4666,12 @@ fn inspect_assessment_report_boundary(source: &str) -> Result<Vec<String>, syn::
             && private_named_field(item, "openapi_review").is_some_and(|field| {
                 attributes_are_exact_cfg_feature(&field.attrs, "openapi-review")
             })
+            && private_named_field(item, "rest_review")
+                .is_some_and(|field| attributes_are_exact_cfg_feature(&field.attrs, "rest-review"))
     });
     if !report_shape_is_exact {
         violations.push(
-            "AssessmentRunReport must privately retain the validated run/profile, consumed subject inventory, typed items, and exact feature-gated redacted authorization and OpenAPI audits"
+            "AssessmentRunReport must privately retain the validated run/profile, consumed subject inventory, typed items, and exact feature-gated redacted authorization, OpenAPI, and REST audits"
                 .to_owned(),
         );
     }
@@ -4740,6 +4762,7 @@ fn inspect_assessment_report_boundary(source: &str) -> Result<Vec<String>, syn::
                     "validate_and_canonicalize_items",
                     "validate_authorization_audit",
                     "validate_openapi_audit",
+                    "validate_rest_audit",
                     "profile",
                 ],
             )
@@ -4769,10 +4792,11 @@ fn inspect_assessment_report_boundary(source: &str) -> Result<Vec<String>, syn::
             )
             && statement_reference_precedes(&method.block, "validate_authorization_audit", "Self")
             && statement_reference_precedes(&method.block, "validate_openapi_audit", "Self")
+            && statement_reference_precedes(&method.block, "validate_rest_audit", "Self")
     });
     if !validator {
         violations.push(
-            "AssessmentRunReport::new_validated must remain private and validate run identity/completion/accounting, the exact root subject, inventory, items, and feature-gated authorization and OpenAPI audits before construction"
+            "AssessmentRunReport::new_validated must remain private and validate run identity/completion/accounting, the exact root subject, inventory, items, and feature-gated authorization, OpenAPI, and REST audits before construction"
                 .to_owned(),
         );
     }
@@ -5933,7 +5957,7 @@ fn assessment_report_constructor_inputs_are_exact(
     } else {
         ["AssessmentItemSet", "CompletedWebAssessmentTruth"].as_slice()
     };
-    typed.len() == expected_prefix.len() + 2
+    typed.len() == expected_prefix.len() + 3
         && typed
             .iter()
             .take(expected_prefix.len())
@@ -5949,9 +5973,15 @@ fn assessment_report_constructor_inputs_are_exact(
                     &["WebAssessmentAuthorizationAudit"],
                 )
         })
+        && typed
+            .get(expected_prefix.len() + 1)
+            .is_some_and(|argument| {
+                attributes_are_exact_cfg_feature(&argument.attrs, "openapi-review")
+                    && is_generic_of_idents(&argument.ty, "Option", &["WebAssessmentOpenApiAudit"])
+            })
         && typed.last().is_some_and(|argument| {
-            attributes_are_exact_cfg_feature(&argument.attrs, "openapi-review")
-                && is_generic_of_idents(&argument.ty, "Option", &["WebAssessmentOpenApiAudit"])
+            attributes_are_exact_cfg_feature(&argument.attrs, "rest-review")
+                && is_generic_of_idents(&argument.ty, "Option", &["WebAssessmentRestAudit"])
         })
 }
 
@@ -8242,6 +8272,7 @@ impl<'ast> Visit<'ast> for OwnershipVisitor<'_> {
                 )
                 | ("crates/venom-scanner/src/web_runtime.rs", "graphql_runtime")
                 | ("crates/venom-scanner/src/web_runtime.rs", "openapi_runtime")
+                | ("crates/venom-scanner/src/web_runtime.rs", "rest_runtime")
                 | (
                     "crates/venom-scanner/src/web_runtime.rs",
                     "resource_authorization_runtime"
@@ -8293,6 +8324,10 @@ impl<'ast> Visit<'ast> for OwnershipVisitor<'_> {
             && module == "openapi_runtime"
         {
             attributes_are_exact_cfg_feature(&item.attrs, "openapi-review")
+        } else if self.source == "crates/venom-scanner/src/web_runtime.rs"
+            && module == "rest_runtime"
+        {
+            attributes_are_exact_cfg_feature(&item.attrs, "rest-review")
         } else if self.source == "crates/venom-scanner/src/web_runtime.rs"
             && module == "resource_authorization_runtime"
         {

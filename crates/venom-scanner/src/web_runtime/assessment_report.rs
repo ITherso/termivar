@@ -31,6 +31,11 @@ use super::resource_authorization_runtime::{
     WebAssessmentAuthorizationAudit, MAX_AUTHORIZATION_REVIEW_REQUESTS,
     RESOURCE_AUTHORIZATION_REVIEW_CAPABILITY_ID,
 };
+#[cfg(feature = "rest-review")]
+use super::rest_runtime::{
+    RestRuntimeOutcome, WebAssessmentRestAudit, MAX_REST_REVIEW_ACTIVE_VERIFICATIONS,
+    MAX_REST_REVIEW_REQUESTS, REST_REVIEW_CAPABILITY_ID,
+};
 use super::{
     assessment_item::{
         AssessmentItem, AssessmentItemSet, AssessmentSubjectInventoryEntry,
@@ -173,6 +178,8 @@ pub struct AssessmentRunReport {
     authorization_review: Option<WebAssessmentAuthorizationAudit>,
     #[cfg(feature = "openapi-review")]
     openapi_review: Option<WebAssessmentOpenApiAudit>,
+    #[cfg(feature = "rest-review")]
+    rest_review: Option<WebAssessmentRestAudit>,
 }
 
 impl AssessmentRunReport {
@@ -185,6 +192,7 @@ impl AssessmentRunReport {
             WebAssessmentAuthorizationAudit,
         >,
         #[cfg(feature = "openapi-review")] openapi_review: Option<WebAssessmentOpenApiAudit>,
+        #[cfg(feature = "rest-review")] rest_review: Option<WebAssessmentRestAudit>,
     ) -> Result<Self, AssessmentRunReportError> {
         let run_report = build_run_report(&truth)?;
         Self::new_validated(
@@ -195,6 +203,8 @@ impl AssessmentRunReport {
             authorization_review,
             #[cfg(feature = "openapi-review")]
             openapi_review,
+            #[cfg(feature = "rest-review")]
+            rest_review,
         )
     }
 
@@ -212,6 +222,8 @@ impl AssessmentRunReport {
             None,
             #[cfg(feature = "openapi-review")]
             None,
+            #[cfg(feature = "rest-review")]
+            None,
         )
     }
 
@@ -223,6 +235,7 @@ impl AssessmentRunReport {
             WebAssessmentAuthorizationAudit,
         >,
         #[cfg(feature = "openapi-review")] openapi_review: Option<WebAssessmentOpenApiAudit>,
+        #[cfg(feature = "rest-review")] rest_review: Option<WebAssessmentRestAudit>,
     ) -> Result<Self, AssessmentRunReportError> {
         validate_run_identity(&run_report, truth.target_identity)?;
         validate_run_completion(&run_report)?;
@@ -244,6 +257,8 @@ impl AssessmentRunReport {
         validate_authorization_audit(authorization_review.as_ref(), &items)?;
         #[cfg(feature = "openapi-review")]
         validate_openapi_audit(openapi_review.as_ref(), &items)?;
+        #[cfg(feature = "rest-review")]
+        validate_rest_audit(rest_review.as_ref(), &items)?;
 
         Ok(Self {
             run_report,
@@ -254,6 +269,8 @@ impl AssessmentRunReport {
             authorization_review,
             #[cfg(feature = "openapi-review")]
             openapi_review,
+            #[cfg(feature = "rest-review")]
+            rest_review,
         })
     }
 
@@ -295,6 +312,12 @@ impl AssessmentRunReport {
     pub const fn openapi_review_audit(&self) -> Option<&WebAssessmentOpenApiAudit> {
         self.openapi_review.as_ref()
     }
+
+    /// Returns the optional redaction-safe REST read-only review audit.
+    #[cfg(feature = "rest-review")]
+    pub const fn rest_review_audit(&self) -> Option<&WebAssessmentRestAudit> {
+        self.rest_review.as_ref()
+    }
 }
 
 #[cfg(feature = "openapi-review")]
@@ -326,6 +349,74 @@ fn validate_openapi_audit(
     Ok(())
 }
 
+#[cfg(feature = "rest-review")]
+fn validate_rest_audit(
+    audit: Option<&WebAssessmentRestAudit>,
+    items: &[AssessmentItem],
+) -> Result<(), AssessmentRunReportError> {
+    let projected = items
+        .iter()
+        .filter(|item| item.capability_id() == REST_REVIEW_CAPABILITY_ID)
+        .count();
+    if projected > 1 {
+        return Err(AssessmentRunReportError::RestAuditMismatch);
+    }
+    let Some(audit) = audit else {
+        return if projected == 0 {
+            Ok(())
+        } else {
+            Err(AssessmentRunReportError::RestAuditMismatch)
+        };
+    };
+    if !RestAuditFacts::from_audit(audit).is_valid(projected) {
+        return Err(AssessmentRunReportError::RestAuditMismatch);
+    }
+    Ok(())
+}
+
+#[cfg(feature = "rest-review")]
+#[derive(Clone, Copy)]
+struct RestAuditFacts {
+    outcome: RestRuntimeOutcome,
+    request_count: usize,
+    active_verification_count: usize,
+    eligible_operation_count: u32,
+    selected_operation_present: bool,
+    replay_stable: bool,
+    item_projected: bool,
+}
+
+#[cfg(feature = "rest-review")]
+impl RestAuditFacts {
+    fn from_audit(audit: &WebAssessmentRestAudit) -> Self {
+        Self {
+            outcome: audit.outcome(),
+            request_count: usize::from(audit.request_count()),
+            active_verification_count: usize::from(audit.active_verification_count()),
+            eligible_operation_count: audit.eligible_operation_count(),
+            selected_operation_present: audit.selected_operation_identity().is_some(),
+            replay_stable: audit.replay_stable(),
+            item_projected: audit.item_projected(),
+        }
+    }
+
+    fn is_valid(self, projected: usize) -> bool {
+        let positive = self.outcome == RestRuntimeOutcome::SurfaceObserved;
+        self.request_count <= MAX_REST_REVIEW_REQUESTS
+            && self.active_verification_count <= MAX_REST_REVIEW_ACTIVE_VERIFICATIONS
+            && self.active_verification_count
+                == usize::from(self.request_count == MAX_REST_REVIEW_REQUESTS)
+            && self.item_projected == (projected == 1)
+            && positive == self.item_projected
+            && self.replay_stable == positive
+            && (!positive
+                || (self.request_count == MAX_REST_REVIEW_REQUESTS
+                    && self.active_verification_count == MAX_REST_REVIEW_ACTIVE_VERIFICATIONS
+                    && self.eligible_operation_count > 0
+                    && self.selected_operation_present))
+    }
+}
+
 impl fmt::Debug for AssessmentRunReport {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut debug = formatter.debug_struct("AssessmentRunReport");
@@ -340,6 +431,13 @@ impl fmt::Debug for AssessmentRunReport {
             "authorization_review_audit_present",
             &self.authorization_review.is_some(),
         );
+        #[cfg(feature = "openapi-review")]
+        debug.field(
+            "openapi_review_audit_present",
+            &self.openapi_review.is_some(),
+        );
+        #[cfg(feature = "rest-review")]
+        debug.field("rest_review_audit_present", &self.rest_review.is_some());
         debug.finish()
     }
 }
@@ -448,6 +546,10 @@ pub enum AssessmentRunReportError {
     #[cfg(feature = "openapi-review")]
     #[error("OpenAPI review audit does not match projected item truth")]
     OpenApiAuditMismatch,
+    /// The optional REST review audit disagreed with projected item truth.
+    #[cfg(feature = "rest-review")]
+    #[error("REST review audit does not match projected item truth")]
+    RestAuditMismatch,
 }
 
 fn build_run_report(
@@ -650,6 +752,8 @@ fn validate_completed_assessment_truth_with_active_limit(
         #[cfg(feature = "authorization-review")]
         let allowance = allowance.saturating_add(1);
         #[cfg(feature = "openapi-review")]
+        let allowance = allowance.saturating_add(1);
+        #[cfg(feature = "rest-review")]
         let allowance = allowance.saturating_add(1);
         allowance
     };
@@ -1150,7 +1254,8 @@ mod tests {
     #[cfg(all(
         feature = "graphql-review",
         feature = "authorization-review",
-        feature = "openapi-review"
+        feature = "openapi-review",
+        feature = "rest-review"
     ))]
     #[test]
     fn independently_enabled_optional_children_have_an_exact_additive_active_allowance() {
@@ -1160,9 +1265,9 @@ mod tests {
                 .unwrap();
         let root = runtime.authorized_root();
         let limits = WebAssessmentLimits::default();
-        let expected = limits.max_active_verifications().checked_add(3).unwrap();
+        let expected = limits.max_active_verifications().checked_add(4).unwrap();
         let usage = AssessmentUsageTruth {
-            active_verifications: 3,
+            active_verifications: 4,
             ..usage_truth(root.url().as_str())
         };
         let profile = ScanProfileV1::web_review().unwrap();
@@ -1170,7 +1275,7 @@ mod tests {
         assert_eq!(
             validate_completed_assessment_truth_with_active_limit(
                 root,
-                AssessmentRuntimeLimits::new(limits, expected, 3),
+                AssessmentRuntimeLimits::new(limits, expected, 4),
                 usage,
                 &WebAssessmentCompletion::Complete,
                 WebAssessmentDefenseMode::ObservationOnly,
@@ -1181,7 +1286,7 @@ mod tests {
         assert_eq!(
             validate_completed_assessment_truth_with_active_limit(
                 root,
-                AssessmentRuntimeLimits::new(limits, expected - 1, 3),
+                AssessmentRuntimeLimits::new(limits, expected - 1, 4),
                 usage,
                 &WebAssessmentCompletion::Complete,
                 WebAssessmentDefenseMode::ObservationOnly,
@@ -1192,7 +1297,7 @@ mod tests {
         assert_eq!(
             validate_completed_assessment_truth_with_active_limit(
                 root,
-                AssessmentRuntimeLimits::new(limits, expected + 1, 4),
+                AssessmentRuntimeLimits::new(limits, expected + 1, 5),
                 usage,
                 &WebAssessmentCompletion::Complete,
                 WebAssessmentDefenseMode::ObservationOnly,
@@ -1200,6 +1305,62 @@ mod tests {
             ),
             Err(AssessmentRunReportError::AssessmentUsageMismatch)
         );
+    }
+
+    #[cfg(feature = "rest-review")]
+    #[test]
+    fn rest_audit_contract_requires_exact_positive_replay_and_item_truth() {
+        let positive = RestAuditFacts {
+            outcome: RestRuntimeOutcome::SurfaceObserved,
+            request_count: MAX_REST_REVIEW_REQUESTS,
+            active_verification_count: MAX_REST_REVIEW_ACTIVE_VERIFICATIONS,
+            eligible_operation_count: 1,
+            selected_operation_present: true,
+            replay_stable: true,
+            item_projected: true,
+        };
+        assert!(positive.is_valid(1));
+
+        for invalid in [
+            RestAuditFacts {
+                request_count: MAX_REST_REVIEW_REQUESTS + 1,
+                ..positive
+            },
+            RestAuditFacts {
+                active_verification_count: MAX_REST_REVIEW_ACTIVE_VERIFICATIONS + 1,
+                ..positive
+            },
+            RestAuditFacts {
+                eligible_operation_count: 0,
+                ..positive
+            },
+            RestAuditFacts {
+                selected_operation_present: false,
+                ..positive
+            },
+            RestAuditFacts {
+                replay_stable: false,
+                ..positive
+            },
+            RestAuditFacts {
+                item_projected: false,
+                ..positive
+            },
+        ] {
+            assert!(!invalid.is_valid(1));
+        }
+
+        let negative = RestAuditFacts {
+            outcome: RestRuntimeOutcome::NotEligible,
+            request_count: 0,
+            active_verification_count: 0,
+            eligible_operation_count: 0,
+            selected_operation_present: false,
+            replay_stable: false,
+            item_projected: false,
+        };
+        assert!(negative.is_valid(0));
+        assert!(!negative.is_valid(1));
     }
 
     #[test]

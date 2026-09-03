@@ -51,6 +51,11 @@ use super::resource_authorization_runtime::{
     ResourceAuthorizationRuntimeResult, WebAssessmentAuthorizationAudit,
     MAX_AUTHORIZATION_REVIEW_ACTIVE_VERIFICATIONS,
 };
+#[cfg(feature = "rest-review")]
+use super::rest_runtime::{
+    CommittedRestReview, RestRuntimeOutcome, RestRuntimeResult, WebAssessmentRestAudit,
+    MAX_REST_REVIEW_ACTIVE_VERIFICATIONS,
+};
 use super::{
     assessment_api_visibility::{
         build_root_api_visibility_runtime, CommittedAssessmentApiVisibility,
@@ -922,6 +927,10 @@ pub enum WebAssessmentIncompleteReason {
     /// The explicitly enabled OpenAPI document/replay pair did not complete.
     #[cfg(feature = "openapi-review")]
     OpenApiReviewIncomplete,
+    /// The explicitly enabled OpenAPI-constrained REST candidate/replay pair
+    /// did not complete its bounded anonymous comparison.
+    #[cfg(feature = "rest-review")]
+    RestReviewIncomplete,
 }
 
 /// Whether every retained subject and eligible document completed within bounds.
@@ -1257,6 +1266,8 @@ pub struct WebAssessmentRunReport {
     authorization_review: Option<WebAssessmentAuthorizationAudit>,
     #[cfg(feature = "openapi-review")]
     openapi_review: Option<WebAssessmentOpenApiAudit>,
+    #[cfg(feature = "rest-review")]
+    rest_review: Option<WebAssessmentRestAudit>,
     assessment_items: AssessmentItemSet,
     assessment_projection_incompleteness: PassiveAssessmentProjectionIncompleteness,
     completion: WebAssessmentCompletion,
@@ -1282,6 +1293,10 @@ impl fmt::Debug for WebAssessmentRunReport {
             .field("defense", &self.defense);
         #[cfg(feature = "authorization-review")]
         debug.field("authorization_review", &self.authorization_review);
+        #[cfg(feature = "openapi-review")]
+        debug.field("openapi_review", &self.openapi_review);
+        #[cfg(feature = "rest-review")]
+        debug.field("rest_review", &self.rest_review);
         debug
             .field("assessment_items", &self.assessment_items)
             .field(
@@ -1343,6 +1358,10 @@ impl WebAssessmentRunReport {
     pub const fn openapi_review_audit(&self) -> Option<&WebAssessmentOpenApiAudit> {
         self.openapi_review.as_ref()
     }
+    #[cfg(feature = "rest-review")]
+    pub const fn rest_review_audit(&self) -> Option<&WebAssessmentRestAudit> {
+        self.rest_review.as_ref()
+    }
     /// Returns claim-safe items derived only from committed assessment truth.
     pub fn assessment_items(&self) -> &[AssessmentItem] {
         self.assessment_items.items()
@@ -1400,6 +1419,8 @@ impl WebAssessmentRunReport {
             self.authorization_review,
             #[cfg(feature = "openapi-review")]
             self.openapi_review,
+            #[cfg(feature = "rest-review")]
+            self.rest_review,
         )
     }
 }
@@ -1532,6 +1553,9 @@ pub enum WebAssessmentRuntimeError {
     #[cfg(feature = "authorization-review")]
     #[error("resource authorization review requires protected authenticated transport")]
     InsecureAuthorizationReviewTransport,
+    #[cfg(feature = "rest-review")]
+    #[error("REST review requires OpenAPI review in the same assessment")]
+    RestReviewRequiresOpenApiReview,
     #[error(transparent)]
     Standard(#[from] StandardWebDecisionRuntimeError),
     #[error("web assessment failed after it started")]
@@ -1588,6 +1612,10 @@ impl fmt::Debug for WebAssessmentRuntimeError {
             #[cfg(feature = "authorization-review")]
             Self::InsecureAuthorizationReviewTransport => formatter
                 .write_str("WebAssessmentRuntimeError::InsecureAuthorizationReviewTransport"),
+            #[cfg(feature = "rest-review")]
+            Self::RestReviewRequiresOpenApiReview => {
+                formatter.write_str("WebAssessmentRuntimeError::RestReviewRequiresOpenApiReview")
+            },
             Self::Standard(_) => {
                 formatter.write_str("WebAssessmentRuntimeError::Standard(<redacted>)")
             },
@@ -1636,6 +1664,8 @@ pub struct WebAssessmentRuntimeBuilder {
     resource_authorization_review: Option<(AuthorizationReviewPolicy, AuthorizationPrincipalPair)>,
     #[cfg(feature = "openapi-review")]
     openapi_review: bool,
+    #[cfg(feature = "rest-review")]
+    rest_review: bool,
     root_authorization_context: Option<WebAssessmentRootAuthorizationContext>,
 }
 
@@ -1656,6 +1686,8 @@ impl WebAssessmentRuntimeBuilder {
             resource_authorization_review: None,
             #[cfg(feature = "openapi-review")]
             openapi_review: false,
+            #[cfg(feature = "rest-review")]
+            rest_review: false,
             root_authorization_context: None,
         }
     }
@@ -1712,6 +1744,16 @@ impl WebAssessmentRuntimeBuilder {
         self.openapi_review = true;
         self
     }
+    /// Explicitly enables one OpenAPI-constrained anonymous REST GET/replay.
+    ///
+    /// Build rejects this option unless OpenAPI review is enabled for the same
+    /// assessment. Catalog knowledge constrains selection but grants no
+    /// independent transport authority.
+    #[cfg(feature = "rest-review")]
+    pub fn enable_rest_review(mut self) -> Self {
+        self.rest_review = true;
+        self
+    }
     /// Adds one explicitly selected, four-view resource authorization review.
     ///
     /// The policy and move-only principals are consumed by this builder. The
@@ -1739,6 +1781,10 @@ impl WebAssessmentRuntimeBuilder {
         self
     }
     pub fn build(self) -> Result<WebAssessmentRuntime, WebAssessmentRuntimeError> {
+        #[cfg(feature = "rest-review")]
+        if self.rest_review && !self.openapi_review {
+            return Err(WebAssessmentRuntimeError::RestReviewRequiresOpenApiReview);
+        }
         #[cfg(feature = "authorization-review")]
         if self.root_authorization_context.is_some() && self.resource_authorization_review.is_some()
         {
@@ -1813,6 +1859,17 @@ impl WebAssessmentRuntimeBuilder {
                         .expect("OpenAPI active-verification allowance fits u16"),
                 )
                 .expect("compiled OpenAPI allowance fits u16");
+            #[cfg(feature = "rest-review")]
+            let allowance = allowance
+                .checked_add(
+                    u16::from(
+                        self.rest_review
+                            && self.limits.max_active_verifications()
+                                == DEFAULT_WEB_ASSESSMENT_MAX_ACTIVE_VERIFICATIONS,
+                    ) * u16::try_from(MAX_REST_REVIEW_ACTIVE_VERIFICATIONS)
+                        .expect("REST active-verification allowance fits u16"),
+                )
+                .expect("compiled REST allowance fits u16");
             allowance
         };
         let runtime_active_verification_limit = self
@@ -1933,6 +1990,8 @@ impl WebAssessmentRuntimeBuilder {
                     select_openapi_candidate(&root.url, []).expect("fixed exact-origin fallback"),
                 )
             }),
+            #[cfg(feature = "rest-review")]
+            rest_review: self.rest_review,
             native_review,
             non_root_structural_review: None,
             xss_structural_review: None,
@@ -1950,6 +2009,10 @@ impl WebAssessmentRuntimeBuilder {
             committed_openapi_review: None,
             #[cfg(feature = "openapi-review")]
             openapi_review_audit: None,
+            #[cfg(feature = "rest-review")]
+            committed_rest_review: None,
+            #[cfg(feature = "rest-review")]
+            rest_review_audit: None,
             #[cfg(feature = "graphql-review")]
             optional_child_parent_defense: None,
             defense_audit: WebAssessmentDefenseAudit::new(if self.defense_enforcement {
@@ -1984,6 +2047,8 @@ pub struct WebAssessmentRuntime {
     resource_authorization_review: Option<ResourceAuthorizationReviewConfig>,
     #[cfg(feature = "openapi-review")]
     openapi_review: Option<OpenApiReviewConfig>,
+    #[cfg(feature = "rest-review")]
+    rest_review: bool,
     native_review: Option<AssessmentNativeReviewRuntime>,
     non_root_structural_review: Option<AssessmentNativeReviewRuntime>,
     xss_structural_review: Option<AssessmentNativeReviewRuntime>,
@@ -2001,6 +2066,10 @@ pub struct WebAssessmentRuntime {
     authorization_review_audit: Option<WebAssessmentAuthorizationAudit>,
     #[cfg(feature = "openapi-review")]
     openapi_review_audit: Option<WebAssessmentOpenApiAudit>,
+    #[cfg(feature = "rest-review")]
+    committed_rest_review: Option<CommittedRestReview>,
+    #[cfg(feature = "rest-review")]
+    rest_review_audit: Option<WebAssessmentRestAudit>,
     #[cfg(feature = "graphql-review")]
     optional_child_parent_defense: Option<AssessmentDefenseController>,
     defense_audit: WebAssessmentDefenseAudit,
@@ -2317,6 +2386,14 @@ impl WebAssessmentRuntime {
                 } else {
                     builder
                 };
+                #[cfg(feature = "rest-review")]
+                let builder = if subject.origin == WebAssessmentSubjectOrigin::AuthorizedRoot
+                    && self.rest_review
+                {
+                    builder.with_rest_review()
+                } else {
+                    builder
+                };
                 let mut runtime = match compose_child(builder) {
                     Ok(runtime) => runtime,
                     Err(source) => {
@@ -2358,6 +2435,8 @@ impl WebAssessmentRuntime {
                 let resource_authorization_binding = runtime.take_resource_authorization_review();
                 #[cfg(feature = "openapi-review")]
                 let openapi_binding = runtime.take_openapi_review();
+                #[cfg(feature = "rest-review")]
+                let rest_binding = runtime.take_rest_review();
                 let defense = runtime.assessment_defense_controller().cloned();
                 let planner = runtime.assessment_planner().clone();
                 let standard = match standard_result {
@@ -2497,6 +2576,55 @@ impl WebAssessmentRuntime {
                                 reasons.insert(WebAssessmentIncompleteReason::HostCancellation);
                             }
                             reasons.insert(WebAssessmentIncompleteReason::OpenApiReviewIncomplete);
+                        },
+                        Err(_) => {
+                            let parts = standard.into_assessment_parts();
+                            return Err(WebAssessmentRuntimeError::ProjectionInvariant {
+                                receipt: Box::new(self.failure_receipt(
+                                    &known_subjects,
+                                    subject_reports,
+                                    forms,
+                                    WebAssessmentSubjectReport::complete(subject, parts),
+                                    failed_reasons(&reasons),
+                                    started_at,
+                                )),
+                            });
+                        },
+                    }
+                }
+                #[cfg(feature = "rest-review")]
+                if let Some(binding) = rest_binding {
+                    let forced_outcome = if self.authority.cancellation().is_cancelled() {
+                        Some(RestRuntimeOutcome::Cancelled)
+                    } else if standard.limit_exceeded().is_some() {
+                        Some(RestRuntimeOutcome::BudgetExhausted)
+                    } else {
+                        None
+                    };
+                    let forced_runtime_limit = standard.limit_exceeded().cloned();
+                    match binding.finalize(
+                        self.authority.knowledge(),
+                        standard.transport(),
+                        forced_outcome,
+                        forced_runtime_limit,
+                    ) {
+                        Ok(RestRuntimeResult::Complete(committed)) => {
+                            self.rest_review_audit = Some(committed.audit().clone());
+                            self.committed_rest_review = Some(committed);
+                        },
+                        Ok(RestRuntimeResult::Stopped {
+                            audit,
+                            runtime_limit,
+                        }) => {
+                            let outcome = audit.outcome();
+                            self.rest_review_audit = Some(audit);
+                            if let Some(limit) = runtime_limit {
+                                reasons.insert(reason_for_runtime_dimension(limit.dimension()));
+                            }
+                            if outcome == RestRuntimeOutcome::Cancelled {
+                                reasons.insert(WebAssessmentIncompleteReason::HostCancellation);
+                            }
+                            reasons.insert(WebAssessmentIncompleteReason::RestReviewIncomplete);
                         },
                         Err(_) => {
                             let parts = standard.into_assessment_parts();
@@ -3263,6 +3391,8 @@ impl WebAssessmentRuntime {
                 authorization: self.committed_resource_authorization_review.as_ref(),
                 #[cfg(feature = "openapi-review")]
                 openapi: self.committed_openapi_review.as_ref(),
+                #[cfg(feature = "rest-review")]
+                rest: self.committed_rest_review.as_ref(),
             },
             self.authority.knowledge(),
             &self.root,
@@ -3328,6 +3458,8 @@ impl WebAssessmentRuntime {
             authorization_review: self.authorization_review_audit.clone(),
             #[cfg(feature = "openapi-review")]
             openapi_review: self.openapi_review_audit.clone(),
+            #[cfg(feature = "rest-review")]
+            rest_review: self.rest_review_audit.clone(),
             assessment_items,
             assessment_projection_incompleteness,
             completion,

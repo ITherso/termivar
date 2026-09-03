@@ -1,5 +1,7 @@
 //! Deterministic, bounded rendering for validated [`venom_core::RunReport`] values.
 
+#[cfg(all(feature = "scanning", feature = "rest-review"))]
+use crate::rest_review::RestDocumentedResponseClass;
 #[cfg(feature = "scanning")]
 use crate::web_runtime::{
     AssessmentBasis, AssessmentRunReport, AssessmentRunReportError, ScanProfileV1,
@@ -7,6 +9,11 @@ use crate::web_runtime::{
 };
 #[cfg(all(feature = "scanning", feature = "openapi-review"))]
 use crate::web_runtime::{OpenApiRuntimeOutcome, OPENAPI_REVIEW_CAPABILITY_ID};
+#[cfg(all(feature = "scanning", feature = "rest-review"))]
+use crate::web_runtime::{
+    RestObservedMediaClass, RestRuntimeOutcome, MAX_REST_REVIEW_ACTIVE_VERIFICATIONS,
+    MAX_REST_REVIEW_REQUESTS, REST_REVIEW_CAPABILITY_ID,
+};
 #[cfg(all(feature = "scanning", feature = "authorization-review"))]
 use crate::{
     authorization_review::{
@@ -919,6 +926,54 @@ fn render_assessment_csv(
             ],
         )?;
     }
+    #[cfg(feature = "rest-review")]
+    if let Some(audit) = &document.rest_review {
+        let request_count = audit.request_count.to_string();
+        let summary = audit.summary();
+        write_assessment_csv_row(
+            &mut output,
+            [
+                "rest_readonly_review_audit",
+                audit.schema,
+                "",
+                "",
+                "",
+                "",
+                audit.outcome,
+                "",
+                "",
+                "",
+                audit.capability_id,
+                "",
+                "",
+                if audit.item_projected {
+                    "informational"
+                } else {
+                    ""
+                },
+                if audit.item_projected {
+                    "observation"
+                } else {
+                    ""
+                },
+                "",
+                "",
+                "",
+                &request_count,
+                &summary,
+                "api-surface",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+            ],
+        )?;
+    }
     for item in &document.items {
         let confidence_ppm = item.confidence_ppm.to_string();
         let evidence_count = item.evidence_count.to_string();
@@ -1029,6 +1084,18 @@ code{overflow-wrap:anywhere}.empty{font-style:italic}</style></head><body><main>
         }
         output.push_str("</dl></section>")?;
     }
+    #[cfg(feature = "rest-review")]
+    if let Some(audit) = &document.rest_review {
+        output.push_str("<section><h2>REST read-only review audit</h2><dl class=\"meta\">")?;
+        for (label, value) in audit.metadata() {
+            output.push_str("<dt>")?;
+            write_html_text(&mut output, label)?;
+            output.push_str("</dt><dd><code>")?;
+            write_html_text(&mut output, &value)?;
+            output.push_str("</code></dd>")?;
+        }
+        output.push_str("</dl></section>")?;
+    }
     output.push_str("<section><h2>Assessment items</h2>")?;
     if document.items.is_empty() {
         output.push_str("<p class=\"empty\">No assessment items.</p>")?;
@@ -1109,6 +1176,15 @@ fn render_assessment_markdown(
             output.push_char('\n')?;
         }
     }
+    #[cfg(feature = "rest-review")]
+    if let Some(audit) = &document.rest_review {
+        output.push_str("\n## REST read-only review audit\n\n")?;
+        for (label, value) in audit.metadata() {
+            output.push_fmt(format_args!("- {label}: "))?;
+            write_markdown_code_span(&mut output, &value)?;
+            output.push_char('\n')?;
+        }
+    }
     output.push_str("\n## Assessment items\n\n")?;
     if document.items.is_empty() {
         output.push_str("No assessment items.\n")?;
@@ -1156,6 +1232,9 @@ struct AssessmentDocument<'a> {
     #[cfg(feature = "openapi-review")]
     #[serde(skip_serializing_if = "Option::is_none")]
     openapi_review: Option<AssessmentOpenApiAuditDocument>,
+    #[cfg(feature = "rest-review")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    rest_review: Option<AssessmentRestAuditDocument>,
     items: Vec<AssessmentItemDocument<'a>>,
 }
 
@@ -1181,6 +1260,10 @@ impl<'a> AssessmentDocument<'a> {
             openapi_review: report
                 .openapi_review_audit()
                 .map(AssessmentOpenApiAuditDocument::from_audit),
+            #[cfg(feature = "rest-review")]
+            rest_review: report
+                .rest_review_audit()
+                .map(AssessmentRestAuditDocument::from_audit),
             items: report
                 .items()
                 .iter()
@@ -1216,6 +1299,16 @@ impl<'a> AssessmentDocument<'a> {
         #[cfg(feature = "openapi-review")]
         if let Some(audit) = &self.openapi_review {
             audit.validate(&self.items)?;
+        }
+        #[cfg(feature = "rest-review")]
+        if let Some(audit) = &self.rest_review {
+            audit.validate(&self.items)?;
+        } else if self
+            .items
+            .iter()
+            .any(|item| item.capability_id == REST_REVIEW_CAPABILITY_ID)
+        {
+            return Err(ReportError::Serialization);
         }
         for item in &self.items {
             item.validate()?;
@@ -1328,6 +1421,157 @@ const fn openapi_outcome(o: OpenApiRuntimeOutcome) -> &'static str {
         OpenApiRuntimeOutcome::Incomplete => "incomplete",
         OpenApiRuntimeOutcome::BudgetExhausted => "budget_exhausted",
         OpenApiRuntimeOutcome::Cancelled => "cancelled",
+    }
+}
+
+#[cfg(all(feature = "scanning", feature = "rest-review"))]
+#[derive(Serialize)]
+struct AssessmentRestAuditDocument {
+    schema: &'static str,
+    capability_id: &'static str,
+    enabled: bool,
+    method: &'static str,
+    outcome: &'static str,
+    request_count: u8,
+    active_verification_count: u8,
+    eligible_operation_count: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    selected_operation_identity: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    documented_response: Option<&'static str>,
+    observed_media: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    status_class: Option<u8>,
+    replay_stable: bool,
+    item_projected: bool,
+}
+
+#[cfg(all(feature = "scanning", feature = "rest-review"))]
+impl AssessmentRestAuditDocument {
+    fn from_audit(audit: &crate::web_runtime::WebAssessmentRestAudit) -> Self {
+        Self {
+            schema: "security.rest-readonly-review-audit/v1",
+            capability_id: REST_REVIEW_CAPABILITY_ID,
+            enabled: true,
+            method: "get",
+            outcome: rest_outcome(audit.outcome()),
+            request_count: audit.request_count(),
+            active_verification_count: audit.active_verification_count(),
+            eligible_operation_count: audit.eligible_operation_count(),
+            selected_operation_identity: audit.selected_operation_identity().map(str::to_owned),
+            documented_response: audit.documented_response().map(rest_documented_response),
+            observed_media: rest_observed_media(audit.observed_media()),
+            status_class: audit.status_class(),
+            replay_stable: audit.replay_stable(),
+            item_projected: audit.item_projected(),
+        }
+    }
+
+    fn validate(&self, items: &[AssessmentItemDocument<'_>]) -> Result<(), ReportError> {
+        let projected = items
+            .iter()
+            .filter(|item| item.capability_id == REST_REVIEW_CAPABILITY_ID)
+            .count();
+        let positive = self.outcome == "surface_observed";
+        let selected_identity_is_valid = self
+            .selected_operation_identity
+            .as_deref()
+            .is_none_or(|identity| identity.starts_with("openapi-operation-sha256:"));
+        if self.schema != "security.rest-readonly-review-audit/v1"
+            || self.capability_id != REST_REVIEW_CAPABILITY_ID
+            || !self.enabled
+            || self.method != "get"
+            || usize::from(self.request_count) > MAX_REST_REVIEW_REQUESTS
+            || usize::from(self.active_verification_count) > MAX_REST_REVIEW_ACTIVE_VERIFICATIONS
+            || usize::from(self.active_verification_count)
+                != usize::from(usize::from(self.request_count) == MAX_REST_REVIEW_REQUESTS)
+            || projected > 1
+            || self.item_projected != (projected == 1)
+            || positive != self.item_projected
+            || self.replay_stable != positive
+            || !selected_identity_is_valid
+            || (positive
+                && (usize::from(self.request_count) != MAX_REST_REVIEW_REQUESTS
+                    || usize::from(self.active_verification_count)
+                        != MAX_REST_REVIEW_ACTIVE_VERIFICATIONS
+                    || self.eligible_operation_count == 0
+                    || self.selected_operation_identity.is_none()))
+        {
+            return Err(ReportError::Serialization);
+        }
+        Ok(())
+    }
+
+    fn summary(&self) -> String {
+        format!(
+            "enabled={};method={};eligible_operations={};selected_operation={};documented_response={};observed_media={};status_class={};replay_stable={};item_projected={}",
+            self.enabled,
+            self.method,
+            self.eligible_operation_count,
+            self.selected_operation_identity.as_deref().unwrap_or("none"),
+            self.documented_response.unwrap_or("none"),
+            self.observed_media,
+            self.status_class
+                .map_or_else(|| "none".to_owned(), |status| status.to_string()),
+            self.replay_stable,
+            self.item_projected,
+        )
+    }
+
+    fn metadata(&self) -> Vec<(&'static str, String)> {
+        vec![
+            ("Audit schema", self.schema.into()),
+            ("Capability", self.capability_id.into()),
+            ("Enabled", self.enabled.to_string()),
+            ("Method", self.method.into()),
+            ("Outcome", self.outcome.into()),
+            ("Request count", self.request_count.to_string()),
+            (
+                "Active verification count",
+                self.active_verification_count.to_string(),
+            ),
+            ("Summary", self.summary()),
+        ]
+    }
+}
+
+#[cfg(all(feature = "scanning", feature = "rest-review"))]
+const fn rest_documented_response(response: RestDocumentedResponseClass) -> &'static str {
+    match response {
+        RestDocumentedResponseClass::JsonCompatible => "json_compatible",
+        RestDocumentedResponseClass::Unknown => "unknown",
+    }
+}
+
+#[cfg(all(feature = "scanning", feature = "rest-review"))]
+const fn rest_observed_media(media: RestObservedMediaClass) -> &'static str {
+    match media {
+        RestObservedMediaClass::JsonCompatible => "json_compatible",
+        RestObservedMediaClass::Text => "text",
+        RestObservedMediaClass::Unsupported => "unsupported",
+        RestObservedMediaClass::Unknown => "unknown",
+    }
+}
+
+#[cfg(all(feature = "scanning", feature = "rest-review"))]
+const fn rest_outcome(outcome: RestRuntimeOutcome) -> &'static str {
+    match outcome {
+        RestRuntimeOutcome::NotEligible => "not_eligible",
+        RestRuntimeOutcome::SurfaceObserved => "surface_observed",
+        RestRuntimeOutcome::ReplayMismatch => "replay_mismatch",
+        RestRuntimeOutcome::CompleteNonJson => "complete_non_json",
+        RestRuntimeOutcome::Redirect => "redirect",
+        RestRuntimeOutcome::AuthenticationRequired => "authentication_required",
+        RestRuntimeOutcome::Forbidden => "forbidden",
+        RestRuntimeOutcome::NotFound => "not_found",
+        RestRuntimeOutcome::RateLimited => "rate_limited",
+        RestRuntimeOutcome::DefensiveInterference => "defensive_interference",
+        RestRuntimeOutcome::ServerError => "server_error",
+        RestRuntimeOutcome::UnsupportedMedia => "unsupported_media",
+        RestRuntimeOutcome::Truncated => "truncated",
+        RestRuntimeOutcome::Incomplete => "incomplete",
+        RestRuntimeOutcome::Cancelled => "cancelled",
+        RestRuntimeOutcome::BudgetExhausted => "budget_exhausted",
     }
 }
 
@@ -2159,6 +2403,8 @@ mod tests {
             authorization_review: None,
             #[cfg(feature = "openapi-review")]
             openapi_review: None,
+            #[cfg(feature = "rest-review")]
+            rest_review: None,
             items: vec![AssessmentItemDocument {
                 schema: crate::web_runtime::ASSESSMENT_ITEM_SCHEMA,
                 capability_id: text,
@@ -2287,6 +2533,42 @@ mod tests {
             multipart_operation_count: 1,
             deprecated_operation_count: 1,
             replay_matched: true,
+            item_projected: true,
+        });
+        document
+    }
+
+    #[cfg(all(feature = "scanning", feature = "rest-review"))]
+    fn observed_rest_assessment_document() -> AssessmentDocument<'static> {
+        let mut document = observation_assessment_document(REST_REVIEW_CAPABILITY_ID);
+        document.items[0].title = "REST operation surface observed";
+        document.items[0].fingerprint = "assessment-rest-fingerprint-v1:0001";
+        document.items[0].redacted_summary =
+            "Two anonymous exact-origin GET requests reproduced the same bounded JSON resource structure.";
+        document.items[0].category = "api-surface";
+        document.items[0].remediation = AssessmentRemediationDocument {
+            id: "api.rest-readonly-surface-review@1",
+            summary: "Confirm that anonymously exposing this documented read-only operation matches deployment policy.",
+        };
+        document.rest_review = Some(AssessmentRestAuditDocument {
+            schema: "security.rest-readonly-review-audit/v1",
+            capability_id: REST_REVIEW_CAPABILITY_ID,
+            enabled: true,
+            method: "get",
+            outcome: rest_outcome(RestRuntimeOutcome::SurfaceObserved),
+            request_count: 2,
+            active_verification_count: 1,
+            eligible_operation_count: 3,
+            selected_operation_identity: Some(
+                "openapi-operation-sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+                    .to_owned(),
+            ),
+            documented_response: Some(rest_documented_response(
+                RestDocumentedResponseClass::JsonCompatible,
+            )),
+            observed_media: rest_observed_media(RestObservedMediaClass::JsonCompatible),
+            status_class: Some(2),
+            replay_stable: true,
             item_projected: true,
         });
         document
@@ -2521,6 +2803,187 @@ mod tests {
             (OpenApiRuntimeOutcome::Cancelled, "cancelled"),
         ] {
             assert_eq!(openapi_outcome(outcome), token);
+        }
+    }
+
+    #[cfg(all(feature = "scanning", feature = "rest-review"))]
+    #[test]
+    fn rest_reporting_absent_audit_adds_no_wire_field_row_or_section() {
+        let document = complete_assessment_document();
+        assert!(document.rest_review.is_none());
+
+        let json = render_assessment_with_limit(&document, ReportFormat::Json, usize::MAX).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert!(parsed.get("rest_review").is_none());
+
+        let csv = render_assessment_with_limit(&document, ReportFormat::Csv, usize::MAX).unwrap();
+        assert!(!csv.contains("rest_readonly_review_audit"));
+
+        let html = render_assessment_with_limit(&document, ReportFormat::Html, usize::MAX).unwrap();
+        assert!(!html.contains("REST read-only review audit"));
+
+        let markdown =
+            render_assessment_with_limit(&document, ReportFormat::Markdown, usize::MAX).unwrap();
+        assert!(!markdown.contains("REST read-only review audit"));
+    }
+
+    #[cfg(all(feature = "scanning", feature = "rest-review"))]
+    #[test]
+    fn rest_reporting_positive_audit_is_minimized_and_redacted_in_every_format() {
+        let document = observed_rest_assessment_document();
+        let json = render_assessment_with_limit(&document, ReportFormat::Json, usize::MAX).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let audit = parsed["rest_review"].as_object().unwrap();
+        assert_eq!(audit["schema"], "security.rest-readonly-review-audit/v1");
+        assert_eq!(audit["capability_id"], REST_REVIEW_CAPABILITY_ID);
+        assert_eq!(audit["enabled"], true);
+        assert_eq!(audit["method"], "get");
+        assert_eq!(audit["outcome"], "surface_observed");
+        assert_eq!(audit["request_count"], 2);
+        assert_eq!(audit["active_verification_count"], 1);
+        assert_eq!(audit["eligible_operation_count"], 3);
+        assert_eq!(audit["documented_response"], "json_compatible");
+        assert_eq!(audit["observed_media"], "json_compatible");
+        assert_eq!(audit["status_class"], 2);
+        assert_eq!(audit["replay_stable"], true);
+        assert_eq!(audit["item_projected"], true);
+        let keys = audit
+            .keys()
+            .map(String::as_str)
+            .collect::<std::collections::BTreeSet<_>>();
+        let expected = [
+            "schema",
+            "capability_id",
+            "enabled",
+            "method",
+            "outcome",
+            "request_count",
+            "active_verification_count",
+            "eligible_operation_count",
+            "selected_operation_identity",
+            "documented_response",
+            "observed_media",
+            "status_class",
+            "replay_stable",
+            "item_projected",
+        ]
+        .into_iter()
+        .collect();
+        assert_eq!(keys, expected);
+        for forbidden_key in [
+            "url",
+            "path",
+            "query",
+            "body",
+            "response",
+            "scalar_values",
+            "examples",
+            "defaults",
+            "credentials",
+            "server",
+        ] {
+            assert!(!audit.contains_key(forbidden_key));
+        }
+
+        for format in ReportGenerator::available_formats() {
+            let rendered = render_assessment_with_limit(&document, *format, usize::MAX).unwrap();
+            assert!(rendered.contains(REST_REVIEW_CAPABILITY_ID));
+            assert!(rendered.contains("surface_observed"));
+            for sentinel in [
+                "REST-RAW-PATH-MUST-NOT-LEAK-5C61E8",
+                "REST-QUERY-MUST-NOT-LEAK-6A7B20",
+                "REST-RESPONSE-BODY-MUST-NOT-LEAK-9073D4",
+                "REST-SCALAR-MUST-NOT-LEAK-44B8F1",
+                "Bearer REST-AUTH-MUST-NOT-LEAK-A31E09",
+                "session=REST-COOKIE-MUST-NOT-LEAK-190AF2",
+            ] {
+                assert!(!rendered.contains(sentinel), "{format:?} leaked {sentinel}");
+            }
+        }
+    }
+
+    #[cfg(all(feature = "scanning", feature = "rest-review"))]
+    #[test]
+    fn rest_reporting_contract_rejects_inconsistent_positive_truth() {
+        let mut too_many_requests = observed_rest_assessment_document();
+        too_many_requests
+            .rest_review
+            .as_mut()
+            .unwrap()
+            .request_count = 3;
+        let mut no_replay = observed_rest_assessment_document();
+        no_replay.rest_review.as_mut().unwrap().replay_stable = false;
+        let mut no_audit = observed_rest_assessment_document();
+        no_audit.rest_review = None;
+        let mut wrong_identity = observed_rest_assessment_document();
+        wrong_identity
+            .rest_review
+            .as_mut()
+            .unwrap()
+            .selected_operation_identity = Some("raw/path".to_owned());
+        let mut wrong_method = observed_rest_assessment_document();
+        wrong_method.rest_review.as_mut().unwrap().method = "post";
+
+        for document in [
+            too_many_requests,
+            no_replay,
+            no_audit,
+            wrong_identity,
+            wrong_method,
+        ] {
+            for format in ReportGenerator::available_formats() {
+                assert_eq!(
+                    render_assessment_with_limit(&document, *format, usize::MAX),
+                    Err(ReportError::Serialization)
+                );
+            }
+        }
+    }
+
+    #[cfg(all(feature = "scanning", feature = "rest-review"))]
+    #[test]
+    fn rest_reporting_outcome_and_class_tokens_are_exhaustive_and_stable() {
+        for (outcome, token) in [
+            (RestRuntimeOutcome::NotEligible, "not_eligible"),
+            (RestRuntimeOutcome::SurfaceObserved, "surface_observed"),
+            (RestRuntimeOutcome::ReplayMismatch, "replay_mismatch"),
+            (RestRuntimeOutcome::CompleteNonJson, "complete_non_json"),
+            (RestRuntimeOutcome::Redirect, "redirect"),
+            (
+                RestRuntimeOutcome::AuthenticationRequired,
+                "authentication_required",
+            ),
+            (RestRuntimeOutcome::Forbidden, "forbidden"),
+            (RestRuntimeOutcome::NotFound, "not_found"),
+            (RestRuntimeOutcome::RateLimited, "rate_limited"),
+            (
+                RestRuntimeOutcome::DefensiveInterference,
+                "defensive_interference",
+            ),
+            (RestRuntimeOutcome::ServerError, "server_error"),
+            (RestRuntimeOutcome::UnsupportedMedia, "unsupported_media"),
+            (RestRuntimeOutcome::Truncated, "truncated"),
+            (RestRuntimeOutcome::Incomplete, "incomplete"),
+            (RestRuntimeOutcome::Cancelled, "cancelled"),
+            (RestRuntimeOutcome::BudgetExhausted, "budget_exhausted"),
+        ] {
+            assert_eq!(rest_outcome(outcome), token);
+        }
+        assert_eq!(
+            rest_documented_response(RestDocumentedResponseClass::JsonCompatible),
+            "json_compatible"
+        );
+        assert_eq!(
+            rest_documented_response(RestDocumentedResponseClass::Unknown),
+            "unknown"
+        );
+        for (media, token) in [
+            (RestObservedMediaClass::JsonCompatible, "json_compatible"),
+            (RestObservedMediaClass::Text, "text"),
+            (RestObservedMediaClass::Unsupported, "unsupported"),
+            (RestObservedMediaClass::Unknown, "unknown"),
+        ] {
+            assert_eq!(rest_observed_media(media), token);
         }
     }
 

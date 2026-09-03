@@ -61,6 +61,8 @@ pub mod openapi_review;
 pub mod payload_strategies;
 pub mod payload_strategy;
 pub mod planner;
+#[cfg(feature = "rest-review")]
+pub mod rest_review;
 pub mod rules;
 pub mod semantic;
 pub mod verification;

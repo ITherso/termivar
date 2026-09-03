@@ -175,6 +175,76 @@ fn resources_compare_complete_canonical_values() {
     );
 }
 
+#[cfg(feature = "rest-review")]
+#[test]
+fn exact_replay_comparison_reuses_status_field_and_resource_signatures() {
+    let comparator = comparator();
+    let candidate = view(
+        &comparator,
+        "rest-review:candidate",
+        200,
+        &json!({"data": {"id": 7, "ready": true}}),
+    );
+    let exact_replay = view(
+        &comparator,
+        "rest-review:replay",
+        200,
+        &json!({"data": {"ready": true, "id": 7}}),
+    );
+    let changed_replay = view(
+        &comparator,
+        "rest-review:changed-replay",
+        200,
+        &json!({"data": {"id": 8, "ready": false}}),
+    );
+
+    let exact = comparator
+        .compare_exact_replay(&candidate, &exact_replay)
+        .unwrap();
+    assert!(exact.status());
+    assert!(exact.fields());
+    assert!(exact.resources());
+    assert!(exact.all_equivalent());
+
+    let changed = comparator
+        .compare_exact_replay(&candidate, &changed_replay)
+        .unwrap();
+    assert!(changed.status());
+    assert!(changed.fields());
+    assert!(!changed.resources());
+    assert!(!changed.all_equivalent());
+}
+
+#[cfg(feature = "rest-review")]
+#[test]
+fn exact_replay_comparison_requires_distinct_correlated_views() {
+    let comparator = comparator();
+    let candidate = view(
+        &comparator,
+        "rest-review:candidate",
+        200,
+        &json!({"data": true}),
+    );
+    assert_eq!(
+        comparator.compare_exact_replay(&candidate, &candidate),
+        Err(ApiVisibilityEvidenceError::IdenticalContexts)
+    );
+
+    let other_scope = comparator
+        .capture_view(
+            "rest-review:replay",
+            "resource:other",
+            ApiSurfaceKind::JsonHttp,
+            200,
+            &json!({"data": true}),
+        )
+        .unwrap();
+    assert_eq!(
+        comparator.compare_exact_replay(&candidate, &other_scope),
+        Err(ApiVisibilityEvidenceError::ResourceScopeMismatch)
+    );
+}
+
 #[test]
 fn status_comparison_is_exact_and_independent_from_json() {
     let comparator = comparator();

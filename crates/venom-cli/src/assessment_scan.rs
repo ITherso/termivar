@@ -361,6 +361,7 @@ pub(crate) struct ProfileScanRuntimeOptions {
     pub(crate) normalization_resilience: bool,
     pub(crate) graphql_review: bool,
     pub(crate) openapi_review: bool,
+    pub(crate) rest_review: bool,
     #[cfg(feature = "authorization-review")]
     pub(crate) resource_authorization_review:
         Option<(AuthorizationReviewPolicy, AuthorizationPrincipalPair)>,
@@ -379,6 +380,7 @@ pub(crate) async fn run_profile_scan(
         normalization_resilience,
         graphql_review,
         openapi_review,
+        rest_review,
         #[cfg(feature = "authorization-review")]
         resource_authorization_review,
     } = runtime_options;
@@ -396,6 +398,13 @@ pub(crate) async fn run_profile_scan(
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::InvalidInput,
                     "GraphQL review requires the web-review profile",
+                )
+                .into());
+            }
+            if rest_review {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "REST read-only review requires the web-review profile",
                 )
                 .into());
             }
@@ -437,6 +446,7 @@ pub(crate) async fn run_profile_scan(
                     normalization_resilience,
                     graphql_review,
                     openapi_review,
+                    rest_review,
                     #[cfg(feature = "authorization-review")]
                     resource_authorization_review,
                 },
@@ -488,6 +498,7 @@ struct WebReviewRunOptions {
     normalization_resilience: bool,
     graphql_review: bool,
     openapi_review: bool,
+    rest_review: bool,
     #[cfg(feature = "authorization-review")]
     resource_authorization_review: Option<(AuthorizationReviewPolicy, AuthorizationPrincipalPair)>,
 }
@@ -506,9 +517,17 @@ async fn run_web_review(
         normalization_resilience,
         graphql_review,
         openapi_review,
+        rest_review,
         #[cfg(feature = "authorization-review")]
         resource_authorization_review,
     } = options;
+    if rest_review && !openapi_review {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "REST read-only review requires OpenAPI review in the same assessment",
+        )
+        .into());
+    }
     let mut builder = WebAssessmentRuntime::builder(target).limits(profile.web_assessment_limits());
     if profile.defense_enforcement_enabled() {
         builder = builder.enable_defense_enforcement();
@@ -554,6 +573,20 @@ async fn run_web_review(
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
                 "OpenAPI review runtime support is not compiled",
+            )
+            .into());
+        }
+    }
+    if rest_review {
+        #[cfg(feature = "rest-review")]
+        {
+            builder = builder.enable_rest_review();
+        }
+        #[cfg(not(feature = "rest-review"))]
+        {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "REST read-only review runtime support is not compiled",
             )
             .into());
         }
@@ -1158,6 +1191,8 @@ fn incomplete_reason_code(reason: &WebAssessmentIncompleteReason) -> &'static st
         WebAssessmentIncompleteReason::GraphqlReviewIncomplete => "graphql_review_incomplete",
         #[cfg(feature = "openapi-review")]
         WebAssessmentIncompleteReason::OpenApiReviewIncomplete => "openapi_review_incomplete",
+        #[cfg(feature = "rest-review")]
+        WebAssessmentIncompleteReason::RestReviewIncomplete => "rest_review_incomplete",
         #[cfg(feature = "authorization-review")]
         WebAssessmentIncompleteReason::AuthorizationReviewIncomplete => {
             "authorization_review_incomplete"
@@ -1434,6 +1469,49 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn baseline_rejects_rest_review_before_transport() {
+        let error = run_profile_scan(
+            Url::parse("https://example.test/").unwrap(),
+            ScanProfileV1::baseline().unwrap(),
+            false,
+            None,
+            false,
+            ProfileScanRuntimeOptions {
+                openapi_review: true,
+                rest_review: true,
+                ..ProfileScanRuntimeOptions::default()
+            },
+        )
+        .await
+        .expect_err("REST read-only review is web-review only");
+        assert_eq!(
+            error.to_string(),
+            "REST read-only review requires the web-review profile"
+        );
+    }
+
+    #[tokio::test]
+    async fn rest_review_requires_same_run_openapi_before_transport() {
+        let error = run_profile_scan(
+            Url::parse("https://example.test/").unwrap(),
+            ScanProfileV1::web_review().unwrap(),
+            false,
+            None,
+            false,
+            ProfileScanRuntimeOptions {
+                rest_review: true,
+                ..ProfileScanRuntimeOptions::default()
+            },
+        )
+        .await
+        .expect_err("REST read-only review requires OpenAPI review");
+        assert_eq!(
+            error.to_string(),
+            "REST read-only review requires OpenAPI review in the same assessment"
+        );
+    }
+
     #[cfg(feature = "authorization-review")]
     #[tokio::test]
     async fn baseline_rejects_resource_authorization_review_before_transport() {
@@ -1703,6 +1781,11 @@ max_diff_paths = 8
         assert_eq!(
             incomplete_reason_code(&WebAssessmentIncompleteReason::OpenApiReviewIncomplete),
             "openapi_review_incomplete"
+        );
+        #[cfg(feature = "rest-review")]
+        assert_eq!(
+            incomplete_reason_code(&WebAssessmentIncompleteReason::RestReviewIncomplete),
+            "rest_review_incomplete"
         );
 
         let stops = [

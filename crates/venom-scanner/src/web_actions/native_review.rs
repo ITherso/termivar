@@ -17,7 +17,8 @@ use crate::planner::{RiskScore, VerificationTarget};
 pub const NATIVE_WEB_REVIEW_ACTION_COUNT: usize = 10
     + cfg!(feature = "normalization-resilience") as usize
     + cfg!(feature = "authorization-review") as usize
-    + cfg!(feature = "openapi-review") as usize;
+    + cfg!(feature = "openapi-review") as usize
+    + cfg!(feature = "rest-review") as usize;
 
 /// Hard per-case request count declared by every native web-review action.
 pub const NATIVE_WEB_REVIEW_REQUESTS_PER_CASE: usize = 2;
@@ -54,6 +55,18 @@ pub(crate) fn authorization_review_phase_terminal_predicate() -> venom_core::Kno
 pub(crate) fn openapi_review_phase_terminal_predicate() -> venom_core::KnowledgePredicate {
     venom_core::KnowledgePredicate::new("web.openapi-review.transport", "phase-terminal")
         .expect("the OpenAPI terminal predicate is a valid static identity")
+}
+
+#[cfg(all(feature = "scanning", feature = "rest-review"))]
+pub(crate) fn rest_review_catalog_ready_predicate() -> venom_core::KnowledgePredicate {
+    venom_core::KnowledgePredicate::new("web.openapi-review.transport", "rest-catalog-ready")
+        .expect("the REST catalog-ready predicate is a valid static identity")
+}
+
+#[cfg(all(feature = "scanning", feature = "rest-review"))]
+pub(crate) fn rest_review_phase_terminal_predicate() -> venom_core::KnowledgePredicate {
+    venom_core::KnowledgePredicate::new("web.rest-review.transport", "phase-terminal")
+        .expect("the REST terminal predicate is a valid static identity")
 }
 
 const CONTROL_CANDIDATE_LEGS: [NativeWebReviewRequestLeg; NATIVE_WEB_REVIEW_REQUESTS_PER_CASE] = [
@@ -95,6 +108,9 @@ pub enum NativeWebReviewActionKind {
     /// Fetch one exact-origin OpenAPI JSON candidate and independently replay it.
     #[cfg(feature = "openapi-review")]
     OpenApiDocumentReplay,
+    /// Observe one replay-stable, anonymous, bodyless REST GET selected from OpenAPI evidence.
+    #[cfg(feature = "rest-review")]
+    RestReadOnlyReplay,
 }
 
 /// The only request surface an action may vary between its matched legs.
@@ -152,6 +168,8 @@ impl NativeWebReviewActionKind {
             Self::ResourceAuthorizationDifferential,
             #[cfg(feature = "openapi-review")]
             Self::OpenApiDocumentReplay,
+            #[cfg(feature = "rest-review")]
+            Self::RestReadOnlyReplay,
         ]
     }
 
@@ -180,6 +198,8 @@ impl NativeWebReviewActionKind {
             },
             #[cfg(feature = "openapi-review")]
             Self::OpenApiDocumentReplay => "web.review.openapi.document-replay@1",
+            #[cfg(feature = "rest-review")]
+            Self::RestReadOnlyReplay => "web.review.rest.readonly-replay@1",
         }
     }
 
@@ -216,6 +236,8 @@ impl NativeWebReviewActionKind {
             Self::ResourceAuthorizationDifferential => "http.authorization-resource-review",
             #[cfg(feature = "openapi-review")]
             Self::OpenApiDocumentReplay => "http.openapi-review",
+            #[cfg(feature = "rest-review")]
+            Self::RestReadOnlyReplay => "http.rest-review",
         }
     }
 
@@ -238,6 +260,8 @@ impl NativeWebReviewActionKind {
             Self::ResourceAuthorizationDifferential => "authorization-resource-differential",
             #[cfg(feature = "openapi-review")]
             Self::OpenApiDocumentReplay => "openapi-document-replay",
+            #[cfg(feature = "rest-review")]
+            Self::RestReadOnlyReplay => "rest-readonly-replay",
         }
     }
 
@@ -270,6 +294,8 @@ impl NativeWebReviewActionKind {
             },
             #[cfg(feature = "openapi-review")]
             Self::OpenApiDocumentReplay => NativeWebReviewDifferentialInput::ExactRequestReplay,
+            #[cfg(feature = "rest-review")]
+            Self::RestReadOnlyReplay => NativeWebReviewDifferentialInput::ExactRequestReplay,
         }
     }
 
@@ -320,6 +346,8 @@ impl NativeWebReviewActionKind {
             Self::ResourceAuthorizationDifferential => 6,
             #[cfg(feature = "openapi-review")]
             Self::OpenApiDocumentReplay => 2,
+            #[cfg(feature = "rest-review")]
+            Self::RestReadOnlyReplay => 2,
         };
         RiskScore::from_percent(percent).expect("native web-review risk is a valid constant")
     }
@@ -434,6 +462,13 @@ mod tests {
                 "http.openapi-review",
                 "openapi-document-replay",
             ),
+            #[cfg(feature = "rest-review")]
+            (
+                NativeWebReviewActionKind::RestReadOnlyReplay,
+                "web.review.rest.readonly-replay@1",
+                "http.rest-review",
+                "rest-readonly-replay",
+            ),
         ];
 
         assert_eq!(
@@ -476,6 +511,8 @@ mod tests {
             #[cfg(feature = "authorization-review")]
             600,
             #[cfg(feature = "openapi-review")]
+            200,
+            #[cfg(feature = "rest-review")]
             200,
         ];
 

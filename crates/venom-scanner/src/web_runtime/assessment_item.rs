@@ -356,6 +356,8 @@ pub(crate) enum AssessmentItemTarget {
     AuthorizationResource(String),
     #[cfg(feature = "openapi-review")]
     OpenApiDocument(String),
+    #[cfg(feature = "rest-review")]
+    RestOperation(String),
 }
 
 impl AssessmentItemTarget {
@@ -397,6 +399,17 @@ impl AssessmentItemTarget {
         }
         Ok(Self::OpenApiDocument(identity))
     }
+
+    #[cfg(feature = "rest-review")]
+    pub(crate) fn rest_operation(
+        identity: impl Into<String>,
+    ) -> Result<Self, AssessmentItemProjectionError> {
+        let identity = identity.into();
+        if !valid_stable_product_identity(&identity) {
+            return Err(AssessmentItemProjectionError::InvalidStableSubjectIdentity);
+        }
+        Ok(Self::RestOperation(identity))
+    }
 }
 
 impl fmt::Debug for AssessmentItemTarget {
@@ -413,6 +426,10 @@ impl fmt::Debug for AssessmentItemTarget {
             #[cfg(feature = "openapi-review")]
             Self::OpenApiDocument(_) => {
                 formatter.write_str("AssessmentItemTarget::OpenApiDocument(<stable-digest>)")
+            },
+            #[cfg(feature = "rest-review")]
+            Self::RestOperation(_) => {
+                formatter.write_str("AssessmentItemTarget::RestOperation(<stable-digest>)")
             },
         }
     }
@@ -1900,6 +1917,11 @@ fn assessment_fingerprint(
         #[cfg(feature = "openapi-review")]
         AssessmentItemTarget::OpenApiDocument(identity) => {
             digest_field(&mut digest, "openapi_document");
+            digest_field(&mut digest, identity);
+        },
+        #[cfg(feature = "rest-review")]
+        AssessmentItemTarget::RestOperation(identity) => {
+            digest_field(&mut digest, "rest_operation");
             digest_field(&mut digest, identity);
         },
     }

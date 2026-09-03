@@ -11,6 +11,22 @@ most two requests and one logical active verification. Only replayed OpenAPI
 `api.openapi-contract-observed@1` item. YAML and Swagger 2.0 create no runtime
 item, and described operations are not executed.
 
+## REST read-only review
+
+The non-default `rest-review` scanner/CLI feature adds no work by itself. It
+requires explicit `--profile web-review --openapi-review --rest-review` and a
+complete replay-stable OpenAPI catalog committed by the same assessment. It
+selects at most one anonymous, bodyless, exact-origin `GET` with zero required
+inputs. One candidate plus one replay consumes exactly two requests and one
+logical active verification through the existing broker and budget.
+
+Only replay-stable successful JSON evidence equivalent in `Status`, `Fields`,
+and value-sensitive `Resources` may produce
+`api.rest-readonly-surface-observed@1`, capped at `Informational` /
+`KnowledgeOnly`. No parameter or request body is materialized, no credential,
+cookie, redirect, retry, or write method is used, and the selected operation is
+not chained into SQL, SSTI, XSS, authorization, SSRF, or upload review.
+
 > This page describes the executable truth of the current main-line source, not
 > aspirations. A compiled module is not necessarily part of a product runtime.
 > This unreleased source state uses package version `0.10.0-alpha.1`; the published
@@ -137,6 +153,7 @@ venom scan <target> --profile web-review
       -> one bounded root-or-discovered SSTI arithmetic review with independent replay
       -> optional exact-root anonymous/authorized API visibility pair
       -> optional anonymous GraphQL control/introspection/replay child
+      -> optional same-run OpenAPI-constrained REST GET candidate/replay child
       -> optional one-resource primary/peer authorization differential with independent replays
       -> central bounded assessment renderer on complete execution
 ```
@@ -235,6 +252,19 @@ verification; fail-closed earlier outcomes stop without it. The review follows
 no redirect and does not read credentials. Complete correlated surface and
 replayed-introspection results are `Informational` / `KnowledgeOnly` only. See
 [GraphQL surface review](graphql-review.md).
+
+The non-default `rest-review` scanner/CLI feature requires the same invocation
+to enable `openapi-review` under explicit `web-review`; otherwise CLI preflight
+rejects it without network I/O. The OpenAPI child must first commit candidate
+and replay with the same semantic document digest. From that catalog, REST V1
+selects at most one anonymous, bodyless, exact-origin `GET` with no required
+path, query, header, or cookie inputs, no request body, and no auth or templated
+server requirement. Candidate and replay cost exactly two requests and one
+active verification. A surface item requires stable successful JSON
+`Status`, `Fields`, and value-sensitive `Resources`; it is
+`Informational` / `KnowledgeOnly` only. No described write runs and no
+parameter, credential, cookie, or downstream vulnerability-family action is
+created. See [REST read-only review](rest-readonly-review.md).
 
 At most one deterministic query name across the assessment receives SQL
 structural review. Two independent matched quote-balance pairs must reproduce
@@ -486,6 +516,7 @@ The following matrix separates build availability from actual execution:
 | `defense` | scanner default | host library and explicit `web-review` observation/shadow; enforcement requires `--enforce-defense` | `web-review` only | implemented and tested Preview; cannot add or intensify actions |
 | normalization-resilience review | scanner and CLI opt-in (`normalization-resilience`) plus explicit runtime flag | one eligible `web-review` parent may produce one transformed candidate/replay child under the shared broker | no | Preview; max one transform/depth one, three child requests/one active verification, `NeedsReview` / `KnowledgeOnly` only |
 | GraphQL surface review | scanner and CLI opt-in (`graphql-review`) plus explicit runtime flag | one exact-origin endpoint may receive an anonymous `__typename` control, bounded schema-root candidate, and distinct replay through the shared broker | no | Preview; max one endpoint, three requests/one active verification, `Informational` / `KnowledgeOnly` only |
+| REST read-only review | scanner and CLI opt-in (`rest-review`) plus explicit same-run `openapi-review` | one replay-stable OpenAPI catalog may select one anonymous, bodyless, exact-origin zero-input GET for candidate plus replay | no | Preview; max one operation, two requests/one active verification, `Informational` / `KnowledgeOnly` only; no chaining |
 | Resource authorization review | scanner and CLI opt-in (`authorization-review`) plus explicit policy and two out-of-band credentials | one exact-origin JSON resource receives primary/peer candidate and independent replay legs through the assessment's shared broker | no | Preview; max one resource, four requests/one active verification, one `NeedsReview` / `KnowledgeOnly` item at most |
 | `phases/*`, `legacy_discovery`, `runner`, `context`, `sdk` | opt-in (`legacy-scanner`) | Surface A; phases 2–4 use bounded passive discovery, phases 5–9 use separate bounded active verification, and phase-one/custom raw I/O remains possible | no | Legacy runtime / `ScannerSdk` facade; whole-run accounting remains `Unmetered` |
 | `advanced_detection`, `anomaly` | opt-in (`detection`) | no repository product caller; validated/catalogued caller records plus text matching only | no | Experimental; no deviation computation, response classification, or finding production |

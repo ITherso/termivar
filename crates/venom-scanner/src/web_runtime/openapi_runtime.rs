@@ -16,12 +16,18 @@ use venom_core::{
     HttpEvidencePredicate, KnowledgePredicate,
 };
 
+#[cfg(feature = "rest-review")]
+use super::rest_runtime::StableRestSelectionSlot;
 use super::{
     assessment_defense::{project_assessment_defense_signal, AssessmentDefenseProjectionContext},
     assessment_item::{
         AssessmentCapabilityDescriptor, AssessmentItemProjectionError, AssessmentItemTarget,
         AssessmentProjectionContext,
     },
+};
+#[cfg(feature = "rest-review")]
+use crate::rest_review::{
+    select_rest_operation, RestOperationSelection, RestOperationSelectionOutcome,
 };
 use crate::{
     http_evidence::{HttpRequestBroker, HttpRequestBrokerError},
@@ -384,8 +390,14 @@ impl OpenApiRuntimeBinding {
             subject: subject.clone(),
             knowledge,
             state: Mutex::new(OpenApiExecutionState::default()),
+            #[cfg(feature = "rest-review")]
+            rest_selection: StableRestSelectionSlot::new(),
         });
         Self { executor, subject }
+    }
+    #[cfg(feature = "rest-review")]
+    pub(super) fn rest_selection_slot(&self) -> StableRestSelectionSlot {
+        self.executor.rest_selection.clone()
     }
     pub(super) fn install_into_parent_registry(
         &self,
@@ -679,6 +691,8 @@ struct OpenApiLeg {
     deprecated: u32,
     response_bytes: u64,
     evidence_id: Option<EvidenceId>,
+    #[cfg(feature = "rest-review")]
+    rest_selection: Option<RestOperationSelection>,
 }
 impl OpenApiLeg {
     fn semantically_matches(&self, other: &Self) -> bool {
@@ -695,6 +709,16 @@ impl OpenApiLeg {
             && self.url_like == other.url_like
             && self.multipart == other.multipart
             && self.deprecated == other.deprecated
+            && {
+                #[cfg(feature = "rest-review")]
+                {
+                    self.rest_selection == other.rest_selection
+                }
+                #[cfg(not(feature = "rest-review"))]
+                {
+                    true
+                }
+            }
     }
 }
 #[derive(Default)]
@@ -708,6 +732,8 @@ struct OpenApiDecisionExecutor {
     subject: EntityId,
     knowledge: KnowledgeBase,
     state: Mutex<OpenApiExecutionState>,
+    #[cfg(feature = "rest-review")]
+    rest_selection: StableRestSelectionSlot,
 }
 
 impl OpenApiDecisionExecutor {
@@ -831,6 +857,11 @@ impl DecisionActionExecutor for OpenApiDecisionExecutor {
         let parsed = parse_openapi_document(response.body(), &candidate.url);
         let leg = match parsed {
             OpenApiParseOutcome::Complete(doc) => {
+                #[cfg(feature = "rest-review")]
+                let rest_selection = match select_rest_operation(&doc, &candidate.url) {
+                    RestOperationSelectionOutcome::Selected(selection) => Some(selection),
+                    RestOperationSelectionOutcome::NoEligibleOperation => None,
+                };
                 let summary = doc.catalog().summary();
                 let get = doc
                     .catalog()
@@ -878,6 +909,8 @@ impl DecisionActionExecutor for OpenApiDecisionExecutor {
                     deprecated: u32::try_from(deprecated).unwrap_or(u32::MAX),
                     response_bytes: u64::try_from(response.body().len()).unwrap_or(u64::MAX),
                     evidence_id: None,
+                    #[cfg(feature = "rest-review")]
+                    rest_selection,
                 }
             },
             OpenApiParseOutcome::Swagger20MetadataOnly => {
@@ -901,7 +934,41 @@ impl DecisionActionExecutor for OpenApiDecisionExecutor {
                 return transport_evidence(request, &response, None, true);
             },
         };
-        let evidence = transport_evidence(request, &response, Some(&leg), false)?;
+        #[cfg(feature = "rest-review")]
+        let stable_rest_catalog = if request.stage() == DecisionExecutionStage::Active {
+            let state = self
+                .state
+                .lock()
+                .map_err(|_| DecisionExecutorError::new("OpenAPI review state is unavailable"))?;
+            state
+                .legs
+                .get(&DecisionExecutionStage::Passive)
+                .is_some_and(|candidate_leg| candidate_leg.semantically_matches(&leg))
+        } else {
+            false
+        };
+        #[cfg(feature = "rest-review")]
+        let stable_rest_selection = stable_rest_catalog
+            .then(|| leg.rest_selection.clone())
+            .flatten();
+        let mut evidence = transport_evidence(request, &response, Some(&leg), false)?;
+        #[cfg(feature = "rest-review")]
+        if stable_rest_catalog {
+            let ready = make_evidence(
+                request,
+                crate::web_actions::rest_review_catalog_ready_predicate(),
+                EvidenceValue::Boolean(true),
+                "rest-catalog-ready",
+            )?;
+            let first_defense = evidence
+                .iter()
+                .position(|item| {
+                    item.predicate().namespace()
+                        == super::assessment_defense::ASSESSMENT_DEFENSE_NAMESPACE
+                })
+                .unwrap_or(evidence.len());
+            evidence.insert(first_defense, ready);
+        }
         let classification = evidence
             .iter()
             .find(|e| {
@@ -923,6 +990,12 @@ impl DecisionActionExecutor for OpenApiDecisionExecutor {
             return Err(DecisionExecutorError::new(
                 "OpenAPI review leg is duplicated",
             ));
+        }
+        #[cfg(feature = "rest-review")]
+        if let Some(selection) = stable_rest_selection {
+            self.rest_selection
+                .commit(selection)
+                .map_err(|_| DecisionExecutorError::new("REST selection handoff failed"))?;
         }
         Ok(evidence)
     }

@@ -133,6 +133,8 @@ fn expected_strategy(kind: NativeWebReviewActionKind) -> Option<PayloadStrategyR
         NativeWebReviewActionKind::ResourceAuthorizationDifferential => return None,
         #[cfg(feature = "openapi-review")]
         NativeWebReviewActionKind::OpenApiDocumentReplay => return None,
+        #[cfg(feature = "rest-review")]
+        NativeWebReviewActionKind::RestReadOnlyReplay => return None,
     };
     Some(PayloadStrategyRef::new(id, revision).unwrap())
 }
@@ -142,7 +144,7 @@ fn profile_definitions_are_deterministic_exact_and_knowledge_only() {
     let first = NativeWebReviewDecisionProfile::new().unwrap();
     let second = NativeWebReviewDecisionProfile::new().unwrap();
 
-    assert_eq!(first.reasoning_rule, second.reasoning_rule);
+    assert_eq!(first.reasoning_rules, second.reasoning_rules);
     assert_eq!(first.actions, second.actions);
     assert_eq!(first.active_rules, second.active_rules);
     assert_eq!(first.actions.len(), NATIVE_WEB_REVIEW_ACTION_COUNT);
@@ -200,7 +202,7 @@ fn subject_specific_profile_is_ordered_exact_and_rejects_duplicates() {
     );
     assert_eq!(profile.actions.len(), 2);
     assert_eq!(profile.active_rules.len(), 2);
-    assert!(profile.reasoning_rule.is_some());
+    assert_eq!(profile.reasoning_rules.len(), 1);
 
     assert!(matches!(
         NativeWebReviewDecisionProfile::for_actions([
@@ -218,7 +220,7 @@ fn empty_subject_specific_profile_intentionally_installs_nothing() {
     assert_eq!(profile.actions().len(), 0);
     assert!(profile.actions.is_empty());
     assert!(profile.active_rules.is_empty());
-    assert!(profile.reasoning_rule.is_none());
+    assert!(profile.reasoning_rules.is_empty());
 
     let mut decision_loop = decision_loop();
     assert_eq!(
@@ -400,6 +402,98 @@ fn authorization_passive_terminal_rule_is_exact_action_and_case_scoped() {
         .verify(&knowledge, &other_case)
         .unwrap();
     assert_eq!(uncorrelated.outcome().status(), OutcomeStatus::Unknown);
+}
+
+#[cfg(feature = "rest-review")]
+#[test]
+fn rest_action_requires_replay_stable_catalog_and_has_exact_terminal_rules() {
+    let rest = NativeWebReviewActionKind::RestReadOnlyReplay;
+    let profile = NativeWebReviewDecisionProfile::for_actions([rest]).unwrap();
+    assert_eq!(profile.reasoning_rules.len(), 1);
+    assert_eq!(profile.actions.len(), 1);
+    assert_eq!(profile.passive_rules.len(), 2);
+    assert_eq!(profile.active_rules.len(), 2);
+    assert!(profile.actions[0].prerequisites().is_empty());
+
+    for (stage, id) in [
+        (
+            VerificationStage::Passive,
+            "web.review.verify.passive.rest-readonly-terminal@1",
+        ),
+        (
+            VerificationStage::Active,
+            "web.review.verify.active.rest-readonly-terminal@1",
+        ),
+    ] {
+        let rule = profile
+            .passive_rules
+            .iter()
+            .chain(profile.active_rules.iter())
+            .find(|rule| rule.id() == id)
+            .unwrap();
+        assert_eq!(rule.stage(), stage);
+        assert_eq!(rule.outcome(), OutcomeStatus::Blocked);
+        assert_eq!(rule.action_id(), Some(rest.action_id()));
+        assert!(rule.requires_case_correlated_evidence());
+        assert_eq!(
+            rule.condition(),
+            &Expression::equals(
+                KnowledgeLayer::Evidence,
+                crate::web_actions::rest_review_phase_terminal_predicate(),
+                EvidenceValue::Boolean(true),
+            )
+        );
+    }
+
+    let mut loop_ = decision_loop();
+    profile.install(&mut loop_).unwrap();
+    let knowledge = KnowledgeBase::new();
+    knowledge
+        .insert_evidence(response_status("case:bootstrap", "bootstrap", 200))
+        .unwrap();
+    loop_.rules().apply(&knowledge, &subject()).unwrap();
+    assert!(loop_
+        .planner()
+        .plan(
+            &knowledge,
+            &subject(),
+            PlanningContext::new(
+                BenefitScore::from_percent(80).unwrap(),
+                100,
+                RiskScore::from_percent(10).unwrap(),
+            ),
+        )
+        .unwrap()
+        .steps()
+        .is_empty());
+
+    let ready = Evidence::new(
+        subject(),
+        EvidenceKind::Custom("openapi-review".to_owned()),
+        crate::web_actions::rest_review_catalog_ready_predicate(),
+        EvidenceValue::Boolean(true),
+        EvidenceSource::new("http.openapi-review", "rest-catalog-ready")
+            .unwrap()
+            .with_correlation_id("case:openapi-replay")
+            .unwrap(),
+        ConfidenceScore::MAX,
+    );
+    knowledge.insert_evidence(ready).unwrap();
+    loop_.rules().apply(&knowledge, &subject()).unwrap();
+    let plan = loop_
+        .planner()
+        .plan(
+            &knowledge,
+            &subject(),
+            PlanningContext::new(
+                BenefitScore::from_percent(80).unwrap(),
+                100,
+                RiskScore::from_percent(10).unwrap(),
+            ),
+        )
+        .unwrap();
+    assert_eq!(plan.steps().len(), 1);
+    assert_eq!(plan.steps()[0].action_id(), rest.action_id());
 }
 
 #[test]

@@ -31,6 +31,7 @@ const QUARANTINED_FEATURES: &[&str] = &[
     "lua",
     "normalization-resilience",
     "openapi-review",
+    "rest-review",
     "platform-models",
     "plugins",
     "reporting",
@@ -53,6 +54,7 @@ const EXACT_SCANNER_FEATURES: &[&str] = &[
     "monitoring",
     "normalization-resilience",
     "openapi-review",
+    "rest-review",
     "platform-models",
     "plugins",
     "reporting",
@@ -74,6 +76,7 @@ const FULL_AGGREGATE_FEATURES: &[&str] = &[
     "monitoring",
     "normalization-resilience",
     "openapi-review",
+    "rest-review",
     "platform-models",
     "plugins",
     "reporting",
@@ -94,6 +97,7 @@ const ENTERPRISE_AGGREGATE_FEATURES: &[&str] = &[
     "monitoring",
     "normalization-resilience",
     "openapi-review",
+    "rest-review",
     "platform-models",
     "plugins",
     "reporting",
@@ -207,6 +211,7 @@ const GRAPHQL_REVIEW_RUNTIME_SOURCE: &str =
     "crates/venom-scanner/src/web_runtime/graphql_runtime.rs";
 const OPENAPI_REVIEW_RUNTIME_SOURCE: &str =
     "crates/venom-scanner/src/web_runtime/openapi_runtime.rs";
+const REST_REVIEW_RUNTIME_SOURCE: &str = "crates/venom-scanner/src/web_runtime/rest_runtime.rs";
 const GRAPHQL_REVIEW_BROKER_SOURCE: &str =
     "crates/venom-scanner/src/http_evidence/request_broker.rs";
 const RESOURCE_AUTHORIZATION_RUNTIME_SOURCE: &str =
@@ -935,6 +940,10 @@ pub(super) fn check(workspace_root: &Path) -> Result<Vec<String>, Box<dyn Error>
         workspace_root,
         &web_runtime_source,
     )?);
+    violations.extend(rest_review_contract_violations(
+        workspace_root,
+        &web_runtime_source,
+    )?);
     violations.extend(resource_authorization_review_contract_violations(
         workspace_root,
         &web_runtime_source,
@@ -1151,6 +1160,10 @@ fn cli_feature_violations(
         ("graphql-review", &["venom-scanner/graphql-review"][..]),
         ("openapi-review", &["venom-scanner/openapi-review"][..]),
         (
+            "rest-review",
+            &["openapi-review", "venom-scanner/rest-review"][..],
+        ),
+        (
             "authorization-review",
             &["venom-scanner/authorization-review"][..],
         ),
@@ -1337,6 +1350,22 @@ fn exact_raw_feature_closures() -> Vec<(&'static str, &'static [&'static str])> 
         (
             "openapi-review",
             &[
+                "openapi-review",
+                "scanning",
+                "core",
+                "dep:async-trait",
+                "dep:html5ever",
+                "dep:markup5ever_rcdom",
+                "dep:reqwest",
+                "dep:tokio",
+                "dep:tokio-util",
+                "dep:toml",
+            ],
+        ),
+        (
+            "rest-review",
+            &[
+                "rest-review",
                 "openapi-review",
                 "scanning",
                 "core",
@@ -1573,6 +1602,27 @@ fn openapi_review_contract_violations(
     let mut violations =
         openapi_review_source_contract_violations(&runtime, &actions, &broker, web_runtime_source);
     violations.extend(openapi_runtime_module_gate_violations(web_runtime_source)?);
+    Ok(violations)
+}
+
+fn rest_review_contract_violations(
+    workspace_root: &Path,
+    web_runtime_source: &str,
+) -> Result<Vec<String>, Box<dyn Error>> {
+    let runtime = fs::read_to_string(workspace_root.join(REST_REVIEW_RUNTIME_SOURCE))?;
+    let actions = fs::read_to_string(workspace_root.join(NATIVE_WEB_REVIEW_ACTION_SOURCE))?;
+    let broker = fs::read_to_string(workspace_root.join(GRAPHQL_REVIEW_BROKER_SOURCE))?;
+    let assessment = fs::read_to_string(workspace_root.join(WEB_ASSESSMENT_RUNTIME_SOURCE))?;
+    let report = fs::read_to_string(workspace_root.join(ASSESSMENT_REPORT_SOURCE))?;
+    let mut violations = rest_review_source_contract_violations(
+        &runtime,
+        &actions,
+        &broker,
+        web_runtime_source,
+        &assessment,
+        &report,
+    );
+    violations.extend(rest_runtime_module_gate_violations(web_runtime_source)?);
     Ok(violations)
 }
 
@@ -1983,6 +2033,8 @@ fn resource_authorization_review_source_contract_violations(
         "wordlist",
         "Uuid::",
         "uuid::",
+        "Termivar",
+        "termivar",
         "Liminvar",
         "liminvar",
         "Confirmed",
@@ -2090,6 +2142,31 @@ fn openapi_runtime_module_gate_violations(source: &str) -> Result<Vec<String>, s
         },
         _ => Ok(vec![
             "OpenAPI review runtime must remain one private out-of-line module behind exact cfg(feature=\"openapi-review\")"
+                .to_owned(),
+        ]),
+    }
+}
+
+fn rest_runtime_module_gate_violations(source: &str) -> Result<Vec<String>, syn::Error> {
+    let syntax = syn::parse_file(source)?;
+    let matches = syntax
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Mod(module) if module.ident == "rest_runtime" => Some(module),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    match matches.as_slice() {
+        [module]
+            if matches!(module.vis, Visibility::Inherited)
+                && module.content.is_none()
+                && cfg_predicates(module) == ["feature=\"rest-review\"".to_owned()] =>
+        {
+            Ok(Vec::new())
+        },
+        _ => Ok(vec![
+            "REST review runtime must remain one private out-of-line module behind exact cfg(feature=\"rest-review\")"
                 .to_owned(),
         ]),
     }
@@ -2246,6 +2323,8 @@ fn openapi_review_source_contract_violations(
             "AssessmentCapabilityDescriptor::differential_review",
             "AssessmentDisposition::NeedsReview",
             "AssessmentDisposition::Confirmed",
+            "Termivar",
+            "termivar",
             "Liminvar",
             "liminvar",
         ],
@@ -2286,6 +2365,246 @@ fn openapi_review_source_contract_violations(
                 "response_headers",
             ],
             "OpenAPI audit and committed review must not retain raw documents, headers, credentials, cookies, or query values",
+        );
+    }
+
+    violations
+}
+
+fn rest_review_source_contract_violations(
+    runtime: &str,
+    actions: &str,
+    broker: &str,
+    web_runtime: &str,
+    assessment: &str,
+    report: &str,
+) -> Vec<String> {
+    let mut violations = Vec::new();
+    let compact_runtime = squash_ascii_whitespace(runtime);
+    let compact_actions = squash_ascii_whitespace(actions);
+    let compact_web_runtime = squash_ascii_whitespace(web_runtime);
+    let compact_assessment = squash_ascii_whitespace(assessment);
+    let compact_report = squash_ascii_whitespace(report);
+
+    for (name, exact) in [
+        (
+            "selected operation",
+            "pubconstMAX_REST_REVIEW_RESOURCES:usize=1;",
+        ),
+        ("request", "pubconstMAX_REST_REVIEW_REQUESTS:usize=2;"),
+        (
+            "active verification",
+            "pubconstMAX_REST_REVIEW_ACTIVE_VERIFICATIONS:usize=1;",
+        ),
+    ] {
+        if !compact_runtime.contains(exact) {
+            violations.push(format!(
+                "REST read-only review V1 {name} ceiling must remain pinned by `{exact}`"
+            ));
+        }
+    }
+
+    require_markers(
+        &mut violations,
+        &compact_runtime,
+        &[
+            "pubconstREST_REVIEW_ACTION_ID:&str=\"web.review.rest.readonly-replay@1\";",
+            "pubconstREST_REVIEW_CAPABILITY_ID:&str=\"api.rest-readonly-surface-observed@1\";",
+            "AssessmentCapabilityDescriptor::informational(",
+            "RestReviewBinding",
+            "install_into_parent_registry",
+            "forstagein[DecisionExecutionStage::Passive,DecisionExecutionStage::Active,]",
+            ".route_action(stage,REST_REVIEW_ACTION_ID,REST_REVIEW_EXECUTOR_ID)",
+            "HttpProbe::new(selection.execution_url().clone(),HttpProbeMethod::Get)",
+            ".with_header(\"accept\",REST_REVIEW_ACCEPT)",
+            "self.requests.collect_for_runtime(",
+            "rest_leg_identity(request.stage())",
+            "DecisionExecutionStage::Passive=>\"rest-review:candidate\"",
+            "DecisionExecutionStage::Active=>\"rest-review:replay\"",
+            ".compare_exact_replay(&candidate.view,&replay.view)",
+            "letprojected=comparison.all_equivalent();",
+            "AssessmentItemTarget::rest_operation(",
+        ],
+        "REST read-only review lost its one-operation, two-GET, parent-native informational contract",
+    );
+    if compact_runtime.matches(".collect_for_runtime(").count() != 1 {
+        violations.push(
+            "REST read-only review must retain exactly one shared-broker dispatch implementation for both replay legs"
+                .to_owned(),
+        );
+    }
+    if compact_runtime.matches(".with_header(").count() != 1 {
+        violations.push(
+            "REST read-only review must send only its one canonical Accept header".to_owned(),
+        );
+    }
+
+    require_markers(
+        &mut violations,
+        &compact_actions,
+        &[
+            "#[cfg(feature=\"rest-review\")]RestReadOnlyReplay,",
+            "Self::RestReadOnlyReplay=>\"web.review.rest.readonly-replay@1\"",
+            "Self::RestReadOnlyReplay=>\"http.rest-review\"",
+            "Self::RestReadOnlyReplay=>NativeWebReviewDifferentialInput::ExactRequestReplay",
+            "Self::RestReadOnlyReplay=>2",
+            "VerificationTarget::KnowledgeOnly",
+        ],
+        "native action catalog lost the single bounded KnowledgeOnly REST replay action",
+    );
+
+    require_markers(
+        &mut violations,
+        &compact_web_runtime,
+        &[
+            "pub(incrate::web_runtime)fnwith_rest_review(",
+            "rest_runtime::RestReviewBinding::new(",
+            "NativeWebReviewActionKind::RestReadOnlyReplay",
+            "binding.install_into_parent_registry(&mutexecutors)",
+            "letmutexecutors=DecisionExecutorRegistry::new();",
+            "runner:DecisionRunnerAdapter::new(executors),",
+        ],
+        "the parent StandardWebDecisionRuntime must own and route the one REST replay executor",
+    );
+    if compact_web_runtime
+        .matches("letmutexecutors=DecisionExecutorRegistry::new();")
+        .count()
+        != 1
+        || compact_web_runtime
+            .matches("runner:DecisionRunnerAdapter::new(executors),")
+            .count()
+            != 1
+    {
+        violations.push(
+            "REST review must reuse the single parent-owned executor registry and runner"
+                .to_owned(),
+        );
+    }
+
+    require_markers(
+        &mut violations,
+        &compact_assessment,
+        &[
+            "pubfnenable_rest_review(",
+            "ifself.rest_review&&!self.openapi_review",
+            ".with_rest_review()",
+            "take_rest_review()",
+            "committed_rest_review",
+            "rest_review_audit",
+            "rest:self.committed_rest_review.as_ref()",
+        ],
+        "WebAssessmentRuntime must compose and finalize REST review in its one assessment lifecycle",
+    );
+    require_markers(
+        &mut violations,
+        &compact_report,
+        &[
+            "validate_rest_audit(rest_review.as_ref(),&items)?;",
+            "pubconstfnrest_review_audit(&self)->Option<&WebAssessmentRestAudit>",
+        ],
+        "REST audit must remain in the one composed assessment report",
+    );
+
+    reject_markers(
+        &mut violations,
+        runtime,
+        &[
+            "reqwest::",
+            "Client::new",
+            "HttpRequestBroker::new",
+            "RequestAccountingBroker",
+            "RuntimeBudget::new",
+            "StandardWebDecisionRuntime::builder",
+            "WebAssessmentRuntime::builder",
+            "DecisionExecutorRegistry::new",
+            "DecisionRunnerAdapter::new",
+            "HttpProbeMethod::Head",
+            "HttpProbeMethod::Post",
+            "HttpProbeMethod::Put",
+            "HttpProbeMethod::Patch",
+            "HttpProbeMethod::Delete",
+            "Method::POST",
+            "Method::PUT",
+            "Method::PATCH",
+            "Method::DELETE",
+            ".with_body(",
+            "query_pairs_mut",
+            "AUTHORIZATION",
+            "COOKIE",
+            "bearer_auth",
+            "basic_auth",
+            "AssessmentCapabilityDescriptor::differential_review",
+            "AssessmentDisposition::NeedsReview",
+            "AssessmentDisposition::Confirmed",
+            "struct RestScanner",
+            "struct ApiScanner",
+            "struct RestRuntime",
+            "struct RestAssessmentReport",
+            "SqlStructuralQuery",
+            "SstiStructuralQuery",
+            "XssStructuralQuery",
+            "XssAttributeBoundary",
+            "XssScriptLexicalBoundary",
+            "NormalizationResilience",
+            "ResourceAuthorizationDifferential",
+            "SsrfReview",
+            "UploadReview",
+            ".with_header(\"authorization\"",
+            ".with_header(\"cookie\"",
+            ".cookie(",
+            "Termivar",
+            "termivar",
+            "Liminvar",
+            "liminvar",
+        ],
+        "REST review must not own transport/accounting, execute writes, materialize parameters or bodies, retain credentials/cookies, fork a scanner/report, elevate claims, or rebrand",
+    );
+
+    reject_markers(
+        &mut violations,
+        assessment,
+        &[
+            "execute_rest_review_detached",
+            "RestAssessmentReport",
+            "RestScanner",
+            "RestRuntime::new",
+        ],
+        "WebAssessmentRuntime must not dispatch a detached REST pass or finalize a second report",
+    );
+
+    let broker_builder = named_function_source(broker, "build").unwrap_or_default();
+    let compact_broker = squash_ascii_whitespace(broker_builder);
+    require_markers(
+        &mut violations,
+        &compact_broker,
+        &[
+            ".redirect(RedirectPolicy::none())",
+            ".retry(reqwest::retry::never())",
+        ],
+        "the shared broker used by REST review must remain redirect-disabled and retry-free",
+    );
+
+    for structure in [
+        named_struct_source(runtime, "WebAssessmentRestAudit"),
+        named_struct_source(runtime, "CommittedRestReview"),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        reject_markers(
+            &mut violations,
+            structure,
+            &[
+                "credential",
+                "authorization_header",
+                "cookie",
+                "raw_body",
+                "response_body",
+                "query_value",
+                "request_headers",
+                "response_headers",
+            ],
+            "REST audit and committed review must not retain raw bodies, headers, credentials, cookies, or query values",
         );
     }
 
@@ -3977,7 +4296,7 @@ fn assessment_bridge_body_is_exact(block: &syn::Block) -> bool {
     };
     if reporting_expression_path_key(report_call.func.as_ref()).as_deref()
         != Some("AssessmentRunReport::from_completed_truth")
-        || report_call.args.len() != 4
+        || report_call.args.len() != 5
     {
         return false;
     }
@@ -3992,6 +4311,9 @@ fn assessment_bridge_body_is_exact(block: &syn::Block) -> bool {
         })
         && arguments.next().is_some_and(|argument| {
             assessment_bridge_feature_field(argument, "openapi_review", "openapi-review")
+        })
+        && arguments.next().is_some_and(|argument| {
+            assessment_bridge_feature_field(argument, "rest_review", "rest-review")
         })
 }
 
@@ -4246,7 +4568,28 @@ const EXACT_REPORTING_DOCUMENT_STRUCTS: &[ReportingDocumentShape] = &[
                 "Option<AssessmentAuthorizationAuditDocument>",
             ),
             ("openapi_review", "Option<AssessmentOpenApiAuditDocument>"),
+            ("rest_review", "Option<AssessmentRestAuditDocument>"),
             ("items", "Vec<AssessmentItemDocument<'a>>"),
+        ],
+    ),
+    (
+        "AssessmentRestAuditDocument",
+        &[],
+        &[
+            ("schema", "&'static str"),
+            ("capability_id", "&'static str"),
+            ("enabled", "bool"),
+            ("method", "&'static str"),
+            ("outcome", "&'static str"),
+            ("request_count", "u8"),
+            ("active_verification_count", "u8"),
+            ("eligible_operation_count", "u32"),
+            ("selected_operation_identity", "Option<String>"),
+            ("documented_response", "Option<&'static str>"),
+            ("observed_media", "&'static str"),
+            ("status_class", "Option<u8>"),
+            ("replay_stable", "bool"),
+            ("item_projected", "bool"),
         ],
     ),
     (
@@ -4413,6 +4756,7 @@ fn reporting_audit_field_attributes_are_exact(attributes: &[Attribute], feature:
     let expected = match feature {
         "authorization-review" => "feature=\"authorization-review\"",
         "openapi-review" => "feature=\"openapi-review\"",
+        "rest-review" => "feature=\"rest-review\"",
         _ => return false,
     };
     attributes.len() == 2
@@ -4446,6 +4790,7 @@ fn reporting_document_contract_violations(source: &str) -> Result<Vec<String>, s
             "AssessmentDocument"
                 | "AssessmentAuthorizationAuditDocument"
                 | "AssessmentOpenApiAuditDocument"
+                | "AssessmentRestAuditDocument"
                 | "AssessmentItemDocument"
                 | "AssessmentBasisLinkageDocument"
                 | "AssessmentRemediationDocument"
@@ -4483,6 +4828,9 @@ fn reporting_document_contract_violations(source: &str) -> Result<Vec<String>, s
                 },
                 "AssessmentOpenApiAuditDocument" => {
                     "all(feature=\"scanning\",feature=\"openapi-review\")"
+                },
+                "AssessmentRestAuditDocument" => {
+                    "all(feature=\"scanning\",feature=\"rest-review\")"
                 },
                 _ => "feature=\"scanning\"",
             };
@@ -4532,6 +4880,16 @@ fn reporting_document_contract_violations(source: &str) -> Result<Vec<String>, s
                         )
                     } else if name == "AssessmentDocument" && field_name == "openapi_review" {
                         reporting_audit_field_attributes_are_exact(&field.attrs, "openapi-review")
+                    } else if name == "AssessmentDocument" && field_name == "rest_review" {
+                        reporting_audit_field_attributes_are_exact(&field.attrs, "rest-review")
+                    } else if name == "AssessmentRestAuditDocument"
+                        && matches!(
+                            field_name.as_str(),
+                            "selected_operation_identity" | "documented_response" | "status_class"
+                        )
+                    {
+                        field.attrs.len() == 1
+                            && reporting_serde_skip_option_is_none(&field.attrs[0])
                     } else {
                         field.attrs.is_empty()
                     };
@@ -6887,8 +7245,8 @@ struct ReportingSourceVisitor {
     inside_test_module: usize,
 }
 
-const EXACT_REPORTING_PRODUCTION_TOKEN_BYTES: usize = 63_078;
-const EXACT_REPORTING_PRODUCTION_FINGERPRINT: u128 = 0x5066_9961_5900_eb5b_93eb_3591_4555_ffdb;
+const EXACT_REPORTING_PRODUCTION_TOKEN_BYTES: usize = 71_111;
+const EXACT_REPORTING_PRODUCTION_FINGERPRINT: u128 = 0x57b0_13c1_f537_f92a_ae8a_8267_b3dc_a874;
 
 fn reporting_production_body_inventory_violations(source: &str) -> Vec<String> {
     let Ok(syntax) = syn::parse_file(source) else {
@@ -6955,13 +7313,19 @@ const EXACT_REPORTING_SOURCE_IMPORTS: &[&str] = &[
     "crate::authorization_review::AuthorizationReviewOutcome",
     "crate::authorization_review::HARD_MAX_AUTHORIZATION_REVIEW_IGNORED_PATHS",
     "crate::authorization_review::HARD_MAX_AUTHORIZATION_REVIEW_SELECTED_PATHS",
+    "crate::rest_review::RestDocumentedResponseClass",
     "crate::web_runtime::AssessmentBasis",
     "crate::web_runtime::AssessmentRunReport",
     "crate::web_runtime::AssessmentRunReportError",
     "crate::web_runtime::MAX_AUTHORIZATION_REVIEW_REQUESTS",
+    "crate::web_runtime::MAX_REST_REVIEW_ACTIVE_VERIFICATIONS",
+    "crate::web_runtime::MAX_REST_REVIEW_REQUESTS",
     "crate::web_runtime::OPENAPI_REVIEW_CAPABILITY_ID",
     "crate::web_runtime::OpenApiRuntimeOutcome",
     "crate::web_runtime::RESOURCE_AUTHORIZATION_REVIEW_CAPABILITY_ID",
+    "crate::web_runtime::REST_REVIEW_CAPABILITY_ID",
+    "crate::web_runtime::RestObservedMediaClass",
+    "crate::web_runtime::RestRuntimeOutcome",
     "crate::web_runtime::ScanProfileV1",
     "crate::web_runtime::WebAssessmentRunReport",
     "serde::Serialize",
@@ -6980,6 +7344,7 @@ const EXACT_REPORTING_SOURCE_IMPORTS: &[&str] = &[
 ];
 
 const ALLOWED_REPORTING_QUALIFIED_PATHS: &[&str] = &[
+    "AssessmentRestAuditDocument::from_audit",
     "AssessmentOpenApiAuditDocument::from_audit",
     "AssessmentAuthorizationAuditDocument::from_audit",
     "AssessmentBasis::Differential",
@@ -7026,6 +7391,28 @@ const ALLOWED_REPORTING_QUALIFIED_PATHS: &[&str] = &[
     "OpenApiRuntimeOutcome::Truncated",
     "OpenApiRuntimeOutcome::UnsupportedMedia",
     "OpenApiRuntimeOutcome::UnsupportedVersion",
+    "RestDocumentedResponseClass::JsonCompatible",
+    "RestDocumentedResponseClass::Unknown",
+    "RestObservedMediaClass::JsonCompatible",
+    "RestObservedMediaClass::Text",
+    "RestObservedMediaClass::Unknown",
+    "RestObservedMediaClass::Unsupported",
+    "RestRuntimeOutcome::AuthenticationRequired",
+    "RestRuntimeOutcome::BudgetExhausted",
+    "RestRuntimeOutcome::Cancelled",
+    "RestRuntimeOutcome::CompleteNonJson",
+    "RestRuntimeOutcome::DefensiveInterference",
+    "RestRuntimeOutcome::Forbidden",
+    "RestRuntimeOutcome::Incomplete",
+    "RestRuntimeOutcome::NotEligible",
+    "RestRuntimeOutcome::NotFound",
+    "RestRuntimeOutcome::RateLimited",
+    "RestRuntimeOutcome::Redirect",
+    "RestRuntimeOutcome::ReplayMismatch",
+    "RestRuntimeOutcome::ServerError",
+    "RestRuntimeOutcome::SurfaceObserved",
+    "RestRuntimeOutcome::Truncated",
+    "RestRuntimeOutcome::UnsupportedMedia",
     "OutcomeDocument::from_outcome",
     "OutcomeStatus::Blocked",
     "OutcomeStatus::ConfirmedNegative",
@@ -7080,17 +7467,24 @@ const ALLOWED_REPORTING_QUALIFIED_PATHS: &[&str] = &[
     "crate::web_runtime::AssessmentRunReport",
     "crate::web_runtime::AssessmentRunReportError",
     "crate::web_runtime::MAX_AUTHORIZATION_REVIEW_REQUESTS",
+    "crate::web_runtime::MAX_REST_REVIEW_ACTIVE_VERIFICATIONS",
+    "crate::web_runtime::MAX_REST_REVIEW_REQUESTS",
     "crate::web_runtime::OPENAPI_REVIEW_CAPABILITY_ID",
     "crate::web_runtime::OpenApiCandidateSource",
     "crate::web_runtime::OpenApiRuntimeOutcome",
     "crate::web_runtime::RESOURCE_AUTHORIZATION_REVIEW_CAPABILITY_ID",
+    "crate::web_runtime::REST_REVIEW_CAPABILITY_ID",
+    "crate::web_runtime::RestObservedMediaClass",
+    "crate::web_runtime::RestRuntimeOutcome",
     "crate::web_runtime::ScanProfileV1",
     "crate::web_runtime::WebAssessmentRunReport",
     "crate::web_runtime::WebAssessmentAuthorizationAudit",
     "crate::web_runtime::WebAssessmentOpenApiAudit",
+    "crate::web_runtime::WebAssessmentRestAudit",
     "crate::authorization_review::AuthorizationReviewOutcome",
     "crate::authorization_review::HARD_MAX_AUTHORIZATION_REVIEW_IGNORED_PATHS",
     "crate::authorization_review::HARD_MAX_AUTHORIZATION_REVIEW_SELECTED_PATHS",
+    "crate::rest_review::RestDocumentedResponseClass",
     "fmt::Arguments",
     "fmt::Display",
     "fmt::Error",
@@ -7132,6 +7526,7 @@ const ALLOWED_REPORTING_FUNCTION_CALLS: &[&str] = &[
     "AssessmentDocument::from_report",
     "AssessmentItemDocument::from_item",
     "AssessmentOpenApiAuditDocument::from_audit",
+    "AssessmentRestAuditDocument::from_audit",
     "AssessmentAuthorizationAuditDocument::from_audit",
     "Err",
     "Ok",
@@ -7155,6 +7550,9 @@ const ALLOWED_REPORTING_FUNCTION_CALLS: &[&str] = &[
     "longest_backtick_run",
     "optional_bool_token",
     "openapi_outcome",
+    "rest_documented_response",
+    "rest_observed_media",
+    "rest_outcome",
     "push_visible_codepoint",
     "render_csv",
     "render_assessment_csv",
@@ -7197,6 +7595,7 @@ const ALLOWED_REPORTING_METHOD_CALLS: &[&str] = &[
     "active_verification_count",
     "all",
     "and_then",
+    "any",
     "anonymous_operation_count",
     "as_deref",
     "as_str",
@@ -7226,6 +7625,7 @@ const ALLOWED_REPORTING_METHOD_CALLS: &[&str] = &[
     "dimensions",
     "disposition",
     "deprecated_operation_count",
+    "documented_response",
     "duration_ms",
     "ends_with",
     "enumerate",
@@ -7248,6 +7648,7 @@ const ALLOWED_REPORTING_METHOD_CALLS: &[&str] = &[
     "is_empty",
     "is_err",
     "is_none",
+    "is_none_or",
     "is_some",
     "is_some_and",
     "is_whitespace",
@@ -7268,6 +7669,7 @@ const ALLOWED_REPORTING_METHOD_CALLS: &[&str] = &[
     "ok_or",
     "ok",
     "openapi_review_audit",
+    "observed_media",
     "operation_count",
     "ordinal",
     "outcomes",
@@ -7290,6 +7692,7 @@ const ALLOWED_REPORTING_METHOD_CALLS: &[&str] = &[
     "remaining",
     "reference_count",
     "replay_matched",
+    "replay_stable",
     "remediation",
     "request_body_bytes",
     "request_count",
@@ -7298,6 +7701,7 @@ const ALLOWED_REPORTING_METHOD_CALLS: &[&str] = &[
     "response_body_bytes",
     "run_report",
     "schema",
+    "selected_operation_identity",
     "selected_path_count",
     "semantic_digest",
     "severity",
@@ -7305,6 +7709,7 @@ const ALLOWED_REPORTING_METHOD_CALLS: &[&str] = &[
     "stage",
     "starts_with",
     "status",
+    "status_class",
     "steps",
     "stop_reason",
     "strip_prefix",
@@ -7320,6 +7725,8 @@ const ALLOWED_REPORTING_METHOD_CALLS: &[&str] = &[
     "unwrap_or",
     "unwrap_or_else",
     "url_like_operation_count",
+    "eligible_operation_count",
+    "rest_review_audit",
     "validate",
     "version",
     "verification_outcome",
@@ -7377,6 +7784,18 @@ fn reporting_source_import_violations(source: &str) -> Result<Vec<String>, syn::
                         | "crate::web_runtime::OPENAPI_REVIEW_CAPABILITY_ID"
                 )
             });
+        let rest_import = !paths.is_empty()
+            && paths.iter().all(|path| {
+                matches!(
+                    path.as_str(),
+                    "crate::rest_review::RestDocumentedResponseClass"
+                        | "crate::web_runtime::MAX_REST_REVIEW_ACTIVE_VERIFICATIONS"
+                        | "crate::web_runtime::MAX_REST_REVIEW_REQUESTS"
+                        | "crate::web_runtime::REST_REVIEW_CAPABILITY_ID"
+                        | "crate::web_runtime::RestObservedMediaClass"
+                        | "crate::web_runtime::RestRuntimeOutcome"
+                )
+            });
         let attributes_are_exact = if assessment_import {
             item.attrs.len() == 1
                 && item.attrs[0].path().is_ident("cfg")
@@ -7391,12 +7810,17 @@ fn reporting_source_import_violations(source: &str) -> Result<Vec<String>, syn::
                 && item.attrs[0].path().is_ident("cfg")
                 && cfg_predicate(&item.attrs[0]).as_deref()
                     == Some("all(feature=\"scanning\",feature=\"openapi-review\")")
+        } else if rest_import {
+            item.attrs.len() == 1
+                && item.attrs[0].path().is_ident("cfg")
+                && cfg_predicate(&item.attrs[0]).as_deref()
+                    == Some("all(feature=\"scanning\",feature=\"rest-review\")")
         } else {
             item.attrs.is_empty()
         };
         if !matches!(item.vis, Visibility::Inherited) || !attributes_are_exact {
             violations.push(
-                "reporting production imports must remain private; only the exact web-assessment, authorization-audit, and OpenAPI-audit imports may use their pinned feature gates"
+                "reporting production imports must remain private; only the exact web-assessment and feature-gated authorization, OpenAPI, and REST audit imports may use their pinned feature gates"
                     .to_owned(),
             );
         }
@@ -7465,12 +7889,14 @@ impl<'ast> Visit<'ast> for ReportingSourceVisitor {
                 Some("feature=\"scanning\"")
                     | Some("feature=\"authorization-review\"")
                     | Some("feature=\"openapi-review\"")
+                    | Some("feature=\"rest-review\"")
                     | Some("all(feature=\"scanning\",feature=\"authorization-review\")")
                     | Some("all(feature=\"scanning\",feature=\"openapi-review\")")
+                    | Some("all(feature=\"scanning\",feature=\"rest-review\")")
             );
         if matches!(attribute_name.as_str(), "cfg" | "cfg_attr") && !exact_feature_gate {
             self.violations.insert(
-                "reporting production source may contain only the exact scanning, authorization-audit, and OpenAPI-audit feature gates"
+                "reporting production source may contain only the exact scanning, authorization, OpenAPI, and REST audit feature gates"
                     .to_owned(),
             );
         }
@@ -7743,7 +8169,8 @@ fn inspect_reporting_path(segments: &[String], violations: &mut BTreeSet<String>
     let key = segments.join("::");
     let exact_internal_assessment_path = ALLOWED_REPORTING_QUALIFIED_PATHS.contains(&key.as_str())
         && (key.starts_with("crate::web_runtime::")
-            || key.starts_with("crate::authorization_review::"));
+            || key.starts_with("crate::authorization_review::")
+            || key.starts_with("crate::rest_review::"));
     if (root == "crate" || root == "super" || (root == "self" && segments.len() > 1))
         && !exact_internal_assessment_path
     {
@@ -8194,6 +8621,7 @@ mod tests {
         );
         features.insert("graphql-review".to_owned(), vec!["scanning".to_owned()]);
         features.insert("openapi-review".to_owned(), vec!["scanning".to_owned()]);
+        features.insert("rest-review".to_owned(), vec!["openapi-review".to_owned()]);
         features.insert(
             "normalization-resilience".to_owned(),
             vec!["scanning".to_owned()],
@@ -8331,6 +8759,32 @@ mod tests {
     }
 
     #[test]
+    fn rest_review_is_non_default_and_requires_the_openapi_feature_edge() {
+        let mut features = valid_feature_map();
+        assert!(feature_violations(&features).is_empty());
+        assert!(!raw_feature_closure(&features, "default").contains("rest-review"));
+        assert_eq!(
+            features.get("rest-review").unwrap(),
+            &["openapi-review".to_owned()]
+        );
+
+        features.remove("rest-review");
+        assert!(feature_violations(&features)
+            .iter()
+            .any(|violation| violation.contains("rest-review")));
+
+        let (mut cli_features, dependencies) = valid_cli_contract();
+        assert!(cli_feature_violations(&cli_features, &dependencies).is_empty());
+        cli_features
+            .get_mut("default")
+            .unwrap()
+            .push("rest-review".to_owned());
+        assert!(cli_feature_violations(&cli_features, &dependencies)
+            .iter()
+            .any(|violation| violation.contains("default features must remain empty")));
+    }
+
+    #[test]
     fn resource_authorization_review_is_non_default_and_uses_exact_feature_edges() {
         let mut features = valid_feature_map();
         assert!(feature_violations(&features).is_empty());
@@ -8425,7 +8879,8 @@ mod tests {
             "fn mutate_resource(target: &mut url::Url) { target.query_pairs_mut(); }",
             "fn enumerate() { enumerate_resource(); }",
             "const CLAIM: &str = \"Confirmed\";",
-            "const PARTIAL_REBRAND: &str = \"Liminvar\";",
+            "const PARTIAL_REBRAND: &str = \"Termivar\";",
+            "const ABANDONED_PARTIAL_REBRAND: &str = \"Liminvar\";",
             "fn second_scanner() { let _ = WebAssessmentRuntime::builder(); }",
             "fn second_broker() { let _ = HttpRequestBroker::new_metered(policy, accounting); }",
             "fn second_budget() { let _ = RuntimeBudget::new(); }",
@@ -8764,7 +9219,8 @@ mod tests {
             "fn write_probe() { let _ = HttpProbeMethod::Post; }",
             "fn credentialed_probe() { let _ = AUTHORIZATION; }",
             "fn execute_described_operation(document: &OpenApiDocument) { for operation in document.operations() { dispatch_operation(operation); } }",
-            "const PARTIAL_REBRAND: &str = \"Liminvar\";",
+            "const PARTIAL_REBRAND: &str = \"Termivar\";",
+            "const ABANDONED_PARTIAL_REBRAND: &str = \"Liminvar\";",
             "fn claim() { let _ = AssessmentDisposition::Confirmed; }",
         ] {
             let mutation = format!("{runtime}\n{forbidden}");
@@ -8810,6 +9266,141 @@ mod tests {
             .unwrap()
             .iter()
             .any(|violation| violation.contains("exact cfg")));
+    }
+
+    #[test]
+    fn rest_review_architecture_is_one_bounded_openapi_constrained_native_child() {
+        let runtime = include_str!("../../../crates/venom-scanner/src/web_runtime/rest_runtime.rs");
+        let actions =
+            include_str!("../../../crates/venom-scanner/src/web_actions/native_review.rs");
+        let broker =
+            include_str!("../../../crates/venom-scanner/src/http_evidence/request_broker.rs");
+        let web_runtime = include_str!("../../../crates/venom-scanner/src/web_runtime.rs");
+        let assessment =
+            include_str!("../../../crates/venom-scanner/src/web_runtime/web_assessment.rs");
+        let report =
+            include_str!("../../../crates/venom-scanner/src/web_runtime/assessment_report.rs");
+
+        let violations = rest_review_source_contract_violations(
+            runtime,
+            actions,
+            broker,
+            web_runtime,
+            assessment,
+            report,
+        );
+        assert!(violations.is_empty(), "{violations:#?}");
+        assert!(rest_runtime_module_gate_violations(web_runtime)
+            .unwrap()
+            .is_empty());
+
+        for (from, to, expected) in [
+            (
+                "MAX_REST_REVIEW_RESOURCES: usize = 1",
+                "MAX_REST_REVIEW_RESOURCES: usize = 2",
+                "selected operation ceiling",
+            ),
+            (
+                "MAX_REST_REVIEW_REQUESTS: usize = 2",
+                "MAX_REST_REVIEW_REQUESTS: usize = 3",
+                "request ceiling",
+            ),
+            (
+                "MAX_REST_REVIEW_ACTIVE_VERIFICATIONS: usize = 1",
+                "MAX_REST_REVIEW_ACTIVE_VERIFICATIONS: usize = 2",
+                "active verification ceiling",
+            ),
+        ] {
+            let mutation = runtime.replacen(from, to, 1);
+            assert!(rest_review_source_contract_violations(
+                &mutation,
+                actions,
+                broker,
+                web_runtime,
+                assessment,
+                report,
+            )
+            .iter()
+            .any(|violation| violation.contains(expected)));
+        }
+
+        for forbidden in [
+            "fn second_client() { reqwest::Client::new(); }",
+            "fn second_broker() { HttpRequestBroker::new_metered(policy(), accounting()); }",
+            "fn second_budget() { let _ = RuntimeBudget::new(); }",
+            "fn second_runner() { let _ = DecisionRunnerAdapter::new(DecisionExecutorRegistry::new()); }",
+            "fn write_probe() { let _ = HttpProbeMethod::Post; }",
+            "fn credentialed_probe() { let _ = AUTHORIZATION; }",
+            "fn request_body() { let _ = probe.with_body(Vec::new()); }",
+            "fn chained_probe() { let _ = SqlStructuralQueryPair; }",
+            "struct RestScanner;",
+            "struct RestRuntime;",
+            "struct RestAssessmentReport;",
+            "fn claim() { let _ = AssessmentDisposition::Confirmed; }",
+            "const PARTIAL_REBRAND: &str = \"Termivar\";",
+            "const ABANDONED_PARTIAL_REBRAND: &str = \"Liminvar\";",
+        ] {
+            let mutation = format!("{runtime}\n{forbidden}");
+            assert!(
+                !rest_review_source_contract_violations(
+                    &mutation,
+                    actions,
+                    broker,
+                    web_runtime,
+                    assessment,
+                    report,
+                )
+                .is_empty(),
+                "REST review architecture mutation unexpectedly passed: {forbidden}"
+            );
+        }
+
+        let write_method = runtime.replacen("HttpProbeMethod::Get", "HttpProbeMethod::Post", 1);
+        assert!(rest_review_source_contract_violations(
+            &write_method,
+            actions,
+            broker,
+            web_runtime,
+            assessment,
+            report,
+        )
+        .iter()
+        .any(|violation| violation.contains("two-GET")));
+
+        let second_dispatch = format!(
+            "{runtime}\nfn duplicate_dispatch(binding: &RestDecisionExecutor) {{ let _ = binding.requests.collect_for_runtime(); }}"
+        );
+        assert!(rest_review_source_contract_violations(
+            &second_dispatch,
+            actions,
+            broker,
+            web_runtime,
+            assessment,
+            report,
+        )
+        .iter()
+        .any(|violation| violation.contains("exactly one shared-broker dispatch")));
+
+        let detached = format!("{assessment}\nfn bad() {{ execute_rest_review_detached(); }}");
+        assert!(rest_review_source_contract_violations(
+            runtime,
+            actions,
+            broker,
+            web_runtime,
+            &detached,
+            report,
+        )
+        .iter()
+        .any(|violation| violation.contains("detached REST pass")));
+
+        let ungated = web_runtime.replace(
+            "#[cfg(feature = \"rest-review\")]\nmod rest_runtime;",
+            "mod rest_runtime;",
+        );
+        assert!(rest_runtime_module_gate_violations(&ungated)
+            .unwrap()
+            .iter()
+            .any(|violation| violation.contains("rest-review")));
     }
 
     #[test]
@@ -10923,6 +11514,13 @@ mod tests {
             (
                 "openapi-review".to_owned(),
                 vec!["venom-scanner/openapi-review".to_owned()],
+            ),
+            (
+                "rest-review".to_owned(),
+                vec![
+                    "openapi-review".to_owned(),
+                    "venom-scanner/rest-review".to_owned(),
+                ],
             ),
             (
                 "normalization-resilience".to_owned(),

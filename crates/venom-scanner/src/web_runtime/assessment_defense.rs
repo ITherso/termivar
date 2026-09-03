@@ -372,6 +372,7 @@ impl CommittedAssessmentDefenseLedger {
             && parsed.is_none()
             && !authorization_no_response_terminal_receipt(receipt)?
             && !openapi_no_response_terminal_receipt(receipt)?
+            && !rest_no_response_terminal_receipt(receipt)?
         {
             return Err(());
         }
@@ -711,6 +712,8 @@ const fn native_interaction_class(kind: NativeWebReviewActionKind) -> DefenseInt
         NativeWebReviewActionKind::OpenApiDocumentReplay => {
             DefenseInteractionClass::DifferentialRead
         },
+        #[cfg(feature = "rest-review")]
+        NativeWebReviewActionKind::RestReadOnlyReplay => DefenseInteractionClass::DifferentialRead,
     }
 }
 
@@ -1161,6 +1164,35 @@ fn openapi_no_response_terminal_receipt(_receipt: &DecisionEvidenceReceipt) -> R
     Ok(false)
 }
 
+#[cfg(feature = "rest-review")]
+fn rest_no_response_terminal_receipt(receipt: &DecisionEvidenceReceipt) -> Result<bool, ()> {
+    if receipt.case().action_id() != super::rest_runtime::REST_REVIEW_ACTION_ID {
+        return Ok(false);
+    }
+    if receipt.executor_id() != "http.rest-review"
+        || receipt
+            .evidence()
+            .iter()
+            .any(|item| item.predicate().namespace() == ASSESSMENT_DEFENSE_NAMESPACE)
+    {
+        return Err(());
+    }
+    let predicate = crate::web_actions::rest_review_phase_terminal_predicate();
+    let item = unique_direct_before(
+        receipt,
+        receipt.evidence().len(),
+        &predicate,
+        EvidenceKind::Custom("rest-review".to_owned()),
+        "phase-terminal",
+    )?;
+    Ok(item.value() == &EvidenceValue::Boolean(true))
+}
+
+#[cfg(not(feature = "rest-review"))]
+fn rest_no_response_terminal_receipt(_receipt: &DecisionEvidenceReceipt) -> Result<bool, ()> {
+    Ok(false)
+}
+
 #[cfg(not(feature = "authorization-review"))]
 fn authorization_no_response_terminal_receipt(
     _receipt: &DecisionEvidenceReceipt,
@@ -1530,6 +1562,20 @@ mod tests {
         eligible.set_strength(HypothesisStrength::Weak);
         eligible.set_state(HypothesisState::Supported);
         knowledge.upsert_hypothesis(eligible).unwrap();
+        #[cfg(feature = "rest-review")]
+        {
+            let mut rest_eligible = Hypothesis::with_id(
+                "test:assessment-defense:rest-review-eligible",
+                subject.clone(),
+                KnowledgePredicate::new("web.rest-review", "eligible").unwrap(),
+                EvidenceValue::Boolean(true),
+                Probability::from_percent(99).unwrap(),
+            )
+            .unwrap();
+            rest_eligible.set_strength(HypothesisStrength::Weak);
+            rest_eligible.set_state(HypothesisState::Supported);
+            knowledge.upsert_hypothesis(rest_eligible).unwrap();
+        }
         planner
             .plan(&knowledge, subject, planning_context())
             .unwrap()

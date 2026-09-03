@@ -12,6 +12,26 @@ project `api.openapi-contract-observed@1` as `Informational` / `KnowledgeOnly`.
 YAML is unsupported in V1, Swagger 2.0 remains metadata-only, redirects are not
 followed, and declared operations are never executed.
 
+## Optional REST read-only review
+
+The non-default `rest-review` feature adds one explicitly enabled child to the
+same `WebAssessmentRuntime`. It requires explicit `--profile web-review` and
+same-run `--openapi-review --rest-review`; missing OpenAPI opt-in is rejected
+before network I/O. Only a complete OpenAPI candidate/replay pair with the same
+semantic digest can supply the catalog. V1 selects at most one anonymous,
+bodyless, exact-origin `GET` with no required path, query, header, or cookie
+input and no auth, request body, cross-origin, or templated-server requirement.
+
+The selected operation receives exactly one candidate and one replay request
+through the parent broker and budget, consuming one logical active
+verification. Stable successful JSON evidence must agree in `Status`,
+`Fields`, and value-sensitive `Resources`. At most one
+`api.rest-readonly-surface-observed@1` item is emitted as `Informational` /
+`KnowledgeOnly`. The review materializes no parameters, executes no writes,
+uses no credentials or cookies, and does not chain the route into SQL, SSTI,
+XSS, authorization, SSRF, or upload review. See
+[REST read-only review](internals/rest-readonly-review.md).
+
 `venom-scanner` contains the default deterministic evidence/reasoning/runtime stack plus feature-gated historical scan contracts, optional analysis modules, plugins, events, persistence models, and bounded report rendering.
 
 ## Default deterministic runtime
@@ -372,6 +392,7 @@ multi-node contract. See [Distributed coordination](distributed.md).
 | `core` | Transport-neutral evidence, knowledge, planning, and verification contracts | Preview |
 | `scanning` | Deterministic evidence, reasoning, planning, execution, verification, and bounded runtime | Preview |
 | `normalization-resilience` | Non-default, explicit `web-review` normalization child for one typed HTML transform with candidate/replay semantic proof; maximum `NeedsReview` / `KnowledgeOnly` | Preview |
+| `rest-review` | Non-default, explicit `web-review` REST child requiring same-run `openapi-review`; maximum one anonymous bodyless exact-origin zero-input GET, two requests/one active verification, `Informational` / `KnowledgeOnly` only | Preview |
 | `authorization-review` | Non-default, explicit `web-review` four-view comparison of one operator-selected exact-origin JSON resource; maximum `NeedsReview` / `KnowledgeOnly` | Preview |
 | `legacy-scanner` | Historical ordered runner, context, phases, and Scanner SDK; separate bounded discovery and active-verification slices within an otherwise unmetered run | Legacy |
 | `platform-models` | Unwired API/auth/dashboard/persistence/post-exploitation/realtime library models | Experimental |

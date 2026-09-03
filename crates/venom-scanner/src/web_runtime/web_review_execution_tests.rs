@@ -69,6 +69,8 @@ fn expected_strategy(kind: NativeWebReviewActionKind) -> Option<PayloadStrategyR
         NativeWebReviewActionKind::ResourceAuthorizationDifferential => return None,
         #[cfg(feature = "openapi-review")]
         NativeWebReviewActionKind::OpenApiDocumentReplay => return None,
+        #[cfg(feature = "rest-review")]
+        NativeWebReviewActionKind::RestReadOnlyReplay => return None,
     };
     Some(PayloadStrategyRef::new(id, revision).unwrap())
 }

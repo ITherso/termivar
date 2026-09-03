@@ -26,6 +26,10 @@ pub(crate) use native_review::{
     native_web_review_response_marker_predicate, NATIVE_WEB_REVIEW_EVIDENCE_NAMESPACE,
     NATIVE_WEB_REVIEW_RESPONSE_MARKER,
 };
+#[cfg(all(feature = "scanning", feature = "rest-review"))]
+pub(crate) use native_review::{
+    rest_review_catalog_ready_predicate, rest_review_phase_terminal_predicate,
+};
 pub use native_review::{
     NativeWebReviewActionKind, NativeWebReviewDifferentialInput, NativeWebReviewRequestLeg,
     NATIVE_WEB_REVIEW_ACTION_COUNT, NATIVE_WEB_REVIEW_ACTIVE_REQUESTS_PER_CASE,

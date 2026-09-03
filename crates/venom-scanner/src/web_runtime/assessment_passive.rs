@@ -37,6 +37,8 @@ use super::openapi_runtime::{project_openapi_item, CommittedOpenApiReview};
 use super::resource_authorization_runtime::{
     project_resource_authorization_item, CommittedResourceAuthorizationReview,
 };
+#[cfg(feature = "rest-review")]
+use super::rest_runtime::{project_rest_item, CommittedRestReview};
 use super::{
     assessment_api_visibility::{project_api_visibility_item, CommittedAssessmentApiVisibility},
     assessment_item::{
@@ -1073,6 +1075,8 @@ pub(crate) struct AssessmentReviewProjectionSources<'a> {
     pub(crate) authorization: Option<&'a CommittedResourceAuthorizationReview>,
     #[cfg(feature = "openapi-review")]
     pub(crate) openapi: Option<&'a CommittedOpenApiReview>,
+    #[cfg(feature = "rest-review")]
+    pub(crate) rest: Option<&'a CommittedRestReview>,
 }
 
 /// Test adapter that projects only the explicitly authorized root.
@@ -1093,6 +1097,8 @@ pub(crate) fn project_passive_assessment_items(
             authorization: None,
             #[cfg(feature = "openapi-review")]
             openapi: None,
+            #[cfg(feature = "rest-review")]
+            rest: None,
         },
         knowledge,
         authorized_root,
@@ -1215,6 +1221,8 @@ fn project_passive_assessment_items_for_root(
             authorization: None,
             #[cfg(feature = "openapi-review")]
             openapi: None,
+            #[cfg(feature = "rest-review")]
+            rest: None,
         },
         knowledge,
         root_subject,
@@ -1314,6 +1322,10 @@ fn project_assessment_items_for_subjects(
     #[cfg(feature = "openapi-review")]
     if let Some(openapi) = reviews.openapi {
         project_openapi_item(&mut context, knowledge, openapi)?;
+    }
+    #[cfg(feature = "rest-review")]
+    if let Some(rest) = reviews.rest {
+        project_rest_item(&mut context, knowledge, rest)?;
     }
     Ok(PassiveAssessmentItemProjection {
         items: context.finish(),

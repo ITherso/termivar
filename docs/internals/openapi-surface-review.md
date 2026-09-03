@@ -47,3 +47,10 @@ credentials, execute described methods, mutate parameters, upload content,
 enumerate resources, test authorization, perform SSRF/OAST, or make
 vulnerability claims. Catalog tags are metadata for future reviewed
 capabilities and create no request obligation.
+
+The separately enabled [REST read-only review](rest-readonly-review.md) is the
+first consumer permitted to use this catalog for a network action. It still
+requires explicit `--rest-review` in the same `web-review` invocation and only
+receives a selection after this OpenAPI candidate/replay pair has committed an
+identical semantic digest. It does not refetch the document or turn the full
+catalog into actions.

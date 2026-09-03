@@ -191,6 +191,38 @@ pub struct ApiVisibilityView {
     limits: ApiVisibilityLimits,
 }
 
+/// Raw-value-free equality across the three exact replay dimensions.
+///
+/// This crate-private result lets native replay capabilities reuse the
+/// canonical API signatures without inventing a semantically inaccurate
+/// public [`ApiVisibilityPairKind`] or exposing either signature.
+#[cfg(feature = "rest-review")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ApiExactReplayComparison {
+    status: bool,
+    fields: bool,
+    resources: bool,
+}
+
+#[cfg(feature = "rest-review")]
+impl ApiExactReplayComparison {
+    pub(crate) const fn status(self) -> bool {
+        self.status
+    }
+
+    pub(crate) const fn fields(self) -> bool {
+        self.fields
+    }
+
+    pub(crate) const fn resources(self) -> bool {
+        self.resources
+    }
+
+    pub(crate) const fn all_equivalent(self) -> bool {
+        self.status && self.fields && self.resources
+    }
+}
+
 impl std::fmt::Debug for ApiVisibilityView {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
@@ -395,6 +427,38 @@ impl ApiVisibilityComparator {
             baseline.resource_scope_id.clone(),
         )?
         .with_observed_at_ms(observed_at_ms))
+    }
+
+    /// Compares two captures of one exact resource without assigning them an
+    /// authorization- or UI-specific public pair meaning.
+    ///
+    /// The validation is intentionally identical to [`Self::compare`]: both
+    /// views must use this comparator's bounds and the same resource/surface,
+    /// while their scanner-owned replay contexts must remain distinct.
+    #[cfg(feature = "rest-review")]
+    pub(crate) fn compare_exact_replay(
+        &self,
+        candidate: &ApiVisibilityView,
+        replay: &ApiVisibilityView,
+    ) -> Result<ApiExactReplayComparison, ApiVisibilityEvidenceError> {
+        if candidate.limits != self.limits || replay.limits != self.limits {
+            return Err(ApiVisibilityEvidenceError::LimitsMismatch);
+        }
+        if candidate.context_id == replay.context_id {
+            return Err(ApiVisibilityEvidenceError::IdenticalContexts);
+        }
+        if candidate.resource_scope_id != replay.resource_scope_id {
+            return Err(ApiVisibilityEvidenceError::ResourceScopeMismatch);
+        }
+        if candidate.surface != replay.surface {
+            return Err(ApiVisibilityEvidenceError::SurfaceMismatch);
+        }
+
+        Ok(ApiExactReplayComparison {
+            status: candidate.status == replay.status,
+            fields: candidate.field_signature == replay.field_signature,
+            resources: candidate.resource_signature == replay.resource_signature,
+        })
     }
 }
 

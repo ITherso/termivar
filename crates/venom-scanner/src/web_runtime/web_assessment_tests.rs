@@ -38,6 +38,10 @@ use crate::web_runtime::assessment_passive::{
 };
 #[cfg(feature = "openapi-review")]
 use crate::web_runtime::openapi_runtime::{OpenApiCandidateSource, OpenApiRuntimeOutcome};
+#[cfg(feature = "rest-review")]
+use crate::web_runtime::rest_runtime::{
+    RestObservedMediaClass, RestRuntimeOutcome, REST_REVIEW_ACTION_ID,
+};
 use crate::web_runtime::{AssessmentBasis, AssessmentDisposition};
 #[cfg(feature = "reporting")]
 use crate::web_runtime::{BuiltInScanProfile, ASSESSMENT_RUN_REPORT_SCHEMA};
@@ -46,7 +50,7 @@ use crate::web_runtime::{
     MAX_AUTHORIZATION_REVIEW_REQUESTS, RESOURCE_AUTHORIZATION_REVIEW_ACTION_ID,
     RESOURCE_AUTHORIZATION_REVIEW_CAPABILITY_ID,
 };
-#[cfg(feature = "authorization-review")]
+#[cfg(any(feature = "authorization-review", feature = "rest-review"))]
 use crate::DecisionActionOrigin;
 use crate::{
     defense::MAX_FINGERPRINT_BODY_SCAN_BYTES,
@@ -1388,6 +1392,619 @@ async fn openapi_review_stalled_candidate_honors_shared_cancellation() {
         .completion()
         .reasons()
         .contains(&WebAssessmentIncompleteReason::OpenApiReviewIncomplete));
+}
+
+#[cfg(feature = "rest-review")]
+const REST_REVIEW_SCALAR_SECRET: &str = "REST-SCALAR-MUST-NOT-LEAK-44B8F1";
+
+#[cfg(feature = "rest-review")]
+#[derive(Clone, Copy)]
+enum RestFixtureMode {
+    Stable,
+    ReplayMismatch,
+    OpenApiReplayMismatch,
+    NoEligibleOperation,
+    Redirect,
+    AuthenticationRequired,
+    Forbidden,
+    NotFound,
+    RateLimited,
+    DefenseChallenge,
+    ServerError,
+    Html,
+    MalformedJson,
+    StructuralLimit,
+    Truncated,
+}
+
+#[cfg(feature = "rest-review")]
+async fn run_rest_fixture(mode: RestFixtureMode) -> (WebAssessmentRunReport, Vec<RecordedRequest>) {
+    run_rest_fixture_with_limits(mode, WebAssessmentLimits::default()).await
+}
+
+#[cfg(feature = "rest-review")]
+async fn run_rest_fixture_with_limits(
+    mode: RestFixtureMode,
+    limits: WebAssessmentLimits,
+) -> (WebAssessmentRunReport, Vec<RecordedRequest>) {
+    let rest_hits = Arc::new(AtomicUsize::new(0));
+    let hits = Arc::clone(&rest_hits);
+    let openapi_hits = Arc::new(AtomicUsize::new(0));
+    let openapi = Arc::clone(&openapi_hits);
+    let server = serve(move |request| {
+        let response = match request.path() {
+            "/" => FixtureResponse::html("fixture root"),
+            "/openapi.json" => {
+                let openapi_hit = openapi.fetch_add(1, Ordering::SeqCst);
+                let document = match mode {
+                    RestFixtureMode::NoEligibleOperation => {
+                        r#"{"openapi":"3.1.0","paths":{"/status":{"get":{"parameters":[{"name":"required","in":"query","required":true,"schema":{"type":"string"}}],"responses":{"200":{"content":{"application/json":{}}}}}}}}"#
+                    },
+                    RestFixtureMode::OpenApiReplayMismatch if openapi_hit > 0 => {
+                        r#"{"openapi":"3.1.0","paths":{"/changed":{"get":{"responses":{"200":{"content":{"application/json":{}}}}}}}}"#
+                    },
+                    _ => {
+                        r#"{"openapi":"3.1.0","paths":{"/status":{"get":{"responses":{"200":{"content":{"application/json":{}}}}}}}}"#
+                    },
+                };
+                FixtureResponse::new("200 OK", Some("application/json"), document)
+            },
+            "/status" => {
+                let hit = hits.fetch_add(1, Ordering::SeqCst);
+                match mode {
+                    RestFixtureMode::Stable | RestFixtureMode::NoEligibleOperation => {
+                        FixtureResponse::new(
+                            "200 OK",
+                            Some("application/json"),
+                            format!(r#"{{"service":{{"state":"{REST_REVIEW_SCALAR_SECRET}"}}}}"#),
+                        )
+                    },
+                    RestFixtureMode::ReplayMismatch if hit > 0 => FixtureResponse::new(
+                        "200 OK",
+                        Some("application/json"),
+                        r#"{"service":{"state":"changed"}}"#,
+                    ),
+                    RestFixtureMode::ReplayMismatch => FixtureResponse::new(
+                        "200 OK",
+                        Some("application/json"),
+                        r#"{"service":{"state":"ready"}}"#,
+                    ),
+                    RestFixtureMode::OpenApiReplayMismatch => FixtureResponse::new(
+                        "200 OK",
+                        Some("application/json"),
+                        r#"{"service":{"state":"must-not-run"}}"#,
+                    ),
+                    RestFixtureMode::Redirect => FixtureResponse::new(
+                        "302 Found",
+                        Some("text/plain"),
+                        "redirect disabled",
+                    )
+                    .with_header("Location", "https://elsewhere.invalid/status"),
+                    RestFixtureMode::AuthenticationRequired => FixtureResponse::new(
+                        "401 Unauthorized",
+                        Some("application/json"),
+                        r#"{"error":"authentication required"}"#,
+                    ),
+                    RestFixtureMode::Forbidden => FixtureResponse::new(
+                        "403 Forbidden",
+                        Some("application/json"),
+                        r#"{"error":"forbidden"}"#,
+                    ),
+                    RestFixtureMode::NotFound => FixtureResponse::new(
+                        "404 Not Found",
+                        Some("application/json"),
+                        r#"{"error":"not found"}"#,
+                    ),
+                    RestFixtureMode::RateLimited => FixtureResponse::new(
+                        "429 Too Many Requests",
+                        Some("application/json"),
+                        r#"{"error":"rate limited"}"#,
+                    ),
+                    RestFixtureMode::DefenseChallenge => FixtureResponse::new(
+                        "403 Forbidden",
+                        Some("text/html"),
+                        "checking your browser before accessing this site",
+                    ),
+                    RestFixtureMode::ServerError => FixtureResponse::new(
+                        "503 Service Unavailable",
+                        Some("application/json"),
+                        r#"{"error":"unavailable"}"#,
+                    ),
+                    RestFixtureMode::Html => FixtureResponse::html("<html>not JSON</html>"),
+                    RestFixtureMode::MalformedJson => {
+                        FixtureResponse::new("200 OK", Some("application/json"), "{")
+                    },
+                    RestFixtureMode::StructuralLimit => FixtureResponse::new(
+                        "200 OK",
+                        Some("application/json"),
+                        format!("{}0{}", "{\"nested\":".repeat(70), "}".repeat(70)),
+                    ),
+                    RestFixtureMode::Truncated => FixtureResponse::new(
+                        "200 OK",
+                        Some("application/json"),
+                        vec![b'x'; 1024],
+                    ),
+                }
+            },
+            _ => FixtureResponse::new("404 Not Found", Some("text/plain"), "not found"),
+        };
+        FixtureReply::Response(response)
+    })
+    .await;
+    let mut runtime = WebAssessmentRuntime::builder(server.url("/"))
+        .limits(limits)
+        .enable_openapi_review()
+        .enable_rest_review()
+        .build()
+        .unwrap();
+    let report = runtime.analyze().await.unwrap();
+    (report, server.requests().await)
+}
+
+#[cfg(feature = "rest-review")]
+async fn run_rest_catalog_fixture(
+    document: &'static str,
+) -> (WebAssessmentRunReport, Vec<RecordedRequest>) {
+    let server = serve(move |request| match request.path() {
+        "/" => FixtureReply::Response(FixtureResponse::html("fixture root")),
+        "/openapi.json" => FixtureReply::Response(FixtureResponse::new(
+            "200 OK",
+            Some("application/json"),
+            document,
+        )),
+        _ => FixtureReply::Response(FixtureResponse::new(
+            "200 OK",
+            Some("application/json"),
+            r#"{"must":"not be requested"}"#,
+        )),
+    })
+    .await;
+    let mut runtime = WebAssessmentRuntime::builder(server.url("/"))
+        .enable_openapi_review()
+        .enable_rest_review()
+        .build()
+        .unwrap();
+    let report = runtime.analyze().await.unwrap();
+    (report, server.requests().await)
+}
+
+#[cfg(feature = "rest-review")]
+#[tokio::test]
+async fn rest_review_uses_stable_openapi_catalog_and_two_parent_broker_gets() {
+    let (report, requests) = run_rest_fixture(RestFixtureMode::Stable).await;
+    assert_report_reconciles(&report);
+    let rest = requests
+        .iter()
+        .filter(|request| request.path() == "/status")
+        .collect::<Vec<_>>();
+    assert_eq!(rest.len(), 2);
+    assert_eq!(report.usage().total_requests(), 5);
+    assert_eq!(report.usage().active_verifications(), 2);
+    let dispatches = report
+        .transport()
+        .receipts()
+        .iter()
+        .filter(|receipt| receipt.action_id() == REST_REVIEW_ACTION_ID)
+        .map(|receipt| (receipt.stage(), receipt.origin()))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        dispatches,
+        [
+            (
+                DecisionExecutionStage::Passive,
+                Some(DecisionActionOrigin::Planned),
+            ),
+            (DecisionExecutionStage::Active, None),
+        ]
+    );
+    for request in rest {
+        assert_eq!(request.method, "GET");
+        assert_eq!(request.target, "/status");
+        assert!(request.body().is_empty());
+        assert_eq!(
+            request.headers.get("accept").map(String::as_str),
+            Some("application/json")
+        );
+        for forbidden in [
+            "authorization",
+            "cookie",
+            "origin",
+            "x-forwarded-for",
+            "x-real-ip",
+            "x-http-method-override",
+        ] {
+            assert!(!request.headers.contains_key(forbidden));
+        }
+    }
+    let audit = report.rest_review_audit().unwrap();
+    assert_eq!(audit.outcome(), RestRuntimeOutcome::SurfaceObserved);
+    assert_eq!(audit.request_count(), 2);
+    assert_eq!(audit.active_verification_count(), 1);
+    assert!(audit.replay_stable());
+    assert!(audit.item_projected());
+    let item = report
+        .assessment_items()
+        .iter()
+        .find(|item| item.capability_id() == "api.rest-readonly-surface-observed@1")
+        .unwrap();
+    assert_eq!(item.disposition(), AssessmentDisposition::Informational);
+    assert!(matches!(item.basis(), AssessmentBasis::Observation(_)));
+    assert!(!format!("{report:?}").contains("/status"));
+    assert!(!format!("{report:?}").contains(REST_REVIEW_SCALAR_SECRET));
+
+    #[cfg(feature = "reporting")]
+    {
+        let product =
+            ReportGenerator::compose_assessment(report, ScanProfileV1::web_review().unwrap())
+                .unwrap();
+        for format in [
+            ReportFormat::Json,
+            ReportFormat::Csv,
+            ReportFormat::Html,
+            ReportFormat::Markdown,
+        ] {
+            let rendered = ReportGenerator::generate_assessment(&product, format).unwrap();
+            assert!(rendered.contains("api.rest-readonly-surface-observed@1"));
+            assert!(rendered.contains("surface_observed"));
+            assert!(!rendered.contains(REST_REVIEW_SCALAR_SECRET));
+            assert!(!rendered.contains("/status"));
+        }
+    }
+}
+
+#[cfg(feature = "rest-review")]
+#[tokio::test]
+async fn rest_review_replay_mismatch_projects_no_rest_item() {
+    let (report, requests) = run_rest_fixture(RestFixtureMode::ReplayMismatch).await;
+    assert_report_reconciles(&report);
+    assert_eq!(
+        requests
+            .iter()
+            .filter(|request| request.path() == "/status")
+            .count(),
+        2
+    );
+    let audit = report.rest_review_audit().unwrap();
+    assert_eq!(audit.outcome(), RestRuntimeOutcome::ReplayMismatch);
+    assert!(!audit.item_projected());
+    assert!(!report
+        .assessment_items()
+        .iter()
+        .any(|item| item.capability_id() == "api.rest-readonly-surface-observed@1"));
+}
+
+#[cfg(feature = "rest-review")]
+#[test]
+fn rest_review_builder_requires_same_run_openapi_before_transport() {
+    let result = WebAssessmentRuntime::builder(Url::parse("https://example.test/").unwrap())
+        .enable_rest_review()
+        .build();
+    let error = match result {
+        Ok(_) => panic!("REST review must require same-run OpenAPI review"),
+        Err(error) => error,
+    };
+    assert!(matches!(
+        error,
+        WebAssessmentRuntimeError::RestReviewRequiresOpenApiReview
+    ));
+}
+
+#[cfg(feature = "rest-review")]
+#[tokio::test]
+async fn rest_review_stable_catalog_without_safe_operation_dispatches_no_rest_request() {
+    let (report, requests) = run_rest_fixture(RestFixtureMode::NoEligibleOperation).await;
+    assert_report_reconciles(&report);
+    assert!(!requests.iter().any(|request| request.path() == "/status"));
+    let audit = report.rest_review_audit().unwrap();
+    assert_eq!(audit.outcome(), RestRuntimeOutcome::NotEligible);
+    assert_eq!(audit.request_count(), 0);
+    assert!(!audit.item_projected());
+}
+
+#[cfg(feature = "rest-review")]
+#[tokio::test]
+async fn rest_review_ineligible_catalog_contracts_never_dispatch_an_operation() {
+    for document in [
+        r#"{"openapi":"3.1.0","paths":{"/items/{id}":{"get":{"parameters":[{"name":"id","in":"path","required":true,"schema":{"type":"string"}}],"responses":{"200":{"content":{"application/json":{}}}}}}}}"#,
+        r#"{"openapi":"3.1.0","paths":{"/items":{"get":{"parameters":[{"name":"filter","in":"query","required":true,"schema":{"type":"string"}}],"responses":{"200":{"content":{"application/json":{}}}}}}}}"#,
+        r#"{"openapi":"3.1.0","paths":{"/items":{"get":{"parameters":[{"name":"x-required","in":"header","required":true,"schema":{"type":"string"}}],"responses":{"200":{"content":{"application/json":{}}}}}}}}"#,
+        r#"{"openapi":"3.1.0","paths":{"/items":{"get":{"parameters":[{"name":"session","in":"cookie","required":true,"schema":{"type":"string"}}],"responses":{"200":{"content":{"application/json":{}}}}}}}}"#,
+        r#"{"openapi":"3.1.0","paths":{"/items":{"get":{"requestBody":{},"responses":{"200":{"content":{"application/json":{}}}}}}}}"#,
+        r#"{"openapi":"3.1.0","components":{"securitySchemes":{"Auth":{"type":"http","scheme":"bearer"}}},"security":[{"Auth":[]}],"paths":{"/items":{"get":{"responses":{"200":{"content":{"application/json":{}}}}}}}}"#,
+        r#"{"openapi":"3.1.0","components":{"securitySchemes":{"Key":{"type":"apiKey","in":"header","name":"X-Key"}}},"security":[{"Key":[]}],"paths":{"/items":{"get":{"responses":{"200":{"content":{"application/json":{}}}}}}}}"#,
+        r#"{"openapi":"3.1.0","components":{"securitySchemes":{"OAuth":{"type":"oauth2","flows":{}}}},"security":[{"OAuth":[]}],"paths":{"/items":{"get":{"responses":{"200":{"content":{"application/json":{}}}}}}}}"#,
+        r#"{"openapi":"3.1.0","servers":[{"url":"https://elsewhere.invalid"}],"paths":{"/items":{"get":{"responses":{"200":{"content":{"application/json":{}}}}}}}}"#,
+        r#"{"openapi":"3.1.0","servers":[{"url":"https://{tenant}.example.test","variables":{"tenant":{}}}],"paths":{"/items":{"get":{"responses":{"200":{"content":{"application/json":{}}}}}}}}"#,
+        r#"{"openapi":"3.1.0","paths":{"/items":{"post":{"responses":{"200":{"content":{"application/json":{}}}}}}}}"#,
+    ] {
+        let (report, requests) = run_rest_catalog_fixture(document).await;
+        assert_report_reconciles(&report);
+        assert_eq!(
+            report.openapi_review_audit().unwrap().outcome(),
+            OpenApiRuntimeOutcome::DocumentObserved
+        );
+        let audit = report.rest_review_audit().unwrap();
+        assert_eq!(audit.outcome(), RestRuntimeOutcome::NotEligible);
+        assert_eq!(audit.request_count(), 0);
+        assert!(!audit.item_projected());
+        assert!(requests
+            .iter()
+            .all(|request| matches!(request.path(), "/" | "/openapi.json")));
+    }
+}
+
+#[cfg(feature = "rest-review")]
+#[tokio::test]
+async fn rest_review_never_runs_when_openapi_candidate_and_replay_differ() {
+    let (report, requests) = run_rest_fixture(RestFixtureMode::OpenApiReplayMismatch).await;
+    assert_report_reconciles(&report);
+    assert!(!requests.iter().any(|request| request.path() == "/status"));
+    assert!(!requests.iter().any(|request| request.path() == "/changed"));
+    assert_eq!(
+        report.openapi_review_audit().unwrap().outcome(),
+        OpenApiRuntimeOutcome::ReplayMismatch
+    );
+    let audit = report.rest_review_audit().unwrap();
+    assert_eq!(audit.outcome(), RestRuntimeOutcome::NotEligible);
+    assert_eq!(audit.request_count(), 0);
+    assert!(!audit.item_projected());
+}
+
+#[cfg(feature = "rest-review")]
+#[tokio::test]
+async fn rest_review_terminal_responses_stop_before_replay_and_project_no_item() {
+    for (mode, expected, status_class, media) in [
+        (
+            RestFixtureMode::Redirect,
+            RestRuntimeOutcome::Redirect,
+            3,
+            RestObservedMediaClass::Text,
+        ),
+        (
+            RestFixtureMode::AuthenticationRequired,
+            RestRuntimeOutcome::AuthenticationRequired,
+            4,
+            RestObservedMediaClass::JsonCompatible,
+        ),
+        (
+            RestFixtureMode::Forbidden,
+            RestRuntimeOutcome::Forbidden,
+            4,
+            RestObservedMediaClass::JsonCompatible,
+        ),
+        (
+            RestFixtureMode::NotFound,
+            RestRuntimeOutcome::NotFound,
+            4,
+            RestObservedMediaClass::JsonCompatible,
+        ),
+        (
+            RestFixtureMode::RateLimited,
+            RestRuntimeOutcome::RateLimited,
+            4,
+            RestObservedMediaClass::JsonCompatible,
+        ),
+        (
+            RestFixtureMode::DefenseChallenge,
+            RestRuntimeOutcome::DefensiveInterference,
+            4,
+            RestObservedMediaClass::Text,
+        ),
+        (
+            RestFixtureMode::ServerError,
+            RestRuntimeOutcome::ServerError,
+            5,
+            RestObservedMediaClass::JsonCompatible,
+        ),
+        (
+            RestFixtureMode::Html,
+            RestRuntimeOutcome::CompleteNonJson,
+            2,
+            RestObservedMediaClass::Text,
+        ),
+        (
+            RestFixtureMode::MalformedJson,
+            RestRuntimeOutcome::Incomplete,
+            2,
+            RestObservedMediaClass::JsonCompatible,
+        ),
+        (
+            RestFixtureMode::StructuralLimit,
+            RestRuntimeOutcome::Incomplete,
+            2,
+            RestObservedMediaClass::JsonCompatible,
+        ),
+    ] {
+        let (report, requests) = run_rest_fixture(mode).await;
+        assert_report_reconciles(&report);
+        assert_eq!(
+            requests
+                .iter()
+                .filter(|request| request.path() == "/status")
+                .count(),
+            1
+        );
+        let audit = report.rest_review_audit().unwrap();
+        assert_eq!(audit.outcome(), expected);
+        assert_eq!(audit.request_count(), 1);
+        assert_eq!(audit.active_verification_count(), 0);
+        assert_eq!(audit.status_class(), Some(status_class));
+        assert_eq!(audit.observed_media(), media);
+        assert!(!audit.item_projected());
+        assert!(!report
+            .assessment_items()
+            .iter()
+            .any(|item| { item.capability_id() == "api.rest-readonly-surface-observed@1" }));
+    }
+}
+
+#[cfg(feature = "rest-review")]
+#[tokio::test]
+async fn rest_review_truncation_and_budget_exhaustion_fail_closed() {
+    let limits = WebAssessmentLimits::default()
+        .with_max_response_body_bytes(512)
+        .unwrap();
+    let (truncated, requests) =
+        run_rest_fixture_with_limits(RestFixtureMode::Truncated, limits).await;
+    assert_report_reconciles(&truncated);
+    assert_eq!(
+        requests
+            .iter()
+            .filter(|request| request.path() == "/status")
+            .count(),
+        1
+    );
+    assert_eq!(
+        truncated.rest_review_audit().unwrap().outcome(),
+        RestRuntimeOutcome::Truncated
+    );
+    assert!(truncated
+        .completion()
+        .reasons()
+        .contains(&WebAssessmentIncompleteReason::RestReviewIncomplete));
+
+    let limits = WebAssessmentLimits::default()
+        .with_max_total_requests(3)
+        .unwrap();
+    let (budgeted, requests) = run_rest_fixture_with_limits(RestFixtureMode::Stable, limits).await;
+    assert_report_reconciles(&budgeted);
+    assert!(!requests.iter().any(|request| request.path() == "/status"));
+    assert_eq!(
+        budgeted.rest_review_audit().unwrap().outcome(),
+        RestRuntimeOutcome::BudgetExhausted
+    );
+    assert!(budgeted
+        .completion()
+        .reasons()
+        .contains(&WebAssessmentIncompleteReason::TotalRequestLimit));
+}
+
+#[cfg(feature = "rest-review")]
+#[tokio::test]
+async fn rest_review_stalled_candidate_honors_parent_cancellation() {
+    let rest_started = Arc::new(Notify::new());
+    let observed = Arc::clone(&rest_started);
+    let server = serve(move |request| match request.path() {
+        "/" => FixtureReply::Response(FixtureResponse::html("fixture root")),
+        "/openapi.json" => FixtureReply::Response(FixtureResponse::new(
+            "200 OK",
+            Some("application/json"),
+            r#"{"openapi":"3.1.0","paths":{"/status":{"get":{"responses":{"200":{"content":{"application/json":{}}}}}}}}"#,
+        )),
+        "/status" => {
+            observed.notify_one();
+            FixtureReply::Stall
+        },
+        _ => FixtureReply::Response(FixtureResponse::new(
+            "404 Not Found",
+            Some("text/plain"),
+            "not found",
+        )),
+    })
+    .await;
+    let cancellation = CancellationToken::new();
+    let cancel = cancellation.clone();
+    let canceller = tokio::spawn(async move {
+        rest_started.notified().await;
+        cancel.cancel();
+    });
+    let mut runtime = WebAssessmentRuntime::builder(server.url("/"))
+        .cancellation_token(cancellation)
+        .enable_openapi_review()
+        .enable_rest_review()
+        .build()
+        .unwrap();
+    let report = runtime.analyze().await.unwrap();
+    canceller.await.unwrap();
+
+    assert_report_reconciles(&report);
+    let audit = report.rest_review_audit().unwrap();
+    assert_eq!(audit.outcome(), RestRuntimeOutcome::Cancelled);
+    assert_eq!(audit.request_count(), 1);
+    assert_eq!(audit.active_verification_count(), 0);
+    assert!(!audit.item_projected());
+    assert_eq!(server.hit_count("/status").await, 1);
+    assert!(report
+        .completion()
+        .reasons()
+        .contains(&WebAssessmentIncompleteReason::HostCancellation));
+    assert!(report
+        .completion()
+        .reasons()
+        .contains(&WebAssessmentIncompleteReason::RestReviewIncomplete));
+    assert!(!report
+        .assessment_items()
+        .iter()
+        .any(|item| item.capability_id() == "api.rest-readonly-surface-observed@1"));
+}
+
+#[cfg(feature = "rest-review")]
+#[tokio::test]
+async fn rest_review_coexists_with_root_authorization_but_remains_anonymous() {
+    let server = serve(|request| match request.path() {
+        "/openapi.json" => FixtureReply::Response(FixtureResponse::new(
+            "200 OK",
+            Some("application/json"),
+            r#"{"openapi":"3.1.0","paths":{"/status":{"get":{"responses":{"200":{"content":{"application/json":{}}}}}}}}"#,
+        )),
+        "/status" => FixtureReply::Response(FixtureResponse::new(
+            "200 OK",
+            Some("application/json"),
+            r#"{"service":{"state":"stable"}}"#,
+        )),
+        "/" if request.headers.contains_key("authorization") => {
+            FixtureReply::Response(FixtureResponse::new(
+                "200 OK",
+                Some("application/json"),
+                r#"{"authorized":true}"#,
+            ))
+        },
+        "/" if request.headers.get("accept").map(String::as_str)
+            == Some("application/json") =>
+        {
+            FixtureReply::Response(FixtureResponse::new(
+                "200 OK",
+                Some("application/json"),
+                r#"{"authorized":false}"#,
+            ))
+        },
+        "/" => FixtureReply::Response(FixtureResponse::html("fixture root")),
+        _ => FixtureReply::Response(FixtureResponse::new(
+            "404 Not Found",
+            Some("text/plain"),
+            "not found",
+        )),
+    })
+    .await;
+    let mut runtime = WebAssessmentRuntime::builder(server.url("/"))
+        .with_root_authorization_context(root_authorization_context())
+        .enable_openapi_review()
+        .enable_rest_review()
+        .build()
+        .unwrap();
+    let report = runtime.analyze().await.unwrap();
+    assert_report_reconciles(&report);
+
+    let requests = server.requests().await;
+    let rest = requests
+        .iter()
+        .filter(|request| request.path() == "/status")
+        .collect::<Vec<_>>();
+    assert_eq!(rest.len(), 2);
+    assert!(rest.iter().all(|request| {
+        !request.headers.contains_key("authorization") && !request.headers.contains_key("cookie")
+    }));
+    assert_eq!(
+        requests
+            .iter()
+            .filter(|request| request.headers.contains_key("authorization"))
+            .count(),
+        1
+    );
+    assert_eq!(
+        report.rest_review_audit().unwrap().outcome(),
+        RestRuntimeOutcome::SurfaceObserved
+    );
 }
 
 #[cfg(feature = "graphql-review")]

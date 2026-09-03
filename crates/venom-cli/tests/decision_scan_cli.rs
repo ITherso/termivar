@@ -284,6 +284,20 @@ fn normalization_resilience_help_and_default_boundary_follow_the_feature() {
 }
 
 #[test]
+fn rest_review_help_and_default_boundary_follow_the_feature() {
+    let help = venom()
+        .args(["scan", "--help"])
+        .output()
+        .expect("failed to run scan help");
+    assert!(help.status.success());
+    let stdout = String::from_utf8(help.stdout).unwrap();
+    assert_eq!(
+        stdout.contains("--rest-review"),
+        cfg!(feature = "rest-review")
+    );
+}
+
+#[test]
 fn resource_authorization_help_and_default_boundary_follow_the_feature() {
     let help = venom()
         .args(["scan", "--help"])
@@ -328,6 +342,42 @@ fn normalization_resilience_rejects_non_review_profiles_before_transport() {
             .args(arguments)
             .output()
             .expect("failed to run invalid normalization-resilience command");
+        assert!(!output.status.success());
+    }
+    assert_eq!(server.connections.load(Ordering::SeqCst), 0);
+}
+
+#[cfg(feature = "rest-review")]
+#[test]
+fn rest_review_rejects_incomplete_or_non_review_opt_in_before_transport() {
+    let server = serve(GENERIC_OK);
+    for arguments in [
+        vec![
+            "scan",
+            "--openapi-review",
+            "--rest-review",
+            server.url.as_str(),
+        ],
+        vec![
+            "scan",
+            "--profile",
+            "baseline",
+            "--openapi-review",
+            "--rest-review",
+            server.url.as_str(),
+        ],
+        vec![
+            "scan",
+            "--profile",
+            "web-review",
+            "--rest-review",
+            server.url.as_str(),
+        ],
+    ] {
+        let output = venom()
+            .args(arguments)
+            .output()
+            .expect("failed to run invalid REST review command");
         assert!(!output.status.success());
     }
     assert_eq!(server.connections.load(Ordering::SeqCst), 0);

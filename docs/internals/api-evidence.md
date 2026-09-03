@@ -359,6 +359,15 @@ finding. The transport-neutral API reasoner remains incapable of dispatching
 these requests; the existing assessment executor owns them through the shared
 broker.
 
+REST read-only review reuses the same raw-value-free comparison foundation for
+an exact replay, not for a cross-principal judgment. After same-run OpenAPI
+candidate/replay stability, at most one anonymous, bodyless, exact-origin
+zero-input `GET` is selected. Its candidate and replay must agree in `Status`,
+`Fields`, and value-sensitive `Resources`. The comparison retains no scalar
+values or response bodies and can produce only the informational
+`api.rest-readonly-surface-observed@1` observation. It grants no execution
+authority to other documented operations or vulnerability families.
+
 ## Commit and reasoning receipts
 
 `ingest_api_visibility_observation` verifies the caller's expected resource

@@ -148,6 +148,23 @@ fn scan_profile_flags_conflict(
     }
 }
 
+/// Returns a stable argument error for the REST review's explicit dependency
+/// on a same-run OpenAPI review. This is evaluated before secret loading or
+/// network construction.
+fn scan_rest_review_flags_conflict(
+    profile: Option<CliScanProfile>,
+    openapi_review: bool,
+    rest_review: bool,
+) -> Option<&'static str> {
+    if rest_review && profile != Some(CliScanProfile::WebReview) {
+        Some("`--rest-review` requires `--profile web-review`")
+    } else if rest_review && !openapi_review {
+        Some("`--rest-review` requires `--openapi-review`")
+    } else {
+        None
+    }
+}
+
 fn scan_report_flags_conflict(
     profile: Option<CliScanProfile>,
     report_format: Option<CliReportFormat>,
@@ -271,6 +288,12 @@ struct ScanArgs {
     #[cfg(feature = "openapi-review")]
     #[arg(long, requires = "profile")]
     openapi_review: bool,
+    /// Explicitly enable the bounded anonymous REST read-only review. This
+    /// option is compiled only with `rest-review` and requires a same-run
+    /// OpenAPI review under `--profile web-review`.
+    #[cfg(feature = "rest-review")]
+    #[arg(long, requires_all = ["profile", "openapi_review"])]
+    rest_review: bool,
     /// Select the centralized typed assessment renderer. Valid only with
     /// `--profile web-review`. Without this option, text maps to Markdown
     /// and JSON maps to JSON for completed web-review reports.
@@ -433,6 +456,8 @@ async fn run_deterministic_scan(invocation: ScanArgs) -> Result<(), Box<dyn std:
         graphql_review,
         #[cfg(feature = "openapi-review")]
         openapi_review,
+        #[cfg(feature = "rest-review")]
+        rest_review,
         report_format,
         report_output,
         auth_env,
@@ -459,6 +484,8 @@ async fn run_deterministic_scan(invocation: ScanArgs) -> Result<(), Box<dyn std:
     let graphql_review = false;
     #[cfg(not(feature = "openapi-review"))]
     let openapi_review = false;
+    #[cfg(not(feature = "rest-review"))]
+    let rest_review = false;
     if scan_flags_conflict(format, explain) {
         use clap::CommandFactory;
         Cli::command()
@@ -466,6 +493,12 @@ async fn run_deterministic_scan(invocation: ScanArgs) -> Result<(), Box<dyn std:
                 clap::error::ErrorKind::ArgumentConflict,
                 "`--explain` applies only to `--format text`; `--format json` already includes full diagnostics",
             )
+            .exit();
+    }
+    if let Some(message) = scan_rest_review_flags_conflict(profile, openapi_review, rest_review) {
+        use clap::CommandFactory;
+        Cli::command()
+            .error(clap::error::ErrorKind::ArgumentConflict, message)
             .exit();
     }
     if let Some(message) = scan_profile_flags_conflict(
@@ -589,6 +622,7 @@ async fn run_deterministic_scan(invocation: ScanArgs) -> Result<(), Box<dyn std:
                 normalization_resilience,
                 graphql_review,
                 openapi_review,
+                rest_review,
                 #[cfg(feature = "authorization-review")]
                 resource_authorization_review,
             },
@@ -978,6 +1012,8 @@ mod tests {
         assert!(!args.graphql_review);
         #[cfg(feature = "openapi-review")]
         assert!(!args.openapi_review);
+        #[cfg(feature = "rest-review")]
+        assert!(!args.rest_review);
         assert_eq!(args.report_format, None);
         assert_eq!(args.report_output, None);
         assert_eq!(args.auth_env, None);
@@ -1018,6 +1054,8 @@ mod tests {
         assert!(!args.graphql_review);
         #[cfg(feature = "openapi-review")]
         assert!(!args.openapi_review);
+        #[cfg(feature = "rest-review")]
+        assert!(!args.rest_review);
         assert_eq!(args.report_format, None);
         assert_eq!(args.report_output, None);
         assert_eq!(args.auth_env, None);
@@ -1405,6 +1443,108 @@ mod tests {
             "--profile",
             "web-review",
             "--openapi-review",
+            "https://example.test/",
+        ])
+        .is_err());
+    }
+
+    #[cfg(feature = "rest-review")]
+    #[test]
+    fn rest_review_requires_explicit_web_review_and_same_run_openapi() {
+        use clap::CommandFactory as _;
+
+        let mut command = Cli::command();
+        let help = command
+            .find_subcommand_mut("scan")
+            .unwrap()
+            .render_long_help()
+            .to_string();
+        assert!(help.contains("--rest-review"));
+
+        assert!(
+            Cli::try_parse_from(["venom", "scan", "--rest-review", "https://example.test/",])
+                .is_err()
+        );
+        assert!(Cli::try_parse_from([
+            "venom",
+            "scan",
+            "--profile",
+            "web-review",
+            "--rest-review",
+            "https://example.test/",
+        ])
+        .is_err());
+
+        let baseline = Cli::try_parse_from([
+            "venom",
+            "scan",
+            "--profile",
+            "baseline",
+            "--openapi-review",
+            "--rest-review",
+            "https://example.test/",
+        ])
+        .expect("the semantic profile guard runs before runtime dispatch");
+        let baseline = parsed_scan_args(&baseline);
+        assert_eq!(baseline.profile, Some(CliScanProfile::Baseline));
+        assert!(baseline.openapi_review);
+        assert!(baseline.rest_review);
+        assert_eq!(
+            scan_rest_review_flags_conflict(
+                Some(CliScanProfile::Baseline),
+                baseline.openapi_review,
+                baseline.rest_review,
+            ),
+            Some("`--rest-review` requires `--profile web-review`")
+        );
+
+        let review = Cli::try_parse_from([
+            "venom",
+            "scan",
+            "--profile",
+            "web-review",
+            "--openapi-review",
+            "--rest-review",
+            "https://example.test/",
+        ])
+        .unwrap();
+        let review = parsed_scan_args(&review);
+        assert_eq!(review.profile, Some(CliScanProfile::WebReview));
+        assert!(review.openapi_review);
+        assert!(review.rest_review);
+        assert_eq!(
+            scan_rest_review_flags_conflict(
+                review.profile,
+                review.openapi_review,
+                review.rest_review
+            ),
+            None
+        );
+        assert_eq!(
+            scan_rest_review_flags_conflict(Some(CliScanProfile::WebReview), false, true),
+            Some("`--rest-review` requires `--openapi-review`")
+        );
+    }
+
+    #[cfg(not(feature = "rest-review"))]
+    #[test]
+    fn default_cli_does_not_parse_the_rest_review_option() {
+        use clap::CommandFactory as _;
+
+        let mut command = Cli::command();
+        let help = command
+            .find_subcommand_mut("scan")
+            .unwrap()
+            .render_long_help()
+            .to_string();
+        assert!(!help.contains("--rest-review"));
+        assert!(Cli::try_parse_from([
+            "venom",
+            "scan",
+            "--profile",
+            "web-review",
+            "--openapi-review",
+            "--rest-review",
             "https://example.test/",
         ])
         .is_err());

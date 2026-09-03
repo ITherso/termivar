@@ -63,6 +63,8 @@ mod graphql_runtime;
 mod openapi_runtime;
 #[cfg(feature = "authorization-review")]
 mod resource_authorization_runtime;
+#[cfg(feature = "rest-review")]
+mod rest_runtime;
 mod scan_profile;
 mod web_assessment;
 mod web_review_decision;
@@ -118,6 +120,12 @@ pub use resource_authorization_runtime::{
     WebAssessmentAuthorizationAudit, MAX_AUTHORIZATION_REVIEW_ACTIVE_VERIFICATIONS,
     MAX_AUTHORIZATION_REVIEW_REQUESTS, MAX_AUTHORIZATION_REVIEW_RESOURCES,
     RESOURCE_AUTHORIZATION_REVIEW_ACTION_ID, RESOURCE_AUTHORIZATION_REVIEW_CAPABILITY_ID,
+};
+#[cfg(feature = "rest-review")]
+pub use rest_runtime::{
+    RestObservedMediaClass, RestRuntimeOutcome, WebAssessmentRestAudit,
+    MAX_REST_REVIEW_ACTIVE_VERIFICATIONS, MAX_REST_REVIEW_REQUESTS, MAX_REST_REVIEW_RESOURCES,
+    REST_REVIEW_ACTION_ID, REST_REVIEW_CAPABILITY_ID,
 };
 #[cfg(feature = "scanning")]
 pub use scan_profile::{
@@ -554,6 +562,8 @@ pub struct StandardWebDecisionRuntimeBuilder {
         Option<resource_authorization_runtime::ResourceAuthorizationReviewConfig>,
     #[cfg(feature = "openapi-review")]
     openapi_review: Option<openapi_runtime::OpenApiReviewConfig>,
+    #[cfg(feature = "rest-review")]
+    rest_review: bool,
 }
 
 struct NativeWebReviewRuntimeConfig {
@@ -604,6 +614,8 @@ impl StandardWebDecisionRuntimeBuilder {
             resource_authorization_review: None,
             #[cfg(feature = "openapi-review")]
             openapi_review: None,
+            #[cfg(feature = "rest-review")]
+            rest_review: false,
         }
     }
 
@@ -740,6 +752,13 @@ impl StandardWebDecisionRuntimeBuilder {
     ) -> Self {
         self.assessment_defense_projection = true;
         self.openapi_review = Some(config);
+        self
+    }
+
+    #[cfg(feature = "rest-review")]
+    pub(in crate::web_runtime) fn with_rest_review(mut self) -> Self {
+        self.assessment_defense_projection = true;
+        self.rest_review = true;
         self
     }
 
@@ -953,6 +972,10 @@ impl StandardWebDecisionRuntimeBuilder {
         &self,
         authorize: impl FnOnce(&Url) -> Result<(), HttpEvidenceError>,
     ) -> Result<StandardWebDecisionRuntimePreflight, StandardWebDecisionRuntimeError> {
+        #[cfg(feature = "rest-review")]
+        if self.rest_review && self.openapi_review.is_none() {
+            return Err(StandardWebDecisionRuntimeError::NativeWebReviewDecisionProfile);
+        }
         let probe = HttpProbe::new(self.target.clone(), HttpProbeMethod::Get)?;
         authorize(probe.url())?;
 
@@ -972,6 +995,10 @@ impl StandardWebDecisionRuntimeBuilder {
         let max_action_cycles = max_action_cycles.saturating_add(
             u32::from(self.openapi_review.is_some())
                 * openapi_runtime::OPENAPI_REVIEW_ACTION_CYCLE_ALLOWANCE,
+        );
+        #[cfg(feature = "rest-review")]
+        let max_action_cycles = max_action_cycles.saturating_add(
+            u32::from(self.rest_review) * rest_runtime::REST_REVIEW_ACTION_CYCLE_ALLOWANCE,
         );
         let config = DecisionLoopConfig::new(
             planning,
@@ -1030,6 +1057,14 @@ impl StandardWebDecisionRuntimeBuilder {
                 subject.clone(),
                 knowledge.clone(),
             )
+        });
+        #[cfg(feature = "rest-review")]
+        let rest_review = self.rest_review.then(|| {
+            let selection = openapi_review
+                .as_ref()
+                .expect("REST preflight requires the same-run OpenAPI binding")
+                .rest_selection_slot();
+            rest_runtime::RestReviewBinding::new(selection, requests.clone(), subject.clone())
         });
 
         let native_executor_profile = match self.native_web_review {
@@ -1137,9 +1172,17 @@ impl StandardWebDecisionRuntimeBuilder {
             .as_ref()
             .map(|profile| profile.actions().collect::<Vec<_>>())
             .unwrap_or_default();
-        #[cfg(any(feature = "authorization-review", feature = "openapi-review"))]
+        #[cfg(any(
+            feature = "authorization-review",
+            feature = "openapi-review",
+            feature = "rest-review"
+        ))]
         let mut native_review_actions = native_executor_actions.clone();
-        #[cfg(not(any(feature = "authorization-review", feature = "openapi-review")))]
+        #[cfg(not(any(
+            feature = "authorization-review",
+            feature = "openapi-review",
+            feature = "rest-review"
+        )))]
         let native_review_actions = native_executor_actions.clone();
         #[cfg(feature = "authorization-review")]
         if resource_authorization_review.is_some() {
@@ -1152,6 +1195,11 @@ impl StandardWebDecisionRuntimeBuilder {
             native_review_actions
                 .push(crate::web_actions::NativeWebReviewActionKind::OpenApiDocumentReplay);
         }
+        #[cfg(feature = "rest-review")]
+        if rest_review.is_some() {
+            native_review_actions
+                .push(crate::web_actions::NativeWebReviewActionKind::RestReadOnlyReplay);
+        }
         if !native_review_actions.is_empty() {
             let profile =
                 NativeWebReviewDecisionProfile::for_actions(native_review_actions.iter().copied())
@@ -1160,7 +1208,15 @@ impl StandardWebDecisionRuntimeBuilder {
             let report = profile
                 .install(&mut decision_loop)
                 .map_err(|_| StandardWebDecisionRuntimeError::NativeWebReviewDecisionProfile)?;
-            debug_assert_eq!(report.reasoning_rules_inserted, 1);
+            #[cfg(feature = "rest-review")]
+            let rest_count = usize::from(rest_review.is_some());
+            #[cfg(not(feature = "rest-review"))]
+            let rest_count = 0;
+            let non_rest_count = native_review_actions.len().saturating_sub(rest_count);
+            debug_assert_eq!(
+                report.reasoning_rules_inserted,
+                usize::from(non_rest_count > 0) + rest_count
+            );
             debug_assert_eq!(report.actions_inserted, native_review_actions.len());
             #[cfg(feature = "authorization-review")]
             let authorization_count = usize::from(resource_authorization_review.is_some());
@@ -1172,11 +1228,11 @@ impl StandardWebDecisionRuntimeBuilder {
             let openapi_count = 0;
             debug_assert_eq!(
                 report.passive_rules_inserted,
-                authorization_count + (2 * openapi_count)
+                authorization_count + (2 * openapi_count) + (2 * rest_count)
             );
             debug_assert_eq!(
                 report.active_rules_inserted,
-                native_review_actions.len() + authorization_count + openapi_count
+                native_review_actions.len() + authorization_count + openapi_count + rest_count
             );
         }
 
@@ -1249,6 +1305,12 @@ impl StandardWebDecisionRuntimeBuilder {
                 .install_into_parent_registry(&mut executors)
                 .map_err(|_| StandardWebDecisionRuntimeError::NativeWebReviewExecutionProfile)?;
         }
+        #[cfg(feature = "rest-review")]
+        if let Some(binding) = rest_review.as_ref() {
+            binding
+                .install_into_parent_registry(&mut executors)
+                .map_err(|_| StandardWebDecisionRuntimeError::NativeWebReviewExecutionProfile)?;
+        }
 
         let mut unsupported_actions: BTreeSet<_> = StandardWebActionKind::all()
             .into_iter()
@@ -1277,6 +1339,8 @@ impl StandardWebDecisionRuntimeBuilder {
             resource_authorization_review,
             #[cfg(feature = "openapi-review")]
             openapi_review,
+            #[cfg(feature = "rest-review")]
+            rest_review,
         })
     }
 }
@@ -1322,6 +1386,8 @@ pub struct StandardWebDecisionRuntime {
         Option<resource_authorization_runtime::ResourceAuthorizationRuntimeBinding>,
     #[cfg(feature = "openapi-review")]
     openapi_review: Option<openapi_runtime::OpenApiRuntimeBinding>,
+    #[cfg(feature = "rest-review")]
+    rest_review: Option<rest_runtime::RestReviewBinding>,
 }
 
 impl StandardWebDecisionRuntime {
@@ -1452,6 +1518,13 @@ impl StandardWebDecisionRuntime {
         &mut self,
     ) -> Option<openapi_runtime::OpenApiRuntimeBinding> {
         self.openapi_review.take()
+    }
+
+    #[cfg(feature = "rest-review")]
+    pub(in crate::web_runtime) fn take_rest_review(
+        &mut self,
+    ) -> Option<rest_runtime::RestReviewBinding> {
+        self.rest_review.take()
     }
 
     /// Collects bootstrap evidence and drives commands to a terminal state.

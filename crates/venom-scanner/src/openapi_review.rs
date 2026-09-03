@@ -567,11 +567,12 @@ impl OpenApiSecurityMetadata {
     }
 }
 
-#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Eq, Ord, PartialEq, PartialOrd)]
 pub struct OpenApiServerMetadata {
     kind: OpenApiServerKind,
     variable_count: usize,
     canonical_identity: [u8; 32],
+    execution_base: Option<Url>,
 }
 
 impl OpenApiServerMetadata {
@@ -582,6 +583,25 @@ impl OpenApiServerMetadata {
     pub const fn variable_count(&self) -> usize {
         self.variable_count
     }
+
+    /// Returns the already-normalized server base only to in-crate execution
+    /// policy. Public metadata deliberately exposes classification, not a URL.
+    #[cfg(feature = "rest-review")]
+    pub(crate) const fn execution_base(&self) -> Option<&Url> {
+        self.execution_base.as_ref()
+    }
+}
+
+impl fmt::Debug for OpenApiServerMetadata {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("OpenApiServerMetadata")
+            .field("kind", &self.kind)
+            .field("variable_count", &self.variable_count)
+            .field("canonical_identity", &"<redacted>")
+            .field("execution_base", &"<redacted>")
+            .finish()
+    }
 }
 
 /// Reduced operation metadata. Debug deliberately omits the raw path.
@@ -591,6 +611,7 @@ pub struct OpenApiOperation {
     path: String,
     method: OpenApiHttpMethod,
     parameters: Vec<OpenApiParameterMetadata>,
+    request_body_declared: bool,
     request_media_types: Vec<String>,
     request_media_families: Vec<OpenApiMediaFamily>,
     responses: Vec<OpenApiResponseMetadata>,
@@ -619,6 +640,12 @@ impl OpenApiOperation {
 
     pub fn parameters(&self) -> &[OpenApiParameterMetadata] {
         &self.parameters
+    }
+
+    /// Returns whether the operation declares a request body, including an
+    /// empty request-body object with no media entries.
+    pub const fn request_body_declared(&self) -> bool {
+        self.request_body_declared
     }
 
     pub fn request_media_types(&self) -> &[String] {
@@ -672,6 +699,7 @@ impl fmt::Debug for OpenApiOperation {
             .field("id", &self.id)
             .field("method", &self.method)
             .field("parameter_count", &self.parameters.len())
+            .field("request_body_declared", &self.request_body_declared)
             .field("request_media_types", &self.request_media_types)
             .field("responses", &self.responses)
             .field("security", &self.security)
@@ -1099,6 +1127,7 @@ fn parse_document(
             if placeholders != declared_path_parameters {
                 return Err(OpenApiReviewError::InvalidOperation);
             }
+            let request_body_declared = operation.contains_key("requestBody");
             let request_media_types = parse_request_media(operation.get("requestBody"))?;
             let request_media_families = media_families(&request_media_types);
             let responses = parse_responses(operation.get("responses"))?;
@@ -1143,6 +1172,7 @@ fn parse_document(
             let candidate_tags = candidate_tags(
                 method,
                 &parameters,
+                request_body_declared,
                 &request_media_types,
                 &responses,
                 &security,
@@ -1152,6 +1182,7 @@ fn parse_document(
                 path,
                 method,
                 parameters: &parameters,
+                request_body_declared,
                 request_media: &request_media_types,
                 responses: &responses,
                 security: &security,
@@ -1166,6 +1197,7 @@ fn parse_document(
                 path: path.clone(),
                 method,
                 parameters,
+                request_body_declared,
                 request_media_types,
                 request_media_families,
                 responses,
@@ -1869,7 +1901,7 @@ fn parse_servers(
             return Err(OpenApiReviewError::CatalogLimit);
         }
         let normalized_input = url.trim().replace('\\', "/");
-        let (kind, canonical_value) =
+        let (kind, canonical_value, execution_base) =
             if normalized_input.contains('{') || normalized_input.contains('}') {
                 let names = server_template_names(&normalized_input)?;
                 let declared = variables
@@ -1878,7 +1910,7 @@ fn parse_servers(
                 if names != declared {
                     return Err(OpenApiReviewError::InvalidOperation);
                 }
-                (OpenApiServerKind::Templated, normalized_input)
+                (OpenApiServerKind::Templated, normalized_input, None)
             } else {
                 let absolute = Url::parse(&normalized_input).ok();
                 let network_path = normalized_input.starts_with("//");
@@ -1888,16 +1920,30 @@ fn parse_servers(
                     .unwrap_or_else(|| origin.join(&normalized_input));
                 match resolved {
                     Ok(server) if !matches!(server.scheme(), "http" | "https") => {
-                        (OpenApiServerKind::Unsupported, server.to_string())
+                        (OpenApiServerKind::Unsupported, server.to_string(), None)
                     },
                     Ok(server) if !same_origin(&server, origin) => {
-                        (OpenApiServerKind::CrossOrigin, server.to_string())
+                        (OpenApiServerKind::CrossOrigin, server.to_string(), None)
                     },
                     Ok(server) if absolute.is_some() || network_path => {
-                        (OpenApiServerKind::ExactOrigin, server.to_string())
+                        let execution_base =
+                            execution_server_base_is_safe(&server).then(|| server.clone());
+                        (
+                            OpenApiServerKind::ExactOrigin,
+                            server.to_string(),
+                            execution_base,
+                        )
                     },
-                    Ok(server) => (OpenApiServerKind::Relative, server.to_string()),
-                    Err(_) => (OpenApiServerKind::Unsupported, normalized_input),
+                    Ok(server) => {
+                        let execution_base =
+                            execution_server_base_is_safe(&server).then(|| server.clone());
+                        (
+                            OpenApiServerKind::Relative,
+                            server.to_string(),
+                            execution_base,
+                        )
+                    },
+                    Err(_) => (OpenApiServerKind::Unsupported, normalized_input, None),
                 }
             };
         servers.push(OpenApiServerMetadata {
@@ -1907,11 +1953,25 @@ fn parse_servers(
                 b"openapi-canonical-server/v1",
                 canonical_value.as_bytes(),
             ),
+            execution_base,
         });
     }
     servers.sort_unstable();
     servers.dedup();
     Ok(servers)
+}
+
+fn execution_server_base_is_safe(server: &Url) -> bool {
+    let path = server.path().to_ascii_lowercase();
+    server.username().is_empty()
+        && server.password().is_none()
+        && server.query().is_none()
+        && server.fragment().is_none()
+        && !path.contains("%2f")
+        && !path.contains("%5c")
+        && !path.contains("%2e")
+        && !server.path().contains(['\\', '\r', '\n', '\0'])
+        && !server.path().contains("//")
 }
 
 fn server_template_names(value: &str) -> Result<BTreeSet<&str>, OpenApiReviewError> {
@@ -1972,6 +2032,7 @@ fn bounded_token(value: Option<&Value>) -> Result<&str, OpenApiReviewError> {
 fn candidate_tags(
     method: OpenApiHttpMethod,
     parameters: &[OpenApiParameterMetadata],
+    request_body_declared: bool,
     request_media: &[String],
     responses: &[OpenApiResponseMetadata],
     security: &OpenApiSecurityMetadata,
@@ -1984,7 +2045,7 @@ fn candidate_tags(
     ) {
         tags.insert(OpenApiCandidateTag::ReadOnly);
     }
-    if !request_media.is_empty() {
+    if request_body_declared {
         tags.insert(OpenApiCandidateTag::BodyBearing);
     }
     if !parameters.is_empty() {
@@ -2077,6 +2138,7 @@ struct OperationIdentityInput<'a> {
     path: &'a str,
     method: OpenApiHttpMethod,
     parameters: &'a [OpenApiParameterMetadata],
+    request_body_declared: bool,
     request_media: &'a [String],
     responses: &'a [OpenApiResponseMetadata],
     security: &'a OpenApiSecurityMetadata,
@@ -2092,15 +2154,7 @@ fn operation_id(input: OperationIdentityInput<'_>) -> OpenApiOperationId {
     update_framed(&mut digest, b"security.openapi-operation/v1");
     update_framed(&mut digest, input.path.as_bytes());
     update_framed(&mut digest, input.method.token().as_bytes());
-    frame_operation_metadata(
-        &mut digest,
-        input.parameters,
-        input.request_media,
-        input.responses,
-        input.security,
-        input.servers,
-        input.tags,
-    );
+    frame_operation_metadata(&mut digest, &input);
     update_framed(&mut digest, input.security_source.token().as_bytes());
     update_framed(
         &mut digest,
@@ -2159,26 +2213,19 @@ fn document_digest(
     format!("openapi-catalog-sha256:{}", hex(&digest.finalize()))
 }
 
-fn frame_operation_metadata(
-    digest: &mut Sha256,
-    parameters: &[OpenApiParameterMetadata],
-    request_media: &[String],
-    responses: &[OpenApiResponseMetadata],
-    security: &OpenApiSecurityMetadata,
-    servers: &[OpenApiServerMetadata],
-    tags: &[OpenApiCandidateTag],
-) {
-    for parameter in parameters {
+fn frame_operation_metadata(digest: &mut Sha256, input: &OperationIdentityInput<'_>) {
+    for parameter in input.parameters {
         update_framed(digest, parameter.location.token().as_bytes());
         update_framed(digest, &[u8::from(parameter.required)]);
         update_framed(digest, &parameter.name_digest);
         update_framed(digest, parameter.schema_kind.token().as_bytes());
         update_framed(digest, parameter.format_class.token().as_bytes());
     }
-    for media in request_media {
+    update_framed(digest, &[u8::from(input.request_body_declared)]);
+    for media in input.request_media {
         update_framed(digest, media.as_bytes());
     }
-    for response in responses {
+    for response in input.responses {
         update_framed(digest, response.status.token().as_bytes());
         match response.status {
             OpenApiResponseStatus::Exact(value) => update_framed(digest, &value.to_be_bytes()),
@@ -2189,17 +2236,17 @@ fn frame_operation_metadata(
             update_framed(digest, media.as_bytes());
         }
     }
-    frame_count(digest, security.alternatives);
-    update_framed(digest, &[u8::from(security.permits_anonymous)]);
-    update_framed(digest, &[u8::from(security.declares_auth)]);
-    frame_count(digest, security.scope_count);
-    for kind in &security.scheme_kinds {
+    frame_count(digest, input.security.alternatives);
+    update_framed(digest, &[u8::from(input.security.permits_anonymous)]);
+    update_framed(digest, &[u8::from(input.security.declares_auth)]);
+    frame_count(digest, input.security.scope_count);
+    for kind in &input.security.scheme_kinds {
         update_framed(digest, kind.token().as_bytes());
     }
-    for server in servers {
+    for server in input.servers {
         frame_server(digest, server);
     }
-    for tag in tags {
+    for tag in input.tags {
         update_framed(digest, tag.token().as_bytes());
     }
 }

@@ -11,6 +11,17 @@ transport-neutral catalog cannot grant execution authority, and described API
 operations are not dispatched. See
 [OpenAPI surface review](internals/openapi-surface-review.md).
 
+The separately non-default `rest-review` feature requires explicit
+`--profile web-review --openapi-review --rest-review`. It consumes only a
+replay-stable OpenAPI catalog committed by that same assessment, selects at
+most one anonymous bodyless exact-origin zero-input `GET`, and runs candidate
+plus replay as two requests and one logical active verification through the
+same `WebAssessmentRuntime`, broker, budget, exact-origin authority, evidence
+registry, completeness lifecycle, and final report. It emits at most
+`Informational` / `KnowledgeOnly`, executes no write, materializes no parameter
+or body, uses no credential/cookie, and does not chain to SQL, SSTI, XSS,
+authorization, SSRF, or upload review.
+
 This document defines dependency direction and runtime ownership for the unreleased Venom `0.10.0-alpha.1` source line. It is a design contract, not a production-readiness claim.
 
 The editable diagrams.net source is [architecture.drawio](architecture.drawio). A presentation- and print-friendly export is available as [architecture.svg](images/architecture.svg).
@@ -319,6 +330,17 @@ typed protocol observations may feed existing API reasoning, but projections
 remain `Informational` / `KnowledgeOnly`. There is no mutation, full schema
 enumeration, authorization testing, depth/complexity probing, second client, or
 WebSocket transport. See [GraphQL surface review](internals/graphql-review.md).
+
+REST read-only review also preserves that boundary. The scanner/CLI
+`rest-review` feature and explicit same-run `openapi-review` plus `web-review`
+choice are required. Only a replay-stable catalog can constrain one anonymous,
+bodyless, exact-origin `GET` with no required inputs. Candidate and replay are
+two parent-broker requests and one active verification; a positive surface
+observation requires stable successful JSON `Status`, `Fields`, and
+value-sensitive `Resources`. It is `Informational` / `KnowledgeOnly` only.
+There is no `RestScanner`, second runtime/client/broker/budget, detached pass,
+write, credential, cookie, parameter/body materialization, or chaining to
+another review family. See [REST read-only review](internals/rest-readonly-review.md).
 
 Resource authorization review follows the same single-scanner rule. The
 non-default scanner/CLI `authorization-review` feature and one explicit

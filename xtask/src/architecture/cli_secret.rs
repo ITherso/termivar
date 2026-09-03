@@ -68,6 +68,7 @@ const CLI_SCAN_FIELDS: &[&str] = &[
     "graphql_review",
     "normalization_resilience",
     "openapi_review",
+    "rest_review",
     "profile",
     "report_format",
     "report_output",
@@ -783,6 +784,20 @@ fn inspect_cli_auth_surface(source: &str) -> Result<Vec<String>, syn::Error> {
     }) {
         violations.push(
             "CLI `openapi_review` must remain an exact cfg-gated bool requiring the explicit scan profile"
+                .to_owned(),
+        );
+    }
+
+    if fields.get("rest_review").is_none_or(|field| {
+        !is_plain_type(&field.ty, "bool")
+            || !exact_cfg_feature_attribute(&field.attrs, "rest-review")
+            || !exact_arg_attribute(
+                &field.attrs,
+                "long,requires_all=[\"profile\",\"openapi_review\"]",
+            )
+    }) {
+        violations.push(
+            "CLI `rest_review` must remain an exact cfg-gated bool requiring the explicit profile and same-run OpenAPI review"
                 .to_owned(),
         );
     }

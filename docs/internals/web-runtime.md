@@ -13,6 +13,19 @@ requests and one logical active verification. A semantic replay mismatch or any
 unsupported, malformed, incomplete, truncated, redirected, or over-limit
 response produces no item.
 
+## Optional REST read-only replay
+
+The non-default `rest-review` child requires explicit `web-review` and
+same-run `openapi-review`. A stable OpenAPI candidate/replay pair may pass one
+deterministically selected anonymous, bodyless, exact-origin `GET` with zero
+required inputs into the existing native action lifecycle. Candidate plus
+replay use exactly two requests and one active verification through the parent
+broker, budget, cancellation, deadline, exact-origin authority, evidence
+registry, completeness lifecycle, and final report. Equivalent successful JSON
+`Status`, `Fields`, and `Resources` can produce only `Informational` /
+`KnowledgeOnly`. No write, credential, cookie, parameter/body materialization,
+or chaining to another review family is permitted.
+
 `StandardWebDecisionRuntime` is the host-facing composition API for one authorized HTTP target. It owns the standard knowledge base, decision loop, executor registry, experience store, and session so a caller does not have to wire those components manually.
 
 ```text

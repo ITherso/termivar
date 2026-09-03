@@ -51,7 +51,8 @@ use crate::payload_strategies::normalization_resilience_query_pair::{
 };
 
 #[cfg(test)]
-pub(crate) const NATIVE_WEB_REVIEW_REASONING_RULE_COUNT: usize = 1;
+pub(crate) const NATIVE_WEB_REVIEW_REASONING_RULE_COUNT: usize =
+    1 + cfg!(feature = "rest-review") as usize;
 #[cfg(test)]
 pub(crate) const NATIVE_WEB_REVIEW_PASSIVE_RULE_COUNT: usize =
     if cfg!(feature = "authorization-review") {
@@ -62,7 +63,7 @@ pub(crate) const NATIVE_WEB_REVIEW_PASSIVE_RULE_COUNT: usize =
         2
     } else {
         0
-    };
+    } + if cfg!(feature = "rest-review") { 2 } else { 0 };
 #[cfg(test)]
 pub(crate) const NATIVE_WEB_REVIEW_ACTIVE_RULE_COUNT: usize = NATIVE_WEB_REVIEW_ACTION_COUNT
     + if cfg!(feature = "authorization-review") {
@@ -74,11 +75,15 @@ pub(crate) const NATIVE_WEB_REVIEW_ACTIVE_RULE_COUNT: usize = NATIVE_WEB_REVIEW_
         1
     } else {
         0
-    };
+    }
+    + if cfg!(feature = "rest-review") { 1 } else { 0 };
 #[cfg(test)]
 pub(crate) const WEB_REVIEW_ELIGIBLE_PREDICATE: &str = "web.review.eligible";
 
 const WEB_REVIEW_ELIGIBLE_RULE_ID: &str = "web.review.reason.eligible-from-response-status@1";
+#[cfg(feature = "rest-review")]
+const REST_REVIEW_ELIGIBLE_RULE_ID: &str =
+    "web.review.reason.rest-eligible-from-stable-openapi-catalog@1";
 
 /// Construction or atomic-installation failure for the opt-in profile.
 #[derive(Debug, Error)]
@@ -114,7 +119,7 @@ pub(crate) struct NativeWebReviewDecisionInstallReport {
 /// Validated, executor-free native web-review decision profile.
 #[derive(Debug, Clone)]
 pub(crate) struct NativeWebReviewDecisionProfile {
-    reasoning_rule: Option<ReasoningRule>,
+    reasoning_rules: Vec<ReasoningRule>,
     enabled_actions: Vec<NativeWebReviewActionKind>,
     actions: Vec<AttackAction>,
     passive_rules: Vec<VerificationRule>,
@@ -175,6 +180,10 @@ impl NativeWebReviewDecisionProfile {
                     VerificationStage::Active,
                 )?);
             }
+            #[cfg(feature = "rest-review")]
+            if kind == NativeWebReviewActionKind::RestReadOnlyReplay {
+                active_rules.push(build_rest_terminal_rule(kind, VerificationStage::Active)?);
+            }
             active_rules.push(build_active_rule(kind)?);
         }
         #[cfg(feature = "authorization-review")]
@@ -198,6 +207,16 @@ impl NativeWebReviewDecisionProfile {
                 NativeWebReviewActionKind::OpenApiDocumentReplay,
             )?);
         }
+        #[cfg(feature = "rest-review")]
+        if enabled_actions.contains(&NativeWebReviewActionKind::RestReadOnlyReplay) {
+            passive_rules.push(build_rest_terminal_rule(
+                NativeWebReviewActionKind::RestReadOnlyReplay,
+                VerificationStage::Passive,
+            )?);
+            passive_rules.push(build_rest_passive_progress_rule(
+                NativeWebReviewActionKind::RestReadOnlyReplay,
+            )?);
+        }
         debug_assert_eq!(actions.len(), enabled_actions.len());
         #[cfg(feature = "authorization-review")]
         let authorization_count = usize::from(
@@ -211,18 +230,39 @@ impl NativeWebReviewDecisionProfile {
         );
         #[cfg(not(feature = "openapi-review"))]
         let openapi_count = 0;
+        #[cfg(feature = "rest-review")]
+        let rest_count =
+            usize::from(enabled_actions.contains(&NativeWebReviewActionKind::RestReadOnlyReplay));
+        #[cfg(not(feature = "rest-review"))]
+        let rest_count = 0;
         debug_assert_eq!(
             passive_rules.len(),
-            authorization_count + (2 * openapi_count)
+            authorization_count + (2 * openapi_count) + (2 * rest_count)
         );
         debug_assert_eq!(
             active_rules.len(),
-            enabled_actions.len() + authorization_count + openapi_count
+            enabled_actions.len() + authorization_count + openapi_count + rest_count
         );
+        let mut reasoning_rules = Vec::new();
+        if enabled_actions.iter().any(|kind| {
+            #[cfg(feature = "rest-review")]
+            {
+                *kind != NativeWebReviewActionKind::RestReadOnlyReplay
+            }
+            #[cfg(not(feature = "rest-review"))]
+            {
+                let _ = kind;
+                true
+            }
+        }) {
+            reasoning_rules.push(build_eligibility_rule()?);
+        }
+        #[cfg(feature = "rest-review")]
+        if rest_count == 1 {
+            reasoning_rules.push(build_rest_eligibility_rule()?);
+        }
         Ok(Self {
-            reasoning_rule: (!enabled_actions.is_empty())
-                .then(build_eligibility_rule)
-                .transpose()?,
+            reasoning_rules,
             enabled_actions,
             actions,
             passive_rules,
@@ -242,13 +282,13 @@ impl NativeWebReviewDecisionProfile {
         decision_loop: &mut DecisionLoop,
     ) -> Result<NativeWebReviewDecisionInstallReport, NativeWebReviewDecisionError> {
         let mut prospective = decision_loop.clone();
-        let reasoning_rules_inserted = match &self.reasoning_rule {
-            Some(rule) => usize::from(matches!(
+        let mut reasoning_rules_inserted = 0;
+        for rule in &self.reasoning_rules {
+            reasoning_rules_inserted += usize::from(matches!(
                 prospective.rules_mut().register(rule.clone())?,
                 RuleWrite::Inserted
-            )),
-            None => 0,
-        };
+            ));
+        }
 
         let mut actions_inserted = 0;
         for action in &self.actions {
@@ -294,6 +334,12 @@ fn eligible_predicate() -> KnowledgePredicate {
         .expect("web.review.eligible is a valid static predicate")
 }
 
+#[cfg(feature = "rest-review")]
+fn rest_eligible_predicate() -> KnowledgePredicate {
+    KnowledgePredicate::new("web.rest-review", "eligible")
+        .expect("web.rest-review.eligible is a valid static predicate")
+}
+
 fn build_eligibility_rule() -> Result<ReasoningRule, RuleEngineError> {
     let status = HttpEvidencePredicate::RESPONSE_STATUS.into_knowledge();
     let calibration = EvidenceCalibration::new(
@@ -317,9 +363,44 @@ fn build_eligibility_rule() -> Result<ReasoningRule, RuleEngineError> {
     )
 }
 
+#[cfg(feature = "rest-review")]
+fn build_rest_eligibility_rule() -> Result<ReasoningRule, RuleEngineError> {
+    let ready = crate::web_actions::rest_review_catalog_ready_predicate();
+    let calibration = EvidenceCalibration::new(
+        EvidenceSelector::equals(ready.clone(), EvidenceValue::Boolean(true)),
+        Probability::from_percent(99).map_err(RuleEngineError::from)?,
+        Probability::from_percent(1)?,
+        "A replay-stable OpenAPI catalog completed bounded REST eligibility selection",
+    )?
+    .with_aggregation(EvidenceAggregation::max_contributions(1)?);
+    ReasoningRule::new(
+        REST_REVIEW_ELIGIBLE_RULE_ID,
+        Expression::equals(
+            KnowledgeLayer::Evidence,
+            ready,
+            EvidenceValue::Boolean(true),
+        ),
+        HypothesisConclusion::new(
+            rest_eligible_predicate(),
+            EvidenceValue::Boolean(true),
+            Probability::from_percent(50)?,
+            HypothesisStrength::Weak,
+            HypothesisState::Supported,
+            vec![calibration],
+        )?,
+    )
+}
+
 fn build_action(
     kind: NativeWebReviewActionKind,
 ) -> Result<AttackAction, NativeWebReviewDecisionError> {
+    #[cfg(feature = "rest-review")]
+    let predicate = if kind == NativeWebReviewActionKind::RestReadOnlyReplay {
+        rest_eligible_predicate()
+    } else {
+        eligible_predicate()
+    };
+    #[cfg(not(feature = "rest-review"))]
     let predicate = eligible_predicate();
     let value = EvidenceValue::Boolean(true);
     let action = AttackAction::new(
@@ -347,6 +428,10 @@ fn build_action(
     }
     #[cfg(feature = "openapi-review")]
     if kind == NativeWebReviewActionKind::OpenApiDocumentReplay {
+        return Ok(action);
+    }
+    #[cfg(feature = "rest-review")]
+    if kind == NativeWebReviewActionKind::RestReadOnlyReplay {
         return Ok(action);
     }
     Ok(action.with_payload_strategy(payload_strategy_ref(kind)?))
@@ -399,6 +484,10 @@ fn payload_strategy_ref(
         },
         #[cfg(feature = "openapi-review")]
         NativeWebReviewActionKind::OpenApiDocumentReplay => {
+            return Err(PayloadStrategyError::DerivationFailed);
+        },
+        #[cfg(feature = "rest-review")]
+        NativeWebReviewActionKind::RestReadOnlyReplay => {
             return Err(PayloadStrategyError::DerivationFailed);
         },
     };
@@ -486,6 +575,57 @@ fn build_openapi_passive_progress_rule(
         OutcomeStatus::NeedsReview,
         Probability::from_percent(99).map_err(RuleEngineError::from)?,
         "The bounded OpenAPI candidate was observed and requires an independent active replay",
+    )?
+    .scoped_to_action(kind.action_id())?
+    .with_case_correlated_evidence()
+}
+
+#[cfg(feature = "rest-review")]
+fn build_rest_terminal_rule(
+    kind: NativeWebReviewActionKind,
+    stage: VerificationStage,
+) -> Result<VerificationRule, VerificationError> {
+    let stage_slug = match stage {
+        VerificationStage::Passive => "passive",
+        VerificationStage::Active => "active",
+        _ => {
+            return Err(VerificationError::EmptyValue {
+                field: "REST review verification stage",
+            });
+        },
+    };
+    VerificationRule::new(
+        format!("web.review.verify.{stage_slug}.rest-readonly-terminal@1"),
+        stage,
+        1_000,
+        Expression::equals(
+            KnowledgeLayer::Evidence,
+            crate::web_actions::rest_review_phase_terminal_predicate(),
+            EvidenceValue::Boolean(true),
+        ),
+        OutcomeStatus::Blocked,
+        Probability::from_percent(99).map_err(RuleEngineError::from)?,
+        "REST review stopped after a terminal bounded transport or response outcome",
+    )?
+    .scoped_to_action(kind.action_id())?
+    .with_case_correlated_evidence()
+}
+
+#[cfg(feature = "rest-review")]
+fn build_rest_passive_progress_rule(
+    kind: NativeWebReviewActionKind,
+) -> Result<VerificationRule, VerificationError> {
+    VerificationRule::new(
+        "web.review.verify.passive.rest-readonly-candidate-observed@1",
+        VerificationStage::Passive,
+        500,
+        Expression::exists(
+            KnowledgeLayer::Evidence,
+            native_web_review_response_marker_predicate(),
+        ),
+        OutcomeStatus::NeedsReview,
+        Probability::from_percent(99).map_err(RuleEngineError::from)?,
+        "The bounded REST candidate was observed and requires an independent active replay",
     )?
     .scoped_to_action(kind.action_id())?
     .with_case_correlated_evidence()
