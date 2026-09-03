@@ -32,9 +32,9 @@ jobs:
           mkdir -p target/quality-metrics
           build_started=$(date +%s)
           /usr/bin/time -v -o target/quality-metrics/build-time.txt \
-            cargo build --locked --release -p venom-cli --timings
+            cargo build --locked --release -p termivar-cli --timings
           build_seconds=$(($(date +%s) - build_started))
-          binary_bytes=$(stat --format=%s target/release/venom)
+          binary_bytes=$(stat --format=%s target/release/termivar)
           build_peak_kib=$(awk -F: '/Maximum resident set size/ {gsub(/^[[:space:]]+/, "", $2); print $2}' target/quality-metrics/build-time.txt)
           cp target/cargo-timings/cargo-timing.html target/quality-metrics/
           printf '%s\n' "$build_seconds" > target/quality-metrics/build-seconds.txt
@@ -47,7 +47,7 @@ jobs:
           set -euo pipefail
           benchmark_started=$(date +%s)
           /usr/bin/time -v -o target/quality-metrics/benchmark-time.txt \
-            cargo bench --locked -p venom-scanner --bench scanner_benchmarks -- --noplot
+            cargo bench --locked -p termivar-scanner --bench scanner_benchmarks -- --noplot
           benchmark_seconds=$(($(date +%s) - benchmark_started))
           benchmark_peak_kib=$(awk -F: '/Maximum resident set size/ {gsub(/^[[:space:]]+/, "", $2); print $2}' target/quality-metrics/benchmark-time.txt)
           printf '%s\n' "$benchmark_seconds" > target/quality-metrics/benchmark-seconds.txt
@@ -63,7 +63,7 @@ jobs:
           benchmark_seconds=$(cat target/quality-metrics/benchmark-seconds.txt)
           benchmark_peak_kib=$(cat target/quality-metrics/benchmark-peak-rss-kib.txt)
           {
-            echo "# Venom quality metrics"
+            echo "# Termivar quality metrics"
             echo
             echo "Commit: \`${GITHUB_SHA}\`"
             echo

@@ -6,7 +6,7 @@ use std::{
     io::Read,
     path::{Path, PathBuf},
 };
-use venom_artifact::{
+use termivar_artifact::{
     ArtifactCatalog, ArtifactCatalogBuilder, ArtifactSignaturePack, MAX_SIGNATURE_MANIFEST_BYTES,
 };
 
@@ -316,7 +316,7 @@ mod tests {
     #[test]
     fn unexpected_or_unsafe_pack_paths_are_rejected() {
         let (_temporary, root) = pack_root();
-        let pack = root.join("lab/venom-canary");
+        let pack = root.join("lab/termivar-canary");
         fs::create_dir_all(&pack).expect("create pack directory");
         fs::write(pack.join("scan.ps1"), b"not executed").expect("write unexpected file");
         let error = discover_manifest_paths(&root).expect_err("unexpected file must fail");
@@ -350,7 +350,7 @@ mod tests {
         assert_eq!(summary.signature_count, 4);
         assert_eq!(
             summary.catalog_digest,
-            "artifact-catalog-sha256:8b844c968ff62cd8c3fec8865872b27f9a928560ecb08dc1ea44f64b22aed5a6"
+            "artifact-catalog-sha256:a817ff9cbfe4a58fbeda8ed8741ecfaf33134b00dd0c77539fc547ef8189620a"
         );
         assert_eq!(summary, repeated);
     }
@@ -362,7 +362,7 @@ mod tests {
             .expect("xtask must live below workspace root")
             .to_path_buf();
         let source = read_bounded(
-            &repository_root.join("artifact-signatures/lab/venom-canary/signatures.toml"),
+            &repository_root.join("artifact-signatures/lab/termivar-canary/signatures.toml"),
             MAX_SIGNATURE_MANIFEST_BYTES,
         )
         .expect("read repository manifest");

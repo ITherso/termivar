@@ -20,11 +20,11 @@ fn committed_html_form_control_corpus_satisfies_the_semantic_oracle() {
     for seed in seeds {
         let data = fs::read(&seed).expect("committed HTML seed must be readable");
         assert!(
-            data.len() <= venom_fuzz_harness::MAX_HTML_FUZZ_INPUT_BYTES,
+            data.len() <= termivar_fuzz_harness::MAX_HTML_FUZZ_INPUT_BYTES,
             "seed exceeds the harness input bound: {}",
             seed.display()
         );
-        venom_fuzz_harness::check_html_form_controls(&data);
+        termivar_fuzz_harness::check_html_form_controls(&data);
     }
 }
 
@@ -33,8 +33,8 @@ fn committed_expression_corpus_satisfies_the_semantic_oracle() {
     replay_json_corpus(
         "expression_semantics",
         13,
-        venom_fuzz_harness::MAX_SEMANTIC_FUZZ_INPUT_BYTES,
-        venom_fuzz_harness::check_expression_semantics,
+        termivar_fuzz_harness::MAX_SEMANTIC_FUZZ_INPUT_BYTES,
+        termivar_fuzz_harness::check_expression_semantics,
     );
 }
 
@@ -43,8 +43,8 @@ fn committed_declarative_policy_corpus_satisfies_the_semantic_oracle() {
     replay_json_corpus(
         "declarative_policy_wire",
         22,
-        venom_fuzz_harness::MAX_SEMANTIC_FUZZ_INPUT_BYTES,
-        venom_fuzz_harness::check_declarative_policy_wire,
+        termivar_fuzz_harness::MAX_SEMANTIC_FUZZ_INPUT_BYTES,
+        termivar_fuzz_harness::check_declarative_policy_wire,
     );
 }
 
@@ -53,8 +53,8 @@ fn committed_decision_loop_authority_corpus_satisfies_the_semantic_oracle() {
     replay_json_corpus(
         "decision_loop_authority",
         14,
-        venom_fuzz_harness::MAX_AUTHORITY_FUZZ_INPUT_BYTES,
-        venom_fuzz_harness::check_decision_loop_authority,
+        termivar_fuzz_harness::MAX_AUTHORITY_FUZZ_INPUT_BYTES,
+        termivar_fuzz_harness::check_decision_loop_authority,
     );
 }
 
@@ -62,7 +62,7 @@ fn committed_decision_loop_authority_corpus_satisfies_the_semantic_oracle() {
 fn bounded_decision_loop_authority_models_cover_numeric_edges() {
     for scenario in 0_u8..14 {
         for boundary in [0_u8, 1, 4, 63, 64, 99, 100, u8::MAX] {
-            venom_fuzz_harness::check_decision_loop_authority(&[
+            termivar_fuzz_harness::check_decision_loop_authority(&[
                 scenario,
                 boundary,
                 u8::MAX - boundary,
@@ -86,10 +86,10 @@ fn bounded_openapi_regression_inputs_satisfy_the_semantic_oracle() {
         &br#"{"openapi":"3.1.0","servers":[{"url":"https://{tenant}.example.test","variables":{"tenant":{"default":"api"}}}],"components":{"securitySchemes":{"bearer":{"type":"http","scheme":"bearer"}}},"security":[{"bearer":[]}],"paths":{"/items":{"post":{"requestBody":{"content":{"application/problem+json":{}}},"responses":{"2XX":{},"default":{}}}}}}"#[..],
     ] {
         assert!(
-            seed.len() <= venom_fuzz_harness::MAX_OPENAPI_FUZZ_INPUT_BYTES,
+            seed.len() <= termivar_fuzz_harness::MAX_OPENAPI_FUZZ_INPUT_BYTES,
             "OpenAPI regression seed exceeds the harness input bound"
         );
-        venom_fuzz_harness::check_openapi_review(seed);
+        termivar_fuzz_harness::check_openapi_review(seed);
     }
 }
 

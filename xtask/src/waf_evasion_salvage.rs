@@ -7,7 +7,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     fs::{self, File},
     io::Read,
-    path::Path,
+    path::{Path, PathBuf},
     process::Command,
 };
 
@@ -1048,7 +1048,7 @@ fn validate_current_replacement_paths(workspace_root: &Path, ledger: &SalvageLed
                 )
             }))
     }) {
-        let absolute = workspace_root.join(path);
+        let absolute = current_replacement_path(workspace_root, path);
         let metadata = fs::symlink_metadata(&absolute).map_err(|error| {
             format!("current replacement path for {owner} is missing ({path}): {error}")
         })?;
@@ -1060,6 +1060,23 @@ fn validate_current_replacement_paths(workspace_root: &Path, ledger: &SalvageLed
         }
     }
     Ok(())
+}
+
+/// Resolves only the live filesystem side of the controlled product rename.
+///
+/// The ledger's `crates/venom-scanner/...` strings are immutable historical
+/// compatibility data and remain bound into its semantic digest and generated
+/// report. They now point at the same implementation under the renamed current
+/// crate directory; historical Git tree validation continues to use the
+/// original paths without this adapter.
+fn current_replacement_path(workspace_root: &Path, ledger_path: &str) -> PathBuf {
+    const FORMER_CURRENT_PREFIX: &str = "crates/venom-scanner/";
+    const CURRENT_PREFIX: &str = "crates/termivar-scanner/";
+
+    match ledger_path.strip_prefix(FORMER_CURRENT_PREFIX) {
+        Some(suffix) => workspace_root.join(format!("{CURRENT_PREFIX}{suffix}")),
+        None => workspace_root.join(ledger_path),
+    }
 }
 
 fn validate_prior_ledger(workspace_root: &Path, ledger: &SalvageLedger) -> TaskResult {
@@ -2017,6 +2034,39 @@ mod tests {
         fixture.files[0].current_replacement_paths = vec!["directory".to_owned()];
         fs::create_dir(temporary.path().join("directory")).expect("create directory");
         assert!(validate_current_replacement_paths(temporary.path(), &fixture).is_err());
+    }
+
+    #[test]
+    fn historical_replacement_paths_resolve_to_the_renamed_live_crate_only() {
+        let temporary = TempDir::new().expect("temporary directory");
+        let live = temporary
+            .path()
+            .join("crates/termivar-scanner/src/defense/state.rs");
+        fs::create_dir_all(live.parent().unwrap()).expect("create live crate path");
+        fs::write(&live, b"source").expect("write replacement");
+
+        assert_eq!(
+            current_replacement_path(
+                temporary.path(),
+                "crates/venom-scanner/src/defense/state.rs"
+            ),
+            live
+        );
+        assert_eq!(
+            current_replacement_path(temporary.path(), "replacement.rs"),
+            temporary.path().join("replacement.rs")
+        );
+
+        let mut fixture = ledger();
+        for file in &mut fixture.files {
+            file.current_replacement_paths.clear();
+            for component in &mut file.components {
+                component.current_replacement_paths.clear();
+            }
+        }
+        fixture.files[0].current_replacement_paths =
+            vec!["crates/venom-scanner/src/defense/state.rs".to_owned()];
+        assert!(validate_current_replacement_paths(temporary.path(), &fixture).is_ok());
     }
 
     #[test]

@@ -1229,6 +1229,62 @@ dependencies = [
 ]
 
 [[package]]
+name = "termivar-core"
+version = "0.10.0-alpha.1"
+dependencies = [
+ "chrono",
+ "hex",
+ "serde",
+ "sha2",
+ "thiserror 1.0.69",
+ "uuid",
+]
+
+[[package]]
+name = "termivar-fuzz"
+version = "0.0.0"
+dependencies = [
+ "httparse",
+ "libfuzzer-sys",
+ "quick-xml",
+ "serde_json",
+ "serde_yaml",
+ "termivar-fuzz-harness",
+ "url",
+]
+
+[[package]]
+name = "termivar-fuzz-harness"
+version = "0.0.0"
+dependencies = [
+ "html5ever",
+ "markup5ever_rcdom",
+ "serde_json",
+ "termivar-core",
+ "termivar-scanner",
+]
+
+[[package]]
+name = "termivar-scanner"
+version = "0.10.0-alpha.1"
+dependencies = [
+ "async-trait",
+ "base64",
+ "html5ever",
+ "markup5ever_rcdom",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2",
+ "termivar-core",
+ "thiserror 1.0.69",
+ "tokio",
+ "tokio-util",
+ "toml",
+ "url",
+]
+
+[[package]]
 name = "thiserror"
 version = "1.0.69"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1507,62 +1563,6 @@ dependencies = [
  "js-sys",
  "serde_core",
  "wasm-bindgen",
-]
-
-[[package]]
-name = "venom-core"
-version = "0.10.0-alpha.1"
-dependencies = [
- "chrono",
- "hex",
- "serde",
- "sha2",
- "thiserror 1.0.69",
- "uuid",
-]
-
-[[package]]
-name = "venom-fuzz"
-version = "0.0.0"
-dependencies = [
- "httparse",
- "libfuzzer-sys",
- "quick-xml",
- "serde_json",
- "serde_yaml",
- "url",
- "venom-fuzz-harness",
-]
-
-[[package]]
-name = "venom-fuzz-harness"
-version = "0.0.0"
-dependencies = [
- "html5ever",
- "markup5ever_rcdom",
- "serde_json",
- "venom-core",
- "venom-scanner",
-]
-
-[[package]]
-name = "venom-scanner"
-version = "0.10.0-alpha.1"
-dependencies = [
- "async-trait",
- "base64",
- "html5ever",
- "markup5ever_rcdom",
- "reqwest",
- "serde",
- "serde_json",
- "sha2",
- "thiserror 1.0.69",
- "tokio",
- "tokio-util",
- "toml",
- "url",
- "venom-core",
 ]
 
 [[package]]

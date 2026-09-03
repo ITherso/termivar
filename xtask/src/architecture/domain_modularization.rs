@@ -578,7 +578,7 @@ const FACADES: &[FacadeDomain] = &[
 ];
 
 pub(super) fn check(workspace_root: &Path) -> Result<Vec<String>, Box<dyn Error>> {
-    let source_root = workspace_root.join("crates/venom-scanner/src");
+    let source_root = workspace_root.join("crates/termivar-scanner/src");
     let mut violations = Vec::new();
     for facade in FACADES {
         violations.extend(inspect_facade(&source_root, facade)?);

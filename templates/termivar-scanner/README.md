@@ -1,0 +1,22 @@
+# {{ project-name }}
+
+{{ scanner_description }}
+
+This project composes application-owned historical phases through `ScannerSdk`.
+The generated dependency explicitly enables Termivar's non-default
+`legacy-scanner` feature; it is not an extension loaded by the canonical bounded
+`termivar scan` runtime. Detection logic stays in `ScanPhase` implementations;
+Termivar owns phase ordering, timeout, cancellation, events, and typed run-report
+construction. Raw phase strings do not cross the SDK boundary: unresolved
+legacy records are projected as informational `Unknown` observations with zero
+confidence and no fabricated evidence IDs. Whole-run request and body resource
+dimensions are reported as unmetered: Termivar's bounded discovery and
+active-verification slices cannot account for transport performed by this
+custom phase or by built-in reconnaissance.
+
+```bash
+cargo run -- https://target-you-are-authorized-to-test.example
+```
+
+The template tracks Termivar `main` during alpha. Pin a release tag or commit before
+publishing or distributing a scanner.

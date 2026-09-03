@@ -20,99 +20,103 @@ use super::{
 
 /// Production modules that consume the bounded standard decision runtime.
 const BOUNDED_RUNTIME_SOURCES: &[&str] = &[
-    "crates/venom-cli/src/assessment_scan.rs",
-    "crates/venom-scanner/src/decision_loop.rs",
-    "crates/venom-scanner/src/decision_loop/command.rs",
-    "crates/venom-scanner/src/decision_loop/policy.rs",
-    "crates/venom-scanner/src/decision_loop/receipts.rs",
-    "crates/venom-scanner/src/decision_loop/state.rs",
-    "crates/venom-scanner/src/decision_runner.rs",
-    "crates/venom-scanner/src/decision_runner/execution.rs",
-    "crates/venom-scanner/src/decision_runner/failures.rs",
-    "crates/venom-scanner/src/decision_runner/receipts.rs",
-    "crates/venom-scanner/src/decision_runner/registry.rs",
+    "crates/termivar-cli/src/assessment_scan.rs",
+    "crates/termivar-scanner/src/decision_loop.rs",
+    "crates/termivar-scanner/src/decision_loop/command.rs",
+    "crates/termivar-scanner/src/decision_loop/policy.rs",
+    "crates/termivar-scanner/src/decision_loop/receipts.rs",
+    "crates/termivar-scanner/src/decision_loop/state.rs",
+    "crates/termivar-scanner/src/decision_runner.rs",
+    "crates/termivar-scanner/src/decision_runner/execution.rs",
+    "crates/termivar-scanner/src/decision_runner/failures.rs",
+    "crates/termivar-scanner/src/decision_runner/receipts.rs",
+    "crates/termivar-scanner/src/decision_runner/registry.rs",
     ASSESSMENT_API_VISIBILITY_SOURCE,
     ASSESSMENT_ITEM_SOURCE,
-    "crates/venom-scanner/src/web_runtime/assessment_passive.rs",
+    "crates/termivar-scanner/src/web_runtime/assessment_passive.rs",
     ASSESSMENT_REVIEW_SOURCE,
     ASSESSMENT_REVIEW_PROJECTION_SOURCE,
-    "crates/venom-scanner/src/web_runtime/assessment_report.rs",
-    "crates/venom-scanner/src/web_runtime/assessment_defense.rs",
-    "crates/venom-scanner/src/http_evidence.rs",
-    "crates/venom-scanner/src/http_evidence/form_controls.rs",
-    "crates/venom-scanner/src/http_evidence/policy.rs",
-    "crates/venom-scanner/src/http_evidence/probe.rs",
-    "crates/venom-scanner/src/http_evidence/response.rs",
+    "crates/termivar-scanner/src/web_runtime/assessment_report.rs",
+    "crates/termivar-scanner/src/web_runtime/assessment_defense.rs",
+    "crates/termivar-scanner/src/http_evidence.rs",
+    "crates/termivar-scanner/src/http_evidence/form_controls.rs",
+    "crates/termivar-scanner/src/http_evidence/policy.rs",
+    "crates/termivar-scanner/src/http_evidence/probe.rs",
+    "crates/termivar-scanner/src/http_evidence/response.rs",
     HTTP_REVIEW_RESPONSE_SOURCE,
-    "crates/venom-scanner/src/payload_strategy.rs",
-    "crates/venom-scanner/src/planner.rs",
-    "crates/venom-scanner/src/planner/model.rs",
-    "crates/venom-scanner/src/planner/policy.rs",
-    "crates/venom-scanner/src/planner/scoring.rs",
-    "crates/venom-scanner/src/planner/selection.rs",
-    "crates/venom-scanner/src/runtime_budget.rs",
-    "crates/venom-scanner/src/web_runtime/scan_profile.rs",
-    "crates/venom-scanner/src/verification.rs",
-    "crates/venom-scanner/src/web_actions.rs",
+    "crates/termivar-scanner/src/payload_strategy.rs",
+    "crates/termivar-scanner/src/planner.rs",
+    "crates/termivar-scanner/src/planner/model.rs",
+    "crates/termivar-scanner/src/planner/policy.rs",
+    "crates/termivar-scanner/src/planner/scoring.rs",
+    "crates/termivar-scanner/src/planner/selection.rs",
+    "crates/termivar-scanner/src/runtime_budget.rs",
+    "crates/termivar-scanner/src/web_runtime/scan_profile.rs",
+    "crates/termivar-scanner/src/verification.rs",
+    "crates/termivar-scanner/src/web_actions.rs",
     NATIVE_REVIEW_ACTION_SOURCE,
-    "crates/venom-scanner/src/web_runtime/web_assessment.rs",
+    "crates/termivar-scanner/src/web_runtime/web_assessment.rs",
     ATTRIBUTE_BOUNDARY_MATCHER_SOURCE,
     ATTRIBUTE_SOURCE_CONTEXT_SOURCE,
     JAVASCRIPT_SOURCE_CONTEXT_SOURCE,
-    "crates/venom-scanner/src/web_runtime/web_assessment/normalization_transform_catalog.rs",
-    "crates/venom-scanner/src/web_runtime/web_assessment/discovery.rs",
-    "crates/venom-scanner/src/web_runtime/web_assessment/reflection_context.rs",
-    "crates/venom-scanner/src/web_runtime/web_assessment/semantic.rs",
-    "crates/venom-scanner/src/web_runtime/web_assessment/xss_probe_catalog.rs",
-    "crates/venom-scanner/src/web_decision.rs",
-    "crates/venom-scanner/src/web_execution.rs",
-    "crates/venom-scanner/src/web_planning.rs",
-    "crates/venom-scanner/src/web_reasoning.rs",
-    "crates/venom-scanner/src/web_runtime.rs",
+    "crates/termivar-scanner/src/web_runtime/web_assessment/normalization_transform_catalog.rs",
+    "crates/termivar-scanner/src/web_runtime/web_assessment/discovery.rs",
+    "crates/termivar-scanner/src/web_runtime/web_assessment/reflection_context.rs",
+    "crates/termivar-scanner/src/web_runtime/web_assessment/semantic.rs",
+    "crates/termivar-scanner/src/web_runtime/web_assessment/xss_probe_catalog.rs",
+    "crates/termivar-scanner/src/web_decision.rs",
+    "crates/termivar-scanner/src/web_execution.rs",
+    "crates/termivar-scanner/src/web_planning.rs",
+    "crates/termivar-scanner/src/web_reasoning.rs",
+    "crates/termivar-scanner/src/web_runtime.rs",
     GRAPHQL_RUNTIME_SOURCE,
     OPENAPI_RUNTIME_SOURCE,
     REST_RUNTIME_SOURCE,
     RESOURCE_AUTHORIZATION_RUNTIME_SOURCE,
     NATIVE_REVIEW_DECISION_SOURCE,
     NATIVE_REVIEW_EXECUTION_SOURCE,
-    "crates/venom-scanner/src/web_runtime/authority.rs",
-    "crates/venom-scanner/src/web_runtime/api_visibility.rs",
-    "crates/venom-scanner/src/web_runtime/api_visibility/differential.rs",
-    "crates/venom-scanner/src/web_runtime/api_visibility/differential/execution.rs",
-    "crates/venom-scanner/src/web_verification.rs",
+    "crates/termivar-scanner/src/web_runtime/authority.rs",
+    "crates/termivar-scanner/src/web_runtime/api_visibility.rs",
+    "crates/termivar-scanner/src/web_runtime/api_visibility/differential.rs",
+    "crates/termivar-scanner/src/web_runtime/api_visibility/differential/execution.rs",
+    "crates/termivar-scanner/src/web_verification.rs",
 ];
 
 /// The sole raw HTTP-client owner in the bounded runtime.
-const TRANSPORT_OWNER_SOURCE: &str = "crates/venom-scanner/src/http_evidence/request_broker.rs";
-const SHARED_RUNTIME_AUTHORITY_SOURCE: &str = "crates/venom-scanner/src/web_runtime/authority.rs";
-const LEGACY_DISCOVERY_AUTHORITY_SOURCE: &str = "crates/venom-scanner/src/legacy_discovery.rs";
+const TRANSPORT_OWNER_SOURCE: &str = "crates/termivar-scanner/src/http_evidence/request_broker.rs";
+const SHARED_RUNTIME_AUTHORITY_SOURCE: &str =
+    "crates/termivar-scanner/src/web_runtime/authority.rs";
+const LEGACY_DISCOVERY_AUTHORITY_SOURCE: &str = "crates/termivar-scanner/src/legacy_discovery.rs";
 const ASSESSMENT_API_VISIBILITY_SOURCE: &str =
-    "crates/venom-scanner/src/web_runtime/assessment_api_visibility.rs";
-const ASSESSMENT_ITEM_SOURCE: &str = "crates/venom-scanner/src/web_runtime/assessment_item.rs";
-const ASSESSMENT_REPORT_SOURCE: &str = "crates/venom-scanner/src/web_runtime/assessment_report.rs";
-const ASSESSMENT_REVIEW_SOURCE: &str = "crates/venom-scanner/src/web_runtime/assessment_review.rs";
+    "crates/termivar-scanner/src/web_runtime/assessment_api_visibility.rs";
+const ASSESSMENT_ITEM_SOURCE: &str = "crates/termivar-scanner/src/web_runtime/assessment_item.rs";
+const ASSESSMENT_REPORT_SOURCE: &str =
+    "crates/termivar-scanner/src/web_runtime/assessment_report.rs";
+const ASSESSMENT_REVIEW_SOURCE: &str =
+    "crates/termivar-scanner/src/web_runtime/assessment_review.rs";
 const ASSESSMENT_REVIEW_PROJECTION_SOURCE: &str =
-    "crates/venom-scanner/src/web_runtime/assessment_review_projection.rs";
+    "crates/termivar-scanner/src/web_runtime/assessment_review_projection.rs";
 const HTTP_REVIEW_RESPONSE_SOURCE: &str =
-    "crates/venom-scanner/src/http_evidence/review_response.rs";
-const NATIVE_REVIEW_ACTION_SOURCE: &str = "crates/venom-scanner/src/web_actions/native_review.rs";
+    "crates/termivar-scanner/src/http_evidence/review_response.rs";
+const NATIVE_REVIEW_ACTION_SOURCE: &str =
+    "crates/termivar-scanner/src/web_actions/native_review.rs";
 const NATIVE_REVIEW_DECISION_SOURCE: &str =
-    "crates/venom-scanner/src/web_runtime/web_review_decision.rs";
+    "crates/termivar-scanner/src/web_runtime/web_review_decision.rs";
 const NATIVE_REVIEW_EXECUTION_SOURCE: &str =
-    "crates/venom-scanner/src/web_runtime/web_review_execution.rs";
-const GRAPHQL_RUNTIME_SOURCE: &str = "crates/venom-scanner/src/web_runtime/graphql_runtime.rs";
-const OPENAPI_RUNTIME_SOURCE: &str = "crates/venom-scanner/src/web_runtime/openapi_runtime.rs";
-const REST_RUNTIME_SOURCE: &str = "crates/venom-scanner/src/web_runtime/rest_runtime.rs";
+    "crates/termivar-scanner/src/web_runtime/web_review_execution.rs";
+const GRAPHQL_RUNTIME_SOURCE: &str = "crates/termivar-scanner/src/web_runtime/graphql_runtime.rs";
+const OPENAPI_RUNTIME_SOURCE: &str = "crates/termivar-scanner/src/web_runtime/openapi_runtime.rs";
+const REST_RUNTIME_SOURCE: &str = "crates/termivar-scanner/src/web_runtime/rest_runtime.rs";
 const RESOURCE_AUTHORIZATION_RUNTIME_SOURCE: &str =
-    "crates/venom-scanner/src/web_runtime/resource_authorization_runtime.rs";
+    "crates/termivar-scanner/src/web_runtime/resource_authorization_runtime.rs";
 const ATTRIBUTE_SOURCE_CONTEXT_SOURCE: &str =
-    "crates/venom-scanner/src/web_runtime/web_assessment/attribute_source_context.rs";
+    "crates/termivar-scanner/src/web_runtime/web_assessment/attribute_source_context.rs";
 const ATTRIBUTE_BOUNDARY_MATCHER_SOURCE: &str =
-    "crates/venom-scanner/src/web_runtime/web_assessment/attribute_boundary_matcher.rs";
+    "crates/termivar-scanner/src/web_runtime/web_assessment/attribute_boundary_matcher.rs";
 const JAVASCRIPT_SOURCE_CONTEXT_SOURCE: &str =
-    "crates/venom-scanner/src/web_runtime/web_assessment/javascript_source_context.rs";
+    "crates/termivar-scanner/src/web_runtime/web_assessment/javascript_source_context.rs";
 const REFLECTION_CONTEXT_SOURCE: &str =
-    "crates/venom-scanner/src/web_runtime/web_assessment/reflection_context.rs";
+    "crates/termivar-scanner/src/web_runtime/web_assessment/reflection_context.rs";
 const NATIVE_REVIEW_BOUNDED_SOURCES: &[&str] = &[
     HTTP_REVIEW_RESPONSE_SOURCE,
     ASSESSMENT_REVIEW_SOURCE,
@@ -124,7 +128,7 @@ const NATIVE_REVIEW_BOUNDED_SOURCES: &[&str] = &[
     JAVASCRIPT_SOURCE_CONTEXT_SOURCE,
     REFLECTION_CONTEXT_SOURCE,
 ];
-const KNOWLEDGE_SOURCE: &str = "crates/venom-scanner/src/knowledge.rs";
+const KNOWLEDGE_SOURCE: &str = "crates/termivar-scanner/src/knowledge.rs";
 
 const ASSESSMENT_EXTERNAL_TRAIT_PROTECTED_TYPES: &[&str] = &[
     "AssessmentBasis",
@@ -295,28 +299,28 @@ const EXPECTED_BROKER_CONSTRUCTORS: &[ExpectedBrokerConstructor] = &[
 /// second transport capability.
 const MIGRATED_LEGACY_DISCOVERY_SOURCES: &[&str] = &[
     LEGACY_DISCOVERY_AUTHORITY_SOURCE,
-    "crates/venom-scanner/src/phases/phase2_crawl.rs",
-    "crates/venom-scanner/src/phases/phase3_fuzzer.rs",
-    "crates/venom-scanner/src/phases/phase4_param.rs",
-    "crates/venom-scanner/src/phases/phase5_sqli.rs",
-    "crates/venom-scanner/src/phases/phase6_xss.rs",
-    "crates/venom-scanner/src/phases/phase7_ssti.rs",
-    "crates/venom-scanner/src/phases/phase8_lfi_xxe.rs",
-    "crates/venom-scanner/src/phases/phase9_ssrf.rs",
+    "crates/termivar-scanner/src/phases/phase2_crawl.rs",
+    "crates/termivar-scanner/src/phases/phase3_fuzzer.rs",
+    "crates/termivar-scanner/src/phases/phase4_param.rs",
+    "crates/termivar-scanner/src/phases/phase5_sqli.rs",
+    "crates/termivar-scanner/src/phases/phase6_xss.rs",
+    "crates/termivar-scanner/src/phases/phase7_ssti.rs",
+    "crates/termivar-scanner/src/phases/phase8_lfi_xxe.rs",
+    "crates/termivar-scanner/src/phases/phase9_ssrf.rs",
 ];
 
 const LEGACY_VERIFICATION_PHASE_SOURCES: &[&str] = &[
-    "crates/venom-scanner/src/phases/phase5_sqli.rs",
-    "crates/venom-scanner/src/phases/phase6_xss.rs",
-    "crates/venom-scanner/src/phases/phase7_ssti.rs",
-    "crates/venom-scanner/src/phases/phase8_lfi_xxe.rs",
-    "crates/venom-scanner/src/phases/phase9_ssrf.rs",
+    "crates/termivar-scanner/src/phases/phase5_sqli.rs",
+    "crates/termivar-scanner/src/phases/phase6_xss.rs",
+    "crates/termivar-scanner/src/phases/phase7_ssti.rs",
+    "crates/termivar-scanner/src/phases/phase8_lfi_xxe.rs",
+    "crates/termivar-scanner/src/phases/phase9_ssrf.rs",
 ];
 
 const LEGACY_CLAIM_BRIDGE_PHASE_SOURCES: &[&str] = &[
-    "crates/venom-scanner/src/phases/phase5_sqli.rs",
-    "crates/venom-scanner/src/phases/phase7_ssti.rs",
-    "crates/venom-scanner/src/phases/phase8_lfi_xxe.rs",
+    "crates/termivar-scanner/src/phases/phase5_sqli.rs",
+    "crates/termivar-scanner/src/phases/phase7_ssti.rs",
+    "crates/termivar-scanner/src/phases/phase8_lfi_xxe.rs",
 ];
 
 /// Existing standalone facades that intentionally construct an unmetered
@@ -325,22 +329,22 @@ const LEGACY_CLAIM_BRIDGE_PHASE_SOURCES: &[&str] = &[
 /// Keep this inventory exact: bounded runtime modules, including paired API
 /// visibility collection, must never be added here.
 const UNMETERED_STANDALONE_FACADE_SOURCES: &[&str] = &[
-    "crates/venom-scanner/src/http_evidence.rs",
-    "crates/venom-scanner/src/web_execution.rs",
+    "crates/termivar-scanner/src/http_evidence.rs",
+    "crates/termivar-scanner/src/web_execution.rs",
 ];
 
 /// Exact raw-client source inventory. Entries other than the broker owner are
 /// legacy and are not covered by `RuntimeBudget`.
 const DIRECT_CLIENT_SOURCE_ALLOWLIST: &[&str] = &[
-    "crates/venom-cli/src/main.rs",
-    "crates/venom-scanner/src/context.rs",
+    "crates/termivar-cli/src/main.rs",
+    "crates/termivar-scanner/src/context.rs",
     TRANSPORT_OWNER_SOURCE,
-    "crates/venom-scanner/src/sdk.rs",
+    "crates/termivar-scanner/src/sdk.rs",
 ];
 
 /// Exact production `.send()` inventory for the legacy phase pipeline.
 const LEGACY_PHASE_SEND_ALLOWLIST: &[(&str, usize)] =
-    &[("crates/venom-scanner/src/phases/phase1_recon.rs", 1)];
+    &[("crates/termivar-scanner/src/phases/phase1_recon.rs", 1)];
 
 pub(super) fn check(workspace_root: &Path) -> Result<Vec<String>, Box<dyn Error>> {
     let mut violations = validate_policy_inventory();
@@ -691,8 +695,8 @@ fn native_review_execution_fingerprint_violations(source: &str, syntax: &syn::Fi
     }
 }
 
-const EXACT_OPENAPI_RUNTIME_TOKEN_BYTES: usize = 38_267;
-const EXACT_OPENAPI_RUNTIME_FINGERPRINT: u128 = 0x9711_b1ee_5468_1092_b3f1_725c_2816_7895;
+const EXACT_OPENAPI_RUNTIME_TOKEN_BYTES: usize = 38_276;
+const EXACT_OPENAPI_RUNTIME_FINGERPRINT: u128 = 0xaa5b_e59f_283c_ac98_644e_0217_55c2_0c48;
 
 fn openapi_runtime_fingerprint_violations(source: &str, syntax: &syn::File) -> Vec<String> {
     if !matches!(syntax.items.last(), Some(Item::Mod(module))
@@ -806,57 +810,57 @@ fn web_assessment_contract_violations(
     workspace_root: &Path,
 ) -> Result<Vec<String>, Box<dyn Error>> {
     let assessment = fs::read_to_string(
-        workspace_root.join("crates/venom-scanner/src/web_runtime/web_assessment.rs"),
+        workspace_root.join("crates/termivar-scanner/src/web_runtime/web_assessment.rs"),
     )?;
     let discovery = fs::read_to_string(
-        workspace_root.join("crates/venom-scanner/src/web_runtime/web_assessment/discovery.rs"),
+        workspace_root.join("crates/termivar-scanner/src/web_runtime/web_assessment/discovery.rs"),
     )?;
     let semantic = fs::read_to_string(
-        workspace_root.join("crates/venom-scanner/src/web_runtime/web_assessment/semantic.rs"),
+        workspace_root.join("crates/termivar-scanner/src/web_runtime/web_assessment/semantic.rs"),
     )?;
     let passive = fs::read_to_string(
-        workspace_root.join("crates/venom-scanner/src/web_runtime/assessment_passive.rs"),
+        workspace_root.join("crates/termivar-scanner/src/web_runtime/assessment_passive.rs"),
     )?;
     let api_visibility = fs::read_to_string(workspace_root.join(ASSESSMENT_API_VISIBILITY_SOURCE))?;
     let defense = fs::read_to_string(
-        workspace_root.join("crates/venom-scanner/src/web_runtime/assessment_defense.rs"),
+        workspace_root.join("crates/termivar-scanner/src/web_runtime/assessment_defense.rs"),
     )?;
     let passive_headers = fs::read_to_string(
-        workspace_root.join("crates/venom-scanner/src/http_evidence/passive_review.rs"),
+        workspace_root.join("crates/termivar-scanner/src/http_evidence/passive_review.rs"),
     )?;
     let assessment_item = fs::read_to_string(workspace_root.join(ASSESSMENT_ITEM_SOURCE))?;
     let assessment_report = fs::read_to_string(workspace_root.join(ASSESSMENT_REPORT_SOURCE))?;
     let knowledge = fs::read_to_string(workspace_root.join(KNOWLEDGE_SOURCE))?;
     let mut http_evidence =
-        fs::read_to_string(workspace_root.join("crates/venom-scanner/src/http_evidence.rs"))?;
+        fs::read_to_string(workspace_root.join("crates/termivar-scanner/src/http_evidence.rs"))?;
     for child in ["policy.rs", "probe.rs", "response.rs"] {
         http_evidence.push('\n');
         http_evidence.push_str(&fs::read_to_string(
             workspace_root
-                .join("crates/venom-scanner/src/http_evidence")
+                .join("crates/termivar-scanner/src/http_evidence")
                 .join(child),
         )?);
     }
     let broker = fs::read_to_string(workspace_root.join(TRANSPORT_OWNER_SOURCE))?;
     let facade =
-        fs::read_to_string(workspace_root.join("crates/venom-scanner/src/web_runtime.rs"))?;
+        fs::read_to_string(workspace_root.join("crates/termivar-scanner/src/web_runtime.rs"))?;
     let mut violations = Vec::new();
 
     for (source_name, source) in [
         (
-            "crates/venom-scanner/src/web_runtime/web_assessment.rs",
+            "crates/termivar-scanner/src/web_runtime/web_assessment.rs",
             assessment.as_str(),
         ),
         (
-            "crates/venom-scanner/src/web_runtime/web_assessment/discovery.rs",
+            "crates/termivar-scanner/src/web_runtime/web_assessment/discovery.rs",
             discovery.as_str(),
         ),
         (
-            "crates/venom-scanner/src/web_runtime/web_assessment/semantic.rs",
+            "crates/termivar-scanner/src/web_runtime/web_assessment/semantic.rs",
             semantic.as_str(),
         ),
         (
-            "crates/venom-scanner/src/web_runtime/assessment_passive.rs",
+            "crates/termivar-scanner/src/web_runtime/assessment_passive.rs",
             passive.as_str(),
         ),
         (ASSESSMENT_API_VISIBILITY_SOURCE, api_visibility.as_str()),
@@ -5297,7 +5301,7 @@ fn inspect_knowledge_authority_accessor(source: &str) -> Result<Vec<String>, syn
 fn inspect_cross_source_assessment_bypasses(
     workspace_root: &Path,
 ) -> Result<Vec<String>, Box<dyn Error>> {
-    let runtime_root = workspace_root.join("crates/venom-scanner/src/web_runtime");
+    let runtime_root = workspace_root.join("crates/termivar-scanner/src/web_runtime");
     let mut paths = Vec::new();
     collect_rust_sources(&runtime_root, &mut paths)?;
     paths.sort();
@@ -6749,7 +6753,7 @@ fn canonical_legacy_authority_aliases() -> BTreeSet<String> {
 fn collect_full_tree_legacy_authority_aliases(
     workspace_root: &Path,
 ) -> Result<BTreeSet<String>, Box<dyn Error>> {
-    let scanner_root = workspace_root.join("crates/venom-scanner/src");
+    let scanner_root = workspace_root.join("crates/termivar-scanner/src");
     let mut paths = Vec::new();
     collect_rust_sources(&scanner_root, &mut paths)?;
     paths.sort();
@@ -7118,7 +7122,7 @@ fn collect_token_identifiers(stream: TokenStream, output: &mut BTreeSet<String>)
 fn broker_constructor_inventory_violations(
     workspace_root: &Path,
 ) -> Result<Vec<String>, Box<dyn Error>> {
-    let scanner_root = workspace_root.join("crates/venom-scanner/src");
+    let scanner_root = workspace_root.join("crates/termivar-scanner/src");
     let mut paths = Vec::new();
     collect_rust_sources(&scanner_root, &mut paths)?;
     paths.sort();
@@ -8020,9 +8024,9 @@ impl OwnershipVisitor<'_> {
         if self.source == ASSESSMENT_ITEM_SOURCE
             || matches!(
                 self.source,
-                "crates/venom-scanner/src/web_runtime/web_assessment.rs"
-                    | "crates/venom-scanner/src/web_runtime/web_assessment/discovery.rs"
-                    | "crates/venom-scanner/src/web_runtime/web_assessment/semantic.rs"
+                "crates/termivar-scanner/src/web_runtime/web_assessment.rs"
+                    | "crates/termivar-scanner/src/web_runtime/web_assessment/discovery.rs"
+                    | "crates/termivar-scanner/src/web_runtime/web_assessment/semantic.rs"
             )
         {
             if segments
@@ -8058,7 +8062,7 @@ impl OwnershipVisitor<'_> {
                 ));
             }
         }
-        if self.source == "crates/venom-scanner/src/payload_strategy.rs"
+        if self.source == "crates/termivar-scanner/src/payload_strategy.rs"
             && is_nondeterministic_strategy_path(segments)
         {
             self.violations.insert(format!(
@@ -8218,146 +8222,169 @@ impl<'ast> Visit<'ast> for OwnershipVisitor<'_> {
         let registered = matches!(
             (self.source, module.as_str()),
             (
-                "crates/venom-scanner/src/http_evidence.rs",
+                "crates/termivar-scanner/src/http_evidence.rs",
                 "request_broker"
-            ) | ("crates/venom-scanner/src/http_evidence.rs", "form_controls")
-                | ("crates/venom-scanner/src/http_evidence.rs", "policy")
-                | ("crates/venom-scanner/src/http_evidence.rs", "probe")
-                | ("crates/venom-scanner/src/http_evidence.rs", "response")
+            ) | (
+                "crates/termivar-scanner/src/http_evidence.rs",
+                "form_controls"
+            ) | ("crates/termivar-scanner/src/http_evidence.rs", "policy")
+                | ("crates/termivar-scanner/src/http_evidence.rs", "probe")
+                | ("crates/termivar-scanner/src/http_evidence.rs", "response")
                 | (
-                    "crates/venom-scanner/src/http_evidence.rs",
+                    "crates/termivar-scanner/src/http_evidence.rs",
                     "passive_review"
                 )
                 | (
-                    "crates/venom-scanner/src/http_evidence.rs",
+                    "crates/termivar-scanner/src/http_evidence.rs",
                     "review_response"
                 )
-                | ("crates/venom-scanner/src/decision_loop.rs", "command")
-                | ("crates/venom-scanner/src/decision_loop.rs", "policy")
-                | ("crates/venom-scanner/src/decision_loop.rs", "receipts")
-                | ("crates/venom-scanner/src/decision_loop.rs", "state")
-                | ("crates/venom-scanner/src/decision_runner.rs", "execution")
-                | ("crates/venom-scanner/src/decision_runner.rs", "failures")
-                | ("crates/venom-scanner/src/decision_runner.rs", "receipts")
-                | ("crates/venom-scanner/src/decision_runner.rs", "registry")
-                | ("crates/venom-scanner/src/planner.rs", "model")
-                | ("crates/venom-scanner/src/planner.rs", "policy")
-                | ("crates/venom-scanner/src/planner.rs", "scoring")
-                | ("crates/venom-scanner/src/planner.rs", "selection")
-                | ("crates/venom-scanner/src/web_actions.rs", "native_review")
-                | ("crates/venom-scanner/src/web_runtime.rs", "authority")
-                | ("crates/venom-scanner/src/web_runtime.rs", "api_visibility")
-                | ("crates/venom-scanner/src/web_runtime.rs", "assessment_item")
+                | ("crates/termivar-scanner/src/decision_loop.rs", "command")
+                | ("crates/termivar-scanner/src/decision_loop.rs", "policy")
+                | ("crates/termivar-scanner/src/decision_loop.rs", "receipts")
+                | ("crates/termivar-scanner/src/decision_loop.rs", "state")
                 | (
-                    "crates/venom-scanner/src/web_runtime.rs",
+                    "crates/termivar-scanner/src/decision_runner.rs",
+                    "execution"
+                )
+                | ("crates/termivar-scanner/src/decision_runner.rs", "failures")
+                | ("crates/termivar-scanner/src/decision_runner.rs", "receipts")
+                | ("crates/termivar-scanner/src/decision_runner.rs", "registry")
+                | ("crates/termivar-scanner/src/planner.rs", "model")
+                | ("crates/termivar-scanner/src/planner.rs", "policy")
+                | ("crates/termivar-scanner/src/planner.rs", "scoring")
+                | ("crates/termivar-scanner/src/planner.rs", "selection")
+                | (
+                    "crates/termivar-scanner/src/web_actions.rs",
+                    "native_review"
+                )
+                | ("crates/termivar-scanner/src/web_runtime.rs", "authority")
+                | (
+                    "crates/termivar-scanner/src/web_runtime.rs",
+                    "api_visibility"
+                )
+                | (
+                    "crates/termivar-scanner/src/web_runtime.rs",
+                    "assessment_item"
+                )
+                | (
+                    "crates/termivar-scanner/src/web_runtime.rs",
                     "assessment_api_visibility"
                 )
                 | (
-                    "crates/venom-scanner/src/web_runtime.rs",
+                    "crates/termivar-scanner/src/web_runtime.rs",
                     "assessment_passive"
                 )
                 | (
-                    "crates/venom-scanner/src/web_runtime.rs",
+                    "crates/termivar-scanner/src/web_runtime.rs",
                     "assessment_report"
                 )
                 | (
-                    "crates/venom-scanner/src/web_runtime.rs",
+                    "crates/termivar-scanner/src/web_runtime.rs",
                     "assessment_review"
                 )
                 | (
-                    "crates/venom-scanner/src/web_runtime.rs",
+                    "crates/termivar-scanner/src/web_runtime.rs",
                     "assessment_review_projection"
                 )
                 | (
-                    "crates/venom-scanner/src/web_runtime.rs",
+                    "crates/termivar-scanner/src/web_runtime.rs",
                     "web_review_decision"
                 )
                 | (
-                    "crates/venom-scanner/src/web_runtime.rs",
+                    "crates/termivar-scanner/src/web_runtime.rs",
                     "web_review_execution"
                 )
                 | (
-                    "crates/venom-scanner/src/web_runtime/api_visibility.rs",
+                    "crates/termivar-scanner/src/web_runtime/api_visibility.rs",
                     "differential"
                 )
                 | (
-                    "crates/venom-scanner/src/web_runtime/api_visibility/differential.rs",
+                    "crates/termivar-scanner/src/web_runtime/api_visibility/differential.rs",
                     "execution"
                 )
                 | (
-                    "crates/venom-scanner/src/web_runtime.rs",
+                    "crates/termivar-scanner/src/web_runtime.rs",
                     "assessment_defense"
                 )
-                | ("crates/venom-scanner/src/web_runtime.rs", "graphql_runtime")
-                | ("crates/venom-scanner/src/web_runtime.rs", "openapi_runtime")
-                | ("crates/venom-scanner/src/web_runtime.rs", "rest_runtime")
                 | (
-                    "crates/venom-scanner/src/web_runtime.rs",
+                    "crates/termivar-scanner/src/web_runtime.rs",
+                    "graphql_runtime"
+                )
+                | (
+                    "crates/termivar-scanner/src/web_runtime.rs",
+                    "openapi_runtime"
+                )
+                | ("crates/termivar-scanner/src/web_runtime.rs", "rest_runtime")
+                | (
+                    "crates/termivar-scanner/src/web_runtime.rs",
                     "resource_authorization_runtime"
                 )
-                | ("crates/venom-scanner/src/web_runtime.rs", "scan_profile")
-                | ("crates/venom-scanner/src/web_runtime.rs", "web_assessment")
+                | ("crates/termivar-scanner/src/web_runtime.rs", "scan_profile")
                 | (
-                    "crates/venom-scanner/src/web_runtime/web_assessment.rs",
+                    "crates/termivar-scanner/src/web_runtime.rs",
+                    "web_assessment"
+                )
+                | (
+                    "crates/termivar-scanner/src/web_runtime/web_assessment.rs",
                     "attribute_boundary_matcher"
                 )
                 | (
-                    "crates/venom-scanner/src/web_runtime/web_assessment.rs",
+                    "crates/termivar-scanner/src/web_runtime/web_assessment.rs",
                     "attribute_source_context"
                 )
                 | (
-                    "crates/venom-scanner/src/web_runtime/web_assessment.rs",
+                    "crates/termivar-scanner/src/web_runtime/web_assessment.rs",
                     "javascript_source_context"
                 )
                 | (
-                    "crates/venom-scanner/src/web_runtime/web_assessment.rs",
+                    "crates/termivar-scanner/src/web_runtime/web_assessment.rs",
                     "normalization_transform_catalog"
                 )
                 | (
-                    "crates/venom-scanner/src/web_runtime/web_assessment.rs",
+                    "crates/termivar-scanner/src/web_runtime/web_assessment.rs",
                     "discovery"
                 )
                 | (
-                    "crates/venom-scanner/src/web_runtime/web_assessment.rs",
+                    "crates/termivar-scanner/src/web_runtime/web_assessment.rs",
                     "reflection_context"
                 )
                 | (
-                    "crates/venom-scanner/src/web_runtime/web_assessment.rs",
+                    "crates/termivar-scanner/src/web_runtime/web_assessment.rs",
                     "semantic"
                 )
                 | (
-                    "crates/venom-scanner/src/web_runtime/web_assessment.rs",
+                    "crates/termivar-scanner/src/web_runtime/web_assessment.rs",
                     "xss_probe_catalog"
                 )
         );
-        let attributes_are_exact = if self.source == "crates/venom-scanner/src/web_runtime.rs"
+        let attributes_are_exact = if self.source == "crates/termivar-scanner/src/web_runtime.rs"
             && module == "assessment_report"
         {
             attributes_are_exact_cfg_feature(&item.attrs, "reporting")
-        } else if self.source == "crates/venom-scanner/src/web_runtime.rs"
+        } else if self.source == "crates/termivar-scanner/src/web_runtime.rs"
             && module == "graphql_runtime"
         {
             attributes_are_exact_cfg_feature(&item.attrs, "graphql-review")
-        } else if self.source == "crates/venom-scanner/src/web_runtime.rs"
+        } else if self.source == "crates/termivar-scanner/src/web_runtime.rs"
             && module == "openapi_runtime"
         {
             attributes_are_exact_cfg_feature(&item.attrs, "openapi-review")
-        } else if self.source == "crates/venom-scanner/src/web_runtime.rs"
+        } else if self.source == "crates/termivar-scanner/src/web_runtime.rs"
             && module == "rest_runtime"
         {
             attributes_are_exact_cfg_feature(&item.attrs, "rest-review")
-        } else if self.source == "crates/venom-scanner/src/web_runtime.rs"
+        } else if self.source == "crates/termivar-scanner/src/web_runtime.rs"
             && module == "resource_authorization_runtime"
         {
             attributes_are_exact_cfg_feature(&item.attrs, "authorization-review")
-        } else if self.source == "crates/venom-scanner/src/web_runtime/web_assessment.rs"
+        } else if self.source == "crates/termivar-scanner/src/web_runtime/web_assessment.rs"
             && module == "normalization_transform_catalog"
         {
             attributes_are_exact_cfg_feature(&item.attrs, "normalization-resilience")
         } else {
             item.attrs.is_empty()
         };
-        let visibility_is_exact = if self.source == "crates/venom-scanner/src/http_evidence.rs"
+        let visibility_is_exact = if self.source == "crates/termivar-scanner/src/http_evidence.rs"
             && module == "passive_review"
         {
             is_pub_crate_visibility(&item.vis)
@@ -8622,7 +8649,7 @@ fn is_allowed_discovery_consumer_path(source: &str, segments: &[String]) -> bool
             _ => false,
         },
         Some("super") => {
-            source == "crates/venom-scanner/src/phases/phase4_param.rs"
+            source == "crates/termivar-scanner/src/phases/phase4_param.rs"
                 && segment(1) == Some("phase3_fuzzer")
                 && segment(2) == Some("ResponseSignature")
         },
@@ -8899,10 +8926,10 @@ fn allowed_http_facade_path(segments: &[String]) -> bool {
 fn is_http_evidence_contract_source(source: &str) -> bool {
     matches!(
         source,
-        "crates/venom-scanner/src/http_evidence.rs"
-            | "crates/venom-scanner/src/http_evidence/policy.rs"
-            | "crates/venom-scanner/src/http_evidence/probe.rs"
-            | "crates/venom-scanner/src/http_evidence/response.rs"
+        "crates/termivar-scanner/src/http_evidence.rs"
+            | "crates/termivar-scanner/src/http_evidence/policy.rs"
+            | "crates/termivar-scanner/src/http_evidence/probe.rs"
+            | "crates/termivar-scanner/src/http_evidence/response.rs"
     )
 }
 
@@ -9041,7 +9068,7 @@ fn path_segments(path: &SynPath) -> Vec<String> {
 
 fn direct_client_sources(workspace_root: &Path) -> Result<BTreeSet<String>, Box<dyn Error>> {
     let mut sources = Vec::new();
-    for root in ["crates/venom-scanner/src", "crates/venom-cli/src"] {
+    for root in ["crates/termivar-scanner/src", "crates/termivar-cli/src"] {
         let source_root = workspace_root.join(root);
         let mut crate_sources = Vec::new();
         collect_rust_sources(&source_root, &mut crate_sources)?;
@@ -9134,7 +9161,7 @@ impl<'ast> Visit<'ast> for DirectCapabilityVisitor {
 fn legacy_send_inventory(workspace_root: &Path) -> Result<BTreeMap<String, usize>, Box<dyn Error>> {
     let mut sources = Vec::new();
     collect_rust_sources(
-        &workspace_root.join("crates/venom-scanner/src/phases"),
+        &workspace_root.join("crates/termivar-scanner/src/phases"),
         &mut sources,
     )?;
     let mut inventory = BTreeMap::new();
@@ -9292,9 +9319,10 @@ mod tests {
                 fn allowed_in_tests(context: &Context) { let _ = context.client.send(); }
             }
         "#;
-        let violations = inspect_bounded_source("crates/venom-scanner/src/web_runtime.rs", source)
-            .unwrap()
-            .join("\n");
+        let violations =
+            inspect_bounded_source("crates/termivar-scanner/src/web_runtime.rs", source)
+                .unwrap()
+                .join("\n");
 
         for expected in [
             "reqwest::Client",
@@ -9319,14 +9347,14 @@ mod tests {
             struct Observation(Method, StatusCode, Url, HeaderMap, Option<Error>);
         "#;
         assert!(
-            inspect_bounded_source("crates/venom-scanner/src/http_evidence.rs", metadata)
+            inspect_bounded_source("crates/termivar-scanner/src/http_evidence.rs", metadata)
                 .unwrap()
                 .is_empty()
         );
 
         let client = "use reqwest::Client; fn leak() { let _ = Client::new(); }";
         let violations =
-            inspect_bounded_source("crates/venom-scanner/src/http_evidence.rs", client)
+            inspect_bounded_source("crates/termivar-scanner/src/http_evidence.rs", client)
                 .unwrap()
                 .join("\n");
         assert!(violations.contains("reqwest::Client"));
@@ -9351,7 +9379,7 @@ mod tests {
             "use crate::http_evidence::HttpProbe;",
         ] {
             let violations =
-                inspect_bounded_source("crates/venom-scanner/src/payload_strategy.rs", source)
+                inspect_bounded_source("crates/termivar-scanner/src/payload_strategy.rs", source)
                     .unwrap()
                     .join("\n");
             assert!(
@@ -9365,7 +9393,7 @@ mod tests {
             use sha2::{Digest, Sha256};
         "#;
         assert!(
-            inspect_bounded_source("crates/venom-scanner/src/payload_strategy.rs", pure)
+            inspect_bounded_source("crates/termivar-scanner/src/payload_strategy.rs", pure)
                 .unwrap()
                 .is_empty()
         );
@@ -9395,12 +9423,12 @@ mod tests {
             .copied()
             .collect::<BTreeSet<_>>();
         assert_eq!(bounded.len(), BOUNDED_RUNTIME_SOURCES.len());
-        assert!(bounded.contains("crates/venom-cli/src/assessment_scan.rs"));
+        assert!(bounded.contains("crates/termivar-cli/src/assessment_scan.rs"));
         assert!(
-            !DIRECT_CLIENT_SOURCE_ALLOWLIST.contains(&"crates/venom-cli/src/assessment_scan.rs")
+            !DIRECT_CLIENT_SOURCE_ALLOWLIST.contains(&"crates/termivar-cli/src/assessment_scan.rs")
         );
         assert!(!UNMETERED_STANDALONE_FACADE_SOURCES
-            .contains(&"crates/venom-cli/src/assessment_scan.rs"));
+            .contains(&"crates/termivar-cli/src/assessment_scan.rs"));
     }
 
     #[test]
@@ -9417,14 +9445,14 @@ mod tests {
             fn mint() { let _ = r#Accounting::new(budget()); }
         "#;
         let extras = [
-            ("crates/venom-scanner/src/lib.rs", self_indirection),
-            ("crates/venom-scanner/src/unlisted.rs", raw_alias),
+            ("crates/termivar-scanner/src/lib.rs", self_indirection),
+            ("crates/termivar-scanner/src/unlisted.rs", raw_alias),
         ];
         let sources = valid_constructor_sources(VALID_SHARED_AUTHORITY, &extras);
         let violations =
             validate_broker_constructor_inventory(&constructor_inventory(&sources)).join("\n");
-        assert!(violations.contains("crates/venom-scanner/src/lib.rs trait impl Accounting::mint contains 1 production RequestAccountingBroker::new calls"));
-        assert!(violations.contains("crates/venom-scanner/src/unlisted.rs impl <free>::mint contains 1 production RequestAccountingBroker::new calls"));
+        assert!(violations.contains("crates/termivar-scanner/src/lib.rs trait impl Accounting::mint contains 1 production RequestAccountingBroker::new calls"));
+        assert!(violations.contains("crates/termivar-scanner/src/unlisted.rs impl <free>::mint contains 1 production RequestAccountingBroker::new calls"));
     }
 
     #[test]
@@ -9472,7 +9500,7 @@ mod tests {
             Some(&1)
         );
         assert!(inventory
-            .violations("crates/venom-scanner/src/consumer.rs")
+            .violations("crates/termivar-scanner/src/consumer.rs")
             .join("\n")
             .contains("include! source indirection"));
     }
@@ -9501,7 +9529,7 @@ mod tests {
             .iter()
             .map(|call| {
                 BrokerConstructorOwnerKey::from_call(
-                    "crates/venom-scanner/src/projection_escape.rs",
+                    "crates/termivar-scanner/src/projection_escape.rs",
                     call,
                 )
             })
@@ -9532,7 +9560,7 @@ mod tests {
             .iter()
             .map(|call| {
                 BrokerConstructorOwnerKey::from_call(
-                    "crates/venom-scanner/src/generic_alias.rs",
+                    "crates/termivar-scanner/src/generic_alias.rs",
                     call,
                 )
             })
@@ -9582,7 +9610,7 @@ mod tests {
             let inventory = inspect_broker_constructor_source(source).unwrap();
             assert!(inventory.direct_calls.is_empty());
             let violations = inventory
-                .violations("crates/venom-scanner/src/escape.rs")
+                .violations("crates/termivar-scanner/src/escape.rs")
                 .join("\n");
             assert!(violations.contains("non-call RequestAccountingBroker::new references"));
         }
@@ -9683,7 +9711,7 @@ mod tests {
     fn constructor_inventory_rejects_source_indirection_but_allows_cfg_test_paths() {
         let include = inspect_broker_constructor_source("include!(\"hidden.rs\");")
             .unwrap()
-            .violations("crates/venom-scanner/src/lib.rs")
+            .violations("crates/termivar-scanner/src/lib.rs")
             .join("\n");
         assert!(include.contains("production include! source indirection"));
 
@@ -9691,7 +9719,7 @@ mod tests {
             "macro_rules! hidden { () => { include!(\"hidden.rs\") } }",
         )
         .unwrap()
-        .violations("crates/venom-scanner/src/lib.rs")
+        .violations("crates/termivar-scanner/src/lib.rs")
         .join("\n");
         assert!(macro_include.contains("include! inside a macro"));
 
@@ -9703,14 +9731,14 @@ mod tests {
             "#,
         )
         .unwrap()
-        .violations("crates/venom-scanner/src/lib.rs")
+        .violations("crates/termivar-scanner/src/lib.rs")
         .join("\n");
         assert!(imported_include.contains("imported include! macro alias"));
         assert!(imported_include.contains("include! source indirection"));
 
         let path = inspect_broker_constructor_source("#[path = \"hidden.rs\"] mod hidden;")
             .unwrap()
-            .violations("crates/venom-scanner/src/lib.rs")
+            .violations("crates/termivar-scanner/src/lib.rs")
             .join("\n");
         assert!(path.contains("production #[path]"));
 
@@ -9776,7 +9804,7 @@ mod tests {
             "fn escape() { hidden!(crate::legacy_discovery::LegacyDiscoveryAuthority::new()); }",
         ] {
             let violations =
-                inspect_bounded_source("crates/venom-scanner/src/web_runtime.rs", source)
+                inspect_bounded_source("crates/termivar-scanner/src/web_runtime.rs", source)
                     .unwrap()
                     .join("\n");
             assert!(
@@ -9789,7 +9817,7 @@ mod tests {
     #[test]
     fn bounded_surface_b_rejects_full_tree_legacy_authority_reexport_aliases() {
         let directory = tempfile::tempdir().unwrap();
-        let scanner_root = directory.path().join("crates/venom-scanner/src");
+        let scanner_root = directory.path().join("crates/termivar-scanner/src");
         fs::create_dir_all(&scanner_root).unwrap();
         fs::write(
             scanner_root.join("lib.rs"),
@@ -9831,7 +9859,7 @@ mod tests {
             assert!(aliases.contains(alias), "missing tainted alias {alias}");
         }
         let violations = inspect_bounded_source_with_legacy_aliases(
-            "crates/venom-scanner/src/web_runtime.rs",
+            "crates/termivar-scanner/src/web_runtime.rs",
             bounded,
             &aliases,
         )
@@ -9859,7 +9887,7 @@ mod tests {
             assert!(aliases.contains(alias), "missing tainted alias {alias}");
         }
         let violations = inspect_bounded_source_with_legacy_aliases(
-            "crates/venom-scanner/src/web_runtime.rs",
+            "crates/termivar-scanner/src/web_runtime.rs",
             bounded,
             &aliases,
         )
@@ -9876,7 +9904,7 @@ mod tests {
             async fn discover(context: &ScanContext) { context.request(); }
         "#;
         assert!(inspect_migrated_discovery_source(
-            "crates/venom-scanner/src/phases/phase2_crawl.rs",
+            "crates/termivar-scanner/src/phases/phase2_crawl.rs",
             safe,
         )
         .unwrap()
@@ -9892,7 +9920,7 @@ mod tests {
         ] {
             assert!(
                 !inspect_migrated_discovery_source(
-                    "crates/venom-scanner/src/phases/phase2_crawl.rs",
+                    "crates/termivar-scanner/src/phases/phase2_crawl.rs",
                     source,
                 )
                 .unwrap()
@@ -9902,12 +9930,12 @@ mod tests {
         }
 
         for source in [
-            "use venom_core::Outcome as Claim; fn forge() { Claim::new(input()); }",
-            "type Claim = venom_core::RunOutcomeRecord; fn forge() { Claim::unresolved(a(), b(), c(), d()); }",
-            "fn forge() { audit!(venom_core::RunOutcomeRecord::from_outcome(a(), b())); }",
+            "use termivar_core::Outcome as Claim; fn forge() { Claim::new(input()); }",
+            "type Claim = termivar_core::RunOutcomeRecord; fn forge() { Claim::unresolved(a(), b(), c(), d()); }",
+            "fn forge() { audit!(termivar_core::RunOutcomeRecord::from_outcome(a(), b())); }",
         ] {
             let violations = inspect_migrated_discovery_source(
-                "crates/venom-scanner/src/phases/phase9_ssrf.rs",
+                "crates/termivar-scanner/src/phases/phase9_ssrf.rs",
                 source,
             )
             .unwrap();
@@ -9943,7 +9971,7 @@ mod tests {
         ] {
             assert!(
                 !inspect_migrated_discovery_source(
-                    "crates/venom-scanner/src/phases/phase2_crawl.rs",
+                    "crates/termivar-scanner/src/phases/phase2_crawl.rs",
                     source,
                 )
                 .unwrap()
@@ -9957,13 +9985,13 @@ mod tests {
     fn migrated_phases_cannot_cross_passive_and_active_request_seams() {
         let passive = "use crate::context::ScanContext; async fn run(context: &ScanContext) { context.request(); }";
         assert!(inspect_migrated_discovery_source(
-            "crates/venom-scanner/src/phases/phase2_crawl.rs",
+            "crates/termivar-scanner/src/phases/phase2_crawl.rs",
             passive,
         )
         .unwrap()
         .is_empty());
         assert!(!inspect_migrated_discovery_source(
-            "crates/venom-scanner/src/phases/phase5_sqli.rs",
+            "crates/termivar-scanner/src/phases/phase5_sqli.rs",
             passive,
         )
         .unwrap()
@@ -9971,13 +9999,13 @@ mod tests {
 
         let active = "use crate::context::ScanContext; async fn run(context: &ScanContext) { context.verification_request(); }";
         assert!(inspect_migrated_discovery_source(
-            "crates/venom-scanner/src/phases/phase5_sqli.rs",
+            "crates/termivar-scanner/src/phases/phase5_sqli.rs",
             active,
         )
         .unwrap()
         .is_empty());
         assert!(!inspect_migrated_discovery_source(
-            "crates/venom-scanner/src/phases/phase2_crawl.rs",
+            "crates/termivar-scanner/src/phases/phase2_crawl.rs",
             active,
         )
         .unwrap()
@@ -10069,7 +10097,7 @@ mod tests {
         ] {
             assert!(
                 !inspect_migrated_discovery_source(
-                    "crates/venom-scanner/src/phases/phase2_crawl.rs",
+                    "crates/termivar-scanner/src/phases/phase2_crawl.rs",
                     source,
                 )
                 .unwrap()
@@ -10102,7 +10130,7 @@ mod tests {
             }
         "#;
         assert!(inspect_migrated_discovery_source(
-            "crates/venom-scanner/src/phases/phase4_param.rs",
+            "crates/termivar-scanner/src/phases/phase4_param.rs",
             allowed,
         )
         .unwrap()
@@ -10116,7 +10144,7 @@ mod tests {
         ] {
             assert!(
                 !inspect_migrated_discovery_source(
-                    "crates/venom-scanner/src/phases/phase4_param.rs",
+                    "crates/termivar-scanner/src/phases/phase4_param.rs",
                     source,
                 )
                 .unwrap()
@@ -10135,7 +10163,7 @@ mod tests {
             "fn escape(policy: Policy) { policy!(Broker::new_unmetered(policy)); }",
         ] {
             let violations = inspect_bounded_source(
-                "crates/venom-scanner/src/web_runtime/api_visibility/differential/execution.rs",
+                "crates/termivar-scanner/src/web_runtime/api_visibility/differential/execution.rs",
                 source,
             )
             .unwrap()
@@ -10158,7 +10186,7 @@ mod tests {
             "fn leak() { policy!(context.client.send()); }",
         ] {
             assert!(
-                !inspect_bounded_source("crates/venom-scanner/src/web_execution.rs", source)
+                !inspect_bounded_source("crates/termivar-scanner/src/web_execution.rs", source)
                     .unwrap()
                     .is_empty(),
                 "transport escape unexpectedly passed: {source}"
@@ -10177,7 +10205,7 @@ mod tests {
             "use tokio::{self as runtime};",
         ] {
             let violations =
-                inspect_bounded_source("crates/venom-scanner/src/web_execution.rs", source)
+                inspect_bounded_source("crates/termivar-scanner/src/web_execution.rs", source)
                     .unwrap()
                     .join("\n");
             assert!(
@@ -10187,7 +10215,7 @@ mod tests {
         }
 
         assert!(inspect_bounded_source(
-            "crates/venom-scanner/src/web_execution.rs",
+            "crates/termivar-scanner/src/web_execution.rs",
             "use super::DecisionLoop;",
         )
         .unwrap()
@@ -10197,17 +10225,17 @@ mod tests {
     #[test]
     fn external_submodules_require_explicit_transport_policy_registration() {
         for (source_name, source) in [
-            ("crates/venom-scanner/src/web_runtime.rs", "mod escape;"),
+            ("crates/termivar-scanner/src/web_runtime.rs", "mod escape;"),
             (
-                "crates/venom-scanner/src/web_runtime.rs",
+                "crates/termivar-scanner/src/web_runtime.rs",
                 "#[path = \"escape.rs\"] mod api_visibility;",
             ),
             (
-                "crates/venom-scanner/src/web_runtime.rs",
+                "crates/termivar-scanner/src/web_runtime.rs",
                 "pub mod api_visibility;",
             ),
             (
-                "crates/venom-scanner/src/web_runtime.rs",
+                "crates/termivar-scanner/src/web_runtime.rs",
                 "mod nested { mod api_visibility; }",
             ),
         ] {
@@ -10222,51 +10250,51 @@ mod tests {
 
         for (source_name, source) in [
             (
-                "crates/venom-scanner/src/http_evidence.rs",
+                "crates/termivar-scanner/src/http_evidence.rs",
                 "mod request_broker;",
             ),
             (
-                "crates/venom-scanner/src/http_evidence.rs",
+                "crates/termivar-scanner/src/http_evidence.rs",
                 "mod form_controls;",
             ),
             (
-                "crates/venom-scanner/src/http_evidence.rs",
+                "crates/termivar-scanner/src/http_evidence.rs",
                 "mod review_response;",
             ),
             (
-                "crates/venom-scanner/src/web_actions.rs",
+                "crates/termivar-scanner/src/web_actions.rs",
                 "mod native_review;",
             ),
             (
-                "crates/venom-scanner/src/web_runtime.rs",
+                "crates/termivar-scanner/src/web_runtime.rs",
                 "mod api_visibility;",
             ),
             (
-                "crates/venom-scanner/src/web_runtime.rs",
+                "crates/termivar-scanner/src/web_runtime.rs",
                 "mod assessment_review;",
             ),
             (
-                "crates/venom-scanner/src/web_runtime.rs",
+                "crates/termivar-scanner/src/web_runtime.rs",
                 "mod assessment_review_projection;",
             ),
             (
-                "crates/venom-scanner/src/web_runtime.rs",
+                "crates/termivar-scanner/src/web_runtime.rs",
                 "mod web_review_decision;",
             ),
             (
-                "crates/venom-scanner/src/web_runtime.rs",
+                "crates/termivar-scanner/src/web_runtime.rs",
                 "mod web_review_execution;",
             ),
             (
-                "crates/venom-scanner/src/web_runtime.rs",
+                "crates/termivar-scanner/src/web_runtime.rs",
                 "#[cfg(feature = \"graphql-review\")] mod graphql_runtime;",
             ),
             (
-                "crates/venom-scanner/src/web_runtime.rs",
+                "crates/termivar-scanner/src/web_runtime.rs",
                 "#[cfg(feature = \"authorization-review\")] mod resource_authorization_runtime;",
             ),
             (
-                "crates/venom-scanner/src/web_runtime/web_assessment.rs",
+                "crates/termivar-scanner/src/web_runtime/web_assessment.rs",
                 "#[cfg(feature = \"normalization-resilience\")] mod normalization_transform_catalog;",
             ),
         ] {
@@ -10284,7 +10312,7 @@ mod tests {
             "#[cfg(feature = \"normalization-resilience\")] pub mod normalization_transform_catalog;",
         ] {
             let violations = inspect_bounded_source(
-                "crates/venom-scanner/src/web_runtime/web_assessment.rs",
+                "crates/termivar-scanner/src/web_runtime/web_assessment.rs",
                 source,
             )
             .unwrap()
@@ -10301,7 +10329,7 @@ mod tests {
             "#[cfg(feature = \"authorization-review\")] pub mod resource_authorization_runtime;",
         ] {
             let violations =
-                inspect_bounded_source("crates/venom-scanner/src/web_runtime.rs", source)
+                inspect_bounded_source("crates/termivar-scanner/src/web_runtime.rs", source)
                     .unwrap()
                     .join("\n");
             assert!(
@@ -10312,7 +10340,7 @@ mod tests {
 
         let inline = "mod helper { use crate::context::ScanContext; }";
         let violations =
-            inspect_bounded_source("crates/venom-scanner/src/web_execution.rs", inline)
+            inspect_bounded_source("crates/termivar-scanner/src/web_execution.rs", inline)
                 .unwrap()
                 .join("\n");
         assert!(violations.contains("crate::context::ScanContext"));
@@ -10320,23 +10348,23 @@ mod tests {
 
         for (source_name, source) in [
             (
-                "crates/venom-scanner/src/http_evidence.rs",
+                "crates/termivar-scanner/src/http_evidence.rs",
                 "mod review_response_copy;",
             ),
             (
-                "crates/venom-scanner/src/web_runtime.rs",
+                "crates/termivar-scanner/src/web_runtime.rs",
                 "mod assessment_review_foreign;",
             ),
             (
-                "crates/venom-scanner/src/web_actions.rs",
+                "crates/termivar-scanner/src/web_actions.rs",
                 "pub mod native_review;",
             ),
             (
-                "crates/venom-scanner/src/web_runtime.rs",
+                "crates/termivar-scanner/src/web_runtime.rs",
                 "#[path = \"foreign.rs\"] mod web_review_execution;",
             ),
             (
-                "crates/venom-scanner/src/web_runtime.rs",
+                "crates/termivar-scanner/src/web_runtime.rs",
                 "pub mod assessment_review_projection;",
             ),
         ] {
@@ -10384,7 +10412,8 @@ mod tests {
     #[test]
     fn direct_client_inventory_uses_reachability_not_test_filenames_in_every_crate() {
         let directory = tempfile::tempdir().unwrap();
-        for (crate_name, root_file) in [("venom-scanner", "lib.rs"), ("venom-cli", "main.rs")] {
+        for (crate_name, root_file) in [("termivar-scanner", "lib.rs"), ("termivar-cli", "main.rs")]
+        {
             let source_root = directory.path().join(format!("crates/{crate_name}/src"));
             fs::create_dir_all(&source_root).unwrap();
             fs::write(
@@ -10403,7 +10432,7 @@ mod tests {
             )
             .unwrap();
         }
-        let scanner_root = directory.path().join("crates/venom-scanner/src");
+        let scanner_root = directory.path().join("crates/termivar-scanner/src");
         fs::write(
             scanner_root.join("lib.rs"),
             r#"
@@ -10428,11 +10457,11 @@ mod tests {
         .unwrap();
 
         let direct = direct_client_sources(directory.path()).unwrap();
-        for crate_name in ["venom-scanner", "venom-cli"] {
+        for crate_name in ["termivar-scanner", "termivar-cli"] {
             assert!(direct.contains(&format!("crates/{crate_name}/src/escape_tests.rs")));
             assert!(!direct.contains(&format!("crates/{crate_name}/src/only_tests.rs")));
         }
-        assert!(direct.contains("crates/venom-scanner/src/binary_escape_tests.rs"));
+        assert!(direct.contains("crates/termivar-scanner/src/binary_escape_tests.rs"));
     }
 
     fn valid_assessment_composition() -> &'static str {
@@ -10659,7 +10688,7 @@ mod tests {
     #[test]
     fn assessment_api_visibility_secret_boundary_is_noncloneable_and_value_free() {
         let source = include_str!(
-            "../../../crates/venom-scanner/src/web_runtime/assessment_api_visibility.rs"
+            "../../../crates/termivar-scanner/src/web_runtime/assessment_api_visibility.rs"
         );
         let syntax = syn::parse_file(source).unwrap();
         assert!(inspect_assessment_api_visibility_secret_boundary(&syntax, source).is_empty());
@@ -10725,7 +10754,7 @@ mod tests {
             ),
         ] {
             let violations = inspect_bounded_source(
-                "crates/venom-scanner/src/web_runtime/web_assessment.rs",
+                "crates/termivar-scanner/src/web_runtime/web_assessment.rs",
                 source,
             )
             .unwrap()
@@ -10803,8 +10832,9 @@ mod tests {
         assert!(!DIRECT_CLIENT_SOURCE_ALLOWLIST.contains(&NATIVE_REVIEW_EXECUTION_SOURCE));
         assert!(!UNMETERED_STANDALONE_FACADE_SOURCES.contains(&NATIVE_REVIEW_EXECUTION_SOURCE));
 
-        let source =
-            include_str!("../../../crates/venom-scanner/src/web_runtime/web_review_execution.rs");
+        let source = include_str!(
+            "../../../crates/termivar-scanner/src/web_runtime/web_review_execution.rs"
+        );
         assert!(
             inspect_native_review_execution_broker_boundary(source)
                 .unwrap()
@@ -10899,7 +10929,7 @@ mod tests {
     #[test]
     fn assessment_defense_cannot_construct_or_install_actions() {
         let source =
-            include_str!("../../../crates/venom-scanner/src/web_runtime/assessment_defense.rs");
+            include_str!("../../../crates/termivar-scanner/src/web_runtime/assessment_defense.rs");
         assert!(
             inspect_assessment_defense_action_boundary(source)
                 .unwrap()
@@ -11072,7 +11102,7 @@ mod tests {
 
     #[test]
     fn assessment_item_facade_is_private_direct_unconditional_and_exact() {
-        let source = include_str!("../../../crates/venom-scanner/src/web_runtime.rs");
+        let source = include_str!("../../../crates/termivar-scanner/src/web_runtime.rs");
         assert!(inspect_assessment_item_facade(source).unwrap().is_empty());
 
         let public_module = source.replacen("mod assessment_item;", "pub mod assessment_item;", 1);
@@ -11103,7 +11133,7 @@ mod tests {
     #[test]
     fn assessment_item_contract_is_read_only_nonserializable_and_claim_derived() {
         let source =
-            include_str!("../../../crates/venom-scanner/src/web_runtime/assessment_item.rs");
+            include_str!("../../../crates/termivar-scanner/src/web_runtime/assessment_item.rs");
         assert!(
             inspect_assessment_item_projection(source)
                 .unwrap()
@@ -11167,7 +11197,7 @@ mod tests {
     #[test]
     fn atomic_paired_comparison_has_one_canonical_construction_authority() {
         let source =
-            include_str!("../../../crates/venom-scanner/src/web_runtime/assessment_item.rs")
+            include_str!("../../../crates/termivar-scanner/src/web_runtime/assessment_item.rs")
                 .replace("\r\n", "\n");
         let source = source.as_str();
 
@@ -11247,7 +11277,7 @@ mod tests {
     #[test]
     fn assessment_item_projection_context_and_factory_authority_are_pinned() {
         let source =
-            include_str!("../../../crates/venom-scanner/src/web_runtime/assessment_item.rs")
+            include_str!("../../../crates/termivar-scanner/src/web_runtime/assessment_item.rs")
                 .replace("\r\n", "\n");
         let source = source.as_str();
 
@@ -11405,11 +11435,11 @@ mod tests {
     #[test]
     fn assessment_projection_knowledge_authority_and_exact_outcome_identity_are_pinned() {
         let item_source =
-            include_str!("../../../crates/venom-scanner/src/web_runtime/assessment_item.rs")
+            include_str!("../../../crates/termivar-scanner/src/web_runtime/assessment_item.rs")
                 .replace("\r\n", "\n");
         let item_source = item_source.as_str();
         let knowledge_source =
-            include_str!("../../../crates/venom-scanner/src/knowledge.rs").replace("\r\n", "\n");
+            include_str!("../../../crates/termivar-scanner/src/knowledge.rs").replace("\r\n", "\n");
         let knowledge_source = knowledge_source.as_str();
 
         let extra_constructor_input = item_source.replacen(
@@ -11500,11 +11530,11 @@ mod tests {
     #[test]
     fn assessment_item_set_and_report_consumption_are_closed() {
         let item_source =
-            include_str!("../../../crates/venom-scanner/src/web_runtime/assessment_item.rs")
+            include_str!("../../../crates/termivar-scanner/src/web_runtime/assessment_item.rs")
                 .replace("\r\n", "\n");
         let item_source = item_source.as_str();
         let report_source =
-            include_str!("../../../crates/venom-scanner/src/web_runtime/assessment_report.rs")
+            include_str!("../../../crates/termivar-scanner/src/web_runtime/assessment_report.rs")
                 .replace("\r\n", "\n");
         let report_source = report_source.as_str();
 
@@ -11852,7 +11882,7 @@ mod tests {
     #[test]
     fn assessment_projection_preflight_and_confirmed_confidence_order_are_pinned() {
         let item_source =
-            include_str!("../../../crates/venom-scanner/src/web_runtime/assessment_item.rs")
+            include_str!("../../../crates/termivar-scanner/src/web_runtime/assessment_item.rs")
                 .replace("\r\n", "\n");
         let item_source = item_source.as_str();
 
@@ -12153,7 +12183,7 @@ mod tests {
 
     #[test]
     fn sealed_observer_and_eof_header_redirect_markers_are_mutation_locked() {
-        let seam = include_str!("../../../crates/venom-scanner/src/http_evidence.rs");
+        let seam = include_str!("../../../crates/termivar-scanner/src/http_evidence.rs");
         assert!(inspect_complete_observer_seam(seam).unwrap().is_empty());
         let broadened = seam.replace(
             "impl Sealed for crate::web_runtime::AssessmentDiscoveryObserver {}",
@@ -12275,15 +12305,15 @@ mod tests {
 
         let mut http = seam.to_owned();
         for child in [
-            include_str!("../../../crates/venom-scanner/src/http_evidence/policy.rs"),
-            include_str!("../../../crates/venom-scanner/src/http_evidence/probe.rs"),
-            include_str!("../../../crates/venom-scanner/src/http_evidence/response.rs"),
+            include_str!("../../../crates/termivar-scanner/src/http_evidence/policy.rs"),
+            include_str!("../../../crates/termivar-scanner/src/http_evidence/probe.rs"),
+            include_str!("../../../crates/termivar-scanner/src/http_evidence/response.rs"),
         ] {
             http.push('\n');
             http.push_str(child);
         }
         let broker =
-            include_str!("../../../crates/venom-scanner/src/http_evidence/request_broker.rs");
+            include_str!("../../../crates/termivar-scanner/src/http_evidence/request_broker.rs");
         assert!(inspect_assessment_transport_markers(&http, broker).is_empty());
         for (mutated_http, mutated_broker, needle) in [
             (

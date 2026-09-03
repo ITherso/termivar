@@ -1,6 +1,6 @@
 //! Repository deployment-truth policy.
 //!
-//! The unreleased Venom `0.10.0-alpha.1` source line has no supported deployment
+//! The unreleased Termivar `0.10.0-alpha.1` source line has no supported deployment
 //! surface. To stop incomplete,
 //! non-deployable infrastructure from silently returning, this fail-closed gate
 //! forbids **executable** orchestration manifests (Helm, Terraform, Kubernetes)
@@ -44,7 +44,7 @@ const FORBIDDEN_DISTRIBUTION_ARTIFACTS: &[(&str, &str)] = &[
 /// Local state and credential-shaped files that must never enter `docker build`
 /// context, even when they are untracked.
 const REQUIRED_DOCKERIGNORE_PATTERNS: &[&str] = &[
-    "/.venom",
+    "/.termivar",
     ".env*",
     "secrets.toml",
     "config.local.toml",

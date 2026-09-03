@@ -1,5 +1,5 @@
 [package]
-name = "venom-current-head-core-consumer"
+name = "termivar-current-head-core-consumer"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -9,4 +9,4 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
-venom-core = { workspace = true }
+termivar-core = { workspace = true }

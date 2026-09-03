@@ -15,7 +15,7 @@ case "$configured_user" in
 esac
 
 configured_entrypoint=$(docker image inspect --format '{{json .Config.Entrypoint}}' "$image")
-[ "$configured_entrypoint" = '["venom"]' ] || \
+[ "$configured_entrypoint" = '["termivar"]' ] || \
     fail "unexpected entrypoint: $configured_entrypoint"
 
 configured_command=$(docker image inspect --format '{{json .Config.Cmd}}' "$image")

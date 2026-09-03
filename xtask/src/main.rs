@@ -20,7 +20,7 @@ type TaskResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 
 #[derive(Debug, Parser)]
 #[command(name = "cargo xtask")]
-#[command(about = "Venom repository maintenance commands")]
+#[command(about = "Termivar repository maintenance commands")]
 struct Cli {
     #[command(subcommand)]
     command: Task,
@@ -48,7 +48,7 @@ enum Task {
     Release,
     /// Verify tag-time changelog and supported-version metadata.
     ReleaseMetadata { version: String },
-    /// Check venom-core's public API against the pinned compatibility baseline.
+    /// Check termivar-core's public API against the pinned compatibility baseline.
     Semver,
     /// Validate the deleted scanner tree's historical salvage ledger.
     ScannerSalvage {
@@ -87,7 +87,7 @@ fn main() -> TaskResult {
             &[
                 "bench",
                 "-p",
-                "venom-scanner",
+                "termivar-scanner",
                 "--bench",
                 "scanner_benchmarks",
             ],
@@ -148,7 +148,7 @@ fn release_preflight(root: &Path) -> TaskResult {
     run(
         root,
         "cargo",
-        &["build", "--release", "--locked", "-p", "venom-cli"],
+        &["build", "--release", "--locked", "-p", "termivar-cli"],
     )?;
     println!("release preflight passed; no tag or artifact was published");
     Ok(())
@@ -163,7 +163,7 @@ fn architecture_preflight(root: &Path) -> TaskResult {
             "check",
             "--locked",
             "-p",
-            "venom-scanner",
+            "termivar-scanner",
             "--no-default-features",
         ],
     )
@@ -172,8 +172,8 @@ fn architecture_preflight(root: &Path) -> TaskResult {
 fn generate(root: &Path, template: Template, name: &str) -> TaskResult {
     validate_project_name(name)?;
     let template_name = match template {
-        Template::Plugin => "venom-plugin",
-        Template::Scanner => "venom-scanner",
+        Template::Plugin => "termivar-plugin",
+        Template::Scanner => "termivar-scanner",
     };
     let template_path = root.join("templates").join(template_name);
     let template_path = template_path
@@ -244,8 +244,8 @@ mod tests {
     #[test]
     fn workspace_templates_exist() {
         let root = workspace_root();
-        assert!(root.join("templates/venom-plugin").is_dir());
-        assert!(root.join("templates/venom-scanner").is_dir());
+        assert!(root.join("templates/termivar-plugin").is_dir());
+        assert!(root.join("templates/termivar-scanner").is_dir());
     }
 
     #[test]

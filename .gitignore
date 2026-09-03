@@ -1,6 +1,7 @@
 /target
 /site
 /.venom
+/.termivar
 *.key
 *.pem
 *.crt

@@ -1274,6 +1274,76 @@ dependencies = [
 ]
 
 [[package]]
+name = "termivar-core"
+version = "0.10.0-alpha.1"
+dependencies = [
+ "chrono",
+ "hex",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror 1.0.69",
+ "toml",
+ "uuid",
+]
+
+[[package]]
+name = "termivar-current-head-core-consumer"
+version = "0.0.0"
+dependencies = [
+ "termivar-core",
+]
+
+[[package]]
+name = "termivar-current-head-deterministic-assessment-consumer"
+version = "0.0.0"
+dependencies = [
+ "termivar-scanner",
+ "url",
+]
+
+[[package]]
+name = "termivar-current-head-plugin-api-0-2-consumer"
+version = "0.0.0"
+dependencies = [
+ "async-trait",
+ "termivar-core",
+ "termivar-scanner",
+]
+
+[[package]]
+name = "termivar-current-head-scanner-sdk-consumer"
+version = "0.0.0"
+dependencies = [
+ "termivar-scanner",
+]
+
+[[package]]
+name = "termivar-scanner"
+version = "0.10.0-alpha.1"
+dependencies = [
+ "async-trait",
+ "base64",
+ "chrono",
+ "dashmap",
+ "futures",
+ "html5ever",
+ "markup5ever_rcdom",
+ "regex",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2",
+ "termivar-core",
+ "thiserror 1.0.69",
+ "tokio",
+ "tokio-util",
+ "toml",
+ "url",
+ "uuid",
+]
+
+[[package]]
 name = "thiserror"
 version = "1.0.69"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1546,76 +1616,6 @@ dependencies = [
  "js-sys",
  "serde_core",
  "wasm-bindgen",
-]
-
-[[package]]
-name = "venom-core"
-version = "0.10.0-alpha.1"
-dependencies = [
- "chrono",
- "hex",
- "serde",
- "serde_json",
- "sha2",
- "thiserror 1.0.69",
- "toml",
- "uuid",
-]
-
-[[package]]
-name = "venom-current-head-core-consumer"
-version = "0.0.0"
-dependencies = [
- "venom-core",
-]
-
-[[package]]
-name = "venom-current-head-deterministic-assessment-consumer"
-version = "0.0.0"
-dependencies = [
- "url",
- "venom-scanner",
-]
-
-[[package]]
-name = "venom-current-head-plugin-api-0-2-consumer"
-version = "0.0.0"
-dependencies = [
- "async-trait",
- "venom-core",
- "venom-scanner",
-]
-
-[[package]]
-name = "venom-current-head-scanner-sdk-consumer"
-version = "0.0.0"
-dependencies = [
- "venom-scanner",
-]
-
-[[package]]
-name = "venom-scanner"
-version = "0.10.0-alpha.1"
-dependencies = [
- "async-trait",
- "base64",
- "chrono",
- "dashmap",
- "futures",
- "html5ever",
- "markup5ever_rcdom",
- "regex",
- "reqwest",
- "serde",
- "serde_json",
- "sha2",
- "thiserror 1.0.69",
- "tokio",
- "tokio-util",
- "toml",
- "url",
- "uuid",
- "venom-core",
 ]
 
 [[package]]

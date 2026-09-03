@@ -1,5 +1,5 @@
 [package]
-name = "venom-current-head-plugin-api-0-2-consumer"
+name = "termivar-current-head-plugin-api-0-2-consumer"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -10,5 +10,5 @@ workspace = true
 
 [dependencies]
 async-trait = { workspace = true }
-venom-core = { workspace = true }
-venom-scanner = { workspace = true, features = ["plugins"] }
+termivar-core = { workspace = true }
+termivar-scanner = { workspace = true, features = ["plugins"] }

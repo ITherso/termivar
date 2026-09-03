@@ -4,5 +4,5 @@ use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|data: &[u8]| {
     let _ = serde_json::from_slice::<serde_json::Value>(data);
-    venom_fuzz_harness::check_openapi_review(data);
+    termivar_fuzz_harness::check_openapi_review(data);
 });

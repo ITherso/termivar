@@ -1,7 +1,7 @@
 //! Exercise the six harmless, INFO-only native plugin trait fixtures.
 //!
 //! Run with:
-//! `cargo run -p venom-examples --bin custom_plugin`
+//! `cargo run -p termivar-examples --bin custom_plugin`
 
 #[path = "plugin-fixtures/mod.rs"]
 mod plugin_fixtures;
@@ -12,11 +12,11 @@ use plugin_fixtures::{
     XxeMarkerFixture, LFI_MARKER, SQL_MARKER, SSRF_MARKER, SSTI_MARKER, XSS_MARKER, XXE_MARKER,
 };
 use std::sync::Arc;
-use url::Url;
-use venom_scanner::{
+use termivar_scanner::{
     EntityId, Plugin, PluginConfig, PluginError, PluginExecutionRequest, PluginHttpRequest,
     PluginHttpResponse, PluginRegistry, PluginRequestBroker, PLUGIN_API_VERSION,
 };
+use url::Url;
 
 /// This example grants no network authority. The fixtures never call it.
 struct NoIoBroker;

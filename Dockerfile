@@ -2,7 +2,7 @@
 
 FROM rust:slim-bookworm AS builder
 
-WORKDIR /usr/src/venom
+WORKDIR /usr/src/termivar
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
@@ -15,26 +15,26 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY . .
 
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,target=/usr/src/venom/target \
-    cargo build --locked --release -p venom-cli \
-    && cp target/release/venom /tmp/venom \
-    && strip /tmp/venom
+    --mount=type=cache,target=/usr/src/termivar/target \
+    cargo build --locked --release -p termivar-cli \
+    && cp target/release/termivar /tmp/termivar \
+    && strip /tmp/termivar
 
 FROM debian:bookworm-slim AS runtime
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/* \
-    && groupadd --gid 1000 venom \
-    && useradd --uid 1000 --gid venom --create-home venom
+    && groupadd --gid 1000 termivar \
+    && useradd --uid 1000 --gid termivar --create-home termivar
 
 WORKDIR /app
 
-COPY --from=builder --chown=venom:venom /tmp/venom /usr/local/bin/venom
+COPY --from=builder --chown=termivar:termivar /tmp/termivar /usr/local/bin/termivar
 
-RUN mkdir -p /app/.venom && chown -R venom:venom /app
+RUN mkdir -p /app/.termivar && chown -R termivar:termivar /app
 
-USER venom
+USER termivar
 
-ENTRYPOINT ["venom"]
+ENTRYPOINT ["termivar"]
 CMD ["--help"]

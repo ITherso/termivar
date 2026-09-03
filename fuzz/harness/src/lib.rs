@@ -14,11 +14,11 @@ pub use semantic::{
 
 /// Maximum byte buffer accepted by the OpenAPI contract-catalog harness.
 pub const MAX_OPENAPI_FUZZ_INPUT_BYTES: usize =
-    venom_scanner::openapi_review::MAX_OPENAPI_DOCUMENT_BYTES;
+    termivar_scanner::openapi_review::MAX_OPENAPI_DOCUMENT_BYTES;
 
 /// Exercises the exact bounded, transport-neutral OpenAPI parser on arbitrary bytes.
 pub fn check_openapi_review(data: &[u8]) {
-    use venom_scanner::openapi_review::OpenApiDocument;
+    use termivar_scanner::openapi_review::OpenApiDocument;
 
     if data.len() > MAX_OPENAPI_FUZZ_INPUT_BYTES {
         return;
@@ -45,13 +45,13 @@ pub fn check_openapi_review(data: &[u8]) {
 // Compile the exact private production extractor into this fuzz-only crate.
 // The scanner wires the same source as `http_evidence::form_controls`; this
 // keeps the normal production API private while avoiding a copied harness.
-#[path = "../../../crates/venom-scanner/src/http_evidence/form_controls.rs"]
+#[path = "../../../crates/termivar-scanner/src/http_evidence/form_controls.rs"]
 mod form_controls;
 
 /// Maximum byte buffer accepted by the HTML semantic harness.
 pub const MAX_HTML_FUZZ_INPUT_BYTES: usize = form_controls::MAX_FORM_CONTROL_PARSE_BYTES;
 
-/// Exercises the exact Venom HTML form-control contract for one bounded input.
+/// Exercises the exact Termivar HTML form-control contract for one bounded input.
 ///
 /// A failure means one of the product-owned properties changed: exact HTML
 /// `name` preservation, element/attribute attribution, deterministic ordering,

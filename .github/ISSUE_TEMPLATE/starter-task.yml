@@ -30,7 +30,7 @@ body:
       description: List observable outcomes and the exact validation command.
       placeholder: |
         - [ ] Behavior is covered by a focused test.
-        - [ ] `cargo test -p venom-core` passes.
+        - [ ] `cargo test -p termivar-core` passes.
     validations:
       required: true
   - type: checkboxes

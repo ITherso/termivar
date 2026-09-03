@@ -77,10 +77,10 @@ worktree_state=$(git status --porcelain=v1 --untracked-files=all)
 
 temporary_parent=${RUNNER_TEMP:-${TMPDIR:-/tmp}}
 temporary_parent=$(cd -- "${temporary_parent}" && pwd -P)
-temporary_dir=$(mktemp -d "${temporary_parent}/venom-endpoint-performance.XXXXXX")
+temporary_dir=$(mktemp -d "${temporary_parent}/termivar-endpoint-performance.XXXXXX")
 cleanup() {
   case "${temporary_dir}" in
-    "${temporary_parent}"/venom-endpoint-performance.*) rm -rf -- "${temporary_dir}" ;;
+    "${temporary_parent}"/termivar-endpoint-performance.*) rm -rf -- "${temporary_dir}" ;;
     *) echo "refusing to remove unexpected temporary path: ${temporary_dir}" >&2 ;;
   esac
 }
@@ -89,7 +89,7 @@ artifact_stream="${temporary_dir}/cargo-artifacts.jsonl"
 raw_report="${temporary_dir}/raw-endpoint-performance.json"
 resource_report="${temporary_dir}/gnu-time.txt"
 
-cargo bench --locked -p venom-scanner --bench endpoint_assessment --no-run \
+cargo bench --locked -p termivar-scanner --bench endpoint_assessment --no-run \
   --message-format=json > "${artifact_stream}"
 benchmark_executable=$(python3 - "${artifact_stream}" <<'PY'
 import json
@@ -119,15 +119,15 @@ cpu_model=$(LC_ALL=C lscpu | awk -F: '/^Model name:/ {sub(/^[[:space:]]+/, "", $
 memory_kib=$(awk '/^MemTotal:/ {print $2; exit}' /proc/meminfo)
 [[ "${memory_kib}" =~ ^[0-9]+$ ]] || { echo "could not determine total memory" >&2; exit 1; }
 
-export VENOM_PERF_COMMIT_SHA
-VENOM_PERF_COMMIT_SHA=$(git rev-parse --verify HEAD)
-export VENOM_PERF_RUST_VERSION
-VENOM_PERF_RUST_VERSION=$(rustc --version --verbose | tr '\n' ' ' | sed 's/[[:space:]]\+$//')
-export VENOM_PERF_OS
-VENOM_PERF_OS=$(uname -srvmo)
-export VENOM_PERF_BUILD_PROFILE=bench
-export VENOM_PERF_CPU_MODEL="${cpu_model}"
-export VENOM_PERF_TOTAL_MEMORY_BYTES=$((memory_kib * 1024))
+export TERMIVAR_PERF_COMMIT_SHA
+TERMIVAR_PERF_COMMIT_SHA=$(git rev-parse --verify HEAD)
+export TERMIVAR_PERF_RUST_VERSION
+TERMIVAR_PERF_RUST_VERSION=$(rustc --version --verbose | tr '\n' ' ' | sed 's/[[:space:]]\+$//')
+export TERMIVAR_PERF_OS
+TERMIVAR_PERF_OS=$(uname -srvmo)
+export TERMIVAR_PERF_BUILD_PROFILE=bench
+export TERMIVAR_PERF_CPU_MODEL="${cpu_model}"
+export TERMIVAR_PERF_TOTAL_MEMORY_BYTES=$((memory_kib * 1024))
 
 # The production broker honors standard proxy variables. This active-security
 # harness must connect only to its own loopback listener, so clear every proxy

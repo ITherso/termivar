@@ -1,0 +1,4369 @@
+use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
+use termivar_core::{ConfidenceScore, EntityId, EvidenceId, EvidenceValue};
+use url::Url;
+
+use super::super::web_assessment::AttributeQuoteMode;
+use super::*;
+use crate::http_evidence::{
+    complete_http_response_observation_for_test, passive_response_projection_for_test,
+    project_review_response, CompleteHttpResponseObservationTestInput, HttpProbe,
+    ReviewResponseProjection,
+};
+
+const CASE_ID: &str = "case:decision:1:planned:web-review";
+const HYPOTHESIS_ID: &str = "hypothesis:web-review:eligible";
+const QUERY_PARAMETER: &str = "return_to";
+
+fn root() -> Url {
+    Url::parse("https://review.test/account").unwrap()
+}
+
+fn seeds() -> NativeWebReviewSeeds {
+    NativeWebReviewSeeds::from_authorized_origin(&root()).unwrap()
+}
+
+fn subject() -> EntityId {
+    EntityId::new(format!("endpoint:{}", root())).unwrap()
+}
+
+fn html_text_selection() -> XssProbeSelection {
+    super::super::web_assessment::select_xss_probe_families(
+        ExactHtmlReflectionContext::HtmlText,
+        &AttributeSourceResult::Absent,
+        &JavaScriptSourceResult::Absent,
+    )
+    .into_iter()
+    .next()
+    .unwrap()
+}
+
+fn attribute_xss_selection(element: &str, attribute: &str, delimiter: &str) -> XssProbeSelection {
+    let marker = seeds().reflection_candidate_marker();
+    let html = format!("<{element} {attribute}={delimiter}{marker}{delimiter}></{element}>");
+    let context = classify_exact_html_reflection(&html, &marker);
+    let source = cross_validate_attribute_reflection_source(&html, &marker, context);
+    super::super::web_assessment::select_xss_probe_families(
+        context,
+        &source,
+        &JavaScriptSourceResult::Absent,
+    )
+    .into_iter()
+    .next()
+    .unwrap()
+}
+
+fn javascript_xss_selection(delimiter: char) -> XssProbeSelection {
+    let marker = seeds().reflection_candidate_marker();
+    let html = format!("<script>const reflected = {delimiter}{marker}{delimiter};</script>");
+    let context = classify_exact_html_reflection(&html, &marker);
+    let source = cross_validate_javascript_reflection_source(&html, &marker, context);
+    super::super::web_assessment::select_xss_probe_families(
+        context,
+        &AttributeSourceResult::Absent,
+        &source,
+    )
+    .into_iter()
+    .next()
+    .unwrap()
+}
+
+fn script_value_document(delimiter: char, value: &str) -> String {
+    format!("<script>const reflected = {delimiter}{value}{delimiter};</script>")
+}
+
+fn same_context_script_document(candidate_delimiter: char, candidate: &str) -> String {
+    let inert_delimiter = if candidate_delimiter == '"' {
+        '\''
+    } else {
+        '"'
+    };
+    script_value_document(inert_delimiter, candidate)
+}
+
+fn headers(values: &[(&str, &str)]) -> HeaderMap {
+    let mut headers = HeaderMap::new();
+    for (name, value) in values {
+        headers.append(
+            HeaderName::from_bytes(name.as_bytes()).unwrap(),
+            HeaderValue::from_str(value).unwrap(),
+        );
+    }
+    headers
+}
+
+#[allow(clippy::too_many_arguments)]
+fn observe(
+    observer: &AssessmentReviewObserverSet,
+    kind: NativeWebReviewActionKind,
+    stage: DecisionExecutionStage,
+    requested_url: &Url,
+    response_headers: &HeaderMap,
+    status: u16,
+    media_type: Option<&str>,
+    complete_body: Option<&[u8]>,
+    executor_id: &str,
+    strategy: Option<&PayloadStrategyRef>,
+    applies_transition: bool,
+) -> Result<Vec<Evidence>, HttpEvidenceError> {
+    let mut probe = HttpProbe::new(requested_url.clone(), HttpProbeMethod::Get).unwrap();
+    if kind == NativeWebReviewActionKind::CorsPolicyPair && stage == DecisionExecutionStage::Active
+    {
+        probe = probe.with_header("origin", seeds().cors_origin()).unwrap();
+    }
+    let review = project_review_response(&probe, response_headers);
+    let passive = passive_response_projection_for_test(&[]);
+    let ids = (0..7).map(|_| EvidenceId::new()).collect::<Vec<_>>();
+    let expected_subject = subject();
+    let observation =
+        complete_http_response_observation_for_test(CompleteHttpResponseObservationTestInput {
+            case_id: CASE_ID,
+            action_id: kind.action_id(),
+            executor_id,
+            hypothesis_id: HYPOTHESIS_ID,
+            has_payload_strategy: strategy.is_some(),
+            payload_strategy: strategy,
+            applies_hypothesis_transition: applies_transition,
+            stage,
+            subject: &expected_subject,
+            method: HttpProbeMethod::Get,
+            requested_url,
+            status,
+            media_type,
+            reliability: ConfidenceScore::MAX,
+            complete_body,
+            request_method_evidence_id: Some(&ids[0]),
+            request_url_evidence_id: Some(&ids[1]),
+            response_status_evidence_id: Some(&ids[2]),
+            response_final_url_evidence_id: Some(&ids[3]),
+            response_media_type_evidence_id: media_type.map(|_| &ids[4]),
+            response_body_truncated_evidence_id: Some(&ids[5]),
+            response_body_digest_evidence_id: Some(&ids[6]),
+            passive_response_projection: &passive,
+            review_response_projection: Some(&review),
+        });
+    observer.observe(observation)
+}
+
+fn values(evidence: &[Evidence]) -> Vec<(&str, &str)> {
+    evidence
+        .iter()
+        .map(|item| {
+            let EvidenceValue::Text(value) = item.value() else {
+                panic!("native review evidence must use fixed text relations")
+            };
+            (item.predicate().name(), value.as_str())
+        })
+        .collect()
+}
+
+#[test]
+fn composite_observer_projects_both_exact_action_contracts_without_raw_values() {
+    let root = root();
+    let seeds = seeds();
+    let observer =
+        AssessmentReviewObserverSet::new(root.clone(), seeds.clone(), Some(QUERY_PARAMETER))
+            .unwrap();
+    let cors_strategy = native_review_strategy_ref(NativeWebReviewActionKind::CorsPolicyPair);
+    let cors = observe(
+        &observer,
+        NativeWebReviewActionKind::CorsPolicyPair,
+        DecisionExecutionStage::Active,
+        &root,
+        &headers(&[
+            ("access-control-allow-origin", seeds.cors_origin()),
+            ("access-control-allow-credentials", "true"),
+            ("vary", "Accept-Encoding, Origin"),
+        ]),
+        200,
+        Some("text/html"),
+        Some(b"<p>ordinary</p>"),
+        NativeWebReviewActionKind::CorsPolicyPair.executor_id(),
+        Some(&cors_strategy),
+        false,
+    )
+    .unwrap();
+    assert_eq!(
+        values(&cors),
+        vec![
+            (NATIVE_WEB_REVIEW_RESPONSE_MARKER, "active-candidate"),
+            (CORS_HTTP_STATUS_CLASS, "successful"),
+            (CORS_ALLOW_ORIGIN_RELATION, "exact-request-origin"),
+            (CORS_ALLOW_CREDENTIALS_RELATION, "true"),
+            (CORS_VARY_ORIGIN_RELATION, "contains-origin"),
+        ]
+    );
+
+    let mut candidate_url = root.clone();
+    candidate_url
+        .query_pairs_mut()
+        .append_pair(QUERY_PARAMETER, seeds.external_url());
+    let redirect_strategy =
+        native_review_strategy_ref(NativeWebReviewActionKind::RedirectReflectionQueryPair);
+    let redirect = observe(
+        &observer,
+        NativeWebReviewActionKind::RedirectReflectionQueryPair,
+        DecisionExecutionStage::Active,
+        &candidate_url,
+        &headers(&[("location", seeds.external_url())]),
+        302,
+        None,
+        None,
+        NativeWebReviewActionKind::RedirectReflectionQueryPair.executor_id(),
+        Some(&redirect_strategy),
+        false,
+    )
+    .unwrap();
+    assert_eq!(
+        values(&redirect),
+        vec![
+            (NATIVE_WEB_REVIEW_RESPONSE_MARKER, "active-candidate"),
+            (REDIRECT_STATUS_RELATION, "redirect"),
+            (REDIRECT_LOCATION_RELATION, "exact-external-query-value",),
+        ]
+    );
+
+    let reflection_contract = observer.reflection.as_ref().unwrap();
+    let marker = seeds.reflection_candidate_marker();
+    let body = format!("<script>const data = '{marker}';</script>");
+    let reflection_strategy =
+        native_review_strategy_ref(NativeWebReviewActionKind::ReflectionContextQueryPair);
+    let reflection = observe(
+        &observer,
+        NativeWebReviewActionKind::ReflectionContextQueryPair,
+        DecisionExecutionStage::Active,
+        &reflection_contract.candidate_url,
+        &HeaderMap::new(),
+        200,
+        Some("text/html"),
+        Some(body.as_bytes()),
+        NativeWebReviewActionKind::ReflectionContextQueryPair.executor_id(),
+        Some(&reflection_strategy),
+        false,
+    )
+    .unwrap();
+    assert_eq!(
+        values(&reflection),
+        vec![
+            (NATIVE_WEB_REVIEW_RESPONSE_MARKER, "active-candidate"),
+            (HTML_REFLECTION_CONTEXT, "script-element-content"),
+            (HTML_ATTRIBUTE_SOURCE_STATUS, "absent"),
+            (HTML_ATTRIBUTE_SOURCE_QUOTE_MODE, "none"),
+            (HTML_ATTRIBUTE_SOURCE_ELEMENT, "none"),
+            (HTML_ATTRIBUTE_SOURCE_NAME, "none"),
+            (HTML_ATTRIBUTE_SOURCE_CONTEXT, "none"),
+            (JAVASCRIPT_SOURCE_STATUS, "exact-script-anchor"),
+            (JAVASCRIPT_SOURCE_SCRIPT_KIND, "classic-javascript"),
+            (JAVASCRIPT_SOURCE_CONTEXT, "single-quoted-string"),
+            (JAVASCRIPT_SOURCE_SCRIPT_ORDINAL, "0"),
+        ]
+    );
+
+    for debug in [
+        format!("{observer:?}"),
+        format!("{cors:?}"),
+        format!("{redirect:?}"),
+        format!("{reflection:?}"),
+    ] {
+        assert!(!debug.contains(seeds.cors_origin()));
+        assert!(!debug.contains(seeds.external_url()));
+        assert!(!debug.contains(body.as_str()));
+    }
+}
+
+#[test]
+fn reflection_observer_commits_only_bounded_source_anchor_fields() {
+    let root = root();
+    let seeds = seeds();
+    let observer = AssessmentReviewObserverSet::new_with_sql(
+        root,
+        seeds.clone(),
+        None,
+        Some(QUERY_PARAMETER),
+        None,
+        None,
+    )
+    .unwrap();
+    let contract = observer.reflection.as_ref().unwrap();
+    let marker = seeds.reflection_candidate_marker();
+    let strategy =
+        native_review_strategy_ref(NativeWebReviewActionKind::ReflectionContextQueryPair);
+    for (body, quote_mode, element, attribute, context) in [
+        (
+            format!("<div title=\"{marker}\"></div>"),
+            "double-quoted",
+            "div",
+            "title",
+            "attribute-value",
+        ),
+        (
+            format!("<a href='{marker}'>x</a>"),
+            "single-quoted",
+            "a",
+            "href",
+            "uri-attribute",
+        ),
+        (
+            format!("<button onclick={marker}>x</button>"),
+            "unquoted",
+            "button",
+            "onclick",
+            "event-handler-attribute",
+        ),
+    ] {
+        let evidence = observe(
+            &observer,
+            NativeWebReviewActionKind::ReflectionContextQueryPair,
+            DecisionExecutionStage::Active,
+            &contract.candidate_url,
+            &HeaderMap::new(),
+            200,
+            Some("text/html"),
+            Some(body.as_bytes()),
+            NativeWebReviewActionKind::ReflectionContextQueryPair.executor_id(),
+            Some(&strategy),
+            false,
+        )
+        .unwrap();
+        let projected = values(&evidence);
+        for expected in [
+            (HTML_ATTRIBUTE_SOURCE_STATUS, "exact-attribute-anchor"),
+            (HTML_ATTRIBUTE_SOURCE_QUOTE_MODE, quote_mode),
+            (HTML_ATTRIBUTE_SOURCE_ELEMENT, element),
+            (HTML_ATTRIBUTE_SOURCE_NAME, attribute),
+            (HTML_ATTRIBUTE_SOURCE_CONTEXT, context),
+        ] {
+            assert!(projected.contains(&expected), "{projected:?}");
+        }
+        let debug = format!("{evidence:?}");
+        assert!(!debug.contains(&marker));
+        assert!(!debug.contains(&body));
+    }
+}
+
+#[test]
+fn redirect_projection_accepts_only_the_closed_redirect_status_set() {
+    let root = root();
+    let seeds = seeds();
+    let observer =
+        AssessmentReviewObserverSet::new(root.clone(), seeds.clone(), Some(QUERY_PARAMETER))
+            .unwrap();
+    let mut candidate_url = root;
+    candidate_url
+        .query_pairs_mut()
+        .append_pair(QUERY_PARAMETER, seeds.external_url());
+    let strategy =
+        native_review_strategy_ref(NativeWebReviewActionKind::RedirectReflectionQueryPair);
+
+    for status in [301, 302, 303, 307, 308] {
+        let evidence = observe(
+            &observer,
+            NativeWebReviewActionKind::RedirectReflectionQueryPair,
+            DecisionExecutionStage::Active,
+            &candidate_url,
+            &headers(&[("location", seeds.external_url())]),
+            status,
+            None,
+            None,
+            NativeWebReviewActionKind::RedirectReflectionQueryPair.executor_id(),
+            Some(&strategy),
+            false,
+        )
+        .unwrap();
+        assert!(values(&evidence).contains(&(REDIRECT_STATUS_RELATION, "redirect")));
+    }
+
+    for status in [300, 304, 305, 306, 399] {
+        let evidence = observe(
+            &observer,
+            NativeWebReviewActionKind::RedirectReflectionQueryPair,
+            DecisionExecutionStage::Active,
+            &candidate_url,
+            &headers(&[("location", seeds.external_url())]),
+            status,
+            None,
+            None,
+            NativeWebReviewActionKind::RedirectReflectionQueryPair.executor_id(),
+            Some(&strategy),
+            false,
+        )
+        .unwrap();
+        assert!(values(&evidence).contains(&(REDIRECT_STATUS_RELATION, "other")));
+    }
+}
+
+#[test]
+fn cors_status_projection_retains_only_a_fixed_vocabulary_class() {
+    let root = root();
+    let observer = AssessmentReviewObserverSet::new(root.clone(), seeds(), None).unwrap();
+    let strategy = native_review_strategy_ref(NativeWebReviewActionKind::CorsPolicyPair);
+
+    for (status, expected) in [
+        (199, "informational"),
+        (200, "successful"),
+        (302, "redirection"),
+        (404, "client-error"),
+        (500, "server-error"),
+        (600, "other"),
+    ] {
+        let evidence = observe(
+            &observer,
+            NativeWebReviewActionKind::CorsPolicyPair,
+            DecisionExecutionStage::Passive,
+            &root,
+            &HeaderMap::new(),
+            status,
+            None,
+            None,
+            NativeWebReviewActionKind::CorsPolicyPair.executor_id(),
+            Some(&strategy),
+            false,
+        )
+        .unwrap();
+        let projected = values(&evidence);
+        assert!(projected.contains(&(CORS_HTTP_STATUS_CLASS, expected)));
+        let raw_status = status.to_string();
+        assert!(projected
+            .iter()
+            .all(|(_, value)| *value != raw_status.as_str()));
+    }
+}
+
+#[test]
+fn unrelated_actions_are_ignored_but_malformed_recognized_actions_fail_closed() {
+    let root = root();
+    let seeds = seeds();
+    let observer =
+        AssessmentReviewObserverSet::new(root.clone(), seeds, Some(QUERY_PARAMETER)).unwrap();
+    let projection = ReviewResponseProjection::empty();
+    let passive = passive_response_projection_for_test(&[]);
+    let ids = (0..7).map(|_| EvidenceId::new()).collect::<Vec<_>>();
+    let subject = subject();
+    let unrelated =
+        complete_http_response_observation_for_test(CompleteHttpResponseObservationTestInput {
+            case_id: "",
+            action_id: "web.action.bootstrap.http-evidence",
+            executor_id: "wrong",
+            hypothesis_id: "",
+            has_payload_strategy: false,
+            payload_strategy: None,
+            applies_hypothesis_transition: true,
+            stage: DecisionExecutionStage::Passive,
+            subject: &subject,
+            method: HttpProbeMethod::Head,
+            requested_url: &root,
+            status: 200,
+            media_type: None,
+            reliability: ConfidenceScore::MAX,
+            complete_body: None,
+            request_method_evidence_id: Some(&ids[0]),
+            request_url_evidence_id: Some(&ids[1]),
+            response_status_evidence_id: Some(&ids[2]),
+            response_final_url_evidence_id: Some(&ids[3]),
+            response_media_type_evidence_id: None,
+            response_body_truncated_evidence_id: Some(&ids[5]),
+            response_body_digest_evidence_id: Some(&ids[6]),
+            passive_response_projection: &passive,
+            review_response_projection: Some(&projection),
+        });
+    assert!(observer.observe(unrelated).unwrap().is_empty());
+
+    let strategy = native_review_strategy_ref(NativeWebReviewActionKind::CorsPolicyPair);
+    assert!(matches!(
+        observe(
+            &observer,
+            NativeWebReviewActionKind::CorsPolicyPair,
+            DecisionExecutionStage::Passive,
+            &root,
+            &HeaderMap::new(),
+            200,
+            None,
+            None,
+            NativeWebReviewActionKind::RedirectReflectionQueryPair.executor_id(),
+            Some(&strategy),
+            false,
+        ),
+        Err(HttpEvidenceError::AssessmentObserverInvariant {
+            invariant: "native-review-action-contract"
+        })
+    ));
+    assert!(matches!(
+        observe(
+            &observer,
+            NativeWebReviewActionKind::CorsPolicyPair,
+            DecisionExecutionStage::Passive,
+            &root,
+            &HeaderMap::new(),
+            200,
+            None,
+            None,
+            NativeWebReviewActionKind::CorsPolicyPair.executor_id(),
+            Some(&strategy),
+            true,
+        ),
+        Err(HttpEvidenceError::AssessmentObserverInvariant { .. })
+    ));
+}
+
+#[test]
+fn reflection_context_requires_complete_utf8_html_and_exact_request_shape() {
+    let root = root();
+    let seeds = seeds();
+    let observer =
+        AssessmentReviewObserverSet::new(root.clone(), seeds.clone(), Some(QUERY_PARAMETER))
+            .unwrap();
+    let strategy =
+        native_review_strategy_ref(NativeWebReviewActionKind::ReflectionContextQueryPair);
+    let contract = observer.reflection.as_ref().unwrap();
+
+    for (media_type, body, expected) in [
+        (Some("text/html"), None, "incomplete"),
+        (Some("application/json"), None, "not-applicable"),
+        (None, Some(b"{}".as_slice()), "incomplete"),
+        (Some("text/html"), Some([0xff].as_slice()), "incomplete"),
+    ] {
+        let evidence = observe(
+            &observer,
+            NativeWebReviewActionKind::ReflectionContextQueryPair,
+            DecisionExecutionStage::Active,
+            &contract.candidate_url,
+            &HeaderMap::new(),
+            200,
+            media_type,
+            body,
+            NativeWebReviewActionKind::ReflectionContextQueryPair.executor_id(),
+            Some(&strategy),
+            false,
+        )
+        .unwrap();
+        let projected = values(&evidence);
+        assert_eq!(
+            projected
+                .iter()
+                .find(|(property, _)| *property == HTML_REFLECTION_CONTEXT),
+            Some(&(HTML_REFLECTION_CONTEXT, expected))
+        );
+        let expected_source = if expected == "not-applicable" {
+            "unsupported"
+        } else {
+            "incomplete"
+        };
+        assert_eq!(
+            projected
+                .iter()
+                .find(|(property, _)| *property == HTML_ATTRIBUTE_SOURCE_STATUS),
+            Some(&(HTML_ATTRIBUTE_SOURCE_STATUS, expected_source))
+        );
+        assert_eq!(
+            projected
+                .iter()
+                .find(|(property, _)| *property == JAVASCRIPT_SOURCE_STATUS),
+            Some(&(JAVASCRIPT_SOURCE_STATUS, expected_source))
+        );
+    }
+
+    let mut wrong_name = root.clone();
+    wrong_name
+        .query_pairs_mut()
+        .append_pair("next", &seeds.reflection_candidate_marker());
+    assert!(matches!(
+        observe(
+            &observer,
+            NativeWebReviewActionKind::ReflectionContextQueryPair,
+            DecisionExecutionStage::Active,
+            &wrong_name,
+            &HeaderMap::new(),
+            200,
+            Some("text/html"),
+            Some(b"<p>ordinary</p>"),
+            NativeWebReviewActionKind::ReflectionContextQueryPair.executor_id(),
+            Some(&strategy),
+            false,
+        ),
+        Err(HttpEvidenceError::AssessmentObserverInvariant { .. })
+    ));
+}
+
+#[test]
+fn xss_html_text_family_requires_one_exact_candidate_specific_node_boundary() {
+    let root = root();
+    let seeds = seeds();
+    let observer =
+        AssessmentReviewObserverSet::new_xss(root, seeds, QUERY_PARAMETER, html_text_selection())
+            .unwrap();
+    let contract = observer.xss.as_ref().unwrap();
+    let strategy = native_review_strategy_ref(NativeWebReviewActionKind::XssStructuralQueryPair);
+    let control = observe(
+        &observer,
+        NativeWebReviewActionKind::XssStructuralQueryPair,
+        DecisionExecutionStage::Passive,
+        &contract.control_url,
+        &HeaderMap::new(),
+        200,
+        Some("text/html"),
+        Some(b"<p>matched control</p>"),
+        NativeWebReviewActionKind::XssStructuralQueryPair.executor_id(),
+        Some(&strategy),
+        false,
+    )
+    .unwrap();
+    assert_eq!(
+        values(&control).last(),
+        Some(&(XSS_STRUCTURAL_RELATION, "encoded-or-inert"))
+    );
+
+    let candidate = observe(
+        &observer,
+        NativeWebReviewActionKind::XssStructuralQueryPair,
+        DecisionExecutionStage::Active,
+        &contract.candidate_url,
+        &HeaderMap::new(),
+        200,
+        Some("text/html"),
+        Some(contract.probe.parts().candidate_value.as_bytes()),
+        NativeWebReviewActionKind::XssStructuralQueryPair.executor_id(),
+        Some(&strategy),
+        false,
+    )
+    .unwrap();
+    assert_eq!(
+        values(&candidate).last(),
+        Some(&(XSS_STRUCTURAL_RELATION, "structural-boundary-observed"))
+    );
+
+    let encoded = format!(
+        "<p>{}</p>",
+        contract
+            .probe
+            .parts()
+            .candidate_value
+            .replace('&', "&amp;")
+            .replace('<', "&lt;")
+            .replace('>', "&gt;")
+            .replace('"', "&quot;")
+    );
+    let candidate = observe(
+        &observer,
+        NativeWebReviewActionKind::XssStructuralQueryPair,
+        DecisionExecutionStage::Active,
+        &contract.candidate_url,
+        &HeaderMap::new(),
+        200,
+        Some("text/html"),
+        Some(encoded.as_bytes()),
+        NativeWebReviewActionKind::XssStructuralQueryPair.executor_id(),
+        Some(&strategy),
+        false,
+    )
+    .unwrap();
+    assert_eq!(
+        values(&candidate).last(),
+        // Encoding removes both the exact raw candidate and its parser-visible
+        // boundary. `ReflectedSameContext` remains reserved for an exact raw
+        // candidate that survives without establishing the required node.
+        Some(&(XSS_STRUCTURAL_RELATION, "encoded-or-inert"))
+    );
+}
+
+#[test]
+fn xss_seed_identity_is_pinned_canonical_and_redacted() {
+    const EXPECTED_IDENTITY: &str = "cbde631857b638780e0cd315f53a6801";
+    let seeds = seeds();
+    assert_eq!(seeds.reflection_identity().len(), 32);
+    assert!(seeds
+        .reflection_identity()
+        .bytes()
+        .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase()));
+    assert_eq!(seeds.reflection_identity(), EXPECTED_IDENTITY);
+    assert!(!format!("{seeds:?}").contains(EXPECTED_IDENTITY));
+}
+
+#[test]
+fn production_derived_xss_candidate_bytes_and_matcher_share_one_identity() {
+    const IDENTITY: &str = "0123456789abcdef0123456789abcdef";
+    const EXPECTED: &str =
+        "<span data-venom-xss-boundary-token=\"0123456789abcdef0123456789abcdef\"></span>";
+    let parts = XssStructuralProbeParts::derive_values(html_text_selection(), IDENTITY).unwrap();
+    assert_eq!(parts.control_identity, IDENTITY);
+    assert_eq!(parts.candidate_identity, IDENTITY);
+    assert_eq!(parts.candidate_value.as_bytes(), EXPECTED.as_bytes());
+    assert_eq!(
+        validate_exact_xss_html_boundary_fragment(
+            &parts.candidate_value,
+            &parts.candidate_identity,
+        ),
+        ExactXssBoundaryMatch::Matched
+    );
+    let probe = parts.validate().unwrap();
+    assert_eq!(probe.parts().control_identity, IDENTITY);
+    assert_eq!(probe.parts().candidate_identity, IDENTITY);
+    assert_eq!(probe.parts().candidate_value, EXPECTED);
+}
+
+#[test]
+fn xss_metadata_only_families_never_upgrade_same_context_reflection() {
+    for family in [
+        XssProbeFamily::UriAttributeStructure,
+        XssProbeFamily::EventHandlerStructure,
+        XssProbeFamily::ScriptContentStructure,
+    ] {
+        assert!(!family.is_v1_executable());
+        assert!(super::super::web_assessment::select_xss_probe_families(
+            family.compatible_context(),
+            &AttributeSourceResult::Absent,
+            &JavaScriptSourceResult::Absent,
+        )
+        .is_empty());
+    }
+}
+
+#[test]
+fn xss_structural_analysis_fails_closed_for_truncation_and_non_html_media() {
+    let root = root();
+    let observer =
+        AssessmentReviewObserverSet::new_xss(root, seeds(), QUERY_PARAMETER, html_text_selection())
+            .unwrap();
+    let contract = observer.xss.as_ref().unwrap();
+    let strategy = native_review_strategy_ref(NativeWebReviewActionKind::XssStructuralQueryPair);
+    for (media_type, body, expected) in [
+        (Some("text/html"), None, "incomplete"),
+        (
+            Some("application/json"),
+            Some(b"{}".as_slice()),
+            "unsupported",
+        ),
+        (None, Some(b"text".as_slice()), "incomplete"),
+    ] {
+        let evidence = observe(
+            &observer,
+            NativeWebReviewActionKind::XssStructuralQueryPair,
+            DecisionExecutionStage::Active,
+            &contract.candidate_url,
+            &HeaderMap::new(),
+            200,
+            media_type,
+            body,
+            NativeWebReviewActionKind::XssStructuralQueryPair.executor_id(),
+            Some(&strategy),
+            false,
+        )
+        .unwrap();
+        assert_eq!(
+            values(&evidence).last(),
+            Some(&(XSS_STRUCTURAL_RELATION, expected))
+        );
+    }
+}
+
+#[test]
+fn quote_aware_attribute_families_require_exact_host_sink_dom_boundaries() {
+    for (element, attribute, delimiter, quote_mode, family) in [
+        (
+            "div",
+            "title",
+            "\"",
+            AttributeQuoteMode::DoubleQuoted,
+            XssProbeFamily::AttributeValueBoundary,
+        ),
+        (
+            "div",
+            "title",
+            "'",
+            AttributeQuoteMode::SingleQuoted,
+            XssProbeFamily::AttributeValueBoundary,
+        ),
+        (
+            "div",
+            "title",
+            "",
+            AttributeQuoteMode::Unquoted,
+            XssProbeFamily::AttributeValueBoundary,
+        ),
+        (
+            "a",
+            "href",
+            "\"",
+            AttributeQuoteMode::DoubleQuoted,
+            XssProbeFamily::UriAttributeBoundary,
+        ),
+        (
+            "a",
+            "href",
+            "'",
+            AttributeQuoteMode::SingleQuoted,
+            XssProbeFamily::UriAttributeBoundary,
+        ),
+        (
+            "a",
+            "href",
+            "",
+            AttributeQuoteMode::Unquoted,
+            XssProbeFamily::UriAttributeBoundary,
+        ),
+        (
+            "button",
+            "onclick",
+            "\"",
+            AttributeQuoteMode::DoubleQuoted,
+            XssProbeFamily::EventHandlerAttributeBoundary,
+        ),
+        (
+            "button",
+            "onclick",
+            "'",
+            AttributeQuoteMode::SingleQuoted,
+            XssProbeFamily::EventHandlerAttributeBoundary,
+        ),
+        (
+            "button",
+            "onclick",
+            "",
+            AttributeQuoteMode::Unquoted,
+            XssProbeFamily::EventHandlerAttributeBoundary,
+        ),
+    ] {
+        let selection = attribute_xss_selection(element, attribute, delimiter);
+        assert_eq!(selection.family(), family);
+        assert_eq!(selection.quote_mode(), Some(quote_mode));
+        assert_eq!(
+            selection.action_kind(),
+            NativeWebReviewActionKind::XssAttributeBoundaryQueryPair
+        );
+        let observer = AssessmentReviewObserverSet::new_xss(
+            root(),
+            seeds(),
+            QUERY_PARAMETER,
+            selection.clone(),
+        )
+        .unwrap();
+        let contract = observer.xss.as_ref().unwrap();
+        let strategy = native_review_strategy_ref(selection.action_kind());
+        let control_body = format!(
+            "<{element} {attribute}={delimiter}{}{delimiter}></{element}>",
+            contract.probe.parts().control_value,
+        );
+        let control = observe(
+            &observer,
+            selection.action_kind(),
+            DecisionExecutionStage::Passive,
+            &contract.control_url,
+            &HeaderMap::new(),
+            200,
+            Some("text/html"),
+            Some(control_body.as_bytes()),
+            selection.action_kind().executor_id(),
+            Some(&strategy),
+            false,
+        )
+        .unwrap();
+        assert_eq!(
+            values(&control).last(),
+            Some(&(XSS_STRUCTURAL_RELATION, "encoded-or-inert"))
+        );
+
+        let candidate_body = format!(
+            "<{element} {attribute}={delimiter}{}{delimiter}></{element}>",
+            contract.probe.parts().candidate_value,
+        );
+        let candidate = observe(
+            &observer,
+            selection.action_kind(),
+            DecisionExecutionStage::Active,
+            &contract.candidate_url,
+            &HeaderMap::new(),
+            200,
+            Some("text/html"),
+            Some(candidate_body.as_bytes()),
+            selection.action_kind().executor_id(),
+            Some(&strategy),
+            false,
+        )
+        .unwrap();
+        let projected = values(&candidate);
+        assert!(projected.contains(&(XSS_PROBE_FAMILY, family.stable_id())));
+        assert!(projected.contains(&(XSS_PROBE_VARIANT, selection.variant_id())));
+        assert_eq!(
+            projected.last(),
+            Some(&(XSS_STRUCTURAL_RELATION, "structural-boundary-observed"))
+        );
+    }
+}
+
+#[test]
+fn javascript_xss_observer_classifies_exact_lexical_boundaries_and_fail_closed_negatives() {
+    for (delimiter, family, variant, context_id) in [
+        (
+            '\'',
+            XssProbeFamily::ScriptSingleQuotedStringBoundary,
+            "web.review.xss.variant.script.single-quoted-string@1",
+            "single-quoted-string",
+        ),
+        (
+            '"',
+            XssProbeFamily::ScriptDoubleQuotedStringBoundary,
+            "web.review.xss.variant.script.double-quoted-string@1",
+            "double-quoted-string",
+        ),
+        (
+            '`',
+            XssProbeFamily::ScriptTemplateLiteralBoundary,
+            "web.review.xss.variant.script.template-literal-text@1",
+            "template-literal-text",
+        ),
+    ] {
+        let selection = javascript_xss_selection(delimiter);
+        let anchor = selection.javascript_anchor().unwrap();
+        assert_eq!(selection.family(), family);
+        assert_eq!(selection.variant_id(), variant);
+        assert_eq!(anchor.script_kind().stable_id(), "classic-javascript");
+        assert_eq!(anchor.context().stable_id(), context_id);
+        assert_eq!(anchor.script_ordinal(), 0);
+        assert_eq!(
+            selection.action_kind(),
+            NativeWebReviewActionKind::XssScriptLexicalBoundaryQueryPair
+        );
+
+        let observer = AssessmentReviewObserverSet::new_xss(
+            root(),
+            seeds(),
+            QUERY_PARAMETER,
+            selection.clone(),
+        )
+        .unwrap();
+        let contract = observer.xss.as_ref().unwrap();
+        let strategy = native_review_strategy_ref(selection.action_kind());
+        let tokens = XssJavascriptLexicalProbeTokens::from_identity(
+            &contract.probe.parts().candidate_identity,
+        )
+        .unwrap();
+
+        let control_body = script_value_document(delimiter, &contract.probe.parts().control_value);
+        let control = observe(
+            &observer,
+            selection.action_kind(),
+            DecisionExecutionStage::Passive,
+            &contract.control_url,
+            &HeaderMap::new(),
+            200,
+            Some("text/html"),
+            Some(control_body.as_bytes()),
+            selection.action_kind().executor_id(),
+            Some(&strategy),
+            false,
+        )
+        .unwrap();
+        assert_eq!(
+            values(&control),
+            vec![
+                (NATIVE_WEB_REVIEW_RESPONSE_MARKER, "passive-control"),
+                (XSS_PROBE_FAMILY, family.stable_id()),
+                (XSS_PROBE_VARIANT, variant),
+                (JAVASCRIPT_SOURCE_STATUS, "exact-script-anchor"),
+                (JAVASCRIPT_SOURCE_SCRIPT_KIND, "classic-javascript"),
+                (JAVASCRIPT_SOURCE_CONTEXT, context_id),
+                (JAVASCRIPT_SOURCE_SCRIPT_ORDINAL, "0"),
+                (XSS_STRUCTURAL_RELATION, "encoded-or-inert"),
+            ]
+        );
+
+        let candidate_body =
+            script_value_document(delimiter, &contract.probe.parts().candidate_value);
+        let candidate = observe(
+            &observer,
+            selection.action_kind(),
+            DecisionExecutionStage::Active,
+            &contract.candidate_url,
+            &HeaderMap::new(),
+            200,
+            Some("text/html"),
+            Some(candidate_body.as_bytes()),
+            selection.action_kind().executor_id(),
+            Some(&strategy),
+            false,
+        )
+        .unwrap();
+        assert_eq!(
+            values(&candidate),
+            vec![
+                (NATIVE_WEB_REVIEW_RESPONSE_MARKER, "active-candidate"),
+                (XSS_PROBE_FAMILY, family.stable_id()),
+                (XSS_PROBE_VARIANT, variant),
+                (JAVASCRIPT_SOURCE_STATUS, "exact-script-anchor"),
+                (JAVASCRIPT_SOURCE_SCRIPT_KIND, "classic-javascript"),
+                (JAVASCRIPT_SOURCE_CONTEXT, context_id),
+                (JAVASCRIPT_SOURCE_SCRIPT_ORDINAL, "0"),
+                (XSS_STRUCTURAL_RELATION, "structural-boundary-observed"),
+            ]
+        );
+
+        let same_context_body =
+            same_context_script_document(delimiter, &contract.probe.parts().candidate_value);
+        let same_context = observe(
+            &observer,
+            selection.action_kind(),
+            DecisionExecutionStage::Active,
+            &contract.candidate_url,
+            &HeaderMap::new(),
+            200,
+            Some("text/html"),
+            Some(same_context_body.as_bytes()),
+            selection.action_kind().executor_id(),
+            Some(&strategy),
+            false,
+        )
+        .unwrap();
+        assert_eq!(
+            values(&same_context).last(),
+            Some(&(XSS_STRUCTURAL_RELATION, "reflected-same-context"))
+        );
+
+        let encoded_candidate = contract
+            .probe
+            .parts()
+            .candidate_value
+            .replace('&', "&amp;")
+            .replace('/', "&#47;")
+            .replace('\'', "&#39;")
+            .replace('"', "&quot;")
+            .replace('`', "&#96;");
+        let encoded_body = script_value_document(delimiter, &encoded_candidate);
+        let encoded = observe(
+            &observer,
+            selection.action_kind(),
+            DecisionExecutionStage::Active,
+            &contract.candidate_url,
+            &HeaderMap::new(),
+            200,
+            Some("text/html"),
+            Some(encoded_body.as_bytes()),
+            selection.action_kind().executor_id(),
+            Some(&strategy),
+            false,
+        )
+        .unwrap();
+        assert_eq!(
+            values(&encoded).last(),
+            Some(&(XSS_STRUCTURAL_RELATION, "encoded-or-inert"))
+        );
+
+        let partial_candidate = format!("{delimiter}{}{delimiter}", tokens.boundary_comment());
+        let partial_body = script_value_document(delimiter, &partial_candidate);
+        let partial = observe(
+            &observer,
+            selection.action_kind(),
+            DecisionExecutionStage::Active,
+            &contract.candidate_url,
+            &HeaderMap::new(),
+            200,
+            Some("text/html"),
+            Some(partial_body.as_bytes()),
+            selection.action_kind().executor_id(),
+            Some(&strategy),
+            false,
+        )
+        .unwrap();
+        assert_eq!(
+            values(&partial).last(),
+            Some(&(XSS_STRUCTURAL_RELATION, "incomplete"))
+        );
+
+        let debug = format!("{observer:?}{control:?}{candidate:?}");
+        for scanner_owned_value in [
+            contract.probe.parts().candidate_identity.as_str(),
+            contract.probe.parts().candidate_value.as_str(),
+            tokens.boundary_comment(),
+            tokens.tail_comment(),
+        ] {
+            assert!(!debug.contains(scanner_owned_value));
+        }
+    }
+}
+
+#[test]
+fn javascript_xss_observer_vocabulary_reconstructs_exact_review_only_ledger_pairs() {
+    for (delimiter, family) in [
+        ('\'', XssProbeFamily::ScriptSingleQuotedStringBoundary),
+        ('"', XssProbeFamily::ScriptDoubleQuotedStringBoundary),
+        ('`', XssProbeFamily::ScriptTemplateLiteralBoundary),
+    ] {
+        let selection = javascript_xss_selection(delimiter);
+        let variant = selection.variant_id();
+        let action = selection.action_kind();
+        assert_eq!(
+            action.verification_target(),
+            crate::planner::VerificationTarget::KnowledgeOnly
+        );
+        let source_evidence_ids = REFLECTION_REVIEW_PROPERTIES
+            .iter()
+            .map(|property| fake_id(&format!("js-source-{}", property.name())))
+            .collect::<Vec<_>>();
+
+        let observer = AssessmentReviewObserverSet::new_xss_with_source_evidence(
+            root(),
+            seeds(),
+            QUERY_PARAMETER,
+            selection.clone(),
+            source_evidence_ids.clone(),
+        )
+        .unwrap();
+        let contract = observer.xss.as_ref().unwrap();
+        let strategy = native_review_strategy_ref(action);
+        assert_eq!(strategy.id(), XSS_JAVASCRIPT_LEXICAL_BOUNDARY_QUERY_PAIR_ID);
+        assert_eq!(
+            strategy.revision(),
+            XSS_JAVASCRIPT_LEXICAL_BOUNDARY_QUERY_PAIR_REVISION
+        );
+        let control_body = script_value_document(delimiter, &contract.probe.parts().control_value);
+        let candidate_body =
+            script_value_document(delimiter, &contract.probe.parts().candidate_value);
+        let control_evidence = observe(
+            &observer,
+            action,
+            DecisionExecutionStage::Passive,
+            &contract.control_url,
+            &HeaderMap::new(),
+            200,
+            Some("text/html"),
+            Some(control_body.as_bytes()),
+            action.executor_id(),
+            Some(&strategy),
+            false,
+        )
+        .unwrap();
+        let candidate_evidence = observe(
+            &observer,
+            action,
+            DecisionExecutionStage::Active,
+            &contract.candidate_url,
+            &HeaderMap::new(),
+            200,
+            Some("text/html"),
+            Some(candidate_body.as_bytes()),
+            action.executor_id(),
+            Some(&strategy),
+            false,
+        )
+        .unwrap();
+
+        for (evidence, expected_method) in [
+            (
+                &control_evidence,
+                "xss-script-lexical-boundary-control-response",
+            ),
+            (
+                &candidate_evidence,
+                "xss-script-lexical-boundary-candidate-response",
+            ),
+        ] {
+            let EvidenceOrigin::Derived(first_derivation) = evidence[0].origin() else {
+                panic!("XSS review evidence must retain exact derived parents")
+            };
+            const COMPLETE_HTTP_RESPONSE_PARENTS: usize = 7;
+            assert_eq!(
+                first_derivation.parents().len(),
+                COMPLETE_HTTP_RESPONSE_PARENTS + REFLECTION_REVIEW_PROPERTIES.len()
+            );
+            assert!(source_evidence_ids
+                .iter()
+                .all(|id| first_derivation.parents().contains(id)));
+            for item in evidence {
+                let EvidenceOrigin::Derived(derivation) = item.origin() else {
+                    panic!("XSS review evidence must remain derived")
+                };
+                assert_eq!(derivation.parents(), first_derivation.parents());
+                assert_eq!(item.source().component(), action.executor_id());
+                assert_eq!(item.source().method(), expected_method);
+                assert_eq!(item.source().correlation_id(), Some(CASE_ID));
+            }
+        }
+
+        let relation = |evidence: &[Evidence]| {
+            let projected = values(evidence);
+            let slug = projected
+                .iter()
+                .find_map(|(property, value)| {
+                    (*property == XSS_STRUCTURAL_RELATION).then_some(*value)
+                })
+                .unwrap();
+            parse_xss_structural_relation(slug).unwrap()
+        };
+        let control = fake_observation(
+            action,
+            DecisionExecutionStage::Passive,
+            CommittedReviewResponse::XssStructural {
+                family,
+                variant: variant.to_owned(),
+                relation: relation(&control_evidence),
+            },
+            false,
+            family.seed_code(),
+        );
+        let candidate_suffix = format!("{}-candidate", family.seed_code());
+        let candidate = fake_observation(
+            action,
+            DecisionExecutionStage::Active,
+            CommittedReviewResponse::XssStructural {
+                family,
+                variant: variant.to_owned(),
+                relation: relation(&candidate_evidence),
+            },
+            true,
+            &candidate_suffix,
+        );
+        let mut ledger = CommittedAssessmentReviewLedger::new_xss_with_source_evidence(
+            root(),
+            seeds(),
+            QUERY_PARAMETER,
+            selection.clone(),
+            source_evidence_ids.clone(),
+        )
+        .unwrap();
+        for observation in [control, candidate] {
+            ledger.observations.insert(
+                ReviewReceiptKey {
+                    kind: observation.kind,
+                    case_id: observation.case_id.clone(),
+                    stage: observation.stage,
+                },
+                observation,
+            );
+        }
+
+        assert!(ledger.pair_is_complete(action));
+        let items = ledger.candidates();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].disposition(), NativeReviewDisposition::NeedsReview);
+        assert_eq!(items[0].xss_family(), Some(family));
+        assert_eq!(items[0].query_parameter(), Some(QUERY_PARAMETER));
+        assert!(source_evidence_ids
+            .iter()
+            .all(|id| items[0].candidate_evidence_ids().contains(id)));
+        assert!(source_evidence_ids
+            .iter()
+            .all(|id| !items[0].control_evidence_ids().contains(id)));
+    }
+}
+
+#[test]
+fn ledger_url_contract_rejects_cross_name_and_cross_seed_candidates() {
+    let root = root();
+    let seeds = seeds();
+    let observer =
+        AssessmentReviewObserverSet::new(root.clone(), seeds.clone(), Some(QUERY_PARAMETER))
+            .unwrap();
+    let contract = observer.redirect.as_ref().unwrap();
+    let exact = EvidenceValue::Text(contract.candidate_url.to_string());
+    assert!(requested_url_value_matches(
+        &exact,
+        &root,
+        Some(contract),
+        DecisionExecutionStage::Active,
+        NativeWebReviewActionKind::RedirectReflectionQueryPair,
+    ));
+
+    let mut cross_name = root.clone();
+    cross_name
+        .query_pairs_mut()
+        .append_pair("next", seeds.external_url());
+    assert!(!requested_url_value_matches(
+        &EvidenceValue::Text(cross_name.to_string()),
+        &root,
+        Some(contract),
+        DecisionExecutionStage::Active,
+        NativeWebReviewActionKind::RedirectReflectionQueryPair,
+    ));
+
+    let mut cross_seed = root.clone();
+    cross_seed.query_pairs_mut().append_pair(
+        QUERY_PARAMETER,
+        "https://foreign.review.invalid/venom-review",
+    );
+    assert!(!requested_url_value_matches(
+        &EvidenceValue::Text(cross_seed.to_string()),
+        &root,
+        Some(contract),
+        DecisionExecutionStage::Active,
+        NativeWebReviewActionKind::RedirectReflectionQueryPair,
+    ));
+}
+
+fn fake_id(label: &str) -> EvidenceId {
+    EvidenceId::parse(format!("evidence:native-review:{label}")).unwrap()
+}
+
+fn fake_observation(
+    kind: NativeWebReviewActionKind,
+    stage: DecisionExecutionStage,
+    response: CommittedReviewResponse,
+    active_pair_success: bool,
+    suffix: &str,
+) -> CommittedAssessmentReviewObservation {
+    let mut property_evidence = BTreeMap::new();
+    let evidence_ids = expected_properties(kind)
+        .iter()
+        .copied()
+        .map(|property| {
+            let id = fake_id(&format!("{suffix}:{}", property.name()));
+            property_evidence.insert(property, id.clone());
+            id
+        })
+        .collect();
+    CommittedAssessmentReviewObservation {
+        kind,
+        subject: subject(),
+        case_id: CASE_ID.to_owned(),
+        hypothesis_id: HYPOTHESIS_ID.to_owned(),
+        stage,
+        response,
+        evidence_ids,
+        property_evidence,
+        active_pair_success,
+    }
+}
+
+#[test]
+fn exact_cors_relationship_is_review_only_and_requires_disjoint_verified_pair() {
+    let control = fake_observation(
+        NativeWebReviewActionKind::CorsPolicyPair,
+        DecisionExecutionStage::Passive,
+        CommittedReviewResponse::Cors {
+            status: ReviewHttpStatusClass::Successful,
+            allow_origin: CorsAllowOriginRelation::Missing,
+            allow_credentials: CorsAllowCredentialsRelation::Missing,
+            vary_origin: VaryOriginRelation::Missing,
+        },
+        false,
+        "cors-control",
+    );
+    let mut candidate = fake_observation(
+        NativeWebReviewActionKind::CorsPolicyPair,
+        DecisionExecutionStage::Active,
+        CommittedReviewResponse::Cors {
+            status: ReviewHttpStatusClass::Successful,
+            allow_origin: CorsAllowOriginRelation::ExactRequestOrigin,
+            allow_credentials: CorsAllowCredentialsRelation::True,
+            vary_origin: VaryOriginRelation::ContainsOrigin,
+        },
+        true,
+        "cors-candidate",
+    );
+    let mut output = Vec::new();
+    append_pair_candidates(&control, &candidate, None, &mut output);
+    assert_eq!(output.len(), 1);
+    assert_eq!(
+        output[0].disposition(),
+        NativeReviewDisposition::NeedsReview
+    );
+    assert!(output[0].query_parameter().is_none());
+    assert_eq!(
+        output[0].cors_status_relationship(),
+        Some(CorsStatusRelationship::MatchedSuccessful)
+    );
+    assert_eq!(output[0].control_evidence_ids().len(), 3);
+    assert_eq!(output[0].candidate_evidence_ids().len(), 5);
+    assert!(disjoint(
+        output[0].control_evidence_ids(),
+        output[0].candidate_evidence_ids()
+    ));
+
+    candidate.active_pair_success = false;
+    output.clear();
+    append_pair_candidates(&control, &candidate, None, &mut output);
+    assert!(output.is_empty());
+
+    candidate.active_pair_success = true;
+    candidate.evidence_ids[0] = control.evidence_ids[0].clone();
+    output.clear();
+    append_pair_candidates(&control, &candidate, None, &mut output);
+    assert!(output.is_empty());
+}
+
+#[test]
+fn cors_status_divergence_and_error_only_pairs_never_produce_review_candidates() {
+    let successful_control = fake_observation(
+        NativeWebReviewActionKind::CorsPolicyPair,
+        DecisionExecutionStage::Passive,
+        CommittedReviewResponse::Cors {
+            status: ReviewHttpStatusClass::Successful,
+            allow_origin: CorsAllowOriginRelation::Missing,
+            allow_credentials: CorsAllowCredentialsRelation::Missing,
+            vary_origin: VaryOriginRelation::Missing,
+        },
+        false,
+        "cors-status-success-control",
+    );
+    let error_candidate = fake_observation(
+        NativeWebReviewActionKind::CorsPolicyPair,
+        DecisionExecutionStage::Active,
+        CommittedReviewResponse::Cors {
+            status: ReviewHttpStatusClass::ServerError,
+            allow_origin: CorsAllowOriginRelation::ExactRequestOrigin,
+            allow_credentials: CorsAllowCredentialsRelation::True,
+            vary_origin: VaryOriginRelation::ContainsOrigin,
+        },
+        true,
+        "cors-status-error-candidate",
+    );
+    let mut output = Vec::new();
+    append_pair_candidates(&successful_control, &error_candidate, None, &mut output);
+    assert!(
+        output.is_empty(),
+        "a status-divergent pair is not comparable"
+    );
+
+    let error_control = fake_observation(
+        NativeWebReviewActionKind::CorsPolicyPair,
+        DecisionExecutionStage::Passive,
+        CommittedReviewResponse::Cors {
+            status: ReviewHttpStatusClass::ServerError,
+            allow_origin: CorsAllowOriginRelation::Missing,
+            allow_credentials: CorsAllowCredentialsRelation::Missing,
+            vary_origin: VaryOriginRelation::Missing,
+        },
+        false,
+        "cors-status-error-control",
+    );
+    output.clear();
+    append_pair_candidates(&error_control, &error_candidate, None, &mut output);
+    assert!(
+        output.is_empty(),
+        "matching error responses are not CORS claims"
+    );
+}
+
+#[test]
+fn exact_pair_completion_rejects_cross_case_and_cross_hypothesis_observations() {
+    let mut ledger =
+        CommittedAssessmentReviewLedger::new(root(), seeds(), Some(QUERY_PARAMETER)).unwrap();
+    let response = CommittedReviewResponse::Cors {
+        status: ReviewHttpStatusClass::Successful,
+        allow_origin: CorsAllowOriginRelation::Missing,
+        allow_credentials: CorsAllowCredentialsRelation::Missing,
+        vary_origin: VaryOriginRelation::Missing,
+    };
+    let control = fake_observation(
+        NativeWebReviewActionKind::CorsPolicyPair,
+        DecisionExecutionStage::Passive,
+        response.clone(),
+        false,
+        "control",
+    );
+    let mut candidate = fake_observation(
+        NativeWebReviewActionKind::CorsPolicyPair,
+        DecisionExecutionStage::Active,
+        response,
+        true,
+        "candidate",
+    );
+    candidate.case_id = "case:cross-case".to_owned();
+    ledger.observations.insert(
+        ReviewReceiptKey {
+            kind: control.kind,
+            case_id: control.case_id.clone(),
+            stage: control.stage,
+        },
+        control.clone(),
+    );
+    ledger.observations.insert(
+        ReviewReceiptKey {
+            kind: candidate.kind,
+            case_id: candidate.case_id.clone(),
+            stage: candidate.stage,
+        },
+        candidate.clone(),
+    );
+    assert!(!ledger.pair_is_complete(NativeWebReviewActionKind::CorsPolicyPair));
+
+    ledger.observations.clear();
+    candidate.case_id = control.case_id.clone();
+    candidate.hypothesis_id = "hypothesis:cross-hypothesis".to_owned();
+    ledger.observations.insert(
+        ReviewReceiptKey {
+            kind: control.kind,
+            case_id: control.case_id.clone(),
+            stage: control.stage,
+        },
+        control,
+    );
+    ledger.observations.insert(
+        ReviewReceiptKey {
+            kind: candidate.kind,
+            case_id: candidate.case_id.clone(),
+            stage: candidate.stage,
+        },
+        candidate,
+    );
+    assert!(!ledger.pair_is_complete(NativeWebReviewActionKind::CorsPolicyPair));
+}
+
+#[test]
+fn redirect_and_script_reflection_remain_distinct_needs_review_candidates() {
+    let control = fake_observation(
+        NativeWebReviewActionKind::RedirectReflectionQueryPair,
+        DecisionExecutionStage::Passive,
+        CommittedReviewResponse::Redirect {
+            status: ReviewStatusRelation::Other,
+            location: LocationRelation::Missing,
+        },
+        false,
+        "redirect-control",
+    );
+    let candidate = fake_observation(
+        NativeWebReviewActionKind::RedirectReflectionQueryPair,
+        DecisionExecutionStage::Active,
+        CommittedReviewResponse::Redirect {
+            status: ReviewStatusRelation::Redirect,
+            location: LocationRelation::ExactExternalQueryValue,
+        },
+        true,
+        "redirect-candidate",
+    );
+    let mut output = Vec::new();
+    append_pair_candidates(&control, &candidate, Some(QUERY_PARAMETER), &mut output);
+    assert_eq!(output.len(), 1);
+    assert_eq!(
+        output[0].disposition(),
+        NativeReviewDisposition::NeedsReview
+    );
+    assert_eq!(output[0].query_parameter(), Some(QUERY_PARAMETER));
+
+    let reflection_control = fake_observation(
+        NativeWebReviewActionKind::ReflectionContextQueryPair,
+        DecisionExecutionStage::Passive,
+        CommittedReviewResponse::Reflection {
+            reflection: ExactHtmlReflectionContext::Absent,
+            attribute_source: AttributeSourceResult::Absent,
+            javascript_source: JavaScriptSourceResult::Absent,
+        },
+        false,
+        "context-control",
+    );
+    let reflection_candidate = fake_observation(
+        NativeWebReviewActionKind::ReflectionContextQueryPair,
+        DecisionExecutionStage::Active,
+        CommittedReviewResponse::Reflection {
+            reflection: ExactHtmlReflectionContext::ScriptElementContent,
+            attribute_source: AttributeSourceResult::Absent,
+            javascript_source: JavaScriptSourceResult::Absent,
+        },
+        true,
+        "context-candidate",
+    );
+    append_pair_candidates(
+        &reflection_control,
+        &reflection_candidate,
+        Some(QUERY_PARAMETER),
+        &mut output,
+    );
+    assert_eq!(output.len(), 2);
+    assert_eq!(
+        output[1].reflection_context(),
+        Some(ReviewReflectionContext::ScriptElementContent)
+    );
+}
+
+#[test]
+fn inert_reflection_is_informational_and_incomplete_or_control_reflection_yields_no_claim() {
+    let base_response = CommittedReviewResponse::Reflection {
+        reflection: ExactHtmlReflectionContext::Absent,
+        attribute_source: AttributeSourceResult::Absent,
+        javascript_source: JavaScriptSourceResult::Absent,
+    };
+    let control = fake_observation(
+        NativeWebReviewActionKind::ReflectionContextQueryPair,
+        DecisionExecutionStage::Passive,
+        base_response,
+        false,
+        "reflection-control",
+    );
+    let mut candidate = fake_observation(
+        NativeWebReviewActionKind::ReflectionContextQueryPair,
+        DecisionExecutionStage::Active,
+        CommittedReviewResponse::Reflection {
+            reflection: ExactHtmlReflectionContext::HtmlComment,
+            attribute_source: AttributeSourceResult::Absent,
+            javascript_source: JavaScriptSourceResult::Absent,
+        },
+        true,
+        "reflection-candidate",
+    );
+    let mut output = Vec::new();
+    append_pair_candidates(&control, &candidate, Some(QUERY_PARAMETER), &mut output);
+    assert_eq!(output.len(), 1);
+    assert_eq!(
+        output[0].disposition(),
+        NativeReviewDisposition::Informational
+    );
+
+    candidate.response = CommittedReviewResponse::Reflection {
+        reflection: ExactHtmlReflectionContext::Incomplete,
+        attribute_source: AttributeSourceResult::Incomplete,
+        javascript_source: JavaScriptSourceResult::Incomplete,
+    };
+    output.clear();
+    append_pair_candidates(&control, &candidate, Some(QUERY_PARAMETER), &mut output);
+    assert!(output.is_empty());
+
+    let reflected_control = fake_observation(
+        NativeWebReviewActionKind::ReflectionContextQueryPair,
+        DecisionExecutionStage::Passive,
+        CommittedReviewResponse::Reflection {
+            reflection: ExactHtmlReflectionContext::HtmlText,
+            attribute_source: AttributeSourceResult::Absent,
+            javascript_source: JavaScriptSourceResult::Absent,
+        },
+        false,
+        "reflected-control",
+    );
+    candidate.response = CommittedReviewResponse::Reflection {
+        reflection: ExactHtmlReflectionContext::EventHandlerAttribute,
+        attribute_source: AttributeSourceResult::Absent,
+        javascript_source: JavaScriptSourceResult::Absent,
+    };
+    output.clear();
+    append_pair_candidates(
+        &reflected_control,
+        &candidate,
+        Some(QUERY_PARAMETER),
+        &mut output,
+    );
+    assert!(output.is_empty());
+}
+
+#[test]
+fn xss_structural_candidate_requires_clean_control_and_exact_parser_boundary() {
+    let family = XssProbeFamily::HtmlTextBoundary;
+    let selection = html_text_selection();
+    let variant = selection.variant_id();
+    let mut ledger =
+        CommittedAssessmentReviewLedger::new_xss(root(), seeds(), QUERY_PARAMETER, selection)
+            .unwrap();
+    let control = fake_observation(
+        NativeWebReviewActionKind::XssStructuralQueryPair,
+        DecisionExecutionStage::Passive,
+        CommittedReviewResponse::XssStructural {
+            family,
+            variant: variant.to_owned(),
+            relation: XssStructuralRelation::EncodedOrInert,
+        },
+        false,
+        "xss-control",
+    );
+    let mut candidate = fake_observation(
+        NativeWebReviewActionKind::XssStructuralQueryPair,
+        DecisionExecutionStage::Active,
+        CommittedReviewResponse::XssStructural {
+            family,
+            variant: variant.to_owned(),
+            relation: XssStructuralRelation::StructuralBoundaryObserved,
+        },
+        true,
+        "xss-candidate",
+    );
+    let insert_pair = |ledger: &mut CommittedAssessmentReviewLedger,
+                       control: CommittedAssessmentReviewObservation,
+                       candidate: CommittedAssessmentReviewObservation| {
+        ledger.observations.clear();
+        for observation in [control, candidate] {
+            ledger.observations.insert(
+                ReviewReceiptKey {
+                    kind: observation.kind,
+                    case_id: observation.case_id.clone(),
+                    stage: observation.stage,
+                },
+                observation,
+            );
+        }
+    };
+    insert_pair(&mut ledger, control.clone(), candidate.clone());
+    let items = ledger.candidates();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].disposition(), NativeReviewDisposition::NeedsReview);
+    assert_eq!(items[0].xss_family(), Some(family));
+    assert_eq!(items[0].query_parameter(), Some(QUERY_PARAMETER));
+
+    candidate.response = CommittedReviewResponse::XssStructural {
+        family,
+        variant: variant.to_owned(),
+        relation: XssStructuralRelation::ReflectedSameContext,
+    };
+    insert_pair(&mut ledger, control.clone(), candidate.clone());
+    assert!(ledger.candidates().is_empty());
+
+    let reflected_control = fake_observation(
+        NativeWebReviewActionKind::XssStructuralQueryPair,
+        DecisionExecutionStage::Passive,
+        CommittedReviewResponse::XssStructural {
+            family,
+            variant: variant.to_owned(),
+            relation: XssStructuralRelation::ReflectedSameContext,
+        },
+        false,
+        "xss-reflected-control",
+    );
+    candidate.response = CommittedReviewResponse::XssStructural {
+        family,
+        variant: variant.to_owned(),
+        relation: XssStructuralRelation::StructuralBoundaryObserved,
+    };
+    insert_pair(&mut ledger, reflected_control, candidate);
+    assert!(ledger.candidates().is_empty());
+
+    let boundary_control = fake_observation(
+        NativeWebReviewActionKind::XssStructuralQueryPair,
+        DecisionExecutionStage::Passive,
+        CommittedReviewResponse::XssStructural {
+            family,
+            variant: variant.to_owned(),
+            relation: XssStructuralRelation::StructuralBoundaryObserved,
+        },
+        false,
+        "xss-preexisting-boundary-control",
+    );
+    let boundary_candidate = fake_observation(
+        NativeWebReviewActionKind::XssStructuralQueryPair,
+        DecisionExecutionStage::Active,
+        CommittedReviewResponse::XssStructural {
+            family,
+            variant: variant.to_owned(),
+            relation: XssStructuralRelation::StructuralBoundaryObserved,
+        },
+        true,
+        "xss-preexisting-boundary-candidate",
+    );
+    insert_pair(&mut ledger, boundary_control, boundary_candidate);
+    assert!(ledger.candidates().is_empty());
+}
+
+#[test]
+fn observer_and_ledger_constructors_reject_ambiguous_authority() {
+    let seeds = seeds();
+    for invalid in [
+        "https://review.test/account?existing=1",
+        "https://review.test/account#fragment",
+        "ftp://review.test/account",
+    ] {
+        assert!(AssessmentReviewObserverSet::new(
+            Url::parse(invalid).unwrap(),
+            seeds.clone(),
+            Some(QUERY_PARAMETER),
+        )
+        .is_err());
+    }
+    assert!(matches!(
+        AssessmentReviewObserverSet::new(root(), seeds.clone(), Some("bad parameter")),
+        Err(AssessmentReviewObserverError::QueryParameter)
+    ));
+    assert!(CommittedAssessmentReviewLedger::new(root(), seeds, Some(QUERY_PARAMETER)).is_ok());
+}
+
+fn sql_observation(
+    kind: NativeWebReviewActionKind,
+    stage: DecisionExecutionStage,
+    status: ReviewHttpStatusClass,
+    structure: &str,
+    active_success: bool,
+    evidence_prefix: &str,
+) -> CommittedAssessmentReviewObservation {
+    fake_observation(
+        kind,
+        stage,
+        CommittedReviewResponse::SqlStructural {
+            status,
+            body_structure: structure.to_owned(),
+        },
+        active_success,
+        evidence_prefix,
+    )
+}
+
+fn sql_pair_set(
+    candidate_status: ReviewHttpStatusClass,
+    candidate_structure: &str,
+    replay_candidate_status: ReviewHttpStatusClass,
+    replay_candidate_structure: &str,
+) -> [CommittedAssessmentReviewObservation; 4] {
+    let control_structure =
+        "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    let control = sql_observation(
+        NativeWebReviewActionKind::SqlStructuralQueryPair,
+        DecisionExecutionStage::Passive,
+        ReviewHttpStatusClass::Successful,
+        control_structure,
+        false,
+        "sql-control",
+    );
+    let candidate = sql_observation(
+        NativeWebReviewActionKind::SqlStructuralQueryPair,
+        DecisionExecutionStage::Active,
+        candidate_status,
+        candidate_structure,
+        true,
+        "sql-candidate",
+    );
+    let mut replay_control = sql_observation(
+        NativeWebReviewActionKind::SqlStructuralQueryReplayPair,
+        DecisionExecutionStage::Passive,
+        ReviewHttpStatusClass::Successful,
+        control_structure,
+        false,
+        "sql-replay-control",
+    );
+    replay_control.case_id = "case:decision:2:sql-replay".to_owned();
+    let mut replay_candidate = sql_observation(
+        NativeWebReviewActionKind::SqlStructuralQueryReplayPair,
+        DecisionExecutionStage::Active,
+        replay_candidate_status,
+        replay_candidate_structure,
+        true,
+        "sql-replay-candidate",
+    );
+    replay_candidate.case_id = replay_control.case_id.clone();
+    [control, candidate, replay_control, replay_candidate]
+}
+
+#[test]
+fn sql_review_requires_two_repeatable_status_and_structure_differentials() {
+    let changed = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+    let [control, candidate, replay_control, replay_candidate] = sql_pair_set(
+        ReviewHttpStatusClass::ServerError,
+        changed,
+        ReviewHttpStatusClass::ServerError,
+        changed,
+    );
+    let mut output = Vec::new();
+    append_sql_candidate(
+        &control,
+        &candidate,
+        &replay_control,
+        &replay_candidate,
+        "item",
+        &mut output,
+    );
+    assert_eq!(output.len(), 1);
+    assert_eq!(
+        output[0].disposition(),
+        NativeReviewDisposition::NeedsReview
+    );
+    assert!(matches!(
+        output[0],
+        AssessmentReviewCandidate::SqlStructural(_)
+    ));
+
+    let mut repeated = Vec::new();
+    append_sql_candidate(
+        &control,
+        &candidate,
+        &replay_control,
+        &replay_candidate,
+        "item",
+        &mut repeated,
+    );
+    assert_eq!(output, repeated);
+}
+
+#[test]
+fn sql_text_only_identical_noisy_and_incomplete_observations_make_no_claim() {
+    let same = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    let changed = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+    for (status, structure, replay_status, replay_structure) in [
+        (
+            ReviewHttpStatusClass::ServerError,
+            same,
+            ReviewHttpStatusClass::ServerError,
+            same,
+        ),
+        (
+            ReviewHttpStatusClass::Successful,
+            changed,
+            ReviewHttpStatusClass::Successful,
+            changed,
+        ),
+        (
+            ReviewHttpStatusClass::ServerError,
+            changed,
+            ReviewHttpStatusClass::ClientError,
+            changed,
+        ),
+        (
+            ReviewHttpStatusClass::ServerError,
+            "incomplete",
+            ReviewHttpStatusClass::ServerError,
+            "incomplete",
+        ),
+    ] {
+        let [control, candidate, replay_control, replay_candidate] =
+            sql_pair_set(status, structure, replay_status, replay_structure);
+        let mut output = Vec::new();
+        append_sql_candidate(
+            &control,
+            &candidate,
+            &replay_control,
+            &replay_candidate,
+            "item",
+            &mut output,
+        );
+        assert!(output.is_empty());
+    }
+}
+
+fn ssti_observation(
+    kind: NativeWebReviewActionKind,
+    stage: DecisionExecutionStage,
+    status: ReviewHttpStatusClass,
+    evaluation: SstiEvaluationRelation,
+    active_success: bool,
+    evidence_prefix: &str,
+) -> CommittedAssessmentReviewObservation {
+    fake_observation(
+        kind,
+        stage,
+        CommittedReviewResponse::SstiStructural { status, evaluation },
+        active_success,
+        evidence_prefix,
+    )
+}
+
+fn ssti_pair_set(
+    candidate: SstiEvaluationRelation,
+    replay_candidate: SstiEvaluationRelation,
+) -> [CommittedAssessmentReviewObservation; 4] {
+    let control = ssti_observation(
+        NativeWebReviewActionKind::SstiStructuralQueryPair,
+        DecisionExecutionStage::Passive,
+        ReviewHttpStatusClass::Successful,
+        SstiEvaluationRelation::Absent,
+        false,
+        "ssti-control",
+    );
+    let candidate = ssti_observation(
+        NativeWebReviewActionKind::SstiStructuralQueryPair,
+        DecisionExecutionStage::Active,
+        ReviewHttpStatusClass::Successful,
+        candidate,
+        true,
+        "ssti-candidate",
+    );
+    let mut replay_control = ssti_observation(
+        NativeWebReviewActionKind::SstiStructuralQueryReplayPair,
+        DecisionExecutionStage::Passive,
+        ReviewHttpStatusClass::Successful,
+        SstiEvaluationRelation::Absent,
+        false,
+        "ssti-replay-control",
+    );
+    replay_control.case_id = "case:decision:2:ssti-replay".to_owned();
+    let mut replay_candidate = ssti_observation(
+        NativeWebReviewActionKind::SstiStructuralQueryReplayPair,
+        DecisionExecutionStage::Active,
+        ReviewHttpStatusClass::Successful,
+        replay_candidate,
+        true,
+        "ssti-replay-candidate",
+    );
+    replay_candidate.case_id = replay_control.case_id.clone();
+    [control, candidate, replay_control, replay_candidate]
+}
+
+#[test]
+fn ssti_review_requires_two_exact_evaluations_and_is_never_confirmed() {
+    let [control, candidate, replay_control, replay_candidate] = ssti_pair_set(
+        SstiEvaluationRelation::ExpectedEvaluation,
+        SstiEvaluationRelation::ExpectedEvaluation,
+    );
+    let mut output = Vec::new();
+    append_ssti_candidate(
+        &control,
+        &candidate,
+        &replay_control,
+        &replay_candidate,
+        "item",
+        &mut output,
+    );
+    assert_eq!(output.len(), 1);
+    assert_eq!(
+        output[0].disposition(),
+        NativeReviewDisposition::NeedsReview
+    );
+    assert!(matches!(
+        output[0],
+        AssessmentReviewCandidate::SstiStructural(_)
+    ));
+
+    let mut repeated = Vec::new();
+    append_ssti_candidate(
+        &control,
+        &candidate,
+        &replay_control,
+        &replay_candidate,
+        "item",
+        &mut repeated,
+    );
+    assert_eq!(output, repeated);
+}
+
+#[test]
+fn ssti_literal_static_error_noisy_wrong_replay_and_incomplete_make_no_claim() {
+    for (candidate_relation, replay_relation) in [
+        (
+            SstiEvaluationRelation::LiteralReflection,
+            SstiEvaluationRelation::LiteralReflection,
+        ),
+        (
+            SstiEvaluationRelation::ExpectedEvaluation,
+            SstiEvaluationRelation::Absent,
+        ),
+        (
+            SstiEvaluationRelation::Absent,
+            SstiEvaluationRelation::ExpectedEvaluation,
+        ),
+        (
+            SstiEvaluationRelation::Unsupported,
+            SstiEvaluationRelation::Unsupported,
+        ),
+        (
+            SstiEvaluationRelation::Incomplete,
+            SstiEvaluationRelation::ExpectedEvaluation,
+        ),
+    ] {
+        let [control, candidate, replay_control, replay_candidate] =
+            ssti_pair_set(candidate_relation, replay_relation);
+        let mut output = Vec::new();
+        append_ssti_candidate(
+            &control,
+            &candidate,
+            &replay_control,
+            &replay_candidate,
+            "item",
+            &mut output,
+        );
+        assert!(output.is_empty());
+    }
+
+    let [mut control, candidate, replay_control, replay_candidate] = ssti_pair_set(
+        SstiEvaluationRelation::ExpectedEvaluation,
+        SstiEvaluationRelation::ExpectedEvaluation,
+    );
+    control.response = CommittedReviewResponse::SstiStructural {
+        status: ReviewHttpStatusClass::Successful,
+        evaluation: SstiEvaluationRelation::ExpectedPresentInControl,
+    };
+    let mut output = Vec::new();
+    append_ssti_candidate(
+        &control,
+        &candidate,
+        &replay_control,
+        &replay_candidate,
+        "item",
+        &mut output,
+    );
+    assert!(output.is_empty());
+
+    let [control, mut candidate, replay_control, replay_candidate] = ssti_pair_set(
+        SstiEvaluationRelation::ExpectedEvaluation,
+        SstiEvaluationRelation::ExpectedEvaluation,
+    );
+    candidate.response = CommittedReviewResponse::SstiStructural {
+        status: ReviewHttpStatusClass::ServerError,
+        evaluation: SstiEvaluationRelation::ExpectedEvaluation,
+    };
+    output.clear();
+    append_ssti_candidate(
+        &control,
+        &candidate,
+        &replay_control,
+        &replay_candidate,
+        "item",
+        &mut output,
+    );
+    assert!(output.is_empty());
+}
+
+#[test]
+fn ssti_observer_classifies_literal_static_evaluated_unsupported_and_incomplete_bodies() {
+    let observer =
+        AssessmentReviewObserverSet::new_with_sql(root(), seeds(), None, None, None, Some("item"))
+            .unwrap();
+    let contract = observer.ssti.as_ref().unwrap();
+    let probe = &contract.primary.probe;
+    let strategy = native_review_strategy_ref(NativeWebReviewActionKind::SstiStructuralQueryPair);
+    let cases = [
+        (
+            DecisionExecutionStage::Active,
+            &contract.primary.candidate_url,
+            Some(probe.candidate_value()),
+            Some("text/html"),
+            "literal-reflection",
+        ),
+        (
+            DecisionExecutionStage::Active,
+            &contract.primary.candidate_url,
+            Some(probe.expected_value()),
+            Some("text/html"),
+            "expected-evaluation",
+        ),
+        (
+            DecisionExecutionStage::Passive,
+            &contract.primary.control_url,
+            Some(probe.expected_value()),
+            Some("text/html"),
+            "expected-present-in-control",
+        ),
+        (
+            DecisionExecutionStage::Active,
+            &contract.primary.candidate_url,
+            Some(probe.expected_value()),
+            Some("application/octet-stream"),
+            "unsupported",
+        ),
+        (
+            DecisionExecutionStage::Active,
+            &contract.primary.candidate_url,
+            None,
+            Some("text/html"),
+            "incomplete",
+        ),
+    ];
+    for (stage, url, body, media_type, expected) in cases {
+        let evidence = observe(
+            &observer,
+            NativeWebReviewActionKind::SstiStructuralQueryPair,
+            stage,
+            url,
+            &HeaderMap::new(),
+            200,
+            media_type,
+            body.as_deref().map(str::as_bytes),
+            NativeWebReviewActionKind::SstiStructuralQueryPair.executor_id(),
+            Some(&strategy),
+            false,
+        )
+        .unwrap();
+        assert!(values(&evidence).contains(&(SSTI_EVALUATION_RELATION, expected)));
+    }
+}
+
+mod scanner_corpus_conformance {
+    use std::{
+        collections::{BTreeMap, BTreeSet},
+        fs,
+        path::{Component, Path, PathBuf},
+    };
+
+    use serde::Deserialize;
+    use termivar_core::{
+        ApiKnowledgePredicate, ApiResponseFormat, ApiSurfaceKind, ConfidenceScore, EntityId,
+        Evidence, EvidenceKind, EvidenceSource, EvidenceValue, HttpEvidencePredicate,
+    };
+
+    use super::*;
+    use crate::{
+        defense::{
+            DefensePosture, DefenseState, DefenseStatusSignal, DefenseTransition,
+            DefenseTransitionKind,
+        },
+        http_evidence::{json_compatible_media_type, normalized_media_type},
+        KnowledgeBase, RuleEngine, StandardApiReasoning,
+    };
+
+    const CORPUS_SCHEMA: &str = "security-assessment-corpus/v1";
+    const CASE_SCHEMA: &str = "security-assessment-fixture/v1";
+    const MAX_CASE_BYTES: u64 = 64 * 1024;
+    const MAX_BODY_BYTES: u64 = 512 * 1024;
+    const REFLECTION_MARKER_PLACEHOLDER: &str = "VENOM_FIXTURE_SLOT_REFLECTION_MARKER_V1";
+    const XSS_CANDIDATE_PLACEHOLDER: &str = "VENOM_FIXTURE_SLOT_XSS_CANDIDATE_V1";
+    const XSS_CANDIDATE_ESCAPED_PLACEHOLDER: &str =
+        "VENOM_FIXTURE_SLOT_XSS_CANDIDATE_HTML_ESCAPED_V1";
+    const SSTI_EXPECTED_PLACEHOLDER: &str = "VENOM_FIXTURE_SLOT_SSTI_EXPECTED_V1";
+    const SSTI_CANDIDATE_PLACEHOLDER: &str = "VENOM_FIXTURE_SLOT_SSTI_CANDIDATE_V1";
+    #[cfg(feature = "normalization-resilience")]
+    const NORMALIZATION_ARTIFACT_PLACEHOLDER: &str = "VENOM_FIXTURE_SLOT_NORMALIZATION_ARTIFACT_V1";
+    #[cfg(feature = "normalization-resilience")]
+    const NORMALIZATION_CANDIDATE_ID: &str = "0123456789abcdef0123456789abcdef";
+    #[cfg(feature = "normalization-resilience")]
+    const NORMALIZATION_REPLAY_ID: &str = "fedcba9876543210fedcba9876543210";
+
+    #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd)]
+    #[serde(rename_all = "kebab-case")]
+    enum CaseCategory {
+        HttpMedia,
+        Defense,
+        Sql,
+        Ssti,
+        Xss,
+        Normalization,
+        ApiGraphql,
+        ApiOpenapi,
+        Authorization,
+    }
+
+    #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+    #[serde(rename_all = "kebab-case")]
+    enum SupportLevel {
+        Current,
+        MetadataOnly,
+    }
+
+    #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+    #[serde(rename_all = "kebab-case")]
+    enum CompletionState {
+        Complete,
+        Incomplete,
+    }
+
+    #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+    #[serde(rename_all = "kebab-case")]
+    enum HttpMediaExpectation {
+        Json,
+        JsonSuffix,
+        GraphqlResponseJson,
+        Malformed,
+        Html,
+        UnsupportedBinary,
+        Truncated,
+    }
+
+    #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+    #[serde(rename_all = "kebab-case")]
+    enum DefenseStateExpectation {
+        Open,
+        Blocking,
+        Challenge,
+        RateLimited,
+        Unknown,
+    }
+
+    #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+    #[serde(rename_all = "kebab-case")]
+    enum DefenseTransitionExpectation {
+        None,
+        StandingBlock,
+        CandidateSpecificBlock,
+        RateLimit,
+        Deescalated,
+    }
+
+    #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+    #[serde(rename_all = "kebab-case")]
+    enum StructuralRelationExpectation {
+        Matched,
+        NotMatched,
+        CandidateOnly,
+        ReplayMismatch,
+        LiteralReflection,
+        Contaminated,
+        Ambiguous,
+    }
+
+    #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+    #[serde(rename_all = "kebab-case")]
+    enum NormalizationExpectation {
+        SemanticGapObserved,
+        AcceptedSemanticsUnknown,
+        ReplayMismatch,
+        Ineligible,
+        StillBlocked,
+    }
+
+    #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+    #[serde(rename_all = "kebab-case")]
+    enum GraphqlExpectation {
+        ExactEnvelope,
+        TypenameControl,
+        IntrospectionAvailable,
+        IntrospectionRestricted,
+        GenericJson,
+        GraphqlLikeHtml,
+        MalformedEnvelope,
+        PartialDataWithErrors,
+        DepthLimited,
+        BatchMetadataOnly,
+        GetQueryMetadataOnly,
+    }
+
+    #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+    #[serde(rename_all = "kebab-case")]
+    enum OpenApiExpectation {
+        Document,
+        #[serde(rename = "swagger-2.0-metadata-only")]
+        Swagger20MetadataOnly,
+        YamlMetadataOnly,
+        UnsupportedVersion,
+        Malformed,
+        LimitExceeded,
+        TooLarge,
+    }
+
+    #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+    #[serde(rename_all = "kebab-case")]
+    enum OpenApiVersionExpectation {
+        #[serde(rename = "openapi-3.0")]
+        OpenApi30,
+        #[serde(rename = "openapi-3.1")]
+        OpenApi31,
+    }
+
+    #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+    #[serde(rename_all = "kebab-case")]
+    enum OpenApiParameterLocationExpectation {
+        Query,
+        Header,
+        Path,
+        Cookie,
+    }
+
+    #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+    #[serde(rename_all = "kebab-case")]
+    enum OpenApiSecuritySchemeExpectation {
+        ApiKeyQuery,
+        ApiKeyHeader,
+        HttpBearer,
+        Oauth2,
+        #[serde(rename = "openid-connect")]
+        OpenIdConnect,
+    }
+
+    #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+    #[serde(rename_all = "kebab-case")]
+    enum OpenApiServerKindExpectation {
+        ExactOrigin,
+        Relative,
+        CrossOrigin,
+        Templated,
+    }
+
+    #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+    #[serde(rename_all = "kebab-case")]
+    enum OpenApiCandidateTagExpectation {
+        ReadOnly,
+        BodyBearing,
+        Parameterized,
+        DeclaresSecurity,
+        DeclaresAnonymousAccess,
+        JsonRequest,
+        JsonResponse,
+        Deprecated,
+        AuthorizationReviewCandidate,
+        SqlInputCandidate,
+        SsrfUrlCandidate,
+        UploadCandidate,
+        OauthCandidate,
+    }
+
+    #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+    #[serde(rename_all = "kebab-case")]
+    enum OpenApiGeneratedInputExpectation {
+        DocumentSizePlusOne,
+        PathLimitPlusOne,
+    }
+
+    #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+    #[serde(rename_all = "kebab-case")]
+    enum AuthorizationOutcomeExpectation {
+        PrimaryBaselineInvalid,
+        PrimaryUnstable,
+        PeerDenied,
+        PeerUnstable,
+        CrossStatusDifferent,
+        CrossFieldsEquivalentOnly,
+        CrossResourcesDifferent,
+        StableCrossPrincipalEquivalence,
+        DefensiveInterference,
+        RateLimited,
+        RedirectObserved,
+        UnsupportedMedia,
+        MalformedJson,
+        GenericJsonErrorEnvelope,
+        SelectedPathMissing,
+        Truncated,
+        Incomplete,
+        BudgetExhausted,
+        Cancelled,
+    }
+
+    #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+    #[serde(rename_all = "kebab-case")]
+    enum AuthorizationBodyState {
+        CompleteJson,
+        UnsupportedMedia,
+        Html,
+        Redirect,
+        RateLimited,
+        ServerError,
+        MalformedJson,
+        Truncated,
+        Incomplete,
+        BudgetExhausted,
+        Cancelled,
+        DefensiveInterference,
+    }
+
+    #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+    #[serde(rename_all = "kebab-case")]
+    enum IncompletenessExpectation {
+        BodyTruncated,
+        ResponseIncomplete,
+        UnsupportedByRuntime,
+        FutureMetadataOnly,
+    }
+
+    #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+    #[serde(rename_all = "kebab-case")]
+    enum ReflectionContextExpectation {
+        HtmlText,
+        Attribute,
+        Script,
+        SameContext,
+        Ambiguous,
+    }
+
+    #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+    #[serde(rename_all = "kebab-case")]
+    enum HtmlQuoteExpectation {
+        Double,
+        Single,
+        Unquoted,
+        NotApplicable,
+    }
+
+    #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+    #[serde(rename_all = "kebab-case")]
+    enum JavascriptContextExpectation {
+        SingleQuoted,
+        DoubleQuoted,
+        TemplateText,
+    }
+
+    #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+    #[serde(rename_all = "kebab-case")]
+    enum DispositionExpectation {
+        Informational,
+        NeedsReview,
+    }
+
+    #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+    #[serde(rename_all = "kebab-case")]
+    enum MaximumAuthorityExpectation {
+        KnowledgeOnly,
+    }
+
+    #[derive(Deserialize)]
+    struct CorpusManifest {
+        schema: String,
+        case_files: Vec<String>,
+    }
+
+    #[derive(Deserialize)]
+    struct FixtureCase {
+        schema: String,
+        id: String,
+        category: CaseCategory,
+        support: SupportLevel,
+        #[serde(default)]
+        tags: Vec<String>,
+        #[serde(default)]
+        parent_case: Option<String>,
+        request: FixtureRequest,
+        response: FixtureResponse,
+        #[serde(default)]
+        authorization: Option<AuthorizationFixture>,
+        expected: ExpectedSemantics,
+    }
+
+    #[derive(Deserialize)]
+    struct AuthorizationFixture {
+        resource: String,
+        resource_handle: String,
+        expectation: String,
+        method: String,
+        comparison: AuthorizationComparisonFixture,
+        primary_candidate: AuthorizationViewFixture,
+        peer_candidate: AuthorizationViewFixture,
+        primary_replay: AuthorizationViewFixture,
+        peer_replay: AuthorizationViewFixture,
+    }
+
+    #[derive(Deserialize)]
+    struct AuthorizationComparisonFixture {
+        selected_paths: Vec<String>,
+        #[serde(default)]
+        ignored_paths: Vec<String>,
+        #[serde(default)]
+        unordered_array_paths: Vec<String>,
+        max_diff_paths: u16,
+    }
+
+    #[derive(Deserialize)]
+    struct AuthorizationViewFixture {
+        status: u16,
+        media_type: String,
+        completion: CompletionState,
+        truncated: bool,
+        state: AuthorizationBodyState,
+        body_file: String,
+    }
+
+    #[derive(Deserialize)]
+    struct FixtureRequest {
+        origin: String,
+        path: String,
+    }
+
+    #[derive(Deserialize)]
+    struct FixtureResponse {
+        status: u16,
+        media_type: String,
+        completion: CompletionState,
+        truncated: bool,
+        #[serde(default)]
+        headers: Vec<FixtureHeader>,
+        #[serde(default)]
+        body_file: Option<String>,
+        #[serde(default)]
+        inline_body: Option<String>,
+        #[serde(default)]
+        control_status: Option<u16>,
+        #[serde(default)]
+        control_body_file: Option<String>,
+        #[serde(default)]
+        replay_status: Option<u16>,
+        #[serde(default)]
+        replay_body_file: Option<String>,
+        #[serde(default)]
+        source_body_file: Option<String>,
+    }
+
+    #[derive(Deserialize)]
+    struct FixtureHeader {
+        name: String,
+        value: String,
+    }
+
+    #[derive(Default, Deserialize)]
+    struct ExpectedSemantics {
+        #[serde(default)]
+        http_media: Option<HttpMediaExpectation>,
+        #[serde(default)]
+        defense_state: Option<DefenseStateExpectation>,
+        #[serde(default)]
+        defense_transition: Option<DefenseTransitionExpectation>,
+        #[serde(default)]
+        reflection_context: Option<ReflectionContextExpectation>,
+        #[serde(default)]
+        html_quote_mode: Option<HtmlQuoteExpectation>,
+        #[serde(default)]
+        javascript_context: Option<JavascriptContextExpectation>,
+        #[serde(default)]
+        sql_relation: Option<StructuralRelationExpectation>,
+        #[serde(default)]
+        ssti_relation: Option<StructuralRelationExpectation>,
+        #[serde(default)]
+        xss_relation: Option<StructuralRelationExpectation>,
+        #[serde(default)]
+        normalization_outcome: Option<NormalizationExpectation>,
+        #[serde(default)]
+        graphql_evidence: Option<GraphqlExpectation>,
+        #[serde(default)]
+        openapi_outcome: Option<OpenApiExpectation>,
+        #[serde(default)]
+        openapi_version: Option<OpenApiVersionExpectation>,
+        #[serde(default)]
+        openapi_path_count: Option<u32>,
+        #[serde(default)]
+        openapi_operation_count: Option<u32>,
+        #[serde(default)]
+        openapi_required_parameter_locations: Vec<OpenApiParameterLocationExpectation>,
+        #[serde(default)]
+        openapi_required_security_schemes: Vec<OpenApiSecuritySchemeExpectation>,
+        #[serde(default)]
+        openapi_required_effective_security_schemes: Vec<OpenApiSecuritySchemeExpectation>,
+        #[serde(default)]
+        openapi_required_server_kinds: Vec<OpenApiServerKindExpectation>,
+        #[serde(default)]
+        openapi_required_candidate_tags: Vec<OpenApiCandidateTagExpectation>,
+        #[serde(default)]
+        openapi_digest_matches: Option<String>,
+        #[serde(default)]
+        openapi_generated_input: Option<OpenApiGeneratedInputExpectation>,
+        #[serde(default)]
+        authorization_outcome: Option<AuthorizationOutcomeExpectation>,
+        #[serde(default)]
+        assessment_capability: Option<String>,
+        #[serde(default)]
+        maximum_disposition: Option<DispositionExpectation>,
+        #[serde(default)]
+        maximum_authority: Option<MaximumAuthorityExpectation>,
+        #[serde(default)]
+        incompleteness: Option<IncompletenessExpectation>,
+    }
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum SemanticMismatch {
+        HttpMedia,
+        DefenseState,
+        DefenseTransition,
+        SqlReview,
+        SstiReview,
+        XssReview,
+        #[cfg(feature = "normalization-resilience")]
+        NormalizationReview,
+        #[cfg(feature = "graphql-review")]
+        GraphqlReview,
+        OpenApiReview,
+        AuthorizationReview,
+        ApiReasoning,
+    }
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum ConformanceResult {
+        Pass,
+        SemanticMismatch(SemanticMismatch),
+        UnsupportedByCurrentRuntime,
+        FixtureInvalid,
+        Incomplete,
+    }
+
+    #[derive(Clone, Copy, Debug, Default)]
+    struct ApiReasoningResult {
+        json: bool,
+        graphql: bool,
+    }
+
+    fn corpus_root() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .join("test-corpus/web-assessment/v1")
+    }
+
+    fn bounded_text(path: &Path, maximum: u64) -> Result<String, ()> {
+        let metadata = fs::symlink_metadata(path).map_err(|_| ())?;
+        if !metadata.file_type().is_file() || metadata.len() > maximum {
+            return Err(());
+        }
+        fs::read_to_string(path).map_err(|_| ())
+    }
+
+    fn safe_relative_path(value: &str) -> bool {
+        let path = Path::new(value);
+        !path.is_absolute()
+            && path
+                .components()
+                .all(|component| matches!(component, Component::Normal(_)))
+    }
+
+    fn load_cases() -> Result<Vec<FixtureCase>, ()> {
+        let root = corpus_root();
+        let manifest_source = bounded_text(&root.join("manifest.toml"), MAX_CASE_BYTES)?;
+        let manifest: CorpusManifest = toml::from_str(&manifest_source).map_err(|_| ())?;
+        if manifest.schema != CORPUS_SCHEMA || manifest.case_files.is_empty() {
+            return Err(());
+        }
+        let mut cases = Vec::with_capacity(manifest.case_files.len());
+        let mut ids = BTreeSet::new();
+        for relative in manifest.case_files {
+            if !safe_relative_path(&relative) || !relative.starts_with("cases/") {
+                return Err(());
+            }
+            let source = bounded_text(&root.join(relative), MAX_CASE_BYTES)?;
+            let case: FixtureCase = toml::from_str(&source).map_err(|_| ())?;
+            if case.schema != CASE_SCHEMA || !ids.insert(case.id.clone()) {
+                return Err(());
+            }
+            cases.push(case);
+        }
+        Ok(cases)
+    }
+
+    fn fixture_body(file: Option<&String>, inline: Option<&String>) -> Result<Vec<u8>, ()> {
+        match (file, inline) {
+            (Some(relative), None) if safe_relative_path(relative) => {
+                let path = corpus_root().join(relative);
+                let metadata = fs::symlink_metadata(&path).map_err(|_| ())?;
+                if !metadata.file_type().is_file() || metadata.len() > MAX_BODY_BYTES {
+                    return Err(());
+                }
+                fs::read(path).map_err(|_| ())
+            },
+            (None, Some(body)) if body.len() as u64 <= MAX_BODY_BYTES => {
+                Ok(body.as_bytes().to_vec())
+            },
+            _ => Err(()),
+        }
+    }
+
+    fn response_body(case: &FixtureCase) -> Result<Vec<u8>, ()> {
+        fixture_body(
+            case.response.body_file.as_ref(),
+            case.response.inline_body.as_ref(),
+        )
+    }
+
+    fn response_leg_body(case: &FixtureCase, file: Option<&String>) -> Result<Vec<u8>, ()> {
+        match file {
+            Some(file) => fixture_body(Some(file), None),
+            None => response_body(case),
+        }
+    }
+
+    fn control_body(case: &FixtureCase) -> Result<Vec<u8>, ()> {
+        response_leg_body(case, case.response.control_body_file.as_ref())
+    }
+
+    fn replay_body(case: &FixtureCase) -> Result<Vec<u8>, ()> {
+        response_leg_body(case, case.response.replay_body_file.as_ref())
+    }
+
+    fn source_body(case: &FixtureCase) -> Result<Vec<u8>, ()> {
+        response_leg_body(case, case.response.source_body_file.as_ref())
+    }
+
+    fn body_text(bytes: Vec<u8>) -> Result<String, ()> {
+        String::from_utf8(bytes).map_err(|_| ())
+    }
+
+    fn rendered_source_body(case: &FixtureCase, marker: &str) -> Result<String, ()> {
+        let template = body_text(source_body(case)?)?;
+        let rendered = template.replace(REFLECTION_MARKER_PLACEHOLDER, marker);
+        if rendered.contains("VENOM_FIXTURE_SLOT_") {
+            return Err(());
+        }
+        Ok(rendered)
+    }
+
+    fn html_escape(value: &str) -> String {
+        value
+            .replace('&', "&amp;")
+            .replace('<', "&lt;")
+            .replace('>', "&gt;")
+            .replace('"', "&quot;")
+            .replace('\'', "&#39;")
+    }
+
+    fn render_xss_template(template: Vec<u8>, candidate: &str) -> Result<String, ()> {
+        let template = body_text(template)?;
+        let rendered = template
+            .replace(XSS_CANDIDATE_ESCAPED_PLACEHOLDER, &html_escape(candidate))
+            .replace(XSS_CANDIDATE_PLACEHOLDER, candidate);
+        if rendered.contains("VENOM_FIXTURE_SLOT_") {
+            return Err(());
+        }
+        Ok(rendered)
+    }
+
+    fn rendered_xss_body(case: &FixtureCase, candidate: &str) -> Result<String, ()> {
+        render_xss_template(response_body(case)?, candidate)
+    }
+
+    fn rendered_ssti_body(bytes: Vec<u8>, probe: &SstiArithmeticProbe) -> Result<Vec<u8>, ()> {
+        let template = body_text(bytes)?;
+        let rendered = template
+            .replace(SSTI_EXPECTED_PLACEHOLDER, &probe.expected_value())
+            .replace(SSTI_CANDIDATE_PLACEHOLDER, &probe.candidate_value());
+        if rendered.contains("VENOM_FIXTURE_SLOT_") {
+            return Err(());
+        }
+        Ok(rendered.into_bytes())
+    }
+
+    fn fixture_media(value: &str) -> Option<String> {
+        let mut headers = HeaderMap::new();
+        headers.insert("content-type", HeaderValue::from_str(value).ok()?);
+        normalized_media_type(&headers)
+    }
+
+    fn api_reasoning(case: &FixtureCase) -> Result<ApiReasoningResult, ()> {
+        let mut endpoint = Url::parse(&case.request.origin).map_err(|_| ())?;
+        endpoint.set_path(&case.request.path);
+        endpoint.set_query(None);
+        endpoint.set_fragment(None);
+        let subject = EntityId::new(format!("endpoint:{endpoint}")).map_err(|_| ())?;
+        let source = EvidenceSource::new("scanner.corpus", "semantic-harness").map_err(|_| ())?;
+        let mut evidence = Vec::new();
+        if let Some(media_type) = fixture_media(&case.response.media_type) {
+            evidence.push(Evidence::new(
+                subject.clone(),
+                EvidenceKind::Http,
+                HttpEvidencePredicate::RESPONSE_MEDIA_TYPE.into_knowledge(),
+                EvidenceValue::Text(media_type.clone()),
+                source.clone(),
+                ConfidenceScore::MAX,
+            ));
+            evidence.push(Evidence::new(
+                subject.clone(),
+                EvidenceKind::Http,
+                HttpEvidencePredicate::RESPONSE_MEDIA_TYPE_JSON_COMPATIBLE.into_knowledge(),
+                EvidenceValue::Boolean(json_compatible_media_type(&media_type)),
+                source.clone(),
+                ConfidenceScore::MAX,
+            ));
+        }
+        for segment in case
+            .request
+            .path
+            .split('/')
+            .filter(|segment| !segment.is_empty())
+        {
+            evidence.push(Evidence::new(
+                subject.clone(),
+                EvidenceKind::Http,
+                HttpEvidencePredicate::REQUEST_PATH_SEGMENT.into_knowledge(),
+                EvidenceValue::Text(segment.to_owned()),
+                source.clone(),
+                ConfidenceScore::MAX,
+            ));
+        }
+
+        let knowledge = KnowledgeBase::new();
+        knowledge.insert_evidence_batch(evidence).map_err(|_| ())?;
+        let mut engine = RuleEngine::new();
+        StandardApiReasoning::new()
+            .map_err(|_| ())?
+            .install(&knowledge, &mut engine)
+            .map_err(|_| ())?;
+        engine.apply(&knowledge, &subject).map_err(|_| ())?;
+        let snapshot = knowledge.snapshot_for_subject(&subject);
+        let json = snapshot.hypotheses().iter().any(|hypothesis| {
+            hypothesis.predicate() == &ApiKnowledgePredicate::RESPONSE_FORMAT.into_knowledge()
+                && hypothesis.value() == &ApiResponseFormat::Json.into()
+        });
+        let graphql = snapshot.hypotheses().iter().any(|hypothesis| {
+            hypothesis.predicate() == &ApiKnowledgePredicate::SURFACE_KIND.into_knowledge()
+                && hypothesis.value() == &ApiSurfaceKind::GraphQl.into()
+        });
+        Ok(ApiReasoningResult { json, graphql })
+    }
+
+    fn observation_contract_matches(case: &FixtureCase) -> bool {
+        case.expected.assessment_capability.is_none()
+            && matches!(
+                case.expected.maximum_disposition,
+                None | Some(DispositionExpectation::Informational)
+            )
+            && case
+                .expected
+                .maximum_authority
+                .is_none_or(|authority| authority == MaximumAuthorityExpectation::KnowledgeOnly)
+    }
+
+    fn run_http_media(case: &FixtureCase) -> ConformanceResult {
+        let Some(expected) = case.expected.http_media else {
+            return ConformanceResult::FixtureInvalid;
+        };
+        let Ok(reasoning) = api_reasoning(case) else {
+            return ConformanceResult::FixtureInvalid;
+        };
+        let normalized = fixture_media(&case.response.media_type);
+        let matched = match expected {
+            HttpMediaExpectation::Json | HttpMediaExpectation::JsonSuffix => {
+                normalized
+                    .as_deref()
+                    .is_some_and(json_compatible_media_type)
+                    && reasoning.json
+                    && !reasoning.graphql
+            },
+            HttpMediaExpectation::GraphqlResponseJson => {
+                normalized.as_deref() == Some("application/graphql-response+json")
+                    && reasoning.json
+                    && reasoning.graphql
+            },
+            HttpMediaExpectation::Malformed => normalized.is_none() && !reasoning.json,
+            HttpMediaExpectation::Html => {
+                normalized.as_deref() == Some("text/html") && !reasoning.json && !reasoning.graphql
+            },
+            HttpMediaExpectation::UnsupportedBinary => {
+                normalized.as_deref() == Some("application/octet-stream") && !reasoning.json
+            },
+            HttpMediaExpectation::Truncated => case.response.truncated,
+        };
+        if !matched {
+            return ConformanceResult::SemanticMismatch(SemanticMismatch::HttpMedia);
+        }
+        let graphql_matches = match case.expected.graphql_evidence {
+            Some(GraphqlExpectation::GenericJson) => reasoning.json && !reasoning.graphql,
+            Some(GraphqlExpectation::GraphqlLikeHtml) => !reasoning.json && !reasoning.graphql,
+            Some(_) => false,
+            None => true,
+        };
+        if !graphql_matches || !observation_contract_matches(case) {
+            return ConformanceResult::SemanticMismatch(SemanticMismatch::ApiReasoning);
+        }
+        terminal_result(case)
+    }
+
+    fn defense_state_from(
+        case: &FixtureCase,
+        status: u16,
+        body: Vec<u8>,
+    ) -> Result<DefenseState, ()> {
+        let body = String::from_utf8(body).map_err(|_| ())?;
+        let headers = case
+            .response
+            .headers
+            .iter()
+            .map(|header| (header.name.as_str(), header.value.as_str()))
+            .collect::<Vec<_>>();
+        Ok(DefenseState::observe(status, &headers, &body))
+    }
+
+    fn defense_state(case: &FixtureCase) -> Result<DefenseState, ()> {
+        defense_state_from(case, case.response.status, response_body(case)?)
+    }
+
+    fn defense_control_state(case: &FixtureCase) -> Result<DefenseState, ()> {
+        let body = String::from_utf8(control_body(case)?).map_err(|_| ())?;
+        Ok(DefenseState::observe(
+            case.response.control_status.unwrap_or(200),
+            &[],
+            &body,
+        ))
+    }
+
+    fn defense_state_matches(state: &DefenseState, expected: DefenseStateExpectation) -> bool {
+        match expected {
+            DefenseStateExpectation::Open => state.posture() == DefensePosture::Open,
+            DefenseStateExpectation::Blocking => state.posture() == DefensePosture::Blocking,
+            DefenseStateExpectation::Challenge => {
+                state.posture() == DefensePosture::Blocking && state.is_challenged()
+            },
+            DefenseStateExpectation::RateLimited => state.is_rate_limited(),
+            DefenseStateExpectation::Unknown => {
+                state.status_signal() == DefenseStatusSignal::ServerError
+                    && state.posture() == DefensePosture::Open
+            },
+        }
+    }
+
+    fn run_defense(case: &FixtureCase, cases: &BTreeMap<&str, &FixtureCase>) -> ConformanceResult {
+        let Some(expected_state) = case.expected.defense_state else {
+            return ConformanceResult::FixtureInvalid;
+        };
+        let Ok(state) = defense_state(case) else {
+            return ConformanceResult::FixtureInvalid;
+        };
+        if !defense_state_matches(&state, expected_state) {
+            return ConformanceResult::SemanticMismatch(SemanticMismatch::DefenseState);
+        }
+        let Some(expected_transition) = case.expected.defense_transition else {
+            return ConformanceResult::FixtureInvalid;
+        };
+        let transition_matches = match expected_transition {
+            DefenseTransitionExpectation::None => case.parent_case.is_none(),
+            DefenseTransitionExpectation::StandingBlock => {
+                case.parent_case.is_none() && state.posture() == DefensePosture::Blocking
+            },
+            DefenseTransitionExpectation::CandidateSpecificBlock => {
+                let Some(parent) = case.parent_case.as_deref().and_then(|id| cases.get(id)) else {
+                    return ConformanceResult::FixtureInvalid;
+                };
+                let Ok(control) = defense_state(parent) else {
+                    return ConformanceResult::FixtureInvalid;
+                };
+                let transition = DefenseTransition::between(&control, &state);
+                transition.kind() == DefenseTransitionKind::DefenseEngaged
+                    && transition.is_newly_blocking()
+                    && !transition.is_newly_rate_limited()
+            },
+            DefenseTransitionExpectation::RateLimit => {
+                let Ok(control) = defense_control_state(case) else {
+                    return ConformanceResult::FixtureInvalid;
+                };
+                DefenseTransition::between(&control, &state).is_newly_rate_limited()
+            },
+            DefenseTransitionExpectation::Deescalated => {
+                let Ok(control) = defense_control_state(case) else {
+                    return ConformanceResult::FixtureInvalid;
+                };
+                DefenseTransition::between(&control, &state).kind()
+                    == DefenseTransitionKind::DefenseRelaxed
+            },
+        };
+        if !transition_matches {
+            return ConformanceResult::SemanticMismatch(SemanticMismatch::DefenseTransition);
+        }
+        if case.expected.normalization_outcome.is_some() {
+            run_normalization(case)
+        } else if !observation_contract_matches(case) {
+            ConformanceResult::SemanticMismatch(SemanticMismatch::DefenseState)
+        } else {
+            terminal_result(case)
+        }
+    }
+
+    fn fixture_sql_structure(case: &FixtureCase, body: &[u8]) -> String {
+        let requested_url = root();
+        let expected_subject = subject();
+        let passive = passive_response_projection_for_test(&[]);
+        let media_type = fixture_media(&case.response.media_type);
+        let observation =
+            complete_http_response_observation_for_test(CompleteHttpResponseObservationTestInput {
+                case_id: CASE_ID,
+                action_id: NativeWebReviewActionKind::SqlStructuralQueryPair.action_id(),
+                executor_id: NativeWebReviewActionKind::SqlStructuralQueryPair.executor_id(),
+                hypothesis_id: HYPOTHESIS_ID,
+                has_payload_strategy: true,
+                payload_strategy: None,
+                applies_hypothesis_transition: false,
+                stage: DecisionExecutionStage::Active,
+                subject: &expected_subject,
+                method: HttpProbeMethod::Get,
+                requested_url: &requested_url,
+                status: case.response.status,
+                media_type: media_type.as_deref(),
+                reliability: ConfidenceScore::MAX,
+                complete_body: (!case.response.truncated).then_some(body),
+                request_method_evidence_id: None,
+                request_url_evidence_id: None,
+                response_status_evidence_id: None,
+                response_final_url_evidence_id: None,
+                response_media_type_evidence_id: None,
+                response_body_truncated_evidence_id: None,
+                response_body_digest_evidence_id: None,
+                passive_response_projection: &passive,
+                review_response_projection: None,
+            });
+        sql_body_structure(&observation)
+    }
+
+    fn review_contract_matches(
+        case: &FixtureCase,
+        candidates: &[AssessmentReviewCandidate],
+        capability: &str,
+        action: NativeWebReviewActionKind,
+    ) -> bool {
+        let capability_matches = match case.expected.assessment_capability.as_deref() {
+            Some(expected) => expected == capability && candidates.len() == 1,
+            None => candidates.is_empty(),
+        };
+        let disposition_matches = match case.expected.maximum_disposition {
+            Some(DispositionExpectation::NeedsReview) => {
+                candidates.len() == 1
+                    && candidates[0].disposition() == NativeReviewDisposition::NeedsReview
+            },
+            Some(DispositionExpectation::Informational) | None => candidates.is_empty(),
+        };
+        let authority_matches = case.expected.maximum_authority.is_none_or(|authority| {
+            authority == MaximumAuthorityExpectation::KnowledgeOnly
+                && action.verification_target() == crate::VerificationTarget::KnowledgeOnly
+        });
+        capability_matches && disposition_matches && authority_matches
+    }
+
+    fn run_sql(case: &FixtureCase) -> ConformanceResult {
+        let Some(expected) = case.expected.sql_relation else {
+            return ConformanceResult::FixtureInvalid;
+        };
+        let Ok(candidate_body) = response_body(case) else {
+            return ConformanceResult::FixtureInvalid;
+        };
+        let structure = fixture_sql_structure(case, &candidate_body);
+        if case.response.truncated {
+            if structure != "incomplete" {
+                return ConformanceResult::SemanticMismatch(SemanticMismatch::SqlReview);
+            }
+            return ConformanceResult::Incomplete;
+        }
+        let (Ok(control_body), Ok(replay_body)) = (control_body(case), replay_body(case)) else {
+            return ConformanceResult::FixtureInvalid;
+        };
+        let control_structure = fixture_sql_structure(case, &control_body);
+        let replay_structure = fixture_sql_structure(case, &replay_body);
+        let control_status = classify_http_status(case.response.control_status.unwrap_or(200));
+        let candidate_status = classify_http_status(case.response.status);
+        let replay_status =
+            classify_http_status(case.response.replay_status.unwrap_or(case.response.status));
+        let control = sql_observation(
+            NativeWebReviewActionKind::SqlStructuralQueryPair,
+            DecisionExecutionStage::Passive,
+            control_status,
+            &control_structure,
+            false,
+            "corpus-sql-control",
+        );
+        let candidate = sql_observation(
+            NativeWebReviewActionKind::SqlStructuralQueryPair,
+            DecisionExecutionStage::Active,
+            candidate_status,
+            &structure,
+            true,
+            "corpus-sql-candidate",
+        );
+        let mut replay_control = sql_observation(
+            NativeWebReviewActionKind::SqlStructuralQueryReplayPair,
+            DecisionExecutionStage::Passive,
+            control_status,
+            &control_structure,
+            false,
+            "corpus-sql-replay-control",
+        );
+        replay_control.case_id = "case:corpus:sql-replay".to_owned();
+        let mut replay_candidate = sql_observation(
+            NativeWebReviewActionKind::SqlStructuralQueryReplayPair,
+            DecisionExecutionStage::Active,
+            replay_status,
+            &replay_structure,
+            true,
+            "corpus-sql-replay-candidate",
+        );
+        replay_candidate.case_id = replay_control.case_id.clone();
+        let mut output = Vec::new();
+        append_sql_candidate(
+            &control,
+            &candidate,
+            &replay_control,
+            &replay_candidate,
+            QUERY_PARAMETER,
+            &mut output,
+        );
+        if (expected == StructuralRelationExpectation::Matched) != (output.len() == 1) {
+            return ConformanceResult::SemanticMismatch(SemanticMismatch::SqlReview);
+        }
+        if !review_contract_matches(
+            case,
+            &output,
+            "sql-structural-review",
+            NativeWebReviewActionKind::SqlStructuralQueryPair,
+        ) {
+            return ConformanceResult::SemanticMismatch(SemanticMismatch::SqlReview);
+        }
+        terminal_result(case)
+    }
+
+    fn classify_ssti_fixture(
+        stage: DecisionExecutionStage,
+        body: Option<&[u8]>,
+        media_type: Option<&str>,
+        probe: &SstiArithmeticProbe,
+    ) -> SstiEvaluationRelation {
+        let requested_url = root();
+        let expected_subject = subject();
+        let passive = passive_response_projection_for_test(&[]);
+        let observation =
+            complete_http_response_observation_for_test(CompleteHttpResponseObservationTestInput {
+                case_id: CASE_ID,
+                action_id: NativeWebReviewActionKind::SstiStructuralQueryPair.action_id(),
+                executor_id: NativeWebReviewActionKind::SstiStructuralQueryPair.executor_id(),
+                hypothesis_id: HYPOTHESIS_ID,
+                has_payload_strategy: true,
+                payload_strategy: None,
+                applies_hypothesis_transition: false,
+                stage,
+                subject: &expected_subject,
+                method: HttpProbeMethod::Get,
+                requested_url: &requested_url,
+                status: 200,
+                media_type,
+                reliability: ConfidenceScore::MAX,
+                complete_body: body,
+                request_method_evidence_id: None,
+                request_url_evidence_id: None,
+                response_status_evidence_id: None,
+                response_final_url_evidence_id: None,
+                response_media_type_evidence_id: None,
+                response_body_truncated_evidence_id: None,
+                response_body_digest_evidence_id: None,
+                passive_response_projection: &passive,
+                review_response_projection: None,
+            });
+        classify_ssti_evaluation(&observation, probe)
+    }
+
+    fn run_ssti(case: &FixtureCase) -> ConformanceResult {
+        let Some(expected) = case.expected.ssti_relation else {
+            return ConformanceResult::FixtureInvalid;
+        };
+        let (Ok(control_template), Ok(candidate_template), Ok(replay_template)) =
+            (control_body(case), response_body(case), replay_body(case))
+        else {
+            return ConformanceResult::FixtureInvalid;
+        };
+        let observer = match AssessmentReviewObserverSet::new_with_sql(
+            root(),
+            seeds(),
+            None,
+            None,
+            None,
+            Some(QUERY_PARAMETER),
+        ) {
+            Ok(observer) => observer,
+            Err(_) => return ConformanceResult::FixtureInvalid,
+        };
+        let Some(contract) = observer.ssti.as_ref() else {
+            return ConformanceResult::FixtureInvalid;
+        };
+        let probe = &contract.primary.probe;
+        let media = fixture_media(&case.response.media_type);
+        let (Ok(control_body), Ok(candidate_body), Ok(replay_body)) = (
+            rendered_ssti_body(control_template, probe),
+            rendered_ssti_body(candidate_template, probe),
+            rendered_ssti_body(replay_template, probe),
+        ) else {
+            return ConformanceResult::FixtureInvalid;
+        };
+        let control_relation = classify_ssti_fixture(
+            DecisionExecutionStage::Passive,
+            Some(&control_body),
+            media.as_deref(),
+            probe,
+        );
+        let candidate_relation = classify_ssti_fixture(
+            DecisionExecutionStage::Active,
+            (!case.response.truncated).then_some(candidate_body.as_slice()),
+            media.as_deref(),
+            probe,
+        );
+        let replay_relation = classify_ssti_fixture(
+            DecisionExecutionStage::Active,
+            (!case.response.truncated).then_some(replay_body.as_slice()),
+            media.as_deref(),
+            probe,
+        );
+        let [mut control, candidate, replay_control, replay_candidate] =
+            ssti_pair_set(candidate_relation, replay_relation);
+        control.response = CommittedReviewResponse::SstiStructural {
+            status: ReviewHttpStatusClass::Successful,
+            evaluation: control_relation,
+        };
+        let mut output = Vec::new();
+        append_ssti_candidate(
+            &control,
+            &candidate,
+            &replay_control,
+            &replay_candidate,
+            QUERY_PARAMETER,
+            &mut output,
+        );
+        if (expected == StructuralRelationExpectation::Matched) != (output.len() == 1) {
+            return ConformanceResult::SemanticMismatch(SemanticMismatch::SstiReview);
+        }
+        if !review_contract_matches(
+            case,
+            &output,
+            "ssti-arithmetic-review",
+            NativeWebReviewActionKind::SstiStructuralQueryPair,
+        ) {
+            return ConformanceResult::SemanticMismatch(SemanticMismatch::SstiReview);
+        }
+        terminal_result(case)
+    }
+
+    struct XssFixtureSelection {
+        selection: XssProbeSelection,
+        context: ExactHtmlReflectionContext,
+        attribute: AttributeSourceResult,
+        javascript: JavaScriptSourceResult,
+    }
+
+    fn xss_selection(case: &FixtureCase) -> Result<XssFixtureSelection, ()> {
+        let marker = seeds().reflection_candidate_marker();
+        let source = rendered_source_body(case, &marker)?;
+        let context = classify_exact_html_reflection(&source, &marker);
+        let attribute = cross_validate_attribute_reflection_source(&source, &marker, context);
+        let javascript = cross_validate_javascript_reflection_source(&source, &marker, context);
+        let mut selections = crate::web_runtime::web_assessment::select_xss_probe_families(
+            context,
+            &attribute,
+            &javascript,
+        );
+        if selections.len() != 1 {
+            return Err(());
+        }
+        Ok(XssFixtureSelection {
+            selection: selections.remove(0),
+            context,
+            attribute,
+            javascript,
+        })
+    }
+
+    fn xss_context_matches(
+        expected: ReflectionContextExpectation,
+        fixture: &XssFixtureSelection,
+        relation: &str,
+    ) -> bool {
+        match expected {
+            ReflectionContextExpectation::HtmlText => {
+                fixture.context == ExactHtmlReflectionContext::HtmlText
+            },
+            ReflectionContextExpectation::Attribute => matches!(
+                fixture.context,
+                ExactHtmlReflectionContext::AttributeValue
+                    | ExactHtmlReflectionContext::UriAttribute
+                    | ExactHtmlReflectionContext::EventHandlerAttribute
+            ),
+            ReflectionContextExpectation::Script => {
+                fixture.context == ExactHtmlReflectionContext::ScriptElementContent
+            },
+            ReflectionContextExpectation::SameContext => relation == "reflected-same-context",
+            ReflectionContextExpectation::Ambiguous => relation == "incomplete",
+        }
+    }
+
+    fn xss_source_contract_matches(
+        case: &FixtureCase,
+        fixture: &XssFixtureSelection,
+        relation: &str,
+    ) -> bool {
+        if case
+            .expected
+            .reflection_context
+            .is_some_and(|expected| !xss_context_matches(expected, fixture, relation))
+        {
+            return false;
+        }
+        let quote = fixture.attribute.quote_mode_id();
+        if case.expected.html_quote_mode.is_some_and(|expected| {
+            let expected = match expected {
+                HtmlQuoteExpectation::Double => "double-quoted",
+                HtmlQuoteExpectation::Single => "single-quoted",
+                HtmlQuoteExpectation::Unquoted => "unquoted",
+                HtmlQuoteExpectation::NotApplicable => "none",
+            };
+            quote != expected
+        }) {
+            return false;
+        }
+        let javascript = fixture.javascript.context_id();
+        !case.expected.javascript_context.is_some_and(|expected| {
+            let expected = match expected {
+                JavascriptContextExpectation::SingleQuoted => "single-quoted-string",
+                JavascriptContextExpectation::DoubleQuoted => "double-quoted-string",
+                JavascriptContextExpectation::TemplateText => "template-literal-text",
+            };
+            javascript != expected
+        })
+    }
+
+    fn xss_capability(selection: &XssProbeSelection) -> &'static str {
+        match selection.family() {
+            XssProbeFamily::HtmlTextBoundary => "xss-html-text-boundary",
+            XssProbeFamily::AttributeValueBoundary => "xss-attribute-boundary",
+            XssProbeFamily::UriAttributeBoundary => "xss-uri-attribute-boundary",
+            XssProbeFamily::EventHandlerAttributeBoundary => "xss-event-attribute-boundary",
+            XssProbeFamily::ScriptSingleQuotedStringBoundary
+            | XssProbeFamily::ScriptDoubleQuotedStringBoundary
+            | XssProbeFamily::ScriptTemplateLiteralBoundary => "xss-script-lexical-boundary",
+            _ => "unsupported-xss-family",
+        }
+    }
+
+    fn observe_xss_relation(
+        observer: &AssessmentReviewObserverSet,
+        selection: &XssProbeSelection,
+        stage: DecisionExecutionStage,
+        requested_url: &Url,
+        status: u16,
+        body: &[u8],
+    ) -> Result<String, ()> {
+        let strategy = native_review_strategy_ref(selection.action_kind());
+        let evidence = observe(
+            observer,
+            selection.action_kind(),
+            stage,
+            requested_url,
+            &HeaderMap::new(),
+            status,
+            Some("text/html"),
+            Some(body),
+            selection.action_kind().executor_id(),
+            Some(&strategy),
+            false,
+        )
+        .map_err(|_| ())?;
+        values(&evidence)
+            .into_iter()
+            .find_map(|(property, value)| {
+                (property == XSS_STRUCTURAL_RELATION).then_some(value.to_owned())
+            })
+            .ok_or(())
+    }
+
+    fn run_xss(case: &FixtureCase) -> ConformanceResult {
+        let Some(expected) = case.expected.xss_relation else {
+            return ConformanceResult::FixtureInvalid;
+        };
+        let Ok(fixture) = xss_selection(case) else {
+            return ConformanceResult::FixtureInvalid;
+        };
+        let selection = fixture.selection.clone();
+        let observer = match AssessmentReviewObserverSet::new_xss(
+            root(),
+            seeds(),
+            QUERY_PARAMETER,
+            selection.clone(),
+        ) {
+            Ok(observer) => observer,
+            Err(_) => return ConformanceResult::FixtureInvalid,
+        };
+        let Some(contract) = observer.xss.as_ref() else {
+            return ConformanceResult::FixtureInvalid;
+        };
+        let candidate_value = contract.probe.parts().candidate_value.as_str();
+        let Ok(body) = rendered_xss_body(case, candidate_value) else {
+            return ConformanceResult::FixtureInvalid;
+        };
+        let Ok(relation) = observe_xss_relation(
+            &observer,
+            &selection,
+            DecisionExecutionStage::Active,
+            &contract.candidate_url,
+            case.response.status,
+            body.as_bytes(),
+        ) else {
+            return ConformanceResult::FixtureInvalid;
+        };
+        let relation_matches = match expected {
+            StructuralRelationExpectation::Matched => relation == "structural-boundary-observed",
+            StructuralRelationExpectation::LiteralReflection => {
+                relation == "reflected-same-context"
+            },
+            StructuralRelationExpectation::Ambiguous => relation == "incomplete",
+            StructuralRelationExpectation::NotMatched
+            | StructuralRelationExpectation::CandidateOnly
+            | StructuralRelationExpectation::ReplayMismatch
+            | StructuralRelationExpectation::Contaminated => {
+                matches!(
+                    relation.as_str(),
+                    "encoded-or-inert" | "reflected-same-context"
+                )
+            },
+        };
+        if !relation_matches {
+            return ConformanceResult::SemanticMismatch(SemanticMismatch::XssReview);
+        }
+
+        if !xss_source_contract_matches(case, &fixture, &relation) {
+            return ConformanceResult::SemanticMismatch(SemanticMismatch::XssReview);
+        }
+        let Ok(parsed_relation) = parse_xss_structural_relation(&relation) else {
+            return ConformanceResult::FixtureInvalid;
+        };
+        let family = selection.family();
+        let variant = selection.variant_id().to_owned();
+        let Ok(control_template) = control_body(case) else {
+            return ConformanceResult::FixtureInvalid;
+        };
+        let Ok(control_body) =
+            render_xss_template(control_template, &contract.probe.parts().control_value)
+        else {
+            return ConformanceResult::FixtureInvalid;
+        };
+        let Ok(control_relation) = observe_xss_relation(
+            &observer,
+            &selection,
+            DecisionExecutionStage::Passive,
+            &contract.control_url,
+            case.response.control_status.unwrap_or(200),
+            control_body.as_bytes(),
+        ) else {
+            return ConformanceResult::FixtureInvalid;
+        };
+        let Ok(control_relation) = parse_xss_structural_relation(&control_relation) else {
+            return ConformanceResult::FixtureInvalid;
+        };
+        let control = fake_observation(
+            selection.action_kind(),
+            DecisionExecutionStage::Passive,
+            CommittedReviewResponse::XssStructural {
+                family,
+                variant: variant.clone(),
+                relation: control_relation,
+            },
+            false,
+            "corpus-xss-control",
+        );
+        let candidate = fake_observation(
+            selection.action_kind(),
+            DecisionExecutionStage::Active,
+            CommittedReviewResponse::XssStructural {
+                family,
+                variant,
+                relation: parsed_relation,
+            },
+            true,
+            "corpus-xss-candidate",
+        );
+        let mut ledger = match CommittedAssessmentReviewLedger::new_xss(
+            root(),
+            seeds(),
+            QUERY_PARAMETER,
+            selection.clone(),
+        ) {
+            Ok(ledger) => ledger,
+            Err(_) => return ConformanceResult::FixtureInvalid,
+        };
+        for observation in [control, candidate] {
+            ledger.observations.insert(
+                ReviewReceiptKey {
+                    kind: observation.kind,
+                    case_id: observation.case_id.clone(),
+                    stage: observation.stage,
+                },
+                observation,
+            );
+        }
+        let candidates = ledger.candidates();
+        if (expected == StructuralRelationExpectation::Matched) != (candidates.len() == 1) {
+            return ConformanceResult::SemanticMismatch(SemanticMismatch::XssReview);
+        }
+        let capability = xss_capability(&selection);
+        if !review_contract_matches(case, &candidates, capability, selection.action_kind()) {
+            return ConformanceResult::SemanticMismatch(SemanticMismatch::XssReview);
+        }
+        terminal_result(case)
+    }
+
+    #[cfg(feature = "normalization-resilience")]
+    fn run_normalization(case: &FixtureCase) -> ConformanceResult {
+        use crate::{
+            payload_strategies::normalization_resilience_query_pair::NormalizationResilienceQueryPairStrategy,
+            web_runtime::web_assessment::{
+                match_exact_xss_html_boundary_document, select_normalization_transform,
+            },
+            PayloadSeed, PayloadStrategy, PayloadStrategyLimits, PayloadVariantRole,
+        };
+
+        let Some(expected) = case.expected.normalization_outcome else {
+            return ConformanceResult::FixtureInvalid;
+        };
+        let Some(selection) = select_normalization_transform(&html_text_selection(), None) else {
+            return ConformanceResult::UnsupportedByCurrentRuntime;
+        };
+        if !selection.is_executable_v1_contract() {
+            return ConformanceResult::SemanticMismatch(SemanticMismatch::NormalizationReview);
+        }
+        let Some(encoded_seed) =
+            selection.strategy_seed(NORMALIZATION_CANDIDATE_ID, NORMALIZATION_REPLAY_ID)
+        else {
+            return ConformanceResult::FixtureInvalid;
+        };
+        let Ok(limits) = PayloadStrategyLimits::new(512, 512) else {
+            return ConformanceResult::FixtureInvalid;
+        };
+        let Ok(seed) = PayloadSeed::new(encoded_seed.into_bytes(), limits) else {
+            return ConformanceResult::FixtureInvalid;
+        };
+        let strategy = NormalizationResilienceQueryPairStrategy::new();
+        let Ok(candidate) = strategy.derive_one(PayloadVariantRole::Control, &seed, limits) else {
+            return ConformanceResult::FixtureInvalid;
+        };
+        let Ok(replay) = strategy.derive_one(PayloadVariantRole::Candidate, &seed, limits) else {
+            return ConformanceResult::FixtureInvalid;
+        };
+        let (Ok(candidate_template), Ok(replay_template)) =
+            (response_body(case), replay_body(case))
+        else {
+            return ConformanceResult::FixtureInvalid;
+        };
+        let Ok(candidate_template) = body_text(candidate_template) else {
+            return ConformanceResult::FixtureInvalid;
+        };
+        let Ok(replay_template) = body_text(replay_template) else {
+            return ConformanceResult::FixtureInvalid;
+        };
+        let candidate_body = candidate_template.replace(
+            NORMALIZATION_ARTIFACT_PLACEHOLDER,
+            std::str::from_utf8(candidate.as_bytes()).unwrap_or_default(),
+        );
+        let replay_body = replay_template.replace(
+            NORMALIZATION_ARTIFACT_PLACEHOLDER,
+            std::str::from_utf8(replay.as_bytes()).unwrap_or_default(),
+        );
+        if candidate_body.contains("VENOM_FIXTURE_SLOT_")
+            || replay_body.contains("VENOM_FIXTURE_SLOT_")
+        {
+            return ConformanceResult::FixtureInvalid;
+        }
+        let candidate_semantic =
+            match_exact_xss_html_boundary_document(&candidate_body, NORMALIZATION_CANDIDATE_ID)
+                == ExactXssBoundaryMatch::Matched;
+        let replay_semantic =
+            match_exact_xss_html_boundary_document(&replay_body, NORMALIZATION_REPLAY_ID)
+                == ExactXssBoundaryMatch::Matched;
+        let matched = match expected {
+            NormalizationExpectation::SemanticGapObserved => candidate_semantic && replay_semantic,
+            NormalizationExpectation::AcceptedSemanticsUnknown => !candidate_semantic,
+            NormalizationExpectation::ReplayMismatch => candidate_semantic && !replay_semantic,
+            NormalizationExpectation::Ineligible | NormalizationExpectation::StillBlocked => {
+                !candidate_semantic && !replay_semantic
+            },
+        };
+        let contract_matches = match case.expected.assessment_capability.as_deref() {
+            Some("defense-normalization-gap") => {
+                expected == NormalizationExpectation::SemanticGapObserved
+                    && candidate_semantic
+                    && replay_semantic
+                    && case.expected.maximum_disposition
+                        == Some(DispositionExpectation::NeedsReview)
+                    && case.expected.maximum_authority
+                        == Some(MaximumAuthorityExpectation::KnowledgeOnly)
+            },
+            Some(_) => false,
+            None => case.expected.maximum_disposition.is_none(),
+        };
+        if matched && contract_matches {
+            terminal_result(case)
+        } else {
+            ConformanceResult::SemanticMismatch(SemanticMismatch::NormalizationReview)
+        }
+    }
+
+    #[cfg(not(feature = "normalization-resilience"))]
+    fn run_normalization(_case: &FixtureCase) -> ConformanceResult {
+        ConformanceResult::UnsupportedByCurrentRuntime
+    }
+
+    #[cfg(feature = "graphql-review")]
+    fn run_graphql_metadata(case: &FixtureCase) -> ConformanceResult {
+        let Some(expected) = case.expected.graphql_evidence else {
+            return ConformanceResult::FixtureInvalid;
+        };
+        let Ok(reasoning) = api_reasoning(case) else {
+            return ConformanceResult::SemanticMismatch(SemanticMismatch::ApiReasoning);
+        };
+        if !matches!(
+            expected,
+            GraphqlExpectation::BatchMetadataOnly | GraphqlExpectation::GetQueryMetadataOnly
+        ) || !reasoning.json
+            || !reasoning.graphql
+            || case.support != SupportLevel::MetadataOnly
+            || case.expected.maximum_authority != Some(MaximumAuthorityExpectation::KnowledgeOnly)
+        {
+            return ConformanceResult::SemanticMismatch(SemanticMismatch::ApiReasoning);
+        }
+        // These two catalog families remain metadata-only in GraphQL V1. Their
+        // shape is valid evidence taxonomy but creates no request obligation.
+        ConformanceResult::UnsupportedByCurrentRuntime
+    }
+
+    #[cfg(feature = "graphql-review")]
+    fn run_graphql(case: &FixtureCase) -> ConformanceResult {
+        use crate::graphql_review::{
+            select_graphql_endpoint, GraphqlEndpointHint, GraphqlErrorCategory,
+            GraphqlFallbackPolicy, GraphqlOperationSet, GraphqlResponseClassification,
+            GraphqlResponseClassifier, GraphqlResponseInput,
+        };
+
+        let Some(expected) = case.expected.graphql_evidence else {
+            return ConformanceResult::FixtureInvalid;
+        };
+        if matches!(
+            expected,
+            GraphqlExpectation::BatchMetadataOnly | GraphqlExpectation::GetQueryMetadataOnly
+        ) {
+            return run_graphql_metadata(case);
+        }
+        if case.support != SupportLevel::Current
+            || case.expected.maximum_authority != Some(MaximumAuthorityExpectation::KnowledgeOnly)
+        {
+            return ConformanceResult::SemanticMismatch(SemanticMismatch::GraphqlReview);
+        }
+        let Ok(reasoning) = api_reasoning(case) else {
+            return ConformanceResult::SemanticMismatch(SemanticMismatch::ApiReasoning);
+        };
+        if !reasoning.json || !reasoning.graphql {
+            return ConformanceResult::SemanticMismatch(SemanticMismatch::ApiReasoning);
+        }
+
+        let Ok(origin) = Url::parse(&case.request.origin) else {
+            return ConformanceResult::FixtureInvalid;
+        };
+        let Ok(endpoint_url) = origin.join(&case.request.path) else {
+            return ConformanceResult::FixtureInvalid;
+        };
+        let Ok(Some(hint)) = GraphqlEndpointHint::exact_path(endpoint_url) else {
+            return ConformanceResult::FixtureInvalid;
+        };
+        let Ok(Some(endpoint)) =
+            select_graphql_endpoint(&origin, [hint], GraphqlFallbackPolicy::Disabled)
+        else {
+            return ConformanceResult::FixtureInvalid;
+        };
+        let Ok(operations) = GraphqlOperationSet::v1(&endpoint) else {
+            return ConformanceResult::FixtureInvalid;
+        };
+        let operation = match expected {
+            GraphqlExpectation::IntrospectionAvailable
+            | GraphqlExpectation::IntrospectionRestricted
+            | GraphqlExpectation::PartialDataWithErrors => operations.candidate(),
+            GraphqlExpectation::ExactEnvelope
+            | GraphqlExpectation::TypenameControl
+            | GraphqlExpectation::GenericJson
+            | GraphqlExpectation::GraphqlLikeHtml
+            | GraphqlExpectation::MalformedEnvelope
+            | GraphqlExpectation::DepthLimited => operations.control(),
+            GraphqlExpectation::BatchMetadataOnly | GraphqlExpectation::GetQueryMetadataOnly => {
+                return ConformanceResult::FixtureInvalid;
+            },
+        };
+        let Ok(body) = fixture_body(
+            case.response.body_file.as_ref(),
+            case.response.inline_body.as_ref(),
+        ) else {
+            return ConformanceResult::FixtureInvalid;
+        };
+        let classification = GraphqlResponseClassifier::default().classify(GraphqlResponseInput {
+            media_type: Some(&case.response.media_type),
+            body: &body,
+            complete: case.response.completion == CompletionState::Complete,
+            truncated: case.response.truncated,
+            operation,
+        });
+        let classification_matches = match expected {
+            GraphqlExpectation::ExactEnvelope | GraphqlExpectation::TypenameControl => {
+                classification == GraphqlResponseClassification::ExactControlEnvelope
+            },
+            GraphqlExpectation::IntrospectionAvailable => matches!(
+                classification,
+                GraphqlResponseClassification::ExactIntrospectionEnvelope(_)
+            ),
+            GraphqlExpectation::IntrospectionRestricted => {
+                classification
+                    == GraphqlResponseClassification::StructuredGraphqlErrors(
+                        GraphqlErrorCategory::IntrospectionRestricted,
+                    )
+            },
+            GraphqlExpectation::GenericJson => {
+                classification == GraphqlResponseClassification::GenericJson
+            },
+            GraphqlExpectation::GraphqlLikeHtml => {
+                classification == GraphqlResponseClassification::Html
+            },
+            GraphqlExpectation::MalformedEnvelope => {
+                classification == GraphqlResponseClassification::MalformedJson
+            },
+            GraphqlExpectation::PartialDataWithErrors => {
+                classification == GraphqlResponseClassification::Ambiguous
+            },
+            GraphqlExpectation::DepthLimited => {
+                classification == GraphqlResponseClassification::Incomplete
+            },
+            GraphqlExpectation::BatchMetadataOnly | GraphqlExpectation::GetQueryMetadataOnly => {
+                false
+            },
+        };
+        let disposition_matches = match expected {
+            GraphqlExpectation::ExactEnvelope
+            | GraphqlExpectation::TypenameControl
+            | GraphqlExpectation::IntrospectionAvailable
+            | GraphqlExpectation::IntrospectionRestricted => {
+                case.expected.maximum_disposition == Some(DispositionExpectation::Informational)
+            },
+            _ => case.expected.maximum_disposition.is_none(),
+        };
+        if !classification_matches || !disposition_matches {
+            return ConformanceResult::SemanticMismatch(SemanticMismatch::GraphqlReview);
+        }
+        terminal_result(case)
+    }
+
+    #[cfg(not(feature = "graphql-review"))]
+    fn run_graphql(_case: &FixtureCase) -> ConformanceResult {
+        ConformanceResult::UnsupportedByCurrentRuntime
+    }
+
+    fn openapi_body(case: &FixtureCase) -> Result<Vec<u8>, ()> {
+        use crate::openapi_review::{MAX_OPENAPI_DOCUMENT_BYTES, MAX_OPENAPI_PATHS};
+
+        match case.expected.openapi_generated_input {
+            Some(OpenApiGeneratedInputExpectation::DocumentSizePlusOne) => {
+                Ok(vec![b' '; MAX_OPENAPI_DOCUMENT_BYTES + 1])
+            },
+            Some(OpenApiGeneratedInputExpectation::PathLimitPlusOne) => {
+                let mut source = String::from("{\"openapi\":\"3.1.0\",\"paths\":{");
+                for index in 0..=MAX_OPENAPI_PATHS {
+                    if index != 0 {
+                        source.push(',');
+                    }
+                    source.push_str(&format!("\"/generated/{index}\":{{}}"));
+                }
+                source.push_str("}}");
+                Ok(source.into_bytes())
+            },
+            None => fixture_body(
+                case.response.body_file.as_ref(),
+                case.response.inline_body.as_ref(),
+            ),
+        }
+    }
+
+    fn openapi_document_contract_matches(
+        case: &FixtureCase,
+        document: &crate::openapi_review::OpenApiDocument,
+    ) -> bool {
+        use crate::openapi_review::{
+            OpenApiCandidateTag, OpenApiParameterLocation, OpenApiSecuritySchemeKind,
+            OpenApiServerKind, OpenApiVersion,
+        };
+
+        let version_matches = matches!(
+            (case.expected.openapi_version, document.version()),
+            (
+                Some(OpenApiVersionExpectation::OpenApi30),
+                Some(OpenApiVersion::OpenApi30),
+            ) | (
+                Some(OpenApiVersionExpectation::OpenApi31),
+                Some(OpenApiVersion::OpenApi31),
+            )
+        );
+        let count_matches = usize::try_from(case.expected.openapi_path_count.unwrap_or(u32::MAX))
+            .is_ok_and(|expected| expected == document.path_count())
+            && usize::try_from(case.expected.openapi_operation_count.unwrap_or(u32::MAX))
+                .is_ok_and(|expected| expected == document.operation_count());
+        if !version_matches || !count_matches {
+            return false;
+        }
+
+        let operations = document.catalog().operations();
+        let parameter_locations = operations
+            .iter()
+            .flat_map(|operation| operation.parameters())
+            .map(|parameter| parameter.location())
+            .collect::<BTreeSet<_>>();
+        let declared_security = document
+            .security_schemes()
+            .iter()
+            .copied()
+            .collect::<BTreeSet<_>>();
+        let effective_security = operations
+            .iter()
+            .flat_map(|operation| operation.security().scheme_kinds())
+            .copied()
+            .collect::<BTreeSet<_>>();
+        let server_kinds = document
+            .servers()
+            .iter()
+            .chain(operations.iter().flat_map(|operation| operation.servers()))
+            .map(|server| server.kind())
+            .collect::<BTreeSet<_>>();
+        let candidate_tags = operations
+            .iter()
+            .flat_map(|operation| operation.candidate_tags())
+            .copied()
+            .collect::<BTreeSet<_>>();
+
+        case.expected
+            .openapi_required_parameter_locations
+            .iter()
+            .all(|expected| {
+                parameter_locations.contains(&match expected {
+                    OpenApiParameterLocationExpectation::Query => OpenApiParameterLocation::Query,
+                    OpenApiParameterLocationExpectation::Header => OpenApiParameterLocation::Header,
+                    OpenApiParameterLocationExpectation::Path => OpenApiParameterLocation::Path,
+                    OpenApiParameterLocationExpectation::Cookie => OpenApiParameterLocation::Cookie,
+                })
+            })
+            && case
+                .expected
+                .openapi_required_security_schemes
+                .iter()
+                .all(|expected| {
+                    declared_security.contains(&match expected {
+                        OpenApiSecuritySchemeExpectation::ApiKeyQuery => {
+                            OpenApiSecuritySchemeKind::ApiKeyQuery
+                        },
+                        OpenApiSecuritySchemeExpectation::ApiKeyHeader => {
+                            OpenApiSecuritySchemeKind::ApiKeyHeader
+                        },
+                        OpenApiSecuritySchemeExpectation::HttpBearer => {
+                            OpenApiSecuritySchemeKind::HttpBearer
+                        },
+                        OpenApiSecuritySchemeExpectation::Oauth2 => {
+                            OpenApiSecuritySchemeKind::OAuth2
+                        },
+                        OpenApiSecuritySchemeExpectation::OpenIdConnect => {
+                            OpenApiSecuritySchemeKind::OpenIdConnect
+                        },
+                    })
+                })
+            && case
+                .expected
+                .openapi_required_effective_security_schemes
+                .iter()
+                .all(|expected| {
+                    effective_security.contains(&match expected {
+                        OpenApiSecuritySchemeExpectation::ApiKeyQuery => {
+                            OpenApiSecuritySchemeKind::ApiKeyQuery
+                        },
+                        OpenApiSecuritySchemeExpectation::ApiKeyHeader => {
+                            OpenApiSecuritySchemeKind::ApiKeyHeader
+                        },
+                        OpenApiSecuritySchemeExpectation::HttpBearer => {
+                            OpenApiSecuritySchemeKind::HttpBearer
+                        },
+                        OpenApiSecuritySchemeExpectation::Oauth2 => {
+                            OpenApiSecuritySchemeKind::OAuth2
+                        },
+                        OpenApiSecuritySchemeExpectation::OpenIdConnect => {
+                            OpenApiSecuritySchemeKind::OpenIdConnect
+                        },
+                    })
+                })
+            && case
+                .expected
+                .openapi_required_server_kinds
+                .iter()
+                .all(|expected| {
+                    server_kinds.contains(&match expected {
+                        OpenApiServerKindExpectation::ExactOrigin => OpenApiServerKind::ExactOrigin,
+                        OpenApiServerKindExpectation::Relative => OpenApiServerKind::Relative,
+                        OpenApiServerKindExpectation::CrossOrigin => OpenApiServerKind::CrossOrigin,
+                        OpenApiServerKindExpectation::Templated => OpenApiServerKind::Templated,
+                    })
+                })
+            && case
+                .expected
+                .openapi_required_candidate_tags
+                .iter()
+                .all(|expected| {
+                    candidate_tags.contains(&match expected {
+                        OpenApiCandidateTagExpectation::ReadOnly => OpenApiCandidateTag::ReadOnly,
+                        OpenApiCandidateTagExpectation::BodyBearing => {
+                            OpenApiCandidateTag::BodyBearing
+                        },
+                        OpenApiCandidateTagExpectation::Parameterized => {
+                            OpenApiCandidateTag::Parameterized
+                        },
+                        OpenApiCandidateTagExpectation::DeclaresSecurity => {
+                            OpenApiCandidateTag::DeclaresSecurity
+                        },
+                        OpenApiCandidateTagExpectation::DeclaresAnonymousAccess => {
+                            OpenApiCandidateTag::DeclaresAnonymousAccess
+                        },
+                        OpenApiCandidateTagExpectation::JsonRequest => {
+                            OpenApiCandidateTag::JsonRequest
+                        },
+                        OpenApiCandidateTagExpectation::JsonResponse => {
+                            OpenApiCandidateTag::JsonResponse
+                        },
+                        OpenApiCandidateTagExpectation::Deprecated => {
+                            OpenApiCandidateTag::Deprecated
+                        },
+                        OpenApiCandidateTagExpectation::AuthorizationReviewCandidate => {
+                            OpenApiCandidateTag::AuthorizationReviewCandidate
+                        },
+                        OpenApiCandidateTagExpectation::SqlInputCandidate => {
+                            OpenApiCandidateTag::SqlInputCandidate
+                        },
+                        OpenApiCandidateTagExpectation::SsrfUrlCandidate => {
+                            OpenApiCandidateTag::SsrfUrlCandidate
+                        },
+                        OpenApiCandidateTagExpectation::UploadCandidate => {
+                            OpenApiCandidateTag::UploadCandidate
+                        },
+                        OpenApiCandidateTagExpectation::OauthCandidate => {
+                            OpenApiCandidateTag::OAuthCandidate
+                        },
+                    })
+                })
+    }
+
+    fn run_openapi(case: &FixtureCase, cases: &BTreeMap<&str, &FixtureCase>) -> ConformanceResult {
+        use crate::openapi_review::{parse_openapi_document, OpenApiParseOutcome};
+
+        let Some(expected) = case.expected.openapi_outcome else {
+            return ConformanceResult::FixtureInvalid;
+        };
+        if expected == OpenApiExpectation::YamlMetadataOnly {
+            return ConformanceResult::UnsupportedByCurrentRuntime;
+        }
+        let Ok(origin) = Url::parse(&case.request.origin) else {
+            return ConformanceResult::FixtureInvalid;
+        };
+        let Ok(body) = openapi_body(case) else {
+            return ConformanceResult::FixtureInvalid;
+        };
+        let outcome = parse_openapi_document(&body, &origin);
+        let matches = match (expected, &outcome) {
+            (OpenApiExpectation::Document, OpenApiParseOutcome::Complete(document)) => {
+                if !openapi_document_contract_matches(case, document) {
+                    return ConformanceResult::SemanticMismatch(SemanticMismatch::OpenApiReview);
+                }
+                if let Some(other_id) = case.expected.openapi_digest_matches.as_deref() {
+                    let Some(other) = cases.get(other_id).copied() else {
+                        return ConformanceResult::FixtureInvalid;
+                    };
+                    let Ok(other_origin) = Url::parse(&other.request.origin) else {
+                        return ConformanceResult::FixtureInvalid;
+                    };
+                    let Ok(other_body) = openapi_body(other) else {
+                        return ConformanceResult::FixtureInvalid;
+                    };
+                    let OpenApiParseOutcome::Complete(other_document) =
+                        parse_openapi_document(&other_body, &other_origin)
+                    else {
+                        return ConformanceResult::FixtureInvalid;
+                    };
+                    document.semantic_digest() == other_document.semantic_digest()
+                } else {
+                    let repeated = parse_openapi_document(&body, &origin);
+                    matches!(
+                        repeated,
+                        OpenApiParseOutcome::Complete(ref repeated_document)
+                            if document.semantic_digest() == repeated_document.semantic_digest()
+                    )
+                }
+            },
+            (
+                OpenApiExpectation::Swagger20MetadataOnly,
+                OpenApiParseOutcome::Swagger20MetadataOnly,
+            ) => return ConformanceResult::UnsupportedByCurrentRuntime,
+            (OpenApiExpectation::UnsupportedVersion, OpenApiParseOutcome::UnsupportedVersion)
+            | (OpenApiExpectation::Malformed, OpenApiParseOutcome::Malformed)
+            | (OpenApiExpectation::LimitExceeded, OpenApiParseOutcome::LimitExceeded)
+            | (OpenApiExpectation::TooLarge, OpenApiParseOutcome::TooLarge) => true,
+            _ => false,
+        };
+        if matches {
+            terminal_result(case)
+        } else {
+            ConformanceResult::SemanticMismatch(SemanticMismatch::OpenApiReview)
+        }
+    }
+
+    fn authorization_policy_source(fixture: &AuthorizationFixture) -> String {
+        let strings = |values: &[String]| {
+            values
+                .iter()
+                .map(|value| toml::Value::String(value.clone()).to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        format!(
+            "schema = \"security.authorization-review-policy/v1\"\n\
+             resource = {}\n\
+             resource_handle = {}\n\
+             expectation = {}\n\
+             method = \"GET\"\n\
+             [comparison]\n\
+             selected_paths = [{}]\n\
+             ignored_paths = [{}]\n\
+             unordered_array_paths = [{}]\n\
+             max_diff_paths = {}\n",
+            toml::Value::String(fixture.resource.clone()),
+            toml::Value::String(fixture.resource_handle.clone()),
+            toml::Value::String(fixture.expectation.clone()),
+            strings(&fixture.comparison.selected_paths),
+            strings(&fixture.comparison.ignored_paths),
+            strings(&fixture.comparison.unordered_array_paths),
+            fixture.comparison.max_diff_paths,
+        )
+    }
+
+    fn authorization_view(
+        policy: &crate::authorization_review::AuthorizationReviewPolicy,
+        role: crate::authorization_review::AuthorizationViewRole,
+        fixture: &AuthorizationViewFixture,
+        receipt_byte: u8,
+    ) -> Result<crate::authorization_review::AuthorizationReviewView, ()> {
+        use crate::authorization_review::{
+            AuthorizationReviewBodyState, AuthorizationReviewMediaClass, AuthorizationReviewView,
+            AuthorizationViewReceiptId,
+        };
+
+        let state = match fixture.state {
+            AuthorizationBodyState::CompleteJson => AuthorizationReviewBodyState::CompleteJson,
+            AuthorizationBodyState::UnsupportedMedia => {
+                AuthorizationReviewBodyState::UnsupportedMedia
+            },
+            AuthorizationBodyState::Html => AuthorizationReviewBodyState::Html,
+            AuthorizationBodyState::Redirect => AuthorizationReviewBodyState::Redirect,
+            AuthorizationBodyState::RateLimited => AuthorizationReviewBodyState::RateLimited,
+            AuthorizationBodyState::ServerError => AuthorizationReviewBodyState::ServerError,
+            AuthorizationBodyState::MalformedJson => AuthorizationReviewBodyState::MalformedJson,
+            AuthorizationBodyState::Truncated => AuthorizationReviewBodyState::Truncated,
+            AuthorizationBodyState::Incomplete => AuthorizationReviewBodyState::Incomplete,
+            AuthorizationBodyState::BudgetExhausted => {
+                AuthorizationReviewBodyState::BudgetExhausted
+            },
+            AuthorizationBodyState::Cancelled => AuthorizationReviewBodyState::Cancelled,
+            AuthorizationBodyState::DefensiveInterference => {
+                AuthorizationReviewBodyState::DefensiveInterference
+            },
+        };
+        let receipt = AuthorizationViewReceiptId::from_digest([receipt_byte; 32]);
+        if state != AuthorizationReviewBodyState::CompleteJson {
+            let media_class = match fixture.state {
+                AuthorizationBodyState::Html => AuthorizationReviewMediaClass::Html,
+                AuthorizationBodyState::UnsupportedMedia => AuthorizationReviewMediaClass::Other,
+                AuthorizationBodyState::BudgetExhausted | AuthorizationBodyState::Cancelled => {
+                    AuthorizationReviewMediaClass::Missing
+                },
+                _ if json_compatible_media_type(&fixture.media_type) => {
+                    AuthorizationReviewMediaClass::JsonCompatible
+                },
+                _ => AuthorizationReviewMediaClass::Other,
+            };
+            let status = match fixture.state {
+                AuthorizationBodyState::BudgetExhausted | AuthorizationBodyState::Cancelled => None,
+                _ => Some(fixture.status),
+            };
+            return AuthorizationReviewView::terminal(
+                policy,
+                role,
+                status,
+                media_class,
+                state,
+                receipt,
+            )
+            .map_err(|_| ());
+        }
+        if fixture.completion != CompletionState::Complete
+            || fixture.truncated
+            || !json_compatible_media_type(&fixture.media_type)
+        {
+            return Err(());
+        }
+        let body = fixture_body(Some(&fixture.body_file), None)?;
+        let snapshot = serde_json::from_slice(&body).map_err(|_| ())?;
+        AuthorizationReviewView::capture_json(policy, role, fixture.status, &snapshot, receipt)
+            .map_err(|_| ())
+    }
+
+    fn run_authorization(case: &FixtureCase) -> ConformanceResult {
+        use crate::authorization_review::{
+            AuthorizationDifferentialResult, AuthorizationPrincipalPair,
+            AuthorizationReviewOutcome, AuthorizationReviewPolicy, AuthorizationViewRole,
+            PeerAuthorizationPrincipal, PrimaryAuthorizationPrincipal,
+        };
+
+        let Some(fixture) = case.authorization.as_ref() else {
+            return ConformanceResult::FixtureInvalid;
+        };
+        if fixture.expectation != "primary-only" || fixture.method != "GET" {
+            return ConformanceResult::FixtureInvalid;
+        }
+        let Ok(origin) = Url::parse(&case.request.origin) else {
+            return ConformanceResult::FixtureInvalid;
+        };
+        let source = authorization_policy_source(fixture);
+        let Ok(policy) = AuthorizationReviewPolicy::parse_toml(&origin, source.as_bytes()) else {
+            return ConformanceResult::FixtureInvalid;
+        };
+        let Ok(primary) = PrimaryAuthorizationPrincipal::new("Fixture primary context") else {
+            return ConformanceResult::FixtureInvalid;
+        };
+        let Ok(peer) = PeerAuthorizationPrincipal::new("Fixture peer context") else {
+            return ConformanceResult::FixtureInvalid;
+        };
+        let Ok(pair) = AuthorizationPrincipalPair::new(primary, peer) else {
+            return ConformanceResult::FixtureInvalid;
+        };
+        let Ok(primary_candidate) = authorization_view(
+            &policy,
+            AuthorizationViewRole::PrimaryCandidate,
+            &fixture.primary_candidate,
+            1,
+        ) else {
+            return ConformanceResult::FixtureInvalid;
+        };
+        let Ok(peer_candidate) = authorization_view(
+            &policy,
+            AuthorizationViewRole::PeerCandidate,
+            &fixture.peer_candidate,
+            2,
+        ) else {
+            return ConformanceResult::FixtureInvalid;
+        };
+        let Ok(primary_replay) = authorization_view(
+            &policy,
+            AuthorizationViewRole::PrimaryReplay,
+            &fixture.primary_replay,
+            3,
+        ) else {
+            return ConformanceResult::FixtureInvalid;
+        };
+        let Ok(peer_replay) = authorization_view(
+            &policy,
+            AuthorizationViewRole::PeerReplay,
+            &fixture.peer_replay,
+            4,
+        ) else {
+            return ConformanceResult::FixtureInvalid;
+        };
+        let Ok(result) = AuthorizationDifferentialResult::compare(
+            &policy,
+            pair.into_proof(),
+            [
+                &primary_candidate,
+                &peer_candidate,
+                &primary_replay,
+                &peer_replay,
+            ],
+        ) else {
+            return ConformanceResult::FixtureInvalid;
+        };
+        let expected = match case.expected.authorization_outcome {
+            Some(AuthorizationOutcomeExpectation::PrimaryBaselineInvalid) => {
+                AuthorizationReviewOutcome::PrimaryBaselineInvalid
+            },
+            Some(AuthorizationOutcomeExpectation::PrimaryUnstable) => {
+                AuthorizationReviewOutcome::PrimaryUnstable
+            },
+            Some(AuthorizationOutcomeExpectation::PeerDenied) => {
+                AuthorizationReviewOutcome::PeerDenied
+            },
+            Some(AuthorizationOutcomeExpectation::PeerUnstable) => {
+                AuthorizationReviewOutcome::PeerUnstable
+            },
+            Some(AuthorizationOutcomeExpectation::CrossStatusDifferent) => {
+                AuthorizationReviewOutcome::CrossStatusDifferent
+            },
+            Some(AuthorizationOutcomeExpectation::CrossFieldsEquivalentOnly) => {
+                AuthorizationReviewOutcome::CrossFieldsEquivalentOnly
+            },
+            Some(AuthorizationOutcomeExpectation::CrossResourcesDifferent) => {
+                AuthorizationReviewOutcome::CrossResourcesDifferent
+            },
+            Some(AuthorizationOutcomeExpectation::StableCrossPrincipalEquivalence) => {
+                AuthorizationReviewOutcome::StableCrossPrincipalEquivalence
+            },
+            Some(AuthorizationOutcomeExpectation::DefensiveInterference) => {
+                AuthorizationReviewOutcome::DefensiveInterference
+            },
+            Some(AuthorizationOutcomeExpectation::RateLimited) => {
+                AuthorizationReviewOutcome::RateLimited
+            },
+            Some(AuthorizationOutcomeExpectation::RedirectObserved) => {
+                AuthorizationReviewOutcome::RedirectObserved
+            },
+            Some(AuthorizationOutcomeExpectation::UnsupportedMedia) => {
+                AuthorizationReviewOutcome::UnsupportedMedia
+            },
+            Some(AuthorizationOutcomeExpectation::MalformedJson) => {
+                AuthorizationReviewOutcome::MalformedJson
+            },
+            Some(AuthorizationOutcomeExpectation::GenericJsonErrorEnvelope) => {
+                AuthorizationReviewOutcome::GenericJsonErrorEnvelope
+            },
+            Some(AuthorizationOutcomeExpectation::SelectedPathMissing) => {
+                AuthorizationReviewOutcome::SelectedPathMissing
+            },
+            Some(AuthorizationOutcomeExpectation::Truncated) => {
+                AuthorizationReviewOutcome::Truncated
+            },
+            Some(AuthorizationOutcomeExpectation::Incomplete) => {
+                AuthorizationReviewOutcome::Incomplete
+            },
+            Some(AuthorizationOutcomeExpectation::BudgetExhausted) => {
+                AuthorizationReviewOutcome::BudgetExhausted
+            },
+            Some(AuthorizationOutcomeExpectation::Cancelled) => {
+                AuthorizationReviewOutcome::Cancelled
+            },
+            None => return ConformanceResult::FixtureInvalid,
+        };
+        if result.outcome() != expected {
+            return ConformanceResult::SemanticMismatch(SemanticMismatch::AuthorizationReview);
+        }
+        let positive = expected == AuthorizationReviewOutcome::StableCrossPrincipalEquivalence;
+        let claim_matches = if positive {
+            case.expected.assessment_capability.as_deref()
+                == Some("authorization.resource-cross-principal-equivalence")
+                && case.expected.maximum_disposition == Some(DispositionExpectation::NeedsReview)
+                && case.expected.maximum_authority
+                    == Some(MaximumAuthorityExpectation::KnowledgeOnly)
+        } else {
+            case.expected.assessment_capability.is_none()
+                && case.expected.maximum_disposition.is_none()
+                && case.expected.maximum_authority.is_none()
+        };
+        if !claim_matches {
+            return ConformanceResult::SemanticMismatch(SemanticMismatch::AuthorizationReview);
+        }
+        terminal_result(case)
+    }
+
+    fn terminal_result(case: &FixtureCase) -> ConformanceResult {
+        if case.support == SupportLevel::MetadataOnly {
+            return ConformanceResult::UnsupportedByCurrentRuntime;
+        }
+        match case.expected.incompleteness {
+            Some(
+                IncompletenessExpectation::UnsupportedByRuntime
+                | IncompletenessExpectation::FutureMetadataOnly,
+            ) => ConformanceResult::UnsupportedByCurrentRuntime,
+            Some(
+                IncompletenessExpectation::BodyTruncated
+                | IncompletenessExpectation::ResponseIncomplete,
+            ) => ConformanceResult::Incomplete,
+            None if case.response.completion == CompletionState::Incomplete
+                || case.response.truncated =>
+            {
+                ConformanceResult::Incomplete
+            },
+            None => ConformanceResult::Pass,
+        }
+    }
+
+    fn expected_result(case: &FixtureCase) -> ConformanceResult {
+        #[cfg(not(feature = "normalization-resilience"))]
+        if case.expected.normalization_outcome.is_some() {
+            return ConformanceResult::UnsupportedByCurrentRuntime;
+        }
+        #[cfg(not(feature = "graphql-review"))]
+        if case.category == CaseCategory::ApiGraphql {
+            return ConformanceResult::UnsupportedByCurrentRuntime;
+        }
+        terminal_result(case)
+    }
+
+    fn dispatch(case: &FixtureCase, cases: &BTreeMap<&str, &FixtureCase>) -> ConformanceResult {
+        match case.category {
+            CaseCategory::HttpMedia => run_http_media(case),
+            CaseCategory::Defense => run_defense(case, cases),
+            CaseCategory::Sql => run_sql(case),
+            CaseCategory::Ssti => run_ssti(case),
+            CaseCategory::Xss => run_xss(case),
+            CaseCategory::Normalization => run_normalization(case),
+            CaseCategory::ApiGraphql => run_graphql(case),
+            CaseCategory::ApiOpenapi => run_openapi(case, cases),
+            CaseCategory::Authorization => run_authorization(case),
+        }
+    }
+
+    #[test]
+    fn versioned_scanner_corpus_dispatches_through_current_production_semantics() {
+        let cases = load_cases().expect("the checked scanner corpus must be structurally valid");
+        assert_eq!(cases.len(), 103, "V1 corpus inventory changed unexpectedly");
+        let by_id = cases
+            .iter()
+            .map(|case| (case.id.as_str(), case))
+            .collect::<BTreeMap<_, _>>();
+        let mut categories = BTreeSet::new();
+        let mut outcomes = BTreeMap::<&'static str, usize>::new();
+
+        for case in &cases {
+            categories.insert(case.category);
+            let actual = dispatch(case, &by_id);
+            let expected = expected_result(case);
+            let outcome = match actual {
+                ConformanceResult::Pass => "pass",
+                ConformanceResult::SemanticMismatch(_) => "semantic-mismatch",
+                ConformanceResult::UnsupportedByCurrentRuntime => "unsupported",
+                ConformanceResult::FixtureInvalid => "fixture-invalid",
+                ConformanceResult::Incomplete => "incomplete",
+            };
+            *outcomes.entry(outcome).or_default() += 1;
+            assert_eq!(actual, expected, "corpus case `{}` diverged", case.id);
+        }
+
+        assert_eq!(
+            categories,
+            BTreeSet::from([
+                CaseCategory::HttpMedia,
+                CaseCategory::Defense,
+                CaseCategory::Sql,
+                CaseCategory::Ssti,
+                CaseCategory::Xss,
+                CaseCategory::ApiGraphql,
+                CaseCategory::ApiOpenapi,
+                CaseCategory::Authorization,
+            ])
+        );
+        assert!(outcomes.get("pass").copied().unwrap_or_default() > 0);
+        assert!(outcomes.get("unsupported").copied().unwrap_or_default() > 0);
+        assert!(outcomes.get("incomplete").copied().unwrap_or_default() > 0);
+        assert_eq!(outcomes.get("semantic-mismatch"), None);
+        assert_eq!(outcomes.get("fixture-invalid"), None);
+        assert!(cases.iter().filter(|case| case.tags.is_empty()).count() < cases.len());
+    }
+}

@@ -121,6 +121,35 @@ class ScopeTests(unittest.TestCase):
             gate.in_scope("crates/venom-scanner/tests/performance_tests.rs")
         )
 
+    def test_termivar_paths_reuse_the_accepted_coverage_identity(self) -> None:
+        self.assertEqual(
+            gate._coverage_identity_path("crates/termivar-core/src/lib.rs"),
+            "crates/venom-core/src/lib.rs",
+        )
+        self.assertEqual(
+            gate._current_source_path("crates/venom-scanner/src/lib.rs"),
+            "crates/termivar-scanner/src/lib.rs",
+        )
+        self.assertEqual(
+            gate._coverage_identity_path("xtask/src/main.rs"),
+            "xtask/src/main.rs",
+        )
+
+    def test_termivar_cobertura_path_is_recorded_under_the_stable_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "crates" / "termivar-core" / "src" / "lib.rs"
+            source.parent.mkdir(parents=True)
+            source.write_text("pub fn current() {}\n", encoding="utf-8")
+            parsed = gate.parse_cobertura(
+                cobertura(
+                    [("crates/termivar-core/src/lib.rs", [(1, 1)])]
+                ).encode("utf-8"),
+                root,
+            )
+
+        self.assertEqual(parsed, {"crates/venom-core/src/lib.rs": {1: 1}})
+
     def test_workspace_outputs_cannot_escape(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -1264,6 +1293,91 @@ class CommandIntegrationTests(unittest.TestCase):
             self.assertEqual(missing, [])
             self.assertEqual(patch["coverable_lines"], 1)
             self.assertEqual(patch["covered_lines"], 1)
+
+    def test_package_directory_rebrand_measures_only_real_source_edits(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self._git(root, "init", "-q")
+            self._git(root, "config", "user.email", "coverage@example.invalid")
+            self._git(root, "config", "user.name", "Coverage Test")
+            old_source = root / "crates" / "venom-core" / "src"
+            old_source.mkdir(parents=True)
+            (old_source / "lib.rs").write_text(
+                "pub fn first() {}\npub fn branded() {}\npub fn last() {}\n",
+                encoding="utf-8",
+            )
+            (old_source / "unchanged.rs").write_text(
+                "pub fn unchanged() {}\n", encoding="utf-8"
+            )
+            self._git(root, "add", "crates")
+            self._git(root, "commit", "-q", "-m", "Venom source identities")
+            base = self._git(root, "rev-parse", "HEAD")
+
+            current_crate = root / "crates" / "termivar-core"
+            (root / "crates" / "venom-core").rename(current_crate)
+            (current_crate / "src" / "lib.rs").write_text(
+                "pub fn first() {}\npub fn termivar() {}\npub fn last() {}\n",
+                encoding="utf-8",
+            )
+            self._git(root, "add", "-A", "--", "crates")
+            self._git(root, "commit", "-q", "-m", "rename package and one symbol")
+            head = self._git(root, "rev-parse", "HEAD")
+
+            names, line_map = gate._changed_sources(root, base, head)
+            self.assertEqual(
+                names,
+                [
+                    "crates/venom-core/src/lib.rs",
+                    "crates/venom-core/src/unchanged.rs",
+                ],
+            )
+            self.assertEqual(
+                line_map,
+                {
+                    "crates/venom-core/src/lib.rs": {2},
+                    "crates/venom-core/src/unchanged.rs": set(),
+                },
+            )
+            patch, missing = gate._patch_measurement(
+                {
+                    "crates/venom-core/src/lib.rs": {1: 1, 2: 1, 3: 1},
+                    "crates/venom-core/src/unchanged.rs": {1: 1},
+                },
+                names,
+                line_map,
+            )
+            self.assertEqual(missing, [])
+            self.assertEqual(patch["coverable_lines"], 1)
+            self.assertEqual(patch["covered_lines"], 1)
+
+    def test_package_directory_rebrand_rejects_duplicate_identity_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self._git(root, "init", "-q")
+            self._git(root, "config", "user.email", "coverage@example.invalid")
+            self._git(root, "config", "user.name", "Coverage Test")
+            old_file = root / "crates" / "venom-core" / "src" / "lib.rs"
+            old_file.parent.mkdir(parents=True)
+            old_file.write_text("pub fn one() {}\n", encoding="utf-8")
+            self._git(root, "add", "crates")
+            self._git(root, "commit", "-q", "-m", "stable source identity")
+            base = self._git(root, "rev-parse", "HEAD")
+
+            current_file = root / "crates" / "termivar-core" / "src" / "lib.rs"
+            current_file.parent.mkdir(parents=True)
+            current_file.write_text("pub fn two() {}\n", encoding="utf-8")
+            self._git(root, "add", "crates")
+            self._git(root, "commit", "-q", "-m", "duplicate current source")
+            head = self._git(root, "rev-parse", "HEAD")
+
+            with self.assertRaisesRegex(
+                gate.GateError, "both stable and current source paths exist"
+            ):
+                gate._changed_sources(root, base, head)
+            with self.assertRaisesRegex(
+                gate.GateError, "multiple tracked source paths map"
+            ):
+                gate._tracked_sources_at(root, head)
 
     def test_candidate_acceptance_freezes_every_non_truth_path_since_measurement(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

@@ -14,7 +14,7 @@ pub use ssti::{SstiMarkerFixture, SSTI_MARKER};
 pub use xss::{XssMarkerFixture, XSS_MARKER};
 pub use xxe::{XxeMarkerFixture, XXE_MARKER};
 
-use venom_scanner::{
+use termivar_scanner::{
     EvidenceKind, EvidenceValue, KnowledgePredicate, PluginContext, PluginError, PluginObservation,
 };
 

@@ -6,12 +6,12 @@
 
 use std::error::Error;
 
-use url::Url;
-use venom_scanner::{
+use termivar_scanner::{
     ApiSurfaceKind, ApiVisibilityComparison, ApiVisibilityDimension, ApiVisibilityPairKind,
     ApiVisibilityResult, ApiVisibilityReviewQuery, ConfidenceScore, EntityId,
     StandardWebDecisionRuntime,
 };
+use url::Url;
 
 fn main() -> Result<(), Box<dyn Error>> {
     let target = Url::parse("https://example.test/api/accounts/42")?;

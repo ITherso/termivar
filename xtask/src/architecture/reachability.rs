@@ -402,7 +402,7 @@ mod tests {
     fn allowlist_is_empty_by_contract() {
         // The workspace is fully reachable today; the exception ledger stays empty.
         assert_empty(SOURCE_REACHABILITY_ALLOWLIST);
-        assert!(allowed_sources_for("venom-scanner").is_empty());
+        assert!(allowed_sources_for("termivar-scanner").is_empty());
     }
 
     #[test]

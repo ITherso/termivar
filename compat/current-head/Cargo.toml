@@ -22,5 +22,5 @@ broken_intra_doc_links = "deny"
 [workspace.dependencies]
 async-trait = "0.1"
 url = "2.5"
-venom-core = { path = "../../crates/venom-core", default-features = false }
-venom-scanner = { path = "../../crates/venom-scanner", default-features = false }
+termivar-core = { path = "../../crates/termivar-core", default-features = false }
+termivar-scanner = { path = "../../crates/termivar-scanner", default-features = false }

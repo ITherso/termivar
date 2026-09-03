@@ -1806,6 +1806,120 @@ dependencies = [
 ]
 
 [[package]]
+name = "termivar-api"
+version = "0.10.0-alpha.1"
+dependencies = [
+ "axum",
+ "tokio",
+]
+
+[[package]]
+name = "termivar-artifact"
+version = "0.10.0-alpha.1"
+dependencies = [
+ "hex",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror 1.0.69",
+ "toml",
+]
+
+[[package]]
+name = "termivar-cli"
+version = "0.10.0-alpha.1"
+dependencies = [
+ "clap",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "termivar-api",
+ "termivar-artifact",
+ "termivar-core",
+ "termivar-proxy",
+ "termivar-scanner",
+ "tokio",
+ "url",
+]
+
+[[package]]
+name = "termivar-core"
+version = "0.10.0-alpha.1"
+dependencies = [
+ "chrono",
+ "hex",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "thiserror 1.0.69",
+ "toml",
+ "uuid",
+]
+
+[[package]]
+name = "termivar-examples"
+version = "0.0.0"
+dependencies = [
+ "async-trait",
+ "clap",
+ "termivar-scanner",
+ "tokio",
+ "url",
+]
+
+[[package]]
+name = "termivar-exploit"
+version = "0.10.0-alpha.1"
+dependencies = [
+ "hex",
+ "semver",
+ "serde",
+ "serde_json",
+ "sha2",
+ "termivar-core",
+ "thiserror 1.0.69",
+ "toml",
+]
+
+[[package]]
+name = "termivar-proxy"
+version = "0.10.0-alpha.1"
+dependencies = [
+ "tokio",
+]
+
+[[package]]
+name = "termivar-scanner"
+version = "0.10.0-alpha.1"
+dependencies = [
+ "async-trait",
+ "base64",
+ "chrono",
+ "clap",
+ "criterion",
+ "dashmap",
+ "futures",
+ "html5ever",
+ "markup5ever_rcdom",
+ "mlua",
+ "regex",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "termivar-core",
+ "thiserror 1.0.69",
+ "tokio",
+ "tokio-util",
+ "toml",
+ "url",
+ "uuid",
+]
+
+[[package]]
 name = "thiserror"
 version = "1.0.69"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2094,120 +2208,6 @@ dependencies = [
  "js-sys",
  "serde_core",
  "wasm-bindgen",
-]
-
-[[package]]
-name = "venom-api"
-version = "0.10.0-alpha.1"
-dependencies = [
- "axum",
- "tokio",
-]
-
-[[package]]
-name = "venom-artifact"
-version = "0.10.0-alpha.1"
-dependencies = [
- "hex",
- "serde",
- "serde_json",
- "sha2",
- "thiserror 1.0.69",
- "toml",
-]
-
-[[package]]
-name = "venom-cli"
-version = "0.10.0-alpha.1"
-dependencies = [
- "clap",
- "reqwest",
- "serde",
- "serde_json",
- "tempfile",
- "tokio",
- "url",
- "venom-api",
- "venom-artifact",
- "venom-core",
- "venom-proxy",
- "venom-scanner",
-]
-
-[[package]]
-name = "venom-core"
-version = "0.10.0-alpha.1"
-dependencies = [
- "chrono",
- "hex",
- "serde",
- "serde_json",
- "sha2",
- "tempfile",
- "thiserror 1.0.69",
- "toml",
- "uuid",
-]
-
-[[package]]
-name = "venom-examples"
-version = "0.0.0"
-dependencies = [
- "async-trait",
- "clap",
- "tokio",
- "url",
- "venom-scanner",
-]
-
-[[package]]
-name = "venom-exploit"
-version = "0.10.0-alpha.1"
-dependencies = [
- "hex",
- "semver",
- "serde",
- "serde_json",
- "sha2",
- "thiserror 1.0.69",
- "toml",
- "venom-core",
-]
-
-[[package]]
-name = "venom-proxy"
-version = "0.10.0-alpha.1"
-dependencies = [
- "tokio",
-]
-
-[[package]]
-name = "venom-scanner"
-version = "0.10.0-alpha.1"
-dependencies = [
- "async-trait",
- "base64",
- "chrono",
- "clap",
- "criterion",
- "dashmap",
- "futures",
- "html5ever",
- "markup5ever_rcdom",
- "mlua",
- "regex",
- "reqwest",
- "serde",
- "serde_json",
- "sha2",
- "tempfile",
- "thiserror 1.0.69",
- "tokio",
- "tokio-util",
- "toml",
- "url",
- "uuid",
- "venom-core",
 ]
 
 [[package]]
@@ -2541,10 +2541,10 @@ dependencies = [
  "sha2",
  "syn",
  "tempfile",
+ "termivar-artifact",
+ "termivar-exploit",
  "toml",
  "url",
- "venom-artifact",
- "venom-exploit",
 ]
 
 [[package]]

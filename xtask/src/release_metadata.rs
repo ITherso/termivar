@@ -9,11 +9,11 @@ use cargo_metadata::MetadataCommand;
 use std::{error::Error, fs, io, path::Path};
 
 const VERSIONED_PACKAGES: &[&str] = &[
-    "venom-api",
-    "venom-cli",
-    "venom-core",
-    "venom-proxy",
-    "venom-scanner",
+    "termivar-api",
+    "termivar-cli",
+    "termivar-core",
+    "termivar-proxy",
+    "termivar-scanner",
 ];
 
 pub(crate) fn check(workspace_root: &Path, version: &str) -> Result<(), Box<dyn Error>> {

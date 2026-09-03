@@ -52,6 +52,19 @@ INITIAL_CALIBRATION_OMISSIONS = [
     "crates/venom-scanner/src/semantic.rs",
     "crates/venom-scanner/src/web_runtime/api_visibility/tests.rs",
 ]
+# Coverage evidence predates the alpha package rename. Keep its accepted
+# source identities stable while resolving the one current implementation at
+# its Termivar paths. This deliberately neither broadens scope nor changes the
+# reviewed omission inventory.
+CURRENT_TO_STABLE_SOURCE_PREFIXES = {
+    "crates/termivar-api/": "crates/venom-api/",
+    "crates/termivar-artifact/": "crates/venom-artifact/",
+    "crates/termivar-cli/": "crates/venom-cli/",
+    "crates/termivar-core/": "crates/venom-core/",
+    "crates/termivar-exploit/": "crates/venom-exploit/",
+    "crates/termivar-proxy/": "crates/venom-proxy/",
+    "crates/termivar-scanner/": "crates/venom-scanner/",
+}
 DEFAULT_BASELINE_POINTER = "docs/reports/coverage/accepted-baseline.txt"
 DEFAULT_ARTIFACT_NAME = "coverage-evidence"
 CANONICAL_REPOSITORY = "ITherso/venom"
@@ -114,6 +127,24 @@ def in_scope(path: str) -> bool:
     if len(parts) >= 3 and parts[0:2] == ["xtask", "src"]:
         return True
     return len(parts) >= 4 and parts[0] == "crates" and parts[2] == "src"
+
+
+def _coverage_identity_path(path: str) -> str:
+    """Map current package paths onto their accepted coverage identities."""
+
+    for current, stable in CURRENT_TO_STABLE_SOURCE_PREFIXES.items():
+        if path.startswith(current):
+            return stable + path[len(current) :]
+    return path
+
+
+def _current_source_path(path: str) -> str:
+    """Resolve a stable coverage identity to the current package path."""
+
+    for current, stable in CURRENT_TO_STABLE_SOURCE_PREFIXES.items():
+        if path.startswith(stable):
+            return current + path[len(stable) :]
+    return path
 
 
 def _workspace_path(root: Path, value: str, purpose: str) -> Path:
@@ -201,9 +232,10 @@ def parse_cobertura(
         raw_filename = class_element.get("filename")
         if raw_filename is None:
             raise GateError("Cobertura class is missing its filename")
-        filename = _normalise_report_path(workspace_root, raw_filename)
-        if not in_scope(filename):
+        report_path = _normalise_report_path(workspace_root, raw_filename)
+        if not in_scope(report_path):
             continue
+        filename = _coverage_identity_path(report_path)
         if filename in seen_files:
             raise GateError(f"Cobertura repeats an in-scope class path: {filename}")
         seen_files.add(filename)
@@ -375,7 +407,8 @@ def _tracked_sources_at(root: Path, commit: str) -> list[str]:
         binary=True,
     )
     assert isinstance(output, bytes)
-    paths = []
+    paths: list[str] = []
+    source_by_identity: dict[str, str] = {}
     for raw in output.split(b"\0"):
         if not raw:
             continue
@@ -386,7 +419,15 @@ def _tracked_sources_at(root: Path, commit: str) -> list[str]:
         if not _is_safe_relative_path(value):
             raise GateError(f"Git returned an unsafe tracked path: {value!r}")
         if in_scope(value):
-            paths.append(value)
+            identity = _coverage_identity_path(value)
+            previous = source_by_identity.get(identity)
+            if previous is not None:
+                raise GateError(
+                    "multiple tracked source paths map to one coverage identity: "
+                    f"{previous}, {value} -> {identity}"
+                )
+            source_by_identity[identity] = value
+            paths.append(identity)
     return sorted(paths)
 
 
@@ -572,6 +613,9 @@ def _reject_instrumentation_exclusions(
 
 def _changed_sources(root: Path, base: str, head: str) -> tuple[list[str], dict[str, set[int]]]:
     range_spec = f"{base}...{head}"
+    comparison_base = str(_git(root, ["merge-base", base, head])).strip().lower()
+    if _FULL_SHA.fullmatch(comparison_base) is None:
+        raise GateError("coverage diff did not resolve to one full merge-base commit SHA")
     raw_names = _git(
         root,
         [
@@ -631,18 +675,94 @@ def _changed_sources(root: Path, base: str, head: str) -> tuple[list[str], dict[
     if unexpected:
         raise GateError(f"diff hunks were not present in the changed-file list: {unexpected}")
     for name in names:
-        head_blob = _git_blob(root, head, name)
+        head_blob = _git_blob_exact(root, head, name)
         if head_blob is None:
             raise GateError(f"changed in-scope source is absent from the head commit: {name}")
-        if _git_blob(root, base, name) != head_blob and name not in hunk_files:
+        identity = _coverage_identity_path(name)
+        base_blob = _git_blob_exact(root, comparison_base, name)
+        if identity != name:
+            identity_blob = _git_blob_exact(root, comparison_base, identity)
+            if identity_blob is not None:
+                base_blob = identity_blob
+        if base_blob != head_blob and name not in hunk_files:
             raise GateError(
                 f"Git reported a content change for {name} without a forced-text diff hunk"
             )
         line_map.setdefault(name, set())
-    return sorted(name_set), dict(sorted(line_map.items()))
+
+    # This migration deliberately keeps the accepted coverage identities under
+    # their pre-Termivar package paths.  Git's forced `--no-renames` diff is a
+    # useful fail-closed default for ordinary files, but it would count every
+    # line of an identity-preserving package-directory move as newly added.
+    # Re-diff only the explicit, reviewed old/current path pair so a rename plus
+    # a real edit accounts for the edited new-side lines, while an unchanged
+    # move contributes no synthetic patch lines.
+    for name in names:
+        identity = _coverage_identity_path(name)
+        if identity == name:
+            continue
+        base_blob = _git_blob_exact(root, comparison_base, identity)
+        if base_blob is None:
+            # The current path already existed at the comparison base, or this
+            # is a genuinely new source.  The ordinary forced-text diff above
+            # is authoritative in either case.
+            continue
+        if _git_blob_exact(root, head, identity) is not None:
+            raise GateError(
+                "both stable and current source paths exist for one coverage identity: "
+                f"{identity}, {name}"
+            )
+        head_blob = _git_blob_exact(root, head, name)
+        if head_blob is None:
+            raise GateError(f"mapped current source is absent from the head commit: {name}")
+        mapped_diff = _git(
+            root,
+            [
+                "-c",
+                "core.quotePath=false",
+                "diff",
+                "--find-renames=1%",
+                "--unified=0",
+                "--no-ext-diff",
+                "--no-color",
+                "--no-textconv",
+                "--text",
+                comparison_base,
+                head,
+                "--",
+                identity,
+                name,
+            ],
+        )
+        assert isinstance(mapped_diff, str)
+        mapped_lines, mapped_hunks = _parse_unified_diff_details(mapped_diff)
+        unexpected_mapped = sorted(set(mapped_lines) - {name})
+        if unexpected_mapped:
+            raise GateError(
+                "mapped coverage rename emitted unexpected new-side paths: "
+                f"{unexpected_mapped}"
+            )
+        if base_blob != head_blob and name not in mapped_hunks:
+            raise GateError(
+                "mapped coverage source changed without a forced-text diff hunk: "
+                f"{identity} -> {name}"
+            )
+        line_map[name] = mapped_lines.get(name, set())
+    identity_names = {_coverage_identity_path(name) for name in name_set}
+    identity_line_map: dict[str, set[int]] = {}
+    for path, lines in line_map.items():
+        identity = _coverage_identity_path(path)
+        if identity in identity_line_map:
+            raise GateError(
+                f"multiple current source paths map to one coverage identity: {identity}"
+            )
+        identity_line_map[identity] = lines
+    return sorted(identity_names), dict(sorted(identity_line_map.items()))
 
 
-def _git_blob(root: Path, commit: str, path: str) -> bytes | None:
+def _git_blob_exact(root: Path, commit: str, path: str) -> bytes | None:
+    """Read one exact repository path without applying rename aliases."""
+
     if not _is_safe_relative_path(path):
         raise GateError(f"baseline blob path is unsafe: {path!r}")
     spec = f"{commit}:{path}"
@@ -661,6 +781,20 @@ def _git_blob(root: Path, commit: str, path: str) -> bytes | None:
     output = _git(root, ["show", spec], binary=True)
     assert isinstance(output, bytes)
     return output
+
+
+def _git_blob(root: Path, commit: str, path: str) -> bytes | None:
+    if not _is_safe_relative_path(path):
+        raise GateError(f"baseline blob path is unsafe: {path!r}")
+    candidates = [path]
+    current = _current_source_path(path)
+    if current != path:
+        candidates.append(current)
+    for candidate in candidates:
+        output = _git_blob_exact(root, commit, candidate)
+        if output is not None:
+            return output
+    return None
 
 
 def _verify_coverage_cargo_config(root: Path, commit: str) -> None:

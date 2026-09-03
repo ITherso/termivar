@@ -6,7 +6,7 @@ This directory contains repository-owned metadata for the Preview
 descriptions and exact/wildcard byte patterns. They contain no executable
 content, target paths, credentials, exploit payloads, or verdict policy.
 
-The initial `lab/venom-canary` pack is a harmless deterministic fixture. A
+The initial `lab/termivar-canary` pack is a harmless deterministic fixture. A
 match is an observation: it is not a malware verdict, vulnerability finding,
 severity assignment, or authorization to execute the matched bytes.
 

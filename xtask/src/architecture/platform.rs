@@ -127,7 +127,7 @@ const REQUIRED_SCANNER_DEPENDENCIES: &[&str] = &[
     "sha2",
     "thiserror",
     "url",
-    "venom-core",
+    "termivar-core",
 ];
 
 const REQUIRED_CORE_DEPENDENCIES: &[&str] =
@@ -140,12 +140,16 @@ const REQUIRED_CLI_DEPENDENCIES: &[&str] = &[
     "serde_json",
     "tokio",
     "url",
-    "venom-core",
-    "venom-scanner",
+    "termivar-core",
+    "termivar-scanner",
 ];
 
-const OPTIONAL_CLI_DEPENDENCIES: &[&str] =
-    &["reqwest", "venom-api", "venom-artifact", "venom-proxy"];
+const OPTIONAL_CLI_DEPENDENCIES: &[&str] = &[
+    "reqwest",
+    "termivar-api",
+    "termivar-artifact",
+    "termivar-proxy",
+];
 const REQUIRED_API_DEPENDENCIES: &[&str] = &["axum"];
 const REQUIRED_PROXY_DEPENDENCIES: &[&str] = &["tokio"];
 
@@ -206,25 +210,26 @@ const EXACT_MODULE_GATES: &[(&str, &str)] = &[
 
 const FORBIDDEN_SCANNER_MODULES: &[&str] = &["waf"];
 
-const GRAPHQL_REVIEW_CORE_SOURCE: &str = "crates/venom-scanner/src/graphql_review.rs";
+const GRAPHQL_REVIEW_CORE_SOURCE: &str = "crates/termivar-scanner/src/graphql_review.rs";
 const GRAPHQL_REVIEW_RUNTIME_SOURCE: &str =
-    "crates/venom-scanner/src/web_runtime/graphql_runtime.rs";
+    "crates/termivar-scanner/src/web_runtime/graphql_runtime.rs";
 const OPENAPI_REVIEW_RUNTIME_SOURCE: &str =
-    "crates/venom-scanner/src/web_runtime/openapi_runtime.rs";
-const REST_REVIEW_RUNTIME_SOURCE: &str = "crates/venom-scanner/src/web_runtime/rest_runtime.rs";
+    "crates/termivar-scanner/src/web_runtime/openapi_runtime.rs";
+const REST_REVIEW_RUNTIME_SOURCE: &str = "crates/termivar-scanner/src/web_runtime/rest_runtime.rs";
 const GRAPHQL_REVIEW_BROKER_SOURCE: &str =
-    "crates/venom-scanner/src/http_evidence/request_broker.rs";
+    "crates/termivar-scanner/src/http_evidence/request_broker.rs";
 const RESOURCE_AUTHORIZATION_RUNTIME_SOURCE: &str =
-    "crates/venom-scanner/src/web_runtime/resource_authorization_runtime.rs";
+    "crates/termivar-scanner/src/web_runtime/resource_authorization_runtime.rs";
 const NATIVE_WEB_REVIEW_ACTION_SOURCE: &str =
-    "crates/venom-scanner/src/web_actions/native_review.rs";
+    "crates/termivar-scanner/src/web_actions/native_review.rs";
 const WEB_REVIEW_DECISION_SOURCE: &str =
-    "crates/venom-scanner/src/web_runtime/web_review_decision.rs";
+    "crates/termivar-scanner/src/web_runtime/web_review_decision.rs";
 const WEB_ASSESSMENT_RUNTIME_SOURCE: &str =
-    "crates/venom-scanner/src/web_runtime/web_assessment.rs";
-const ASSESSMENT_REPORT_SOURCE: &str = "crates/venom-scanner/src/web_runtime/assessment_report.rs";
-const ASSESSMENT_ITEM_SOURCE: &str = "crates/venom-scanner/src/web_runtime/assessment_item.rs";
-const RUNTIME_BUDGET_SOURCE: &str = "crates/venom-scanner/src/runtime_budget.rs";
+    "crates/termivar-scanner/src/web_runtime/web_assessment.rs";
+const ASSESSMENT_REPORT_SOURCE: &str =
+    "crates/termivar-scanner/src/web_runtime/assessment_report.rs";
+const ASSESSMENT_ITEM_SOURCE: &str = "crates/termivar-scanner/src/web_runtime/assessment_item.rs";
+const RUNTIME_BUDGET_SOURCE: &str = "crates/termivar-scanner/src/runtime_budget.rs";
 
 const RETIRED_ADAPTIVE_MODULES: &[&str] = &["payloads", "scoring", "strategy"];
 
@@ -772,16 +777,16 @@ pub(super) fn check(workspace_root: &Path) -> Result<Vec<String>, Box<dyn Error>
     let core = packages
         .iter()
         .copied()
-        .find(|package| package.name.as_str() == "venom-core")
+        .find(|package| package.name.as_str() == "termivar-core")
         .ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::NotFound,
-                "workspace package `venom-core` is missing",
+                "workspace package `termivar-core` is missing",
             )
         })?;
     violations.extend(core_feature_violations(&core.features));
     violations.extend(dependency_inventory_violations(
-        "venom-core",
+        "termivar-core",
         &dependency_contracts(core),
         REQUIRED_CORE_DEPENDENCIES,
         FEATURE_OWNED_CORE_DEPENDENCIES,
@@ -789,11 +794,11 @@ pub(super) fn check(workspace_root: &Path) -> Result<Vec<String>, Box<dyn Error>
     let scanner = packages
         .iter()
         .copied()
-        .find(|package| package.name.as_str() == "venom-scanner")
+        .find(|package| package.name.as_str() == "termivar-scanner")
         .ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::NotFound,
-                "workspace package `venom-scanner` is missing",
+                "workspace package `termivar-scanner` is missing",
             )
         })?;
 
@@ -801,21 +806,21 @@ pub(super) fn check(workspace_root: &Path) -> Result<Vec<String>, Box<dyn Error>
     violations.extend(feature_violations(&scanner.features));
     violations.extend(scanner_dependency_violations(&scanner_dependencies));
     violations.extend(dependency_inventory_violations(
-        "venom-scanner",
+        "termivar-scanner",
         &scanner_dependencies,
         REQUIRED_SCANNER_DEPENDENCIES,
         FEATURE_OWNED_DEPENDENCIES,
     ));
     violations.extend(exact_dependency_contract_violations(
-        "venom-scanner",
+        "termivar-scanner",
         &scanner_dependencies,
-        "venom-core",
+        "termivar-core",
         false,
         false,
         &[],
     ));
     violations.extend(exact_dependency_contract_violations(
-        "venom-scanner",
+        "termivar-scanner",
         &scanner_dependencies,
         "reqwest",
         true,
@@ -823,7 +828,7 @@ pub(super) fn check(workspace_root: &Path) -> Result<Vec<String>, Box<dyn Error>
         &["rustls-tls"],
     ));
     violations.extend(exact_dependency_contract_violations(
-        "venom-scanner",
+        "termivar-scanner",
         &scanner_dependencies,
         "mlua",
         true,
@@ -836,7 +841,7 @@ pub(super) fn check(workspace_root: &Path) -> Result<Vec<String>, Box<dyn Error>
         .find(|dependency| dependency.name.as_str() == "mlua")
         .map(|dependency| dependency.req.to_string());
     violations.extend(exact_dependency_requirement_violations(
-        "venom-scanner",
+        "termivar-scanner",
         "mlua",
         mlua_requirement.as_deref(),
         "^0.9",
@@ -844,23 +849,23 @@ pub(super) fn check(workspace_root: &Path) -> Result<Vec<String>, Box<dyn Error>
     let cli = packages
         .iter()
         .copied()
-        .find(|package| package.name.as_str() == "venom-cli")
+        .find(|package| package.name.as_str() == "termivar-cli")
         .ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::NotFound,
-                "workspace package `venom-cli` is missing",
+                "workspace package `termivar-cli` is missing",
             )
         })?;
     let cli_dependencies = dependency_contracts(cli);
     violations.extend(cli_feature_violations(&cli.features, &cli_dependencies));
     violations.extend(dependency_inventory_violations(
-        "venom-cli",
+        "termivar-cli",
         &cli_dependencies,
         REQUIRED_CLI_DEPENDENCIES,
         OPTIONAL_CLI_DEPENDENCIES,
     ));
     violations.extend(exact_dependency_contract_violations(
-        "venom-cli",
+        "termivar-cli",
         &cli_dependencies,
         "reqwest",
         true,
@@ -870,22 +875,22 @@ pub(super) fn check(workspace_root: &Path) -> Result<Vec<String>, Box<dyn Error>
     let api = packages
         .iter()
         .copied()
-        .find(|package| package.name.as_str() == "venom-api")
+        .find(|package| package.name.as_str() == "termivar-api")
         .ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::NotFound,
-                "workspace package `venom-api` is missing",
+                "workspace package `termivar-api` is missing",
             )
         })?;
     let api_dependencies = dependency_contracts(api);
     violations.extend(dependency_inventory_violations(
-        "venom-api",
+        "termivar-api",
         &api_dependencies,
         REQUIRED_API_DEPENDENCIES,
         &[],
     ));
     violations.extend(exact_dependency_contract_violations(
-        "venom-api",
+        "termivar-api",
         &api_dependencies,
         "axum",
         false,
@@ -895,21 +900,21 @@ pub(super) fn check(workspace_root: &Path) -> Result<Vec<String>, Box<dyn Error>
     let proxy = packages
         .iter()
         .copied()
-        .find(|package| package.name.as_str() == "venom-proxy")
+        .find(|package| package.name.as_str() == "termivar-proxy")
         .ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::NotFound,
-                "workspace package `venom-proxy` is missing",
+                "workspace package `termivar-proxy` is missing",
             )
         })?;
     violations.extend(dependency_inventory_violations(
-        "venom-proxy",
+        "termivar-proxy",
         &dependency_contracts(proxy),
         REQUIRED_PROXY_DEPENDENCIES,
         &[],
     ));
     violations.extend(core_surface_violations(workspace_root)?);
-    let source = fs::read_to_string(workspace_root.join("crates/venom-scanner/src/lib.rs"))?;
+    let source = fs::read_to_string(workspace_root.join("crates/termivar-scanner/src/lib.rs"))?;
     violations.extend(module_gate_violations(&source)?);
     violations.extend(scanner_legacy_reexport_violations(&source)?);
     violations.extend(private_facade_reexport_violations(
@@ -931,7 +936,7 @@ pub(super) fn check(workspace_root: &Path) -> Result<Vec<String>, Box<dyn Error>
         EXACT_LUA_CONFIG_REEXPORTS,
     )?);
     let web_runtime_source =
-        fs::read_to_string(workspace_root.join("crates/venom-scanner/src/web_runtime.rs"))?;
+        fs::read_to_string(workspace_root.join("crates/termivar-scanner/src/web_runtime.rs"))?;
     violations.extend(graphql_review_contract_violations(
         workspace_root,
         &web_runtime_source,
@@ -961,14 +966,14 @@ pub(super) fn check(workspace_root: &Path) -> Result<Vec<String>, Box<dyn Error>
     violations.extend(host_surface_cfg_facade_violations(&source)?);
     violations.extend(reporting_reexport_violations(&source)?);
     violations.extend(reporting_whole_crate_closure_violations(
-        &workspace_root.join("crates/venom-scanner/src"),
+        &workspace_root.join("crates/termivar-scanner/src"),
     )?);
     violations.extend(surface_contract_violations(
         QUARANTINED_PUBLIC_SURFACES,
         &source,
     )?);
     violations.extend(forbidden_surface_source_violations(workspace_root)?);
-    let scanner_source = workspace_root.join("crates/venom-scanner/src");
+    let scanner_source = workspace_root.join("crates/termivar-scanner/src");
     let distributed_source_storage =
         read_ordered_sources(&scanner_source, DISTRIBUTED_PRODUCTION_SOURCE_PATHS)?;
     let distributed_sources = borrowed_sources(&distributed_source_storage);
@@ -983,7 +988,7 @@ pub(super) fn check(workspace_root: &Path) -> Result<Vec<String>, Box<dyn Error>
         read_ordered_sources(&scanner_source, LUA_ENGINE_PRODUCTION_SOURCE_PATHS)?;
     let lua_engine_sources = borrowed_sources(&lua_engine_source_storage);
     let lua_config_source =
-        fs::read_to_string(workspace_root.join("crates/venom-scanner/src/lua_config.rs"))?;
+        fs::read_to_string(workspace_root.join("crates/termivar-scanner/src/lua_config.rs"))?;
     violations.extend(lua_public_api_violations(
         &lua_engine_sources,
         &lua_config_source,
@@ -994,7 +999,7 @@ pub(super) fn check(workspace_root: &Path) -> Result<Vec<String>, Box<dyn Error>
         &lua_config_source,
     ));
     let reporting_source =
-        fs::read_to_string(workspace_root.join("crates/venom-scanner/src/reporting.rs"))?;
+        fs::read_to_string(workspace_root.join("crates/termivar-scanner/src/reporting.rs"))?;
     violations.extend(reporting_source_import_violations(&reporting_source)?);
     violations.extend(reporting_source_violations(&reporting_source)?);
     violations.extend(reporting_public_api_violations(&reporting_source)?);
@@ -1012,7 +1017,7 @@ fn core_feature_violations(features: &BTreeMap<String, Vec<String>>) -> Vec<Stri
     let mut violations = Vec::new();
     if actual_names != expected_names {
         violations.push(format!(
-            "venom-core feature names must be exactly {expected_names:?}, found {actual_names:?}"
+            "termivar-core feature names must be exactly {expected_names:?}, found {actual_names:?}"
         ));
     }
     for feature in EXACT_CORE_FEATURES {
@@ -1028,7 +1033,7 @@ fn core_feature_violations(features: &BTreeMap<String, Vec<String>>) -> Vec<Stri
         };
         if members != expected {
             violations.push(format!(
-                "venom-core `{feature}` members must be exactly {expected:?}, found {members:?}"
+                "termivar-core `{feature}` members must be exactly {expected:?}, found {members:?}"
             ));
         }
     }
@@ -1148,30 +1153,30 @@ fn cli_feature_violations(
         .get("default")
         .is_none_or(|features| !features.is_empty())
     {
-        violations.push("venom-cli default features must remain empty".to_owned());
+        violations.push("termivar-cli default features must remain empty".to_owned());
     }
     for (feature, expected) in [
-        ("api-adapter", &["dep:venom-api"][..]),
-        ("artifact-adapter", &["dep:venom-artifact"][..]),
+        ("api-adapter", &["dep:termivar-api"][..]),
+        ("artifact-adapter", &["dep:termivar-artifact"][..]),
         (
             "legacy-scanner",
-            &["dep:reqwest", "venom-scanner/legacy-scanner"][..],
+            &["dep:reqwest", "termivar-scanner/legacy-scanner"][..],
         ),
-        ("graphql-review", &["venom-scanner/graphql-review"][..]),
-        ("openapi-review", &["venom-scanner/openapi-review"][..]),
+        ("graphql-review", &["termivar-scanner/graphql-review"][..]),
+        ("openapi-review", &["termivar-scanner/openapi-review"][..]),
         (
             "rest-review",
-            &["openapi-review", "venom-scanner/rest-review"][..],
+            &["openapi-review", "termivar-scanner/rest-review"][..],
         ),
         (
             "authorization-review",
-            &["venom-scanner/authorization-review"][..],
+            &["termivar-scanner/authorization-review"][..],
         ),
         (
             "normalization-resilience",
-            &["venom-scanner/normalization-resilience"][..],
+            &["termivar-scanner/normalization-resilience"][..],
         ),
-        ("proxy-adapter", &["dep:venom-proxy"][..]),
+        ("proxy-adapter", &["dep:termivar-proxy"][..]),
     ] {
         let actual: BTreeSet<_> = features
             .get(feature)
@@ -1182,31 +1187,36 @@ fn cli_feature_violations(
         let expected: BTreeSet<_> = expected.iter().copied().collect();
         if actual != expected {
             violations.push(format!(
-                "venom-cli `{feature}` members must be exactly {expected:?}, found {actual:?}"
+                "termivar-cli `{feature}` members must be exactly {expected:?}, found {actual:?}"
             ));
         }
     }
 
-    for dependency in ["reqwest", "venom-api", "venom-artifact", "venom-proxy"] {
+    for dependency in [
+        "reqwest",
+        "termivar-api",
+        "termivar-artifact",
+        "termivar-proxy",
+    ] {
         if dependencies
             .get(dependency)
             .is_none_or(|contract| !contract.optional)
         {
             violations.push(format!(
-                "venom-cli dependency `{dependency}` must remain optional"
+                "termivar-cli dependency `{dependency}` must remain optional"
             ));
         }
     }
     let expected_scanner_features = BTreeSet::from(["reporting".to_owned(), "scanning".to_owned()]);
-    match dependencies.get("venom-scanner") {
+    match dependencies.get("termivar-scanner") {
         Some(contract)
             if !contract.optional
                 && !contract.uses_default_features
                 && contract.features == expected_scanner_features => {},
         Some(contract) => violations.push(format!(
-            "venom-cli must use non-optional venom-scanner with default-features=false and exactly [reporting, scanning], found {contract:?}"
+            "termivar-cli must use non-optional termivar-scanner with default-features=false and exactly [reporting, scanning], found {contract:?}"
         )),
-        None => violations.push("venom-cli dependency `venom-scanner` is missing".to_owned()),
+        None => violations.push("termivar-cli dependency `termivar-scanner` is missing".to_owned()),
     }
     violations
 }
@@ -1217,7 +1227,7 @@ fn feature_violations(features: &BTreeMap<String, Vec<String>>) -> Vec<String> {
     let expected_feature_names: BTreeSet<_> = EXACT_SCANNER_FEATURES.iter().copied().collect();
     if actual_feature_names != expected_feature_names {
         violations.push(format!(
-            "venom-scanner feature names must be exactly {expected_feature_names:?}, found {actual_feature_names:?}"
+            "termivar-scanner feature names must be exactly {expected_feature_names:?}, found {actual_feature_names:?}"
         ));
     }
 
@@ -1230,14 +1240,14 @@ fn feature_violations(features: &BTreeMap<String, Vec<String>>) -> Vec<String> {
     let expected: BTreeSet<_> = DEFAULT_SCANNER_FEATURES.iter().copied().collect();
     if default != expected {
         violations.push(format!(
-            "venom-scanner default features must be exactly {expected:?}, found {default:?}"
+            "termivar-scanner default features must be exactly {expected:?}, found {default:?}"
         ));
     }
 
     for feature in QUARANTINED_FEATURES {
         if !features.contains_key(*feature) {
             violations.push(format!(
-                "venom-scanner must declare the explicit `{feature}` feature"
+                "termivar-scanner must declare the explicit `{feature}` feature"
             ));
         }
     }
@@ -1247,7 +1257,7 @@ fn feature_violations(features: &BTreeMap<String, Vec<String>>) -> Vec<String> {
         let expected: BTreeSet<_> = expected_members.iter().copied().collect();
         if actual != expected {
             violations.push(format!(
-                "venom-scanner `{feature}` raw feature closure must be exactly {expected:?}, found {actual:?}"
+                "termivar-scanner `{feature}` raw feature closure must be exactly {expected:?}, found {actual:?}"
             ));
         }
     }
@@ -1256,10 +1266,11 @@ fn feature_violations(features: &BTreeMap<String, Vec<String>>) -> Vec<String> {
 
     let plugins = raw_feature_closure(features, "plugins");
     if plugins.contains("lua") || plugins.contains("dep:mlua") {
-        violations.push("venom-scanner `plugins` must not enable `lua` or `dep:mlua`".to_owned());
+        violations
+            .push("termivar-scanner `plugins` must not enable `lua` or `dep:mlua`".to_owned());
     }
     if raw_feature_closure(features, "lua").contains("plugins") {
-        violations.push("venom-scanner `lua` must not enable `plugins`".to_owned());
+        violations.push("termivar-scanner `lua` must not enable `plugins`".to_owned());
     }
 
     violations
@@ -1282,7 +1293,7 @@ fn compatibility_alias_violations(features: &BTreeMap<String, Vec<String>>) -> V
         let expected: BTreeSet<_> = expected_members.iter().copied().collect();
         if actual != expected {
             violations.push(format!(
-                "venom-scanner compatibility alias `{alias}` members must be exactly {expected:?}, found {actual:?}"
+                "termivar-scanner compatibility alias `{alias}` members must be exactly {expected:?}, found {actual:?}"
             ));
         }
     }
@@ -1293,7 +1304,7 @@ fn compatibility_alias_violations(features: &BTreeMap<String, Vec<String>>) -> V
         let target_closure = raw_feature_closure(features, target);
         if alias_closure != target_closure {
             violations.push(format!(
-                "venom-scanner compatibility alias `{alias}` must have the same raw feature closure as `{target}`"
+                "termivar-scanner compatibility alias `{alias}` must have the same raw feature closure as `{target}`"
             ));
         }
     }
@@ -1414,7 +1425,7 @@ fn exact_raw_feature_closures() -> Vec<(&'static str, &'static [&'static str])> 
                 "legacy-scanner",
                 "scanning",
                 "core",
-                "venom-core/legacy-contracts",
+                "termivar-core/legacy-contracts",
                 "dep:async-trait",
                 "dep:html5ever",
                 "dep:markup5ever_rcdom",
@@ -1433,7 +1444,7 @@ fn exact_raw_feature_closures() -> Vec<(&'static str, &'static [&'static str])> 
             &[
                 "platform-models",
                 "core",
-                "venom-core/legacy-contracts",
+                "termivar-core/legacy-contracts",
                 "dep:dashmap",
                 "dep:uuid",
             ],
@@ -1474,7 +1485,7 @@ fn scanner_dependency_violations(
         })
         .map(|dependency| {
             format!(
-                "venom-scanner feature-owned dependency `{dependency}` must remain present and optional"
+                "termivar-scanner feature-owned dependency `{dependency}` must remain present and optional"
             )
         })
         .collect()
@@ -1514,7 +1525,7 @@ fn module_gate_violations(source: &str) -> Result<Vec<String>, syn::Error> {
             .any(|item| matches!(item, Item::Mod(module) if module.ident == *module_name))
         {
             violations.push(format!(
-                "retired venom-scanner module `{module_name}` must not be declared"
+                "retired termivar-scanner module `{module_name}` must not be declared"
             ));
         }
     }
@@ -1529,13 +1540,13 @@ fn module_gate_violations(source: &str) -> Result<Vec<String>, syn::Error> {
             .collect();
         match matches.as_slice() {
             [] => violations.push(format!(
-                "venom-scanner module `{module_name}` is missing from lib.rs"
+                "termivar-scanner module `{module_name}` is missing from lib.rs"
             )),
             [module] => {
                 let actual = cfg_predicates(module);
                 if actual != [(*expected).to_owned()] {
                     violations.push(format!(
-                        "venom-scanner module `{module_name}` must use exact cfg({expected}), found {actual:?}"
+                        "termivar-scanner module `{module_name}` must use exact cfg({expected}), found {actual:?}"
                     ));
                 }
                 if *module_name == "reporting" {
@@ -1550,7 +1561,7 @@ fn module_gate_violations(source: &str) -> Result<Vec<String>, syn::Error> {
                         || !non_doc_attributes[0].path().is_ident("cfg")
                     {
                         violations.push(
-                            "venom-scanner `reporting` must remain one public out-of-line module with only its exact cfg and optional docs"
+                            "termivar-scanner `reporting` must remain one public out-of-line module with only its exact cfg and optional docs"
                                 .to_owned(),
                         );
                     }
@@ -1567,13 +1578,13 @@ fn module_gate_violations(source: &str) -> Result<Vec<String>, syn::Error> {
                         || !non_doc_attributes[0].path().is_ident("cfg")
                     {
                         violations.push(format!(
-                            "venom-scanner `{module_name}` must remain one private out-of-line module behind exact root re-exports"
+                            "termivar-scanner `{module_name}` must remain one private out-of-line module behind exact root re-exports"
                         ));
                     }
                 }
             },
             _ => violations.push(format!(
-                "venom-scanner module `{module_name}` must be declared exactly once"
+                "termivar-scanner module `{module_name}` must be declared exactly once"
             )),
         }
     }
@@ -2033,8 +2044,8 @@ fn resource_authorization_review_source_contract_violations(
         "wordlist",
         "Uuid::",
         "uuid::",
-        "Termivar",
-        "termivar",
+        "Venom",
+        "venom",
         "Liminvar",
         "liminvar",
         "Confirmed",
@@ -2323,8 +2334,8 @@ fn openapi_review_source_contract_violations(
             "AssessmentCapabilityDescriptor::differential_review",
             "AssessmentDisposition::NeedsReview",
             "AssessmentDisposition::Confirmed",
-            "Termivar",
-            "termivar",
+            "Venom",
+            "venom",
             "Liminvar",
             "liminvar",
         ],
@@ -2552,8 +2563,8 @@ fn rest_review_source_contract_violations(
             ".with_header(\"authorization\"",
             ".with_header(\"cookie\"",
             ".cookie(",
-            "Termivar",
-            "termivar",
+            "Venom",
+            "venom",
             "Liminvar",
             "liminvar",
         ],
@@ -2778,7 +2789,7 @@ fn squash_ascii_whitespace(source: &str) -> String {
 }
 
 fn core_surface_violations(workspace_root: &Path) -> Result<Vec<String>, Box<dyn Error>> {
-    let core_source = workspace_root.join("crates/venom-core/src");
+    let core_source = workspace_root.join("crates/termivar-core/src");
     let lib_source = fs::read_to_string(core_source.join("lib.rs"))?;
     let mut violations = core_library_gate_violations(&lib_source)?;
 
@@ -2787,7 +2798,7 @@ fn core_surface_violations(workspace_root: &Path) -> Result<Vec<String>, Box<dyn
     for symbol in LEGACY_CORE_MODEL_SYMBOLS {
         if !model_shape.symbols.contains(*symbol) {
             violations.push(format!(
-                "venom-core legacy models must retain opt-in `{symbol}` for the pinned compatibility baseline"
+                "termivar-core legacy models must retain opt-in `{symbol}` for the pinned compatibility baseline"
             ));
         }
     }
@@ -2808,18 +2819,18 @@ fn core_library_gate_violations(source: &str) -> Result<Vec<String>, syn::Error>
             .collect();
         match matches.as_slice() {
             [] => violations.push(format!(
-                "venom-core module `{module_name}` is missing from lib.rs"
+                "termivar-core module `{module_name}` is missing from lib.rs"
             )),
             [module] => {
                 let actual = cfg_predicates(module);
                 if actual != [(*expected).to_owned()] {
                     violations.push(format!(
-                        "venom-core module `{module_name}` must use exact cfg({expected}), found {actual:?}"
+                        "termivar-core module `{module_name}` must use exact cfg({expected}), found {actual:?}"
                     ));
                 }
             },
             _ => violations.push(format!(
-                "venom-core module `{module_name}` must be declared exactly once"
+                "termivar-core module `{module_name}` must be declared exactly once"
             )),
         }
     }
@@ -2862,7 +2873,7 @@ fn core_library_gate_violations(source: &str) -> Result<Vec<String>, syn::Error>
         let expected_cfg = "feature=\"legacy-contracts\"".to_owned();
         if actual_cfg != [expected_cfg.clone()] {
             violations.push(format!(
-                "venom-core legacy re-exports {legacy_names:?} must use exact cfg({expected_cfg}), found {actual_cfg:?}"
+                "termivar-core legacy re-exports {legacy_names:?} must use exact cfg({expected_cfg}), found {actual_cfg:?}"
             ));
         }
         for name in legacy_names {
@@ -2873,7 +2884,7 @@ fn core_library_gate_violations(source: &str) -> Result<Vec<String>, syn::Error>
         match actual_reexports.get(&name).copied().unwrap_or_default() {
             1 => {},
             count => violations.push(format!(
-                "venom-core legacy symbol `{name}` must be re-exported exactly once; found {count}"
+                "termivar-core legacy symbol `{name}` must be re-exported exactly once; found {count}"
             )),
         }
     }
@@ -2911,7 +2922,7 @@ fn scanner_legacy_reexport_violations(source: &str) -> Result<Vec<String>, syn::
             let actual_cfg = cfg_predicates_from_attributes(&item.attrs);
             if actual_cfg != [(*expected_cfg).to_owned()] {
                 violations.push(format!(
-                    "venom-scanner legacy re-export `{name}` must use exact cfg({expected_cfg}), found {actual_cfg:?}"
+                    "termivar-scanner legacy re-export `{name}` must use exact cfg({expected_cfg}), found {actual_cfg:?}"
                 ));
             }
         }
@@ -2920,7 +2931,7 @@ fn scanner_legacy_reexport_violations(source: &str) -> Result<Vec<String>, syn::
         match counts.get(*name).copied().unwrap_or_default() {
             1 => {},
             count => violations.push(format!(
-                "venom-scanner legacy symbol `{name}` must be re-exported exactly once; found {count}"
+                "termivar-scanner legacy symbol `{name}` must be re-exported exactly once; found {count}"
             )),
         }
     }
@@ -3082,7 +3093,7 @@ fn private_facade_reexport_violations(
     for (record, is_related) in all_type_aliases.iter().zip(related_type_aliases) {
         if is_related {
             violations.push(format!(
-                "venom-scanner `{module}` facade cannot pass through type alias `{}` at inline-module depth {}",
+                "termivar-scanner `{module}` facade cannot pass through type alias `{}` at inline-module depth {}",
                 record.item.ident, record.depth
             ));
         }
@@ -3097,20 +3108,20 @@ fn private_facade_reexport_violations(
             let item = record.item;
             if record.depth != 0 || !is_public(&item.vis) {
                 violations.push(format!(
-                    "venom-scanner `{module}` facade must be one public root re-export"
+                    "termivar-scanner `{module}` facade must be one public root re-export"
                 ));
             }
             if item.leading_colon.is_some()
                 || use_tree_root_ident(&item.tree).as_deref() != Some(module)
             {
                 violations.push(format!(
-                    "venom-scanner `{module}` re-exports must use the exact direct `{module}::{{...}}` path"
+                    "termivar-scanner `{module}` re-exports must use the exact direct `{module}::{{...}}` path"
                 ));
             }
             let actual_cfg = cfg_predicates_from_attributes(&item.attrs);
             if actual_cfg != [expected_cfg.to_owned()] {
                 violations.push(format!(
-                    "venom-scanner `{module}` re-exports must use exact cfg({expected_cfg}), found {actual_cfg:?}"
+                    "termivar-scanner `{module}` re-exports must use exact cfg({expected_cfg}), found {actual_cfg:?}"
                 ));
             }
             let mut actual = BTreeSet::new();
@@ -3120,12 +3131,12 @@ fn private_facade_reexport_violations(
                 collect_reporting_import_paths(&item.tree, &mut Vec::new(), &mut exact_paths);
             if actual != expected || !direct_names_only {
                 violations.push(format!(
-                    "venom-scanner `{module}` re-exports must be exactly {expected:?} without aliases or globs, found {actual:?}"
+                    "termivar-scanner `{module}` re-exports must be exactly {expected:?} without aliases or globs, found {actual:?}"
                 ));
             }
         },
         _ => violations.push(format!(
-            "venom-scanner must declare exactly one public `{module}` re-export with symbols {expected:?}; found {}",
+            "termivar-scanner must declare exactly one public `{module}` re-export with symbols {expected:?}; found {}",
             related_uses.len()
         )),
     }
@@ -3153,7 +3164,7 @@ fn private_natural_child_module_violations(
         return Ok(Vec::new());
     }
     Ok(vec![format!(
-        "venom-scanner `{module}` implementation must remain one private natural external child with no attributes or path redirection"
+        "termivar-scanner `{module}` implementation must remain one private natural external child with no attributes or path redirection"
     )])
 }
 
@@ -3187,7 +3198,7 @@ fn host_surface_cfg_facade_violations(source: &str) -> Result<Vec<String>, syn::
         };
         if !allowed {
             violations.push(format!(
-                "venom-scanner cfg-gated host facade item `{}` is forbidden; only the exact private modules and root re-exports are allowed",
+                "termivar-scanner cfg-gated host facade item `{}` is forbidden; only the exact private modules and root re-exports are allowed",
                 reporting_item_label(item)
             ));
         }
@@ -3277,7 +3288,7 @@ fn reporting_reexport_violations(source: &str) -> Result<Vec<String>, syn::Error
     for (record, related) in all_type_aliases.iter().zip(related_type_aliases) {
         if related {
             violations.push(format!(
-                "venom-scanner reporting facade cannot pass through type alias `{}` at inline-module depth {}",
+                "termivar-scanner reporting facade cannot pass through type alias `{}` at inline-module depth {}",
                 record.item.ident, record.depth
             ));
         }
@@ -3287,7 +3298,7 @@ fn reporting_reexport_violations(source: &str) -> Result<Vec<String>, syn::Error
         let item = record.item;
         if record.depth != 0 || !is_public(&item.vis) {
             violations.push(
-                "venom-scanner reporting facade cannot pass through private aliases or inline modules"
+                "termivar-scanner reporting facade cannot pass through private aliases or inline modules"
                     .to_owned(),
             );
         }
@@ -3296,7 +3307,7 @@ fn reporting_reexport_violations(source: &str) -> Result<Vec<String>, syn::Error
             || use_tree_root_ident(&item.tree).as_deref() != Some("reporting")
         {
             violations.push(
-                "venom-scanner reporting re-exports must use the exact direct `reporting::{...}` path"
+                "termivar-scanner reporting re-exports must use the exact direct `reporting::{...}` path"
                     .to_owned(),
             );
         }
@@ -3308,18 +3319,18 @@ fn reporting_reexport_violations(source: &str) -> Result<Vec<String>, syn::Error
             let expected_cfg = ["feature=\"reporting\"".to_owned()];
             if actual_cfg != expected_cfg {
                 violations.push(format!(
-                    "venom-scanner base reporting re-exports must use exact cfg(feature=\"reporting\"), found {actual_cfg:?}"
+                    "termivar-scanner base reporting re-exports must use exact cfg(feature=\"reporting\"), found {actual_cfg:?}"
                 ));
             }
         } else {
             violations.push(format!(
-                "venom-scanner reporting re-exports must be exactly {expected:?}; assessment-only symbols remain available through the public reporting module, found {actual:?}"
+                "termivar-scanner reporting re-exports must be exactly {expected:?}; assessment-only symbols remain available through the public reporting module, found {actual:?}"
             ));
         }
     }
     if base_count != 1 || reporting_uses.len() != 1 {
         violations.push(format!(
-            "venom-scanner must declare exactly one public base reporting re-export; found base={base_count}, total={}",
+            "termivar-scanner must declare exactly one public base reporting re-export; found base={base_count}, total={}",
             reporting_uses.len()
         ));
     }
@@ -3344,7 +3355,7 @@ fn collect_reporting_cfg_item_violations(
                 };
             if !exact_root_item {
                 violations.push(format!(
-                    "venom-scanner cfg(reporting) facade item `{}` at inline-module depth {depth} is forbidden; only the exact root module and five-symbol base re-export are allowed",
+                    "termivar-scanner cfg(reporting) facade item `{}` at inline-module depth {depth} is forbidden; only the exact root module and five-symbol base re-export are allowed",
                     reporting_item_label(item)
                 ));
             }
@@ -3582,7 +3593,7 @@ fn reporting_cross_source_set_violations_with_inventory(
             if let Some(expected) = expected {
                 if visitor.internal_reporting_cfg_count != expected {
                     visitor.violations.insert(format!(
-                        "venom-scanner reporting authority must remain in reporting.rs and the exact lib.rs facade; {relative_path} must retain its exact report-only cfg inventory of {expected} sites, found {}",
+                        "termivar-scanner reporting authority must remain in reporting.rs and the exact lib.rs facade; {relative_path} must retain its exact report-only cfg inventory of {expected} sites, found {}",
                         visitor.internal_reporting_cfg_count,
                     ));
                 }
@@ -3839,7 +3850,7 @@ struct ReportingCrossFileVisitor<'a> {
 impl ReportingCrossFileVisitor<'_> {
     fn insert(&mut self, detail: impl std::fmt::Display) {
         self.violations.insert(format!(
-            "venom-scanner reporting authority must remain in reporting.rs and the exact lib.rs facade; {} contains {detail}",
+            "termivar-scanner reporting authority must remain in reporting.rs and the exact lib.rs facade; {} contains {detail}",
             self.relative_path
         ));
     }
@@ -5979,7 +5990,7 @@ fn surface_contract_violations(
         }
         let Some(module) = modules.get(contract.module) else {
             violations.push(format!(
-                "inventoried quarantined surface `{}` is missing from venom-scanner lib.rs",
+                "inventoried quarantined surface `{}` is missing from termivar-scanner lib.rs",
                 contract.module
             ));
             continue;
@@ -6155,8 +6166,8 @@ const EXACT_DISTRIBUTED_CONSTANTS: &[(&str, &str, u128)] = &[
     ("MAX_AGGREGATE_ITEMS", "usize", 65_536),
 ];
 
-const EXACT_DISTRIBUTED_PRODUCTION_TOKEN_BYTES: usize = 90_986;
-const EXACT_DISTRIBUTED_PRODUCTION_FINGERPRINT: u128 = 0xd532_01fe_237b_3a56_832d_5a7e_e74a_e2fe;
+const EXACT_DISTRIBUTED_PRODUCTION_TOKEN_BYTES: usize = 90_989;
+const EXACT_DISTRIBUTED_PRODUCTION_FINGERPRINT: u128 = 0xcfc8_d2db_cb6f_2833_7ec5_e2f1_4172_0319;
 
 fn distributed_public_api_violations(
     sources: &[NamedSource<'_>],
@@ -7208,7 +7219,7 @@ struct PublicApiShape {
 fn forbidden_surface_source_violations(
     workspace_root: &Path,
 ) -> Result<Vec<String>, Box<dyn Error>> {
-    let scanner_source = workspace_root.join("crates/venom-scanner/src");
+    let scanner_source = workspace_root.join("crates/termivar-scanner/src");
     let mut violations = Vec::new();
     for contract in FORBIDDEN_SURFACE_APIS {
         let path = scanner_source.join(format!("{}.rs", contract.module));
@@ -7232,7 +7243,7 @@ fn forbidden_surface_source_violations(
     for symbol in retired_symbols {
         if lib_shape.symbols.contains(symbol) {
             violations.push(format!(
-                "retired public facade `{symbol}` must not be re-exported by venom-scanner"
+                "retired public facade `{symbol}` must not be re-exported by termivar-scanner"
             ));
         }
     }
@@ -7245,8 +7256,8 @@ struct ReportingSourceVisitor {
     inside_test_module: usize,
 }
 
-const EXACT_REPORTING_PRODUCTION_TOKEN_BYTES: usize = 71_111;
-const EXACT_REPORTING_PRODUCTION_FINGERPRINT: u128 = 0x57b0_13c1_f537_f92a_ae8a_8267_b3dc_a874;
+const EXACT_REPORTING_PRODUCTION_TOKEN_BYTES: usize = 71_138;
+const EXACT_REPORTING_PRODUCTION_FINGERPRINT: u128 = 0x05d7_a24d_3d72_66b3_3f25_fb45_c86f_f061;
 
 fn reporting_production_body_inventory_violations(source: &str) -> Vec<String> {
     let Ok(syntax) = syn::parse_file(source) else {
@@ -7332,15 +7343,15 @@ const EXACT_REPORTING_SOURCE_IMPORTS: &[&str] = &[
     "std::error::Error",
     "std::fmt",
     "std::io",
-    "venom_core::OutcomeStatus",
-    "venom_core::ResourceAccounting",
-    "venom_core::ResourceAccountingMode",
-    "venom_core::RunOutcomeRecord",
-    "venom_core::RunReport",
-    "venom_core::RunStatus",
-    "venom_core::RunStepStatus",
-    "venom_core::RunStopCode",
-    "venom_core::SecuritySeverity",
+    "termivar_core::OutcomeStatus",
+    "termivar_core::ResourceAccounting",
+    "termivar_core::ResourceAccountingMode",
+    "termivar_core::RunOutcomeRecord",
+    "termivar_core::RunReport",
+    "termivar_core::RunStatus",
+    "termivar_core::RunStepStatus",
+    "termivar_core::RunStopCode",
+    "termivar_core::SecuritySeverity",
 ];
 
 const ALLOWED_REPORTING_QUALIFIED_PATHS: &[&str] = &[
@@ -7507,16 +7518,16 @@ const ALLOWED_REPORTING_QUALIFIED_PATHS: &[&str] = &[
     "u32::from",
     "u64::try_from",
     "usize::from",
-    "venom_core::OutcomeStatus",
-    "venom_core::ResourceAccounting",
-    "venom_core::ResourceAccountingMode",
-    "venom_core::RunOutcomeRecord",
-    "venom_core::RunReport",
-    "venom_core::RunStatus",
-    "venom_core::RunStepReport",
-    "venom_core::RunStepStatus",
-    "venom_core::RunStopCode",
-    "venom_core::SecuritySeverity",
+    "termivar_core::OutcomeStatus",
+    "termivar_core::ResourceAccounting",
+    "termivar_core::ResourceAccountingMode",
+    "termivar_core::RunOutcomeRecord",
+    "termivar_core::RunReport",
+    "termivar_core::RunStatus",
+    "termivar_core::RunStepReport",
+    "termivar_core::RunStepStatus",
+    "termivar_core::RunStopCode",
+    "termivar_core::SecuritySeverity",
 ];
 
 const ALLOWED_REPORTING_FUNCTION_CALLS: &[&str] = &[
@@ -8297,7 +8308,7 @@ fn inspect_reporting_macro_tokens(tokens: TokenStream, violations: &mut BTreeSet
 }
 
 fn adaptive_surface_violations(workspace_root: &Path) -> Result<Vec<String>, Box<dyn Error>> {
-    let adaptive_dir = workspace_root.join("crates/venom-scanner/src/adaptive");
+    let adaptive_dir = workspace_root.join("crates/termivar-scanner/src/adaptive");
     let module_source = fs::read_to_string(adaptive_dir.join("mod.rs"))?;
     let pipeline_source = fs::read_to_string(adaptive_dir.join("pipeline.rs"))?;
     let mut violations = adaptive_module_source_violations(&module_source)?;
@@ -8494,39 +8505,39 @@ mod tests {
         vec![
             (
                 "distributed.rs",
-                include_str!("../../../crates/venom-scanner/src/distributed.rs"),
+                include_str!("../../../crates/termivar-scanner/src/distributed.rs"),
             ),
             (
                 "distributed/coordinator.rs",
-                include_str!("../../../crates/venom-scanner/src/distributed/coordinator.rs"),
+                include_str!("../../../crates/termivar-scanner/src/distributed/coordinator.rs"),
             ),
             (
                 "distributed/lease.rs",
-                include_str!("../../../crates/venom-scanner/src/distributed/lease.rs"),
+                include_str!("../../../crates/termivar-scanner/src/distributed/lease.rs"),
             ),
             (
                 "distributed/limits.rs",
-                include_str!("../../../crates/venom-scanner/src/distributed/limits.rs"),
+                include_str!("../../../crates/termivar-scanner/src/distributed/limits.rs"),
             ),
             (
                 "distributed/model.rs",
-                include_str!("../../../crates/venom-scanner/src/distributed/model.rs"),
+                include_str!("../../../crates/termivar-scanner/src/distributed/model.rs"),
             ),
             (
                 "distributed/queue.rs",
-                include_str!("../../../crates/venom-scanner/src/distributed/queue.rs"),
+                include_str!("../../../crates/termivar-scanner/src/distributed/queue.rs"),
             ),
             (
                 "distributed/recovery.rs",
-                include_str!("../../../crates/venom-scanner/src/distributed/recovery.rs"),
+                include_str!("../../../crates/termivar-scanner/src/distributed/recovery.rs"),
             ),
             (
                 "distributed/results.rs",
-                include_str!("../../../crates/venom-scanner/src/distributed/results.rs"),
+                include_str!("../../../crates/termivar-scanner/src/distributed/results.rs"),
             ),
             (
                 "distributed/worker.rs",
-                include_str!("../../../crates/venom-scanner/src/distributed/worker.rs"),
+                include_str!("../../../crates/termivar-scanner/src/distributed/worker.rs"),
             ),
         ]
     }
@@ -8535,31 +8546,31 @@ mod tests {
         vec![
             (
                 "lua_engine.rs",
-                include_str!("../../../crates/venom-scanner/src/lua_engine.rs"),
+                include_str!("../../../crates/termivar-scanner/src/lua_engine.rs"),
             ),
             (
                 "lua_engine/execution.rs",
-                include_str!("../../../crates/venom-scanner/src/lua_engine/execution.rs"),
+                include_str!("../../../crates/termivar-scanner/src/lua_engine/execution.rs"),
             ),
             (
                 "lua_engine/history.rs",
-                include_str!("../../../crates/venom-scanner/src/lua_engine/history.rs"),
+                include_str!("../../../crates/termivar-scanner/src/lua_engine/history.rs"),
             ),
             (
                 "lua_engine/limits.rs",
-                include_str!("../../../crates/venom-scanner/src/lua_engine/limits.rs"),
+                include_str!("../../../crates/termivar-scanner/src/lua_engine/limits.rs"),
             ),
             (
                 "lua_engine/registry.rs",
-                include_str!("../../../crates/venom-scanner/src/lua_engine/registry.rs"),
+                include_str!("../../../crates/termivar-scanner/src/lua_engine/registry.rs"),
             ),
             (
                 "lua_engine/source.rs",
-                include_str!("../../../crates/venom-scanner/src/lua_engine/source.rs"),
+                include_str!("../../../crates/termivar-scanner/src/lua_engine/source.rs"),
             ),
             (
                 "lua_engine/vm.rs",
-                include_str!("../../../crates/venom-scanner/src/lua_engine/vm.rs"),
+                include_str!("../../../crates/termivar-scanner/src/lua_engine/vm.rs"),
             ),
         ]
     }
@@ -8630,7 +8641,7 @@ mod tests {
             "legacy-scanner".to_owned(),
             [
                 "scanning",
-                "venom-core/legacy-contracts",
+                "termivar-core/legacy-contracts",
                 "dep:chrono",
                 "dep:dashmap",
                 "dep:futures",
@@ -8644,7 +8655,7 @@ mod tests {
             "platform-models".to_owned(),
             [
                 "core",
-                "venom-core/legacy-contracts",
+                "termivar-core/legacy-contracts",
                 "dep:dashmap",
                 "dep:uuid",
             ]
@@ -8812,21 +8823,22 @@ mod tests {
     #[test]
     fn resource_authorization_review_is_one_bounded_shared_runtime_capability() {
         let runtime = include_str!(
-            "../../../crates/venom-scanner/src/web_runtime/resource_authorization_runtime.rs"
+            "../../../crates/termivar-scanner/src/web_runtime/resource_authorization_runtime.rs"
         );
         let broker =
-            include_str!("../../../crates/venom-scanner/src/http_evidence/request_broker.rs");
+            include_str!("../../../crates/termivar-scanner/src/http_evidence/request_broker.rs");
         let assessment =
-            include_str!("../../../crates/venom-scanner/src/web_runtime/web_assessment.rs");
+            include_str!("../../../crates/termivar-scanner/src/web_runtime/web_assessment.rs");
         let report =
-            include_str!("../../../crates/venom-scanner/src/web_runtime/assessment_report.rs");
-        let item = include_str!("../../../crates/venom-scanner/src/web_runtime/assessment_item.rs");
-        let budget = include_str!("../../../crates/venom-scanner/src/runtime_budget.rs");
-        let web_runtime = include_str!("../../../crates/venom-scanner/src/web_runtime.rs");
+            include_str!("../../../crates/termivar-scanner/src/web_runtime/assessment_report.rs");
+        let item =
+            include_str!("../../../crates/termivar-scanner/src/web_runtime/assessment_item.rs");
+        let budget = include_str!("../../../crates/termivar-scanner/src/runtime_budget.rs");
+        let web_runtime = include_str!("../../../crates/termivar-scanner/src/web_runtime.rs");
         let actions =
-            include_str!("../../../crates/venom-scanner/src/web_actions/native_review.rs");
+            include_str!("../../../crates/termivar-scanner/src/web_actions/native_review.rs");
         let decision =
-            include_str!("../../../crates/venom-scanner/src/web_runtime/web_review_decision.rs");
+            include_str!("../../../crates/termivar-scanner/src/web_runtime/web_review_decision.rs");
         let sources = ResourceAuthorizationSources {
             runtime,
             broker,
@@ -8879,7 +8891,7 @@ mod tests {
             "fn mutate_resource(target: &mut url::Url) { target.query_pairs_mut(); }",
             "fn enumerate() { enumerate_resource(); }",
             "const CLAIM: &str = \"Confirmed\";",
-            "const PARTIAL_REBRAND: &str = \"Termivar\";",
+            "const FORMER_BRAND: &str = \"Venom\";",
             "const ABANDONED_PARTIAL_REBRAND: &str = \"Liminvar\";",
             "fn second_scanner() { let _ = WebAssessmentRuntime::builder(); }",
             "fn second_broker() { let _ = HttpRequestBroker::new_metered(policy, accounting); }",
@@ -9169,12 +9181,12 @@ mod tests {
     #[test]
     fn openapi_review_architecture_is_one_bounded_informational_native_child() {
         let runtime =
-            include_str!("../../../crates/venom-scanner/src/web_runtime/openapi_runtime.rs");
+            include_str!("../../../crates/termivar-scanner/src/web_runtime/openapi_runtime.rs");
         let actions =
-            include_str!("../../../crates/venom-scanner/src/web_actions/native_review.rs");
+            include_str!("../../../crates/termivar-scanner/src/web_actions/native_review.rs");
         let broker =
-            include_str!("../../../crates/venom-scanner/src/http_evidence/request_broker.rs");
-        let web_runtime = include_str!("../../../crates/venom-scanner/src/web_runtime.rs");
+            include_str!("../../../crates/termivar-scanner/src/http_evidence/request_broker.rs");
+        let web_runtime = include_str!("../../../crates/termivar-scanner/src/web_runtime.rs");
 
         let violations =
             openapi_review_source_contract_violations(runtime, actions, broker, web_runtime);
@@ -9219,7 +9231,7 @@ mod tests {
             "fn write_probe() { let _ = HttpProbeMethod::Post; }",
             "fn credentialed_probe() { let _ = AUTHORIZATION; }",
             "fn execute_described_operation(document: &OpenApiDocument) { for operation in document.operations() { dispatch_operation(operation); } }",
-            "const PARTIAL_REBRAND: &str = \"Termivar\";",
+            "const FORMER_BRAND: &str = \"Venom\";",
             "const ABANDONED_PARTIAL_REBRAND: &str = \"Liminvar\";",
             "fn claim() { let _ = AssessmentDisposition::Confirmed; }",
         ] {
@@ -9270,16 +9282,17 @@ mod tests {
 
     #[test]
     fn rest_review_architecture_is_one_bounded_openapi_constrained_native_child() {
-        let runtime = include_str!("../../../crates/venom-scanner/src/web_runtime/rest_runtime.rs");
+        let runtime =
+            include_str!("../../../crates/termivar-scanner/src/web_runtime/rest_runtime.rs");
         let actions =
-            include_str!("../../../crates/venom-scanner/src/web_actions/native_review.rs");
+            include_str!("../../../crates/termivar-scanner/src/web_actions/native_review.rs");
         let broker =
-            include_str!("../../../crates/venom-scanner/src/http_evidence/request_broker.rs");
-        let web_runtime = include_str!("../../../crates/venom-scanner/src/web_runtime.rs");
+            include_str!("../../../crates/termivar-scanner/src/http_evidence/request_broker.rs");
+        let web_runtime = include_str!("../../../crates/termivar-scanner/src/web_runtime.rs");
         let assessment =
-            include_str!("../../../crates/venom-scanner/src/web_runtime/web_assessment.rs");
+            include_str!("../../../crates/termivar-scanner/src/web_runtime/web_assessment.rs");
         let report =
-            include_str!("../../../crates/venom-scanner/src/web_runtime/assessment_report.rs");
+            include_str!("../../../crates/termivar-scanner/src/web_runtime/assessment_report.rs");
 
         let violations = rest_review_source_contract_violations(
             runtime,
@@ -9337,7 +9350,7 @@ mod tests {
             "struct RestRuntime;",
             "struct RestAssessmentReport;",
             "fn claim() { let _ = AssessmentDisposition::Confirmed; }",
-            "const PARTIAL_REBRAND: &str = \"Termivar\";",
+            "const FORMER_BRAND: &str = \"Venom\";",
             "const ABANDONED_PARTIAL_REBRAND: &str = \"Liminvar\";",
         ] {
             let mutation = format!("{runtime}\n{forbidden}");
@@ -9405,12 +9418,12 @@ mod tests {
 
     #[test]
     fn graphql_review_architecture_is_bounded_anonymous_and_shared_transport_only() {
-        let core = include_str!("../../../crates/venom-scanner/src/graphql_review.rs");
+        let core = include_str!("../../../crates/termivar-scanner/src/graphql_review.rs");
         let runtime =
-            include_str!("../../../crates/venom-scanner/src/web_runtime/graphql_runtime.rs");
+            include_str!("../../../crates/termivar-scanner/src/web_runtime/graphql_runtime.rs");
         let broker =
-            include_str!("../../../crates/venom-scanner/src/http_evidence/request_broker.rs");
-        let web_runtime = include_str!("../../../crates/venom-scanner/src/web_runtime.rs");
+            include_str!("../../../crates/termivar-scanner/src/http_evidence/request_broker.rs");
+        let web_runtime = include_str!("../../../crates/termivar-scanner/src/web_runtime.rs");
         assert!(graphql_review_source_contract_violations(core, runtime, broker).is_empty());
         assert!(graphql_runtime_module_gate_violations(web_runtime)
             .unwrap()
@@ -9476,11 +9489,11 @@ mod tests {
 
     #[test]
     fn graphql_future_dangerous_families_cannot_become_executable_or_expand_queries() {
-        let core = include_str!("../../../crates/venom-scanner/src/graphql_review.rs");
+        let core = include_str!("../../../crates/termivar-scanner/src/graphql_review.rs");
         let runtime =
-            include_str!("../../../crates/venom-scanner/src/web_runtime/graphql_runtime.rs");
+            include_str!("../../../crates/termivar-scanner/src/web_runtime/graphql_runtime.rs");
         let broker =
-            include_str!("../../../crates/venom-scanner/src/http_evidence/request_broker.rs");
+            include_str!("../../../crates/termivar-scanner/src/http_evidence/request_broker.rs");
         let compact = squash_ascii_whitespace(core);
         for marker in [
             "catalog_entry(JsonArrayBatching,\"graphql.json-array-batching\",MetadataOnly,)",
@@ -9522,7 +9535,7 @@ mod tests {
 
     #[test]
     fn host_execution_facades_are_private_direct_and_exact() {
-        let source = include_str!("../../../crates/venom-scanner/src/lib.rs");
+        let source = include_str!("../../../crates/termivar-scanner/src/lib.rs");
         for (module, cfg, symbols) in [
             (
                 "distributed",
@@ -9543,7 +9556,8 @@ mod tests {
                 "{module}"
             );
         }
-        let web_runtime_source = include_str!("../../../crates/venom-scanner/src/web_runtime.rs");
+        let web_runtime_source =
+            include_str!("../../../crates/termivar-scanner/src/web_runtime.rs");
         assert!(
             private_natural_child_module_violations(web_runtime_source, "scan_profile")
                 .unwrap()
@@ -9718,7 +9732,7 @@ mod tests {
     fn host_surface_production_signatures_and_bodies_are_exact() {
         let distributed = distributed_sources();
         let lua_engine = lua_engine_sources();
-        let lua_config = include_str!("../../../crates/venom-scanner/src/lua_config.rs");
+        let lua_config = include_str!("../../../crates/termivar-scanner/src/lua_config.rs");
         let distributed_violations = distributed_production_inventory_violations(&distributed);
         assert!(
             distributed_violations.is_empty(),
@@ -9795,7 +9809,7 @@ mod tests {
         lua.pop();
         assert!(lua_public_api_violations(
             &lua,
-            include_str!("../../../crates/venom-scanner/src/lua_config.rs")
+            include_str!("../../../crates/termivar-scanner/src/lua_config.rs")
         )
         .unwrap()
         .iter()
@@ -9806,7 +9820,7 @@ mod tests {
             .any(|violation| violation.contains("production source inventory")));
         assert!(lua_production_inventory_violations(
             &lua,
-            include_str!("../../../crates/venom-scanner/src/lua_config.rs")
+            include_str!("../../../crates/termivar-scanner/src/lua_config.rs")
         )
         .iter()
         .any(|violation| violation.contains("production source inventory")));
@@ -9821,7 +9835,7 @@ mod tests {
     #[test]
     fn lua_vm_construction_and_ambient_authority_are_exact() {
         let sources = lua_engine_sources();
-        let config = include_str!("../../../crates/venom-scanner/src/lua_config.rs");
+        let config = include_str!("../../../crates/termivar-scanner/src/lua_config.rs");
         assert!(lua_source_authority_violations(&sources)
             .unwrap()
             .is_empty());
@@ -9984,7 +9998,7 @@ mod tests {
             },
         )]);
         assert!(exact_dependency_contract_violations(
-            "venom-scanner",
+            "termivar-scanner",
             &dependencies,
             "mlua",
             true,
@@ -9993,14 +10007,14 @@ mod tests {
         )
         .is_empty());
         assert!(exact_dependency_requirement_violations(
-            "venom-scanner",
+            "termivar-scanner",
             "mlua",
             Some("^0.9"),
             "^0.9",
         )
         .is_empty());
         assert!(exact_dependency_requirement_violations(
-            "venom-scanner",
+            "termivar-scanner",
             "mlua",
             Some("^0.10"),
             "^0.9",
@@ -10014,7 +10028,7 @@ mod tests {
             .features
             .insert("serialize".to_owned());
         assert!(exact_dependency_contract_violations(
-            "venom-scanner",
+            "termivar-scanner",
             &dependencies,
             "mlua",
             true,
@@ -10028,7 +10042,7 @@ mod tests {
         dependency.features.remove("serialize");
         dependency.uses_default_features = true;
         assert!(exact_dependency_contract_violations(
-            "venom-scanner",
+            "termivar-scanner",
             &dependencies,
             "mlua",
             true,
@@ -10141,7 +10155,7 @@ mod tests {
                 feature = "legacy-scanner",
                 feature = "platform-models"
             ))]
-            pub use venom_core::ScanFinding;
+            pub use termivar_core::ScanFinding;
         "#;
         assert!(scanner_legacy_reexport_violations(source)
             .unwrap()
@@ -10332,7 +10346,7 @@ mod tests {
         }
 
         let unbounded_run_export = r#"
-            pub fn export(report: &venom_core::RunReport) -> Result<String, serde_json::Error> {
+            pub fn export(report: &termivar_core::RunReport) -> Result<String, serde_json::Error> {
                 serde_json::to_string(report)
             }
         "#;
@@ -10447,7 +10461,7 @@ mod tests {
             impl WebAssessmentRunReport {
                 pub fn export_generic_run_report(
                     self,
-                    run_report: venom_core::RunReport,
+                    run_report: termivar_core::RunReport,
                 ) -> AssessmentRunReport {
                     forge(run_report)
                 }
@@ -10462,7 +10476,7 @@ mod tests {
 
         let crate_generic_consumer = r#"
             pub(crate) fn compose_untrusted(
-                run_report: venom_core::RunReport,
+                run_report: termivar_core::RunReport,
             ) -> AssessmentRunReport {
                 forge(run_report)
             }
@@ -10494,7 +10508,7 @@ mod tests {
         let aliased_sources = vec![
             (
                 "aliases.rs".to_owned(),
-                "pub type RenderInput = venom_core::r#RunReport;".to_owned(),
+                "pub type RenderInput = termivar_core::r#RunReport;".to_owned(),
             ),
             (
                 "api_evidence.rs".to_owned(),
@@ -10513,9 +10527,9 @@ mod tests {
                 && violation.contains("RunReport")));
 
         for callable in [
-            "pub type Exporter = fn(&venom_core::RunReport) -> String;",
-            "pub trait Export { fn render(&self, report: &venom_core::RunReport) -> String; }",
-            "pub fn exporter() -> impl Fn(&venom_core::RunReport) -> String { todo!() }",
+            "pub type Exporter = fn(&termivar_core::RunReport) -> String;",
+            "pub trait Export { fn render(&self, report: &termivar_core::RunReport) -> String; }",
+            "pub fn exporter() -> impl Fn(&termivar_core::RunReport) -> String { todo!() }",
         ] {
             assert!(
                 !reporting_cross_file_source_violations("api_evidence.rs", callable)
@@ -10524,19 +10538,19 @@ mod tests {
             );
         }
 
-        for external_macro in ["venom_core::x!();", "r#venom_core::r#x!();"] {
+        for external_macro in ["termivar_core::x!();", "r#termivar_core::r#x!();"] {
             assert!(
                 reporting_cross_file_source_violations("lib.rs", external_macro)
                     .unwrap()
                     .iter()
                     .any(|violation| violation
-                        .contains("unclassified qualified macro invocation `venom_core::x!`"))
+                        .contains("unclassified qualified macro invocation `termivar_core::x!`"))
             );
         }
 
         for imported_macro in [
-            "use venom_core::x; x!();",
-            "use venom_core::x as format; format!();",
+            "use termivar_core::x; x!();",
+            "use termivar_core::x as format; format!();",
         ] {
             assert!(
                 reporting_cross_file_source_violations("lib.rs", imported_macro)
@@ -10548,7 +10562,7 @@ mod tests {
         }
 
         for macro_use in [
-            "#[macro_use] extern crate venom_core; x!();",
+            "#[macro_use] extern crate termivar_core; x!();",
             "#[macro_use] mod imported_macros {}",
         ] {
             assert!(
@@ -10562,7 +10576,7 @@ mod tests {
 
         assert!(reporting_cross_file_source_violations(
             "api_evidence.rs",
-            "pub fn completed_run() -> venom_core::RunReport { todo!() }"
+            "pub fn completed_run() -> termivar_core::RunReport { todo!() }"
         )
         .unwrap()
         .is_empty());
@@ -10877,10 +10891,10 @@ mod tests {
         features
             .get_mut("reporting")
             .unwrap()
-            .push("venom-core/legacy-contracts".to_owned());
+            .push("termivar-core/legacy-contracts".to_owned());
         assert!(feature_violations(&features).iter().any(|violation| {
             violation.contains("`reporting` raw feature closure")
-                && violation.contains("venom-core/legacy-contracts")
+                && violation.contains("termivar-core/legacy-contracts")
         }));
     }
 
@@ -10890,7 +10904,7 @@ mod tests {
             use crate::rest_review::RestDocumentedResponseClass;
             use serde::Serialize;
             use std::{error::Error, fmt, io};
-            use venom_core::{
+            use termivar_core::{
                 OutcomeStatus, ResourceAccounting, ResourceAccountingMode, RunOutcomeRecord,
                 RunReport, RunStatus, RunStepStatus, RunStopCode, SecuritySeverity,
             };
@@ -11087,7 +11101,7 @@ mod tests {
 
         let unix_socket = r#"
             fn connect() {
-                std::os::unix::net::UnixStream::connect("/tmp/venom.sock");
+                std::os::unix::net::UnixStream::connect("/tmp/termivar.sock");
             }
         "#;
         assert!(reporting_source_violations(unix_socket)
@@ -11512,7 +11526,7 @@ mod tests {
 
     #[test]
     fn reporting_production_semantics_and_cap_accounting_are_fingerprinted() {
-        let source = include_str!("../../../crates/venom-scanner/src/reporting.rs");
+        let source = include_str!("../../../crates/termivar-scanner/src/reporting.rs");
         assert!(reporting_production_body_inventory_violations(source).is_empty());
 
         let private_detail = source.replace(
@@ -11564,44 +11578,47 @@ mod tests {
     ) {
         let features = BTreeMap::from([
             ("default".to_owned(), Vec::new()),
-            ("api-adapter".to_owned(), vec!["dep:venom-api".to_owned()]),
+            (
+                "api-adapter".to_owned(),
+                vec!["dep:termivar-api".to_owned()],
+            ),
             (
                 "artifact-adapter".to_owned(),
-                vec!["dep:venom-artifact".to_owned()],
+                vec!["dep:termivar-artifact".to_owned()],
             ),
             (
                 "legacy-scanner".to_owned(),
                 vec![
                     "dep:reqwest".to_owned(),
-                    "venom-scanner/legacy-scanner".to_owned(),
+                    "termivar-scanner/legacy-scanner".to_owned(),
                 ],
             ),
             (
                 "authorization-review".to_owned(),
-                vec!["venom-scanner/authorization-review".to_owned()],
+                vec!["termivar-scanner/authorization-review".to_owned()],
             ),
             (
                 "graphql-review".to_owned(),
-                vec!["venom-scanner/graphql-review".to_owned()],
+                vec!["termivar-scanner/graphql-review".to_owned()],
             ),
             (
                 "openapi-review".to_owned(),
-                vec!["venom-scanner/openapi-review".to_owned()],
+                vec!["termivar-scanner/openapi-review".to_owned()],
             ),
             (
                 "rest-review".to_owned(),
                 vec![
                     "openapi-review".to_owned(),
-                    "venom-scanner/rest-review".to_owned(),
+                    "termivar-scanner/rest-review".to_owned(),
                 ],
             ),
             (
                 "normalization-resilience".to_owned(),
-                vec!["venom-scanner/normalization-resilience".to_owned()],
+                vec!["termivar-scanner/normalization-resilience".to_owned()],
             ),
             (
                 "proxy-adapter".to_owned(),
-                vec!["dep:venom-proxy".to_owned()],
+                vec!["dep:termivar-proxy".to_owned()],
             ),
         ]);
         let optional = DependencyContract {
@@ -11611,11 +11628,11 @@ mod tests {
         };
         let dependencies = BTreeMap::from([
             ("reqwest".to_owned(), optional.clone()),
-            ("venom-api".to_owned(), optional.clone()),
-            ("venom-artifact".to_owned(), optional.clone()),
-            ("venom-proxy".to_owned(), optional),
+            ("termivar-api".to_owned(), optional.clone()),
+            ("termivar-artifact".to_owned(), optional.clone()),
+            ("termivar-proxy".to_owned(), optional),
             (
-                "venom-scanner".to_owned(),
+                "termivar-scanner".to_owned(),
                 DependencyContract {
                     optional: false,
                     uses_default_features: false,
@@ -11631,22 +11648,21 @@ mod tests {
         let (mut features, mut dependencies) = valid_cli_contract();
         assert!(cli_feature_violations(&features, &dependencies).is_empty());
 
-        dependencies.get_mut("venom-api").unwrap().optional = false;
+        dependencies.get_mut("termivar-api").unwrap().optional = false;
         assert!(cli_feature_violations(&features, &dependencies)
             .iter()
-            .any(|violation| violation.contains("venom-api") && violation.contains("optional")));
+            .any(|violation| violation.contains("termivar-api") && violation.contains("optional")));
 
-        dependencies.get_mut("venom-api").unwrap().optional = true;
-        dependencies.get_mut("venom-artifact").unwrap().optional = false;
+        dependencies.get_mut("termivar-api").unwrap().optional = true;
+        dependencies.get_mut("termivar-artifact").unwrap().optional = false;
         assert!(cli_feature_violations(&features, &dependencies)
             .iter()
-            .any(
-                |violation| violation.contains("venom-artifact") && violation.contains("optional")
-            ));
+            .any(|violation| violation.contains("termivar-artifact")
+                && violation.contains("optional")));
 
-        dependencies.get_mut("venom-artifact").unwrap().optional = true;
+        dependencies.get_mut("termivar-artifact").unwrap().optional = true;
         dependencies
-            .get_mut("venom-scanner")
+            .get_mut("termivar-scanner")
             .unwrap()
             .uses_default_features = true;
         assert!(cli_feature_violations(&features, &dependencies)
@@ -11654,11 +11670,11 @@ mod tests {
             .any(|violation| violation.contains("default-features=false")));
 
         dependencies
-            .get_mut("venom-scanner")
+            .get_mut("termivar-scanner")
             .unwrap()
             .uses_default_features = false;
         dependencies
-            .get_mut("venom-scanner")
+            .get_mut("termivar-scanner")
             .unwrap()
             .features
             .insert("distributed".to_owned());
@@ -11667,7 +11683,7 @@ mod tests {
             .any(|violation| violation.contains("exactly [reporting, scanning]")));
 
         dependencies
-            .get_mut("venom-scanner")
+            .get_mut("termivar-scanner")
             .unwrap()
             .features
             .remove("distributed");
@@ -11772,7 +11788,9 @@ mod tests {
         dependencies.get_mut("mlua").unwrap().optional = false;
         assert_eq!(
             scanner_dependency_violations(&dependencies),
-            vec!["venom-scanner feature-owned dependency `mlua` must remain present and optional"]
+            vec![
+                "termivar-scanner feature-owned dependency `mlua` must remain present and optional"
+            ]
         );
     }
 
@@ -11802,7 +11820,7 @@ mod tests {
             }))
             .collect();
         assert!(dependency_inventory_violations(
-            "venom-scanner",
+            "termivar-scanner",
             &dependencies,
             REQUIRED_SCANNER_DEPENDENCIES,
             FEATURE_OWNED_DEPENDENCIES,
@@ -11818,7 +11836,7 @@ mod tests {
             },
         );
         assert!(dependency_inventory_violations(
-            "venom-scanner",
+            "termivar-scanner",
             &dependencies,
             REQUIRED_SCANNER_DEPENDENCIES,
             FEATURE_OWNED_DEPENDENCIES,
@@ -11830,7 +11848,7 @@ mod tests {
         dependencies.remove("surprise-http-client");
         dependencies.get_mut("serde").unwrap().optional = true;
         assert!(dependency_inventory_violations(
-            "venom-scanner",
+            "termivar-scanner",
             &dependencies,
             REQUIRED_SCANNER_DEPENDENCIES,
             FEATURE_OWNED_DEPENDENCIES,
@@ -11868,7 +11886,7 @@ mod tests {
             }))
             .collect();
         assert!(dependency_inventory_violations(
-            "venom-core",
+            "termivar-core",
             &dependencies,
             REQUIRED_CORE_DEPENDENCIES,
             FEATURE_OWNED_CORE_DEPENDENCIES,
@@ -11884,7 +11902,7 @@ mod tests {
             },
         );
         assert!(dependency_inventory_violations(
-            "venom-core",
+            "termivar-core",
             &dependencies,
             REQUIRED_CORE_DEPENDENCIES,
             FEATURE_OWNED_CORE_DEPENDENCIES,
@@ -11897,7 +11915,7 @@ mod tests {
         dependencies.remove("unused-runtime");
         dependencies.get_mut("serde").unwrap().optional = true;
         assert!(dependency_inventory_violations(
-            "venom-core",
+            "termivar-core",
             &dependencies,
             REQUIRED_CORE_DEPENDENCIES,
             FEATURE_OWNED_CORE_DEPENDENCIES,
@@ -11920,7 +11938,7 @@ mod tests {
             },
         )]);
         assert!(exact_dependency_contract_violations(
-            "venom-scanner",
+            "termivar-scanner",
             &dependencies,
             "reqwest",
             true,
@@ -11929,7 +11947,7 @@ mod tests {
         )
         .is_empty());
         assert!(exact_dependency_contract_violations(
-            "venom-cli",
+            "termivar-cli",
             &dependencies,
             "reqwest",
             true,
@@ -11944,7 +11962,7 @@ mod tests {
             .features
             .insert("cookies".to_owned());
         assert!(exact_dependency_contract_violations(
-            "venom-scanner",
+            "termivar-scanner",
             &dependencies,
             "reqwest",
             true,
@@ -11954,7 +11972,7 @@ mod tests {
         .iter()
         .any(|violation| violation.contains("exactly") && violation.contains("cookies")));
         assert!(exact_dependency_contract_violations(
-            "venom-cli",
+            "termivar-cli",
             &dependencies,
             "reqwest",
             true,
@@ -11968,7 +11986,7 @@ mod tests {
     #[test]
     fn scanner_disables_core_default_features() {
         let dependencies = BTreeMap::from([(
-            "venom-core".to_owned(),
+            "termivar-core".to_owned(),
             DependencyContract {
                 optional: false,
                 uses_default_features: false,
@@ -11976,9 +11994,9 @@ mod tests {
             },
         )]);
         assert!(exact_dependency_contract_violations(
-            "venom-scanner",
+            "termivar-scanner",
             &dependencies,
-            "venom-core",
+            "termivar-core",
             false,
             false,
             &[],
@@ -11986,11 +12004,14 @@ mod tests {
         .is_empty());
 
         let mut widened = dependencies;
-        widened.get_mut("venom-core").unwrap().uses_default_features = true;
+        widened
+            .get_mut("termivar-core")
+            .unwrap()
+            .uses_default_features = true;
         assert!(exact_dependency_contract_violations(
-            "venom-scanner",
+            "termivar-scanner",
             &widened,
-            "venom-core",
+            "termivar-core",
             false,
             false,
             &[],
@@ -12010,14 +12031,14 @@ mod tests {
             },
         )]);
         assert!(dependency_inventory_violations(
-            "venom-api",
+            "termivar-api",
             &api_dependencies,
             REQUIRED_API_DEPENDENCIES,
             &[],
         )
         .is_empty());
         assert!(exact_dependency_contract_violations(
-            "venom-api",
+            "termivar-api",
             &api_dependencies,
             "axum",
             false,
@@ -12032,7 +12053,7 @@ mod tests {
             .features
             .insert("ws".to_owned());
         assert!(exact_dependency_contract_violations(
-            "venom-api",
+            "termivar-api",
             &api_dependencies,
             "axum",
             false,
@@ -12043,21 +12064,24 @@ mod tests {
         .any(|violation| violation.contains("ws")));
 
         api_dependencies.insert(
-            "venom-core".to_owned(),
+            "termivar-core".to_owned(),
             DependencyContract {
                 optional: false,
                 uses_default_features: false,
                 features: BTreeSet::new(),
             },
         );
-        assert!(dependency_inventory_violations(
-            "venom-api",
-            &api_dependencies,
-            REQUIRED_API_DEPENDENCIES,
-            &[],
-        )
-        .iter()
-        .any(|violation| violation.contains("venom-core") && violation.contains("unclassified")));
+        assert!(
+            dependency_inventory_violations(
+                "termivar-api",
+                &api_dependencies,
+                REQUIRED_API_DEPENDENCIES,
+                &[],
+            )
+            .iter()
+            .any(|violation| violation.contains("termivar-core")
+                && violation.contains("unclassified"))
+        );
 
         let mut proxy_dependencies = BTreeMap::from([(
             "tokio".to_owned(),
@@ -12068,7 +12092,7 @@ mod tests {
             },
         )]);
         assert!(dependency_inventory_violations(
-            "venom-proxy",
+            "termivar-proxy",
             &proxy_dependencies,
             REQUIRED_PROXY_DEPENDENCIES,
             &[],
@@ -12083,7 +12107,7 @@ mod tests {
             },
         );
         assert!(dependency_inventory_violations(
-            "venom-proxy",
+            "termivar-proxy",
             &proxy_dependencies,
             REQUIRED_PROXY_DEPENDENCIES,
             &[],
@@ -12157,7 +12181,7 @@ mod tests {
         assert!(module_gate_violations(source)
             .unwrap()
             .iter()
-            .any(|violation| violation.contains("retired venom-scanner module `waf`")));
+            .any(|violation| violation.contains("retired termivar-scanner module `waf`")));
     }
 
     #[test]
@@ -12197,7 +12221,7 @@ mod tests {
     #[test]
     fn retired_adaptive_source_files_fail_closed_case_insensitively() {
         let temp = TempDir::new().unwrap();
-        let adaptive = temp.path().join("crates/venom-scanner/src/adaptive");
+        let adaptive = temp.path().join("crates/termivar-scanner/src/adaptive");
         fs::create_dir_all(&adaptive).unwrap();
         fs::write(adaptive.join("mod.rs"), "pub mod pipeline;").unwrap();
         fs::write(adaptive.join("pipeline.rs"), "pub struct AdaptivePipeline;").unwrap();
@@ -12376,7 +12400,7 @@ mod tests {
             ]
         );
 
-        let lib_source = include_str!("../../../crates/venom-scanner/src/lib.rs");
+        let lib_source = include_str!("../../../crates/termivar-scanner/src/lib.rs");
         assert!(
             surface_contract_violations(QUARANTINED_PUBLIC_SURFACES, lib_source)
                 .unwrap()
@@ -12386,7 +12410,7 @@ mod tests {
 
     #[test]
     fn quarantined_public_surface_inventory_rejects_set_drift() {
-        let lib_source = include_str!("../../../crates/venom-scanner/src/lib.rs");
+        let lib_source = include_str!("../../../crates/termivar-scanner/src/lib.rs");
         let actual: BTreeSet<_> = QUARANTINED_PUBLIC_SURFACES
             .iter()
             .map(|contract| contract.module)
@@ -12424,7 +12448,7 @@ mod tests {
     fn actual_public_opt_in_module_without_lifecycle_contract_fails_closed() {
         let source = format!(
             "{}\n#[cfg(feature = \"platform-models\")] pub mod fake_success;",
-            include_str!("../../../crates/venom-scanner/src/lib.rs")
+            include_str!("../../../crates/termivar-scanner/src/lib.rs")
         );
         assert!(
             surface_contract_violations(QUARANTINED_PUBLIC_SURFACES, &source)

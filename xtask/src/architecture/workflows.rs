@@ -24,7 +24,7 @@ const TAG_FETCH_GATE: &str = "git fetch --force --no-tags origin \"refs/tags/${G
 const TAG_TYPE_GATE: &str = "test \"$(git cat-file -t \"refs/tags/${GITHUB_REF_NAME}\")\" = tag";
 const TAG_COMMIT_GATE: &str =
     "test \"$(git rev-parse \"refs/tags/${GITHUB_REF_NAME}^{commit}\")\" = \"$(git rev-parse \"${GITHUB_SHA}^{commit}\")\"";
-const CHECKSUM_GATE: &str = "sha256sum venom-* | sort -k2 > ../SHA256SUMS";
+const CHECKSUM_GATE: &str = "sha256sum termivar-* | sort -k2 > ../SHA256SUMS";
 const RELEASE_CREATE_GATE: &str = "gh release create \"$GITHUB_REF_NAME\" \\";
 const TESTS_WORKFLOW: &str = ".github/workflows/tests.yml";
 const COVERAGE_BASELINE_POINTER: &str = "docs/reports/coverage/accepted-baseline.txt";
@@ -1008,7 +1008,7 @@ mod tests {
     #[test]
     fn reusable_workflow_with_full_sha_is_accepted() {
         let contents = format!(
-            "    uses: owner/venom/.github/workflows/reusable.yml@{SHA} # reusable workflow\n"
+            "    uses: owner/termivar/.github/workflows/reusable.yml@{SHA} # reusable workflow\n"
         );
         assert!(violations(&contents).is_empty());
     }

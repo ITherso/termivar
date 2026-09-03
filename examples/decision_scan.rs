@@ -2,26 +2,26 @@
 //!
 //! ## Runtime scope
 //!
-//! - **Build:** example binary (`venom-examples`).
+//! - **Build:** example binary (`termivar-examples`).
 //! - **Execution:** Surface B host — composes `StandardWebDecisionRuntime` with a
 //!   `RuntimeBudget`.
-//! - **Default `venom scan`:** yes; this is a small library-host equivalent of
+//! - **Default `termivar scan`:** yes; this is a small library-host equivalent of
 //!   the canonical deterministic command.
 //! - **Support:** implemented and tested (reference host for the deterministic runtime).
 //!
 //! See `docs/internals/runtime-map.md`.
 //!
 //! Use only against a target you own or are explicitly authorized to test:
-//! `cargo run -p venom-examples --bin decision_scan -- https://target.example/`
+//! `cargo run -p termivar-examples --bin decision_scan -- https://target.example/`
 
 use std::{error::Error, time::Duration};
 
 use clap::Parser;
-use url::Url;
-use venom_scanner::{
+use termivar_scanner::{
     HttpBodyCapture, HttpEvidencePolicy, RuntimeBudget, StandardWebDecisionRuntime,
     StandardWebDecisionRuntimeTurn,
 };
+use url::Url;
 
 /// Run the standard deterministic web decision runtime against an authorized target.
 #[derive(Debug, Parser)]

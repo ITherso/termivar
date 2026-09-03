@@ -1,0 +1,47 @@
+[package]
+name = "termivar-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Command-line composition layer for the Termivar security-testing framework"
+homepage = "https://github.com/ITherso/venom"
+keywords = ["security", "scanner", "pentesting", "cli"]
+categories = ["command-line-utilities"]
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "termivar"
+path = "src/main.rs"
+
+[features]
+default = []
+legacy-scanner = ["dep:reqwest", "termivar-scanner/legacy-scanner"]
+api-adapter = ["dep:termivar-api"]
+proxy-adapter = ["dep:termivar-proxy"]
+artifact-adapter = ["dep:termivar-artifact"]
+normalization-resilience = ["termivar-scanner/normalization-resilience"]
+graphql-review = ["termivar-scanner/graphql-review"]
+openapi-review = ["termivar-scanner/openapi-review"]
+rest-review = ["openapi-review", "termivar-scanner/rest-review"]
+authorization-review = ["termivar-scanner/authorization-review"]
+
+[dependencies]
+termivar-core = { version = "0.10.0-alpha.1", path = "../termivar-core" }
+termivar-scanner = { version = "0.10.0-alpha.1", path = "../termivar-scanner", default-features = false, features = ["scanning", "reporting"] }
+termivar-api = { version = "0.10.0-alpha.1", path = "../termivar-api", optional = true }
+termivar-proxy = { version = "0.10.0-alpha.1", path = "../termivar-proxy", optional = true }
+termivar-artifact = { version = "=0.10.0-alpha.1", path = "../termivar-artifact", optional = true }
+tokio = { workspace = true }
+reqwest = { workspace = true, optional = true }
+url = "2.5"
+clap = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

@@ -61,7 +61,7 @@ const REMOVED_PRODUCTION_PLUGIN_TYPES: &[&str] = &[
 
 /// Verifies that source-linked plugins remain observation-only host guests.
 pub(super) fn check(workspace_root: &Path) -> Result<Vec<String>, Box<dyn Error>> {
-    let scanner = workspace_root.join("crates/venom-scanner/src");
+    let scanner = workspace_root.join("crates/termivar-scanner/src");
     let plugin_source = fs::read_to_string(scanner.join("plugin.rs"))?;
     let decision_source = fs::read_to_string(scanner.join("decision_runner.rs"))?;
     let library_source = fs::read_to_string(scanner.join("lib.rs"))?;
@@ -84,10 +84,10 @@ pub(super) fn check(workspace_root: &Path) -> Result<Vec<String>, Box<dyn Error>
 
     let mut consumer_sources = vec![
         workspace_root.join("examples/custom_plugin.rs"),
-        workspace_root.join("crates/venom-scanner/tests/plugin_integration_tests.rs"),
+        workspace_root.join("crates/termivar-scanner/tests/plugin_integration_tests.rs"),
     ];
     consumer_sources.extend(rust_sources_below(
-        &workspace_root.join("templates/venom-plugin"),
+        &workspace_root.join("templates/termivar-plugin"),
     )?);
     consumer_sources.extend(rust_sources_below(
         &workspace_root.join("examples/plugin-fixtures"),
@@ -177,12 +177,12 @@ fn validate_contract_sources(
     }
 
     if declares_plugins_module(library_source) {
-        violations.push("venom-scanner reintroduces a production plugins module".to_owned());
+        violations.push("termivar-scanner reintroduces a production plugins module".to_owned());
     }
     for removed in REMOVED_PRODUCTION_PLUGIN_TYPES {
         if library_source.contains(removed) {
             violations.push(format!(
-                "venom-scanner reexports removed fake scanner type {removed}"
+                "termivar-scanner reexports removed fake scanner type {removed}"
             ));
         }
     }

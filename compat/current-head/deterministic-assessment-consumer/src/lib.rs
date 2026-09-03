@@ -3,7 +3,7 @@
 #![forbid(unsafe_code)]
 
 use url::Url;
-use venom_scanner::{
+use termivar_scanner::{
     web_runtime::{
         AssessmentRunReport, ScanProfileV1, WebAssessmentRuntime, WebAssessmentRuntimeError,
     },
@@ -36,7 +36,7 @@ pub fn render_completed_assessment(
 
 #[cfg(test)]
 mod tests {
-    use venom_scanner::web_runtime::SCAN_PROFILE_V1_SCHEMA;
+    use termivar_scanner::web_runtime::SCAN_PROFILE_V1_SCHEMA;
 
     use super::*;
 

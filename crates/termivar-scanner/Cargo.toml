@@ -1,0 +1,148 @@
+[package]
+name = "termivar-scanner"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Composable scanner SDK, execution pipeline, plugins, and reporting for Termivar"
+homepage = "https://github.com/ITherso/venom"
+documentation = "https://itherso.github.io/venom/rust/termivar_scanner/"
+keywords = ["security", "scanner", "pentesting", "sdk", "async"]
+categories = ["development-tools", "network-programming"]
+
+[lints]
+workspace = true
+
+[dependencies]
+termivar-core = { version = "0.10.0-alpha.1", path = "../termivar-core", default-features = false }
+tokio = { workspace = true, optional = true }
+tokio-util = { workspace = true, optional = true }
+reqwest = { workspace = true, optional = true }
+chrono = { workspace = true, optional = true }
+futures = { workspace = true, optional = true }
+async-trait = { version = "0.1", optional = true }
+dashmap = { version = "5.5", optional = true }
+url = "2.5"
+base64 = { workspace = true }
+regex = { workspace = true, optional = true }
+html5ever = { workspace = true, optional = true }
+markup5ever_rcdom = { workspace = true, optional = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+thiserror = { workspace = true }
+toml = { workspace = true, optional = true }
+uuid = { workspace = true, optional = true }
+mlua = { version = "0.9", default-features = false, features = ["lua54", "vendored"], optional = true }
+
+[dev-dependencies]
+clap = { workspace = true }
+criterion = "0.5"
+tempfile = { workspace = true }
+
+[features]
+# Default product: deterministic evidence/reasoning/runtime surface.
+default = ["core", "scanning"]
+
+# Core scanning engine (always compiled)
+core = []
+
+# Deterministic scanner runtime
+scanning = ["core", "dep:async-trait", "dep:html5ever", "dep:markup5ever_rcdom", "dep:reqwest", "dep:tokio", "dep:tokio-util", "dep:toml"]
+
+# Explicitly enabled normalization-resilience review for inert structural probes.
+# The runtime remains absent from the default scanner feature set.
+normalization-resilience = ["scanning"]
+
+# Explicitly enabled, anonymous, bounded GraphQL surface review. The API
+# reasoner remains transport-neutral; the scanner runtime owns any requests.
+graphql-review = ["scanning"]
+
+# Explicitly enabled, bounded OpenAPI-described surface review. Contract
+# parsing remains transport-neutral; the scanner runtime owns any requests.
+openapi-review = ["scanning"]
+
+# Explicitly enabled, bounded REST read-only review. A committed OpenAPI
+# catalog is required before the scanner runtime may select one safe GET.
+rest-review = ["openapi-review"]
+
+# Explicitly enabled, bounded four-view authorization differential review.
+# Credentials and network authority remain owned by the web-assessment host.
+authorization-review = ["scanning"]
+
+# Historical direct-I/O phases, ordered runner, and Scanner SDK.
+# This is intentionally absent from the default product.
+legacy-scanner = ["scanning", "termivar-core/legacy-contracts", "dep:chrono", "dep:dashmap", "dep:futures", "dep:uuid"]
+
+# Unwired REST/auth/dashboard/persistence/realtime data and service models.
+# These types are retained for explicit library consumers, but no repository
+# runtime composes them and they are intentionally absent from the default.
+platform-models = ["core", "termivar-core/legacy-contracts", "dep:dashmap", "dep:uuid"]
+
+# Bounded host-library renderers for the typed RunReport contract. Kept
+# separate so output-format dependencies and consumers do not enlarge the
+# default decision runtime.
+reporting = ["core"]
+
+# Detection & analysis models
+detection = ["dep:regex"]
+
+# Serializable records for externally computed model output; no learning runtime
+ml = []
+
+# Bounded deterministic in-process coordinator. It intentionally owns no
+# transport, serialization, clock, or persistence dependency.
+distributed = []
+
+# Caller-supplied measurement and comparison records; no telemetry collector
+monitoring = []
+
+# Caller-supplied compliance/audit record catalogs; no audit execution
+compliance = []
+
+# Offline threat record catalogs; no feed retrieval or correlation engine
+threat-intel = []
+
+# Plugin system support
+plugins = ["core", "dep:async-trait", "dep:dashmap", "dep:futures", "dep:regex", "dep:tokio", "dep:tokio-util"]
+
+# Experimental host-owned Lua execution. Lua is independent from the native
+# plugin ABI and carries its VM/runtime dependencies only when explicitly requested.
+lua = ["core", "dep:mlua", "dep:tokio"]
+
+# Historical compatibility aggregate enabling every opt-in source surface.
+# This is not a supported product tier or a production-readiness claim.
+full = ["core", "scanning", "normalization-resilience", "graphql-review", "openapi-review", "rest-review", "authorization-review", "legacy-scanner", "detection", "ml", "distributed", "monitoring", "compliance", "threat-intel", "platform-models", "reporting", "plugins", "lua"]
+
+# Minimal deterministic scanner runtime
+minimal = ["core", "scanning"]
+
+# Historical compatibility aggregate excluding threat intelligence.
+# It is not an enterprise distribution or supported package.
+enterprise = ["core", "scanning", "normalization-resilience", "graphql-review", "openapi-review", "rest-review", "authorization-review", "legacy-scanner", "detection", "ml", "distributed", "monitoring", "compliance", "platform-models", "reporting", "plugins", "lua"]
+
+# Historical alias for the all-opt-in compatibility aggregate.
+research = ["full"]
+
+[lib]
+name = "termivar_scanner"
+path = "src/lib.rs"
+
+[package.metadata.docs.rs]
+all-features = true
+targets = ["x86_64-unknown-linux-gnu"]
+
+[[bench]]
+name = "scanner_benchmarks"
+harness = false
+
+[[bench]]
+name = "endpoint_assessment"
+harness = false
+required-features = ["scanning"]
+
+[[test]]
+name = "endpoint_assessment_harness"
+required-features = ["scanning"]

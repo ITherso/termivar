@@ -1,12 +1,12 @@
 [workspace]
 members = [
-    "crates/venom-artifact",
-    "crates/venom-core",
-    "crates/venom-exploit",
-    "crates/venom-proxy",
-    "crates/venom-scanner",
-    "crates/venom-api",
-    "crates/venom-cli",
+    "crates/termivar-artifact",
+    "crates/termivar-core",
+    "crates/termivar-exploit",
+    "crates/termivar-proxy",
+    "crates/termivar-scanner",
+    "crates/termivar-api",
+    "crates/termivar-cli",
     "examples",
     "xtask",
 ]

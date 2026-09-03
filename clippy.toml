@@ -1,4 +1,4 @@
-# VENOM Clippy Configuration
+# Termivar Clippy Configuration
 # Static analysis and linting rules
 
 # Cognitive complexity (functions shouldn't be too complex)
@@ -6,7 +6,7 @@ cognitive-complexity-threshold = 20
 
 # Docstring length (minimum characters before warning)
 doc-valid-idents = [
-    "VENOM",
+    "Termivar",
     "CLI",
     "MITM",
     "TLS",

@@ -19,12 +19,12 @@ use syn::{
 };
 
 const SCAN_TASK_BOUNDARY_SOURCES: &[&str] = &[
-    "crates/venom-scanner/src/runner.rs",
-    "crates/venom-scanner/src/sdk.rs",
-    "crates/venom-scanner/src/decision_runner.rs",
-    "crates/venom-cli/src/main.rs",
-    "crates/venom-cli/src/assessment_scan.rs",
-    "crates/venom-cli/src/decision_scan.rs",
+    "crates/termivar-scanner/src/runner.rs",
+    "crates/termivar-scanner/src/sdk.rs",
+    "crates/termivar-scanner/src/decision_runner.rs",
+    "crates/termivar-cli/src/main.rs",
+    "crates/termivar-cli/src/assessment_scan.rs",
+    "crates/termivar-cli/src/decision_scan.rs",
 ];
 
 pub(super) fn check(workspace_root: &Path) -> Result<Vec<String>, Box<dyn Error>> {
@@ -193,9 +193,9 @@ mod tests {
             .copied()
             .collect::<std::collections::BTreeSet<_>>();
         assert_eq!(inventory.len(), SCAN_TASK_BOUNDARY_SOURCES.len());
-        assert!(inventory.contains("crates/venom-cli/src/main.rs"));
-        assert!(inventory.contains("crates/venom-cli/src/decision_scan.rs"));
-        assert!(inventory.contains("crates/venom-cli/src/assessment_scan.rs"));
+        assert!(inventory.contains("crates/termivar-cli/src/main.rs"));
+        assert!(inventory.contains("crates/termivar-cli/src/decision_scan.rs"));
+        assert!(inventory.contains("crates/termivar-cli/src/assessment_scan.rs"));
     }
 
     #[test]

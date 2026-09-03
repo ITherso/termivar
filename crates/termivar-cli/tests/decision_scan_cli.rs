@@ -1,0 +1,389 @@
+//! Process-level contract tests for deterministic `termivar scan`, exercising the real
+//! compiled binary (stdout/stderr/exit code), not just the render functions.
+//!
+//! These assert the machine-consumption contract: JSON goes to stdout with no
+//! warning contamination, runtime notices go to stderr, the deprecated
+//! `decision-scan` alias executes the same behavior, and invalid flag combinations
+//! are rejected before contacting a target.
+
+use std::io::{Read, Write};
+use std::net::{SocketAddr, TcpListener};
+use std::process::Command;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
+use std::thread;
+
+fn termivar() -> Command {
+    Command::new(env!("CARGO_BIN_EXE_termivar"))
+}
+
+/// A local server that replies to every connection with a fixed response and
+/// counts the connections it accepted. The accept loop is a detached thread that
+/// ends when the process exits.
+struct TestServer {
+    url: String,
+    connections: Arc<AtomicUsize>,
+}
+
+fn serve(response: &'static [u8]) -> TestServer {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address: SocketAddr = listener.local_addr().unwrap();
+    let connections = Arc::new(AtomicUsize::new(0));
+    let counter = Arc::clone(&connections);
+    thread::spawn(move || {
+        for stream in listener.incoming() {
+            let mut stream = match stream {
+                Ok(stream) => stream,
+                Err(_) => break,
+            };
+            counter.fetch_add(1, Ordering::SeqCst);
+            let mut buffer = [0_u8; 2048];
+            let _ = stream.read(&mut buffer);
+            let _ = stream.write_all(response);
+            let _ = stream.flush();
+        }
+    });
+    TestServer {
+        url: format!("http://{address}/"),
+        connections,
+    }
+}
+
+const BASIC_CHALLENGE: &[u8] =
+    b"HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: Basic realm=\"admin\"\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+const GENERIC_OK: &[u8] =
+    b"HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: 5\r\nConnection: close\r\n\r\nhello";
+
+#[test]
+fn json_format_writes_parseable_json_to_stdout_and_the_runtime_notice_to_stderr() {
+    let server = serve(BASIC_CHALLENGE);
+    let output = termivar()
+        .args(["scan", "--format", "json", &server.url])
+        .output()
+        .expect("failed to run termivar");
+
+    assert!(output.status.success(), "exit status: {:?}", output.status);
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let stderr = String::from_utf8(output.stderr).unwrap();
+
+    // stdout is pure JSON — the preview warning never contaminates it.
+    assert!(
+        !stdout.contains("[ALPHA]"),
+        "stdout leaked the runtime notice:\n{stdout}"
+    );
+    let value: serde_json::Value =
+        serde_json::from_str(&stdout).expect("stdout must be valid JSON");
+    assert_eq!(value["schema_version"], "decision-scan/v1");
+    assert_eq!(value["hypotheses"][0]["value"], "http-basic");
+
+    // The alpha/authorization notice is on stderr.
+    assert!(
+        stderr.contains("[ALPHA]") && stderr.contains("authorized"),
+        "stderr must carry the runtime notice:\n{stderr}"
+    );
+    assert!(!stderr.contains("[DEPRECATED]"));
+}
+
+#[test]
+fn json_with_explain_is_rejected_and_contacts_no_target() {
+    let server = serve(GENERIC_OK);
+    let output = termivar()
+        .args(["scan", "--format", "json", "--explain", &server.url])
+        .output()
+        .expect("failed to run termivar");
+
+    // Fail-fast: non-zero exit with an argument-conflict diagnostic.
+    assert!(
+        !output.status.success(),
+        "the invalid combination must exit non-zero"
+    );
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(
+        stderr.contains("--explain") && stderr.to_lowercase().contains("json"),
+        "expected an argument-conflict diagnostic naming both flags:\n{stderr}"
+    );
+    // The conflict is caught before dispatch — the target is never contacted.
+    assert_eq!(
+        server.connections.load(Ordering::SeqCst),
+        0,
+        "a rejected invocation must perform zero dispatches"
+    );
+}
+
+#[cfg(feature = "legacy-scanner")]
+#[test]
+fn legacy_scan_without_acknowledgement_is_rejected_before_network_io() {
+    let server = serve(GENERIC_OK);
+    let output = termivar()
+        .args(["legacy-scan", &server.url])
+        .output()
+        .expect("failed to run termivar");
+
+    assert!(
+        !output.status.success(),
+        "missing acknowledgement must exit non-zero"
+    );
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(
+        stderr.contains("--acknowledge-legacy-heuristics"),
+        "the diagnostic must name the required acknowledgement:\n{stderr}"
+    );
+    assert!(
+        stdout.is_empty(),
+        "a rejected invocation must not render scan output:\n{stdout}"
+    );
+    assert!(
+        !stderr.contains("ordered CLI phase pipeline"),
+        "the runtime warning would show that dispatch was entered:\n{stderr}"
+    );
+    assert_eq!(
+        server.connections.load(Ordering::SeqCst),
+        0,
+        "a rejected legacy invocation must perform zero dispatches"
+    );
+}
+
+#[cfg(feature = "api-adapter")]
+#[test]
+fn unsupported_api_adapter_exits_nonzero_without_fake_startup_success() {
+    let output = termivar()
+        .args(["api", "--addr", "[::1]:8080"])
+        .output()
+        .expect("failed to run termivar");
+
+    assert!(
+        !output.status.success(),
+        "the unsupported listener adapter must exit non-zero"
+    );
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(
+        stdout.is_empty(),
+        "unsupported startup must not print a success message:\n{stdout}"
+    );
+    assert!(
+        stderr.contains("unsupported") && stderr.contains("did not bind [::1]:8080"),
+        "stderr must state that no listener was bound:\n{stderr}"
+    );
+    let stderr_lower = stderr.to_lowercase();
+    assert!(
+        !stderr_lower.contains("starting api")
+            && !stderr_lower.contains("api started")
+            && !stderr_lower.contains("listening on"),
+        "unsupported startup must not claim listener success:\n{stderr}"
+    );
+}
+
+#[cfg(feature = "proxy-adapter")]
+#[test]
+fn proxy_adapter_requires_an_explicit_upstream_before_binding() {
+    let output = termivar()
+        .args(["proxy", "--addr", "127.0.0.1:0"])
+        .output()
+        .expect("failed to run termivar");
+
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(stderr.contains("--upstream"), "unexpected stderr: {stderr}");
+}
+
+#[test]
+fn explicit_text_format_matches_the_default_output() {
+    // Both runs hit the SAME server (same origin); only the elapsed time differs,
+    // which is normalized away before the byte comparison.
+    let server = serve(GENERIC_OK);
+    let default = termivar()
+        .args(["scan", &server.url])
+        .output()
+        .expect("failed to run termivar");
+    let text = termivar()
+        .args(["scan", "--format", "text", &server.url])
+        .output()
+        .expect("failed to run termivar");
+
+    assert!(default.status.success() && text.status.success());
+    let normalize = |bytes: Vec<u8>| {
+        String::from_utf8(bytes)
+            .unwrap()
+            .lines()
+            .map(|line| match line.find(" elapsed_ms=") {
+                Some(index) => line[..index].to_string(),
+                None => line.to_string(),
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    assert_eq!(
+        normalize(default.stdout),
+        normalize(text.stdout),
+        "explicit --format text must match the default output"
+    );
+}
+
+#[test]
+fn deprecated_alias_produces_the_same_result_as_scan() {
+    let server = serve(GENERIC_OK);
+    let primary = termivar()
+        .args(["scan", "--format", "json", &server.url])
+        .output()
+        .expect("failed to run primary scan");
+    let alias = termivar()
+        .args(["decision-scan", "--format", "json", &server.url])
+        .output()
+        .expect("failed to run compatibility alias");
+
+    assert!(primary.status.success() && alias.status.success());
+    let mut primary_json: serde_json::Value = serde_json::from_slice(&primary.stdout).unwrap();
+    let mut alias_json: serde_json::Value = serde_json::from_slice(&alias.stdout).unwrap();
+    primary_json["usage"]["elapsed_ms"] = serde_json::json!(0);
+    alias_json["usage"]["elapsed_ms"] = serde_json::json!(0);
+    assert_eq!(primary_json, alias_json);
+
+    let primary_stderr = String::from_utf8(primary.stderr).unwrap();
+    let alias_stderr = String::from_utf8(alias.stderr).unwrap();
+    assert_eq!(primary_stderr, alias_stderr);
+}
+
+#[test]
+fn help_exposes_primary_product_and_only_enabled_optional_commands() {
+    let output = termivar()
+        .arg("--help")
+        .output()
+        .expect("failed to run help");
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(stdout.contains("Termivar - bounded evidence-driven web security runtime"));
+    assert!(stdout.contains("Usage: termivar [COMMAND]"));
+    assert!(stdout
+        .lines()
+        .any(|line| line.trim_start().starts_with("scan ")));
+    let has_command = |name: &str| {
+        stdout
+            .lines()
+            .any(|line| line.trim_start().starts_with(&format!("{name} ")))
+    };
+    assert_eq!(has_command("legacy-scan"), cfg!(feature = "legacy-scanner"));
+    assert_eq!(has_command("api"), cfg!(feature = "api-adapter"));
+    assert_eq!(has_command("proxy"), cfg!(feature = "proxy-adapter"));
+    assert_eq!(has_command("artifact"), cfg!(feature = "artifact-adapter"));
+    assert!(
+        stdout.contains("decision-scan"),
+        "deprecated alias should remain discoverable"
+    );
+}
+
+#[test]
+fn normalization_resilience_help_and_default_boundary_follow_the_feature() {
+    let help = termivar()
+        .args(["scan", "--help"])
+        .output()
+        .expect("failed to run scan help");
+    assert!(help.status.success());
+    let stdout = String::from_utf8(help.stdout).unwrap();
+    assert_eq!(
+        stdout.contains("--normalization-resilience"),
+        cfg!(feature = "normalization-resilience")
+    );
+}
+
+#[test]
+fn rest_review_help_and_default_boundary_follow_the_feature() {
+    let help = termivar()
+        .args(["scan", "--help"])
+        .output()
+        .expect("failed to run scan help");
+    assert!(help.status.success());
+    let stdout = String::from_utf8(help.stdout).unwrap();
+    assert_eq!(
+        stdout.contains("--rest-review"),
+        cfg!(feature = "rest-review")
+    );
+}
+
+#[test]
+fn resource_authorization_help_and_default_boundary_follow_the_feature() {
+    let help = termivar()
+        .args(["scan", "--help"])
+        .output()
+        .expect("failed to run scan help");
+    assert!(help.status.success());
+    let stdout = String::from_utf8(help.stdout).unwrap();
+    for flag in [
+        "--authorization-review-policy",
+        "--authz-primary-env",
+        "--authz-primary-file",
+        "--authz-primary-stdin",
+        "--authz-peer-env",
+        "--authz-peer-file",
+        "--authz-peer-stdin",
+    ] {
+        assert_eq!(
+            stdout.contains(flag),
+            cfg!(feature = "authorization-review"),
+            "unexpected feature boundary for {flag}"
+        );
+    }
+    assert!(!stdout.contains("--authz-primary-value"));
+    assert!(!stdout.contains("--authz-peer-value"));
+}
+
+#[cfg(feature = "normalization-resilience")]
+#[test]
+fn normalization_resilience_rejects_non_review_profiles_before_transport() {
+    let server = serve(GENERIC_OK);
+    for arguments in [
+        vec!["scan", "--normalization-resilience", server.url.as_str()],
+        vec![
+            "scan",
+            "--profile",
+            "baseline",
+            "--normalization-resilience",
+            server.url.as_str(),
+        ],
+    ] {
+        let output = termivar()
+            .args(arguments)
+            .output()
+            .expect("failed to run invalid normalization-resilience command");
+        assert!(!output.status.success());
+    }
+    assert_eq!(server.connections.load(Ordering::SeqCst), 0);
+}
+
+#[cfg(feature = "rest-review")]
+#[test]
+fn rest_review_rejects_incomplete_or_non_review_opt_in_before_transport() {
+    let server = serve(GENERIC_OK);
+    for arguments in [
+        vec![
+            "scan",
+            "--openapi-review",
+            "--rest-review",
+            server.url.as_str(),
+        ],
+        vec![
+            "scan",
+            "--profile",
+            "baseline",
+            "--openapi-review",
+            "--rest-review",
+            server.url.as_str(),
+        ],
+        vec![
+            "scan",
+            "--profile",
+            "web-review",
+            "--rest-review",
+            server.url.as_str(),
+        ],
+    ] {
+        let output = termivar()
+            .args(arguments)
+            .output()
+            .expect("failed to run invalid REST review command");
+        assert!(!output.status.success());
+    }
+    assert_eq!(server.connections.load(Ordering::SeqCst), 0);
+}

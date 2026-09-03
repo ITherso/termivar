@@ -417,7 +417,7 @@ def render_markdown(report: dict[str, Any]) -> str:
     configuration = report["configuration"]
     resources = report["process_resources"]
     lines = [
-        "# Venom endpoint performance evidence",
+        "# Termivar endpoint performance evidence",
         "",
         f"Schema: `{SCHEMA}`",
         "",

@@ -1,8 +1,8 @@
-//! Same-revision consumer of Venom's default transport-neutral core surface.
+//! Same-revision consumer of Termivar's default transport-neutral core surface.
 
 #![forbid(unsafe_code)]
 
-use venom_core::{
+use termivar_core::{
     ConfidenceScore, EntityId, Outcome, OutcomeError, ReasoningModelError, RunReportError,
     RunStopCode, RunStopReason, VerificationStage,
 };
@@ -40,7 +40,7 @@ pub fn review_confidence() -> Result<ConfidenceScore, ReasoningModelError> {
 
 #[cfg(test)]
 mod tests {
-    use venom_core::OutcomeStatus;
+    use termivar_core::OutcomeStatus;
 
     use super::*;
 

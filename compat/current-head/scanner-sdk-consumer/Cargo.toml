@@ -1,5 +1,5 @@
 [package]
-name = "venom-current-head-scanner-sdk-consumer"
+name = "termivar-current-head-scanner-sdk-consumer"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -9,4 +9,4 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
-venom-scanner = { workspace = true, features = ["legacy-scanner"] }
+termivar-scanner = { workspace = true, features = ["legacy-scanner"] }

@@ -1,12 +1,12 @@
 use std::collections::BTreeSet;
 
 use serde_json::Value;
-use venom_core::{
+use termivar_core::{
     ConfidenceScore, EntityId, Evidence, EvidenceId, EvidenceKind, EvidenceSource, EvidenceValue,
     HypothesisState, HypothesisStrength, KnowledgePredicate, OutcomeStatus, Probability,
     VerificationStage,
 };
-use venom_scanner::{
+use termivar_scanner::{
     ActionCost, AdaptationLimits, AdaptationRule, AdaptivePipeline, AttackAction, AttackPlanner,
     BenefitScore, DecisionActionOrigin, DecisionLoop, DecisionLoopCommand, DecisionLoopConfig,
     DecisionLoopError, DecisionLoopState, DecisionSession, EvidenceCalibration, EvidenceSelector,
@@ -338,7 +338,7 @@ fn run_scenario(model: &AuthorityModel) -> ScenarioObservation {
 
 fn assert_expected_result(
     model: &AuthorityModel,
-    result: &Result<venom_scanner::DecisionOutcomeReport, DecisionLoopError>,
+    result: &Result<termivar_scanner::DecisionOutcomeReport, DecisionLoopError>,
 ) {
     match (model.scenario, result) {
         (

@@ -4,7 +4,7 @@
 
 use std::time::Duration;
 
-use venom_scanner::{ScannerBuilder, ScannerSdk};
+use termivar_scanner::{ScannerBuilder, ScannerSdk};
 
 /// Builds an empty historical scanner facade without executing a scan.
 ///

@@ -1,12 +1,12 @@
 use std::collections::BTreeSet;
 
 use serde_json::Value;
-use venom_core::{
+use termivar_core::{
     ConfidenceScore, EntityId, Evidence, EvidenceId, EvidenceKind, EvidenceSource, EvidenceValue,
     HypothesisState, HypothesisStrength, KnowledgePredicate, OutcomeStatus, Probability,
     VerificationStage,
 };
-use venom_scanner::{
+use termivar_scanner::{
     AdaptationRule, EvidenceAggregation, EvidenceCalibration, EvidenceSelector, Expression,
     HypothesisConclusion, KnowledgeBase, KnowledgeLayer, OutcomeSelector, PipelineDirective,
     ReasoningRule, RuleEngine, RuleEngineError, VerificationCase, VerificationRule,
@@ -423,7 +423,7 @@ pub fn check_declarative_policy_wire(data: &[u8]) {
 
 fn check_bounded_nested_expression(
     expression: &Expression,
-    snapshot: &venom_scanner::KnowledgeSnapshot,
+    snapshot: &termivar_scanner::KnowledgeSnapshot,
     depth: usize,
 ) {
     let mut nested = expression.clone();
@@ -442,8 +442,8 @@ fn check_bounded_nested_expression(
 }
 
 fn assert_same_evaluation(
-    left: Result<venom_scanner::ExpressionEvaluation, RuleEngineError>,
-    right: Result<venom_scanner::ExpressionEvaluation, RuleEngineError>,
+    left: Result<termivar_scanner::ExpressionEvaluation, RuleEngineError>,
+    right: Result<termivar_scanner::ExpressionEvaluation, RuleEngineError>,
 ) {
     match (left, right) {
         (Ok(left), Ok(right)) => assert_eq!(left, right),
@@ -570,7 +570,7 @@ fn check_expression_corruption(expression: &Expression, root: Option<&Value>, da
     assert_eq!(&decoded, expression);
 }
 
-fn check_embedded_expression(root: Option<&Value>, snapshot: &venom_scanner::KnowledgeSnapshot) {
+fn check_embedded_expression(root: Option<&Value>, snapshot: &termivar_scanner::KnowledgeSnapshot) {
     let Some(candidate) = root.and_then(|value| value.get("expression")) else {
         return;
     };

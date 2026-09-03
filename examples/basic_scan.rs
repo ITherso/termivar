@@ -1,10 +1,10 @@
 //! Build a scanner from an application-defined phase.
 //!
 //! Run with:
-//! `cargo run -p venom-examples --bin basic_scan`
+//! `cargo run -p termivar-examples --bin basic_scan`
 
 use async_trait::async_trait;
-use venom_scanner::{Result, ScanContext, ScanFinding, ScanPhase, ScannerSdk};
+use termivar_scanner::{Result, ScanContext, ScanFinding, ScanPhase, ScannerSdk};
 
 struct InventoryPhase;
 

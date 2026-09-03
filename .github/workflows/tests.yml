@@ -19,9 +19,9 @@ jobs:
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
       - name: Build default CLI container
-        run: docker build --tag venom:ci .
+        run: docker build --tag termivar:ci .
       - name: Verify container contract
-        run: sh tests/distribution/container-contract.sh venom:ci
+        run: sh tests/distribution/container-contract.sh termivar:ci
 
   architecture:
     name: Architecture Boundaries
@@ -35,7 +35,7 @@ jobs:
       - name: Verify workspace and reasoning boundaries
         run: cargo run --locked -p xtask -- architecture
       - name: Test transport-free scanner contracts
-        run: cargo test --locked -p venom-scanner --no-default-features --lib
+        run: cargo test --locked -p termivar-scanner --no-default-features --lib
 
   historical-scanner-salvage:
     name: Historical Scanner Salvage
@@ -98,7 +98,7 @@ jobs:
       - name: Validate scanner conformance corpus
         run: cargo run --locked -p xtask -- scanner-corpus
       - name: Exercise corpus through current scanner semantics
-        run: cargo test --locked -p venom-scanner --all-features versioned_scanner_corpus_dispatches_through_current_production_semantics
+        run: cargo test --locked -p termivar-scanner --all-features versioned_scanner_corpus_dispatches_through_current_production_semantics
 
   artifact-signature-catalog:
     name: Artifact Signature Catalog
@@ -115,13 +115,13 @@ jobs:
           toolchain: "1.88.0"
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
       - name: Test bounded artifact signature contracts
-        run: cargo test --locked -p venom-artifact
+        run: cargo test --locked -p termivar-artifact
       - name: Test repository artifact catalog validator
         run: cargo test --locked -p xtask artifact_catalog
       - name: Validate repository artifact signature catalog
         run: cargo run --locked -p xtask -- artifact-catalog
       - name: Test opt-in local-file adapter
-        run: cargo test --locked -p venom-cli --no-default-features --features artifact-adapter --test artifact_cli
+        run: cargo test --locked -p termivar-cli --no-default-features --features artifact-adapter --test artifact_cli
 
   unit-tests:
     name: Unit Tests
@@ -138,12 +138,12 @@ jobs:
         run: cargo test --locked --doc --verbose
       - name: Verify default and opt-in CLI contracts
         run: |
-          cargo test --locked -p venom-cli --no-default-features
-          cargo test --locked -p venom-cli --no-default-features --features legacy-scanner
-          cargo test --locked -p venom-cli --no-default-features --features api-adapter
-          cargo test --locked -p venom-cli --no-default-features --features proxy-adapter
-          cargo test --locked -p venom-cli --no-default-features --features artifact-adapter
-          cargo test --locked -p venom-cli --no-default-features --features normalization-resilience
+          cargo test --locked -p termivar-cli --no-default-features
+          cargo test --locked -p termivar-cli --no-default-features --features legacy-scanner
+          cargo test --locked -p termivar-cli --no-default-features --features api-adapter
+          cargo test --locked -p termivar-cli --no-default-features --features proxy-adapter
+          cargo test --locked -p termivar-cli --no-default-features --features artifact-adapter
+          cargo test --locked -p termivar-cli --no-default-features --features normalization-resilience
       - name: Verify scanner feature boundaries independently
         run: |
           set -euo pipefail
@@ -151,11 +151,11 @@ jobs:
             core scanning normalization-resilience legacy-scanner platform-models reporting detection ml \
             distributed monitoring compliance threat-intel plugins lua
           do
-            cargo test --locked -p venom-scanner --no-default-features --features "$feature" --lib --tests
+            cargo test --locked -p termivar-scanner --no-default-features --features "$feature" --lib --tests
           done
           for aggregate in minimal full enterprise research
           do
-            cargo check --locked -p venom-scanner --no-default-features --features "$aggregate"
+            cargo check --locked -p termivar-scanner --no-default-features --features "$aggregate"
           done
 
   integration-tests:
@@ -184,17 +184,17 @@ jobs:
         run: |
           set -euo pipefail
           plugin_dir=$(mktemp -d)
-          cp -R templates/venom-plugin/. "$plugin_dir/"
+          cp -R templates/termivar-plugin/. "$plugin_dir/"
           sed -i \
-            -e 's/{{ project-name }}/venom-plugin-smoke/g' \
-            -e 's/{{ authors }}/Venom CI/g' \
+            -e 's/{{ project-name }}/termivar-plugin-smoke/g' \
+            -e 's/{{ authors }}/Termivar CI/g' \
             -e 's/{{ plugin_id }}/smoke-plugin/g' \
             -e 's/{{ plugin_description }}/CI smoke plugin/g' \
             "$plugin_dir/Cargo.toml" \
             "$plugin_dir/src/lib.rs" \
             "$plugin_dir/README.md"
           sed -i \
-            "s#venom-scanner = .*#venom-scanner = { path = \"${GITHUB_WORKSPACE}/crates/venom-scanner\", default-features = false, features = [\"plugins\"] }#" \
+            "s#termivar-scanner = .*#termivar-scanner = { path = \"${GITHUB_WORKSPACE}/crates/termivar-scanner\", default-features = false, features = [\"plugins\"] }#" \
             "$plugin_dir/Cargo.toml"
           cargo test --manifest-path "$plugin_dir/Cargo.toml"
 
@@ -212,15 +212,15 @@ jobs:
         run: |
           set -euo pipefail
           scanner_dir=$(mktemp -d)
-          cp -R templates/venom-scanner/. "$scanner_dir/"
+          cp -R templates/termivar-scanner/. "$scanner_dir/"
           sed -i \
-            -e 's/{{ project-name }}/venom-scanner-smoke/g' \
-            -e 's/{{ authors }}/Venom CI/g' \
+            -e 's/{{ project-name }}/termivar-scanner-smoke/g' \
+            -e 's/{{ authors }}/Termivar CI/g' \
             -e 's/{{ scanner_description }}/CI scanner SDK smoke project/g' \
             "$scanner_dir/Cargo.toml" \
             "$scanner_dir/README.md"
           sed -i \
-            "s#venom-scanner = .*#venom-scanner = { path = \"${GITHUB_WORKSPACE}/crates/venom-scanner\", default-features = false, features = [\"legacy-scanner\"] }#" \
+            "s#termivar-scanner = .*#termivar-scanner = { path = \"${GITHUB_WORKSPACE}/crates/termivar-scanner\", default-features = false, features = [\"legacy-scanner\"] }#" \
             "$scanner_dir/Cargo.toml"
           cargo test --manifest-path "$scanner_dir/Cargo.toml"
 
@@ -241,20 +241,20 @@ jobs:
           toolchain: "1.88.0"
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
       - name: Build default CLI
-        run: cargo build --locked -p venom-cli
+        run: cargo build --locked -p termivar-cli
       - name: Exercise CLI metadata
         run: |
-          cargo run --locked -p venom-cli -- --version
-          cargo run --locked -p venom-cli -- --help
+          cargo run --locked -p termivar-cli -- --version
+          cargo run --locked -p termivar-cli -- --help
       - name: Exercise default decision scan against loopback
-        run: cargo test --locked -p venom-cli --test decision_scan_cli json_format_writes_parseable_json_to_stdout_and_the_runtime_notice_to_stderr
+        run: cargo test --locked -p termivar-cli --test decision_scan_cli json_format_writes_parseable_json_to_stdout_and_the_runtime_notice_to_stderr
       - name: Exercise atomic report-output path semantics
-        run: cargo test --locked -p venom-cli --test profile_scan_cli report_output_is_complete_atomic_and_never_overwritten
+        run: cargo test --locked -p termivar-cli --test profile_scan_cli report_output_is_complete_atomic_and_never_overwritten
       - name: Exercise focused core and scanner contracts
         run: |
-          cargo test --locked -p venom-core --lib report_round_trip_and_golden_are_stable
-          cargo test --locked -p venom-scanner --lib authority_narrows_a_broader_policy_to_one_exact_origin
-          cargo test --locked -p venom-scanner --lib redirect_is_observed_without_following_the_location
+          cargo test --locked -p termivar-core --lib report_round_trip_and_golden_are_stable
+          cargo test --locked -p termivar-scanner --lib authority_narrows_a_broader_policy_to_one_exact_origin
+          cargo test --locked -p termivar-scanner --lib redirect_is_observed_without_following_the_location
 
   downstream-current-head:
     name: Downstream Current-Head Compile
@@ -269,13 +269,13 @@ jobs:
           toolchain: "1.88.0"
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
       - name: Test default core consumer
-        run: cargo test --manifest-path compat/current-head/Cargo.toml --locked -p venom-current-head-core-consumer
+        run: cargo test --manifest-path compat/current-head/Cargo.toml --locked -p termivar-current-head-core-consumer
       - name: Test deterministic assessment consumer
-        run: cargo test --manifest-path compat/current-head/Cargo.toml --locked -p venom-current-head-deterministic-assessment-consumer
+        run: cargo test --manifest-path compat/current-head/Cargo.toml --locked -p termivar-current-head-deterministic-assessment-consumer
       - name: Test historical Scanner SDK consumer
-        run: cargo test --manifest-path compat/current-head/Cargo.toml --locked -p venom-current-head-scanner-sdk-consumer
+        run: cargo test --manifest-path compat/current-head/Cargo.toml --locked -p termivar-current-head-scanner-sdk-consumer
       - name: Test plugin API 0.2 consumer
-        run: cargo test --manifest-path compat/current-head/Cargo.toml --locked -p venom-current-head-plugin-api-0-2-consumer
+        run: cargo test --manifest-path compat/current-head/Cargo.toml --locked -p termivar-current-head-plugin-api-0-2-consumer
 
   security-tests:
     name: Security Tests

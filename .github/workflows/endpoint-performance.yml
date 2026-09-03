@@ -35,10 +35,10 @@ on:
     types: [opened, synchronize, reopened, labeled]
     paths:
       - '.github/workflows/endpoint-performance.yml'
-      - 'crates/venom-scanner/Cargo.toml'
-      - 'crates/venom-scanner/benches/endpoint_assessment.rs'
-      - 'crates/venom-scanner/benches/endpoint_assessment_support/**'
-      - 'crates/venom-scanner/tests/endpoint_assessment_harness.rs'
+      - 'crates/termivar-scanner/Cargo.toml'
+      - 'crates/termivar-scanner/benches/endpoint_assessment.rs'
+      - 'crates/termivar-scanner/benches/endpoint_assessment_support/**'
+      - 'crates/termivar-scanner/tests/endpoint_assessment_harness.rs'
       - 'scripts/run-endpoint-performance.sh'
       - 'scripts/endpoint_performance_report.py'
       - 'scripts/tests/test_endpoint_performance_report.py'
@@ -48,10 +48,10 @@ on:
     branches: [main]
     paths:
       - '.github/workflows/endpoint-performance.yml'
-      - 'crates/venom-scanner/Cargo.toml'
-      - 'crates/venom-scanner/benches/endpoint_assessment.rs'
-      - 'crates/venom-scanner/benches/endpoint_assessment_support/**'
-      - 'crates/venom-scanner/tests/endpoint_assessment_harness.rs'
+      - 'crates/termivar-scanner/Cargo.toml'
+      - 'crates/termivar-scanner/benches/endpoint_assessment.rs'
+      - 'crates/termivar-scanner/benches/endpoint_assessment_support/**'
+      - 'crates/termivar-scanner/tests/endpoint_assessment_harness.rs'
       - 'scripts/run-endpoint-performance.sh'
       - 'scripts/endpoint_performance_report.py'
       - 'scripts/tests/test_endpoint_performance_report.py'
@@ -77,9 +77,9 @@ jobs:
           toolchain: '1.88.0'
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
       - name: Check endpoint benchmark target
-        run: cargo check --locked -p venom-scanner --bench endpoint_assessment
+        run: cargo check --locked -p termivar-scanner --bench endpoint_assessment
       - name: Exercise the small loopback authority fixture
-        run: cargo test --locked -p venom-scanner --test endpoint_assessment_harness
+        run: cargo test --locked -p termivar-scanner --test endpoint_assessment_harness
       - name: Exercise strict JSON and Markdown projection
         run: python3 -m unittest discover -s scripts/tests -p 'test_endpoint_performance_report.py'
       - name: Check canonical Linux wrapper

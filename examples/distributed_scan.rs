@@ -1,10 +1,10 @@
 //! Exercise the bounded deterministic in-process coordinator.
 //!
 //! Run with:
-//! `cargo run -p venom-examples --bin distributed_scan`
+//! `cargo run -p termivar-examples --bin distributed_scan`
 
 use std::collections::BTreeSet;
-use venom_scanner::{TaskPriority, TaskSpec, WorkerPool, WorkerSpec, WorkerTag};
+use termivar_scanner::{TaskPriority, TaskSpec, WorkerPool, WorkerSpec, WorkerTag};
 
 fn main() {
     let pool = WorkerPool::new();

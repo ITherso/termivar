@@ -86,7 +86,7 @@ benchmark_lines=$(sum_lines "${benchmark_files[@]}")
 total_lines=$((source_lines + test_lines + benchmark_lines))
 
 cat <<EOF
-# Venom workspace Rust metrics
+# Termivar workspace Rust metrics
 
 | Metric | Value |
 | --- | ---: |

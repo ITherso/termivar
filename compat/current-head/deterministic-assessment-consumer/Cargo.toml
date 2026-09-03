@@ -1,5 +1,5 @@
 [package]
-name = "venom-current-head-deterministic-assessment-consumer"
+name = "termivar-current-head-deterministic-assessment-consumer"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -10,4 +10,4 @@ workspace = true
 
 [dependencies]
 url = { workspace = true }
-venom-scanner = { workspace = true, features = ["scanning", "reporting"] }
+termivar-scanner = { workspace = true, features = ["scanning", "reporting"] }

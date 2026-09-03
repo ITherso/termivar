@@ -18,11 +18,11 @@ use syn::{
     Visibility,
 };
 
-const AUTH_INPUT_SOURCE: &str = "crates/venom-cli/src/auth_input.rs";
-const CLI_MAIN_SOURCE: &str = "crates/venom-cli/src/main.rs";
+const AUTH_INPUT_SOURCE: &str = "crates/termivar-cli/src/auth_input.rs";
+const CLI_MAIN_SOURCE: &str = "crates/termivar-cli/src/main.rs";
 const SCANNER_CONTEXT_SOURCE: &str =
-    "crates/venom-scanner/src/web_runtime/assessment_api_visibility.rs";
-const PAYLOAD_STRATEGY_SOURCE: &str = "crates/venom-scanner/src/payload_strategy.rs";
+    "crates/termivar-scanner/src/web_runtime/assessment_api_visibility.rs";
+const PAYLOAD_STRATEGY_SOURCE: &str = "crates/termivar-scanner/src/payload_strategy.rs";
 
 const AUTH_SOURCE_VARIANTS: &[(&str, Option<&str>)] = &[
     ("Environment", Some("OsString")),
@@ -96,7 +96,7 @@ fn protected_type_cross_source_violations(
 ) -> Result<Vec<String>, Box<dyn Error>> {
     let roots = [
         (
-            workspace_root.join("crates/venom-cli/src"),
+            workspace_root.join("crates/termivar-cli/src"),
             AUTH_INPUT_SOURCE,
             &[
                 "AuthorizationInputSource",
@@ -107,12 +107,12 @@ fn protected_type_cross_source_violations(
             ][..],
         ),
         (
-            workspace_root.join("crates/venom-cli/src"),
+            workspace_root.join("crates/termivar-cli/src"),
             CLI_MAIN_SOURCE,
             &["Cli", "Commands", "ScanArgs"][..],
         ),
         (
-            workspace_root.join("crates/venom-scanner/src"),
+            workspace_root.join("crates/termivar-scanner/src"),
             SCANNER_CONTEXT_SOURCE,
             &["WebAssessmentRootAuthorizationContext"][..],
         ),
@@ -1467,12 +1467,13 @@ fn find_struct_has_derive(syntax: &syn::File, name: &str) -> bool {
 mod tests {
     use super::*;
 
-    const AUTH_INPUT: &str = include_str!("../../../crates/venom-cli/src/auth_input.rs");
-    const CLI_MAIN: &str = include_str!("../../../crates/venom-cli/src/main.rs");
-    const SCANNER_CONTEXT: &str =
-        include_str!("../../../crates/venom-scanner/src/web_runtime/assessment_api_visibility.rs");
+    const AUTH_INPUT: &str = include_str!("../../../crates/termivar-cli/src/auth_input.rs");
+    const CLI_MAIN: &str = include_str!("../../../crates/termivar-cli/src/main.rs");
+    const SCANNER_CONTEXT: &str = include_str!(
+        "../../../crates/termivar-scanner/src/web_runtime/assessment_api_visibility.rs"
+    );
     const PAYLOAD_STRATEGY: &str =
-        include_str!("../../../crates/venom-scanner/src/payload_strategy.rs");
+        include_str!("../../../crates/termivar-scanner/src/payload_strategy.rs");
 
     fn assert_mutation_fails(
         original: &str,

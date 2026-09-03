@@ -6,19 +6,19 @@ on:
     branches: [main]
     paths:
       - "fuzz/**"
-      - "crates/venom-core/src/reasoning.rs"
-      - "crates/venom-scanner/src/experience.rs"
-      - "crates/venom-scanner/src/knowledge.rs"
-      - "crates/venom-scanner/src/rules.rs"
-      - "crates/venom-scanner/src/planner.rs"
-      - "crates/venom-scanner/src/verification.rs"
-      - "crates/venom-scanner/src/adaptive/pipeline.rs"
-      - "crates/venom-scanner/src/decision_loop.rs"
-      - "crates/venom-scanner/src/decision_runner.rs"
-      - "crates/venom-scanner/src/web_runtime.rs"
-      - "crates/venom-scanner/src/http_evidence.rs"
-      - "crates/venom-scanner/src/http_evidence/form_controls.rs"
-      - "crates/venom-scanner/src/openapi_review.rs"
+      - "crates/termivar-core/src/reasoning.rs"
+      - "crates/termivar-scanner/src/experience.rs"
+      - "crates/termivar-scanner/src/knowledge.rs"
+      - "crates/termivar-scanner/src/rules.rs"
+      - "crates/termivar-scanner/src/planner.rs"
+      - "crates/termivar-scanner/src/verification.rs"
+      - "crates/termivar-scanner/src/adaptive/pipeline.rs"
+      - "crates/termivar-scanner/src/decision_loop.rs"
+      - "crates/termivar-scanner/src/decision_runner.rs"
+      - "crates/termivar-scanner/src/web_runtime.rs"
+      - "crates/termivar-scanner/src/http_evidence.rs"
+      - "crates/termivar-scanner/src/http_evidence/form_controls.rs"
+      - "crates/termivar-scanner/src/openapi_review.rs"
       - ".github/workflows/fuzz.yml"
   schedule:
     - cron: "43 3 * * 1"
@@ -29,7 +29,7 @@ permissions:
 
 jobs:
   product-target-contract:
-    name: Venom-owned seed replay and compile
+    name: Termivar-owned seed replay and compile
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -52,7 +52,7 @@ jobs:
           CARGO_PROFILE_RELEASE_LTO: "false"
           CARGO_PROFILE_RELEASE_STRIP: "none"
         run: cargo test --manifest-path fuzz/harness/Cargo.toml --locked
-      - name: Compile Venom-owned targets
+      - name: Compile Termivar-owned targets
         working-directory: fuzz
         env:
           CARGO_PROFILE_RELEASE_LTO: "false"

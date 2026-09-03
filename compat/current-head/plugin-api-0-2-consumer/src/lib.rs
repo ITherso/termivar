@@ -5,8 +5,8 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use venom_core::{EvidenceKind, EvidenceValue, KnowledgePredicate};
-use venom_scanner::{
+use termivar_core::{EvidenceKind, EvidenceValue, KnowledgePredicate};
+use termivar_scanner::{
     Plugin, PluginCategory, PluginConfig, PluginContext, PluginError, PluginObservation,
     PluginRegistry, PLUGIN_API_VERSION,
 };
@@ -39,7 +39,7 @@ impl Plugin for HeaderPresenceObserver {
     }
 
     fn author(&self) -> &str {
-        "Venom compatibility fixture"
+        "Termivar compatibility fixture"
     }
 
     fn category(&self) -> PluginCategory {

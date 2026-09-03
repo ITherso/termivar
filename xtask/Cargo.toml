@@ -18,8 +18,8 @@ sha2 = { workspace = true }
 syn = { version = "2", features = ["full", "visit"] }
 toml = { workspace = true }
 url = "2.5"
-venom-exploit = { path = "../crates/venom-exploit", version = "=0.10.0-alpha.1" }
-venom-artifact = { path = "../crates/venom-artifact", version = "=0.10.0-alpha.1" }
+termivar-exploit = { path = "../crates/termivar-exploit", version = "=0.10.0-alpha.1" }
+termivar-artifact = { path = "../crates/termivar-artifact", version = "=0.10.0-alpha.1" }
 
 [dev-dependencies]
 tempfile = { workspace = true }

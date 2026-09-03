@@ -3340,7 +3340,7 @@ mod tests {
 
     #[test]
     fn reserved_example_email_and_inert_canary_are_accepted() {
-        validate_safe_fixture_bytes(b"analyst@example.test VENOM-INERT-CANARY")
+        validate_safe_fixture_bytes(b"analyst@example.test TERMIVAR-INERT-CANARY")
             .expect("safe example fixture");
     }
 

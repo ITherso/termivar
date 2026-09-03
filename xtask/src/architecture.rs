@@ -17,6 +17,7 @@ use syn::{
 };
 
 mod artifact;
+mod brand;
 mod cli_secret;
 mod deployment;
 mod domain_modularization;
@@ -28,7 +29,7 @@ mod source_hygiene;
 mod transport;
 mod workflows;
 
-const ALLOWED_EXTERNAL_ROOTS: &[&str] = &["core", "serde", "std", "thiserror", "venom_core"];
+const ALLOWED_EXTERNAL_ROOTS: &[&str] = &["core", "serde", "std", "thiserror", "termivar_core"];
 const ALLOWED_LIBRARY_ATTRIBUTES: &[&str] = &["allow", "cfg", "deny", "deprecated", "doc"];
 const ATTRIBUTE_NON_DEPENDENCY_ROOTS: &[&str] = &["clippy", "rustdoc"];
 const CODE_STRING_ATTRIBUTE_KEYS: &[&str] = &[
@@ -283,6 +284,7 @@ const MODULE_POLICIES: &[ModulePolicy] = &[
 pub(crate) fn check(workspace_root: &Path) -> Result<(), Box<dyn Error>> {
     let mut violations = workspace_graph_violations(workspace_root)?;
     violations.extend(module_boundary_violations(workspace_root)?);
+    violations.extend(brand::check(workspace_root)?);
     violations.extend(cli_secret::check(workspace_root)?);
     violations.extend(artifact::check(workspace_root)?);
     violations.extend(domain_modularization::check(workspace_root)?);
@@ -340,14 +342,14 @@ fn workspace_graph_violations(workspace_root: &Path) -> Result<Vec<String>, Box<
             &manifest,
         ));
 
-        if package.name == "venom-examples" {
+        if package.name == "termivar-examples" {
             let package_root = package
                 .manifest_path
                 .parent()
                 .ok_or_else(|| {
                     io::Error::new(
                         io::ErrorKind::InvalidData,
-                        "venom-examples manifest has no package root",
+                        "termivar-examples manifest has no package root",
                     )
                 })?
                 .as_std_path();
@@ -453,24 +455,24 @@ fn manifest_inherits_workspace_lints(manifest: &str) -> bool {
 
 fn allowed_workspace_graph() -> BTreeMap<String, BTreeSet<String>> {
     [
-        ("venom-core", &[][..]),
-        ("venom-artifact", &[][..]),
-        ("venom-exploit", &["venom-core"][..]),
-        ("venom-scanner", &["venom-core"][..]),
-        ("venom-proxy", &[][..]),
-        ("venom-api", &[][..]),
+        ("termivar-core", &[][..]),
+        ("termivar-artifact", &[][..]),
+        ("termivar-exploit", &["termivar-core"][..]),
+        ("termivar-scanner", &["termivar-core"][..]),
+        ("termivar-proxy", &[][..]),
+        ("termivar-api", &[][..]),
         (
-            "venom-cli",
+            "termivar-cli",
             &[
-                "venom-api",
-                "venom-artifact",
-                "venom-core",
-                "venom-proxy",
-                "venom-scanner",
+                "termivar-api",
+                "termivar-artifact",
+                "termivar-core",
+                "termivar-proxy",
+                "termivar-scanner",
             ][..],
         ),
-        ("venom-examples", &["venom-scanner"][..]),
-        ("xtask", &["venom-artifact", "venom-exploit"][..]),
+        ("termivar-examples", &["termivar-scanner"][..]),
+        ("xtask", &["termivar-artifact", "termivar-exploit"][..]),
     ]
     .into_iter()
     .map(|(package, dependencies)| {
@@ -515,7 +517,7 @@ fn validate_workspace_graph(graph: &BTreeMap<String, BTreeSet<String>>) -> Vec<S
 }
 
 fn module_boundary_violations(workspace_root: &Path) -> Result<Vec<String>, Box<dyn Error>> {
-    let source_root = workspace_root.join("crates/venom-scanner/src");
+    let source_root = workspace_root.join("crates/termivar-scanner/src");
     let mut violations = validate_module_policy_registry(MODULE_POLICIES);
     let library_source = fs::read_to_string(source_root.join("lib.rs"))?;
     violations.extend(validate_module_wiring(&library_source, MODULE_POLICIES)?);
@@ -1711,7 +1713,7 @@ mod tests {
 
     #[test]
     fn openapi_foundation_is_transport_neutral_and_candidate_tags_are_metadata_only() {
-        let source = include_str!("../../crates/venom-scanner/src/openapi_review.rs");
+        let source = include_str!("../../crates/termivar-scanner/src/openapi_review.rs");
         assert!(openapi_foundation_contract_violations(source)
             .unwrap()
             .is_empty());
@@ -1743,7 +1745,7 @@ mod tests {
             .iter()
             .find(|policy| policy.source == "openapi_review.rs")
             .expect("OpenAPI foundation must have an architecture module policy");
-        let source = include_str!("../../crates/venom-scanner/src/openapi_review.rs");
+        let source = include_str!("../../crates/termivar-scanner/src/openapi_review.rs");
         assert!(inspect_module_source(policy, source).unwrap().is_empty());
 
         for (dependency, expected) in [
@@ -1762,17 +1764,17 @@ mod tests {
     fn workspace_allowlist_rejects_reverse_and_unknown_edges() {
         let mut graph = allowed_workspace_graph();
         graph
-            .get_mut("venom-core")
+            .get_mut("termivar-core")
             .unwrap()
-            .insert("venom-scanner".to_owned());
+            .insert("termivar-scanner".to_owned());
         graph.insert(
-            "venom-product".to_owned(),
-            BTreeSet::from(["venom-core".to_owned()]),
+            "termivar-product".to_owned(),
+            BTreeSet::from(["termivar-core".to_owned()]),
         );
 
         let violations = validate_workspace_graph(&graph).join("\n");
-        assert!(violations.contains("venom-core -> venom-scanner"));
-        assert!(violations.contains("venom-product has no architecture policy"));
+        assert!(violations.contains("termivar-core -> termivar-scanner"));
+        assert!(violations.contains("termivar-product has no architecture policy"));
     }
 
     #[test]
@@ -1780,18 +1782,23 @@ mod tests {
         let graph = allowed_workspace_graph();
 
         assert_eq!(
-            graph.get("venom-exploit"),
-            Some(&BTreeSet::from(["venom-core".to_owned()]))
+            graph.get("termivar-exploit"),
+            Some(&BTreeSet::from(["termivar-core".to_owned()]))
         );
         assert_eq!(
             graph.get("xtask"),
             Some(&BTreeSet::from([
-                "venom-artifact".to_owned(),
-                "venom-exploit".to_owned(),
+                "termivar-artifact".to_owned(),
+                "termivar-exploit".to_owned(),
             ]))
         );
-        for product in ["venom-scanner", "venom-cli", "venom-api", "venom-proxy"] {
-            assert!(!graph[product].contains("venom-exploit"));
+        for product in [
+            "termivar-scanner",
+            "termivar-cli",
+            "termivar-api",
+            "termivar-proxy",
+        ] {
+            assert!(!graph[product].contains("termivar-exploit"));
         }
     }
 
@@ -1799,11 +1806,16 @@ mod tests {
     fn workspace_allowlist_pins_artifact_domain_edges() {
         let graph = allowed_workspace_graph();
 
-        assert_eq!(graph.get("venom-artifact"), Some(&BTreeSet::new()));
-        assert!(graph["venom-cli"].contains("venom-artifact"));
-        assert!(graph["xtask"].contains("venom-artifact"));
-        for product in ["venom-scanner", "venom-exploit", "venom-api", "venom-proxy"] {
-            assert!(!graph[product].contains("venom-artifact"));
+        assert_eq!(graph.get("termivar-artifact"), Some(&BTreeSet::new()));
+        assert!(graph["termivar-cli"].contains("termivar-artifact"));
+        assert!(graph["xtask"].contains("termivar-artifact"));
+        for product in [
+            "termivar-scanner",
+            "termivar-exploit",
+            "termivar-api",
+            "termivar-proxy",
+        ] {
+            assert!(!graph[product].contains("termivar-artifact"));
         }
     }
 
@@ -1824,14 +1836,14 @@ mod tests {
         let target_sources = BTreeSet::from([declared.clone()]);
 
         assert!(validate_top_level_rust_target_ownership(
-            "venom-examples",
+            "termivar-examples",
             std::slice::from_ref(&declared),
             &target_sources,
         )
         .is_empty());
 
         let violations = validate_top_level_rust_target_ownership(
-            "venom-examples",
+            "termivar-examples",
             &[declared, loose],
             &target_sources,
         );
@@ -1918,7 +1930,7 @@ mod tests {
     fn library_cannot_shadow_approved_external_roots() {
         let source = r#"
             pub mod serde {}
-            pub use crate::web_execution as venom_core;
+            pub use crate::web_execution as termivar_core;
             extern crate self as std;
             use facade::{self as core, *};
             #[doc::rewrite]
@@ -1927,7 +1939,7 @@ mod tests {
             rewriter::items!();
         "#;
         let violations = validate_module_wiring(source, &[]).unwrap().join("\n");
-        for root in ["serde", "venom_core", "std", "core"] {
+        for root in ["serde", "termivar_core", "std", "core"] {
             assert!(
                 violations.contains(&format!("reserved external root {root}")),
                 "missing shadowing violation for {root}: {violations}"
@@ -1943,7 +1955,7 @@ mod tests {
     fn canonical_allowed_imports_pass() {
         let source = r#"
             use std::collections::BTreeMap;
-            use venom_core::Outcome;
+            use termivar_core::Outcome;
             use crate::{
                 knowledge::KnowledgeSnapshot as Snapshot,
                 rules::{Expression, RuleEngineError},
@@ -2009,7 +2021,7 @@ mod tests {
     #[test]
     fn test_modules_do_not_create_production_edges() {
         let source = r#"
-            use venom_core::Outcome;
+            use termivar_core::Outcome;
             #[cfg(test)]
             mod tests {
                 use crate::decision_runner::DecisionRunnerAdapter;
@@ -2134,8 +2146,8 @@ mod tests {
         );
 
         let qualified_predicate = r#"
-            fn predicate() -> venom_core::KnowledgePredicate {
-                venom_core::KnowledgePredicate::new()
+            fn predicate() -> termivar_core::KnowledgePredicate {
+                termivar_core::KnowledgePredicate::new()
             }
         "#;
         assert!(inspect_module_source(&child, qualified_predicate)

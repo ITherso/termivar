@@ -1,4 +1,4 @@
-name: venom-core Public API Compatibility
+name: termivar-core Public API Compatibility
 
 on:
   push:
@@ -25,5 +25,5 @@ jobs:
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
       - name: Install pinned cargo-semver-checks
         run: cargo install cargo-semver-checks --version 0.50.0 --locked
-      - name: Check venom-core public API
+      - name: Check termivar-core public API
         run: cargo run --locked -p xtask -- semver

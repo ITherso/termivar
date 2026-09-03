@@ -13,8 +13,13 @@ use syn::{
     ExprPath, ItemExternCrate, ItemUse, Macro, Path as SynPath, UseTree,
 };
 
-const ARTIFACT_PACKAGE: &str = "venom-artifact";
-const PRODUCT_PACKAGES: &[&str] = &["venom-scanner", "venom-exploit", "venom-api", "venom-proxy"];
+const ARTIFACT_PACKAGE: &str = "termivar-artifact";
+const PRODUCT_PACKAGES: &[&str] = &[
+    "termivar-scanner",
+    "termivar-exploit",
+    "termivar-api",
+    "termivar-proxy",
+];
 const EXPECTED_RUNTIME_DEPENDENCIES: &[&str] =
     &["hex", "serde", "serde_json", "sha2", "thiserror", "toml"];
 const EXPECTED_SOURCE_FILES: &[&str] = &[
@@ -43,8 +48,8 @@ const FORBIDDEN_SOURCE_PREFIXES: &[&[&str]] = &[
     &["tokio", "net"],
     &["tokio", "process"],
     &["ureq"],
-    &["venom_exploit"],
-    &["venom_scanner"],
+    &["termivar_exploit"],
+    &["termivar_scanner"],
 ];
 
 pub(super) fn check(workspace_root: &Path) -> Result<Vec<String>, Box<dyn Error>> {
@@ -60,7 +65,8 @@ pub(super) fn check(workspace_root: &Path) -> Result<Vec<String>, Box<dyn Error>
         .find(|package| package.name == ARTIFACT_PACKAGE)
     else {
         return Ok(vec![
-            "workspace package `venom-artifact` is missing from `crates/venom-artifact`".to_owned(),
+            "workspace package `termivar-artifact` is missing from `crates/termivar-artifact`"
+                .to_owned(),
         ]);
     };
 
@@ -73,10 +79,10 @@ pub(super) fn check(workspace_root: &Path) -> Result<Vec<String>, Box<dyn Error>
 
 fn package_contract_violations(workspace_root: &Path, artifact: &Package) -> Vec<String> {
     let mut violations = Vec::new();
-    let expected_manifest = workspace_root.join("crates/venom-artifact/Cargo.toml");
+    let expected_manifest = workspace_root.join("crates/termivar-artifact/Cargo.toml");
     if artifact.manifest_path.as_std_path() != expected_manifest {
         violations.push(format!(
-            "venom-artifact must remain the separate package at {}, found {}",
+            "termivar-artifact must remain the separate package at {}, found {}",
             expected_manifest.display(),
             artifact.manifest_path
         ));
@@ -86,20 +92,21 @@ fn package_contract_violations(workspace_root: &Path, artifact: &Package) -> Vec
         .as_ref()
         .is_none_or(|registries| !registries.is_empty())
     {
-        violations.push("venom-artifact must remain `publish = false` during Preview".to_owned());
+        violations
+            .push("termivar-artifact must remain `publish = false` during Preview".to_owned());
     }
     if artifact.targets.len() != 1
-        || artifact.targets[0].name != "venom_artifact"
+        || artifact.targets[0].name != "termivar_artifact"
         || artifact.targets[0].kind.as_slice() != ["lib"]
     {
         violations.push(
-            "venom-artifact must expose exactly one reviewed `venom_artifact` library target"
+            "termivar-artifact must expose exactly one reviewed `termivar_artifact` library target"
                 .to_owned(),
         );
     }
     if !artifact.features.is_empty() {
         violations.push(format!(
-            "venom-artifact V1 must not expose crate features, found {:?}",
+            "termivar-artifact V1 must not expose crate features, found {:?}",
             artifact.features.keys().collect::<BTreeSet<_>>()
         ));
     }
@@ -108,7 +115,7 @@ fn package_contract_violations(workspace_root: &Path, artifact: &Package) -> Vec
     let expected: BTreeSet<_> = EXPECTED_RUNTIME_DEPENDENCIES.iter().copied().collect();
     if runtime != expected {
         violations.push(format!(
-            "venom-artifact runtime dependencies must remain exactly {expected:?}, found {runtime:?}"
+            "termivar-artifact runtime dependencies must remain exactly {expected:?}, found {runtime:?}"
         ));
     }
     for kind in [
@@ -119,7 +126,7 @@ fn package_contract_violations(workspace_root: &Path, artifact: &Package) -> Vec
         let names = dependency_names(artifact, kind);
         if !names.is_empty() {
             violations.push(format!(
-                "venom-artifact has forbidden {kind:?} dependencies {names:?}"
+                "termivar-artifact has forbidden {kind:?} dependencies {names:?}"
             ));
         }
     }
@@ -130,7 +137,8 @@ fn package_contract_violations(workspace_root: &Path, artifact: &Package) -> Vec
             || dependency.path.is_some()
     }) {
         violations.push(
-            "venom-artifact dependencies must remain unconditional external libraries".to_owned(),
+            "termivar-artifact dependencies must remain unconditional external libraries"
+                .to_owned(),
         );
     }
     violations
@@ -155,7 +163,7 @@ fn dependency_edge_violations(workspace_root: &Path, packages: &[&Package]) -> V
             .is_some_and(|package| has_dependency(package, ARTIFACT_PACKAGE))
         {
             violations.push(format!(
-                "{product} must not depend on the isolated venom-artifact domain"
+                "{product} must not depend on the isolated termivar-artifact domain"
             ));
         }
     }
@@ -163,7 +171,7 @@ fn dependency_edge_violations(workspace_root: &Path, packages: &[&Package]) -> V
     match packages
         .iter()
         .copied()
-        .find(|package| package.name == "venom-cli")
+        .find(|package| package.name == "termivar-cli")
         .and_then(|package| {
             package
                 .dependencies
@@ -175,9 +183,9 @@ fn dependency_edge_violations(workspace_root: &Path, packages: &[&Package]) -> V
             violations.extend(adapter_dependency_violations(
                 workspace_root,
                 dependency,
-                "crates/venom-artifact/Cargo.toml",
+                "crates/termivar-artifact/Cargo.toml",
                 true,
-                "venom-cli",
+                "termivar-cli",
             ));
             let members: BTreeSet<_> = cli
                 .features
@@ -186,20 +194,20 @@ fn dependency_edge_violations(workspace_root: &Path, packages: &[&Package]) -> V
                 .flatten()
                 .map(String::as_str)
                 .collect();
-            if members != BTreeSet::from(["dep:venom-artifact"])
+            if members != BTreeSet::from(["dep:termivar-artifact"])
                 || cli
                     .features
                     .get("default")
                     .is_none_or(|default| !default.is_empty())
             {
                 violations.push(
-                    "venom-cli must gate its sole artifact edge behind exactly the non-default `artifact-adapter` feature"
+                    "termivar-cli must gate its sole artifact edge behind exactly the non-default `artifact-adapter` feature"
                         .to_owned(),
                 );
             }
         },
         None => violations.push(
-            "venom-cli is missing the reviewed optional venom-artifact adapter dependency"
+            "termivar-cli is missing the reviewed optional termivar-artifact adapter dependency"
                 .to_owned(),
         ),
     }
@@ -217,12 +225,13 @@ fn dependency_edge_violations(workspace_root: &Path, packages: &[&Package]) -> V
         Some(dependency) => violations.extend(adapter_dependency_violations(
             workspace_root,
             dependency,
-            "crates/venom-artifact/Cargo.toml",
+            "crates/termivar-artifact/Cargo.toml",
             false,
             "xtask",
         )),
         None => violations.push(
-            "xtask is missing the reviewed venom-artifact catalog-validation dependency".to_owned(),
+            "xtask is missing the reviewed termivar-artifact catalog-validation dependency"
+                .to_owned(),
         ),
     }
     violations
@@ -249,7 +258,7 @@ fn adapter_dependency_violations(
         Vec::new()
     } else {
         vec![format!(
-            "{owner} venom-artifact dependency must retain its exact versioned local path and reviewed optionality"
+            "{owner} termivar-artifact dependency must retain its exact versioned local path and reviewed optionality"
         )]
     }
 }
@@ -262,7 +271,7 @@ fn has_dependency(package: &Package, dependency_name: &str) -> bool {
 }
 
 fn source_contract_violations(workspace_root: &Path) -> Result<Vec<String>, Box<dyn Error>> {
-    let source_root = workspace_root.join("crates/venom-artifact/src");
+    let source_root = workspace_root.join("crates/termivar-artifact/src");
     let mut paths = rust_sources_below(&source_root)?;
     paths.sort();
     let actual: BTreeSet<_> = paths
@@ -273,7 +282,7 @@ fn source_contract_violations(workspace_root: &Path) -> Result<Vec<String>, Box<
     let mut violations = Vec::new();
     if actual != expected || paths.len() != expected.len() {
         violations.push(format!(
-            "venom-artifact source inventory must remain exactly {expected:?}, found {actual:?}"
+            "termivar-artifact source inventory must remain exactly {expected:?}, found {actual:?}"
         ));
     }
 
@@ -302,7 +311,7 @@ fn source_contract_violations(workspace_root: &Path) -> Result<Vec<String>, Box<
                 .is_ok_and(|list| list.tokens.to_string() == "unsafe_code")
     });
     if !forbids_unsafe {
-        violations.push("venom-artifact must retain `#![forbid(unsafe_code)]`".to_owned());
+        violations.push("termivar-artifact must retain `#![forbid(unsafe_code)]`".to_owned());
     }
     Ok(violations)
 }
@@ -472,8 +481,8 @@ mod tests {
     #[test]
     fn product_dependency_inventory_excludes_artifact_runtime() {
         assert_eq!(PRODUCT_PACKAGES.len(), 4);
-        assert!(PRODUCT_PACKAGES.contains(&"venom-scanner"));
-        assert!(PRODUCT_PACKAGES.contains(&"venom-exploit"));
-        assert!(!PRODUCT_PACKAGES.contains(&"venom-cli"));
+        assert!(PRODUCT_PACKAGES.contains(&"termivar-scanner"));
+        assert!(PRODUCT_PACKAGES.contains(&"termivar-exploit"));
+        assert!(!PRODUCT_PACKAGES.contains(&"termivar-cli"));
     }
 }
