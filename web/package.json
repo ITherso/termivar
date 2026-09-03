@@ -1,7 +1,7 @@
 {
   "name": "termivar-dashboard",
-  "version": "0.10.0-alpha.1",
-  "description": "Static preview for the unreleased Termivar 0.10.0-alpha.1 source line; not connected to the Rust API",
+  "version": "0.10.0-alpha.2",
+  "description": "Static preview for the unreleased Termivar 0.10.0-alpha.2 development source line; not connected to the Rust API",
   "private": true,
   "type": "module",
   "engines": {

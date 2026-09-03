@@ -56,16 +56,17 @@ immutable `v0.9.0-alpha` source commit. CI pins Rust
 [Repository health](repository-health.md#public-api-compatibility-scope) for
 the current scope and the documented scanner exception.
 
-The current scanner shape has selected the new pre-1.0 minor source identity
-`0.10.0-alpha.1`. Before publishing it:
+The `v0.10.0-alpha.1` prerelease is published. Current `main` uses the
+unreleased `0.10.0-alpha.2` development identity so later source cannot be
+confused with that immutable release. Before publishing `0.10.0-alpha.2`:
 
 1. move its reviewed changes from `Unreleased` into a dated
-   `0.10.0-alpha.1` section;
-2. list the `ScanContext` construction transition under Upgrade notes and link
-   the [migration guide](migrations/scan-context-construction.md);
+   `0.10.0-alpha.2` section;
+2. update the tag-time release metadata contract and add its curated release
+   note;
 3. create the release and annotated tag only after every release check passes;
 4. resolve that tag to its immutable peeled commit; and
-5. add the blocking `termivar-scanner` baseline in a later change.
+5. advance the workspace version before the first later source commit.
 
 Do not baseline the scanner against mutable `main` or describe the current
 transition as patch-compatible with `v0.9.0-alpha`.

@@ -16,7 +16,7 @@ categories = ["development-tools", "network-programming"]
 workspace = true
 
 [dependencies]
-termivar-core = { version = "0.10.0-alpha.1", path = "../termivar-core", default-features = false }
+termivar-core = { version = "0.10.0-alpha.2", path = "../termivar-core", default-features = false }
 tokio = { workspace = true, optional = true }
 tokio-util = { workspace = true, optional = true }
 reqwest = { workspace = true, optional = true }

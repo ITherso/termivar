@@ -15,7 +15,7 @@ digest, compatibility, and provenance identifiers may retain the former name
 where changing them would break deterministic identity or historical integrity.
 
 > [!WARNING]
-> **This remediated `0.10.0-alpha.1` source state is unreleased and not production-ready.** The historical `v0.9.0-alpha` binaries predate the bounded default runtime documented here and are not an installation path for this behavior. Build a reviewed, pinned commit from source and use it only on systems you own or are explicitly authorized to test. The default `scan` command is bounded, but it still makes network requests. The separately compiled `legacy-scan` has distinct bounded discovery and verification authorities, but phase one and custom extensions can still perform direct I/O outside `RuntimeBudget`, so its whole-run accounting is `Unmetered`. Preview and Experimental contracts may change.
+> **The `0.10.0-alpha.2` development source line is unreleased and not production-ready.** The published `v0.10.0-alpha.1` prerelease predates current `main`; build a reviewed, pinned commit from source when evaluating unreleased behavior. Use Termivar only on systems you own or are explicitly authorized to test. The default `scan` command is bounded, but it still makes network requests. The separately compiled `legacy-scan` has distinct bounded discovery and verification authorities, but phase one and custom extensions can still perform direct I/O outside `RuntimeBudget`, so its whole-run accounting is `Unmetered`. Preview and Experimental contracts may change.
 
 **Why an action ran is not what it proved.** Termivar keeps the evidence that motivates an action separate from the evidence that may change a hypothesis. An action can return `Success` after completing a knowledge-gathering objective without confirming its motivating hypothesis.
 
@@ -516,7 +516,11 @@ See [Fuzzing](docs/fuzzing.md), [Quality metrics](docs/quality-metrics.md), [Rep
 
 ## Project status
 
-The latest published tag, **v0.9.0-alpha**, is historical and predates this source contract; `main` targets the next Preview release. Build from a reviewed, pinned source commit until a remediated tag exists. Alpha means public contracts, output details, and integration boundaries may change. Lifecycle labels describe maturity, not completeness:
+The latest published tag is the experimental **v0.10.0-alpha.1** prerelease;
+`main` is the later, unreleased `0.10.0-alpha.2` development line. Build a
+reviewed, pinned source commit when evaluating unreleased behavior. Alpha means
+public contracts, output details, and integration boundaries may change.
+Lifecycle labels describe maturity, not completeness:
 
 - [Feature lifecycle](FEATURES.md)
 - [Stable-release gates and active blockers](PROJECT_STATUS.md)

@@ -4,6 +4,19 @@ All notable changes to Termivar are recorded here. Releases use the categories f
 
 ## [Unreleased]
 
+### Changed
+
+- Advanced the post-`v0.10.0-alpha.1` development line to
+  `0.10.0-alpha.2`. A required provenance gate now rejects commits that keep a
+  workspace version after its matching release tag.
+
+### Fixed
+
+- Exposed typed, redacted OpenAPI and REST review audits in JSON and text
+  output so incomplete and ineligible reviews report their outcome, request
+  and active-verification counts, replay state, and item-projection state
+  without retaining response bodies or sensitive values.
+
 ## [0.10.0-alpha.1] - 2026-09-03
 
 ### Upgrade notes

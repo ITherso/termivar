@@ -13,7 +13,7 @@ const PREVIEW_DATA: DashboardData = {
   systemStatus: {
     status: 'stopped',
     uptime: 0,
-    version: '0.10.0-alpha.1',
+    version: '0.10.0-alpha.2',
     lastUpdate: PREVIEW_TIMESTAMP,
     healthy: false,
   },
@@ -40,7 +40,7 @@ const Dashboard: React.FC = () => {
       <header className="dashboard-header">
         <h1>Termivar Dashboard</h1>
         <div className="header-info">
-          <span className="version">0.10.0-alpha.1 Preview</span>
+          <span className="version">0.10.0-alpha.2 Preview</span>
           <span className="last-update">Illustrative static data</span>
         </div>
       </header>
@@ -103,7 +103,7 @@ const Dashboard: React.FC = () => {
       </div>
 
       <footer className="dashboard-footer">
-        <p>Termivar 0.10.0-alpha.1 Dashboard Preview</p>
+        <p>Termivar 0.10.0-alpha.2 Dashboard Preview</p>
         <p>Static sample data · No Rust API connection · No authentication · Not production-ready</p>
       </footer>
     </div>

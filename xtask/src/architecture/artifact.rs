@@ -249,7 +249,7 @@ fn adapter_dependency_violations(
         && dependency.rename.is_none()
         && dependency.target.is_none()
         && dependency.optional == optional
-        && dependency.req.to_string() == "=0.10.0-alpha.1"
+        && dependency.req.to_string() == "=0.10.0-alpha.2"
         && dependency
             .path
             .as_ref()

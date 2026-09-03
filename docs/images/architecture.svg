@@ -36,7 +36,7 @@
 
   <rect width="1600" height="980" rx="28" fill="url(#background)"/>
   <text class="title" x="70" y="74">Termivar Architecture</text>
-  <text class="subtitle" x="70" y="108">0.10.0-alpha.1 source · legacy scan flow and inward crate dependencies</text>
+  <text class="subtitle" x="70" y="108">0.10.0-alpha.2 source · legacy scan flow and inward crate dependencies</text>
 
   <rect class="panel" x="50" y="145" width="1500" height="475" rx="22"/>
   <text class="section" x="80" y="188">Runtime flow</text>

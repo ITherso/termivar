@@ -39,11 +39,11 @@ release-bundle = [
 ]
 
 [dependencies]
-termivar-core = { version = "0.10.0-alpha.1", path = "../termivar-core" }
-termivar-scanner = { version = "0.10.0-alpha.1", path = "../termivar-scanner", default-features = false, features = ["scanning", "reporting"] }
-termivar-api = { version = "0.10.0-alpha.1", path = "../termivar-api", optional = true }
-termivar-proxy = { version = "0.10.0-alpha.1", path = "../termivar-proxy", optional = true }
-termivar-artifact = { version = "=0.10.0-alpha.1", path = "../termivar-artifact", optional = true }
+termivar-core = { version = "0.10.0-alpha.2", path = "../termivar-core" }
+termivar-scanner = { version = "0.10.0-alpha.2", path = "../termivar-scanner", default-features = false, features = ["scanning", "reporting"] }
+termivar-api = { version = "0.10.0-alpha.2", path = "../termivar-api", optional = true }
+termivar-proxy = { version = "0.10.0-alpha.2", path = "../termivar-proxy", optional = true }
+termivar-artifact = { version = "=0.10.0-alpha.2", path = "../termivar-artifact", optional = true }
 tokio = { workspace = true }
 reqwest = { workspace = true, optional = true }
 url = "2.5"

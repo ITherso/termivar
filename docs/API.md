@@ -1,6 +1,6 @@
 # API reference
 
-The unreleased Termivar `0.10.0-alpha.1` source line is primarily a Rust library framework. The generated Rust API documentation is the source of truth for public types, traits, feature gates, and examples.
+The unreleased Termivar `0.10.0-alpha.2` development source line is primarily a Rust library framework. The generated Rust API documentation is the source of truth for public types, traits, feature gates, and examples.
 
 ## Rust crates
 

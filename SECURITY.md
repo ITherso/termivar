@@ -6,8 +6,8 @@ Termivar is security-testing software. Its alpha releases may contain defects th
 
 | Version | Supported | Notes |
 | --- | --- | --- |
-| `v0.10.0-alpha.1` | Yes | Current experimental prerelease |
-| `main` | Yes | Security fixes land here first; identify reports by full commit SHA |
+| `v0.10.0-alpha.1` | Yes | Published experimental prerelease |
+| `main` | Yes | Unreleased `0.10.0-alpha.2` source line; security fixes land here first; identify reports by full commit SHA |
 | Historical `v0.9.0-alpha` artifacts | No | Predate the remediated runtime; build a reviewed current commit instead |
 | Earlier snapshots | No | Upgrade before reporting a defect |
 

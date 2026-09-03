@@ -1,6 +1,6 @@
 //! Repository deployment-truth policy.
 //!
-//! The unreleased Termivar `0.10.0-alpha.1` source line has no supported deployment
+//! The unreleased Termivar `0.10.0-alpha.2` development source line has no supported deployment
 //! surface. To stop incomplete,
 //! non-deployable infrastructure from silently returning, this fail-closed gate
 //! forbids **executable** orchestration manifests (Helm, Terraform, Kubernetes)

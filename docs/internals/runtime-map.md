@@ -29,8 +29,9 @@ not chained into SQL, SSTI, XSS, authorization, SSRF, or upload review.
 
 > This page describes the executable truth of the current main-line source, not
 > aspirations. A compiled module is not necessarily part of a product runtime.
-> This unreleased source state uses package version `0.10.0-alpha.1`; the published
-> `v0.9.0-alpha` tag predates this runtime map. Neither is production-ready.
+> This unreleased development source line uses package version `0.10.0-alpha.2`;
+> the published `v0.10.0-alpha.1` prerelease does not include later `main`
+> changes. Neither line is production-ready.
 
 The historical audit and its final dispositions are kept separately in the
 [runtime-truth remediation closure](../audits/runtime-truth-remediation-closure.md).

@@ -22,7 +22,7 @@ registry, completeness lifecycle, and final report. It emits at most
 or body, uses no credential/cookie, and does not chain to SQL, SSTI, XSS,
 authorization, SSRF, or upload review.
 
-This document defines dependency direction and runtime ownership for the unreleased Termivar `0.10.0-alpha.1` source line. It is a design contract, not a production-readiness claim.
+This document defines dependency direction and runtime ownership for the unreleased Termivar `0.10.0-alpha.2` development source line. It is a design contract, not a production-readiness claim.
 
 The editable diagrams.net source is [architecture.drawio](architecture.drawio). A presentation- and print-friendly export is available as [architecture.svg](images/architecture.svg).
 

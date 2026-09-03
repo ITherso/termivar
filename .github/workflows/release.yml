@@ -210,7 +210,7 @@ jobs:
           set -euo pipefail
           release_binary="target/${{ matrix.target }}/release/${{ matrix.binary }}"
           version_output=$("$release_binary" --version)
-          test "$version_output" = "termivar 0.10.0-alpha.1"
+          test "$version_output" = "termivar 0.10.0-alpha.2"
           help_output=$("$release_binary" --help)
           scan_help=$("$release_binary" scan --help)
           grep -Fq "Termivar" <<<"$help_output"
@@ -233,7 +233,7 @@ jobs:
         run: |
           $releaseBinary = "target/${{ matrix.target }}/release/${{ matrix.binary }}"
           $versionOutput = ((& $releaseBinary --version) | Out-String).Trim()
-          if ($versionOutput -ne "termivar 0.10.0-alpha.1") {
+          if ($versionOutput -ne "termivar 0.10.0-alpha.2") {
             throw "unexpected release binary identity"
           }
           $helpOutput = ((& $releaseBinary --help) | Out-String)

@@ -1,6 +1,6 @@
 # Termivar feature lifecycle
 
-This document maps the current unreleased source state, whose package version is `0.10.0-alpha.1`. The published `v0.9.0-alpha` tag predates this remediation and is not the executable represented here. This map records what exists, how mature it is, and the most important limitation; it is not a completion score or a production-readiness claim.
+This document maps the current unreleased `0.10.0-alpha.2` development source line. The published `v0.10.0-alpha.1` prerelease does not include later `main` changes. This map records what exists, how mature it is, and the most important limitation; it is not a completion score or a production-readiness claim.
 
 A compiled module is not necessarily a runtime feature. The [runtime map](docs/internals/runtime-map.md) records whether each major surface participates in the default deterministic `termivar scan`, the feature-gated `termivar legacy-scan`, an opt-in library host, or no repository execution path.
 

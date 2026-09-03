@@ -93,7 +93,7 @@ const App: React.FC = () => {
 
       <main className="main-content">
         <aside className="preview-notice" role="note">
-          <strong>0.10.0-alpha.1 static preview.</strong>{' '}
+          <strong>0.10.0-alpha.2 static preview.</strong>{' '}
           This UI is not connected to the Rust API; the API currently exposes only <code>GET /health</code>.
           It has no authentication or security boundary and is not production-ready.
         </aside>

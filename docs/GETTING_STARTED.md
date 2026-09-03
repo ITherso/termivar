@@ -1,10 +1,10 @@
 # Getting started
 
-This unreleased source state (package version `0.10.0-alpha.1`) is an experimental
-Rust security-testing project. The historical `v0.9.0-alpha` tag predates the
-bounded default runtime documented here. Build a reviewed, pinned
-commit; it is not production-ready and must be run only against systems you own
-or are explicitly authorized to test.
+This unreleased development source line (package version `0.10.0-alpha.2`) is
+an experimental Rust security-testing project. The published
+`v0.10.0-alpha.1` prerelease does not include later `main` changes. Build a
+reviewed, pinned commit; it is not production-ready and must be run only
+against systems you own or are explicitly authorized to test.
 
 This guide covers the default deterministic CLI and the separately compiled
 historical runner. It does not describe a dashboard, bound API service,

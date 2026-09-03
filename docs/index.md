@@ -1,6 +1,6 @@
 # Termivar documentation
 
-Termivar is an experimental Rust security-testing project centered on a deterministic decision runtime that turns bounded web observations into typed evidence, hypotheses, risk-aware plans, and verifier-scoped outcomes. This remediated source state is unreleased and not production-ready; the historical `v0.9.0-alpha` binaries released under the former name predate its bounded default runtime. Build a reviewed, pinned commit and use it only on systems the operator owns or is explicitly authorized to test.
+Termivar is an experimental Rust security-testing project centered on a deterministic decision runtime that turns bounded web observations into typed evidence, hypotheses, risk-aware plans, and verifier-scoped outcomes. Current `main` is the unreleased `0.10.0-alpha.2` development line and is not production-ready; the published `v0.10.0-alpha.1` prerelease does not include later source changes. Build a reviewed, pinned commit and use it only on systems the operator owns or is explicitly authorized to test.
 
 ## Start here
 

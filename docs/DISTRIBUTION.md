@@ -1,6 +1,6 @@
 # Distribution and installation
 
-The remediated, unreleased `0.10.0-alpha.1` source state is currently available from the
+The unreleased `0.10.0-alpha.2` development source line is currently available from the
 repository only. It has no matching prebuilt release artifact, package-manager
 repository, container registry, cloud marketplace, or orchestrated deployment
 channel.
@@ -30,16 +30,16 @@ PostgreSQL, Redis, Node.js, a dashboard, and an API service are not required by 
 
 ## Release status
 
-The historical `v0.9.0-alpha` release predates the deterministic-default and
-legacy-authority remediation in this repository state. Its binary runs a
-different, unsafe historical contract and is not a supported installation path
-for the behavior documented here. The repository-root installer was removed so
-it cannot silently substitute that artifact for the current source.
+`v0.10.0-alpha.1` is the latest published experimental prerelease. Current
+`main` has advanced to the unreleased `0.10.0-alpha.2` development line, so no
+published archive represents later source behavior. The historical
+`v0.9.0-alpha` release predates the deterministic-default and legacy-authority
+remediation and is not a supported installation path for the behavior
+documented here.
 
-A future remediated tag must use the archive, checksum, and provenance contract
-in [Release Process](RELEASE.md). Until that tag exists, build a reviewed,
-pinned commit from source and do not describe any historical archive as the
-current product.
+Future tags must use the archive, checksum, and provenance contract in
+[Release Process](RELEASE.md). For unreleased behavior, build a reviewed,
+pinned commit from source rather than substituting an older archive.
 
 ## Local container build
 

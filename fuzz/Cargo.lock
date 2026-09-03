@@ -1230,7 +1230,7 @@ dependencies = [
 
 [[package]]
 name = "termivar-core"
-version = "0.10.0-alpha.1"
+version = "0.10.0-alpha.2"
 dependencies = [
  "chrono",
  "hex",
@@ -1266,7 +1266,7 @@ dependencies = [
 
 [[package]]
 name = "termivar-scanner"
-version = "0.10.0-alpha.1"
+version = "0.10.0-alpha.2"
 dependencies = [
  "async-trait",
  "base64",

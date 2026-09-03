@@ -55,7 +55,7 @@ the current `termivar-core`, with all features enabled, against the historical
 `9f65c661028af2d7129caeee640f9b6185c357ca`, the commit referenced by the
 annotated `v0.9.0-alpha` tag. The explicit patch comparison mode makes a
 detected breaking change fail even though the unreleased workspace has moved
-to the distinct `0.10.0-alpha.1` pre-1.0 minor line.
+to the distinct `0.10.0-alpha.2` development line.
 
 The all-features comparison deliberately enables core's non-default
 `legacy-contracts` feature. That feature preserves the historical configuration,

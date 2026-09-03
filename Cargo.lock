@@ -1807,7 +1807,7 @@ dependencies = [
 
 [[package]]
 name = "termivar-api"
-version = "0.10.0-alpha.1"
+version = "0.10.0-alpha.2"
 dependencies = [
  "axum",
  "tokio",
@@ -1815,7 +1815,7 @@ dependencies = [
 
 [[package]]
 name = "termivar-artifact"
-version = "0.10.0-alpha.1"
+version = "0.10.0-alpha.2"
 dependencies = [
  "hex",
  "serde",
@@ -1827,7 +1827,7 @@ dependencies = [
 
 [[package]]
 name = "termivar-cli"
-version = "0.10.0-alpha.1"
+version = "0.10.0-alpha.2"
 dependencies = [
  "clap",
  "reqwest",
@@ -1845,7 +1845,7 @@ dependencies = [
 
 [[package]]
 name = "termivar-core"
-version = "0.10.0-alpha.1"
+version = "0.10.0-alpha.2"
 dependencies = [
  "chrono",
  "hex",
@@ -1871,7 +1871,7 @@ dependencies = [
 
 [[package]]
 name = "termivar-exploit"
-version = "0.10.0-alpha.1"
+version = "0.10.0-alpha.2"
 dependencies = [
  "hex",
  "semver",
@@ -1885,14 +1885,14 @@ dependencies = [
 
 [[package]]
 name = "termivar-proxy"
-version = "0.10.0-alpha.1"
+version = "0.10.0-alpha.2"
 dependencies = [
  "tokio",
 ]
 
 [[package]]
 name = "termivar-scanner"
-version = "0.10.0-alpha.1"
+version = "0.10.0-alpha.2"
 dependencies = [
  "async-trait",
  "base64",

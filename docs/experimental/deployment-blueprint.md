@@ -1,7 +1,7 @@
 # Deployment blueprint (non-deployable design sketch)
 
 > **Status: non-deployable architecture sketch.** The unreleased Termivar
-> `0.10.0-alpha.1` source line has **no
+> `0.10.0-alpha.2` development source line has **no
 > supported deployment surface**. This document preserves the *intent* of a
 > future orchestrated deployment. It is prose and tables only — deliberately not
 > executable Helm, Terraform, or Kubernetes source — so it cannot be mistaken for

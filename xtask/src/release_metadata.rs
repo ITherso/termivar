@@ -388,7 +388,7 @@ fn is_iso_date(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        check, metadata_violations, package_version_violations, release_note_file_violations,
+        metadata_violations, package_version_violations, release_note_file_violations,
         release_note_text_violations, validate_version_token, CURRENT_RELEASE,
         MAX_RELEASE_NOTE_BYTES, VERSIONED_PACKAGES,
     };
@@ -429,11 +429,16 @@ mod tests {
     }
 
     #[test]
-    fn current_workspace_release_metadata_is_valid() {
+    fn published_release_files_remain_valid_after_the_development_line_advances() {
         let workspace = Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()
             .expect("xtask must be inside the workspace");
-        check(workspace, CURRENT_RELEASE).expect("current release metadata must pass");
+        let changelog =
+            fs::read_to_string(workspace.join("CHANGELOG.md")).expect("read repository changelog");
+        let security =
+            fs::read_to_string(workspace.join("SECURITY.md")).expect("read security policy");
+        assert!(metadata_violations(CURRENT_RELEASE, &changelog, &security).is_empty());
+        assert!(release_note_file_violations(workspace, CURRENT_RELEASE).is_empty());
     }
 
     #[test]

@@ -2,6 +2,7 @@
 
 mod architecture;
 mod artifact_catalog;
+mod development_line;
 mod exploit_catalog;
 mod release_metadata;
 mod scanner_corpus;
@@ -50,6 +51,8 @@ enum Task {
     Benchmark,
     /// Build MkDocs and Rust API documentation.
     Docs,
+    /// Ensure post-release source has advanced beyond an existing version tag.
+    DevelopmentLine,
     /// Validate repository-owned exploit-pack manifests and catalog identity.
     ExploitCatalog,
     /// Validate the repository-owned security-assessment conformance corpus.
@@ -120,6 +123,7 @@ fn main() -> TaskResult {
             )?;
             run_mkdocs(&root)
         },
+        Task::DevelopmentLine => development_line::check(&root),
         Task::ExploitCatalog => exploit_catalog::check(&root),
         Task::Release => release_preflight(&root),
         Task::ReleaseMetadata { version } => release_metadata::check(&root, &version),
@@ -337,5 +341,12 @@ mod tests {
         let write = Cli::try_parse_from(["cargo xtask", "scanner-corpus", "--write"])
             .expect("parse generation command");
         assert!(matches!(write.command, Task::ScannerCorpus { write: true }));
+    }
+
+    #[test]
+    fn development_line_command_is_explicit() {
+        let parsed = Cli::try_parse_from(["cargo xtask", "development-line"])
+            .expect("parse development-line validation command");
+        assert!(matches!(parsed.command, Task::DevelopmentLine));
     }
 }

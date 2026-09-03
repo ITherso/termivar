@@ -27,8 +27,8 @@ const INITIAL_TAG_TYPE_GATE: &str = "test \"$(git cat-file -t \"$GITHUB_REF\")\"
 const MAIN_ANCESTRY_GATE: &str = "git merge-base --is-ancestor \"$GITHUB_SHA\" origin/main";
 const VERSION_EQUALITY_GATE: &str = "test \"$tag_version\" = \"$workspace_version\"";
 const RELEASE_BUILD_GATE: &str = "run: cargo build --locked --release --target ${{ matrix.target }} -p termivar-cli --features release-bundle";
-const UNIX_SMOKE_VERSION_GATE: &str = "test \"$version_output\" = \"termivar 0.10.0-alpha.1\"";
-const WINDOWS_SMOKE_VERSION_GATE: &str = "if ($versionOutput -ne \"termivar 0.10.0-alpha.1\") {";
+const UNIX_SMOKE_VERSION_GATE: &str = "test \"$version_output\" = \"termivar 0.10.0-alpha.2\"";
+const WINDOWS_SMOKE_VERSION_GATE: &str = "if ($versionOutput -ne \"termivar 0.10.0-alpha.2\") {";
 const UNIX_QUARANTINE_SMOKE_GATE: &str =
     "if grep -Eq '^  (legacy-scan|api|proxy)[[:space:]]' <<<\"$help_output\"; then";
 const WINDOWS_QUARANTINE_SMOKE_GATE: &str =
@@ -67,6 +67,46 @@ const RELEASE_NOTES_FLAG_GATE: &str = "--notes-file \"$notes_file\" \\";
 const RELEASE_TITLE_GATE: &str = "--title \"Termivar $GITHUB_REF_NAME\" \\";
 const RELEASE_PRERELEASE_GATE: &str = "--prerelease";
 const TESTS_WORKFLOW: &str = ".github/workflows/tests.yml";
+const DEVELOPMENT_LINE_CHECKOUT: &str = r#"      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}"#;
+const DEVELOPMENT_LINE_DEFAULTS: &str = r#"    defaults:
+      run:
+        shell: bash
+        working-directory: ."#;
+const DEVELOPMENT_LINE_GATE: &str = r#"      - name: Verify post-release development-line provenance
+        run: cargo run --locked -p xtask -- development-line"#;
+const ARCHITECTURE_GATE: &str = r#"      - name: Verify workspace and reasoning boundaries
+        run: cargo run --locked -p xtask -- architecture"#;
+const EXPECTED_ARCHITECTURE_JOB: &str = r#"  architecture:
+    name: Architecture Boundaries
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
+        working-directory: .
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      - name: Test development-line provenance contract
+        run: cargo test --locked -p xtask development_line
+      - name: Verify post-release development-line provenance
+        run: cargo run --locked -p xtask -- development-line
+      - name: Verify workspace and reasoning boundaries
+        run: cargo run --locked -p xtask -- architecture
+      - name: Test transport-free scanner contracts
+        run: cargo test --locked -p termivar-scanner --no-default-features --lib"#;
 const EXPECTED_SECURITY_JOB: &str = r#"  security-tests:
     name: Security Tests
     runs-on: ubuntu-latest
@@ -157,6 +197,7 @@ pub(super) fn check(workspace_root: &Path) -> Result<Vec<String>, Box<dyn Error>
     let mut violations = workflow_pin_violations(&files);
     violations.extend(release_workflow_policy_violations(&files));
     violations.extend(security_workflow_policy_violations(&files));
+    violations.extend(development_line_workflow_policy_violations(&files));
     let baseline_accepted = workspace_root.join(COVERAGE_BASELINE_POINTER).is_file();
     violations.extend(coverage_workflow_policy_violations(
         &files,
@@ -164,6 +205,37 @@ pub(super) fn check(workspace_root: &Path) -> Result<Vec<String>, Box<dyn Error>
     ));
     violations.extend(coverage_build_input_policy_violations(workspace_root)?);
     Ok(violations)
+}
+
+fn development_line_workflow_policy_violations(files: &[(String, String)]) -> Vec<String> {
+    let Some((_, contents)) = files.iter().find(|(path, _)| path == TESTS_WORKFLOW) else {
+        return vec![format!(
+            "{TESTS_WORKFLOW}: reviewed development-line workflow is missing"
+        )];
+    };
+    let normalized = contents.replace("\r\n", "\n");
+    let jobs = named_job_blocks(&normalized, "architecture");
+    let valid = jobs.len() == 1
+        && jobs[0] == EXPECTED_ARCHITECTURE_JOB
+        && jobs[0].contains(DEVELOPMENT_LINE_DEFAULTS)
+        && jobs[0].contains(DEVELOPMENT_LINE_CHECKOUT)
+        && jobs[0].contains(DEVELOPMENT_LINE_GATE)
+        && jobs[0].contains(ARCHITECTURE_GATE)
+        && jobs[0]
+            .find(DEVELOPMENT_LINE_GATE)
+            .zip(jobs[0].find(ARCHITECTURE_GATE))
+            .is_some_and(|(development, architecture)| development < architecture)
+        && !jobs[0]
+            .lines()
+            .map(str::trim)
+            .any(|line| line.starts_with("continue-on-error:"));
+    if valid {
+        Vec::new()
+    } else {
+        vec![format!(
+            "{TESTS_WORKFLOW}: `Architecture Boundaries` must match the reviewed exact-head contract, fetch complete tag history, and run the unsuppressed development-line gate before architecture validation"
+        )]
+    }
 }
 
 fn security_workflow_policy_violations(files: &[(String, String)]) -> Vec<String> {
@@ -978,6 +1050,62 @@ mod tests {
             contents.to_owned(),
         )]);
         assert!(violations.is_empty(), "{violations:?}");
+    }
+
+    #[test]
+    fn repository_architecture_job_enforces_the_development_line_with_full_history() {
+        let contents = include_str!("../../../.github/workflows/tests.yml");
+        let violations = development_line_workflow_policy_violations(&[(
+            TESTS_WORKFLOW.to_owned(),
+            contents.to_owned(),
+        )]);
+        assert!(violations.is_empty(), "{violations:?}");
+    }
+
+    #[test]
+    fn development_line_workflow_rejects_missing_history_suppression_and_reordering() {
+        let path = TESTS_WORKFLOW.to_owned();
+        let valid = include_str!("../../../.github/workflows/tests.yml").to_owned();
+        let mutations = [
+            valid.replacen(DEVELOPMENT_LINE_DEFAULTS, "", 1),
+            valid.replacen("        shell: bash\n", "        shell: bash {0} || true\n", 1),
+            valid.replacen("        working-directory: .\n", "        working-directory: elsewhere\n", 1),
+            valid.replacen("          fetch-depth: 0\n", "", 1),
+            valid.replacen("          fetch-tags: true\n", "", 1),
+            valid.replacen(DEVELOPMENT_LINE_GATE, "", 1),
+            valid.replacen(
+                DEVELOPMENT_LINE_GATE,
+                &format!("{DEVELOPMENT_LINE_GATE}\n        continue-on-error: true"),
+                1,
+            ),
+            valid.replacen(
+                &format!("{DEVELOPMENT_LINE_GATE}\n{ARCHITECTURE_GATE}"),
+                &format!("{ARCHITECTURE_GATE}\n{DEVELOPMENT_LINE_GATE}"),
+                1,
+            ),
+            valid.replacen(
+                DEVELOPMENT_LINE_GATE,
+                &format!("{DEVELOPMENT_LINE_GATE}\n        if: false"),
+                1,
+            ),
+            valid.replacen(
+                DEVELOPMENT_LINE_GATE,
+                &format!("{DEVELOPMENT_LINE_GATE}\n        shell: bash {{0}} || true"),
+                1,
+            ),
+            valid.replacen(
+                DEVELOPMENT_LINE_GATE,
+                &format!(
+                    "{DEVELOPMENT_LINE_GATE}\n      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4"
+                ),
+                1,
+            ),
+        ];
+        for mutation in mutations {
+            let violations =
+                development_line_workflow_policy_violations(&[(path.clone(), mutation)]);
+            assert_eq!(violations.len(), 1, "{violations:?}");
+        }
     }
 
     #[test]
