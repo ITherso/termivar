@@ -364,6 +364,7 @@ mod tests {
     use std::process::ExitStatus;
 
     use super::*;
+    use tempfile::TempDir;
 
     #[cfg(unix)]
     fn exit_status(code: i32) -> ExitStatus {
@@ -383,6 +384,73 @@ mod tests {
             stdout: stdout.as_bytes().to_vec(),
             stderr: stderr.as_bytes().to_vec(),
         }
+    }
+
+    fn run_git(root: &Path, arguments: &[&str]) -> Output {
+        let output = Command::new("git")
+            .args(arguments)
+            .current_dir(root)
+            .output()
+            .expect("run Git fixture command");
+        assert!(
+            output.status.success(),
+            "git {} failed: {}",
+            arguments.join(" "),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        output
+    }
+
+    fn git_fixture(files: impl IntoIterator<Item = (String, Vec<u8>)>) -> TempDir {
+        let repository = TempDir::new().expect("temporary Git repository");
+        run_git(repository.path(), &["init", "--quiet"]);
+        for (relative, contents) in files {
+            let path = repository.path().join(relative);
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent).expect("create fixture parent");
+            }
+            fs::write(path, contents).expect("write fixture file");
+        }
+        run_git(repository.path(), &["add", "--all"]);
+        run_git(
+            repository.path(),
+            &[
+                "-c",
+                "user.name=Termivar SemVer Fixture",
+                "-c",
+                "user.email=semver@example.invalid",
+                "commit",
+                "--quiet",
+                "--message",
+                "fixture",
+            ],
+        );
+        repository
+    }
+
+    fn fixture_tree(repository: &Path) -> String {
+        let output = git_output(
+            repository,
+            &[
+                "ls-tree",
+                "-r",
+                "-l",
+                "--full-tree",
+                "HEAD",
+                "--",
+                BASELINE_CRATE_ROOT,
+            ],
+            MAX_BASELINE_TREE_BYTES,
+        )
+        .expect("read bounded fixture tree");
+        String::from_utf8(output).expect("Git tree output is UTF-8")
+    }
+
+    fn bind_fixture_to_historical_revision(repository: &Path) {
+        let head = String::from_utf8(run_git(repository, &["rev-parse", "HEAD"]).stdout)
+            .expect("fixture head is UTF-8");
+        let replacement = format!("refs/replace/{BASELINE_REVISION}");
+        run_git(repository, &["update-ref", &replacement, head.trim()]);
     }
 
     #[test]
@@ -437,6 +505,257 @@ mod tests {
         ] {
             assert!(parse_baseline_tree(invalid).is_err(), "{invalid}");
         }
+    }
+
+    #[test]
+    fn historical_baseline_materializes_as_one_identity_only_adapter() {
+        let repository = git_fixture([
+            (
+                "Cargo.toml".to_owned(),
+                br#"[workspace]
+members = ["crates/venom-core", "crates/venom-cli"]
+default-members = ["crates/venom-cli"]
+resolver = "2"
+"#
+                .to_vec(),
+            ),
+            (
+                "crates/venom-core/Cargo.toml".to_owned(),
+                br#"[package]
+name = "venom-core"
+version = "0.9.0-alpha"
+
+[lib]
+name = "venom_core"
+path = "src/lib.rs"
+"#
+                .to_vec(),
+            ),
+            (
+                "crates/venom-core/src/lib.rs".to_owned(),
+                b"mod model;\npub use model::Baseline;\n".to_vec(),
+            ),
+            (
+                "crates/venom-core/src/model.rs".to_owned(),
+                b"pub struct Baseline;\n".to_vec(),
+            ),
+        ]);
+        bind_fixture_to_historical_revision(repository.path());
+
+        let materialized_path = repository
+            .path()
+            .join("target")
+            .join(format!("termivar-semver-baseline-{}", std::process::id()));
+        fs::create_dir_all(&materialized_path).expect("create stale materialization");
+        fs::write(materialized_path.join("stale"), b"stale")
+            .expect("write stale materialization marker");
+
+        let baseline = BaselineWorkspace::materialize(repository.path())
+            .expect("materialize pinned historical baseline");
+        assert_eq!(baseline.path(), materialized_path);
+        assert!(!baseline.path().join("stale").exists());
+
+        let workspace = fs::read_to_string(baseline.path().join("Cargo.toml"))
+            .expect("read materialized workspace")
+            .parse::<toml::Value>()
+            .expect("parse materialized workspace");
+        assert_eq!(
+            workspace["workspace"]["members"].as_array().unwrap(),
+            &[toml::Value::String(BASELINE_CRATE_ROOT.to_owned())]
+        );
+        assert!(workspace["workspace"].get("default-members").is_none());
+
+        let core_manifest =
+            fs::read_to_string(baseline.path().join(BASELINE_CRATE_ROOT).join("Cargo.toml"))
+                .expect("read materialized core manifest")
+                .parse::<toml::Value>()
+                .expect("parse materialized core manifest");
+        assert_eq!(core_manifest["package"]["name"].as_str(), Some(PACKAGE));
+        assert_eq!(core_manifest["lib"]["name"].as_str(), Some("termivar_core"));
+
+        let expected_library = git_file(
+            repository.path(),
+            BASELINE_REVISION,
+            &format!("{BASELINE_CRATE_ROOT}/src/lib.rs"),
+            MAX_BASELINE_FILE_BYTES,
+        )
+        .expect("read pinned library blob");
+        assert_eq!(
+            fs::read(baseline.path().join(BASELINE_CRATE_ROOT).join("src/lib.rs"))
+                .expect("read materialized library"),
+            expected_library
+        );
+
+        let cleanup_path = baseline.path().to_owned();
+        drop(baseline);
+        assert!(!cleanup_path.exists());
+    }
+
+    #[test]
+    fn bounded_git_reads_report_command_failure_and_output_overrun() {
+        let repository = git_fixture([(
+            "crates/venom-core/src/lib.rs".to_owned(),
+            b"pub struct Baseline;\n".to_vec(),
+        )]);
+
+        assert_eq!(
+            git_file(
+                repository.path(),
+                "HEAD",
+                "crates/venom-core/src/lib.rs",
+                64,
+            )
+            .unwrap(),
+            b"pub struct Baseline;\n"
+        );
+
+        let missing = git_output(
+            repository.path(),
+            &["show", "missing-revision:Cargo.toml"],
+            64,
+        )
+        .expect_err("an absent revision must fail closed")
+        .to_string();
+        assert!(missing.contains("bounded Git read failed with status"));
+
+        let oversized = git_output(
+            repository.path(),
+            &["show", "HEAD:crates/venom-core/src/lib.rs"],
+            3,
+        )
+        .expect_err("output beyond the caller's bound must fail closed")
+        .to_string();
+        assert_eq!(oversized, "bounded Git read exceeded its byte limit");
+    }
+
+    #[test]
+    fn real_git_trees_enforce_file_count_size_and_required_roots() {
+        let mut too_many_files = vec![
+            (
+                "crates/venom-core/Cargo.toml".to_owned(),
+                b"[package]\nname = \"venom-core\"\n".to_vec(),
+            ),
+            (
+                "crates/venom-core/src/lib.rs".to_owned(),
+                b"pub struct Baseline;\n".to_vec(),
+            ),
+        ];
+        for index in 0..MAX_BASELINE_FILES {
+            too_many_files.push((
+                format!("crates/venom-core/src/generated_{index:03}.rs"),
+                b"pub const VALUE: usize = 1;\n".to_vec(),
+            ));
+        }
+        let repository = git_fixture(too_many_files);
+        assert_eq!(
+            parse_baseline_tree(&fixture_tree(repository.path()))
+                .expect_err("the baseline file-count bound must fail closed")
+                .to_string(),
+            "SemVer baseline contains too many files"
+        );
+
+        let repository = git_fixture([
+            (
+                "crates/venom-core/Cargo.toml".to_owned(),
+                b"[package]\nname = \"venom-core\"\n".to_vec(),
+            ),
+            (
+                "crates/venom-core/src/lib.rs".to_owned(),
+                b"pub struct Baseline;\n".to_vec(),
+            ),
+            (
+                "crates/venom-core/src/oversized.rs".to_owned(),
+                vec![b'x'; MAX_BASELINE_FILE_BYTES + 1],
+            ),
+        ]);
+        let oversized = parse_baseline_tree(&fixture_tree(repository.path()))
+            .expect_err("an oversized baseline blob must fail closed")
+            .to_string();
+        assert!(oversized.contains("oversized.rs"));
+        assert!(oversized.contains("exceeds its byte limit"));
+
+        let repository = git_fixture([(
+            "crates/venom-core/Cargo.toml".to_owned(),
+            b"[package]\nname = \"venom-core\"\n".to_vec(),
+        )]);
+        assert_eq!(
+            parse_baseline_tree(&fixture_tree(repository.path()))
+                .expect_err("the library root is mandatory")
+                .to_string(),
+            "SemVer baseline is missing its manifest or library root"
+        );
+
+        let repository = git_fixture([
+            (
+                "crates/venom-core/Cargo.toml".to_owned(),
+                b"[package]\nname = \"venom-core\"\n".to_vec(),
+            ),
+            (
+                "crates/venom-core/src/lib.rs".to_owned(),
+                b"pub struct Baseline;\n".to_vec(),
+            ),
+            (
+                "crates/venom-core/README.md".to_owned(),
+                b"not part of the bounded source baseline\n".to_vec(),
+            ),
+        ]);
+        bind_fixture_to_historical_revision(repository.path());
+        assert_eq!(
+            baseline_tree_entries(repository.path())
+                .expect_err("a committed path outside the allowlist must fail closed")
+                .to_string(),
+            "unexpected SemVer baseline path `crates/venom-core/README.md`"
+        );
+    }
+
+    #[test]
+    fn materialization_enforces_aggregate_size_and_cleans_partial_output() {
+        let mut files = vec![
+            (
+                "Cargo.toml".to_owned(),
+                b"[workspace]\nmembers = [\"crates/venom-core\"]\n".to_vec(),
+            ),
+            (
+                "crates/venom-core/Cargo.toml".to_owned(),
+                br#"[package]
+name = "venom-core"
+version = "0.9.0-alpha"
+
+[lib]
+name = "venom_core"
+path = "src/lib.rs"
+"#
+                .to_vec(),
+            ),
+            (
+                "crates/venom-core/src/lib.rs".to_owned(),
+                b"pub struct Baseline;\n".to_vec(),
+            ),
+        ];
+        for index in 0..5 {
+            files.push((
+                format!("crates/venom-core/src/large_{index}.rs"),
+                vec![b'x'; 900 * 1024],
+            ));
+        }
+        let repository = git_fixture(files);
+        bind_fixture_to_historical_revision(repository.path());
+
+        let materialized_path = repository
+            .path()
+            .join("target")
+            .join(format!("termivar-semver-baseline-{}", std::process::id()));
+        assert_eq!(
+            BaselineWorkspace::materialize(repository.path())
+                .map(|_| ())
+                .expect_err("aggregate baseline size must fail closed")
+                .to_string(),
+            "SemVer baseline exceeds its aggregate byte limit"
+        );
+        assert!(
+            !materialized_path.exists(),
+            "the partially materialized baseline must be cleaned by its guard"
+        );
     }
 
     #[test]

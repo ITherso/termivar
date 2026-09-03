@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Measure and enforce Venom's repository-owned Rust source coverage.
+"""Measure and enforce Termivar's repository-owned Rust source coverage.
 
 The checker deliberately uses only the Python standard library.  It consumes
 Tarpaulin's Cobertura XML, measures the fixed repository scope, and compares
@@ -52,19 +52,6 @@ INITIAL_CALIBRATION_OMISSIONS = [
     "crates/venom-scanner/src/semantic.rs",
     "crates/venom-scanner/src/web_runtime/api_visibility/tests.rs",
 ]
-# Coverage evidence predates the alpha package rename. Keep its accepted
-# source identities stable while resolving the one current implementation at
-# its Termivar paths. This deliberately neither broadens scope nor changes the
-# reviewed omission inventory.
-CURRENT_TO_STABLE_SOURCE_PREFIXES = {
-    "crates/termivar-api/": "crates/venom-api/",
-    "crates/termivar-artifact/": "crates/venom-artifact/",
-    "crates/termivar-cli/": "crates/venom-cli/",
-    "crates/termivar-core/": "crates/venom-core/",
-    "crates/termivar-exploit/": "crates/venom-exploit/",
-    "crates/termivar-proxy/": "crates/venom-proxy/",
-    "crates/termivar-scanner/": "crates/venom-scanner/",
-}
 DEFAULT_BASELINE_POINTER = "docs/reports/coverage/accepted-baseline.txt"
 DEFAULT_ARTIFACT_NAME = "coverage-evidence"
 CANONICAL_REPOSITORY = "ITherso/venom"
@@ -78,6 +65,7 @@ _ENFORCEMENT_ARGUMENTS = b" --require-base"
 
 _FULL_SHA = re.compile(r"[0-9a-f]{40}")
 _BASELINE_NAME = re.compile(r"[0-9a-f]{7,40}\.json")
+_RENAME_STATUS = re.compile(r"R([0-9]{1,3})")
 _PORTABLE_PATH = re.compile(r"[A-Za-z0-9._/-]+")
 _HUNK = re.compile(
     r"^@@ -[0-9]+(?:,[0-9]+)? \+([0-9]+)(?:,([0-9]+))? @@(?: .*)?$"
@@ -127,24 +115,6 @@ def in_scope(path: str) -> bool:
     if len(parts) >= 3 and parts[0:2] == ["xtask", "src"]:
         return True
     return len(parts) >= 4 and parts[0] == "crates" and parts[2] == "src"
-
-
-def _coverage_identity_path(path: str) -> str:
-    """Map current package paths onto their accepted coverage identities."""
-
-    for current, stable in CURRENT_TO_STABLE_SOURCE_PREFIXES.items():
-        if path.startswith(current):
-            return stable + path[len(current) :]
-    return path
-
-
-def _current_source_path(path: str) -> str:
-    """Resolve a stable coverage identity to the current package path."""
-
-    for current, stable in CURRENT_TO_STABLE_SOURCE_PREFIXES.items():
-        if path.startswith(stable):
-            return current + path[len(stable) :]
-    return path
 
 
 def _workspace_path(root: Path, value: str, purpose: str) -> Path:
@@ -232,10 +202,9 @@ def parse_cobertura(
         raw_filename = class_element.get("filename")
         if raw_filename is None:
             raise GateError("Cobertura class is missing its filename")
-        report_path = _normalise_report_path(workspace_root, raw_filename)
-        if not in_scope(report_path):
+        filename = _normalise_report_path(workspace_root, raw_filename)
+        if not in_scope(filename):
             continue
-        filename = _coverage_identity_path(report_path)
         if filename in seen_files:
             raise GateError(f"Cobertura repeats an in-scope class path: {filename}")
         seen_files.add(filename)
@@ -408,7 +377,6 @@ def _tracked_sources_at(root: Path, commit: str) -> list[str]:
     )
     assert isinstance(output, bytes)
     paths: list[str] = []
-    source_by_identity: dict[str, str] = {}
     for raw in output.split(b"\0"):
         if not raw:
             continue
@@ -419,15 +387,7 @@ def _tracked_sources_at(root: Path, commit: str) -> list[str]:
         if not _is_safe_relative_path(value):
             raise GateError(f"Git returned an unsafe tracked path: {value!r}")
         if in_scope(value):
-            identity = _coverage_identity_path(value)
-            previous = source_by_identity.get(identity)
-            if previous is not None:
-                raise GateError(
-                    "multiple tracked source paths map to one coverage identity: "
-                    f"{previous}, {value} -> {identity}"
-                )
-            source_by_identity[identity] = value
-            paths.append(identity)
+            paths.append(value)
     return sorted(paths)
 
 
@@ -611,44 +571,108 @@ def _reject_instrumentation_exclusions(
         )
 
 
-def _changed_sources(root: Path, base: str, head: str) -> tuple[list[str], dict[str, set[int]]]:
-    range_spec = f"{base}...{head}"
+def _decode_git_path(raw: bytes, purpose: str) -> str:
+    try:
+        path = raw.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise GateError(f"Git returned a non-UTF-8 {purpose} path") from error
+    if not _is_safe_relative_path(path):
+        raise GateError(f"Git returned an unsafe {purpose} path: {path!r}")
+    return path
+
+
+def _parse_name_status_z(
+    raw: bytes,
+) -> tuple[list[str], dict[str, str], list[str], list[str]]:
+    """Parse NUL-delimited Git status, retaining explicit rename evidence."""
+
+    if not raw:
+        return [], {}, [], []
+    if not raw.endswith(b"\0"):
+        raise GateError("Git name-status output is not NUL terminated")
+    fields = raw[:-1].split(b"\0")
+    current: set[str] = set()
+    deleted: set[str] = set()
+    entered_scope: set[str] = set()
+    renames: dict[str, str] = {}
+    rename_targets: set[str] = set()
+    offset = 0
+    while offset < len(fields):
+        try:
+            status = fields[offset].decode("ascii")
+        except UnicodeDecodeError as error:
+            raise GateError("Git returned a non-ASCII change status") from error
+        offset += 1
+        rename = _RENAME_STATUS.fullmatch(status)
+        if rename is not None:
+            if int(rename.group(1)) > 100 or offset + 1 >= len(fields):
+                raise GateError(f"Git returned a malformed rename status: {status!r}")
+            old_path = _decode_git_path(fields[offset], "renamed old-side")
+            new_path = _decode_git_path(fields[offset + 1], "renamed new-side")
+            offset += 2
+            if old_path == new_path:
+                raise GateError("Git rename status repeats one path on both sides")
+            if in_scope(old_path) and in_scope(new_path):
+                if old_path in renames or new_path in rename_targets:
+                    raise GateError("Git returned duplicate source rename identities")
+                renames[old_path] = new_path
+                rename_targets.add(new_path)
+                current.add(new_path)
+                deleted.add(old_path)
+            elif in_scope(new_path):
+                current.add(new_path)
+                entered_scope.add(new_path)
+            elif in_scope(old_path):
+                deleted.add(old_path)
+            continue
+        if status not in {"A", "D", "M"} or offset >= len(fields):
+            raise GateError(f"Git returned an unsupported change status: {status!r}")
+        path = _decode_git_path(fields[offset], "changed")
+        offset += 1
+        if not in_scope(path):
+            continue
+        if status == "D":
+            deleted.add(path)
+        else:
+            current.add(path)
+    if current.intersection(deleted):
+        raise GateError("Git reported one source path as both current and deleted")
+    return (
+        sorted(current),
+        dict(sorted(renames.items())),
+        sorted(deleted),
+        sorted(entered_scope),
+    )
+
+
+def _changed_source_details(
+    root: Path, base: str, head: str
+) -> tuple[list[str], dict[str, set[int]], dict[str, str], list[str]]:
     comparison_base = str(_git(root, ["merge-base", base, head])).strip().lower()
     if _FULL_SHA.fullmatch(comparison_base) is None:
         raise GateError("coverage diff did not resolve to one full merge-base commit SHA")
-    raw_names = _git(
+    raw_status = _git(
         root,
         [
             "-c",
             "core.quotePath=false",
             "diff",
-            "--name-only",
+            "--find-renames",
+            "--name-status",
             "-z",
-            "--diff-filter=ACMR",
-            "--no-renames",
+            "--diff-filter=ADMR",
             "--no-ext-diff",
             "--no-textconv",
-            "--text",
-            range_spec,
+            comparison_base,
+            head,
             "--",
             "crates",
             "xtask",
         ],
         binary=True,
     )
-    assert isinstance(raw_names, bytes)
-    names: list[str] = []
-    for raw in raw_names.split(b"\0"):
-        if not raw:
-            continue
-        try:
-            value = raw.decode("utf-8")
-        except UnicodeDecodeError as error:
-            raise GateError("Git returned a non-UTF-8 changed path") from error
-        if not _is_safe_relative_path(value):
-            raise GateError(f"Git returned an unsafe changed path: {value!r}")
-        if in_scope(value):
-            names.append(value)
+    assert isinstance(raw_status, bytes)
+    names, renames, deleted, entered_scope = _parse_name_status_z(raw_status)
 
     diff = _git(
         root,
@@ -656,13 +680,14 @@ def _changed_sources(root: Path, base: str, head: str) -> tuple[list[str], dict[
             "-c",
             "core.quotePath=false",
             "diff",
+            "--find-renames",
             "--unified=0",
             "--no-ext-diff",
             "--no-color",
-            "--no-renames",
             "--no-textconv",
             "--text",
-            range_spec,
+            comparison_base,
+            head,
             "--",
             "crates",
             "xtask",
@@ -674,90 +699,61 @@ def _changed_sources(root: Path, base: str, head: str) -> tuple[list[str], dict[
     unexpected = sorted(set(line_map) - name_set)
     if unexpected:
         raise GateError(f"diff hunks were not present in the changed-file list: {unexpected}")
+    old_by_new = {new: old for old, new in renames.items()}
     for name in names:
         head_blob = _git_blob_exact(root, head, name)
         if head_blob is None:
             raise GateError(f"changed in-scope source is absent from the head commit: {name}")
-        identity = _coverage_identity_path(name)
-        base_blob = _git_blob_exact(root, comparison_base, name)
-        if identity != name:
-            identity_blob = _git_blob_exact(root, comparison_base, identity)
-            if identity_blob is not None:
-                base_blob = identity_blob
-        if base_blob != head_blob and name not in hunk_files:
+        if name in entered_scope:
+            try:
+                head_source = head_blob.decode("utf-8")
+            except UnicodeDecodeError as error:
+                raise GateError(f"newly in-scope Rust source is not UTF-8: {name}") from error
+            line_map[name] = set(range(1, len(head_source.splitlines()) + 1))
+            continue
+        base_path = old_by_new.get(name, name)
+        base_blob = _git_blob_exact(root, comparison_base, base_path)
+        if base_blob != head_blob and head_blob and name not in hunk_files:
             raise GateError(
                 f"Git reported a content change for {name} without a forced-text diff hunk"
             )
         line_map.setdefault(name, set())
+    return names, dict(sorted(line_map.items())), renames, deleted
 
-    # This migration deliberately keeps the accepted coverage identities under
-    # their pre-Termivar package paths.  Git's forced `--no-renames` diff is a
-    # useful fail-closed default for ordinary files, but it would count every
-    # line of an identity-preserving package-directory move as newly added.
-    # Re-diff only the explicit, reviewed old/current path pair so a rename plus
-    # a real edit accounts for the edited new-side lines, while an unchanged
-    # move contributes no synthetic patch lines.
-    for name in names:
-        identity = _coverage_identity_path(name)
-        if identity == name:
-            continue
-        base_blob = _git_blob_exact(root, comparison_base, identity)
-        if base_blob is None:
-            # The current path already existed at the comparison base, or this
-            # is a genuinely new source.  The ordinary forced-text diff above
-            # is authoritative in either case.
-            continue
-        if _git_blob_exact(root, head, identity) is not None:
-            raise GateError(
-                "both stable and current source paths exist for one coverage identity: "
-                f"{identity}, {name}"
-            )
-        head_blob = _git_blob_exact(root, head, name)
-        if head_blob is None:
-            raise GateError(f"mapped current source is absent from the head commit: {name}")
-        mapped_diff = _git(
-            root,
-            [
-                "-c",
-                "core.quotePath=false",
-                "diff",
-                "--find-renames=1%",
-                "--unified=0",
-                "--no-ext-diff",
-                "--no-color",
-                "--no-textconv",
-                "--text",
-                comparison_base,
-                head,
-                "--",
-                identity,
-                name,
-            ],
-        )
-        assert isinstance(mapped_diff, str)
-        mapped_lines, mapped_hunks = _parse_unified_diff_details(mapped_diff)
-        unexpected_mapped = sorted(set(mapped_lines) - {name})
-        if unexpected_mapped:
-            raise GateError(
-                "mapped coverage rename emitted unexpected new-side paths: "
-                f"{unexpected_mapped}"
-            )
-        if base_blob != head_blob and name not in mapped_hunks:
-            raise GateError(
-                "mapped coverage source changed without a forced-text diff hunk: "
-                f"{identity} -> {name}"
-            )
-        line_map[name] = mapped_lines.get(name, set())
-    identity_names = {_coverage_identity_path(name) for name in name_set}
-    identity_line_map: dict[str, set[int]] = {}
-    for path, lines in line_map.items():
-        identity = _coverage_identity_path(path)
-        if identity in identity_line_map:
-            raise GateError(
-                f"multiple current source paths map to one coverage identity: {identity}"
-            )
-        identity_line_map[identity] = lines
-    return sorted(identity_names), dict(sorted(identity_line_map.items()))
+
+def _source_renames_between(root: Path, base: str, head: str) -> dict[str, str]:
+    """Return persistent source identity moves between two repository states."""
+
+    raw_status = _git(
+        root,
+        [
+            "-c",
+            "core.quotePath=false",
+            "diff",
+            "--find-renames",
+            "--name-status",
+            "-z",
+            "--diff-filter=R",
+            "--no-ext-diff",
+            "--no-textconv",
+            base,
+            head,
+            "--",
+            "crates",
+            "xtask",
+        ],
+        binary=True,
+    )
+    assert isinstance(raw_status, bytes)
+    _, renames, _, _ = _parse_name_status_z(raw_status)
+    return renames
+
+
+def _changed_sources(root: Path, base: str, head: str) -> tuple[list[str], dict[str, set[int]]]:
+    """Return current changed sources and new-side executable line candidates."""
+
+    names, line_map, _, _ = _changed_source_details(root, base, head)
+    return names, line_map
 
 
 def _git_blob_exact(root: Path, commit: str, path: str) -> bytes | None:
@@ -784,17 +780,7 @@ def _git_blob_exact(root: Path, commit: str, path: str) -> bytes | None:
 
 
 def _git_blob(root: Path, commit: str, path: str) -> bytes | None:
-    if not _is_safe_relative_path(path):
-        raise GateError(f"baseline blob path is unsafe: {path!r}")
-    candidates = [path]
-    current = _current_source_path(path)
-    if current != path:
-        candidates.append(current)
-    for candidate in candidates:
-        output = _git_blob_exact(root, commit, candidate)
-        if output is not None:
-            return output
-    return None
+    return _git_blob_exact(root, commit, path)
 
 
 def _verify_coverage_cargo_config(root: Path, commit: str) -> None:
@@ -1278,12 +1264,396 @@ def _candidate_provenance_violations(
     return violations
 
 
+def _project_paths_to_head(paths: Iterable[str], renames: dict[str, str]) -> set[str]:
+    """Project historical source identities through Git-confirmed renames."""
+
+    source_paths = set(paths)
+    projected = {renames.get(path, path) for path in source_paths}
+    if len(projected) != len(source_paths):
+        raise GateError("source rename projection collapses distinct path identities")
+    return projected
+
+
+def _comment_identity_tokens(comment: str, product_root: str) -> list[tuple[str, str]]:
+    """Tokenize reviewable brand words in one comment without marker substitution."""
+
+    spellings = {
+        product_root: "lower",
+        product_root.capitalize(): "title",
+        product_root.upper(): "upper",
+    }
+    pattern = re.compile(
+        r"(?<![A-Za-z0-9_])(?:"
+        + "|".join(re.escape(value) for value in sorted(spellings, key=len, reverse=True))
+        + r")(?![A-Za-z0-9./])"
+    )
+    tokens: list[tuple[str, str]] = []
+    cursor = 0
+    for match in pattern.finditer(comment):
+        if match.start() > cursor:
+            tokens.append(("comment", comment[cursor : match.start()]))
+        tokens.append(("comment-brand", spellings[match.group()]))
+        cursor = match.end()
+    if cursor < len(comment):
+        tokens.append(("comment", comment[cursor:]))
+    return tokens
+
+
+def _quoted_string_end(source: str, start: int) -> int:
+    """Return the end of a normal Rust string literal starting at its quote."""
+
+    end = start + 1
+    while end < len(source):
+        if source[end] == "\\":
+            end += 2
+            continue
+        if source[end] == '"':
+            return end + 1
+        end += 1
+    raise GateError("unterminated Rust string while comparing renamed source")
+
+
+def _normalised_rust_identity_tokens(
+    blob: bytes, product_root: str
+) -> tuple[tuple[str, str] | tuple[str, str, str], ...]:
+    """Lex Rust conservatively, preserving every literal as exact source text."""
+
+    try:
+        source = blob.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise GateError("renamed Rust source is not UTF-8") from error
+
+    tokens: list[tuple[str, str] | tuple[str, str, str]] = []
+    offset = 0
+    while offset < len(source):
+        if source.startswith("//", offset):
+            end = source.find("\n", offset + 2)
+            if end < 0:
+                end = len(source)
+            tokens.extend(_comment_identity_tokens(source[offset:end], product_root))
+            offset = end
+            continue
+        if source.startswith("/*", offset):
+            depth = 1
+            end = offset + 2
+            while end < len(source) and depth:
+                if source.startswith("/*", end):
+                    depth += 1
+                    end += 2
+                elif source.startswith("*/", end):
+                    depth -= 1
+                    end += 2
+                else:
+                    end += 1
+            if depth:
+                raise GateError("unterminated Rust block comment while comparing renamed source")
+            tokens.extend(_comment_identity_tokens(source[offset:end], product_root))
+            offset = end
+            continue
+
+        raw_end = _raw_string_end(source, offset)
+        if raw_end is not None:
+            tokens.append(("literal", source[offset:raw_end]))
+            offset = raw_end
+            continue
+        if source.startswith(('b"', 'c"'), offset):
+            end = _quoted_string_end(source, offset + 1)
+            tokens.append(("literal", source[offset:end]))
+            offset = end
+            continue
+        if source[offset] == '"':
+            end = _quoted_string_end(source, offset)
+            tokens.append(("literal", source[offset:end]))
+            offset = end
+            continue
+        if source.startswith("b'", offset):
+            char_end = _char_literal_end(source, offset + 1)
+            if char_end is not None:
+                tokens.append(("literal", source[offset:char_end]))
+                offset = char_end
+                continue
+        if source[offset] == "'":
+            char_end = _char_literal_end(source, offset)
+            if char_end is not None:
+                tokens.append(("literal", source[offset:char_end]))
+                offset = char_end
+                continue
+        if source[offset].isspace():
+            end = offset + 1
+            while end < len(source) and source[end].isspace():
+                end += 1
+            tokens.append(("whitespace", source[offset:end]))
+            offset = end
+            continue
+        if source[offset].isascii() and (
+            source[offset].isalpha() or source[offset] == "_"
+        ):
+            end = offset + 1
+            while end < len(source) and source[end].isascii() and (
+                source[end].isalnum() or source[end] == "_"
+            ):
+                end += 1
+            identifier = source[offset:end]
+            tokens.append(("identifier", identifier))
+            offset = end
+            continue
+        tokens.append(("punctuation", source[offset]))
+        offset += 1
+    return tuple(tokens)
+
+
+def _normalise_top_level_import_identities(
+    tokens: tuple[tuple[str, str] | tuple[str, str, str], ...],
+    identities: dict[str, tuple[str, str]],
+) -> tuple[tuple[str, str] | tuple[str, str, str], ...]:
+    """Abstract crate-root identifiers only inside proven top-level imports."""
+
+    normalised = list(tokens)
+    allowed_kinds = {"identifier", "whitespace", "punctuation"}
+    allowed_punctuation = {":", "{", "}", ",", "*", ";"}
+    delimiter_stack: list[str] = []
+    offset = 0
+    while offset < len(tokens):
+        token = tokens[offset]
+        if (
+            not delimiter_stack
+            and token == ("identifier", "use")
+        ):
+            end = offset
+            import_brace_depth = 0
+            while end < len(tokens):
+                import_token = tokens[end]
+                if import_token[0] not in allowed_kinds:
+                    break
+                if import_token[0] == "punctuation":
+                    punctuation = import_token[1]
+                    if punctuation not in allowed_punctuation:
+                        break
+                    if punctuation == "{":
+                        import_brace_depth += 1
+                    elif punctuation == "}":
+                        if import_brace_depth == 0:
+                            break
+                        import_brace_depth -= 1
+                    elif punctuation == ";" and import_brace_depth == 0:
+                        end += 1
+                        for index in range(offset + 1, end):
+                            candidate = normalised[index]
+                            if candidate[0] != "identifier":
+                                continue
+                            identifier = candidate[1]
+                            if identifier in identities:
+                                old_identity, new_identity = identities[identifier]
+                                normalised[index] = (
+                                    "package-import-identifier",
+                                    old_identity,
+                                    new_identity,
+                                )
+                            # Only the crate-root path segment is package
+                            # identity. Imported symbols and aliases remain
+                            # exact semantic source.
+                            break
+                        offset = end
+                        break
+                end += 1
+            else:
+                offset = end
+                continue
+            if offset == end:
+                continue
+        if token[0] == "punctuation" and token[1] in {"(", "[", "{"}:
+            delimiter_stack.append({"(": ")", "[": "]", "{": "}"}[token[1]])
+        elif token[0] == "punctuation" and token[1] in {")", "]", "}"}:
+            if not delimiter_stack or delimiter_stack.pop() != token[1]:
+                raise GateError("unbalanced Rust delimiters while comparing renamed source")
+        offset += 1
+    if delimiter_stack:
+        raise GateError("unbalanced Rust delimiters while comparing renamed source")
+    return tuple(normalised)
+
+
+def _canonicalise_leading_use_prelude(
+    tokens: tuple[tuple[str, str] | tuple[str, str, str], ...],
+) -> tuple[object, ...]:
+    """Canonicalise only a lexically proven, plain leading Rust `use` prelude."""
+
+    offset = 0
+    while offset < len(tokens) and tokens[offset][0] == "whitespace":
+        offset += 1
+    first = offset
+    statements: list[tuple[tuple[str, str] | tuple[str, str, str], ...]] = []
+    gaps: list[tuple[tuple[str, str] | tuple[str, str, str], ...]] = []
+    allowed_punctuation = {":", "{", "}", ",", "*", ";"}
+    while offset < len(tokens) and tokens[offset] == ("identifier", "use"):
+        statement_start = offset
+        brace_depth = 0
+        while offset < len(tokens):
+            token = tokens[offset]
+            kind = token[0]
+            if kind not in {
+                "identifier",
+                "package-import-identifier",
+                "whitespace",
+                "punctuation",
+            }:
+                return tuple(tokens)
+            if kind == "punctuation":
+                punctuation = token[1]
+                if punctuation not in allowed_punctuation:
+                    return tuple(tokens)
+                if punctuation == "{":
+                    brace_depth += 1
+                elif punctuation == "}":
+                    if brace_depth == 0:
+                        return tuple(tokens)
+                    brace_depth -= 1
+                elif punctuation == ";" and brace_depth == 0:
+                    offset += 1
+                    break
+            offset += 1
+        else:
+            return tuple(tokens)
+        statements.append(tuple(tokens[statement_start:offset]))
+        gap_start = offset
+        while offset < len(tokens) and tokens[offset][0] == "whitespace":
+            offset += 1
+        gap = tuple(tokens[gap_start:offset])
+        gap_text = "".join(token[1] for token in gap)
+        if (
+            offset < len(tokens)
+            and tokens[offset] == ("identifier", "use")
+            and re.fullmatch(r"[ \t]*\r?\n[ \t]*", gap_text) is not None
+        ):
+            gaps.append(gap)
+            continue
+        offset = gap_start
+        break
+
+    if len(statements) < 2 or len(gaps) != len(statements) - 1:
+        return tuple(tokens)
+    if not gaps[0] or any(gap != gaps[0] for gap in gaps[1:]):
+        return tuple(tokens)
+    return (
+        *tokens[:first],
+        ("leading-use-prelude", tuple(sorted(statements)), gaps[0]),
+        *tokens[offset:],
+    )
+
+
+def _package_identity_rename_equivalent(
+    old_path: str,
+    new_path: str,
+    old_blob: bytes,
+    new_blob: bytes,
+    crate_identities: dict[str, str],
+) -> bool:
+    """Allow an omitted crate move only when content differs by its package identity."""
+
+    old_parts = old_path.split("/")
+    new_parts = new_path.split("/")
+    if (
+        len(old_parts) < 4
+        or len(new_parts) < 4
+        or old_parts[0] != "crates"
+        or new_parts[0] != "crates"
+        or old_parts[2:] != new_parts[2:]
+    ):
+        return False
+    old_package = old_parts[1]
+    new_package = new_parts[1]
+    old_root, old_separator, old_suffix = old_package.partition("-")
+    new_root, new_separator, new_suffix = new_package.partition("-")
+    if (
+        not old_separator
+        or not new_separator
+        or not old_root
+        or not new_root
+        or old_root == new_root
+        or old_suffix != new_suffix
+    ):
+        return False
+    try:
+        old_package.encode("ascii")
+        new_package.encode("ascii")
+        old_root.encode("ascii")
+        new_root.encode("ascii")
+    except UnicodeEncodeError:
+        return False
+    old_package_identity = old_package.replace("-", "_")
+    new_package_identity = new_package.replace("-", "_")
+    if crate_identities.get(old_package_identity) != new_package_identity:
+        return False
+    old_import_identities = {
+        old: (old, new) for old, new in crate_identities.items()
+    }
+    new_import_identities = {
+        new: (old, new) for old, new in crate_identities.items()
+    }
+    old_normalised = _normalise_top_level_import_identities(
+        _normalised_rust_identity_tokens(old_blob, old_root), old_import_identities
+    )
+    new_normalised = _normalise_top_level_import_identities(
+        _normalised_rust_identity_tokens(new_blob, new_root), new_import_identities
+    )
+    return _canonicalise_leading_use_prelude(
+        old_normalised
+    ) == _canonicalise_leading_use_prelude(new_normalised)
+
+
+def _crate_identity_renames(renames: dict[str, str]) -> dict[str, str]:
+    """Derive exact Rust crate identities from Git-confirmed package moves."""
+
+    identities: dict[str, str] = {}
+    reverse: dict[str, str] = {}
+    for old_path, new_path in sorted(renames.items()):
+        old_parts = old_path.split("/")
+        new_parts = new_path.split("/")
+        if (
+            len(old_parts) < 4
+            or len(new_parts) < 4
+            or old_parts[0] != "crates"
+            or new_parts[0] != "crates"
+            or old_parts[2:] != new_parts[2:]
+        ):
+            continue
+        old_package = old_parts[1]
+        new_package = new_parts[1]
+        old_root, old_separator, old_suffix = old_package.partition("-")
+        new_root, new_separator, new_suffix = new_package.partition("-")
+        if (
+            not old_separator
+            or not new_separator
+            or not old_root
+            or not new_root
+            or old_root == new_root
+            or old_suffix != new_suffix
+        ):
+            continue
+        old_identity = old_package.replace("-", "_")
+        new_identity = new_package.replace("-", "_")
+        if (
+            re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", old_identity) is None
+            or re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", new_identity) is None
+        ):
+            raise GateError("Git-confirmed package rename is not a Rust crate identity")
+        previous = identities.get(old_identity)
+        reverse_previous = reverse.get(new_identity)
+        if (previous is not None and previous != new_identity) or (
+            reverse_previous is not None and reverse_previous != old_identity
+        ):
+            raise GateError("Git-confirmed package renames contain conflicting crate identities")
+        identities[old_identity] = new_identity
+        reverse[new_identity] = old_identity
+    return dict(sorted(identities.items()))
+
+
 def _omission_blob_violations(
     root: Path,
     head: str,
     coverage: dict[str, Any],
     head_baseline: tuple[str, dict[str, Any]] | None,
     base_baseline: tuple[str, dict[str, Any]] | None,
+    renames: dict[str, str] | None = None,
 ) -> list[str]:
     """Freeze accepted omitted paths to their measured-source blob identity."""
 
@@ -1293,22 +1663,32 @@ def _omission_blob_violations(
     source_commit = omission_floor["source"]["commit"]
     floor_omissions = set(omission_floor["coverage"]["omitted_in_scope_files"])
     current_omissions = set(coverage["omitted_in_scope_files"])
+    rename_map = renames or {}
+    crate_identities = _crate_identity_renames(rename_map)
     violations = []
-    for path in sorted(floor_omissions.intersection(current_omissions)):
+    for path in sorted(floor_omissions):
+        current_path = rename_map.get(path, path)
+        if current_path not in current_omissions:
+            continue
         source_blob = _git_blob(root, source_commit, path)
-        head_blob = _git_blob(root, head, path)
+        head_blob = _git_blob(root, head, current_path)
         if source_blob is None:
             violations.append(
                 f"accepted omission floor source commit does not contain {path}"
             )
         elif head_blob is None:
             violations.append(
-                f"current omission inventory names a path absent from HEAD: {path}"
+                f"current omission inventory names a path absent from HEAD: {current_path}"
             )
-        elif head_blob != source_blob:
+        elif head_blob != source_blob and not (
+            current_path != path
+            and _package_identity_rename_equivalent(
+                path, current_path, source_blob, head_blob, crate_identities
+            )
+        ):
             violations.append(
                 "accepted omitted in-scope source changed while remaining unobserved "
-                f"by Cobertura: {path}"
+                f"by Cobertura: {path} -> {current_path}"
             )
     return violations
 
@@ -1425,6 +1805,7 @@ def _evaluation_violations(
     base_baseline: tuple[str, dict[str, Any]] | None,
     calibrate: bool,
     preexisting_violations: Iterable[str] = (),
+    renames: dict[str, str] | None = None,
 ) -> tuple[list[str], dict[str, Any]]:
     violations = list(preexisting_violations)
     current_omissions = set(coverage["omitted_in_scope_files"])
@@ -1492,6 +1873,10 @@ def _evaluation_violations(
         violations.append("aggregate source coverage is below the accepted baseline ratio")
 
     omission_floor = base_baseline[1] if base_baseline is not None else baseline
+    rename_map = renames or {}
+    floor_omissions = _project_paths_to_head(
+        omission_floor["coverage"]["omitted_in_scope_files"], rename_map
+    )
     if (
         base_baseline is None
         and omission_floor["coverage"]["omitted_in_scope_files"]
@@ -1502,7 +1887,7 @@ def _evaluation_violations(
             "bootstrap inventory"
         )
     unaccepted_missing = sorted(
-        missing_set - set(omission_floor["coverage"]["omitted_in_scope_files"])
+        missing_set - floor_omissions
     )
     if unaccepted_missing:
         violations.append(
@@ -1510,14 +1895,14 @@ def _evaluation_violations(
             "inventory: "
             + ", ".join(unaccepted_missing)
         )
-    baseline_files = {
-        entry["path"] for entry in omission_floor["coverage"]["files"]
-    }
+    baseline_files = _project_paths_to_head(
+        (entry["path"] for entry in omission_floor["coverage"]["files"]), rename_map
+    )
     current_files = {entry["path"] for entry in coverage["files"]}
     current_sources = current_files.union(coverage["omitted_in_scope_files"])
     newly_omitted = sorted(
         set(coverage["omitted_in_scope_files"])
-        - set(omission_floor["coverage"]["omitted_in_scope_files"])
+        - floor_omissions
     )
     lost_measured = sorted((baseline_files.intersection(current_sources)) - current_files)
     if newly_omitted:
@@ -1751,18 +2136,27 @@ def run(arguments: list[str] | None = None) -> int:
 
     patch: dict[str, Any] | None = None
     missing_changed: list[str] = []
+    patch_renames: dict[str, str] = {}
     if base is not None:
-        changed_files, changed_lines = _changed_sources(root, base, head)
+        changed_files, changed_lines, patch_renames, _ = _changed_source_details(
+            root, base, head
+        )
         patch, missing_changed = _patch_measurement(line_hits, changed_files, changed_lines)
 
     head_baseline = load_baseline(root, head, pointer)
     base_baseline = load_baseline(root, base, pointer) if base is not None else None
+    identity_floor = base_baseline if base_baseline is not None else head_baseline
+    identity_renames = (
+        _source_renames_between(root, identity_floor[1]["source"]["commit"], head)
+        if identity_floor is not None
+        else patch_renames
+    )
     preexisting_violations = _candidate_provenance_violations(
         root, head, head_baseline, base_baseline
     )
     preexisting_violations.extend(
         _omission_blob_violations(
-            root, head, coverage, head_baseline, base_baseline
+            root, head, coverage, head_baseline, base_baseline, identity_renames
         )
     )
     violations, evaluation = _evaluation_violations(
@@ -1773,6 +2167,7 @@ def run(arguments: list[str] | None = None) -> int:
         base_baseline,
         args.calibrate,
         preexisting_violations,
+        identity_renames,
     )
     record = _record(
         root=root,

@@ -21,6 +21,11 @@ assert SPEC is not None and SPEC.loader is not None
 gate = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(gate)
 
+TERMIVAR_CRATE_IDENTITIES = {
+    "venom_core": "termivar_core",
+    "venom_scanner": "termivar_scanner",
+}
+
 
 def cobertura(classes: list[tuple[str, list[tuple[int, int]]]]) -> str:
     rendered = []
@@ -121,21 +126,7 @@ class ScopeTests(unittest.TestCase):
             gate.in_scope("crates/venom-scanner/tests/performance_tests.rs")
         )
 
-    def test_termivar_paths_reuse_the_accepted_coverage_identity(self) -> None:
-        self.assertEqual(
-            gate._coverage_identity_path("crates/termivar-core/src/lib.rs"),
-            "crates/venom-core/src/lib.rs",
-        )
-        self.assertEqual(
-            gate._current_source_path("crates/venom-scanner/src/lib.rs"),
-            "crates/termivar-scanner/src/lib.rs",
-        )
-        self.assertEqual(
-            gate._coverage_identity_path("xtask/src/main.rs"),
-            "xtask/src/main.rs",
-        )
-
-    def test_termivar_cobertura_path_is_recorded_under_the_stable_identity(self) -> None:
+    def test_termivar_cobertura_path_remains_the_current_canonical_identity(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             source = root / "crates" / "termivar-core" / "src" / "lib.rs"
@@ -148,7 +139,7 @@ class ScopeTests(unittest.TestCase):
                 root,
             )
 
-        self.assertEqual(parsed, {"crates/venom-core/src/lib.rs": {1: 1}})
+        self.assertEqual(parsed, {"crates/termivar-core/src/lib.rs": {1: 1}})
 
     def test_workspace_outputs_cannot_escape(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -477,6 +468,189 @@ class CoberturaTests(unittest.TestCase):
 
 
 class DiffTests(unittest.TestCase):
+    def test_package_identity_rename_equivalence_is_narrow(self) -> None:
+        old_path = "crates/venom-scanner/src/lib.rs"
+        new_path = "crates/termivar-scanner/src/lib.rs"
+        old = (
+            b"use url::Url;\n"
+            b"use venom_core::Evidence;\n"
+            b"use venom_scanner::Runtime;\n"
+            b"// Venom scanner.\n"
+            b"const SCHEMA: &str = \"venom.protocol/v1\";\n"
+        )
+        renamed = (
+            b"use termivar_scanner::Runtime;\n"
+            b"use termivar_core::Evidence;\n"
+            b"use url::Url;\n"
+            b"// Termivar scanner.\n"
+            b"const SCHEMA: &str = \"venom.protocol/v1\";\n"
+        )
+        changed = renamed.replace(b"Runtime;", b"OtherRuntime;")
+
+        self.assertTrue(
+            gate._package_identity_rename_equivalent(
+                old_path, new_path, old, renamed, TERMIVAR_CRATE_IDENTITIES
+            )
+        )
+        self.assertFalse(
+            gate._package_identity_rename_equivalent(
+                old_path, new_path, old, changed, TERMIVAR_CRATE_IDENTITIES
+            )
+        )
+        self.assertFalse(
+            gate._package_identity_rename_equivalent(
+                old_path,
+                "crates/termivar-scanner/src/other.rs",
+                old,
+                renamed,
+                TERMIVAR_CRATE_IDENTITIES,
+            )
+        )
+
+    def test_package_identity_rename_never_normalises_literal_contents(self) -> None:
+        old_path = "crates/venom-scanner/src/lib.rs"
+        new_path = "crates/termivar-scanner/src/lib.rs"
+        literal_changes = [
+            (b'const X: &str = "venom.protocol/v1";\n',
+             b'const X: &str = "termivar.protocol/v1";\n'),
+            (b'const X: &[u8] = b"venom.digest/v1";\n',
+             b'const X: &[u8] = b"termivar.digest/v1";\n'),
+            (b'const X: &str = r#"venom.protocol/v1"#;\n',
+             b'const X: &str = r#"termivar.protocol/v1"#;\n'),
+            (b'const X: &[u8] = br#"venom.digest/v1"#;\n',
+             b'const X: &[u8] = br#"termivar.digest/v1"#;\n'),
+            (b"const X: char = 'v';\n", b"const X: char = 't';\n"),
+            (b"const X: u8 = b'v';\n", b"const X: u8 = b't';\n"),
+            (b'const X: &str = "venom";\n',
+             b'const X: &str = "__COVERAGE_PRODUCT__";\n'),
+        ]
+        for old, new in literal_changes:
+            with self.subTest(old=old):
+                self.assertFalse(
+                    gate._package_identity_rename_equivalent(
+                        old_path,
+                        new_path,
+                        old,
+                        new,
+                        TERMIVAR_CRATE_IDENTITIES,
+                    )
+                )
+
+    def test_package_identity_rename_does_not_sort_use_text_in_raw_string(self) -> None:
+        old = (
+            b'const SOURCE: &str = r#"use venom_core::Evidence;\n'
+            b'use url::Url;\n"#;\n'
+        )
+        new = (
+            b'const SOURCE: &str = r#"use url::Url;\n'
+            b'use termivar_core::Evidence;\n"#;\n'
+        )
+        self.assertFalse(
+            gate._package_identity_rename_equivalent(
+                "crates/venom-scanner/src/lib.rs",
+                "crates/termivar-scanner/src/lib.rs",
+                old,
+                new,
+                TERMIVAR_CRATE_IDENTITIES,
+            )
+        )
+
+    def test_package_identity_rename_keeps_executable_symbols_semantic(self) -> None:
+        cases = [
+            (b"const VENOM_LIMIT: usize = 1;\n", b"const TERMIVAR_LIMIT: usize = 1;\n"),
+            (b"struct VenomRuntime;\n", b"struct TermivarRuntime;\n"),
+            (b"fn venom_helper() {}\n", b"fn termivar_helper() {}\n"),
+            (b"const X: &str = stringify!(venom_core);\n",
+             b"const X: &str = stringify!(termivar_core);\n"),
+            (b"use other::venom_handler;\n", b"use other::termivar_handler;\n"),
+            (b"use venom_helper;\n", b"use termivar_helper;\n"),
+            (b"use venom_strategy::value;\n",
+             b"use termivar_strategy::value;\n"),
+            (b"use crate::venom_helper;\n", b"use crate::termivar_helper;\n"),
+            (b"use other::{venom_helper};\n",
+             b"use other::{termivar_helper};\n"),
+            (b"pub use Handler as venom_handler;\n",
+             b"pub use Handler as termivar_handler;\n"),
+            (b"make!(use venom_core::Thing;);\n",
+             b"make!(use termivar_core::Thing;);\n"),
+            (b"make![use venom_core::Thing;];\n",
+             b"make![use termivar_core::Thing;];\n"),
+        ]
+        for old, new in cases:
+            with self.subTest(old=old):
+                self.assertFalse(
+                    gate._package_identity_rename_equivalent(
+                        "crates/venom-scanner/src/lib.rs",
+                        "crates/termivar-scanner/src/lib.rs",
+                        old,
+                        new,
+                        TERMIVAR_CRATE_IDENTITIES,
+                    )
+                )
+
+    def test_name_status_retains_head_paths_and_explicit_renames(self) -> None:
+        current, renames, deleted, entered_scope = gate._parse_name_status_z(
+            b"M\0crates/demo/src/lib.rs\0"
+            b"A\0crates/new/src/lib.rs\0"
+            b"D\0crates/gone/src/lib.rs\0"
+            b"R094\0crates/venom-core/src/models.rs\0"
+            b"crates/termivar-core/src/models.rs\0"
+        )
+        self.assertEqual(
+            current,
+            [
+                "crates/demo/src/lib.rs",
+                "crates/new/src/lib.rs",
+                "crates/termivar-core/src/models.rs",
+            ],
+        )
+        self.assertEqual(
+            renames,
+            {
+                "crates/venom-core/src/models.rs":
+                    "crates/termivar-core/src/models.rs"
+            },
+        )
+        self.assertEqual(
+            deleted,
+            ["crates/gone/src/lib.rs", "crates/venom-core/src/models.rs"],
+        )
+        self.assertEqual(entered_scope, [])
+
+    def test_crate_identity_renames_require_consistent_package_move_evidence(self) -> None:
+        renames = {
+            "crates/venom-core/src/lib.rs": "crates/termivar-core/src/lib.rs",
+            "crates/venom-core/src/models.rs": "crates/termivar-core/src/models.rs",
+            "crates/venom-scanner/src/lib.rs": "crates/termivar-scanner/src/lib.rs",
+            "crates/demo/src/old.rs": "crates/demo/src/new.rs",
+        }
+        self.assertEqual(
+            gate._crate_identity_renames(renames),
+            {
+                "venom_core": "termivar_core",
+                "venom_scanner": "termivar_scanner",
+            },
+        )
+        with self.assertRaisesRegex(gate.GateError, "conflicting crate identities"):
+            gate._crate_identity_renames(
+                {
+                    "crates/venom-core/src/lib.rs": "crates/termivar-core/src/lib.rs",
+                    "crates/venom-core/src/models.rs": "crates/other-core/src/models.rs",
+                }
+            )
+
+    def test_name_status_rejects_malformed_or_unsafe_input(self) -> None:
+        fixtures = [
+            b"M\0crates/demo/src/lib.rs",
+            b"R101\0crates/old/src/lib.rs\0crates/new/src/lib.rs\0",
+            b"R090\0crates/old/src/lib.rs\0",
+            b"C100\0crates/old/src/lib.rs\0crates/new/src/lib.rs\0",
+            b"M\0../crates/demo/src/lib.rs\0",
+        ]
+        for fixture in fixtures:
+            with self.subTest(fixture=fixture), self.assertRaises(gate.GateError):
+                gate._parse_name_status_z(fixture)
+
     def test_zero_context_hunks_measure_only_new_side_ranges(self) -> None:
         parsed = gate.parse_unified_diff(
             "diff --git a/crates/demo/src/lib.rs b/crates/demo/src/lib.rs\n"
@@ -658,6 +832,83 @@ class RatioAndEvaluationTests(unittest.TestCase):
         )
         self.assertEqual(violations, [])
         self.assertEqual(evaluation["status"], "passed")
+        self.assertEqual(
+            evaluation["patch"],
+            "not applicable (zero observed coverable changed lines)",
+        )
+
+    def test_evaluation_projects_historical_baseline_paths_through_rename(self) -> None:
+        baseline = valid_record()
+        accepted = ("docs/reports/coverage/aaaaaaa.json", baseline)
+        current = copy.deepcopy(baseline["coverage"])
+        current["files"][0]["path"] = "crates/current/src/lib.rs"
+        old_omission = "crates/venom-core/src/lib.rs"
+        new_omission = "crates/termivar-core/src/lib.rs"
+        current["omitted_in_scope_files"].remove(old_omission)
+        current["omitted_in_scope_files"].append(new_omission)
+        current["omitted_in_scope_files"].sort()
+        patch = {
+            "covered_lines": 3,
+            "coverable_lines": 4,
+            "changed_in_scope_files": ["crates/current/src/lib.rs", new_omission],
+            "files": [],
+        }
+        violations, evaluation = gate._evaluation_violations(
+            current,
+            patch,
+            [new_omission],
+            accepted,
+            accepted,
+            False,
+            renames={
+                "crates/demo/src/lib.rs": "crates/current/src/lib.rs",
+                old_omission: new_omission,
+            },
+        )
+        self.assertEqual(violations, [])
+        self.assertEqual(evaluation["patch"], "passed")
+
+    def test_termivar_migration_projects_all_seven_uninstrumented_sources(self) -> None:
+        old_paths = [
+            "crates/venom-core/src/lib.rs",
+            "crates/venom-core/src/models.rs",
+            "crates/venom-scanner/src/adaptive/mod.rs",
+            "crates/venom-scanner/src/contracts.rs",
+            "crates/venom-scanner/src/phases/mod.rs",
+            "crates/venom-scanner/src/semantic.rs",
+            "crates/venom-scanner/src/web_runtime/api_visibility/tests.rs",
+        ]
+        renames = {
+            path: path.replace("crates/venom-", "crates/termivar-", 1)
+            for path in old_paths
+        }
+        baseline = valid_record()
+        accepted = ("docs/reports/coverage/aaaaaaa.json", baseline)
+        current = copy.deepcopy(baseline["coverage"])
+        current["omitted_in_scope_files"] = sorted(
+            renames.get(path, path) for path in current["omitted_in_scope_files"]
+        )
+        new_paths = sorted(renames.values())
+        patch = {
+            "covered_lines": 0,
+            "coverable_lines": 0,
+            "changed_in_scope_files": new_paths,
+            "files": [],
+        }
+        violations, evaluation = gate._evaluation_violations(
+            current,
+            patch,
+            new_paths,
+            accepted,
+            accepted,
+            False,
+            renames=renames,
+        )
+        self.assertEqual(violations, [])
+        self.assertEqual(
+            gate._project_paths_to_head(old_paths, renames), set(new_paths)
+        )
+        self.assertTrue(set(old_paths).isdisjoint(current["omitted_in_scope_files"]))
         self.assertEqual(
             evaluation["patch"],
             "not applicable (zero observed coverable changed lines)",
@@ -1100,15 +1351,16 @@ class CommandIntegrationTests(unittest.TestCase):
             self._git(root, "add", "-A", "--", renamed_from_path, renamed_path)
             self._git(root, "commit", "-q", "-m", "rename omitted source")
             renamed_head = self._git(root, "rev-parse", "HEAD")
-            changed_files, changed_lines = gate._changed_sources(
+            changed_files, changed_lines, renames, _ = gate._changed_source_details(
                 root, changed_head, renamed_head
             )
             self.assertEqual(changed_files, [renamed_path])
+            self.assertEqual(renames, {renamed_from_path: renamed_path})
             patch, missing = gate._patch_measurement({}, changed_files, changed_lines)
             self.assertEqual(missing, [renamed_path])
             self.assertEqual(patch["files"][0]["path"], renamed_path)
 
-            renamed_coverage = copy.deepcopy(coverage)
+            renamed_coverage = copy.deepcopy(now_measured)
             renamed_coverage["omitted_in_scope_files"].remove(renamed_from_path)
             renamed_coverage["omitted_in_scope_files"].append(renamed_path)
             renamed_coverage["omitted_in_scope_files"].sort()
@@ -1119,8 +1371,20 @@ class CommandIntegrationTests(unittest.TestCase):
                 accepted,
                 accepted,
                 False,
+                renames=renames,
             )
-            self.assertTrue(any("new in-scope files" in item for item in violations))
+            self.assertEqual(violations, [])
+            self.assertEqual(
+                gate._omission_blob_violations(
+                    root,
+                    renamed_head,
+                    renamed_coverage,
+                    accepted,
+                    accepted,
+                    renames,
+                ),
+                [],
+            )
 
     def test_calibration_writes_both_summaries_and_normal_mode_fails_without_baseline(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -1323,25 +1587,42 @@ class CommandIntegrationTests(unittest.TestCase):
             self._git(root, "commit", "-q", "-m", "rename package and one symbol")
             head = self._git(root, "rev-parse", "HEAD")
 
-            names, line_map = gate._changed_sources(root, base, head)
+            names, line_map, renames, deleted = gate._changed_source_details(
+                root, base, head
+            )
             self.assertEqual(
                 names,
                 [
-                    "crates/venom-core/src/lib.rs",
-                    "crates/venom-core/src/unchanged.rs",
+                    "crates/termivar-core/src/lib.rs",
+                    "crates/termivar-core/src/unchanged.rs",
                 ],
             )
             self.assertEqual(
                 line_map,
                 {
-                    "crates/venom-core/src/lib.rs": {2},
-                    "crates/venom-core/src/unchanged.rs": set(),
+                    "crates/termivar-core/src/lib.rs": {2},
+                    "crates/termivar-core/src/unchanged.rs": set(),
                 },
+            )
+            self.assertEqual(
+                renames,
+                {
+                    "crates/venom-core/src/lib.rs": "crates/termivar-core/src/lib.rs",
+                    "crates/venom-core/src/unchanged.rs":
+                        "crates/termivar-core/src/unchanged.rs",
+                },
+            )
+            self.assertEqual(
+                deleted,
+                [
+                    "crates/venom-core/src/lib.rs",
+                    "crates/venom-core/src/unchanged.rs",
+                ],
             )
             patch, missing = gate._patch_measurement(
                 {
-                    "crates/venom-core/src/lib.rs": {1: 1, 2: 1, 3: 1},
-                    "crates/venom-core/src/unchanged.rs": {1: 1},
+                    "crates/termivar-core/src/lib.rs": {1: 1, 2: 1, 3: 1},
+                    "crates/termivar-core/src/unchanged.rs": {1: 1},
                 },
                 names,
                 line_map,
@@ -1350,7 +1631,111 @@ class CommandIntegrationTests(unittest.TestCase):
             self.assertEqual(patch["coverable_lines"], 1)
             self.assertEqual(patch["covered_lines"], 1)
 
-    def test_package_directory_rebrand_rejects_duplicate_identity_paths(self) -> None:
+            missing_patch, missing = gate._patch_measurement({}, names, line_map)
+            self.assertEqual(missing, names)
+            self.assertEqual(missing_patch["coverable_lines"], 0)
+
+            uncovered_patch, missing = gate._patch_measurement(
+                {
+                    "crates/termivar-core/src/lib.rs": {1: 1, 2: 0, 3: 1},
+                    "crates/termivar-core/src/unchanged.rs": {1: 1},
+                },
+                names,
+                line_map,
+            )
+            self.assertEqual(missing, [])
+            self.assertEqual(uncovered_patch["coverable_lines"], 1)
+            self.assertEqual(uncovered_patch["covered_lines"], 0)
+
+            documentation = root / "README.md"
+            documentation.write_text("unrelated follow-up\n", encoding="utf-8")
+            self._git(root, "add", "README.md")
+            self._git(root, "commit", "-q", "-m", "later unrelated change")
+            later_head = self._git(root, "rev-parse", "HEAD")
+            _, _, current_renames, _ = gate._changed_source_details(
+                root, head, later_head
+            )
+            self.assertEqual(current_renames, {})
+            self.assertEqual(
+                gate._source_renames_between(root, base, later_head),
+                renames,
+            )
+
+    def test_rename_entering_scope_measures_every_head_line(self) -> None:
+        for edited in (False, True):
+            with self.subTest(edited=edited), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                self._git(root, "init", "-q")
+                self._git(root, "config", "user.email", "coverage@example.invalid")
+                self._git(root, "config", "user.name", "Coverage Test")
+                old_file = root / "crates" / "demo" / "tests" / "helper.rs"
+                old_file.parent.mkdir(parents=True)
+                old_file.write_text(
+                    "pub fn first() {}\npub fn second() {}\npub fn third() {}\n",
+                    encoding="utf-8",
+                )
+                self._git(root, "add", "crates")
+                self._git(root, "commit", "-q", "-m", "out of scope helper")
+                base = self._git(root, "rev-parse", "HEAD")
+
+                new_file = root / "crates" / "demo" / "src" / "helper.rs"
+                new_file.parent.mkdir(parents=True)
+                old_file.rename(new_file)
+                if edited:
+                    new_file.write_text(
+                        "pub fn first() {}\npub fn changed() {}\npub fn third() {}\n",
+                        encoding="utf-8",
+                    )
+                self._git(root, "add", "-A", "--", "crates")
+                self._git(root, "commit", "-q", "-m", "move helper into source")
+                head = self._git(root, "rev-parse", "HEAD")
+
+                names, line_map, renames, deleted = gate._changed_source_details(
+                    root, base, head
+                )
+                self.assertEqual(names, ["crates/demo/src/helper.rs"])
+                self.assertEqual(line_map, {"crates/demo/src/helper.rs": {1, 2, 3}})
+                self.assertEqual(renames, {})
+                self.assertEqual(deleted, [])
+                patch, missing = gate._patch_measurement(
+                    {"crates/demo/src/helper.rs": {1: 1, 2: 0, 3: 1}},
+                    names,
+                    line_map,
+                )
+                self.assertEqual(missing, [])
+                self.assertEqual(patch["coverable_lines"], 3)
+                self.assertEqual(patch["covered_lines"], 2)
+
+                _, missing = gate._patch_measurement({}, names, line_map)
+                self.assertEqual(missing, ["crates/demo/src/helper.rs"])
+
+    def test_rename_leaving_scope_is_deletion_only(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self._git(root, "init", "-q")
+            self._git(root, "config", "user.email", "coverage@example.invalid")
+            self._git(root, "config", "user.name", "Coverage Test")
+            old_file = root / "crates" / "demo" / "src" / "helper.rs"
+            old_file.parent.mkdir(parents=True)
+            old_file.write_text("pub fn helper() {}\n", encoding="utf-8")
+            self._git(root, "add", "crates")
+            self._git(root, "commit", "-q", "-m", "in scope helper")
+            base = self._git(root, "rev-parse", "HEAD")
+
+            new_file = root / "crates" / "demo" / "tests" / "helper.rs"
+            new_file.parent.mkdir(parents=True)
+            old_file.rename(new_file)
+            self._git(root, "add", "-A", "--", "crates")
+            self._git(root, "commit", "-q", "-m", "move helper out of source")
+            head = self._git(root, "rev-parse", "HEAD")
+
+            names, line_map, renames, deleted = gate._changed_source_details(
+                root, base, head
+            )
+            self.assertEqual((names, line_map, renames), ([], {}, {}))
+            self.assertEqual(deleted, ["crates/demo/src/helper.rs"])
+
+    def test_unrelated_added_path_is_not_conflated_with_existing_source(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             self._git(root, "init", "-q")
@@ -1370,14 +1755,66 @@ class CommandIntegrationTests(unittest.TestCase):
             self._git(root, "commit", "-q", "-m", "duplicate current source")
             head = self._git(root, "rev-parse", "HEAD")
 
-            with self.assertRaisesRegex(
-                gate.GateError, "both stable and current source paths exist"
-            ):
-                gate._changed_sources(root, base, head)
-            with self.assertRaisesRegex(
-                gate.GateError, "multiple tracked source paths map"
-            ):
-                gate._tracked_sources_at(root, head)
+            names, line_map, renames, deleted = gate._changed_source_details(
+                root, base, head
+            )
+            self.assertEqual(names, ["crates/termivar-core/src/lib.rs"])
+            self.assertEqual(line_map, {"crates/termivar-core/src/lib.rs": {1}})
+            self.assertEqual(renames, {})
+            self.assertEqual(deleted, [])
+            self.assertEqual(
+                gate._tracked_sources_at(root, head),
+                [
+                    "crates/termivar-core/src/lib.rs",
+                    "crates/venom-core/src/lib.rs",
+                ],
+            )
+
+    def test_deleted_source_is_not_demanded_and_unrelated_addition_is_independent(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self._git(root, "init", "-q")
+            self._git(root, "config", "user.email", "coverage@example.invalid")
+            self._git(root, "config", "user.name", "Coverage Test")
+            old_file = root / "crates" / "old" / "src" / "lib.rs"
+            old_file.parent.mkdir(parents=True)
+            old_file.write_text(
+                "pub fn alpha() -> bool { true }\npub fn beta() -> bool { false }\n",
+                encoding="utf-8",
+            )
+            self._git(root, "add", "crates")
+            self._git(root, "commit", "-q", "-m", "old source")
+            base = self._git(root, "rev-parse", "HEAD")
+
+            old_file.unlink()
+            self._git(root, "add", "-A", "--", "crates")
+            self._git(root, "commit", "-q", "-m", "delete source")
+            deleted_head = self._git(root, "rev-parse", "HEAD")
+            names, line_map, renames, deleted = gate._changed_source_details(
+                root, base, deleted_head
+            )
+            self.assertEqual((names, line_map, renames), ([], {}, {}))
+            self.assertEqual(deleted, ["crates/old/src/lib.rs"])
+
+            new_file = root / "crates" / "new" / "src" / "lib.rs"
+            new_file.parent.mkdir(parents=True)
+            new_file.write_text(
+                "pub struct CompletelyDifferent;\n"
+                "impl CompletelyDifferent {\n"
+                "    pub fn value() -> u64 { 42 }\n"
+                "}\n",
+                encoding="utf-8",
+            )
+            self._git(root, "add", "crates")
+            self._git(root, "commit", "-q", "-m", "unrelated replacement")
+            head = self._git(root, "rev-parse", "HEAD")
+            names, line_map, renames, deleted = gate._changed_source_details(
+                root, base, head
+            )
+            self.assertEqual(names, ["crates/new/src/lib.rs"])
+            self.assertEqual(renames, {})
+            self.assertEqual(deleted, ["crates/old/src/lib.rs"])
+            self.assertEqual(line_map["crates/new/src/lib.rs"], {1, 2, 3, 4})
 
     def test_candidate_acceptance_freezes_every_non_truth_path_since_measurement(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

@@ -12534,4 +12534,229 @@ mod tests {
             violation.contains("cannot be labelled implemented") && violation.contains("dashboard")
         }));
     }
+
+    #[test]
+    fn renamed_product_architecture_edges_still_fail_closed() {
+        let (features, mut dependencies) = valid_cli_contract();
+        dependencies.remove("termivar-scanner");
+        assert!(cli_feature_violations(&features, &dependencies)
+            .iter()
+            .any(|violation| violation.contains("dependency `termivar-scanner` is missing")));
+
+        let mut features = valid_feature_map();
+        features.get_mut("lua").unwrap().push("plugins".to_owned());
+        assert!(feature_violations(&features)
+            .iter()
+            .any(|violation| violation.contains("`lua` must not enable `plugins`")));
+
+        let malformed_reporting = r#"
+            #[cfg(feature = "reporting")]
+            mod reporting {}
+        "#;
+        assert!(module_gate_violations(malformed_reporting)
+            .unwrap()
+            .iter()
+            .any(|violation| violation.contains("one public out-of-line module")));
+
+        let duplicate_reporting = r#"
+            #[cfg(feature = "reporting")] pub mod reporting;
+            #[cfg(feature = "reporting")] pub mod reporting;
+        "#;
+        assert!(module_gate_violations(duplicate_reporting)
+            .unwrap()
+            .iter()
+            .any(|violation| violation.contains("declared exactly once")));
+
+        let core = include_str!("../../../crates/termivar-core/src/lib.rs");
+        let missing_module = core.replacen(
+            "#[cfg(feature = \"legacy-contracts\")]\npub mod config;",
+            "",
+            1,
+        );
+        assert!(core_library_gate_violations(&missing_module)
+            .unwrap()
+            .iter()
+            .any(|violation| violation.contains("module `config` is missing")));
+
+        let duplicate_module = core.replacen(
+            "#[cfg(feature = \"legacy-contracts\")]\npub mod config;",
+            "#[cfg(feature = \"legacy-contracts\")]\npub mod config;\n#[cfg(feature = \"legacy-contracts\")]\npub mod config;",
+            1,
+        );
+        assert!(core_library_gate_violations(&duplicate_module)
+            .unwrap()
+            .iter()
+            .any(|violation| violation.contains("module `config`")
+                && violation.contains("exactly once")));
+
+        let ungated_reexport = core.replacen(
+            "#[cfg(feature = \"legacy-contracts\")]\npub use config::{",
+            "pub use config::{",
+            1,
+        );
+        assert!(core_library_gate_violations(&ungated_reexport)
+            .unwrap()
+            .iter()
+            .any(|violation| violation.contains("legacy re-exports")
+                && violation.contains("exact cfg")));
+
+        let missing_reexport = core.replacen(
+            "pub use config::{Config, ConfigBuilder, ConfigError, ScanIntensity};",
+            "pub use config::{ConfigBuilder, ConfigError, ScanIntensity};",
+            1,
+        );
+        assert!(core_library_gate_violations(&missing_reexport)
+            .unwrap()
+            .iter()
+            .any(|violation| violation.contains("legacy symbol `Config`")
+                && violation.contains("found 0")));
+
+        let scanner = include_str!("../../../crates/termivar-scanner/src/lib.rs");
+        let missing_scanner_reexport = scanner.replacen(
+            "pub use event_bus::{Event, EventBuilder, EventBus, EventHandler, EventSeverity, EventType};",
+            "pub use event_bus::{EventBuilder, EventBus, EventHandler, EventSeverity, EventType};",
+            1,
+        );
+        assert!(
+            scanner_legacy_reexport_violations(&missing_scanner_reexport)
+                .unwrap()
+                .iter()
+                .any(|violation| violation.contains("legacy symbol `Event`")
+                    && violation.contains("found 0"))
+        );
+    }
+
+    #[test]
+    fn private_facade_and_inventory_mutations_remain_closed() {
+        let names = EXACT_DISTRIBUTED_REEXPORTS.join(", ");
+        let valid = format!("#[cfg(feature = \"distributed\")] pub use distributed::{{{names}}};");
+        assert!(private_facade_reexport_violations(
+            &valid,
+            "distributed",
+            "feature=\"distributed\"",
+            EXACT_DISTRIBUTED_REEXPORTS,
+        )
+        .unwrap()
+        .is_empty());
+
+        let alias = format!("type Escaped = distributed::DistributedError;\n{valid}");
+        assert!(private_facade_reexport_violations(
+            &alias,
+            "distributed",
+            "feature=\"distributed\"",
+            EXACT_DISTRIBUTED_REEXPORTS,
+        )
+        .unwrap()
+        .iter()
+        .any(|violation| violation.contains("cannot pass through type alias")));
+
+        let nested = format!("mod host {{ {valid} }}");
+        assert!(private_facade_reexport_violations(
+            &nested,
+            "distributed",
+            "feature=\"distributed\"",
+            EXACT_DISTRIBUTED_REEXPORTS,
+        )
+        .unwrap()
+        .iter()
+        .any(|violation| violation.contains("one public root re-export")));
+
+        let wrong_cfg = valid.replace("feature = \"distributed\"", "feature = \"lua\"");
+        assert!(private_facade_reexport_violations(
+            &wrong_cfg,
+            "distributed",
+            "feature=\"distributed\"",
+            EXACT_DISTRIBUTED_REEXPORTS,
+        )
+        .unwrap()
+        .iter()
+        .any(|violation| violation.contains("must use exact cfg")));
+
+        let renamed = valid.replace("DistributedError", "DistributedError as RenamedError");
+        assert!(private_facade_reexport_violations(
+            &renamed,
+            "distributed",
+            "feature=\"distributed\"",
+            EXACT_DISTRIBUTED_REEXPORTS,
+        )
+        .unwrap()
+        .iter()
+        .any(|violation| violation.contains("without aliases or globs")));
+
+        let duplicated = format!("{valid}\n{valid}");
+        assert!(private_facade_reexport_violations(
+            &duplicated,
+            "distributed",
+            "feature=\"distributed\"",
+            EXACT_DISTRIBUTED_REEXPORTS,
+        )
+        .unwrap()
+        .iter()
+        .any(|violation| violation.contains("declare exactly one public")));
+
+        assert!(private_facade_reexport_violations(
+            "",
+            "distributed",
+            "feature=\"distributed\"",
+            EXACT_DISTRIBUTED_REEXPORTS,
+        )
+        .unwrap()
+        .iter()
+        .any(|violation| violation.contains("found 0")));
+
+        assert!(reporting_cross_source_set_violations_with_inventory(
+            &[("web_runtime.rs".to_owned(), String::new())],
+            true,
+        )
+        .unwrap()
+        .iter()
+        .any(|violation| violation.contains("exact report-only cfg inventory")));
+
+        let scanner = include_str!("../../../crates/termivar-scanner/src/lib.rs");
+        let missing_surface = scanner.replacen(
+            "#[cfg(feature = \"platform-models\")]\npub mod api_gateway;",
+            "",
+            1,
+        );
+        assert!(
+            surface_contract_violations(QUARANTINED_PUBLIC_SURFACES, &missing_surface)
+                .unwrap()
+                .iter()
+                .any(|violation| violation
+                    .contains("`api_gateway` is missing from termivar-scanner"))
+        );
+    }
+
+    #[test]
+    fn filesystem_architecture_checks_reject_missing_compatibility_and_retired_exports() {
+        let core_root = TempDir::new().unwrap();
+        let core_source = core_root.path().join("crates/termivar-core/src");
+        fs::create_dir_all(&core_source).unwrap();
+        fs::write(
+            core_source.join("lib.rs"),
+            include_str!("../../../crates/termivar-core/src/lib.rs"),
+        )
+        .unwrap();
+        fs::write(core_source.join("models.rs"), "").unwrap();
+        assert!(core_surface_violations(core_root.path())
+            .unwrap()
+            .iter()
+            .any(|violation| violation.contains("legacy models must retain opt-in")));
+
+        let scanner_root = TempDir::new().unwrap();
+        let scanner_source = scanner_root.path().join("crates/termivar-scanner/src");
+        fs::create_dir_all(&scanner_source).unwrap();
+        for contract in FORBIDDEN_SURFACE_APIS {
+            if contract.module != "waf" {
+                let path = scanner_source.join(format!("{}.rs", contract.module));
+                fs::create_dir_all(path.parent().unwrap()).unwrap();
+                fs::write(path, "").unwrap();
+            }
+        }
+        fs::write(scanner_source.join("lib.rs"), "pub struct ApiGateway;").unwrap();
+        assert!(forbidden_surface_source_violations(scanner_root.path())
+            .unwrap()
+            .iter()
+            .any(|violation| violation.contains("retired public facade `ApiGateway`")));
+    }
 }
