@@ -10373,6 +10373,8 @@ mod tests {
                         self.authorization_review,
                         #[cfg(feature = "openapi-review")]
                         self.openapi_review,
+                        #[cfg(feature = "rest-review")]
+                        self.rest_review,
                     )
                 }
             }
@@ -10390,7 +10392,7 @@ mod tests {
             ),
             typed_assessment_bridge.replace("#[cfg(feature = \"reporting\")]", ""),
             typed_assessment_bridge.replace(
-                "AssessmentRunReport::from_completed_truth(\n                        self.assessment_items,\n                        truth,\n                        #[cfg(feature = \"authorization-review\")]\n                        self.authorization_review,\n                        #[cfg(feature = \"openapi-review\")]\n                        self.openapi_review,\n                    )",
+                "AssessmentRunReport::from_completed_truth(\n                        self.assessment_items,\n                        truth,\n                        #[cfg(feature = \"authorization-review\")]\n                        self.authorization_review,\n                        #[cfg(feature = \"openapi-review\")]\n                        self.openapi_review,\n                        #[cfg(feature = \"rest-review\")]\n                        self.rest_review,\n                    )",
                 "render(self.assessment_items)",
             ),
             typed_assessment_bridge.replace(
@@ -10425,6 +10427,7 @@ mod tests {
             ),
             typed_assessment_bridge
                 .replace("self.openapi_review,", "forged_openapi_review,"),
+            typed_assessment_bridge.replace("self.rest_review,", "forged_rest_review,"),
         ] {
             assert!(!reporting_cross_file_source_violations(
                 "web_runtime/web_assessment.rs",
@@ -10883,6 +10886,8 @@ mod tests {
 
     fn valid_reporting_import_fixture() -> &'static str {
         r#"
+            #[cfg(all(feature = "scanning", feature = "rest-review"))]
+            use crate::rest_review::RestDocumentedResponseClass;
             use serde::Serialize;
             use std::{error::Error, fmt, io};
             use venom_core::{
@@ -10896,6 +10901,12 @@ mod tests {
             };
             #[cfg(all(feature = "scanning", feature = "openapi-review"))]
             use crate::web_runtime::{OpenApiRuntimeOutcome, OPENAPI_REVIEW_CAPABILITY_ID};
+            #[cfg(all(feature = "scanning", feature = "rest-review"))]
+            use crate::web_runtime::{
+                RestObservedMediaClass, RestRuntimeOutcome,
+                MAX_REST_REVIEW_ACTIVE_VERIFICATIONS, MAX_REST_REVIEW_REQUESTS,
+                REST_REVIEW_CAPABILITY_ID,
+            };
             #[cfg(all(feature = "scanning", feature = "authorization-review"))]
             use crate::{
                 authorization_review::{
@@ -10945,6 +10956,16 @@ mod tests {
             .unwrap()
             .iter()
             .any(|violation| violation.contains("production type alias `Result`")));
+
+        let widened_rest_import = imports.replace(
+            "#[cfg(all(feature = \"scanning\", feature = \"rest-review\"))]\n            use crate::rest_review::RestDocumentedResponseClass;",
+            "#[cfg(feature = \"scanning\")]\n            use crate::rest_review::RestDocumentedResponseClass;",
+        );
+        assert_ne!(widened_rest_import, imports);
+        let violations = reporting_source_import_violations(&widened_rest_import)
+            .unwrap()
+            .join("\n");
+        assert!(violations.contains("pinned feature gates"), "{violations}");
     }
 
     #[test]
@@ -11245,7 +11266,31 @@ mod tests {
                 #[cfg(feature = "openapi-review")]
                 #[serde(skip_serializing_if = "Option::is_none")]
                 openapi_review: Option<AssessmentOpenApiAuditDocument>,
+                #[cfg(feature = "rest-review")]
+                #[serde(skip_serializing_if = "Option::is_none")]
+                rest_review: Option<AssessmentRestAuditDocument>,
                 items: Vec<AssessmentItemDocument<'a>>,
+            }
+            #[cfg(all(feature = "scanning", feature = "rest-review"))]
+            #[derive(Serialize)]
+            struct AssessmentRestAuditDocument {
+                schema: &'static str,
+                capability_id: &'static str,
+                enabled: bool,
+                method: &'static str,
+                outcome: &'static str,
+                request_count: u8,
+                active_verification_count: u8,
+                eligible_operation_count: u32,
+                #[serde(skip_serializing_if = "Option::is_none")]
+                selected_operation_identity: Option<String>,
+                #[serde(skip_serializing_if = "Option::is_none")]
+                documented_response: Option<&'static str>,
+                observed_media: &'static str,
+                #[serde(skip_serializing_if = "Option::is_none")]
+                status_class: Option<u8>,
+                replay_stable: bool,
+                item_projected: bool,
             }
             #[cfg(all(feature = "scanning", feature = "openapi-review"))]
             #[derive(Serialize)]
@@ -11390,6 +11435,34 @@ mod tests {
             .iter()
             .any(|violation| violation.contains("OutcomeDocument")
                 && violation.contains("fields must remain exactly")));
+
+        let public_rest_audit = source.replace(
+            "                rest_review: Option<AssessmentRestAuditDocument>,",
+            "                pub rest_review: Option<AssessmentRestAuditDocument>,",
+        );
+        assert_ne!(public_rest_audit, source);
+        let violations = reporting_document_contract_violations(&public_rest_audit)
+            .unwrap()
+            .join("\n");
+        assert!(
+            violations.contains("AssessmentDocument")
+                && violations.contains("fields must remain exactly"),
+            "{violations}"
+        );
+
+        let nested_rest_audit = source.replace(
+            "                replay_stable: bool,\n                item_projected: bool,",
+            "                replay_stable: bool,\n                nested_audit: Option<AssessmentRestAuditDocument>,\n                item_projected: bool,",
+        );
+        assert_ne!(nested_rest_audit, source);
+        let violations = reporting_document_contract_violations(&nested_rest_audit)
+            .unwrap()
+            .join("\n");
+        assert!(
+            violations.contains("AssessmentRestAuditDocument")
+                && violations.contains("fields must remain exactly"),
+            "{violations}"
+        );
 
         let numeric_drift = source.replace("duration_ms: String,", "duration_ms: u64,");
         assert!(reporting_document_contract_violations(&numeric_drift)

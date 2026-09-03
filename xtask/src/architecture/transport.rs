@@ -2203,6 +2203,7 @@ fn inspect_web_assessment_models(source: &str) -> Result<Vec<String>, syn::Error
     let mut public_types = BTreeSet::new();
     let mut audit_owners = BTreeMap::<String, usize>::new();
     let mut defense_audit_owners = BTreeMap::<String, usize>::new();
+    let mut rest_audit_owners = BTreeMap::<String, usize>::new();
 
     for item in &syntax.items {
         match item {
@@ -2240,6 +2241,14 @@ fn inspect_web_assessment_models(source: &str) -> Result<Vec<String>, syn::Error
                     .count();
                 if defense_audit_count > 0 {
                     defense_audit_owners.insert(name.clone(), defense_audit_count);
+                }
+                let rest_audit_count = item
+                    .fields
+                    .iter()
+                    .filter(|field| type_references_ident(&field.ty, "WebAssessmentRestAudit"))
+                    .count();
+                if rest_audit_count > 0 {
+                    rest_audit_owners.insert(name.clone(), rest_audit_count);
                 }
                 if name == "WebAssessmentSubjectReport"
                     && item.fields.iter().any(|field| {
@@ -2342,6 +2351,15 @@ fn inspect_web_assessment_models(source: &str) -> Result<Vec<String>, syn::Error
     if defense_audit_owners != expected_defense_audit_owners {
         violations.push(format!(
             "assessment defense audit ownership drifted: expected {expected_defense_audit_owners:?}, observed {defense_audit_owners:?}"
+        ));
+    }
+    let expected_rest_audit_owners = BTreeMap::from([
+        ("WebAssessmentRunReport".to_owned(), 1usize),
+        ("WebAssessmentRuntime".to_owned(), 1usize),
+    ]);
+    if rest_audit_owners != expected_rest_audit_owners {
+        violations.push(format!(
+            "assessment REST audit ownership drifted: expected {expected_rest_audit_owners:?}, observed {rest_audit_owners:?}"
         ));
     }
     for item in &syntax.items {
@@ -4715,7 +4733,7 @@ fn inspect_assessment_report_boundary(source: &str) -> Result<Vec<String>, syn::
         });
     if !completed_constructor {
         violations.push(
-            "AssessmentRunReport::from_completed_truth must consume AssessmentItemSet plus runtime-owned completion truth and only the exact feature-gated authorization and OpenAPI audits, build the generic envelope internally, and then validate it"
+            "AssessmentRunReport::from_completed_truth must consume AssessmentItemSet plus runtime-owned completion truth and only the exact feature-gated authorization, OpenAPI, and REST audits, build the generic envelope internally, and then validate it"
                 .to_owned(),
         );
     }
@@ -11581,7 +11599,7 @@ mod tests {
             .unwrap()
             .join("\n");
         assert!(
-            violations.contains("feature-gated redacted authorization and OpenAPI audits"),
+            violations.contains("feature-gated redacted authorization, OpenAPI, and REST audits"),
             "{violations}"
         );
 
@@ -11595,7 +11613,21 @@ mod tests {
             .unwrap()
             .join("\n");
         assert!(
-            violations.contains("feature-gated redacted authorization and OpenAPI audits"),
+            violations.contains("feature-gated redacted authorization, OpenAPI, and REST audits"),
+            "{violations}"
+        );
+
+        let missing_rest_audit = report_source.replacen(
+            "    #[cfg(feature = \"rest-review\")]\n    rest_review: Option<WebAssessmentRestAudit>,\n",
+            "",
+            1,
+        );
+        assert_ne!(missing_rest_audit, report_source);
+        let violations = inspect_assessment_report_boundary(&missing_rest_audit)
+            .unwrap()
+            .join("\n");
+        assert!(
+            violations.contains("feature-gated redacted authorization, OpenAPI, and REST audits"),
             "{violations}"
         );
 
@@ -11609,7 +11641,7 @@ mod tests {
             .unwrap()
             .join("\n");
         assert!(
-            violations.contains("feature-gated authorization and OpenAPI audits"),
+            violations.contains("feature-gated authorization, OpenAPI, and REST audits"),
             "{violations}"
         );
 
@@ -11623,7 +11655,21 @@ mod tests {
             .unwrap()
             .join("\n");
         assert!(
-            violations.contains("feature-gated authorization and OpenAPI audits"),
+            violations.contains("feature-gated authorization, OpenAPI, and REST audits"),
+            "{violations}"
+        );
+
+        let unvalidated_rest_audit = report_source.replacen(
+            "        #[cfg(feature = \"rest-review\")]\n        validate_rest_audit(rest_review.as_ref(), &items)?;",
+            "        #[cfg(feature = \"rest-review\")]\n        let _ = rest_review.as_ref();",
+            1,
+        );
+        assert_ne!(unvalidated_rest_audit, report_source);
+        let violations = inspect_assessment_report_boundary(&unvalidated_rest_audit)
+            .unwrap()
+            .join("\n");
+        assert!(
+            violations.contains("feature-gated authorization, OpenAPI, and REST audits"),
             "{violations}"
         );
 
@@ -12000,6 +12046,7 @@ mod tests {
         let valid = r#"
             pub struct WebAssessmentSubjectReport { subject: String }
             pub struct WebAssessmentDefenseAudit { mode: String }
+            pub struct WebAssessmentRestAudit { outcome: String }
             pub struct WebAssessmentRunReport {
                 #[cfg(feature = "reporting")]
                 run_started_at: SystemTime,
@@ -12007,11 +12054,17 @@ mod tests {
                 authorization_review: Option<WebAssessmentAuthorizationAudit>,
                 #[cfg(feature = "openapi-review")]
                 openapi_review: Option<WebAssessmentOpenApiAudit>,
+                #[cfg(feature = "rest-review")]
+                rest_review: Option<WebAssessmentRestAudit>,
                 transport: TransportDispatchAudit,
                 defense: WebAssessmentDefenseAudit,
             }
             pub struct WebAssessmentFailureReceipt { transport: TransportDispatchAudit, defense: WebAssessmentDefenseAudit }
-            struct WebAssessmentRuntime { defense_audit: WebAssessmentDefenseAudit }
+            struct WebAssessmentRuntime {
+                defense_audit: WebAssessmentDefenseAudit,
+                #[cfg(feature = "rest-review")]
+                rest_review_audit: Option<WebAssessmentRestAudit>,
+            }
         "#;
         assert!(inspect_web_assessment_models(valid).unwrap().is_empty());
 
@@ -12027,6 +12080,53 @@ mod tests {
         );
         let violations = inspect_web_assessment_models(&serde).unwrap().join("\n");
         assert!(violations.contains("serde wire contract"), "{violations}");
+
+        let rest_serde = valid.replace(
+            "pub struct WebAssessmentRestAudit",
+            "#[derive(Serialize)] pub struct WebAssessmentRestAudit",
+        );
+        assert_ne!(rest_serde, valid);
+        let violations = inspect_web_assessment_models(&rest_serde)
+            .unwrap()
+            .join("\n");
+        assert!(violations.contains("serde wire contract"), "{violations}");
+
+        let public_rest_field = valid.replace(
+            "rest_review: Option<WebAssessmentRestAudit>",
+            "pub rest_review: Option<WebAssessmentRestAudit>",
+        );
+        assert_ne!(public_rest_field, valid);
+        let violations = inspect_web_assessment_models(&public_rest_field)
+            .unwrap()
+            .join("\n");
+        assert!(violations.contains("exposes fields"), "{violations}");
+
+        let nested_rest_audit = valid.replace(
+            "subject: String",
+            "subject: String, rest_review: Option<WebAssessmentRestAudit>",
+        );
+        assert_ne!(nested_rest_audit, valid);
+        let violations = inspect_web_assessment_models(&nested_rest_audit)
+            .unwrap()
+            .join("\n");
+        assert!(
+            violations.contains("REST audit ownership drifted"),
+            "{violations}"
+        );
+
+        let missing_rest_audit = valid.replace(
+            "                #[cfg(feature = \"rest-review\")]\n                rest_review: Option<WebAssessmentRestAudit>,\n",
+            "",
+        );
+        assert_ne!(missing_rest_audit, valid);
+        let violations = inspect_web_assessment_models(&missing_rest_audit)
+            .unwrap()
+            .join("\n");
+        assert!(
+            violations
+                .contains("feature-gated authorization, OpenAPI, and REST redacted audit fields"),
+            "{violations}"
+        );
 
         let nested_audit = valid.replace(
             "subject: String",
