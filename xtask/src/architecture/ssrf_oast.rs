@@ -864,6 +864,41 @@ mod tests {
     }
 
     #[test]
+    fn helper_contracts_fail_closed_for_ambiguous_shapes_and_paths() {
+        let mut evaluation = Evaluation::default();
+        evaluation.require(1, true, "first evaluation");
+        evaluation.require(1, true, "duplicate evaluation");
+        let violations = evaluation.finish();
+        assert!(violations
+            .iter()
+            .any(|value| value.contains("evaluated more than once")));
+        assert!(violations
+            .iter()
+            .any(|value| value.contains("exact gate inventory mismatch")));
+
+        assert_eq!(
+            exact_private_struct_fields("struct Audit { value: bool }", "Audit").unwrap(),
+            Some(string_set(&["value"]))
+        );
+        assert_eq!(
+            exact_private_struct_fields(
+                "struct Audit { value: bool } struct Audit { other: bool }",
+                "Audit"
+            )
+            .unwrap(),
+            None
+        );
+        assert_eq!(
+            exact_private_struct_fields("struct Audit { pub value: bool }", "Audit").unwrap(),
+            None
+        );
+
+        let root = Path::new("workspace");
+        let error = checked_repository_path(root, "../outside.json").unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    }
+
+    #[test]
     fn feature_profile_policy_and_release_mutations_fail_closed() {
         let sources = current_sources();
 

@@ -4242,6 +4242,53 @@ mod tests {
     }
 
     #[test]
+    fn ssrf_oast_fixture_rejects_ineligible_sources_and_inexact_completion() {
+        let mut ineligible = valid_ssrf_oast_case("ssrf-ineligible");
+        ineligible.request.method = HttpMethod::Post;
+        assert_error_contains(
+            validate_case("cases/ssrf-ineligible.toml", &ineligible),
+            "one observed GET URL query source",
+        );
+
+        let mut unsafe_url = valid_ssrf_oast_case("ssrf-unsafe-url");
+        unsafe_url.request.query[0].value = "ftp://upstream.example.test/resource".to_owned();
+        assert_error_contains(
+            validate_case("cases/ssrf-unsafe-url.toml", &unsafe_url),
+            "eligible absolute HTTP URL",
+        );
+
+        let mut incomplete_claim = valid_ssrf_oast_case("ssrf-incomplete-claim");
+        incomplete_claim.expected.assessment_capability = None;
+        assert_error_contains(
+            validate_case("cases/ssrf-incomplete-claim.toml", &incomplete_claim),
+            "bounded NeedsReview/KnowledgeOnly contract",
+        );
+
+        let mut truncated = valid_ssrf_oast_case("ssrf-truncated");
+        truncated.ssrf_oast.as_mut().unwrap().scenario = SsrfOastScenario::Truncated;
+        truncated.expected.ssrf_oast_outcome = Some(SsrfOastOutcomeExpectation::Truncated);
+        truncated.expected.assessment_capability = None;
+        truncated.expected.maximum_disposition = None;
+        truncated.expected.maximum_authority = None;
+        assert_error_contains(
+            validate_case("cases/ssrf-truncated.toml", &truncated),
+            "incomplete scenarios require exact completion metadata",
+        );
+
+        let mut contradictory = valid_ssrf_oast_case("ssrf-contradictory");
+        contradictory.ssrf_oast.as_mut().unwrap().scenario = SsrfOastScenario::NoCallback;
+        contradictory.expected.ssrf_oast_outcome = Some(SsrfOastOutcomeExpectation::NoCallback);
+        contradictory.expected.assessment_capability = None;
+        contradictory.expected.maximum_disposition = None;
+        contradictory.expected.maximum_authority = None;
+        contradictory.expected.incompleteness = Some(IncompletenessExpectation::BodyTruncated);
+        assert_error_contains(
+            validate_case("cases/ssrf-contradictory.toml", &contradictory),
+            "complete SSRF OAST scenarios cannot declare generic incompleteness",
+        );
+    }
+
+    #[test]
     fn versioned_capability_grammar_is_narrow() {
         validate_capability("ssrf.oast-repeated-outbound-interaction@1")
             .expect("positive decimal revision");

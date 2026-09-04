@@ -1722,7 +1722,8 @@ mod tests {
 
     use termivar_oast::{
         serve_provider_on_listener, AdminToken, LoopbackBind, ProviderConfig, ProviderLimits,
-        ProviderState,
+        ProviderState, CALLBACK_SCHEMA, CLEANUP_SCHEMA, NATIVE_OAST_PROTOCOL_REVISION,
+        SESSION_SCHEMA,
     };
     use tokio::{
         io::{AsyncReadExt, AsyncWriteExt},
@@ -1735,7 +1736,7 @@ mod tests {
         ssrf_oast_review::{
             SsrfOastAdminToken, SsrfOastReviewPolicy, MIN_SSRF_OAST_ADMIN_TOKEN_BYTES,
         },
-        web_runtime::{AssessmentDisposition, WebAssessmentRuntime},
+        web_runtime::{AssessmentDisposition, WebAssessmentLimits, WebAssessmentRuntime},
     };
 
     const ADMIN_SECRET: &[u8] = b"SSRF-OAST-RUNTIME-ADMIN-MUST-NOT-LEAK-91C8";
@@ -1845,6 +1846,56 @@ mod tests {
             provider_task,
             provider_origin,
         }
+    }
+
+    async fn provider_rejecting_second_allocation() -> (PublicOrigin, JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let origin = PublicOrigin::from_test_loopback(address).unwrap();
+        let session_id = "BwcHBwcHBwcHBwcHBwcHBw";
+        let callback_id = "CAgICAgICAgICAgICAgICA";
+        let session_token = "CQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQk";
+        let callback_target = format!("{}c/{session_id}/{callback_id}", origin.as_str());
+        let registration = serde_json::to_vec(&serde_json::json!({
+            "schema": SESSION_SCHEMA,
+            "session_id": session_id,
+            "session_token": session_token,
+            "expires_after_ms": 5_000,
+            "protocol_revision": NATIVE_OAST_PROTOCOL_REVISION,
+        }))
+        .unwrap();
+        let allocation = serde_json::to_vec(&serde_json::json!({
+            "schema": CALLBACK_SCHEMA,
+            "callback_id": callback_id,
+            "callback_target": callback_target,
+        }))
+        .unwrap();
+        let rejection = br#"{"error":"request rejected"}"#.to_vec();
+        let cleanup = serde_json::to_vec(&serde_json::json!({
+            "schema": CLEANUP_SCHEMA,
+            "removed": true,
+        }))
+        .unwrap();
+        let task = tokio::spawn(async move {
+            for (status, body) in [
+                ("201 Created", registration),
+                ("201 Created", allocation),
+                ("500 Internal Server Error", rejection),
+                ("200 OK", cleanup),
+            ] {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut request = vec![0_u8; 16 * 1_024];
+                let _ = stream.read(&mut request).await.unwrap();
+                let head = format!(
+                    "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                stream.write_all(head.as_bytes()).await.unwrap();
+                stream.write_all(&body).await.unwrap();
+                stream.shutdown().await.unwrap();
+            }
+        });
+        (origin, task)
     }
 
     #[test]
@@ -2122,5 +2173,97 @@ mod tests {
         let debug = format!("{report:?}");
         assert!(!debug.contains(std::str::from_utf8(ADMIN_SECRET).unwrap()));
         assert!(!debug.contains("seed.example.invalid"));
+    }
+
+    #[tokio::test]
+    async fn insufficient_parent_budget_stops_after_control_before_provider_dispatch() {
+        let fixture = loopback_fixture().await;
+        let policy = SsrfOastReviewPolicy::for_loopback(
+            fixture.target.clone(),
+            fixture.provider_origin.clone(),
+            1,
+            250,
+            5_000,
+        )
+        .unwrap();
+        let administrator = SsrfOastAdminToken::new(ADMIN_SECRET.to_vec()).unwrap();
+        let limits = WebAssessmentLimits::default()
+            .with_max_total_requests(3)
+            .unwrap();
+        let mut runtime = WebAssessmentRuntime::builder(fixture.target.clone())
+            .limits(limits)
+            .with_ssrf_oast_review(policy, administrator)
+            .build()
+            .unwrap();
+
+        let report = runtime.analyze().await.unwrap();
+        let audit = report.ssrf_oast_review_audit().unwrap();
+        assert_eq!(audit.outcome(), SsrfOastRuntimeOutcome::Incomplete);
+        assert_eq!(audit.target_request_count(), 1);
+        assert_eq!(audit.provider_request_count(), 0);
+        assert_eq!(audit.active_verification_count(), 0);
+        assert!(!audit.cleanup_verified());
+        assert!(!audit.item_projected());
+        assert_eq!(fixture.target_requests.lock().await.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn rejected_provider_registration_is_metered_and_never_reaches_active_dispatch() {
+        let fixture = loopback_fixture().await;
+        let policy = SsrfOastReviewPolicy::for_loopback(
+            fixture.target.clone(),
+            fixture.provider_origin.clone(),
+            1,
+            250,
+            5_000,
+        )
+        .unwrap();
+        let wrong_administrator =
+            SsrfOastAdminToken::new(b"WRONG-OAST-ADMIN-CREDENTIAL-DOES-NOT-MATCH-55D1".to_vec())
+                .unwrap();
+        let mut runtime = WebAssessmentRuntime::builder(fixture.target.clone())
+            .with_ssrf_oast_review(policy, wrong_administrator)
+            .build()
+            .unwrap();
+
+        let report = runtime.analyze().await.unwrap();
+        let audit = report.ssrf_oast_review_audit().unwrap();
+        assert_eq!(audit.outcome(), SsrfOastRuntimeOutcome::Incomplete);
+        assert_eq!(audit.target_request_count(), 1);
+        assert_eq!(audit.provider_request_count(), 1);
+        assert_eq!(audit.active_verification_count(), 0);
+        assert!(!audit.cleanup_verified());
+        assert!(!audit.item_projected());
+        assert_eq!(fixture.target_requests.lock().await.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn second_allocation_rejection_cleans_up_and_never_reaches_active_dispatch() {
+        let fixture = loopback_fixture().await;
+        let (provider_origin, provider_task) = provider_rejecting_second_allocation().await;
+        let policy = SsrfOastReviewPolicy::for_loopback(
+            fixture.target.clone(),
+            provider_origin,
+            1,
+            250,
+            5_000,
+        )
+        .unwrap();
+        let administrator = SsrfOastAdminToken::new(ADMIN_SECRET.to_vec()).unwrap();
+        let mut runtime = WebAssessmentRuntime::builder(fixture.target.clone())
+            .with_ssrf_oast_review(policy, administrator)
+            .build()
+            .unwrap();
+
+        let report = runtime.analyze().await.unwrap();
+        let audit = report.ssrf_oast_review_audit().unwrap();
+        assert_eq!(audit.outcome(), SsrfOastRuntimeOutcome::Incomplete);
+        assert_eq!(audit.target_request_count(), 1);
+        assert_eq!(audit.provider_request_count(), 4);
+        assert_eq!(audit.active_verification_count(), 0);
+        assert!(audit.cleanup_verified());
+        assert!(!audit.item_projected());
+        assert_eq!(fixture.target_requests.lock().await.len(), 2);
+        provider_task.await.unwrap();
     }
 }

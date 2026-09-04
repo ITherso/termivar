@@ -2144,6 +2144,120 @@ mod tests {
     }
 
     #[test]
+    fn policy_and_review_debug_boundaries_remain_raw_free() {
+        let policy = policy();
+        let policy_id = policy.policy_id();
+        assert_ne!(policy_id.as_bytes(), [0; 32]);
+        assert_eq!(policy_id.to_string(), policy_id.to_wire());
+
+        let selected = SsrfOastCandidateSelection::Selected(Box::new(observed(
+            "https://target.example.test/fetch?url=https%3A%2F%2Fold.example%2Fresource",
+        )));
+        let selected_debug = format!("{selected:?}");
+        assert!(selected_debug.starts_with("Selected("));
+        assert!(!selected_debug.contains("target.example"));
+        assert!(!selected_debug.contains("old.example"));
+        assert_eq!(
+            format!("{:?}", SsrfOastCandidateSelection::NotEligible),
+            "NotEligible"
+        );
+
+        let candidate =
+            observed("https://target.example.test/fetch?url=https%3A%2F%2Fold.example%2Fresource");
+        assert_eq!(
+            candidate.control_execution_url([0; 32]).unwrap_err(),
+            SsrfOastContractError::InvalidControlSeed
+        );
+
+        let callback = callback_identity(7);
+        assert_eq!(
+            format!("{callback:?}"),
+            "SsrfOastCallbackIdentity(<redacted>)"
+        );
+        let observed_event = event(callback, 9);
+        assert_eq!(
+            format!("{observed_event:?}"),
+            "SsrfOastObservedEvent(<redacted>)"
+        );
+
+        let facts_debug = format!("{:?}", positive_facts());
+        assert!(facts_debug.contains("control_complete: true"));
+        assert!(facts_debug.contains("candidate_event: true"));
+        assert!(facts_debug.contains("target_accounting_complete: true"));
+        assert!(!facts_debug.contains("target.example"));
+        assert!(!facts_debug.contains("old.example"));
+    }
+
+    #[test]
+    fn loopback_policy_and_origin_helpers_fail_closed() {
+        let target = Url::parse(TARGET).unwrap();
+        assert_eq!(
+            SsrfOastReviewPolicy::for_loopback(
+                target.clone(),
+                PublicOrigin::from_str(PROVIDER).unwrap(),
+                0,
+                1_000,
+                20_000,
+            )
+            .unwrap_err(),
+            SsrfOastReviewPolicyError::InvalidLimits
+        );
+        assert_eq!(
+            SsrfOastReviewPolicy::for_loopback(
+                target,
+                PublicOrigin::from_str(TARGET).unwrap(),
+                3,
+                1_000,
+                20_000,
+            )
+            .unwrap_err(),
+            SsrfOastReviewPolicyError::ProviderOriginMatchesTarget
+        );
+
+        let ipv6_loopback = Url::parse("http://[::1]:8080/").unwrap();
+        let ipv6_public = Url::parse("http://[2001:db8::1]:8080/").unwrap();
+        assert!(is_http_loopback_origin(&ipv6_loopback));
+        assert!(!is_http_loopback_origin(&ipv6_public));
+        assert!(!is_http_loopback_origin(
+            &Url::parse("http://localhost:8080/").unwrap()
+        ));
+        assert!(normalized_host(&ipv6_loopback).is_some_and(|host| host == "::1"));
+
+        assert_eq!(
+            parse_declared_target_origin("").unwrap_err(),
+            SsrfOastReviewPolicyError::TargetOriginMismatch
+        );
+        assert_eq!(
+            parse_declared_target_origin("https://target.example.test/path").unwrap_err(),
+            SsrfOastReviewPolicyError::TargetOriginMismatch
+        );
+        assert!(
+            canonical_target_origin(&Url::parse("ftp://target.example.test/").unwrap()).is_none()
+        );
+    }
+
+    #[test]
+    fn query_materialization_rejects_malformed_private_state() {
+        assert!(parse_query_pairs("url=value&").is_err());
+        assert!(parse_query_pairs("=value").is_err());
+
+        let mut inconsistent =
+            observed("https://target.example.test/fetch?url=https%3A%2F%2Fold.example%2F");
+        inconsistent.selected_pair_index = None;
+        assert_eq!(
+            materialize_query(&inconsistent, "https://replacement.example/").unwrap_err(),
+            SsrfOastContractError::MutationInvariant
+        );
+
+        let selected =
+            observed("https://target.example.test/fetch?url=https%3A%2F%2Fold.example%2F");
+        assert_eq!(
+            materialize_query(&selected, &"x".repeat(MAX_TARGET_BYTES)).unwrap_err(),
+            SsrfOastContractError::MutationInvariant
+        );
+    }
+
+    #[test]
     fn only_full_repeated_callback_contract_projects() {
         let outcome = evaluate_ssrf_oast_review(&positive_facts()).unwrap();
         assert_eq!(outcome, SsrfOastReviewOutcome::RepeatedCallbacksObserved);
