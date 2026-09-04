@@ -293,8 +293,15 @@ jobs:
   security-tests:
     name: Security Tests
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
         with:
           toolchain: stable
@@ -304,10 +311,8 @@ jobs:
         run: rustup toolchain install 1.88.0 --profile minimal --component rustfmt --no-self-update
       - name: Check canonical formatting
         run: cargo +1.88.0 fmt --all -- --check
-      - name: Install cargo-audit
-        run: cargo install cargo-audit
-      - name: Run security audit
-        run: cargo audit
+      - name: Run pinned RustSec audit
+        run: bash scripts/ci/run-cargo-audit.sh
       - name: Run clippy (security lints)
         run: cargo +stable clippy --workspace --all-targets --all-features --locked -- -D warnings
 

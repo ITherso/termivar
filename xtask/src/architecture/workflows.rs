@@ -19,6 +19,8 @@ use std::{collections::BTreeSet, error::Error, fs, io, path::Path};
 use cargo_metadata::MetadataCommand;
 
 const RELEASE_WORKFLOW: &str = ".github/workflows/release.yml";
+#[cfg(test)]
+const RELEASE_AUDIT_RUNNER_PATH: &str = "      - \"scripts/ci/run-cargo-audit.sh\"";
 const CANONICAL_FORMAT_GATE: &str = "run: cargo +1.88.0 fmt --all -- --check";
 const RELEASE_FORMAT_STEP: &str =
     "      - name: Check formatting\n        run: cargo +1.88.0 fmt --all -- --check";
@@ -67,6 +69,8 @@ const RELEASE_NOTES_FLAG_GATE: &str = "--notes-file \"$notes_file\" \\";
 const RELEASE_TITLE_GATE: &str = "--title \"Termivar $GITHUB_REF_NAME\" \\";
 const RELEASE_PRERELEASE_GATE: &str = "--prerelease";
 const TESTS_WORKFLOW: &str = ".github/workflows/tests.yml";
+const SECURITY_WORKFLOW: &str = ".github/workflows/security.yml";
+const AUDIT_RUNNER: &str = "scripts/ci/run-cargo-audit.sh";
 const DEVELOPMENT_LINE_CHECKOUT: &str = r#"      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
@@ -110,8 +114,15 @@ const EXPECTED_ARCHITECTURE_JOB: &str = r#"  architecture:
 const EXPECTED_SECURITY_JOB: &str = r#"  security-tests:
     name: Security Tests
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
         with:
           toolchain: stable
@@ -121,12 +132,116 @@ const EXPECTED_SECURITY_JOB: &str = r#"  security-tests:
         run: rustup toolchain install 1.88.0 --profile minimal --component rustfmt --no-self-update
       - name: Check canonical formatting
         run: cargo +1.88.0 fmt --all -- --check
-      - name: Install cargo-audit
-        run: cargo install cargo-audit
-      - name: Run security audit
-        run: cargo audit
+      - name: Run pinned RustSec audit
+        run: bash scripts/ci/run-cargo-audit.sh
       - name: Run clippy (security lints)
         run: cargo +stable clippy --workspace --all-targets --all-features --locked -- -D warnings"#;
+const EXPECTED_DEPENDENCY_POLICY_JOB: &str = r#"  rust-dependencies:
+    name: Rust dependency policy
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+
+      - name: Install audit toolchain
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+        with:
+          toolchain: "1.88.0"
+
+      - name: Run pinned RustSec audit
+        run: bash scripts/ci/run-cargo-audit.sh
+
+      - name: Enforce licenses, sources, bans, and advisories
+        uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
+        with:
+          rust-version: '1.88.0'
+          command: check
+          arguments: --all-features"#;
+const EXPECTED_RELEASE_SECURITY_JOB: &str = r#"  release-rust-security:
+    name: Release Rust security gate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+
+      - name: Install audit toolchain
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+        with:
+          toolchain: "1.88.0"
+
+      - name: Run pinned RustSec audit
+        run: bash scripts/ci/run-cargo-audit.sh
+
+      - name: Enforce licenses, sources, bans, and advisories
+        uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
+        with:
+          rust-version: "1.88.0"
+          command: check
+          arguments: --all-features"#;
+const EXPECTED_AUDIT_RUNNER: &str = r#"#!/usr/bin/env bash
+set -euo pipefail
+
+readonly CARGO_AUDIT_VERSION="0.22.2"
+readonly CARGO_AUDIT_TOOLCHAIN="1.88.0"
+
+workspace_root="$(git rev-parse --show-toplevel)"
+cd -- "$workspace_root"
+
+if [[ ! -f Cargo.lock || -L Cargo.lock ]]; then
+  echo "Cargo.lock must be a regular, non-symlinked file" >&2
+  exit 1
+fi
+git ls-files --error-unmatch -- Cargo.lock >/dev/null
+
+lock_fingerprint="$(git hash-object -- Cargo.lock)"
+tool_root="$(mktemp -d "${TMPDIR:-/tmp}/termivar-cargo-audit.XXXXXX")"
+trap 'rm -rf -- "$tool_root"' EXIT
+
+cargo +"$CARGO_AUDIT_TOOLCHAIN" install \
+  cargo-audit \
+  --version "$CARGO_AUDIT_VERSION" \
+  --locked \
+  --root "$tool_root" \
+  --no-track
+
+audit_bin="$tool_root/bin/cargo-audit"
+expected_version="cargo-audit $CARGO_AUDIT_VERSION"
+actual_version="$("$audit_bin" --version)"
+if [[ "$actual_version" != "$expected_version" ]]; then
+  echo "installed cargo-audit version did not match the reviewed version" >&2
+  exit 1
+fi
+printf '%s\n' "$actual_version"
+
+audit_home="$tool_root/audit-home"
+audit_worktree="$tool_root/audit-worktree"
+mkdir -p -- "$audit_home/.cargo" "$audit_worktree"
+(
+  cd -- "$audit_worktree"
+  HOME="$audit_home" \
+    CARGO_HOME="$audit_home/.cargo" \
+    "$audit_bin" audit --file "$workspace_root/Cargo.lock"
+)
+
+if [[ "$(git hash-object -- Cargo.lock)" != "$lock_fingerprint" ]]; then
+  echo "cargo-audit modified the committed Cargo.lock" >&2
+  exit 1
+fi
+"#;
 const COVERAGE_BASELINE_POINTER: &str = "docs/reports/coverage/accepted-baseline.txt";
 const EXPECTED_WORKFLOW_TRIGGERS: &str =
     "on:\n  push:\n    branches: [ main, develop ]\n  pull_request:\n    branches: [ main, develop, 'agent/**' ]";
@@ -197,6 +312,16 @@ pub(super) fn check(workspace_root: &Path) -> Result<Vec<String>, Box<dyn Error>
     let mut violations = workflow_pin_violations(&files);
     violations.extend(release_workflow_policy_violations(&files));
     violations.extend(security_workflow_policy_violations(&files));
+    let audit_runner_path = workspace_root.join(AUDIT_RUNNER);
+    let audit_runner = match fs::read_to_string(&audit_runner_path) {
+        Ok(contents) => Some(contents),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+        Err(error) => return Err(error.into()),
+    };
+    violations.extend(cargo_audit_policy_violations(
+        &files,
+        audit_runner.as_deref(),
+    ));
     violations.extend(development_line_workflow_policy_violations(&files));
     let baseline_accepted = workspace_root.join(COVERAGE_BASELINE_POINTER).is_file();
     violations.extend(coverage_workflow_policy_violations(
@@ -248,10 +373,174 @@ fn security_workflow_policy_violations(files: &[(String, String)]) -> Vec<String
     let jobs = named_job_blocks(&normalized, "security-tests");
     if jobs.len() != 1 || jobs[0] != EXPECTED_SECURITY_JOB {
         return vec![format!(
-            "{TESTS_WORKFLOW}: `Security Tests` must match the reviewed contract exactly; it installs canonical Rust 1.88.0 rustfmt, checks the whole workspace without suppression, and retains current-stable Clippy with `-D warnings`"
+            "{TESTS_WORKFLOW}: `Security Tests` must match the reviewed contract exactly; it installs canonical Rust 1.88.0 rustfmt, calls the pinned shared RustSec runner, checks the whole workspace without suppression, and retains current-stable Clippy with `-D warnings`"
         )];
     }
     Vec::new()
+}
+
+fn cargo_audit_policy_violations(
+    files: &[(String, String)],
+    audit_runner: Option<&str>,
+) -> Vec<String> {
+    let mut violations = Vec::new();
+
+    for (workflow, job_id, expected, description) in [
+        (
+            SECURITY_WORKFLOW,
+            "rust-dependencies",
+            EXPECTED_DEPENDENCY_POLICY_JOB,
+            "Rust dependency policy",
+        ),
+        (
+            RELEASE_WORKFLOW,
+            "release-rust-security",
+            EXPECTED_RELEASE_SECURITY_JOB,
+            "Release Rust security gate",
+        ),
+    ] {
+        let jobs = files
+            .iter()
+            .find(|(path, _)| path == workflow)
+            .map(|(_, contents)| contents.replace("\r\n", "\n"))
+            .map_or_else(Vec::new, |contents| named_job_blocks(&contents, job_id));
+        if jobs.len() != 1 || jobs[0] != expected {
+            violations.push(format!(
+                "{workflow}: `{description}` must use the reviewed pinned RustSec runner and retain the exact cargo-deny policy"
+            ));
+        }
+    }
+
+    let runner_is_reviewed = audit_runner
+        .map(|contents| contents.replace("\r\n", "\n"))
+        .is_some_and(|contents| contents == EXPECTED_AUDIT_RUNNER);
+    if !runner_is_reviewed {
+        violations.push(format!(
+            "{AUDIT_RUNNER}: cargo-audit must be installed as exact version 0.22.2 with Rust 1.88.0 and its packaged lockfile, version-checked, and run without advisory suppression"
+        ));
+    }
+
+    for (path, contents) in files {
+        if workflow_has_forbidden_audit_execution(contents) {
+            violations.push(format!(
+                "{path}: workflows must delegate RustSec auditing only to `{AUDIT_RUNNER}`"
+            ));
+        }
+    }
+
+    violations
+}
+
+fn workflow_has_forbidden_audit_execution(contents: &str) -> bool {
+    let normalized = contents.replace("\r\n", "\n").replace("\\\n", " ");
+    let lines: Vec<_> = normalized.lines().collect();
+    let mut index = 0;
+    while index < lines.len() {
+        let line = lines[index];
+        if matches!(
+            parse_uses_line(line),
+            UsesLine::Reference(reference)
+                if reference
+                    .get(.."rustsec/audit-check@".len())
+                    .is_some_and(|prefix| prefix.eq_ignore_ascii_case("rustsec/audit-check@"))
+        ) {
+            return true;
+        }
+        if !is_mapping_key(line, "run") {
+            index += 1;
+            continue;
+        }
+
+        let mut script = line
+            .split_once(':')
+            .map_or("", |(_, value)| value)
+            .trim()
+            .to_owned();
+        if opens_block_scalar(line) {
+            script.clear();
+            let open_indent = leading_whitespace(line);
+            index += 1;
+            while index < lines.len()
+                && (lines[index].trim().is_empty()
+                    || leading_whitespace(lines[index]) > open_indent)
+            {
+                script.push_str(" ; ");
+                script.push_str(lines[index].trim());
+                index += 1;
+            }
+        } else {
+            index += 1;
+        }
+        if shell_invokes_cargo_audit(&script) {
+            return true;
+        }
+    }
+    false
+}
+
+fn shell_invokes_cargo_audit(script: &str) -> bool {
+    let separated = script
+        .replace("&&", " && ")
+        .replace("||", " || ")
+        .replace(';', " ; ")
+        .replace('|', " | ");
+    let tokens: Vec<_> = separated
+        .split_ascii_whitespace()
+        .map(|token| token.trim_matches(|character| "\"'()".contains(character)))
+        .collect();
+    let mut command_position = true;
+    let mut index = 0;
+    while index < tokens.len() {
+        let token = tokens[index];
+        if matches!(token, ";" | "&&" | "||" | "|") {
+            command_position = true;
+            index += 1;
+            continue;
+        }
+        if !command_position {
+            index += 1;
+            continue;
+        }
+        if token.contains('=')
+            || matches!(
+                token,
+                "!" | "command" | "do" | "elif" | "env" | "if" | "then" | "until" | "while"
+            )
+        {
+            index += 1;
+            continue;
+        }
+        if token == "cargo-audit" || token.ends_with("/cargo-audit") {
+            return true;
+        }
+        if token == "cargo" {
+            let mut command = index + 1;
+            if tokens
+                .get(command)
+                .is_some_and(|token| token.starts_with('+'))
+            {
+                command += 1;
+            }
+            if tokens.get(command) == Some(&"audit") {
+                return true;
+            }
+            let command_end = tokens[command..]
+                .iter()
+                .position(|token| matches!(*token, ";" | "&&" | "||" | "|"))
+                .map_or(tokens.len(), |offset| command + offset);
+            let command = &tokens[command..command_end];
+            if command.contains(&"install")
+                && command
+                    .iter()
+                    .any(|token| *token == "cargo-audit" || token.starts_with("cargo-audit@"))
+            {
+                return true;
+            }
+        }
+        command_position = false;
+        index += 1;
+    }
+    false
 }
 
 fn named_job_blocks(contents: &str, job_id: &str) -> Vec<String> {
@@ -458,6 +747,21 @@ fn release_workflow_policy_violations(files: &[(String, String)]) -> Vec<String>
     let normalized = contents.replace("\r\n", "\n");
     let lines: Vec<_> = normalized.lines().map(str::trim).collect();
     let mut violations = Vec::new();
+    if release_push_paths(&normalized).is_none_or(|paths| {
+        paths
+            .iter()
+            .filter(|path| {
+                path.strip_prefix('"')
+                    .and_then(|path| path.strip_suffix('"'))
+                    == Some(AUDIT_RUNNER)
+            })
+            .count()
+            != 1
+    }) {
+        violations.push(format!(
+            "{RELEASE_WORKFLOW}: release path filters must include the exact audit runner `{AUDIT_RUNNER}`"
+        ));
+    }
     let release_gate_jobs = named_job_blocks(&normalized, "test-before-release");
     if release_gate_jobs.len() != 1 || !release_gate_jobs[0].contains(RELEASE_FORMAT_STEP) {
         violations.push(format!(
@@ -619,6 +923,48 @@ fn release_workflow_policy_violations(files: &[(String, String)]) -> Vec<String>
     }
 
     violations
+}
+
+fn release_push_paths(contents: &str) -> Option<Vec<&str>> {
+    let lines: Vec<_> = contents.lines().collect();
+    let on_positions: Vec<_> = lines
+        .iter()
+        .enumerate()
+        .filter_map(|(index, line)| (*line == "on:").then_some(index))
+        .collect();
+    let [on_start] = on_positions.as_slice() else {
+        return None;
+    };
+    let on_end = lines[*on_start + 1..]
+        .iter()
+        .position(|line| !line.trim().is_empty() && leading_whitespace(line) == 0)
+        .map_or(lines.len(), |offset| on_start + 1 + offset);
+    let push_positions: Vec<_> = (*on_start + 1..on_end)
+        .filter(|index| lines[*index] == "  push:")
+        .collect();
+    let [push_start] = push_positions.as_slice() else {
+        return None;
+    };
+    let push_end = lines[*push_start + 1..on_end]
+        .iter()
+        .position(|line| !line.trim().is_empty() && leading_whitespace(line) <= 2)
+        .map_or(on_end, |offset| push_start + 1 + offset);
+    let paths_positions: Vec<_> = (*push_start + 1..push_end)
+        .filter(|index| lines[*index] == "    paths:")
+        .collect();
+    let [paths_start] = paths_positions.as_slice() else {
+        return None;
+    };
+    let paths_end = lines[*paths_start + 1..push_end]
+        .iter()
+        .position(|line| !line.trim().is_empty() && leading_whitespace(line) <= 4)
+        .map_or(push_end, |offset| paths_start + 1 + offset);
+    Some(
+        lines[*paths_start + 1..paths_end]
+            .iter()
+            .filter_map(|line| line.strip_prefix("      - "))
+            .collect(),
+    )
 }
 
 fn collect_workflow_files(
@@ -1025,11 +1371,31 @@ mod tests {
             RELEASE_TITLE_GATE.to_owned(),
             RELEASE_PRERELEASE_GATE.to_owned(),
         ]);
-        format!("jobs:\n  test-before-release:\n{}\n", lines.join("\n"))
+        format!(
+            "on:\n  push:\n    paths:\n{RELEASE_AUDIT_RUNNER_PATH}\n\njobs:\n  test-before-release:\n{}\n",
+            lines.join("\n")
+        )
     }
 
     fn reviewed_security_workflow_fixture() -> String {
         format!("jobs:\n{EXPECTED_SECURITY_JOB}\n")
+    }
+
+    fn reviewed_cargo_audit_workflow_fixtures() -> Vec<(String, String)> {
+        vec![
+            (
+                TESTS_WORKFLOW.to_owned(),
+                reviewed_security_workflow_fixture(),
+            ),
+            (
+                SECURITY_WORKFLOW.to_owned(),
+                format!("jobs:\n{EXPECTED_DEPENDENCY_POLICY_JOB}\n"),
+            ),
+            (
+                RELEASE_WORKFLOW.to_owned(),
+                format!("jobs:\n{EXPECTED_RELEASE_SECURITY_JOB}\n"),
+            ),
+        ]
     }
 
     #[test]
@@ -1053,6 +1419,27 @@ mod tests {
     }
 
     #[test]
+    fn repository_cargo_audit_installation_is_pinned_locked_and_shared() {
+        let files = vec![
+            (
+                TESTS_WORKFLOW.to_owned(),
+                include_str!("../../../.github/workflows/tests.yml").to_owned(),
+            ),
+            (
+                SECURITY_WORKFLOW.to_owned(),
+                include_str!("../../../.github/workflows/security.yml").to_owned(),
+            ),
+            (
+                RELEASE_WORKFLOW.to_owned(),
+                include_str!("../../../.github/workflows/release.yml").to_owned(),
+            ),
+        ];
+        let runner = include_str!("../../../scripts/ci/run-cargo-audit.sh");
+        let violations = cargo_audit_policy_violations(&files, Some(runner));
+        assert!(violations.is_empty(), "{violations:?}");
+    }
+
+    #[test]
     fn repository_architecture_job_enforces_the_development_line_with_full_history() {
         let contents = include_str!("../../../.github/workflows/tests.yml");
         let violations = development_line_workflow_policy_violations(&[(
@@ -1065,7 +1452,7 @@ mod tests {
     #[test]
     fn development_line_workflow_rejects_missing_history_suppression_and_reordering() {
         let path = TESTS_WORKFLOW.to_owned();
-        let valid = include_str!("../../../.github/workflows/tests.yml").to_owned();
+        let valid = include_str!("../../../.github/workflows/tests.yml").replace("\r\n", "\n");
         let mutations = [
             valid.replacen(DEVELOPMENT_LINE_DEFAULTS, "", 1),
             valid.replacen("        shell: bash\n", "        shell: bash {0} || true\n", 1),
@@ -1102,6 +1489,7 @@ mod tests {
             ),
         ];
         for mutation in mutations {
+            assert_ne!(mutation, valid, "mutation fixture must change the workflow");
             let violations =
                 development_line_workflow_policy_violations(&[(path.clone(), mutation)]);
             assert_eq!(violations.len(), 1, "{violations:?}");
@@ -1151,6 +1539,201 @@ mod tests {
     }
 
     #[test]
+    fn cargo_audit_runner_rejects_mutable_suppressed_or_unverified_tools() {
+        let files = reviewed_cargo_audit_workflow_fixtures();
+        assert!(cargo_audit_policy_violations(&files, Some(EXPECTED_AUDIT_RUNNER)).is_empty());
+        assert!(cargo_audit_policy_violations(
+            &files,
+            Some(&EXPECTED_AUDIT_RUNNER.replace('\n', "\r\n")),
+        )
+        .is_empty());
+        assert!(!cargo_audit_policy_violations(&files, None).is_empty());
+
+        let mutations = [
+            EXPECTED_AUDIT_RUNNER.replacen("0.22.2", "latest", 1),
+            EXPECTED_AUDIT_RUNNER.replacen("1.88.0", "stable", 1),
+            EXPECTED_AUDIT_RUNNER.replacen("  --version \"$CARGO_AUDIT_VERSION\" \\\n", "", 1),
+            EXPECTED_AUDIT_RUNNER.replacen("  --locked \\\n", "", 1),
+            EXPECTED_AUDIT_RUNNER.replacen(
+                "cargo +\"$CARGO_AUDIT_TOOLCHAIN\" install",
+                "cargo install",
+                1,
+            ),
+            EXPECTED_AUDIT_RUNNER.replacen(
+                "actual_version=\"$(\"$audit_bin\" --version)\"",
+                "actual_version=\"$expected_version\"",
+                1,
+            ),
+            EXPECTED_AUDIT_RUNNER.replacen(
+                "\"$audit_bin\" audit --file \"$workspace_root/Cargo.lock\"",
+                "\"$audit_bin\" audit --file \"$workspace_root/Cargo.lock\" || true",
+                1,
+            ),
+            EXPECTED_AUDIT_RUNNER.replacen(
+                "\"$audit_bin\" audit --file \"$workspace_root/Cargo.lock\"",
+                "\"$audit_bin\" audit --ignore RUSTSEC-0000-0000 --file \"$workspace_root/Cargo.lock\"",
+                1,
+            ),
+            EXPECTED_AUDIT_RUNNER.replacen(
+                "\"$audit_bin\" audit --file \"$workspace_root/Cargo.lock\"",
+                "\"$audit_bin\" audit --no-fetch --file \"$workspace_root/Cargo.lock\"",
+                1,
+            ),
+            EXPECTED_AUDIT_RUNNER.replacen(
+                "  HOME=\"$audit_home\" \\\n    CARGO_HOME=\"$audit_home/.cargo\" \\\n",
+                "",
+                1,
+            ),
+            EXPECTED_AUDIT_RUNNER.replacen(
+                " --file \"$workspace_root/Cargo.lock\"",
+                "",
+                1,
+            ),
+            EXPECTED_AUDIT_RUNNER.replacen(
+                "  cd -- \"$audit_worktree\"",
+                "  cd -- \"$workspace_root\"",
+                1,
+            ),
+            EXPECTED_AUDIT_RUNNER.replacen("set -euo pipefail", "set -u", 1),
+        ];
+        for mutation in mutations {
+            assert_ne!(
+                mutation, EXPECTED_AUDIT_RUNNER,
+                "mutation must change runner"
+            );
+            let violations = cargo_audit_policy_violations(&files, Some(&mutation));
+            assert!(
+                violations
+                    .iter()
+                    .any(|violation| violation.contains(AUDIT_RUNNER)),
+                "{violations:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn cargo_audit_execution_scan_rejects_commands_but_not_prose_or_the_runner() {
+        for allowed in [
+            "# cargo install cargo-audit\n",
+            "      - name: Explain cargo-audit policy\n",
+            "      - run: bash scripts/ci/run-cargo-audit.sh\n",
+            "      - run: echo cargo audit policy\n",
+        ] {
+            assert!(
+                !workflow_has_forbidden_audit_execution(allowed),
+                "{allowed}"
+            );
+        }
+        for forbidden in [
+            "      - run: cargo install cargo-audit\n",
+            "      - run: cargo install --locked cargo-audit\n",
+            "      - run: cargo install --version 0.22.2 cargo-audit\n",
+            "      - run: cargo install cargo-audit@0.22.2 --locked\n",
+            "      - run: cargo +stable install cargo-audit\n",
+            "      - run: cargo +stable install --locked cargo-audit\n",
+            "      - run: cargo audit\n",
+            "      - run: cargo-audit audit\n",
+            "      - run: |\n          cargo install \\\n            cargo-audit\n",
+            "      - uses: rustsec/audit-check@69366f33c96575abad1ee0dba8212993eecbe998\n",
+            "      - uses: RustSec/Audit-Check@69366f33c96575abad1ee0dba8212993eecbe998\n",
+        ] {
+            assert!(
+                workflow_has_forbidden_audit_execution(forbidden),
+                "{forbidden}"
+            );
+        }
+    }
+
+    #[test]
+    fn cargo_audit_workflows_reject_bypasses_wrapper_reintroduction_and_policy_drift() {
+        let files = reviewed_cargo_audit_workflow_fixtures();
+        let runner = Some(EXPECTED_AUDIT_RUNNER);
+        assert!(cargo_audit_policy_violations(&files, runner).is_empty());
+
+        let mutations = [
+            (TESTS_WORKFLOW, "run: cargo install cargo-audit"),
+            (SECURITY_WORKFLOW, "run: cargo install cargo-audit"),
+            (RELEASE_WORKFLOW, "run: cargo install cargo-audit"),
+            (
+                SECURITY_WORKFLOW,
+                "uses: rustsec/audit-check@69366f33c96575abad1ee0dba8212993eecbe998",
+            ),
+            (
+                SECURITY_WORKFLOW,
+                "run: bash scripts/ci/run-cargo-audit.sh || true",
+            ),
+            (
+                SECURITY_WORKFLOW,
+                "run: bash scripts/ci/run-cargo-audit.sh\n        continue-on-error: true",
+            ),
+            (SECURITY_WORKFLOW, "arguments: --licenses"),
+            (RELEASE_WORKFLOW, "arguments: --licenses"),
+            (SECURITY_WORKFLOW, "shell: bash {0} || true"),
+            (RELEASE_WORKFLOW, "shell: bash {0} || true"),
+            (SECURITY_WORKFLOW, "persist-credentials: true"),
+            (RELEASE_WORKFLOW, "persist-credentials: true"),
+        ];
+        for (path, replacement) in mutations {
+            let mut mutation = files.clone();
+            let (_, contents) = mutation
+                .iter_mut()
+                .find(|(candidate, _)| candidate == path)
+                .expect("reviewed workflow fixture");
+            let source = if replacement.starts_with("arguments:") {
+                "arguments: --all-features"
+            } else if replacement.starts_with("shell:") {
+                "shell: bash"
+            } else if replacement.starts_with("persist-credentials:") {
+                "persist-credentials: false"
+            } else {
+                "run: bash scripts/ci/run-cargo-audit.sh"
+            };
+            *contents = contents.replacen(source, replacement, 1);
+            let original = files
+                .iter()
+                .find(|(candidate, _)| candidate == path)
+                .expect("source workflow fixture")
+                .1
+                .as_str();
+            assert_ne!(contents.as_str(), original, "mutation must change {path}");
+            let violations = cargo_audit_policy_violations(&mutation, runner);
+            assert!(!violations.is_empty(), "{path}: {replacement}");
+        }
+
+        for (path, job) in [
+            (SECURITY_WORKFLOW, EXPECTED_DEPENDENCY_POLICY_JOB),
+            (RELEASE_WORKFLOW, EXPECTED_RELEASE_SECURITY_JOB),
+        ] {
+            let missing: Vec<_> = files
+                .iter()
+                .filter(|(candidate, _)| candidate != path)
+                .cloned()
+                .collect();
+            assert!(!cargo_audit_policy_violations(&missing, runner).is_empty());
+
+            let mut duplicate = files.clone();
+            let (_, contents) = duplicate
+                .iter_mut()
+                .find(|(candidate, _)| candidate == path)
+                .expect("reviewed workflow fixture");
+            contents.push('\n');
+            contents.push_str(job);
+            assert!(!cargo_audit_policy_violations(&duplicate, runner).is_empty());
+        }
+
+        let hostile_top_level_defaults = files
+            .iter()
+            .map(|(path, contents)| {
+                (
+                    path.clone(),
+                    format!("defaults:\n  run:\n    shell: bash {{0}} || true\n\n{contents}"),
+                )
+            })
+            .collect::<Vec<_>>();
+        assert!(cargo_audit_policy_violations(&hostile_top_level_defaults, runner).is_empty());
+    }
+
+    #[test]
     fn release_workflow_requires_the_same_unsuppressed_canonical_formatter() {
         let path = RELEASE_WORKFLOW.to_owned();
         let valid = reviewed_release_workflow_fixture();
@@ -1184,6 +1767,27 @@ mod tests {
             release_workflow_policy_violations(&[(RELEASE_WORKFLOW.to_owned(), misplaced)]);
         assert_eq!(violations.len(), 1, "{violations:?}");
         assert!(violations[0].contains("canonical Rust 1.88.0"));
+    }
+
+    #[test]
+    fn release_workflow_path_filters_include_the_shared_audit_runner() {
+        let path = RELEASE_WORKFLOW.to_owned();
+        let valid = reviewed_release_workflow_fixture();
+        assert!(release_workflow_policy_violations(&[(path.clone(), valid.clone())]).is_empty());
+
+        let missing_runner = valid.replacen(&format!("{RELEASE_AUDIT_RUNNER_PATH}\n"), "", 1);
+        let violations = release_workflow_policy_violations(&[(path, missing_runner)]);
+        assert_eq!(violations.len(), 1, "{violations:?}");
+        assert!(violations[0].contains("release path filters"));
+
+        let relocated_runner = format!(
+            "{}\nother:\n  nested:\n{RELEASE_AUDIT_RUNNER_PATH}\n",
+            valid.replacen(&format!("{RELEASE_AUDIT_RUNNER_PATH}\n"), "", 1)
+        );
+        let violations =
+            release_workflow_policy_violations(&[(RELEASE_WORKFLOW.to_owned(), relocated_runner)]);
+        assert_eq!(violations.len(), 1, "{violations:?}");
+        assert!(violations[0].contains("release path filters"));
     }
 
     #[test]

@@ -8,7 +8,7 @@ independent security assurance.
 | Control | State | Enforcement or gap |
 | --- | --- | --- |
 | CodeQL | Configured for JavaScript/TypeScript | Advanced setup analyzes `web/` on relevant changes, a weekly schedule, and manual dispatch; it does not analyze Rust |
-| `cargo-audit` | Configured in security CI | The RustSec action audits the committed Cargo dependency resolution without rewriting the lockfile |
+| `cargo-audit` | Configured in security CI | One repository-owned runner builds exact `cargo-audit` 0.22.2 with Rust 1.88.0 and the tool's packaged lockfile, verifies that executable, then checks the committed workspace lockfile against the current RustSec advisory database without rewriting it |
 | `cargo-deny` | Configured in security CI | The pinned action checks advisories, licenses, bans, and dependency sources against repository policy |
 | Trivy | Configured in security CI | SHA-pinned `trivy-action` v0.36.0 runs Trivy v0.70.0 against the repository filesystem for vulnerability, secret, and misconfiguration findings at the declared severity policy |
 | Semgrep CE | Configured in security CI | A digest-pinned Semgrep CE image runs declared community rules with metrics disabled |
@@ -86,10 +86,15 @@ API compatibility status](public-api-compatibility.md).
 ## Workflow supply-chain posture
 
 The security workflow uses top-level read-only repository permissions and
-grants narrower job-level write permissions only where check, issue, or SARIF
-publication requires them. Its Rust dependency actions and Trivy action are
-commit-SHA pinned; the Semgrep CE container is image-digest pinned. Trivy's
-action version and scanner version are separate and both are declared.
+grants narrower job-level write permissions only where SARIF publication
+requires them. RustSec audit execution is repository-owned: the executable is
+version-pinned, compiled with Rust 1.88.0 using its upstream packaged lockfile,
+and shared by test, security, and release gates. The advisory database remains
+live rather than vendored or frozen. `cargo-deny` remains a separate
+commit-SHA-pinned policy action; application dependencies are not modified to
+repair CI-tool dependency drift. The Trivy action is commit-SHA pinned and the
+Semgrep CE container is image-digest pinned. Trivy's action version and scanner
+version are separate and both are declared.
 
 This hardening reduces mutable-reference risk but does not eliminate workflow
 supply-chain risk. Workflow actions are full-SHA pinned and container jobs are

@@ -19,6 +19,7 @@ on:
       - "mkdocs.yml"
       - "docs/**"
       - "rustfmt.toml"
+      - "scripts/ci/run-cargo-audit.sh"
       - ".github/workflows/release.yml"
       - ".github/release-notes/**"
 
@@ -112,14 +113,22 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      checks: write
-      issues: write
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
-      - name: Audit locked Rust dependencies
-        uses: rustsec/audit-check@69366f33c96575abad1ee0dba8212993eecbe998 # v2.0.0
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+          persist-credentials: false
+
+      - name: Install audit toolchain
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+        with:
+          toolchain: "1.88.0"
+
+      - name: Run pinned RustSec audit
+        run: bash scripts/ci/run-cargo-audit.sh
+
       - name: Enforce licenses, sources, bans, and advisories
         uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
         with:
