@@ -533,7 +533,7 @@ fn selected_candidate(resource: &Url) -> crate::scanner_ssrf_oast_review::SsrfOa
     ) else {
         panic!("fixed structurally eligible query must be selected")
     };
-    candidate
+    *candidate
 }
 
 fn complete_facts() -> SsrfOastReviewFacts {

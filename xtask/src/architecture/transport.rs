@@ -703,8 +703,8 @@ fn native_review_execution_fingerprint_violations(source: &str, syntax: &syn::Fi
     }
 }
 
-const EXACT_OPENAPI_RUNTIME_TOKEN_BYTES: usize = 41_025;
-const EXACT_OPENAPI_RUNTIME_FINGERPRINT: u128 = 0xf5b6_c867_43dc_7294_5c23_1c0f_aaf4_ce7b;
+const EXACT_OPENAPI_RUNTIME_TOKEN_BYTES: usize = 41_038;
+const EXACT_OPENAPI_RUNTIME_FINGERPRINT: u128 = 0x081c_f925_4650_b2ea_1709_87da_82ba_da9b;
 
 fn openapi_runtime_fingerprint_violations(source: &str, syntax: &syn::File) -> Vec<String> {
     if !matches!(syntax.items.last(), Some(Item::Mod(module))

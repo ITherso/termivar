@@ -908,9 +908,12 @@ mod tests {
         assert_gate_fails(&mutation, 5);
 
         let mut mutation = sources.clone();
-        mutation.domain = mutation
-            .domain
-            .replace("parsed.scheme() != \"https\"", "parsed.scheme() != \"ftp\"");
+        mutation.domain = mutation.domain.replacen(
+            "parsed.scheme() == \"https\"",
+            "parsed.scheme() == \"ftp\"",
+            1,
+        );
+        assert_ne!(mutation.domain, sources.domain);
         assert_gate_fails(&mutation, 6);
 
         let mut mutation = sources.clone();

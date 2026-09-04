@@ -375,7 +375,7 @@ impl SsrfOastCandidateSource {
 /// Result of bounded structural candidate selection.
 pub(crate) enum SsrfOastCandidateSelection {
     /// One deterministic query position was selected.
-    Selected(SsrfOastQueryCandidate),
+    Selected(Box<SsrfOastQueryCandidate>),
     /// No input proved the exact V1 structural contract.
     NotEligible,
 }
@@ -503,7 +503,7 @@ pub(crate) fn select_observed_query_candidate(
     if eligible.len() != MAX_SSRF_OAST_REVIEW_PARAMETERS {
         return SsrfOastCandidateSelection::NotEligible;
     }
-    SsrfOastCandidateSelection::Selected(eligible.remove(0))
+    SsrfOastCandidateSelection::Selected(Box::new(eligible.remove(0)))
 }
 
 /// Validates a private OpenAPI name/execution bridge against reduced catalog metadata.
@@ -570,14 +570,14 @@ pub(crate) fn select_openapi_query_candidate(
         return SsrfOastCandidateSelection::NotEligible;
     }
 
-    SsrfOastCandidateSelection::Selected(build_candidate(
+    SsrfOastCandidateSelection::Selected(Box::new(build_candidate(
         SsrfOastCandidateSource::OpenApiOptionalUrlQuery,
         execution_url.clone(),
         parameter_name.to_owned(),
         None,
         operation.id().as_str(),
         *position,
-    ))
+    )))
 }
 
 /// Reduces one complete OpenAPI catalog to its deterministic SSRF OAST query candidate.
@@ -607,8 +607,8 @@ pub(crate) fn select_openapi_document_query_candidate(
             ) else {
                 continue;
             };
-            selected = match choose_ssrf_oast_query_candidate(selected, Some(candidate)) {
-                SsrfOastCandidateSelection::Selected(candidate) => Some(candidate),
+            selected = match choose_ssrf_oast_query_candidate(selected, Some(*candidate)) {
+                SsrfOastCandidateSelection::Selected(candidate) => Some(*candidate),
                 SsrfOastCandidateSelection::NotEligible => None,
             };
         }
@@ -656,9 +656,9 @@ pub(crate) fn choose_ssrf_oast_query_candidate(
 ) -> SsrfOastCandidateSelection {
     let mut candidates = observed.into_iter().chain(openapi).collect::<Vec<_>>();
     candidates.sort_by(candidate_order);
-    candidates.into_iter().next().map_or(
-        SsrfOastCandidateSelection::NotEligible,
-        SsrfOastCandidateSelection::Selected,
+    candidates.into_iter().next().map_or_else(
+        || SsrfOastCandidateSelection::NotEligible,
+        |candidate| SsrfOastCandidateSelection::Selected(Box::new(candidate)),
     )
 }
 
@@ -1605,7 +1605,7 @@ mod tests {
         ) else {
             panic!("expected candidate")
         };
-        candidate
+        *candidate
     }
 
     fn callback(index: u8) -> String {
@@ -2026,7 +2026,7 @@ mod tests {
         };
         let provider = PublicOrigin::from_str(PROVIDER).unwrap();
         let plan = SsrfOastMutationPlan::from_callback_strings(
-            selected,
+            *selected,
             [9; 32],
             &callback(1),
             &callback(2),
@@ -2183,7 +2183,8 @@ mod tests {
 
     #[test]
     fn lifecycle_incompleteness_and_interference_fail_closed() {
-        let mutations: Vec<(Box<dyn Fn(&mut SsrfOastReviewFacts)>, SsrfOastReviewOutcome)> = vec![
+        type FactsMutationCase = (Box<dyn Fn(&mut SsrfOastReviewFacts)>, SsrfOastReviewOutcome);
+        let mutations: Vec<FactsMutationCase> = vec![
             (
                 Box::new(|facts| facts.control_complete = false),
                 SsrfOastReviewOutcome::ControlIncomplete,

@@ -260,7 +260,7 @@ pub(super) struct StableSsrfOastSelectionSlot {
 impl StableSsrfOastSelectionSlot {
     fn new(selection: SsrfOastCandidateSelection) -> Self {
         let candidate = match selection {
-            SsrfOastCandidateSelection::Selected(candidate) => Some(candidate),
+            SsrfOastCandidateSelection::Selected(candidate) => Some(*candidate),
             SsrfOastCandidateSelection::NotEligible => None,
         };
         Self {
@@ -281,7 +281,7 @@ impl StableSsrfOastSelectionSlot {
             .lock()
             .map_err(|_| SsrfOastRuntimeInvariantError::Catalog)?;
         if slot.is_none() {
-            *slot = Some(candidate);
+            *slot = Some(*candidate);
         }
         Ok(())
     }
@@ -370,10 +370,9 @@ impl SsrfOastRuntimeBinding {
         }
         let mut state = self.executor.take_state()?;
         if let Some(terminal) = forced_terminal {
-            state
-                .facts
-                .as_mut()
-                .map(|facts| facts.terminal = Some(terminal));
+            if let Some(facts) = state.facts.as_mut() {
+                facts.terminal = Some(terminal);
+            }
         }
         let target_count = u8::try_from(receipts.len()).unwrap_or(u8::MAX);
         let target_accounting_complete = receipts.len() == SSRF_OAST_TARGET_REQUESTS
@@ -499,6 +498,12 @@ struct PreparedSsrfOast {
     candidate_correlation: OastCorrelationId,
     replay_correlation: OastCorrelationId,
     facts: SsrfOastReviewFacts,
+}
+
+struct ProviderTerminalContext {
+    source: SsrfOastCandidateSource,
+    parameter_identity: String,
+    cleanup_verified: bool,
 }
 
 struct SsrfOastDecisionExecutor {
@@ -657,9 +662,11 @@ impl SsrfOastDecisionExecutor {
                 None,
                 provider_terminal(error.kind()),
                 None,
-                source,
-                parameter_identity,
-                false,
+                ProviderTerminalContext {
+                    source,
+                    parameter_identity,
+                    cleanup_verified: false,
+                },
             )?;
             return phase_evidence(
                 request,
@@ -685,9 +692,11 @@ impl SsrfOastDecisionExecutor {
                     None,
                     terminal,
                     None,
-                    source,
-                    parameter_identity,
-                    cleanup_verified,
+                    ProviderTerminalContext {
+                        source,
+                        parameter_identity,
+                        cleanup_verified,
+                    },
                 )?;
                 return phase_evidence(
                     request,
@@ -713,9 +722,11 @@ impl SsrfOastDecisionExecutor {
                     None,
                     terminal,
                     None,
-                    source,
-                    parameter_identity,
-                    cleanup_verified,
+                    ProviderTerminalContext {
+                        source,
+                        parameter_identity,
+                        cleanup_verified,
+                    },
                 )?;
                 return phase_evidence(
                     request,
@@ -765,9 +776,11 @@ impl SsrfOastDecisionExecutor {
                     Some(facts),
                     SsrfOastTerminalState::MalformedProviderResponse,
                     None,
-                    source,
-                    parameter_identity,
-                    lifecycle.cleanup_verified,
+                    ProviderTerminalContext {
+                        source,
+                        parameter_identity,
+                        cleanup_verified: lifecycle.cleanup_verified,
+                    },
                 )?;
                 return phase_evidence(
                     request,
@@ -790,9 +803,11 @@ impl SsrfOastDecisionExecutor {
                     Some(facts),
                     terminal,
                     None,
-                    source,
-                    parameter_identity,
-                    lifecycle.cleanup_verified,
+                    ProviderTerminalContext {
+                        source,
+                        parameter_identity,
+                        cleanup_verified: lifecycle.cleanup_verified,
+                    },
                 )?;
                 return phase_evidence(
                     request,
@@ -1048,9 +1063,7 @@ impl SsrfOastDecisionExecutor {
         facts: Option<SsrfOastReviewFacts>,
         terminal: SsrfOastTerminalState,
         limit: Option<RuntimeLimitExceeded>,
-        source: SsrfOastCandidateSource,
-        parameter_identity: String,
-        cleanup_verified: bool,
+        context: ProviderTerminalContext,
     ) -> Result<(), DecisionExecutorError> {
         let mut state = self
             .state
@@ -1059,9 +1072,9 @@ impl SsrfOastDecisionExecutor {
         state.provider_request_count = u8::try_from(provider.receipts().len()).unwrap_or(u8::MAX);
         state.terminal = Some(terminal);
         state.runtime_limit = limit;
-        state.source = Some(source);
-        state.parameter_identity = Some(parameter_identity);
-        state.cleanup_verified = cleanup_verified;
+        state.source = Some(context.source);
+        state.parameter_identity = Some(context.parameter_identity);
+        state.cleanup_verified = context.cleanup_verified;
         state.facts = facts;
         Ok(())
     }
@@ -1674,7 +1687,7 @@ pub(super) fn project_ssrf_oast_item(
 }
 
 fn positive_evidence_contract(knowledge: &KnowledgeBase, evidence_ids: &[EvidenceId]) -> bool {
-    evidence_ids.len() % 2 == 0
+    evidence_ids.len().is_multiple_of(2)
         && [
             CONTROL_COMPLETE,
             PROVIDER_REGISTERED,

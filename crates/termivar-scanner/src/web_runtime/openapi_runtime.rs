@@ -1068,7 +1068,7 @@ impl DecisionActionExecutor for OpenApiDecisionExecutor {
         }
         #[cfg(all(feature = "ssrf-oast-review", feature = "openapi-review"))]
         if let (Some(slot), Some(selection)) = (&self.ssrf_selection, stable_ssrf_selection) {
-            slot.commit_openapi(SsrfOastCandidateSelection::Selected(selection))
+            slot.commit_openapi(SsrfOastCandidateSelection::Selected(Box::new(selection)))
                 .map_err(|_| DecisionExecutorError::new("SSRF OAST selection handoff failed"))?;
         }
         Ok(evidence)

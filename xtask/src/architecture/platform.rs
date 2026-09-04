@@ -9939,8 +9939,8 @@ mod tests {
 
         let worker = source(&sources, "distributed/worker.rs");
         let public_snapshot = worker.replacen(
-            "pub struct WorkerNode {\n    pub(super) worker_id:",
-            "pub struct WorkerNode {\n    pub worker_id:",
+            "    pub(super) worker_id: String,",
+            "    pub worker_id: String,",
             1,
         );
         assert_ne!(public_snapshot, worker);
@@ -10202,11 +10202,7 @@ mod tests {
             );
         }
 
-        let public_manifest = root.replacen(
-            "pub struct LuaScriptManifest {\n    id:",
-            "pub struct LuaScriptManifest {\n    pub id:",
-            1,
-        );
+        let public_manifest = root.replacen("    id: String,", "    pub id: String,", 1);
         assert_ne!(public_manifest, root);
         let public_manifest_sources = replacing_source(&sources, "lua_engine.rs", &public_manifest);
         assert!(lua_public_api_violations(&public_manifest_sources, config)
@@ -11787,10 +11783,12 @@ mod tests {
             "target: report.target(),",
             "target: report.authorized_origin(),",
         );
-        let doubled_public_cap = source.replace(
-            "    match format {\n        ReportFormat::Json => render_json(document, limit),",
-            "    let limit = if limit == MAX_RENDERED_REPORT_BYTES { limit * 2 } else { limit };\n    match format {\n        ReportFormat::Json => render_json(document, limit),",
+        let doubled_public_cap = source.replacen(
+            "        ReportFormat::Json => render_json(document, limit),",
+            "        ReportFormat::Json => render_json(document, limit.saturating_mul(2)),",
+            1,
         );
+        assert_ne!(doubled_public_cap, source);
         let dropped_basis_count_binding = source.replace(
             "if linkage.reference_count()? != evidence_count {",
             "if false {",
@@ -12895,7 +12893,7 @@ mod tests {
             .iter()
             .any(|violation| violation.contains("declared exactly once")));
 
-        let core = include_str!("../../../crates/termivar-core/src/lib.rs");
+        let core = include_str!("../../../crates/termivar-core/src/lib.rs").replace("\r\n", "\n");
         let missing_module = core.replacen(
             "#[cfg(feature = \"legacy-contracts\")]\npub mod config;",
             "",
