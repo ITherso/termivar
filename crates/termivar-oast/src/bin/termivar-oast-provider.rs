@@ -460,6 +460,7 @@ mod tests {
 
     #[test]
     fn environment_and_regular_file_sources_load_without_exposing_locations() {
+        let directory = tempfile::tempdir().unwrap();
         let environment_name = "TERMIVAR_OAST_TEST_ADMIN_81E4D7";
         std::env::set_var(environment_name, SECRET);
         let token = AdminTokenSource::Environment(OsString::from(environment_name))
@@ -486,21 +487,14 @@ mod tests {
         );
         std::env::remove_var(environment_name);
 
-        let path = std::env::temp_dir().join(format!(
-            "termivar-oast-admin-{}-81e4d7.txt",
-            std::process::id()
-        ));
+        let path = directory.path().join("admin.txt");
         fs::write(&path, format!("{SECRET}\r\n")).unwrap();
         let source = AdminTokenSource::File(path.clone());
         assert!(!format!("{source:?}").contains(path.to_string_lossy().as_ref()));
         let token = source.load().unwrap();
         assert_eq!(format!("{token:?}"), "AdminToken(<redacted>)");
-        fs::remove_file(path).unwrap();
 
-        let oversized_path = std::env::temp_dir().join(format!(
-            "termivar-oast-admin-oversized-{}-81e4d7.txt",
-            std::process::id()
-        ));
+        let oversized_path = directory.path().join("oversized-admin.txt");
         fs::write(&oversized_path, vec![b'x'; MAX_ADMIN_TOKEN_BYTES + 3]).unwrap();
         assert_eq!(
             AdminTokenSource::File(oversized_path.clone())
@@ -508,7 +502,6 @@ mod tests {
                 .unwrap_err(),
             BinaryError::AdminTokenTooLarge
         );
-        fs::remove_file(oversized_path).unwrap();
     }
 
     #[test]
@@ -519,14 +512,15 @@ mod tests {
                 .unwrap_err(),
             BinaryError::AdminTokenUnavailable
         );
-        let directory = std::env::temp_dir();
-        let error = AdminTokenSource::File(directory.clone())
+        let directory = tempfile::tempdir().unwrap();
+        let directory_path = directory.path().to_path_buf();
+        let error = AdminTokenSource::File(directory_path.clone())
             .load()
             .unwrap_err();
         assert_eq!(error, BinaryError::AdminTokenNotRegularFile);
         assert!(!error
             .to_string()
-            .contains(directory.to_string_lossy().as_ref()));
+            .contains(directory_path.to_string_lossy().as_ref()));
     }
 
     #[cfg(unix)]
@@ -534,15 +528,9 @@ mod tests {
     fn symbolic_link_token_source_is_rejected() {
         use std::os::unix::fs::symlink;
 
-        let directory = std::env::temp_dir();
-        let target = directory.join(format!(
-            "termivar-oast-admin-symlink-target-{}-81e4d7.txt",
-            std::process::id()
-        ));
-        let link = directory.join(format!(
-            "termivar-oast-admin-symlink-{}-81e4d7.txt",
-            std::process::id()
-        ));
+        let directory = tempfile::tempdir().unwrap();
+        let target = directory.path().join("admin-symlink-target.txt");
+        let link = directory.path().join("admin-symlink.txt");
         fs::write(&target, SECRET).unwrap();
         symlink(&target, &link).unwrap();
 
@@ -550,9 +538,6 @@ mod tests {
         assert_eq!(error, BinaryError::AdminTokenNotRegularFile);
         assert!(!error.to_string().contains(SECRET));
         assert!(!error.to_string().contains(link.to_string_lossy().as_ref()));
-
-        fs::remove_file(link).unwrap();
-        fs::remove_file(target).unwrap();
     }
 
     #[cfg(windows)]
@@ -560,23 +545,15 @@ mod tests {
     fn windows_symbolic_link_token_source_is_rejected_when_supported() {
         use std::os::windows::fs::symlink_file;
 
-        let directory = std::env::temp_dir();
-        let target = directory.join(format!(
-            "termivar-oast-admin-windows-symlink-target-{}-81e4d7.txt",
-            std::process::id()
-        ));
-        let link = directory.join(format!(
-            "termivar-oast-admin-windows-symlink-{}-81e4d7.txt",
-            std::process::id()
-        ));
+        let directory = tempfile::tempdir().unwrap();
+        let target = directory.path().join("admin-windows-symlink-target.txt");
+        let link = directory.path().join("admin-windows-symlink.txt");
         fs::write(&target, SECRET).unwrap();
         if symlink_file(&target, &link).is_ok() {
             let error = AdminTokenSource::File(link.clone()).load().unwrap_err();
             assert_eq!(error, BinaryError::AdminTokenNotRegularFile);
             assert!(!error.to_string().contains(SECRET));
             assert!(!error.to_string().contains(link.to_string_lossy().as_ref()));
-            fs::remove_file(link).unwrap();
         }
-        fs::remove_file(target).unwrap();
     }
 }
