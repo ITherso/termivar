@@ -1949,6 +1949,7 @@ dependencies = [
  "criterion",
  "dashmap",
  "futures",
+ "getrandom 0.2.17",
  "html5ever",
  "markup5ever_rcdom",
  "mlua",

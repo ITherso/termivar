@@ -20,6 +20,15 @@ use syn::{
 
 const MODULE_NAME: &str = "oast";
 const NATIVE_PROVIDER_ADAPTER: &str = "native_oast_provider.rs";
+const SSRF_OAST_REVIEW_CONTRACT: &str = "ssrf_oast_review.rs";
+const SSRF_OAST_REVIEW_RUNTIME: &str = "web_runtime/ssrf_oast_runtime.rs";
+const SSRF_OAST_REVIEW_TESTS: &str = "web_runtime/assessment_review_tests.rs";
+const ASSESSMENT_REVIEW_SOURCE: &str = "web_runtime/assessment_review.rs";
+const EXACT_SCANNER_CONSUMERS: &[&str] = &[
+    NATIVE_PROVIDER_ADAPTER,
+    SSRF_OAST_REVIEW_CONTRACT,
+    SSRF_OAST_REVIEW_RUNTIME,
+];
 const FEATURE_PREDICATE: &str = "feature=\"oast-correlation\"";
 const SECRET_TYPE: &str = "OastCorrelationToken";
 const SECRET_FIELD: &str = "secret_bytes";
@@ -331,12 +340,27 @@ pub(super) fn repository_consumer_violations(
         if relative == "oast.rs" {
             continue;
         }
+        if relative == SSRF_OAST_REVIEW_TESTS {
+            continue;
+        }
         let source = fs::read_to_string(&path)?;
         violations.extend(consumer_source_violations(
             &relative,
             &source,
             relative == "lib.rs",
         )?);
+    }
+    let assessment_review = fs::read_to_string(source_root.join(ASSESSMENT_REVIEW_SOURCE))?;
+    let exact_test_module = "#[cfg(test)]\n#[path = \"assessment_review_tests.rs\"]\nmod tests;";
+    if assessment_review
+        .replace("\r\n", "\n")
+        .matches(exact_test_module)
+        .count()
+        != 1
+    {
+        violations.push(format!(
+            "the test-only OAST consumer must remain behind the exact cfg(test) module declaration in {ASSESSMENT_REVIEW_SOURCE}"
+        ));
     }
     Ok(violations)
 }
@@ -371,15 +395,14 @@ fn consumer_source_violations(
         }
         visitor.visit_item(item);
     }
-    if visitor.references_oast && relative_path != NATIVE_PROVIDER_ADAPTER {
+    if visitor.references_oast && !EXACT_SCANNER_CONSUMERS.contains(&relative_path) {
         Ok(vec![format!(
-            "termivar-scanner production source `{relative_path}` must not consume crate::oast or Oast* types; only the sealed native_oast_provider.rs host adapter may use the correlation boundary"
+            "termivar-scanner production source `{relative_path}` must not consume crate::oast or Oast* types; only the sealed native provider adapter, bounded SSRF OAST review contract, and its exact child runtime may use the correlation boundary"
         )])
-    } else if !visitor.references_oast && relative_path == NATIVE_PROVIDER_ADAPTER {
-        Ok(vec![
-            "the sealed native_oast_provider.rs adapter must consume the existing crate::oast correlation boundary"
-                .to_owned(),
-        ])
+    } else if !visitor.references_oast && EXACT_SCANNER_CONSUMERS.contains(&relative_path) {
+        Ok(vec![format!(
+            "the exact OAST consumer `{relative_path}` must consume the existing crate::oast correlation boundary"
+        )])
     } else {
         Ok(Vec::new())
     }
@@ -2036,8 +2059,36 @@ mod tests {
         )
         .unwrap()
         .is_empty());
+        assert!(consumer_source_violations(
+            SSRF_OAST_REVIEW_CONTRACT,
+            "use crate::oast::{OastAuthorityEpoch, OastCorrelationToken, OastEventKey}; fn bind(_: OastAuthorityEpoch, _: OastCorrelationToken, _: OastEventKey) {}",
+            false,
+        )
+        .unwrap()
+        .is_empty());
+        assert!(consumer_source_violations(
+            SSRF_OAST_REVIEW_RUNTIME,
+            "use crate::oast::{OastCorrelationId, OastEventDisposition}; fn reduce(_: OastCorrelationId, _: OastEventDisposition) {}",
+            false,
+        )
+        .unwrap()
+        .is_empty());
         assert!(!consumer_source_violations(
             NATIVE_PROVIDER_ADAPTER,
+            "fn bypasses_correlation() {}",
+            false,
+        )
+        .unwrap()
+        .is_empty());
+        assert!(!consumer_source_violations(
+            SSRF_OAST_REVIEW_CONTRACT,
+            "fn bypasses_correlation() {}",
+            false,
+        )
+        .unwrap()
+        .is_empty());
+        assert!(!consumer_source_violations(
+            SSRF_OAST_REVIEW_RUNTIME,
             "fn bypasses_correlation() {}",
             false,
         )

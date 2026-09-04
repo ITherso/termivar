@@ -102,3 +102,10 @@ path = "fuzz_targets/native_oast_adapter.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "ssrf_oast_review"
+path = "fuzz_targets/ssrf_oast_review.rs"
+test = false
+doc = false
+bench = false

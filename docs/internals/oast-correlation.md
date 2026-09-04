@@ -92,6 +92,10 @@ payload, or target request. Enabling `oast-correlation` alone remains
 transport-free. The separate native adapter is not enabled by that feature and
 does not prove SSRF.
 
-Any later bounded SSRF review requires separate target authority and review.
+The separately gated [SSRF OAST query review](ssrf-oast-query-review.md)
+provides that target authority for one exact eligible query occurrence. It
+still consumes this foundation through exact case binding and requires two
+independent fresh callback identities; enabling this foundation alone remains
+transport-free and cannot produce an item.
 Provider configuration cannot become target-execution authority, and a
 callback observation remains distinct from a vulnerability verdict.

@@ -36,37 +36,65 @@ use crate::{
 
 pub(crate) const NATIVE_OAST_PROVIDER_ACTION_ID: &str = "web.auxiliary.native-oast-provider";
 #[cfg_attr(
-    all(not(test), feature = "oast-native-provider"),
+    all(
+        not(test),
+        feature = "oast-native-provider",
+        not(feature = "ssrf-oast-review")
+    ),
     expect(dead_code, reason = "consumed by the sealed PR B limits constructor")
 )]
 pub(crate) const HARD_MAX_NATIVE_OAST_REGISTRATIONS: u16 = 1;
 #[cfg_attr(
-    all(not(test), feature = "oast-native-provider"),
+    all(
+        not(test),
+        feature = "oast-native-provider",
+        not(feature = "ssrf-oast-review")
+    ),
     expect(dead_code, reason = "consumed by the sealed PR B limits constructor")
 )]
 pub(crate) const HARD_MAX_NATIVE_OAST_CALLBACKS: u16 = 8;
 #[cfg_attr(
-    all(not(test), feature = "oast-native-provider"),
+    all(
+        not(test),
+        feature = "oast-native-provider",
+        not(feature = "ssrf-oast-review")
+    ),
     expect(dead_code, reason = "consumed by the sealed PR B limits constructor")
 )]
 pub(crate) const HARD_MAX_NATIVE_OAST_PROVIDER_REQUESTS: u16 = 64;
 #[cfg_attr(
-    all(not(test), feature = "oast-native-provider"),
+    all(
+        not(test),
+        feature = "oast-native-provider",
+        not(feature = "ssrf-oast-review")
+    ),
     expect(dead_code, reason = "consumed by the sealed PR B limits constructor")
 )]
 pub(crate) const HARD_MAX_NATIVE_OAST_POLLS: u16 = 32;
 #[cfg_attr(
-    all(not(test), feature = "oast-native-provider"),
+    all(
+        not(test),
+        feature = "oast-native-provider",
+        not(feature = "ssrf-oast-review")
+    ),
     expect(dead_code, reason = "consumed by the sealed PR B limits constructor")
 )]
 pub(crate) const HARD_MAX_NATIVE_OAST_PROVIDER_REQUEST_BYTES: u64 = 64 * 1_024;
 #[cfg_attr(
-    all(not(test), feature = "oast-native-provider"),
+    all(
+        not(test),
+        feature = "oast-native-provider",
+        not(feature = "ssrf-oast-review")
+    ),
     expect(dead_code, reason = "consumed by the sealed PR B limits constructor")
 )]
 pub(crate) const HARD_MAX_NATIVE_OAST_PROVIDER_RESPONSE_BYTES: u64 = 2 * 1_024 * 1_024;
 #[cfg_attr(
-    all(not(test), feature = "oast-native-provider"),
+    all(
+        not(test),
+        feature = "oast-native-provider",
+        not(feature = "ssrf-oast-review")
+    ),
     expect(dead_code, reason = "consumed by the sealed PR B limits constructor")
 )]
 pub(crate) const HARD_MAX_NATIVE_OAST_PROVIDER_WALL_TIME_MS: u64 = 120_000;
@@ -193,7 +221,11 @@ pub(crate) struct NativeOastProviderConfiguration {
 }
 
 #[cfg_attr(
-    all(not(test), feature = "oast-native-provider"),
+    all(
+        not(test),
+        feature = "oast-native-provider",
+        not(feature = "ssrf-oast-review")
+    ),
     expect(
         dead_code,
         reason = "sealed PR B configuration is consumed only by the separately gated ssrf-oast-review capability"
@@ -230,7 +262,7 @@ impl NativeOastProviderConfiguration {
     }
 
     #[cfg(test)]
-    fn for_loopback(
+    pub(crate) fn for_loopback(
         origin: PublicOrigin,
         assessment_id: &str,
         epoch: [u8; 32],
@@ -934,7 +966,11 @@ struct NativeOastProviderCallback {
 /// One move-only callback allocation ready for a future explicitly authorized
 /// target action. The target never enters an adapter receipt.
 #[cfg_attr(
-    all(not(test), feature = "oast-native-provider"),
+    all(
+        not(test),
+        feature = "oast-native-provider",
+        not(feature = "ssrf-oast-review")
+    ),
     expect(
         dead_code,
         reason = "sealed PR B allocation is consumed only by the separately gated ssrf-oast-review capability"
@@ -942,6 +978,7 @@ struct NativeOastProviderCallback {
 )]
 pub(crate) struct NativeOastAllocatedCallback {
     ordinal: u16,
+    callback_id: CallbackId,
     target: CallbackTarget,
     correlation_receipt: OastRegistrationReceipt,
     provider_receipt: NativeOastProviderReceipt,
@@ -957,6 +994,10 @@ pub(crate) struct NativeOastAllocatedCallback {
 impl NativeOastAllocatedCallback {
     pub(crate) const fn ordinal(&self) -> u16 {
         self.ordinal
+    }
+
+    pub(crate) const fn callback_id(&self) -> &CallbackId {
+        &self.callback_id
     }
 
     pub(crate) fn target(&self) -> &CallbackTarget {
@@ -1016,7 +1057,11 @@ impl NativeOastPollOutcome {
 /// Sealed lifecycle adapter. It owns one provider client, one narrowing
 /// permit, and one correlation authority; it performs no work in `Drop`.
 #[cfg_attr(
-    all(not(test), feature = "oast-native-provider"),
+    all(
+        not(test),
+        feature = "oast-native-provider",
+        not(feature = "ssrf-oast-review")
+    ),
     expect(
         dead_code,
         reason = "sealed PR B authority is consumed only by the separately gated ssrf-oast-review capability"
@@ -1672,7 +1717,7 @@ impl NativeOastProviderAdapter {
         let allocation = dispatch.into_value();
         let callback_id = allocation.callback_id().clone();
         if self.callbacks.contains_key(&callback_id) {
-            let receipt = self.operation_receipt(
+            let receipt = self.record_receipt(
                 NativeOastProviderOperation::AllocateCallback,
                 before,
                 before,
@@ -1685,8 +1730,10 @@ impl NativeOastProviderAdapter {
             ));
         }
         let target = allocation.take_target();
-        self.callbacks
-            .insert(callback_id, NativeOastProviderCallback { correlation });
+        self.callbacks.insert(
+            callback_id.clone(),
+            NativeOastProviderCallback { correlation },
+        );
         self.lifecycle = NativeOastProviderLifecycle::CallbackAllocated;
         let provider_receipt = self.record_receipt(
             NativeOastProviderOperation::AllocateCallback,
@@ -1697,6 +1744,7 @@ impl NativeOastProviderAdapter {
         );
         Ok(NativeOastAllocatedCallback {
             ordinal: u16::try_from(self.callbacks.len()).unwrap_or(u16::MAX),
+            callback_id,
             target,
             correlation_receipt,
             provider_receipt,
@@ -2149,12 +2197,17 @@ fn transport_outcome_for_client_error(kind: NativeOastClientErrorKind) -> Transp
 #[cfg(all(test, feature = "oast-native-provider"))]
 mod tests {
     use super::*;
+    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
     use termivar_core::EntityId;
     use termivar_oast::{
         serve_provider_on_listener, AdminToken, LoopbackBind, ProviderConfig, ProviderLimits,
-        ProviderState,
+        ProviderState, CALLBACK_SCHEMA, NATIVE_OAST_PROTOCOL_REVISION, SESSION_SCHEMA,
     };
-    use tokio::{net::TcpListener, task::JoinHandle};
+    use tokio::{
+        io::{AsyncReadExt, AsyncWriteExt},
+        net::TcpListener,
+        task::JoinHandle,
+    };
 
     use crate::{web_runtime::SharedWebRuntimeAuthority, HttpEvidencePolicy};
 
@@ -2231,6 +2284,73 @@ mod tests {
             [11; 32],
             ADMIN_SECRET.to_vec(),
             adapter_limits(max_callbacks, max_polls),
+        )
+        .unwrap();
+        let adapter = authority.mint_native_oast_provider(configuration).unwrap();
+        (adapter, accounting, task)
+    }
+
+    async fn duplicate_callback_adapter() -> (
+        NativeOastProviderAdapter,
+        RequestAccountingBroker,
+        JoinHandle<()>,
+    ) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let origin = PublicOrigin::from_test_loopback(address).unwrap();
+        let session_id = URL_SAFE_NO_PAD.encode([7_u8; 16]);
+        let session_token = URL_SAFE_NO_PAD.encode([9_u8; 32]);
+        let callback_id = URL_SAFE_NO_PAD.encode([8_u8; 16]);
+        let callback_target = format!("{}c/{session_id}/{callback_id}", origin.as_str());
+        let registration = serde_json::to_vec(&serde_json::json!({
+            "schema": SESSION_SCHEMA,
+            "session_id": session_id,
+            "session_token": session_token,
+            "expires_after_ms": 1_000,
+            "protocol_revision": NATIVE_OAST_PROTOCOL_REVISION,
+        }))
+        .unwrap();
+        let allocation = serde_json::to_vec(&serde_json::json!({
+            "schema": CALLBACK_SCHEMA,
+            "callback_id": callback_id,
+            "callback_target": callback_target,
+        }))
+        .unwrap();
+        let task = tokio::spawn(async move {
+            for (status, body) in [
+                ("201 Created", registration),
+                ("201 Created", allocation.clone()),
+                ("201 Created", allocation),
+            ] {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut request = vec![0_u8; 16 * 1_024];
+                let _ = stream.read(&mut request).await.unwrap();
+                let head = format!(
+                    "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                stream.write_all(head.as_bytes()).await.unwrap();
+                stream.write_all(&body).await.unwrap();
+                stream.shutdown().await.unwrap();
+            }
+        });
+
+        let budget = RuntimeBudget::default();
+        let target = Url::parse("https://target.example.test/").unwrap();
+        let authority = SharedWebRuntimeAuthority::new_exact_origin(
+            &target,
+            HttpEvidencePolicy::for_origin(target.clone()).unwrap(),
+            budget,
+            CancellationToken::new(),
+        )
+        .unwrap();
+        let accounting = authority.request_accounting().clone();
+        let configuration = NativeOastProviderConfiguration::for_loopback(
+            origin,
+            "assessment:native-oast",
+            [11; 32],
+            ADMIN_SECRET.to_vec(),
+            adapter_limits(2, 1),
         )
         .unwrap();
         let adapter = authority.mint_native_oast_provider(configuration).unwrap();
@@ -2416,6 +2536,58 @@ mod tests {
         assert_eq!(accounting.snapshot().passive_requests(), 5);
         assert_eq!(accounting.snapshot().active_verifications(), 0);
         task.abort();
+    }
+
+    #[tokio::test]
+    async fn duplicate_callback_rejection_records_the_dispatched_request_without_retaining_it() {
+        let (mut adapter, accounting, task) = duplicate_callback_adapter().await;
+        adapter.register().await.unwrap();
+        let first = adapter
+            .allocate_callback(
+                verification_case(1),
+                OastCorrelationToken::new([24; 32]).unwrap(),
+            )
+            .await
+            .unwrap();
+        let first_callback_id = first.callback_id().clone();
+
+        let error = adapter
+            .allocate_callback(
+                verification_case(2),
+                OastCorrelationToken::new([25; 32]).unwrap(),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error.kind(),
+            NativeOastProviderErrorKind::ProviderCallbackMismatch
+        );
+        let rejected = error.receipt().unwrap();
+        assert_eq!(
+            rejected.operation(),
+            NativeOastProviderOperation::AllocateCallback
+        );
+        assert_eq!(
+            rejected.lifecycle_before(),
+            NativeOastProviderLifecycle::CallbackAllocated
+        );
+        assert_eq!(rejected.lifecycle_after(), rejected.lifecycle_before());
+        assert_eq!(rejected.request_count(), 3);
+        assert_eq!(rejected.callback_allocations(), 1);
+
+        assert_eq!(adapter.receipts().len(), 3);
+        assert_eq!(adapter.receipts().last(), Some(rejected));
+        assert_eq!(accounting.snapshot().total_requests(), 3);
+        assert!(
+            adapter.receipts().len() <= usize::from(adapter.permit.limits.max_provider_requests())
+        );
+        assert_eq!(adapter.callbacks.len(), 1);
+        assert!(adapter.callbacks.contains_key(&first_callback_id));
+        assert_eq!(
+            adapter.lifecycle(),
+            NativeOastProviderLifecycle::CallbackAllocated
+        );
+        task.await.unwrap();
     }
 
     #[tokio::test]

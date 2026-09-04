@@ -16,6 +16,8 @@ use termivar_scanner::authorization_review::{
 };
 #[cfg(feature = "rest-review")]
 use termivar_scanner::rest_review::RestDocumentedResponseClass;
+#[cfg(feature = "ssrf-oast-review")]
+use termivar_scanner::ssrf_oast_review::{SsrfOastAdminToken, SsrfOastReviewPolicy};
 use termivar_scanner::web_runtime::{
     BuiltInScanProfile, ScanProfileScope, ScanProfileV1, WebAssessmentCompletion,
     WebAssessmentDefenseAudit, WebAssessmentDefenseBodyCoverage, WebAssessmentDefenseMode,
@@ -482,6 +484,8 @@ pub(crate) struct ProfileScanRuntimeOptions {
     #[cfg(feature = "authorization-review")]
     pub(crate) resource_authorization_review:
         Option<(AuthorizationReviewPolicy, AuthorizationPrincipalPair)>,
+    #[cfg(feature = "ssrf-oast-review")]
+    pub(crate) ssrf_oast_review: Option<(SsrfOastReviewPolicy, SsrfOastAdminToken)>,
 }
 
 pub(crate) async fn run_profile_scan(
@@ -500,6 +504,8 @@ pub(crate) async fn run_profile_scan(
         rest_review,
         #[cfg(feature = "authorization-review")]
         resource_authorization_review,
+        #[cfg(feature = "ssrf-oast-review")]
+        ssrf_oast_review,
     } = runtime_options;
     let target_origin = target.origin().ascii_serialization();
     match (profile.profile(), profile.scope()) {
@@ -540,6 +546,14 @@ pub(crate) async fn run_profile_scan(
                 )
                 .into());
             }
+            #[cfg(feature = "ssrf-oast-review")]
+            if ssrf_oast_review.is_some() {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "SSRF OAST query review requires the web-review profile",
+                )
+                .into());
+            }
             if report_format.is_some() || report_to_file || root_authorization_context.is_some() {
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::InvalidInput,
@@ -566,6 +580,8 @@ pub(crate) async fn run_profile_scan(
                     rest_review,
                     #[cfg(feature = "authorization-review")]
                     resource_authorization_review,
+                    #[cfg(feature = "ssrf-oast-review")]
+                    ssrf_oast_review,
                 },
             )
             .await
@@ -618,6 +634,8 @@ struct WebReviewRunOptions {
     rest_review: bool,
     #[cfg(feature = "authorization-review")]
     resource_authorization_review: Option<(AuthorizationReviewPolicy, AuthorizationPrincipalPair)>,
+    #[cfg(feature = "ssrf-oast-review")]
+    ssrf_oast_review: Option<(SsrfOastReviewPolicy, SsrfOastAdminToken)>,
 }
 
 async fn run_web_review(
@@ -637,6 +655,8 @@ async fn run_web_review(
         rest_review,
         #[cfg(feature = "authorization-review")]
         resource_authorization_review,
+        #[cfg(feature = "ssrf-oast-review")]
+        ssrf_oast_review,
     } = options;
     if rest_review && !openapi_review {
         return Err(std::io::Error::new(
@@ -714,6 +734,10 @@ async fn run_web_review(
     #[cfg(feature = "authorization-review")]
     if let Some((policy, principals)) = resource_authorization_review {
         builder = builder.with_resource_authorization_review(policy, principals);
+    }
+    #[cfg(feature = "ssrf-oast-review")]
+    if let Some((policy, administrator)) = ssrf_oast_review {
+        builder = builder.with_ssrf_oast_review(policy, administrator);
     }
     let mut runtime = builder.build()?;
     match runtime.analyze().await {
@@ -1773,6 +1797,43 @@ max_diff_paths = 8
         assert_eq!(
             error.to_string(),
             "resource authorization review requires the web-review profile"
+        );
+    }
+
+    #[cfg(feature = "ssrf-oast-review")]
+    #[tokio::test]
+    async fn baseline_rejects_ssrf_oast_review_before_transport() {
+        let target = Url::parse("https://example.test/").unwrap();
+        let policy = SsrfOastReviewPolicy::parse_toml(
+            &target,
+            br#"schema = "security.ssrf-oast-review-policy/v1"
+target_origin = "https://example.test"
+provider_origin = "https://oast.example.test"
+acknowledge_external_interaction = true
+polls_per_leg = 1
+poll_interval_ms = 250
+lifetime_ms = 5000
+"#,
+        )
+        .unwrap();
+        let administrator =
+            SsrfOastAdminToken::new(b"SSRF-OAST-CLI-PREFLIGHT-TOKEN-32".to_vec()).unwrap();
+        let error = run_profile_scan(
+            target,
+            ScanProfileV1::baseline().unwrap(),
+            false,
+            None,
+            false,
+            ProfileScanRuntimeOptions {
+                ssrf_oast_review: Some((policy, administrator)),
+                ..ProfileScanRuntimeOptions::default()
+            },
+        )
+        .await
+        .expect_err("SSRF OAST query review is web-review only");
+        assert_eq!(
+            error.to_string(),
+            "SSRF OAST query review requires the web-review profile"
         );
     }
 

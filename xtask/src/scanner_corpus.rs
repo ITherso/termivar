@@ -150,7 +150,16 @@ struct FixtureCase {
     response: FixtureResponse,
     #[serde(default)]
     authorization: Option<AuthorizationFixture>,
+    #[serde(default)]
+    ssrf_oast: Option<SsrfOastFixture>,
     expected: ExpectedSemantics,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct SsrfOastFixture {
+    source: SsrfOastCandidateSourceExpectation,
+    scenario: SsrfOastScenario,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -300,6 +309,8 @@ struct ExpectedSemantics {
     #[serde(default)]
     authorization_outcome: Option<AuthorizationOutcomeExpectation>,
     #[serde(default)]
+    ssrf_oast_outcome: Option<SsrfOastOutcomeExpectation>,
+    #[serde(default)]
     assessment_capability: Option<String>,
     #[serde(default)]
     maximum_disposition: Option<DispositionExpectation>,
@@ -332,7 +343,8 @@ wire_enum!(CaseCategory {
     Normalization => "normalization",
     ApiGraphql => "api-graphql",
     ApiOpenapi => "api-openapi",
-    Authorization => "authorization"
+    Authorization => "authorization",
+    SsrfOast => "ssrf-oast"
 });
 wire_enum!(Provenance {
     CurrentAuthored => "current-authored",
@@ -579,6 +591,61 @@ wire_enum!(AuthorizationOutcomeExpectation {
     Incomplete => "incomplete",
     BudgetExhausted => "budget-exhausted",
     Cancelled => "cancelled"
+});
+wire_enum!(SsrfOastCandidateSourceExpectation {
+    ObservedUrlQuery => "observed-url-query"
+});
+wire_enum!(SsrfOastScenario {
+    RepeatedCallbacksObserved => "repeated-callbacks-observed",
+    ControlIncomplete => "control-incomplete",
+    RegistrationIncomplete => "registration-incomplete",
+    AllocationIncomplete => "allocation-incomplete",
+    PreflightContaminated => "preflight-contaminated",
+    TargetNotDispatched => "target-not-dispatched",
+    NoCallback => "no-callback",
+    CandidateOnly => "candidate-only",
+    ReplayOnly => "replay-only",
+    WrongCallback => "wrong-callback",
+    EventIdentityConflict => "event-identity-conflict",
+    CorrelationMismatch => "correlation-mismatch",
+    DuplicateOnly => "duplicate-only",
+    CleanupIncomplete => "cleanup-incomplete",
+    DefensiveInterference => "defensive-interference",
+    RateLimited => "rate-limited",
+    ProviderAuthenticationFailed => "provider-authentication-failed",
+    MalformedProviderResponse => "malformed-provider-response",
+    PollExhausted => "poll-exhausted",
+    Expired => "expired",
+    Cancelled => "cancelled",
+    BudgetExhausted => "budget-exhausted",
+    Truncated => "truncated",
+    Incomplete => "incomplete"
+});
+wire_enum!(SsrfOastOutcomeExpectation {
+    RepeatedCallbacksObserved => "repeated-callbacks-observed",
+    ControlIncomplete => "control-incomplete",
+    RegistrationIncomplete => "registration-incomplete",
+    AllocationIncomplete => "allocation-incomplete",
+    PreflightContaminated => "preflight-contaminated",
+    TargetNotDispatched => "target-not-dispatched",
+    NoCallback => "no-callback",
+    CandidateOnly => "candidate-only",
+    ReplayOnly => "replay-only",
+    WrongCallback => "wrong-callback",
+    EventIdentityConflict => "event-identity-conflict",
+    CorrelationMismatch => "correlation-mismatch",
+    DuplicateOnly => "duplicate-only",
+    CleanupIncomplete => "cleanup-incomplete",
+    DefensiveInterference => "defensive-interference",
+    RateLimited => "rate-limited",
+    ProviderAuthenticationFailed => "provider-authentication-failed",
+    MalformedProviderResponse => "malformed-provider-response",
+    PollExhausted => "poll-exhausted",
+    Expired => "expired",
+    Cancelled => "cancelled",
+    BudgetExhausted => "budget-exhausted",
+    Truncated => "truncated",
+    Incomplete => "incomplete"
 });
 wire_enum!(DispositionExpectation {
     Informational => "informational",
@@ -832,6 +899,7 @@ fn validate_case(source_path: &str, case: &FixtureCase) -> TaskResult {
     validate_request(&case.request)?;
     validate_response(&case.response)?;
     validate_authorization_contract(case)?;
+    validate_ssrf_oast_contract(case)?;
     if case.response.source_body_file.is_some() && case.category != CaseCategory::Xss {
         return Err("source-body fixtures are limited to XSS source-context conformance".into());
     }
@@ -1124,6 +1192,134 @@ fn validate_authorization_contract(case: &FixtureCase) -> TaskResult {
         return Err("non-positive authorization outcomes cannot declare an assessment item".into());
     }
     Ok(())
+}
+
+fn validate_ssrf_oast_contract(case: &FixtureCase) -> TaskResult {
+    let is_ssrf_oast = case.category == CaseCategory::SsrfOast;
+    if !is_ssrf_oast {
+        if case.ssrf_oast.is_some() || case.expected.ssrf_oast_outcome.is_some() {
+            return Err("SSRF OAST fixture data is limited to the ssrf-oast category".into());
+        }
+        return Ok(());
+    }
+
+    let fixture = case
+        .ssrf_oast
+        .as_ref()
+        .ok_or("SSRF OAST cases require a typed raw-free lifecycle fixture")?;
+    if fixture.source != SsrfOastCandidateSourceExpectation::ObservedUrlQuery
+        || case.support != SupportLevel::Current
+        || case.request.method != HttpMethod::Get
+        || case.request.query.len() != 1
+    {
+        return Err("SSRF OAST V1 corpus cases require one observed GET URL query source".into());
+    }
+    let query = &case.request.query[0];
+    let candidate = Url::parse(&query.value)
+        .map_err(|_| "SSRF OAST observed query value must be an absolute URL")?;
+    if !matches!(candidate.scheme(), "http" | "https")
+        || candidate.host().is_none()
+        || candidate.username() != ""
+        || candidate.password().is_some()
+        || candidate.fragment().is_some()
+    {
+        return Err("SSRF OAST observed query value must be an eligible absolute HTTP URL".into());
+    }
+
+    let expected = case
+        .expected
+        .ssrf_oast_outcome
+        .ok_or("SSRF OAST cases require a typed outcome")?;
+    if expected != ssrf_oast_scenario_outcome(fixture.scenario) {
+        return Err("SSRF OAST scenario and typed outcome do not agree".into());
+    }
+
+    let positive = expected == SsrfOastOutcomeExpectation::RepeatedCallbacksObserved;
+    if positive {
+        if case.expected.assessment_capability.as_deref()
+            != Some("ssrf.oast-repeated-outbound-interaction@1")
+            || case.expected.maximum_disposition != Some(DispositionExpectation::NeedsReview)
+            || case.expected.maximum_authority != Some(MaximumAuthorityExpectation::KnowledgeOnly)
+            || case.expected.incompleteness.is_some()
+        {
+            return Err(
+                "positive SSRF OAST evidence requires the bounded NeedsReview/KnowledgeOnly contract"
+                    .into(),
+            );
+        }
+    } else if case.expected.assessment_capability.is_some()
+        || case.expected.maximum_disposition.is_some()
+        || case.expected.maximum_authority.is_some()
+    {
+        return Err("non-positive SSRF OAST outcomes cannot declare an assessment item".into());
+    }
+
+    match fixture.scenario {
+        SsrfOastScenario::Truncated
+            if case.response.completion == CompletionState::Incomplete
+                && case.response.truncated
+                && case.expected.incompleteness
+                    == Some(IncompletenessExpectation::BodyTruncated) => {},
+        SsrfOastScenario::Incomplete
+            if case.response.completion == CompletionState::Incomplete
+                && !case.response.truncated
+                && case.expected.incompleteness
+                    == Some(IncompletenessExpectation::ResponseIncomplete) => {},
+        SsrfOastScenario::Truncated | SsrfOastScenario::Incomplete => {
+            return Err("SSRF OAST incomplete scenarios require exact completion metadata".into())
+        },
+        _ if case.response.completion != CompletionState::Complete
+            || case.response.truncated
+            || case.expected.incompleteness.is_some() =>
+        {
+            return Err("complete SSRF OAST scenarios cannot declare generic incompleteness".into())
+        },
+        _ => {},
+    }
+    Ok(())
+}
+
+const fn ssrf_oast_scenario_outcome(scenario: SsrfOastScenario) -> SsrfOastOutcomeExpectation {
+    match scenario {
+        SsrfOastScenario::RepeatedCallbacksObserved => {
+            SsrfOastOutcomeExpectation::RepeatedCallbacksObserved
+        },
+        SsrfOastScenario::ControlIncomplete => SsrfOastOutcomeExpectation::ControlIncomplete,
+        SsrfOastScenario::RegistrationIncomplete => {
+            SsrfOastOutcomeExpectation::RegistrationIncomplete
+        },
+        SsrfOastScenario::AllocationIncomplete => SsrfOastOutcomeExpectation::AllocationIncomplete,
+        SsrfOastScenario::PreflightContaminated => {
+            SsrfOastOutcomeExpectation::PreflightContaminated
+        },
+        SsrfOastScenario::TargetNotDispatched => SsrfOastOutcomeExpectation::TargetNotDispatched,
+        SsrfOastScenario::NoCallback => SsrfOastOutcomeExpectation::NoCallback,
+        SsrfOastScenario::CandidateOnly => SsrfOastOutcomeExpectation::CandidateOnly,
+        SsrfOastScenario::ReplayOnly => SsrfOastOutcomeExpectation::ReplayOnly,
+        SsrfOastScenario::WrongCallback => SsrfOastOutcomeExpectation::WrongCallback,
+        SsrfOastScenario::EventIdentityConflict => {
+            SsrfOastOutcomeExpectation::EventIdentityConflict
+        },
+        SsrfOastScenario::CorrelationMismatch => SsrfOastOutcomeExpectation::CorrelationMismatch,
+        SsrfOastScenario::DuplicateOnly => SsrfOastOutcomeExpectation::DuplicateOnly,
+        SsrfOastScenario::CleanupIncomplete => SsrfOastOutcomeExpectation::CleanupIncomplete,
+        SsrfOastScenario::DefensiveInterference => {
+            SsrfOastOutcomeExpectation::DefensiveInterference
+        },
+        SsrfOastScenario::RateLimited => SsrfOastOutcomeExpectation::RateLimited,
+        SsrfOastScenario::ProviderAuthenticationFailed => {
+            SsrfOastOutcomeExpectation::ProviderAuthenticationFailed
+        },
+        SsrfOastScenario::MalformedProviderResponse => {
+            SsrfOastOutcomeExpectation::MalformedProviderResponse
+        },
+        SsrfOastScenario::PollExhausted => SsrfOastOutcomeExpectation::PollExhausted,
+        SsrfOastScenario::Expired => SsrfOastOutcomeExpectation::Expired,
+        SsrfOastScenario::Cancelled => SsrfOastOutcomeExpectation::Cancelled,
+        SsrfOastScenario::BudgetExhausted => SsrfOastOutcomeExpectation::BudgetExhausted,
+        SsrfOastScenario::Truncated => SsrfOastOutcomeExpectation::Truncated,
+        SsrfOastScenario::Incomplete => SsrfOastOutcomeExpectation::Incomplete,
+    }
 }
 
 fn validate_authorization_comparison(comparison: &AuthorizationComparisonFixture) -> TaskResult {
@@ -1460,6 +1656,7 @@ fn validate_expected(expected: &ExpectedSemantics) -> TaskResult {
         expected.openapi_digest_matches.is_some(),
         expected.openapi_generated_input.is_some(),
         expected.authorization_outcome.is_some(),
+        expected.ssrf_oast_outcome.is_some(),
         expected.assessment_capability.is_some(),
         expected.maximum_disposition.is_some(),
         expected.maximum_authority.is_some(),
@@ -1472,7 +1669,7 @@ fn validate_expected(expected: &ExpectedSemantics) -> TaskResult {
         return Err("fixture case requires at least one typed semantic expectation".into());
     }
     if let Some(capability) = &expected.assessment_capability {
-        validate_token(capability, "assessment capability", MAX_ID_BYTES)?;
+        validate_capability(capability)?;
     }
     if expected.maximum_disposition.is_some() && expected.maximum_authority.is_none() {
         return Err("maximum disposition requires an explicit maximum authority".into());
@@ -1780,6 +1977,23 @@ fn validate_token(value: &str, field: &str, maximum: usize) -> TaskResult {
         return Err(format!("{field} contains characters outside its closed ASCII set").into());
     }
     Ok(())
+}
+
+fn validate_capability(value: &str) -> TaskResult {
+    validate_text(value, "assessment capability", MAX_ID_BYTES)?;
+    if let Some((name, revision)) = value.split_once('@') {
+        validate_token(name, "assessment capability", MAX_ID_BYTES)?;
+        if revision.is_empty()
+            || revision.contains('@')
+            || !revision.bytes().all(|byte| byte.is_ascii_digit())
+            || revision.bytes().all(|byte| byte == b'0')
+        {
+            return Err("assessment capability revision is not a positive decimal".into());
+        }
+        Ok(())
+    } else {
+        validate_token(value, "assessment capability", MAX_ID_BYTES)
+    }
 }
 
 fn validate_text(value: &str, field: &str, maximum: usize) -> TaskResult {
@@ -2253,7 +2467,17 @@ fn digest_case(writer: &mut DigestWriter, case: &FixtureCase, bodies: &BTreeMap<
         bodies,
     );
     digest_authorization(writer, case.authorization.as_ref(), bodies);
+    digest_ssrf_oast(writer, case.ssrf_oast.as_ref());
     digest_expected(writer, &case.expected);
+}
+
+fn digest_ssrf_oast(writer: &mut DigestWriter, fixture: Option<&SsrfOastFixture>) {
+    let Some(fixture) = fixture else {
+        writer.optional("ssrf_oast.source", None);
+        return;
+    };
+    writer.optional("ssrf_oast.source", Some(fixture.source.wire()));
+    writer.field("ssrf_oast.scenario", fixture.scenario.wire());
 }
 
 fn digest_authorization(
@@ -2466,6 +2690,10 @@ fn digest_expected(writer: &mut DigestWriter, expected: &ExpectedSemantics) {
         expected.authorization_outcome.map(|value| value.wire()),
     );
     writer.optional(
+        "expected.ssrf_oast_outcome",
+        expected.ssrf_oast_outcome.map(|value| value.wire()),
+    );
+    writer.optional(
         "expected.assessment_capability",
         expected.assessment_capability.as_deref(),
     );
@@ -2554,6 +2782,7 @@ fn case_semantic_fingerprint(
         body_digests,
     );
     digest_authorization(&mut writer, case.authorization.as_ref(), body_digests);
+    digest_ssrf_oast(&mut writer, case.ssrf_oast.as_ref());
     digest_expected(&mut writer, &case.expected);
     writer.finish()
 }
@@ -2865,6 +3094,7 @@ mod tests {
                 source_body_file: None,
             },
             authorization: None,
+            ssrf_oast: None,
             expected: ExpectedSemantics {
                 http_media: Some(HttpMediaExpectation::Json),
                 maximum_disposition: Some(DispositionExpectation::Informational),
@@ -2925,6 +3155,29 @@ mod tests {
             openapi_version: Some(OpenApiVersionExpectation::OpenApi31),
             openapi_path_count: Some(1),
             openapi_operation_count: Some(1),
+            ..ExpectedSemantics::default()
+        };
+        case
+    }
+
+    fn valid_ssrf_oast_case(id: &str) -> FixtureCase {
+        let mut case = valid_case(id);
+        case.category = CaseCategory::SsrfOast;
+        case.request.role = ExchangeRole::Bootstrap;
+        case.response.role = ExchangeRole::Bootstrap;
+        case.request.query = vec![QueryParameter {
+            name: "next".to_owned(),
+            value: "https://upstream.example.test/resource".to_owned(),
+        }];
+        case.ssrf_oast = Some(SsrfOastFixture {
+            source: SsrfOastCandidateSourceExpectation::ObservedUrlQuery,
+            scenario: SsrfOastScenario::RepeatedCallbacksObserved,
+        });
+        case.expected = ExpectedSemantics {
+            ssrf_oast_outcome: Some(SsrfOastOutcomeExpectation::RepeatedCallbacksObserved),
+            assessment_capability: Some("ssrf.oast-repeated-outbound-interaction@1".to_owned()),
+            maximum_disposition: Some(DispositionExpectation::NeedsReview),
+            maximum_authority: Some(MaximumAuthorityExpectation::KnowledgeOnly),
             ..ExpectedSemantics::default()
         };
         case
@@ -3949,6 +4202,69 @@ mod tests {
         let mut changed_case = valid_case("expectation-change");
         changed_case.expected.http_media = Some(HttpMediaExpectation::Html);
         let second = validated(vec![changed_case]);
+        assert_ne!(semantic_digest(&first), semantic_digest(&second));
+    }
+
+    #[test]
+    fn ssrf_oast_fixture_pins_positive_and_negative_claim_contracts() {
+        let positive = valid_ssrf_oast_case("ssrf-positive");
+        validate_case("cases/ssrf-positive.toml", &positive).expect("positive contract");
+
+        let mut negative = valid_ssrf_oast_case("ssrf-negative");
+        let fixture = negative.ssrf_oast.as_mut().unwrap();
+        fixture.scenario = SsrfOastScenario::NoCallback;
+        negative.expected.ssrf_oast_outcome = Some(SsrfOastOutcomeExpectation::NoCallback);
+        assert_error_contains(
+            validate_case("cases/ssrf-negative.toml", &negative),
+            "cannot declare an assessment item",
+        );
+        negative.expected.assessment_capability = None;
+        negative.expected.maximum_disposition = None;
+        negative.expected.maximum_authority = None;
+        validate_case("cases/ssrf-negative.toml", &negative).expect("negative contract");
+    }
+
+    #[test]
+    fn ssrf_oast_fixture_is_category_scoped_and_scenario_typed() {
+        let mut outside = valid_ssrf_oast_case("ssrf-outside");
+        outside.category = CaseCategory::HttpMedia;
+        assert_error_contains(
+            validate_case("cases/ssrf-outside.toml", &outside),
+            "limited to the ssrf-oast category",
+        );
+
+        let mut mismatch = valid_ssrf_oast_case("ssrf-mismatch");
+        mismatch.ssrf_oast.as_mut().unwrap().scenario = SsrfOastScenario::CandidateOnly;
+        assert_error_contains(
+            validate_case("cases/ssrf-mismatch.toml", &mismatch),
+            "scenario and typed outcome",
+        );
+    }
+
+    #[test]
+    fn versioned_capability_grammar_is_narrow() {
+        validate_capability("ssrf.oast-repeated-outbound-interaction@1")
+            .expect("positive decimal revision");
+        for invalid in [
+            "ssrf.oast@0",
+            "ssrf.oast@alpha",
+            "ssrf.oast@1@2",
+            "ssrf/oast@1",
+        ] {
+            assert!(validate_capability(invalid).is_err(), "{invalid}");
+        }
+    }
+
+    #[test]
+    fn ssrf_oast_scenario_changes_semantic_digest() {
+        let first = validated(vec![valid_ssrf_oast_case("ssrf-digest")]);
+        let mut changed = valid_ssrf_oast_case("ssrf-digest");
+        changed.ssrf_oast.as_mut().unwrap().scenario = SsrfOastScenario::NoCallback;
+        changed.expected.ssrf_oast_outcome = Some(SsrfOastOutcomeExpectation::NoCallback);
+        changed.expected.assessment_capability = None;
+        changed.expected.maximum_disposition = None;
+        changed.expected.maximum_authority = None;
+        let second = validated(vec![changed]);
         assert_ne!(semantic_digest(&first), semantic_digest(&second));
     }
 

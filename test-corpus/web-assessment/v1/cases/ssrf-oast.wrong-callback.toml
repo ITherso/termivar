@@ -1,0 +1,31 @@
+schema = "security-assessment-fixture/v1"
+id = "ssrf-oast.wrong-callback"
+revision = 1
+category = "ssrf-oast"
+purpose = "A provider event belongs to neither exact expected callback."
+provenance = "current-authored"
+support = "current"
+tags = ["ssrf-oast", "raw-free", "negative"]
+
+[request]
+method = "get"
+origin = "https://target.example.test"
+path = "/fetch"
+role = "bootstrap"
+loopback_fixture = false
+query = [{ name = "next", value = "https://upstream.example.test/resource" }]
+
+[response]
+status = 200
+media_type = "application/json"
+role = "bootstrap"
+completion = "complete"
+truncated = false
+inline_body = '{"fixture":"ssrf-oast"}'
+
+[ssrf_oast]
+source = "observed-url-query"
+scenario = "wrong-callback"
+
+[expected]
+ssrf_oast_outcome = "wrong-callback"

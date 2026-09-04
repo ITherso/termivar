@@ -173,6 +173,10 @@ pub(crate) const fn native_review_active_verifier_rule_id(
         NativeWebReviewActionKind::RestReadOnlyReplay => {
             "web.review.verify.active.rest-readonly-replay.pair-complete@1"
         },
+        #[cfg(feature = "ssrf-oast-review")]
+        NativeWebReviewActionKind::SsrfOastQueryReview => {
+            "web.review.verify.active.ssrf-oast-query-review.pair-complete@1"
+        },
     }
 }
 
@@ -939,6 +943,8 @@ impl AssessmentReviewObserverSet {
             (NativeWebReviewActionKind::OpenApiDocumentReplay, _) => None,
             #[cfg(feature = "rest-review")]
             (NativeWebReviewActionKind::RestReadOnlyReplay, _) => None,
+            #[cfg(feature = "ssrf-oast-review")]
+            (NativeWebReviewActionKind::SsrfOastQueryReview, _) => None,
         }
     }
 
@@ -1116,6 +1122,8 @@ impl AssessmentReviewObserverSet {
             NativeWebReviewActionKind::OpenApiDocumentReplay => return Vec::new(),
             #[cfg(feature = "rest-review")]
             NativeWebReviewActionKind::RestReadOnlyReplay => return Vec::new(),
+            #[cfg(feature = "ssrf-oast-review")]
+            NativeWebReviewActionKind::SsrfOastQueryReview => return Vec::new(),
         }
         records
     }
@@ -1325,6 +1333,10 @@ fn native_review_strategy_ref(kind: NativeWebReviewActionKind) -> PayloadStrateg
         #[cfg(feature = "rest-review")]
         NativeWebReviewActionKind::RestReadOnlyReplay => {
             unreachable!("REST review owns no generic payload strategy")
+        },
+        #[cfg(feature = "ssrf-oast-review")]
+        NativeWebReviewActionKind::SsrfOastQueryReview => {
+            unreachable!("SSRF OAST review owns no generic payload strategy")
         },
     };
     PayloadStrategyRef::new(id, revision)
@@ -1812,6 +1824,10 @@ fn review_source_method(
         },
         #[cfg(feature = "rest-review")]
         (NativeWebReviewActionKind::RestReadOnlyReplay, _) => "rest-review-invalid-generic-source",
+        #[cfg(feature = "ssrf-oast-review")]
+        (NativeWebReviewActionKind::SsrfOastQueryReview, _) => {
+            "ssrf-oast-review-invalid-generic-source"
+        },
     }
 }
 
@@ -3253,6 +3269,10 @@ fn parse_review_receipt(
         NativeWebReviewActionKind::RestReadOnlyReplay => {
             return Err(AssessmentReviewLedgerError::EvidenceProjection);
         },
+        #[cfg(feature = "ssrf-oast-review")]
+        NativeWebReviewActionKind::SsrfOastQueryReview => {
+            return Err(AssessmentReviewLedgerError::EvidenceProjection);
+        },
     };
     Ok(CommittedAssessmentReviewObservation {
         kind,
@@ -3546,6 +3566,8 @@ fn requested_url_value_matches_with_sql(
         (NativeWebReviewActionKind::OpenApiDocumentReplay, _) => false,
         #[cfg(feature = "rest-review")]
         (NativeWebReviewActionKind::RestReadOnlyReplay, _) => false,
+        #[cfg(feature = "ssrf-oast-review")]
+        (NativeWebReviewActionKind::SsrfOastQueryReview, _) => false,
     }
 }
 
@@ -3601,6 +3623,8 @@ const fn is_xss_response_action(kind: NativeWebReviewActionKind) -> bool {
         NativeWebReviewActionKind::OpenApiDocumentReplay => false,
         #[cfg(feature = "rest-review")]
         NativeWebReviewActionKind::RestReadOnlyReplay => false,
+        #[cfg(feature = "ssrf-oast-review")]
+        NativeWebReviewActionKind::SsrfOastQueryReview => false,
     }
 }
 
@@ -3675,6 +3699,8 @@ fn expected_properties(kind: NativeWebReviewActionKind) -> &'static [ReviewPrope
         NativeWebReviewActionKind::OpenApiDocumentReplay => &[],
         #[cfg(feature = "rest-review")]
         NativeWebReviewActionKind::RestReadOnlyReplay => &[],
+        #[cfg(feature = "ssrf-oast-review")]
+        NativeWebReviewActionKind::SsrfOastQueryReview => &[],
     }
 }
 

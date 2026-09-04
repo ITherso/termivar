@@ -73,6 +73,7 @@ const BOUNDED_RUNTIME_SOURCES: &[&str] = &[
     OPENAPI_RUNTIME_SOURCE,
     REST_RUNTIME_SOURCE,
     RESOURCE_AUTHORIZATION_RUNTIME_SOURCE,
+    SSRF_OAST_RUNTIME_SOURCE,
     NATIVE_REVIEW_DECISION_SOURCE,
     NATIVE_REVIEW_EXECUTION_SOURCE,
     "crates/termivar-scanner/src/web_runtime/authority.rs",
@@ -109,6 +110,8 @@ const OPENAPI_RUNTIME_SOURCE: &str = "crates/termivar-scanner/src/web_runtime/op
 const REST_RUNTIME_SOURCE: &str = "crates/termivar-scanner/src/web_runtime/rest_runtime.rs";
 const RESOURCE_AUTHORIZATION_RUNTIME_SOURCE: &str =
     "crates/termivar-scanner/src/web_runtime/resource_authorization_runtime.rs";
+const SSRF_OAST_RUNTIME_SOURCE: &str =
+    "crates/termivar-scanner/src/web_runtime/ssrf_oast_runtime.rs";
 const NATIVE_OAST_PROVIDER_ADAPTER_SOURCE: &str =
     "crates/termivar-scanner/src/native_oast_provider.rs";
 const ATTRIBUTE_SOURCE_CONTEXT_SOURCE: &str =
@@ -643,8 +646,8 @@ fn inspect_native_review_execution_broker_boundary(
     Ok(violations.into_iter().collect())
 }
 
-const EXACT_NATIVE_REVIEW_EXECUTION_TOKEN_BYTES: usize = 29_524;
-const EXACT_NATIVE_REVIEW_EXECUTION_FINGERPRINT: u128 = 0x7c93_b64f_b37a_027f_15a9_4239_2298_b920;
+const EXACT_NATIVE_REVIEW_EXECUTION_TOKEN_BYTES: usize = 29_776;
+const EXACT_NATIVE_REVIEW_EXECUTION_FINGERPRINT: u128 = 0x8527_2255_8ecc_5916_5bb4_b93d_fa2f_4e9d;
 
 fn native_review_execution_fingerprint_violations(source: &str, syntax: &syn::File) -> Vec<String> {
     let exact_tests = matches!(syntax.items.last(), Some(Item::Mod(module))
@@ -700,8 +703,8 @@ fn native_review_execution_fingerprint_violations(source: &str, syntax: &syn::Fi
     }
 }
 
-const EXACT_OPENAPI_RUNTIME_TOKEN_BYTES: usize = 38_276;
-const EXACT_OPENAPI_RUNTIME_FINGERPRINT: u128 = 0xaa5b_e59f_283c_ac98_644e_0217_55c2_0c48;
+const EXACT_OPENAPI_RUNTIME_TOKEN_BYTES: usize = 41_025;
+const EXACT_OPENAPI_RUNTIME_FINGERPRINT: u128 = 0xf5b6_c867_43dc_7294_5c23_1c0f_aaf4_ce7b;
 
 fn openapi_runtime_fingerprint_violations(source: &str, syntax: &syn::File) -> Vec<String> {
     if !matches!(syntax.items.last(), Some(Item::Mod(module))
@@ -1211,7 +1214,8 @@ fn native_defense_classifier_is_exact(function: &syn::ItemFn) -> bool {
             || attributes_are_exact_cfg_feature(&arm.attrs, "normalization-resilience")
             || attributes_are_exact_cfg_feature(&arm.attrs, "authorization-review")
             || attributes_are_exact_cfg_feature(&arm.attrs, "openapi-review")
-            || attributes_are_exact_cfg_feature(&arm.attrs, "rest-review"))
+            || attributes_are_exact_cfg_feature(&arm.attrs, "rest-review")
+            || attributes_are_exact_cfg_feature(&arm.attrs, "ssrf-oast-review"))
             && arm.guard.is_none()
             && collect_exact_native_review_patterns(&arm.pat, &mut variants)
             && expression_is_exact_defense_class(&arm.body, "DifferentialRead")
@@ -1242,6 +1246,7 @@ fn native_defense_classifier_is_exact(function: &syn::ItemFn) -> bool {
                 "OpenApiDocumentReplay".to_owned(),
                 "RestReadOnlyReplay".to_owned(),
                 "ResourceAuthorizationDifferential".to_owned(),
+                "SsrfOastQueryReview".to_owned(),
             ])
 }
 
@@ -1273,6 +1278,7 @@ fn collect_exact_native_review_patterns(
                 "OpenApiDocumentReplay",
                 "RestReadOnlyReplay",
                 "ResourceAuthorizationDifferential",
+                "SsrfOastQueryReview",
             ] {
                 if syn_path_is_exact(&pattern.path, &["NativeWebReviewActionKind", variant]) {
                     return variants.insert(variant.to_owned());
@@ -2295,6 +2301,12 @@ fn inspect_web_assessment_models(source: &str) -> Result<Vec<String>, syn::Error
                             .as_ref()
                             .is_some_and(|ident| ident_name(ident) == "rest_review")
                     });
+                    let ssrf_oast_review = item.fields.iter().find(|field| {
+                        field
+                            .ident
+                            .as_ref()
+                            .is_some_and(|ident| ident_name(ident) == "ssrf_oast_review")
+                    });
                     if run_started_at.is_none_or(|field| {
                         !is_plain_ident(&field.ty, "SystemTime")
                             || !attributes_are_exact_cfg_feature(&field.attrs, "reporting")
@@ -2310,6 +2322,9 @@ fn inspect_web_assessment_models(source: &str) -> Result<Vec<String>, syn::Error
                     }) || rest_review.is_none_or(|field| {
                         !is_generic_of_idents(&field.ty, "Option", &["WebAssessmentRestAudit"])
                             || !attributes_are_exact_cfg_feature(&field.attrs, "rest-review")
+                    }) || ssrf_oast_review.is_none_or(|field| {
+                        !is_generic_of_idents(&field.ty, "Option", &["WebAssessmentSsrfOastAudit"])
+                            || !attributes_are_exact_cfg_feature(&field.attrs, "ssrf-oast-review")
                     }) || item.fields.iter().any(|field| {
                         field.ident.as_ref().is_none_or(|ident| {
                             !matches!(
@@ -2318,11 +2333,12 @@ fn inspect_web_assessment_models(source: &str) -> Result<Vec<String>, syn::Error
                                     | "authorization_review"
                                     | "openapi_review"
                                     | "rest_review"
+                                    | "ssrf_oast_review"
                             )
                         }) && !field.attrs.is_empty()
                     }) {
                         violations.push(
-                            "WebAssessmentRunReport must retain exactly one private cfg(reporting) SystemTime run_started_at field, exact private feature-gated authorization, OpenAPI, and REST redacted audit fields, and no other conditional fields"
+                            "WebAssessmentRunReport must retain exactly one private cfg(reporting) SystemTime run_started_at field, exact private feature-gated authorization, OpenAPI, REST, and SSRF/OAST redacted audit fields, and no other conditional fields"
                                 .to_owned(),
                         );
                     }
@@ -4664,7 +4680,7 @@ fn inspect_assessment_report_boundary(source: &str) -> Result<Vec<String>, syn::
     let report_shape_is_exact = report.is_some_and(|item| {
         matches!(item.vis, syn::Visibility::Public(_))
             && private_named_fields(item).is_some_and(|fields| {
-                fields.len() == 7
+                fields.len() == 8
                     && fields
                         .get("run_report")
                         .is_some_and(|field| is_plain_ident(field, "RunReport"))
@@ -4686,6 +4702,9 @@ fn inspect_assessment_report_boundary(source: &str) -> Result<Vec<String>, syn::
                     && fields.get("rest_review").is_some_and(|field| {
                         is_generic_of_idents(field, "Option", &["WebAssessmentRestAudit"])
                     })
+                    && fields.get("ssrf_oast_review").is_some_and(|field| {
+                        is_generic_of_idents(field, "Option", &["WebAssessmentSsrfOastAudit"])
+                    })
             })
             && private_named_field(item, "authorization_review").is_some_and(|field| {
                 attributes_are_exact_cfg_feature(&field.attrs, "authorization-review")
@@ -4695,10 +4714,13 @@ fn inspect_assessment_report_boundary(source: &str) -> Result<Vec<String>, syn::
             })
             && private_named_field(item, "rest_review")
                 .is_some_and(|field| attributes_are_exact_cfg_feature(&field.attrs, "rest-review"))
+            && private_named_field(item, "ssrf_oast_review").is_some_and(|field| {
+                attributes_are_exact_cfg_feature(&field.attrs, "ssrf-oast-review")
+            })
     });
     if !report_shape_is_exact {
         violations.push(
-            "AssessmentRunReport must privately retain the validated run/profile, consumed subject inventory, typed items, and exact feature-gated redacted authorization, OpenAPI, and REST audits"
+            "AssessmentRunReport must privately retain the validated run/profile, consumed subject inventory, typed items, and exact feature-gated redacted authorization, OpenAPI, REST, and SSRF/OAST audits"
                 .to_owned(),
         );
     }
@@ -4742,7 +4764,7 @@ fn inspect_assessment_report_boundary(source: &str) -> Result<Vec<String>, syn::
         });
     if !completed_constructor {
         violations.push(
-            "AssessmentRunReport::from_completed_truth must consume AssessmentItemSet plus runtime-owned completion truth and only the exact feature-gated authorization, OpenAPI, and REST audits, build the generic envelope internally, and then validate it"
+            "AssessmentRunReport::from_completed_truth must consume AssessmentItemSet plus runtime-owned completion truth and only the exact feature-gated authorization, OpenAPI, REST, and SSRF/OAST audits, build the generic envelope internally, and then validate it"
                 .to_owned(),
         );
     }
@@ -4790,6 +4812,7 @@ fn inspect_assessment_report_boundary(source: &str) -> Result<Vec<String>, syn::
                     "validate_authorization_audit",
                     "validate_openapi_audit",
                     "validate_rest_audit",
+                    "validate_ssrf_oast_audit",
                     "profile",
                 ],
             )
@@ -4820,10 +4843,11 @@ fn inspect_assessment_report_boundary(source: &str) -> Result<Vec<String>, syn::
             && statement_reference_precedes(&method.block, "validate_authorization_audit", "Self")
             && statement_reference_precedes(&method.block, "validate_openapi_audit", "Self")
             && statement_reference_precedes(&method.block, "validate_rest_audit", "Self")
+            && statement_reference_precedes(&method.block, "validate_ssrf_oast_audit", "Self")
     });
     if !validator {
         violations.push(
-            "AssessmentRunReport::new_validated must remain private and validate run identity/completion/accounting, the exact root subject, inventory, items, and feature-gated authorization, OpenAPI, and REST audits before construction"
+            "AssessmentRunReport::new_validated must remain private and validate run identity/completion/accounting, the exact root subject, inventory, items, and feature-gated authorization, OpenAPI, REST, and SSRF/OAST audits before construction"
                 .to_owned(),
         );
     }
@@ -5501,6 +5525,7 @@ fn inspect_production_verifier_descriptors(
             ASSESSMENT_REVIEW_PROJECTION_SOURCE
                 | ASSESSMENT_API_VISIBILITY_SOURCE
                 | RESOURCE_AUTHORIZATION_RUNTIME_SOURCE
+                | SSRF_OAST_RUNTIME_SOURCE
         ),
         ..DescriptorVisitor::default()
     };
@@ -5508,7 +5533,7 @@ fn inspect_production_verifier_descriptors(
     let mut violations = Vec::new();
     if visitor.invalid_initializers != 0 {
         violations.push(format!(
-            "{source_name} defines a production AssessmentCapabilityDescriptor outside its exact constructor allowlist; differential_review is restricted to {ASSESSMENT_REVIEW_PROJECTION_SOURCE}, {ASSESSMENT_API_VISIBILITY_SOURCE}, and {RESOURCE_AUTHORIZATION_RUNTIME_SOURCE}"
+            "{source_name} defines a production AssessmentCapabilityDescriptor outside its exact constructor allowlist; differential_review is restricted to {ASSESSMENT_REVIEW_PROJECTION_SOURCE}, {ASSESSMENT_API_VISIBILITY_SOURCE}, {RESOURCE_AUTHORIZATION_RUNTIME_SOURCE}, and {SSRF_OAST_RUNTIME_SOURCE}"
         ));
     }
     if visitor.verifier_transitions != 0 {
@@ -5984,7 +6009,7 @@ fn assessment_report_constructor_inputs_are_exact(
     } else {
         ["AssessmentItemSet", "CompletedWebAssessmentTruth"].as_slice()
     };
-    typed.len() == expected_prefix.len() + 3
+    typed.len() == expected_prefix.len() + 4
         && typed
             .iter()
             .take(expected_prefix.len())
@@ -6006,9 +6031,15 @@ fn assessment_report_constructor_inputs_are_exact(
                 attributes_are_exact_cfg_feature(&argument.attrs, "openapi-review")
                     && is_generic_of_idents(&argument.ty, "Option", &["WebAssessmentOpenApiAudit"])
             })
+        && typed
+            .get(expected_prefix.len() + 2)
+            .is_some_and(|argument| {
+                attributes_are_exact_cfg_feature(&argument.attrs, "rest-review")
+                    && is_generic_of_idents(&argument.ty, "Option", &["WebAssessmentRestAudit"])
+            })
         && typed.last().is_some_and(|argument| {
-            attributes_are_exact_cfg_feature(&argument.attrs, "rest-review")
-                && is_generic_of_idents(&argument.ty, "Option", &["WebAssessmentRestAudit"])
+            attributes_are_exact_cfg_feature(&argument.attrs, "ssrf-oast-review")
+                && is_generic_of_idents(&argument.ty, "Option", &["WebAssessmentSsrfOastAudit"])
         })
 }
 
@@ -8322,6 +8353,10 @@ impl<'ast> Visit<'ast> for OwnershipVisitor<'_> {
                 | ("crates/termivar-scanner/src/web_runtime.rs", "rest_runtime")
                 | (
                     "crates/termivar-scanner/src/web_runtime.rs",
+                    "ssrf_oast_runtime"
+                )
+                | (
+                    "crates/termivar-scanner/src/web_runtime.rs",
                     "resource_authorization_runtime"
                 )
                 | ("crates/termivar-scanner/src/web_runtime.rs", "scan_profile")
@@ -8382,6 +8417,10 @@ impl<'ast> Visit<'ast> for OwnershipVisitor<'_> {
             && module == "resource_authorization_runtime"
         {
             attributes_are_exact_cfg_feature(&item.attrs, "authorization-review")
+        } else if self.source == "crates/termivar-scanner/src/web_runtime.rs"
+            && module == "ssrf_oast_runtime"
+        {
+            attributes_are_exact_cfg_feature(&item.attrs, "ssrf-oast-review")
         } else if self.source == "crates/termivar-scanner/src/web_runtime/web_assessment.rs"
             && module == "normalization_transform_catalog"
         {
@@ -11665,7 +11704,9 @@ mod tests {
             .unwrap()
             .join("\n");
         assert!(
-            violations.contains("feature-gated redacted authorization, OpenAPI, and REST audits"),
+            violations.contains(
+                "feature-gated redacted authorization, OpenAPI, REST, and SSRF/OAST audits"
+            ),
             "{violations}"
         );
 
@@ -11679,7 +11720,9 @@ mod tests {
             .unwrap()
             .join("\n");
         assert!(
-            violations.contains("feature-gated redacted authorization, OpenAPI, and REST audits"),
+            violations.contains(
+                "feature-gated redacted authorization, OpenAPI, REST, and SSRF/OAST audits"
+            ),
             "{violations}"
         );
 
@@ -11693,7 +11736,25 @@ mod tests {
             .unwrap()
             .join("\n");
         assert!(
-            violations.contains("feature-gated redacted authorization, OpenAPI, and REST audits"),
+            violations.contains(
+                "feature-gated redacted authorization, OpenAPI, REST, and SSRF/OAST audits"
+            ),
+            "{violations}"
+        );
+
+        let missing_ssrf_oast_audit = report_source.replacen(
+            "    #[cfg(feature = \"ssrf-oast-review\")]\n    ssrf_oast_review: Option<WebAssessmentSsrfOastAudit>,\n",
+            "",
+            1,
+        );
+        assert_ne!(missing_ssrf_oast_audit, report_source);
+        let violations = inspect_assessment_report_boundary(&missing_ssrf_oast_audit)
+            .unwrap()
+            .join("\n");
+        assert!(
+            violations.contains(
+                "feature-gated redacted authorization, OpenAPI, REST, and SSRF/OAST audits"
+            ),
             "{violations}"
         );
 
@@ -11707,7 +11768,7 @@ mod tests {
             .unwrap()
             .join("\n");
         assert!(
-            violations.contains("feature-gated authorization, OpenAPI, and REST audits"),
+            violations.contains("feature-gated authorization, OpenAPI, REST, and SSRF/OAST audits"),
             "{violations}"
         );
 
@@ -11721,7 +11782,7 @@ mod tests {
             .unwrap()
             .join("\n");
         assert!(
-            violations.contains("feature-gated authorization, OpenAPI, and REST audits"),
+            violations.contains("feature-gated authorization, OpenAPI, REST, and SSRF/OAST audits"),
             "{violations}"
         );
 
@@ -11735,7 +11796,21 @@ mod tests {
             .unwrap()
             .join("\n");
         assert!(
-            violations.contains("feature-gated authorization, OpenAPI, and REST audits"),
+            violations.contains("feature-gated authorization, OpenAPI, REST, and SSRF/OAST audits"),
+            "{violations}"
+        );
+
+        let unvalidated_ssrf_oast_audit = report_source.replacen(
+            "        #[cfg(feature = \"ssrf-oast-review\")]\n        validate_ssrf_oast_audit(ssrf_oast_review.as_ref(), &items)?;",
+            "        #[cfg(feature = \"ssrf-oast-review\")]\n        let _ = ssrf_oast_review.as_ref();",
+            1,
+        );
+        assert_ne!(unvalidated_ssrf_oast_audit, report_source);
+        let violations = inspect_assessment_report_boundary(&unvalidated_ssrf_oast_audit)
+            .unwrap()
+            .join("\n");
+        assert!(
+            violations.contains("feature-gated authorization, OpenAPI, REST, and SSRF/OAST audits"),
             "{violations}"
         );
 
@@ -12070,6 +12145,12 @@ mod tests {
             false,
         )
         .is_empty());
+        assert!(inspect_production_verifier_descriptors(
+            SSRF_OAST_RUNTIME_SOURCE,
+            &differential,
+            false,
+        )
+        .is_empty());
         let violations =
             inspect_production_verifier_descriptors("foreign_projection.rs", &differential, false)
                 .join("\n");
@@ -12113,6 +12194,7 @@ mod tests {
             pub struct WebAssessmentSubjectReport { subject: String }
             pub struct WebAssessmentDefenseAudit { mode: String }
             pub struct WebAssessmentRestAudit { outcome: String }
+            pub struct WebAssessmentSsrfOastAudit { outcome: String }
             pub struct WebAssessmentRunReport {
                 #[cfg(feature = "reporting")]
                 run_started_at: SystemTime,
@@ -12122,6 +12204,8 @@ mod tests {
                 openapi_review: Option<WebAssessmentOpenApiAudit>,
                 #[cfg(feature = "rest-review")]
                 rest_review: Option<WebAssessmentRestAudit>,
+                #[cfg(feature = "ssrf-oast-review")]
+                ssrf_oast_review: Option<WebAssessmentSsrfOastAudit>,
                 transport: TransportDispatchAudit,
                 defense: WebAssessmentDefenseAudit,
             }
@@ -12189,8 +12273,24 @@ mod tests {
             .unwrap()
             .join("\n");
         assert!(
-            violations
-                .contains("feature-gated authorization, OpenAPI, and REST redacted audit fields"),
+            violations.contains(
+                "feature-gated authorization, OpenAPI, REST, and SSRF/OAST redacted audit fields"
+            ),
+            "{violations}"
+        );
+
+        let missing_ssrf_oast_audit = valid.replace(
+            "                #[cfg(feature = \"ssrf-oast-review\")]\n                ssrf_oast_review: Option<WebAssessmentSsrfOastAudit>,\n",
+            "",
+        );
+        assert_ne!(missing_ssrf_oast_audit, valid);
+        let violations = inspect_web_assessment_models(&missing_ssrf_oast_audit)
+            .unwrap()
+            .join("\n");
+        assert!(
+            violations.contains(
+                "feature-gated authorization, OpenAPI, REST, and SSRF/OAST redacted audit fields"
+            ),
             "{violations}"
         );
 

@@ -160,7 +160,7 @@ impl SharedWebRuntimeAuthority {
     /// deadline already owned by this assessment.
     #[cfg(feature = "oast-native-provider")]
     #[cfg_attr(
-        not(test),
+        all(not(test), not(feature = "ssrf-oast-review")),
         expect(
             dead_code,
             reason = "sealed PR B authority is consumed only by the separately gated ssrf-oast-review capability"

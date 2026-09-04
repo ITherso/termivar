@@ -165,6 +165,18 @@ fn scan_rest_review_flags_conflict(
     }
 }
 
+#[cfg(feature = "ssrf-oast-review")]
+fn scan_ssrf_oast_review_flags_conflict(
+    profile: Option<CliScanProfile>,
+    ssrf_oast_review_enabled: bool,
+) -> Option<&'static str> {
+    if ssrf_oast_review_enabled && profile != Some(CliScanProfile::WebReview) {
+        Some("SSRF OAST query review requires `--profile web-review`")
+    } else {
+        None
+    }
+}
+
 fn scan_report_flags_conflict(
     profile: Option<CliScanProfile>,
     report_format: Option<CliReportFormat>,
@@ -294,6 +306,53 @@ struct ScanArgs {
     #[cfg(feature = "rest-review")]
     #[arg(long, requires_all = ["profile", "openapi_review"])]
     rest_review: bool,
+    /// Explicitly enable the bounded SSRF OAST query review. This option is
+    /// compiled only with `ssrf-oast-review`, requires one policy, and is valid
+    /// only with `--profile web-review`.
+    #[cfg(feature = "ssrf-oast-review")]
+    #[arg(long, requires_all = ["profile", "ssrf_oast_policy"])]
+    ssrf_oast_review: bool,
+    /// Read one strict bounded `security.ssrf-oast-review-policy/v1` policy.
+    /// A policy is inert unless the explicit review flag is also present.
+    #[cfg(feature = "ssrf-oast-review")]
+    #[arg(
+        long,
+        value_name = "FILE",
+        requires_all = ["profile", "ssrf_oast_review"]
+    )]
+    ssrf_oast_policy: Option<PathBuf>,
+    /// Read the self-hosted OAST provider administrator token from an
+    /// environment variable. Its name and value are redacted.
+    #[cfg(feature = "ssrf-oast-review")]
+    #[arg(
+        long,
+        value_name = "ENV_VAR",
+        requires = "ssrf_oast_policy",
+        conflicts_with_all = ["oast_admin_token_file", "oast_admin_token_stdin"]
+    )]
+    oast_admin_token_env: Option<OsString>,
+    /// Read the self-hosted OAST provider administrator token from a bounded
+    /// regular file. Its path and value are redacted.
+    #[cfg(feature = "ssrf-oast-review")]
+    #[arg(
+        long,
+        value_name = "FILE",
+        requires = "ssrf_oast_policy",
+        conflicts_with_all = ["oast_admin_token_env", "oast_admin_token_stdin"]
+    )]
+    oast_admin_token_file: Option<PathBuf>,
+    /// Read the self-hosted OAST provider administrator token once from stdin.
+    #[cfg(feature = "ssrf-oast-review")]
+    #[arg(
+        long,
+        requires = "ssrf_oast_policy",
+        conflicts_with_all = ["oast_admin_token_env", "oast_admin_token_file", "auth_stdin"]
+    )]
+    #[cfg_attr(
+        feature = "authorization-review",
+        arg(conflicts_with_all = ["authz_primary_stdin", "authz_peer_stdin"])
+    )]
+    oast_admin_token_stdin: bool,
     /// Select the centralized typed assessment renderer. Valid only with
     /// `--profile web-review`. Without this option, text maps to Markdown
     /// and JSON maps to JSON for completed web-review reports.
@@ -330,6 +389,10 @@ struct ScanArgs {
         long,
         requires = "profile",
         conflicts_with_all = ["auth_env", "auth_file"]
+    )]
+    #[cfg_attr(
+        feature = "ssrf-oast-review",
+        arg(conflicts_with = "oast_admin_token_stdin")
     )]
     auth_stdin: bool,
     /// Read a strict bounded `security.authorization-review-policy/v1`
@@ -370,6 +433,10 @@ struct ScanArgs {
         requires = "authorization_review_policy",
         conflicts_with_all = ["authz_primary_env", "authz_primary_file", "authz_peer_stdin"]
     )]
+    #[cfg_attr(
+        feature = "ssrf-oast-review",
+        arg(conflicts_with = "oast_admin_token_stdin")
+    )]
     authz_primary_stdin: bool,
     /// Read the peer principal's complete Authorization value from an
     /// environment variable. Its name and value are redacted.
@@ -397,6 +464,10 @@ struct ScanArgs {
         long,
         requires = "authorization_review_policy",
         conflicts_with_all = ["authz_peer_env", "authz_peer_file", "authz_primary_stdin"]
+    )]
+    #[cfg_attr(
+        feature = "ssrf-oast-review",
+        arg(conflicts_with = "oast_admin_token_stdin")
     )]
     authz_peer_stdin: bool,
 }
@@ -458,6 +529,16 @@ async fn run_deterministic_scan(invocation: ScanArgs) -> Result<(), Box<dyn std:
         openapi_review,
         #[cfg(feature = "rest-review")]
         rest_review,
+        #[cfg(feature = "ssrf-oast-review")]
+        ssrf_oast_review,
+        #[cfg(feature = "ssrf-oast-review")]
+        ssrf_oast_policy,
+        #[cfg(feature = "ssrf-oast-review")]
+        oast_admin_token_env,
+        #[cfg(feature = "ssrf-oast-review")]
+        oast_admin_token_file,
+        #[cfg(feature = "ssrf-oast-review")]
+        oast_admin_token_stdin,
         report_format,
         report_output,
         auth_env,
@@ -496,6 +577,13 @@ async fn run_deterministic_scan(invocation: ScanArgs) -> Result<(), Box<dyn std:
             .exit();
     }
     if let Some(message) = scan_rest_review_flags_conflict(profile, openapi_review, rest_review) {
+        use clap::CommandFactory;
+        Cli::command()
+            .error(clap::error::ErrorKind::ArgumentConflict, message)
+            .exit();
+    }
+    #[cfg(feature = "ssrf-oast-review")]
+    if let Some(message) = scan_ssrf_oast_review_flags_conflict(profile, ssrf_oast_review) {
         use clap::CommandFactory;
         Cli::command()
             .error(clap::error::ErrorKind::ArgumentConflict, message)
@@ -582,6 +670,16 @@ async fn run_deterministic_scan(invocation: ScanArgs) -> Result<(), Box<dyn std:
             authz_peer_stdin,
         ),
     )?;
+    #[cfg(feature = "ssrf-oast-review")]
+    let ssrf_oast_review_input = auth_input::SsrfOastReviewInput::select(
+        ssrf_oast_review,
+        ssrf_oast_policy,
+        auth_input::AuthorizationSourceOptions::new(
+            oast_admin_token_env,
+            oast_admin_token_file,
+            oast_admin_token_stdin,
+        ),
+    )?;
     #[cfg(feature = "authorization-review")]
     if resource_authorization_input.is_some()
         && !authorization_context_transport_is_allowed(&target)
@@ -609,6 +707,10 @@ async fn run_deterministic_scan(invocation: ScanArgs) -> Result<(), Box<dyn std:
         let resource_authorization_review = resource_authorization_input
             .map(|input| input.load(&target))
             .transpose()?;
+        #[cfg(feature = "ssrf-oast-review")]
+        let ssrf_oast_review = ssrf_oast_review_input
+            .map(|input| input.load(&target))
+            .transpose()?;
 
         eprintln!("{DETERMINISTIC_SCAN_WARNING}");
         let execution = assessment_scan::run_profile_scan(
@@ -625,6 +727,8 @@ async fn run_deterministic_scan(invocation: ScanArgs) -> Result<(), Box<dyn std:
                 rest_review,
                 #[cfg(feature = "authorization-review")]
                 resource_authorization_review,
+                #[cfg(feature = "ssrf-oast-review")]
+                ssrf_oast_review,
             },
         )
         .await?;
@@ -1014,6 +1118,14 @@ mod tests {
         assert!(!args.openapi_review);
         #[cfg(feature = "rest-review")]
         assert!(!args.rest_review);
+        #[cfg(feature = "ssrf-oast-review")]
+        {
+            assert!(!args.ssrf_oast_review);
+            assert_eq!(args.ssrf_oast_policy, None);
+            assert_eq!(args.oast_admin_token_env, None);
+            assert_eq!(args.oast_admin_token_file, None);
+            assert!(!args.oast_admin_token_stdin);
+        }
         assert_eq!(args.report_format, None);
         assert_eq!(args.report_output, None);
         assert_eq!(args.auth_env, None);
@@ -1057,6 +1169,14 @@ mod tests {
         assert!(!args.openapi_review);
         #[cfg(feature = "rest-review")]
         assert!(!args.rest_review);
+        #[cfg(feature = "ssrf-oast-review")]
+        {
+            assert!(!args.ssrf_oast_review);
+            assert_eq!(args.ssrf_oast_policy, None);
+            assert_eq!(args.oast_admin_token_env, None);
+            assert_eq!(args.oast_admin_token_file, None);
+            assert!(!args.oast_admin_token_stdin);
+        }
         assert_eq!(args.report_format, None);
         assert_eq!(args.report_output, None);
         assert_eq!(args.auth_env, None);
@@ -1554,6 +1674,233 @@ mod tests {
             "web-review",
             "--openapi-review",
             "--rest-review",
+            "https://example.test/",
+        ])
+        .is_err());
+    }
+
+    #[cfg(feature = "ssrf-oast-review")]
+    #[test]
+    fn ssrf_oast_review_exposes_only_explicit_web_review_secret_sources() {
+        use clap::CommandFactory as _;
+
+        let mut command = Cli::command();
+        let help = command
+            .find_subcommand_mut("scan")
+            .unwrap()
+            .render_long_help()
+            .to_string();
+        for flag in [
+            "--ssrf-oast-review",
+            "--ssrf-oast-policy",
+            "--oast-admin-token-env",
+            "--oast-admin-token-file",
+            "--oast-admin-token-stdin",
+        ] {
+            assert!(help.contains(flag), "missing feature-gated flag {flag}");
+        }
+        assert!(!help.contains("--oast-admin-token <"));
+        assert!(!help.contains("--ssrf-oast-review-policy"));
+
+        assert!(Cli::try_parse_from([
+            "termivar",
+            "scan",
+            "--profile",
+            "web-review",
+            "--ssrf-oast-review",
+            "https://example.test/",
+        ])
+        .is_err());
+        let requires_explicit_enable = match Cli::try_parse_from([
+            "termivar",
+            "scan",
+            "--profile",
+            "web-review",
+            "--ssrf-oast-policy",
+            "PRIVATE-POLICY-PATH",
+            "--oast-admin-token-env",
+            "PRIVATE_OAST_ADMIN_ENV",
+            "https://example.test/",
+        ]) {
+            Ok(_) => panic!("policy and token sources must not silently enable SSRF OAST review"),
+            Err(error) => error.to_string(),
+        };
+        assert!(!requires_explicit_enable.contains("PRIVATE-POLICY-PATH"));
+        assert!(!requires_explicit_enable.contains("PRIVATE_OAST_ADMIN_ENV"));
+
+        assert!(Cli::try_parse_from([
+            "termivar",
+            "scan",
+            "--ssrf-oast-review",
+            "--ssrf-oast-policy",
+            "private-policy.toml",
+            "--oast-admin-token-env",
+            "PRIVATE_OAST_ADMIN_ENV",
+            "https://example.test/?return=https://reserved.example/",
+        ])
+        .is_err());
+
+        let baseline = Cli::try_parse_from([
+            "termivar",
+            "scan",
+            "--profile",
+            "baseline",
+            "--ssrf-oast-review",
+            "--ssrf-oast-policy",
+            "private-policy.toml",
+            "--oast-admin-token-env",
+            "PRIVATE_OAST_ADMIN_ENV",
+            "https://example.test/?return=https://reserved.example/",
+        ])
+        .expect("the semantic profile guard runs before runtime dispatch");
+        let baseline = parsed_scan_args(&baseline);
+        assert_eq!(baseline.profile, Some(CliScanProfile::Baseline));
+        assert!(baseline.ssrf_oast_review);
+        assert!(baseline.ssrf_oast_policy.is_some());
+        assert!(baseline.oast_admin_token_env.is_some());
+        assert_eq!(
+            scan_ssrf_oast_review_flags_conflict(Some(CliScanProfile::Baseline), true),
+            Some("SSRF OAST query review requires `--profile web-review`")
+        );
+
+        let review = Cli::try_parse_from([
+            "termivar",
+            "scan",
+            "--profile",
+            "web-review",
+            "--ssrf-oast-review",
+            "--ssrf-oast-policy",
+            "private-policy.toml",
+            "--oast-admin-token-file",
+            "private-admin-token",
+            "https://example.test/?return=https://reserved.example/",
+        ])
+        .unwrap();
+        let review = parsed_scan_args(&review);
+        assert_eq!(review.profile, Some(CliScanProfile::WebReview));
+        assert!(review.ssrf_oast_review);
+        assert!(review.ssrf_oast_policy.is_some());
+        assert!(review.oast_admin_token_file.is_some());
+        #[cfg(feature = "openapi-review")]
+        assert!(
+            !review.openapi_review,
+            "OpenAPI must not be silently enabled"
+        );
+        assert_eq!(
+            scan_ssrf_oast_review_flags_conflict(review.profile, true),
+            None
+        );
+
+        assert!(Cli::try_parse_from([
+            "termivar",
+            "scan",
+            "--profile",
+            "web-review",
+            "--oast-admin-token-env",
+            "PRIVATE_OAST_ADMIN_ENV",
+            "https://example.test/",
+        ])
+        .is_err());
+        assert!(Cli::try_parse_from([
+            "termivar",
+            "scan",
+            "--profile",
+            "web-review",
+            "--ssrf-oast-review",
+            "--ssrf-oast-policy",
+            "private-policy.toml",
+            "--oast-admin-token",
+            "RAW-OAST-TOKEN-MUST-NOT-EXIST",
+            "https://example.test/",
+        ])
+        .is_err());
+    }
+
+    #[cfg(feature = "ssrf-oast-review")]
+    #[test]
+    fn ssrf_oast_review_rejects_conflicting_sources_and_shared_stdin() {
+        let conflict = match Cli::try_parse_from([
+            "termivar",
+            "scan",
+            "--profile",
+            "web-review",
+            "--ssrf-oast-review",
+            "--ssrf-oast-policy",
+            "private-policy.toml",
+            "--oast-admin-token-env",
+            "PRIVATE_OAST_ADMIN_ENV",
+            "--oast-admin-token-file",
+            "private-admin-token",
+            "https://example.test/",
+        ]) {
+            Ok(_) => panic!("conflicting OAST administrator sources must fail"),
+            Err(error) => error.to_string(),
+        };
+        assert!(!conflict.contains("PRIVATE_OAST_ADMIN_ENV"));
+        assert!(!conflict.contains("private-admin-token"));
+        assert!(Cli::try_parse_from([
+            "termivar",
+            "scan",
+            "--profile",
+            "web-review",
+            "--auth-stdin",
+            "--ssrf-oast-review",
+            "--ssrf-oast-policy",
+            "private-policy.toml",
+            "--oast-admin-token-stdin",
+            "https://example.test/",
+        ])
+        .is_err());
+
+        #[cfg(feature = "authorization-review")]
+        assert!(Cli::try_parse_from([
+            "termivar",
+            "scan",
+            "--profile",
+            "web-review",
+            "--authorization-review-policy",
+            "authorization-policy.toml",
+            "--authz-primary-stdin",
+            "--authz-peer-file",
+            "peer-token",
+            "--ssrf-oast-review",
+            "--ssrf-oast-policy",
+            "ssrf-policy.toml",
+            "--oast-admin-token-stdin",
+            "https://example.test/",
+        ])
+        .is_err());
+    }
+
+    #[cfg(not(feature = "ssrf-oast-review"))]
+    #[test]
+    fn default_cli_does_not_expose_ssrf_oast_review_inputs() {
+        use clap::CommandFactory as _;
+
+        let mut command = Cli::command();
+        let help = command
+            .find_subcommand_mut("scan")
+            .unwrap()
+            .render_long_help()
+            .to_string();
+        for flag in [
+            "--ssrf-oast-review",
+            "--ssrf-oast-policy",
+            "--oast-admin-token-env",
+            "--oast-admin-token-file",
+            "--oast-admin-token-stdin",
+        ] {
+            assert!(!help.contains(flag), "default CLI exposed {flag}");
+        }
+        assert!(!help.contains("--ssrf-oast-review-policy"));
+        assert!(Cli::try_parse_from([
+            "termivar",
+            "scan",
+            "--profile",
+            "web-review",
+            "--ssrf-oast-review",
+            "--ssrf-oast-policy",
+            "review.toml",
             "https://example.test/",
         ])
         .is_err());

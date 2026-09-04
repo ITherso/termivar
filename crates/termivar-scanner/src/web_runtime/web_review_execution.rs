@@ -206,6 +206,8 @@ pub(crate) fn enabled_native_web_review_actions(
             NativeWebReviewActionKind::OpenApiDocumentReplay => false,
             #[cfg(feature = "rest-review")]
             NativeWebReviewActionKind::RestReadOnlyReplay => false,
+            #[cfg(feature = "ssrf-oast-review")]
+            NativeWebReviewActionKind::SsrfOastQueryReview => false,
         })
         .collect()
 }
@@ -719,6 +721,10 @@ fn payload_strategy_reference(
         },
         #[cfg(feature = "rest-review")]
         NativeWebReviewActionKind::RestReadOnlyReplay => {
+            return Err(PayloadStrategyError::DerivationFailed);
+        },
+        #[cfg(feature = "ssrf-oast-review")]
+        NativeWebReviewActionKind::SsrfOastQueryReview => {
             return Err(PayloadStrategyError::DerivationFailed);
         },
     };

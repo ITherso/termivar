@@ -28,6 +28,7 @@ mod platform;
 mod plugin;
 mod reachability;
 mod source_hygiene;
+mod ssrf_oast;
 mod transport;
 mod workflows;
 
@@ -303,6 +304,7 @@ pub(crate) fn check(workspace_root: &Path) -> Result<(), Box<dyn Error>> {
     violations.extend(platform::check(workspace_root)?);
     violations.extend(exploit::check(workspace_root)?);
     violations.extend(native_oast::check(workspace_root)?);
+    violations.extend(ssrf_oast::check(workspace_root)?);
     violations.extend(source_hygiene::check(workspace_root)?);
     violations.extend(plugin::check(workspace_root)?);
     violations.extend(workflows::check(workspace_root)?);

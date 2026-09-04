@@ -182,6 +182,52 @@ fn discovered_subject_identity_fails_closed_for_unapproved_structure() {
     );
 }
 
+#[cfg(feature = "ssrf-oast-review")]
+#[test]
+fn ssrf_oast_query_target_accepts_only_the_exact_pseudonymous_identity() {
+    let identity = format!("ssrf-oast-parameter-sha256:{}", "a".repeat(64));
+    let target = AssessmentItemTarget::ssrf_oast_query(identity.clone()).unwrap();
+    assert_eq!(
+        format!("{target:?}"),
+        "AssessmentItemTarget::SsrfOastQuery(<stable-digest>)"
+    );
+
+    for invalid in [
+        "https://target.example.test/proxy?url=secret".to_owned(),
+        format!("ssrf-oast-parameter-sha256:{}", "a".repeat(63)),
+        format!("ssrf-oast-parameter-sha256:{}", "A".repeat(64)),
+        format!("ssrf-oast-parameter-sha256:{}", "g".repeat(64)),
+    ] {
+        assert_eq!(
+            AssessmentItemTarget::ssrf_oast_query(invalid),
+            Err(AssessmentItemProjectionError::InvalidStableSubjectIdentity)
+        );
+    }
+
+    let stable_subject = StableAssessmentSubjectId::new(identity.clone()).unwrap();
+    let first = assessment_fingerprint(
+        REVIEW_DESCRIPTOR.id,
+        &test_scope_id(),
+        &stable_subject,
+        &target,
+    );
+    let other = AssessmentItemTarget::ssrf_oast_query(format!(
+        "ssrf-oast-parameter-sha256:{}",
+        "b".repeat(64)
+    ))
+    .unwrap();
+    let second = assessment_fingerprint(
+        REVIEW_DESCRIPTOR.id,
+        &test_scope_id(),
+        &stable_subject,
+        &other,
+    );
+    assert!(first.starts_with("sha256:"));
+    assert_eq!(first.len(), "sha256:".len() + 64);
+    assert_ne!(first, second);
+    assert!(!first.contains(&identity));
+}
+
 fn references(values: &[u32]) -> Vec<AssessmentEvidenceReference> {
     values
         .iter()

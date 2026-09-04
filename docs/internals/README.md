@@ -94,6 +94,7 @@ Bounded manifest bytes --> termivar-exploit validation --> sealed metadata catal
 - [OAST correlation foundation](oast-correlation.md): provider-neutral host-minted token binding, bounded caller-driven polls, typed DNS/HTTP events, replay suppression, and redacted receipts without network execution.
 - [Native OAST provider](native-oast-provider.md): unpublished self-hosted loopback service, fixed HTTPS management protocol, high-entropy Bearer credentials, bounded raw-free HTTP callback events, and explicit cleanup without scanner authority.
 - [Native OAST provider authority](native-oast-provider-authority.md): non-default host-library adapter, exact HTTPS provider-origin permit, fixed management operations, parent-budget accounting, explicit lifecycle, and raw-free correlation reduction without a target action or report.
+- [SSRF OAST query review](ssrf-oast-query-review.md): explicit one-parameter target authority, `.invalid` control, two independent native-provider callbacks, bounded polling/cleanup, and repeated raw-free evidence with `NeedsReview` / `KnowledgeOnly` maximum authority.
 - [Standard web decision profile](web-decision.md): one-shot composition, installation transaction, and layer boundaries.
 - [Standard web decision runtime](web-runtime.md): target builder, bootstrap evidence, executable-plan filtering, resource budgets, and complete session driving.
 - [Web reasoning](web-reasoning.md): standard ontology, explainable fingerprint rules, and Bayesian weak/strong hypotheses.

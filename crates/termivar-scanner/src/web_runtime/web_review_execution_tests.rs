@@ -71,6 +71,8 @@ fn expected_strategy(kind: NativeWebReviewActionKind) -> Option<PayloadStrategyR
         NativeWebReviewActionKind::OpenApiDocumentReplay => return None,
         #[cfg(feature = "rest-review")]
         NativeWebReviewActionKind::RestReadOnlyReplay => return None,
+        #[cfg(feature = "ssrf-oast-review")]
+        NativeWebReviewActionKind::SsrfOastQueryReview => return None,
     };
     Some(PayloadStrategyRef::new(id, revision).unwrap())
 }

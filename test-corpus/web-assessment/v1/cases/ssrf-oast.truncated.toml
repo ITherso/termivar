@@ -1,0 +1,32 @@
+schema = "security-assessment-fixture/v1"
+id = "ssrf-oast.truncated"
+revision = 1
+category = "ssrf-oast"
+purpose = "Truncated retained evidence cannot support projection."
+provenance = "current-authored"
+support = "current"
+tags = ["ssrf-oast", "raw-free", "negative"]
+
+[request]
+method = "get"
+origin = "https://target.example.test"
+path = "/fetch"
+role = "bootstrap"
+loopback_fixture = false
+query = [{ name = "next", value = "https://upstream.example.test/resource" }]
+
+[response]
+status = 200
+media_type = "application/json"
+role = "bootstrap"
+completion = "incomplete"
+truncated = true
+inline_body = '{"fixture":"ssrf-oast"}'
+
+[ssrf_oast]
+source = "observed-url-query"
+scenario = "truncated"
+
+[expected]
+ssrf_oast_outcome = "truncated"
+incompleteness = "body-truncated"

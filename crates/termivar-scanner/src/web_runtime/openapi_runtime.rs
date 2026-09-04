@@ -18,6 +18,8 @@ use url::Url;
 
 #[cfg(feature = "rest-review")]
 use super::rest_runtime::StableRestSelectionSlot;
+#[cfg(all(feature = "ssrf-oast-review", feature = "openapi-review"))]
+use super::ssrf_oast_runtime::StableSsrfOastSelectionSlot;
 use super::{
     assessment_defense::{project_assessment_defense_signal, AssessmentDefenseProjectionContext},
     assessment_item::{
@@ -28,6 +30,10 @@ use super::{
 #[cfg(feature = "rest-review")]
 use crate::rest_review::{
     select_rest_operation, RestOperationSelection, RestOperationSelectionOutcome,
+};
+#[cfg(all(feature = "ssrf-oast-review", feature = "openapi-review"))]
+use crate::ssrf_oast_review::{
+    select_openapi_document_query_candidate, SsrfOastCandidateSelection, SsrfOastQueryCandidate,
 };
 use crate::{
     http_evidence::{HttpRequestBroker, HttpRequestBrokerError},
@@ -383,6 +389,35 @@ impl OpenApiRuntimeBinding {
         subject: EntityId,
         knowledge: KnowledgeBase,
     ) -> Self {
+        Self::new_internal(
+            config,
+            requests,
+            subject,
+            knowledge,
+            #[cfg(feature = "ssrf-oast-review")]
+            None,
+        )
+    }
+
+    #[cfg(all(feature = "ssrf-oast-review", feature = "openapi-review"))]
+    pub(super) fn new_with_ssrf_selection(
+        config: OpenApiReviewConfig,
+        requests: HttpRequestBroker,
+        subject: EntityId,
+        knowledge: KnowledgeBase,
+        ssrf_selection: StableSsrfOastSelectionSlot,
+    ) -> Self {
+        Self::new_internal(config, requests, subject, knowledge, Some(ssrf_selection))
+    }
+
+    fn new_internal(
+        config: OpenApiReviewConfig,
+        requests: HttpRequestBroker,
+        subject: EntityId,
+        knowledge: KnowledgeBase,
+        #[cfg(all(feature = "ssrf-oast-review", feature = "openapi-review"))]
+        ssrf_selection: Option<StableSsrfOastSelectionSlot>,
+    ) -> Self {
         let candidate = config.candidate;
         let executor = Arc::new(OpenApiDecisionExecutor {
             requests,
@@ -392,6 +427,8 @@ impl OpenApiRuntimeBinding {
             state: Mutex::new(OpenApiExecutionState::default()),
             #[cfg(feature = "rest-review")]
             rest_selection: StableRestSelectionSlot::new(),
+            #[cfg(all(feature = "ssrf-oast-review", feature = "openapi-review"))]
+            ssrf_selection,
         });
         Self { executor, subject }
     }
@@ -693,6 +730,8 @@ struct OpenApiLeg {
     evidence_id: Option<EvidenceId>,
     #[cfg(feature = "rest-review")]
     rest_selection: Option<RestOperationSelection>,
+    #[cfg(all(feature = "ssrf-oast-review", feature = "openapi-review"))]
+    ssrf_selection: Option<SsrfOastQueryCandidate>,
 }
 impl OpenApiLeg {
     fn semantically_matches(&self, other: &Self) -> bool {
@@ -719,6 +758,16 @@ impl OpenApiLeg {
                     true
                 }
             }
+            && {
+                #[cfg(all(feature = "ssrf-oast-review", feature = "openapi-review"))]
+                {
+                    self.ssrf_selection == other.ssrf_selection
+                }
+                #[cfg(not(all(feature = "ssrf-oast-review", feature = "openapi-review")))]
+                {
+                    true
+                }
+            }
     }
 }
 #[derive(Default)]
@@ -734,6 +783,8 @@ struct OpenApiDecisionExecutor {
     state: Mutex<OpenApiExecutionState>,
     #[cfg(feature = "rest-review")]
     rest_selection: StableRestSelectionSlot,
+    #[cfg(all(feature = "ssrf-oast-review", feature = "openapi-review"))]
+    ssrf_selection: Option<StableSsrfOastSelectionSlot>,
 }
 
 impl OpenApiDecisionExecutor {
@@ -862,6 +913,8 @@ impl DecisionActionExecutor for OpenApiDecisionExecutor {
                     RestOperationSelectionOutcome::Selected(selection) => Some(selection),
                     RestOperationSelectionOutcome::NoEligibleOperation => None,
                 };
+                #[cfg(all(feature = "ssrf-oast-review", feature = "openapi-review"))]
+                let ssrf_selection = select_openapi_document_query_candidate(&doc, &candidate.url);
                 let summary = doc.catalog().summary();
                 let get = doc
                     .catalog()
@@ -911,6 +964,8 @@ impl DecisionActionExecutor for OpenApiDecisionExecutor {
                     evidence_id: None,
                     #[cfg(feature = "rest-review")]
                     rest_selection,
+                    #[cfg(all(feature = "ssrf-oast-review", feature = "openapi-review"))]
+                    ssrf_selection,
                 }
             },
             OpenApiParseOutcome::Swagger20MetadataOnly => {
@@ -951,6 +1006,20 @@ impl DecisionActionExecutor for OpenApiDecisionExecutor {
         let stable_rest_selection = stable_rest_catalog
             .then(|| leg.rest_selection.clone())
             .flatten();
+        #[cfg(all(feature = "ssrf-oast-review", feature = "openapi-review"))]
+        let stable_ssrf_selection = if request.stage() == DecisionExecutionStage::Active {
+            let state = self
+                .state
+                .lock()
+                .map_err(|_| DecisionExecutorError::new("OpenAPI review state is unavailable"))?;
+            state
+                .legs
+                .get(&DecisionExecutionStage::Passive)
+                .filter(|candidate_leg| candidate_leg.semantically_matches(&leg))
+                .and_then(|_| leg.ssrf_selection.clone())
+        } else {
+            None
+        };
         let mut evidence = transport_evidence(request, &response, Some(&leg), false)?;
         #[cfg(feature = "rest-review")]
         if stable_rest_catalog {
@@ -996,6 +1065,11 @@ impl DecisionActionExecutor for OpenApiDecisionExecutor {
             self.rest_selection
                 .commit(selection)
                 .map_err(|_| DecisionExecutorError::new("REST selection handoff failed"))?;
+        }
+        #[cfg(all(feature = "ssrf-oast-review", feature = "openapi-review"))]
+        if let (Some(slot), Some(selection)) = (&self.ssrf_selection, stable_ssrf_selection) {
+            slot.commit_openapi(SsrfOastCandidateSelection::Selected(selection))
+                .map_err(|_| DecisionExecutorError::new("SSRF OAST selection handoff failed"))?;
         }
         Ok(evidence)
     }

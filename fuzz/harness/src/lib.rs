@@ -9,6 +9,7 @@ mod native_oast_adapter;
 #[path = "oast.rs"]
 mod oast_harness;
 mod semantic;
+mod ssrf_oast_review;
 
 // Harness-local friend seam for the exact private adapter source below. The
 // product token is owned by `web_runtime::authority`; this parallel test-only
@@ -31,6 +32,17 @@ pub(crate) mod verification {
 }
 #[path = "../../../crates/termivar-scanner/src/oast.rs"]
 pub(crate) mod oast;
+#[cfg(feature = "openapi-review")]
+pub(crate) mod openapi_review {
+    #[cfg(test)]
+    pub(crate) use termivar_scanner::openapi_review::{
+        parse_openapi_document, OpenApiParseOutcome,
+    };
+    pub(crate) use termivar_scanner::openapi_review::{
+        OpenApiFormatClass, OpenApiHttpMethod, OpenApiOperation, OpenApiParameterLocation,
+        OpenApiServerKind,
+    };
+}
 pub(crate) mod runtime_budget {
     use std::sync::{Arc, Mutex};
 
@@ -145,6 +157,8 @@ pub(crate) use termivar_scanner::{
 };
 #[path = "../../../crates/termivar-scanner/src/native_oast_provider.rs"]
 mod scanner_native_oast_provider;
+#[path = "../../../crates/termivar-scanner/src/ssrf_oast_review.rs"]
+mod scanner_ssrf_oast_review;
 
 pub use authority::{check_decision_loop_authority, MAX_AUTHORITY_FUZZ_INPUT_BYTES};
 pub use native_oast::{check_native_oast_provider, MAX_NATIVE_OAST_FUZZ_INPUT_BYTES};
@@ -156,6 +170,7 @@ pub use semantic::{
     check_declarative_policy_wire, check_expression_semantics, MAX_EXPRESSION_FUZZ_DEPTH,
     MAX_EXPRESSION_FUZZ_NODES, MAX_SEMANTIC_FUZZ_INPUT_BYTES, MAX_SEMANTIC_FUZZ_STRING_BYTES,
 };
+pub use ssrf_oast_review::{check_ssrf_oast_review, MAX_SSRF_OAST_FUZZ_INPUT_BYTES};
 
 /// Maximum byte buffer accepted by the OpenAPI contract-catalog harness.
 pub const MAX_OPENAPI_FUZZ_INPUT_BYTES: usize =

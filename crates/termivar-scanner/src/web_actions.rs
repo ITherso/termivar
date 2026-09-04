@@ -30,6 +30,10 @@ pub(crate) use native_review::{
 pub(crate) use native_review::{
     rest_review_catalog_ready_predicate, rest_review_phase_terminal_predicate,
 };
+#[cfg(all(feature = "scanning", feature = "ssrf-oast-review"))]
+pub(crate) use native_review::{
+    ssrf_oast_review_candidate_ready_predicate, ssrf_oast_review_phase_terminal_predicate,
+};
 pub use native_review::{
     NativeWebReviewActionKind, NativeWebReviewDifferentialInput, NativeWebReviewRequestLeg,
     NATIVE_WEB_REVIEW_ACTION_COUNT, NATIVE_WEB_REVIEW_ACTIVE_REQUESTS_PER_CASE,

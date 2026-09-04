@@ -1,0 +1,31 @@
+schema = "security-assessment-fixture/v1"
+id = "ssrf-oast.defensive-interference"
+revision = 1
+category = "ssrf-oast"
+purpose = "Typed defensive interference stops the callback review."
+provenance = "current-authored"
+support = "current"
+tags = ["ssrf-oast", "raw-free", "negative"]
+
+[request]
+method = "get"
+origin = "https://target.example.test"
+path = "/fetch"
+role = "bootstrap"
+loopback_fixture = false
+query = [{ name = "next", value = "https://upstream.example.test/resource" }]
+
+[response]
+status = 200
+media_type = "application/json"
+role = "bootstrap"
+completion = "complete"
+truncated = false
+inline_body = '{"fixture":"ssrf-oast"}'
+
+[ssrf_oast]
+source = "observed-url-query"
+scenario = "defensive-interference"
+
+[expected]
+ssrf_oast_outcome = "defensive-interference"

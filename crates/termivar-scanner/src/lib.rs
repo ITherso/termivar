@@ -69,6 +69,8 @@ pub mod planner;
 pub mod rest_review;
 pub mod rules;
 pub mod semantic;
+#[cfg(feature = "ssrf-oast-review")]
+pub mod ssrf_oast_review;
 pub mod verification;
 pub mod web_actions;
 pub mod web_planning;

@@ -63,7 +63,12 @@ pub(crate) const NATIVE_WEB_REVIEW_PASSIVE_RULE_COUNT: usize =
         2
     } else {
         0
-    } + if cfg!(feature = "rest-review") { 2 } else { 0 };
+    } + if cfg!(feature = "rest-review") { 2 } else { 0 }
+        + if cfg!(feature = "ssrf-oast-review") {
+            2
+        } else {
+            0
+        };
 #[cfg(test)]
 pub(crate) const NATIVE_WEB_REVIEW_ACTIVE_RULE_COUNT: usize = NATIVE_WEB_REVIEW_ACTION_COUNT
     + if cfg!(feature = "authorization-review") {
@@ -76,7 +81,12 @@ pub(crate) const NATIVE_WEB_REVIEW_ACTIVE_RULE_COUNT: usize = NATIVE_WEB_REVIEW_
     } else {
         0
     }
-    + if cfg!(feature = "rest-review") { 1 } else { 0 };
+    + if cfg!(feature = "rest-review") { 1 } else { 0 }
+    + if cfg!(feature = "ssrf-oast-review") {
+        1
+    } else {
+        0
+    };
 #[cfg(test)]
 pub(crate) const WEB_REVIEW_ELIGIBLE_PREDICATE: &str = "web.review.eligible";
 
@@ -184,6 +194,13 @@ impl NativeWebReviewDecisionProfile {
             if kind == NativeWebReviewActionKind::RestReadOnlyReplay {
                 active_rules.push(build_rest_terminal_rule(kind, VerificationStage::Active)?);
             }
+            #[cfg(feature = "ssrf-oast-review")]
+            if kind == NativeWebReviewActionKind::SsrfOastQueryReview {
+                active_rules.push(build_ssrf_oast_terminal_rule(
+                    kind,
+                    VerificationStage::Active,
+                )?);
+            }
             active_rules.push(build_active_rule(kind)?);
         }
         #[cfg(feature = "authorization-review")]
@@ -195,7 +212,7 @@ impl NativeWebReviewDecisionProfile {
             .collect::<Result<Vec<_>, _>>()?;
         #[cfg(not(feature = "authorization-review"))]
         let passive_rules = Vec::new();
-        #[cfg(feature = "openapi-review")]
+        #[cfg(any(feature = "openapi-review", feature = "ssrf-oast-review"))]
         let mut passive_rules = passive_rules;
         #[cfg(feature = "openapi-review")]
         if enabled_actions.contains(&NativeWebReviewActionKind::OpenApiDocumentReplay) {
@@ -217,6 +234,16 @@ impl NativeWebReviewDecisionProfile {
                 NativeWebReviewActionKind::RestReadOnlyReplay,
             )?);
         }
+        #[cfg(feature = "ssrf-oast-review")]
+        if enabled_actions.contains(&NativeWebReviewActionKind::SsrfOastQueryReview) {
+            passive_rules.push(build_ssrf_oast_terminal_rule(
+                NativeWebReviewActionKind::SsrfOastQueryReview,
+                VerificationStage::Passive,
+            )?);
+            passive_rules.push(build_ssrf_oast_passive_progress_rule(
+                NativeWebReviewActionKind::SsrfOastQueryReview,
+            )?);
+        }
         debug_assert_eq!(actions.len(), enabled_actions.len());
         #[cfg(feature = "authorization-review")]
         let authorization_count = usize::from(
@@ -235,13 +262,22 @@ impl NativeWebReviewDecisionProfile {
             usize::from(enabled_actions.contains(&NativeWebReviewActionKind::RestReadOnlyReplay));
         #[cfg(not(feature = "rest-review"))]
         let rest_count = 0;
+        #[cfg(feature = "ssrf-oast-review")]
+        let ssrf_oast_count =
+            usize::from(enabled_actions.contains(&NativeWebReviewActionKind::SsrfOastQueryReview));
+        #[cfg(not(feature = "ssrf-oast-review"))]
+        let ssrf_oast_count = 0;
         debug_assert_eq!(
             passive_rules.len(),
-            authorization_count + (2 * openapi_count) + (2 * rest_count)
+            authorization_count + (2 * openapi_count) + (2 * rest_count) + (2 * ssrf_oast_count)
         );
         debug_assert_eq!(
             active_rules.len(),
-            enabled_actions.len() + authorization_count + openapi_count + rest_count
+            enabled_actions.len()
+                + authorization_count
+                + openapi_count
+                + rest_count
+                + ssrf_oast_count
         );
         let mut reasoning_rules = Vec::new();
         if enabled_actions.iter().any(|kind| {
@@ -434,6 +470,10 @@ fn build_action(
     if kind == NativeWebReviewActionKind::RestReadOnlyReplay {
         return Ok(action);
     }
+    #[cfg(feature = "ssrf-oast-review")]
+    if kind == NativeWebReviewActionKind::SsrfOastQueryReview {
+        return Ok(action);
+    }
     Ok(action.with_payload_strategy(payload_strategy_ref(kind)?))
 }
 
@@ -488,6 +528,10 @@ fn payload_strategy_ref(
         },
         #[cfg(feature = "rest-review")]
         NativeWebReviewActionKind::RestReadOnlyReplay => {
+            return Err(PayloadStrategyError::DerivationFailed);
+        },
+        #[cfg(feature = "ssrf-oast-review")]
+        NativeWebReviewActionKind::SsrfOastQueryReview => {
             return Err(PayloadStrategyError::DerivationFailed);
         },
     };
@@ -626,6 +670,60 @@ fn build_rest_passive_progress_rule(
         OutcomeStatus::NeedsReview,
         Probability::from_percent(99).map_err(RuleEngineError::from)?,
         "The bounded REST candidate was observed and requires an independent active replay",
+    )?
+    .scoped_to_action(kind.action_id())?
+    .with_case_correlated_evidence()
+}
+
+#[cfg(feature = "ssrf-oast-review")]
+fn build_ssrf_oast_terminal_rule(
+    kind: NativeWebReviewActionKind,
+    stage: VerificationStage,
+) -> Result<VerificationRule, VerificationError> {
+    debug_assert_eq!(kind, NativeWebReviewActionKind::SsrfOastQueryReview);
+    let stage_slug = match stage {
+        VerificationStage::Passive => "passive",
+        VerificationStage::Active => "active",
+        _ => {
+            return Err(VerificationError::EmptyValue {
+                field: "SSRF OAST review verification stage",
+            });
+        },
+    };
+    VerificationRule::new(
+        format!("web.review.verify.{stage_slug}.ssrf-oast-terminal@1"),
+        stage,
+        1_000,
+        Expression::equals(
+            KnowledgeLayer::Evidence,
+            crate::web_actions::ssrf_oast_review_phase_terminal_predicate(),
+            EvidenceValue::Boolean(true),
+        ),
+        OutcomeStatus::Blocked,
+        Probability::from_percent(99).map_err(RuleEngineError::from)?,
+        "SSRF OAST review stopped after a terminal bounded transport, provider, or correlation outcome",
+    )?
+    .scoped_to_action(kind.action_id())?
+    .with_case_correlated_evidence()
+}
+
+#[cfg(feature = "ssrf-oast-review")]
+fn build_ssrf_oast_passive_progress_rule(
+    kind: NativeWebReviewActionKind,
+) -> Result<VerificationRule, VerificationError> {
+    debug_assert_eq!(kind, NativeWebReviewActionKind::SsrfOastQueryReview);
+    VerificationRule::new(
+        "web.review.verify.passive.ssrf-oast-control-observed@1",
+        VerificationStage::Passive,
+        500,
+        Expression::equals(
+            KnowledgeLayer::Evidence,
+            crate::web_actions::ssrf_oast_review_candidate_ready_predicate(),
+            EvidenceValue::Boolean(true),
+        ),
+        OutcomeStatus::NeedsReview,
+        Probability::from_percent(99).map_err(RuleEngineError::from)?,
+        "The bounded SSRF control and provider preflight completed and require one active candidate/replay phase",
     )?
     .scoped_to_action(kind.action_id())?
     .with_case_correlated_evidence()

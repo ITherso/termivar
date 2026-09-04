@@ -66,6 +66,8 @@ mod resource_authorization_runtime;
 #[cfg(feature = "rest-review")]
 mod rest_runtime;
 mod scan_profile;
+#[cfg(feature = "ssrf-oast-review")]
+mod ssrf_oast_runtime;
 mod web_assessment;
 mod web_review_decision;
 mod web_review_execution;
@@ -136,6 +138,13 @@ pub use scan_profile::{
     ScanProfileV1Error, BASELINE_SCAN_PROFILE_ID, BASELINE_SCAN_PROFILE_MAX_TOTAL_REQUESTS,
     BASELINE_SCAN_PROFILE_MAX_TOTAL_RESPONSE_BYTES, BASELINE_SCAN_PROFILE_MAX_WALL_TIME_MS,
     SCAN_PROFILE_V1_SCHEMA, WEB_REVIEW_SCAN_PROFILE_ID,
+};
+#[cfg(feature = "ssrf-oast-review")]
+pub use ssrf_oast_runtime::{
+    SsrfOastRuntimeOutcome, WebAssessmentSsrfOastAudit, MAX_SSRF_OAST_REVIEW_ACTIVE_VERIFICATIONS,
+    MAX_SSRF_OAST_REVIEW_PARAMETERS, MAX_SSRF_OAST_REVIEW_PROVIDER_REQUESTS,
+    MAX_SSRF_OAST_REVIEW_REQUESTS, MAX_SSRF_OAST_REVIEW_RESOURCES, SSRF_OAST_REVIEW_ACTION_ID,
+    SSRF_OAST_REVIEW_CAPABILITY_ID,
 };
 pub use web_assessment::{
     WebAssessmentCompletion, WebAssessmentDefenseAudit, WebAssessmentDefenseBodyCoverage,
@@ -566,6 +575,8 @@ pub struct StandardWebDecisionRuntimeBuilder {
     openapi_review: Option<openapi_runtime::OpenApiReviewConfig>,
     #[cfg(feature = "rest-review")]
     rest_review: bool,
+    #[cfg(feature = "ssrf-oast-review")]
+    ssrf_oast_review: Option<ssrf_oast_runtime::SsrfOastReviewConfig>,
 }
 
 struct NativeWebReviewRuntimeConfig {
@@ -618,6 +629,8 @@ impl StandardWebDecisionRuntimeBuilder {
             openapi_review: None,
             #[cfg(feature = "rest-review")]
             rest_review: false,
+            #[cfg(feature = "ssrf-oast-review")]
+            ssrf_oast_review: None,
         }
     }
 
@@ -761,6 +774,16 @@ impl StandardWebDecisionRuntimeBuilder {
     pub(in crate::web_runtime) fn with_rest_review(mut self) -> Self {
         self.assessment_defense_projection = true;
         self.rest_review = true;
+        self
+    }
+
+    #[cfg(feature = "ssrf-oast-review")]
+    pub(in crate::web_runtime) fn with_ssrf_oast_review(
+        mut self,
+        config: ssrf_oast_runtime::SsrfOastReviewConfig,
+    ) -> Self {
+        self.assessment_defense_projection = true;
+        self.ssrf_oast_review = Some(config);
         self
     }
 
@@ -1002,6 +1025,11 @@ impl StandardWebDecisionRuntimeBuilder {
         let max_action_cycles = max_action_cycles.saturating_add(
             u32::from(self.rest_review) * rest_runtime::REST_REVIEW_ACTION_CYCLE_ALLOWANCE,
         );
+        #[cfg(feature = "ssrf-oast-review")]
+        let max_action_cycles = max_action_cycles.saturating_add(
+            u32::from(self.ssrf_oast_review.is_some())
+                * ssrf_oast_runtime::SSRF_OAST_REVIEW_ACTION_CYCLE_ALLOWANCE,
+        );
         let config = DecisionLoopConfig::new(
             planning,
             self.adaptation_limits,
@@ -1051,8 +1079,26 @@ impl StandardWebDecisionRuntimeBuilder {
                 })
             })
             .transpose()?;
+        #[cfg(feature = "ssrf-oast-review")]
+        let ssrf_oast_review = self.ssrf_oast_review.map(|config| {
+            ssrf_oast_runtime::SsrfOastRuntimeBinding::new(
+                config,
+                authority.clone(),
+                subject.clone(),
+            )
+        });
         #[cfg(feature = "openapi-review")]
         let openapi_review = self.openapi_review.map(|config| {
+            #[cfg(all(feature = "ssrf-oast-review", feature = "openapi-review"))]
+            if let Some(ssrf) = ssrf_oast_review.as_ref() {
+                return openapi_runtime::OpenApiRuntimeBinding::new_with_ssrf_selection(
+                    config,
+                    requests.clone(),
+                    subject.clone(),
+                    knowledge.clone(),
+                    ssrf.selection_slot(),
+                );
+            }
             openapi_runtime::OpenApiRuntimeBinding::new(
                 config,
                 requests.clone(),
@@ -1068,7 +1114,6 @@ impl StandardWebDecisionRuntimeBuilder {
                 .rest_selection_slot();
             rest_runtime::RestReviewBinding::new(selection, requests.clone(), subject.clone())
         });
-
         let native_executor_profile = match self.native_web_review {
             Some(config) => {
                 let profile = {
@@ -1177,13 +1222,15 @@ impl StandardWebDecisionRuntimeBuilder {
         #[cfg(any(
             feature = "authorization-review",
             feature = "openapi-review",
-            feature = "rest-review"
+            feature = "rest-review",
+            feature = "ssrf-oast-review"
         ))]
         let mut native_review_actions = native_executor_actions.clone();
         #[cfg(not(any(
             feature = "authorization-review",
             feature = "openapi-review",
-            feature = "rest-review"
+            feature = "rest-review",
+            feature = "ssrf-oast-review"
         )))]
         let native_review_actions = native_executor_actions.clone();
         #[cfg(feature = "authorization-review")]
@@ -1202,6 +1249,11 @@ impl StandardWebDecisionRuntimeBuilder {
             native_review_actions
                 .push(crate::web_actions::NativeWebReviewActionKind::RestReadOnlyReplay);
         }
+        #[cfg(feature = "ssrf-oast-review")]
+        if ssrf_oast_review.is_some() {
+            native_review_actions
+                .push(crate::web_actions::NativeWebReviewActionKind::SsrfOastQueryReview);
+        }
         if !native_review_actions.is_empty() {
             let profile =
                 NativeWebReviewDecisionProfile::for_actions(native_review_actions.iter().copied())
@@ -1214,10 +1266,17 @@ impl StandardWebDecisionRuntimeBuilder {
             let rest_count = usize::from(rest_review.is_some());
             #[cfg(not(feature = "rest-review"))]
             let rest_count = 0;
-            let non_rest_count = native_review_actions.len().saturating_sub(rest_count);
+            #[cfg(feature = "ssrf-oast-review")]
+            let ssrf_oast_count = usize::from(ssrf_oast_review.is_some());
+            #[cfg(not(feature = "ssrf-oast-review"))]
+            let ssrf_oast_count = 0;
+            let non_rest_count = native_review_actions
+                .len()
+                .saturating_sub(rest_count)
+                .saturating_sub(ssrf_oast_count);
             debug_assert_eq!(
                 report.reasoning_rules_inserted,
-                usize::from(non_rest_count > 0) + rest_count
+                usize::from(non_rest_count > 0) + rest_count + ssrf_oast_count
             );
             debug_assert_eq!(report.actions_inserted, native_review_actions.len());
             #[cfg(feature = "authorization-review")]
@@ -1230,11 +1289,18 @@ impl StandardWebDecisionRuntimeBuilder {
             let openapi_count = 0;
             debug_assert_eq!(
                 report.passive_rules_inserted,
-                authorization_count + (2 * openapi_count) + (2 * rest_count)
+                authorization_count
+                    + (2 * openapi_count)
+                    + (2 * rest_count)
+                    + (2 * ssrf_oast_count)
             );
             debug_assert_eq!(
                 report.active_rules_inserted,
-                native_review_actions.len() + authorization_count + openapi_count + rest_count
+                native_review_actions.len()
+                    + authorization_count
+                    + openapi_count
+                    + rest_count
+                    + ssrf_oast_count
             );
         }
 
@@ -1313,6 +1379,12 @@ impl StandardWebDecisionRuntimeBuilder {
                 .install_into_parent_registry(&mut executors)
                 .map_err(|_| StandardWebDecisionRuntimeError::NativeWebReviewExecutionProfile)?;
         }
+        #[cfg(feature = "ssrf-oast-review")]
+        if let Some(binding) = ssrf_oast_review.as_ref() {
+            binding
+                .install_into_parent_registry(&mut executors)
+                .map_err(|_| StandardWebDecisionRuntimeError::NativeWebReviewExecutionProfile)?;
+        }
 
         let mut unsupported_actions: BTreeSet<_> = StandardWebActionKind::all()
             .into_iter()
@@ -1343,6 +1415,8 @@ impl StandardWebDecisionRuntimeBuilder {
             openapi_review,
             #[cfg(feature = "rest-review")]
             rest_review,
+            #[cfg(feature = "ssrf-oast-review")]
+            ssrf_oast_review,
         })
     }
 }
@@ -1390,6 +1464,8 @@ pub struct StandardWebDecisionRuntime {
     openapi_review: Option<openapi_runtime::OpenApiRuntimeBinding>,
     #[cfg(feature = "rest-review")]
     rest_review: Option<rest_runtime::RestReviewBinding>,
+    #[cfg(feature = "ssrf-oast-review")]
+    ssrf_oast_review: Option<ssrf_oast_runtime::SsrfOastRuntimeBinding>,
 }
 
 impl StandardWebDecisionRuntime {
@@ -1527,6 +1603,13 @@ impl StandardWebDecisionRuntime {
         &mut self,
     ) -> Option<rest_runtime::RestReviewBinding> {
         self.rest_review.take()
+    }
+
+    #[cfg(feature = "ssrf-oast-review")]
+    pub(in crate::web_runtime) fn take_ssrf_oast_review(
+        &mut self,
+    ) -> Option<ssrf_oast_runtime::SsrfOastRuntimeBinding> {
+        self.ssrf_oast_review.take()
     }
 
     /// Collects bootstrap evidence and drives commands to a terminal state.

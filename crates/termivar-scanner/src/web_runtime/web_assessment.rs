@@ -56,6 +56,11 @@ use super::rest_runtime::{
     CommittedRestReview, RestRuntimeOutcome, RestRuntimeResult, WebAssessmentRestAudit,
     MAX_REST_REVIEW_ACTIVE_VERIFICATIONS,
 };
+#[cfg(feature = "ssrf-oast-review")]
+use super::ssrf_oast_runtime::{
+    CommittedSsrfOastReview, SsrfOastReviewConfig, SsrfOastRuntimeResult,
+    WebAssessmentSsrfOastAudit, MAX_SSRF_OAST_REVIEW_ACTIVE_VERIFICATIONS,
+};
 use super::{
     assessment_api_visibility::{
         build_root_api_visibility_runtime, CommittedAssessmentApiVisibility,
@@ -84,6 +89,11 @@ use super::{
         CompletedWebAssessmentTruth,
     },
     scan_profile::ScanProfileV1,
+};
+#[cfg(feature = "ssrf-oast-review")]
+use crate::ssrf_oast_review::{
+    select_observed_query_candidate, SsrfOastAdminToken, SsrfOastReviewPolicy,
+    SsrfOastTerminalState,
 };
 use crate::{
     http_evidence::{CompleteHttpResponseObservation, CompleteHttpResponseObserver},
@@ -931,6 +941,10 @@ pub enum WebAssessmentIncompleteReason {
     /// did not complete its bounded anonymous comparison.
     #[cfg(feature = "rest-review")]
     RestReviewIncomplete,
+    /// The explicitly enabled query-only SSRF/OAST child did not complete its
+    /// bounded correlated target and provider lifecycle.
+    #[cfg(feature = "ssrf-oast-review")]
+    SsrfOastReviewIncomplete,
 }
 
 /// Whether every retained subject and eligible document completed within bounds.
@@ -1268,6 +1282,8 @@ pub struct WebAssessmentRunReport {
     openapi_review: Option<WebAssessmentOpenApiAudit>,
     #[cfg(feature = "rest-review")]
     rest_review: Option<WebAssessmentRestAudit>,
+    #[cfg(feature = "ssrf-oast-review")]
+    ssrf_oast_review: Option<WebAssessmentSsrfOastAudit>,
     assessment_items: AssessmentItemSet,
     assessment_projection_incompleteness: PassiveAssessmentProjectionIncompleteness,
     completion: WebAssessmentCompletion,
@@ -1297,6 +1313,8 @@ impl fmt::Debug for WebAssessmentRunReport {
         debug.field("openapi_review", &self.openapi_review);
         #[cfg(feature = "rest-review")]
         debug.field("rest_review", &self.rest_review);
+        #[cfg(feature = "ssrf-oast-review")]
+        debug.field("ssrf_oast_review", &self.ssrf_oast_review);
         debug
             .field("assessment_items", &self.assessment_items)
             .field(
@@ -1362,6 +1380,10 @@ impl WebAssessmentRunReport {
     pub const fn rest_review_audit(&self) -> Option<&WebAssessmentRestAudit> {
         self.rest_review.as_ref()
     }
+    #[cfg(feature = "ssrf-oast-review")]
+    pub const fn ssrf_oast_review_audit(&self) -> Option<&WebAssessmentSsrfOastAudit> {
+        self.ssrf_oast_review.as_ref()
+    }
     /// Returns claim-safe items derived only from committed assessment truth.
     pub fn assessment_items(&self) -> &[AssessmentItem] {
         self.assessment_items.items()
@@ -1421,6 +1443,8 @@ impl WebAssessmentRunReport {
             self.openapi_review,
             #[cfg(feature = "rest-review")]
             self.rest_review,
+            #[cfg(feature = "ssrf-oast-review")]
+            self.ssrf_oast_review,
         )
     }
 }
@@ -1666,6 +1690,8 @@ pub struct WebAssessmentRuntimeBuilder {
     openapi_review: bool,
     #[cfg(feature = "rest-review")]
     rest_review: bool,
+    #[cfg(feature = "ssrf-oast-review")]
+    ssrf_oast_review: Option<(SsrfOastReviewPolicy, SsrfOastAdminToken)>,
     root_authorization_context: Option<WebAssessmentRootAuthorizationContext>,
 }
 
@@ -1688,6 +1714,8 @@ impl WebAssessmentRuntimeBuilder {
             openapi_review: false,
             #[cfg(feature = "rest-review")]
             rest_review: false,
+            #[cfg(feature = "ssrf-oast-review")]
+            ssrf_oast_review: None,
             root_authorization_context: None,
         }
     }
@@ -1754,6 +1782,16 @@ impl WebAssessmentRuntimeBuilder {
         self.rest_review = true;
         self
     }
+    /// Enables one explicitly authorized query-only OAST correlation review.
+    #[cfg(feature = "ssrf-oast-review")]
+    pub fn with_ssrf_oast_review(
+        mut self,
+        policy: SsrfOastReviewPolicy,
+        administrator: SsrfOastAdminToken,
+    ) -> Self {
+        self.ssrf_oast_review = Some((policy, administrator));
+        self
+    }
     /// Adds one explicitly selected, four-view resource authorization review.
     ///
     /// The policy and move-only principals are consumed by this builder. The
@@ -1781,6 +1819,18 @@ impl WebAssessmentRuntimeBuilder {
         self
     }
     pub fn build(self) -> Result<WebAssessmentRuntime, WebAssessmentRuntimeError> {
+        #[cfg(feature = "ssrf-oast-review")]
+        let ssrf_oast_review = self.ssrf_oast_review.map(|(policy, administrator)| {
+            let selection = select_observed_query_candidate(
+                policy.target_origin(),
+                &self.target,
+                "authorized-root@1",
+                true,
+                true,
+                true,
+            );
+            SsrfOastReviewConfig::new(policy, administrator, selection)
+        });
         #[cfg(feature = "rest-review")]
         if self.rest_review && !self.openapi_review {
             return Err(WebAssessmentRuntimeError::RestReviewRequiresOpenApiReview);
@@ -1870,6 +1920,17 @@ impl WebAssessmentRuntimeBuilder {
                         .expect("REST active-verification allowance fits u16"),
                 )
                 .expect("compiled REST allowance fits u16");
+            #[cfg(feature = "ssrf-oast-review")]
+            let allowance = allowance
+                .checked_add(
+                    u16::from(
+                        ssrf_oast_review.is_some()
+                            && self.limits.max_active_verifications()
+                                == DEFAULT_WEB_ASSESSMENT_MAX_ACTIVE_VERIFICATIONS,
+                    ) * u16::try_from(MAX_SSRF_OAST_REVIEW_ACTIVE_VERIFICATIONS)
+                        .expect("SSRF OAST active-verification allowance fits u16"),
+                )
+                .expect("compiled SSRF OAST allowance fits u16");
             allowance
         };
         let runtime_active_verification_limit = self
@@ -1992,6 +2053,8 @@ impl WebAssessmentRuntimeBuilder {
             }),
             #[cfg(feature = "rest-review")]
             rest_review: self.rest_review,
+            #[cfg(feature = "ssrf-oast-review")]
+            ssrf_oast_review,
             native_review,
             non_root_structural_review: None,
             xss_structural_review: None,
@@ -2013,6 +2076,10 @@ impl WebAssessmentRuntimeBuilder {
             committed_rest_review: None,
             #[cfg(feature = "rest-review")]
             rest_review_audit: None,
+            #[cfg(feature = "ssrf-oast-review")]
+            committed_ssrf_oast_review: None,
+            #[cfg(feature = "ssrf-oast-review")]
+            ssrf_oast_review_audit: None,
             #[cfg(feature = "graphql-review")]
             optional_child_parent_defense: None,
             defense_audit: WebAssessmentDefenseAudit::new(if self.defense_enforcement {
@@ -2049,6 +2116,8 @@ pub struct WebAssessmentRuntime {
     openapi_review: Option<OpenApiReviewConfig>,
     #[cfg(feature = "rest-review")]
     rest_review: bool,
+    #[cfg(feature = "ssrf-oast-review")]
+    ssrf_oast_review: Option<SsrfOastReviewConfig>,
     native_review: Option<AssessmentNativeReviewRuntime>,
     non_root_structural_review: Option<AssessmentNativeReviewRuntime>,
     xss_structural_review: Option<AssessmentNativeReviewRuntime>,
@@ -2070,6 +2139,10 @@ pub struct WebAssessmentRuntime {
     committed_rest_review: Option<CommittedRestReview>,
     #[cfg(feature = "rest-review")]
     rest_review_audit: Option<WebAssessmentRestAudit>,
+    #[cfg(feature = "ssrf-oast-review")]
+    committed_ssrf_oast_review: Option<CommittedSsrfOastReview>,
+    #[cfg(feature = "ssrf-oast-review")]
+    ssrf_oast_review_audit: Option<WebAssessmentSsrfOastAudit>,
     #[cfg(feature = "graphql-review")]
     optional_child_parent_defense: Option<AssessmentDefenseController>,
     defense_audit: WebAssessmentDefenseAudit,
@@ -2394,6 +2467,15 @@ impl WebAssessmentRuntime {
                 } else {
                     builder
                 };
+                #[cfg(feature = "ssrf-oast-review")]
+                let builder = if subject.origin == WebAssessmentSubjectOrigin::AuthorizedRoot {
+                    match self.ssrf_oast_review.take() {
+                        Some(config) => builder.with_ssrf_oast_review(config),
+                        None => builder,
+                    }
+                } else {
+                    builder
+                };
                 let mut runtime = match compose_child(builder) {
                     Ok(runtime) => runtime,
                     Err(source) => {
@@ -2437,6 +2519,8 @@ impl WebAssessmentRuntime {
                 let openapi_binding = runtime.take_openapi_review();
                 #[cfg(feature = "rest-review")]
                 let rest_binding = runtime.take_rest_review();
+                #[cfg(feature = "ssrf-oast-review")]
+                let ssrf_oast_binding = runtime.take_ssrf_oast_review();
                 let defense = runtime.assessment_defense_controller().cloned();
                 let planner = runtime.assessment_planner().clone();
                 let standard = match standard_result {
@@ -2625,6 +2709,55 @@ impl WebAssessmentRuntime {
                                 reasons.insert(WebAssessmentIncompleteReason::HostCancellation);
                             }
                             reasons.insert(WebAssessmentIncompleteReason::RestReviewIncomplete);
+                        },
+                        Err(_) => {
+                            let parts = standard.into_assessment_parts();
+                            return Err(WebAssessmentRuntimeError::ProjectionInvariant {
+                                receipt: Box::new(self.failure_receipt(
+                                    &known_subjects,
+                                    subject_reports,
+                                    forms,
+                                    WebAssessmentSubjectReport::complete(subject, parts),
+                                    failed_reasons(&reasons),
+                                    started_at,
+                                )),
+                            });
+                        },
+                    }
+                }
+                #[cfg(feature = "ssrf-oast-review")]
+                if let Some(binding) = ssrf_oast_binding {
+                    let forced_terminal = if self.authority.cancellation().is_cancelled() {
+                        Some(SsrfOastTerminalState::Cancelled)
+                    } else if standard.limit_exceeded().is_some() {
+                        Some(SsrfOastTerminalState::BudgetExhausted)
+                    } else {
+                        None
+                    };
+                    match binding.finalize(
+                        self.authority.knowledge(),
+                        standard.transport(),
+                        forced_terminal,
+                        standard.limit_exceeded().cloned(),
+                    ) {
+                        Ok(SsrfOastRuntimeResult::Complete(committed)) => {
+                            self.ssrf_oast_review_audit = Some(committed.audit().clone());
+                            self.committed_ssrf_oast_review = Some(committed);
+                        },
+                        Ok(SsrfOastRuntimeResult::Stopped {
+                            audit,
+                            runtime_limit,
+                        }) => {
+                            let cancelled = audit.outcome()
+                                == super::ssrf_oast_runtime::SsrfOastRuntimeOutcome::Cancelled;
+                            self.ssrf_oast_review_audit = Some(audit);
+                            if let Some(limit) = runtime_limit {
+                                reasons.insert(reason_for_runtime_dimension(limit.dimension()));
+                            }
+                            if cancelled {
+                                reasons.insert(WebAssessmentIncompleteReason::HostCancellation);
+                            }
+                            reasons.insert(WebAssessmentIncompleteReason::SsrfOastReviewIncomplete);
                         },
                         Err(_) => {
                             let parts = standard.into_assessment_parts();
@@ -3393,6 +3526,8 @@ impl WebAssessmentRuntime {
                 openapi: self.committed_openapi_review.as_ref(),
                 #[cfg(feature = "rest-review")]
                 rest: self.committed_rest_review.as_ref(),
+                #[cfg(feature = "ssrf-oast-review")]
+                ssrf_oast: self.committed_ssrf_oast_review.as_ref(),
             },
             self.authority.knowledge(),
             &self.root,
@@ -3460,6 +3595,8 @@ impl WebAssessmentRuntime {
             openapi_review: self.openapi_review_audit.clone(),
             #[cfg(feature = "rest-review")]
             rest_review: self.rest_review_audit.clone(),
+            #[cfg(feature = "ssrf-oast-review")]
+            ssrf_oast_review: self.ssrf_oast_review_audit.clone(),
             assessment_items,
             assessment_projection_incompleteness,
             completion,

@@ -297,6 +297,12 @@ impl OastAuthorityEpoch {
         reject_zero(&bytes)?;
         Ok(Self(bytes))
     }
+
+    /// Consumes the epoch only at the sealed native-provider configuration boundary.
+    #[cfg(feature = "ssrf-oast-review")]
+    pub(crate) const fn into_bytes(self) -> [u8; 32] {
+        self.0
+    }
 }
 
 impl fmt::Debug for OastAuthorityEpoch {
@@ -334,6 +340,12 @@ impl OastEventKey {
     pub fn new(bytes: [u8; EVENT_KEY_BYTES]) -> Result<Self, OastError> {
         reject_zero(&bytes)?;
         Ok(Self(bytes))
+    }
+
+    /// Borrows the already-reduced opaque identity for in-crate differential review.
+    #[cfg(feature = "ssrf-oast-review")]
+    pub(crate) const fn as_bytes(&self) -> &[u8; EVENT_KEY_BYTES] {
+        &self.0
     }
 }
 

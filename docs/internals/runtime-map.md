@@ -85,8 +85,8 @@ rejected; ledger status itself never authorizes execution or raises claim
 authority.
 
 The [scanner conformance corpus](scanner-conformance-corpus.md) is also outside
-every product runtime. Its 103 sanitized cases, including 23 four-view
-authorization differentials, use the internal
+every product runtime. Its 127 sanitized cases, including 23 four-view
+authorization differentials and 24 raw-free SSRF OAST lifecycle cases, use the internal
 `security-assessment-fixture/v1` schema and are checked by the deterministic
 `xtask scanner-corpus` command. Validation and the conformance harness perform
 no network requests, add no scanner action or executor, and change no report
@@ -110,9 +110,20 @@ bounded raw-free events, and performs explicit cleanup. The non-default
 sealed scanner host-library consumer of its HTTPS client. A host-minted permit
 binds the exact provider origin, assessment, epoch, fixed operations, parent
 budget reservation, and request/byte/time ceilings. It feeds reduced HTTP
-events through the existing OAST correlation state machine. There is still no
-CLI flag, `WebAssessmentRuntime` action, target request, assessment evidence,
-report item, release-bundle edge, or SSRF conclusion.
+events through the existing OAST correlation state machine. Enabling the
+adapter by itself still adds no CLI flag, `WebAssessmentRuntime` action, target
+request, assessment evidence, report item, release-bundle edge, or SSRF
+conclusion.
+
+The separately gated [SSRF OAST query review](ssrf-oast-query-review.md) is the
+only product caller that joins this narrowing provider authority to target-side
+authority. One strict policy may select one structurally eligible query
+occurrence. One `.invalid` control and two independent callback mutations use
+exactly three anonymous bodyless target GETs, one logical active verification,
+and at most twelve fixed provider requests. Both fresh callback identities must
+be observed after their respective dispatches; one-sided or noisy interaction
+never creates an item. The maximum conclusion is `NeedsReview` /
+`KnowledgeOnly`, never confirmed SSRF or inferred impact.
 
 The [OpenAPI contract catalog](openapi-contract-catalog.md) is a
 transport-neutral foundation rather than a product runtime. It accepts only
@@ -540,6 +551,7 @@ The following matrix separates build availability from actual execution:
 | GraphQL surface review | scanner and CLI opt-in (`graphql-review`) plus explicit runtime flag | one exact-origin endpoint may receive an anonymous `__typename` control, bounded schema-root candidate, and distinct replay through the shared broker | no | Preview; max one endpoint, three requests/one active verification, `Informational` / `KnowledgeOnly` only |
 | REST read-only review | scanner and CLI opt-in (`rest-review`) plus explicit same-run `openapi-review` | one replay-stable OpenAPI catalog may select one anonymous, bodyless, exact-origin zero-input GET for candidate plus replay | no | Preview; max one operation, two requests/one active verification, `Informational` / `KnowledgeOnly` only; no chaining |
 | Native OAST provider authority | explicit library host plus non-default `oast-native-provider` | fixed register/allocate/poll/cleanup requests to one host-authorized self-hosted HTTPS provider, charged to a narrowing parent-budget reservation | no | Preview; no CLI, target action/request, report/finding, release-bundle entry, or SSRF conclusion |
+| SSRF OAST query review | scanner and CLI opt-in (`ssrf-oast-review`) plus explicit policy and out-of-band provider administrator token | one exact query occurrence may receive a `.invalid` control and two independent HTTPS callback mutations through the existing target broker and narrowing provider authority | no | Preview; exactly three target GETs, at most twelve provider requests, one active verification, and one `NeedsReview` / `KnowledgeOnly` item only after both callbacks; no confirmed SSRF or impact |
 | Resource authorization review | scanner and CLI opt-in (`authorization-review`) plus explicit policy and two out-of-band credentials | one exact-origin JSON resource receives primary/peer candidate and independent replay legs through the assessment's shared broker | no | Preview; max one resource, four requests/one active verification, one `NeedsReview` / `KnowledgeOnly` item at most |
 | `oast` correlation foundation | scanner library opt-in (`oast-correlation`) | host-owned, transport-free registration and caller-driven poll state only; no provider transport dependency or runtime caller | no | Preview library contract; host-minted move-only tokens, exact case binding, bounded DNS/HTTP event receipts, replay suppression, and no target probe or vulnerability claim |
 | `termivar-oast` native provider | independent unpublished workspace crate; separate non-default `server` and `client` features | optional self-hosted loopback auxiliary service plus exact-origin HTTPS client for the fixed management protocol and raw-free HTTP callback mailbox | no | Preview infrastructure; one sealed scanner host-library adapter uses the client under narrowing authority; no public provider, target authority, scanner action, report projection, Interactsh compatibility, or `release-bundle` inclusion |

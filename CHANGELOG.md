@@ -6,6 +6,15 @@ All notable changes to Termivar are recorded here. Releases use the categories f
 
 ### Added
 
+- Added a non-default SSRF OAST query review for one operator-authorized,
+  structurally eligible query parameter. One `.invalid` control and two
+  independently allocated HTTPS callback targets use exactly three anonymous,
+  bodyless target GETs, one logical active verification, and at most twelve
+  fixed provider-management requests. Only two correctly correlated callback
+  observations can produce `NeedsReview` / `KnowledgeOnly` evidence; one-sided
+  callbacks, timing, target status, and provider noise produce no item. The
+  feature retains no raw target/provider traffic, remains outside
+  `release-bundle`, and does not confirm SSRF or infer business impact.
 - Added a non-default native OAST provider adapter that binds one explicitly
   self-hosted HTTPS management origin, one assessment and authority epoch,
   fixed register/allocate/poll/cleanup operations, and checked request, byte,

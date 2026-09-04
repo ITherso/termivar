@@ -31,7 +31,8 @@ impl CollectedHttpResponse {
     #[cfg(any(
         feature = "legacy-scanner",
         feature = "authorization-review",
-        feature = "openapi-review"
+        feature = "openapi-review",
+        feature = "ssrf-oast-review"
     ))]
     pub(crate) fn final_url(&self) -> &Url {
         &self.final_url
@@ -53,7 +54,8 @@ impl CollectedHttpResponse {
     #[cfg(any(
         feature = "graphql-review",
         feature = "authorization-review",
-        feature = "openapi-review"
+        feature = "openapi-review",
+        feature = "ssrf-oast-review"
     ))]
     pub(crate) fn body_complete(&self) -> bool {
         self.body_complete && !self.body_truncated
@@ -97,6 +99,17 @@ impl CollectedHttpResponse {
 
     #[cfg(feature = "openapi-review")]
     pub(crate) fn openapi_defense_signal(&self) -> crate::web_runtime::AssessmentDefenseSignal {
+        super::bounded_assessment_defense_signal(
+            self.status(),
+            crate::HttpProbeMethod::Get,
+            &self.headers,
+            self.body_complete,
+            &self.body,
+        )
+    }
+
+    #[cfg(feature = "ssrf-oast-review")]
+    pub(crate) fn ssrf_oast_defense_signal(&self) -> crate::web_runtime::AssessmentDefenseSignal {
         super::bounded_assessment_defense_signal(
             self.status(),
             crate::HttpProbeMethod::Get,

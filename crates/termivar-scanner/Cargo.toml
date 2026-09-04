@@ -23,6 +23,7 @@ tokio-util = { workspace = true, optional = true }
 reqwest = { workspace = true, optional = true }
 chrono = { workspace = true, optional = true }
 futures = { workspace = true, optional = true }
+getrandom = { workspace = true, optional = true }
 async-trait = { version = "0.1", optional = true }
 dashmap = { version = "5.5", optional = true }
 url = "2.5"
@@ -83,6 +84,10 @@ oast-correlation = ["core", "dep:zeroize"]
 # fixed-route, and metered through one narrowing child of the assessment
 # authority; this feature adds no target action or CLI surface.
 oast-native-provider = ["oast-correlation", "scanning", "dep:termivar-oast"]
+
+# Explicitly enabled, bounded query-only SSRF OAST review. The native provider
+# remains a narrowing child authority and is not included in any aggregate.
+ssrf-oast-review = ["scanning", "oast-correlation", "oast-native-provider", "dep:getrandom"]
 
 # Historical direct-I/O phases, ordered runner, and Scanner SDK.
 # This is intentionally absent from the default product.

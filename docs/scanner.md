@@ -1,5 +1,28 @@
 # Scanner
 
+## Optional SSRF OAST query review
+
+The non-default `ssrf-oast-review` feature adds one explicitly enabled child
+to the existing `WebAssessmentRuntime`. It requires explicit
+`--profile web-review`, `--ssrf-oast-review`, a strict
+`security.ssrf-oast-review-policy/v1` file selected by `--ssrf-oast-policy`,
+and exactly one provider administrator-token source through environment, file,
+or stdin. The policy binds the CLI target's exact origin, one different HTTPS
+provider origin, explicit external-interaction acknowledgement, and bounded
+polling/lifetime limits. No provider is selected or deployed automatically.
+
+V1 selects at most one exact query-parameter occurrence whose observed value
+is an absolute HTTP(S) URL, or one eligible optional `url`/`uri` query
+parameter from a complete same-run OpenAPI catalog. It never guesses from a
+name or materializes an example/default. The target plan is exactly one inert
+`.invalid` control plus candidate and replay: three anonymous bodyless GETs and
+one logical active verification. Candidate and replay use distinct provider
+callbacks and both must yield fresh, correctly correlated HTTP events before
+`ssrf.oast-repeated-outbound-interaction@1` may be projected as
+`NeedsReview` / `KnowledgeOnly` with no severity. One-sided callbacks, timing,
+status codes, provider noise, and business-impact inference are insufficient.
+See [SSRF OAST query review](internals/ssrf-oast-query-review.md).
+
 ## Optional OpenAPI surface review
 
 The non-default `openapi-review` feature adds one explicit

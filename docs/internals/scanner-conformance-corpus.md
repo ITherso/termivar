@@ -1,9 +1,10 @@
 # Scanner conformance corpus
 
-The scanner conformance corpus is repository-only test data. It contains 103
+The scanner conformance corpus is repository-only test data. It contains 127
 sanitized request/response cases for deterministic checks of current scanner
 semantics and explicitly identified future protocol cases. Twenty-three cases
-exercise the transport-neutral four-view authorization differential contract.
+exercise the transport-neutral four-view authorization differential contract,
+and twenty-four exercise raw-free SSRF OAST lifecycle outcomes.
 It is not loaded by `termivar scan` and grants no network, execution, or claim
 authority.
 
@@ -88,6 +89,21 @@ not a labelled vulnerability or proof that an operator-declared policy is
 correct. The same pure contract is used by the explicitly enabled resource
 authorization runtime; corpus cases themselves still issue no requests. See
 [Authorization differential review](authorization-differential-review.md).
+
+## SSRF OAST query-review cases
+
+The SSRF OAST subset supplies one sanitized observed URL-query shape plus typed,
+raw-free lifecycle facts to the production comparator. Its twenty-four cases
+cover repeated independent callbacks, no callback, one-sided and wrong callback
+events, duplicate-only and stale preflight states, correlation and event
+identity mismatches, provider authentication/rate-limit/malformed/expiry
+states, cancellation, truncation, accounting incompleteness, and cleanup.
+
+The corpus never contacts a target or provider, allocates a callback, carries a
+credential or callback URL, or confirms SSRF. It checks only that the pure
+selection and outcome contracts remain bounded and that no state short of two
+exact independently correlated events may project the V1 item. See
+[SSRF OAST query review](ssrf-oast-query-review.md).
 
 ## What passing means
 

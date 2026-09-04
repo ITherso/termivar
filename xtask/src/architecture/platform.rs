@@ -34,6 +34,7 @@ const QUARANTINED_FEATURES: &[&str] = &[
     "oast-native-provider",
     "openapi-review",
     "rest-review",
+    "ssrf-oast-review",
     "platform-models",
     "plugins",
     "reporting",
@@ -59,6 +60,7 @@ const EXACT_SCANNER_FEATURES: &[&str] = &[
     "oast-native-provider",
     "openapi-review",
     "rest-review",
+    "ssrf-oast-review",
     "platform-models",
     "plugins",
     "reporting",
@@ -115,6 +117,7 @@ const FEATURE_OWNED_DEPENDENCIES: &[&str] = &[
     "chrono",
     "dashmap",
     "futures",
+    "getrandom",
     "html5ever",
     "markup5ever_rcdom",
     "mlua",
@@ -207,6 +210,7 @@ const EXACT_MODULE_GATES: &[(&str, &str)] = &[
     ("monitoring", "feature=\"monitoring\""),
     ("oast", "feature=\"oast-correlation\""),
     ("native_oast_provider", "feature=\"oast-native-provider\""),
+    ("ssrf_oast_review", "feature=\"ssrf-oast-review\""),
     ("persistence", "feature=\"platform-models\""),
     ("plugin", "feature=\"plugins\""),
     ("post_exploitation", "feature=\"platform-models\""),
@@ -1200,6 +1204,10 @@ fn cli_feature_violations(
             &["termivar-scanner/authorization-review"][..],
         ),
         (
+            "ssrf-oast-review",
+            &["termivar-scanner/ssrf-oast-review"][..],
+        ),
+        (
             "normalization-resilience",
             &["termivar-scanner/normalization-resilience"][..],
         ),
@@ -1503,6 +1511,26 @@ fn exact_raw_feature_closures() -> Vec<(&'static str, &'static [&'static str])> 
                 "oast-correlation",
                 "scanning",
                 "core",
+                "dep:termivar-oast",
+                "dep:zeroize",
+                "dep:async-trait",
+                "dep:html5ever",
+                "dep:markup5ever_rcdom",
+                "dep:reqwest",
+                "dep:tokio",
+                "dep:tokio-util",
+                "dep:toml",
+            ],
+        ),
+        (
+            "ssrf-oast-review",
+            &[
+                "ssrf-oast-review",
+                "oast-native-provider",
+                "oast-correlation",
+                "scanning",
+                "core",
+                "dep:getrandom",
                 "dep:termivar-oast",
                 "dep:zeroize",
                 "dep:async-trait",
@@ -4367,7 +4395,7 @@ fn assessment_bridge_body_is_exact(block: &syn::Block) -> bool {
     };
     if reporting_expression_path_key(report_call.func.as_ref()).as_deref()
         != Some("AssessmentRunReport::from_completed_truth")
-        || report_call.args.len() != 5
+        || report_call.args.len() != 6
     {
         return false;
     }
@@ -4385,6 +4413,9 @@ fn assessment_bridge_body_is_exact(block: &syn::Block) -> bool {
         })
         && arguments.next().is_some_and(|argument| {
             assessment_bridge_feature_field(argument, "rest_review", "rest-review")
+        })
+        && arguments.next().is_some_and(|argument| {
+            assessment_bridge_feature_field(argument, "ssrf_oast_review", "ssrf-oast-review")
         })
 }
 
@@ -7320,7 +7351,8 @@ const EXACT_REPORTING_PRODUCTION_TOKEN_BYTES: usize = 71_138;
 const EXACT_REPORTING_PRODUCTION_FINGERPRINT: u128 = 0x05d7_a24d_3d72_66b3_3f25_fb45_c86f_f061;
 
 fn reporting_production_body_inventory_violations(source: &str) -> Vec<String> {
-    let Ok(syntax) = syn::parse_file(source) else {
+    let normalized_source = source.replace("\r\n", "\n");
+    let Ok(syntax) = syn::parse_file(&normalized_source) else {
         return vec!["reporting.rs must remain valid Rust source".to_owned()];
     };
     let exact_test_modules = syntax
@@ -7351,7 +7383,7 @@ fn reporting_production_body_inventory_violations(source: &str) -> Vec<String> {
             "reporting.rs must end with exactly one exact cfg(test) inline tests module".to_owned(),
         ];
     }
-    let Some((production, _)) = source.split_once("#[cfg(test)]") else {
+    let Some((production, _)) = normalized_source.split_once("#[cfg(test)]") else {
         return vec![
             "reporting.rs must end production code with the exact cfg(test) module boundary"
                 .to_owned(),
@@ -8740,6 +8772,15 @@ mod tests {
                 "dep:termivar-oast".to_owned(),
             ],
         );
+        features.insert(
+            "ssrf-oast-review".to_owned(),
+            vec![
+                "scanning".to_owned(),
+                "oast-correlation".to_owned(),
+                "oast-native-provider".to_owned(),
+                "dep:getrandom".to_owned(),
+            ],
+        );
         features.insert("compliance".to_owned(), Vec::new());
         features.insert("threat-intel".to_owned(), Vec::new());
         features.insert(
@@ -8887,6 +8928,31 @@ mod tests {
                 .push("oast-native-provider".to_owned());
             assert!(!feature_violations(&widened).is_empty());
         }
+    }
+
+    #[test]
+    fn ssrf_oast_review_is_exact_non_default_and_absent_from_aggregates() {
+        let features = valid_feature_map();
+        assert!(feature_violations(&features).is_empty());
+        assert_eq!(
+            features.get("ssrf-oast-review").unwrap(),
+            &[
+                "scanning".to_owned(),
+                "oast-correlation".to_owned(),
+                "oast-native-provider".to_owned(),
+                "dep:getrandom".to_owned(),
+            ]
+        );
+        for aggregate in ["default", "full", "enterprise", "research"] {
+            assert!(!raw_feature_closure(&features, aggregate).contains("ssrf-oast-review"));
+        }
+
+        let mut widened = valid_feature_map();
+        widened
+            .get_mut("default")
+            .unwrap()
+            .push("ssrf-oast-review".to_owned());
+        assert!(!feature_violations(&widened).is_empty());
     }
 
     #[test]
@@ -10561,6 +10627,8 @@ mod tests {
                         self.openapi_review,
                         #[cfg(feature = "rest-review")]
                         self.rest_review,
+                        #[cfg(feature = "ssrf-oast-review")]
+                        self.ssrf_oast_review,
                     )
                 }
             }
@@ -10578,7 +10646,7 @@ mod tests {
             ),
             typed_assessment_bridge.replace("#[cfg(feature = \"reporting\")]", ""),
             typed_assessment_bridge.replace(
-                "AssessmentRunReport::from_completed_truth(\n                        self.assessment_items,\n                        truth,\n                        #[cfg(feature = \"authorization-review\")]\n                        self.authorization_review,\n                        #[cfg(feature = \"openapi-review\")]\n                        self.openapi_review,\n                        #[cfg(feature = \"rest-review\")]\n                        self.rest_review,\n                    )",
+                "AssessmentRunReport::from_completed_truth(\n                        self.assessment_items,\n                        truth,\n                        #[cfg(feature = \"authorization-review\")]\n                        self.authorization_review,\n                        #[cfg(feature = \"openapi-review\")]\n                        self.openapi_review,\n                        #[cfg(feature = \"rest-review\")]\n                        self.rest_review,\n                        #[cfg(feature = \"ssrf-oast-review\")]\n                        self.ssrf_oast_review,\n                    )",
                 "render(self.assessment_items)",
             ),
             typed_assessment_bridge.replace(
@@ -10614,6 +10682,8 @@ mod tests {
             typed_assessment_bridge
                 .replace("self.openapi_review,", "forged_openapi_review,"),
             typed_assessment_bridge.replace("self.rest_review,", "forged_rest_review,"),
+            typed_assessment_bridge
+                .replace("self.ssrf_oast_review,", "forged_ssrf_oast_review,"),
         ] {
             assert!(!reporting_cross_file_source_violations(
                 "web_runtime/web_assessment.rs",
@@ -11770,6 +11840,10 @@ mod tests {
                 vec!["termivar-scanner/authorization-review".to_owned()],
             ),
             (
+                "ssrf-oast-review".to_owned(),
+                vec!["termivar-scanner/ssrf-oast-review".to_owned()],
+            ),
+            (
                 "graphql-review".to_owned(),
                 vec!["termivar-scanner/graphql-review".to_owned()],
             ),
@@ -11900,7 +11974,12 @@ mod tests {
                 "authorization-review".to_owned(),
             ]
         );
-        for excluded in ["legacy-scanner", "api-adapter", "proxy-adapter"] {
+        for excluded in [
+            "legacy-scanner",
+            "api-adapter",
+            "proxy-adapter",
+            "ssrf-oast-review",
+        ] {
             assert!(features
                 .get("release-bundle")
                 .unwrap()
@@ -12377,6 +12456,7 @@ mod tests {
             #[cfg(feature = "monitoring")] pub mod monitoring;
             #[cfg(feature = "oast-native-provider")] pub(crate) mod native_oast_provider;
             #[cfg(feature = "oast-correlation")] pub mod oast;
+            #[cfg(feature = "ssrf-oast-review")] pub mod ssrf_oast_review;
             #[cfg(feature = "platform-models")] pub mod persistence;
             #[cfg(feature = "plugins")] pub mod plugin;
             #[cfg(feature = "platform-models")] pub mod post_exploitation;

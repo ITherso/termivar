@@ -26,6 +26,15 @@ const SOURCE_ROOT: &str = "crates/termivar-oast/src";
 const SCANNER_MANIFEST: &str = "crates/termivar-scanner/Cargo.toml";
 const SCANNER_SOURCE_ROOT: &str = "crates/termivar-scanner/src";
 const SCANNER_ADAPTER: &str = "native_oast_provider.rs";
+const SSRF_OAST_REVIEW_CONTRACT: &str = "ssrf_oast_review.rs";
+const SSRF_OAST_REVIEW_RUNTIME: &str = "web_runtime/ssrf_oast_runtime.rs";
+const SSRF_OAST_REVIEW_TESTS: &str = "web_runtime/assessment_review_tests.rs";
+const ASSESSMENT_REVIEW_SOURCE: &str = "web_runtime/assessment_review.rs";
+const EXACT_SCANNER_PROVIDER_CONSUMERS: &[&str] = &[
+    SCANNER_ADAPTER,
+    SSRF_OAST_REVIEW_CONTRACT,
+    SSRF_OAST_REVIEW_RUNTIME,
+];
 const SHARED_AUTHORITY_SOURCE: &str = "crates/termivar-scanner/src/web_runtime/authority.rs";
 const CLI_MANIFEST: &str = "crates/termivar-cli/Cargo.toml";
 const RELEASE_WORKFLOW: &str = ".github/workflows/release.yml";
@@ -809,23 +818,18 @@ fn scanner_adapter_contract_violations(
 
     let mut scanner_sources = rust_sources_below(&source_root)?;
     scanner_sources.sort();
-    let mut provider_consumers = Vec::new();
     let mut scanner_production_sources = Vec::new();
     for path in scanner_sources {
         let source = fs::read_to_string(&path)?;
         let relative = normalized_relative(&source_root, &path)?;
         let production = source_without_exact_oast_test_modules(production_prefix(&source))?;
-        let consumes_provider = production.contains("termivar_oast");
-        if consumes_provider {
-            provider_consumers.push(relative.clone());
-        }
         scanner_production_sources.push((relative, production));
     }
-    if provider_consumers != [SCANNER_ADAPTER.to_owned()] {
-        violations.push(format!(
-            "termivar-scanner must have exactly one production termivar_oast consumer at {SCANNER_ADAPTER}; found {provider_consumers:?}"
-        ));
-    }
+    violations.extend(scanner_provider_consumer_violations(
+        &scanner_production_sources,
+    ));
+    let assessment_review = fs::read_to_string(source_root.join(ASSESSMENT_REVIEW_SOURCE))?;
+    violations.extend(assessment_review_test_module_violations(&assessment_review));
     violations.extend(sealed_mint_consumer_violations(
         &scanner_production_sources,
     )?);
@@ -854,6 +858,41 @@ fn scanner_adapter_contract_violations(
     violations.extend(shared_provider_mint_contract_violations(&authority)?);
 
     Ok(violations)
+}
+
+fn scanner_provider_consumer_violations(sources: &[(String, String)]) -> Vec<String> {
+    let provider_consumers = sources
+        .iter()
+        .filter(|(path, source)| path != SSRF_OAST_REVIEW_TESTS && source.contains("termivar_oast"))
+        .map(|(path, _)| path.clone())
+        .collect::<Vec<_>>();
+    let expected = EXACT_SCANNER_PROVIDER_CONSUMERS
+        .iter()
+        .map(|path| (*path).to_owned())
+        .collect::<Vec<_>>();
+    (provider_consumers != expected)
+        .then(|| {
+            format!(
+                "termivar-scanner must confine production termivar_oast use to the sealed adapter, bounded SSRF contract, and exact child runtime; expected {expected:?}, found {provider_consumers:?}"
+            )
+        })
+        .into_iter()
+        .collect()
+}
+
+fn assessment_review_test_module_violations(source: &str) -> Vec<String> {
+    let exact_test_module = "#[cfg(test)]#[path=\"assessment_review_tests.rs\"]modtests;";
+    (compact_whitespace(source)
+        .matches(exact_test_module)
+        .count()
+        != 1)
+        .then(|| {
+            format!(
+                "the test-only termivar_oast consumer must remain behind the exact cfg(test) module declaration in {ASSESSMENT_REVIEW_SOURCE}"
+            )
+        })
+        .into_iter()
+        .collect()
 }
 
 fn adapter_forbidden_authority_violations(production: &str) -> Vec<String> {
@@ -2139,6 +2178,56 @@ mod tests {
             violations.is_empty(),
             "native OAST architecture violations: {violations:#?}"
         );
+    }
+
+    #[test]
+    fn scanner_provider_consumers_are_exact_and_test_only_use_is_not_production() {
+        let valid = vec![
+            (
+                SCANNER_ADAPTER.to_owned(),
+                "use termivar_oast::NativeOastProviderClient;".to_owned(),
+            ),
+            (
+                SSRF_OAST_REVIEW_CONTRACT.to_owned(),
+                "use termivar_oast::CallbackTarget;".to_owned(),
+            ),
+            (
+                SSRF_OAST_REVIEW_RUNTIME.to_owned(),
+                "use termivar_oast::CallbackId;".to_owned(),
+            ),
+            (
+                SSRF_OAST_REVIEW_TESTS.to_owned(),
+                "use termivar_oast::{CallbackId, EventId};".to_owned(),
+            ),
+        ];
+        assert!(scanner_provider_consumer_violations(&valid).is_empty());
+
+        for missing in EXACT_SCANNER_PROVIDER_CONSUMERS {
+            let mutation = valid
+                .iter()
+                .filter(|(path, _)| path != missing)
+                .cloned()
+                .collect::<Vec<_>>();
+            assert!(
+                !scanner_provider_consumer_violations(&mutation).is_empty(),
+                "missing exact consumer `{missing}` unexpectedly passed"
+            );
+        }
+
+        let mut widened = valid;
+        widened.push((
+            "web_runtime.rs".to_owned(),
+            "use termivar_oast::CallbackId;".to_owned(),
+        ));
+        assert!(!scanner_provider_consumer_violations(&widened).is_empty());
+
+        let exact_test_module =
+            "#[cfg(test)]\n#[path = \"assessment_review_tests.rs\"]\nmod tests;";
+        assert!(assessment_review_test_module_violations(exact_test_module).is_empty());
+        assert!(!assessment_review_test_module_violations(
+            "#[path = \"assessment_review_tests.rs\"]\nmod tests;"
+        )
+        .is_empty());
     }
 
     #[test]

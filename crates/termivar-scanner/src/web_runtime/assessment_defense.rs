@@ -101,7 +101,12 @@ impl AssessmentDefenseSignal {
         }
     }
 
-    #[cfg(any(test, feature = "authorization-review", feature = "openapi-review"))]
+    #[cfg(any(
+        test,
+        feature = "authorization-review",
+        feature = "openapi-review",
+        feature = "ssrf-oast-review"
+    ))]
     pub(crate) fn state(&self) -> &DefenseState {
         &self.state
     }
@@ -714,6 +719,8 @@ const fn native_interaction_class(kind: NativeWebReviewActionKind) -> DefenseInt
         },
         #[cfg(feature = "rest-review")]
         NativeWebReviewActionKind::RestReadOnlyReplay => DefenseInteractionClass::DifferentialRead,
+        #[cfg(feature = "ssrf-oast-review")]
+        NativeWebReviewActionKind::SsrfOastQueryReview => DefenseInteractionClass::DifferentialRead,
     }
 }
 
@@ -758,14 +765,7 @@ fn parse_receipt(
         return Err(());
     }
     let defense: Vec<_> = receipt.evidence()[first_defense..].iter().collect();
-    #[cfg(feature = "authorization-review")]
-    let base = if receipt.case().action_id() == RESOURCE_AUTHORIZATION_REVIEW_ACTION_ID {
-        BaseEvidence::parse_authorization(receipt, first_defense)?
-    } else {
-        BaseEvidence::parse(receipt, first_defense)?
-    };
-    #[cfg(not(feature = "authorization-review"))]
-    let base = BaseEvidence::parse(receipt, first_defense)?;
+    let base = BaseEvidence::parse_for_receipt(receipt, first_defense)?;
     let mut canonical_parents = base.parent_ids.clone();
     canonical_parents.sort();
     if canonical_parents.windows(2).any(|pair| pair[0] == pair[1]) {
@@ -814,6 +814,12 @@ fn parse_receipt(
         receipt.case().action_id() == RESOURCE_AUTHORIZATION_REVIEW_ACTION_ID;
     #[cfg(not(feature = "authorization-review"))]
     let authorization_receipt = false;
+    #[cfg(feature = "ssrf-oast-review")]
+    let ssrf_oast_receipt =
+        receipt.case().action_id() == NativeWebReviewActionKind::SsrfOastQueryReview.action_id();
+    #[cfg(not(feature = "ssrf-oast-review"))]
+    let ssrf_oast_receipt = false;
+    let ordinary_receipt = !authorization_receipt && !ssrf_oast_receipt;
     #[cfg(feature = "authorization-review")]
     let state = if authorization_receipt {
         if rate_limit_headers || fingerprint.is_some() {
@@ -848,11 +854,12 @@ fn parse_receipt(
         || challenged != state.is_challenged()
         || rate_limited != state.is_rate_limited()
         || rate_limit_headers != state.has_rate_limit_headers()
-        || (!authorization_receipt && base.rate_detected != (base.status == 429))
-        || (!authorization_receipt && rate_limited != (base.rate_detected || base.rate_advertised))
-        || (!authorization_receipt && rate_limit_headers != base.rate_advertised)
+        || (ordinary_receipt && base.rate_detected != (base.status == 429))
+        || (ordinary_receipt && rate_limited != (base.rate_detected || base.rate_advertised))
+        || (ordinary_receipt && rate_limit_headers != base.rate_advertised)
         || (authorization_receipt
             && (base.rate_advertised || base.rate_detected != rate_limited || rate_limit_headers))
+        || (ssrf_oast_receipt && base.rate_detected && !rate_limited)
         || (base.request_method == "HEAD"
             && body_coverage != AssessmentDefenseBodyCoverage::MetadataOnly)
         || (body_coverage == AssessmentDefenseBodyCoverage::CompleteUtf8Prefix
@@ -885,6 +892,22 @@ struct BaseEvidence {
 }
 
 impl BaseEvidence {
+    fn parse_for_receipt(
+        receipt: &DecisionEvidenceReceipt,
+        first_defense: usize,
+    ) -> Result<Self, ()> {
+        #[cfg(feature = "authorization-review")]
+        if receipt.case().action_id() == RESOURCE_AUTHORIZATION_REVIEW_ACTION_ID {
+            return Self::parse_authorization(receipt, first_defense);
+        }
+        #[cfg(feature = "ssrf-oast-review")]
+        if receipt.case().action_id() == NativeWebReviewActionKind::SsrfOastQueryReview.action_id()
+        {
+            return Self::parse_ssrf_oast(receipt, first_defense);
+        }
+        Self::parse(receipt, first_defense)
+    }
+
     fn parse(receipt: &DecisionEvidenceReceipt, first_defense: usize) -> Result<Self, ()> {
         let required = [
             HttpEvidencePredicate::REQUEST_METHOD,
@@ -1067,6 +1090,88 @@ impl BaseEvidence {
             ],
         })
     }
+
+    #[cfg(feature = "ssrf-oast-review")]
+    fn parse_ssrf_oast(
+        receipt: &DecisionEvidenceReceipt,
+        first_defense: usize,
+    ) -> Result<Self, ()> {
+        Self::parse_ssrf_oast_parts(
+            receipt.case(),
+            receipt.executor_id(),
+            receipt.evidence(),
+            first_defense,
+        )
+    }
+
+    #[cfg(feature = "ssrf-oast-review")]
+    fn parse_ssrf_oast_parts(
+        case: &VerificationCase,
+        executor_id: &str,
+        evidence: &[Evidence],
+        first_defense: usize,
+    ) -> Result<Self, ()> {
+        let action = NativeWebReviewActionKind::SsrfOastQueryReview;
+        if case.action_id() != action.action_id()
+            || executor_id != action.executor_id()
+            || first_defense < 2
+            || first_defense > evidence.len()
+        {
+            return Err(());
+        }
+        let prefix = &evidence[..first_defense];
+        if prefix.iter().any(|item| {
+            matches!(
+                item.value(),
+                EvidenceValue::Text(_) | EvidenceValue::TextList(_)
+            ) || item.predicate() == &HttpEvidencePredicate::REQUEST_URL.into_knowledge()
+                || item.predicate() == &HttpEvidencePredicate::RESPONSE_FINAL_URL.into_knowledge()
+        }) {
+            return Err(());
+        }
+        let body = unique_direct_before_parts(
+            case,
+            executor_id,
+            evidence,
+            first_defense,
+            &HttpEvidencePredicate::RESPONSE_BODY_BYTES_OBSERVED.into_knowledge(),
+            EvidenceKind::Content,
+            "response-body-size",
+        )?;
+        let status_item = unique_direct_before_parts(
+            case,
+            executor_id,
+            evidence,
+            first_defense,
+            &HttpEvidencePredicate::RESPONSE_STATUS.into_knowledge(),
+            EvidenceKind::Http,
+            "response-status",
+        )?;
+        if prefix.first().map(Evidence::id) != Some(body.id())
+            || prefix.last().map(Evidence::id) != Some(status_item.id())
+        {
+            return Err(());
+        }
+        let EvidenceValue::Unsigned(body_bytes) = body.value() else {
+            return Err(());
+        };
+        let EvidenceValue::Unsigned(status) = status_item.value() else {
+            return Err(());
+        };
+        let status = u16::try_from(*status)
+            .ok()
+            .filter(|value| (100..=599).contains(value))
+            .ok_or(())?;
+        Ok(Self {
+            request_method: "GET".to_owned(),
+            status,
+            body_bytes: *body_bytes,
+            body_truncated: false,
+            rate_detected: status == 429,
+            rate_advertised: false,
+            parent_ids: vec![body.id().clone(), status_item.id().clone()],
+        })
+    }
 }
 
 #[cfg(any(feature = "authorization-review", feature = "openapi-review"))]
@@ -1077,8 +1182,32 @@ fn unique_direct_before<'a>(
     kind: EvidenceKind,
     method: &'static str,
 ) -> Result<&'a Evidence, ()> {
-    let mut matching = receipt
-        .evidence()
+    unique_direct_before_parts(
+        receipt.case(),
+        receipt.executor_id(),
+        receipt.evidence(),
+        first_defense,
+        predicate,
+        kind,
+        method,
+    )
+}
+
+#[cfg(any(
+    feature = "authorization-review",
+    feature = "openapi-review",
+    feature = "ssrf-oast-review"
+))]
+fn unique_direct_before_parts<'a>(
+    case: &VerificationCase,
+    executor_id: &str,
+    evidence: &'a [Evidence],
+    first_defense: usize,
+    predicate: &KnowledgePredicate,
+    kind: EvidenceKind,
+    method: &'static str,
+) -> Result<&'a Evidence, ()> {
+    let mut matching = evidence
         .iter()
         .enumerate()
         .filter(|(_, item)| item.predicate() == predicate);
@@ -1089,10 +1218,10 @@ fn unique_direct_before<'a>(
         || index >= first_defense
         || !item.origin().is_direct()
         || item.kind() != &kind
-        || item.source().component() != receipt.executor_id()
+        || item.source().component() != executor_id
         || item.source().method() != method
-        || item.source().correlation_id() != Some(receipt.case().id())
-        || item.subject() != receipt.case().subject()
+        || item.source().correlation_id() != Some(case.id())
+        || item.subject() != case.subject()
     {
         return Err(());
     }
@@ -1488,6 +1617,18 @@ mod tests {
         )
     }
 
+    fn native_planning_context() -> PlanningContext {
+        let exact_catalog_cost = NativeWebReviewActionKind::all()
+            .into_iter()
+            .map(|kind| u64::try_from(kind.maximum_requests_per_case()).unwrap())
+            .sum();
+        PlanningContext::new(
+            BenefitScore::from_percent(100).unwrap(),
+            exact_catalog_cost,
+            RiskScore::from_percent(100).unwrap(),
+        )
+    }
+
     fn decision_loop() -> DecisionLoop {
         DecisionLoop::new(
             DecisionLoopConfig::new(
@@ -1577,7 +1718,7 @@ mod tests {
             knowledge.upsert_hypothesis(rest_eligible).unwrap();
         }
         planner
-            .plan(&knowledge, subject, planning_context())
+            .plan(&knowledge, subject, native_planning_context())
             .unwrap()
     }
 
@@ -1649,6 +1790,179 @@ mod tests {
             reliability: ConfidenceScore::MAX,
             parents,
         }
+    }
+
+    #[cfg(feature = "ssrf-oast-review")]
+    fn ssrf_oast_case(action_id: &str) -> VerificationCase {
+        VerificationCase::new(
+            "case:test:ssrf-oast-defense",
+            EntityId::new("endpoint:https://example.test/").unwrap(),
+            action_id,
+            "hypothesis:test:ssrf-oast-defense",
+        )
+        .unwrap()
+    }
+
+    #[cfg(feature = "ssrf-oast-review")]
+    fn ssrf_oast_base_record(
+        case: &VerificationCase,
+        kind: EvidenceKind,
+        predicate: KnowledgePredicate,
+        value: EvidenceValue,
+        method: &str,
+    ) -> Evidence {
+        Evidence::new(
+            case.subject().clone(),
+            kind,
+            predicate,
+            value,
+            EvidenceSource::new(
+                NativeWebReviewActionKind::SsrfOastQueryReview.executor_id(),
+                method,
+            )
+            .unwrap()
+            .with_correlation_id(case.id())
+            .unwrap(),
+            ConfidenceScore::MAX,
+        )
+    }
+
+    #[cfg(feature = "ssrf-oast-review")]
+    fn ssrf_oast_base_prefix(case: &VerificationCase, status: u64) -> Vec<Evidence> {
+        vec![
+            ssrf_oast_base_record(
+                case,
+                EvidenceKind::Content,
+                HttpEvidencePredicate::RESPONSE_BODY_BYTES_OBSERVED.into_knowledge(),
+                EvidenceValue::Unsigned(37),
+                "response-body-size",
+            ),
+            ssrf_oast_base_record(
+                case,
+                EvidenceKind::Custom("ssrf-oast-phase".to_owned()),
+                crate::web_actions::ssrf_oast_review_candidate_ready_predicate(),
+                EvidenceValue::Boolean(true),
+                "candidate-ready",
+            ),
+            ssrf_oast_base_record(
+                case,
+                EvidenceKind::Http,
+                HttpEvidencePredicate::RESPONSE_STATUS.into_knowledge(),
+                EvidenceValue::Unsigned(status),
+                "response-status",
+            ),
+        ]
+    }
+
+    #[cfg(feature = "ssrf-oast-review")]
+    #[test]
+    fn ssrf_oast_defense_base_accepts_only_the_raw_free_action_bound_shape() {
+        let action = NativeWebReviewActionKind::SsrfOastQueryReview;
+        let case = ssrf_oast_case(action.action_id());
+        let evidence = ssrf_oast_base_prefix(&case, 200);
+        let parsed = BaseEvidence::parse_ssrf_oast_parts(
+            &case,
+            action.executor_id(),
+            &evidence,
+            evidence.len(),
+        )
+        .unwrap();
+
+        assert_eq!(parsed.request_method, "GET");
+        assert_eq!(parsed.status, 200);
+        assert_eq!(parsed.body_bytes, 37);
+        assert!(!parsed.body_truncated);
+        assert!(!parsed.rate_detected);
+        assert!(!parsed.rate_advertised);
+        assert_eq!(
+            parsed.parent_ids,
+            vec![evidence[0].id().clone(), evidence[2].id().clone()]
+        );
+
+        let rate_limited = ssrf_oast_base_prefix(&case, 429);
+        assert!(
+            BaseEvidence::parse_ssrf_oast_parts(
+                &case,
+                action.executor_id(),
+                &rate_limited,
+                rate_limited.len(),
+            )
+            .unwrap()
+            .rate_detected
+        );
+    }
+
+    #[cfg(feature = "ssrf-oast-review")]
+    #[test]
+    fn ssrf_oast_defense_base_rejects_wrong_routes_duplicates_and_raw_text() {
+        let action = NativeWebReviewActionKind::SsrfOastQueryReview;
+        let case = ssrf_oast_case(action.action_id());
+        let evidence = ssrf_oast_base_prefix(&case, 200);
+        assert!(BaseEvidence::parse_ssrf_oast_parts(
+            &case,
+            "http.some-other-executor",
+            &evidence,
+            evidence.len(),
+        )
+        .is_err());
+
+        let wrong_action = ssrf_oast_case("web.review.cors.policy-pair@1");
+        let wrong_action_evidence = ssrf_oast_base_prefix(&wrong_action, 200);
+        assert!(BaseEvidence::parse_ssrf_oast_parts(
+            &wrong_action,
+            action.executor_id(),
+            &wrong_action_evidence,
+            wrong_action_evidence.len(),
+        )
+        .is_err());
+
+        let mut duplicate = evidence.clone();
+        duplicate.insert(1, duplicate[0].clone());
+        assert!(BaseEvidence::parse_ssrf_oast_parts(
+            &case,
+            action.executor_id(),
+            &duplicate,
+            duplicate.len(),
+        )
+        .is_err());
+
+        let mut raw_url = evidence.clone();
+        raw_url.insert(
+            1,
+            ssrf_oast_base_record(
+                &case,
+                EvidenceKind::Http,
+                HttpEvidencePredicate::REQUEST_URL.into_knowledge(),
+                EvidenceValue::Text("https://example.test/?next=redacted".to_owned()),
+                "request-url",
+            ),
+        );
+        assert!(BaseEvidence::parse_ssrf_oast_parts(
+            &case,
+            action.executor_id(),
+            &raw_url,
+            raw_url.len(),
+        )
+        .is_err());
+
+        let invalid_status = ssrf_oast_base_prefix(&case, 700);
+        assert!(BaseEvidence::parse_ssrf_oast_parts(
+            &case,
+            action.executor_id(),
+            &invalid_status,
+            invalid_status.len(),
+        )
+        .is_err());
+
+        let mut wrong_order = evidence;
+        wrong_order.swap(1, 2);
+        assert!(BaseEvidence::parse_ssrf_oast_parts(
+            &case,
+            action.executor_id(),
+            &wrong_order,
+            wrong_order.len(),
+        )
+        .is_err());
     }
 
     #[test]
@@ -1767,6 +2081,13 @@ mod tests {
             .map(|step| step.action_id().to_owned())
             .collect();
         assert_eq!(baseline_ids.len(), NATIVE_WEB_REVIEW_ACTION_COUNT);
+        assert_eq!(
+            baseline_ids.iter().cloned().collect::<BTreeSet<_>>(),
+            NativeWebReviewActionKind::all()
+                .into_iter()
+                .map(|kind| kind.action_id().to_owned())
+                .collect()
+        );
 
         let case = test_case("case:test:defense:native-review", &subject);
         let mut controller = AssessmentDefenseController::new(true);

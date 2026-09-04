@@ -90,6 +90,21 @@ fn authorization_terminal_marker(correlation_id: &str) -> Evidence {
     )
 }
 
+#[cfg(feature = "ssrf-oast-review")]
+fn ssrf_oast_candidate_ready_marker(correlation_id: &str) -> Evidence {
+    Evidence::new(
+        subject(),
+        EvidenceKind::Custom("ssrf-oast-phase".to_owned()),
+        crate::web_actions::ssrf_oast_review_candidate_ready_predicate(),
+        EvidenceValue::Boolean(true),
+        EvidenceSource::new("http.ssrf-oast-review", "candidate-ready")
+            .unwrap()
+            .with_correlation_id(correlation_id)
+            .unwrap(),
+        ConfidenceScore::MAX,
+    )
+}
+
 fn expected_strategy(kind: NativeWebReviewActionKind) -> Option<PayloadStrategyRef> {
     let (id, revision) = match kind {
         NativeWebReviewActionKind::CorsPolicyPair => {
@@ -135,6 +150,8 @@ fn expected_strategy(kind: NativeWebReviewActionKind) -> Option<PayloadStrategyR
         NativeWebReviewActionKind::OpenApiDocumentReplay => return None,
         #[cfg(feature = "rest-review")]
         NativeWebReviewActionKind::RestReadOnlyReplay => return None,
+        #[cfg(feature = "ssrf-oast-review")]
+        NativeWebReviewActionKind::SsrfOastQueryReview => return None,
     };
     Some(PayloadStrategyRef::new(id, revision).unwrap())
 }
@@ -402,6 +419,42 @@ fn authorization_passive_terminal_rule_is_exact_action_and_case_scoped() {
         .verify(&knowledge, &other_case)
         .unwrap();
     assert_eq!(uncorrelated.outcome().status(), OutcomeStatus::Unknown);
+}
+
+#[cfg(feature = "ssrf-oast-review")]
+#[test]
+fn ssrf_oast_candidate_ready_rule_requires_active_for_the_same_case() {
+    const CASE_ID: &str = "case:ssrf-oast-candidate-ready";
+    const HYPOTHESIS_ID: &str = "hypothesis:ssrf-oast-candidate-ready";
+    let action = NativeWebReviewActionKind::SsrfOastQueryReview;
+    let profile = NativeWebReviewDecisionProfile::for_actions([action]).unwrap();
+    let mut loop_ = decision_loop();
+    profile.install(&mut loop_).unwrap();
+    let knowledge = KnowledgeBase::new();
+    let mut hypothesis = Hypothesis::with_id(
+        HYPOTHESIS_ID,
+        subject(),
+        eligible_predicate(),
+        EvidenceValue::Boolean(true),
+        Probability::from_percent(99).unwrap(),
+    )
+    .unwrap();
+    hypothesis.set_strength(HypothesisStrength::Weak);
+    hypothesis.set_state(HypothesisState::Supported);
+    knowledge.upsert_hypothesis(hypothesis).unwrap();
+    knowledge
+        .insert_evidence(ssrf_oast_candidate_ready_marker(CASE_ID))
+        .unwrap();
+    let case = VerificationCase::new(CASE_ID, subject(), action.action_id(), HYPOTHESIS_ID)
+        .unwrap()
+        .without_hypothesis_transition();
+    let report = loop_
+        .verification()
+        .passive()
+        .verify(&knowledge, &case)
+        .unwrap();
+    assert_eq!(report.outcome().status(), OutcomeStatus::NeedsReview);
+    assert!(!report.outcome().status().is_terminal());
 }
 
 #[cfg(feature = "rest-review")]

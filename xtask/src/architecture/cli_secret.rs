@@ -67,11 +67,16 @@ const CLI_SCAN_FIELDS: &[&str] = &[
     "format",
     "graphql_review",
     "normalization_resilience",
+    "oast_admin_token_env",
+    "oast_admin_token_file",
+    "oast_admin_token_stdin",
     "openapi_review",
     "rest_review",
     "profile",
     "report_format",
     "report_output",
+    "ssrf_oast_policy",
+    "ssrf_oast_review",
     "target",
 ];
 
@@ -654,7 +659,12 @@ fn inspect_cli_auth_surface(source: &str) -> Result<Vec<String>, syn::Error> {
         ("enforce_defense", "bool", None),
         ("graphql_review", "bool", None),
         ("normalization_resilience", "bool", None),
+        ("oast_admin_token_env", "Option", Some("OsString")),
+        ("oast_admin_token_file", "Option", Some("PathBuf")),
+        ("oast_admin_token_stdin", "bool", None),
         ("openapi_review", "bool", None),
+        ("ssrf_oast_policy", "Option", Some("PathBuf")),
+        ("ssrf_oast_review", "bool", None),
         ("authorization_review_policy", "Option", Some("PathBuf")),
         ("authz_primary_env", "Option", Some("OsString")),
         ("authz_primary_file", "Option", Some("PathBuf")),
@@ -802,6 +812,49 @@ fn inspect_cli_auth_surface(source: &str) -> Result<Vec<String>, syn::Error> {
         );
     }
 
+    for (name, expected_type, expected_arg) in [
+        (
+            "ssrf_oast_review",
+            ("bool", None),
+            "long,requires_all=[\"profile\",\"ssrf_oast_policy\"]",
+        ),
+        (
+            "ssrf_oast_policy",
+            ("Option", Some("PathBuf")),
+            "long,value_name=\"FILE\",requires_all=[\"profile\",\"ssrf_oast_review\"]",
+        ),
+        (
+            "oast_admin_token_env",
+            ("Option", Some("OsString")),
+            "long,value_name=\"ENV_VAR\",requires=\"ssrf_oast_policy\",conflicts_with_all=[\"oast_admin_token_file\",\"oast_admin_token_stdin\"]",
+        ),
+        (
+            "oast_admin_token_file",
+            ("Option", Some("PathBuf")),
+            "long,value_name=\"FILE\",requires=\"ssrf_oast_policy\",conflicts_with_all=[\"oast_admin_token_env\",\"oast_admin_token_stdin\"]",
+        ),
+        (
+            "oast_admin_token_stdin",
+            ("bool", None),
+            "long,requires=\"ssrf_oast_policy\",conflicts_with_all=[\"oast_admin_token_env\",\"oast_admin_token_file\",\"auth_stdin\"]",
+        ),
+    ] {
+        let exact = fields.get(name).is_some_and(|field| {
+            let type_matches = match expected_type {
+                (outer, Some(inner)) => is_one_argument_type(&field.ty, outer, inner),
+                (plain, None) => is_plain_type(&field.ty, plain),
+            };
+            type_matches
+                && exact_cfg_feature_attribute(&field.attrs, "ssrf-oast-review")
+                && exact_arg_attribute(&field.attrs, expected_arg)
+        });
+        if !exact {
+            violations.push(format!(
+                "CLI `{name}` must retain its exact feature-gated SSRF OAST type, explicit enablement, and out-of-band source conflicts"
+            ));
+        }
+    }
+
     for type_name in ["Cli", "Commands", "ScanArgs"] {
         if item_has_sensitive_derive(&syntax, type_name)
             || !explicit_trait_impls(&syntax, type_name).is_empty()
@@ -830,12 +883,27 @@ fn inspect_cli_auth_surface(source: &str) -> Result<Vec<String>, syn::Error> {
             .count()
             != 1
         || compact
-            .matches("auth_input::AuthorizationSourceOptions::new(")
+            .matches("auth_input::AuthorizationSourceOptions::new(authz_")
             .count()
             != 2
     {
         violations.push(
-            "CLI must select one policy plus exactly one primary and peer out-of-band source without reading them"
+            "CLI must select one authorization-review policy plus exactly one primary and peer out-of-band source without reading them"
+                .to_owned(),
+        );
+    }
+    if !compact.contains("auth_input::SsrfOastReviewInput::select(ssrf_oast_review,ssrf_oast_policy,auth_input::AuthorizationSourceOptions::new(oast_admin_token_env,oast_admin_token_file,oast_admin_token_stdin,),)?")
+        || compact
+            .matches("auth_input::SsrfOastReviewInput::select(")
+            .count()
+            != 1
+        || compact
+            .matches("auth_input::AuthorizationSourceOptions::new(oast_admin_token_")
+            .count()
+            != 1
+    {
+        violations.push(
+            "CLI must require explicit SSRF OAST enablement, one policy, and exactly one out-of-band administrator source without reading them"
                 .to_owned(),
         );
     }
@@ -868,6 +936,7 @@ fn inspect_cli_auth_surface(source: &str) -> Result<Vec<String>, syn::Error> {
     let ordered = ordered_boundary_references(run);
     let expected = [
         "scan_flags_conflict",
+        "scan_ssrf_oast_review_flags_conflict",
         "scan_profile_flags_conflict",
         "scan_report_flags_conflict",
         "scan_resource_authorization_flags_conflict",
@@ -876,10 +945,12 @@ fn inspect_cli_auth_surface(source: &str) -> Result<Vec<String>, syn::Error> {
         "is_exact_origin_root",
         "authorization_context_transport_is_allowed",
         "select",
+        "select",
         "authorization_context_transport_is_allowed",
         "for_builtin",
         "with_defense_enforcement_enabled",
         "preflight_report_output",
+        "load",
         "load",
         "load",
         "DETERMINISTIC_SCAN_WARNING",
@@ -890,12 +961,12 @@ fn inspect_cli_auth_surface(source: &str) -> Result<Vec<String>, syn::Error> {
             .iter()
             .filter(|name| name.as_str() == "load")
             .count()
-            != 2
+            != 3
         || ordered
             .iter()
             .filter(|name| name.as_str() == "select")
             .count()
-            != 2
+            != 3
     {
         violations.push(format!(
             "CLI authorization sources must be selected without I/O and loaded exactly once each after flag, transport, profile, defense, and report preflights and before warning/network execution; observed {ordered:?}"
@@ -1388,6 +1459,7 @@ fn source_dispatch_is_exact(compact: &str) -> bool {
 fn ordered_boundary_references(function: &ItemFn) -> Vec<String> {
     const OBSERVED: &[&str] = &[
         "scan_flags_conflict",
+        "scan_ssrf_oast_review_flags_conflict",
         "scan_profile_flags_conflict",
         "scan_report_flags_conflict",
         "scan_resource_authorization_flags_conflict",
@@ -1482,6 +1554,7 @@ mod tests {
         inspect: impl FnOnce(&str) -> Vec<String>,
         needle: &str,
     ) {
+        let original = original.replace("\r\n", "\n");
         let mutated = original.replacen(from, to, 1);
         assert_ne!(mutated, original, "stale mutation marker: {from}");
         let violations = inspect(&mutated).join("\n");
@@ -1668,8 +1741,8 @@ mod tests {
                 "underived",
             ),
             (
-                ".field(\"policy_file\", &\"<redacted>\")",
-                ".field(\"policy_file\", &self.policy_file)",
+                ".debug_struct(\"AuthorizationReviewInput\")\n            .field(\"policy_file\", &\"<redacted>\")",
+                ".debug_struct(\"AuthorizationReviewInput\")\n            .field(\"policy_file\", &self.policy_file)",
                 "value-free redacted Debug",
             ),
             (

@@ -99,14 +99,16 @@ Execution decisions are deterministic and model-independent. Termivar does not r
 | Execution | Exact-origin, redirect-disabled transport actions through one metered request broker; a tested zero-I/O `LocalKnowledge` library contract |
 | Output | Unchanged no-profile text/`--explain`/`decision-scan/v1`; explicit profile audits; and bounded JSON, CSV, HTML, or Markdown assessment reports for completed `web-review` runs |
 | Exploit foundation | Independent Preview `termivar-exploit` manifest/catalog library plus a disconnected non-default orchestration API. Only a five-step in-memory canary fixture exercises host-minted grants, typed permits/receipts, impact verification, and cleanup verification; there is no real exploit, production adapter, or scanner/CLI/API/proxy integration |
-| OAST correlation foundation | Non-default provider-neutral `termivar-scanner` library contracts consume host-minted tokens, bind one exact verification case, meter caller-driven polls, classify reduced DNS/HTTP events, suppress replays, and return redacted receipts. V1 has no provider adapter, network I/O, scanner action, target payload, report item, or SSRF conclusion |
+| OAST correlation foundation | Non-default provider-neutral `termivar-scanner` library contracts consume host-minted tokens, bind one exact verification case, meter caller-driven polls, classify reduced DNS/HTTP events, suppress replays, and return redacted receipts. Enabling this foundation alone adds no provider adapter, network I/O, scanner action, target payload, report item, or SSRF conclusion |
+| Native OAST provider | Unpublished self-hosted `termivar-oast` auxiliary service plus a separately gated scanner adapter. The provider binds to loopback behind an operator-managed HTTPS reverse proxy, exposes only fixed management and HTTP callback routes, and reduces callback traffic to bounded raw-free events. It is not a scanner and is excluded from `release-bundle` |
 | Artifact signatures | Independent Preview `termivar-artifact` library scans bounded caller-supplied buffers/readers for exact/wildcard signatures with overlapping deterministic observations. Explicit local regular-file access is available only through the non-default CLI `artifact-adapter`; matches are not malware or vulnerability verdicts |
 | Normalization resilience | Non-default Preview scanner/CLI feature plus explicit `--normalization-resilience` on `web-review`. V1 selects at most one typed depth-one HTML representation, reuses committed XSS/defense evidence, and requires transformed candidate plus distinct replay to reproduce the same inert parser semantics. It is `NeedsReview` / `KnowledgeOnly` only, not a generic or product-specific WAF-bypass claim |
 | GraphQL surface review | Non-default Preview scanner/CLI feature plus explicit `--graphql-review` on `web-review`. V1 selects at most one exact-origin endpoint and performs up to three anonymous bounded POST/JSON requests: an aliased `__typename` control, schema-root introspection candidate, and distinct replay. Results are `Informational` / `KnowledgeOnly`, not vulnerability or authorization claims |
 | OpenAPI surface review | Non-default Preview scanner/CLI feature plus explicit `--openapi-review` on `web-review`. V1 selects at most one exact-origin document from a bounded committed discovery reference or the single `/openapi.json` fallback, then performs a candidate GET plus an exact replay through the shared broker. A correlated OpenAPI 3.0/3.1 JSON contract observation is `Informational` / `KnowledgeOnly`; it is not endpoint reachability, authorization, or vulnerability proof |
 | REST read-only review | Non-default Preview scanner/CLI feature plus explicit `--openapi-review --rest-review` on `web-review`. From the same assessment's replay-stable OpenAPI catalog, V1 selects at most one anonymous, bodyless, exact-origin `GET` with zero required inputs and sends exactly a candidate plus replay (two requests, one active verification). Stable `Status`, `Fields`, and `Resources` may yield only `Informational` / `KnowledgeOnly`; there is no write, credential, parameter materialization, or vulnerability-family chaining |
+| SSRF OAST query review | Non-default Preview scanner/CLI feature with an explicit bounded policy and out-of-band provider administrator-token source on `web-review`. V1 mutates at most one structurally eligible query parameter using a `.invalid` control and two independent HTTPS callbacks: exactly three anonymous bodyless target GETs, one active verification, and at most twelve fixed provider requests. Both callback identities must be observed after their respective dispatches before one `NeedsReview` / `KnowledgeOnly` item is possible; it never confirms SSRF or impact |
 | Resource authorization review | Non-default Preview scanner/CLI `authorization-review` feature plus one explicit policy file and two out-of-band credential sources on `web-review`. V1 compares one exact-origin JSON resource as primary candidate, peer candidate, primary replay, and peer replay through the assessment's existing broker and budget. Stable selected-resource equivalence can produce only `NeedsReview` / `KnowledgeOnly`, not an IDOR, BOLA, or authorization-bypass confirmation |
-| Scanner conformance corpus | Repository-only `security-assessment-fixture/v1` data provides 103 sanitized request/response cases, including 23 four-view authorization differentials and 30 bounded OpenAPI contract cases, with deterministic `xtask scanner-corpus` checks. It adds no runtime request or claim, and conformance is not an empirical accuracy result |
+| Scanner conformance corpus | Repository-only `security-assessment-fixture/v1` data provides 127 sanitized request/response cases, including 23 four-view authorization differentials, 30 bounded OpenAPI contract cases, and 24 raw-free SSRF OAST lifecycle cases, with deterministic `xtask scanner-corpus` checks. It adds no runtime request or claim, and conformance is not an empirical accuracy result |
 | Historical salvage inventories | Two strict repository ledgers and local-Git `xtask` checks preserve separate source epochs: the deleted 38-file pre-workspace scanner tree and the 13-file/39-component post-workspace WAF/evasion quarantine wave. The detector byte-pattern component is restored in `termivar-artifact`, the sanitized fixture component is restored only as repository conformance data, bounded GraphQL and OpenAPI/REST contract subsets have been independently rebuilt while the broader protocol taxonomy remains planned, and the historical HTML token-case/inter-token whitespace concepts are restored by the separately reviewed normalization runtime. Historical source itself remains non-authoritative |
 
 The standard web profile currently has conservative, claim-specific behavior:
@@ -146,6 +148,12 @@ cargo run -p termivar-cli --locked --features authorization-review -- \
   --authorization-review-policy ./review.toml \
   --authz-primary-env PRIMARY_AUTH_CONTEXT \
   --authz-peer-env PEER_AUTH_CONTEXT
+cargo run -p termivar-cli --locked --features ssrf-oast-review -- \
+  scan 'https://authorized.example.test/fetch?url=https%3A%2F%2Fpublic.example.test%2F' \
+  --profile web-review \
+  --ssrf-oast-review \
+  --ssrf-oast-policy ./ssrf-oast-review.toml \
+  --oast-admin-token-env TERMIVAR_OAST_ADMIN_TOKEN
 ```
 
 `baseline` runs the same conservative single-resource decision primitive and
@@ -172,6 +180,17 @@ emitting `api.rest-readonly-surface-observed@1` as `Informational` /
 request body, uses no credential/cookie, and does not chain into SQL, SSTI,
 XSS, authorization, SSRF, or upload review. See
 [REST read-only review](docs/internals/rest-readonly-review.md).
+
+SSRF OAST query review is a separate, non-default child of the same runtime.
+It requires one strict operator policy, an administrator token supplied through
+environment, file, or stdin rather than argv, and one explicitly self-hosted
+HTTPS provider distinct from the exact target origin. The child selects at
+most one observed URL-valued query parameter, or one same-run stable OpenAPI
+optional `url`/`uri` query parameter, without name guessing, examples, or
+defaults. It issues one inert `.invalid` control plus candidate and replay,
+then requires two independently allocated and correctly correlated callback
+events. One-sided callbacks, timing, target status, and provider noise cannot
+create an item. See [SSRF OAST query review](docs/internals/ssrf-oast-query-review.md).
 
 The built-in CLI `web-review` profile fixes its envelope at 64 subjects at
 depth two, 128 discovered references per document, 8,192 bytes per query-free
@@ -465,6 +484,7 @@ See the [runtime map](docs/internals/runtime-map.md) for the exact module and co
 | `termivar scan ... --openapi-review` | Preview, opt-in | Absent from default builds and invalid outside explicit `web-review`. It selects at most one exact-origin JSON document, uses two anonymous bodyless GETs and one logical active verification, and emits only an `Informational` / `KnowledgeOnly` contract observation after exact replay |
 | `termivar scan ... --openapi-review --rest-review` | Preview, opt-in | Absent from default builds and invalid outside explicit `web-review`. A replay-stable same-run OpenAPI catalog may select one anonymous bodyless exact-origin zero-input GET at most; candidate plus replay use two requests and one active verification and emit only `Informational` / `KnowledgeOnly` surface evidence |
 | `termivar scan ... --authorization-review-policy FILE` | Preview, opt-in | Absent from default builds and invalid outside explicit `web-review`. It compares one exact-origin JSON resource under two distinct out-of-band authorization contexts and independent replays, using four requests and one logical active verification. Stable equivalence can emit only `NeedsReview` / `KnowledgeOnly` |
+| `termivar scan ... --ssrf-oast-review --ssrf-oast-policy FILE` | Preview, opt-in | Absent from default and release-bundle builds and invalid outside explicit `web-review`. One exact structurally eligible query occurrence receives a `.invalid` control and two independent HTTPS callbacks through three anonymous bodyless GETs and one active verification; at most twelve fixed provider requests are allowed, and both correlated callbacks are required for `NeedsReview` / `KnowledgeOnly` evidence |
 | `termivar api` | Unsupported, opt-in | Absent from default builds; the `api-adapter` feature reports that no listener is implemented |
 | `termivar proxy` | Experimental, opt-in | Absent from default builds; `proxy-adapter` exposes an explicit fixed-upstream TCP relay with no `CONNECT`, TLS termination, certificate generation, or HTTP inspection |
 
@@ -593,6 +613,9 @@ tag and accepted cross-version baseline exist, pin a reviewed full commit.
 - [OpenAPI surface review](docs/internals/openapi-surface-review.md)
 - [REST read-only review](docs/internals/rest-readonly-review.md)
 - [OAST correlation foundation](docs/internals/oast-correlation.md)
+- [Native OAST provider](docs/internals/native-oast-provider.md)
+- [Native OAST provider authority](docs/internals/native-oast-provider-authority.md)
+- [SSRF OAST query review](docs/internals/ssrf-oast-query-review.md)
 - [Normalization-resilience review](docs/internals/normalization-resilience.md)
 - [Historical scanner salvage](docs/history/historical-scanner-salvage.md)
 - [Post-workspace WAF/evasion salvage](docs/history/post-workspace-waf-evasion-salvage.md)

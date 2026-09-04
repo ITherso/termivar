@@ -15,11 +15,11 @@ use crate::{
     scanner_native_oast_provider::{
         lifecycle_allows, provider_origin_fingerprint, reduce_provider_http_event,
         validate_provider_poll_page, NativeOastPollPageFacts, NativeOastProviderAdapter,
-        NativeOastProviderConfiguration, NativeOastProviderErrorKind,
-        NativeOastProviderLifecycle, NativeOastProviderLimits, NativeOastProviderOperation,
-        HARD_MAX_NATIVE_OAST_CALLBACKS, HARD_MAX_NATIVE_OAST_POLLS,
-        HARD_MAX_NATIVE_OAST_PROVIDER_REQUESTS, HARD_MAX_NATIVE_OAST_PROVIDER_REQUEST_BYTES,
-        HARD_MAX_NATIVE_OAST_PROVIDER_RESPONSE_BYTES, HARD_MAX_NATIVE_OAST_PROVIDER_WALL_TIME_MS,
+        NativeOastProviderConfiguration, NativeOastProviderErrorKind, NativeOastProviderLifecycle,
+        NativeOastProviderLimits, NativeOastProviderOperation, HARD_MAX_NATIVE_OAST_CALLBACKS,
+        HARD_MAX_NATIVE_OAST_POLLS, HARD_MAX_NATIVE_OAST_PROVIDER_REQUESTS,
+        HARD_MAX_NATIVE_OAST_PROVIDER_REQUEST_BYTES, HARD_MAX_NATIVE_OAST_PROVIDER_RESPONSE_BYTES,
+        HARD_MAX_NATIVE_OAST_PROVIDER_WALL_TIME_MS,
     },
     web_runtime::mint_native_oast_provider_token_for_fuzz,
     RuntimeBudget,
@@ -163,7 +163,11 @@ fn check_poll_page_validation(data: &[u8]) {
         })
     };
     assert_eq!(validate(), expected);
-    assert_eq!(validate(), expected, "poll validation must be deterministic");
+    assert_eq!(
+        validate(),
+        expected,
+        "poll validation must be deterministic"
+    );
 }
 
 fn check_lifecycle_matrix() {

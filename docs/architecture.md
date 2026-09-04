@@ -77,7 +77,7 @@ reverse proxy and exposes a fixed session/allocation/poll/cleanup protocol plus
 constant public `GET`/`HEAD` callback handling. It retains only bounded opaque
 HTTP event records in memory. Its exact-origin HTTPS client has one non-default,
 sealed scanner host-library consumer, and both remain absent from the CLI
-`release-bundle`. Neither can select a target, register a
+`release-bundle`. On their own, neither can select a target, register a
 `WebAssessmentRuntime` action, create evidence or reports, or make an SSRF
 claim. See the
 [native OAST provider contract](internals/native-oast-provider.md).
@@ -91,11 +91,15 @@ callback, and wall-time ceilings. The adapter performs no work in `Drop`, and
 provider identifiers and secrets remain outside evidence and reporting. See
 [native OAST provider authority](internals/native-oast-provider-authority.md).
 
-This dependency edge supplies auxiliary callback correlation only. It is not
-reachable from the CLI, `WebAssessmentRuntime` action catalog, legacy phases,
-plugins, Lua, exploit orchestration, API review families, or the release
-bundle. It cannot dispatch a target request or create a report, finding, or
-vulnerability conclusion.
+This dependency edge supplies auxiliary callback correlation only. The
+separately gated SSRF OAST review is its sole product caller: the existing
+`WebAssessmentRuntime` may narrow one explicitly acknowledged policy to one
+query occurrence, one `.invalid` control, and two independent callback
+mutations. It reuses the parent target broker/budget and one narrowing provider
+authority, produces one final composed report, and requires both callbacks for
+at most `NeedsReview` / `KnowledgeOnly`. Legacy phases, plugins, Lua, exploit
+orchestration, unrelated API review families, and `release-bundle` cannot reach
+this path. See [SSRF OAST query review](internals/ssrf-oast-query-review.md).
 
 `termivar-artifact` is a separate artifact-observation domain. Its library accepts
 caller-supplied bytes or bounded readers and owns no filesystem path, network,

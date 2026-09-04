@@ -3,7 +3,7 @@ corpus_id = "web-assessment-conformance"
 revision = 1
 title = "Web assessment conformance corpus"
 summary = "Sanitized deterministic request and response cases for current scanner contracts and explicit future protocol metadata."
-corpus_digest = "corpus-sha256:25fb1c1d62352742a9732de574d44a21224f9e6e5e876775a6d949414b6f3c31"
+corpus_digest = "corpus-sha256:813a3bbb79a205167abd98f1f2ffacb9c5e5d41975060d5e555290d834bda120"
 case_files = [
   "cases/authorization.cross-fields-only.toml",
   "cases/authorization.cross-resources-different.toml",
@@ -83,6 +83,30 @@ case_files = [
   "cases/openapi.unknown-version.toml",
   "cases/openapi.url-parameter.toml",
   "cases/openapi.vendor-extensions-ignored.toml",
+  "cases/ssrf-oast.allocation-incomplete.toml",
+  "cases/ssrf-oast.budget-exhausted.toml",
+  "cases/ssrf-oast.candidate-only.toml",
+  "cases/ssrf-oast.cancelled.toml",
+  "cases/ssrf-oast.cleanup-incomplete.toml",
+  "cases/ssrf-oast.control-incomplete.toml",
+  "cases/ssrf-oast.correlation-mismatch.toml",
+  "cases/ssrf-oast.defensive-interference.toml",
+  "cases/ssrf-oast.duplicate-only.toml",
+  "cases/ssrf-oast.event-identity-conflict.toml",
+  "cases/ssrf-oast.expired.toml",
+  "cases/ssrf-oast.incomplete.toml",
+  "cases/ssrf-oast.malformed-provider-response.toml",
+  "cases/ssrf-oast.no-callback.toml",
+  "cases/ssrf-oast.poll-exhausted.toml",
+  "cases/ssrf-oast.preflight-contaminated.toml",
+  "cases/ssrf-oast.provider-authentication-failed.toml",
+  "cases/ssrf-oast.rate-limited.toml",
+  "cases/ssrf-oast.registration-incomplete.toml",
+  "cases/ssrf-oast.repeated-callbacks-observed.toml",
+  "cases/ssrf-oast.replay-only.toml",
+  "cases/ssrf-oast.target-not-dispatched.toml",
+  "cases/ssrf-oast.truncated.toml",
+  "cases/ssrf-oast.wrong-callback.toml",
   "cases/sql.error-text-only.toml",
   "cases/sql.raw-reflection.toml",
   "cases/sql.structural-replay-match.toml",

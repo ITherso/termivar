@@ -157,11 +157,12 @@ jobs:
           cargo test --locked -p termivar-cli --no-default-features --features proxy-adapter
           cargo test --locked -p termivar-cli --no-default-features --features artifact-adapter
           cargo test --locked -p termivar-cli --no-default-features --features normalization-resilience
+          cargo test --locked -p termivar-cli --no-default-features --features ssrf-oast-review
       - name: Verify scanner feature boundaries independently
         run: |
           set -euo pipefail
           for feature in \
-            core scanning normalization-resilience oast-correlation legacy-scanner platform-models reporting detection ml \
+            core scanning normalization-resilience oast-correlation oast-native-provider ssrf-oast-review legacy-scanner platform-models reporting detection ml \
             distributed monitoring compliance threat-intel plugins lua
           do
             cargo test --locked -p termivar-scanner --no-default-features --features "$feature" --lib --tests

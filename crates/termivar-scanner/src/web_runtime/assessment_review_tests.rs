@@ -2194,6 +2194,7 @@ mod scanner_corpus_conformance {
         ApiGraphql,
         ApiOpenapi,
         Authorization,
+        SsrfOast,
     }
 
     #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
@@ -2399,6 +2400,70 @@ mod scanner_corpus_conformance {
 
     #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
     #[serde(rename_all = "kebab-case")]
+    enum SsrfOastCandidateSourceExpectation {
+        ObservedUrlQuery,
+    }
+
+    #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+    #[serde(rename_all = "kebab-case")]
+    enum SsrfOastScenario {
+        RepeatedCallbacksObserved,
+        ControlIncomplete,
+        RegistrationIncomplete,
+        AllocationIncomplete,
+        PreflightContaminated,
+        TargetNotDispatched,
+        NoCallback,
+        CandidateOnly,
+        ReplayOnly,
+        WrongCallback,
+        EventIdentityConflict,
+        CorrelationMismatch,
+        DuplicateOnly,
+        CleanupIncomplete,
+        DefensiveInterference,
+        RateLimited,
+        ProviderAuthenticationFailed,
+        MalformedProviderResponse,
+        PollExhausted,
+        Expired,
+        Cancelled,
+        BudgetExhausted,
+        Truncated,
+        Incomplete,
+    }
+
+    #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+    #[serde(rename_all = "kebab-case")]
+    enum SsrfOastOutcomeExpectation {
+        RepeatedCallbacksObserved,
+        ControlIncomplete,
+        RegistrationIncomplete,
+        AllocationIncomplete,
+        PreflightContaminated,
+        TargetNotDispatched,
+        NoCallback,
+        CandidateOnly,
+        ReplayOnly,
+        WrongCallback,
+        EventIdentityConflict,
+        CorrelationMismatch,
+        DuplicateOnly,
+        CleanupIncomplete,
+        DefensiveInterference,
+        RateLimited,
+        ProviderAuthenticationFailed,
+        MalformedProviderResponse,
+        PollExhausted,
+        Expired,
+        Cancelled,
+        BudgetExhausted,
+        Truncated,
+        Incomplete,
+    }
+
+    #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+    #[serde(rename_all = "kebab-case")]
     enum IncompletenessExpectation {
         BodyTruncated,
         ResponseIncomplete,
@@ -2466,7 +2531,15 @@ mod scanner_corpus_conformance {
         response: FixtureResponse,
         #[serde(default)]
         authorization: Option<AuthorizationFixture>,
+        #[serde(default)]
+        ssrf_oast: Option<SsrfOastFixture>,
         expected: ExpectedSemantics,
+    }
+
+    #[derive(Deserialize)]
+    struct SsrfOastFixture {
+        source: SsrfOastCandidateSourceExpectation,
+        scenario: SsrfOastScenario,
     }
 
     #[derive(Deserialize)]
@@ -2506,6 +2579,14 @@ mod scanner_corpus_conformance {
     struct FixtureRequest {
         origin: String,
         path: String,
+        #[serde(default)]
+        query: Vec<FixtureQuery>,
+    }
+
+    #[derive(Deserialize)]
+    struct FixtureQuery {
+        name: String,
+        value: String,
     }
 
     #[derive(Deserialize)]
@@ -2587,6 +2668,8 @@ mod scanner_corpus_conformance {
         #[serde(default)]
         authorization_outcome: Option<AuthorizationOutcomeExpectation>,
         #[serde(default)]
+        ssrf_oast_outcome: Option<SsrfOastOutcomeExpectation>,
+        #[serde(default)]
         assessment_capability: Option<String>,
         #[serde(default)]
         maximum_disposition: Option<DispositionExpectation>,
@@ -2610,6 +2693,8 @@ mod scanner_corpus_conformance {
         GraphqlReview,
         OpenApiReview,
         AuthorizationReview,
+        #[cfg(feature = "ssrf-oast-review")]
+        SsrfOastReview,
         ApiReasoning,
     }
 
@@ -4272,6 +4357,219 @@ mod scanner_corpus_conformance {
         terminal_result(case)
     }
 
+    #[cfg(feature = "ssrf-oast-review")]
+    fn run_ssrf_oast(case: &FixtureCase) -> ConformanceResult {
+        use crate::ssrf_oast_review::{
+            evaluate_ssrf_oast_review, select_observed_query_candidate, SsrfOastCandidateSelection,
+            SsrfOastCandidateSource, SsrfOastObservedEvent, SsrfOastReviewFacts,
+            SsrfOastReviewOutcome, SsrfOastTerminalState,
+        };
+        use termivar_oast::CallbackId;
+
+        use crate::oast::OastEventKey;
+
+        let Some(fixture) = case.ssrf_oast.as_ref() else {
+            return ConformanceResult::FixtureInvalid;
+        };
+        let [query] = case.request.query.as_slice() else {
+            return ConformanceResult::FixtureInvalid;
+        };
+        let Ok(origin) = Url::parse(&case.request.origin) else {
+            return ConformanceResult::FixtureInvalid;
+        };
+        let mut resource = origin.clone();
+        resource.set_path(&case.request.path);
+        resource.set_query(None);
+        resource
+            .query_pairs_mut()
+            .append_pair(&query.name, &query.value);
+        let SsrfOastCandidateSelection::Selected(selected) = select_observed_query_candidate(
+            &origin,
+            &resource,
+            "corpus:ssrf-oast-subject",
+            true,
+            true,
+            true,
+        ) else {
+            return ConformanceResult::FixtureInvalid;
+        };
+        if fixture.source != SsrfOastCandidateSourceExpectation::ObservedUrlQuery
+            || selected.source() != SsrfOastCandidateSource::ObservedUrlQuery
+        {
+            return ConformanceResult::FixtureInvalid;
+        }
+
+        let Ok(candidate_id) = "AQEBAQEBAQEBAQEBAQEBAQ".parse::<CallbackId>() else {
+            return ConformanceResult::FixtureInvalid;
+        };
+        let Ok(replay_id) = "AgICAgICAgICAgICAgICAg".parse::<CallbackId>() else {
+            return ConformanceResult::FixtureInvalid;
+        };
+        let Ok(foreign_id) = "AwMDAwMDAwMDAwMDAwMDAw".parse::<CallbackId>() else {
+            return ConformanceResult::FixtureInvalid;
+        };
+        let Ok(candidate_event_id) = OastEventKey::new([4; 32]) else {
+            return ConformanceResult::FixtureInvalid;
+        };
+        let Ok(replay_event_id) = OastEventKey::new([5; 32]) else {
+            return ConformanceResult::FixtureInvalid;
+        };
+
+        let candidate_event =
+            SsrfOastObservedEvent::from_reduced(&candidate_id, &candidate_event_id);
+        let replay_event = SsrfOastObservedEvent::from_reduced(&replay_id, &replay_event_id);
+        let mut facts = SsrfOastReviewFacts::new(&candidate_id, &replay_id);
+        facts.control_complete = true;
+        facts.provider_registered = true;
+        facts.allocations_complete = true;
+        facts.preflight_clean = true;
+        facts.candidate_dispatched = true;
+        facts.replay_dispatched = true;
+        facts.candidate_event = Some(candidate_event.clone());
+        facts.replay_event = Some(replay_event.clone());
+        facts.correlations_distinct = true;
+        facts.same_correlation_scope = true;
+        facts.cleanup_verified = true;
+        facts.target_accounting_complete = true;
+        facts.provider_accounting_complete = true;
+
+        match fixture.scenario {
+            SsrfOastScenario::RepeatedCallbacksObserved => {},
+            SsrfOastScenario::ControlIncomplete => facts.control_complete = false,
+            SsrfOastScenario::RegistrationIncomplete => facts.provider_registered = false,
+            SsrfOastScenario::AllocationIncomplete => facts.allocations_complete = false,
+            SsrfOastScenario::PreflightContaminated => facts.preflight_clean = false,
+            SsrfOastScenario::TargetNotDispatched => facts.replay_dispatched = false,
+            SsrfOastScenario::NoCallback => {
+                facts.candidate_event = None;
+                facts.replay_event = None;
+            },
+            SsrfOastScenario::CandidateOnly => facts.replay_event = None,
+            SsrfOastScenario::ReplayOnly => facts.candidate_event = None,
+            SsrfOastScenario::WrongCallback => {
+                facts.candidate_event = Some(SsrfOastObservedEvent::from_reduced(
+                    &foreign_id,
+                    &candidate_event_id,
+                ));
+            },
+            SsrfOastScenario::EventIdentityConflict => {
+                facts.replay_event = Some(SsrfOastObservedEvent::from_reduced(
+                    &replay_id,
+                    &candidate_event_id,
+                ));
+            },
+            SsrfOastScenario::CorrelationMismatch => facts.correlations_distinct = false,
+            SsrfOastScenario::DuplicateOnly => facts.duplicate_only_substitution = true,
+            SsrfOastScenario::CleanupIncomplete => facts.cleanup_verified = false,
+            SsrfOastScenario::DefensiveInterference => {
+                facts.terminal = Some(SsrfOastTerminalState::DefensiveInterference);
+            },
+            SsrfOastScenario::RateLimited => {
+                facts.terminal = Some(SsrfOastTerminalState::RateLimited);
+            },
+            SsrfOastScenario::ProviderAuthenticationFailed => {
+                facts.terminal = Some(SsrfOastTerminalState::ProviderAuthenticationFailed);
+            },
+            SsrfOastScenario::MalformedProviderResponse => {
+                facts.terminal = Some(SsrfOastTerminalState::MalformedProviderResponse);
+            },
+            SsrfOastScenario::PollExhausted => {
+                facts.terminal = Some(SsrfOastTerminalState::PollExhausted);
+            },
+            SsrfOastScenario::Expired => {
+                facts.terminal = Some(SsrfOastTerminalState::Expired);
+            },
+            SsrfOastScenario::Cancelled => {
+                facts.terminal = Some(SsrfOastTerminalState::Cancelled);
+            },
+            SsrfOastScenario::BudgetExhausted => {
+                facts.terminal = Some(SsrfOastTerminalState::BudgetExhausted);
+            },
+            SsrfOastScenario::Truncated => facts.truncated = true,
+            SsrfOastScenario::Incomplete => facts.target_accounting_complete = false,
+        }
+
+        let Ok(actual) = evaluate_ssrf_oast_review(&facts) else {
+            return ConformanceResult::FixtureInvalid;
+        };
+        let expected = match case.expected.ssrf_oast_outcome {
+            Some(SsrfOastOutcomeExpectation::RepeatedCallbacksObserved) => {
+                SsrfOastReviewOutcome::RepeatedCallbacksObserved
+            },
+            Some(SsrfOastOutcomeExpectation::ControlIncomplete) => {
+                SsrfOastReviewOutcome::ControlIncomplete
+            },
+            Some(SsrfOastOutcomeExpectation::RegistrationIncomplete) => {
+                SsrfOastReviewOutcome::RegistrationIncomplete
+            },
+            Some(SsrfOastOutcomeExpectation::AllocationIncomplete) => {
+                SsrfOastReviewOutcome::AllocationIncomplete
+            },
+            Some(SsrfOastOutcomeExpectation::PreflightContaminated) => {
+                SsrfOastReviewOutcome::PreflightContaminated
+            },
+            Some(SsrfOastOutcomeExpectation::TargetNotDispatched) => {
+                SsrfOastReviewOutcome::TargetNotDispatched
+            },
+            Some(SsrfOastOutcomeExpectation::NoCallback) => SsrfOastReviewOutcome::NoCallback,
+            Some(SsrfOastOutcomeExpectation::CandidateOnly) => SsrfOastReviewOutcome::CandidateOnly,
+            Some(SsrfOastOutcomeExpectation::ReplayOnly) => SsrfOastReviewOutcome::ReplayOnly,
+            Some(SsrfOastOutcomeExpectation::WrongCallback) => SsrfOastReviewOutcome::WrongCallback,
+            Some(SsrfOastOutcomeExpectation::EventIdentityConflict) => {
+                SsrfOastReviewOutcome::EventIdentityConflict
+            },
+            Some(SsrfOastOutcomeExpectation::CorrelationMismatch) => {
+                SsrfOastReviewOutcome::CorrelationMismatch
+            },
+            Some(SsrfOastOutcomeExpectation::DuplicateOnly) => SsrfOastReviewOutcome::DuplicateOnly,
+            Some(SsrfOastOutcomeExpectation::CleanupIncomplete) => {
+                SsrfOastReviewOutcome::CleanupIncomplete
+            },
+            Some(SsrfOastOutcomeExpectation::DefensiveInterference) => {
+                SsrfOastReviewOutcome::DefensiveInterference
+            },
+            Some(SsrfOastOutcomeExpectation::RateLimited) => SsrfOastReviewOutcome::RateLimited,
+            Some(SsrfOastOutcomeExpectation::ProviderAuthenticationFailed) => {
+                SsrfOastReviewOutcome::ProviderAuthenticationFailed
+            },
+            Some(SsrfOastOutcomeExpectation::MalformedProviderResponse) => {
+                SsrfOastReviewOutcome::MalformedProviderResponse
+            },
+            Some(SsrfOastOutcomeExpectation::PollExhausted) => SsrfOastReviewOutcome::PollExhausted,
+            Some(SsrfOastOutcomeExpectation::Expired) => SsrfOastReviewOutcome::Expired,
+            Some(SsrfOastOutcomeExpectation::Cancelled) => SsrfOastReviewOutcome::Cancelled,
+            Some(SsrfOastOutcomeExpectation::BudgetExhausted) => {
+                SsrfOastReviewOutcome::BudgetExhausted
+            },
+            Some(SsrfOastOutcomeExpectation::Truncated) => SsrfOastReviewOutcome::Truncated,
+            Some(SsrfOastOutcomeExpectation::Incomplete) => SsrfOastReviewOutcome::Incomplete,
+            None => return ConformanceResult::FixtureInvalid,
+        };
+        if actual != expected {
+            return ConformanceResult::SemanticMismatch(SemanticMismatch::SsrfOastReview);
+        }
+        let claim_matches = if actual.projects_item() {
+            case.expected.assessment_capability.as_deref()
+                == Some("ssrf.oast-repeated-outbound-interaction@1")
+                && case.expected.maximum_disposition == Some(DispositionExpectation::NeedsReview)
+                && case.expected.maximum_authority
+                    == Some(MaximumAuthorityExpectation::KnowledgeOnly)
+        } else {
+            case.expected.assessment_capability.is_none()
+                && case.expected.maximum_disposition.is_none()
+                && case.expected.maximum_authority.is_none()
+        };
+        if !claim_matches {
+            return ConformanceResult::SemanticMismatch(SemanticMismatch::SsrfOastReview);
+        }
+        terminal_result(case)
+    }
+
+    #[cfg(not(feature = "ssrf-oast-review"))]
+    fn run_ssrf_oast(_case: &FixtureCase) -> ConformanceResult {
+        ConformanceResult::UnsupportedByCurrentRuntime
+    }
+
     fn terminal_result(case: &FixtureCase) -> ConformanceResult {
         if case.support == SupportLevel::MetadataOnly {
             return ConformanceResult::UnsupportedByCurrentRuntime;
@@ -4303,6 +4601,10 @@ mod scanner_corpus_conformance {
         if case.category == CaseCategory::ApiGraphql {
             return ConformanceResult::UnsupportedByCurrentRuntime;
         }
+        #[cfg(not(feature = "ssrf-oast-review"))]
+        if case.category == CaseCategory::SsrfOast {
+            return ConformanceResult::UnsupportedByCurrentRuntime;
+        }
         terminal_result(case)
     }
 
@@ -4317,13 +4619,14 @@ mod scanner_corpus_conformance {
             CaseCategory::ApiGraphql => run_graphql(case),
             CaseCategory::ApiOpenapi => run_openapi(case, cases),
             CaseCategory::Authorization => run_authorization(case),
+            CaseCategory::SsrfOast => run_ssrf_oast(case),
         }
     }
 
     #[test]
     fn versioned_scanner_corpus_dispatches_through_current_production_semantics() {
         let cases = load_cases().expect("the checked scanner corpus must be structurally valid");
-        assert_eq!(cases.len(), 103, "V1 corpus inventory changed unexpectedly");
+        assert_eq!(cases.len(), 127, "V1 corpus inventory changed unexpectedly");
         let by_id = cases
             .iter()
             .map(|case| (case.id.as_str(), case))
@@ -4357,6 +4660,7 @@ mod scanner_corpus_conformance {
                 CaseCategory::ApiGraphql,
                 CaseCategory::ApiOpenapi,
                 CaseCategory::Authorization,
+                CaseCategory::SsrfOast,
             ])
         );
         assert!(outcomes.get("pass").copied().unwrap_or_default() > 0);

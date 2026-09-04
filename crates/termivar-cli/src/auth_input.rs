@@ -2,8 +2,8 @@
 //!
 //! This module is the only CLI boundary that reads credential material. It
 //! never accepts a credential as a command-line value, never serializes or
-//! logs one, and converts bounded bytes directly into the scanner-owned root
-//! context or role-bound two-principal authorization contracts.
+//! logs one, and converts bounded bytes directly into scanner-owned root,
+//! role-bound two-principal, or OAST administrator-secret contracts.
 
 use std::{
     ffi::OsString,
@@ -17,6 +17,10 @@ use std::{
 use termivar_scanner::authorization_review::{
     AuthorizationPrincipalPair, AuthorizationReviewPolicy, PeerAuthorizationPrincipal,
     PrimaryAuthorizationPrincipal, HARD_MAX_AUTHORIZATION_REVIEW_POLICY_BYTES,
+};
+#[cfg(feature = "ssrf-oast-review")]
+use termivar_scanner::ssrf_oast_review::{
+    SsrfOastAdminToken, SsrfOastReviewPolicy, MAX_SSRF_OAST_REVIEW_POLICY_BYTES,
 };
 use termivar_scanner::{
     web_runtime::WebAssessmentRootAuthorizationContext, DEFAULT_MAX_PAYLOAD_ARTIFACT_BYTES,
@@ -109,16 +113,16 @@ pub(crate) struct AuthorizationReviewInput {
     peer: AuthorizationInputSource,
 }
 
-/// One role's unvalidated source-selection arguments. The wrapper keeps the
-/// public CLI flow small without exposing source identifiers through `Debug`.
-#[cfg(feature = "authorization-review")]
+/// One unvalidated credential source selection. The wrapper keeps the public
+/// CLI flow small without exposing source identifiers through `Debug`.
+#[cfg(any(feature = "authorization-review", feature = "ssrf-oast-review"))]
 pub(crate) struct AuthorizationSourceOptions {
     environment: Option<OsString>,
     file: Option<PathBuf>,
     stdin: bool,
 }
 
-#[cfg(feature = "authorization-review")]
+#[cfg(any(feature = "authorization-review", feature = "ssrf-oast-review"))]
 impl AuthorizationSourceOptions {
     pub(crate) const fn new(
         environment: Option<OsString>,
@@ -133,12 +137,134 @@ impl AuthorizationSourceOptions {
     }
 }
 
-#[cfg(feature = "authorization-review")]
+#[cfg(any(feature = "authorization-review", feature = "ssrf-oast-review"))]
 impl fmt::Debug for AuthorizationSourceOptions {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str("AuthorizationSourceOptions(<redacted>)")
     }
 }
+
+/// Complete source selection for one explicit SSRF OAST query review.
+///
+/// The policy path, administrator source, and secret material are excluded
+/// from `Debug`. Selection itself performs no I/O.
+#[cfg(feature = "ssrf-oast-review")]
+pub(crate) struct SsrfOastReviewInput {
+    policy_file: PathBuf,
+    administrator: AuthorizationInputSource,
+}
+
+#[cfg(feature = "ssrf-oast-review")]
+impl fmt::Debug for SsrfOastReviewInput {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("SsrfOastReviewInput")
+            .field("policy_file", &"<redacted>")
+            .field("administrator", &"<redacted>")
+            .finish()
+    }
+}
+
+#[cfg(feature = "ssrf-oast-review")]
+impl SsrfOastReviewInput {
+    /// Requires one policy and exactly one administrator-token source without
+    /// reading either source.
+    pub(crate) fn select(
+        enabled: bool,
+        policy_file: Option<PathBuf>,
+        administrator: AuthorizationSourceOptions,
+    ) -> Result<Option<Self>, SsrfOastReviewInputError> {
+        let any_input = policy_file.is_some()
+            || administrator.environment.is_some()
+            || administrator.file.is_some()
+            || administrator.stdin;
+        if !enabled {
+            return if any_input {
+                Err(SsrfOastReviewInputError::ExplicitEnableRequired)
+            } else {
+                Ok(None)
+            };
+        }
+        let policy_file = policy_file.ok_or(SsrfOastReviewInputError::MissingPolicy)?;
+        let administrator = AuthorizationInputSource::select(
+            administrator.environment,
+            administrator.file,
+            administrator.stdin,
+        )
+        .map_err(|_| SsrfOastReviewInputError::ConflictingAdministratorSources)?
+        .ok_or(SsrfOastReviewInputError::MissingAdministratorSource)?;
+        Ok(Some(Self {
+            policy_file,
+            administrator,
+        }))
+    }
+
+    /// Reads a bounded UTF-8 policy and administrator token exactly once,
+    /// immediately converting the secret bytes into the scanner-owned wrapper.
+    pub(crate) fn load(
+        self,
+        target: &url::Url,
+    ) -> Result<(SsrfOastReviewPolicy, SsrfOastAdminToken), SsrfOastReviewInputError> {
+        let policy_source =
+            read_bounded_regular_file(self.policy_file, MAX_SSRF_OAST_REVIEW_POLICY_BYTES)
+                .map_err(SsrfOastReviewInputError::PolicySource)?;
+        let policy_source = std::str::from_utf8(&policy_source)
+            .map_err(|_| SsrfOastReviewInputError::InvalidPolicyEncoding)?;
+        let policy = SsrfOastReviewPolicy::parse_toml(target, policy_source.as_bytes())
+            .map_err(|_| SsrfOastReviewInputError::InvalidPolicy)?;
+        let administrator = self
+            .administrator
+            .read_bytes()
+            .map_err(SsrfOastReviewInputError::AdministratorSource)
+            .and_then(|bytes| {
+                SsrfOastAdminToken::new(bytes)
+                    .map_err(|_| SsrfOastReviewInputError::InvalidAdministratorValue)
+            })?;
+        Ok((policy, administrator))
+    }
+}
+
+/// Static, value-free failures for the SSRF OAST CLI input boundary.
+#[cfg(feature = "ssrf-oast-review")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SsrfOastReviewInputError {
+    ExplicitEnableRequired,
+    MissingPolicy,
+    MissingAdministratorSource,
+    ConflictingAdministratorSources,
+    PolicySource(AuthorizationInputError),
+    InvalidPolicyEncoding,
+    InvalidPolicy,
+    AdministratorSource(AuthorizationInputError),
+    InvalidAdministratorValue,
+}
+
+#[cfg(feature = "ssrf-oast-review")]
+impl fmt::Display for SsrfOastReviewInputError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::ExplicitEnableRequired => {
+                "SSRF OAST query-review inputs require explicit `--ssrf-oast-review`"
+            },
+            Self::MissingPolicy => "SSRF OAST query review requires one policy file",
+            Self::MissingAdministratorSource | Self::ConflictingAdministratorSources => {
+                "SSRF OAST query review requires exactly one administrator-token source"
+            },
+            Self::PolicySource(_) => {
+                "SSRF OAST query-review policy must be a bounded regular UTF-8 file"
+            },
+            Self::InvalidPolicyEncoding => "SSRF OAST query-review policy must contain valid UTF-8",
+            Self::InvalidPolicy => "SSRF OAST query-review policy is invalid",
+            Self::AdministratorSource(_) => {
+                "SSRF OAST administrator-token source could not be loaded"
+            },
+            Self::InvalidAdministratorValue => "SSRF OAST administrator token is invalid",
+        })
+    }
+}
+
+#[cfg(feature = "ssrf-oast-review")]
+impl std::error::Error for SsrfOastReviewInputError {}
 
 #[cfg(feature = "authorization-review")]
 impl fmt::Debug for AuthorizationReviewInput {
@@ -362,7 +488,7 @@ fn open_regular_file(path: PathBuf) -> Result<File, AuthorizationInputError> {
     Ok(file)
 }
 
-#[cfg(feature = "authorization-review")]
+#[cfg(any(feature = "authorization-review", feature = "ssrf-oast-review"))]
 fn read_bounded_regular_file(
     path: PathBuf,
     max_bytes: usize,
@@ -521,6 +647,238 @@ mod tests {
         let error = read_bounded_line_source(&mut FailingReader).unwrap_err();
         assert_eq!(error, AuthorizationInputError::SourceReadFailed);
         assert!(!error.to_string().contains("PRIVATE_SOURCE_DIAGNOSTIC"));
+    }
+
+    #[cfg(feature = "ssrf-oast-review")]
+    fn valid_ssrf_oast_policy() -> &'static str {
+        r#"schema = "security.ssrf-oast-review-policy/v1"
+target_origin = "https://authorized.example.test"
+provider_origin = "https://oast.authorized.example.test"
+acknowledge_external_interaction = true
+polls_per_leg = 1
+poll_interval_ms = 250
+lifetime_ms = 5000
+"#
+    }
+
+    #[cfg(feature = "ssrf-oast-review")]
+    #[test]
+    fn ssrf_oast_selection_requires_one_policy_and_one_admin_source() {
+        assert!(SsrfOastReviewInput::select(
+            false,
+            None,
+            AuthorizationSourceOptions::new(None, None, false),
+        )
+        .unwrap()
+        .is_none());
+        assert_eq!(
+            SsrfOastReviewInput::select(
+                false,
+                Some(PathBuf::from("PRIVATE-POLICY-PATH")),
+                AuthorizationSourceOptions::new(
+                    Some(OsString::from("PRIVATE-OAST-ENV-NAME")),
+                    None,
+                    false,
+                ),
+            )
+            .unwrap_err(),
+            SsrfOastReviewInputError::ExplicitEnableRequired
+        );
+        assert_eq!(
+            SsrfOastReviewInput::select(
+                true,
+                Some(PathBuf::from("PRIVATE-POLICY-PATH")),
+                AuthorizationSourceOptions::new(None, None, false),
+            )
+            .unwrap_err(),
+            SsrfOastReviewInputError::MissingAdministratorSource
+        );
+        assert_eq!(
+            SsrfOastReviewInput::select(
+                true,
+                None,
+                AuthorizationSourceOptions::new(
+                    Some(OsString::from("PRIVATE-OAST-ENV-NAME")),
+                    None,
+                    false,
+                ),
+            )
+            .unwrap_err(),
+            SsrfOastReviewInputError::MissingPolicy
+        );
+        assert_eq!(
+            SsrfOastReviewInput::select(
+                true,
+                Some(PathBuf::from("PRIVATE-POLICY-PATH")),
+                AuthorizationSourceOptions::new(
+                    Some(OsString::from("PRIVATE-OAST-ENV-NAME")),
+                    Some(PathBuf::from("PRIVATE-OAST-TOKEN-PATH")),
+                    false,
+                ),
+            )
+            .unwrap_err(),
+            SsrfOastReviewInputError::ConflictingAdministratorSources
+        );
+
+        let input = SsrfOastReviewInput::select(
+            true,
+            Some(PathBuf::from("PRIVATE-POLICY-PATH")),
+            AuthorizationSourceOptions::new(
+                Some(OsString::from("PRIVATE-OAST-ENV-NAME")),
+                None,
+                false,
+            ),
+        )
+        .unwrap()
+        .unwrap();
+        let debug = format!("{input:?}");
+        for private in [
+            "PRIVATE-POLICY-PATH",
+            "PRIVATE-OAST-ENV-NAME",
+            "PRIVATE-OAST-TOKEN-PATH",
+        ] {
+            assert!(!debug.contains(private));
+        }
+        let messages = [
+            SsrfOastReviewInputError::ExplicitEnableRequired,
+            SsrfOastReviewInputError::MissingPolicy,
+            SsrfOastReviewInputError::MissingAdministratorSource,
+            SsrfOastReviewInputError::ConflictingAdministratorSources,
+            SsrfOastReviewInputError::PolicySource(AuthorizationInputError::SourceUnavailable),
+            SsrfOastReviewInputError::InvalidPolicyEncoding,
+            SsrfOastReviewInputError::InvalidPolicy,
+            SsrfOastReviewInputError::AdministratorSource(
+                AuthorizationInputError::SourceUnavailable,
+            ),
+            SsrfOastReviewInputError::InvalidAdministratorValue,
+        ]
+        .map(|error| error.to_string());
+        assert!(messages
+            .iter()
+            .all(|message| !message.contains("PRIVATE") && !message.contains("secret bytes")));
+    }
+
+    #[cfg(feature = "ssrf-oast-review")]
+    #[test]
+    fn ssrf_oast_input_loads_policy_and_move_only_admin_token_from_files() {
+        const ADMIN_SECRET: &str = "OAST-ADMIN-TOKEN-MUST-NOT-LEAK-0123456789ABCDEF";
+
+        let directory = tempfile::tempdir().unwrap();
+        let policy_path = directory.path().join("PRIVATE-policy.toml");
+        let administrator_path = directory.path().join("PRIVATE-administrator.txt");
+        std::fs::write(&policy_path, valid_ssrf_oast_policy()).unwrap();
+        std::fs::write(&administrator_path, format!("{ADMIN_SECRET}\r\n")).unwrap();
+        let input = SsrfOastReviewInput::select(
+            true,
+            Some(policy_path),
+            AuthorizationSourceOptions::new(None, Some(administrator_path), false),
+        )
+        .unwrap()
+        .unwrap();
+        let (policy, administrator) = input
+            .load(&url::Url::parse("https://authorized.example.test/").unwrap())
+            .unwrap();
+        let rendered = format!("{policy:?} {administrator:?}");
+        assert!(!rendered.contains(ADMIN_SECRET));
+        assert!(!rendered.contains("PRIVATE-policy.toml"));
+        assert!(!rendered.contains("PRIVATE-administrator.txt"));
+    }
+
+    #[cfg(feature = "ssrf-oast-review")]
+    #[test]
+    fn ssrf_oast_policy_source_is_strict_utf8_bounded_and_secret_free() {
+        const ADMIN_SECRET: &[u8] = b"OAST-ADMIN-TOKEN-MUST-NOT-LEAK-0123456789ABCDEF";
+
+        let directory = tempfile::tempdir().unwrap();
+        let administrator_path = directory.path().join("administrator.txt");
+        std::fs::write(&administrator_path, ADMIN_SECRET).unwrap();
+        let load_error = |policy_path: PathBuf| {
+            SsrfOastReviewInput::select(
+                true,
+                Some(policy_path),
+                AuthorizationSourceOptions::new(None, Some(administrator_path.clone()), false),
+            )
+            .unwrap()
+            .unwrap()
+            .load(&url::Url::parse("https://authorized.example.test/").unwrap())
+            .unwrap_err()
+        };
+
+        assert_eq!(
+            load_error(directory.path().to_path_buf()),
+            SsrfOastReviewInputError::PolicySource(AuthorizationInputError::SourceNotRegularFile)
+        );
+        let invalid_utf8 = directory.path().join("invalid-utf8.toml");
+        std::fs::write(&invalid_utf8, [0xff, 0xfe]).unwrap();
+        assert_eq!(
+            load_error(invalid_utf8),
+            SsrfOastReviewInputError::InvalidPolicyEncoding
+        );
+        let oversized = directory.path().join("oversized.toml");
+        std::fs::write(
+            &oversized,
+            vec![b'x'; MAX_SSRF_OAST_REVIEW_POLICY_BYTES + 1],
+        )
+        .unwrap();
+        assert_eq!(
+            load_error(oversized),
+            SsrfOastReviewInputError::PolicySource(AuthorizationInputError::ValueTooLarge)
+        );
+        let secret_field = directory.path().join("secret-field.toml");
+        std::fs::write(
+            &secret_field,
+            format!(
+                "{}admin_token = \"OAST-ADMIN-TOKEN-MUST-NOT-LEAK-0123456789ABCDEF\"\n",
+                valid_ssrf_oast_policy()
+            ),
+        )
+        .unwrap();
+        assert_eq!(
+            load_error(secret_field),
+            SsrfOastReviewInputError::InvalidPolicy
+        );
+    }
+
+    #[cfg(all(feature = "ssrf-oast-review", unix))]
+    #[test]
+    fn ssrf_oast_policy_and_admin_sources_reject_symlinks() {
+        use std::os::unix::fs::symlink;
+
+        let directory = tempfile::tempdir().unwrap();
+        let policy_target = directory.path().join("policy-target.toml");
+        let policy_link = directory.path().join("policy-link.toml");
+        let administrator_target = directory.path().join("administrator-target.txt");
+        let administrator_link = directory.path().join("administrator-link.txt");
+        std::fs::write(&policy_target, valid_ssrf_oast_policy()).unwrap();
+        std::fs::write(
+            &administrator_target,
+            b"OAST-ADMIN-TOKEN-MUST-NOT-LEAK-0123456789ABCDEF",
+        )
+        .unwrap();
+        symlink(&policy_target, &policy_link).unwrap();
+        symlink(&administrator_target, &administrator_link).unwrap();
+
+        let load = |policy: PathBuf, administrator: PathBuf| {
+            SsrfOastReviewInput::select(
+                true,
+                Some(policy),
+                AuthorizationSourceOptions::new(None, Some(administrator), false),
+            )
+            .unwrap()
+            .unwrap()
+            .load(&url::Url::parse("https://authorized.example.test/").unwrap())
+            .unwrap_err()
+        };
+        assert_eq!(
+            load(policy_link, administrator_target),
+            SsrfOastReviewInputError::PolicySource(AuthorizationInputError::SourceNotRegularFile)
+        );
+        assert_eq!(
+            load(policy_target, administrator_link),
+            SsrfOastReviewInputError::AdministratorSource(
+                AuthorizationInputError::SourceNotRegularFile
+            )
+        );
     }
 
     #[test]

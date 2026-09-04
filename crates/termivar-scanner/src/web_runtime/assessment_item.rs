@@ -352,6 +352,8 @@ impl fmt::Debug for StableAssessmentSubjectId {
 pub(crate) enum AssessmentItemTarget {
     Subject,
     QueryParameter(String),
+    #[cfg(feature = "ssrf-oast-review")]
+    SsrfOastQuery(String),
     #[cfg(feature = "authorization-review")]
     AuthorizationResource(String),
     #[cfg(feature = "openapi-review")]
@@ -376,6 +378,24 @@ impl AssessmentItemTarget {
             return Err(AssessmentItemProjectionError::InvalidQueryParameterTarget);
         }
         Ok(Self::QueryParameter(name))
+    }
+
+    #[cfg(feature = "ssrf-oast-review")]
+    pub(crate) fn ssrf_oast_query(
+        identity: impl Into<String>,
+    ) -> Result<Self, AssessmentItemProjectionError> {
+        let identity = identity.into();
+        let Some(digest) = identity.strip_prefix("ssrf-oast-parameter-sha256:") else {
+            return Err(AssessmentItemProjectionError::InvalidStableSubjectIdentity);
+        };
+        if digest.len() != 64
+            || !digest
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+        {
+            return Err(AssessmentItemProjectionError::InvalidStableSubjectIdentity);
+        }
+        Ok(Self::SsrfOastQuery(identity))
     }
 
     #[cfg(feature = "authorization-review")]
@@ -418,6 +438,10 @@ impl fmt::Debug for AssessmentItemTarget {
             Self::Subject => formatter.write_str("AssessmentItemTarget::Subject"),
             Self::QueryParameter(_) => {
                 formatter.write_str("AssessmentItemTarget::QueryParameter(<name-only>)")
+            },
+            #[cfg(feature = "ssrf-oast-review")]
+            Self::SsrfOastQuery(_) => {
+                formatter.write_str("AssessmentItemTarget::SsrfOastQuery(<stable-digest>)")
             },
             #[cfg(feature = "authorization-review")]
             Self::AuthorizationResource(_) => {
@@ -650,6 +674,11 @@ impl AssessmentProjectionContext {
             },
         );
         Ok(reference)
+    }
+
+    #[cfg(feature = "ssrf-oast-review")]
+    pub(super) fn has_subject(&self, subject: &EntityId) -> bool {
+        self.subjects.contains_key(subject)
     }
 
     #[cfg(test)]
@@ -1908,6 +1937,11 @@ fn assessment_fingerprint(
         AssessmentItemTarget::QueryParameter(name) => {
             digest_field(&mut digest, "query_parameter");
             digest_field(&mut digest, name);
+        },
+        #[cfg(feature = "ssrf-oast-review")]
+        AssessmentItemTarget::SsrfOastQuery(identity) => {
+            digest_field(&mut digest, "ssrf_oast_query");
+            digest_field(&mut digest, identity);
         },
         #[cfg(feature = "authorization-review")]
         AssessmentItemTarget::AuthorizationResource(identity) => {

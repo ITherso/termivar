@@ -29,6 +29,7 @@ graphql-review = ["termivar-scanner/graphql-review"]
 openapi-review = ["termivar-scanner/openapi-review"]
 rest-review = ["openapi-review", "termivar-scanner/rest-review"]
 authorization-review = ["termivar-scanner/authorization-review"]
+ssrf-oast-review = ["termivar-scanner/ssrf-oast-review"]
 release-bundle = [
     "artifact-adapter",
     "normalization-resilience",

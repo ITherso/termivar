@@ -36,6 +36,12 @@ use super::rest_runtime::{
     RestRuntimeOutcome, WebAssessmentRestAudit, MAX_REST_REVIEW_ACTIVE_VERIFICATIONS,
     MAX_REST_REVIEW_REQUESTS, REST_REVIEW_CAPABILITY_ID,
 };
+#[cfg(feature = "ssrf-oast-review")]
+use super::ssrf_oast_runtime::{
+    SsrfOastRuntimeOutcome, WebAssessmentSsrfOastAudit, MAX_SSRF_OAST_REVIEW_ACTIVE_VERIFICATIONS,
+    MAX_SSRF_OAST_REVIEW_PROVIDER_REQUESTS, MAX_SSRF_OAST_REVIEW_REQUESTS,
+    SSRF_OAST_REVIEW_CAPABILITY_ID,
+};
 use super::{
     assessment_item::{
         AssessmentItem, AssessmentItemSet, AssessmentSubjectInventoryEntry,
@@ -180,6 +186,8 @@ pub struct AssessmentRunReport {
     openapi_review: Option<WebAssessmentOpenApiAudit>,
     #[cfg(feature = "rest-review")]
     rest_review: Option<WebAssessmentRestAudit>,
+    #[cfg(feature = "ssrf-oast-review")]
+    ssrf_oast_review: Option<WebAssessmentSsrfOastAudit>,
 }
 
 impl AssessmentRunReport {
@@ -193,6 +201,7 @@ impl AssessmentRunReport {
         >,
         #[cfg(feature = "openapi-review")] openapi_review: Option<WebAssessmentOpenApiAudit>,
         #[cfg(feature = "rest-review")] rest_review: Option<WebAssessmentRestAudit>,
+        #[cfg(feature = "ssrf-oast-review")] ssrf_oast_review: Option<WebAssessmentSsrfOastAudit>,
     ) -> Result<Self, AssessmentRunReportError> {
         let run_report = build_run_report(&truth)?;
         Self::new_validated(
@@ -205,6 +214,8 @@ impl AssessmentRunReport {
             openapi_review,
             #[cfg(feature = "rest-review")]
             rest_review,
+            #[cfg(feature = "ssrf-oast-review")]
+            ssrf_oast_review,
         )
     }
 
@@ -224,6 +235,8 @@ impl AssessmentRunReport {
             None,
             #[cfg(feature = "rest-review")]
             None,
+            #[cfg(feature = "ssrf-oast-review")]
+            None,
         )
     }
 
@@ -236,6 +249,7 @@ impl AssessmentRunReport {
         >,
         #[cfg(feature = "openapi-review")] openapi_review: Option<WebAssessmentOpenApiAudit>,
         #[cfg(feature = "rest-review")] rest_review: Option<WebAssessmentRestAudit>,
+        #[cfg(feature = "ssrf-oast-review")] ssrf_oast_review: Option<WebAssessmentSsrfOastAudit>,
     ) -> Result<Self, AssessmentRunReportError> {
         validate_run_identity(&run_report, truth.target_identity)?;
         validate_run_completion(&run_report)?;
@@ -259,6 +273,8 @@ impl AssessmentRunReport {
         validate_openapi_audit(openapi_review.as_ref(), &items)?;
         #[cfg(feature = "rest-review")]
         validate_rest_audit(rest_review.as_ref(), &items)?;
+        #[cfg(feature = "ssrf-oast-review")]
+        validate_ssrf_oast_audit(ssrf_oast_review.as_ref(), &items)?;
 
         Ok(Self {
             run_report,
@@ -271,6 +287,8 @@ impl AssessmentRunReport {
             openapi_review,
             #[cfg(feature = "rest-review")]
             rest_review,
+            #[cfg(feature = "ssrf-oast-review")]
+            ssrf_oast_review,
         })
     }
 
@@ -318,6 +336,52 @@ impl AssessmentRunReport {
     pub const fn rest_review_audit(&self) -> Option<&WebAssessmentRestAudit> {
         self.rest_review.as_ref()
     }
+
+    /// Returns the optional redaction-safe query-only SSRF/OAST review audit.
+    #[cfg(feature = "ssrf-oast-review")]
+    pub const fn ssrf_oast_review_audit(&self) -> Option<&WebAssessmentSsrfOastAudit> {
+        self.ssrf_oast_review.as_ref()
+    }
+}
+
+#[cfg(feature = "ssrf-oast-review")]
+fn validate_ssrf_oast_audit(
+    audit: Option<&WebAssessmentSsrfOastAudit>,
+    items: &[AssessmentItem],
+) -> Result<(), AssessmentRunReportError> {
+    let projected = items
+        .iter()
+        .filter(|item| item.capability_id() == SSRF_OAST_REVIEW_CAPABILITY_ID)
+        .count();
+    if projected > 1 {
+        return Err(AssessmentRunReportError::SsrfOastAuditMismatch);
+    }
+    let Some(audit) = audit else {
+        return if projected == 0 {
+            Ok(())
+        } else {
+            Err(AssessmentRunReportError::SsrfOastAuditMismatch)
+        };
+    };
+    let positive = audit.outcome() == SsrfOastRuntimeOutcome::RepeatedCallbacksObserved;
+    if usize::from(audit.target_request_count()) > MAX_SSRF_OAST_REVIEW_REQUESTS
+        || usize::from(audit.provider_request_count()) > MAX_SSRF_OAST_REVIEW_PROVIDER_REQUESTS
+        || usize::from(audit.active_verification_count())
+            > MAX_SSRF_OAST_REVIEW_ACTIVE_VERIFICATIONS
+        || audit.item_projected() != (projected == 1)
+        || positive != audit.item_projected()
+        || (positive
+            && (usize::from(audit.target_request_count()) != MAX_SSRF_OAST_REVIEW_REQUESTS
+                || usize::from(audit.active_verification_count())
+                    != MAX_SSRF_OAST_REVIEW_ACTIVE_VERIFICATIONS
+                || !audit.preflight_clean()
+                || !audit.candidate_callback_observed()
+                || !audit.replay_callback_observed()
+                || !audit.cleanup_verified()))
+    {
+        return Err(AssessmentRunReportError::SsrfOastAuditMismatch);
+    }
+    Ok(())
 }
 
 #[cfg(feature = "openapi-review")]
@@ -438,6 +502,11 @@ impl fmt::Debug for AssessmentRunReport {
         );
         #[cfg(feature = "rest-review")]
         debug.field("rest_review_audit_present", &self.rest_review.is_some());
+        #[cfg(feature = "ssrf-oast-review")]
+        debug.field(
+            "ssrf_oast_review_audit_present",
+            &self.ssrf_oast_review.is_some(),
+        );
         debug.finish()
     }
 }
@@ -550,6 +619,10 @@ pub enum AssessmentRunReportError {
     #[cfg(feature = "rest-review")]
     #[error("REST review audit does not match projected item truth")]
     RestAuditMismatch,
+    /// The optional SSRF/OAST review audit disagreed with projected item truth.
+    #[cfg(feature = "ssrf-oast-review")]
+    #[error("SSRF OAST review audit does not match projected item truth")]
+    SsrfOastAuditMismatch,
 }
 
 fn build_run_report(

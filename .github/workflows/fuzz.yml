@@ -21,6 +21,7 @@ on:
       - "crates/termivar-scanner/src/openapi_review.rs"
       - "crates/termivar-scanner/src/oast.rs"
       - "crates/termivar-scanner/src/native_oast_provider.rs"
+      - "crates/termivar-scanner/src/ssrf_oast_review.rs"
       - "crates/termivar-oast/**"
       - ".github/workflows/fuzz.yml"
   schedule:
@@ -62,7 +63,7 @@ jobs:
           CARGO_PROFILE_RELEASE_STRIP: "none"
         shell: bash
         run: |
-          for target in json_parser html_form_controls expression_semantics declarative_policy_wire decision_loop_authority oast_correlation native_oast_provider native_oast_adapter; do
+          for target in json_parser html_form_controls expression_semantics declarative_policy_wire decision_loop_authority oast_correlation native_oast_provider native_oast_adapter ssrf_oast_review; do
             cargo fuzz build "$target"
           done
 
@@ -109,6 +110,9 @@ jobs:
             max_len: 4096
             input_timeout: 2
           - target: native_oast_adapter
+            max_len: 4096
+            input_timeout: 2
+          - target: ssrf_oast_review
             max_len: 4096
             input_timeout: 2
     steps:

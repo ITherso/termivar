@@ -84,6 +84,8 @@ This revision does not configure a provider from the CLI, start the provider,
 send an SSRF or XXE payload, register a `WebAssessmentRuntime` action, project
 evidence or an `AssessmentItem`, or expose the adapter to plugins, Lua, exploit
 orchestration, GraphQL, OpenAPI, REST, SQL, SSTI, XSS, or the legacy scanner.
-No public provider is bundled or selected. A later review must add separate,
-explicit target-side authority before any target request can carry a callback
-value.
+No public provider is bundled or selected. The separately gated
+[SSRF OAST query review](ssrf-oast-query-review.md) supplies a narrow,
+operator-acknowledged target-side authority without broadening this adapter:
+at most one eligible query occurrence, two independent callbacks, bounded
+polling, and no confirmed SSRF conclusion.

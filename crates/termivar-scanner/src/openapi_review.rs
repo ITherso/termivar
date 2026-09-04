@@ -445,11 +445,17 @@ impl fmt::Debug for OpenApiOperationId {
     }
 }
 
-#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Eq, Ord, PartialEq, PartialOrd)]
+#[cfg_attr(
+    not(all(feature = "ssrf-oast-review", feature = "openapi-review")),
+    derive(Debug)
+)]
 pub struct OpenApiParameterMetadata {
     location: OpenApiParameterLocation,
     required: bool,
     name_digest: [u8; 32],
+    #[cfg(all(feature = "ssrf-oast-review", feature = "openapi-review"))]
+    execution_name: String,
     schema_kind: OpenApiSchemaPrimitiveKind,
     format_class: OpenApiFormatClass,
 }
@@ -473,6 +479,27 @@ impl OpenApiParameterMetadata {
     /// Stable raw-value-free fingerprint of the declared parameter name.
     pub const fn name_fingerprint(&self) -> &[u8; 32] {
         &self.name_digest
+    }
+
+    /// Returns the validated clear name only to the in-crate SSRF execution bridge.
+    #[cfg(all(feature = "ssrf-oast-review", feature = "openapi-review"))]
+    pub(crate) fn execution_name(&self) -> &str {
+        &self.execution_name
+    }
+}
+
+#[cfg(all(feature = "ssrf-oast-review", feature = "openapi-review"))]
+impl fmt::Debug for OpenApiParameterMetadata {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("OpenApiParameterMetadata")
+            .field("location", &self.location)
+            .field("required", &self.required)
+            .field("name_digest", &"<stable-digest>")
+            .field("execution_name", &"<redacted>")
+            .field("schema_kind", &self.schema_kind)
+            .field("format_class", &self.format_class)
+            .finish()
     }
 }
 
@@ -586,7 +613,10 @@ impl OpenApiServerMetadata {
 
     /// Returns the already-normalized server base only to in-crate execution
     /// policy. Public metadata deliberately exposes classification, not a URL.
-    #[cfg(feature = "rest-review")]
+    #[cfg(any(
+        feature = "rest-review",
+        all(feature = "ssrf-oast-review", feature = "openapi-review")
+    ))]
     pub(crate) const fn execution_base(&self) -> Option<&Url> {
         self.execution_base.as_ref()
     }
@@ -1556,6 +1586,8 @@ fn parse_parameters(
             location,
             required,
             name_digest: digest_bytes(b"openapi-parameter-name/v1", name.as_bytes()),
+            #[cfg(all(feature = "ssrf-oast-review", feature = "openapi-review"))]
+            execution_name: name.to_owned(),
             schema_kind,
             format_class,
         };

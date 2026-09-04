@@ -18,7 +18,8 @@ pub const NATIVE_WEB_REVIEW_ACTION_COUNT: usize = 10
     + cfg!(feature = "normalization-resilience") as usize
     + cfg!(feature = "authorization-review") as usize
     + cfg!(feature = "openapi-review") as usize
-    + cfg!(feature = "rest-review") as usize;
+    + cfg!(feature = "rest-review") as usize
+    + cfg!(feature = "ssrf-oast-review") as usize;
 
 /// Hard per-case request count declared by every native web-review action.
 pub const NATIVE_WEB_REVIEW_REQUESTS_PER_CASE: usize = 2;
@@ -69,6 +70,18 @@ pub(crate) fn rest_review_phase_terminal_predicate() -> termivar_core::Knowledge
         .expect("the REST terminal predicate is a valid static identity")
 }
 
+#[cfg(all(feature = "scanning", feature = "ssrf-oast-review"))]
+pub(crate) fn ssrf_oast_review_candidate_ready_predicate() -> termivar_core::KnowledgePredicate {
+    termivar_core::KnowledgePredicate::new("web.ssrf-oast-review.transport", "candidate-ready")
+        .expect("the SSRF OAST candidate-ready predicate is a valid static identity")
+}
+
+#[cfg(all(feature = "scanning", feature = "ssrf-oast-review"))]
+pub(crate) fn ssrf_oast_review_phase_terminal_predicate() -> termivar_core::KnowledgePredicate {
+    termivar_core::KnowledgePredicate::new("web.ssrf-oast-review.transport", "phase-terminal")
+        .expect("the SSRF OAST terminal predicate is a valid static identity")
+}
+
 const CONTROL_CANDIDATE_LEGS: [NativeWebReviewRequestLeg; NATIVE_WEB_REVIEW_REQUESTS_PER_CASE] = [
     NativeWebReviewRequestLeg::PassiveControl,
     NativeWebReviewRequestLeg::ActiveCandidate,
@@ -111,6 +124,9 @@ pub enum NativeWebReviewActionKind {
     /// Observe one replay-stable, anonymous, bodyless REST GET selected from OpenAPI evidence.
     #[cfg(feature = "rest-review")]
     RestReadOnlyReplay,
+    /// Verify one query-only outbound interaction with distinct candidate and replay callbacks.
+    #[cfg(feature = "ssrf-oast-review")]
+    SsrfOastQueryReview,
 }
 
 /// The only request surface an action may vary between its matched legs.
@@ -170,6 +186,8 @@ impl NativeWebReviewActionKind {
             Self::OpenApiDocumentReplay,
             #[cfg(feature = "rest-review")]
             Self::RestReadOnlyReplay,
+            #[cfg(feature = "ssrf-oast-review")]
+            Self::SsrfOastQueryReview,
         ]
     }
 
@@ -200,6 +218,8 @@ impl NativeWebReviewActionKind {
             Self::OpenApiDocumentReplay => "web.review.openapi.document-replay@1",
             #[cfg(feature = "rest-review")]
             Self::RestReadOnlyReplay => "web.review.rest.readonly-replay@1",
+            #[cfg(feature = "ssrf-oast-review")]
+            Self::SsrfOastQueryReview => "web.review.ssrf.oast-query@1",
         }
     }
 
@@ -238,6 +258,8 @@ impl NativeWebReviewActionKind {
             Self::OpenApiDocumentReplay => "http.openapi-review",
             #[cfg(feature = "rest-review")]
             Self::RestReadOnlyReplay => "http.rest-review",
+            #[cfg(feature = "ssrf-oast-review")]
+            Self::SsrfOastQueryReview => "http.ssrf-oast-review",
         }
     }
 
@@ -262,6 +284,8 @@ impl NativeWebReviewActionKind {
             Self::OpenApiDocumentReplay => "openapi-document-replay",
             #[cfg(feature = "rest-review")]
             Self::RestReadOnlyReplay => "rest-readonly-replay",
+            #[cfg(feature = "ssrf-oast-review")]
+            Self::SsrfOastQueryReview => "ssrf-oast-query-review",
         }
     }
 
@@ -296,6 +320,8 @@ impl NativeWebReviewActionKind {
             Self::OpenApiDocumentReplay => NativeWebReviewDifferentialInput::ExactRequestReplay,
             #[cfg(feature = "rest-review")]
             Self::RestReadOnlyReplay => NativeWebReviewDifferentialInput::ExactRequestReplay,
+            #[cfg(feature = "ssrf-oast-review")]
+            Self::SsrfOastQueryReview => NativeWebReviewDifferentialInput::SingleQueryParameter,
         }
     }
 
@@ -315,6 +341,10 @@ impl NativeWebReviewActionKind {
         #[cfg(feature = "authorization-review")]
         if matches!(self, Self::ResourceAuthorizationDifferential) {
             return 4;
+        }
+        #[cfg(feature = "ssrf-oast-review")]
+        if matches!(self, Self::SsrfOastQueryReview) {
+            return 3;
         }
         self.request_legs().len()
     }
@@ -348,6 +378,8 @@ impl NativeWebReviewActionKind {
             Self::OpenApiDocumentReplay => 2,
             #[cfg(feature = "rest-review")]
             Self::RestReadOnlyReplay => 2,
+            #[cfg(feature = "ssrf-oast-review")]
+            Self::SsrfOastQueryReview => 5,
         };
         RiskScore::from_percent(percent).expect("native web-review risk is a valid constant")
     }
@@ -469,6 +501,13 @@ mod tests {
                 "http.rest-review",
                 "rest-readonly-replay",
             ),
+            #[cfg(feature = "ssrf-oast-review")]
+            (
+                NativeWebReviewActionKind::SsrfOastQueryReview,
+                "web.review.ssrf.oast-query@1",
+                "http.ssrf-oast-review",
+                "ssrf-oast-query-review",
+            ),
         ];
 
         assert_eq!(
@@ -538,20 +577,27 @@ mod tests {
 
         for kind in NativeWebReviewActionKind::all() {
             assert_eq!(kind.request_legs(), &expected_legs);
+            let extended_request_plan = false;
+            #[cfg(feature = "authorization-review")]
+            let extended_request_plan = extended_request_plan
+                || kind == NativeWebReviewActionKind::ResourceAuthorizationDifferential;
             #[cfg(feature = "authorization-review")]
             if kind == NativeWebReviewActionKind::ResourceAuthorizationDifferential {
                 assert_eq!(kind.maximum_requests_per_case(), 4);
-            } else {
+            }
+            #[cfg(feature = "ssrf-oast-review")]
+            let extended_request_plan =
+                extended_request_plan || kind == NativeWebReviewActionKind::SsrfOastQueryReview;
+            #[cfg(feature = "ssrf-oast-review")]
+            if kind == NativeWebReviewActionKind::SsrfOastQueryReview {
+                assert_eq!(kind.maximum_requests_per_case(), 3);
+            }
+            if !extended_request_plan {
                 assert_eq!(
                     kind.maximum_requests_per_case(),
                     NATIVE_WEB_REVIEW_REQUESTS_PER_CASE
                 );
             }
-            #[cfg(not(feature = "authorization-review"))]
-            assert_eq!(
-                kind.maximum_requests_per_case(),
-                NATIVE_WEB_REVIEW_REQUESTS_PER_CASE
-            );
             assert_eq!(
                 kind.maximum_active_requests_per_case(),
                 NATIVE_WEB_REVIEW_ACTIVE_REQUESTS_PER_CASE
