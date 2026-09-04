@@ -2430,6 +2430,10 @@ mod tests {
                     "serve_provider, ProviderServerError, provider_router",
                 ),
             ),
+            (
+                valid_server_source().replacen("#[doc(hidden)]", "", 1),
+                valid_library_source().to_owned(),
+            ),
         ] {
             assert!(!server_surface_violations(&server, &library)
                 .unwrap()
@@ -2460,6 +2464,94 @@ mod tests {
                     .unwrap()
                     .is_empty(),
                 "native client transport mutation unexpectedly passed"
+            );
+        }
+    }
+
+    #[test]
+    fn native_adapter_authority_shape_mutations_fail_closed() {
+        let source = include_str!("../../../crates/termivar-scanner/src/native_oast_provider.rs");
+        let production = source_without_exact_oast_test_modules(source).unwrap();
+        assert!(adapter_forbidden_authority_violations(&production).is_empty());
+        assert!(adapter_private_authority_shape_violations(&production)
+            .unwrap()
+            .is_empty());
+
+        for (mutation, expected) in [
+            (
+                format!("{production}\nfn escape() {{ let _: reqwest::Client; }}"),
+                "forbidden authority surface `reqwest::`",
+            ),
+            (
+                format!("{production}\nfn escape() {{ tokio::spawn(async {{}}); }}"),
+                "must not start background work through `tokio::spawn`",
+            ),
+        ] {
+            let violations = adapter_forbidden_authority_violations(&mutation);
+            assert!(
+                violations
+                    .iter()
+                    .any(|violation| violation.contains(expected)),
+                "adapter authority mutation `{expected}` was not rejected: {violations:?}"
+            );
+        }
+
+        for (mutation, expected) in [
+            (
+                format!("#![allow(dead_code)]\n{production}"),
+                "must not suppress dead-code policy",
+            ),
+            (
+                production.replacen("NativeOastClient::new(", "NativeOastClient::build(", 1),
+                "NativeOastClient::new(",
+            ),
+            (
+                production.replacen(
+                    "pub(crate) struct NativeOastProviderConfiguration",
+                    "pub(crate) struct MissingNativeOastProviderConfiguration",
+                    1,
+                ),
+                "declare exactly one `NativeOastProviderConfiguration`",
+            ),
+            (
+                production.replacen(
+                    "pub(crate) struct NativeOastProviderPermit",
+                    "pub struct NativeOastProviderPermit",
+                    1,
+                ),
+                "and all of its fields must remain crate-private",
+            ),
+            (
+                production.replacen(
+                    "pub(crate) struct NativeOastProviderConfiguration",
+                    "#[derive(Clone)] pub(crate) struct NativeOastProviderConfiguration",
+                    1,
+                ),
+                "must remain move-only and non-serializable",
+            ),
+            (
+                format!(
+                    "{production}\nimpl Drop for NativeOastProviderAdapter {{ fn drop(&mut self) {{}} }}"
+                ),
+                "must not implement `Drop`",
+            ),
+            (
+                production.replacen("    fn mint(", "    pub(crate) fn mint(", 1),
+                "NativeOastProviderPermit::mint must remain exactly one private constructor",
+            ),
+            (
+                production.replacen(
+                    "_authority: NativeOastProviderMintToken",
+                    "_authority: &NativeOastProviderMintToken",
+                    1,
+                ),
+                "consuming the move-only authority token by value",
+            ),
+        ] {
+            let violations = adapter_private_authority_shape_violations(&mutation).unwrap();
+            assert!(
+                violations.iter().any(|violation| violation.contains(expected)),
+                "adapter shape mutation `{expected}` was not rejected: {violations:?}"
             );
         }
     }
@@ -2542,6 +2634,12 @@ mod tests {
             .unwrap()
             .is_empty());
 
+        let missing = valid.replacen("struct AdminToken", "struct MissingAdminToken", 1);
+        let violations = secret_surface_violations(&missing, &expected).unwrap();
+        assert!(violations
+            .iter()
+            .any(|violation| violation.contains("declare exactly one `AdminToken`")));
+
         for mutation in [
             valid.replacen("struct AdminToken", "#[derive(Clone)] struct AdminToken", 1),
             valid.replacen("bytes: Vec<u8>", "pub bytes: Vec<u8>", 1),
@@ -2570,6 +2668,11 @@ mod tests {
         let widened_workflow =
             format!("{workflow}\ncargo build -p termivar-oast --bin termivar-oast-provider");
         assert!(!release_isolation_source_violations(cli, &widened_workflow).is_empty());
+
+        let violations = release_isolation_source_violations(cli, "cargo build --workspace");
+        assert!(violations
+            .iter()
+            .any(|violation| violation.contains("exact termivar-cli release-bundle build")));
     }
 
     #[test]
@@ -2610,6 +2713,88 @@ mod tests {
         );
         let broadened_production = source_without_exact_oast_test_modules(&broadened).unwrap();
         assert!(broadened_production.contains("reqwest::Client"));
+    }
+
+    #[test]
+    fn exact_oast_feature_test_module_filter_rejects_malformed_guards() {
+        let guard = "#[cfg(all(test, feature = \"oast-native-provider\"))]";
+        for (source, expected) in [
+            (guard.to_owned(), "has no following module"),
+            (
+                format!("{guard}\nfn fixture() {{}}"),
+                "must apply directly to a module",
+            ),
+            (
+                format!("{guard}\nmod fixtures {{"),
+                "did not contain one complete module",
+            ),
+        ] {
+            let error = source_without_exact_oast_test_modules(&source).unwrap_err();
+            assert!(
+                error.to_string().contains(expected),
+                "malformed OAST cfg guard `{expected}` was not rejected: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn shared_runtime_native_oast_mint_mutations_fail_closed() {
+        let source = include_str!("../../../crates/termivar-scanner/src/web_runtime/authority.rs");
+        let production = production_prefix(source);
+        assert!(shared_provider_mint_contract_violations(production)
+            .unwrap()
+            .is_empty());
+
+        for (mutation, expected) in [
+            (
+                production.replacen(
+                    "pub(crate) struct SharedWebRuntimeAuthority",
+                    "pub(crate) struct MissingSharedWebRuntimeAuthority",
+                    1,
+                ),
+                "declare exactly one SharedWebRuntimeAuthority",
+            ),
+            (
+                production.replacen(
+                    "native_oast_provider_minted: Arc<std::sync::Mutex<bool>>",
+                    "native_oast_provider_minted: Arc<std::sync::Mutex<u8>>",
+                    1,
+                ),
+                "Arc<Mutex<bool>> native OAST mint-once state",
+            ),
+            (
+                production.replacen("#[derive(Clone)]", "#[derive(Debug)]", 1),
+                "must clone the shared native OAST mint-once state",
+            ),
+            (
+                production.replacen(
+                    "fn mint_native_oast_provider",
+                    "fn removed_native_oast_provider",
+                    1,
+                ),
+                "expose exactly one crate-private native OAST mint method",
+            ),
+            (
+                production.replacen(
+                    "pub(crate) fn mint_native_oast_provider",
+                    "pub fn mint_native_oast_provider",
+                    1,
+                ),
+                "one feature-gated crate-private &self method",
+            ),
+            (
+                production.replacen("*minted = true;", "let _ = &minted;", 1),
+                "exactly one mint-state commit",
+            ),
+        ] {
+            let violations = shared_provider_mint_contract_violations(&mutation).unwrap();
+            assert!(
+                violations
+                    .iter()
+                    .any(|violation| violation.contains(expected)),
+                "shared mint mutation `{expected}` was not rejected: {violations:?}"
+            );
+        }
     }
 
     #[test]

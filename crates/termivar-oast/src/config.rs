@@ -418,6 +418,24 @@ mod tests {
         }
         assert!(PublicOrigin::test_http_loopback("http://127.0.0.1:8080/").is_ok());
         assert!(PublicOrigin::test_http_loopback("http://example.test/").is_err());
+        assert_eq!(
+            PublicOrigin::from_test_loopback("127.0.0.1:0".parse().unwrap()),
+            Err(ProviderError::InvalidPublicOrigin)
+        );
+        assert_eq!(
+            PublicOrigin::from_test_loopback("192.0.2.1:8080".parse().unwrap()),
+            Err(ProviderError::NonLoopbackBindRejected)
+        );
+        assert_eq!(
+            PublicOrigin::from_test_loopback("[::1]:8080".parse().unwrap())
+                .unwrap()
+                .as_str(),
+            "http://[::1]:8080/"
+        );
+        assert_eq!(
+            format!("{:?}", "127.0.0.1:8080".parse::<LoopbackBind>().unwrap()),
+            "LoopbackBind(<loopback>)"
+        );
     }
 
     #[test]

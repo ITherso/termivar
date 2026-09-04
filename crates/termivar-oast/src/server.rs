@@ -778,6 +778,24 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "test-support")]
+    #[tokio::test]
+    async fn prebound_listener_must_match_the_provider_bind() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let listener_address = listener.local_addr().unwrap();
+        let provider_port = if listener_address.port() == 1 { 2 } else { 1 };
+        let provider_address = std::net::SocketAddr::new(listener_address.ip(), provider_port);
+        let provider = test_provider(
+            provider_address,
+            ProviderLimits::new(1, 1, 1, 1, 1, 5_000, 1).unwrap(),
+        );
+
+        assert_eq!(
+            serve_provider_on_listener(listener, provider).await,
+            Err(ProviderServerError::Bind)
+        );
+    }
+
     #[test]
     fn callback_response_is_constant_and_non_reflective() {
         let response = callback_no_content();

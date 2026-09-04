@@ -2549,4 +2549,327 @@ mod tests {
             requests_after_failure
         );
     }
+
+    #[test]
+    fn provider_error_vocabulary_is_complete_static_and_raw_free() {
+        let kinds = [
+            NativeOastProviderErrorKind::InvalidLimits,
+            NativeOastProviderErrorKind::InvalidProviderOrigin,
+            NativeOastProviderErrorKind::ProviderTargetOriginOverlap,
+            NativeOastProviderErrorKind::AuthorityAlreadyMinted,
+            NativeOastProviderErrorKind::ParentBudgetTooSmall,
+            NativeOastProviderErrorKind::OperationNotPermitted,
+            NativeOastProviderErrorKind::InvalidLifecycle,
+            NativeOastProviderErrorKind::RegistrationLimit,
+            NativeOastProviderErrorKind::CallbackLimit,
+            NativeOastProviderErrorKind::RequestLimit,
+            NativeOastProviderErrorKind::RequestByteLimit,
+            NativeOastProviderErrorKind::ResponseByteLimit,
+            NativeOastProviderErrorKind::PollLimit,
+            NativeOastProviderErrorKind::Cancelled,
+            NativeOastProviderErrorKind::DeadlineExceeded,
+            NativeOastProviderErrorKind::RuntimeBudget(RuntimeBudgetDimension::TotalRequests),
+            NativeOastProviderErrorKind::ProviderRejected,
+            NativeOastProviderErrorKind::ProviderResponseInvalid,
+            NativeOastProviderErrorKind::ProviderSessionMismatch,
+            NativeOastProviderErrorKind::ProviderCallbackMismatch,
+            NativeOastProviderErrorKind::ProviderPageIncomplete,
+            NativeOastProviderErrorKind::ProviderExpired,
+            NativeOastProviderErrorKind::CorrelationRejected,
+            NativeOastProviderErrorKind::CleanupUnverified,
+            NativeOastProviderErrorKind::InternalInvariant,
+        ];
+
+        for kind in kinds {
+            let error = NativeOastProviderError::new(kind);
+            let display = error.to_string();
+            let debug = format!("{error:?}");
+            assert!(!display.is_empty());
+            assert!(!display.contains("oast.example.test"));
+            assert!(!display.contains("MUST-NOT-LEAK"));
+            assert!(!debug.contains("oast.example.test"));
+            assert!(!debug.contains("MUST-NOT-LEAK"));
+        }
+
+        assert_eq!(
+            NativeOastProviderError::internal_invariant().kind(),
+            NativeOastProviderErrorKind::InternalInvariant
+        );
+    }
+
+    #[test]
+    fn configuration_rejects_each_untrusted_identity_without_secret_echo() {
+        let limits = adapter_limits(1, 1);
+        let invalid = [
+            NativeOastProviderConfiguration::new(
+                "https://oast.example.test/",
+                "assessment:native-oast",
+                [11; 32],
+                Vec::new(),
+                limits,
+            )
+            .unwrap_err(),
+            NativeOastProviderConfiguration::new(
+                "http://oast.example.test/",
+                "assessment:native-oast",
+                [11; 32],
+                ADMIN_SECRET.to_vec(),
+                limits,
+            )
+            .unwrap_err(),
+            NativeOastProviderConfiguration::new(
+                "https://oast.example.test/",
+                "",
+                [11; 32],
+                ADMIN_SECRET.to_vec(),
+                limits,
+            )
+            .unwrap_err(),
+            NativeOastProviderConfiguration::new(
+                "https://oast.example.test/",
+                "assessment:native-oast",
+                [0; 32],
+                ADMIN_SECRET.to_vec(),
+                limits,
+            )
+            .unwrap_err(),
+        ];
+        assert_eq!(
+            invalid[0].kind(),
+            NativeOastProviderErrorKind::ProviderRejected
+        );
+        assert_eq!(
+            invalid[1].kind(),
+            NativeOastProviderErrorKind::InvalidProviderOrigin
+        );
+        assert_eq!(
+            invalid[2].kind(),
+            NativeOastProviderErrorKind::CorrelationRejected
+        );
+        assert_eq!(
+            invalid[3].kind(),
+            NativeOastProviderErrorKind::CorrelationRejected
+        );
+        for error in invalid {
+            let rendered = format!("{error:?} {error}");
+            assert!(!rendered.contains("oast.example.test"));
+            assert!(!rendered.contains("MUST-NOT-LEAK"));
+        }
+
+        let origin = PublicOrigin::from_test_loopback("127.0.0.1:1".parse().unwrap()).unwrap();
+        for error in [
+            NativeOastProviderConfiguration::for_loopback(
+                origin.clone(),
+                "assessment:native-oast",
+                [11; 32],
+                Vec::new(),
+                limits,
+            )
+            .unwrap_err(),
+            NativeOastProviderConfiguration::for_loopback(
+                origin.clone(),
+                "",
+                [11; 32],
+                ADMIN_SECRET.to_vec(),
+                limits,
+            )
+            .unwrap_err(),
+            NativeOastProviderConfiguration::for_loopback(
+                origin,
+                "assessment:native-oast",
+                [0; 32],
+                ADMIN_SECRET.to_vec(),
+                limits,
+            )
+            .unwrap_err(),
+        ] {
+            assert!(!format!("{error:?} {error}").contains("MUST-NOT-LEAK"));
+        }
+    }
+
+    #[tokio::test]
+    async fn live_adapter_debug_redacts_provider_session_callback_and_secret_state() {
+        let (mut adapter, _accounting, task) = loopback_adapter(1, 1).await;
+        assert!(!format!("{adapter:?}").contains("MUST-NOT-LEAK"));
+        adapter.register().await.unwrap();
+        let allocation = adapter
+            .allocate_callback(
+                verification_case(51),
+                OastCorrelationToken::new([51; 32]).unwrap(),
+            )
+            .await
+            .unwrap();
+
+        let target = allocation.target().as_str().to_owned();
+        let rendered = format!("{adapter:?} {allocation:?}");
+        assert!(!rendered.contains("MUST-NOT-LEAK"));
+        assert!(!rendered.contains("127.0.0.1"));
+        assert!(!rendered.contains(&target));
+        assert!(rendered.contains("<redacted>"));
+        assert!(rendered.contains("<opaque>"));
+
+        adapter.cleanup().await.unwrap();
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn invalid_lifecycle_and_terminal_boundaries_fail_before_network() {
+        let (mut adapter, accounting, task) = loopback_adapter(1, 1).await;
+        assert_eq!(
+            adapter
+                .allocate_callback(
+                    verification_case(61),
+                    OastCorrelationToken::new([61; 32]).unwrap(),
+                )
+                .await
+                .unwrap_err()
+                .kind(),
+            NativeOastProviderErrorKind::InvalidLifecycle
+        );
+        assert_eq!(
+            adapter.poll().await.unwrap_err().kind(),
+            NativeOastProviderErrorKind::InvalidLifecycle
+        );
+        assert_eq!(
+            adapter.cleanup().await.unwrap_err().kind(),
+            NativeOastProviderErrorKind::InvalidLifecycle
+        );
+        assert_eq!(accounting.snapshot().total_requests(), 0);
+
+        adapter.permit.cancellation.cancel();
+        let cancelled = adapter.register().await.unwrap_err();
+        assert_eq!(cancelled.kind(), NativeOastProviderErrorKind::Cancelled);
+        assert_eq!(
+            cancelled.receipt().unwrap().operation(),
+            NativeOastProviderOperation::Register
+        );
+        assert_eq!(accounting.snapshot().total_requests(), 0);
+        assert_eq!(
+            adapter.register().await.unwrap_err().kind(),
+            NativeOastProviderErrorKind::RegistrationLimit
+        );
+        task.abort();
+
+        let (mut elapsed, elapsed_accounting, elapsed_task) = loopback_adapter(1, 1).await;
+        elapsed.permit.deadline = tokio::time::Instant::now();
+        let deadline = elapsed.register().await.unwrap_err();
+        assert_eq!(
+            deadline.kind(),
+            NativeOastProviderErrorKind::DeadlineExceeded
+        );
+        assert_eq!(elapsed_accounting.snapshot().total_requests(), 0);
+        elapsed_task.abort();
+    }
+
+    #[test]
+    fn permit_boundary_preserves_invariants_and_shared_budget_failures() {
+        let budget = RuntimeBudget::default();
+        let mut permit = NativeOastProviderPermit::mint(
+            "https://oast.example.test/".parse().unwrap(),
+            "https://target.example.test/",
+            adapter_limits(1, 1),
+            RequestAccountingBroker::new(budget),
+            budget,
+            CancellationToken::new(),
+            tokio::time::Instant::now().checked_add(Duration::from_secs(1)),
+        )
+        .unwrap();
+        assert_eq!(permit.observe_response_bytes(17), 0);
+        permit
+            .begin_dispatch(NativeOastProviderOperation::Register, 1, 0)
+            .unwrap();
+        assert_eq!(
+            NativeOastClientBoundary::begin(&mut permit, NativeOastClientOperation::Poll, 1, 0,),
+            Err(NativeOastBoundaryRejection::AccountingInvariant)
+        );
+        assert_eq!(
+            permit.take_boundary_error(),
+            Some(NativeOastProviderErrorKind::InternalInvariant)
+        );
+        permit.finish_dispatch(TransportDispatchOutcome::Completed);
+
+        let constrained = RuntimeBudget::default().with_max_total_requests(2);
+        let accounting = RequestAccountingBroker::new(constrained);
+        let mut exhausted = NativeOastProviderPermit::mint(
+            "https://oast.example.test/".parse().unwrap(),
+            "https://target.example.test/",
+            NativeOastProviderLimits::new(1, 1, 2, 1, 128, 128, 1_000).unwrap(),
+            accounting.clone(),
+            constrained,
+            CancellationToken::new(),
+            tokio::time::Instant::now().checked_add(Duration::from_secs(1)),
+        )
+        .unwrap();
+        for action in ["test.consume.one", "test.consume.two"] {
+            let mut lease = accounting
+                .try_begin(action, DecisionExecutionStage::Passive, None)
+                .unwrap();
+            lease.finish(TransportDispatchOutcome::Completed);
+        }
+        assert_eq!(
+            NativeOastClientBoundary::begin(
+                &mut exhausted,
+                NativeOastClientOperation::Register,
+                1,
+                0,
+            ),
+            Err(NativeOastBoundaryRejection::BudgetExhausted)
+        );
+        assert_eq!(
+            exhausted.take_boundary_error(),
+            Some(NativeOastProviderErrorKind::RuntimeBudget(
+                RuntimeBudgetDimension::TotalRequests
+            ))
+        );
+        assert_eq!(accounting.snapshot().total_requests(), 2);
+    }
+
+    #[test]
+    fn boundary_and_transport_error_mapping_is_exact() {
+        assert_eq!(
+            boundary_rejection_for(NativeOastProviderErrorKind::Cancelled),
+            NativeOastBoundaryRejection::Cancelled
+        );
+        assert_eq!(
+            boundary_rejection_for(NativeOastProviderErrorKind::DeadlineExceeded),
+            NativeOastBoundaryRejection::DeadlineExceeded
+        );
+        for kind in [
+            NativeOastProviderErrorKind::RequestLimit,
+            NativeOastProviderErrorKind::RequestByteLimit,
+            NativeOastProviderErrorKind::ResponseByteLimit,
+            NativeOastProviderErrorKind::RuntimeBudget(RuntimeBudgetDimension::TotalRequests),
+            NativeOastProviderErrorKind::ParentBudgetTooSmall,
+        ] {
+            assert_eq!(
+                boundary_rejection_for(kind),
+                NativeOastBoundaryRejection::BudgetExhausted
+            );
+        }
+        assert_eq!(
+            boundary_rejection_for(NativeOastProviderErrorKind::InternalInvariant),
+            NativeOastBoundaryRejection::AccountingInvariant
+        );
+        assert_eq!(
+            boundary_rejection_for(NativeOastProviderErrorKind::InvalidLifecycle),
+            NativeOastBoundaryRejection::OperationNotPermitted
+        );
+
+        assert_eq!(
+            transport_outcome_for_client_error(NativeOastClientErrorKind::Cancelled),
+            TransportDispatchOutcome::Cancelled
+        );
+        assert_eq!(
+            transport_outcome_for_client_error(NativeOastClientErrorKind::DeadlineExceeded),
+            TransportDispatchOutcome::RequestTimeout
+        );
+        assert_eq!(
+            transport_outcome_for_client_error(NativeOastClientErrorKind::ResponseTooLarge),
+            TransportDispatchOutcome::ResponseBudgetReached
+        );
+        assert_eq!(
+            transport_outcome_for_client_error(NativeOastClientErrorKind::MalformedResponse),
+            TransportDispatchOutcome::TransportFailure
+        );
+    }
 }

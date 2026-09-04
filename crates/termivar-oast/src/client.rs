@@ -1077,6 +1077,7 @@ mod tests {
     use tokio::{
         io::{AsyncReadExt, AsyncWriteExt},
         net::TcpListener,
+        sync::oneshot,
     };
 
     const ADMIN_SECRET: &[u8] = b"CLIENT-ADMIN-MUST-NOT-LEAK-63A917F0";
@@ -1237,6 +1238,52 @@ mod tests {
         (origin, captured, task)
     }
 
+    async fn response_that_stalls_before_headers() -> (
+        PublicOrigin,
+        oneshot::Receiver<()>,
+        tokio::task::JoinHandle<()>,
+    ) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let origin = PublicOrigin::test_http_loopback(&format!("http://{address}/")).unwrap();
+        let (request_observed, observed) = oneshot::channel();
+        let task = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = vec![0; 16 * 1024];
+            let _ = stream.read(&mut request).await.unwrap();
+            let _ = request_observed.send(());
+            tokio::time::sleep(Duration::from_secs(5)).await;
+        });
+        (origin, observed, task)
+    }
+
+    async fn response_with_incomplete_body(
+        body: Vec<u8>,
+        stall_after_body: bool,
+    ) -> (PublicOrigin, tokio::task::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let origin = PublicOrigin::test_http_loopback(&format!("http://{address}/")).unwrap();
+        let task = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = vec![0; 16 * 1024];
+            let _ = stream.read(&mut request).await.unwrap();
+            let head = format!(
+                "HTTP/1.1 201 Created\r\nContent-Type: {JSON_MEDIA_TYPE}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len() + 1
+            );
+            stream.write_all(head.as_bytes()).await.unwrap();
+            stream.write_all(&body).await.unwrap();
+            if stall_after_body {
+                stream.flush().await.unwrap();
+                tokio::time::sleep(Duration::from_secs(5)).await;
+            } else {
+                stream.shutdown().await.unwrap();
+            }
+        });
+        (origin, task)
+    }
+
     #[test]
     fn wire_decoding_is_strict_and_secret_debug_is_redacted() {
         let wire: RegistrationWire = serde_json::from_slice(&registration_json()).unwrap();
@@ -1343,6 +1390,80 @@ mod tests {
         assert_eq!(error.kind(), NativeOastClientErrorKind::Cancelled);
         assert!(!error.accounting().possibly_dispatched());
         assert!(cancelled.begun.is_empty());
+    }
+
+    #[tokio::test]
+    async fn cancellation_while_waiting_for_response_head_is_terminal() {
+        let (origin, request_observed, task) = response_that_stalls_before_headers().await;
+        let client = NativeOastClient::new(origin).unwrap();
+        let mut boundary = TestBoundary::open();
+        let cancellation = boundary.cancellation.clone();
+        let cancel = tokio::spawn(async move {
+            request_observed.await.unwrap();
+            cancellation.cancel();
+        });
+
+        let error = client
+            .register(
+                AdminToken::new(ADMIN_SECRET.to_vec()).unwrap(),
+                SessionRequest::new(1_000, 1, 1, 1),
+                &mut boundary,
+            )
+            .await
+            .unwrap_err();
+        cancel.await.unwrap();
+        task.abort();
+        assert!(task.await.unwrap_err().is_cancelled());
+        assert_eq!(error.kind(), NativeOastClientErrorKind::Cancelled);
+        assert!(error.accounting().possibly_dispatched());
+        assert_eq!(error.accounting().response_bytes(), 0);
+        assert_eq!(boundary.begun.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn truncated_transport_body_fails_after_charging_delivered_bytes() {
+        let body = registration_json();
+        let (origin, task) = response_with_incomplete_body(body.clone(), false).await;
+        let client = NativeOastClient::new(origin).unwrap();
+        let mut boundary = TestBoundary::open();
+
+        let error = client
+            .register(
+                AdminToken::new(ADMIN_SECRET.to_vec()).unwrap(),
+                SessionRequest::new(1_000, 1, 1, 1),
+                &mut boundary,
+            )
+            .await
+            .unwrap_err();
+        task.await.unwrap();
+        assert_eq!(error.kind(), NativeOastClientErrorKind::TransportFailure);
+        assert!(error.accounting().possibly_dispatched());
+        assert_eq!(error.accounting().response_bytes(), body.len() as u64);
+        assert_eq!(boundary.observed, body.len() as u64);
+    }
+
+    #[tokio::test]
+    async fn cancellation_between_response_chunks_is_terminal_and_accounted() {
+        let body = registration_json();
+        let (origin, task) = response_with_incomplete_body(body.clone(), true).await;
+        let client = NativeOastClient::new(origin).unwrap();
+        let mut boundary = TestBoundary::open();
+        boundary.cancel_on_observe = true;
+
+        let error = client
+            .register(
+                AdminToken::new(ADMIN_SECRET.to_vec()).unwrap(),
+                SessionRequest::new(1_000, 1, 1, 1),
+                &mut boundary,
+            )
+            .await
+            .unwrap_err();
+        task.abort();
+        assert!(task.await.unwrap_err().is_cancelled());
+        assert_eq!(error.kind(), NativeOastClientErrorKind::Cancelled);
+        assert!(error.accounting().possibly_dispatched());
+        assert_eq!(error.accounting().response_bytes(), body.len() as u64);
+        assert_eq!(boundary.observed, body.len() as u64);
     }
 
     #[tokio::test]
@@ -1680,6 +1801,48 @@ mod tests {
         assert_eq!(error.kind(), NativeOastClientErrorKind::ProtocolMismatch);
         assert_eq!(error.accounting().request_bytes(), 199);
 
+        let wrong_session_poll: PollWire = serde_json::from_value(serde_json::json!({
+            "schema": POLL_SCHEMA,
+            "session_id": encoded(&[6; 16]),
+            "next_cursor": 0,
+            "complete": true,
+            "expired": false,
+            "events": [],
+        }))
+        .unwrap();
+        assert_eq!(
+            validate_poll(
+                wrong_session_poll,
+                &session_id(),
+                EventCursor::default(),
+                NativeOastDispatchAccounting::default(),
+            )
+            .unwrap_err()
+            .kind(),
+            NativeOastClientErrorKind::ProtocolMismatch
+        );
+
+        let advanced_empty_poll: PollWire = serde_json::from_value(serde_json::json!({
+            "schema": POLL_SCHEMA,
+            "session_id": session_id().as_str(),
+            "next_cursor": 1,
+            "complete": true,
+            "expired": false,
+            "events": [],
+        }))
+        .unwrap();
+        assert_eq!(
+            validate_poll(
+                advanced_empty_poll,
+                &session_id(),
+                EventCursor::default(),
+                NativeOastDispatchAccounting::default(),
+            )
+            .unwrap_err()
+            .kind(),
+            NativeOastClientErrorKind::ProtocolMismatch
+        );
+
         for invalid_poll in [
             serde_json::json!({
                 "schema": "security.termivar-oast.poll/v2",
@@ -1706,6 +1869,66 @@ mod tests {
         ] {
             assert!(serde_json::from_value::<PollWire>(invalid_poll).is_err());
         }
+
+        let non_string_token = serde_json::json!({
+            "schema": SESSION_SCHEMA,
+            "session_id": session_id().as_str(),
+            "session_token": 7,
+            "expires_after_ms": 1_000,
+            "protocol_revision": NATIVE_OAST_PROTOCOL_REVISION,
+        });
+        let error = serde_json::from_value::<RegistrationWire>(non_string_token)
+            .err()
+            .unwrap()
+            .to_string();
+        assert!(error.contains("one canonical native OAST session token"));
+
+        let non_string_target = serde_json::json!({
+            "schema": CALLBACK_SCHEMA,
+            "callback_id": callback_id().as_str(),
+            "callback_target": 7,
+        });
+        let error = serde_json::from_value::<AllocationWire>(non_string_target)
+            .err()
+            .unwrap()
+            .to_string();
+        assert!(error.contains("one bounded callback target"));
+
+        let oversized_target = "x".repeat(2_049);
+        let borrowed = format!(
+            "{{\"schema\":\"{CALLBACK_SCHEMA}\",\"callback_id\":\"{}\",\"callback_target\":\"{oversized_target}\"}}",
+            callback_id().as_str()
+        );
+        assert!(serde_json::from_str::<AllocationWire>(&borrowed).is_err());
+        assert!(serde_json::from_value::<AllocationWire>(serde_json::json!({
+            "schema": CALLBACK_SCHEMA,
+            "callback_id": callback_id().as_str(),
+            "callback_target": oversized_target,
+        }))
+        .is_err());
+    }
+
+    #[tokio::test]
+    async fn response_origin_mismatch_fails_before_body_intake() {
+        let (origin, _, task) =
+            scripted_response("201 Created", JSON_MEDIA_TYPE, registration_json()).await;
+        let client = NativeOastClient::new(origin).unwrap();
+        let actual = client.endpoint(REGISTER_PATH, None);
+        let response = client.client.get(actual).send().await.unwrap();
+        task.await.unwrap();
+        let different = client.endpoint("/v1/different", None);
+        let error = validate_response_head(
+            &response,
+            StatusCode::CREATED,
+            &different,
+            NativeOastDispatchAccounting::planned(17, 0),
+        )
+        .unwrap_err();
+        assert_eq!(
+            error.kind(),
+            NativeOastClientErrorKind::ResponseOriginMismatch
+        );
+        assert_eq!(error.accounting().response_bytes(), 0);
     }
 
     #[test]
@@ -1725,5 +1948,88 @@ mod tests {
         assert_eq!(CLEANUP_SCHEMA, "security.termivar-oast.cleanup/v1");
         assert_eq!(NATIVE_OAST_PROTOCOL_REVISION, "termivar-native-oast/v1");
         assert_eq!(ProtocolClass::Http.as_str(), "http");
+
+        let cases = [
+            (
+                NativeOastClientErrorKind::ClientInitialization,
+                "native OAST client initialization failed",
+            ),
+            (
+                NativeOastClientErrorKind::RequestConstruction,
+                "native OAST fixed request construction failed",
+            ),
+            (
+                NativeOastClientErrorKind::BoundaryRejected(
+                    NativeOastBoundaryRejection::OperationNotPermitted,
+                ),
+                "native OAST parent authority rejected the operation",
+            ),
+            (
+                NativeOastClientErrorKind::Cancelled,
+                "native OAST operation was cancelled",
+            ),
+            (
+                NativeOastClientErrorKind::DeadlineExceeded,
+                "native OAST operation deadline elapsed",
+            ),
+            (
+                NativeOastClientErrorKind::UnexpectedStatus,
+                "native OAST provider returned an unexpected status",
+            ),
+            (
+                NativeOastClientErrorKind::ResponseOriginMismatch,
+                "native OAST provider response origin mismatched",
+            ),
+            (
+                NativeOastClientErrorKind::UnsupportedMedia,
+                "native OAST provider response media is unsupported",
+            ),
+            (
+                NativeOastClientErrorKind::ResponseTooLarge,
+                "native OAST provider response exceeded a byte ceiling",
+            ),
+            (
+                NativeOastClientErrorKind::MalformedResponse,
+                "native OAST provider response was malformed",
+            ),
+            (
+                NativeOastClientErrorKind::ProtocolMismatch,
+                "native OAST provider response contradicted the protocol",
+            ),
+            (
+                NativeOastClientErrorKind::CallbackTargetMismatch,
+                "native OAST callback target mismatched the configured provider",
+            ),
+            (
+                NativeOastClientErrorKind::AccountingInvariant,
+                "native OAST response accounting invariant failed",
+            ),
+        ];
+        for (kind, expected) in cases {
+            assert_eq!(
+                NativeOastClientError::new(kind, NativeOastDispatchAccounting::default())
+                    .to_string(),
+                expected
+            );
+        }
+
+        let construction = request_construction_error();
+        assert_eq!(
+            construction.kind(),
+            NativeOastClientErrorKind::RequestConstruction
+        );
+        assert_eq!(
+            construction.accounting(),
+            NativeOastDispatchAccounting::default()
+        );
+
+        let dispatch = NativeOastClientDispatch {
+            value: "DISPATCH-VALUE-MUST-NOT-LEAK",
+            accounting: NativeOastDispatchAccounting::planned(11, 0),
+        };
+        let debug = format!("{dispatch:?}");
+        assert!(debug.contains("NativeOastClientDispatch"));
+        assert!(debug.contains("<typed>"));
+        assert!(!debug.contains("DISPATCH-VALUE-MUST-NOT-LEAK"));
     }
 }
