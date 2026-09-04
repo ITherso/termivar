@@ -4,10 +4,12 @@
 use std::collections::BTreeSet;
 
 mod authority;
+mod native_oast;
 mod oast;
 mod semantic;
 
 pub use authority::{check_decision_loop_authority, MAX_AUTHORITY_FUZZ_INPUT_BYTES};
+pub use native_oast::{check_native_oast_provider, MAX_NATIVE_OAST_FUZZ_INPUT_BYTES};
 pub use oast::{check_oast_correlation, MAX_OAST_FUZZ_INPUT_BYTES};
 pub use semantic::{
     check_declarative_policy_wire, check_expression_semantics, MAX_EXPRESSION_FUZZ_DEPTH,

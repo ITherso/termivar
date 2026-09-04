@@ -108,6 +108,67 @@ fn bounded_oast_regression_inputs_satisfy_the_semantic_oracle() {
     }
 }
 
+#[test]
+fn bounded_native_oast_provider_models_cover_owned_seed_matrix() {
+    let mut count = 0_usize;
+    for scenario in 0_u8..12 {
+        for boundary in [0_u8, 1, 31, 32, 63, 64, 127, u8::MAX] {
+            let seed = structured_native_oast_seed(scenario, boundary);
+            assert_eq!(seed.len(), 96, "structured native OAST seed shape drifted");
+            assert!(seed.len() <= termivar_fuzz_harness::MAX_NATIVE_OAST_FUZZ_INPUT_BYTES);
+            termivar_fuzz_harness::check_native_oast_provider(&seed);
+            count += 1;
+        }
+    }
+    assert_eq!(count, 96, "owned native OAST seed inventory drifted");
+}
+
+#[test]
+fn owned_native_oast_route_and_bearer_seeds_use_production_contracts() {
+    const SESSION_ID: &str = "AQEBAQEBAQEBAQEBAQEBAQ";
+    const CALLBACK_ID: &str = "AgICAgICAgICAgICAgICAg";
+
+    let route_inputs = [
+        "/v1/sessions".to_owned(),
+        format!("/v1/sessions/{SESSION_ID}/callbacks"),
+        format!("/v1/sessions/{SESSION_ID}/events?after=0"),
+        format!("/v1/sessions/{SESSION_ID}/events?after=00"),
+        format!("/v1/sessions/{SESSION_ID}/events?after=%30"),
+        format!("/v1/sessions/{SESSION_ID}/events?after=0&extra=1"),
+        format!("/c/{SESSION_ID}/{CALLBACK_ID}"),
+        format!("/c/{SESSION_ID}/{CALLBACK_ID}?ignored=RAW-ROUTE-MUST-NOT-LEAK"),
+        format!("/c/%41QEBAQEBAQEBAQEBAQEBAQ/{CALLBACK_ID}"),
+        "https://provider.example.test/v1/sessions".to_owned(),
+    ];
+    let bearer_inputs: [(u8, &[u8]); 6] = [
+        (0, b"Bearer FUZZ-ONLY-OAST-ADMIN-TOKEN-8D31C0A4"),
+        (1, b"Bearer AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM"),
+        (0, b"bearer FUZZ-ONLY-OAST-ADMIN-TOKEN-8D31C0A4"),
+        (0, b"Bearer  FUZZ-ONLY-OAST-ADMIN-TOKEN-8D31C0A4"),
+        (1, b"Bearer AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAw="),
+        (1, b"Bearer\tSESSION-TOKEN-MUST-NOT-BE-ACCEPTED"),
+    ];
+
+    let mut count = 0_usize;
+    for route in route_inputs {
+        let seed = native_oast_seed(7, route.as_bytes());
+        assert!(seed.len() <= termivar_fuzz_harness::MAX_NATIVE_OAST_FUZZ_INPUT_BYTES);
+        termivar_fuzz_harness::check_native_oast_provider(&seed);
+        count += 1;
+    }
+    for (selector, bearer) in bearer_inputs {
+        let mut payload = Vec::with_capacity(bearer.len() + 1);
+        payload.push(selector);
+        payload.extend_from_slice(bearer);
+        let seed = native_oast_seed(9, &payload);
+        assert!(seed.len() <= termivar_fuzz_harness::MAX_NATIVE_OAST_FUZZ_INPUT_BYTES);
+        termivar_fuzz_harness::check_native_oast_provider(&seed);
+        count += 1;
+    }
+
+    assert_eq!(count, 16, "owned route/bearer seed inventory drifted");
+}
+
 fn structured_oast_seed(scenario: u8, boundary: u8) -> Vec<u8> {
     let mut seed = vec![0_u8; 80];
     seed[0] = scenario;
@@ -131,6 +192,25 @@ fn structured_oast_seed(scenario: u8, boundary: u8) -> Vec<u8> {
             .wrapping_add(scenario.wrapping_mul(13))
             .wrapping_add(index as u8);
     }
+    seed
+}
+
+fn structured_native_oast_seed(scenario: u8, boundary: u8) -> Vec<u8> {
+    let mut seed = vec![0_u8; 96];
+    seed[0] = scenario;
+    for (index, byte) in seed[1..].iter_mut().enumerate() {
+        *byte = boundary
+            .wrapping_add(scenario.wrapping_mul(19))
+            .wrapping_add((index as u8).wrapping_mul(37))
+            ^ scenario.rotate_left((index % 8) as u32);
+    }
+    seed
+}
+
+fn native_oast_seed(scenario: u8, payload: &[u8]) -> Vec<u8> {
+    let mut seed = Vec::with_capacity(payload.len() + 1);
+    seed.push(scenario);
+    seed.extend_from_slice(payload);
     seed
 }
 

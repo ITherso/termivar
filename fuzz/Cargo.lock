@@ -1261,7 +1261,21 @@ dependencies = [
  "markup5ever_rcdom",
  "serde_json",
  "termivar-core",
+ "termivar-oast",
  "termivar-scanner",
+]
+
+[[package]]
+name = "termivar-oast"
+version = "0.10.0-alpha.2"
+dependencies = [
+ "base64",
+ "getrandom 0.2.17",
+ "serde",
+ "sha2",
+ "subtle",
+ "url",
+ "zeroize",
 ]
 
 [[package]]

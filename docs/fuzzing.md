@@ -1,10 +1,12 @@
 # Fuzzing
 
-The `fuzz/` package contains five Termivar-owned semantic targets plus five bounded
+The `fuzz/` package contains six Termivar-owned semantic targets plus five bounded
 upstream-parser targets. `html_form_controls`, `expression_semantics`, and
 `declarative_policy_wire` exercise extraction and declarative-policy contracts;
 `decision_loop_authority` exercises adaptive planner authority, and
-`oast_correlation` exercises the transport-free correlation state machine. The parser
+`oast_correlation` exercises the transport-free correlation state machine, and
+`native_oast_provider` exercises the self-hosted provider's bounded input
+contracts without network I/O. The parser
 targets are dependency-level signals and must not be reported as Termivar
 decision-runtime coverage.
 
@@ -18,11 +20,12 @@ cargo fuzz run expression_semantics
 cargo fuzz run declarative_policy_wire
 cargo fuzz run decision_loop_authority
 cargo fuzz run oast_correlation
+cargo fuzz run native_oast_provider
 ```
 
 Every pull request replays the committed semantic corpora, runs the deterministic
 structured OAST regression matrix, and compiles all Termivar-owned targets. The
-`Scheduled Fuzzing` workflow runs all ten targets in bounded weekly campaigns
+`Scheduled Fuzzing` workflow runs all eleven targets in bounded weekly campaigns
 and when fuzz harnesses change on `main`. Every target uploads its libFuzzer log
 and a structured campaign summary for 90 days; failures also retain crash
 artifacts. This provides regression pressure, not proof of parser or
@@ -39,6 +42,7 @@ Run fuzzing on a dedicated machine or bounded CI job. Start with a small, non-se
 | `declarative_policy_wire` | Termivar | One-field semantic corruption rejects or reconstructs an exactly equivalent historical policy |
 | `decision_loop_authority` | Termivar | Adaptive scheduling cannot bypass registration, host suppression, requirements, risk, budget, prerequisites, executor identity, or claim policy; errors are atomic |
 | `oast_correlation` | Termivar | Host-minted token reuse, exact case/correlation binding, protocol grants, expiry/cancellation, bounded poll permits, opaque event-key replay suppression, and atomic batch failure semantics |
+| `native_oast_provider` | Termivar | Exact public-origin, loopback-bind, strict session-request, opaque-identity, callback-path identity, and cursor parsing; checked resource limits; administrator-secret validation/redaction; raw-free state transitions; and fixed provider regressions without network I/O |
 | `http_parser` | Upstream | `httparse` request parser survival |
 | `json_parser` | Upstream | `serde_json` value parser survival |
 | `yaml_parser` | Upstream-only dependency | `serde_yaml` value parser survival |
@@ -99,6 +103,22 @@ cancellation, spent poll permits, duplicate keys, conflicting protocol
 families for one event key, and unique-event limits. The harness performs no
 network, provider, clock, random, reporting, or scanner-runtime work.
 
+`native_oast_provider` accepts at most 4 KiB and routes a bounded prefix through
+the exact production public-origin, loopback-bind, provider-limit,
+administrator-token, session-request, opaque-identity, and cursor constructors.
+Callback-shaped inputs and complete Authorization values are reduced through
+the production fixed-route and redacted Bearer parsers. Repeated parsing must
+classify identically;
+successful origins remain canonical HTTPS DNS origins, successful binds remain
+loopback, limits remain inside every hard ceiling, and secret Debug/error text
+cannot contain supplied token material. Its fixed regressions keep IP-literal,
+localhost, userinfo, non-root path, query, fragment, wildcard, public-bind, and
+unspecified-bind rejection in every campaign. A bounded in-memory state model
+also registers, allocates, records and deduplicates GET/HEAD observations,
+polls, and cleans up while comparing only raw-free result shape; provider-minted
+random identities are never used as an oracle. The harness does not start the
+HTTP provider, read secret sources, or perform network I/O.
+
 ## Semantic corpus and reproduction
 
 Reviewed seeds under `fuzz/corpus/html_form_controls/` include the minimized
@@ -128,6 +148,11 @@ The harness replay also constructs 96 deterministic, owned 80-byte OAST seeds:
 all twelve scenarios crossed with eight boundary patterns. Every seed populates
 the complete token, event key, timing, and bound-selector prefix consumed by the
 OAST model rather than relying on fallback bytes.
+It separately constructs 96 deterministic, owned 96-byte native-provider
+seeds by crossing twelve scenario selectors with eight boundary patterns. They
+exercise all provider-input oracle classes without containing real credentials
+or public provider addresses. Sixteen additional exact route and Bearer seeds
+pin canonical and adversarial production-parser cases.
 Generated hash-named files in every corpus remain ignored until reviewed.
 
 Replay all committed seeds without libFuzzer:
@@ -148,6 +173,8 @@ cargo fuzz run decision_loop_authority artifacts/decision_loop_authority/<artifa
 cargo fuzz tmin decision_loop_authority artifacts/decision_loop_authority/<artifact>
 cargo fuzz run oast_correlation artifacts/oast_correlation/<artifact>
 cargo fuzz tmin oast_correlation artifacts/oast_correlation/<artifact>
+cargo fuzz run native_oast_provider artifacts/native_oast_provider/<artifact>
+cargo fuzz tmin native_oast_provider artifacts/native_oast_provider/<artifact>
 ```
 
 Scheduled campaigns use an explicit 60-second budget and 1024-MiB RSS limit with
@@ -157,7 +184,13 @@ seconds. A timeout, semantic assertion failure, panic, excessive allocation, or
 sanitizer finding requires the same minimize-classify-regress-fix triage as a
 normal test failure.
 
-Fuzz harnesses should have no network, filesystem, clock, or random dependencies. A parser rejection is not a crash; panics, hangs, excessive allocation, and sanitizer findings require triage.
+Fuzz harnesses should have no network, filesystem, or ambient-clock
+dependencies. The native-provider state oracle deliberately calls the exact
+production OS-CSPRNG identity path rather than introducing a deterministic
+identity mint; it normalizes every generated identity away and asserts only
+transition classes and bounded counts. No random identity bytes participate in
+an expected value. A parser rejection is not a crash; panics, hangs, excessive
+allocation, and sanitizer findings require triage.
 
 ## Published reports
 

@@ -22,6 +22,7 @@ mod cli_secret;
 mod deployment;
 mod domain_modularization;
 mod exploit;
+mod native_oast;
 mod oast;
 mod platform;
 mod plugin;
@@ -301,6 +302,7 @@ pub(crate) fn check(workspace_root: &Path) -> Result<(), Box<dyn Error>> {
     violations.extend(deployment::check(workspace_root)?);
     violations.extend(platform::check(workspace_root)?);
     violations.extend(exploit::check(workspace_root)?);
+    violations.extend(native_oast::check(workspace_root)?);
     violations.extend(source_hygiene::check(workspace_root)?);
     violations.extend(plugin::check(workspace_root)?);
     violations.extend(workflows::check(workspace_root)?);
@@ -466,6 +468,7 @@ fn allowed_workspace_graph() -> BTreeMap<String, BTreeSet<String>> {
         ("termivar-core", &[][..]),
         ("termivar-artifact", &[][..]),
         ("termivar-exploit", &["termivar-core"][..]),
+        ("termivar-oast", &[][..]),
         ("termivar-scanner", &["termivar-core"][..]),
         ("termivar-proxy", &[][..]),
         ("termivar-api", &[][..]),
@@ -1854,6 +1857,24 @@ mod tests {
             "termivar-proxy",
         ] {
             assert!(!graph[product].contains("termivar-artifact"));
+        }
+    }
+
+    #[test]
+    fn workspace_allowlist_keeps_native_oast_provider_auxiliary_and_isolated() {
+        let graph = allowed_workspace_graph();
+
+        assert_eq!(graph.get("termivar-oast"), Some(&BTreeSet::new()));
+        for product in [
+            "termivar-core",
+            "termivar-scanner",
+            "termivar-cli",
+            "termivar-api",
+            "termivar-proxy",
+            "termivar-artifact",
+            "termivar-exploit",
+        ] {
+            assert!(!graph[product].contains("termivar-oast"));
         }
     }
 

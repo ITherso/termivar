@@ -1,0 +1,55 @@
+[package]
+name = "termivar-oast"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+description = "Bounded native HTTP OAST protocol and self-hosted provider for Termivar"
+
+[lints]
+workspace = true
+
+[dependencies]
+axum = { workspace = true, optional = true, features = ["http1", "json", "original-uri", "query", "tokio"] }
+base64 = { workspace = true }
+clap = { workspace = true, optional = true }
+getrandom = { workspace = true }
+futures = { workspace = true, optional = true }
+hyper = { workspace = true, optional = true }
+hyper-util = { workspace = true, optional = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true, optional = true }
+sha2 = { workspace = true }
+subtle = { workspace = true }
+tokio = { workspace = true, optional = true }
+tower = { workspace = true, optional = true }
+url = "2.5"
+zeroize = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
+
+[features]
+default = []
+server = [
+    "dep:axum",
+    "dep:clap",
+    "dep:futures",
+    "dep:hyper",
+    "dep:hyper-util",
+    "dep:serde_json",
+    "dep:tokio",
+    "dep:tower",
+]
+
+[lib]
+name = "termivar_oast"
+path = "src/lib.rs"
+
+[[bin]]
+name = "termivar-oast-provider"
+path = "src/bin/termivar-oast-provider.rs"
+required-features = ["server"]

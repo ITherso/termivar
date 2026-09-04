@@ -101,6 +101,14 @@ listener, clock, random generator, CLI flag, scanner action, target request,
 report projection, or SSRF conclusion, so enabling the feature does not add a
 runtime path.
 
+The [native OAST provider](native-oast-provider.md) is a separate unpublished
+auxiliary service, not a scanner surface. Its production binary binds only to
+loopback behind an operator-managed HTTPS reverse proxy. Its fixed protocol
+creates short-lived sessions, allocates opaque HTTP callback targets, returns
+bounded raw-free events, and performs explicit cleanup. No scanner, CLI, or
+release-bundle edge exists in this foundation revision; no target request,
+assessment evidence, report item, or SSRF conclusion can originate there.
+
 The [OpenAPI contract catalog](openapi-contract-catalog.md) is a
 transport-neutral foundation rather than a product runtime. It accepts only
 caller-supplied JSON bytes for OpenAPI 3.0/3.1, applies a strict 2 MiB document
@@ -527,7 +535,8 @@ The following matrix separates build availability from actual execution:
 | GraphQL surface review | scanner and CLI opt-in (`graphql-review`) plus explicit runtime flag | one exact-origin endpoint may receive an anonymous `__typename` control, bounded schema-root candidate, and distinct replay through the shared broker | no | Preview; max one endpoint, three requests/one active verification, `Informational` / `KnowledgeOnly` only |
 | REST read-only review | scanner and CLI opt-in (`rest-review`) plus explicit same-run `openapi-review` | one replay-stable OpenAPI catalog may select one anonymous, bodyless, exact-origin zero-input GET for candidate plus replay | no | Preview; max one operation, two requests/one active verification, `Informational` / `KnowledgeOnly` only; no chaining |
 | Resource authorization review | scanner and CLI opt-in (`authorization-review`) plus explicit policy and two out-of-band credentials | one exact-origin JSON resource receives primary/peer candidate and independent replay legs through the assessment's shared broker | no | Preview; max one resource, four requests/one active verification, one `NeedsReview` / `KnowledgeOnly` item at most |
-| `oast` correlation foundation | scanner library opt-in (`oast-correlation`) | host-owned, transport-free registration and caller-driven poll state only; no repository provider or runtime caller | no | Preview library contract; host-minted move-only tokens, exact case binding, bounded DNS/HTTP event receipts, replay suppression, and no target probe or vulnerability claim |
+| `oast` correlation foundation | scanner library opt-in (`oast-correlation`) | host-owned, transport-free registration and caller-driven poll state only; no provider transport dependency or runtime caller | no | Preview library contract; host-minted move-only tokens, exact case binding, bounded DNS/HTTP event receipts, replay suppression, and no target probe or vulnerability claim |
+| `termivar-oast` native provider | independent unpublished workspace crate; non-default `server` feature | optional self-hosted loopback auxiliary service with a fixed server-side management protocol and raw-free HTTP callback mailbox; no scanner caller or outbound client yet | no | Preview infrastructure; the HTTPS client and narrowing scanner authority are deferred to a separately reviewed revision; no public provider, target authority, scanner action, report projection, Interactsh compatibility, or `release-bundle` inclusion |
 | `phases/*`, `legacy_discovery`, `runner`, `context`, `sdk` | opt-in (`legacy-scanner`) | Surface A; phases 2–4 use bounded passive discovery, phases 5–9 use separate bounded active verification, and phase-one/custom raw I/O remains possible | no | Legacy runtime / `ScannerSdk` facade; whole-run accounting remains `Unmetered` |
 | `advanced_detection`, `anomaly` | opt-in (`detection`) | no repository product caller; validated/catalogued caller records plus text matching only | no | Experimental; no deviation computation, response classification, or finding production |
 | `api`, `api_gateway`, `auth`, `cache`, `config`, `config_loader`, `metrics`, `post_exploitation`, `persistence`, `realtime`, `dashboard` | opt-in (`platform-models`) | no repository product caller | no | Experimental records, catalogs, and in-memory utilities; no API/auth/persistence/realtime execution path, and caller-owned collections are not uniformly capacity-bounded |

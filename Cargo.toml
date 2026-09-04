@@ -3,6 +3,7 @@ members = [
     "crates/termivar-artifact",
     "crates/termivar-core",
     "crates/termivar-exploit",
+    "crates/termivar-oast",
     "crates/termivar-proxy",
     "crates/termivar-scanner",
     "crates/termivar-api",
@@ -42,9 +43,14 @@ clap = { version = "4", features = ["derive"] }
 async-trait = "0.1"
 base64 = "0.22"
 hex = "0.4"
+getrandom = "0.2"
 axum = { version = "0.7", default-features = false }
 futures = "0.3"
+hyper = { version = "1", features = ["http1", "server"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
 sha2 = "0.10"
+subtle = "2.6"
+tower = { version = "0.5", features = ["util"] }
 zeroize = "1.9"
 html5ever = "0.39"
 markup5ever_rcdom = "0.39"
