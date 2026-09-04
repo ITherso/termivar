@@ -33,10 +33,10 @@ The editable diagrams.net source is [architecture.drawio](architecture.drawio). 
 | Crate | Responsibility | May depend on |
 | --- | --- | --- |
 | `termivar-core` | Default transport-neutral evidence, reasoning, ontology, outcome, predicate, and run-report contracts; the pre-quarantine facade is feature-gated | External libraries only |
-| `termivar-scanner` | Phase/plugin traits, deterministic reasoning, runner, detection, opt-in bounded report rendering, and Experimental host-owned Lua/coordination execution | `termivar-core` |
+| `termivar-scanner` | Phase/plugin traits, deterministic reasoning, runner, detection, opt-in bounded report rendering, Experimental host-owned Lua/coordination execution, and a non-default sealed native OAST provider adapter | `termivar-core`; `termivar-oast` only through the non-default native-provider client feature |
 | `termivar-exploit` | Preview, non-published exploit manifest/catalog plus disconnected non-default authorized orchestration contracts; only an in-memory lab fixture executes | `termivar-core` only where shared opaque identity/evidence contracts are required |
 | `termivar-artifact` | Preview, non-published exact/wildcard buffer and bounded-reader signature observations; no path, network, process, exploit, or verdict authority | External libraries only |
-| `termivar-oast` | Preview, unpublished self-hosted loopback HTTP callback mailbox plus fixed server-side management protocol; no outbound client, scanner, target, evidence, report, or finding authority | External libraries only |
+| `termivar-oast` | Preview, unpublished self-hosted loopback HTTP callback mailbox plus fixed server-side management protocol and separately gated exact-origin HTTPS client; no target, evidence, report, or finding authority | External libraries only |
 | `termivar-proxy` | Experimental fixed-upstream TCP relay; no HTTP/TLS interception | External libraries only |
 | `termivar-api` | Library health router and its local unsupported-listener error | External libraries only |
 | `termivar-cli` | Composition root and command routing | `termivar-scanner` by default; `termivar-api`, `termivar-proxy`, and `termivar-artifact` only through explicit adapter features |
@@ -66,6 +66,7 @@ flowchart TD
     CLI -. "proxy-adapter" .-> Proxy[termivar-proxy]
     CLI -. "artifact-adapter" .-> Artifact["termivar-artifact<br/>bounded observations"]
     Scanner --> Core["termivar-core<br/>Evidence / Reasoning / Outcomes / Reports"]
+    Scanner -. "oast-native-provider" .-> OAST
     Exploit["termivar-exploit<br/>Preview metadata + opt-in lab orchestration"] --> Core
     OAST["termivar-oast<br/>self-hosted raw-free HTTP callback mailbox"]
 ```
@@ -74,13 +75,27 @@ flowchart TD
 production provider binds only to loopback behind an operator-controlled HTTPS
 reverse proxy and exposes a fixed session/allocation/poll/cleanup protocol plus
 constant public `GET`/`HEAD` callback handling. It retains only bounded opaque
-HTTP event records in memory. No workspace product crate depends on it in this
-foundation revision, and it is absent from the CLI `release-bundle`. It cannot
-select a target, invoke `WebAssessmentRuntime`, create evidence or reports, or
-make an SSRF claim. This revision deliberately opens no outbound HTTP client or
-TLS stack; the HTTPS management client and narrowing scanner authority belong
-to a separately reviewed follow-up. See the
+HTTP event records in memory. Its exact-origin HTTPS client has one non-default,
+sealed scanner host-library consumer, and both remain absent from the CLI
+`release-bundle`. Neither can select a target, register a
+`WebAssessmentRuntime` action, create evidence or reports, or make an SSRF
+claim. See the
 [native OAST provider contract](internals/native-oast-provider.md).
+
+The non-default native provider adapter is a single sealed host-library edge
+from `termivar-scanner` to the reviewed `termivar-oast` HTTPS client. It does
+not add another target broker or runtime. A host-minted permit narrows one
+parent assessment budget to one exact provider origin, one assessment and
+epoch, the four fixed management operations, and explicit request, byte, poll,
+callback, and wall-time ceilings. The adapter performs no work in `Drop`, and
+provider identifiers and secrets remain outside evidence and reporting. See
+[native OAST provider authority](internals/native-oast-provider-authority.md).
+
+This dependency edge supplies auxiliary callback correlation only. It is not
+reachable from the CLI, `WebAssessmentRuntime` action catalog, legacy phases,
+plugins, Lua, exploit orchestration, API review families, or the release
+bundle. It cannot dispatch a target request or create a report, finding, or
+vulnerability conclusion.
 
 `termivar-artifact` is a separate artifact-observation domain. Its library accepts
 caller-supplied bytes or bounded readers and owns no filesystem path, network,

@@ -17,6 +17,7 @@ workspace = true
 
 [dependencies]
 termivar-core = { version = "0.10.0-alpha.2", path = "../termivar-core", default-features = false }
+termivar-oast = { version = "0.10.0-alpha.2", path = "../termivar-oast", default-features = false, features = ["client"], optional = true }
 tokio = { workspace = true, optional = true }
 tokio-util = { workspace = true, optional = true }
 reqwest = { workspace = true, optional = true }
@@ -42,6 +43,7 @@ mlua = { version = "0.9", default-features = false, features = ["lua54", "vendor
 clap = { workspace = true }
 criterion = "0.5"
 tempfile = { workspace = true }
+termivar-oast = { version = "0.10.0-alpha.2", path = "../termivar-oast", default-features = false, features = ["client", "test-support"] }
 
 [features]
 # Default product: deterministic evidence/reasoning/runtime surface.
@@ -76,6 +78,11 @@ authorization-review = ["scanning"]
 # Provider-neutral, transport-free correlation contracts for host-minted
 # external-interaction tokens and bounded DNS/HTTP callback receipts.
 oast-correlation = ["core", "dep:zeroize"]
+
+# Explicitly enabled native-provider adapter. Provider traffic is auxiliary,
+# fixed-route, and metered through one narrowing child of the assessment
+# authority; this feature adds no target action or CLI surface.
+oast-native-provider = ["oast-correlation", "scanning", "dep:termivar-oast"]
 
 # Historical direct-I/O phases, ordered runner, and Scanner SDK.
 # This is intentionally absent from the default product.

@@ -19,6 +19,7 @@ use syn::{
 };
 
 const MODULE_NAME: &str = "oast";
+const NATIVE_PROVIDER_ADAPTER: &str = "native_oast_provider.rs";
 const FEATURE_PREDICATE: &str = "feature=\"oast-correlation\"";
 const SECRET_TYPE: &str = "OastCorrelationToken";
 const SECRET_FIELD: &str = "secret_bytes";
@@ -370,10 +371,15 @@ fn consumer_source_violations(
         }
         visitor.visit_item(item);
     }
-    if visitor.references_oast {
+    if visitor.references_oast && relative_path != NATIVE_PROVIDER_ADAPTER {
         Ok(vec![format!(
-            "termivar-scanner production source `{relative_path}` must not consume crate::oast or Oast* types; hosts own all OAST runtime/provider integration"
+            "termivar-scanner production source `{relative_path}` must not consume crate::oast or Oast* types; only the sealed native_oast_provider.rs host adapter may use the correlation boundary"
         )])
+    } else if !visitor.references_oast && relative_path == NATIVE_PROVIDER_ADAPTER {
+        Ok(vec![
+            "the sealed native_oast_provider.rs adapter must consume the existing crate::oast correlation boundary"
+                .to_owned(),
+        ])
     } else {
         Ok(Vec::new())
     }
@@ -2023,6 +2029,20 @@ mod tests {
                 .unwrap()
                 .is_empty());
         }
+        assert!(consumer_source_violations(
+            NATIVE_PROVIDER_ADAPTER,
+            "use crate::oast::{OastEventKey, OastHttpEvent}; fn reduce(_: OastEventKey, _: OastHttpEvent) {}",
+            false,
+        )
+        .unwrap()
+        .is_empty());
+        assert!(!consumer_source_violations(
+            NATIVE_PROVIDER_ADAPTER,
+            "fn bypasses_correlation() {}",
+            false,
+        )
+        .unwrap()
+        .is_empty());
         assert!(consumer_source_violations(
             "lib.rs",
             "#[cfg(feature = \"oast-correlation\")] pub mod oast;",

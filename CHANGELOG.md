@@ -6,14 +6,23 @@ All notable changes to Termivar are recorded here. Releases use the categories f
 
 ### Added
 
+- Added a non-default native OAST provider adapter that binds one explicitly
+  self-hosted HTTPS management origin, one assessment and authority epoch,
+  fixed register/allocate/poll/cleanup operations, and checked request, byte,
+  poll, callback, and wall-time limits to a narrowing reservation of the
+  parent assessment budget. Provider events are reduced into the existing
+  raw-free correlation state machine. The adapter adds no CLI flag, target
+  action or request, report, finding, release-bundle component, public provider,
+  or SSRF conclusion.
 - Added the unpublished `termivar-oast` auxiliary service and native protocol
   for an explicitly self-hosted, loopback-bound HTTP callback mailbox behind
   an operator-managed HTTPS reverse proxy. It uses high-entropy Bearer
   credentials, bounded in-memory raw-free events, fixed management routes, and
-  explicit cleanup. It has no public provider, scanner action, target request,
-  vulnerability claim, Interactsh compatibility, application-layer encryption,
-  outbound management client, or `release-bundle` inclusion. The HTTPS client
-  and narrowing scanner authority remain a separately reviewed follow-up.
+  explicit cleanup. Its server closure has no outbound client; a separately
+  gated fixed-route HTTPS client and narrowing scanner authority provide the
+  only reviewed management edge. Neither side adds a public provider, scanner
+  action, target request, vulnerability claim, Interactsh compatibility,
+  application-layer encryption, or `release-bundle` inclusion.
 - Added a non-default, provider-neutral OAST correlation foundation with
   host-minted move-only tokens, exact verification-case binding, bounded
   caller-driven polling, DNS/HTTP event taxonomy, deterministic duplicate

@@ -95,3 +95,10 @@ path = "fuzz_targets/native_oast_provider.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "native_oast_adapter"
+path = "fuzz_targets/native_oast_adapter.rs"
+test = false
+doc = false
+bench = false

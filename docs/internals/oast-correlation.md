@@ -70,14 +70,28 @@ implementing `Serialize` or retaining raw callback material. They are audit
 contracts only. V1 creates no `Evidence`, `Outcome`, `AssessmentItem`, severity,
 or vulnerability conclusion.
 
+## Native provider adapter boundary
+
+The separately gated `oast-native-provider` host-library adapter may feed the
+correlation authority only after reducing a bounded response from one exact
+self-hosted provider origin. It must use the existing registration and poll
+permits; provider events cannot become correlation events by bypassing the
+state machine. Provider session, callback, and event identifiers remain
+private, while replay suppression and exact verification-case binding remain
+owned here.
+
+See [Native OAST provider authority](native-oast-provider-authority.md) for the
+fixed HTTPS operations and narrowing parent-budget contract.
+
 ## Deliberate exclusions
 
-V1 has no callback provider adapter, callback service URL, provider session,
-HTTP/DNS listener, CLI flag, report field, `WebAssessmentRuntime` action,
-background task, clock, random generator, persistence, SSRF/XXE payload, or
-target request. It does not poll the Internet and does not prove SSRF.
+The provider-neutral foundation itself has no callback service URL, provider
+session, HTTP/DNS listener, CLI flag, report field, `WebAssessmentRuntime`
+action, background task, clock, random generator, persistence, SSRF/XXE
+payload, or target request. Enabling `oast-correlation` alone remains
+transport-free. The separate native adapter is not enabled by that feature and
+does not prove SSRF.
 
-An explicit provider adapter and any later bounded SSRF review require separate
-authority and review. In particular, a future adapter must not turn provider
-configuration into target-execution authority, and a callback observation must
-still remain distinct from a vulnerability verdict.
+Any later bounded SSRF review requires separate target authority and review.
+Provider configuration cannot become target-execution authority, and a
+callback observation remains distinct from a vulnerability verdict.

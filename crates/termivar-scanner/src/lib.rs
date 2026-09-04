@@ -57,6 +57,8 @@ pub mod logging;
 mod lua_config;
 #[cfg(feature = "platform-models")]
 pub mod metrics;
+#[cfg(feature = "oast-native-provider")]
+pub(crate) mod native_oast_provider;
 #[cfg(feature = "oast-correlation")]
 pub mod oast;
 pub mod openapi_review;

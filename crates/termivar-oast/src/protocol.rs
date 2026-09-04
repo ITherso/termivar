@@ -136,6 +136,17 @@ impl SessionToken {
         Ok(Self { encoded })
     }
 
+    #[cfg(feature = "client")]
+    pub(crate) fn from_encoded(mut encoded: Vec<u8>) -> Result<Self, ProviderError> {
+        if !valid_session_credential(&encoded) {
+            encoded.zeroize();
+            return Err(ProviderError::Unauthorized);
+        }
+        Ok(Self {
+            encoded: Zeroizing::new(encoded),
+        })
+    }
+
     pub(crate) fn expose_bytes(&self) -> &[u8] {
         self.encoded.as_slice()
     }

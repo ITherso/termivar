@@ -76,6 +76,8 @@ pub(crate) use assessment_defense::{
     AssessmentDefenseProjectionContext, AssessmentDefenseSignal,
 };
 pub(crate) use assessment_review::AssessmentReviewObserverSet;
+#[cfg(feature = "oast-native-provider")]
+pub(crate) use authority::NativeOastProviderMintToken;
 pub(crate) use authority::SharedWebRuntimeAuthority;
 pub(crate) use web_assessment::AssessmentDiscoveryObserver;
 use web_review_decision::NativeWebReviewDecisionProfile;

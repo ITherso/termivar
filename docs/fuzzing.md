@@ -1,11 +1,13 @@
 # Fuzzing
 
-The `fuzz/` package contains six Termivar-owned semantic targets plus five bounded
+The `fuzz/` package contains seven Termivar-owned semantic targets plus five bounded
 upstream-parser targets. `html_form_controls`, `expression_semantics`, and
 `declarative_policy_wire` exercise extraction and declarative-policy contracts;
 `decision_loop_authority` exercises adaptive planner authority, and
 `oast_correlation` exercises the transport-free correlation state machine, and
 `native_oast_provider` exercises the self-hosted provider's bounded input
+contracts without network I/O. `native_oast_adapter` exercises narrowing
+provider-permit, sequencing, accounting, event-reduction, and redaction
 contracts without network I/O. The parser
 targets are dependency-level signals and must not be reported as Termivar
 decision-runtime coverage.
@@ -21,11 +23,12 @@ cargo fuzz run declarative_policy_wire
 cargo fuzz run decision_loop_authority
 cargo fuzz run oast_correlation
 cargo fuzz run native_oast_provider
+cargo fuzz run native_oast_adapter
 ```
 
 Every pull request replays the committed semantic corpora, runs the deterministic
 structured OAST regression matrix, and compiles all Termivar-owned targets. The
-`Scheduled Fuzzing` workflow runs all eleven targets in bounded weekly campaigns
+`Scheduled Fuzzing` workflow runs all twelve targets in bounded weekly campaigns
 and when fuzz harnesses change on `main`. Every target uploads its libFuzzer log
 and a structured campaign summary for 90 days; failures also retain crash
 artifacts. This provides regression pressure, not proof of parser or
@@ -43,6 +46,7 @@ Run fuzzing on a dedicated machine or bounded CI job. Start with a small, non-se
 | `decision_loop_authority` | Termivar | Adaptive scheduling cannot bypass registration, host suppression, requirements, risk, budget, prerequisites, executor identity, or claim policy; errors are atomic |
 | `oast_correlation` | Termivar | Host-minted token reuse, exact case/correlation binding, protocol grants, expiry/cancellation, bounded poll permits, opaque event-key replay suppression, and atomic batch failure semantics |
 | `native_oast_provider` | Termivar | Exact public-origin, loopback-bind, strict session-request, opaque-identity, callback-path identity, and cursor parsing; checked resource limits; administrator-secret validation/redaction; raw-free state transitions; and fixed provider regressions without network I/O |
+| `native_oast_adapter` | Termivar | Exact provider/target-origin separation, narrowing permit limits, fixed operation sequencing, parent-budget accounting, raw-free HTTP event reduction, malformed poll rejection, and receipt/secret redaction without network I/O |
 | `http_parser` | Upstream | `httparse` request parser survival |
 | `json_parser` | Upstream | `serde_json` value parser survival |
 | `yaml_parser` | Upstream-only dependency | `serde_yaml` value parser survival |
@@ -153,6 +157,11 @@ seeds by crossing twelve scenario selectors with eight boundary patterns. They
 exercise all provider-input oracle classes without containing real credentials
 or public provider addresses. Sixteen additional exact route and Bearer seeds
 pin canonical and adversarial production-parser cases.
+The adapter harness constructs 96 deterministic, owned bounded seeds by
+crossing twelve permit, sequencing, reduction, and accounting scenarios with
+eight boundary patterns. The seeds contain only reserved `.invalid` origins,
+loopback values, and synthetic credentials; they perform no network I/O and
+retain no callback URL or provider response body.
 Generated hash-named files in every corpus remain ignored until reviewed.
 
 Replay all committed seeds without libFuzzer:
@@ -175,6 +184,8 @@ cargo fuzz run oast_correlation artifacts/oast_correlation/<artifact>
 cargo fuzz tmin oast_correlation artifacts/oast_correlation/<artifact>
 cargo fuzz run native_oast_provider artifacts/native_oast_provider/<artifact>
 cargo fuzz tmin native_oast_provider artifacts/native_oast_provider/<artifact>
+cargo fuzz run native_oast_adapter artifacts/native_oast_adapter/<artifact>
+cargo fuzz tmin native_oast_adapter artifacts/native_oast_adapter/<artifact>
 ```
 
 Scheduled campaigns use an explicit 60-second budget and 1024-MiB RSS limit with

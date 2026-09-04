@@ -124,6 +124,28 @@ fn bounded_native_oast_provider_models_cover_owned_seed_matrix() {
 }
 
 #[test]
+fn bounded_native_oast_adapter_models_cover_owned_seed_matrix() {
+    let mut count = 0_usize;
+    for scenario in 0_u8..12 {
+        for boundary in [0_u8, 1, 31, 32, 63, 64, 127, u8::MAX] {
+            let seed = structured_native_oast_adapter_seed(scenario, boundary);
+            assert_eq!(
+                seed.len(),
+                128,
+                "structured native OAST adapter seed shape drifted"
+            );
+            assert!(seed.len() <= termivar_fuzz_harness::MAX_NATIVE_OAST_ADAPTER_FUZZ_INPUT_BYTES);
+            termivar_fuzz_harness::check_native_oast_adapter(&seed);
+            count += 1;
+        }
+    }
+    assert_eq!(
+        count, 96,
+        "owned native OAST adapter seed inventory drifted"
+    );
+}
+
+#[test]
 fn owned_native_oast_route_and_bearer_seeds_use_production_contracts() {
     const SESSION_ID: &str = "AQEBAQEBAQEBAQEBAQEBAQ";
     const CALLBACK_ID: &str = "AgICAgICAgICAgICAgICAg";
@@ -203,6 +225,19 @@ fn structured_native_oast_seed(scenario: u8, boundary: u8) -> Vec<u8> {
             .wrapping_add(scenario.wrapping_mul(19))
             .wrapping_add((index as u8).wrapping_mul(37))
             ^ scenario.rotate_left((index % 8) as u32);
+    }
+    seed
+}
+
+fn structured_native_oast_adapter_seed(scenario: u8, boundary: u8) -> Vec<u8> {
+    let mut seed = vec![0_u8; 128];
+    seed[0] = scenario;
+    for (index, byte) in seed[1..].iter_mut().enumerate() {
+        *byte = boundary
+            .wrapping_mul(5)
+            .wrapping_add(scenario.wrapping_mul(23))
+            .wrapping_add((index as u8).wrapping_mul(41))
+            ^ boundary.rotate_left((index % 8) as u32);
     }
     seed
 }

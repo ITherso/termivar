@@ -109,6 +109,8 @@ const OPENAPI_RUNTIME_SOURCE: &str = "crates/termivar-scanner/src/web_runtime/op
 const REST_RUNTIME_SOURCE: &str = "crates/termivar-scanner/src/web_runtime/rest_runtime.rs";
 const RESOURCE_AUTHORIZATION_RUNTIME_SOURCE: &str =
     "crates/termivar-scanner/src/web_runtime/resource_authorization_runtime.rs";
+const NATIVE_OAST_PROVIDER_ADAPTER_SOURCE: &str =
+    "crates/termivar-scanner/src/native_oast_provider.rs";
 const ATTRIBUTE_SOURCE_CONTEXT_SOURCE: &str =
     "crates/termivar-scanner/src/web_runtime/web_assessment/attribute_source_context.rs";
 const ATTRIBUTE_BOUNDARY_MATCHER_SOURCE: &str =
@@ -333,11 +335,14 @@ const UNMETERED_STANDALONE_FACADE_SOURCES: &[&str] = &[
     "crates/termivar-scanner/src/web_execution.rs",
 ];
 
-/// Exact raw-client source inventory. Entries other than the broker owner are
-/// legacy and are not covered by `RuntimeBudget`.
+/// Exact raw-client source inventory. The native OAST entry may construct only
+/// the reviewed fixed-route auxiliary client and remains charged through the
+/// parent `RequestAccountingBroker`; the remaining non-broker entries are
+/// legacy compatibility owners.
 const DIRECT_CLIENT_SOURCE_ALLOWLIST: &[&str] = &[
     "crates/termivar-cli/src/main.rs",
     "crates/termivar-scanner/src/context.rs",
+    NATIVE_OAST_PROVIDER_ADAPTER_SOURCE,
     TRANSPORT_OWNER_SOURCE,
     "crates/termivar-scanner/src/sdk.rs",
 ];
@@ -9001,6 +9006,10 @@ fn is_direct_transport_path(segments: &[String]) -> bool {
                     )
                 })
         },
+        "termivar_oast" => segments
+            .get(1)
+            .is_some_and(|item| normalize_identifier(item) == "NativeOastClient"),
+        "NativeOastClient" => true,
         other => is_network_crate_root(other),
     }
 }
@@ -10401,12 +10410,39 @@ mod tests {
             "use reqwest::Client;",
             "use tokio::net::TcpStream;",
             "fn leak() { let _ = reqwest::get(\"https://example.test\"); }",
+            "use termivar_oast::NativeOastClient; fn auxiliary() { let _ = NativeOastClient::new(origin()); }",
         ] {
             let syntax = syn::parse_file(source).unwrap();
             let mut visitor = DirectCapabilityVisitor::default();
             visitor.visit_file(&syntax);
             assert!(visitor.found, "direct capability not detected: {source}");
         }
+    }
+
+    #[test]
+    fn fixed_native_oast_client_has_one_exact_scanner_owner() {
+        assert_eq!(
+            DIRECT_CLIENT_SOURCE_ALLOWLIST
+                .iter()
+                .filter(|source| **source == NATIVE_OAST_PROVIDER_ADAPTER_SOURCE)
+                .count(),
+            1
+        );
+        assert!(!BOUNDED_RUNTIME_SOURCES.contains(&NATIVE_OAST_PROVIDER_ADAPTER_SOURCE));
+
+        let test_only = syn::parse_file(
+            r#"
+                #[cfg(all(test, feature = "oast-native-provider"))]
+                mod tests {
+                    use termivar_oast::NativeOastClient;
+                    fn fixture() { let _ = NativeOastClient::new(origin()); }
+                }
+            "#,
+        )
+        .unwrap();
+        let mut visitor = DirectCapabilityVisitor::default();
+        visitor.visit_file(&test_only);
+        assert!(!visitor.found);
     }
 
     #[test]

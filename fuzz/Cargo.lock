@@ -1260,9 +1260,14 @@ dependencies = [
  "html5ever",
  "markup5ever_rcdom",
  "serde_json",
+ "sha2",
  "termivar-core",
  "termivar-oast",
  "termivar-scanner",
+ "tokio",
+ "tokio-util",
+ "url",
+ "zeroize",
 ]
 
 [[package]]
@@ -1271,9 +1276,13 @@ version = "0.10.0-alpha.2"
 dependencies = [
  "base64",
  "getrandom 0.2.17",
+ "reqwest",
  "serde",
+ "serde_json",
  "sha2",
  "subtle",
+ "tokio",
+ "tokio-util",
  "url",
  "zeroize",
 ]
@@ -1291,6 +1300,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "termivar-core",
+ "termivar-oast",
  "thiserror 1.0.69",
  "tokio",
  "tokio-util",

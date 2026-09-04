@@ -87,14 +87,34 @@ impl PublicOrigin {
 
     #[cfg(test)]
     pub(crate) fn test_http_loopback(source: &str) -> Result<Self, ProviderError> {
-        let mut parsed = parse_origin(source, true)?;
-        match parsed.host() {
-            Some(Host::Ipv4(address)) if address.is_loopback() => {},
-            Some(Host::Ipv6(address)) if address.is_loopback() => {},
-            _ => return Err(ProviderError::InvalidPublicOrigin),
-        }
-        normalize_origin(&mut parsed)
+        test_loopback_origin(source)
     }
+
+    /// Constructs a cleartext numeric-loopback origin for repository-owned
+    /// integration fixtures only.
+    ///
+    /// This API is absent unless the explicitly non-default `test-support`
+    /// feature is selected. Production provider origins remain HTTPS-only.
+    #[cfg(feature = "test-support")]
+    #[doc(hidden)]
+    pub fn from_test_loopback(address: SocketAddr) -> Result<Self, ProviderError> {
+        LoopbackBind::new(address)?;
+        if address.port() == 0 {
+            return Err(ProviderError::InvalidPublicOrigin);
+        }
+        test_loopback_origin(&format!("http://{address}/"))
+    }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+fn test_loopback_origin(source: &str) -> Result<PublicOrigin, ProviderError> {
+    let mut parsed = parse_origin(source, true)?;
+    match parsed.host() {
+        Some(Host::Ipv4(address)) if address.is_loopback() => {},
+        Some(Host::Ipv6(address)) if address.is_loopback() => {},
+        _ => return Err(ProviderError::InvalidPublicOrigin),
+    }
+    normalize_origin(&mut parsed)
 }
 
 impl FromStr for PublicOrigin {

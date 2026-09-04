@@ -589,6 +589,11 @@ pub enum OastHttpScheme {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[non_exhaustive]
 pub enum OastHttpMethod {
+    /// The provider retained an HTTP interaction without retaining its method.
+    ///
+    /// This is deliberately distinct from guessing `GET`: a raw-free provider
+    /// may prove only that an HTTP callback occurred.
+    Unknown,
     /// GET.
     Get,
     /// HEAD.
@@ -1054,6 +1059,47 @@ impl fmt::Debug for OastCorrelation {
 }
 
 impl OastCorrelation {
+    /// Creates an isolated state snapshot for an atomic native-provider page.
+    ///
+    /// This is deliberately not a `Clone` implementation: arbitrary callers
+    /// must not be able to fork correlation authority. The sealed native OAST
+    /// adapter uses snapshots only to validate and commit a complete provider
+    /// page before replacing the live states as one batch.
+    #[cfg_attr(
+        all(
+            not(test),
+            feature = "oast-correlation",
+            not(feature = "oast-native-provider")
+        ),
+        expect(
+            dead_code,
+            reason = "transactional rollback is consumed only by the separately gated native provider adapter"
+        )
+    )]
+    pub(crate) fn transactional_snapshot(&self) -> Self {
+        Self {
+            binding_id: self.binding_id.clone(),
+            correlation_id: self.correlation_id.clone(),
+            assessment_id: self.assessment_id.clone(),
+            verification_case: self.verification_case.clone(),
+            allowed_protocols: self.allowed_protocols,
+            issued_at: self.issued_at,
+            expires_at: self.expires_at,
+            last_time: self.last_time,
+            state: self.state,
+            terminal_at: self.terminal_at,
+            poll_limit: self.poll_limit,
+            remaining_polls: self.remaining_polls,
+            next_poll_ordinal: self.next_poll_ordinal,
+            max_events_per_poll: self.max_events_per_poll,
+            max_unique_events: self.max_unique_events,
+            seen_events: self.seen_events.clone(),
+            accepted_events: self.accepted_events,
+            duplicate_events: self.duplicate_events,
+            abandoned_polls: self.abandoned_polls,
+        }
+    }
+
     /// Returns the binding identity.
     pub fn binding_id(&self) -> &OastBindingId {
         &self.binding_id
@@ -1493,7 +1539,7 @@ fn hash_field(hasher: &mut Sha256, bytes: &[u8]) {
     hasher.update(bytes);
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "oast-correlation"))]
 mod tests {
     use super::*;
     use crate::payload_strategy::PayloadStrategyRef;

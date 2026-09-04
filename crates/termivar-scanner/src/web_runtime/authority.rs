@@ -15,6 +15,23 @@ use crate::{
     HttpEvidencePolicy, KnowledgeBase, RuntimeBudget,
 };
 
+#[cfg(feature = "oast-native-provider")]
+use crate::native_oast_provider::{
+    NativeOastProviderAdapter, NativeOastProviderConfiguration, NativeOastProviderError,
+};
+
+#[cfg(feature = "oast-native-provider")]
+struct NativeOastProviderMintSeal;
+
+/// Move-only proof that a native-provider adapter was minted by the one
+/// shared web-runtime authority.
+///
+/// The private seal deliberately has no constructor or trait implementations.
+/// Sibling scanner modules may name this crate-private type through the
+/// `web_runtime` re-export, but only this module can construct it.
+#[cfg(feature = "oast-native-provider")]
+pub(crate) struct NativeOastProviderMintToken(NativeOastProviderMintSeal);
+
 /// Returns whether credentials may be dispatched to this exact target.
 ///
 /// Authenticated transport requires HTTPS except for numeric-IP loopback HTTP
@@ -60,6 +77,8 @@ pub(crate) struct SharedWebRuntimeAuthority {
     request_accounting: RequestAccountingBroker,
     cancellation: CancellationToken,
     timing: Arc<OnceLock<SharedWebRuntimeTiming>>,
+    #[cfg(feature = "oast-native-provider")]
+    native_oast_provider_minted: Arc<std::sync::Mutex<bool>>,
 }
 
 impl SharedWebRuntimeAuthority {
@@ -86,6 +105,8 @@ impl SharedWebRuntimeAuthority {
             request_accounting,
             cancellation,
             timing: Arc::new(OnceLock::new()),
+            #[cfg(feature = "oast-native-provider")]
+            native_oast_provider_minted: Arc::new(std::sync::Mutex::new(false)),
         })
     }
 
@@ -132,6 +153,49 @@ impl SharedWebRuntimeAuthority {
                 deadline: started_at.checked_add(self.budget.max_wall_time()),
             }
         })
+    }
+
+    /// Mints the single narrowing native-provider authority from the same
+    /// broker, budget, cancellation domain, exact target origin, and absolute
+    /// deadline already owned by this assessment.
+    #[cfg(feature = "oast-native-provider")]
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "sealed PR B authority is consumed only by the separately gated ssrf-oast-review capability"
+        )
+    )]
+    pub(crate) fn mint_native_oast_provider(
+        &self,
+        configuration: NativeOastProviderConfiguration,
+    ) -> Result<NativeOastProviderAdapter, NativeOastProviderError> {
+        let mut minted = self
+            .native_oast_provider_minted
+            .lock()
+            .map_err(|_| NativeOastProviderError::internal_invariant())?;
+        if *minted {
+            return Err(NativeOastProviderError::authority_already_minted());
+        }
+        let target_origin = self
+            .policy
+            .allowed_origins()
+            .iter()
+            .next()
+            .filter(|_| self.policy.allowed_origins().len() == 1)
+            .ok_or_else(NativeOastProviderError::internal_invariant)?;
+        let timing = self.start();
+        let adapter = NativeOastProviderAdapter::mint(
+            NativeOastProviderMintToken(NativeOastProviderMintSeal),
+            configuration,
+            target_origin,
+            self.request_accounting.clone(),
+            self.budget,
+            self.cancellation.clone(),
+            timing.deadline(),
+        )?;
+        *minted = true;
+        Ok(adapter)
     }
 }
 
@@ -247,5 +311,80 @@ mod tests {
 
         clone.cancellation_token().cancel();
         assert!(authority.cancellation().is_cancelled());
+    }
+
+    #[cfg(feature = "oast-native-provider")]
+    #[test]
+    fn native_oast_mint_narrows_the_shared_broker_and_separates_provider_from_target() {
+        use crate::native_oast_provider::{
+            NativeOastProviderConfiguration, NativeOastProviderErrorKind,
+            NativeOastProviderLifecycle, NativeOastProviderLimits,
+        };
+
+        let root = target("/root");
+        let authority = SharedWebRuntimeAuthority::new_exact_origin(
+            &root,
+            HttpEvidencePolicy::for_origin(root.clone()).unwrap(),
+            RuntimeBudget::default(),
+            CancellationToken::new(),
+        )
+        .unwrap();
+        let clone = authority.clone();
+        let limits = NativeOastProviderLimits::new(1, 1, 4, 1, 16_384, 65_536, 5_000).unwrap();
+
+        let overlap = clone
+            .mint_native_oast_provider(
+                NativeOastProviderConfiguration::new(
+                    "https://example.test/",
+                    "assessment:native-oast-overlap",
+                    [72; 32],
+                    b"NATIVE-OAST-OVERLAP-MUST-NOT-LEAK-83B4".to_vec(),
+                    limits,
+                )
+                .unwrap(),
+            )
+            .unwrap_err();
+        assert_eq!(
+            overlap.kind(),
+            NativeOastProviderErrorKind::ProviderTargetOriginOverlap
+        );
+
+        let adapter = authority
+            .mint_native_oast_provider(
+                NativeOastProviderConfiguration::new(
+                    "https://oast.example.test/",
+                    "assessment:native-oast-authority",
+                    [71; 32],
+                    b"NATIVE-OAST-AUTHORITY-MUST-NOT-LEAK-91A7".to_vec(),
+                    limits,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        assert_eq!(adapter.lifecycle(), NativeOastProviderLifecycle::Configured);
+        assert!(authority
+            .authorize_target(&Url::parse("https://oast.example.test/v1/sessions").unwrap())
+            .is_err());
+
+        let second = clone
+            .mint_native_oast_provider(
+                NativeOastProviderConfiguration::new(
+                    "https://other-oast.example.test/",
+                    "assessment:native-oast-second",
+                    [73; 32],
+                    b"NATIVE-OAST-SECOND-MUST-NOT-LEAK-68C2".to_vec(),
+                    limits,
+                )
+                .unwrap(),
+            )
+            .unwrap_err();
+        assert_eq!(
+            second.kind(),
+            NativeOastProviderErrorKind::AuthorityAlreadyMinted
+        );
+        assert_eq!(
+            second.to_string(),
+            "native OAST provider authority was already minted"
+        );
     }
 }

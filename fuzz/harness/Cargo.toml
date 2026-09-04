@@ -8,6 +8,16 @@ edition = "2021"
 html5ever = "0.39"
 markup5ever_rcdom = "0.39"
 serde_json = "1"
+sha2 = "0.10"
 termivar-core = { path = "../../crates/termivar-core" }
-termivar-oast = { path = "../../crates/termivar-oast", default-features = false }
-termivar-scanner = { path = "../../crates/termivar-scanner", default-features = false, features = ["scanning", "oast-correlation"] }
+termivar-oast = { path = "../../crates/termivar-oast", default-features = false, features = ["client"] }
+termivar-scanner = { path = "../../crates/termivar-scanner", default-features = false, features = ["oast-native-provider"] }
+tokio = { version = "1", features = ["rt", "sync", "time"] }
+tokio-util = "0.7"
+url = "2.5"
+zeroize = "1"
+
+[features]
+default = []
+oast-correlation = []
+oast-native-provider = []

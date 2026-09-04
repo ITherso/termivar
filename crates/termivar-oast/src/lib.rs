@@ -12,8 +12,17 @@ mod protocol;
 mod secret;
 mod state;
 
+#[cfg(feature = "client")]
+mod client;
 #[cfg(feature = "server")]
 mod server;
+
+#[cfg(feature = "client")]
+pub use client::{
+    NativeOastBoundaryRejection, NativeOastClient, NativeOastClientBoundary,
+    NativeOastClientDispatch, NativeOastClientError, NativeOastClientErrorKind,
+    NativeOastClientOperation, NativeOastDispatchAccounting,
+};
 
 pub use config::{
     LoopbackBind, ProviderConfig, ProviderLimits, PublicOrigin, HARD_MAX_ACTIVE_SESSIONS,
@@ -31,6 +40,9 @@ pub use protocol::{
 pub use secret::AdminToken;
 pub use state::ProviderState;
 
+#[cfg(feature = "test-support")]
+#[doc(hidden)]
+pub use server::serve_provider_on_listener;
 #[cfg(feature = "server")]
 pub use server::{serve_provider, ProviderServerError};
 

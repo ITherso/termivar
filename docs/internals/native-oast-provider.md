@@ -67,10 +67,12 @@ security.termivar-oast.poll/v1
 security.termivar-oast.cleanup/v1
 ```
 
-This foundation revision implements the protocol and provider only. It opens no
-outbound HTTP client or TLS stack. The exact-origin HTTPS management client and
-narrowing scanner authority are deferred to a separately reviewed follow-up;
-no assessment can use this provider until that authority exists.
+The server remains independent from its separately feature-gated HTTPS client.
+The non-default scanner adapter described in
+[Native OAST provider authority](native-oast-provider-authority.md) may use that
+client only through a host-minted, exact-origin narrowing permit and the parent
+assessment budget. The provider itself still owns no scanner or target
+authority.
 
 ## Raw-free in-memory state
 
@@ -108,9 +110,11 @@ operating-system CSPRNG and use strict unpadded URL-safe encoding.
 
 ## Product boundary
 
-The provider is excluded from `termivar-cli`'s `release-bundle` and from
-release packaging and publication. It does not import `termivar-scanner`,
+The provider and its client adapter are excluded from `termivar-cli`'s
+`release-bundle` and from release packaging and publication. The provider does
+not import `termivar-scanner`,
 `WebAssessmentRuntime`, legacy SSRF phases, reporting, or finding types. Its
 HTTP callback observation is not evidence of SSRF and produces no scanner
-claim. A later, separately reviewed scanner adapter must provide a narrowing
-provider authority before an assessment can use this service.
+claim. The separately reviewed adapter can register, allocate, poll, reduce,
+and clean up under narrowing authority; it still creates no target request,
+report, finding, or scanner action.

@@ -20,11 +20,13 @@ getrandom = { workspace = true }
 futures = { workspace = true, optional = true }
 hyper = { workspace = true, optional = true }
 hyper-util = { workspace = true, optional = true }
+reqwest = { workspace = true, optional = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true, optional = true }
 sha2 = { workspace = true }
 subtle = { workspace = true }
 tokio = { workspace = true, optional = true }
+tokio-util = { workspace = true, optional = true }
 tower = { workspace = true, optional = true }
 url = "2.5"
 zeroize = { workspace = true }
@@ -35,6 +37,12 @@ tempfile = { workspace = true }
 
 [features]
 default = []
+client = [
+    "dep:reqwest",
+    "dep:serde_json",
+    "dep:tokio",
+    "dep:tokio-util",
+]
 server = [
     "dep:axum",
     "dep:clap",
@@ -45,6 +53,7 @@ server = [
     "dep:tokio",
     "dep:tower",
 ]
+test-support = ["server"]
 
 [lib]
 name = "termivar_oast"

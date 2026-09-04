@@ -31,6 +31,7 @@ const QUARANTINED_FEATURES: &[&str] = &[
     "lua",
     "normalization-resilience",
     "oast-correlation",
+    "oast-native-provider",
     "openapi-review",
     "rest-review",
     "platform-models",
@@ -55,6 +56,7 @@ const EXACT_SCANNER_FEATURES: &[&str] = &[
     "monitoring",
     "normalization-resilience",
     "oast-correlation",
+    "oast-native-provider",
     "openapi-review",
     "rest-review",
     "platform-models",
@@ -121,6 +123,7 @@ const FEATURE_OWNED_DEPENDENCIES: &[&str] = &[
     "tokio",
     "tokio-util",
     "toml",
+    "termivar-oast",
     "uuid",
     "zeroize",
 ];
@@ -203,6 +206,7 @@ const EXACT_MODULE_GATES: &[(&str, &str)] = &[
     ("ml", "feature=\"ml\""),
     ("monitoring", "feature=\"monitoring\""),
     ("oast", "feature=\"oast-correlation\""),
+    ("native_oast_provider", "feature=\"oast-native-provider\""),
     ("persistence", "feature=\"platform-models\""),
     ("plugin", "feature=\"plugins\""),
     ("post_exploitation", "feature=\"platform-models\""),
@@ -845,6 +849,14 @@ pub(super) fn check(workspace_root: &Path) -> Result<Vec<String>, Box<dyn Error>
     violations.extend(exact_dependency_contract_violations(
         "termivar-scanner",
         &scanner_dependencies,
+        "termivar-oast",
+        true,
+        false,
+        &["client"],
+    ));
+    violations.extend(exact_dependency_contract_violations(
+        "termivar-scanner",
+        &scanner_dependencies,
         "mlua",
         true,
         false,
@@ -1483,6 +1495,24 @@ fn exact_raw_feature_closures() -> Vec<(&'static str, &'static [&'static str])> 
         (
             "oast-correlation",
             &["oast-correlation", "core", "dep:zeroize"],
+        ),
+        (
+            "oast-native-provider",
+            &[
+                "oast-native-provider",
+                "oast-correlation",
+                "scanning",
+                "core",
+                "dep:termivar-oast",
+                "dep:zeroize",
+                "dep:async-trait",
+                "dep:html5ever",
+                "dep:markup5ever_rcdom",
+                "dep:reqwest",
+                "dep:tokio",
+                "dep:tokio-util",
+                "dep:toml",
+            ],
         ),
         ("compliance", &["compliance"]),
         ("threat-intel", &["threat-intel"]),
@@ -8702,6 +8732,14 @@ mod tests {
             "oast-correlation".to_owned(),
             vec!["core".to_owned(), "dep:zeroize".to_owned()],
         );
+        features.insert(
+            "oast-native-provider".to_owned(),
+            vec![
+                "oast-correlation".to_owned(),
+                "scanning".to_owned(),
+                "dep:termivar-oast".to_owned(),
+            ],
+        );
         features.insert("compliance".to_owned(), Vec::new());
         features.insert("threat-intel".to_owned(), Vec::new());
         features.insert(
@@ -8810,6 +8848,44 @@ mod tests {
             assert!(feature_violations(&missing).iter().any(|violation| {
                 violation.contains(&format!("compatibility alias `{aggregate}`"))
             }));
+        }
+    }
+
+    #[test]
+    fn native_oast_provider_is_exact_and_absent_from_every_aggregate() {
+        let features = valid_feature_map();
+        assert!(feature_violations(&features).is_empty());
+        assert_eq!(
+            features.get("oast-native-provider").unwrap(),
+            &[
+                "oast-correlation".to_owned(),
+                "scanning".to_owned(),
+                "dep:termivar-oast".to_owned(),
+            ]
+        );
+        let expected = exact_raw_feature_closures()
+            .into_iter()
+            .find(|(feature, _)| *feature == "oast-native-provider")
+            .unwrap()
+            .1
+            .iter()
+            .copied()
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            raw_feature_closure(&features, "oast-native-provider"),
+            expected
+        );
+        for aggregate in ["default", "full", "enterprise", "research"] {
+            assert!(!raw_feature_closure(&features, aggregate).contains("oast-native-provider"));
+        }
+
+        for aggregate in ["default", "full", "enterprise"] {
+            let mut widened = valid_feature_map();
+            widened
+                .get_mut(aggregate)
+                .unwrap()
+                .push("oast-native-provider".to_owned());
+            assert!(!feature_violations(&widened).is_empty());
         }
     }
 
@@ -12299,6 +12375,7 @@ mod tests {
             #[cfg(feature = "platform-models")] pub mod metrics;
             #[cfg(feature = "ml")] pub mod ml;
             #[cfg(feature = "monitoring")] pub mod monitoring;
+            #[cfg(feature = "oast-native-provider")] pub(crate) mod native_oast_provider;
             #[cfg(feature = "oast-correlation")] pub mod oast;
             #[cfg(feature = "platform-models")] pub mod persistence;
             #[cfg(feature = "plugins")] pub mod plugin;

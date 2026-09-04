@@ -469,7 +469,7 @@ fn allowed_workspace_graph() -> BTreeMap<String, BTreeSet<String>> {
         ("termivar-artifact", &[][..]),
         ("termivar-exploit", &["termivar-core"][..]),
         ("termivar-oast", &[][..]),
-        ("termivar-scanner", &["termivar-core"][..]),
+        ("termivar-scanner", &["termivar-core", "termivar-oast"][..]),
         ("termivar-proxy", &[][..]),
         ("termivar-api", &[][..]),
         (
@@ -1670,10 +1670,17 @@ fn item_identifier(item: &Item) -> Option<String> {
 fn has_cfg_test(attributes: &[Attribute]) -> bool {
     attributes.iter().any(|attribute| {
         attribute.path().is_ident("cfg")
-            && attribute
-                .meta
-                .require_list()
-                .is_ok_and(|list| list.tokens.to_string() == "test")
+            && attribute.meta.require_list().is_ok_and(|list| {
+                let predicate = list
+                    .tokens
+                    .to_string()
+                    .chars()
+                    .filter(|character| !character.is_whitespace())
+                    .collect::<String>();
+                predicate == "test"
+                    || predicate == "all(test,feature=\"oast-correlation\")"
+                    || predicate == "all(test,feature=\"oast-native-provider\")"
+            })
     })
 }
 
@@ -1723,6 +1730,27 @@ impl Error for ArchitectureViolations {}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cfg_test_recognizes_only_exact_oast_feature_test_guards() {
+        for source in [
+            "#[cfg(test)] mod tests {}",
+            "#[cfg(all(test, feature = \"oast-correlation\"))] mod tests {}",
+            "#[cfg(all(test, feature = \"oast-native-provider\"))] mod tests {}",
+        ] {
+            let item: Item = syn::parse_str(source).unwrap();
+            assert!(has_cfg_test(item_attributes(&item)));
+        }
+
+        for source in [
+            "#[cfg(not(test))] mod production {}",
+            "#[cfg(any(test, feature = \"oast-native-provider\"))] mod production {}",
+            "#[cfg(feature = \"oast-native-provider\")] mod production {}",
+        ] {
+            let item: Item = syn::parse_str(source).unwrap();
+            assert!(!has_cfg_test(item_attributes(&item)));
+        }
+    }
 
     fn policy(source: &'static str, allowed_internal: &'static [&'static str]) -> ModulePolicy {
         ModulePolicy {
@@ -1861,13 +1889,19 @@ mod tests {
     }
 
     #[test]
-    fn workspace_allowlist_keeps_native_oast_provider_auxiliary_and_isolated() {
+    fn workspace_allowlist_pins_one_native_oast_scanner_adapter_edge() {
         let graph = allowed_workspace_graph();
 
         assert_eq!(graph.get("termivar-oast"), Some(&BTreeSet::new()));
+        assert_eq!(
+            graph.get("termivar-scanner"),
+            Some(&BTreeSet::from([
+                "termivar-core".to_owned(),
+                "termivar-oast".to_owned(),
+            ]))
+        );
         for product in [
             "termivar-core",
-            "termivar-scanner",
             "termivar-cli",
             "termivar-api",
             "termivar-proxy",

@@ -107,6 +107,27 @@ pub async fn serve_provider(provider: ProviderState) -> Result<(), ProviderServe
     serve_listener(listener, provider).await
 }
 
+/// Serves a repository-owned fixture on an already-bound numeric-loopback
+/// listener.
+///
+/// This avoids a port-selection race in cross-crate integration tests. It is
+/// absent from production builds unless the non-default `test-support`
+/// feature is explicitly selected.
+#[cfg(feature = "test-support")]
+#[doc(hidden)]
+pub async fn serve_provider_on_listener(
+    listener: TcpListener,
+    provider: ProviderState,
+) -> Result<(), ProviderServerError> {
+    let address = listener
+        .local_addr()
+        .map_err(|_| ProviderServerError::Bind)?;
+    if !address.ip().is_loopback() || address != provider.bind().socket_addr() {
+        return Err(ProviderServerError::Bind);
+    }
+    serve_listener(listener, provider).await
+}
+
 async fn serve_listener(
     listener: TcpListener,
     provider: ProviderState,
