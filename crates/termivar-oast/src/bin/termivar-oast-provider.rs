@@ -368,6 +368,58 @@ mod tests {
         );
     }
 
+    #[test]
+    fn binary_error_messages_are_static_and_exhaustive() {
+        let cases = [
+            (
+                BinaryError::InvalidArguments,
+                "provider arguments are invalid",
+            ),
+            (
+                BinaryError::AdminTokenUnavailable,
+                "administrator token source is unavailable",
+            ),
+            (
+                BinaryError::AdminTokenNotRegularFile,
+                "administrator token source must be a regular file",
+            ),
+            (
+                BinaryError::AdminTokenReadFailed,
+                "administrator token source could not be read",
+            ),
+            (
+                BinaryError::AdminTokenTooLarge,
+                "administrator token exceeds the compiled byte limit",
+            ),
+            (
+                BinaryError::InvalidAdminToken,
+                "administrator token is invalid",
+            ),
+            (
+                BinaryError::InvalidBind,
+                "provider bind must be an exact loopback socket",
+            ),
+            (
+                BinaryError::InvalidPublicOrigin,
+                "provider public origin must be an exact HTTPS origin",
+            ),
+            (
+                BinaryError::InvalidLimits,
+                "provider resource limits are invalid",
+            ),
+            (
+                BinaryError::ProviderInitialization,
+                "provider initialization failed",
+            ),
+            (BinaryError::ProviderTransport, "provider transport failed"),
+        ];
+
+        for (error, expected) in cases {
+            assert_eq!(error.to_string(), expected);
+            assert!(!error.to_string().contains(SECRET));
+        }
+    }
+
     struct SecretThenReadFailure {
         emitted: bool,
     }
@@ -456,6 +508,26 @@ mod tests {
         assert!(matches!(source, AdminTokenSource::Stdin));
         assert_eq!(provider.bind, "127.0.0.1:8080");
         assert_eq!(provider.public_origin, "https://oast.example.test");
+    }
+
+    #[tokio::test]
+    async fn run_rejects_invalid_limits_before_secret_input_or_transport() {
+        let args = Args {
+            bind: "127.0.0.1:8080".to_owned(),
+            public_origin: "https://oast.example.test".to_owned(),
+            admin_token_env: None,
+            admin_token_file: None,
+            admin_token_stdin: true,
+            max_active_sessions: 0,
+            max_callbacks_per_session: 2,
+            max_events_per_session: 4,
+            max_polls_per_session: 4,
+            max_poll_events_per_response: 4,
+            max_session_lifetime_secs: 30,
+            max_concurrent_requests: 16,
+        };
+
+        assert_eq!(run(args).await.unwrap_err(), BinaryError::InvalidLimits);
     }
 
     #[test]

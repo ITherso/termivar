@@ -667,19 +667,93 @@ mod tests {
 
     #[test]
     fn provider_failures_have_closed_generic_status_mapping() {
-        assert_eq!(
-            HttpFailure::from_provider(ProviderError::Unauthorized).0,
-            StatusCode::UNAUTHORIZED
-        );
-        assert_eq!(
-            HttpFailure::from_provider(ProviderError::PollBudgetExhausted).0,
-            StatusCode::TOO_MANY_REQUESTS
-        );
+        let cases = [
+            (ProviderError::Unauthorized, StatusCode::UNAUTHORIZED),
+            (ProviderError::SessionNotFound, StatusCode::NOT_FOUND),
+            (ProviderError::CallbackNotFound, StatusCode::NOT_FOUND),
+            (ProviderError::SessionExpired, StatusCode::GONE),
+            (
+                ProviderError::SessionCapacityExhausted,
+                StatusCode::TOO_MANY_REQUESTS,
+            ),
+            (
+                ProviderError::CallbackCapacityExhausted,
+                StatusCode::TOO_MANY_REQUESTS,
+            ),
+            (
+                ProviderError::PollBudgetExhausted,
+                StatusCode::TOO_MANY_REQUESTS,
+            ),
+            (
+                ProviderError::EventCapacityExhausted,
+                StatusCode::TOO_MANY_REQUESTS,
+            ),
+            (
+                ProviderError::InvalidSessionRequest,
+                StatusCode::BAD_REQUEST,
+            ),
+            (ProviderError::InvalidCursor, StatusCode::BAD_REQUEST),
+            (ProviderError::InvalidRequestTarget, StatusCode::BAD_REQUEST),
+            (
+                ProviderError::RequestTooLarge,
+                StatusCode::PAYLOAD_TOO_LARGE,
+            ),
+            (
+                ProviderError::MethodNotAllowed,
+                StatusCode::METHOD_NOT_ALLOWED,
+            ),
+            (ProviderError::Cancelled, StatusCode::SERVICE_UNAVAILABLE),
+            (ProviderError::DeadlineExceeded, StatusCode::GATEWAY_TIMEOUT),
+            (
+                ProviderError::InvalidConfiguration,
+                StatusCode::INTERNAL_SERVER_ERROR,
+            ),
+            (
+                ProviderError::InvalidPublicOrigin,
+                StatusCode::INTERNAL_SERVER_ERROR,
+            ),
+            (
+                ProviderError::NonLoopbackBindRejected,
+                StatusCode::INTERNAL_SERVER_ERROR,
+            ),
+            (
+                ProviderError::InvalidAdminToken,
+                StatusCode::INTERNAL_SERVER_ERROR,
+            ),
+            (
+                ProviderError::ResponseTooLarge,
+                StatusCode::INTERNAL_SERVER_ERROR,
+            ),
+            (
+                ProviderError::EntropyUnavailable,
+                StatusCode::INTERNAL_SERVER_ERROR,
+            ),
+            (
+                ProviderError::InternalInvariant,
+                StatusCode::INTERNAL_SERVER_ERROR,
+            ),
+        ];
+        for (error, expected) in cases {
+            assert_eq!(HttpFailure::from_provider(error).0, expected);
+        }
+        assert_eq!(HttpFailure::internal().0, StatusCode::INTERNAL_SERVER_ERROR);
         let response = generic_error(StatusCode::BAD_REQUEST);
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
         assert_eq!(
             response.headers().get(CACHE_CONTROL).unwrap(),
             HeaderValue::from_static("no-store")
+        );
+    }
+
+    #[test]
+    fn listener_errors_are_static_and_value_free() {
+        assert_eq!(
+            ProviderServerError::Bind.to_string(),
+            "native OAST loopback listener could not bind"
+        );
+        assert_eq!(
+            ProviderServerError::Serve.to_string(),
+            "native OAST loopback listener failed"
         );
     }
 

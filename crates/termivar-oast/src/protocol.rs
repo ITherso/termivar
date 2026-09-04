@@ -723,6 +723,26 @@ mod tests {
     }
 
     #[test]
+    fn opaque_ids_round_trip_through_the_exact_wire_encoding() {
+        let session_id = SessionId::from_random([7; SHORT_ID_BYTES]).unwrap();
+        let callback_id = CallbackId::from_random([8; SHORT_ID_BYTES]).unwrap();
+        let event_id = EventId::from_random([9; EVENT_ID_BYTES]).unwrap();
+
+        let encoded = serde_json::to_string(&session_id).unwrap();
+        assert_eq!(
+            serde_json::from_str::<SessionId>(&encoded).unwrap(),
+            session_id
+        );
+        let encoded = serde_json::to_string(&callback_id).unwrap();
+        assert_eq!(
+            serde_json::from_str::<CallbackId>(&encoded).unwrap(),
+            callback_id
+        );
+        let encoded = serde_json::to_string(&event_id).unwrap();
+        assert_eq!(serde_json::from_str::<EventId>(&encoded).unwrap(), event_id);
+    }
+
+    #[test]
     fn strict_request_rejects_unknown_fields() {
         let source = format!(
             r#"{{"schema":"{SESSION_SCHEMA}","lifetime_ms":1000,"max_callbacks":1,"max_events":1,"max_polls":1,"extra":true}}"#

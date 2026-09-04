@@ -116,3 +116,107 @@ impl std::fmt::Display for ProviderError {
 }
 
 impl std::error::Error for ProviderError {}
+
+#[cfg(test)]
+mod tests {
+    use super::ProviderError;
+
+    #[test]
+    fn provider_error_messages_are_static_and_exhaustive() {
+        let cases = [
+            (
+                ProviderError::InvalidConfiguration,
+                "native OAST provider configuration is invalid",
+            ),
+            (
+                ProviderError::InvalidPublicOrigin,
+                "native OAST public origin is invalid",
+            ),
+            (
+                ProviderError::NonLoopbackBindRejected,
+                "native OAST provider bind must be loopback",
+            ),
+            (
+                ProviderError::InvalidAdminToken,
+                "native OAST administrator token is invalid",
+            ),
+            (
+                ProviderError::Unauthorized,
+                "native OAST management request is unauthorized",
+            ),
+            (
+                ProviderError::SessionCapacityExhausted,
+                "native OAST session capacity is exhausted",
+            ),
+            (
+                ProviderError::InvalidSessionRequest,
+                "native OAST session request is invalid",
+            ),
+            (
+                ProviderError::SessionExpired,
+                "native OAST session is expired",
+            ),
+            (
+                ProviderError::SessionNotFound,
+                "native OAST session was not found",
+            ),
+            (
+                ProviderError::CallbackCapacityExhausted,
+                "native OAST callback capacity is exhausted",
+            ),
+            (
+                ProviderError::CallbackNotFound,
+                "native OAST callback was not found",
+            ),
+            (
+                ProviderError::PollBudgetExhausted,
+                "native OAST poll budget is exhausted",
+            ),
+            (
+                ProviderError::EventCapacityExhausted,
+                "native OAST event capacity is exhausted",
+            ),
+            (
+                ProviderError::InvalidCursor,
+                "native OAST event cursor is invalid",
+            ),
+            (
+                ProviderError::InvalidRequestTarget,
+                "native OAST request target is invalid",
+            ),
+            (
+                ProviderError::RequestTooLarge,
+                "native OAST management request is too large",
+            ),
+            (
+                ProviderError::ResponseTooLarge,
+                "native OAST management response is too large",
+            ),
+            (
+                ProviderError::MethodNotAllowed,
+                "native OAST method is not allowed",
+            ),
+            (
+                ProviderError::Cancelled,
+                "native OAST operation was cancelled",
+            ),
+            (
+                ProviderError::DeadlineExceeded,
+                "native OAST operation deadline elapsed",
+            ),
+            (
+                ProviderError::EntropyUnavailable,
+                "native OAST identity generation failed",
+            ),
+            (
+                ProviderError::InternalInvariant,
+                "native OAST provider invariant failed",
+            ),
+        ];
+
+        for (error, expected) in cases {
+            assert_eq!(error.to_string(), expected);
+            assert!(!error.to_string().contains("MUST-NOT-LEAK"));
+        }
+    }
+}
