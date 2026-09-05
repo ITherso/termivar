@@ -4,14 +4,14 @@
       <p class="tmv-eyebrow"><span>Development preview</span> Rust security assessment</p>
       <h1 id="termivar-home-title">Evidence before verdicts.</h1>
       <p class="tmv-hero-lede">
-        Termivar is a bounded, evidence-driven security assessment platform with
-        deterministic execution, explicit authority, typed evidence, and
-        claim-safe reporting.
+        Run bounded web assessments. Understand the evidence. Compare what changed.
+        Termivar produces readable HTML and JSON reports and compares their
+        observations offline without treating disappearance as verified remediation.
       </p>
       <div class="tmv-actions" aria-label="Primary documentation links">
         <a class="tmv-button tmv-button-primary" href="GETTING_STARTED/">Get started</a>
-        <a class="tmv-button tmv-button-secondary" href="architecture/">Explore architecture</a>
-        <a class="tmv-text-link" href="https://github.com/ITherso/termivar">View source <span aria-hidden="true">&rarr;</span></a>
+        <a class="tmv-button tmv-button-secondary" href="examples/first-use/assessment.html">View example report</a>
+        <a class="tmv-text-link" href="architecture/">Explore architecture <span aria-hidden="true">&rarr;</span></a>
       </div>
       <ul class="tmv-hero-facts" aria-label="Core runtime boundaries">
         <li>Exact-origin authority</li>
