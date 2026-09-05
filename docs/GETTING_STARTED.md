@@ -107,6 +107,56 @@ source ref and feature set are **caller declarations**, not inferred or attested
 by `--version`. Record the real revision and build command; never relabel a
 source build as release-archive acceptance.
 
+## Export one development assessment in two formats
+
+A development `0.10.0-alpha.2` binary whose `scan --help` includes
+`--report-dir` can create HTML and JSON from one completed assessment:
+
+```bash
+termivar scan <AUTHORIZED_TARGET> \
+  --profile web-review \
+  --report-dir ./assessment-001
+```
+
+Use only an exact origin you are authorized to assess. The parent of
+`assessment-001` must already exist as a trusted, private, user-owned directory,
+and `assessment-001` itself must not exist. The command neither overwrites nor
+reuses an existing file, directory, or link and does not create missing parent
+directories. On Windows, the new directory inherits the parent's ACL.
+Termivar checks the immediate parent is an existing non-link directory; the
+operator supplies the trust/ownership assertion for that parent and its
+ancestors.
+
+A successful directory contains exactly `assessment.html`, `assessment.json`,
+and `manifest.json`. The runtime runs once, composes one completed typed
+assessment, and renders both report formats from it. `manifest.json` is
+published last and records exact lengths and hashes for the other two files.
+Those hashes identify bytes; they are not a signature or proof of scope. The
+payload files can be visible while publication is in progress, so readers must
+require and verify the final manifest rather than assume whole-directory atomic
+visibility.
+
+`--report-dir` requires explicit `web-review` and cannot be combined with
+`--report-format` or `--report-output`. `--format` still selects only the
+existing diagnostic encoding for an incomplete/failed run; it does not change
+the bundle's fixed HTML and JSON formats. An incomplete run creates no
+completion manifest. A crash can leave an incomplete directory, which must not
+be silently reused.
+
+The bundled JSON retains the normal assessment schema. Two deliberately chosen
+bundles can be compared offline:
+
+```bash
+termivar report compare \
+  --before assessment-001/assessment.json \
+  --after assessment-002/assessment.json \
+  --same-scope
+```
+
+This option belongs to development source containing the feature; the published
+`v0.10.0-alpha.1` archives and their checked-in first-use captures do not have
+it. See the [full bundle and manifest contract](reporting.md#single-run-report-bundles).
+
 ## Open the outputs
 
 A passed run prints `first-use: passed` and retains these files in the selected

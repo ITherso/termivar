@@ -49,6 +49,7 @@ futures = "0.3"
 hyper = { version = "1", features = ["http1", "server"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
 sha2 = "0.10"
+same-file = "1.0.6"
 subtle = "2.6"
 tower = { version = "0.5", features = ["util"] }
 zeroize = "1.9"

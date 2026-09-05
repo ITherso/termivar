@@ -51,6 +51,8 @@ url = "2.5"
 clap = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+sha2 = { workspace = true }
+same-file = { workspace = true }
 zeroize = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]

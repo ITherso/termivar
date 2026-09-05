@@ -316,6 +316,8 @@ jobs:
         run: cargo test --locked -p termivar-cli --test decision_scan_cli json_format_writes_parseable_json_to_stdout_and_the_runtime_notice_to_stderr
       - name: Exercise atomic report-output path semantics
         run: cargo test --locked -p termivar-cli --test profile_scan_cli report_output_is_complete_atomic_and_never_overwritten
+      - name: Exercise single-run report bundle CLI
+        run: cargo test --locked -p termivar-cli --test report_bundle_cli
       - name: Exercise offline report comparison CLI
         run: cargo test --locked -p termivar-cli --test report_compare_cli
       - name: Test fixed offline comparison controls without a browser

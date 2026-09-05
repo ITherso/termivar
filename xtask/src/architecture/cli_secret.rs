@@ -74,6 +74,7 @@ const CLI_SCAN_FIELDS: &[&str] = &[
     "openapi_review",
     "rest_review",
     "profile",
+    "report_dir",
     "report_format",
     "report_output",
     "ssrf_oast_policy",
@@ -678,6 +679,7 @@ fn inspect_cli_auth_surface(source: &str) -> Result<Vec<String>, syn::Error> {
         ("authz_peer_file", "Option", Some("PathBuf")),
         ("authz_peer_stdin", "bool", None),
         ("report_format", "Option", Some("CliReportFormat")),
+        ("report_dir", "Option", Some("PathBuf")),
         ("report_output", "Option", Some("PathBuf")),
     ]
     .iter()
@@ -817,6 +819,19 @@ fn inspect_cli_auth_surface(source: &str) -> Result<Vec<String>, syn::Error> {
         );
     }
 
+    if fields.get("report_dir").is_none_or(|field| {
+        !is_one_argument_type(&field.ty, "Option", "PathBuf")
+            || !exact_arg_attribute(
+                &field.attrs,
+                "long,value_name=\"DIRECTORY\",requires=\"profile\",conflicts_with_all=[\"report_format\",\"report_output\"]",
+            )
+    }) {
+        violations.push(
+            "CLI `report_dir` must remain an exact optional directory requiring a profile and conflicting with both single-report output options"
+                .to_owned(),
+        );
+    }
+
     for (name, expected_type, expected_arg) in [
         (
             "ssrf_oast_review",
@@ -923,6 +938,18 @@ fn inspect_cli_auth_surface(source: &str) -> Result<Vec<String>, syn::Error> {
                 .to_owned(),
         );
     }
+    if !compact.contains(
+        "letmutreport_bundle=report_bundle::reserve_report_bundle(report_dir.as_deref())?;",
+    ) || compact
+        .matches("report_bundle::reserve_report_bundle(report_dir.as_deref())?")
+        .count()
+        != 1
+    {
+        violations.push(
+            "CLI must exclusively reserve the selected report bundle directory before reading authorization material"
+                .to_owned(),
+        );
+    }
     if !compact.contains("authorization_source.is_some()&&!is_exact_origin_root(&target)")
         || !compact.contains(
             "authorization_source.is_some()&&!authorization_context_transport_is_allowed(&target)",
@@ -955,6 +982,7 @@ fn inspect_cli_auth_surface(source: &str) -> Result<Vec<String>, syn::Error> {
         "for_builtin",
         "with_defense_enforcement_enabled",
         "preflight_report_output",
+        "reserve_report_bundle",
         "load",
         "load",
         "load",
@@ -1724,6 +1752,7 @@ fn ordered_boundary_references(function: &ItemFn) -> Vec<String> {
         "for_builtin",
         "with_defense_enforcement_enabled",
         "preflight_report_output",
+        "reserve_report_bundle",
         "load",
         "DETERMINISTIC_SCAN_WARNING",
         "run_profile_scan",
@@ -2138,6 +2167,11 @@ mod tests {
                 "must remain an exact cfg-gated bool",
             ),
             (
+                "conflicts_with_all = [\"report_format\", \"report_output\"]",
+                "conflicts_with = \"report_format\"",
+                "conflicting with both single-report output options",
+            ),
+            (
                 "conflicts_with_all = [\"auth_file\", \"auth_stdin\"]",
                 "conflicts_with_all = [\"auth_stdin\"]",
                 "exact out-of-band type",
@@ -2146,6 +2180,11 @@ mod tests {
                 "preflight_report_output(report_output.as_deref())?;",
                 "let _deferred_report_preflight = report_output.as_deref();",
                 "preflight the selected report output",
+            ),
+            (
+                "let mut report_bundle = report_bundle::reserve_report_bundle(report_dir.as_deref())?;",
+                "let mut report_bundle = report_dir.as_deref();",
+                "exclusively reserve the selected report bundle directory",
             ),
             (
                 "authorization_context_transport_is_allowed(&target)",

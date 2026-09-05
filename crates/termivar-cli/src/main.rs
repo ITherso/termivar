@@ -24,6 +24,7 @@ mod artifact_adapter;
 mod assessment_scan;
 mod auth_input;
 mod decision_scan;
+mod report_bundle;
 mod report_compare;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
@@ -182,11 +183,18 @@ fn scan_report_flags_conflict(
     profile: Option<CliScanProfile>,
     report_format: Option<CliReportFormat>,
     report_output: Option<&std::path::Path>,
+    report_dir: Option<&std::path::Path>,
 ) -> Option<&'static str> {
-    if report_output.is_some() && report_format.is_none() {
+    if report_dir.is_some() && report_format.is_some() {
+        Some("`--report-dir` conflicts with `--report-format`")
+    } else if report_dir.is_some() && report_output.is_some() {
+        Some("`--report-dir` conflicts with `--report-output`")
+    } else if report_output.is_some() && report_format.is_none() {
         Some("`--report-output` requires `--report-format`")
     } else if report_format.is_some() && profile != Some(CliScanProfile::WebReview) {
         Some("`--report-format` requires `--profile web-review`")
+    } else if report_dir.is_some() && profile != Some(CliScanProfile::WebReview) {
+        Some("`--report-dir` requires `--profile web-review`")
     } else {
         None
     }
@@ -366,6 +374,17 @@ struct ScanArgs {
     /// promise crash-durable directory metadata.
     #[arg(long, requires = "report_format")]
     report_output: Option<PathBuf>,
+    /// Exclusively create one new directory containing HTML and JSON reports
+    /// from the same completed assessment plus a manifest committed last.
+    /// The parent must already exist and be trusted; existing destinations are
+    /// never reused or overwritten.
+    #[arg(
+        long,
+        value_name = "DIRECTORY",
+        requires = "profile",
+        conflicts_with_all = ["report_format", "report_output"]
+    )]
+    report_dir: Option<PathBuf>,
     /// Read the complete authorized-root `Authorization` header value from
     /// this environment variable. The variable name and value are redacted.
     #[arg(
@@ -547,6 +566,7 @@ async fn run_deterministic_scan(invocation: ScanArgs) -> Result<(), Box<dyn std:
         oast_admin_token_stdin,
         report_format,
         report_output,
+        report_dir,
         auth_env,
         auth_file,
         auth_stdin,
@@ -608,9 +628,12 @@ async fn run_deterministic_scan(invocation: ScanArgs) -> Result<(), Box<dyn std:
             .error(clap::error::ErrorKind::ArgumentConflict, message)
             .exit();
     }
-    if let Some(message) =
-        scan_report_flags_conflict(profile, report_format, report_output.as_deref())
-    {
+    if let Some(message) = scan_report_flags_conflict(
+        profile,
+        report_format,
+        report_output.as_deref(),
+        report_dir.as_deref(),
+    ) {
         use clap::CommandFactory;
         Cli::command()
             .error(clap::error::ErrorKind::ArgumentConflict, message)
@@ -703,28 +726,53 @@ async fn run_deterministic_scan(invocation: ScanArgs) -> Result<(), Box<dyn std:
         if enforce_defense {
             profile = profile.with_defense_enforcement_enabled(true)?;
         }
+        let output_request = if report_dir.is_some() {
+            assessment_scan::ProfileScanOutput::Bundle {
+                diagnostic_json: matches!(format, OutputFormat::Json),
+            }
+        } else if report_output.is_some() {
+            assessment_scan::ProfileScanOutput::SingleFile {
+                diagnostic_json: matches!(format, OutputFormat::Json),
+                report_format: report_format
+                    .map(Into::into)
+                    .ok_or_else(|| std::io::Error::other("report output format is missing"))?,
+            }
+        } else {
+            assessment_scan::ProfileScanOutput::Stdout {
+                diagnostic_json: matches!(format, OutputFormat::Json),
+                report_format: report_format.map(Into::into),
+            }
+        };
         preflight_report_output(report_output.as_deref())?;
+        let mut report_bundle = report_bundle::reserve_report_bundle(report_dir.as_deref())?;
         // All flag, profile, target, and obvious report-output checks above
         // precede the only secret source read in the CLI.
         let root_authorization_context = authorization_source
             .map(auth_input::AuthorizationInputSource::load)
-            .transpose()?;
+            .transpose()
+            .inspect_err(|_| {
+                abort_report_bundle_after_failure(&mut report_bundle);
+            })?;
         #[cfg(feature = "authorization-review")]
         let resource_authorization_review = resource_authorization_input
             .map(|input| input.load(&target))
-            .transpose()?;
+            .transpose()
+            .inspect_err(|_| {
+                abort_report_bundle_after_failure(&mut report_bundle);
+            })?;
         #[cfg(feature = "ssrf-oast-review")]
         let ssrf_oast_review = ssrf_oast_review_input
             .map(|input| input.load(&target))
-            .transpose()?;
+            .transpose()
+            .inspect_err(|_| {
+                abort_report_bundle_after_failure(&mut report_bundle);
+            })?;
 
         eprintln!("{DETERMINISTIC_SCAN_WARNING}");
-        let execution = assessment_scan::run_profile_scan(
+        let execution = match assessment_scan::run_profile_scan(
             target,
             profile,
-            matches!(format, OutputFormat::Json),
-            report_format.map(Into::into),
-            report_output.is_some(),
+            output_request,
             assessment_scan::ProfileScanRuntimeOptions {
                 root_authorization_context,
                 normalization_resilience,
@@ -737,23 +785,58 @@ async fn run_deterministic_scan(invocation: ScanArgs) -> Result<(), Box<dyn std:
                 ssrf_oast_review,
             },
         )
-        .await?;
+        .await
+        {
+            Ok(execution) => execution,
+            Err(error) => {
+                abort_report_bundle_after_failure(&mut report_bundle);
+                return Err(error);
+            },
+        };
         let (rendered, report_artifact, post_render_failure) = execution.into_parts();
         if !rendered.is_empty() {
             use std::io::Write as _;
             let stdout = std::io::stdout();
             let mut output = stdout.lock();
-            output.write_all(rendered.as_bytes())?;
-            output.flush()?;
+            if let Err(error) = output
+                .write_all(rendered.as_bytes())
+                .and_then(|()| output.flush())
+            {
+                abort_report_bundle_after_failure(&mut report_bundle);
+                return Err(error.into());
+            }
         }
         if let Some(artifact) = report_artifact {
-            let output = report_output.as_deref().ok_or_else(|| {
-                std::io::Error::other("report artifact has no authorized output path")
-            })?;
-            write_report_atomically(output, artifact.as_bytes())?;
+            match artifact {
+                assessment_scan::AssessmentScanArtifact::SingleFile(artifact) => {
+                    let output = report_output.as_deref().ok_or_else(|| {
+                        std::io::Error::other("report artifact has no authorized output path")
+                    })?;
+                    write_report_atomically(output, artifact.as_bytes())?;
+                },
+                assessment_scan::AssessmentScanArtifact::Bundle(bundle) => {
+                    let reservation = report_bundle.take().ok_or_else(|| {
+                        std::io::Error::other(
+                            "report bundle artifact has no reserved output directory",
+                        )
+                    })?;
+                    reservation.publish(&bundle)?;
+                    eprintln!(
+                        "Report bundle completed: assessment.html, assessment.json, manifest.json"
+                    );
+                },
+            }
         }
         if let Some(failure) = post_render_failure {
+            abort_report_bundle_after_failure(&mut report_bundle);
             return Err(std::io::Error::other(failure.message()).into());
+        }
+        if report_bundle.is_some() {
+            abort_report_bundle_after_failure(&mut report_bundle);
+            return Err(std::io::Error::other(
+                "completed assessment did not produce its requested report bundle",
+            )
+            .into());
         }
         return Ok(());
     }
@@ -774,6 +857,17 @@ async fn run_deterministic_scan(invocation: ScanArgs) -> Result<(), Box<dyn std:
         },
     }
     Ok(())
+}
+
+fn abort_report_bundle_after_failure(
+    reservation: &mut Option<report_bundle::ReportBundleReservation>,
+) {
+    if reservation
+        .take()
+        .is_some_and(|reservation| reservation.abort().is_err())
+    {
+        eprintln!("report bundle cleanup was incomplete; the uncommitted directory was retained");
+    }
 }
 
 fn preflight_report_output(path: Option<&std::path::Path>) -> std::io::Result<()> {
@@ -2148,6 +2242,7 @@ mod tests {
                 Some(CliScanProfile::Baseline),
                 Some(CliReportFormat::Json),
                 None,
+                None,
             ),
             Some("`--report-format` requires `--profile web-review`")
         );
@@ -2156,6 +2251,7 @@ mod tests {
                 Some(CliScanProfile::WebReview),
                 None,
                 Some(std::path::Path::new("review.json")),
+                None,
             ),
             Some("`--report-output` requires `--report-format`")
         );
@@ -2163,6 +2259,7 @@ mod tests {
             scan_report_flags_conflict(
                 Some(CliScanProfile::WebReview),
                 Some(CliReportFormat::Markdown),
+                None,
                 None,
             ),
             None
@@ -2175,6 +2272,73 @@ mod tests {
             "https://example.test/",
         ])
         .is_err());
+    }
+
+    #[test]
+    fn report_bundle_is_explicit_web_review_only_and_preserves_the_scan_alias() {
+        for spelling in ["scan", "decision-scan"] {
+            let cli = Cli::try_parse_from([
+                "termivar",
+                spelling,
+                "--profile",
+                "web-review",
+                "--report-dir",
+                "assessment-001",
+                "https://example.test/",
+            ])
+            .unwrap();
+            let args = parsed_scan_args(&cli);
+            assert_eq!(args.profile, Some(CliScanProfile::WebReview));
+            assert_eq!(
+                args.report_dir.as_deref(),
+                Some(std::path::Path::new("assessment-001"))
+            );
+            assert_eq!(args.format, OutputFormat::Text);
+            assert!(args.report_format.is_none());
+            assert!(args.report_output.is_none());
+        }
+
+        assert!(Cli::try_parse_from([
+            "termivar",
+            "scan",
+            "--report-dir",
+            "assessment-001",
+            "https://example.test/",
+        ])
+        .is_err());
+        assert!(Cli::try_parse_from([
+            "termivar",
+            "scan",
+            "--profile",
+            "web-review",
+            "--report-dir",
+            "assessment-001",
+            "--report-format",
+            "json",
+            "https://example.test/",
+        ])
+        .is_err());
+        assert!(Cli::try_parse_from([
+            "termivar",
+            "scan",
+            "--profile",
+            "web-review",
+            "--report-dir",
+            "assessment-001",
+            "--report-output",
+            "assessment.json",
+            "https://example.test/",
+        ])
+        .is_err());
+        assert_eq!(
+            scan_report_flags_conflict(
+                Some(CliScanProfile::Baseline),
+                None,
+                None,
+                Some(std::path::Path::new("assessment-001")),
+            ),
+            Some("`--report-dir` requires `--profile web-review`")
+        );
     }
 
     #[test]

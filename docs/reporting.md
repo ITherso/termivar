@@ -125,6 +125,96 @@ while the command returns nonzero; it does not report publication success.
 Directory-metadata crash durability is best effort, and filesystems without the
 required same-directory hard-link semantics fail nonzero.
 
+## Single-run report bundles
+
+Development `0.10.0-alpha.2` source that includes this option can render both
+assessment formats from one completed run:
+
+```bash
+termivar scan <AUTHORIZED_TARGET> \
+  --profile web-review \
+  --report-dir ./assessment-001
+```
+
+`--report-dir` requires an explicit `--profile web-review` and conflicts with
+both `--report-format` and `--report-output`. It does not change feature
+defaults. The existing `--format text|json` selection remains independent: it
+controls the diagnostic envelope if a started assessment is incomplete or
+fails, not the two formats in a successful bundle. A successful bundle writes
+no report document to stdout.
+
+The assessment executes once and is composed once into the existing immutable
+typed assessment model. The existing renderer then produces HTML and JSON from
+that same value; output selection does not replay target requests. A successful
+destination contains exactly:
+
+```text
+assessment-001/
+  assessment.html
+  assessment.json
+  manifest.json
+```
+
+The HTML remains the existing self-contained, script-free assessment document.
+The JSON retains `venom-rendered-assessment/v1` and can be supplied directly to
+`termivar report compare`. Each report keeps the existing 16 MiB document
+ceiling. The manifest is bounded to 64 KiB and uses the additive
+`termivar-report-bundle/v1` schema. It records the Termivar package version,
+completed profile/status and available typed counts, plus exactly two sorted
+payload entries with fixed relative names, media types, exact byte lengths, and
+lowercase SHA-256 digests. It neither hashes itself nor includes a target URL,
+credential, local absolute path, response body, or invented source/run identity.
+Checked arithmetic also caps the total in-memory bundle payload at two report
+ceilings plus the manifest ceiling (32 MiB + 64 KiB).
+
+The destination must not already exist. Its parent must already exist as a
+trusted, private, user-owned directory; Termivar does not create missing
+ancestors. Files, directories, links, `.`, `..`, roots, and invalid final
+components are rejected as destinations. Exclusive creation of the final
+directory reserves it before credential loading or network construction, so a
+competing writer cannot reuse an existing directory. Newly owned outputs use
+restrictive permissions where the platform supports them. On Windows, the new
+directory inherits its parent's ACL; Termivar does not claim to install a new
+ACL policy. Trust in the parent path remains an explicit boundary.
+Termivar verifies that the immediate parent is an existing non-link directory;
+the operator's ownership/private-directory assertion is a precondition, not a
+whole-path ownership or ancestor-integrity check performed by this command.
+That trust boundary also assumes another actor able to mutate the parent does
+not race file replacement against publication or cleanup.
+
+Publication renders and bounds all documents before committing final report
+names. It publishes and synchronizes `assessment.html` and `assessment.json`,
+then publishes `manifest.json` last with no-overwrite file semantics. The final
+manifest is the bundle's completion marker: readers must verify its two names,
+lengths, and hashes before treating the directory as complete. Payload files
+and temporary construction state can be visible before that point, so the
+three-file operation is not an atomic directory snapshot for arbitrary readers.
+The digests identify exact bytes; they are not signatures and do not establish
+source authenticity, trusted scope, remote delivery, or remediation.
+
+Before the manifest commit point, ordinary failures attempt to remove only
+known files owned by that publication and then only an empty owned directory.
+Cleanup uncertainty is reported instead of deleting unknown contents. If the
+manifest was committed but temporary-file housekeeping later fails, the valid
+committed files are retained and the command reports the post-commit error; it
+does not claim rollback. A crash or forced termination can leave an incomplete
+directory, and that directory must be inspected or removed deliberately rather
+than reused for another bundle. File synchronization and best-effort supported
+directory synchronization do not promise universal power-loss durability.
+
+To compare JSON from two deliberately selected bundles without starting a new
+scan:
+
+```bash
+termivar report compare \
+  --before assessment-001/assessment.json \
+  --after assessment-002/assessment.json \
+  --same-scope
+```
+
+The published `v0.10.0-alpha.1` archives predate `--report-dir`; their genuine
+first-use JSON and HTML captures remain separate assessment executions.
+
 ## Offline assessment report comparison
 
 `termivar report compare` reads exactly two explicit local files and performs

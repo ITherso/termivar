@@ -46,7 +46,10 @@ use termivar_scanner::{
 };
 use url::Url;
 
-use crate::decision_scan::{self, DecisionScanSummary, OutcomeView};
+use crate::{
+    decision_scan::{self, DecisionScanSummary, OutcomeView},
+    report_bundle::{self, RenderedReportBundle},
+};
 
 /// Original additive schema retained for the baseline profile contract.
 pub(crate) const WEB_ASSESSMENT_SCHEMA_V1: &str = "web-assessment/v1";
@@ -82,8 +85,14 @@ impl AssessmentScanPostRenderFailure {
 #[derive(Debug)]
 pub(crate) struct AssessmentScanExecution {
     rendered: String,
-    report_artifact: Option<String>,
+    report_artifact: Option<AssessmentScanArtifact>,
     post_render_failure: Option<AssessmentScanPostRenderFailure>,
+}
+
+#[derive(Debug)]
+pub(crate) enum AssessmentScanArtifact {
+    SingleFile(String),
+    Bundle(RenderedReportBundle),
 }
 
 impl AssessmentScanExecution {
@@ -92,13 +101,55 @@ impl AssessmentScanExecution {
         self,
     ) -> (
         String,
-        Option<String>,
+        Option<AssessmentScanArtifact>,
         Option<AssessmentScanPostRenderFailure>,
     ) {
         (
             self.rendered,
             self.report_artifact,
             self.post_render_failure,
+        )
+    }
+}
+
+/// Closed selection for the completed-assessment projection. Diagnostic JSON
+/// remains independent because incomplete runs never publish a completed
+/// artifact.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ProfileScanOutput {
+    Stdout {
+        diagnostic_json: bool,
+        report_format: Option<ReportFormat>,
+    },
+    SingleFile {
+        diagnostic_json: bool,
+        report_format: ReportFormat,
+    },
+    Bundle {
+        diagnostic_json: bool,
+    },
+}
+
+impl ProfileScanOutput {
+    const fn diagnostic_json(self) -> bool {
+        match self {
+            Self::Stdout {
+                diagnostic_json, ..
+            }
+            | Self::SingleFile {
+                diagnostic_json, ..
+            }
+            | Self::Bundle { diagnostic_json } => diagnostic_json,
+        }
+    }
+
+    const fn baseline_compatible(self) -> bool {
+        matches!(
+            self,
+            Self::Stdout {
+                report_format: None,
+                ..
+            }
         )
     }
 }
@@ -471,9 +522,9 @@ enum AssessmentItemsReport {
 /// Runs an explicitly selected profile and builds the additive output entirely
 /// in memory.
 ///
-/// `format_is_json` deliberately avoids coupling this module to the CLI-local
-/// `OutputFormat` enum. The absence-of-`--profile` compatibility path must never
-/// call this function.
+/// [`ProfileScanOutput`] deliberately avoids coupling this module to the
+/// CLI-local argument enums. The absence-of-`--profile` compatibility path
+/// must never call this function.
 #[derive(Default)]
 pub(crate) struct ProfileScanRuntimeOptions {
     pub(crate) root_authorization_context: Option<WebAssessmentRootAuthorizationContext>,
@@ -491,9 +542,7 @@ pub(crate) struct ProfileScanRuntimeOptions {
 pub(crate) async fn run_profile_scan(
     target: Url,
     profile: ScanProfileV1,
-    format_is_json: bool,
-    report_format: Option<ReportFormat>,
-    report_to_file: bool,
+    output: ProfileScanOutput,
     runtime_options: ProfileScanRuntimeOptions,
 ) -> Result<AssessmentScanExecution, Box<dyn Error>> {
     let ProfileScanRuntimeOptions {
@@ -554,7 +603,7 @@ pub(crate) async fn run_profile_scan(
                 )
                 .into());
             }
-            if report_format.is_some() || report_to_file || root_authorization_context.is_some() {
+            if !output.baseline_compatible() || root_authorization_context.is_some() {
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::InvalidInput,
                     "typed assessment reports require the web-review profile",
@@ -562,7 +611,7 @@ pub(crate) async fn run_profile_scan(
                 .into());
             }
             let document = run_baseline(target, target_origin, profile).await?;
-            render_execution(document, format_is_json)
+            render_execution(document, output.diagnostic_json())
         },
         (BuiltInScanProfile::WebReview, ScanProfileScope::ExactOrigin) => {
             run_web_review(
@@ -570,9 +619,7 @@ pub(crate) async fn run_profile_scan(
                 WebReviewRunOptions {
                     target_origin,
                     profile,
-                    format_is_json,
-                    report_format,
-                    report_to_file,
+                    output,
                     root_authorization_context,
                     normalization_resilience,
                     graphql_review,
@@ -624,9 +671,7 @@ async fn run_baseline(
 struct WebReviewRunOptions {
     target_origin: String,
     profile: ScanProfileV1,
-    format_is_json: bool,
-    report_format: Option<ReportFormat>,
-    report_to_file: bool,
+    output: ProfileScanOutput,
     root_authorization_context: Option<WebAssessmentRootAuthorizationContext>,
     normalization_resilience: bool,
     graphql_review: bool,
@@ -645,9 +690,7 @@ async fn run_web_review(
     let WebReviewRunOptions {
         target_origin,
         profile,
-        format_is_json,
-        report_format,
-        report_to_file,
+        output,
         root_authorization_context,
         normalization_resilience,
         graphql_review,
@@ -742,35 +785,49 @@ async fn run_web_review(
     let mut runtime = builder.build()?;
     match runtime.analyze().await {
         Ok(report) if matches!(report.completion(), WebAssessmentCompletion::Complete) => {
-            let format = report_format.unwrap_or(if format_is_json {
-                ReportFormat::Json
-            } else {
-                ReportFormat::Markdown
-            });
             let product = ReportGenerator::compose_assessment(report, profile)?;
-            let rendered = ReportGenerator::generate_assessment(&product, format)?;
-            Ok(if report_to_file {
-                AssessmentScanExecution {
+            match output {
+                ProfileScanOutput::Stdout {
+                    diagnostic_json,
+                    report_format,
+                } => {
+                    let format = report_format.unwrap_or(if diagnostic_json {
+                        ReportFormat::Json
+                    } else {
+                        ReportFormat::Markdown
+                    });
+                    Ok(AssessmentScanExecution {
+                        rendered: ReportGenerator::generate_assessment(&product, format)?,
+                        report_artifact: None,
+                        post_render_failure: None,
+                    })
+                },
+                ProfileScanOutput::SingleFile { report_format, .. } => {
+                    Ok(AssessmentScanExecution {
+                        rendered: String::new(),
+                        report_artifact: Some(AssessmentScanArtifact::SingleFile(
+                            ReportGenerator::generate_assessment(&product, report_format)?,
+                        )),
+                        post_render_failure: None,
+                    })
+                },
+                ProfileScanOutput::Bundle { .. } => Ok(AssessmentScanExecution {
                     rendered: String::new(),
-                    report_artifact: Some(rendered),
+                    report_artifact: Some(AssessmentScanArtifact::Bundle(
+                        report_bundle::render_report_bundle(&product)?,
+                    )),
                     post_render_failure: None,
-                }
-            } else {
-                AssessmentScanExecution {
-                    rendered,
-                    report_artifact: None,
-                    post_render_failure: None,
-                }
-            })
+                }),
+            }
         },
         Ok(report) => render_execution(
             document_from_web_review_report(target_origin, profile, &report),
-            format_is_json,
+            output.diagnostic_json(),
         ),
         Err(source) => match source.failure_receipt() {
             Some(receipt) => render_execution(
                 document_from_web_review_failure(target_origin, profile, receipt),
-                format_is_json,
+                output.diagnostic_json(),
             ),
             None => Err(Box::new(source)),
         },
@@ -1652,9 +1709,10 @@ mod tests {
         let error = run_profile_scan(
             Url::parse("https://example.test/").unwrap(),
             ScanProfileV1::baseline().unwrap(),
-            false,
-            None,
-            false,
+            ProfileScanOutput::Stdout {
+                diagnostic_json: false,
+                report_format: None,
+            },
             ProfileScanRuntimeOptions {
                 normalization_resilience: true,
                 ..ProfileScanRuntimeOptions::default()
@@ -1673,9 +1731,10 @@ mod tests {
         let error = run_profile_scan(
             Url::parse("https://example.test/").unwrap(),
             ScanProfileV1::baseline().unwrap(),
-            false,
-            None,
-            false,
+            ProfileScanOutput::Stdout {
+                diagnostic_json: false,
+                report_format: None,
+            },
             ProfileScanRuntimeOptions {
                 graphql_review: true,
                 ..ProfileScanRuntimeOptions::default()
@@ -1694,9 +1753,10 @@ mod tests {
         let error = run_profile_scan(
             Url::parse("https://example.test/").unwrap(),
             ScanProfileV1::baseline().unwrap(),
-            false,
-            None,
-            false,
+            ProfileScanOutput::Stdout {
+                diagnostic_json: false,
+                report_format: None,
+            },
             ProfileScanRuntimeOptions {
                 openapi_review: true,
                 ..ProfileScanRuntimeOptions::default()
@@ -1715,9 +1775,10 @@ mod tests {
         let error = run_profile_scan(
             Url::parse("https://example.test/").unwrap(),
             ScanProfileV1::baseline().unwrap(),
-            false,
-            None,
-            false,
+            ProfileScanOutput::Stdout {
+                diagnostic_json: false,
+                report_format: None,
+            },
             ProfileScanRuntimeOptions {
                 openapi_review: true,
                 rest_review: true,
@@ -1737,9 +1798,10 @@ mod tests {
         let error = run_profile_scan(
             Url::parse("https://example.test/").unwrap(),
             ScanProfileV1::web_review().unwrap(),
-            false,
-            None,
-            false,
+            ProfileScanOutput::Stdout {
+                diagnostic_json: false,
+                report_format: None,
+            },
             ProfileScanRuntimeOptions {
                 rest_review: true,
                 ..ProfileScanRuntimeOptions::default()
@@ -1784,9 +1846,10 @@ max_diff_paths = 8
         let error = run_profile_scan(
             target,
             ScanProfileV1::baseline().unwrap(),
-            false,
-            None,
-            false,
+            ProfileScanOutput::Stdout {
+                diagnostic_json: false,
+                report_format: None,
+            },
             ProfileScanRuntimeOptions {
                 resource_authorization_review: Some((policy, principals)),
                 ..ProfileScanRuntimeOptions::default()
@@ -1821,9 +1884,10 @@ lifetime_ms = 5000
         let error = run_profile_scan(
             target,
             ScanProfileV1::baseline().unwrap(),
-            false,
-            None,
-            false,
+            ProfileScanOutput::Stdout {
+                diagnostic_json: false,
+                report_format: None,
+            },
             ProfileScanRuntimeOptions {
                 ssrf_oast_review: Some((policy, administrator)),
                 ..ProfileScanRuntimeOptions::default()

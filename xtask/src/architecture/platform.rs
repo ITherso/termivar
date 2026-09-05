@@ -148,8 +148,10 @@ const FEATURE_OWNED_CORE_DEPENDENCIES: &[&str] = &["serde_json", "toml"];
 const REQUIRED_CLI_DEPENDENCIES: &[&str] = &[
     "clap",
     "libc",
+    "same-file",
     "serde",
     "serde_json",
+    "sha2",
     "tokio",
     "url",
     "zeroize",
@@ -898,6 +900,16 @@ pub(super) fn check(workspace_root: &Path) -> Result<Vec<String>, Box<dyn Error>
         REQUIRED_CLI_DEPENDENCIES,
         OPTIONAL_CLI_DEPENDENCIES,
     ));
+    for dependency in ["same-file", "sha2"] {
+        violations.extend(exact_dependency_contract_violations(
+            "termivar-cli",
+            &cli_dependencies,
+            dependency,
+            false,
+            true,
+            &[],
+        ));
+    }
     violations.extend(exact_dependency_contract_violations(
         "termivar-cli",
         &cli_dependencies,
@@ -12012,8 +12024,10 @@ mod tests {
         let required = [
             "clap",
             "libc",
+            "same-file",
             "serde",
             "serde_json",
+            "sha2",
             "tokio",
             "url",
             "zeroize",
@@ -12085,6 +12099,56 @@ mod tests {
             |violation| violation.contains("unclassified-intake-dependency")
                 && violation.contains("unclassified")
         ));
+    }
+
+    #[test]
+    fn cli_report_bundle_dependencies_are_required_and_exact() {
+        for name in ["same-file", "sha2"] {
+            let mut dependencies = BTreeMap::from([(
+                name.to_owned(),
+                DependencyContract {
+                    optional: false,
+                    uses_default_features: true,
+                    features: BTreeSet::new(),
+                },
+            )]);
+            assert!(exact_dependency_contract_violations(
+                "termivar-cli",
+                &dependencies,
+                name,
+                false,
+                true,
+                &[],
+            )
+            .is_empty());
+
+            dependencies.get_mut(name).unwrap().optional = true;
+            assert!(!exact_dependency_contract_violations(
+                "termivar-cli",
+                &dependencies,
+                name,
+                false,
+                true,
+                &[],
+            )
+            .is_empty());
+
+            dependencies.get_mut(name).unwrap().optional = false;
+            dependencies
+                .get_mut(name)
+                .unwrap()
+                .features
+                .insert("extra".to_owned());
+            assert!(!exact_dependency_contract_violations(
+                "termivar-cli",
+                &dependencies,
+                name,
+                false,
+                true,
+                &[],
+            )
+            .is_empty());
+        }
     }
 
     fn valid_cli_intake_dependencies() -> Vec<cargo_metadata::Dependency> {

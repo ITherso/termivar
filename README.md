@@ -65,6 +65,21 @@ above.
 See the [sample reading guide](docs/examples/first-use/README.md) and
 [report contract](docs/reporting.md).
 
+Development `0.10.0-alpha.2` source that includes the report-bundle command can
+export HTML and JSON from one completed assessment and one typed composition:
+
+```bash
+termivar scan <AUTHORIZED_TARGET> \
+  --profile web-review \
+  --report-dir ./assessment-001
+```
+
+The new directory contains `assessment.html`, `assessment.json`, and a final
+`manifest.json` that identifies the exact report bytes. It does not rerun the
+assessment, and the manifest hashes are integrity metadata rather than a
+signature. This option is not present in the published `v0.10.0-alpha.1`
+archives. See the [bundle publication contract](docs/reporting.md#single-run-report-bundles).
+
 Saved complete assessment JSON files can also be compared without starting a
 scan or making a network request:
 
@@ -86,6 +101,8 @@ and unchanged groups. Disappearance is not verified remediation. See the
 - A bounded, exact-origin web assessment with evidence and completeness records.
 - Human-readable HTML or Markdown and machine-readable JSON or CSV output,
   using the existing report renderer.
+- A single-run development-source bundle containing HTML and JSON rendered
+  from the same completed assessment, with a manifest published last.
 - Offline Markdown, JSON, or standalone HTML comparison of two supported,
   complete assessment JSON documents.
 - Source-level Rust evidence, reasoning, and reporting contracts for an explicit
