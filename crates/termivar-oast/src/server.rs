@@ -1,25 +1,36 @@
 //! Loopback-only Axum transport for the native provider state machine.
 
-use std::{fmt, sync::Arc};
+use std::{
+    fmt,
+    future::Future,
+    io,
+    pin::Pin,
+    sync::Arc,
+    task::{Context, Poll},
+    time::Duration,
+};
 
 use axum::{
     body::{Body, Bytes},
     extract::{rejection::BytesRejection, DefaultBodyLimit, OriginalUri, State},
     http::{
-        header::{AUTHORIZATION, CACHE_CONTROL, CONTENT_TYPE},
-        HeaderMap, HeaderValue, StatusCode,
+        header::{AUTHORIZATION, CACHE_CONTROL, CONNECTION, CONTENT_TYPE},
+        HeaderMap, HeaderValue, Method, StatusCode,
     },
+    middleware::{from_fn_with_state, Next},
     response::{IntoResponse, Response},
     routing::{delete, get, post},
     Router,
 };
 use futures::{stream::FuturesUnordered, StreamExt};
 use hyper::{body::Incoming, server::conn::http1, service::service_fn, Request};
-use hyper_util::rt::TokioIo;
+use hyper_util::rt::{TokioIo, TokioTimer};
 use serde::Serialize;
 use tokio::{
-    net::{TcpListener, TcpStream},
+    io::{AsyncRead, AsyncWrite, ReadBuf},
+    net::TcpListener,
     sync::{Mutex, OwnedSemaphorePermit, Semaphore},
+    time::{sleep, timeout, Instant, Sleep},
 };
 use tower::ServiceExt;
 
@@ -36,6 +47,19 @@ const MANAGEMENT_JSON_MEDIA_TYPE: &str = "application/json";
 const SESSIONS_ROUTE: &str = "/v1/sessions";
 const GENERIC_ERROR_JSON: &[u8] = br#"{"error":"request rejected"}"#;
 
+// Fixed, non-zero backend budgets, independent of provider session expiry.
+// The request budget includes body extraction and waiting for provider state.
+const HEADER_READ_TIMEOUT: Duration = Duration::from_secs(10);
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
+const CONNECTION_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
+const CONNECTION_LIFETIME: Duration = Duration::from_secs(120);
+const _: () = assert!(
+    !HEADER_READ_TIMEOUT.is_zero()
+        && HEADER_READ_TIMEOUT.as_secs() < REQUEST_TIMEOUT.as_secs()
+        && REQUEST_TIMEOUT.as_secs() < CONNECTION_IDLE_TIMEOUT.as_secs()
+        && CONNECTION_IDLE_TIMEOUT.as_secs() < CONNECTION_LIFETIME.as_secs()
+);
+
 #[derive(Clone)]
 struct AppState {
     provider: Arc<Mutex<ProviderState>>,
@@ -51,10 +75,9 @@ impl AppState {
         }
     }
 
-    async fn admit(&self) -> Result<OwnedSemaphorePermit, HttpFailure> {
+    fn admit(&self) -> Result<OwnedSemaphorePermit, HttpFailure> {
         Arc::clone(&self.requests)
-            .acquire_owned()
-            .await
+            .try_acquire_owned()
             .map_err(|_| HttpFailure::unavailable())
     }
 }
@@ -80,6 +103,10 @@ impl fmt::Display for ProviderServerError {
 impl std::error::Error for ProviderServerError {}
 
 fn provider_router(provider: ProviderState) -> Router {
+    router_with_state(AppState::new(provider))
+}
+
+fn router_with_state(state: AppState) -> Router {
     Router::new()
         .route(SESSIONS_ROUTE, post(register))
         .route("/v1/sessions/:session_id/callbacks", post(allocate))
@@ -95,7 +122,59 @@ fn provider_router(provider: ProviderState) -> Router {
         .fallback(not_found)
         .method_not_allowed_fallback(method_not_allowed)
         .layer(DefaultBodyLimit::max(MAX_MANAGEMENT_BODY_BYTES))
-        .with_state(AppState::new(provider))
+        .layer(from_fn_with_state(state.clone(), bound_request))
+        .with_state(state)
+}
+
+async fn bound_request(
+    State(state): State<AppState>,
+    request: Request<Body>,
+    next: Next,
+) -> Response {
+    // This middleware receives an unconsumed body. Admission must precede
+    // Next::run, because Bytes extraction happens before a handler is called.
+    // Fail immediately on saturation: neither a body buffer nor an admission
+    // waiter is allocated. The owned permit drops with this future on every
+    // response, timeout, disconnect, or listener cancellation.
+    let operation = async {
+        let Ok(_permit) = state.admit() else {
+            if is_callback_request(&request) {
+                if let Ok(NativeOastRoute::Callback {
+                    session_id,
+                    callback_id,
+                }) = request.uri().to_string().parse()
+                {
+                    state
+                        .provider
+                        .lock()
+                        .await
+                        .mark_callback_observation_incomplete(&session_id, &callback_id);
+                }
+                return callback_no_content();
+            }
+            return closing_error(StatusCode::SERVICE_UNAVAILABLE);
+        };
+        next.run(request).await
+    };
+    timeout(REQUEST_TIMEOUT, operation)
+        .await
+        .unwrap_or_else(|_| closing_error(StatusCode::REQUEST_TIMEOUT))
+}
+
+fn is_callback_request(request: &Request<Body>) -> bool {
+    let mut segments = request.uri().path().split('/');
+    matches!(*request.method(), Method::GET | Method::HEAD)
+        && matches!(
+            (
+                segments.next(),
+                segments.next(),
+                segments.next(),
+                segments.next(),
+                segments.next(),
+            ),
+            (Some(""), Some("c"), Some(session), Some(callback), None)
+                if !session.is_empty() && !callback.is_empty()
+        )
 }
 
 /// Binds and serves only the exact checked loopback socket in provider state.
@@ -161,14 +240,115 @@ async fn serve_listener(
     }
 }
 
-async fn serve_connection(router: Router, stream: TcpStream) -> Result<(), hyper::Error> {
+async fn serve_connection<T>(router: Router, stream: T) -> Result<(), ProviderServerError>
+where
+    T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
     let service = service_fn(move |request: Request<Incoming>| {
         let router = router.clone();
         async move { router.oneshot(request.map(Body::new)).await }
     });
-    http1::Builder::new()
-        .serve_connection(TokioIo::new(stream), service)
-        .await
+    let mut builder = http1::Builder::new();
+    builder
+        .timer(TokioTimer::new())
+        .header_read_timeout(HEADER_READ_TIMEOUT)
+        .keep_alive(true);
+    // Keep-alive is useful for a local reverse proxy, but never makes a
+    // connection immortal. Dropping this future also drops pending requests.
+    timeout(
+        CONNECTION_LIFETIME,
+        builder.serve_connection(TokioIo::new(IdleIo::new(stream)), service),
+    )
+    .await
+    .map_err(|_| ProviderServerError::Serve)?
+    .map_err(|_| ProviderServerError::Serve)
+}
+
+/// Idle means no actual bytes read or written, not merely repeated polling.
+/// A single timer covers idle keep-alive and stalled response writes; header
+/// and request timers separately cap progress that never completes a request.
+struct IdleIo<T> {
+    inner: T,
+    deadline: Pin<Box<Sleep>>,
+}
+
+impl<T> IdleIo<T> {
+    fn new(inner: T) -> Self {
+        Self {
+            inner,
+            deadline: Box::pin(sleep(CONNECTION_IDLE_TIMEOUT)),
+        }
+    }
+
+    fn check_deadline(&mut self, cx: &mut Context<'_>) -> io::Result<()> {
+        if self.deadline.as_mut().poll(cx).is_ready() {
+            Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "native OAST connection idle timeout",
+            ))
+        } else {
+            Ok(())
+        }
+    }
+
+    fn made_progress(&mut self) {
+        self.deadline
+            .as_mut()
+            .reset(Instant::now() + CONNECTION_IDLE_TIMEOUT);
+    }
+}
+
+impl<T: AsyncRead + Unpin> AsyncRead for IdleIo<T> {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buffer: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        let this = self.get_mut();
+        this.check_deadline(cx)?;
+        let before = buffer.filled().len();
+        let result = Pin::new(&mut this.inner).poll_read(cx, buffer);
+        if matches!(result, Poll::Ready(Ok(()))) && buffer.filled().len() > before {
+            this.made_progress();
+        }
+        result
+    }
+}
+
+impl<T: AsyncWrite + Unpin> AsyncWrite for IdleIo<T> {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buffer: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        let this = self.get_mut();
+        this.check_deadline(cx)?;
+        let result = Pin::new(&mut this.inner).poll_write(cx, buffer);
+        if matches!(result, Poll::Ready(Ok(count)) if count > 0) {
+            this.made_progress();
+        }
+        result
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        let this = self.get_mut();
+        this.check_deadline(cx)?;
+        Pin::new(&mut this.inner).poll_flush(cx)
+    }
+
+    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        let this = self.get_mut();
+        this.check_deadline(cx)?;
+        Pin::new(&mut this.inner).poll_shutdown(cx)
+    }
+}
+
+fn closing_error(status: StatusCode) -> Response {
+    let mut response = generic_error(status);
+    response
+        .headers_mut()
+        .insert(CONNECTION, HeaderValue::from_static("close"));
+    response
 }
 
 async fn register(
@@ -177,7 +357,6 @@ async fn register(
     headers: HeaderMap,
     body: Result<Bytes, BytesRejection>,
 ) -> Result<Response, HttpFailure> {
-    let _permit = state.admit().await?;
     if !matches!(canonical_route(original_uri)?, NativeOastRoute::Register) {
         return Err(HttpFailure::bad_request());
     }
@@ -204,7 +383,6 @@ async fn allocate(
     headers: HeaderMap,
     body: Result<Bytes, BytesRejection>,
 ) -> Result<Response, HttpFailure> {
-    let _permit = state.admit().await?;
     let NativeOastRoute::Allocate { session_id } = canonical_route(original_uri)? else {
         return Err(HttpFailure::bad_request());
     };
@@ -226,7 +404,6 @@ async fn poll(
     headers: HeaderMap,
     body: Result<Bytes, BytesRejection>,
 ) -> Result<Response, HttpFailure> {
-    let _permit = state.admit().await?;
     let NativeOastRoute::Poll { session_id, after } = canonical_route(original_uri)? else {
         return Err(HttpFailure::bad_request());
     };
@@ -248,7 +425,6 @@ async fn cleanup(
     headers: HeaderMap,
     body: Result<Bytes, BytesRejection>,
 ) -> Result<Response, HttpFailure> {
-    let _permit = state.admit().await?;
     let NativeOastRoute::Cleanup { session_id } = canonical_route(original_uri)? else {
         return Err(HttpFailure::bad_request());
     };
@@ -293,14 +469,6 @@ async fn observe_callback(
     callback_id: CallbackId,
     method: CallbackMethod,
 ) -> Response {
-    let Ok(_permit) = state.admit().await else {
-        state
-            .provider
-            .lock()
-            .await
-            .mark_callback_observation_incomplete(&session_id, &callback_id);
-        return callback_no_content();
-    };
     // Every internal disposition, including entropy/capacity failure, is
     // deliberately collapsed to the same public response. Retention failures
     // are sticky in provider state and prevent a later complete poll.
@@ -583,8 +751,11 @@ mod tests {
     };
     use axum::{body::to_bytes, http::Method};
     use serde_json::Value;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use tokio::{
-        io::{AsyncReadExt, AsyncWriteExt},
+        io::{AsyncReadExt, AsyncWriteExt, DuplexStream},
+        net::TcpStream,
+        task::JoinHandle,
         time::{timeout, Duration},
     };
 
@@ -637,6 +808,46 @@ mod tests {
             HeaderValue::from_static("no-store")
         );
         assert_eq!(body_bytes(response).await.as_ref(), GENERIC_ERROR_JSON);
+    }
+
+    fn transport_fixture() -> (
+        AppState,
+        DuplexStream,
+        JoinHandle<Result<(), ProviderServerError>>,
+    ) {
+        let state = AppState::new(test_provider(
+            "127.0.0.1:8080".parse().unwrap(),
+            ProviderLimits::new(1, 1, 1, 1, 1, 5_000, 1).unwrap(),
+        ));
+        let (client, server) = tokio::io::duplex(1024);
+        let task = tokio::spawn(serve_connection(router_with_state(state.clone()), server));
+        (state, client, task)
+    }
+
+    async fn read_fixture_response<T: AsyncRead + Unpin>(client: &mut T) -> String {
+        let mut head = Vec::new();
+        while !head.ends_with(b"\r\n\r\n") {
+            let mut byte = [0_u8; 1];
+            client.read_exact(&mut byte).await.unwrap();
+            head.extend_from_slice(&byte);
+            assert!(head.len() < 4096);
+        }
+        let head = String::from_utf8(head).unwrap();
+        let length = head
+            .lines()
+            .find_map(|line| line.strip_prefix("content-length: "))
+            .map_or(0, |value| value.parse::<usize>().unwrap());
+        assert!(length <= crate::MAX_MANAGEMENT_RESPONSE_BYTES);
+        let mut body = vec![0_u8; length];
+        client.read_exact(&mut body).await.unwrap();
+        format!("{head}{}", String::from_utf8(body).unwrap())
+    }
+
+    fn counted_pending_body(polls: Arc<AtomicUsize>) -> Body {
+        Body::from_stream(futures::stream::poll_fn(move |_| {
+            polls.fetch_add(1, Ordering::SeqCst);
+            Poll::<Option<io::Result<Bytes>>>::Pending
+        }))
     }
 
     #[test]
@@ -826,13 +1037,16 @@ mod tests {
         let state = AppState::new(provider);
         state.requests.close();
 
-        let response = observe_callback(
-            state.clone(),
-            session_id.clone(),
-            callback_id.clone(),
-            CallbackMethod::Get,
-        )
-        .await;
+        let response = router_with_state(state.clone())
+            .oneshot(request(
+                Method::GET,
+                &format!("/c/{session_id}/{callback_id}"),
+                Body::empty(),
+                None,
+                None,
+            ))
+            .await
+            .unwrap();
         assert_eq!(response.status(), StatusCode::NO_CONTENT);
         let page = state
             .provider
@@ -1364,5 +1578,473 @@ mod tests {
         assert!(response.starts_with("HTTP/1.1 404 Not Found\r\n"));
         assert!(response.contains(MANAGEMENT_JSON_MEDIA_TYPE));
         task.abort();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn incomplete_benign_headers_have_a_finite_lifetime() {
+        let router = provider_router(test_provider(
+            "127.0.0.1:8080".parse().unwrap(),
+            ProviderLimits::new(1, 1, 1, 1, 1, 5_000, 1).unwrap(),
+        ));
+        let (mut client, server) = tokio::io::duplex(1024);
+        let task = tokio::spawn(serve_connection(router, server));
+        client
+            .write_all(b"GET /unimplemented HTTP/1.1\r\n")
+            .await
+            .unwrap();
+        tokio::task::yield_now().await;
+        tokio::time::advance(Duration::from_secs(11)).await;
+        tokio::task::yield_now().await;
+        assert!(
+            task.is_finished(),
+            "incomplete headers retained the connection"
+        );
+        assert!(task.await.unwrap().is_err());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn body_admission_precedes_polling_and_timeout_releases_the_permit() {
+        let state = AppState::new(test_provider(
+            "127.0.0.1:8080".parse().unwrap(),
+            ProviderLimits::new(1, 1, 1, 1, 1, 5_000, 1).unwrap(),
+        ));
+        let router = router_with_state(state.clone());
+        let admitted_polls = Arc::new(AtomicUsize::new(0));
+        let waiting = router.clone().oneshot(request(
+            Method::POST,
+            SESSIONS_ROUTE,
+            counted_pending_body(Arc::clone(&admitted_polls)),
+            None,
+            Some(MANAGEMENT_JSON_MEDIA_TYPE),
+        ));
+        tokio::pin!(waiting);
+        assert!(futures::poll!(&mut waiting).is_pending());
+        assert_eq!(state.requests.available_permits(), 0);
+        assert!(admitted_polls.load(Ordering::SeqCst) > 0);
+        // No provider mutex is held while an admitted body is being read.
+        assert!(state.provider.try_lock().is_ok());
+
+        let rejected_polls = Arc::new(AtomicUsize::new(0));
+        let rejected = router
+            .clone()
+            .oneshot(request(
+                Method::POST,
+                SESSIONS_ROUTE,
+                counted_pending_body(Arc::clone(&rejected_polls)),
+                None,
+                None,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(rejected.headers()[CONNECTION], "close");
+        assert_generic(rejected, StatusCode::SERVICE_UNAVAILABLE).await;
+        assert_eq!(rejected_polls.load(Ordering::SeqCst), 0);
+
+        tokio::time::advance(REQUEST_TIMEOUT + Duration::from_secs(1)).await;
+        let expired = waiting.await.unwrap();
+        assert_eq!(expired.headers()[CONNECTION], "close");
+        assert_generic(expired, StatusCode::REQUEST_TIMEOUT).await;
+        assert_eq!(state.requests.available_permits(), 1);
+
+        let healthy = router
+            .oneshot(request(
+                Method::GET,
+                "/unimplemented",
+                Body::empty(),
+                None,
+                None,
+            ))
+            .await
+            .unwrap();
+        assert_generic(healthy, StatusCode::NOT_FOUND).await;
+        assert_eq!(state.requests.available_permits(), 1);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn incomplete_benign_body_closes_transport_and_releases_admission() {
+        let (state, mut client, task) = transport_fixture();
+        client
+            .write_all(
+                b"POST /v1/sessions HTTP/1.1\r\nHost: localhost\r\nContent-Length: 2\r\n\r\n{",
+            )
+            .await
+            .unwrap();
+        tokio::task::yield_now().await;
+        assert_eq!(state.requests.available_permits(), 0);
+        assert!(state.provider.try_lock().is_ok());
+        tokio::time::advance(REQUEST_TIMEOUT + Duration::from_secs(1)).await;
+        let response = read_fixture_response(&mut client).await;
+        assert!(response.starts_with("HTTP/1.1 408 Request Timeout\r\n"));
+        assert!(response.contains("connection: close\r\n"));
+        assert!(response.ends_with(std::str::from_utf8(GENERIC_ERROR_JSON).unwrap()));
+        let mut byte = [0_u8; 1];
+        assert_eq!(client.read(&mut byte).await.unwrap(), 0);
+        assert!(task.await.unwrap().is_ok());
+        assert_eq!(state.requests.available_permits(), 1);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn healthy_body_progress_and_backend_keep_alive_succeed() {
+        let (state, mut client, task) = transport_fixture();
+        let body = serde_json::to_vec(&SessionRequest::new(1_000, 1, 1, 1)).unwrap();
+        let head = format!(
+            "POST /v1/sessions HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
+            std::str::from_utf8(ADMIN).unwrap(),
+            body.len(),
+        );
+        client.write_all(head.as_bytes()).await.unwrap();
+        client.write_all(&body[..1]).await.unwrap();
+        tokio::task::yield_now().await;
+        assert_eq!(state.requests.available_permits(), 0);
+        tokio::time::advance(Duration::from_secs(7)).await;
+        client.write_all(&body[1..]).await.unwrap();
+        assert!(read_fixture_response(&mut client)
+            .await
+            .starts_with("HTTP/1.1 201 Created\r\n"));
+        assert_eq!(state.requests.available_permits(), 1);
+        tokio::time::advance(Duration::from_secs(2)).await;
+        client
+            .write_all(b"GET /unimplemented HTTP/1.1\r\nHost: localhost\r\n\r\n")
+            .await
+            .unwrap();
+        assert!(read_fixture_response(&mut client)
+            .await
+            .starts_with("HTTP/1.1 404 Not Found\r\n"));
+        assert!(!task.is_finished());
+        task.abort();
+        assert!(task.await.unwrap_err().is_cancelled());
+        assert_eq!(state.requests.available_permits(), 1);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn streamed_body_size_limit_stops_reading_and_releases_admission() {
+        let state = AppState::new(test_provider(
+            "127.0.0.1:8080".parse().unwrap(),
+            ProviderLimits::new(1, 1, 1, 1, 1, 5_000, 1).unwrap(),
+        ));
+        let polls = Arc::new(AtomicUsize::new(0));
+        let observed = Arc::clone(&polls);
+        let body = Body::from_stream(futures::stream::poll_fn(move |_| {
+            let index = observed.fetch_add(1, Ordering::SeqCst);
+            let bytes = if index == 0 {
+                Bytes::from(vec![b' '; MAX_MANAGEMENT_BODY_BYTES])
+            } else {
+                Bytes::from_static(b" ")
+            };
+            Poll::Ready(Some(Ok::<_, io::Error>(bytes)))
+        }));
+        let response = router_with_state(state.clone())
+            .oneshot(request(Method::POST, SESSIONS_ROUTE, body, None, None))
+            .await
+            .unwrap();
+        assert_generic(response, StatusCode::PAYLOAD_TOO_LARGE).await;
+        assert_eq!(polls.load(Ordering::SeqCst), 2);
+        assert_eq!(state.requests.available_permits(), 1);
+        assert!(state.provider.try_lock().is_ok());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn connection_cancel_and_peer_disconnect_release_pending_body_permits() {
+        let (state, mut client, task) = transport_fixture();
+        client
+            .write_all(
+                b"POST /v1/sessions HTTP/1.1\r\nHost: localhost\r\nContent-Length: 2\r\n\r\n{",
+            )
+            .await
+            .unwrap();
+        tokio::task::yield_now().await;
+        assert_eq!(state.requests.available_permits(), 0);
+        task.abort();
+        assert!(task.await.unwrap_err().is_cancelled());
+        assert_eq!(state.requests.available_permits(), 1);
+        let mut byte = [0_u8; 1];
+        assert_eq!(client.read(&mut byte).await.unwrap(), 0);
+
+        let (state, mut client, task) = transport_fixture();
+        client
+            .write_all(
+                b"POST /v1/sessions HTTP/1.1\r\nHost: localhost\r\nContent-Length: 2\r\n\r\n{",
+            )
+            .await
+            .unwrap();
+        tokio::task::yield_now().await;
+        assert_eq!(state.requests.available_permits(), 0);
+        drop(client);
+        let _ = task.await.unwrap();
+        assert_eq!(state.requests.available_permits(), 1);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn idle_io_expires_without_bytes_and_progress_renews_its_deadline() {
+        let (mut client, server) = tokio::io::duplex(8);
+        let mut server = IdleIo::new(server);
+        let mut byte = [0_u8; 1];
+        assert!(futures::poll!(Box::pin(server.read(&mut byte))).is_pending());
+        tokio::time::advance(Duration::from_secs(20)).await;
+        client.write_all(b"a").await.unwrap();
+        assert_eq!(server.read(&mut byte).await.unwrap(), 1);
+        tokio::time::advance(Duration::from_secs(20)).await;
+        assert!(futures::poll!(Box::pin(server.read(&mut byte))).is_pending());
+        // A successful write is also real transport progress.
+        server.write_all(b"b").await.unwrap();
+        tokio::time::advance(Duration::from_secs(20)).await;
+        assert!(futures::poll!(Box::pin(server.read(&mut byte))).is_pending());
+        tokio::time::advance(Duration::from_secs(11)).await;
+        assert_eq!(
+            server.read(&mut byte).await.unwrap_err().kind(),
+            io::ErrorKind::TimedOut
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn stalled_writes_and_empty_writes_do_not_extend_idle_lifetime() {
+        let (mut client, server) = tokio::io::duplex(1);
+        let mut server = IdleIo::new(server);
+        server.write_all(b"a").await.unwrap();
+        assert!(futures::poll!(Box::pin(server.write_all(b"b"))).is_pending());
+        tokio::time::advance(Duration::from_secs(20)).await;
+        let mut byte = [0_u8; 1];
+        client.read_exact(&mut byte).await.unwrap();
+        assert_eq!(server.write(b"").await.unwrap(), 0);
+        tokio::time::advance(Duration::from_secs(11)).await;
+        assert_eq!(
+            server.write(b"b").await.unwrap_err().kind(),
+            io::ErrorKind::TimedOut
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn healthy_keep_alive_is_still_bounded_by_absolute_connection_lifetime() {
+        let (state, mut client, task) = transport_fixture();
+        // A handful of sequential benign requests over virtual minutes keeps
+        // both the header and idle budgets fresh without any load generator.
+        for index in 0..15 {
+            if index > 0 {
+                tokio::time::advance(Duration::from_secs(8)).await;
+            }
+            client
+                .write_all(b"GET /unimplemented HTTP/1.1\r\nHost: localhost\r\n\r\n")
+                .await
+                .unwrap();
+            assert!(read_fixture_response(&mut client)
+                .await
+                .starts_with("HTTP/1.1 404 Not Found\r\n"));
+            assert!(!task.is_finished());
+        }
+        client
+            .write_all(
+                b"POST /v1/sessions HTTP/1.1\r\nHost: localhost\r\nContent-Length: 2\r\n\r\n{",
+            )
+            .await
+            .unwrap();
+        tokio::task::yield_now().await;
+        assert_eq!(state.requests.available_permits(), 0);
+        // At 121 seconds the latest request/idle deadline is still in the
+        // future; only the absolute accepted-connection budget has elapsed.
+        tokio::time::advance(Duration::from_secs(9)).await;
+        assert_eq!(task.await.unwrap(), Err(ProviderServerError::Serve));
+        assert_eq!(state.requests.available_permits(), 1);
+        let mut byte = [0_u8; 1];
+        assert_eq!(client.read(&mut byte).await.unwrap(), 0);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn silent_backend_keep_alive_has_a_finite_lifetime() {
+        let (state, mut client, task) = transport_fixture();
+        client
+            .write_all(b"GET /unimplemented HTTP/1.1\r\nHost: localhost\r\n\r\n")
+            .await
+            .unwrap();
+        assert!(read_fixture_response(&mut client)
+            .await
+            .starts_with("HTTP/1.1 404 Not Found\r\n"));
+        // Hyper 1.10.1 also starts its next-header budget on idle keep-alive,
+        // so a silent reused connection may close before the I/O idle bound.
+        tokio::time::advance(HEADER_READ_TIMEOUT + Duration::from_secs(1)).await;
+        assert_eq!(task.await.unwrap(), Err(ProviderServerError::Serve));
+        assert_eq!(state.requests.available_permits(), 1);
+        let mut byte = [0_u8; 1];
+        assert_eq!(client.read(&mut byte).await.unwrap(), 0);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn saturated_callback_routes_remain_constant_and_do_not_read_bodies() {
+        let state = AppState::new(test_provider(
+            "127.0.0.1:8080".parse().unwrap(),
+            ProviderLimits::new(1, 1, 1, 1, 1, 5_000, 1).unwrap(),
+        ));
+        let _held = state.admit().unwrap();
+        let router = router_with_state(state);
+        let polls = Arc::new(AtomicUsize::new(0));
+        for uri in [
+            "/c/not-a-session/not-a-callback",
+            "/c/AAAAAAAAAAAAAAAAAAAAAA/BBBBBBBBBBBBBBBBBBBBBB",
+            "/c/%FF/BBBBBBBBBBBBBBBBBBBBBB",
+        ] {
+            let response = router
+                .clone()
+                .oneshot(request(
+                    Method::GET,
+                    uri,
+                    counted_pending_body(Arc::clone(&polls)),
+                    None,
+                    None,
+                ))
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::NO_CONTENT);
+            assert_eq!(body_bytes(response).await.len(), 0);
+        }
+        assert_eq!(polls.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn listener_cancellation_closes_its_active_backend_connection() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let state = test_provider(
+            address,
+            ProviderLimits::new(1, 1, 1, 1, 1, 5_000, 1).unwrap(),
+        );
+        let task = tokio::spawn(serve_listener(listener, state));
+        let mut client = TcpStream::connect(address).await.unwrap();
+        client
+            .write_all(b"GET /unimplemented HTTP/1.1\r\nHost: localhost\r\n\r\n")
+            .await
+            .unwrap();
+        let mut response = Vec::new();
+        timeout(Duration::from_secs(2), async {
+            while !response.ends_with(GENERIC_ERROR_JSON) {
+                let mut byte = [0_u8; 1];
+                client.read_exact(&mut byte).await.unwrap();
+                response.extend_from_slice(&byte);
+                assert!(response.len() < 4096);
+            }
+        })
+        .await
+        .unwrap();
+        task.abort();
+        assert!(task.await.unwrap_err().is_cancelled());
+        let mut byte = [0_u8; 1];
+        assert_eq!(
+            timeout(Duration::from_secs(2), client.read(&mut byte))
+                .await
+                .unwrap()
+                .unwrap(),
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn header_timeout_frees_the_only_listener_slot_for_a_pending_healthy_request() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let state = test_provider(
+            address,
+            ProviderLimits::new(1, 1, 1, 1, 1, 5_000, 1).unwrap(),
+        );
+        let task = tokio::spawn(serve_listener(listener, state));
+        let mut first = TcpStream::connect(address).await.unwrap();
+        first
+            .write_all(b"GET /unimplemented HTTP/1.1\r\nHost: localhost\r\n\r\n")
+            .await
+            .unwrap();
+        let first_response = timeout(Duration::from_secs(2), read_fixture_response(&mut first))
+            .await
+            .unwrap();
+        assert!(first_response.starts_with("HTTP/1.1 404 Not Found\r\n"));
+        // Completing this response synchronizes with a connection that is
+        // actually served and still occupies the sole keep-alive slot.
+        first
+            .write_all(b"GET /unimplemented HTTP/1.1\r\n")
+            .await
+            .unwrap();
+        let mut second = TcpStream::connect(address).await.unwrap();
+        second
+            .write_all(
+                b"GET /unimplemented HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+            )
+            .await
+            .unwrap();
+        tokio::task::yield_now().await;
+        let mut byte = [0_u8; 1];
+        assert!(futures::poll!(Box::pin(second.read(&mut byte))).is_pending());
+
+        // Freeze only for the explicit deadline transition. Resume before
+        // waiting on OS sockets so automatic time advancement cannot race
+        // readiness delivery for the second connection.
+        tokio::time::pause();
+        tokio::time::advance(HEADER_READ_TIMEOUT + Duration::from_secs(1)).await;
+        tokio::time::resume();
+        assert_eq!(
+            timeout(Duration::from_secs(2), first.read(&mut byte))
+                .await
+                .unwrap()
+                .unwrap(),
+            0,
+            "the incomplete first connection must be closed by its timer"
+        );
+        let mut second_response = Vec::new();
+        timeout(
+            Duration::from_secs(2),
+            second.read_to_end(&mut second_response),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let second_response = String::from_utf8(second_response).unwrap();
+        assert!(second_response.starts_with("HTTP/1.1 404 Not Found\r\n"));
+        assert!(second_response.ends_with(std::str::from_utf8(GENERIC_ERROR_JSON).unwrap()));
+        assert!(!task.is_finished());
+        task.abort();
+        assert!(task.await.unwrap_err().is_cancelled());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn request_timeout_waiting_for_provider_mutex_releases_permit_without_late_mutation() {
+        let state = AppState::new(test_provider(
+            "127.0.0.1:8080".parse().unwrap(),
+            ProviderLimits::new(1, 1, 1, 1, 1, 5_000, 1).unwrap(),
+        ));
+        let router = router_with_state(state.clone());
+        let admin = format!("Bearer {}", std::str::from_utf8(ADMIN).unwrap());
+        let body = serde_json::to_vec(&SessionRequest::new(1_000, 1, 1, 1)).unwrap();
+        let provider_guard = state.provider.lock().await;
+        let before = format!("{provider_guard:?}");
+        let waiting = router.clone().oneshot(request(
+            Method::POST,
+            SESSIONS_ROUTE,
+            body.clone(),
+            Some(&admin),
+            Some(MANAGEMENT_JSON_MEDIA_TYPE),
+        ));
+        tokio::pin!(waiting);
+        assert!(futures::poll!(&mut waiting).is_pending());
+        assert_eq!(state.requests.available_permits(), 0);
+        tokio::time::advance(REQUEST_TIMEOUT + Duration::from_secs(1)).await;
+        let expired = waiting.await.unwrap();
+        assert_eq!(expired.headers()[CONNECTION], "close");
+        assert_generic(expired, StatusCode::REQUEST_TIMEOUT).await;
+        // Admission is released even while the mutex remains unavailable.
+        assert_eq!(state.requests.available_permits(), 1);
+        assert_eq!(format!("{provider_guard:?}"), before);
+        drop(provider_guard);
+        tokio::task::yield_now().await;
+        // Releasing the mutex must not revive the timed-out registration.
+        assert_eq!(format!("{:?}", state.provider.lock().await), before);
+        let healthy = router
+            .oneshot(request(
+                Method::POST,
+                SESSIONS_ROUTE,
+                body,
+                Some(&admin),
+                Some(MANAGEMENT_JSON_MEDIA_TYPE),
+            ))
+            .await
+            .unwrap();
+        // The sole session slot is still free: the cancelled request did not
+        // mutate provider state immediately or after the mutex was released.
+        assert_eq!(healthy.status(), StatusCode::CREATED);
+        assert_eq!(state.requests.available_permits(), 1);
     }
 }

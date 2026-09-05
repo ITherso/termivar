@@ -9,12 +9,19 @@ use zeroize::Zeroize;
 
 const MAX_DUPLICATE_HITS: u32 = u16::MAX as u32;
 const ID_GENERATION_ATTEMPTS: usize = 8;
+// Result retrieval remains available for two minutes after callback acceptance
+// expires. This window is fixed, finite, and does not extend on access.
+const RESULT_RETENTION_MILLIS: u64 = 120_000;
 
 /// One bounded, in-memory, self-hosted callback provider.
 ///
 /// The state has no persistence, background task, target authority, or network
 /// work in `Drop`. All mutation occurs synchronously through the fixed protocol
-/// operations.
+/// operations. Callback acceptance expires at the requested lifetime; results
+/// remain poll-visible (subject to the original poll budget) for a further
+/// 120,000 milliseconds. Valid authenticated registration or authenticated
+/// session management reclaims sessions at or beyond that fixed retention
+/// deadline. Idle providers do not run timers.
 pub struct ProviderState {
     config: ProviderConfig,
     admin_digest: SecretDigest,
@@ -65,15 +72,29 @@ impl ProviderState {
         admin_bearer: &[u8],
         request: SessionRequest,
     ) -> Result<SessionRegistration, ProviderError> {
+        self.register_bearer_at(admin_bearer, request, self.now_millis())
+    }
+
+    fn register_bearer_at(
+        &mut self,
+        admin_bearer: &[u8],
+        request: SessionRequest,
+        now: u64,
+    ) -> Result<SessionRegistration, ProviderError> {
         if !self.admin_digest.matches_admin(admin_bearer) {
             return Err(ProviderError::Unauthorized);
         }
-        let now = self.now_millis();
         let limits = self.config.limits();
         validate_session_request(&request, limits)?;
-        // Expired sessions remain poll-visible until authenticated cleanup, so
-        // they continue to consume the hard retained-session bound. This keeps
-        // sequential expiry from growing the in-memory map without limit.
+        let expires_at_millis = now
+            .checked_add(request.lifetime_ms())
+            .ok_or(ProviderError::InvalidSessionRequest)?;
+        let retain_until_millis = expires_at_millis
+            .checked_add(RESULT_RETENTION_MILLIS)
+            .ok_or(ProviderError::InvalidSessionRequest)?;
+        reclaim_sessions_at(&mut self.sessions, now);
+        // Live sessions and results still inside their retention window both
+        // consume the hard bound. Capacity never evicts either kind early.
         if self.sessions.len() >= usize::from(limits.max_active_sessions()) {
             return Err(ProviderError::SessionCapacityExhausted);
         }
@@ -81,12 +102,10 @@ impl ProviderState {
         let session_id = unique_short_id(&self.sessions)?;
         let session_token = random_session_token()?;
         let token_digest = SecretDigest::session(session_token.expose_bytes());
-        let expires_at_millis = now
-            .checked_add(request.lifetime_ms())
-            .ok_or(ProviderError::InvalidSessionRequest)?;
         let session = SessionState {
             token_digest,
             expires_at_millis,
+            retain_until_millis,
             max_callbacks: request.max_callbacks(),
             max_events: request.max_events(),
             max_polls: request.max_polls(),
@@ -120,8 +139,17 @@ impl ProviderState {
         session_id: &SessionId,
         session_bearer: &[u8],
     ) -> Result<CallbackAllocation, ProviderError> {
-        let now = self.now_millis();
-        let session = authenticated_session_mut(&mut self.sessions, session_id, session_bearer)?;
+        self.allocate_bearer_at(session_id, session_bearer, self.now_millis())
+    }
+
+    fn allocate_bearer_at(
+        &mut self,
+        session_id: &SessionId,
+        session_bearer: &[u8],
+        now: u64,
+    ) -> Result<CallbackAllocation, ProviderError> {
+        let session =
+            authenticated_session_mut(&mut self.sessions, session_id, session_bearer, now)?;
         if now >= session.expires_at_millis {
             return Err(ProviderError::SessionExpired);
         }
@@ -150,9 +178,18 @@ impl ProviderState {
         &mut self,
         session_id: &SessionId,
         callback_id: &CallbackId,
-        _method: CallbackMethod,
+        method: CallbackMethod,
     ) -> Result<CallbackDisposition, ProviderError> {
-        let now = self.now_millis();
+        self.observe_callback_at(session_id, callback_id, method, self.now_millis())
+    }
+
+    fn observe_callback_at(
+        &mut self,
+        session_id: &SessionId,
+        callback_id: &CallbackId,
+        _method: CallbackMethod,
+        now: u64,
+    ) -> Result<CallbackDisposition, ProviderError> {
         let Some(session) = self.sessions.get_mut(session_id) else {
             return Ok(CallbackDisposition::Unknown);
         };
@@ -217,9 +254,19 @@ impl ProviderState {
         session_bearer: &[u8],
         after: EventCursor,
     ) -> Result<PollResponse, ProviderError> {
-        let now = self.now_millis();
+        self.poll_bearer_at(session_id, session_bearer, after, self.now_millis())
+    }
+
+    fn poll_bearer_at(
+        &mut self,
+        session_id: &SessionId,
+        session_bearer: &[u8],
+        after: EventCursor,
+        now: u64,
+    ) -> Result<PollResponse, ProviderError> {
         let page_limit = self.config.limits().max_poll_events_per_response();
-        let session = authenticated_session_mut(&mut self.sessions, session_id, session_bearer)?;
+        let session =
+            authenticated_session_mut(&mut self.sessions, session_id, session_bearer, now)?;
         if session.polls >= session.max_polls {
             return Err(ProviderError::PollBudgetExhausted);
         }
@@ -254,7 +301,9 @@ impl ProviderState {
         ))
     }
 
-    /// Authenticates and removes exactly one session and all of its state.
+    /// Authenticates and explicitly removes one session and all of its state.
+    /// Also performs the same expired-retention maintenance as other management
+    /// operations. A session past its retention deadline is already not found.
     pub fn cleanup(
         &mut self,
         session_id: &SessionId,
@@ -268,15 +317,16 @@ impl ProviderState {
         session_id: &SessionId,
         session_bearer: &[u8],
     ) -> Result<CleanupResponse, ProviderError> {
-        {
-            let session = self
-                .sessions
-                .get(session_id)
-                .ok_or(ProviderError::SessionNotFound)?;
-            if !session.token_digest.matches_session(session_bearer) {
-                return Err(ProviderError::Unauthorized);
-            }
-        }
+        self.cleanup_bearer_at(session_id, session_bearer, self.now_millis())
+    }
+
+    fn cleanup_bearer_at(
+        &mut self,
+        session_id: &SessionId,
+        session_bearer: &[u8],
+        now: u64,
+    ) -> Result<CleanupResponse, ProviderError> {
+        authenticated_session_mut(&mut self.sessions, session_id, session_bearer, now)?;
         self.sessions
             .remove(session_id)
             .ok_or(ProviderError::InternalInvariant)?;
@@ -341,6 +391,7 @@ fn retain_new_event(
 struct SessionState {
     token_digest: SecretDigest,
     expires_at_millis: u64,
+    retain_until_millis: u64,
     max_callbacks: u16,
     max_events: u16,
     max_polls: u16,
@@ -377,14 +428,25 @@ fn authenticated_session_mut<'a>(
     sessions: &'a mut BTreeMap<SessionId, SessionState>,
     session_id: &SessionId,
     candidate: &[u8],
+    now: u64,
 ) -> Result<&'a mut SessionState, ProviderError> {
     let session = sessions
-        .get_mut(session_id)
+        .get(session_id)
         .ok_or(ProviderError::SessionNotFound)?;
     if !session.token_digest.matches_session(candidate) {
         return Err(ProviderError::Unauthorized);
     }
-    Ok(session)
+    reclaim_sessions_at(sessions, now);
+    sessions
+        .get_mut(session_id)
+        .ok_or(ProviderError::SessionNotFound)
+}
+
+fn reclaim_sessions_at(sessions: &mut BTreeMap<SessionId, SessionState>, now: u64) {
+    // ProviderLimits bounds the entire map to at most 256 sessions. A full
+    // sweep is bounded and fair: no ordered-map prefix can starve later IDs.
+    // Removing an entry drops its SecretDigest, which zeroizes itself.
+    sessions.retain(|_, session| now < session.retain_until_millis);
 }
 
 fn validate_session_request(
@@ -451,8 +513,6 @@ fn random_event_id() -> Result<EventId, ProviderError> {
 mod tests {
     use super::*;
     use crate::ProviderLimits;
-    use std::thread;
-    use std::time::Duration;
 
     const ADMIN: &[u8] = b"ADMIN-TOKEN-MUST-NOT-LEAK-4F291DB7";
 
@@ -477,8 +537,31 @@ mod tests {
             .unwrap()
     }
 
+    fn register_at(state: &mut ProviderState, lifetime_ms: u64, now: u64) -> SessionRegistration {
+        state
+            .register_bearer_at(ADMIN, SessionRequest::new(lifetime_ms, 3, 3, 4), now)
+            .unwrap()
+    }
+
     fn session_token(registration: SessionRegistration) -> SessionToken {
         registration.take_session_token()
+    }
+
+    #[test]
+    fn abandoned_registration_releases_capacity_after_finite_retention() {
+        let limits = ProviderLimits::new(1, 1, 1, 1, 1, 10, 1).unwrap();
+        let mut state = state_with_limits(limits);
+        let request = SessionRequest::new(10, 1, 1, 1);
+        // The reply, including its cleanup credential, is lost by the caller.
+        drop(state.register_bearer_at(ADMIN, request, 0).unwrap());
+        assert!(matches!(
+            state.register_bearer_at(ADMIN, request, 10 + RESULT_RETENTION_MILLIS - 1),
+            Err(ProviderError::SessionCapacityExhausted)
+        ));
+        assert!(state
+            .register_bearer_at(ADMIN, request, 10 + RESULT_RETENTION_MILLIS)
+            .is_ok());
+        assert_eq!(state.sessions.len(), 1);
     }
 
     #[test]
@@ -555,44 +638,314 @@ mod tests {
     #[test]
     fn expiry_prevents_allocation_but_remains_poll_visible() {
         let mut state = state(25);
-        let registration = register(&mut state, 1);
+        let registration = register_at(&mut state, 10, 0);
         let session_id = registration.session_id().clone();
         let token = session_token(registration);
-        thread::sleep(Duration::from_millis(3));
+        let bearer = token.expose_bytes();
+        let allocation = state.allocate_bearer_at(&session_id, bearer, 9).unwrap();
+        assert_eq!(
+            state
+                .observe_callback_at(
+                    &session_id,
+                    allocation.callback_id(),
+                    CallbackMethod::Get,
+                    9
+                )
+                .unwrap(),
+            CallbackDisposition::Recorded
+        );
         assert!(matches!(
-            state.allocate(&session_id, &token),
+            state.allocate_bearer_at(&session_id, bearer, 10),
             Err(ProviderError::SessionExpired)
         ));
-        assert!(state
-            .poll(&session_id, &token, EventCursor::default())
-            .unwrap()
-            .expired());
-        assert!(state.cleanup(&session_id, &token).unwrap().removed());
+        assert_eq!(
+            state
+                .observe_callback_at(
+                    &session_id,
+                    allocation.callback_id(),
+                    CallbackMethod::Head,
+                    10
+                )
+                .unwrap(),
+            CallbackDisposition::Expired
+        );
+        for now in [10, 10 + RESULT_RETENTION_MILLIS - 1] {
+            let page = state
+                .poll_bearer_at(&session_id, bearer, EventCursor::default(), now)
+                .unwrap();
+            assert!(page.expired());
+            assert!(page.complete());
+            assert_eq!(page.events().len(), 1);
+            assert_eq!(page.events()[0].duplicate_count(), 0);
+        }
+        assert_eq!(
+            state.poll_bearer_at(
+                &session_id,
+                bearer,
+                EventCursor::default(),
+                10 + RESULT_RETENTION_MILLIS,
+            ),
+            Err(ProviderError::SessionNotFound)
+        );
+        assert!(state.sessions.is_empty());
+        assert_eq!(
+            state
+                .observe_callback_at(
+                    &session_id,
+                    allocation.callback_id(),
+                    CallbackMethod::Get,
+                    10 + RESULT_RETENTION_MILLIS,
+                )
+                .unwrap(),
+            CallbackDisposition::Unknown
+        );
     }
 
     #[test]
-    fn expired_retained_sessions_consume_capacity_until_cleanup() {
+    fn active_and_retained_sessions_consume_capacity_until_cleanup_or_retention() {
         let mut state = state(25);
-        let first = register(&mut state, 1);
-        let second = register(&mut state, 1);
+        let first = register_at(&mut state, 10, 0);
+        let second = register_at(&mut state, 10, 0);
         let first_id = first.session_id().clone();
         let first_token = session_token(first);
         let _second_token = session_token(second);
-        thread::sleep(Duration::from_millis(3));
-        assert!(matches!(
-            state.register(
-                &AdminToken::new(ADMIN.to_vec()).unwrap(),
-                SessionRequest::new(1, 1, 1, 1)
-            ),
-            Err(ProviderError::SessionCapacityExhausted)
-        ));
-        state.cleanup(&first_id, &first_token).unwrap();
+        for now in [0, 9, 10, 10 + RESULT_RETENTION_MILLIS - 1] {
+            assert!(matches!(
+                state.register_bearer_at(ADMIN, SessionRequest::new(10, 1, 1, 1), now),
+                Err(ProviderError::SessionCapacityExhausted)
+            ));
+            assert_eq!(state.sessions.len(), 2);
+        }
+        state
+            .cleanup_bearer_at(
+                &first_id,
+                first_token.expose_bytes(),
+                10 + RESULT_RETENTION_MILLIS - 1,
+            )
+            .unwrap();
         assert!(state
-            .register(
-                &AdminToken::new(ADMIN.to_vec()).unwrap(),
+            .register_bearer_at(
+                ADMIN,
                 SessionRequest::new(1, 1, 1, 1),
+                10 + RESULT_RETENTION_MILLIS - 1,
             )
             .is_ok());
+    }
+
+    #[test]
+    fn expired_retention_is_not_found_on_each_direct_management_operation() {
+        for operation in 0..3 {
+            let mut state = state(25);
+            let registration = register_at(&mut state, 10, 0);
+            let session_id = registration.session_id().clone();
+            let token = session_token(registration);
+            let bearer = token.expose_bytes();
+            let now = 10 + RESULT_RETENTION_MILLIS;
+            let result = match operation {
+                0 => state
+                    .allocate_bearer_at(&session_id, bearer, now)
+                    .map(|_| ()),
+                1 => state
+                    .poll_bearer_at(&session_id, bearer, EventCursor::default(), now)
+                    .map(|_| ()),
+                _ => state
+                    .cleanup_bearer_at(&session_id, bearer, now)
+                    .map(|_| ()),
+            };
+            assert_eq!(result, Err(ProviderError::SessionNotFound));
+            assert!(state.sessions.is_empty());
+            assert_eq!(
+                state.poll_bearer_at(&session_id, bearer, EventCursor::default(), now + 1),
+                Err(ProviderError::SessionNotFound)
+            );
+            assert!(state.sessions.is_empty());
+        }
+    }
+
+    #[test]
+    fn only_authenticated_management_reclaims_abandoned_sessions() {
+        for operation in 0..3 {
+            let mut state = state(crate::HARD_MAX_SESSION_LIFETIME_MILLIS);
+            let abandoned = register_at(&mut state, 10, 0);
+            let abandoned_id = abandoned.session_id().clone();
+            drop(abandoned);
+            let live = register_at(&mut state, crate::HARD_MAX_SESSION_LIFETIME_MILLIS, 20);
+            let live_id = live.session_id().clone();
+            let live_token = session_token(live);
+            let now = 10 + RESULT_RETENTION_MILLIS;
+            assert!(matches!(
+                state.register_bearer_at(b"invalid", SessionRequest::new(10, 1, 1, 1), now),
+                Err(ProviderError::Unauthorized)
+            ));
+            assert!(matches!(
+                state.allocate_bearer_at(&live_id, b"invalid", now),
+                Err(ProviderError::Unauthorized)
+            ));
+            assert_eq!(
+                state.poll_bearer_at(&live_id, b"invalid", EventCursor::default(), now),
+                Err(ProviderError::Unauthorized)
+            );
+            assert_eq!(
+                state.cleanup_bearer_at(&live_id, b"invalid", now),
+                Err(ProviderError::Unauthorized)
+            );
+            assert_eq!(
+                state
+                    .observe_callback_at(
+                        &abandoned_id,
+                        &CallbackId::from_random([19; 16]).unwrap(),
+                        CallbackMethod::Get,
+                        now,
+                    )
+                    .unwrap(),
+                CallbackDisposition::Expired
+            );
+            assert_eq!(state.sessions.len(), 2);
+            let bearer = live_token.expose_bytes();
+            match operation {
+                0 => {
+                    state.allocate_bearer_at(&live_id, bearer, now).unwrap();
+                },
+                1 => {
+                    let page = state
+                        .poll_bearer_at(&live_id, bearer, EventCursor::default(), now)
+                        .unwrap();
+                    assert!(!page.expired());
+                },
+                _ => {
+                    assert!(state
+                        .cleanup_bearer_at(&live_id, bearer, now)
+                        .unwrap()
+                        .removed());
+                },
+            }
+            assert!(!state.sessions.contains_key(&abandoned_id));
+            assert_eq!(state.sessions.len(), usize::from(operation != 2));
+        }
+    }
+
+    #[test]
+    fn hard_bounded_sweep_reclaims_every_eligible_session_and_preserves_other_results() {
+        let limits = ProviderLimits::new(256, 3, 3, 4, 2, 120_000, 8).unwrap();
+        let mut state = state_with_limits(limits);
+        for _ in 0..254 {
+            drop(register_at(&mut state, 10, 0));
+        }
+        let live = register_at(&mut state, 120_000, 20);
+        let live_id = live.session_id().clone();
+        let live_token = session_token(live);
+        let retained = register_at(&mut state, 10, 20);
+        let retained_id = retained.session_id().clone();
+        let retained_token = session_token(retained);
+        let callback = state
+            .allocate_bearer_at(&retained_id, retained_token.expose_bytes(), 20)
+            .unwrap();
+        state
+            .observe_callback_at(
+                &retained_id,
+                callback.callback_id(),
+                CallbackMethod::Get,
+                20,
+            )
+            .unwrap();
+        assert_eq!(state.sessions.len(), 256);
+        let now = 10 + RESULT_RETENTION_MILLIS;
+        assert!(!state
+            .poll_bearer_at(
+                &live_id,
+                live_token.expose_bytes(),
+                EventCursor::default(),
+                now
+            )
+            .unwrap()
+            .expired());
+        // One authenticated request examines the entire hard-bounded map,
+        // regardless of the live/retained IDs' positions in its sort order.
+        assert_eq!(state.sessions.len(), 2);
+        let page = state
+            .poll_bearer_at(
+                &retained_id,
+                retained_token.expose_bytes(),
+                EventCursor::default(),
+                now,
+            )
+            .unwrap();
+        assert!(page.expired());
+        assert!(page.complete());
+        assert_eq!(page.events().len(), 1);
+        assert_eq!(page.events()[0].callback_id(), callback.callback_id());
+        for _ in 0..254 {
+            drop(register_at(&mut state, 10, now));
+        }
+        assert_eq!(state.sessions.len(), 256);
+    }
+
+    #[test]
+    fn explicit_cleanup_is_authenticated_before_and_after_acceptance_expiry() {
+        for now in [9, 10, 10 + RESULT_RETENTION_MILLIS - 1] {
+            let mut state = state(25);
+            let registration = register_at(&mut state, 10, 0);
+            let session_id = registration.session_id().clone();
+            let token = session_token(registration);
+            assert_eq!(
+                state.cleanup_bearer_at(&session_id, b"invalid", now),
+                Err(ProviderError::Unauthorized)
+            );
+            assert_eq!(state.sessions.len(), 1);
+            assert!(state
+                .cleanup_bearer_at(&session_id, token.expose_bytes(), now)
+                .unwrap()
+                .removed());
+            assert!(state.sessions.is_empty());
+            assert_eq!(
+                state.cleanup_bearer_at(&session_id, token.expose_bytes(), now),
+                Err(ProviderError::SessionNotFound)
+            );
+        }
+    }
+
+    #[test]
+    fn acceptance_and_retention_deadlines_use_checked_arithmetic() {
+        let mut state = state(25);
+        let request = SessionRequest::new(10, 1, 1, 4);
+        let latest_valid = u64::MAX - RESULT_RETENTION_MILLIS - 10;
+        let registration = state
+            .register_bearer_at(ADMIN, request, latest_valid)
+            .unwrap();
+        let session_id = registration.session_id().clone();
+        let token = session_token(registration);
+        let session = state.sessions.get(&session_id).unwrap();
+        assert_eq!(
+            session.expires_at_millis,
+            u64::MAX - RESULT_RETENTION_MILLIS
+        );
+        assert_eq!(session.retain_until_millis, u64::MAX);
+        for now in [latest_valid + 1, u64::MAX - 9, u64::MAX] {
+            assert!(matches!(
+                state.register_bearer_at(ADMIN, request, now),
+                Err(ProviderError::InvalidSessionRequest)
+            ));
+            assert_eq!(state.sessions.len(), 1);
+        }
+        assert!(state
+            .poll_bearer_at(
+                &session_id,
+                token.expose_bytes(),
+                EventCursor::default(),
+                u64::MAX - 1,
+            )
+            .unwrap()
+            .expired());
+        assert_eq!(
+            state.poll_bearer_at(
+                &session_id,
+                token.expose_bytes(),
+                EventCursor::default(),
+                u64::MAX,
+            ),
+            Err(ProviderError::SessionNotFound)
+        );
+        assert!(state.sessions.is_empty());
     }
 
     #[test]

@@ -2,8 +2,9 @@
 
 `termivar-oast` is an unpublished, self-hosted auxiliary service for receiving
 bounded HTTP callbacks. It is not a scanner, does not select targets or
-parameters, and cannot create assessment evidence, findings, or reports. No
-Termivar scan path uses the provider in this foundation release.
+parameters, and cannot create assessment evidence, findings, or reports. A
+separately gated scanner adapter can use this service under narrowing host
+authority; the provider itself owns no target authority.
 
 ## Security and deployment model
 
@@ -21,8 +22,9 @@ AES, or Interactsh-compatible callback envelope. A high-entropy administrator
 Bearer token authorizes only session creation. Each session receives a fresh
 high-entropy Bearer token, delivered once, for callback allocation, polling,
 and cleanup. Secret wrapper types are move-only, redacted, zeroized, and do not
-implement serialization; the session token crosses only the registration
-response's narrow wire-construction boundary. Provider state retains only
+implement serialization. The session token necessarily crosses the private
+registration response and subsequent authenticated management-request header
+boundaries. Provider state retains only
 domain-separated SHA-256 token digests compared in constant time.
 
 The provider administrator token is loaded from exactly one of:
@@ -78,27 +80,75 @@ authority.
 
 For a valid allocated callback, the provider retains only opaque random event,
 session, and callback identifiers, the `HTTP` protocol class, a monotonic
-cursor, a bounded duplicate count, and internal expiry state. It immediately
-discards the source address, port, URL, query, headers, cookies, body, user
-agent, time, TLS details, and reverse-proxy metadata. Unknown, expired, or
+cursor, a bounded duplicate count, and internal expiry state. Stored events do
+not include the source address, port, URL, query, headers, cookies, body, user
+agent, time, TLS details, or reverse-proxy metadata. This is a retained-state
+guarantee, not a claim that transient HTTP buffers contain none of those values.
+Unknown, expired, or
 deleted callback identities are not recorded.
 
 State lives only in checked, bounded in-memory collections. There is no
 database, filesystem persistence, session serialization, background cleanup,
-or network work in `Drop`. Cleanup is an explicit authenticated operation and
-removes the session's token digest, callbacks, and events without affecting
-another session.
+or network work in `Drop`. Explicit authenticated cleanup removes the session's
+token digest, callbacks, and events without affecting another session.
+
+Acceptance expiry and result retention are separate. Callbacks stop being
+accepted at the declared session expiry. Existing events remain pollable with
+the session credential and remaining poll allowance for a further 120 seconds,
+up to but not including the retention deadline. These retained sessions still
+count against capacity; neither live sessions nor retained results are evicted
+early to admit another registration.
+
+Valid administrator-authenticated registration, or authenticated session
+allocation/poll/cleanup, triggers lazy reclamation over at most the existing
+256 retained sessions. Invalid registration input does not trigger a sweep.
+This recovers abandoned sessions, including
+when the registration response and its cleanup credential were lost. The sweep
+is bounded and visits every retained entry, without a starvation-prone cursor.
+Idle state is not physically erased at its deadline: removal occurs on later
+authenticated management activity or provider drop. Removal zeroizes the owned
+secret digest. A reclaimed session receives the existing `SessionNotFound`
+result and generic HTTP error; callback responses remain non-reflective and
+cannot resurrect state. Invalid credentials do not trigger maintenance.
+
+## HTTP resource lifetimes
+
+The loopback HTTP/1 backend uses fixed, checked finite limits:
+
+| Boundary | Limit | Scope |
+| --- | --- | --- |
+| Header read | 10 seconds | Hyper timer, including the next keep-alive request |
+| Request | 15 seconds | Admission, body extraction, state wait and handler |
+| I/O inactivity | 30 seconds | No actual bytes read or written |
+| Connection lifetime | 120 seconds | Absolute, regardless of ongoing progress |
+
+Admission is immediate and precedes body extraction. Saturation does not create
+an admission queue or read a management body. The existing 64 KiB body ceiling
+still applies while streaming. No provider-state mutex is held while reading
+the network body. Owned permits and connection futures are dropped on timeout,
+disconnect, cancellation or listener shutdown; there is no detached task.
+
+Healthy requests can reuse a connection. A silent keep-alive connection can
+hit the header timeout before the outer inactivity limit. An operator's reverse
+proxy must tolerate ordinary backend connection rotation; clients must not
+silently retry management operations whose completion is unknown. Request
+timeout uses a generic `408` response with connection closure; transport/header
+timeouts can close without an application response. Saturated management
+requests use generic `503` with closure. Callback paths retain the generic
+non-reflective `204` behavior on saturation. Existing successful protocol and
+body-limit responses are unchanged.
 
 ## Hard bounds
 
 V1 enforces named ceilings at or below:
 
-- 256 active sessions;
+- 256 retained sessions (live and expired-with-results combined);
 - 8 callbacks per session;
 - 64 accepted events per session;
 - 32 polls per session;
 - 32 events per poll response;
-- 120 seconds per session;
+- 120 seconds of callback acceptance per session;
+- 120 further seconds of result retention;
 - 256 concurrently admitted loopback requests;
 - 64 KiB per management request body;
 - 256 KiB per management response;

@@ -1817,14 +1817,31 @@ fn server_transport_contract_violations(source: &str) -> Vec<String> {
     let required_once = [
         "letpermits=usize::from(provider.max_concurrent_requests());",
         "Semaphore::new(permits)",
-        "Arc::clone(&self.requests).acquire_owned().await",
+        "Arc::clone(&self.requests).try_acquire_owned()",
+        "constHEADER_READ_TIMEOUT:Duration=Duration::from_secs(10);",
+        "constREQUEST_TIMEOUT:Duration=Duration::from_secs(15);",
+        "constCONNECTION_IDLE_TIMEOUT:Duration=Duration::from_secs(30);",
+        "constCONNECTION_LIFETIME:Duration=Duration::from_secs(120);",
+        ".layer(DefaultBodyLimit::max(MAX_MANAGEMENT_BODY_BYTES)).layer(from_fn_with_state(state.clone(),bound_request)).with_state(state)",
+        "asyncfnbound_request(State(state):State<AppState>,request:Request<Body>,next:Next,)->Response{",
+        "letOk(_permit)=state.admit()else{",
+        "next.run(request).await",
+        "timeout(REQUEST_TIMEOUT,operation).await.unwrap_or_else(|_|closing_error(StatusCode::REQUEST_TIMEOUT))",
+        ".insert(CONNECTION,HeaderValue::from_static(\"close\"));",
         "letconnection_limit=usize::from(provider.max_concurrent_requests());",
         "letmutconnections=FuturesUnordered::new();",
         "ifconnections.len()>=connection_limit{let_=connections.next().await;continue;}",
         "ifconnections.is_empty(){",
         "tokio::select!{",
         "_=connections.next()=>{}",
-        "http1::Builder::new().serve_connection(TokioIo::new(stream),service).await",
+        "letmutbuilder=http1::Builder::new();",
+        "builder.timer(TokioTimer::new()).header_read_timeout(HEADER_READ_TIMEOUT).keep_alive(true);",
+        "timeout(CONNECTION_LIFETIME,builder.serve_connection(TokioIo::new(IdleIo::new(stream)),service),).await",
+        "deadline:Box::pin(sleep(CONNECTION_IDLE_TIMEOUT))",
+        "ifself.deadline.as_mut().poll(cx).is_ready(){",
+        ".reset(Instant::now()+CONNECTION_IDLE_TIMEOUT);",
+        "ifmatches!(result,Poll::Ready(Ok(())))&&buffer.filled().len()>before{this.made_progress();}",
+        "ifmatches!(result,Poll::Ready(Ok(count))ifcount>0){this.made_progress();}",
     ];
     let mut violations = Vec::new();
     for required in required_once {
@@ -1840,6 +1857,13 @@ fn server_transport_contract_violations(source: &str) -> Vec<String> {
             "connections.push(serve_connection(router.clone(),stream));",
             2,
         ),
+        (".try_acquire_owned()", 1),
+        ("state.admit()", 1),
+        (".header_read_timeout(", 1),
+        (".timer(", 1),
+        (".keep_alive(", 1),
+        ("this.check_deadline(cx)?;", 4),
+        ("this.made_progress();", 2),
     ] {
         if compact.matches(required).count() != count {
             violations.push(format!(
@@ -1848,10 +1872,16 @@ fn server_transport_contract_violations(source: &str) -> Vec<String> {
         }
     }
     for forbidden in [
-        "try_acquire",
+        ".acquire_owned(",
+        ".acquire(",
+        ".try_acquire(",
+        ".header_read_timeout(None)",
+        ".keep_alive(false)",
         "axum::serve",
         "hyper::Server",
         "tokio::spawn",
+        "spawn_blocking",
+        "thread::spawn",
     ] {
         if compact.contains(forbidden) {
             violations.push(format!(
@@ -1859,7 +1889,74 @@ fn server_transport_contract_violations(source: &str) -> Vec<String> {
             ));
         }
     }
+    if !admission_precedes_body_dispatch(source) {
+        violations.push(format!(
+            "{PACKAGE} request middleware must acquire and retain its permit before dispatching the unconsumed body"
+        ));
+    }
     violations
+}
+
+fn admission_precedes_body_dispatch(source: &str) -> bool {
+    let Ok(syntax) = syn::parse_file(source) else {
+        return false;
+    };
+    let Some(function) = syntax.items.iter().find_map(|item| match item {
+        Item::Fn(function) if function.sig.ident == "bound_request" => Some(function),
+        _ => None,
+    }) else {
+        return false;
+    };
+    // Require a single operation future whose first statement owns admission
+    // and whose tail dispatches the untouched body. This rejects early body
+    // reads, moved admission, or a permit dropped before handler extraction.
+    let [syn::Stmt::Local(operation), syn::Stmt::Expr(_, None)] = function.block.stmts.as_slice()
+    else {
+        return false;
+    };
+    let syn::Pat::Ident(binding) = &operation.pat else {
+        return false;
+    };
+    if binding.ident != "operation" {
+        return false;
+    }
+    let Some(initializer) = &operation.init else {
+        return false;
+    };
+    let syn::Expr::Async(operation) = initializer.expr.as_ref() else {
+        return false;
+    };
+    let [syn::Stmt::Local(admission), syn::Stmt::Expr(syn::Expr::Await(dispatch), None)] =
+        operation.block.stmts.as_slice()
+    else {
+        return false;
+    };
+    let syn::Pat::TupleStruct(pattern) = &admission.pat else {
+        return false;
+    };
+    if !pattern.path.is_ident("Ok")
+        || !matches!(pattern.elems.first(), Some(syn::Pat::Ident(permit)) if permit.ident == "_permit")
+        || pattern.elems.len() != 1
+    {
+        return false;
+    }
+    let Some(initializer) = &admission.init else {
+        return false;
+    };
+    let syn::Expr::MethodCall(admit) = initializer.expr.as_ref() else {
+        return false;
+    };
+    let syn::Expr::MethodCall(run) = dispatch.base.as_ref() else {
+        return false;
+    };
+    initializer.diverge.is_some()
+        && admit.method == "admit"
+        && path_expression_name(&admit.receiver).as_deref() == Some("state")
+        && admit.args.is_empty()
+        && run.method == "run"
+        && path_expression_name(&run.receiver).as_deref() == Some("next")
+        && run.args.len() == 1
+        && run.args.first().and_then(path_expression_name).as_deref() == Some("request")
 }
 
 fn compact_whitespace(source: &str) -> String {
@@ -2428,7 +2525,37 @@ mod tests {
 
     fn valid_server_source() -> &'static str {
         r#"
-            fn provider_router(provider: ProviderState) -> Router { todo!() }
+            const HEADER_READ_TIMEOUT: Duration = Duration::from_secs(10);
+            const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
+            const CONNECTION_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
+            const CONNECTION_LIFETIME: Duration = Duration::from_secs(120);
+            fn provider_router(provider: ProviderState) -> Router {
+                let state = AppState::new(provider);
+                Router::new()
+                    .layer(DefaultBodyLimit::max(MAX_MANAGEMENT_BODY_BYTES))
+                    .layer(from_fn_with_state(state.clone(), bound_request))
+                    .with_state(state)
+            }
+            async fn bound_request(
+                State(state): State<AppState>,
+                request: Request<Body>,
+                next: Next,
+            ) -> Response {
+                let operation = async {
+                    let Ok(_permit) = state.admit() else {
+                        return closing_error(StatusCode::SERVICE_UNAVAILABLE);
+                    };
+                    next.run(request).await
+                };
+                timeout(REQUEST_TIMEOUT, operation)
+                    .await
+                    .unwrap_or_else(|_| closing_error(StatusCode::REQUEST_TIMEOUT))
+            }
+            fn closing_error(status: StatusCode) -> Response {
+                let mut response = generic_error(status);
+                response.headers_mut().insert(CONNECTION, HeaderValue::from_static("close"));
+                response
+            }
             pub async fn serve_provider(provider: ProviderState) -> Result<(), Error> { todo!() }
             #[cfg(feature = "test-support")]
             #[doc(hidden)]
@@ -2460,7 +2587,14 @@ mod tests {
             }
             async fn serve_connection(router: Router, stream: TcpStream) -> Result<(), Error> {
                 let service = service_fn();
-                http1::Builder::new().serve_connection(TokioIo::new(stream), service).await
+                let mut builder = http1::Builder::new();
+                builder.timer(TokioTimer::new())
+                    .header_read_timeout(HEADER_READ_TIMEOUT)
+                    .keep_alive(true);
+                timeout(
+                    CONNECTION_LIFETIME,
+                    builder.serve_connection(TokioIo::new(IdleIo::new(stream)), service),
+                ).await.map_err(|_| Error)?
             }
             struct AppState { requests: Semaphore }
             impl AppState {
@@ -2468,8 +2602,55 @@ mod tests {
                     let permits = usize::from(provider.max_concurrent_requests());
                     Self { requests: Semaphore::new(permits) }
                 }
-                async fn admit(&self) {
-                    Arc::clone(&self.requests).acquire_owned().await;
+                fn admit(&self) {
+                    Arc::clone(&self.requests).try_acquire_owned();
+                }
+            }
+            struct IdleIo<T> { inner: T, deadline: Pin<Box<Sleep>> }
+            impl<T> IdleIo<T> {
+                fn new(inner: T) -> Self {
+                    Self { inner, deadline: Box::pin(sleep(CONNECTION_IDLE_TIMEOUT)) }
+                }
+                fn check_deadline(&mut self, cx: &mut Context<'_>) -> io::Result<()> {
+                    if self.deadline.as_mut().poll(cx).is_ready() {
+                        Err(io::Error::new(io::ErrorKind::TimedOut, "idle"))
+                    } else { Ok(()) }
+                }
+                fn made_progress(&mut self) {
+                    self.deadline.as_mut().reset(Instant::now() + CONNECTION_IDLE_TIMEOUT);
+                }
+            }
+            impl<T: AsyncRead + Unpin> AsyncRead for IdleIo<T> {
+                fn poll_read(self: Pin<&mut Self>, cx: &mut Context<'_>, buffer: &mut ReadBuf<'_>) -> Poll<io::Result<()>> {
+                    let this = self.get_mut();
+                    this.check_deadline(cx)?;
+                    let before = buffer.filled().len();
+                    let result = Pin::new(&mut this.inner).poll_read(cx, buffer);
+                    if matches!(result, Poll::Ready(Ok(()))) && buffer.filled().len() > before {
+                        this.made_progress();
+                    }
+                    result
+                }
+            }
+            impl<T: AsyncWrite + Unpin> AsyncWrite for IdleIo<T> {
+                fn poll_write(self: Pin<&mut Self>, cx: &mut Context<'_>, buffer: &[u8]) -> Poll<io::Result<usize>> {
+                    let this = self.get_mut();
+                    this.check_deadline(cx)?;
+                    let result = Pin::new(&mut this.inner).poll_write(cx, buffer);
+                    if matches!(result, Poll::Ready(Ok(count)) if count > 0) {
+                        this.made_progress();
+                    }
+                    result
+                }
+                fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+                    let this = self.get_mut();
+                    this.check_deadline(cx)?;
+                    Pin::new(&mut this.inner).poll_flush(cx)
+                }
+                fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+                    let this = self.get_mut();
+                    this.check_deadline(cx)?;
+                    Pin::new(&mut this.inner).poll_shutdown(cx)
                 }
             }
         "#
@@ -2668,11 +2849,187 @@ mod tests {
                 valid_server_source()
             ),
             valid_server_source().replace(
-                "http1::Builder::new().serve_connection(TokioIo::new(stream), service).await",
+                "builder.serve_connection(TokioIo::new(IdleIo::new(stream)), service)",
                 "axum::serve(listener, router).await",
+            ),
+            format!(
+                "{}\nasync fn escape() {{ connections.push(serve_connection(router.clone(), stream)); }}",
+                valid_server_source()
             ),
         ] {
             assert!(!server_transport_contract_violations(&mutation).is_empty());
+        }
+    }
+
+    #[test]
+    fn connection_deadline_and_timer_mutations_fail_closed() {
+        let source = valid_server_source();
+        for (before, after) in [
+            ("Duration::from_secs(10)", "Duration::ZERO"),
+            ("Duration::from_secs(15)", "Duration::from_secs(16)"),
+            ("Duration::from_secs(30)", "Duration::from_secs(300)"),
+            ("Duration::from_secs(120)", "Duration::from_secs(1200)"),
+            (".timer(TokioTimer::new())", ""),
+            (".header_read_timeout(HEADER_READ_TIMEOUT)", ""),
+            (
+                ".header_read_timeout(HEADER_READ_TIMEOUT)",
+                ".header_read_timeout(None)",
+            ),
+            (
+                ".header_read_timeout(HEADER_READ_TIMEOUT)",
+                ".header_read_timeout(HEADER_READ_TIMEOUT).header_read_timeout(None)",
+            ),
+            (".keep_alive(true)", ".keep_alive(false)"),
+            ("CONNECTION_LIFETIME,", "REQUEST_TIMEOUT,"),
+            ("IdleIo::new(stream)", "stream"),
+            ("sleep(CONNECTION_IDLE_TIMEOUT)", "sleep(Duration::MAX)"),
+            ("this.check_deadline(cx)?;", ""),
+            (
+                "buffer.filled().len() > before",
+                "buffer.filled().len() >= before",
+            ),
+            ("if count > 0", "if count >= 0"),
+            (
+                "reset(Instant::now() + CONNECTION_IDLE_TIMEOUT)",
+                "reset(Instant::now() + CONNECTION_LIFETIME)",
+            ),
+        ] {
+            assert!(
+                source.contains(before),
+                "missing fixture mutation site: {before}"
+            );
+            let mutation = source.replace(before, after);
+            assert!(
+                !server_transport_contract_violations(&mutation).is_empty(),
+                "deadline mutation unexpectedly passed: {before} -> {after}"
+            );
+        }
+    }
+
+    #[test]
+    fn request_admission_and_body_limit_mutations_fail_closed() {
+        let source = valid_server_source();
+        for (before, after) in [
+            (".try_acquire_owned()", ".acquire_owned().await"),
+            (".try_acquire_owned()", ".try_acquire()"),
+            (
+                ".layer(from_fn_with_state(state.clone(), bound_request))",
+                "",
+            ),
+            (
+                ".layer(DefaultBodyLimit::max(MAX_MANAGEMENT_BODY_BYTES))",
+                ".layer(DefaultBodyLimit::disable())",
+            ),
+            (
+                "DefaultBodyLimit::max(MAX_MANAGEMENT_BODY_BYTES)",
+                "DefaultBodyLimit::max(usize::MAX)",
+            ),
+            ("request: Request<Body>", "request: Bytes"),
+            (
+                "timeout(REQUEST_TIMEOUT, operation)",
+                "timeout(CONNECTION_LIFETIME, operation)",
+            ),
+            (
+                "let operation = async {",
+                "let body = read_body(request).await; let operation = async {",
+            ),
+            (
+                "let Ok(_permit) = state.admit() else {",
+                "let body = read_body(request).await; let Ok(_permit) = state.admit() else {",
+            ),
+            (
+                "next.run(request).await",
+                "drop(_permit); next.run(request).await",
+            ),
+            (
+                "next.run(request).await",
+                "let _extra = state.admit(); next.run(request).await",
+            ),
+            (
+                "HeaderValue::from_static(\"close\")",
+                "HeaderValue::from_static(\"keep-alive\")",
+            ),
+        ] {
+            assert!(
+                source.contains(before),
+                "missing fixture mutation site: {before}"
+            );
+            let mutation = source.replace(before, after);
+            assert!(
+                !server_transport_contract_violations(&mutation).is_empty(),
+                "admission mutation unexpectedly passed: {before} -> {after}"
+            );
+        }
+    }
+
+    #[test]
+    fn admission_ast_guard_rejects_malformed_outer_operation_shapes() {
+        for source in [
+            "fn bound_request(",
+            "fn unrelated() {}",
+            "fn bound_request() {}",
+            "fn bound_request() { consume_body(); let operation = async {}; finish(operation) }",
+            "fn bound_request() { let operation = async {}; finish(operation); }",
+            "fn bound_request() { let (operation,) = async {}; finish(operation) }",
+            "fn bound_request() { let other = async {}; finish(other) }",
+            "fn bound_request() { let operation; finish(operation) }",
+            "fn bound_request() { let operation = run(); finish(operation) }",
+            "fn bound_request() { let operation = async {}; finish(operation) }",
+        ] {
+            assert!(
+                !admission_precedes_body_dispatch(source),
+                "malformed outer admission shape unexpectedly passed: {source}"
+            );
+        }
+    }
+
+    #[test]
+    fn admission_ast_guard_requires_the_owned_permit_and_awaited_body_dispatch() {
+        // These standalone parser fixtures deliberately do not reproduce the
+        // production module. Each varies one semantic boundary of the guard.
+        let admission = "let Ok(_permit) = state.admit() else { return rejected(); };";
+        let dispatch = "next.run(request).await";
+        let source = |admission: &str, dispatch: &str| {
+            format!(
+                "async fn bound_request() {{ let operation = async {{ {admission} {dispatch} }}; finish(operation) }}"
+            )
+        };
+        assert!(admission_precedes_body_dispatch(&source(
+            admission, dispatch
+        )));
+        for malformed in [
+            "let _permit = state.admit();",
+            "let Some(_permit) = state.admit() else { return rejected(); };",
+            "let Ok(other) = state.admit() else { return rejected(); };",
+            "let Ok(_permit, extra) = state.admit() else { return rejected(); };",
+            "let Ok((_permit,)) = state.admit() else { return rejected(); };",
+            "let Ok(_permit);",
+            "let Ok(_permit) = acquire() else { return rejected(); };",
+            "let Ok(_permit) = state.admit();",
+            "let Ok(_permit) = state.wait() else { return rejected(); };",
+            "let Ok(_permit) = other.admit() else { return rejected(); };",
+            "let Ok(_permit) = state.admit(request) else { return rejected(); };",
+        ] {
+            assert!(
+                !admission_precedes_body_dispatch(&source(malformed, dispatch)),
+                "malformed permit admission unexpectedly passed: {malformed}"
+            );
+        }
+        for malformed in [
+            "next.run(request)",
+            "run(request).await",
+            "next.skip(request).await",
+            "other.run(request).await",
+            "next.run().await",
+            "next.run(request, other).await",
+            "next.run(other).await",
+            "next.run(build_request()).await",
+            "drop(_permit); next.run(request).await",
+        ] {
+            assert!(
+                !admission_precedes_body_dispatch(&source(admission, malformed)),
+                "malformed body dispatch unexpectedly passed: {malformed}"
+            );
         }
     }
 

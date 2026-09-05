@@ -56,6 +56,14 @@ adapter performs no network operation. A malformed, oversized, foreign,
 expired, cancelled, or out-of-order provider response commits no correlation
 event.
 
+`Closed` is a local lifecycle state, not proof of remote deletion. Cleanup
+attempt, transport admission and verified provider response remain distinct
+receipt facts. Cancellation, expired authority and exhausted parent budget
+remain terminal: they must not be bypassed to force a cleanup request. When
+cleanup cannot legally run, the provider's finite result-retention window and
+later authenticated management activity recover abandoned capacity. Available
+raw-free observations do not turn incomplete cleanup into a complete review.
+
 Poll responses are reduced immediately. Provider session, callback, and event
 identifiers remain private transport details; an accepted HTTP callback becomes
 only an existing `OastHttpEvent` and opaque `OastEventKey` under the exact
