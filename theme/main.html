@@ -24,7 +24,7 @@
 
 {% block site_name %}
   <a class="tmv-skip-link tmv-skip-desktop" href="#termivar-main-content">Skip to main content</a>
-  <a href="{{ nav.homepage.url|url }}" class="tmv-site-brand" aria-label="Termivar documentation home">
+  <a href="./{{ nav.homepage.url|url }}" class="tmv-site-brand" aria-label="Termivar documentation home">
     <span class="tmv-site-brand-mark" aria-hidden="true">
       <img src="{{ 'assets/brand/termivar-mark.png'|url }}" alt="" width="320" height="320">
     </span>
@@ -40,7 +40,7 @@
   <button type="button" class="tmv-nav-toggle" data-toggle="wy-nav-top" aria-controls="termivar-navigation" aria-expanded="false" aria-label="Open documentation navigation">
     <span class="fa fa-bars" aria-hidden="true"></span>
   </button>
-  <a href="{{ nav.homepage.url|url }}" class="tmv-mobile-brand">
+  <a href="./{{ nav.homepage.url|url }}" class="tmv-mobile-brand" aria-label="Termivar documentation home">
     <img src="{{ 'assets/brand/termivar-mark.png'|url }}" alt="" width="320" height="320">
     <span>Termivar <small>Docs</small></span>
   </a>
@@ -62,8 +62,8 @@
       </div>
     </div>
     <nav aria-label="Footer links">
-      <a href="{{ 'GETTING_STARTED/'|url }}">Get started</a>
-      <a href="{{ 'architecture/'|url }}">Architecture</a>
+      <a href="./{{ 'GETTING_STARTED/'|url }}">Get started</a>
+      <a href="./{{ 'architecture/'|url }}">Architecture</a>
       <a href="https://github.com/ITherso/termivar">GitHub</a>
     </nav>
   </div>
