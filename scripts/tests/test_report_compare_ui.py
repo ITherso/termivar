@@ -134,6 +134,22 @@ class ReportComparisonScriptTests(unittest.TestCase):
         self.assertEqual(html.count('<article class="item"'), 4)
         self.assertIn("Disappearance is not verified remediation.", html)
 
+    def test_checked_in_cli_example_bytes_are_checkout_stable(self):
+        attributes = set(
+            (ROOT / ".gitattributes").read_text(encoding="utf-8").splitlines()
+        )
+        expected = {
+            f"docs/examples/report-compare/{filename} -text"
+            for filename in (
+                "before.json",
+                "after.json",
+                "comparison.json",
+                "comparison.html",
+                "provenance.json",
+            )
+        }
+        self.assertTrue(expected.issubset(attributes))
+
 
 if __name__ == "__main__":
     unittest.main()

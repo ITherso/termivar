@@ -5,3 +5,11 @@ docs/examples/first-use/assessment.json -text
 docs/examples/first-use/assessment.html -text
 docs/examples/first-use/default.json -text
 docs/examples/first-use/provenance.json -text
+
+# The comparison example records SHA-256 over exact input and generated output
+# bytes. Preserve those bytes across native Windows, macOS, and Linux checkouts.
+docs/examples/report-compare/before.json -text
+docs/examples/report-compare/after.json -text
+docs/examples/report-compare/comparison.json -text
+docs/examples/report-compare/comparison.html -text
+docs/examples/report-compare/provenance.json -text
