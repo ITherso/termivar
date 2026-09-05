@@ -15,6 +15,8 @@ from unittest import mock
 
 
 SCRIPTS = Path(__file__).resolve().parents[1]
+REPOSITORY = SCRIPTS.parent
+CHECKED_IN_BUNDLE = REPOSITORY / "docs" / "examples" / "report-bundle" / "assessment-001"
 sys.path.insert(0, str(SCRIPTS))
 SCRIPT = SCRIPTS / "report_bundle_example.py"
 SPEC = importlib.util.spec_from_file_location("report_bundle_example", SCRIPT)
@@ -106,6 +108,31 @@ class BundleValidationTests(unittest.TestCase):
             data = (directory / entry["name"]).read_bytes()
             self.assertEqual(entry["bytes"], len(data))
             self.assertEqual(entry["sha256"], digest(data))
+
+    def test_checked_in_loopback_bundle_retains_exact_manifest_contract(self):
+        result = runner.validate_bundle(CHECKED_IN_BUNDLE)
+        self.assertEqual(result["producer"], {
+            "product": "Termivar", "version": "0.10.0-alpha.2",
+        })
+        self.assertEqual(result["assessment"], {
+            "schema": runner.ASSESSMENT_SCHEMA,
+            "profile": "web-review",
+            "status": "complete",
+            "subject_count": 1,
+            "item_count": 4,
+        })
+        self.assertEqual(
+            [(entry["name"], entry["bytes"], entry["sha256"])
+             for entry in result["files"]],
+            [
+                ("assessment.html", 8000,
+                 "a43070ee91860782a1eb47cd081b5fe628423a847bcc172e1a039cb6055cf1c1"),
+                ("assessment.json", 3907,
+                 "c3104e05c372eab172f2247ae748d867b5e5e01d2adf4daa40d21e5515267ab9"),
+                ("manifest.json", 711,
+                 "c77ce74508e8efaff7ebf1b0203331b4295d468c726e4acd7bad709eb85813df"),
+            ],
+        )
 
     def test_extra_file_and_incorrect_digest_fail_closed(self):
         directory = self.root / "extra"

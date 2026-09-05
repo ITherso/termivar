@@ -13,3 +13,9 @@ docs/examples/report-compare/after.json -text
 docs/examples/report-compare/comparison.json -text
 docs/examples/report-compare/comparison.html -text
 docs/examples/report-compare/provenance.json -text
+
+# The single-run bundle manifest hashes the exact HTML and JSON payload bytes;
+# keep the complete recorded three-file bundle byte-stable on every checkout.
+docs/examples/report-bundle/assessment-001/assessment.html -text
+docs/examples/report-bundle/assessment-001/assessment.json -text
+docs/examples/report-bundle/assessment-001/manifest.json -text

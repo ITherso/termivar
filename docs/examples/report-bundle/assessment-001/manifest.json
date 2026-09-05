@@ -1,0 +1,29 @@
+{
+  "schema": "termivar-report-bundle/v1",
+  "producer": {
+    "product": "Termivar",
+    "version": "0.10.0-alpha.2"
+  },
+  "assessment": {
+    "profile": "web-review",
+    "status": "complete",
+    "subject_count": 1,
+    "item_count": 4
+  },
+  "files": [
+    {
+      "name": "assessment.html",
+      "format": "html",
+      "media_type": "text/html; charset=utf-8",
+      "byte_length": 8000,
+      "sha256": "a43070ee91860782a1eb47cd081b5fe628423a847bcc172e1a039cb6055cf1c1"
+    },
+    {
+      "name": "assessment.json",
+      "format": "json",
+      "media_type": "application/json",
+      "byte_length": 3907,
+      "sha256": "c3104e05c372eab172f2247ae748d867b5e5e01d2adf4daa40d21e5515267ab9"
+    }
+  ]
+}

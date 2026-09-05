@@ -214,6 +214,9 @@ termivar report compare \
 
 The published `v0.10.0-alpha.1` archives predate `--report-dir`; their genuine
 first-use JSON and HTML captures remain separate assessment executions.
+The [development report-bundle example](examples/report-bundle/README.md)
+records one local loopback run, exact payload hashes, and an offline
+self-comparison without relabelling it as release or effectiveness evidence.
 
 ## Offline assessment report comparison
 

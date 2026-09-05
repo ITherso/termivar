@@ -78,7 +78,8 @@ The new directory contains `assessment.html`, `assessment.json`, and a final
 `manifest.json` that identifies the exact report bytes. It does not rerun the
 assessment, and the manifest hashes are integrity metadata rather than a
 signature. This option is not present in the published `v0.10.0-alpha.1`
-archives. See the [bundle publication contract](docs/reporting.md#single-run-report-bundles).
+archives. See the [bundle publication contract](docs/reporting.md#single-run-report-bundles)
+and the [recorded loopback example](docs/examples/report-bundle/README.md).
 
 Saved complete assessment JSON files can also be compared without starting a
 scan or making a network request:
