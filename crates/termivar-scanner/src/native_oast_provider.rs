@@ -1301,14 +1301,14 @@ mod permit_tests {
             let result: Result<u8, NativeOastProviderError> =
                 Err(NativeOastProviderError::new(kind));
             adapter.observe_operation_result(operation, &result);
-            assert_eq!(result.unwrap_err().kind(), kind);
+            assert!(matches!(&result, Err(error) if error.kind() == kind));
             assert_eq!(
                 adapter.provider_failure(),
                 Some(NativeOastProviderErrorKind::DeadlineExceeded)
             );
         }
         adapter.observe_operation_result(NativeOastProviderOperation::Cleanup, &success);
-        assert_eq!(success.unwrap(), 17);
+        assert!(matches!(success, Ok(17)));
         assert_eq!(
             adapter.cleanup_failure(),
             Some(NativeOastProviderErrorKind::Cancelled)
@@ -1341,9 +1341,12 @@ mod permit_tests {
             adapter.cleanup_failure(),
             Some(NativeOastProviderErrorKind::CleanupUnverified)
         );
-        let error = result.unwrap_err();
-        assert_eq!(error.kind(), NativeOastProviderErrorKind::CleanupUnverified);
-        assert_eq!(error.receipt(), Some(&receipt));
+        assert!(matches!(
+            &result,
+            Err(error)
+                if error.kind() == NativeOastProviderErrorKind::CleanupUnverified
+                    && error.receipt() == Some(&receipt)
+        ));
         assert!(!adapter.cleanup_attempted);
         assert!(adapter.receipts().is_empty());
         assert_eq!(adapter.admitted_provider_requests(), 0);
