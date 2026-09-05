@@ -36,8 +36,12 @@ The provider administrator token is loaded from exactly one of:
 ```
 
 There is deliberately no raw-token command-line argument. The bounded file
-loader rejects symlinks and the stdin source is consumed once. A single
-trailing LF or CRLF is normalized; embedded line breaks are rejected.
+loader validates the opened regular-file handle and refuses final-component
+symlinks/reparse points; parent directories must be trusted. The stdin source
+is consumed once. A single trailing LF or CRLF is wiped before normalization;
+embedded line breaks are rejected. See the shared
+[credential-input guarantees and limits](credential-input.md); handle validation
+does not make file contents immutable or erase every downstream secret copy.
 
 Reverse-proxy access logging should exclude `Authorization` values and public
 callback paths. The callback endpoint always emits the same non-reflective

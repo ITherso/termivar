@@ -264,6 +264,10 @@ jobs:
         run: cargo test --locked -p termivar-cli --test decision_scan_cli json_format_writes_parseable_json_to_stdout_and_the_runtime_notice_to_stderr
       - name: Exercise atomic report-output path semantics
         run: cargo test --locked -p termivar-cli --test profile_scan_cli report_output_is_complete_atomic_and_never_overwritten
+      - name: Exercise credential input handle and buffer contracts
+        run: cargo test --locked -p termivar-cli --no-default-features --features authorization-review,ssrf-oast-review --bin termivar auth_input::tests
+      - name: Exercise provider secret-file contracts
+        run: cargo test --locked -p termivar-oast --features server --bin termivar-oast-provider
       - name: Exercise focused core and scanner contracts
         run: |
           cargo test --locked -p termivar-core --lib report_round_trip_and_golden_are_stable

@@ -1,6 +1,6 @@
 # Project Status
 
-The latest release under the former Venom name is **v0.9.0-alpha**, but its binaries predate the remediated runtime documented by this unreleased source state; `main` targets the next Preview release. Termivar is an experimental Rust security-testing project centered on a bounded deterministic decision runtime, and it is not production-ready.
+The latest published release is the experimental **v0.10.0-alpha.1** prerelease. Current `main` is the unreleased `0.10.0-alpha.2` development line; the published binaries do not include its later changes. The historical **v0.9.0-alpha** release under the former Venom name predates the remediated runtime. Termivar is an experimental Rust security-testing project centered on a bounded deterministic decision runtime, and it is not production-ready.
 
 ## Why alpha
 
@@ -13,7 +13,7 @@ The latest release under the former Venom name is **v0.9.0-alpha**, but its bina
   host-owned bounded context and record observations; Termivar ships no stock
   detector plugins, and plugin output is not an automatic finding.
 - The default `termivar scan` command exercises the conservative deterministic single-resource runtime; its operational outcomes are not findings or vulnerability verdicts. Explicit `web-review` adds bounded exact-origin discovery plus passive and matched low-risk review under the same host-owned authority. A separately explicit, exact-root authorization-context pair reads secret material only from an environment variable, file, stdin, or a library host; it retains one atomic comparison and can produce at most `NeedsReview`. Native actions remain KnowledgeOnly. The historical heuristic runner is separately feature-gated and requires explicit acknowledgement. Its phases 2–4 share bounded passive discovery and phases 5–9 share a distinct bounded active-verification authority. Phase one and custom extensions can still perform raw I/O, so whole-run accounting remains `Unmetered`; the narrower phase-5-to-9 authority must not be mistaken for `RuntimeBudget` coverage.
-- `ScanContext` now has an accepted non-exhaustive, constructor-owned policy, but the intentional transition from the tagged struct-literal contract still needs a new Preview release and post-transition scanner baseline.
+- The non-exhaustive, constructor-owned `ScanContext` transition is included in `v0.10.0-alpha.1`; an accepted post-transition scanner compatibility baseline remains outstanding. This intentional change from the former tagged struct-literal contract is not a patch-compatibility claim.
 - Lua execution and distributed coordination are implemented Experimental,
   opt-in host-library contracts with no repository runtime caller. Lua provides
   cooperative in-process VM limits rather than process isolation; distributed
@@ -56,7 +56,8 @@ Distributed multi-node production readiness is tracked separately for v1.1 and d
 
 ## Evidence
 
-- [v0.9.0-alpha release](https://github.com/ITherso/venom/releases/tag/v0.9.0-alpha)
+- [Published v0.10.0-alpha.1 prerelease](https://github.com/ITherso/termivar/releases/tag/v0.10.0-alpha.1)
+- [Historical former-name v0.9.0-alpha release](https://github.com/ITherso/venom/releases/tag/v0.9.0-alpha)
 - [Feature lifecycle](FEATURES.md)
 - [Repository health](docs/repository-health.md)
 - [Benchmark evidence](docs/benchmarks.md)

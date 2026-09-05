@@ -3,9 +3,9 @@
 use std::{
     ffi::OsString,
     fmt,
-    fs::{self, File},
+    fs::File,
     io::{self, Read},
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::ExitCode,
 };
 
@@ -14,7 +14,7 @@ use termivar_oast::{
     serve_provider, AdminToken, LoopbackBind, ProviderConfig, ProviderLimits, ProviderState,
     PublicOrigin,
 };
-use zeroize::Zeroizing;
+use zeroize::{Zeroize, Zeroizing};
 
 const MAX_ADMIN_TOKEN_BYTES: usize = 4_096;
 
@@ -193,20 +193,74 @@ impl fmt::Display for BinaryError {
 impl std::error::Error for BinaryError {}
 
 fn open_regular_file(path: PathBuf) -> Result<File, BinaryError> {
-    let metadata = fs::symlink_metadata(&path).map_err(|_| BinaryError::AdminTokenUnavailable)?;
-    if !metadata.file_type().is_file() {
+    // No-follow applies only to the final component. Parent directories must
+    // be trusted; this is not whole-path containment or an immutable snapshot.
+    // A special/network path may still be contacted while opening it. Inspect
+    // the resulting handle before reading, never a separately checked path.
+    let file = open_no_follow(&path)?;
+    validate_opened_file(file)
+}
+
+#[cfg(unix)]
+fn open_no_follow(path: &Path) -> Result<File, BinaryError> {
+    use std::os::unix::fs::OpenOptionsExt;
+
+    std::fs::OpenOptions::new()
+        .read(true)
+        // NONBLOCK ensures opening a FIFO cannot wait for a writer before its
+        // handle is rejected as non-regular. It does not bound regular-file I/O.
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(path)
+        .map_err(|error| {
+            if error.raw_os_error() == Some(libc::ELOOP) {
+                BinaryError::AdminTokenNotRegularFile
+            } else {
+                BinaryError::AdminTokenUnavailable
+            }
+        })
+}
+
+#[cfg(windows)]
+fn open_no_follow(path: &Path) -> Result<File, BinaryError> {
+    use std::os::windows::fs::OpenOptionsExt;
+
+    const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+    const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+    std::fs::OpenOptions::new()
+        .read(true)
+        // BACKUP_SEMANTICS allows a directory handle, which validation rejects.
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS)
+        // SECURITY_ANONYMOUS prevents named-pipe impersonation before opened-
+        // handle metadata can reject a non-file. std sets SQOS_PRESENT.
+        .security_qos_flags(0)
+        .open(path)
+        .map_err(|_| BinaryError::AdminTokenUnavailable)
+}
+
+#[cfg(not(any(unix, windows)))]
+fn open_no_follow(_: &Path) -> Result<File, BinaryError> {
+    Err(BinaryError::AdminTokenUnavailable)
+}
+
+fn validate_opened_file(file: File) -> Result<File, BinaryError> {
+    let metadata = file
+        .metadata()
+        .map_err(|_| BinaryError::AdminTokenUnavailable)?;
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0000_0400;
+        // Reject every reparse tag, not just symbolic-link file types.
+        if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            return Err(BinaryError::AdminTokenNotRegularFile);
+        }
+    }
+    if !metadata.is_file() {
         return Err(BinaryError::AdminTokenNotRegularFile);
     }
     if metadata.len() > u64::try_from(MAX_ADMIN_TOKEN_BYTES + 2).unwrap_or(u64::MAX) {
         return Err(BinaryError::AdminTokenTooLarge);
-    }
-    let file = File::open(path).map_err(|_| BinaryError::AdminTokenUnavailable)?;
-    if !file
-        .metadata()
-        .map_err(|_| BinaryError::AdminTokenUnavailable)?
-        .is_file()
-    {
-        return Err(BinaryError::AdminTokenNotRegularFile);
     }
     Ok(file)
 }
@@ -227,18 +281,24 @@ fn read_bounded_line(reader: &mut impl Read) -> Result<Zeroizing<Vec<u8>>, Binar
     {
         return Err(BinaryError::AdminTokenTooLarge);
     }
-    let normalized_length = if bytes.ends_with(b"\r\n") {
-        Some(bytes.len().saturating_sub(2))
-    } else if bytes.ends_with(b"\n") {
-        Some(bytes.len().saturating_sub(1))
-    } else {
-        None
-    };
-    if let Some(length) = normalized_length {
-        bytes.truncate(length);
-    }
+    let normalized_length = wipe_terminal_line_ending(&mut bytes);
+    bytes.truncate(normalized_length);
     validate_source_length(bytes.len())?;
     Ok(bytes)
+}
+
+fn wipe_terminal_line_ending(bytes: &mut [u8]) -> usize {
+    let length = if bytes.ends_with(b"\r\n") {
+        bytes.len().saturating_sub(2)
+    } else if bytes.ends_with(b"\n") {
+        bytes.len().saturating_sub(1)
+    } else {
+        bytes.len()
+    };
+    // Truncating first would leave removed bytes outside Zeroizing's live
+    // slice. Wipe the suffix while it is still addressable and initialized.
+    bytes[length..].zeroize();
+    length
 }
 
 fn into_admin_token(mut bytes: Zeroizing<Vec<u8>>) -> Result<AdminToken, BinaryError> {
@@ -305,7 +365,10 @@ async fn main() -> ExitCode {
 
 #[cfg(test)]
 mod tests {
-    use std::io::{self, Cursor, Error, Read};
+    use std::{
+        fs,
+        io::{self, Cursor, Error, Read},
+    };
 
     use clap::CommandFactory as _;
 
@@ -330,6 +393,28 @@ mod tests {
             read_bounded_line(&mut two).unwrap().as_slice(),
             format!("{SECRET}\n").as_bytes()
         );
+    }
+
+    #[test]
+    fn terminal_line_endings_are_wiped_while_the_suffix_is_still_live() {
+        for (input, expected) in [
+            (b"fixture\n".as_slice(), b"fixture".as_slice()),
+            (b"fixture\r\n".as_slice(), b"fixture".as_slice()),
+            (b"fixture\n\n".as_slice(), b"fixture\n".as_slice()),
+            (b"fixture\r".as_slice(), b"fixture\r".as_slice()),
+            (b"fixture".as_slice(), b"fixture".as_slice()),
+            (b"\r\n".as_slice(), b"".as_slice()),
+            (b"".as_slice(), b"".as_slice()),
+        ] {
+            let mut bytes = input.to_vec();
+            let length = wipe_terminal_line_ending(&mut bytes);
+            assert_eq!(length, expected.len());
+            assert_eq!(bytes.len(), input.len());
+            assert_eq!(&bytes[..length], expected);
+            assert!(bytes[length..].iter().all(|byte| *byte == 0));
+            bytes.truncate(length);
+            assert_eq!(bytes, expected);
+        }
     }
 
     #[test]
@@ -593,6 +678,119 @@ mod tests {
         assert!(!error
             .to_string()
             .contains(directory_path.to_string_lossy().as_ref()));
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn opened_file_identity_survives_deterministic_path_replacement() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("selected.txt");
+        let original = directory.path().join("original.txt");
+        fs::write(&path, SECRET).unwrap();
+        let file = open_no_follow(&path).unwrap();
+        // The pathname is replaced between open and handle validation, with
+        // no timing races and no reads before the handle is validated.
+        fs::rename(&path, &original).unwrap();
+        fs::write(&path, b"REPLACEMENT-FIXTURE-MUST-NOT-BE-READ").unwrap();
+        let mut file = validate_opened_file(file).unwrap();
+        let bytes = read_bounded_line(&mut file).unwrap();
+        assert_eq!(bytes.as_slice(), SECRET.as_bytes());
+        assert_eq!(file.metadata().unwrap().len(), SECRET.len() as u64);
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn opened_file_size_rejection_uses_the_handle_after_path_replacement() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("selected.txt");
+        let original = directory.path().join("original.txt");
+        fs::write(&path, vec![b'x'; MAX_ADMIN_TOKEN_BYTES + 3]).unwrap();
+        let file = open_no_follow(&path).unwrap();
+        fs::rename(&path, &original).unwrap();
+        fs::write(&path, SECRET).unwrap();
+        assert!(fs::metadata(&path).unwrap().len() < MAX_ADMIN_TOKEN_BYTES as u64);
+        let error = validate_opened_file(file).unwrap_err();
+        assert_eq!(error, BinaryError::AdminTokenTooLarge);
+        assert!(!error.to_string().contains(path.to_string_lossy().as_ref()));
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn opened_file_validation_rejects_directories_before_any_read() {
+        let directory = tempfile::tempdir().unwrap();
+        let file = open_no_follow(directory.path()).unwrap();
+        assert!(file.metadata().unwrap().is_dir());
+        let error = validate_opened_file(file).unwrap_err();
+        assert_eq!(error, BinaryError::AdminTokenNotRegularFile);
+        assert!(!error
+            .to_string()
+            .contains(directory.path().to_string_lossy().as_ref()));
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn growth_after_handle_validation_still_hits_the_bounded_reader() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("growing-fixture.txt");
+        fs::write(&path, SECRET).unwrap();
+        let mut file = open_regular_file(path.clone()).unwrap();
+        // The contract is not immutability: a writer may still change this
+        // regular file. Intake remains bounded even after successful metadata.
+        fs::write(&path, vec![b'x'; MAX_ADMIN_TOKEN_BYTES + 3]).unwrap();
+        assert_eq!(
+            read_bounded_line(&mut file).unwrap_err(),
+            BinaryError::AdminTokenTooLarge
+        );
+    }
+
+    #[cfg(unix)]
+    fn create_test_file_link(target: &Path, link: &Path) {
+        std::os::unix::fs::symlink(target, link)
+            .expect("temporary symbolic-link fixture must be supported");
+    }
+
+    #[cfg(windows)]
+    fn create_test_file_link(target: &Path, link: &Path) {
+        std::os::windows::fs::symlink_file(target, link)
+            .expect("temporary symbolic-link fixture must be supported");
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn final_component_swapped_to_a_link_is_rejected_without_reading_its_target() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("selected.txt");
+        let original = directory.path().join("original.txt");
+        let target = directory.path().join("replacement-target.txt");
+        fs::write(&path, SECRET).unwrap();
+        fs::write(&target, b"REPLACEMENT-FIXTURE-MUST-NOT-BE-READ").unwrap();
+        assert!(fs::metadata(&path).unwrap().is_file());
+        fs::rename(&path, &original).unwrap();
+        create_test_file_link(&target, &path);
+        // Only the atomic open/handle check, not the earlier path observation,
+        // determines whether the final entry can supply credential bytes.
+        let error = AdminTokenSource::File(path.clone()).load().unwrap_err();
+        assert_eq!(error, BinaryError::AdminTokenNotRegularFile);
+        assert!(!error.to_string().contains(SECRET));
+        assert!(!error.to_string().contains(path.to_string_lossy().as_ref()));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn opened_windows_reparse_handle_is_rejected_before_reading() {
+        use std::os::windows::fs::MetadataExt;
+
+        let directory = tempfile::tempdir().unwrap();
+        let target = directory.path().join("target.txt");
+        let link = directory.path().join("link.txt");
+        fs::write(&target, SECRET).unwrap();
+        create_test_file_link(&target, &link);
+        let file = open_no_follow(&link).unwrap();
+        assert_ne!(file.metadata().unwrap().file_attributes() & 0x0000_0400, 0);
+        assert_eq!(
+            validate_opened_file(file).unwrap_err(),
+            BinaryError::AdminTokenNotRegularFile
+        );
     }
 
     #[cfg(unix)]

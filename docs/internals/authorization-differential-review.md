@@ -31,8 +31,11 @@ termivar scan https://authorized.example.test \
 
 Each environment/file/stdin value is a complete `Authorization` header value;
 the CLI does not assume `Bearer`. The existing bounded secret-input module is
-the sole loader. There is no raw credential-value argument. File inputs must be
-regular non-symlink files, and at most one of the two roles may use stdin. V1
+the sole loader. There is no raw credential-value argument. File inputs require
+validated regular-file handles and final-component no-follow protection;
+parent directories must be trusted. The shared
+[credential-input limits](credential-input.md) apply, and at most one of the
+two roles may use stdin. V1
 rejects combining this workflow with the existing exact-root
 `--auth-env`/`--auth-file`/`--auth-stdin` comparison so principal roles and
 accounting cannot become ambiguous. The policy path, secret-source names, and

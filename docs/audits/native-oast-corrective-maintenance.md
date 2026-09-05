@@ -7,8 +7,9 @@ each disposition below distinguishes inspection from executed regression proof.
 ## Reviewed baseline and delivery
 
 - Reviewed and fetched main: `3de3d32f9cb0b6b76cd9f7a3c24ce4557d848b29`.
-- Development version: `0.10.0-alpha.2`. GitHub confirms published prerelease
-  `v0.10.0-alpha.1`; no alpha.2 release is present.
+- Development version: `0.10.0-alpha.2`. GitHub release metadata, checked again
+  on 2026-09-05, confirms the published [v0.10.0-alpha.1 prerelease](https://github.com/ITherso/termivar/releases/tag/v0.10.0-alpha.1)
+  dated 2026-09-03; no alpha.2 release is present.
 - Worktree was clean. Open dependency-update PRs and unrelated branches remain
   outside this work.
 - PR A branch: `agent/oast-lifecycle-transport-hardening`.
@@ -16,9 +17,17 @@ each disposition below distinguishes inspection from executed regression proof.
   `b8c0ae2630b541ac04733e4f2701423654f740a8`. All 14 required contexts passed;
   aggregate coverage 89.87%, patch 100.00% (187/187). Both task branches were
   deleted and protected main advanced by exact-SHA fast-forward.
-- PR B starts from that exact SHA on `agent/oast-state-diagnostics-correctness`.
-  Its final tested/landed SHA is recorded in the PR verification receipt, not
-  inferred from local execution. PR C may start only after PR B lands.
+- PR B: [#110](https://github.com/ITherso/termivar/pull/110), based on that exact
+  PR A SHA and tested/landed as `f0b2889c07fe765f8b2f7bdf785725edda209b67`.
+  The [exact-head landing receipt](https://github.com/ITherso/termivar/pull/110#issuecomment-5551145983)
+  records all 14 strict required contexts, all 28 applicable Actions contexts
+  and all six workflow runs successful. Aggregate coverage was 64,678/71,944
+  (89.90%); patch coverage was 159/166 (95.78%). One test-only Clippy repair
+  round was needed. Protected main advanced by exact-SHA fast-forward;
+  the local and remote task branches were deleted.
+- PR C starts from that landed SHA on `agent/credential-intake-hardening`.
+  Credential-input repairs are implemented; final CI/landing evidence remains
+  pending.
 
 ## Finding ledger
 
@@ -28,10 +37,10 @@ each disposition below distinguishes inspection from executed regression proof.
 | F2 — `termivar-oast/src/server.rs`, `serve_listener`, `serve_connection`, `AppState::admit` | Confirmed defect; repair in PR A | Connection count is bounded, connection lifetime is not explicitly bounded; handler admission occurs after body extraction. | A single benign incomplete-header duplex test failed against old behavior under paused Tokio time. PR A places admission before body extraction and bounds header, request/body, I/O idle and total connection lifetimes. No load test or target application is used. |
 | F3 — `web_runtime/ssrf_oast_runtime.rs`, polling phase completion | Deferred / out of scope / unresolved | The maintainer explicitly excluded active SSRF replay/verification behavior from this continuation. | No phase-completion fix or success oracle is added. The polling region, receipt-order completeness check and public review-outcome enum remain byte-identical after newline normalization. This finding is not closed or rejected. |
 | F4 — `termivar-oast/src/client.rs::validate_response_head`, `native_oast_provider.rs::client_failure`, runtime audit boundary | Confirmed defect; repaired in PR B | Unexpected statuses and construction/transport failures can be mislabeled as authentication failures, and early failures lack typed audit detail. | Synthetic 401-vs-429 and local-credential-vs-remote-auth regressions failed before repair and passed afterward. Add non-exhaustive HTTP metadata without changing existing public client error variants; retain separate optional first-provider/cleanup diagnostics through the existing serializable library audit. No response prose, new CLI renderer or protocol/digest identity change. |
-| F5 — provider receipt/count assignments in `ssrf_oast_runtime.rs`; permit dispatch accounting | Confirmed defect; repaired in PR B, final CI pending | A failure receipt can exist before budget admission. Receipt-vector length is not the charged HTTP-operation count. | All five audit count paths now read the permit counter. Synthetic tests distinguish recorded attempts, admitted requests, possibly-dispatched operations and body EOF. Failure receipts and successful-path ordering checks remain. Local adapter tests compiled but Application Control prevented execution; CI proof is required, not assumed. |
-| F6 — both CLI/provider `open_regular_file` implementations | Conditional local-path risk confirmed by inspection; unmodified | Separate pathname inspection and open do not atomically reject a substituted link or establish object identity. | Existing static-link tests do not establish replacement-race resistance. A future fix must state final-component versus ancestor guarantees per platform; no filesystem exploitation or privileged test result is claimed. |
-| F7 — CLI `read_environment`, `read_bounded_line_source` | Confirmed intake-buffer defect by inspection; unmodified | Some owned raw buffers can be dropped on oversize/read error before entering a zeroizing wrapper. | Regression not yet executed. Intake-buffer protection does not erase OS environment storage, allocator history, successful downstream copies or HTTP-library buffers. Provider input already uses `Zeroizing` on several corresponding paths. |
-| F8 — `PROJECT_STATUS.md`, `docs/DISTRIBUTION.md`, affected provider documentation | Mixed: narrow stale claims and already-corrected statements | PROJECT_STATUS and an installer sentence remain stale. README and distribution release-status sections already distinguish published alpha.1 from development alpha.2. | The already-corrected release descriptions came from `61d08b3`; retain them. PR A updates lifecycle/transport documentation for F1/F2; PR B documents diagnostic and accounting distinctions for F4/F5. Remaining secret-input and source/release factual cleanup is reserved for PR C. |
+| F5 — provider receipt/count assignments in `ssrf_oast_runtime.rs`; permit dispatch accounting | Confirmed defect; repaired and landed in PR B | A failure receipt can exist before budget admission. Receipt-vector length is not the charged HTTP-operation count. | All five audit count paths now read the permit counter. Synthetic tests distinguish recorded attempts, admitted requests, possibly-dispatched operations and body EOF. Failure receipts and successful-path ordering checks remain. Local adapter execution was blocked by Application Control; exact-head CI passed as recorded in the PR B landing receipt. |
+| F6 — both CLI/provider `open_regular_file` implementations | Conditional local-path risk confirmed by inspection; repair implemented in PR C, CI pending | Separate pathname inspection and open do not atomically reject a substituted link or establish object identity. | Both loaders now open with platform no-follow flags and validate the same handle before bytes. Final-component protection requires trusted parents and does not establish immutable contents or hard-link provenance. Baseline evidence is inspection only, not an executed red test; new deterministic tests compiled but local execution was blocked. No filesystem exploitation or privileged test result is claimed. |
+| F7 — CLI `read_environment`, `read_bounded_line_source` | Confirmed intake-buffer defect by inspection; repair implemented in PR C, CI pending | Some owned raw buffers can be dropped on oversize/read error before entering a zeroizing wrapper. | CLI input is guarded before fallible validation/read, with initialized storage for partial errors, a guarded overflow probe and suffix wiping before truncation. The guarantee ends at constructor handoff; downstream root/principal copies remain unchanged. Provider input already used `Zeroizing` and now also wipes the removed suffix. Deterministic tests compiled; local execution was blocked, not passed. |
+| F8 — `PROJECT_STATUS.md`, `docs/DISTRIBUTION.md`, affected provider documentation | Mixed: factual corrections in PR C; already-corrected statements preserved | PROJECT_STATUS omitted the current published prerelease and still described the ScanContext release prerequisite as unmet. An installer sentence also depended on an obsolete release condition. | GitHub release metadata and alpha.1 tagged source confirm the narrow corrections. README and distribution release-status descriptions from `61d08b3` are retained. PR A lifecycle/transport and PR B diagnostic/accounting documentation are preserved. The shared credential-input contract states final-component and intake-memory limits; PR C final verification remains pending. |
 
 ## PR A contract
 
@@ -130,9 +139,75 @@ The following evidence is separate from PR A and from GitHub exact-head CI:
   without rewriting their artifacts or digests. Lockfiles, source version,
   coverage baseline, omissions and all network ceilings are unchanged.
 
-Current-stable Clippy, full workspace execution, Linux coverage, dependency
-policy and platform/compatibility checks require their fresh GitHub runs;
-local Application Control, missing MSVC linker and the existing CRLF-only
-architecture check limitation are not bypassed or reported as successes.
-Final CI and landing evidence belongs to the PR's exact-head verification
-receipt. Until then PR B is not landed and PR C has not started.
+The fresh exact-head GitHub runs subsequently passed current-stable Clippy,
+workspace execution, Linux coverage, dependency policy and applicable
+platform/compatibility checks, as recorded in the [PR B landing receipt](https://github.com/ITherso/termivar/pull/110#issuecomment-5551145983).
+That receipt distinguishes the explicit non-PR deploy/matrix workflow skips
+and existing Trivy code-scanning baseline-configuration neutral annotation
+from the successful filesystem/secret/configuration scan. Local Application
+Control, missing MSVC linker and the existing CRLF-only architecture check
+limitation were not bypassed or reclassified as local successes.
+
+PR B is landed at `f0b2889c07fe765f8b2f7bdf785725edda209b67`. F3 remains
+Deferred / out of scope / unresolved.
+
+## PR C credential-input contract and pending validation
+
+The [shared credential-input contract](../internals/credential-input.md)
+documents the implemented file-opening and owned-memory boundaries. Both
+loaders use platform no-follow opening without pathname prechecks, then
+validate the opened handle. Unix uses the already-locked `libc` 0.2.186
+constants for `O_NOFOLLOW | O_NONBLOCK`. Windows uses reparse-point and
+directory-handle flags, anonymous security quality of service, and rejects
+all reparse attributes and non-regular handles before reads. Other platform
+families fail closed for file input. These are final-component guarantees,
+not ancestor containment, immutable snapshots, hard-link provenance or a
+promise that opening special/network paths makes no external contact.
+
+CLI intake buffers now enter `Zeroizing` ownership before Unicode/size
+validation or bounded reads. Fixed initialized read storage covers partial
+errors, including bytes written before a reader returns an error. Overflow
+and removed LF/CRLF bytes are wiped while owned, and successful constructor
+handoff transfers the allocation without an extra intake copy. Downstream
+root/principal `PayloadSeed`/`String` ownership is unchanged and outside this
+guarantee. Provider input already used zeroizing storage; the removed
+line-ending suffix is now wiped before truncation. Neither change claims
+erasure of OS environment storage, allocator history, HTTP-library buffers
+or every successful downstream copy.
+
+F6 baseline evidence is source inspection, not an executed before-fix
+failure. New deterministic input tests compiled with the ordinary local
+toolchain, but Application Control blocked execution of the CLI and provider
+test binaries. No workaround was used and this is not a local passing result.
+The existing three-OS `Tests / Runtime Smoke` matrix now includes focused CLI
+and provider input tests; their exact-head CI results and PR C's final
+tested/landed SHA remain pending. These steps add no active F3 regression,
+target probe or scanner behavior.
+
+The root lockfile adds only three dependency edges (`libc` for each loader and
+`zeroize` for CLI intake), with no existing package-version change; nested
+lockfiles, release/tag/version state, coverage gates and historical identifiers
+remain unchanged. This section is not a final PR C validation or landing receipt.
+
+Additional local PR C evidence, before opening the Draft airlock:
+
+- Canonical Rust 1.88 formatting and whitespace checks passed. The complete
+  workspace/all-target/all-feature GNU Rust 1.88 check and provider/scanner/CLI
+  feature-off plus explicit input-feature checks passed.
+- Three focused architecture tests passed: current provider workspace closure,
+  exact server feature set, and the narrow optional Unix-only `libc` edge.
+  Other conditional/renamed/local edges are still rejected. Provider and xtask
+  GNU Rust 1.88 Clippy passed with warnings denied.
+- The optional full-workspace GNU Rust 1.88 Clippy invocation failed on the
+  unchanged `ssrf_oast_runtime.rs` `uninlined_format_args` expression. This is
+  not a local passing result or an environmental error; it is outside the
+  canonical current-stable Clippy job and the PR C diff. The excluded runtime
+  was not edited to accommodate it. Current-stable Clippy remains CI-required.
+- Locked compatibility/fuzz metadata passed. Repeating offline Cargo metadata
+  resolution left all three lockfile hashes unchanged, with no manual lockfile
+  edits or version churn.
+- Development-line, scanner corpus (127 cases), both salvage and both catalog
+  validators passed; all six semantic/version identities remain unchanged.
+
+F6/F7 execution on each supported OS, workspace execution, current-stable
+Clippy, coverage and advisory checks require the final-head CI receipt.

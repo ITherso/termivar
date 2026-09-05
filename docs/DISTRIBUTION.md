@@ -72,7 +72,7 @@ The historical root `docker-compose.yml` was removed. It coupled the CLI to
 unused PostgreSQL/Redis services, default credentials, disabled security, and a
 listener the default image did not provide. The architecture gate rejects a
 replacement root Compose manifest while deployment status remains unsupported.
-There is no supported repository installer until a remediated release exists.
+There is no supported repository installer for the current development source line.
 
 The non-deployable [deployment blueprint](experimental/deployment-blueprint.md) records prerequisites that must exist before orchestrated manifests can become executable product artifacts.
 

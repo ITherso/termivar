@@ -50,6 +50,7 @@ const EXPECTED_RUNTIME_DEPENDENCIES: &[&str] = &[
     "getrandom",
     "hyper",
     "hyper-util",
+    "libc",
     "reqwest",
     "serde",
     "serde_json",
@@ -239,13 +240,31 @@ fn package_contract_violations(workspace_root: &Path, provider: &Package) -> Vec
         }
     }
     if provider.dependencies.iter().any(|dependency| {
-        dependency.rename.is_some() || dependency.target.is_some() || dependency.path.is_some()
+        dependency.rename.is_some()
+            || dependency.path.is_some()
+            || !dependency_platform_is_allowed(
+                &dependency.name,
+                dependency
+                    .target
+                    .as_ref()
+                    .map(ToString::to_string)
+                    .as_deref(),
+                dependency.optional,
+            )
     }) {
         violations.push(format!(
-            "{PACKAGE} dependencies must not be renamed, target-conditional, or local workspace edges"
+            "{PACKAGE} dependencies must not be renamed or local; only optional server libc may target cfg(unix)"
         ));
     }
     violations
+}
+
+fn dependency_platform_is_allowed(name: &str, target: Option<&str>, optional: bool) -> bool {
+    if name == "libc" {
+        optional && target == Some("cfg(unix)")
+    } else {
+        target.is_none()
+    }
 }
 
 fn feature_contract_violations(features: &BTreeMap<String, Vec<String>>) -> Vec<String> {
@@ -268,6 +287,7 @@ fn feature_contract_violations(features: &BTreeMap<String, Vec<String>>) -> Vec<
                 "dep:futures",
                 "dep:hyper",
                 "dep:hyper-util",
+                "dep:libc",
                 "dep:serde_json",
                 "dep:tokio",
                 "dep:tower",
@@ -2348,6 +2368,7 @@ mod tests {
                     "dep:futures".to_owned(),
                     "dep:hyper".to_owned(),
                     "dep:hyper-util".to_owned(),
+                    "dep:libc".to_owned(),
                     "dep:serde_json".to_owned(),
                     "dep:tokio".to_owned(),
                     "dep:tower".to_owned(),
@@ -2370,6 +2391,26 @@ mod tests {
             .unwrap()
             .push("dep:termivar-scanner".to_owned());
         assert!(!feature_contract_violations(&widened).is_empty());
+    }
+
+    #[test]
+    fn file_open_dependency_is_exactly_unix_and_server_only() {
+        assert!(dependency_platform_is_allowed(
+            "libc",
+            Some("cfg(unix)"),
+            true
+        ));
+        for (name, target, optional) in [
+            ("libc", None, true),
+            ("libc", Some("cfg(windows)"), true),
+            ("libc", Some("cfg(unix)"), false),
+            ("libc", Some("cfg(any(unix, windows))"), true),
+            ("reqwest", Some("cfg(unix)"), true),
+        ] {
+            assert!(!dependency_platform_is_allowed(name, target, optional));
+        }
+        assert!(dependency_platform_is_allowed("reqwest", None, true));
+        assert!(dependency_platform_is_allowed("zeroize", None, false));
     }
 
     fn dependency_graph(

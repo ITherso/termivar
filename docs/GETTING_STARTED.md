@@ -120,8 +120,9 @@ cargo run -p termivar-cli --locked -- scan https://authorized.example.test \
 ```
 
 `--auth-stdin` reads through EOF and is also supported; the invoking host must
-therefore bound its own input lifecycle. `--auth-file` accepts only a regular,
-non-symlink file. The three sources are mutually exclusive, bounded to the
+therefore bound its own input lifecycle. `--auth-file` validates the opened
+regular-file handle and refuses a final-component symlink/reparse point;
+parent directories must be trusted. The three sources are mutually exclusive, bounded to the
 scanner's compiled 4 KiB payload-artifact ceiling, and consumed only after
 profile, exact-root, authenticated-transport, and obvious report-output
 validation. Credentialed review requires HTTPS, with numeric-IP loopback HTTP
@@ -131,6 +132,8 @@ control and an authorized candidate through the same global assessment
 authority. Equal JSON visibility emits no item; a complete difference is one
 atomic `NeedsReview` comparison, not confirmation of broken authorization.
 Credentials and raw response bodies are not serialized or logged.
+See the shared [credential-input guarantees and limits](internals/credential-input.md)
+for platform-specific file handling and the intake-only memory-erasure boundary.
 
 For completed reports, start `web-review` at the exact origin root (`/`). The
 historical root identity remains `authorized-root@1`. Eligible discovered

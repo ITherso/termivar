@@ -8,7 +8,9 @@ correlation review, not a general SSRF fuzzer. The operator supplies a strict
 acknowledges the outbound callback
 test, and supplies the self-hosted native provider administrator token through
 one bounded environment, regular-file, or stdin source. No credential value is
-accepted on the command line.
+accepted on the command line. The shared
+[credential-input guarantees and limits](credential-input.md) apply to that
+source and the policy-file loader.
 
 The target and provider authorities remain separate. The target must be the
 assessment's exact origin. The provider must be a different, exact HTTPS DNS
