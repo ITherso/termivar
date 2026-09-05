@@ -141,10 +141,10 @@ pub use scan_profile::{
 };
 #[cfg(feature = "ssrf-oast-review")]
 pub use ssrf_oast_runtime::{
-    SsrfOastRuntimeOutcome, WebAssessmentSsrfOastAudit, MAX_SSRF_OAST_REVIEW_ACTIVE_VERIFICATIONS,
-    MAX_SSRF_OAST_REVIEW_PARAMETERS, MAX_SSRF_OAST_REVIEW_PROVIDER_REQUESTS,
-    MAX_SSRF_OAST_REVIEW_REQUESTS, MAX_SSRF_OAST_REVIEW_RESOURCES, SSRF_OAST_REVIEW_ACTION_ID,
-    SSRF_OAST_REVIEW_CAPABILITY_ID,
+    SsrfOastProviderFailure, SsrfOastRuntimeOutcome, WebAssessmentSsrfOastAudit,
+    MAX_SSRF_OAST_REVIEW_ACTIVE_VERIFICATIONS, MAX_SSRF_OAST_REVIEW_PARAMETERS,
+    MAX_SSRF_OAST_REVIEW_PROVIDER_REQUESTS, MAX_SSRF_OAST_REVIEW_REQUESTS,
+    MAX_SSRF_OAST_REVIEW_RESOURCES, SSRF_OAST_REVIEW_ACTION_ID, SSRF_OAST_REVIEW_CAPABILITY_ID,
 };
 pub use web_assessment::{
     WebAssessmentCompletion, WebAssessmentDefenseAudit, WebAssessmentDefenseBodyCoverage,

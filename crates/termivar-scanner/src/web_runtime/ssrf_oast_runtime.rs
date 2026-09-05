@@ -153,6 +153,78 @@ impl From<SsrfOastReviewOutcome> for SsrfOastRuntimeOutcome {
     }
 }
 
+/// Bounded provider diagnostics, separate from review or cleanup completion.
+///
+/// Access rejection describes the response class, not a guessed credential
+/// cause. No variant contains protocol data or authorizes another request.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[non_exhaustive]
+#[serde(rename_all = "snake_case")]
+pub enum SsrfOastProviderFailure {
+    CredentialInputInvalid,
+    AccessRejected,
+    Throttled,
+    NotFound,
+    Gone,
+    RedirectRefused,
+    ServerFailure,
+    TransportFailure,
+    RequestConstruction,
+    ClientInitialization,
+    UnexpectedStatus,
+    MalformedResponse,
+    Cancelled,
+    Timeout,
+    Expired,
+    BudgetRejected,
+    PollLimit,
+    LocalRejected,
+    CleanupUnverified,
+    InternalInvariant,
+}
+
+impl From<NativeOastProviderErrorKind> for SsrfOastProviderFailure {
+    fn from(kind: NativeOastProviderErrorKind) -> Self {
+        match kind {
+            NativeOastProviderErrorKind::ProviderRejected => Self::CredentialInputInvalid,
+            NativeOastProviderErrorKind::ProviderAccessRejected => Self::AccessRejected,
+            NativeOastProviderErrorKind::ProviderThrottled => Self::Throttled,
+            NativeOastProviderErrorKind::ProviderNotFound => Self::NotFound,
+            NativeOastProviderErrorKind::ProviderGone => Self::Gone,
+            NativeOastProviderErrorKind::ProviderRedirectRefused => Self::RedirectRefused,
+            NativeOastProviderErrorKind::ProviderServerFailure => Self::ServerFailure,
+            NativeOastProviderErrorKind::ProviderTransportFailure => Self::TransportFailure,
+            NativeOastProviderErrorKind::ProviderRequestConstruction => Self::RequestConstruction,
+            NativeOastProviderErrorKind::ProviderClientInitialization => Self::ClientInitialization,
+            NativeOastProviderErrorKind::ProviderUnexpectedStatus => Self::UnexpectedStatus,
+            NativeOastProviderErrorKind::ProviderResponseInvalid
+            | NativeOastProviderErrorKind::ProviderSessionMismatch
+            | NativeOastProviderErrorKind::ProviderCallbackMismatch
+            | NativeOastProviderErrorKind::ProviderPageIncomplete
+            | NativeOastProviderErrorKind::CorrelationRejected => Self::MalformedResponse,
+            NativeOastProviderErrorKind::Cancelled => Self::Cancelled,
+            NativeOastProviderErrorKind::DeadlineExceeded => Self::Timeout,
+            NativeOastProviderErrorKind::ProviderExpired => Self::Expired,
+            NativeOastProviderErrorKind::RuntimeBudget(_)
+            | NativeOastProviderErrorKind::ParentBudgetTooSmall
+            | NativeOastProviderErrorKind::RequestLimit
+            | NativeOastProviderErrorKind::RequestByteLimit
+            | NativeOastProviderErrorKind::ResponseByteLimit => Self::BudgetRejected,
+            NativeOastProviderErrorKind::PollLimit => Self::PollLimit,
+            NativeOastProviderErrorKind::CleanupUnverified => Self::CleanupUnverified,
+            NativeOastProviderErrorKind::InternalInvariant => Self::InternalInvariant,
+            NativeOastProviderErrorKind::InvalidLimits
+            | NativeOastProviderErrorKind::InvalidProviderOrigin
+            | NativeOastProviderErrorKind::ProviderTargetOriginOverlap
+            | NativeOastProviderErrorKind::AuthorityAlreadyMinted
+            | NativeOastProviderErrorKind::OperationNotPermitted
+            | NativeOastProviderErrorKind::InvalidLifecycle
+            | NativeOastProviderErrorKind::RegistrationLimit
+            | NativeOastProviderErrorKind::CallbackLimit => Self::LocalRejected,
+        }
+    }
+}
+
 /// Redaction-safe audit retained by the one composed assessment report.
 #[derive(Clone, Eq, PartialEq, Serialize)]
 pub struct WebAssessmentSsrfOastAudit {
@@ -161,6 +233,10 @@ pub struct WebAssessmentSsrfOastAudit {
     candidate_source: Option<&'static str>,
     target_request_count: u8,
     provider_request_count: u8,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    provider_failure: Option<SsrfOastProviderFailure>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cleanup_failure: Option<SsrfOastProviderFailure>,
     active_verification_count: u8,
     preflight_clean: bool,
     candidate_callback_observed: bool,
@@ -182,8 +258,18 @@ impl WebAssessmentSsrfOastAudit {
     pub const fn target_request_count(&self) -> u8 {
         self.target_request_count
     }
+    /// Cumulative operations admitted and charged by the parent provider permit.
+    /// Logical failure receipts and proof of server receipt are not this count.
     pub const fn provider_request_count(&self) -> u8 {
         self.provider_request_count
+    }
+    /// First provider failure, excluding the separate cleanup operation.
+    pub const fn provider_failure(&self) -> Option<SsrfOastProviderFailure> {
+        self.provider_failure
+    }
+    /// Failure of the explicit cleanup attempt, without replacing the cause.
+    pub const fn cleanup_failure(&self) -> Option<SsrfOastProviderFailure> {
+        self.cleanup_failure
     }
     pub const fn active_verification_count(&self) -> u8 {
         self.active_verification_count
@@ -213,6 +299,8 @@ impl fmt::Debug for WebAssessmentSsrfOastAudit {
             .field("candidate_source", &self.candidate_source)
             .field("target_request_count", &self.target_request_count)
             .field("provider_request_count", &self.provider_request_count)
+            .field("provider_failure", &self.provider_failure)
+            .field("cleanup_failure", &self.cleanup_failure)
             .field("active_verification_count", &self.active_verification_count)
             .field("preflight_clean", &self.preflight_clean)
             .field(
@@ -484,10 +572,29 @@ struct SsrfOastExecutionState {
     terminal: Option<SsrfOastTerminalState>,
     runtime_limit: Option<RuntimeLimitExceeded>,
     provider_request_count: u8,
+    provider_failure: Option<SsrfOastProviderFailure>,
+    cleanup_failure: Option<SsrfOastProviderFailure>,
     source: Option<SsrfOastCandidateSource>,
     parameter_identity: Option<String>,
     evidence_ids: Vec<EvidenceId>,
     cleanup_verified: bool,
+}
+
+impl SsrfOastExecutionState {
+    fn retain_provider_audit(&mut self, provider: &NativeOastProviderAdapter) {
+        self.provider_request_count =
+            u8::try_from(provider.admitted_provider_requests()).unwrap_or(u8::MAX);
+        self.retain_provider_failures(provider.provider_failure(), provider.cleanup_failure());
+    }
+
+    fn retain_provider_failures(
+        &mut self,
+        provider_failure: Option<NativeOastProviderErrorKind>,
+        cleanup_failure: Option<NativeOastProviderErrorKind>,
+    ) {
+        self.provider_failure = self.provider_failure.or(provider_failure.map(Into::into));
+        self.cleanup_failure = self.cleanup_failure.or(cleanup_failure.map(Into::into));
+    }
 }
 
 struct PreparedSsrfOast {
@@ -644,6 +751,10 @@ impl SsrfOastDecisionExecutor {
             Ok(provider) => provider,
             Err(error) => {
                 self.stop(provider_terminal(error.kind()), None)?;
+                self.state
+                    .lock()
+                    .map_err(|_| DecisionExecutorError::new("SSRF OAST state is unavailable"))?
+                    .retain_provider_failures(Some(error.kind()), None);
                 return phase_evidence(
                     request,
                     control_bytes,
@@ -833,8 +944,7 @@ impl SsrfOastDecisionExecutor {
                 .map_err(|_| DecisionExecutorError::new("SSRF OAST state is unavailable"))?;
             state.cleanup_verified = facts.cleanup_verified;
             state.facts = Some(facts);
-            state.provider_request_count =
-                u8::try_from(provider.receipts().len()).unwrap_or(u8::MAX);
+            state.retain_provider_audit(&provider);
             state.source = Some(source);
             state.parameter_identity = Some(parameter_identity);
             return phase_evidence(
@@ -844,11 +954,11 @@ impl SsrfOastDecisionExecutor {
                 Some((&signal, control_response.status())),
             );
         }
-        let provider_count = u8::try_from(provider.receipts().len()).unwrap_or(u8::MAX);
         let mut state = self
             .state
             .lock()
             .map_err(|_| DecisionExecutorError::new("SSRF OAST state is unavailable"))?;
+        state.retain_provider_audit(&provider);
         state.prepared = Some(PreparedSsrfOast {
             provider,
             plan,
@@ -858,7 +968,6 @@ impl SsrfOastDecisionExecutor {
             replay_correlation,
             facts,
         });
-        state.provider_request_count = provider_count;
         state.source = Some(source);
         state.parameter_identity = Some(parameter_identity);
         let lifecycle = SsrfOastLifecycleEvidence::from_facts(
@@ -1006,7 +1115,6 @@ impl SsrfOastDecisionExecutor {
             provider_accounting_is_complete(&prepared.provider);
         prepared.facts.target_accounting_complete =
             current_target_accounting_is_complete(&self.authority);
-        let provider_count = u8::try_from(prepared.provider.receipts().len()).unwrap_or(u8::MAX);
         let terminal = prepared.facts.terminal.is_some()
             && !matches!(
                 prepared.facts.terminal,
@@ -1025,7 +1133,7 @@ impl SsrfOastDecisionExecutor {
             .state
             .lock()
             .map_err(|_| DecisionExecutorError::new("SSRF OAST state is unavailable"))?;
-        state.provider_request_count = provider_count;
+        state.retain_provider_audit(&prepared.provider);
         state.terminal = prepared.facts.terminal;
         state.cleanup_verified = prepared.facts.cleanup_verified;
         state.evidence_ids.extend(ssrf_evidence_ids(&evidence));
@@ -1048,8 +1156,7 @@ impl SsrfOastDecisionExecutor {
             .state
             .lock()
             .map_err(|_| DecisionExecutorError::new("SSRF OAST state is unavailable"))?;
-        state.provider_request_count =
-            u8::try_from(prepared.provider.receipts().len()).unwrap_or(u8::MAX);
+        state.retain_provider_audit(&prepared.provider);
         state.terminal = prepared.facts.terminal;
         state.runtime_limit = limit;
         state.cleanup_verified = prepared.facts.cleanup_verified;
@@ -1069,7 +1176,7 @@ impl SsrfOastDecisionExecutor {
             .state
             .lock()
             .map_err(|_| DecisionExecutorError::new("SSRF OAST state is unavailable"))?;
-        state.provider_request_count = u8::try_from(provider.receipts().len()).unwrap_or(u8::MAX);
+        state.retain_provider_audit(&provider);
         state.terminal = Some(terminal);
         state.runtime_limit = limit;
         state.source = Some(context.source);
@@ -1332,7 +1439,7 @@ fn provider_terminal(kind: NativeOastProviderErrorKind) -> SsrfOastTerminalState
         | NativeOastProviderErrorKind::ResponseByteLimit
         | NativeOastProviderErrorKind::RequestByteLimit => SsrfOastTerminalState::BudgetExhausted,
         NativeOastProviderErrorKind::PollLimit => SsrfOastTerminalState::PollExhausted,
-        NativeOastProviderErrorKind::ProviderRejected => {
+        NativeOastProviderErrorKind::ProviderAccessRejected => {
             SsrfOastTerminalState::ProviderAuthenticationFailed
         },
         NativeOastProviderErrorKind::ProviderResponseInvalid
@@ -1639,6 +1746,8 @@ fn audit(
         candidate_source: state.source.map(SsrfOastCandidateSource::as_str),
         target_request_count: target_requests,
         provider_request_count: state.provider_request_count,
+        provider_failure: state.provider_failure,
+        cleanup_failure: state.cleanup_failure,
         active_verification_count: u8::from(target_requests >= 2),
         preflight_clean: facts.is_some_and(|facts| facts.preflight_clean),
         candidate_callback_observed: facts.is_some_and(|facts| facts.candidate_event.is_some()),
@@ -1923,7 +2032,7 @@ mod tests {
                 SsrfOastTerminalState::PollExhausted,
             ),
             (
-                NativeOastProviderErrorKind::ProviderRejected,
+                NativeOastProviderErrorKind::ProviderAccessRejected,
                 SsrfOastTerminalState::ProviderAuthenticationFailed,
             ),
             (
@@ -1941,6 +2050,441 @@ mod tests {
         ] {
             assert_eq!(provider_terminal(kind), expected);
         }
+    }
+
+    #[test]
+    fn local_credential_rejection_is_not_remote_authentication_evidence() {
+        assert_eq!(
+            provider_terminal(NativeOastProviderErrorKind::ProviderRejected),
+            SsrfOastTerminalState::Incomplete
+        );
+    }
+
+    #[test]
+    fn provider_unavailability_is_not_remote_authentication_evidence() {
+        for kind in [
+            NativeOastProviderErrorKind::ProviderThrottled,
+            NativeOastProviderErrorKind::ProviderNotFound,
+            NativeOastProviderErrorKind::ProviderGone,
+            NativeOastProviderErrorKind::ProviderRedirectRefused,
+            NativeOastProviderErrorKind::ProviderServerFailure,
+            NativeOastProviderErrorKind::ProviderTransportFailure,
+            NativeOastProviderErrorKind::ProviderRequestConstruction,
+            NativeOastProviderErrorKind::ProviderClientInitialization,
+            NativeOastProviderErrorKind::ProviderUnexpectedStatus,
+        ] {
+            assert_eq!(provider_terminal(kind), SsrfOastTerminalState::Incomplete);
+        }
+        // Preserve the coarse public category while the sidecar reports only
+        // access rejection, without guessing whether a token caused it.
+        assert_eq!(
+            provider_terminal(NativeOastProviderErrorKind::ProviderAccessRejected),
+            SsrfOastTerminalState::ProviderAuthenticationFailed
+        );
+    }
+
+    #[test]
+    fn provider_failure_sidecars_have_closed_raw_free_wire_values() {
+        use NativeOastProviderErrorKind as Kind;
+        use SsrfOastProviderFailure as Failure;
+
+        for (kind, expected, wire) in [
+            (
+                Kind::ProviderRejected,
+                Failure::CredentialInputInvalid,
+                "credential_input_invalid",
+            ),
+            (
+                Kind::ProviderAccessRejected,
+                Failure::AccessRejected,
+                "access_rejected",
+            ),
+            (Kind::ProviderThrottled, Failure::Throttled, "throttled"),
+            (Kind::ProviderNotFound, Failure::NotFound, "not_found"),
+            (Kind::ProviderGone, Failure::Gone, "gone"),
+            (
+                Kind::ProviderRedirectRefused,
+                Failure::RedirectRefused,
+                "redirect_refused",
+            ),
+            (
+                Kind::ProviderServerFailure,
+                Failure::ServerFailure,
+                "server_failure",
+            ),
+            (
+                Kind::ProviderTransportFailure,
+                Failure::TransportFailure,
+                "transport_failure",
+            ),
+            (
+                Kind::ProviderRequestConstruction,
+                Failure::RequestConstruction,
+                "request_construction",
+            ),
+            (
+                Kind::ProviderClientInitialization,
+                Failure::ClientInitialization,
+                "client_initialization",
+            ),
+            (
+                Kind::ProviderUnexpectedStatus,
+                Failure::UnexpectedStatus,
+                "unexpected_status",
+            ),
+            (
+                Kind::ProviderResponseInvalid,
+                Failure::MalformedResponse,
+                "malformed_response",
+            ),
+            (
+                Kind::ProviderSessionMismatch,
+                Failure::MalformedResponse,
+                "malformed_response",
+            ),
+            (
+                Kind::ProviderCallbackMismatch,
+                Failure::MalformedResponse,
+                "malformed_response",
+            ),
+            (
+                Kind::ProviderPageIncomplete,
+                Failure::MalformedResponse,
+                "malformed_response",
+            ),
+            (
+                Kind::CorrelationRejected,
+                Failure::MalformedResponse,
+                "malformed_response",
+            ),
+            (Kind::Cancelled, Failure::Cancelled, "cancelled"),
+            (Kind::DeadlineExceeded, Failure::Timeout, "timeout"),
+            (Kind::ProviderExpired, Failure::Expired, "expired"),
+            (
+                Kind::RuntimeBudget(crate::RuntimeBudgetDimension::TotalRequests),
+                Failure::BudgetRejected,
+                "budget_rejected",
+            ),
+            (
+                Kind::ParentBudgetTooSmall,
+                Failure::BudgetRejected,
+                "budget_rejected",
+            ),
+            (
+                Kind::RequestLimit,
+                Failure::BudgetRejected,
+                "budget_rejected",
+            ),
+            (
+                Kind::RequestByteLimit,
+                Failure::BudgetRejected,
+                "budget_rejected",
+            ),
+            (
+                Kind::ResponseByteLimit,
+                Failure::BudgetRejected,
+                "budget_rejected",
+            ),
+            (Kind::PollLimit, Failure::PollLimit, "poll_limit"),
+            (
+                Kind::CleanupUnverified,
+                Failure::CleanupUnverified,
+                "cleanup_unverified",
+            ),
+            (
+                Kind::InternalInvariant,
+                Failure::InternalInvariant,
+                "internal_invariant",
+            ),
+            (
+                Kind::InvalidLimits,
+                Failure::LocalRejected,
+                "local_rejected",
+            ),
+            (
+                Kind::InvalidProviderOrigin,
+                Failure::LocalRejected,
+                "local_rejected",
+            ),
+            (
+                Kind::ProviderTargetOriginOverlap,
+                Failure::LocalRejected,
+                "local_rejected",
+            ),
+            (
+                Kind::AuthorityAlreadyMinted,
+                Failure::LocalRejected,
+                "local_rejected",
+            ),
+            (
+                Kind::OperationNotPermitted,
+                Failure::LocalRejected,
+                "local_rejected",
+            ),
+            (
+                Kind::InvalidLifecycle,
+                Failure::LocalRejected,
+                "local_rejected",
+            ),
+            (
+                Kind::RegistrationLimit,
+                Failure::LocalRejected,
+                "local_rejected",
+            ),
+            (
+                Kind::CallbackLimit,
+                Failure::LocalRejected,
+                "local_rejected",
+            ),
+        ] {
+            let actual = SsrfOastProviderFailure::from(kind);
+            assert_eq!(actual, expected);
+            assert_eq!(serde_json::to_value(actual).unwrap(), wire);
+        }
+    }
+
+    #[test]
+    fn client_failure_classes_reach_the_serializable_audit_without_response_data() {
+        use crate::native_oast_provider::provider_client_failure_kind;
+        use termivar_oast::{
+            NativeOastBoundaryRejection, NativeOastClientErrorKind as Client,
+            NativeOastHttpFailure as Http,
+        };
+        use SsrfOastProviderFailure as Failure;
+        use SsrfOastTerminalState as Terminal;
+
+        let target = url::Url::parse("http://127.0.0.1:41001/").unwrap();
+        let provider =
+            PublicOrigin::from_test_loopback("127.0.0.1:41002".parse().unwrap()).unwrap();
+        let policy = SsrfOastReviewPolicy::for_loopback(target, provider, 1, 250, 5_000).unwrap();
+        // Independent expectations include every status class and the unknown
+        // fallback. No test constructs a request or reads response prose.
+        for (input, http, failure, terminal, wire) in [
+            (
+                Client::UnexpectedStatus,
+                Some(Http::AccessRejected),
+                Failure::AccessRejected,
+                Terminal::ProviderAuthenticationFailed,
+                "access_rejected",
+            ),
+            (
+                Client::UnexpectedStatus,
+                Some(Http::Throttled),
+                Failure::Throttled,
+                Terminal::Incomplete,
+                "throttled",
+            ),
+            (
+                Client::UnexpectedStatus,
+                Some(Http::NotFound),
+                Failure::NotFound,
+                Terminal::Incomplete,
+                "not_found",
+            ),
+            (
+                Client::UnexpectedStatus,
+                Some(Http::Gone),
+                Failure::Gone,
+                Terminal::Incomplete,
+                "gone",
+            ),
+            (
+                Client::UnexpectedStatus,
+                Some(Http::RedirectRefused),
+                Failure::RedirectRefused,
+                Terminal::Incomplete,
+                "redirect_refused",
+            ),
+            (
+                Client::UnexpectedStatus,
+                Some(Http::ServerFailure),
+                Failure::ServerFailure,
+                Terminal::Incomplete,
+                "server_failure",
+            ),
+            (
+                Client::UnexpectedStatus,
+                Some(Http::Unexpected),
+                Failure::UnexpectedStatus,
+                Terminal::Incomplete,
+                "unexpected_status",
+            ),
+            (
+                Client::UnexpectedStatus,
+                None,
+                Failure::UnexpectedStatus,
+                Terminal::Incomplete,
+                "unexpected_status",
+            ),
+            (
+                Client::TransportFailure,
+                None,
+                Failure::TransportFailure,
+                Terminal::Incomplete,
+                "transport_failure",
+            ),
+            (
+                Client::RequestConstruction,
+                None,
+                Failure::RequestConstruction,
+                Terminal::Incomplete,
+                "request_construction",
+            ),
+            (
+                Client::ClientInitialization,
+                None,
+                Failure::ClientInitialization,
+                Terminal::Incomplete,
+                "client_initialization",
+            ),
+            (
+                Client::Cancelled,
+                None,
+                Failure::Cancelled,
+                Terminal::Cancelled,
+                "cancelled",
+            ),
+            (
+                Client::DeadlineExceeded,
+                None,
+                Failure::Timeout,
+                Terminal::Expired,
+                "timeout",
+            ),
+            (
+                Client::MalformedResponse,
+                None,
+                Failure::MalformedResponse,
+                Terminal::MalformedProviderResponse,
+                "malformed_response",
+            ),
+            (
+                Client::ProtocolMismatch,
+                None,
+                Failure::MalformedResponse,
+                Terminal::MalformedProviderResponse,
+                "malformed_response",
+            ),
+            (
+                Client::UnsupportedMedia,
+                None,
+                Failure::MalformedResponse,
+                Terminal::MalformedProviderResponse,
+                "malformed_response",
+            ),
+            (
+                Client::ResponseOriginMismatch,
+                None,
+                Failure::MalformedResponse,
+                Terminal::MalformedProviderResponse,
+                "malformed_response",
+            ),
+            (
+                Client::AccountingInvariant,
+                None,
+                Failure::MalformedResponse,
+                Terminal::MalformedProviderResponse,
+                "malformed_response",
+            ),
+            (
+                Client::CallbackTargetMismatch,
+                None,
+                Failure::MalformedResponse,
+                Terminal::MalformedProviderResponse,
+                "malformed_response",
+            ),
+            (
+                Client::ResponseTooLarge,
+                None,
+                Failure::BudgetRejected,
+                Terminal::BudgetExhausted,
+                "budget_rejected",
+            ),
+            (
+                Client::BoundaryRejected(NativeOastBoundaryRejection::OperationNotPermitted),
+                None,
+                Failure::LocalRejected,
+                Terminal::Incomplete,
+                "local_rejected",
+            ),
+        ] {
+            let provider_kind = provider_client_failure_kind(input, http);
+            assert_eq!(provider_terminal(provider_kind), terminal);
+            let mut state = SsrfOastExecutionState::default();
+            state.retain_provider_failures(Some(provider_kind), None);
+            let audit = audit(
+                &policy,
+                &state,
+                SsrfOastRuntimeOutcome::Incomplete,
+                0,
+                false,
+            );
+            assert_eq!(audit.provider_failure(), Some(failure));
+            assert_eq!(audit.cleanup_failure(), None);
+            assert_eq!(audit.provider_request_count(), 0);
+            assert!(!audit.item_projected());
+            let serialized = serde_json::to_value(audit).unwrap();
+            assert_eq!(serialized["provider_failure"], wire);
+            assert!(serialized.get("cleanup_failure").is_none());
+        }
+    }
+
+    #[test]
+    fn provider_diagnostics_preserve_first_error_and_separate_cleanup_without_facts() {
+        let target = url::Url::parse("http://127.0.0.1:41001/").unwrap();
+        let provider =
+            PublicOrigin::from_test_loopback("127.0.0.1:41002".parse().unwrap()).unwrap();
+        let policy = SsrfOastReviewPolicy::for_loopback(target, provider, 1, 250, 5_000).unwrap();
+        let mut state = SsrfOastExecutionState::default();
+        state.retain_provider_failures(
+            Some(NativeOastProviderErrorKind::ProviderServerFailure),
+            None,
+        );
+        state.retain_provider_failures(
+            Some(NativeOastProviderErrorKind::ProviderTransportFailure),
+            Some(NativeOastProviderErrorKind::ProviderAccessRejected),
+        );
+        state.retain_provider_failures(None, None);
+        let primary = audit(
+            &policy,
+            &state,
+            SsrfOastRuntimeOutcome::Incomplete,
+            0,
+            false,
+        );
+        assert_eq!(
+            primary.provider_failure(),
+            Some(SsrfOastProviderFailure::ServerFailure)
+        );
+        assert_eq!(
+            primary.cleanup_failure(),
+            Some(SsrfOastProviderFailure::AccessRejected)
+        );
+        assert_eq!(primary.outcome(), SsrfOastRuntimeOutcome::Incomplete);
+        assert!(!primary.item_projected());
+        let serialized = serde_json::to_value(&primary).unwrap();
+        assert_eq!(serialized["provider_failure"], "server_failure");
+        assert_eq!(serialized["cleanup_failure"], "access_rejected");
+
+        let mut state = SsrfOastExecutionState::default();
+        state.retain_provider_failures(None, Some(NativeOastProviderErrorKind::Cancelled));
+        let cleanup = audit(
+            &policy,
+            &state,
+            SsrfOastRuntimeOutcome::Incomplete,
+            0,
+            false,
+        );
+        assert_eq!(cleanup.provider_failure(), None);
+        assert_eq!(
+            cleanup.cleanup_failure(),
+            Some(SsrfOastProviderFailure::Cancelled)
+        );
+        assert_eq!(cleanup.provider_request_count(), 0);
+        assert!(!cleanup.cleanup_verified());
+        let serialized = serde_json::to_value(&cleanup).unwrap();
+        assert!(serialized.get("provider_failure").is_none());
+        assert_eq!(serialized["cleanup_failure"], "cancelled");
     }
 
     #[test]
@@ -2109,6 +2653,11 @@ mod tests {
         assert_eq!(audit.candidate_source(), Some("observed_url_query"));
         assert_eq!(audit.target_request_count(), 3);
         assert_eq!(audit.provider_request_count(), 7);
+        assert_eq!(audit.provider_failure(), None);
+        assert_eq!(audit.cleanup_failure(), None);
+        let serialized = serde_json::to_value(&audit).unwrap();
+        assert!(serialized.get("provider_failure").is_none());
+        assert!(serialized.get("cleanup_failure").is_none());
         assert_eq!(audit.active_verification_count(), 1);
         assert!(audit.preflight_clean());
         assert!(audit.cleanup_verified());

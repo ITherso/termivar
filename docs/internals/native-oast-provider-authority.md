@@ -86,6 +86,43 @@ expiry, and cleanup status. They do not retain the provider origin, callback
 URL, session or callback identity, credential, header, body, address, path,
 query, or provider timestamp.
 
+### Diagnostic and accounting distinctions
+
+An operation receipt records a logical attempt, including a failure before
+dispatch admission. Its cumulative request count comes from the narrowing
+permit after parent-budget admission, not from the number of receipts. Planned
+request bytes on a client error are not necessarily charged bytes. The adapter
+receipt retains authoritative cumulative admitted bytes and requests; it does
+not discard failure receipts to make these counters agree.
+
+`possibly_dispatched` is conservative: admission can succeed and cancellation
+can win before the wire attempt progresses. It is not proof that a server
+received the request. `response_completed` means the bounded body reached EOF;
+it does not imply valid JSON, a successful status or a verified cleanup. A full
+but malformed body can be complete; a partial or budget-stopped body cannot.
+
+Client diagnostics preserve bounded status classes without retaining response
+prose or headers. 401/403 mean access rejection, not a proven bad token; 429
+means throttling; 404/410 mean not-found/gone, not a guessed expiry cause. 3xx
+is a refused redirect, 5xx is server failure, and unrecognized statuses remain
+unexpected. A 503 does not reveal whether provider capacity or an upstream
+server failed. Transport, request construction, client initialization, malformed
+protocol, cancellation and deadline failures remain distinct where observed.
+No diagnostic causes retry, failover, redirect following or another operation.
+
+The first non-cleanup failure and first cleanup failure are retained separately.
+The existing review audit exposes optional typed `provider_failure` and
+`cleanup_failure` fields even when the coarse review outcome is `incomplete`.
+Its legacy coarse authentication outcome is only used for observed access
+rejection; detailed `access_rejected` does not infer a credential cause. Local
+credential validation is `credential_input_invalid`, not a remote rejection.
+These optional fields are omitted when absent. They are additive serialized
+audit metadata; existing public outcome/error variants and schema/digest IDs
+remain unchanged. Strict external consumers of this audit must allow the new
+optional fields. This maintenance does not add an SSRF audit channel to the
+CLI text/report-format renderer; the existing library audit accessor and its
+direct serialization are the supported visibility boundary.
+
 ## Deliberate exclusions
 
 This revision does not configure a provider from the CLI, start the provider,

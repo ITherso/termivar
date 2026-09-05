@@ -44,11 +44,13 @@ const EXPECTED_AUDIT_FIELDS: &[&str] = &[
     "active_verification_count",
     "candidate_callback_observed",
     "candidate_source",
+    "cleanup_failure",
     "cleanup_verified",
     "item_projected",
     "outcome",
     "policy_id",
     "preflight_clean",
+    "provider_failure",
     "provider_request_count",
     "replay_callback_observed",
     "target_request_count",
@@ -563,6 +565,7 @@ fn contract_violations(sources: &ContractSources) -> Result<Vec<String>, Box<dyn
     result.require(
         36,
         audit_fields.as_ref() == Some(&expected_audit_fields)
+            && diagnostic_enum_is_bounded(&sources.runtime)?
             && !expected_audit_fields.iter().any(|field| {
                 matches!(
                     field.as_str(),
@@ -729,6 +732,14 @@ fn exact_private_struct_fields(
     {
         return Ok(None);
     }
+    if record.fields.iter().any(|field| {
+        field.ident.as_ref().is_some_and(|name| {
+            (name == "provider_failure" || name == "cleanup_failure")
+                && !diagnostic_field_type_is_closed(&field.ty)
+        })
+    }) {
+        return Ok(None);
+    }
     Ok(Some(
         record
             .fields
@@ -736,6 +747,38 @@ fn exact_private_struct_fields(
             .filter_map(|field| field.ident.as_ref().map(ToString::to_string))
             .collect(),
     ))
+}
+
+fn diagnostic_field_type_is_closed(ty: &syn::Type) -> bool {
+    let syn::Type::Path(path) = ty else {
+        return false;
+    };
+    if path.qself.is_some() || path.path.segments.len() != 1 {
+        return false;
+    }
+    let option = &path.path.segments[0];
+    let syn::PathArguments::AngleBracketed(arguments) = &option.arguments else {
+        return false;
+    };
+    option.ident == "Option"
+        && arguments.args.len() == 1
+        && matches!(arguments.args.first(), Some(syn::GenericArgument::Type(syn::Type::Path(inner)))
+            if inner.qself.is_none() && inner.path.is_ident("SsrfOastProviderFailure"))
+}
+
+fn diagnostic_enum_is_bounded(source: &str) -> Result<bool, syn::Error> {
+    let syntax = syn::parse_file(source)?;
+    let enums: Vec<_> = syntax
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Enum(item) if item.ident == "SsrfOastProviderFailure" => Some(item),
+            _ => None,
+        })
+        .collect();
+    Ok(matches!(enums.as_slice(), [item]
+        if !item.variants.is_empty() && item.variants.len() <= 32
+        && item.variants.iter().all(|variant| matches!(variant.fields, Fields::Unit))))
 }
 
 fn compact_whitespace(source: &str) -> String {
@@ -1165,6 +1208,24 @@ mod tests {
         );
         assert_gate_fails(&mutation, 36);
 
+        for changed in [
+            sources.runtime.replace(
+                "provider_failure: Option<SsrfOastProviderFailure>",
+                "pub provider_failure: Option<SsrfOastProviderFailure>",
+            ),
+            sources.runtime.replace(
+                "cleanup_failure: Option<SsrfOastProviderFailure>",
+                "cleanup_failure: Option<String>",
+            ),
+            sources
+                .runtime
+                .replace("    AccessRejected,", "    AccessRejected(String),"),
+        ] {
+            let mut mutation = sources.clone();
+            mutation.runtime = changed;
+            assert_gate_fails(&mutation, 36);
+        }
+
         let mut mutation = sources.clone();
         mutation
             .release_workflow
@@ -1174,5 +1235,48 @@ mod tests {
         let mut mutation = sources;
         mutation.domain = append_production(&mutation.domain, "#[coverage(off)] fn hidden() {}");
         assert_gate_fails(&mutation, 38);
+    }
+
+    #[test]
+    fn provider_diagnostics_are_optional_closed_unit_values() {
+        for ty in [
+            "String",
+            "&str",
+            "std::option::Option<SsrfOastProviderFailure>",
+            "<T as Trait>::Type",
+            "Option<()>",
+            "Option<String>",
+            "Option<SsrfOastProviderFailure, String>",
+            "Vec<SsrfOastProviderFailure>",
+        ] {
+            assert!(
+                !diagnostic_field_type_is_closed(&syn::parse_str(ty).unwrap()),
+                "{ty}"
+            );
+        }
+        assert!(diagnostic_field_type_is_closed(
+            &syn::parse_str("Option<SsrfOastProviderFailure>").unwrap()
+        ));
+        assert!(
+            diagnostic_enum_is_bounded("enum SsrfOastProviderFailure { AccessRejected }").unwrap()
+        );
+        for source in [
+            "",
+            "enum SsrfOastProviderFailure {}",
+            "enum SsrfOastProviderFailure { Raw(String) }",
+            "enum SsrfOastProviderFailure { Raw { value: String } }",
+            "enum SsrfOastProviderFailure { A } enum SsrfOastProviderFailure { B }",
+        ] {
+            assert!(!diagnostic_enum_is_bounded(source).unwrap());
+        }
+        assert!(diagnostic_enum_is_bounded("enum").is_err());
+        let variants = (0..33)
+            .map(|index| format!("Case{index}"))
+            .collect::<Vec<_>>()
+            .join(",");
+        assert!(!diagnostic_enum_is_bounded(&format!(
+            "enum SsrfOastProviderFailure {{ {variants} }}"
+        ))
+        .unwrap());
     }
 }

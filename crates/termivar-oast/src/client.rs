@@ -94,6 +94,7 @@ pub trait NativeOastClientBoundary {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct NativeOastDispatchAccounting {
     possibly_dispatched: bool,
+    response_completed: bool,
     request_bytes: u64,
     request_body_bytes: u64,
     response_bytes: u64,
@@ -103,6 +104,7 @@ impl NativeOastDispatchAccounting {
     fn planned(request_bytes: u64, request_body_bytes: u64) -> Self {
         Self {
             possibly_dispatched: false,
+            response_completed: false,
             request_bytes,
             request_body_bytes,
             response_bytes: 0,
@@ -114,8 +116,19 @@ impl NativeOastDispatchAccounting {
         self.possibly_dispatched
     }
 
-    /// Conservative canonical application-request bytes charged to the
-    /// provider permit. This covers the fixed method, request target, explicit
+    /// Whether the entire bounded response body reached normal EOF.
+    ///
+    /// This does not imply successful status, decoding, or protocol validation.
+    /// Early head rejection, partial body delivery, cancellation before EOF,
+    /// and retention failure leave this false; byte counts alone cannot
+    /// establish completion. A later decoding failure does not undo EOF.
+    pub const fn response_completed(self) -> bool {
+        self.response_completed
+    }
+
+    /// Conservative canonical planned application-request bytes. These are
+    /// charged only if the caller boundary admits dispatch. This covers the
+    /// fixed method, request target, explicit
     /// headers, and body, while excluding transport framing. Administrator
     /// credentials are charged at their protocol maximum so this value never
     /// reveals actual secret length.
@@ -123,7 +136,7 @@ impl NativeOastDispatchAccounting {
         self.request_bytes
     }
 
-    /// Exact canonical request-body bytes admitted by the boundary.
+    /// Exact canonical planned request-body bytes, charged only after admission.
     pub const fn request_body_bytes(self) -> u64 {
         self.request_body_bytes
     }
@@ -205,21 +218,80 @@ pub enum NativeOastClientErrorKind {
     AccountingInvariant,
 }
 
+/// Bounded classification of an unexpected HTTP response status.
+///
+/// These observations do not identify which upstream component produced the
+/// status or establish a cause. In particular, access rejection is not proof
+/// that a credential is invalid. No status prose, URL, header, or body is kept.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum NativeOastHttpFailure {
+    /// HTTP 401 or 403 rejected access, possibly at an intermediary.
+    AccessRejected,
+    /// HTTP 429 reported throttling; this does not authorize a retry.
+    Throttled,
+    /// HTTP 404 reported that the addressed resource was not found.
+    NotFound,
+    /// HTTP 410 reported that the addressed resource is gone.
+    Gone,
+    /// An unexpected 3xx response was received; redirects remain disabled.
+    RedirectRefused,
+    /// An unexpected 5xx response reported a server-side failure.
+    ServerFailure,
+    /// Any other status differed from the fixed operation contract.
+    Unexpected,
+}
+
+impl NativeOastHttpFailure {
+    const fn from_status(status: StatusCode) -> Self {
+        match status.as_u16() {
+            401 | 403 => Self::AccessRejected,
+            429 => Self::Throttled,
+            404 => Self::NotFound,
+            410 => Self::Gone,
+            300..=399 => Self::RedirectRefused,
+            500..=599 => Self::ServerFailure,
+            _ => Self::Unexpected,
+        }
+    }
+}
+
 /// Fixed-client error carrying no URL, body, header, identifier, or secret.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct NativeOastClientError {
     kind: NativeOastClientErrorKind,
+    http_failure: Option<NativeOastHttpFailure>,
     accounting: NativeOastDispatchAccounting,
 }
 
 impl NativeOastClientError {
     fn new(kind: NativeOastClientErrorKind, accounting: NativeOastDispatchAccounting) -> Self {
-        Self { kind, accounting }
+        Self {
+            kind,
+            http_failure: None,
+            accounting,
+        }
+    }
+
+    fn unexpected_status(status: StatusCode, accounting: NativeOastDispatchAccounting) -> Self {
+        Self {
+            kind: NativeOastClientErrorKind::UnexpectedStatus,
+            http_failure: Some(NativeOastHttpFailure::from_status(status)),
+            accounting,
+        }
     }
 
     /// Static error classification.
     pub const fn kind(self) -> NativeOastClientErrorKind {
         self.kind
+    }
+
+    /// Additional raw-free detail when an unexpected HTTP status was observed.
+    ///
+    /// The existing error kind remains `UnexpectedStatus`. Other failures do
+    /// not acquire HTTP metadata, including an earlier response-origin failure.
+    pub const fn http_failure(self) -> Option<NativeOastHttpFailure> {
+        self.http_failure
     }
 
     /// Exact accounting preserved even on cancellation and failure.
@@ -233,6 +305,7 @@ impl fmt::Debug for NativeOastClientError {
         formatter
             .debug_struct("NativeOastClientError")
             .field("kind", &self.kind)
+            .field("http_failure", &self.http_failure)
             .field("accounting", &self.accounting)
             .finish()
     }
@@ -733,8 +806,8 @@ fn validate_response_head(
         ));
     }
     if response.status() != expected_status {
-        return Err(NativeOastClientError::new(
-            NativeOastClientErrorKind::UnexpectedStatus,
+        return Err(NativeOastClientError::unexpected_status(
+            response.status(),
             accounting,
         ));
     }
@@ -823,6 +896,7 @@ async fn read_response_body<B: NativeOastClientBoundary + ?Sized>(
         }
         body.extend_from_slice(&chunk);
     }
+    accounting.response_completed = true;
     Ok(body)
 }
 
@@ -1331,6 +1405,7 @@ mod tests {
         assert_eq!(dispatch.value().session_id(), &session_id());
         assert_eq!(dispatch.value().expires_after_ms(), 1_000);
         assert!(dispatch.accounting().possibly_dispatched());
+        assert!(dispatch.accounting().response_completed());
         assert_eq!(
             dispatch.accounting().response_bytes(),
             expected_response_bytes
@@ -1500,6 +1575,10 @@ mod tests {
                 .unwrap_err();
             task.await.unwrap();
             assert_eq!(error.kind(), expected);
+            assert_eq!(
+                error.accounting().response_completed(),
+                expected == NativeOastClientErrorKind::MalformedResponse
+            );
             assert!(!format!("{error:?}").contains("MUST-NOT-LEAK"));
             assert!(!error.to_string().contains("MUST-NOT-LEAK"));
         }
@@ -1522,6 +1601,7 @@ mod tests {
         task.await.unwrap();
         assert_eq!(error.kind(), NativeOastClientErrorKind::ProtocolMismatch);
         assert_eq!(error.accounting().response_bytes(), expected);
+        assert!(error.accounting().response_completed());
 
         let wire: RegistrationWire = serde_json::from_slice(&registration_json()).unwrap();
         let error = validate_registration(
@@ -1906,6 +1986,299 @@ mod tests {
             "callback_target": oversized_target,
         }))
         .is_err());
+    }
+
+    #[cfg(feature = "server")]
+    fn synthetic_response_head(status: StatusCode) -> Response {
+        synthetic_response_body(status, reqwest::Body::from("BODY-MUST-NOT-LEAK"))
+    }
+
+    #[cfg(feature = "server")]
+    fn synthetic_response_body(status: StatusCode, body: reqwest::Body) -> Response {
+        use reqwest::ResponseBuilderExt;
+
+        // In-memory response conversion only: no client, listener or dispatch.
+        hyper::Response::builder()
+            .status(status)
+            .url(Url::parse("https://provider.example/v1/sessions").unwrap())
+            .header(CONTENT_TYPE, JSON_MEDIA_TYPE)
+            .header("location", "https://LOCATION-MUST-NOT-LEAK.example/")
+            .header("x-private", "HEADER-MUST-NOT-LEAK")
+            .body(body)
+            .unwrap()
+            .into()
+    }
+
+    #[cfg(feature = "server")]
+    #[test]
+    fn response_status_failures_retain_distinct_bounded_diagnostics() {
+        let access = synthetic_response_head(StatusCode::UNAUTHORIZED);
+        let throttled = synthetic_response_head(StatusCode::TOO_MANY_REQUESTS);
+        let accounting = NativeOastDispatchAccounting::planned(91, 19);
+        let access_error =
+            validate_response_head(&access, StatusCode::CREATED, access.url(), accounting)
+                .unwrap_err();
+        let throttle_error =
+            validate_response_head(&throttled, StatusCode::CREATED, throttled.url(), accounting)
+                .unwrap_err();
+        assert_eq!(
+            access_error.kind(),
+            NativeOastClientErrorKind::UnexpectedStatus
+        );
+        assert_eq!(
+            throttle_error.kind(),
+            NativeOastClientErrorKind::UnexpectedStatus
+        );
+        assert_eq!(access_error.accounting(), throttle_error.accounting());
+        assert_ne!(
+            access_error, throttle_error,
+            "access rejection and throttling must retain distinct raw-free diagnostics"
+        );
+    }
+
+    #[cfg(feature = "server")]
+    #[test]
+    fn synthetic_status_diagnostics_are_bounded_raw_free_and_preserve_accounting() {
+        let mut accounting = NativeOastDispatchAccounting::planned(91, 19);
+        accounting.possibly_dispatched = true;
+        for (status, expected) in [
+            (401, NativeOastHttpFailure::AccessRejected),
+            (403, NativeOastHttpFailure::AccessRejected),
+            (429, NativeOastHttpFailure::Throttled),
+            (404, NativeOastHttpFailure::NotFound),
+            (410, NativeOastHttpFailure::Gone),
+            (300, NativeOastHttpFailure::RedirectRefused),
+            (301, NativeOastHttpFailure::RedirectRefused),
+            (302, NativeOastHttpFailure::RedirectRefused),
+            (304, NativeOastHttpFailure::RedirectRefused),
+            (307, NativeOastHttpFailure::RedirectRefused),
+            (308, NativeOastHttpFailure::RedirectRefused),
+            (399, NativeOastHttpFailure::RedirectRefused),
+            (500, NativeOastHttpFailure::ServerFailure),
+            (502, NativeOastHttpFailure::ServerFailure),
+            (503, NativeOastHttpFailure::ServerFailure),
+            (504, NativeOastHttpFailure::ServerFailure),
+            (599, NativeOastHttpFailure::ServerFailure),
+            (100, NativeOastHttpFailure::Unexpected),
+            (200, NativeOastHttpFailure::Unexpected),
+            (204, NativeOastHttpFailure::Unexpected),
+            (400, NativeOastHttpFailure::Unexpected),
+            (405, NativeOastHttpFailure::Unexpected),
+            (408, NativeOastHttpFailure::Unexpected),
+            (413, NativeOastHttpFailure::Unexpected),
+            (415, NativeOastHttpFailure::Unexpected),
+            (600, NativeOastHttpFailure::Unexpected),
+        ] {
+            let response = synthetic_response_head(StatusCode::from_u16(status).unwrap());
+            let error =
+                validate_response_head(&response, StatusCode::CREATED, response.url(), accounting)
+                    .unwrap_err();
+            assert_eq!(error.kind(), NativeOastClientErrorKind::UnexpectedStatus);
+            assert_eq!(error.http_failure(), Some(expected));
+            assert_eq!(error.accounting(), accounting);
+            assert_eq!(error.accounting().response_bytes(), 0);
+            assert!(!error.accounting().response_completed());
+            assert_eq!(
+                error.to_string(),
+                "native OAST provider returned an unexpected status"
+            );
+            assert!(std::error::Error::source(&error).is_none());
+            let rendered = format!("{error:?} {error}");
+            for forbidden in [
+                "BODY-MUST-NOT-LEAK",
+                "HEADER-MUST-NOT-LEAK",
+                "LOCATION-MUST-NOT-LEAK",
+                "provider.example",
+                "bad token",
+            ] {
+                assert!(!rendered.contains(forbidden));
+            }
+        }
+        let access = |status| {
+            let response = synthetic_response_head(status);
+            validate_response_head(&response, StatusCode::CREATED, response.url(), accounting)
+                .unwrap_err()
+        };
+        // A class, not the exact status code or any upstream prose, is kept.
+        assert_eq!(
+            access(StatusCode::UNAUTHORIZED),
+            access(StatusCode::FORBIDDEN)
+        );
+    }
+
+    #[cfg(feature = "server")]
+    #[test]
+    fn synthetic_status_diagnostics_preserve_head_validation_order() {
+        let accounting = NativeOastDispatchAccounting::planned(17, 0);
+        let response = synthetic_response_head(StatusCode::UNAUTHORIZED);
+        let other_route = Url::parse("https://provider.example/v1/other").unwrap();
+        let origin_error =
+            validate_response_head(&response, StatusCode::CREATED, &other_route, accounting)
+                .unwrap_err();
+        assert_eq!(
+            origin_error.kind(),
+            NativeOastClientErrorKind::ResponseOriginMismatch
+        );
+        assert_eq!(origin_error.http_failure(), None);
+        assert_eq!(origin_error.accounting(), accounting);
+
+        let mut response = synthetic_response_head(StatusCode::CREATED);
+        validate_response_head(&response, StatusCode::CREATED, response.url(), accounting).unwrap();
+        response.headers_mut().remove(CONTENT_TYPE);
+        let media_error =
+            validate_response_head(&response, StatusCode::CREATED, response.url(), accounting)
+                .unwrap_err();
+        assert_eq!(
+            media_error.kind(),
+            NativeOastClientErrorKind::UnsupportedMedia
+        );
+        assert_eq!(media_error.http_failure(), None);
+        assert_eq!(media_error.accounting(), accounting);
+
+        for kind in [
+            NativeOastClientErrorKind::Cancelled,
+            NativeOastClientErrorKind::TransportFailure,
+            NativeOastClientErrorKind::MalformedResponse,
+            NativeOastClientErrorKind::BoundaryRejected(
+                NativeOastBoundaryRejection::OperationNotPermitted,
+            ),
+        ] {
+            assert_eq!(
+                NativeOastClientError::new(kind, accounting).http_failure(),
+                None
+            );
+        }
+    }
+
+    #[cfg(feature = "server")]
+    #[tokio::test]
+    async fn synthetic_complete_bodies_mark_completion_even_when_empty_or_malformed() {
+        assert!(!NativeOastDispatchAccounting::default().response_completed());
+        for bytes in [b"".as_slice(), b"{}".as_slice(), b"{malformed".as_slice()] {
+            let mut boundary = TestBoundary::open();
+            let cancellation = boundary.cancellation.clone();
+            let deadline = boundary.deadline;
+            let mut accounting = NativeOastDispatchAccounting::planned(91, 19);
+            accounting.possibly_dispatched = true;
+            let response = synthetic_response_body(StatusCode::OK, reqwest::Body::from(bytes));
+            let body = read_response_body(
+                response,
+                &mut boundary,
+                &cancellation,
+                deadline,
+                &mut accounting,
+            )
+            .await
+            .unwrap();
+            assert_eq!(body.as_slice(), bytes);
+            assert!(accounting.possibly_dispatched());
+            assert!(accounting.response_completed());
+            assert_eq!(accounting.response_bytes(), bytes.len() as u64);
+            assert_eq!(boundary.observed, bytes.len() as u64);
+            assert!(boundary.begun.is_empty());
+            if serde_json::from_slice::<serde_json::Value>(&body).is_err() {
+                let error = NativeOastClientError::new(
+                    NativeOastClientErrorKind::MalformedResponse,
+                    accounting,
+                );
+                assert!(error.accounting().response_completed());
+                assert_eq!(error.http_failure(), None);
+            }
+        }
+    }
+
+    #[cfg(feature = "server")]
+    struct SyntheticTruncatedBody {
+        delivered: bool,
+    }
+
+    #[cfg(feature = "server")]
+    impl hyper::body::Body for SyntheticTruncatedBody {
+        type Data = hyper::body::Bytes;
+        type Error = std::io::Error;
+
+        fn poll_frame(
+            mut self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Option<Result<hyper::body::Frame<Self::Data>, Self::Error>>> {
+            let result = if self.delivered {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::UnexpectedEof,
+                    "BODY-ERROR-MUST-NOT-LEAK",
+                ))
+            } else {
+                self.delivered = true;
+                Ok(hyper::body::Frame::data(hyper::body::Bytes::from_static(
+                    b"part",
+                )))
+            };
+            std::task::Poll::Ready(Some(result))
+        }
+    }
+
+    #[cfg(feature = "server")]
+    #[tokio::test]
+    async fn synthetic_partial_body_failure_preserves_bytes_without_claiming_completion() {
+        let body = SyntheticTruncatedBody { delivered: false };
+        let response = synthetic_response_body(StatusCode::OK, reqwest::Body::wrap(body));
+        let mut boundary = TestBoundary::open();
+        let cancellation = boundary.cancellation.clone();
+        let deadline = boundary.deadline;
+        let mut accounting = NativeOastDispatchAccounting::planned(91, 19);
+        accounting.possibly_dispatched = true;
+        let error = read_response_body(
+            response,
+            &mut boundary,
+            &cancellation,
+            deadline,
+            &mut accounting,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.kind(), NativeOastClientErrorKind::TransportFailure);
+        assert!(error.accounting().possibly_dispatched());
+        assert!(!error.accounting().response_completed());
+        assert_eq!(error.accounting().response_bytes(), 4);
+        assert_eq!(boundary.observed, 4);
+        assert_eq!(error.accounting(), accounting);
+        assert_eq!(error.http_failure(), None);
+        assert!(!format!("{error:?} {error}").contains("BODY-ERROR-MUST-NOT-LEAK"));
+    }
+
+    #[cfg(feature = "server")]
+    #[tokio::test]
+    async fn synthetic_cancelled_or_unretained_body_never_claims_completion() {
+        for cancel in [true, false] {
+            let mut boundary = TestBoundary::open();
+            boundary.cancel_on_observe = cancel;
+            boundary.retain = if cancel { None } else { Some(0) };
+            let cancellation = boundary.cancellation.clone();
+            let deadline = boundary.deadline;
+            let mut accounting = NativeOastDispatchAccounting::planned(91, 19);
+            accounting.possibly_dispatched = true;
+            let response = synthetic_response_body(StatusCode::OK, reqwest::Body::from("part"));
+            let error = read_response_body(
+                response,
+                &mut boundary,
+                &cancellation,
+                deadline,
+                &mut accounting,
+            )
+            .await
+            .unwrap_err();
+            let expected_kind = if cancel {
+                NativeOastClientErrorKind::Cancelled
+            } else {
+                NativeOastClientErrorKind::ResponseTooLarge
+            };
+            assert_eq!(error.kind(), expected_kind);
+            assert!(error.accounting().possibly_dispatched());
+            assert!(!error.accounting().response_completed());
+            assert_eq!(error.accounting().response_bytes(), 4);
+            assert_eq!(boundary.observed, 4);
+            assert_eq!(error.accounting(), accounting);
+            assert_eq!(error.http_failure(), None);
+        }
     }
 
     #[tokio::test]

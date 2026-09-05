@@ -12,9 +12,13 @@ each disposition below distinguishes inspection from executed regression proof.
 - Worktree was clean. Open dependency-update PRs and unrelated branches remain
   outside this work.
 - PR A branch: `agent/oast-lifecycle-transport-hardening`.
-- Final tested/landed SHA: pending. The PR's head, check attribution and landing
-  receipt will identify the tested commit; this document does not assert that
-  unexecuted checks passed.
+- PR A: [#109](https://github.com/ITherso/termivar/pull/109), tested and landed
+  `b8c0ae2630b541ac04733e4f2701423654f740a8`. All 14 required contexts passed;
+  aggregate coverage 89.87%, patch 100.00% (187/187). Both task branches were
+  deleted and protected main advanced by exact-SHA fast-forward.
+- PR B starts from that exact SHA on `agent/oast-state-diagnostics-correctness`.
+  Its final tested/landed SHA is recorded in the PR verification receipt, not
+  inferred from local execution. PR C may start only after PR B lands.
 
 ## Finding ledger
 
@@ -22,12 +26,12 @@ each disposition below distinguishes inspection from executed regression proof.
 | --- | --- | --- | --- |
 | F1 — `termivar-oast/src/state.rs`, `register_bearer`, `poll_bearer`, `cleanup_bearer`, `SessionState` | Confirmed defect; repair in PR A | Expiration stops acceptance but abandoned sessions remain in the retained-capacity map indefinitely. Acceptance expiry and finite result retention must be separate. | A dropped-registration-response test failed against old behavior with explicitly advanced monotonic time. PR A adds a 120-second result window after acceptance expiry, checked deadline arithmetic and authenticated lazy reclamation over at most 256 retained entries. Results are not erased at the expiry instant while idle. |
 | F2 — `termivar-oast/src/server.rs`, `serve_listener`, `serve_connection`, `AppState::admit` | Confirmed defect; repair in PR A | Connection count is bounded, connection lifetime is not explicitly bounded; handler admission occurs after body extraction. | A single benign incomplete-header duplex test failed against old behavior under paused Tokio time. PR A places admission before body extraction and bounds header, request/body, I/O idle and total connection lifetimes. No load test or target application is used. |
-| F3 — `web_runtime/ssrf_oast_runtime.rs`, polling phase completion | Deferred; not evaluated or changed | Active SSRF replay/verification behavior is outside this maintenance execution's supported scope. | No synthetic success oracle, active payload dispatch or verification-efficiency repair is claimed. |
-| F4 — `termivar-oast/src/client.rs::validate_response_head`, `native_oast_provider.rs::client_failure`, `ssrf_oast_runtime.rs::provider_terminal` | Confirmed by source inspection; unmodified | Unrelated nonexpected statuses and construction/transport failures collapse to an authentication label. | Regression not yet executed. Preserve typed cause without response prose. The public client error enum is exhaustive, so any new variant needs an explicit source-compatibility decision; the core-only semver gate does not prove OAST compatibility. |
-| F5 — provider receipt/count assignments in `ssrf_oast_runtime.rs`; permit dispatch accounting | Confirmed by source inspection; unmodified | A failure receipt can exist before budget admission. Receipt-vector length is not the charged HTTP-operation count. | Regression not yet executed. Preserve logical attempt receipts and use authoritative cumulative admission accounting. A possibly-dispatched marker is not proof of server receipt. |
+| F3 — `web_runtime/ssrf_oast_runtime.rs`, polling phase completion | Deferred / out of scope / unresolved | The maintainer explicitly excluded active SSRF replay/verification behavior from this continuation. | No phase-completion fix or success oracle is added. The polling region, receipt-order completeness check and public review-outcome enum remain byte-identical after newline normalization. This finding is not closed or rejected. |
+| F4 — `termivar-oast/src/client.rs::validate_response_head`, `native_oast_provider.rs::client_failure`, runtime audit boundary | Confirmed defect; repaired in PR B | Unexpected statuses and construction/transport failures can be mislabeled as authentication failures, and early failures lack typed audit detail. | Synthetic 401-vs-429 and local-credential-vs-remote-auth regressions failed before repair and passed afterward. Add non-exhaustive HTTP metadata without changing existing public client error variants; retain separate optional first-provider/cleanup diagnostics through the existing serializable library audit. No response prose, new CLI renderer or protocol/digest identity change. |
+| F5 — provider receipt/count assignments in `ssrf_oast_runtime.rs`; permit dispatch accounting | Confirmed defect; repaired in PR B, final CI pending | A failure receipt can exist before budget admission. Receipt-vector length is not the charged HTTP-operation count. | All five audit count paths now read the permit counter. Synthetic tests distinguish recorded attempts, admitted requests, possibly-dispatched operations and body EOF. Failure receipts and successful-path ordering checks remain. Local adapter tests compiled but Application Control prevented execution; CI proof is required, not assumed. |
 | F6 — both CLI/provider `open_regular_file` implementations | Conditional local-path risk confirmed by inspection; unmodified | Separate pathname inspection and open do not atomically reject a substituted link or establish object identity. | Existing static-link tests do not establish replacement-race resistance. A future fix must state final-component versus ancestor guarantees per platform; no filesystem exploitation or privileged test result is claimed. |
 | F7 — CLI `read_environment`, `read_bounded_line_source` | Confirmed intake-buffer defect by inspection; unmodified | Some owned raw buffers can be dropped on oversize/read error before entering a zeroizing wrapper. | Regression not yet executed. Intake-buffer protection does not erase OS environment storage, allocator history, successful downstream copies or HTTP-library buffers. Provider input already uses `Zeroizing` on several corresponding paths. |
-| F8 — `PROJECT_STATUS.md`, `docs/DISTRIBUTION.md`, affected provider documentation | Mixed: narrow stale claims and already-corrected statements | PROJECT_STATUS and an installer sentence remain stale. README and distribution release-status sections already distinguish published alpha.1 from development alpha.2. | The already-corrected release descriptions came from `61d08b3`; retain them. PR A updates only lifecycle/transport documentation needed for F1/F2. Broader factual cleanup remains pending. |
+| F8 — `PROJECT_STATUS.md`, `docs/DISTRIBUTION.md`, affected provider documentation | Mixed: narrow stale claims and already-corrected statements | PROJECT_STATUS and an installer sentence remain stale. README and distribution release-status sections already distinguish published alpha.1 from development alpha.2. | The already-corrected release descriptions came from `61d08b3`; retain them. PR A updates lifecycle/transport documentation for F1/F2; PR B documents diagnostic and accounting distinctions for F4/F5. Remaining secret-input and source/release factual cleanup is reserved for PR C. |
 
 ## PR A contract
 
@@ -103,3 +107,32 @@ Target and provider traffic ceilings are unchanged by PR A. The existing
 provider plan remains at most twelve admitted requests: registration, two
 allocations, preflight, at most seven later polls, and cleanup. No additional
 target probe, polling retry, deadline extension or scanner capability is added.
+
+## PR B local validation and scope
+
+The following evidence is separate from PR A and from GitHub exact-head CI:
+
+- The provider's 80 library tests, 11 provider-binary input tests and doc tests
+  passed with ordinary GNU Rust 1.88.0. Provider all-target/all-feature Clippy
+  under that toolchain passed with warnings denied.
+- Eight focused scanner diagnostic/accounting tests passed without target
+  traffic. Synthetic client response-head tests distinguish status families;
+  no active replay/verification regression was introduced for F3.
+- The adapter accounting tests compiled, but Windows Application Control
+  prevented their execution. They are pending CI execution, not locally green.
+- Both focused architecture diagnostic-shape and negative-mutation tests
+  passed. They require the exact optional unit-enum fields and reject public
+  fields, arbitrary strings and payload-bearing variants.
+- Canonical Rust 1.88.0 formatting, the workspace all-feature/all-target check,
+  provider and scanner feature-off checks, and the CLI's explicit review-feature
+  check passed. Existing feature-off scanner warnings are outside this diff.
+- Development-line, corpus, both salvage and both catalog validators passed
+  without rewriting their artifacts or digests. Lockfiles, source version,
+  coverage baseline, omissions and all network ceilings are unchanged.
+
+Current-stable Clippy, full workspace execution, Linux coverage, dependency
+policy and platform/compatibility checks require their fresh GitHub runs;
+local Application Control, missing MSVC linker and the existing CRLF-only
+architecture check limitation are not bypassed or reported as successes.
+Final CI and landing evidence belongs to the PR's exact-head verification
+receipt. Until then PR B is not landed and PR C has not started.

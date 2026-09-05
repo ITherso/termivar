@@ -11,8 +11,8 @@ use sha2::{Digest, Sha256};
 use termivar_oast::{
     AdminToken, CallbackId, CallbackTarget, EventCursor, NativeOastBoundaryRejection,
     NativeOastClient, NativeOastClientBoundary, NativeOastClientError, NativeOastClientErrorKind,
-    NativeOastClientOperation, NativeOastDispatchAccounting, PollResponse, PublicOrigin, SessionId,
-    SessionRequest, SessionToken, POLL_SCHEMA,
+    NativeOastClientOperation, NativeOastDispatchAccounting, NativeOastHttpFailure, PollResponse,
+    PublicOrigin, SessionId, SessionRequest, SessionToken, POLL_SCHEMA,
 };
 use tokio_util::sync::CancellationToken;
 use url::{Host, Url};
@@ -319,6 +319,8 @@ pub(crate) struct NativeOastProviderReceipt {
     lifecycle_before: NativeOastProviderLifecycle,
     lifecycle_after: NativeOastProviderLifecycle,
     request_count: u16,
+    possibly_dispatched: bool,
+    response_completed: bool,
     request_bytes: u64,
     response_bytes: u64,
     callback_allocations: u16,
@@ -362,8 +364,22 @@ impl NativeOastProviderReceipt {
         self.lifecycle_after
     }
 
+    /// Cumulative requests admitted by the authoritative provider permit.
+    /// Recording an operation attempt alone does not increment this counter.
     pub(crate) const fn request_count(&self) -> u16 {
         self.request_count
+    }
+
+    /// Whether this operation may have begun client transport execution.
+    /// This does not establish that the provider received the request.
+    pub(crate) const fn possibly_dispatched(&self) -> bool {
+        self.possibly_dispatched
+    }
+
+    /// Whether this operation's response body reached a complete client EOF.
+    /// This says nothing about protocol validity or the operation's success.
+    pub(crate) const fn response_completed(&self) -> bool {
+        self.response_completed
     }
 
     pub(crate) const fn request_bytes(&self) -> u64 {
@@ -422,7 +438,18 @@ pub(crate) enum NativeOastProviderErrorKind {
     Cancelled,
     DeadlineExceeded,
     RuntimeBudget(RuntimeBudgetDimension),
+    // Local credential validation, not a remote authentication observation.
     ProviderRejected,
+    ProviderAccessRejected,
+    ProviderThrottled,
+    ProviderNotFound,
+    ProviderGone,
+    ProviderRedirectRefused,
+    ProviderServerFailure,
+    ProviderTransportFailure,
+    ProviderRequestConstruction,
+    ProviderClientInitialization,
+    ProviderUnexpectedStatus,
     ProviderResponseInvalid,
     ProviderSessionMismatch,
     ProviderCallbackMismatch,
@@ -527,7 +554,35 @@ impl fmt::Display for NativeOastProviderError {
                 "native OAST provider traffic exceeded assessment budget"
             },
             NativeOastProviderErrorKind::ProviderRejected => {
-                "native OAST provider rejected the operation"
+                "native OAST administrator input is invalid"
+            },
+            NativeOastProviderErrorKind::ProviderAccessRejected => {
+                "native OAST provider denied access"
+            },
+            NativeOastProviderErrorKind::ProviderThrottled => {
+                "native OAST provider reported throttling"
+            },
+            NativeOastProviderErrorKind::ProviderNotFound => {
+                "native OAST provider reported not found"
+            },
+            NativeOastProviderErrorKind::ProviderGone => "native OAST provider reported gone",
+            NativeOastProviderErrorKind::ProviderRedirectRefused => {
+                "native OAST provider redirect was refused"
+            },
+            NativeOastProviderErrorKind::ProviderServerFailure => {
+                "native OAST provider reported a server failure"
+            },
+            NativeOastProviderErrorKind::ProviderTransportFailure => {
+                "native OAST provider transport failed"
+            },
+            NativeOastProviderErrorKind::ProviderRequestConstruction => {
+                "native OAST provider request construction failed"
+            },
+            NativeOastProviderErrorKind::ProviderClientInitialization => {
+                "native OAST provider client initialization failed"
+            },
+            NativeOastProviderErrorKind::ProviderUnexpectedStatus => {
+                "native OAST provider returned an unexpected status"
             },
             NativeOastProviderErrorKind::ProviderResponseInvalid => {
                 "native OAST provider response is invalid"
@@ -1081,6 +1136,8 @@ pub(crate) struct NativeOastProviderAdapter {
     cleanup_attempted: bool,
     clock_origin: tokio::time::Instant,
     receipts: Vec<NativeOastProviderReceipt>,
+    first_provider_failure: Option<NativeOastProviderErrorKind>,
+    cleanup_failure: Option<NativeOastProviderErrorKind>,
 }
 
 #[cfg(all(test, feature = "oast-native-provider"))]
@@ -1104,6 +1161,193 @@ mod permit_tests {
             tokio::time::Instant::now().checked_add(Duration::from_secs(30)),
         )
         .unwrap()
+    }
+
+    fn receipt_adapter() -> NativeOastProviderAdapter {
+        let provider_limits = limits();
+        NativeOastProviderAdapter {
+            client: NativeOastClient::new("https://oast.example.test/".parse().unwrap()).unwrap(),
+            permit: permit(provider_limits, RuntimeBudget::default()),
+            correlations: OastCorrelationAuthority::new(
+                OastAuthorityEpoch::new([7; 32]).unwrap(),
+                OastAssessmentId::new("assessment:diagnostic-counts").unwrap(),
+                OastAuthorityLimits::new(2, 3, 32, 64, 10_000).unwrap(),
+            ),
+            administrator: None,
+            session: None,
+            callbacks: BTreeMap::new(),
+            lifecycle: NativeOastProviderLifecycle::Configured,
+            registration_attempted: false,
+            callback_attempts: 0,
+            poll_attempts: 0,
+            cleanup_attempted: false,
+            clock_origin: tokio::time::Instant::now(),
+            receipts: Vec::new(),
+            first_provider_failure: None,
+            cleanup_failure: None,
+        }
+    }
+
+    #[test]
+    fn pre_admission_failure_records_one_attempt_but_zero_admitted_requests() {
+        let mut adapter = receipt_adapter();
+        adapter.permit.cancellation.cancel();
+        let failure = adapter
+            .permit
+            .begin_dispatch(NativeOastProviderOperation::Register, 64, 32)
+            .unwrap_err();
+        assert_eq!(failure.kind(), NativeOastProviderErrorKind::Cancelled);
+        let receipt = adapter.record_receipt(
+            NativeOastProviderOperation::Register,
+            NativeOastProviderLifecycle::Configured,
+            NativeOastProviderLifecycle::Configured,
+            NativeOastDispatchAccounting::default(),
+            NativeOastProviderReceiptFacts::default(),
+        );
+        let failure = NativeOastProviderError::with_receipt(failure.kind(), receipt);
+
+        // The old audit projection (receipts.len()) would report one request.
+        // No request was admitted and no transport has been invoked here.
+        assert_eq!(adapter.receipts().len(), 1);
+        assert_eq!(adapter.admitted_provider_requests(), 0);
+        let receipt = failure.receipt().unwrap();
+        assert_eq!(receipt.request_count(), 0);
+        assert!(!receipt.possibly_dispatched());
+        assert!(!receipt.response_completed());
+        assert_eq!(receipt.request_bytes(), 0);
+        assert_eq!(receipt.response_bytes(), 0);
+        assert_eq!(adapter.accounting_snapshot().total_requests(), 0);
+        assert_eq!(adapter.accounting_snapshot().active_verifications(), 0);
+    }
+
+    #[test]
+    fn attempt_receipts_do_not_change_authoritative_admission_or_dispatch_facts() {
+        let mut adapter = receipt_adapter();
+        adapter
+            .permit
+            .begin_dispatch(NativeOastProviderOperation::Register, 64, 32)
+            .unwrap();
+        adapter
+            .permit
+            .finish_dispatch(TransportDispatchOutcome::Cancelled);
+        let before = NativeOastProviderLifecycle::Configured;
+        // Synthetic accounting models admission without invoking client
+        // transport. Admission alone cannot prove dispatch or response EOF.
+        let admitted = adapter.record_receipt(
+            NativeOastProviderOperation::Register,
+            before,
+            before,
+            NativeOastDispatchAccounting::default(),
+            NativeOastProviderReceiptFacts::default(),
+        );
+        assert_eq!(admitted.request_count(), 1);
+        assert!(!admitted.possibly_dispatched());
+        assert!(!admitted.response_completed());
+        adapter.permit.cancellation.cancel();
+        assert_eq!(
+            adapter
+                .permit
+                .begin_dispatch(NativeOastProviderOperation::Cleanup, 24, 0)
+                .unwrap_err()
+                .kind(),
+            NativeOastProviderErrorKind::Cancelled
+        );
+        let not_admitted = adapter.record_receipt(
+            NativeOastProviderOperation::Cleanup,
+            before,
+            before,
+            NativeOastDispatchAccounting::default(),
+            NativeOastProviderReceiptFacts::default(),
+        );
+        assert_eq!(adapter.receipts().len(), 2);
+        assert_eq!(adapter.admitted_provider_requests(), 1);
+        assert_eq!(not_admitted.request_count(), 1);
+        assert_eq!(not_admitted.request_bytes(), 64);
+        assert!(!not_admitted.possibly_dispatched());
+        assert!(!not_admitted.response_completed());
+        assert_eq!(adapter.accounting_snapshot().total_requests(), 1);
+        assert_eq!(adapter.accounting_snapshot().active_verifications(), 0);
+    }
+
+    #[test]
+    fn diagnostic_failures_preserve_first_provider_error_and_separate_cleanup_error() {
+        let mut adapter = receipt_adapter();
+        let success: Result<u8, NativeOastProviderError> = Ok(17);
+        adapter.observe_operation_result(NativeOastProviderOperation::Register, &success);
+        assert_eq!(adapter.provider_failure(), None);
+        assert_eq!(adapter.cleanup_failure(), None);
+        for (operation, kind) in [
+            (
+                NativeOastProviderOperation::Register,
+                NativeOastProviderErrorKind::DeadlineExceeded,
+            ),
+            (
+                NativeOastProviderOperation::AllocateCallback,
+                NativeOastProviderErrorKind::ProviderResponseInvalid,
+            ),
+            (
+                NativeOastProviderOperation::Poll,
+                NativeOastProviderErrorKind::Cancelled,
+            ),
+            (
+                NativeOastProviderOperation::Cleanup,
+                NativeOastProviderErrorKind::Cancelled,
+            ),
+            (
+                NativeOastProviderOperation::Cleanup,
+                NativeOastProviderErrorKind::InvalidLifecycle,
+            ),
+        ] {
+            let result: Result<u8, NativeOastProviderError> =
+                Err(NativeOastProviderError::new(kind));
+            adapter.observe_operation_result(operation, &result);
+            assert_eq!(result.unwrap_err().kind(), kind);
+            assert_eq!(
+                adapter.provider_failure(),
+                Some(NativeOastProviderErrorKind::DeadlineExceeded)
+            );
+        }
+        adapter.observe_operation_result(NativeOastProviderOperation::Cleanup, &success);
+        assert_eq!(success.unwrap(), 17);
+        assert_eq!(
+            adapter.cleanup_failure(),
+            Some(NativeOastProviderErrorKind::Cancelled)
+        );
+        assert_eq!(adapter.lifecycle(), NativeOastProviderLifecycle::Configured);
+        assert_eq!(adapter.admitted_provider_requests(), 0);
+        assert!(adapter.receipts().is_empty());
+        assert_eq!(adapter.accounting_snapshot().total_requests(), 0);
+        assert_eq!(adapter.accounting_snapshot().active_verifications(), 0);
+    }
+
+    #[test]
+    fn diagnostic_cleanup_failure_does_not_invent_a_provider_failure_or_change_receipts() {
+        let mut adapter = receipt_adapter();
+        let receipt = adapter.operation_receipt(
+            NativeOastProviderOperation::Cleanup,
+            NativeOastProviderLifecycle::Registered,
+            NativeOastProviderLifecycle::Closed,
+            NativeOastDispatchAccounting::default(),
+            NativeOastProviderReceiptFacts::default(),
+        );
+        let result: Result<(), NativeOastProviderError> =
+            Err(NativeOastProviderError::with_receipt(
+                NativeOastProviderErrorKind::CleanupUnverified,
+                receipt.clone(),
+            ));
+        adapter.observe_operation_result(NativeOastProviderOperation::Cleanup, &result);
+        assert_eq!(adapter.provider_failure(), None);
+        assert_eq!(
+            adapter.cleanup_failure(),
+            Some(NativeOastProviderErrorKind::CleanupUnverified)
+        );
+        let error = result.unwrap_err();
+        assert_eq!(error.kind(), NativeOastProviderErrorKind::CleanupUnverified);
+        assert_eq!(error.receipt(), Some(&receipt));
+        assert!(!adapter.cleanup_attempted);
+        assert!(adapter.receipts().is_empty());
+        assert_eq!(adapter.admitted_provider_requests(), 0);
+        assert_eq!(adapter.accounting_snapshot().total_requests(), 0);
     }
 
     #[test]
@@ -1349,6 +1593,8 @@ mod permit_tests {
             lifecycle_before: NativeOastProviderLifecycle::CallbackAllocated,
             lifecycle_after: NativeOastProviderLifecycle::Polling,
             request_count: 3,
+            possibly_dispatched: true,
+            response_completed: true,
             request_bytes: 19,
             response_bytes: 31,
             callback_allocations: 2,
@@ -1369,6 +1615,8 @@ mod permit_tests {
             NativeOastProviderLifecycle::Polling
         );
         assert_eq!(receipt.request_count(), 3);
+        assert!(receipt.possibly_dispatched());
+        assert!(receipt.response_completed());
         assert_eq!(receipt.request_bytes(), 19);
         assert_eq!(receipt.response_bytes(), 31);
         assert_eq!(receipt.callback_allocations(), 2);
@@ -1538,8 +1786,11 @@ impl NativeOastProviderAdapter {
             administrator,
             limits,
         } = configuration;
-        let client = NativeOastClient::new(origin.clone()).map_err(|_| {
-            NativeOastProviderError::new(NativeOastProviderErrorKind::ProviderRejected)
+        let client = NativeOastClient::new(origin.clone()).map_err(|error| {
+            NativeOastProviderError::new(provider_client_failure_kind(
+                error.kind(),
+                error.http_failure(),
+            ))
         })?;
         let correlation_limits = OastAuthorityLimits::new(
             limits.max_callbacks,
@@ -1572,6 +1823,8 @@ impl NativeOastProviderAdapter {
             cleanup_attempted: false,
             clock_origin: tokio::time::Instant::now(),
             receipts: Vec::new(),
+            first_provider_failure: None,
+            cleanup_failure: None,
         })
     }
 
@@ -1579,8 +1832,41 @@ impl NativeOastProviderAdapter {
         self.lifecycle
     }
 
+    /// Diagnostic receipts for recorded logical operation attempts. Their
+    /// number is not a count of admitted requests or provider-side receipts.
     pub(crate) fn receipts(&self) -> &[NativeOastProviderReceipt] {
         &self.receipts
+    }
+
+    /// Authoritative admitted provider requests, independent of attempt
+    /// receipts and without asserting that any server received a request.
+    pub(crate) const fn admitted_provider_requests(&self) -> u16 {
+        self.permit.provider_requests
+    }
+
+    /// First completed non-cleanup failure, for diagnostics only.
+    pub(crate) const fn provider_failure(&self) -> Option<NativeOastProviderErrorKind> {
+        self.first_provider_failure
+    }
+
+    /// First completed cleanup failure, without replacing the original failure.
+    pub(crate) const fn cleanup_failure(&self) -> Option<NativeOastProviderErrorKind> {
+        self.cleanup_failure
+    }
+
+    fn observe_operation_result<T>(
+        &mut self,
+        operation: NativeOastProviderOperation,
+        result: &Result<T, NativeOastProviderError>,
+    ) {
+        let Err(error) = result else {
+            return;
+        };
+        if operation == NativeOastProviderOperation::Cleanup {
+            self.cleanup_failure.get_or_insert(error.kind());
+        } else {
+            self.first_provider_failure.get_or_insert(error.kind());
+        }
     }
 
     pub(crate) fn accounting_snapshot(&self) -> RequestAccountingSnapshot {
@@ -1588,6 +1874,14 @@ impl NativeOastProviderAdapter {
     }
 
     pub(crate) async fn register(
+        &mut self,
+    ) -> Result<NativeOastProviderReceipt, NativeOastProviderError> {
+        let result = self.register_inner().await;
+        self.observe_operation_result(NativeOastProviderOperation::Register, &result);
+        result
+    }
+
+    async fn register_inner(
         &mut self,
     ) -> Result<NativeOastProviderReceipt, NativeOastProviderError> {
         let before = self.lifecycle;
@@ -1646,6 +1940,16 @@ impl NativeOastProviderAdapter {
     }
 
     pub(crate) async fn allocate_callback(
+        &mut self,
+        verification_case: VerificationCase,
+        token: OastCorrelationToken,
+    ) -> Result<NativeOastAllocatedCallback, NativeOastProviderError> {
+        let result = self.allocate_callback_inner(verification_case, token).await;
+        self.observe_operation_result(NativeOastProviderOperation::AllocateCallback, &result);
+        result
+    }
+
+    async fn allocate_callback_inner(
         &mut self,
         verification_case: VerificationCase,
         token: OastCorrelationToken,
@@ -1752,6 +2056,12 @@ impl NativeOastProviderAdapter {
     }
 
     pub(crate) async fn poll(&mut self) -> Result<NativeOastPollOutcome, NativeOastProviderError> {
+        let result = self.poll_inner().await;
+        self.observe_operation_result(NativeOastProviderOperation::Poll, &result);
+        result
+    }
+
+    async fn poll_inner(&mut self) -> Result<NativeOastPollOutcome, NativeOastProviderError> {
         let before = self.lifecycle;
         if !lifecycle_allows(before, NativeOastProviderOperation::Poll) {
             return Err(NativeOastProviderError::new(
@@ -1850,6 +2160,14 @@ impl NativeOastProviderAdapter {
     }
 
     pub(crate) async fn cleanup(
+        &mut self,
+    ) -> Result<NativeOastProviderReceipt, NativeOastProviderError> {
+        let result = self.cleanup_inner().await;
+        self.observe_operation_result(NativeOastProviderOperation::Cleanup, &result);
+        result
+    }
+
+    async fn cleanup_inner(
         &mut self,
     ) -> Result<NativeOastProviderReceipt, NativeOastProviderError> {
         let before = self.lifecycle;
@@ -2016,34 +2334,12 @@ impl NativeOastProviderAdapter {
         let accounting = error.accounting();
         self.permit
             .finish_dispatch(transport_outcome_for_client_error(error.kind()));
-        let kind = match error.kind() {
-            NativeOastClientErrorKind::BoundaryRejected(_) => self
-                .permit
+        let kind = if matches!(error.kind(), NativeOastClientErrorKind::BoundaryRejected(_)) {
+            self.permit
                 .take_boundary_error()
-                .unwrap_or(NativeOastProviderErrorKind::OperationNotPermitted),
-            NativeOastClientErrorKind::Cancelled => NativeOastProviderErrorKind::Cancelled,
-            NativeOastClientErrorKind::DeadlineExceeded => {
-                NativeOastProviderErrorKind::DeadlineExceeded
-            },
-            NativeOastClientErrorKind::ResponseTooLarge => {
-                NativeOastProviderErrorKind::ResponseByteLimit
-            },
-            NativeOastClientErrorKind::CallbackTargetMismatch => {
-                NativeOastProviderErrorKind::ProviderCallbackMismatch
-            },
-            NativeOastClientErrorKind::ProtocolMismatch
-            | NativeOastClientErrorKind::MalformedResponse
-            | NativeOastClientErrorKind::UnsupportedMedia
-            | NativeOastClientErrorKind::ResponseOriginMismatch
-            | NativeOastClientErrorKind::AccountingInvariant => {
-                NativeOastProviderErrorKind::ProviderResponseInvalid
-            },
-            NativeOastClientErrorKind::ClientInitialization
-            | NativeOastClientErrorKind::RequestConstruction
-            | NativeOastClientErrorKind::TransportFailure
-            | NativeOastClientErrorKind::UnexpectedStatus => {
-                NativeOastProviderErrorKind::ProviderRejected
-            },
+                .unwrap_or(NativeOastProviderErrorKind::OperationNotPermitted)
+        } else {
+            provider_client_failure_kind(error.kind(), error.http_failure())
         };
         let after = self.lifecycle;
         let receipt = self.record_receipt(
@@ -2074,7 +2370,7 @@ impl NativeOastProviderAdapter {
         operation: NativeOastProviderOperation,
         before: NativeOastProviderLifecycle,
         after: NativeOastProviderLifecycle,
-        _accounting: NativeOastDispatchAccounting,
+        accounting: NativeOastDispatchAccounting,
         facts: NativeOastProviderReceiptFacts,
     ) -> NativeOastProviderReceipt {
         NativeOastProviderReceipt {
@@ -2083,6 +2379,8 @@ impl NativeOastProviderAdapter {
             lifecycle_before: before,
             lifecycle_after: after,
             request_count: self.permit.provider_requests,
+            possibly_dispatched: accounting.possibly_dispatched(),
+            response_completed: accounting.response_completed(),
             request_bytes: self.permit.provider_request_bytes,
             response_bytes: self.permit.provider_response_bytes,
             callback_allocations: u16::try_from(self.callbacks.len()).unwrap_or(u16::MAX),
@@ -2160,6 +2458,63 @@ pub(crate) const fn lifecycle_allows(
                 | NativeOastProviderLifecycle::CallbackAllocated
                 | NativeOastProviderLifecycle::Polling
         ),
+    }
+}
+
+/// Diagnostic reduction only: this cannot authorize, retry or dispatch an operation.
+pub(crate) fn provider_client_failure_kind(
+    kind: NativeOastClientErrorKind,
+    http: Option<NativeOastHttpFailure>,
+) -> NativeOastProviderErrorKind {
+    match kind {
+        NativeOastClientErrorKind::BoundaryRejected(_) => {
+            NativeOastProviderErrorKind::OperationNotPermitted
+        },
+        NativeOastClientErrorKind::Cancelled => NativeOastProviderErrorKind::Cancelled,
+        NativeOastClientErrorKind::DeadlineExceeded => {
+            NativeOastProviderErrorKind::DeadlineExceeded
+        },
+        NativeOastClientErrorKind::ResponseTooLarge => {
+            NativeOastProviderErrorKind::ResponseByteLimit
+        },
+        NativeOastClientErrorKind::CallbackTargetMismatch => {
+            NativeOastProviderErrorKind::ProviderCallbackMismatch
+        },
+        NativeOastClientErrorKind::ProtocolMismatch
+        | NativeOastClientErrorKind::MalformedResponse
+        | NativeOastClientErrorKind::UnsupportedMedia
+        | NativeOastClientErrorKind::ResponseOriginMismatch
+        | NativeOastClientErrorKind::AccountingInvariant => {
+            NativeOastProviderErrorKind::ProviderResponseInvalid
+        },
+        NativeOastClientErrorKind::ClientInitialization => {
+            NativeOastProviderErrorKind::ProviderClientInitialization
+        },
+        NativeOastClientErrorKind::RequestConstruction => {
+            NativeOastProviderErrorKind::ProviderRequestConstruction
+        },
+        NativeOastClientErrorKind::TransportFailure => {
+            NativeOastProviderErrorKind::ProviderTransportFailure
+        },
+        NativeOastClientErrorKind::UnexpectedStatus => match http {
+            Some(NativeOastHttpFailure::AccessRejected) => {
+                NativeOastProviderErrorKind::ProviderAccessRejected
+            },
+            Some(NativeOastHttpFailure::Throttled) => {
+                NativeOastProviderErrorKind::ProviderThrottled
+            },
+            Some(NativeOastHttpFailure::NotFound) => NativeOastProviderErrorKind::ProviderNotFound,
+            Some(NativeOastHttpFailure::Gone) => NativeOastProviderErrorKind::ProviderGone,
+            Some(NativeOastHttpFailure::RedirectRefused) => {
+                NativeOastProviderErrorKind::ProviderRedirectRefused
+            },
+            Some(NativeOastHttpFailure::ServerFailure) => {
+                NativeOastProviderErrorKind::ProviderServerFailure
+            },
+            // The public HTTP taxonomy is additive/non-exhaustive. Unknown
+            // future cases stay unexpected, never access rejection.
+            _ => NativeOastProviderErrorKind::ProviderUnexpectedStatus,
+        },
     }
 }
 
@@ -2676,7 +3031,7 @@ mod tests {
         let poll_error = adapter.poll().await.unwrap_err();
         assert_eq!(
             poll_error.kind(),
-            NativeOastProviderErrorKind::ProviderRejected
+            NativeOastProviderErrorKind::ProviderTransportFailure
         );
         assert!(poll_error.receipt().is_some());
         let after = adapter
@@ -2700,7 +3055,7 @@ mod tests {
         let cleanup_error = adapter.cleanup().await.unwrap_err();
         assert_eq!(
             cleanup_error.kind(),
-            NativeOastProviderErrorKind::ProviderRejected
+            NativeOastProviderErrorKind::ProviderTransportFailure
         );
         let receipt = cleanup_error.receipt().unwrap();
         assert!(receipt.cleanup_attempted());
@@ -2742,6 +3097,16 @@ mod tests {
             NativeOastProviderErrorKind::DeadlineExceeded,
             NativeOastProviderErrorKind::RuntimeBudget(RuntimeBudgetDimension::TotalRequests),
             NativeOastProviderErrorKind::ProviderRejected,
+            NativeOastProviderErrorKind::ProviderAccessRejected,
+            NativeOastProviderErrorKind::ProviderThrottled,
+            NativeOastProviderErrorKind::ProviderNotFound,
+            NativeOastProviderErrorKind::ProviderGone,
+            NativeOastProviderErrorKind::ProviderRedirectRefused,
+            NativeOastProviderErrorKind::ProviderServerFailure,
+            NativeOastProviderErrorKind::ProviderTransportFailure,
+            NativeOastProviderErrorKind::ProviderRequestConstruction,
+            NativeOastProviderErrorKind::ProviderClientInitialization,
+            NativeOastProviderErrorKind::ProviderUnexpectedStatus,
             NativeOastProviderErrorKind::ProviderResponseInvalid,
             NativeOastProviderErrorKind::ProviderSessionMismatch,
             NativeOastProviderErrorKind::ProviderCallbackMismatch,

@@ -21,7 +21,7 @@ mod server;
 pub use client::{
     NativeOastBoundaryRejection, NativeOastClient, NativeOastClientBoundary,
     NativeOastClientDispatch, NativeOastClientError, NativeOastClientErrorKind,
-    NativeOastClientOperation, NativeOastDispatchAccounting,
+    NativeOastClientOperation, NativeOastDispatchAccounting, NativeOastHttpFailure,
 };
 
 pub use config::{
