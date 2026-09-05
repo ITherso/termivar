@@ -460,10 +460,6 @@ fn inspect_auth_input_contract(source: &str) -> Result<Vec<String>, syn::Error> 
             "read_bounded_line_source",
             "CLI file/stdin authorization input must remain one private bounded reader",
         ),
-        (
-            "open_regular_file",
-            "CLI file authorization input must remain one private regular-file opener",
-        ),
     ] {
         if find_function(&syntax, function_name)
             .is_none_or(|function| !matches!(function.vis, Visibility::Inherited))
@@ -1615,7 +1611,7 @@ fn regular_file_open_is_exact(items: &[(String, String)]) -> bool {
     definitions_are_exact(
         items,
         r#"
-        fn open_regular_file(path: PathBuf) -> Result<File, AuthorizationInputError> {
+        pub(super) fn open_regular_file(path: PathBuf) -> Result<File, AuthorizationInputError> {
             validate_opened_regular_file(open_no_follow(&path)?)
         }
         #[cfg(unix)]
@@ -2052,6 +2048,10 @@ mod tests {
     #[test]
     fn atomic_open_and_same_handle_validation_are_mutation_locked() {
         for (from, to) in [
+            ("pub(super) fn open_regular_file", "pub fn open_regular_file"),
+            ("pub(super) fn open_regular_file", "pub(crate) fn open_regular_file"),
+            ("pub(super) fn open_regular_file", "fn open_regular_file"),
+            ("fn open_no_follow", "pub(super) fn open_no_follow"),
             ("validate_opened_regular_file(open_no_follow(&path)?)", "open_no_follow(&path)"),
             ("validate_opened_regular_file(open_no_follow(&path)?)", "{ let _ = std::fs::metadata(&path); File::open(path).map_err(|_| AuthorizationInputError::SourceUnavailable) }"),
             ("libc::O_NOFOLLOW | libc::O_NONBLOCK", "libc::O_NONBLOCK"),

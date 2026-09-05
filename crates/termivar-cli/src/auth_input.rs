@@ -529,7 +529,7 @@ fn validate_environment_value(value: OsString) -> Result<CredentialBytes, Author
     Ok(bytes)
 }
 
-fn open_regular_file(path: PathBuf) -> Result<File, AuthorizationInputError> {
+pub(super) fn open_regular_file(path: PathBuf) -> Result<File, AuthorizationInputError> {
     // Only the final component is no-follow. Parent directories must be trusted;
     // this is neither whole-path containment nor an immutable content snapshot.
     validate_opened_regular_file(open_no_follow(&path)?)
@@ -745,15 +745,25 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn windows_opened_reparse_handle_is_rejected() {
-        use std::os::windows::fs::{symlink_file, MetadataExt};
+        use std::os::windows::fs::MetadataExt;
+        use std::process::{Command, Stdio};
 
         let directory = tempfile::tempdir().unwrap();
         let destination = directory.path().join("destination");
         let link = directory.path().join("link");
-        std::fs::write(&destination, b"Bearer fixture").unwrap();
-        // This test requires the runner's existing symlink privilege; it must
-        // fail, not silently pass, if the platform cannot exercise the contract.
-        symlink_file(&destination, &link).unwrap();
+        std::fs::create_dir(&destination).unwrap();
+        // Directory junctions exercise the same final-component reparse-point
+        // rejection without requiring Developer Mode or SeCreateSymbolicLink.
+        let result = Command::new("cmd.exe")
+            .args(["/D", "/C", "mklink", "/J"])
+            .arg(&link)
+            .arg(&destination)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .unwrap();
+        assert!(result.success(), "Windows junction fixture creation failed");
         let opened = open_no_follow(&link).unwrap();
         assert_ne!(
             opened.metadata().unwrap().file_attributes() & 0x0000_0400,

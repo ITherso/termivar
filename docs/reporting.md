@@ -125,6 +125,90 @@ while the command returns nonzero; it does not report publication success.
 Directory-metadata crash durability is best effort, and filesystems without the
 required same-directory hard-link semantics fail nonzero.
 
+## Offline assessment report comparison
+
+`termivar report compare` reads exactly two explicit local files and performs
+no scan, target request, credential lookup, provider operation, or browser
+launch. It accepts supported, complete `venom-rendered-assessment/v1` JSON
+documents, including renderer output with the current optional audit sections.
+It rejects operational `decision-scan/v1` output, incomplete diagnostic
+envelopes, unknown schemas, duplicate JSON keys or item identities, malformed
+fingerprints, inconsistent counts, and inputs above the 16 MiB per-file limit.
+
+```bash
+# Markdown to stdout (the default).
+termivar report compare \
+  --before before.json \
+  --after after.json \
+  --same-scope
+
+# Structured comparison to a new file.
+termivar report compare \
+  --before before.json \
+  --after after.json \
+  --same-scope \
+  --format json \
+  --output changes.json
+
+# Standalone interactive comparison to a new file.
+termivar report compare \
+  --before before.json \
+  --after after.json \
+  --same-scope \
+  --format html \
+  --output changes.html
+```
+
+`--same-scope` is required. It records only the operator's assertion that the
+two files were deliberately selected for comparable assessment scope; parsing
+does not authenticate either source or reconstruct target identity. Source
+hashes are included, but a hash provides integrity identification rather than
+authenticity. The documents may differ in enabled work or retained evidence,
+so equivalent assessment coverage is not established.
+
+Items match by the renderer's existing stable fingerprint together with the
+compatible capability identity. Array/key order and report-local subject,
+evidence, case, and outcome reference numbering do not define identity. The
+new `termivar-report-comparison/v1` projection has four mutually exclusive
+groups:
+
+- `only_in_after`: present only in the supplied after document;
+- `only_in_before`: present only in the supplied before document;
+- `changed`: matched identity with different supported comparable content;
+- `unchanged`: matched identity with equal supported comparable content.
+
+Only-in-before does not mean fixed, resolved, verified-remediated, or safe.
+Only-in-after does not establish when an observation first appeared. Unchanged
+means only that the supported display projection is equal; it is not proof of
+security or equal scan coverage. Imported disposition, claim basis, severity,
+CWE, confidence, summary, remediation, and selected evidence-linkage metadata
+are displayed without independent endorsement. No CVSS, evidence, verdict, or
+target identity is reconstructed.
+
+Without `--output`, the complete selected encoding goes to stdout and
+diagnostics go to stderr. With `--output`, the existing same-directory atomic,
+no-overwrite publisher is used: an existing destination or an input/output
+collision fails, and malformed input produces no partial destination. Inputs
+are opened as bounded regular files and never modified. Exit `0` means the
+offline comparison document was produced; invalid CLI usage exits `2`; input,
+comparison, or publication failures exit nonzero (normally `1`). Error text
+does not echo supplied paths or document bodies.
+
+Markdown is the terminal default. JSON is deterministic structured output.
+The standalone HTML includes four count cards, group filters, text search,
+expandable before/after fields, responsive dark/light styling, keyboard focus,
+and print styling. It has no external resources, storage, forms, frames, or
+network capability. Imported values are pre-rendered as encoded text. A small
+fixed CSP-hashed script changes only `textContent`, `hidden`, expanded details,
+and filter-button state; with scripts blocked, all comparison entries remain in
+the document and can be read or expanded. Encoding prevents active markup; it
+does not remove secrets from untrusted imported text, so review output before
+sharing it.
+
+A small [synthetic CLI-generated example](examples/report-compare/README.md)
+demonstrates all four groups. Its edited input is document-processing fixture
+data, not another assessment and not evidence that a security condition changed.
+
 An incomplete or started-failed `web-review` assessment is not a partial typed
 report. It emits the redacted `web-assessment/v2` diagnostic audit to stdout,
 marks assessment items unavailable, returns nonzero, and creates no requested

@@ -3631,7 +3631,9 @@ fn reporting_whole_crate_closure_violations(
             .strip_prefix(scanner_source)?
             .to_string_lossy()
             .replace('\\', "/");
-        if relative == "reporting.rs" {
+        if relative == "reporting.rs"
+            || super::report_comparison::SCANNER_SOURCES.contains(&relative.as_str())
+        {
             continue;
         }
         let source = fs::read_to_string(&path)?;
@@ -4665,6 +4667,7 @@ const EXACT_REPORTING_PUBLIC_ITEMS: &[(&str, &str)] = &[
     ("ReportError", "enum"),
     ("ReportFormat", "enum"),
     ("ReportGenerator", "struct"),
+    ("comparison", "mod"),
 ];
 
 const EXACT_REPORTING_INHERENT_METHODS: &[(&str, &[&str])] = &[
@@ -5199,7 +5202,10 @@ fn reporting_public_api_violations(source: &str) -> Result<Vec<String>, syn::Err
                 record_reporting_public_item(&mut actual_items, item.sig.ident.to_string(), "fn")
             },
             Item::Mod(item) if is_public(&item.vis) => {
-                record_reporting_public_item(&mut actual_items, item.ident.to_string(), "mod")
+                record_reporting_public_item(&mut actual_items, item.ident.to_string(), "mod");
+                if !exact_comparison_module(item) {
+                    violations.push("reporting may expose only the exact out-of-line comparison module declaration".to_owned());
+                }
             },
             Item::Static(item) if is_public(&item.vis) => {
                 record_reporting_public_item(&mut actual_items, item.ident.to_string(), "static")
@@ -7388,6 +7394,15 @@ struct ReportingSourceVisitor {
 const EXACT_REPORTING_PRODUCTION_TOKEN_BYTES: usize = 71_138;
 const EXACT_REPORTING_PRODUCTION_FINGERPRINT: u128 = 0x05d7_a24d_3d72_66b3_3f25_fb45_c86f_f061;
 
+fn exact_comparison_module(module: &syn::ItemMod) -> bool {
+    module.ident == "comparison"
+        && matches!(module.vis, syn::Visibility::Public(_))
+        && module.attrs.is_empty()
+        && module.content.is_none()
+        && module.semi.is_some()
+        && module.unsafety.is_none()
+}
+
 fn reporting_production_body_inventory_violations(source: &str) -> Vec<String> {
     let normalized_source = source.replace("\r\n", "\n");
     let Ok(syntax) = syn::parse_file(&normalized_source) else {
@@ -7427,6 +7442,22 @@ fn reporting_production_body_inventory_violations(source: &str) -> Vec<String> {
                 .to_owned(),
         ];
     };
+    // The additive module is audited independently. Preserve the pre-comparison
+    // renderer's exact fingerprint instead of accepting any renderer-body drift.
+    if syntax
+        .items
+        .iter()
+        .filter(|item| matches!(item, Item::Mod(module) if exact_comparison_module(module)))
+        .count()
+        != 1
+        || production.matches("\npub mod comparison;\n").count() != 1
+    {
+        return vec![
+            "reporting.rs must contain exactly the audited comparison module declaration"
+                .to_owned(),
+        ];
+    }
+    let production = production.replacen("\npub mod comparison;\n", "\n", 1);
     let Ok(tokens) = production.parse::<TokenStream>() else {
         return vec!["reporting.rs production source must remain valid Rust tokens".to_owned()];
     };
@@ -8094,6 +8125,9 @@ impl<'ast> Visit<'ast> for ReportingSourceVisitor {
     fn visit_item_mod(&mut self, item: &'ast syn::ItemMod) {
         if self.inside_test_module != 0 {
             syn::visit::visit_item_mod(self, item);
+            return;
+        }
+        if exact_comparison_module(item) {
             return;
         }
         let cfg_attributes: Vec<_> = item
@@ -10921,6 +10955,7 @@ mod tests {
 
     fn valid_reporting_public_api_fixture() -> &'static str {
         r#"
+            pub mod comparison;
             pub const REPORT_DOCUMENT_SCHEMA: &str = "venom-rendered-run/v1";
             #[cfg(feature = "scanning")]
             pub const ASSESSMENT_REPORT_DOCUMENT_SCHEMA: &str =
@@ -11798,6 +11833,42 @@ mod tests {
                 .any(|violation| violation.contains("AssessmentDocument")
                     && violation.contains("fields must remain exactly"))
         );
+    }
+
+    #[test]
+    fn reporting_comparison_declaration_does_not_unlock_existing_renderer() {
+        let source =
+            include_str!("../../../crates/termivar-scanner/src/reporting.rs").replace("\r\n", "\n");
+        assert!(reporting_production_body_inventory_violations(&source).is_empty());
+        for replacement in [
+            "pub mod comparison;\npub mod comparison;",
+            "#[path = \"other.rs\"]\npub mod comparison;",
+            "#[cfg(feature = \"scanning\")]\npub mod comparison;",
+            "pub mod comparison {}",
+            "pub(crate) mod comparison;",
+            "pub mod other;",
+            "",
+        ] {
+            let mutation = source.replacen("pub mod comparison;", replacement, 1);
+            assert!(
+                !reporting_production_body_inventory_violations(&mutation).is_empty(),
+                "accepted {replacement}"
+            );
+            assert!(
+                !reporting_public_api_violations(&mutation)
+                    .unwrap()
+                    .is_empty(),
+                "accepted API {replacement}"
+            );
+        }
+        let script = source.replacen(
+            "#[cfg(test)]",
+            "const UNEXPECTED_SCRIPT: &str = \"<script>unexpected()</script>\";\n#[cfg(test)]",
+            1,
+        );
+        assert!(reporting_production_body_inventory_violations(&script)
+            .iter()
+            .any(|violation| violation.contains("production AST/body inventory changed")));
     }
 
     #[test]

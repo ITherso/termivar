@@ -61,11 +61,29 @@ above.
 See the [sample reading guide](docs/examples/first-use/README.md) and
 [report contract](docs/reporting.md).
 
+Saved complete assessment JSON files can also be compared without starting a
+scan or making a network request:
+
+```bash
+termivar report compare \
+  --before before.json \
+  --after after.json \
+  --same-scope
+```
+
+The explicit `--same-scope` flag records the operator's selection; Termivar
+does not infer or authenticate target identity from a rendered report. The
+comparison separates observations into only-in-after, only-in-before, changed,
+and unchanged groups. Disappearance is not verified remediation. See the
+[offline comparison contract and formats](docs/reporting.md#offline-assessment-report-comparison).
+
 ## What you can evaluate
 
 - A bounded, exact-origin web assessment with evidence and completeness records.
 - Human-readable HTML or Markdown and machine-readable JSON or CSV output,
   using the existing report renderer.
+- Offline Markdown, JSON, or standalone HTML comparison of two supported,
+  complete assessment JSON documents.
 - Source-level Rust evidence, reasoning, and reporting contracts for an explicit
   library host; see the [architecture](docs/architecture.md).
 

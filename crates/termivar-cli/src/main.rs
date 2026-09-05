@@ -24,6 +24,7 @@ mod artifact_adapter;
 mod assessment_scan;
 mod auth_input;
 mod decision_scan;
+mod report_compare;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use std::{ffi::OsString, path::PathBuf};
@@ -477,6 +478,11 @@ enum Commands {
     /// Run the bounded deterministic scanner against an authorized origin.
     #[command(visible_alias = "decision-scan")]
     Scan(Box<ScanArgs>),
+    /// Compare two saved assessment reports offline; no scan is performed.
+    Report {
+        #[command(subcommand)]
+        command: report_compare::ReportCommands,
+    },
     /// Run the historical mixed-authority, whole-run-unmetered heuristic pipeline.
     #[cfg(feature = "legacy-scanner")]
     LegacyScan {
@@ -1037,12 +1043,25 @@ fn legacy_disposition(disposition: OutcomeStatus) -> &'static str {
     }
 }
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
+    if let Some(Commands::Report { command }) = cli.command {
+        return report_compare::run(command).map_err(Into::into);
+    }
+    run_existing_command(cli.command)
+}
 
-    match cli.command {
+#[tokio::main]
+async fn run_existing_command(command: Option<Commands>) -> Result<(), Box<dyn std::error::Error>> {
+    match command {
         Some(Commands::Scan(args)) => run_deterministic_scan(*args).await?,
+        Some(Commands::Report { .. }) => {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "offline report commands must be dispatched before runtime initialization",
+            )
+            .into());
+        },
         #[cfg(feature = "legacy-scanner")]
         Some(Commands::LegacyScan {
             target,

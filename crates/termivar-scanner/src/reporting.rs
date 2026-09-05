@@ -1,5 +1,7 @@
 //! Deterministic, bounded rendering for validated [`termivar_core::RunReport`] values.
 
+pub mod comparison;
+
 #[cfg(all(feature = "scanning", feature = "rest-review"))]
 use crate::rest_review::RestDocumentedResponseClass;
 #[cfg(feature = "scanning")]

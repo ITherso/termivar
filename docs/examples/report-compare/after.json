@@ -1,0 +1,108 @@
+{
+  "schema": "venom-rendered-assessment/v1",
+  "source_schema": "venom-assessment-run/v1",
+  "run_schema": "venom-run/v1",
+  "profile_schema": "venom.scan-profile/v1",
+  "profile": "web-review",
+  "status": "complete",
+  "subject_count": 1,
+  "item_count": 3,
+  "items": [
+    {
+      "schema": "venom-assessment-item/v1",
+      "capability_id": "web.passive.csp.missing@1",
+      "subject_reference": "subject-0000",
+      "title": "Synthetic comparison fixture 1",
+      "disposition": "informational",
+      "claim_basis": "observation",
+      "severity": null,
+      "confidence_ppm": 1000000,
+      "fingerprint": "sha256:266e52f37c7b0c13ada33c28b9d4c2a15adabaeaa14e06b9d381c2752cc47d03",
+      "evidence_count": 6,
+      "redacted_summary": "Synthetic edited summary used to demonstrate a content difference, not remediation.",
+      "category": "content-policy",
+      "cwe": null,
+      "remediation": {
+        "id": "web.remediation.csp@1",
+        "summary": "Define and validate a Content-Security-Policy for the application document."
+      },
+      "evidence_references": [
+        "evidence-0000",
+        "evidence-0003",
+        "evidence-0004",
+        "evidence-0006",
+        "evidence-0007",
+        "evidence-0008"
+      ],
+      "control_evidence_references": [],
+      "candidate_evidence_references": [],
+      "case_reference": null,
+      "outcome_reference": null,
+      "verification_stage": null
+    },
+    {
+      "schema": "venom-assessment-item/v1",
+      "capability_id": "web.passive.referrer-policy.missing@1",
+      "subject_reference": "subject-0000",
+      "title": "Synthetic comparison fixture 2",
+      "disposition": "informational",
+      "claim_basis": "observation",
+      "severity": null,
+      "confidence_ppm": 1000000,
+      "fingerprint": "sha256:7c882350932c1b914df08570b8d31f9e42e379b18a400d36dfe9f88e3246f3e1",
+      "evidence_count": 6,
+      "redacted_summary": "Synthetic document-processing fixture. This is not a new assessment result.",
+      "category": "browser-defense",
+      "cwe": null,
+      "remediation": {
+        "id": "web.remediation.referrer-policy@1",
+        "summary": "Define a Referrer-Policy that matches the application's cross-origin disclosure needs."
+      },
+      "evidence_references": [
+        "evidence-0000",
+        "evidence-0002",
+        "evidence-0003",
+        "evidence-0004",
+        "evidence-0006",
+        "evidence-0007"
+      ],
+      "control_evidence_references": [],
+      "candidate_evidence_references": [],
+      "case_reference": null,
+      "outcome_reference": null,
+      "verification_stage": null
+    },
+    {
+      "schema": "venom-assessment-item/v1",
+      "capability_id": "web.passive.x-content-type-options.missing@1",
+      "subject_reference": "subject-0000",
+      "title": "Synthetic after-only comparison fixture",
+      "disposition": "informational",
+      "claim_basis": "observation",
+      "severity": null,
+      "confidence_ppm": 1000000,
+      "fingerprint": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "evidence_count": 6,
+      "redacted_summary": "Synthetic document-processing fixture. This is not a new assessment result.",
+      "category": "browser-defense",
+      "cwe": null,
+      "remediation": {
+        "id": "web.remediation.nosniff@1",
+        "summary": "Set X-Content-Type-Options to nosniff where compatible with served content."
+      },
+      "evidence_references": [
+        "evidence-0000",
+        "evidence-0001",
+        "evidence-0003",
+        "evidence-0004",
+        "evidence-0006",
+        "evidence-0007"
+      ],
+      "control_evidence_references": [],
+      "candidate_evidence_references": [],
+      "case_reference": null,
+      "outcome_reference": null,
+      "verification_stage": null
+    }
+  ]
+}
