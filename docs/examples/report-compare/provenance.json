@@ -2,9 +2,9 @@
   "schema": "termivar-report-comparison-example-provenance/v1",
   "fixture_kind": "synthetic_document_processing_not_assessment_evidence",
   "source_base_commit": "e19a2729e14d3cc142c94d07c0f6955d55d828dd",
-  "source_commit": "a9c730bc031bd8a84ab94bbefe3cbeaaffce0eeb",
+  "source_commit": "664d385bd455a4fc5002b98a2103078cfba1be29",
   "binary_version": "termivar 0.10.0-alpha.2",
-  "binary_sha256": "f0dda3ab7269e6463bfc58f349561c95f0108520ba42c90003ae8175016d806a",
+  "binary_sha256": "6690463ae8459245d7ffad703df0ede266a01f4c3c107bb6f51dd3ef6fe344da",
   "inputs": {
     "before.json": "33f709237ffea142d892891d818815251c1cb35d888abe155f7175e15d7d481f",
     "after.json": "5ea44cfd6dbab132aa96e62813c32c12e35f0bf32c09b43a102a16e9ff7bbe64"
