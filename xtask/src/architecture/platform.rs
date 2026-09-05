@@ -147,10 +147,12 @@ const FEATURE_OWNED_CORE_DEPENDENCIES: &[&str] = &["serde_json", "toml"];
 
 const REQUIRED_CLI_DEPENDENCIES: &[&str] = &[
     "clap",
+    "libc",
     "serde",
     "serde_json",
     "tokio",
     "url",
+    "zeroize",
     "termivar-core",
     "termivar-scanner",
 ];
@@ -889,6 +891,7 @@ pub(super) fn check(workspace_root: &Path) -> Result<Vec<String>, Box<dyn Error>
         })?;
     let cli_dependencies = dependency_contracts(cli);
     violations.extend(cli_feature_violations(&cli.features, &cli_dependencies));
+    violations.extend(cli_intake_dependency_scope_violations(&cli.dependencies));
     violations.extend(dependency_inventory_violations(
         "termivar-cli",
         &cli_dependencies,
@@ -1125,6 +1128,41 @@ fn dependency_inventory_violations(
         {
             violations.push(format!(
                 "{package} feature-owned dependency `{dependency}` must remain optional"
+            ));
+        }
+    }
+    violations
+}
+
+fn cli_intake_dependency_scope_violations(
+    dependencies: &[cargo_metadata::Dependency],
+) -> Vec<String> {
+    let mut violations = Vec::new();
+    for (name, expected_target) in [("libc", Some("cfg(unix)")), ("zeroize", None)] {
+        // Inspect the raw entries: the shared inventory map does not retain
+        // aliases/targets and would collapse repeated target-specific entries.
+        let entries: Vec<_> = dependencies
+            .iter()
+            .filter(|dependency| {
+                dependency.kind == DependencyKind::Normal && dependency.name == name
+            })
+            .collect();
+        let [dependency] = entries.as_slice() else {
+            violations.push(format!(
+                "termivar-cli intake dependency `{name}` must have exactly one normal dependency entry, found {}",
+                entries.len()
+            ));
+            continue;
+        };
+        let target = dependency.target.as_ref().map(ToString::to_string);
+        if dependency.rename.is_some()
+            || dependency.optional
+            || !dependency.uses_default_features
+            || !dependency.features.is_empty()
+            || target.as_deref() != expected_target
+        {
+            violations.push(format!(
+                "termivar-cli intake dependency `{name}` must remain unrenamed, non-optional, default-features=true, with no extra features and exact target {expected_target:?}"
             ));
         }
     }
@@ -11896,6 +11934,198 @@ mod tests {
             ),
         ]);
         (features, dependencies)
+    }
+
+    #[test]
+    fn cli_intake_dependency_inventory_is_required_and_exact() {
+        let required = [
+            "clap",
+            "libc",
+            "serde",
+            "serde_json",
+            "tokio",
+            "url",
+            "zeroize",
+            "termivar-core",
+            "termivar-scanner",
+        ];
+        let mut dependencies: BTreeMap<_, _> = required
+            .into_iter()
+            .map(|name| {
+                (
+                    name.to_owned(),
+                    DependencyContract {
+                        optional: false,
+                        uses_default_features: true,
+                        features: BTreeSet::new(),
+                    },
+                )
+            })
+            .chain(OPTIONAL_CLI_DEPENDENCIES.iter().map(|name| {
+                (
+                    (*name).to_owned(),
+                    DependencyContract {
+                        optional: true,
+                        uses_default_features: true,
+                        features: BTreeSet::new(),
+                    },
+                )
+            }))
+            .collect();
+        let violations = dependency_inventory_violations(
+            "termivar-cli",
+            &dependencies,
+            REQUIRED_CLI_DEPENDENCIES,
+            OPTIONAL_CLI_DEPENDENCIES,
+        );
+        assert!(violations.is_empty(), "{violations:?}");
+
+        for name in ["libc", "zeroize"] {
+            dependencies.get_mut(name).unwrap().optional = true;
+            assert!(dependency_inventory_violations(
+                "termivar-cli",
+                &dependencies,
+                REQUIRED_CLI_DEPENDENCIES,
+                OPTIONAL_CLI_DEPENDENCIES,
+            )
+            .iter()
+            .any(
+                |violation| violation.contains(name) && violation.contains("must not be optional")
+            ));
+            dependencies.get_mut(name).unwrap().optional = false;
+        }
+
+        dependencies.insert(
+            "unclassified-intake-dependency".to_owned(),
+            DependencyContract {
+                optional: false,
+                uses_default_features: true,
+                features: BTreeSet::new(),
+            },
+        );
+        assert!(dependency_inventory_violations(
+            "termivar-cli",
+            &dependencies,
+            REQUIRED_CLI_DEPENDENCIES,
+            OPTIONAL_CLI_DEPENDENCIES,
+        )
+        .iter()
+        .any(
+            |violation| violation.contains("unclassified-intake-dependency")
+                && violation.contains("unclassified")
+        ));
+    }
+
+    fn valid_cli_intake_dependencies() -> Vec<cargo_metadata::Dependency> {
+        let libc = toml::from_str(
+            r#"
+                name = "libc"
+                req = "^0.2"
+                kind = "normal"
+                optional = false
+                uses_default_features = true
+                features = []
+                target = "cfg(unix)"
+            "#,
+        )
+        .unwrap();
+        let zeroize = toml::from_str(
+            r#"
+                name = "zeroize"
+                req = "^1.9"
+                kind = "normal"
+                optional = false
+                uses_default_features = true
+                features = []
+            "#,
+        )
+        .unwrap();
+        vec![libc, zeroize]
+    }
+
+    #[test]
+    fn cli_intake_dependency_scope_is_exact_and_preserves_other_inventory_checks() {
+        let dependencies = valid_cli_intake_dependencies();
+        assert!(cli_intake_dependency_scope_violations(&dependencies).is_empty());
+
+        for index in 0..dependencies.len() {
+            for mutation in [
+                "rename", "optional", "defaults", "features", "kind", "missing",
+            ] {
+                let mut changed = dependencies.clone();
+                match mutation {
+                    "rename" => changed[index].rename = Some("intake_alias".to_owned()),
+                    "optional" => changed[index].optional = true,
+                    "defaults" => changed[index].uses_default_features = false,
+                    "features" => changed[index].features.push("extra".to_owned()),
+                    "kind" => changed[index].kind = DependencyKind::Build,
+                    "missing" => {
+                        changed.remove(index);
+                    },
+                    _ => unreachable!(),
+                }
+                assert!(
+                    cli_intake_dependency_scope_violations(&changed)
+                        .iter()
+                        .any(|violation| violation.contains(&dependencies[index].name)),
+                    "{mutation} must reject {}",
+                    dependencies[index].name
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn cli_intake_libc_cannot_be_widened_beyond_exact_unix_target() {
+        for target in [
+            None,
+            Some("cfg(windows)"),
+            Some("cfg(any(unix, windows))"),
+            Some("cfg(target_os = \"linux\")"),
+            Some("x86_64-unknown-linux-gnu"),
+        ] {
+            let mut dependencies = valid_cli_intake_dependencies();
+            dependencies[0].target = target.map(|value| value.parse().unwrap());
+            assert!(cli_intake_dependency_scope_violations(&dependencies)
+                .iter()
+                .any(
+                    |violation| violation.contains("`libc`") && violation.contains("exact target")
+                ));
+        }
+
+        let mut dependencies = valid_cli_intake_dependencies();
+        dependencies[1].target = Some("cfg(unix)".parse().unwrap());
+        assert!(
+            cli_intake_dependency_scope_violations(&dependencies)
+                .iter()
+                .any(|violation| violation.contains("`zeroize`")
+                    && violation.contains("exact target"))
+        );
+    }
+
+    #[test]
+    fn cli_intake_duplicate_entries_cannot_hide_target_or_alias_drift() {
+        for index in 0..2 {
+            for target in [None, Some("cfg(unix)"), Some("cfg(windows)")] {
+                let mut dependencies = valid_cli_intake_dependencies();
+                let mut duplicate = dependencies[index].clone();
+                duplicate.target = target.map(|value| value.parse().unwrap());
+                dependencies.push(duplicate);
+                assert!(cli_intake_dependency_scope_violations(&dependencies)
+                    .iter()
+                    .any(|violation| violation.contains(&dependencies[index].name)
+                        && violation.contains("exactly one normal dependency entry")));
+            }
+
+            let mut dependencies = valid_cli_intake_dependencies();
+            let mut duplicate = dependencies[index].clone();
+            duplicate.rename = Some("intake_alias".to_owned());
+            dependencies.push(duplicate);
+            assert!(cli_intake_dependency_scope_violations(&dependencies)
+                .iter()
+                .any(|violation| violation.contains(&dependencies[index].name)
+                    && violation.contains("exactly one normal dependency entry")));
+        }
     }
 
     #[test]

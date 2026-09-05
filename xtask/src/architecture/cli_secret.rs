@@ -11,8 +11,9 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use proc_macro2::TokenStream;
+use proc_macro2::{TokenStream, TokenTree};
 use syn::{
+    parse::Parser,
     visit::{self, Visit},
     Attribute, Expr, Fields, FnArg, ImplItem, Item, ItemEnum, ItemFn, Meta, Pat, ReturnType, Type,
     Visibility,
@@ -105,6 +106,7 @@ fn protected_type_cross_source_violations(
             AUTH_INPUT_SOURCE,
             &[
                 "AuthorizationInputSource",
+                "CredentialBytes",
                 "AuthorizationInputError",
                 "AuthorizationReviewInput",
                 "AuthorizationReviewInputError",
@@ -344,6 +346,7 @@ fn type_references_alias(item_type: &Type, aliases: &BTreeSet<String>) -> bool {
 fn inspect_auth_input_contract(source: &str) -> Result<Vec<String>, syn::Error> {
     let syntax = syn::parse_file(source)?;
     let compact = compact_source(source);
+    let contracts = contract_items(source)?;
     let mut violations = Vec::new();
 
     let ceiling_is_exact = syntax.items.iter().any(|item| {
@@ -411,7 +414,7 @@ fn inspect_auth_input_contract(source: &str) -> Result<Vec<String>, syn::Error> 
         .get("load")
         .is_none_or(|method| !load_signature_is_exact(method))
         || !compact.contains(
-            "WebAssessmentRootAuthorizationContext::new(bytes).map_err(|_|AuthorizationInputError::InvalidValue)",
+            "WebAssessmentRootAuthorizationContext::new(bytes.into_owned()).map_err(|_|AuthorizationInputError::InvalidValue)",
         )
     {
         violations.push(
@@ -469,25 +472,31 @@ fn inspect_auth_input_contract(source: &str) -> Result<Vec<String>, syn::Error> 
         }
     }
 
-    if !bounded_reader_is_exact(&compact) {
+    if !guarded_intake_is_exact(&contracts) {
+        violations.push(
+            "CLI intake must remain a private non-cloneable Zeroizing guard with redacted Debug, live-storage wiping, and consuming allocation handoff"
+                .to_owned(),
+        );
+    }
+    if !bounded_reader_is_exact(&contracts) {
         violations.push(
             "CLI file/stdin reader must retain at most 4 KiB plus one CRLF, probe one overflow byte, remove only one terminal line ending, and fail closed"
                 .to_owned(),
         );
     }
-    if !environment_reader_is_exact(&compact) {
+    if !environment_reader_is_exact(&contracts) {
         violations.push(
             "CLI environment reader must validate the source name, discard OS diagnostics, and enforce the 4 KiB ceiling before construction"
                 .to_owned(),
         );
     }
-    if !regular_file_open_is_exact(&compact) {
+    if !regular_file_open_is_exact(&contracts) {
         violations.push(
-            "CLI file authorization source must reject non-regular paths before opening and re-check the opened handle without retaining filesystem diagnostics"
+            "CLI file authorization source must use exact platform no-follow flags and reject reparse/non-regular opened handles before reading, without retaining filesystem diagnostics"
                 .to_owned(),
         );
     }
-    if !source_dispatch_is_exact(&compact) {
+    if !source_dispatch_is_exact(&contracts) {
         violations.push(
             "CLI authorization source dispatch must use the bounded reader for file/stdin and discard all source-location diagnostics"
                 .to_owned(),
@@ -554,11 +563,11 @@ fn inspect_authorization_review_input_contract(syntax: &syn::File, compact: &str
         "letboth_stdin=primary.stdin&&peer.stdin;",
         "ifboth_stdin{returnErr(AuthorizationReviewInputError::AmbiguousStdin);}",
         "read_bounded_regular_file(self.policy_file,HARD_MAX_AUTHORIZATION_REVIEW_POLICY_BYTES)",
-        "AuthorizationReviewPolicy::parse_toml(target,&policy_source)",
+        "AuthorizationReviewPolicy::parse_toml(target,policy_source.as_slice())",
         "self.primary.read_bytes()",
         "self.peer.read_bytes()",
-        "PrimaryAuthorizationPrincipal::new(bytes)",
-        "PeerAuthorizationPrincipal::new(bytes)",
+        "PrimaryAuthorizationPrincipal::new(bytes.into_owned())",
+        "PeerAuthorizationPrincipal::new(bytes.into_owned())",
         "AuthorizationPrincipalPair::new(primary,peer)",
     ] {
         if !compact.contains(marker) {
@@ -1396,64 +1405,313 @@ fn static_error_display_is_exact(compact: &str) -> bool {
         })
 }
 
-fn bounded_reader_is_exact(compact: &str) -> bool {
-    [
-        "letretained_limit=MAX_AUTHORIZATION_CONTEXT_BYTES.saturating_add(2);",
-        "letmutbytes=Vec::with_capacity(retained_limit);",
-        ".by_ref().take(u64::try_from(retained_limit).unwrap_or(u64::MAX)).read_to_end(&mutbytes).map_err(|_|AuthorizationInputError::SourceReadFailed)?;",
-        "letmutoverflow=[0_u8;1];",
-        "reader.read(&mutoverflow).map_err(|_|AuthorizationInputError::SourceReadFailed)?!=0",
-        "returnErr(AuthorizationInputError::ValueTooLarge);",
-        "ifbytes.ends_with(b\"\\r\\n\")",
-        "bytes.truncate(bytes.len().saturating_sub(2));",
-        "elseifbytes.ends_with(b\"\\n\")",
-        "bytes.truncate(bytes.len().saturating_sub(1));",
-        "ifbytes.len()>MAX_AUTHORIZATION_CONTEXT_BYTES",
-    ]
-    .iter()
-    .all(|marker| compact.contains(marker))
+// Compare whole, top-level definitions, not free-floating markers. Comments,
+// test modules, nested helper decoys and string literals cannot satisfy these
+// contracts. Documentation attributes alone are omitted from the token match.
+fn contract_items(source: &str) -> Result<Vec<(String, String)>, syn::Error> {
+    let parser = |input: syn::parse::ParseStream<'_>| {
+        for attribute in input.call(Attribute::parse_inner)? {
+            if !attribute.path().is_ident("doc") {
+                return Err(
+                    input.error("credential contract permits only inner documentation attributes")
+                );
+            }
+        }
+        let mut items = Vec::new();
+        while !input.is_empty() {
+            let before = input.cursor().token_stream();
+            let item: Item = input.parse()?;
+            let consumed = before.clone().into_iter().count()
+                - input.cursor().token_stream().into_iter().count();
+            let tokens = before.into_iter().take(consumed).collect::<TokenStream>();
+            let key = match item {
+                Item::Fn(item) => Some(format!("fn:{}", item.sig.ident)),
+                Item::Struct(item) => Some(format!("struct:{}", item.ident)),
+                Item::Impl(item) => match item.self_ty.as_ref() {
+                    Type::Path(path) => path
+                        .path
+                        .segments
+                        .last()
+                        .map(|segment| format!("impl:{}", segment.ident)),
+                    _ => None,
+                },
+                _ => None,
+            };
+            if let Some(key) = key {
+                // Keep token boundaries and literal whitespace: `return Err`
+                // must not compare equal to an unrelated `returnErr` call.
+                items.push((key, without_documentation(tokens).to_string()));
+            }
+        }
+        Ok(items)
+    };
+    parser.parse_str(source)
 }
 
-fn environment_reader_is_exact(compact: &str) -> bool {
-    [
-        "name.into_string().map_err(|_|AuthorizationInputError::SourceNameInvalid)?",
-        "ifname.is_empty()||name.chars().any(|character|matches!(character,'='|'\\0'))",
-        "std::env::var_os(name).ok_or(AuthorizationInputError::SourceUnavailable)?",
-        "value.into_string().map_err(|_|AuthorizationInputError::SourceNotUnicode)?",
-        "letbytes=value.into_bytes();",
-        "ifbytes.len()>MAX_AUTHORIZATION_CONTEXT_BYTES",
-    ]
-    .iter()
-    .all(|marker| compact.contains(marker))
+fn without_documentation(tokens: TokenStream) -> TokenStream {
+    let mut tokens = tokens.into_iter().peekable();
+    let mut retained = TokenStream::new();
+    while let Some(token) = tokens.next() {
+        if matches!(&token, TokenTree::Punct(punctuation) if punctuation.as_char() == '#')
+            && tokens.peek().is_some_and(|next| {
+                matches!(next, TokenTree::Group(group)
+                    if group.delimiter() == proc_macro2::Delimiter::Bracket
+                        && matches!(group.stream().into_iter().next(),
+                            Some(TokenTree::Ident(identifier)) if identifier == "doc"))
+            })
+        {
+            tokens.next();
+        } else if let TokenTree::Group(group) = token {
+            retained.extend([TokenTree::Group(proc_macro2::Group::new(
+                group.delimiter(),
+                without_documentation(group.stream()),
+            ))]);
+        } else {
+            retained.extend([token]);
+        }
+    }
+    retained
 }
 
-fn regular_file_open_is_exact(compact: &str) -> bool {
-    compact
-        .matches("file.metadata().map_err(|_|AuthorizationInputError::SourceUnavailable)?")
-        .count()
-        == 2
-        && [
-            "fs::symlink_metadata(&path).map_err(|_|AuthorizationInputError::SourceUnavailable)?",
-            "if!metadata.file_type().is_file()",
-            "returnErr(AuthorizationInputError::SourceNotRegularFile);",
-            "File::open(path).map_err(|_|AuthorizationInputError::SourceUnavailable)?",
-            "file.metadata().map_err(|_|AuthorizationInputError::SourceUnavailable)?",
-            "if!opened_metadata.is_file()",
-            "Ok(file)",
-        ]
-        .iter()
-        .all(|marker| compact.contains(marker))
+fn definitions_are_exact(observed: &[(String, String)], expected: &str) -> bool {
+    let Ok(expected) = contract_items(expected) else {
+        return false;
+    };
+    let keys = expected.iter().map(|(key, _)| key).collect::<BTreeSet<_>>();
+    !expected.is_empty()
+        && observed
+            .iter()
+            .filter(|(key, _)| keys.contains(key))
+            .eq(expected.iter())
 }
 
-fn source_dispatch_is_exact(compact: &str) -> bool {
-    [
-        "Self::Environment(name)=>read_environment(name)",
-        "Self::File(path)=>{letmutfile=open_regular_file(path)?;",
-        "read_bounded_line_source(&mutfile)}",
-        "Self::Stdin=>{letstdin=io::stdin();letmutinput=stdin.lock();read_bounded_line_source(&mutinput)}",
-    ]
-    .iter()
-    .all(|marker| compact.contains(marker))
+fn guarded_intake_is_exact(items: &[(String, String)]) -> bool {
+    definitions_are_exact(
+        items,
+        r#"
+        struct CredentialBytes { bytes: Zeroizing<Vec<u8>>, }
+        impl CredentialBytes {
+            fn new(bytes: Vec<u8>) -> Self { Self { bytes: Zeroizing::new(bytes), } }
+            fn as_slice(&self) -> &[u8] { self.bytes.as_slice() }
+            fn into_owned(mut self) -> Vec<u8> { std::mem::take(&mut *self.bytes) }
+        }
+        impl fmt::Debug for CredentialBytes {
+            fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("CredentialBytes(<redacted>)")
+            }
+        }
+        impl Drop for CredentialBytes {
+            fn drop(&mut self) {
+                self.bytes.as_mut_slice().zeroize();
+                #[cfg(test)]
+                INTAKE_DROPS.with(|drops| {
+                    drops.borrow_mut().push((self.bytes.len(), self.bytes.iter().all(|byte| *byte == 0)));
+                });
+            }
+        }
+    "#,
+    )
+}
+
+fn bounded_reader_is_exact(items: &[(String, String)]) -> bool {
+    definitions_are_exact(
+        items,
+        r#"
+        #[cfg(any(feature = "authorization-review", feature = "ssrf-oast-review"))]
+        fn read_bounded_regular_file(path: PathBuf, max_bytes: usize,)
+            -> Result<CredentialBytes, AuthorizationInputError> {
+            let mut file = open_regular_file(path)?;
+            ensure_opened_file_length(&file, max_bytes)?;
+            let retained = max_bytes.saturating_add(1);
+            let bytes = read_bounded_bytes(&mut file, retained)?;
+            if bytes.as_slice().len() > max_bytes {
+                return Err(AuthorizationInputError::ValueTooLarge);
+            }
+            Ok(bytes)
+        }
+        fn ensure_opened_file_length(file: &File, max_bytes: usize) -> Result<(), AuthorizationInputError> {
+            let length = file.metadata().map_err(|_| AuthorizationInputError::SourceUnavailable)? .len();
+            if length > u64::try_from(max_bytes).unwrap_or(u64::MAX) {
+                return Err(AuthorizationInputError::ValueTooLarge);
+            }
+            Ok(())
+        }
+        fn read_bounded_line_source(reader: &mut impl Read,)
+            -> Result<CredentialBytes, AuthorizationInputError> {
+            let retained_limit = MAX_AUTHORIZATION_CONTEXT_BYTES.saturating_add(2);
+            let mut bytes = read_bounded_bytes(reader, retained_limit)?;
+            let mut overflow = Zeroizing::new([0_u8; 1]);
+            if read_overflow_byte(reader, &mut overflow)? != 0 {
+                return Err(AuthorizationInputError::ValueTooLarge);
+            }
+            let retained = wipe_terminal_line_ending(bytes.bytes.as_mut_slice());
+            bytes.bytes.truncate(retained);
+            if bytes.as_slice().len() > MAX_AUTHORIZATION_CONTEXT_BYTES {
+                return Err(AuthorizationInputError::ValueTooLarge);
+            }
+            Ok(bytes)
+        }
+        fn read_bounded_bytes(reader: &mut impl Read, retained_limit: usize,)
+            -> Result<CredentialBytes, AuthorizationInputError> {
+            let mut bytes = CredentialBytes::new(vec![0; retained_limit]);
+            let mut filled = 0;
+            while filled < retained_limit {
+                match reader.read(&mut bytes.bytes[filled..]) {
+                    Ok(0) => break,
+                    Ok(count) => {
+                        filled = filled.checked_add(count).filter(|filled| *filled <= retained_limit)
+                            .ok_or(AuthorizationInputError::SourceReadFailed)?;
+                    },
+                    Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                    Err(_) => return Err(AuthorizationInputError::SourceReadFailed),
+                }
+            }
+            bytes.bytes[filled..].zeroize();
+            bytes.bytes.truncate(filled);
+            Ok(bytes)
+        }
+        fn read_overflow_byte(reader: &mut impl Read, overflow: &mut [u8; 1],)
+            -> Result<usize, AuthorizationInputError> {
+            let result = reader.read(overflow).map_err(|_| AuthorizationInputError::SourceReadFailed);
+            overflow.zeroize();
+            result
+        }
+        fn wipe_terminal_line_ending(bytes: &mut [u8]) -> usize {
+            let removed = if bytes.ends_with(b"\r\n") { 2 }
+                else if bytes.ends_with(b"\n") { 1 } else { 0 };
+            let retained = bytes.len().saturating_sub(removed);
+            bytes[retained..].zeroize();
+            retained
+        }
+    "#,
+    )
+}
+
+fn environment_reader_is_exact(items: &[(String, String)]) -> bool {
+    definitions_are_exact(
+        items,
+        r#"
+        fn read_environment(name: OsString) -> Result<CredentialBytes, AuthorizationInputError> {
+            let name = name.into_string().map_err(|_| AuthorizationInputError::SourceNameInvalid)?;
+            if name.is_empty() || name.chars().any(|character| matches!(character, '=' | '\0')) {
+                return Err(AuthorizationInputError::SourceNameInvalid);
+            }
+            let value = std::env::var_os(name).ok_or(AuthorizationInputError::SourceUnavailable)?;
+            validate_environment_value(value)
+        }
+        fn validate_environment_value(value: OsString) -> Result<CredentialBytes, AuthorizationInputError> {
+            let bytes = CredentialBytes::new(value.into_encoded_bytes());
+            std::str::from_utf8(bytes.as_slice()).map_err(|_| AuthorizationInputError::SourceNotUnicode)?;
+            if bytes.as_slice().len() > MAX_AUTHORIZATION_CONTEXT_BYTES {
+                return Err(AuthorizationInputError::ValueTooLarge);
+            }
+            Ok(bytes)
+        }
+    "#,
+    )
+}
+
+fn regular_file_open_is_exact(items: &[(String, String)]) -> bool {
+    definitions_are_exact(
+        items,
+        r#"
+        fn open_regular_file(path: PathBuf) -> Result<File, AuthorizationInputError> {
+            validate_opened_regular_file(open_no_follow(&path)?)
+        }
+        #[cfg(unix)]
+        fn open_no_follow(path: &std::path::Path) -> Result<File, AuthorizationInputError> {
+            use std::os::unix::fs::OpenOptionsExt;
+            std::fs::OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+                .open(path).map_err(|error| {
+                    if error.raw_os_error() == Some(libc::ELOOP) {
+                        AuthorizationInputError::SourceNotRegularFile
+                    } else { AuthorizationInputError::SourceUnavailable }
+                })
+        }
+        #[cfg(windows)]
+        fn open_no_follow(path: &std::path::Path) -> Result<File, AuthorizationInputError> {
+            use std::os::windows::fs::OpenOptionsExt;
+            const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+            const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+            std::fs::OpenOptions::new().read(true)
+                .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS)
+                .security_qos_flags(0).open(path).map_err(|_| AuthorizationInputError::SourceUnavailable)
+        }
+        #[cfg(not(any(unix, windows)))]
+        fn open_no_follow(_: &std::path::Path) -> Result<File, AuthorizationInputError> {
+            Err(AuthorizationInputError::SourceUnavailable)
+        }
+        fn validate_opened_regular_file(file: File) -> Result<File, AuthorizationInputError> {
+            let opened_metadata = file.metadata().map_err(|_| AuthorizationInputError::SourceUnavailable)?;
+            #[cfg(windows)] {
+                use std::os::windows::fs::MetadataExt;
+                const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0000_0400;
+                if opened_metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+                    return Err(AuthorizationInputError::SourceNotRegularFile);
+                }
+            }
+            if !opened_metadata.is_file() {
+                return Err(AuthorizationInputError::SourceNotRegularFile);
+            }
+            Ok(file)
+        }
+    "#,
+    )
+}
+
+fn source_dispatch_is_exact(items: &[(String, String)]) -> bool {
+    definitions_are_exact(
+        items,
+        r#"
+        impl fmt::Debug for AuthorizationInputSource {
+            fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                let source = match self {
+                    Self::Environment(_) => "environment",
+                    Self::File(_) => "file",
+                    Self::Stdin => "stdin",
+                };
+                formatter.debug_struct("AuthorizationInputSource").field("source", &source)
+                    .field("location", &"<redacted>").finish()
+            }
+        }
+        impl AuthorizationInputSource {
+            pub(crate) fn select(environment: Option<OsString>, file: Option<PathBuf>, stdin: bool,)
+                -> Result<Option<Self>, AuthorizationInputError> {
+                let selected = usize::from(environment.is_some())
+                    .saturating_add(usize::from(file.is_some())).saturating_add(usize::from(stdin));
+                if selected > 1 { return Err(AuthorizationInputError::ConflictingSources); }
+                Ok(match (environment, file, stdin) {
+                    (Some(name), None, false) => Some(Self::Environment(name)),
+                    (None, Some(path), false) => Some(Self::File(path)),
+                    (None, None, true) => Some(Self::Stdin),
+                    (None, None, false) => None,
+                    _ => return Err(AuthorizationInputError::ConflictingSources),
+                })
+            }
+            pub(crate) fn load(self,)
+                -> Result<WebAssessmentRootAuthorizationContext, AuthorizationInputError> {
+                let bytes = self.read_bytes()?;
+                WebAssessmentRootAuthorizationContext::new(bytes.into_owned())
+                    .map_err(|_| AuthorizationInputError::InvalidValue)
+            }
+            fn read_bytes(self) -> Result<CredentialBytes, AuthorizationInputError> {
+                match self {
+                    Self::Environment(name) => read_environment(name),
+                    Self::File(path) => {
+                        let mut file = open_regular_file(path)?;
+                        ensure_opened_file_length(&file, MAX_AUTHORIZATION_CONTEXT_BYTES + 2)?;
+                        read_bounded_line_source(&mut file)
+                    },
+                    Self::Stdin => {
+                        let stdin = io::stdin();
+                        let mut input = stdin.lock();
+                        read_bounded_line_source(&mut input)
+                    },
+                }
+            }
+        }
+    "#,
+    )
 }
 
 fn ordered_boundary_references(function: &ItemFn) -> Vec<String> {
@@ -1566,7 +1824,8 @@ mod tests {
 
     #[test]
     fn checked_in_secret_boundary_is_accepted() {
-        assert!(inspect_auth_input_contract(AUTH_INPUT).unwrap().is_empty());
+        let violations = inspect_auth_input_contract(AUTH_INPUT).unwrap();
+        assert!(violations.is_empty(), "{violations:#?}");
         assert!(inspect_cli_auth_surface(CLI_MAIN).unwrap().is_empty());
         assert!(
             inspect_scanner_context_validation(SCANNER_CONTEXT, PAYLOAD_STRATEGY)
@@ -1623,13 +1882,13 @@ mod tests {
                 "exact crate-private cast",
             ),
             (
-                ".take(u64::try_from(retained_limit).unwrap_or(u64::MAX))",
-                ".take(u64::MAX)",
+                "read_bounded_bytes(reader, retained_limit)?",
+                "read_bounded_bytes(reader, usize::MAX)?",
                 "probe one overflow byte",
             ),
             (
+                "    let mut overflow = Zeroizing::new([0_u8; 1]);",
                 "    let mut overflow = [0_u8; 1];",
-                "    let mut overflow = [0_u8; 0];",
                 "probe one overflow byte",
             ),
             (
@@ -1638,14 +1897,14 @@ mod tests {
                 "value-free unit-variant",
             ),
             (
-                "    let metadata =\n        fs::symlink_metadata(&path)",
-                "    let metadata =\n        fs::metadata(&path)",
-                "reject non-regular paths before opening",
+                "validate_opened_regular_file(open_no_follow(&path)?)",
+                "File::open(path).map_err(|_| AuthorizationInputError::SourceUnavailable)",
+                "reject reparse/non-regular opened handles before reading",
             ),
             (
                 "    let opened_metadata = file\n        .metadata()",
-                "    let opened_metadata = metadata",
-                "reject non-regular paths before opening",
+                "    let opened_metadata = std::fs::metadata(\"replacement\")",
+                "reject reparse/non-regular opened handles before reading",
             ),
             (
                 "Self::SourceReadFailed => \"authorization-context input source could not be read\"",
@@ -1653,8 +1912,8 @@ mod tests {
                 "static credential-free",
             ),
             (
-                "WebAssessmentRootAuthorizationContext::new(bytes)",
-                "WebAssessmentRootAuthorizationContext::from_unchecked(bytes)",
+                "WebAssessmentRootAuthorizationContext::new(bytes.into_owned())",
+                "WebAssessmentRootAuthorizationContext::from_unchecked(bytes.into_owned())",
                 "scanner-owned authorization-context constructor",
             ),
         ] {
@@ -1665,6 +1924,193 @@ mod tests {
                 |source| inspect_auth_input_contract(source).unwrap(),
                 needle,
             );
+        }
+    }
+
+    #[test]
+    fn complete_definitions_ignore_documentation_but_reject_decoys_and_duplicates() {
+        const EXPECTED: &str = "fn bounded() { read_one(); }";
+        let documented = contract_items(
+            "//! module documentation\n/// function documentation\nfn bounded() { /* comment */ read_one(); }",
+        ).unwrap();
+        assert!(definitions_are_exact(&documented, EXPECTED));
+        assert!(!definitions_are_exact(&documented, ""));
+        assert!(!definitions_are_exact(&documented, "fn {"));
+        assert!(contract_items("#![cfg(test)] fn bounded() {}").is_err());
+        for source in [
+            "// fn bounded() { read_one(); }\nfn bounded() { read_all(); }",
+            "const DECOY: &str = \"fn bounded() { read_one(); }\"; fn bounded() { read_all(); }",
+            "mod tests { fn bounded() { read_one(); } }",
+            "fn outer() { fn bounded() { read_one(); } }",
+            "generate! { fn bounded() { read_one(); } }",
+            "#[cfg(test)] fn bounded() { read_one(); }",
+            "pub fn bounded() { read_one(); }",
+            "fn bounded() { read_one(); } fn bounded() { read_one(); }",
+            "fn bounded() { return; read_one(); }",
+        ] {
+            let items = contract_items(source).unwrap();
+            assert!(
+                !definitions_are_exact(&items, EXPECTED),
+                "accepted decoy: {source}"
+            );
+        }
+        // Parsed but irrelevant item shapes cannot act as named definitions;
+        // macro punctuation and non-doc attributes are not erased as comments.
+        let items = contract_items(
+            "impl (A, B) {} fn other() { tokens! { #value #[cfg(test)] #(value) }; }",
+        )
+        .unwrap();
+        assert_eq!(items.len(), 1);
+        assert!(!definitions_are_exact(
+            &items,
+            "fn other() { tokens! { value }; }"
+        ));
+        for (expected, mutation) in [
+            (
+                "fn bounded() { return Err(InputError); }",
+                "fn bounded() { returnErr(InputError); }",
+            ),
+            (
+                "fn bounded() { accept(\"two words\"); }",
+                "fn bounded() { accept(\"twowords\"); }",
+            ),
+        ] {
+            let items = contract_items(mutation).unwrap();
+            assert!(
+                !definitions_are_exact(&items, expected),
+                "collapsed tokens: {mutation}"
+            );
+        }
+    }
+
+    #[test]
+    fn intake_guard_and_ownership_handoff_are_mutation_locked() {
+        for (from, to) in [
+            ("struct CredentialBytes {", "#[derive(Clone)] struct CredentialBytes {"),
+            ("struct CredentialBytes {", "pub(crate) struct CredentialBytes {"),
+            ("bytes: Zeroizing<Vec<u8>>,", "bytes: Vec<u8>,"),
+            ("bytes: Zeroizing::new(bytes),", "bytes: bytes.into(),"),
+            ("self.bytes.as_mut_slice().zeroize();", "self.bytes.as_mut_slice().fill(0);"),
+            ("std::mem::take(&mut *self.bytes)", "self.bytes.to_vec()"),
+            ("fn into_owned(mut self)", "fn into_owned(&mut self)"),
+            ("CredentialBytes(<redacted>)", "CredentialBytes(visible)"),
+            ("impl CredentialBytes {", "impl Clone for CredentialBytes { fn clone(&self) -> Self { panic!() } } impl CredentialBytes {"),
+        ] {
+            assert_mutation_fails(AUTH_INPUT, from, to,
+                |source| inspect_auth_input_contract(source).unwrap(),
+                "private non-cloneable Zeroizing guard");
+        }
+        for (from, to) in [
+            (
+                "WebAssessmentRootAuthorizationContext::new(bytes.into_owned())",
+                "WebAssessmentRootAuthorizationContext::new(bytes.as_slice().to_vec())",
+            ),
+            (
+                "PrimaryAuthorizationPrincipal::new(bytes.into_owned())",
+                "PrimaryAuthorizationPrincipal::new(bytes.as_slice().to_vec())",
+            ),
+            (
+                "PeerAuthorizationPrincipal::new(bytes.into_owned())",
+                "PeerAuthorizationPrincipal::new(bytes.as_slice().to_vec())",
+            ),
+            (
+                "AuthorizationReviewPolicy::parse_toml(target, policy_source.as_slice())",
+                "AuthorizationReviewPolicy::parse_toml(target, &policy_source)",
+            ),
+        ] {
+            assert_mutation_fails(
+                AUTH_INPUT,
+                from,
+                to,
+                |source| inspect_auth_input_contract(source).unwrap(),
+                if from.starts_with("WebAssessment") {
+                    "scanner-owned authorization-context constructor"
+                } else {
+                    "distinct role construction"
+                },
+            );
+        }
+    }
+
+    #[test]
+    fn environment_validation_must_follow_zeroizing_ownership() {
+        for (from, to) in [
+            ("validate_environment_value(value)\n}", "Ok(CredentialBytes::new(value.into_encoded_bytes()))\n}"),
+            ("let bytes = CredentialBytes::new(value.into_encoded_bytes());", "let bytes = value.into_encoded_bytes();"),
+            ("let bytes = CredentialBytes::new(value.into_encoded_bytes());", "let bytes = CredentialBytes::new(value.into_string().unwrap().into_bytes());"),
+            ("std::str::from_utf8(bytes.as_slice()).map_err(|_| AuthorizationInputError::SourceNotUnicode)?;", "let _ = std::str::from_utf8(bytes.as_slice());"),
+            ("if bytes.as_slice().len() > MAX_AUTHORIZATION_CONTEXT_BYTES", "if bytes.as_slice().len() > usize::MAX"),
+            ("if name.is_empty()", "if false"),
+            ("std::env::var_os(name).ok_or(AuthorizationInputError::SourceUnavailable)?", "std::env::var_os(name).unwrap_or_default()"),
+        ] {
+            assert_mutation_fails(AUTH_INPUT, from, to,
+                |source| inspect_auth_input_contract(source).unwrap(),
+                "environment reader must validate");
+        }
+    }
+
+    #[test]
+    fn atomic_open_and_same_handle_validation_are_mutation_locked() {
+        for (from, to) in [
+            ("validate_opened_regular_file(open_no_follow(&path)?)", "open_no_follow(&path)"),
+            ("validate_opened_regular_file(open_no_follow(&path)?)", "{ let _ = std::fs::metadata(&path); File::open(path).map_err(|_| AuthorizationInputError::SourceUnavailable) }"),
+            ("libc::O_NOFOLLOW | libc::O_NONBLOCK", "libc::O_NONBLOCK"),
+            ("libc::O_NOFOLLOW | libc::O_NONBLOCK", "libc::O_NOFOLLOW"),
+            ("#[cfg(unix)]\nfn open_no_follow", "#[cfg(any(unix, windows))]\nfn open_no_follow"),
+            ("#[cfg(windows)]\nfn open_no_follow", "#[cfg(test)]\nfn open_no_follow"),
+            ("#[cfg(not(any(unix, windows)))]\nfn open_no_follow", "#[cfg(not(unix))]\nfn open_no_follow"),
+            ("FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS", "FILE_FLAG_BACKUP_SEMANTICS"),
+            ("FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS", "FILE_FLAG_OPEN_REPARSE_POINT"),
+            ("const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;", "const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0;"),
+            (".security_qos_flags(0)", ".security_qos_flags(0x0002_0000)"),
+            ("if opened_metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0", "if false"),
+            ("if !opened_metadata.is_file()", "if false"),
+            ("fn validate_opened_regular_file(file: File) -> Result<File, AuthorizationInputError> {", "fn validate_opened_regular_file(mut file: File) -> Result<File, AuthorizationInputError> { let mut bytes = Vec::new(); file.read_to_end(&mut bytes).unwrap();"),
+            ("    Ok(file)\n}", "    File::open(\"replacement\").map_err(|_| AuthorizationInputError::SourceUnavailable)\n}"),
+        ] {
+            assert_mutation_fails(AUTH_INPUT, from, to,
+                |source| inspect_auth_input_contract(source).unwrap(),
+                "exact platform no-follow flags");
+        }
+    }
+
+    #[test]
+    fn fixed_reads_overflow_and_removed_suffix_wiping_are_mutation_locked() {
+        for (from, to) in [
+            ("let mut bytes = CredentialBytes::new(vec![0; retained_limit]);", "let mut bytes = CredentialBytes::new(Vec::with_capacity(retained_limit));"),
+            ("let mut bytes = CredentialBytes::new(vec![0; retained_limit]);", "let mut bytes = Vec::new(); reader.read_to_end(&mut bytes).unwrap(); let mut bytes = CredentialBytes::new(bytes);"),
+            ("while filled < retained_limit", "while true"),
+            ("reader.read(&mut bytes.bytes[filled..])", "reader.read(&mut bytes.bytes[..])"),
+            (".checked_add(count)", ".saturating_add(count)"),
+            (".filter(|filled| *filled <= retained_limit)", ".filter(|_| true)"),
+            ("Err(_) => return Err(AuthorizationInputError::SourceReadFailed),", "Err(_) => break,"),
+            ("bytes.bytes[filled..].zeroize();", "bytes.bytes[filled..].fill(0);"),
+            ("if read_overflow_byte(reader, &mut overflow)? != 0", "if false"),
+            ("overflow.zeroize();", "let _ = overflow;"),
+            ("bytes[retained..].zeroize();", "let _ = &bytes[retained..];"),
+            ("bytes.ends_with(b\"\\r\\n\")", "bytes.ends_with(b\"\\n\\n\")"),
+            ("let retained = max_bytes.saturating_add(1);", "let retained = usize::MAX;"),
+            ("ensure_opened_file_length(&file, max_bytes)?;", "let _ = max_bytes;"),
+            ("if length > u64::try_from(max_bytes).unwrap_or(u64::MAX)", "if false"),
+            ("    bytes.bytes.truncate(retained);", "    bytes.bytes.truncate(0);"),
+        ] {
+            assert_mutation_fails(AUTH_INPUT, from, to,
+                |source| inspect_auth_input_contract(source).unwrap(),
+                "probe one overflow byte");
+        }
+    }
+
+    #[test]
+    fn source_selection_and_dispatch_cannot_read_before_validation() {
+        for (from, to) in [
+            ("let selected = usize::from(environment.is_some())", "let _ = std::env::var_os(\"PREMATURE\"); let selected = usize::from(environment.is_some())"),
+            ("ensure_opened_file_length(&file, MAX_AUTHORIZATION_CONTEXT_BYTES + 2)?;", "let _ = read_bounded_line_source(&mut file)?;"),
+            ("read_bounded_line_source(&mut input)\n", "{ let mut bytes = Vec::new(); input.read_to_end(&mut bytes).unwrap(); Ok(CredentialBytes::new(bytes)) }\n"),
+            ("Self::Environment(name) => read_environment(name),", "Self::Environment(name) => Ok(CredentialBytes::new(std::env::var_os(name).unwrap().into_encoded_bytes())),"),
+        ] {
+            assert_mutation_fails(AUTH_INPUT, from, to,
+                |source| inspect_auth_input_contract(source).unwrap(),
+                "source dispatch must use the bounded reader");
         }
     }
 

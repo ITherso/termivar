@@ -974,7 +974,7 @@ mod tests {
 
     #[test]
     fn overflow_probe_erases_its_live_byte_on_success_eof_and_error() {
-        let mut overflow = [b'x'];
+        let mut overflow = *b"x";
         assert_eq!(
             read_overflow_byte(&mut Cursor::new(b"x"), &mut overflow),
             Ok(1)
