@@ -33,7 +33,7 @@ Enable only `reporting` for a host that already owns a `RunReport`:
 termivar-scanner = { path = "/path/to/reviewed/termivar/crates/termivar-scanner", default-features = false, features = ["reporting"] }
 ```
 
-```rust,ignore
+```rust
 use termivar_scanner::{ReportFormat, ReportGenerator, RunReport};
 
 fn render(report: &RunReport) -> Result<String, termivar_scanner::ReportError> {
@@ -56,7 +56,7 @@ runtime-owned assessment truth:
 termivar-scanner = { path = "/path/to/reviewed/termivar/crates/termivar-scanner", default-features = false, features = ["scanning", "reporting"] }
 ```
 
-```rust,ignore
+```rust
 use termivar_scanner::{ReportFormat, ReportGenerator};
 use termivar_scanner::web_runtime::{ScanProfileV1, WebAssessmentRunReport};
 

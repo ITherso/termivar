@@ -60,6 +60,7 @@ const CURRENT_PUBLIC_TREES: &[&str] = &[
     "artifact-signatures",
     "exploit-packs",
     "profiles",
+    "theme",
     "web",
 ];
 
@@ -765,6 +766,11 @@ mod tests {
             "Venom is the current scanner.\n",
         )
         .unwrap();
+        fs::write(
+            temporary.path().join("theme/main.html"),
+            "<span>Venom is the current site.</span>\n",
+        )
+        .unwrap();
         fs::create_dir_all(temporary.path().join("docs/history")).unwrap();
         fs::write(
             temporary.path().join("docs/history/legacy.md"),
@@ -778,8 +784,13 @@ mod tests {
         .unwrap();
 
         let violations = public_brand_violations(temporary.path()).unwrap();
-        assert_eq!(violations.len(), 1);
-        assert!(violations[0].contains("docs/scanner.md:1"));
+        assert_eq!(violations.len(), 2);
+        assert!(violations
+            .iter()
+            .any(|item| item.contains("docs/scanner.md:1")));
+        assert!(violations
+            .iter()
+            .any(|item| item.contains("theme/main.html:1")));
     }
 
     #[test]

@@ -1,0 +1,70 @@
+{% extends "base.html" %}
+
+{% block extrahead %}
+  {{ super() }}
+  <meta name="theme-color" content="#0c1417">
+  <meta name="color-scheme" content="light dark">
+  <link rel="icon" type="image/png" sizes="64x64" href="{{ 'assets/brand/termivar-favicon.png'|url }}">
+  <link rel="apple-touch-icon" href="{{ 'assets/brand/termivar-mark.png'|url }}">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="Termivar Documentation">
+  <meta property="og:title" content="{% if page and page.title and not page.is_homepage %}{{ page.title|striptags|e }} · {% endif %}Termivar">
+  <meta property="og:description" content="{{ config.site_description|e }}">
+  {% if page and page.canonical_url %}<meta property="og:url" content="{{ page.canonical_url|e }}">{% endif %}
+  <meta property="og:image" content="{{ config.site_url }}assets/brand/termivar-social-card.png">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta property="og:image:alt" content="Termivar — Deterministic security testing. Evidence before verdicts.">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="{% if page and page.title and not page.is_homepage %}{{ page.title|striptags|e }} · {% endif %}Termivar">
+  <meta name="twitter:description" content="{{ config.site_description|e }}">
+  <meta name="twitter:image" content="{{ config.site_url }}assets/brand/termivar-social-card.png">
+  <meta name="twitter:image:alt" content="Termivar — Deterministic security testing. Evidence before verdicts.">
+{% endblock %}
+
+{% block site_name %}
+  <a class="tmv-skip-link tmv-skip-desktop" href="#termivar-main-content">Skip to main content</a>
+  <a href="{{ nav.homepage.url|url }}" class="tmv-site-brand" aria-label="Termivar documentation home">
+    <span class="tmv-site-brand-mark" aria-hidden="true">
+      <img src="{{ 'assets/brand/termivar-mark.png'|url }}" alt="" width="320" height="320">
+    </span>
+    <span class="tmv-site-brand-copy">
+      <strong>Termivar</strong>
+      <small>Documentation</small>
+    </span>
+  </a>
+{% endblock %}
+
+{% block mobile_nav %}
+  <a class="tmv-skip-link tmv-skip-mobile" href="#termivar-main-content">Skip to main content</a>
+  <button type="button" class="tmv-nav-toggle" data-toggle="wy-nav-top" aria-controls="termivar-navigation" aria-expanded="false" aria-label="Open documentation navigation">
+    <span class="fa fa-bars" aria-hidden="true"></span>
+  </button>
+  <a href="{{ nav.homepage.url|url }}" class="tmv-mobile-brand">
+    <img src="{{ 'assets/brand/termivar-mark.png'|url }}" alt="" width="320" height="320">
+    <span>Termivar <small>Docs</small></span>
+  </a>
+{% endblock %}
+
+{% block content %}
+  <span id="termivar-main-content" class="tmv-main-anchor" tabindex="-1"></span>
+  {{ super() }}
+{% endblock %}
+
+{% block footer %}
+  {{ super() }}
+  <div class="tmv-docs-footer" aria-label="Termivar documentation footer">
+    <div class="tmv-footer-brand">
+      <img src="{{ 'assets/brand/termivar-mark.png'|url }}" alt="" width="320" height="320">
+      <div>
+        <strong>Termivar</strong>
+        <span>Deterministic security testing. Evidence before verdicts.</span>
+      </div>
+    </div>
+    <nav aria-label="Footer links">
+      <a href="{{ 'GETTING_STARTED/'|url }}">Get started</a>
+      <a href="{{ 'architecture/'|url }}">Architecture</a>
+      <a href="https://github.com/ITherso/termivar">GitHub</a>
+    </nav>
+  </div>
+{% endblock %}

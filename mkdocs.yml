@@ -1,20 +1,44 @@
 site_name: Termivar Documentation
-site_description: Architecture and operating documentation for Termivar
+site_description: Bounded, evidence-driven security assessment with deterministic execution and claim-safe reporting.
+site_author: ITherso
 site_url: https://itherso.github.io/termivar/
 repo_url: https://github.com/ITherso/termivar
 repo_name: ITherso/termivar
+edit_uri: edit/main/docs/
+copyright: Termivar is an experimental project. Use it only with explicit authorization.
 docs_dir: docs
 theme:
   name: readthedocs
+  custom_dir: theme
+  include_homepage_in_sidebar: false
+  navigation_depth: 4
+  sticky_navigation: true
+extra:
+  version: Development preview
+extra_css:
+  - stylesheets/termivar.css
+extra_javascript:
+  - javascripts/termivar-navigation.js
 nav:
   - Home: index.md
   - Getting Started: GETTING_STARTED.md
-  - Example Reports: examples/first-use/README.md
+  - Reports:
+      - Reporting contract: reporting.md
+      - First-use example: examples/first-use/README.md
+      - Compare two reports: examples/report-compare/README.md
+  - Capabilities:
+      - Scanner overview: scanner.md
+      - GraphQL surface review: internals/graphql-review.md
+      - Authorization differential: internals/authorization-differential-review.md
+      - OpenAPI contract catalog: internals/openapi-contract-catalog.md
+      - OpenAPI surface review: internals/openapi-surface-review.md
+      - REST read-only review: internals/rest-readonly-review.md
+      - Normalization resilience: internals/normalization-resilience.md
+      - Defense observation: internals/defense-observation.md
+      - Artifact signature scanning: artifact-signatures.md
   - Architecture:
       - Overview: architecture.md
       - Runner: runner.md
-      - Scanner: scanner.md
-      - Reporting: reporting.md
       - Scanner SDK: sdk.md
       - ScanContext migration: migrations/scan-context-construction.md
       - Plugins: plugin.md

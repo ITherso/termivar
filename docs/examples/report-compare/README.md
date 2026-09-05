@@ -10,6 +10,13 @@ The example was generated with development package version
 `0.10.0-alpha.2`. Exact source and binary identity, input/output hashes, and the
 generation command are recorded in [`provenance.json`](provenance.json).
 
+<div class="tmv-example-actions" role="group" aria-label="Report comparison example files">
+  <a class="tmv-button tmv-button-primary" href="comparison.html">Open the interactive comparison</a>
+  <a class="tmv-button tmv-example-secondary" href="comparison.json">View comparison JSON</a>
+  <a class="tmv-button tmv-example-secondary" href="before.json">Before fixture</a>
+  <a class="tmv-button tmv-example-secondary" href="after.json">After fixture</a>
+</div>
+
 Expected groups:
 
 | Group | Count | Fixture meaning |
@@ -18,6 +25,15 @@ Expected groups:
 | `only_in_before` | 1 | A different synthetic identity exists only in `before.json` |
 | `changed` | 1 | One shared identity has a deliberately edited display summary |
 | `unchanged` | 1 | One shared identity has equal comparable content |
+
+The generated comparison summary is therefore:
+
+```text
+only_in_after:  1
+only_in_before: 1
+changed:        1
+unchanged:      1
+```
 
 Run from the repository root:
 

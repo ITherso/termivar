@@ -12,7 +12,7 @@ Choose one binary first:
   Rust toolchain is required.
 - [Development source: 0.10.0-alpha.2](DISTRIBUTION.md#build-from-source):
   build package `termivar-cli` from the reviewed full commit
-  `57e5ddad7732b0b2c3d5988898aa2e4af5015195` in a separate source tree.
+  `a29ba40c8cfdc7d0385431ea4d9e374e213ca4e0` in a separate source tree.
 
 The older archives do not include maintenance from PRs #109–#111 and are not
 recommended for credentialed or production use. The
@@ -81,9 +81,9 @@ Linux/macOS:
 
 ```bash
 python3 scripts/first_use.py \
-  --binary ../termivar-source-57e5dda/target/release/termivar \
+  --binary ../termivar-source-a29ba40/target/release/termivar \
   --output first-use-source-output \
-  --source-ref 57e5ddad7732b0b2c3d5988898aa2e4af5015195 \
+  --source-ref a29ba40c8cfdc7d0385431ea4d9e374e213ca4e0 \
   --build-features default \
   --expect-version 0.10.0-alpha.2
 ```
@@ -91,7 +91,7 @@ python3 scripts/first_use.py \
 Windows PowerShell:
 
 ```powershell
-python scripts/first_use.py --binary ..\termivar-source-57e5dda\target\release\termivar.exe --output first-use-source-output --source-ref 57e5ddad7732b0b2c3d5988898aa2e4af5015195 --build-features default --expect-version 0.10.0-alpha.2
+python scripts/first_use.py --binary ..\termivar-source-a29ba40\target\release\termivar.exe --output first-use-source-output --source-ref a29ba40c8cfdc7d0385431ea4d9e374e213ca4e0 --build-features default --expect-version 0.10.0-alpha.2
 if ($LASTEXITCODE -ne 0) { throw "First-use acceptance did not pass; inspect its diagnostics" }
 ```
 

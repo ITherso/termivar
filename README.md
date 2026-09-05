@@ -1,5 +1,9 @@
 # Termivar
 
+<p align="center">
+  <img src="docs/assets/brand/termivar-lockup.png" alt="Termivar" width="720">
+</p>
+
 [![CI](https://github.com/ITherso/termivar/actions/workflows/tests.yml/badge.svg?branch=main)](https://github.com/ITherso/termivar/actions/workflows/tests.yml)
 [![Docs](https://github.com/ITherso/termivar/actions/workflows/docs.yml/badge.svg?branch=main)](https://itherso.github.io/termivar/)
 [![License](https://img.shields.io/github/license/ITherso/termivar)](LICENSE)
@@ -20,7 +24,7 @@ not require an LLM.
    then follow the [Linux, macOS, or Windows verification and extraction steps](docs/DISTRIBUTION.md#try-the-published-prerelease).
    No Rust toolchain is needed for the archived binary.
 2. Alternatively, [build the reviewed development source](docs/DISTRIBUTION.md#build-from-source)
-   at `57e5ddad7732b0b2c3d5988898aa2e4af5015195`.
+   at `a29ba40c8cfdc7d0385431ea4d9e374e213ca4e0`.
 3. [Run the local walkthrough](docs/GETTING_STARTED.md). It starts and stops its
    own tiny loopback fixture, runs the actual CLI, and saves separate default,
    JSON-assessment, and HTML-assessment outputs.

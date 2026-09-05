@@ -6,7 +6,7 @@ audited; the published prerelease does not acquire later source fixes.
 | Choice | Exact identity | Build features |
 | --- | --- | --- |
 | Published prerelease | [v0.10.0-alpha.1](https://github.com/ITherso/termivar/releases/tag/v0.10.0-alpha.1), release ID `382219595`, tag commit `2212b2590c6193a18915dcd33ad2bb31e1a9ef7b` | Existing `release-bundle` |
-| Reviewed development source | `0.10.0-alpha.2` at `57e5ddad7732b0b2c3d5988898aa2e4af5015195` | Default CLI build, or explicit `release-bundle` |
+| Reviewed development source | `0.10.0-alpha.2` at `a29ba40c8cfdc7d0385431ea4d9e374e213ca4e0` | Default CLI build, or explicit `release-bundle` |
 
 The CLI's default feature list is empty; its scanner dependency enables
 `scanning` and `reporting`. The existing release bundle additionally compiles
@@ -173,22 +173,22 @@ Linux/macOS:
 
 ```bash
 set -eu
-SOURCE_COMMIT="57e5ddad7732b0b2c3d5988898aa2e4af5015195"
-git clone https://github.com/ITherso/termivar.git ../termivar-source-57e5dda
-git -C ../termivar-source-57e5dda checkout --detach "$SOURCE_COMMIT"
-test "$(git -C ../termivar-source-57e5dda rev-parse HEAD)" = "$SOURCE_COMMIT"
+SOURCE_COMMIT="a29ba40c8cfdc7d0385431ea4d9e374e213ca4e0"
+git clone https://github.com/ITherso/termivar.git ../termivar-source-a29ba40
+git -C ../termivar-source-a29ba40 checkout --detach "$SOURCE_COMMIT"
+test "$(git -C ../termivar-source-a29ba40 rev-parse HEAD)" = "$SOURCE_COMMIT"
 cargo build --locked --release -p termivar-cli \
-  --manifest-path ../termivar-source-57e5dda/Cargo.toml \
-  --target-dir ../termivar-source-57e5dda/target
-../termivar-source-57e5dda/target/release/termivar --version
+  --manifest-path ../termivar-source-a29ba40/Cargo.toml \
+  --target-dir ../termivar-source-a29ba40/target
+../termivar-source-a29ba40/target/release/termivar --version
 ```
 
 Windows PowerShell:
 
 ```powershell
 $ErrorActionPreference = "Stop"
-$sourceCommit = "57e5ddad7732b0b2c3d5988898aa2e4af5015195"
-$sourceDir = "..\termivar-source-57e5dda"
+$sourceCommit = "a29ba40c8cfdc7d0385431ea4d9e374e213ca4e0"
+$sourceDir = "..\termivar-source-a29ba40"
 if (Test-Path -LiteralPath $sourceDir) { throw "Choose a fresh source directory" }
 git clone https://github.com/ITherso/termivar.git $sourceDir
 if ($LASTEXITCODE -ne 0) { throw "Source clone failed" }
@@ -209,13 +209,13 @@ build into a different output directory so the default binary is preserved:
 
 ```bash
 cargo build --locked --release -p termivar-cli \
-  --manifest-path ../termivar-source-57e5dda/Cargo.toml \
+  --manifest-path ../termivar-source-a29ba40/Cargo.toml \
   --features release-bundle \
-  --target-dir ../termivar-source-57e5dda/target/release-bundle
+  --target-dir ../termivar-source-a29ba40/target/release-bundle
 ```
 
 The resulting path is
-`../termivar-source-57e5dda/target/release-bundle/release/termivar`
+`../termivar-source-a29ba40/target/release-bundle/release/termivar`
 (`termivar.exe` on Windows). PowerShell accepts the same command on one line.
 Label that source binary `release-bundle`, not a published-release binary.
 No optional runtime review flag is needed for the local example.
@@ -225,11 +225,11 @@ No optional runtime review flag is needed for the local example.
 From the tools checkout, inspect the default source binary:
 
 ```bash
-../termivar-source-57e5dda/target/release/termivar --help
-../termivar-source-57e5dda/target/release/termivar scan --help
+../termivar-source-a29ba40/target/release/termivar --help
+../termivar-source-a29ba40/target/release/termivar scan --help
 ```
 
-On Windows, use `..\termivar-source-57e5dda\target\release\termivar.exe`.
+On Windows, use `..\termivar-source-a29ba40\target\release\termivar.exe`.
 Then run the [source-binary walkthrough](GETTING_STARTED.md#development-source-binary).
 The runner checks the actual version and records the executable hash; ref and
 feature labels are explicit caller declarations, not facts inferred from help.

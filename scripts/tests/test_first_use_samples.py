@@ -82,7 +82,9 @@ class FirstUseSamples(unittest.TestCase):
         self.assertIn(fragment, (SAMPLES / "assessment.json").read_text(encoding="utf-8"))
         self.assertIn(fragment, readme)
         self.assertIn("releases/tag/v0.10.0-alpha.1", readme)
-        self.assertIn("57e5ddad7732b0b2c3d5988898aa2e4af5015195", distribution)
+        reviewed_source = "a29ba40c8cfdc7d0385431ea4d9e374e213ca4e0"
+        for text in (readme, distribution, guide):
+            self.assertIn(reviewed_source, text)
         for text in (readme, distribution, guide):
             self.assertNotIn("releases/latest", text)
             self.assertNotIn("REPLACE_WITH_SHA", text)

@@ -23,6 +23,13 @@ callbacks and both must yield fresh, correctly correlated HTTP events before
 status codes, provider noise, and business-impact inference are insufficient.
 See [SSRF OAST query review](internals/ssrf-oast-query-review.md).
 
+!!! warning "Unresolved verification boundary"
+    Corrective-maintenance finding F3 remains deferred, out of scope, and
+    unresolved. The current candidate/replay and polling semantics must not be
+    read as a stronger verification guarantee than the implementation provides.
+    See the [maintenance ledger](audits/native-oast-corrective-maintenance.md#finding-ledger)
+    before evaluating or describing this optional capability.
+
 ## Optional OpenAPI surface review
 
 The non-default `openapi-review` feature adds one explicit

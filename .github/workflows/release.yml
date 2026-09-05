@@ -18,6 +18,7 @@ on:
       - "requirements-docs.txt"
       - "mkdocs.yml"
       - "docs/**"
+      - "theme/**"
       - "rustfmt.toml"
       - "scripts/ci/run-cargo-audit.sh"
       - ".github/workflows/release.yml"
