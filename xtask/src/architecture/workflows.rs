@@ -69,6 +69,7 @@ const RELEASE_NOTES_FLAG_GATE: &str = "--notes-file \"$notes_file\" \\";
 const RELEASE_TITLE_GATE: &str = "--title \"Termivar $GITHUB_REF_NAME\" \\";
 const RELEASE_PRERELEASE_GATE: &str = "--prerelease";
 const TESTS_WORKFLOW: &str = ".github/workflows/tests.yml";
+const FIRST_USE_TEMP_PREFIX: &str = "${{ runner.temp }}/termivar-first-use-${{ matrix.os }}-${{ github.run_id }}-${{ github.run_attempt }}";
 const SECURITY_WORKFLOW: &str = ".github/workflows/security.yml";
 const AUDIT_RUNNER: &str = "scripts/ci/run-cargo-audit.sh";
 const DEVELOPMENT_LINE_CHECKOUT: &str = r#"      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -323,6 +324,7 @@ pub(super) fn check(workspace_root: &Path) -> Result<Vec<String>, Box<dyn Error>
         audit_runner.as_deref(),
     ));
     violations.extend(development_line_workflow_policy_violations(&files));
+    violations.extend(first_use_workflow_policy_violations(&files));
     let baseline_accepted = workspace_root.join(COVERAGE_BASELINE_POINTER).is_file();
     violations.extend(coverage_workflow_policy_violations(
         &files,
@@ -330,6 +332,72 @@ pub(super) fn check(workspace_root: &Path) -> Result<Vec<String>, Box<dyn Error>
     ));
     violations.extend(coverage_build_input_policy_violations(workspace_root)?);
     Ok(violations)
+}
+
+fn first_use_workflow_policy_violations(files: &[(String, String)]) -> Vec<String> {
+    let Some((_, contents)) = files.iter().find(|(path, _)| path == TESTS_WORKFLOW) else {
+        return vec![format!(
+            "{TESTS_WORKFLOW}: reviewed first-use runtime-smoke workflow is missing"
+        )];
+    };
+    let normalized = contents.replace("\r\n", "\n");
+    let jobs = named_job_blocks(&normalized, "platform-runtime-smoke");
+    let [job] = jobs.as_slice() else {
+        return vec![format!(
+            "{TESTS_WORKFLOW}: expected exactly one reviewed platform runtime-smoke job"
+        )];
+    };
+
+    let required = [
+        (format!("--output \"{FIRST_USE_TEMP_PREFIX}-source\""), 1),
+        (
+            format!("download_dir=\"{FIRST_USE_TEMP_PREFIX}-release-download\""),
+            1,
+        ),
+        (
+            format!("extract_dir=\"{FIRST_USE_TEMP_PREFIX}-release-binary\""),
+            1,
+        ),
+        ("mkdir -m 700 \"$download_dir\"".to_owned(), 1),
+        ("--output \"$download_dir/SHA256SUMS\"".to_owned(), 1),
+        ("--output \"$download_dir/$archive\"".to_owned(), 1),
+        (
+            "--archive \"$download_dir/$archive\" --checksums \"$download_dir/SHA256SUMS\""
+                .to_owned(),
+            2,
+        ),
+        ("--extract-to \"$extract_dir\"".to_owned(), 1),
+        (
+            format!("--binary \"{FIRST_USE_TEMP_PREFIX}-release-binary/termivar\""),
+            1,
+        ),
+        (format!("--output \"{FIRST_USE_TEMP_PREFIX}-release\""), 1),
+        (format!("{FIRST_USE_TEMP_PREFIX}-source/"), 1),
+        (format!("{FIRST_USE_TEMP_PREFIX}-release/"), 1),
+    ];
+    let paths_are_reviewed = required
+        .iter()
+        .all(|(expected, count)| job.matches(expected).count() == *count);
+    let cache_precedes_acceptance = job
+        .find("uses: Swatinem/rust-cache@")
+        .zip(job.find("python scripts/first_use.py"))
+        .is_some_and(|(cache, acceptance)| cache < acceptance);
+    let retains_failure_evidence = job.contains(
+        "      - name: Retain bounded first-use acceptance evidence\n        if: always()",
+    ) && job
+        .contains("          if-no-files-found: error\n          retention-days: 30");
+
+    if paths_are_reviewed
+        && cache_precedes_acceptance
+        && retains_failure_evidence
+        && !job.contains("target/first-use-")
+    {
+        Vec::new()
+    } else {
+        vec![format!(
+            "{TESTS_WORKFLOW}: first-use source, release-download, release-extract, and release-result artifacts must use one run/attempt/matrix-qualified `runner.temp` identity outside Cargo's cached target tree while preserving fresh-output refusal and always-retained bounded evidence"
+        )]
+    }
 }
 
 fn development_line_workflow_policy_violations(files: &[(String, String)]) -> Vec<String> {
@@ -1447,6 +1515,61 @@ mod tests {
             contents.to_owned(),
         )]);
         assert!(violations.is_empty(), "{violations:?}");
+    }
+
+    #[test]
+    fn repository_first_use_artifacts_are_fresh_outside_the_cached_target_tree() {
+        let contents = include_str!("../../../.github/workflows/tests.yml");
+        for fixture in [contents.to_owned(), contents.replace('\n', "\r\n")] {
+            let violations =
+                first_use_workflow_policy_violations(&[(TESTS_WORKFLOW.to_owned(), fixture)]);
+            assert!(violations.is_empty(), "{violations:?}");
+        }
+    }
+
+    #[test]
+    fn first_use_workflow_rejects_cached_or_non_unique_artifact_paths() {
+        let valid = include_str!("../../../.github/workflows/tests.yml").replace("\r\n", "\n");
+        let mutations = [
+            valid.replacen(
+                &format!("--output \"{FIRST_USE_TEMP_PREFIX}-source\""),
+                "--output target/first-use-source",
+                1,
+            ),
+            valid.replacen(
+                &format!("download_dir=\"{FIRST_USE_TEMP_PREFIX}-release-download\""),
+                "download_dir=target/first-use-release-download",
+                1,
+            ),
+            valid.replacen(
+                &format!("extract_dir=\"{FIRST_USE_TEMP_PREFIX}-release-binary\""),
+                "extract_dir=target/first-use-release-binary",
+                1,
+            ),
+            valid.replacen(
+                "--output \"$download_dir/$archive\"",
+                "--output target/release-archive",
+                1,
+            ),
+            valid.replacen("-${{ github.run_attempt }}-source", "-source", 1),
+            valid.replacen(
+                &format!("{FIRST_USE_TEMP_PREFIX}-source/"),
+                "target/first-use-source/",
+                1,
+            ),
+            valid.replacen(
+                "      - name: Retain bounded first-use acceptance evidence\n        if: always()",
+                "      - name: Retain bounded first-use acceptance evidence\n        if: success()",
+                1,
+            ),
+        ];
+        for mutation in mutations {
+            assert_ne!(mutation, valid, "mutation must alter the workflow fixture");
+            let violations =
+                first_use_workflow_policy_violations(&[(TESTS_WORKFLOW.to_owned(), mutation)]);
+            assert_eq!(violations.len(), 1, "{violations:?}");
+            assert!(violations[0].contains("runner.temp"), "{violations:?}");
+        }
     }
 
     #[test]

@@ -14,7 +14,7 @@ pub(super) const SCANNER_SOURCES: &[&str] = &[
     "reporting/comparison/import.rs",
     "reporting/comparison/import/audits.rs",
     "reporting/comparison/html.rs",
-    "reporting/comparison/tests.rs",
+    "reporting/comparison_tests.rs",
 ];
 
 pub(super) fn check(workspace_root: &Path) -> Result<Vec<String>, Box<dyn Error>> {
@@ -33,7 +33,7 @@ pub(super) fn check(workspace_root: &Path) -> Result<Vec<String>, Box<dyn Error>
     }
     for relative in SCANNER_SOURCES
         .iter()
-        .filter(|path| !path.ends_with("/tests.rs"))
+        .filter(|path| **path != "reporting/comparison_tests.rs")
     {
         match fs::read_to_string(scanner.join(relative)) {
             Ok(source) => {
@@ -561,11 +561,31 @@ impl<'ast> Visit<'ast> for ComparisonVisitor<'_> {
         }
     }
     fn visit_item_mod(&mut self, item: &'ast syn::ItemMod) {
-        let exact_test = item.ident == "tests"
+        let cfg_test = |attribute: &syn::Attribute| matches!(&attribute.meta, syn::Meta::List(meta) if meta.path.is_ident("cfg") && meta.tokens.to_string() == "test");
+        let exact_inline_test = item.ident == "tests"
             && item.attrs.len() == 1
-            && matches!(&item.attrs[0].meta, syn::Meta::List(meta) if meta.path.is_ident("cfg") && meta.tokens.to_string() == "test")
+            && cfg_test(&item.attrs[0])
+            && item.content.is_some()
             && matches!(item.vis, Visibility::Inherited);
-        if exact_test && (item.content.is_some() || self.relative == "reporting/comparison.rs") {
+        let exact_external_test = self.relative == "reporting/comparison.rs"
+            && item.ident == "tests"
+            && item.attrs.len() == 2
+            && cfg_test(&item.attrs[0])
+            && matches!(
+                &item.attrs[1].meta,
+                syn::Meta::NameValue(meta)
+                    if meta.path.is_ident("path")
+                        && matches!(
+                            &meta.value,
+                            syn::Expr::Lit(syn::ExprLit {
+                                lit: syn::Lit::Str(value),
+                                ..
+                            }) if value.value() == "comparison_tests.rs"
+                        )
+            )
+            && item.content.is_none()
+            && matches!(item.vis, Visibility::Inherited);
+        if exact_inline_test || exact_external_test {
             return;
         }
         if self.relative == "reporting/comparison.rs"
@@ -915,6 +935,24 @@ mod tests {
                     .unwrap()
                     .is_empty(),
                 "accepted {source}"
+            );
+        }
+
+        for mutation in [
+            mutate(ROOT, "comparison_tests.rs", "hidden.rs"),
+            mutate(ROOT, "#[cfg(test)]", "#[cfg(any(test, unix))]"),
+            mutate(ROOT, "mod tests;", "pub mod tests;"),
+            mutate(
+                ROOT,
+                "#[path = \"comparison_tests.rs\"]",
+                "#[allow(dead_code)]\n#[path = \"comparison_tests.rs\"]",
+            ),
+        ] {
+            assert!(
+                !source_violations("reporting/comparison.rs", &mutation)
+                    .unwrap()
+                    .is_empty(),
+                "accepted an inexact external test module"
             );
         }
     }

@@ -274,7 +274,7 @@ jobs:
         run: >-
           python scripts/first_use.py
           --binary ${{ runner.os == 'Windows' && 'target/debug/termivar.exe' || 'target/debug/termivar' }}
-          --output target/first-use-source
+          --output "${{ runner.temp }}/termivar-first-use-${{ matrix.os }}-${{ github.run_id }}-${{ github.run_attempt }}-source"
           --source-ref ${{ github.event.pull_request.head.sha || github.sha }}
           --build-features default
           --expect-version 0.10.0-alpha.2
@@ -283,20 +283,22 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -m 700 target/first-use-release-download
+          download_dir="${{ runner.temp }}/termivar-first-use-${{ matrix.os }}-${{ github.run_id }}-${{ github.run_attempt }}-release-download"
+          extract_dir="${{ runner.temp }}/termivar-first-use-${{ matrix.os }}-${{ github.run_id }}-${{ github.run_attempt }}-release-binary"
+          mkdir -m 700 "$download_dir"
           release_url=https://github.com/ITherso/termivar/releases/download/v0.10.0-alpha.1
           archive=termivar-v0.10.0-alpha.1-x86_64-unknown-linux-gnu.tar.gz
-          curl --fail --location --proto '=https' --proto-redir '=https' --tlsv1.2 "$release_url/SHA256SUMS" --output target/first-use-release-download/SHA256SUMS
-          curl --fail --location --proto '=https' --proto-redir '=https' --tlsv1.2 "$release_url/$archive" --output "target/first-use-release-download/$archive"
-          echo '7e815a89385f7470a01656b407735b337cf45a0aec9fec84ffd4eab6bf54cf5e  target/first-use-release-download/SHA256SUMS' | sha256sum --check --strict -
-          python scripts/verify_release_archive.py --archive "target/first-use-release-download/$archive" --checksums target/first-use-release-download/SHA256SUMS
-          python scripts/verify_release_archive.py --archive "target/first-use-release-download/$archive" --checksums target/first-use-release-download/SHA256SUMS --extract-to target/first-use-release-binary
+          curl --fail --location --proto '=https' --proto-redir '=https' --tlsv1.2 "$release_url/SHA256SUMS" --output "$download_dir/SHA256SUMS"
+          curl --fail --location --proto '=https' --proto-redir '=https' --tlsv1.2 "$release_url/$archive" --output "$download_dir/$archive"
+          echo "7e815a89385f7470a01656b407735b337cf45a0aec9fec84ffd4eab6bf54cf5e  $download_dir/SHA256SUMS" | sha256sum --check --strict -
+          python scripts/verify_release_archive.py --archive "$download_dir/$archive" --checksums "$download_dir/SHA256SUMS"
+          python scripts/verify_release_archive.py --archive "$download_dir/$archive" --checksums "$download_dir/SHA256SUMS" --extract-to "$extract_dir"
       - name: Accept the verified published Linux binary without a source substitute
         if: runner.os == 'Linux'
         run: >-
           python scripts/first_use.py
-          --binary target/first-use-release-binary/termivar
-          --output target/first-use-release
+          --binary "${{ runner.temp }}/termivar-first-use-${{ matrix.os }}-${{ github.run_id }}-${{ github.run_attempt }}-release-binary/termivar"
+          --output "${{ runner.temp }}/termivar-first-use-${{ matrix.os }}-${{ github.run_id }}-${{ github.run_attempt }}-release"
           --source-ref v0.10.0-alpha.1
           --build-features release-bundle
           --expect-version 0.10.0-alpha.1
@@ -306,8 +308,8 @@ jobs:
         with:
           name: first-use-${{ matrix.os }}-${{ github.event.pull_request.head.sha || github.sha }}
           path: |
-            target/first-use-source/
-            target/first-use-release/
+            ${{ runner.temp }}/termivar-first-use-${{ matrix.os }}-${{ github.run_id }}-${{ github.run_attempt }}-source/
+            ${{ runner.temp }}/termivar-first-use-${{ matrix.os }}-${{ github.run_id }}-${{ github.run_attempt }}-release/
           if-no-files-found: error
           retention-days: 30
       - name: Exercise default decision scan against loopback

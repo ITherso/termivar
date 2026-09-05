@@ -14,6 +14,7 @@ use super::{render_serializable_json, write_markdown_code_span, RenderBuffer, Re
 mod html;
 mod import;
 #[cfg(test)]
+#[path = "comparison_tests.rs"]
 mod tests;
 
 /// Versioned display-only comparison document schema.
