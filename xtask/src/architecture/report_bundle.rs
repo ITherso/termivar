@@ -998,6 +998,95 @@ mod tests {
     }
 
     #[test]
+    fn exact_negative_bundle_boundaries_are_mutation_locked() {
+        for (from, to, expected) in [
+            (
+                "const REPORT_BUNDLE_SCHEMA: &str = \"termivar-report-bundle/v1\";",
+                "const REPORT_BUNDLE_SCHEMA: &str = \"termivar-report-bundle/v2\";",
+                "constant `REPORT_BUNDLE_SCHEMA`",
+            ),
+            (
+                "const MAX_MANIFEST_BYTES: usize = 64 * 1024;",
+                "const MAX_MANIFEST_BYTES: usize = 32 * 1024;",
+                "manifest ceiling",
+            ),
+            (
+                "let _ = 1usize.checked_add(1);",
+                "let _ = 1usize.saturating_add(1);",
+                "aggregate bound",
+            ),
+            (
+                "struct RenderedReportBundle;",
+                "pub struct RenderedReportBundle;",
+                "without becoming public API",
+            ),
+            (
+                "fn render_report_bundle(report: &AssessmentRunReport)",
+                "pub fn render_report_bundle(report: &AssessmentRunReport)",
+                "non-public safe synchronous pure function",
+            ),
+            (
+                "fn reserve_report_bundle(_: Option<&Path>)",
+                "pub fn reserve_report_bundle(_: Option<&Path>)",
+                "non-public safe synchronous CLI boundary",
+            ),
+            (
+                "let _ = fs::create_dir(\"x\");",
+                "let _ = fs::remove_dir(\"x\");",
+                "required exclusive publication primitive `create_dir`",
+            ),
+            (
+                "let _ = Sha256::new();",
+                "let _ = Sha256::new(); let _ = include_str!(\"forbidden\");",
+                "forbidden authority or unsafe publication primitive `include_str!`",
+            ),
+            (
+                "enum FileKind { Manifest }",
+                "mod delegated {} enum FileKind { Manifest }",
+                "cannot delegate publication authority",
+            ),
+            (
+                "struct BundleManifest { schema: &'static str }",
+                "struct BundleManifest { pub schema: &'static str }",
+                "only private manifest projection structs with private fields",
+            ),
+            (
+                "let _html = render(report, ReportFormat::Html);",
+                "let _html = render(report, ReportFormat::Html); let _ = termivar_scanner::WebAssessmentRuntime;",
+                "may reference only the read-only assessment report",
+            ),
+            (
+                "fn existing_assessment_renderer(",
+                "async fn existing_assessment_renderer(",
+                "functions must remain safe and synchronous",
+            ),
+            (
+                "fn verify_owned_path(&self) {}",
+                "async fn verify_owned_path(&self) {}",
+                "methods must remain safe and synchronous",
+            ),
+            (
+                "let _ = fs::create_dir(\"x\");",
+                "let _ = fs::create_dir(\"x\"); let _ = Path::new(\"x\").exists();",
+                "cannot use a non-exclusive existence preflight",
+            ),
+            (
+                "let _ = fs::create_dir(\"x\");",
+                "let _ = fs::create_dir(\"x\"); let _ = unsafe { 1 };",
+                "must not contain unsafe blocks",
+            ),
+        ] {
+            let changed = VALID.replacen(from, to, 1);
+            assert_ne!(changed, VALID, "mutation anchor missing: {from}");
+            let violations = bundle_violations(&changed).unwrap();
+            assert!(
+                violations.iter().any(|violation| violation.contains(expected)),
+                "mutation `{to}` did not produce `{expected}`: {violations:#?}"
+            );
+        }
+    }
+
+    #[test]
     fn single_analysis_composition_and_bundle_delegation_are_mutation_locked() {
         assert!(assessment_flow_violations(VALID_ASSESSMENT_FLOW)
             .unwrap()
