@@ -669,6 +669,18 @@ fn validate_destination(path: &Path) -> io::Result<()> {
             "report bundle destination must have a valid final directory name",
         ));
     }
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let parent_link_metadata = fs::symlink_metadata(parent)
+        .map_err(|error| io::Error::new(error.kind(), "report bundle parent is unavailable"))?;
+    if metadata_is_link_like(&parent_link_metadata) || !parent_link_metadata.is_dir() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "report bundle parent must be a trusted non-link directory",
+        ));
+    }
     match fs::symlink_metadata(path) {
         Ok(_) => {
             return Err(io::Error::new(
@@ -683,18 +695,6 @@ fn validate_destination(path: &Path) -> io::Result<()> {
                 "report bundle destination state could not be inspected",
             ));
         },
-    }
-    let parent = path
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-        .unwrap_or_else(|| Path::new("."));
-    let parent_link_metadata = fs::symlink_metadata(parent)
-        .map_err(|error| io::Error::new(error.kind(), "report bundle parent is unavailable"))?;
-    if metadata_is_link_like(&parent_link_metadata) || !parent_link_metadata.is_dir() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "report bundle parent must be a trusted non-link directory",
-        ));
     }
     Ok(())
 }

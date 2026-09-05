@@ -167,7 +167,8 @@ class EndToEndOrchestrationTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
         self.output = self.root / "bundle"
-        self.binary = Path(sys.executable)
+        self.binary = self.root / "termivar-test-binary"
+        self.binary.write_bytes(b"regular local test binary fixture")
         self.addCleanup(self.temp.cleanup)
         self.environment = mock.patch.dict(os.environ, {}, clear=True)
         self.environment.start()
