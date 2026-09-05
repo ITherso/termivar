@@ -9,6 +9,7 @@ theme:
 nav:
   - Home: index.md
   - Getting Started: GETTING_STARTED.md
+  - Example Reports: examples/first-use/README.md
   - Architecture:
       - Overview: architecture.md
       - Runner: runner.md

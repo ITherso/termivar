@@ -250,6 +250,12 @@ jobs:
         os: [ubuntu-latest, windows-latest, macos-latest]
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.12"
       - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # 1.88.0
         with:
           toolchain: "1.88.0"
@@ -260,6 +266,50 @@ jobs:
         run: |
           cargo run --locked -p termivar-cli -- --version
           cargo run --locked -p termivar-cli -- --help
+      - name: Test first-use fixture and checked-in sample contracts
+        run: python -m unittest discover -s scripts/tests -p 'test_first_use*.py'
+      - name: Test release archive verification contracts
+        run: python -m unittest discover -s scripts/tests -p test_verify_release_archive.py
+      - name: Accept the actual development CLI against its own loopback fixture
+        run: >-
+          python scripts/first_use.py
+          --binary ${{ runner.os == 'Windows' && 'target/debug/termivar.exe' || 'target/debug/termivar' }}
+          --output target/first-use-source
+          --source-ref ${{ github.event.pull_request.head.sha || github.sha }}
+          --build-features default
+          --expect-version 0.10.0-alpha.2
+      - name: Acquire the exact published Linux prerelease for separate acceptance
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -m 700 target/first-use-release-download
+          release_url=https://github.com/ITherso/termivar/releases/download/v0.10.0-alpha.1
+          archive=termivar-v0.10.0-alpha.1-x86_64-unknown-linux-gnu.tar.gz
+          curl --fail --location --proto '=https' --proto-redir '=https' --tlsv1.2 "$release_url/SHA256SUMS" --output target/first-use-release-download/SHA256SUMS
+          curl --fail --location --proto '=https' --proto-redir '=https' --tlsv1.2 "$release_url/$archive" --output "target/first-use-release-download/$archive"
+          echo '7e815a89385f7470a01656b407735b337cf45a0aec9fec84ffd4eab6bf54cf5e  target/first-use-release-download/SHA256SUMS' | sha256sum --check --strict -
+          python scripts/verify_release_archive.py --archive "target/first-use-release-download/$archive" --checksums target/first-use-release-download/SHA256SUMS
+          python scripts/verify_release_archive.py --archive "target/first-use-release-download/$archive" --checksums target/first-use-release-download/SHA256SUMS --extract-to target/first-use-release-binary
+      - name: Accept the verified published Linux binary without a source substitute
+        if: runner.os == 'Linux'
+        run: >-
+          python scripts/first_use.py
+          --binary target/first-use-release-binary/termivar
+          --output target/first-use-release
+          --source-ref v0.10.0-alpha.1
+          --build-features release-bundle
+          --expect-version 0.10.0-alpha.1
+      - name: Retain bounded first-use acceptance evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: first-use-${{ matrix.os }}-${{ github.event.pull_request.head.sha || github.sha }}
+          path: |
+            target/first-use-source/
+            target/first-use-release/
+          if-no-files-found: error
+          retention-days: 30
       - name: Exercise default decision scan against loopback
         run: cargo test --locked -p termivar-cli --test decision_scan_cli json_format_writes_parseable_json_to_stdout_and_the_runtime_notice_to_stderr
       - name: Exercise atomic report-output path semantics

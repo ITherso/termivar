@@ -1,0 +1,40 @@
+{
+  "archive_inspection": {
+    "archive": "termivar-v0.10.0-alpha.1-x86_64-pc-windows-msvc.zip",
+    "archive_bytes": 3977601,
+    "archive_sha256": "fd67d07686ec6c7df24dbbfd041ced99e66abfb9757c0aec332c0ef013ab722d",
+    "checksums_sha256": "7e815a89385f7470a01656b407735b337cf45a0aec9fec84ffd4eab6bf54cf5e",
+    "entry_count": 1,
+    "extracted": false,
+    "member": "termivar.exe",
+    "member_bytes": 9446912,
+    "member_sha256": "c9427e91c5e0e9648b6fa00906b0b942432a7ea391863882122d28a8af6e6428",
+    "release_tag": "v0.10.0-alpha.1",
+    "schema": "termivar-release-archive-inspection-v1"
+  },
+  "peeled_tag_commit": "2212b2590c6193a18915dcd33ad2bb31e1a9ef7b",
+  "raw_provenance_sha256": "325947b7e0729e2b896e6b18eb605d059fd1fb8be2f8a686593b93285a5056de",
+  "release_id": 382219595,
+  "release_tag": "v0.10.0-alpha.1",
+  "release_url": "https://github.com/ITherso/termivar/releases/tag/v0.10.0-alpha.1",
+  "samples": {
+    "assessment.html": {
+      "bytes": 8000,
+      "sha256": "b25c8145ecf825ba2dc8034da40b04791fc53f7c4d01604d3aec752104d7b568"
+    },
+    "assessment.json": {
+      "bytes": 3907,
+      "sha256": "b8e6d5c720bca98b629a7be11340092e0d02c0aea2c12f30afaeaee0d125477f"
+    },
+    "default.json": {
+      "bytes": 2091,
+      "sha256": "2fa7a085eb8463589db04c35b4f31603048ca288066c2fd194bc4bf3ee2fc6b8"
+    },
+    "provenance.json": {
+      "bytes": 11171,
+      "sha256": "72bf2595813ed5e122bdecad4d81c2ae89753597362484da5c9dc989e64860f3"
+    }
+  },
+  "schema": "termivar-first-use-acquisition/v1",
+  "transformation": "Reports and default output copied byte-for-byte; only public provenance binary.path and invocations[*].argv[0] replaced with <LOCAL_BINARY>."
+}

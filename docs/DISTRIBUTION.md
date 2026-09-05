@@ -1,99 +1,272 @@
 # Distribution and installation
 
-The unreleased `0.10.0-alpha.2` development source line is currently available from the
-repository only. It has no matching prebuilt release artifact, package-manager
-repository, container registry, cloud marketplace, or orchestrated deployment
-channel.
+Choose a binary deliberately. Neither line is production-ready or independently
+audited; the published prerelease does not acquire later source fixes.
 
-> Termivar is not production-ready. Review and pin the source commit, read the
-> [runtime map](internals/runtime-map.md), and use the resulting binary only
-> against systems you own or are explicitly authorized to test.
+| Choice | Exact identity | Build features |
+| --- | --- | --- |
+| Published prerelease | [v0.10.0-alpha.1](https://github.com/ITherso/termivar/releases/tag/v0.10.0-alpha.1), release ID `382219595`, tag commit `2212b2590c6193a18915dcd33ad2bb31e1a9ef7b` | Existing `release-bundle` |
+| Reviewed development source | `0.10.0-alpha.2` at `57e5ddad7732b0b2c3d5988898aa2e4af5015195` | Default CLI build, or explicit `release-bundle` |
+
+The CLI's default feature list is empty; its scanner dependency enables
+`scanning` and `reporting`. The existing release bundle additionally compiles
+`artifact-adapter`, `normalization-resilience`, `graphql-review`,
+`openapi-review`, `rest-review`, and `authorization-review`. Compiling these
+features does not opt into their runtime actions. The bundle excludes OAST,
+the legacy runner, the unsupported API listener, and the experimental proxy.
+
+The alpha.1 archives predate PRs #109–#111. Do not use the older prerelease for
+credentialed or production evaluation. The walkthrough is credential-free and
+loopback-only. See the [maintenance record](audits/native-oast-corrective-maintenance.md)
+for the later fixes and unresolved F3; no OAST setup is part of this guide.
+
+## Before either path
+
+The archived binary needs no Rust toolchain. The walkthrough and archive
+inspection use Python **3.12.4 or newer**, standard library only. Windows needs
+that minimum for the helper's
+[private-directory creation](https://docs.python.org/3.12/library/os.html#os.mkdir).
+Source compilation also needs Git, Rust 1.88 or newer, and the platform's linker.
+
+Use a reviewed checkout containing this guide, `scripts/first_use.py`, and
+`scripts/verify_release_archive.py` as the **tools checkout**. Git is needed to
+obtain that checkout; the scripts are not inside the published binary archive.
+If you do not already have one, start in a private, user-owned parent directory
+and clone into a new directory (the same commands work in PowerShell):
+
+```text
+git clone https://github.com/ITherso/termivar.git termivar-first-use-tools
+cd termivar-first-use-tools
+git rev-parse HEAD
+```
+
+Run the remaining commands from that checkout's root. Inspect the scripts and
+record the full revision printed above; it identifies the tools you actually
+obtained, not the pinned source binary or the published release.
+If either script is absent, stop: the alpha.1 tag and the pinned development
+revision below predate these walkthrough tools. Do not switch this tools
+checkout to the older source revision; use the separate source tree below.
+
+No step needs administrator privileges, global PATH changes, execution-policy
+changes, Gatekeeper bypass, or disabled antivirus/App Control. If host security
+blocks a binary, leave it blocked and report the unexecuted step.
+
+## Try the published prerelease
+
+Download only your matching archive and the exact release's
+[SHA256SUMS](https://github.com/ITherso/termivar/releases/download/v0.10.0-alpha.1/SHA256SUMS).
+
+| Platform | Archive |
+| --- | --- |
+| Linux x86_64 (GNU) | [termivar-v0.10.0-alpha.1-x86_64-unknown-linux-gnu.tar.gz](https://github.com/ITherso/termivar/releases/download/v0.10.0-alpha.1/termivar-v0.10.0-alpha.1-x86_64-unknown-linux-gnu.tar.gz) |
+| macOS Apple Silicon | [termivar-v0.10.0-alpha.1-aarch64-apple-darwin.tar.gz](https://github.com/ITherso/termivar/releases/download/v0.10.0-alpha.1/termivar-v0.10.0-alpha.1-aarch64-apple-darwin.tar.gz) |
+| macOS Intel | [termivar-v0.10.0-alpha.1-x86_64-apple-darwin.tar.gz](https://github.com/ITherso/termivar/releases/download/v0.10.0-alpha.1/termivar-v0.10.0-alpha.1-x86_64-apple-darwin.tar.gz) |
+| Windows x86_64 (MSVC) | [termivar-v0.10.0-alpha.1-x86_64-pc-windows-msvc.zip](https://github.com/ITherso/termivar/releases/download/v0.10.0-alpha.1/termivar-v0.10.0-alpha.1-x86_64-pc-windows-msvc.zip) |
+
+The helper selects the **single exact filename** in the checksum manifest,
+rejects missing, duplicate, or malformed entries, and compares the archive
+digest. You do not need the other three archives. It then inspects the archive
+and refuses unexpected names, absolute/traversing paths, links, and an
+unexpected executable. Extraction re-verifies and uses a fresh private
+destination whose parent already exists and is trusted. It never overwrites,
+downloads, installs, or executes anything.
+
+Checksum agreement checks bytes against the manifest, not independent safety
+or platform code signing. Build provenance is separate: see the
+[release contract](RELEASE.md) and GitHub's
+[artifact-attestation verification guidance](https://docs.github.com/en/actions/how-tos/secure-your-work/use-artifact-attestations/use-artifact-attestations#verifying-an-artifact-attestation-for-binaries).
+Do not silently substitute another archive or a source build after a failure.
+
+### Linux and macOS
+
+First select exactly one filename.
+
+Linux x86_64:
+
+```bash
+ASSET="termivar-v0.10.0-alpha.1-x86_64-unknown-linux-gnu.tar.gz"
+```
+
+macOS Apple Silicon:
+
+```bash
+ASSET="termivar-v0.10.0-alpha.1-aarch64-apple-darwin.tar.gz"
+```
+
+macOS Intel:
+
+```bash
+ASSET="termivar-v0.10.0-alpha.1-x86_64-apple-darwin.tar.gz"
+```
+
+Then download and inspect. `curl` is an explicit acquisition prerequisite.
+The download directory must not already exist.
+
+```bash
+set -eu
+RELEASE_URL="https://github.com/ITherso/termivar/releases/download/v0.10.0-alpha.1"
+mkdir -m 700 first-use-downloads
+curl --fail --location --proto '=https' --proto-redir '=https' --tlsv1.2 \
+  --output "first-use-downloads/$ASSET" "$RELEASE_URL/$ASSET"
+curl --fail --location --proto '=https' --proto-redir '=https' --tlsv1.2 \
+  --output first-use-downloads/SHA256SUMS "$RELEASE_URL/SHA256SUMS"
+python3 scripts/verify_release_archive.py \
+  --archive "first-use-downloads/$ASSET" \
+  --checksums first-use-downloads/SHA256SUMS
+```
+
+Review the inspection output before extracting to the new directory:
+
+```bash
+set -eu
+python3 scripts/verify_release_archive.py \
+  --archive "first-use-downloads/$ASSET" \
+  --checksums first-use-downloads/SHA256SUMS \
+  --extract-to termivar-alpha1
+./termivar-alpha1/termivar --version
+./termivar-alpha1/termivar --help
+./termivar-alpha1/termivar scan --help
+```
+
+Expect version `0.10.0-alpha.1`. Continue with the
+[released-binary walkthrough](GETTING_STARTED.md#run-the-local-walkthrough).
+
+### Windows PowerShell
+
+The download and extraction directories must not already exist. Use an
+installed Python 3.12.4+ interpreter as `python`.
+
+```powershell
+$ErrorActionPreference = "Stop"
+$asset = "termivar-v0.10.0-alpha.1-x86_64-pc-windows-msvc.zip"
+$releaseUrl = "https://github.com/ITherso/termivar/releases/download/v0.10.0-alpha.1"
+New-Item -ItemType Directory -Path first-use-downloads | Out-Null
+Invoke-WebRequest -Uri "$releaseUrl/$asset" -OutFile "first-use-downloads/$asset"
+Invoke-WebRequest -Uri "$releaseUrl/SHA256SUMS" -OutFile first-use-downloads/SHA256SUMS
+python scripts/verify_release_archive.py --archive "first-use-downloads/$asset" --checksums first-use-downloads/SHA256SUMS
+if ($LASTEXITCODE -ne 0) { throw "Archive inspection failed" }
+```
+
+Review the inspection output before the next commands:
+
+```powershell
+python scripts/verify_release_archive.py --archive "first-use-downloads/$asset" --checksums first-use-downloads/SHA256SUMS --extract-to termivar-alpha1
+if ($LASTEXITCODE -ne 0) { throw "Verified extraction failed" }
+.\termivar-alpha1\termivar.exe --version
+.\termivar-alpha1\termivar.exe --help
+.\termivar-alpha1\termivar.exe scan --help
+```
+
+Expect version `0.10.0-alpha.1`. Continue with the
+[released-binary walkthrough](GETTING_STARTED.md#run-the-local-walkthrough).
+Published-platform acceptance is recorded per actual native execution in the
+[sample provenance](examples/first-use/README.md); downloadable does not mean
+every archive was executed for this walkthrough.
 
 ## Build from source
 
-Requirements: Rust 1.88 or newer and Git.
+Keep the walkthrough scripts in the tools checkout. Clone a **separate**
+source tree at the concrete reviewed revision below. These commands build
+package `termivar-cli`, whose executable is `termivar`.
+
+Linux/macOS:
 
 ```bash
-git clone https://github.com/ITherso/termivar.git termivar
-cd termivar
-REVIEWED_COMMIT="REPLACE_WITH_THE_REVIEWED_FULL_COMMIT_SHA"
-test "$REVIEWED_COMMIT" != "REPLACE_WITH_THE_REVIEWED_FULL_COMMIT_SHA"
-git checkout --detach "$REVIEWED_COMMIT"
-test "$(git rev-parse HEAD)" = "$REVIEWED_COMMIT"
-cargo build --locked --release -p termivar-cli
-./target/release/termivar --help
+set -eu
+SOURCE_COMMIT="57e5ddad7732b0b2c3d5988898aa2e4af5015195"
+git clone https://github.com/ITherso/termivar.git ../termivar-source-57e5dda
+git -C ../termivar-source-57e5dda checkout --detach "$SOURCE_COMMIT"
+test "$(git -C ../termivar-source-57e5dda rev-parse HEAD)" = "$SOURCE_COMMIT"
+cargo build --locked --release -p termivar-cli \
+  --manifest-path ../termivar-source-57e5dda/Cargo.toml \
+  --target-dir ../termivar-source-57e5dda/target
+../termivar-source-57e5dda/target/release/termivar --version
 ```
 
-On Windows, the binary is `target\release\termivar.exe`.
+Windows PowerShell:
 
-PostgreSQL, Redis, Node.js, a dashboard, and an API service are not required by the CLI scan commands.
+```powershell
+$ErrorActionPreference = "Stop"
+$sourceCommit = "57e5ddad7732b0b2c3d5988898aa2e4af5015195"
+$sourceDir = "..\termivar-source-57e5dda"
+if (Test-Path -LiteralPath $sourceDir) { throw "Choose a fresh source directory" }
+git clone https://github.com/ITherso/termivar.git $sourceDir
+if ($LASTEXITCODE -ne 0) { throw "Source clone failed" }
+git -C $sourceDir checkout --detach $sourceCommit
+if ($LASTEXITCODE -ne 0) { throw "Source checkout failed" }
+if ((git -C $sourceDir rev-parse HEAD) -ne $sourceCommit) { throw "Source identity mismatch" }
+cargo build --locked --release -p termivar-cli --manifest-path "$sourceDir/Cargo.toml" --target-dir "$sourceDir/target"
+if ($LASTEXITCODE -ne 0) { throw "Source build failed" }
+& "$sourceDir/target/release/termivar.exe" --version
+```
 
-## Release status
+Expect `0.10.0-alpha.2`. A deliberately chosen alternative must also be a
+reviewed full commit: record it, inspect its manifest/features, build that exact
+tree, and pass its real ref/version to the runner. A commit pin is not an audit.
 
-`v0.10.0-alpha.1` is the latest published experimental prerelease. Current
-`main` has advanced to the unreleased `0.10.0-alpha.2` development line, so no
-published archive represents later source behavior. The historical
-`v0.9.0-alpha` release predates the deterministic-default and legacy-authority
-remediation and is not a supported installation path for the behavior
-documented here.
+To compare the **same source revision** with the existing release bundle,
+build into a different output directory so the default binary is preserved:
 
-Future tags must use the archive, checksum, and provenance contract in
-[Release Process](RELEASE.md). For unreleased behavior, build a reviewed,
-pinned commit from source rather than substituting an older archive.
+```bash
+cargo build --locked --release -p termivar-cli \
+  --manifest-path ../termivar-source-57e5dda/Cargo.toml \
+  --features release-bundle \
+  --target-dir ../termivar-source-57e5dda/target/release-bundle
+```
 
-## Local container build
+The resulting path is
+`../termivar-source-57e5dda/target/release-bundle/release/termivar`
+(`termivar.exe` on Windows). PowerShell accepts the same command on one line.
+Label that source binary `release-bundle`, not a published-release binary.
+No optional runtime review flag is needed for the local example.
 
-The repository Dockerfile is built in CI and can package the current CLI locally:
+## Verify the source-built binary
+
+From the tools checkout, inspect the default source binary:
+
+```bash
+../termivar-source-57e5dda/target/release/termivar --help
+../termivar-source-57e5dda/target/release/termivar scan --help
+```
+
+On Windows, use `..\termivar-source-57e5dda\target\release\termivar.exe`.
+Then run the [source-binary walkthrough](GETTING_STARTED.md#development-source-binary).
+The runner checks the actual version and records the executable hash; ref and
+feature labels are explicit caller declarations, not facts inferred from help.
+
+## Release status and unsupported channels
+
+The development line has no matching prebuilt release. The historical
+`v0.9.0-alpha` archives predate the deterministic-default remediation and are
+not an installation path for this guide. Future releases use the existing
+[release process](RELEASE.md); this walkthrough changes no release or tag.
+
+There is no supported Homebrew/Apt/AUR/Snap/Chocolatey/Scoop/crates.io package,
+repository installer, automatic updater, signed-platform binary channel,
+published Docker Hub/GHCR image, or cloud-marketplace deployment.
+Kubernetes, Helm, Terraform, Compose, and a PostgreSQL/Redis service stack are
+not supported installation paths. The historical root Compose manifest remains
+removed; the [deployment blueprint](experimental/deployment-blueprint.md) is
+non-deployable reference material.
+
+### Local container build
+
+The existing Dockerfile can package the CLI locally; it is not used by this
+native walkthrough or published to a registry by repository workflows.
 
 ```bash
 docker build -t termivar:local .
 docker run --rm termivar:local --help
 ```
 
-The image's default command is `termivar --help`; it does not open a listener or contact a target. Pass an explicit deterministic `scan` command and an authorized reachable origin when using the image for an assessment. The non-default API and proxy adapters are not compiled into this image.
-
-Repository workflows do not publish a supported image to Docker Hub or GHCR,
-and no `latest`, `slim`, or `full` image contract is promised. A maintainer may
-manually build and optionally publish a commit-scoped development image; that
-manual artifact is not an installation channel or a release image.
-
-## Unsupported channels
-
-The following installation/deployment claims are **not** supported for this source state:
-
-- Homebrew, Apt/PPA, Pacman/AUR, Snap, Chocolatey, Scoop, or crates.io packages;
-- quick-install scripts from a vanity domain;
-- Docker Hub or GitHub Container Registry images;
-- Kubernetes, Helm, Terraform, Docker Compose, or a PostgreSQL/Redis service stack;
-- AWS, Azure, or GCP marketplace images;
-- automatic update checks or signed release binaries.
-
-The historical root `docker-compose.yml` was removed. It coupled the CLI to
-unused PostgreSQL/Redis services, default credentials, disabled security, and a
-listener the default image did not provide. The architecture gate rejects a
-replacement root Compose manifest while deployment status remains unsupported.
-There is no supported repository installer for the current development source line.
-
-The non-deployable [deployment blueprint](experimental/deployment-blueprint.md) records prerequisites that must exist before orchestrated manifests can become executable product artifacts.
-
-## Verify the source-built binary
-
-```bash
-termivar --version
-termivar --help
-termivar scan --help
-```
-
-The supported CLI truth is documented in [Getting Started](GETTING_STARTED.md).
-`termivar scan` is the bounded deterministic Preview, while `decision-scan` is its
-deprecated compatibility alias. The mixed-authority `legacy-scan` (whose
-complete run remains `Unmetered`), Preview local-file `artifact`, unsupported
-`api`, and experimental `proxy` adapters are absent from default builds and
-require explicit Cargo features. The artifact adapter reads only one explicitly
-selected regular file and reports signature observations; it is not a machine
-scanner, malware verifier, or distribution channel.
+Its default command is help, not a listener. The optional API and proxy adapters
+are not compiled into that image. See the [runtime map](internals/runtime-map.md)
+before treating any compiled module as an executable product.
 
 ## Reporting problems
+
+Attach the actual version, OS/architecture, source or release ref, exit code,
+and redacted diagnostics. Never include credentials or private machine paths.
 
 - [GitHub issues](https://github.com/ITherso/termivar/issues)
 - [GitHub discussions](https://github.com/ITherso/termivar/discussions)

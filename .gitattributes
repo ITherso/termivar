@@ -1,0 +1,7 @@
+# Generated acceptance evidence is byte-identified, including line endings.
+# Keep the real capture bytes on every native checkout; this is not a lint or
+# coverage exclusion. Documentation and source files retain normal Git policy.
+docs/examples/first-use/assessment.json -text
+docs/examples/first-use/assessment.html -text
+docs/examples/first-use/default.json -text
+docs/examples/first-use/provenance.json -text

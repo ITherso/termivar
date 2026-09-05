@@ -1,0 +1,358 @@
+{
+  "binary": {
+    "actual_version_output": "termivar 0.10.0-alpha.1",
+    "declarations_note": "Ref and features are caller declarations, not inferred or attested by --version.",
+    "declared_build_features": "release-bundle",
+    "declared_source_ref": "v0.10.0-alpha.1",
+    "expected_version": "0.10.0-alpha.1",
+    "path": "<LOCAL_BINARY>",
+    "sha256": "c9427e91c5e0e9648b6fa00906b0b942432a7ea391863882122d28a8af6e6428"
+  },
+  "finished_at": "2026-09-05T12:23:42.953952+00:00",
+  "fixture": {
+    "actual_origin": "http://127.0.0.1:55305/",
+    "contract": {
+      "bind": "127.0.0.1:0",
+      "content_type": "text/html; charset=utf-8",
+      "header_limit_bytes": 8192,
+      "methods": [
+        "GET",
+        "HEAD"
+      ],
+      "routes": {
+        "/": "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><title>Termivar local demonstration</title></head><body><h1>Termivar local demonstration</h1><p>This fixed static document demonstrates command and report behavior. It is not a vulnerable application or a security effectiveness test.</p></body></html>",
+        "/example": "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><title>Termivar local demonstration</title></head><body><h1>Termivar local demonstration</h1><p>This fixed static document demonstrates command and report behavior. It is not a vulnerable application or a security effectiveness test.</p></body></html>"
+      },
+      "unknown_body": "<!doctype html><title>Not found</title><p>No demonstration document.</p>",
+      "unknown_status": 404,
+      "unsupported_body": "<!doctype html><title>Method not supported</title><p>GET or HEAD only.</p>",
+      "unsupported_status": 405
+    },
+    "request_counts_including_readiness": {
+      "example": 3,
+      "invalid": 0,
+      "root": 8,
+      "unknown": 0,
+      "unsupported": 0
+    },
+    "sha256": "85406051314bd6316af1542848cb56eb97969bf2f7f269b4959f3eb00bcff4e3",
+    "stopped": true
+  },
+  "host": {
+    "architecture": "AMD64",
+    "os": "Windows",
+    "python": "3.12.14"
+  },
+  "invocations": [
+    {
+      "argv": [
+        "<LOCAL_BINARY>",
+        "--version"
+      ],
+      "capture_limit_exceeded": false,
+      "elapsed_ms": 16,
+      "exit_code": 0,
+      "finished_at": "2026-09-05T12:23:42.676188+00:00",
+      "invocation_id": "01-version",
+      "started_at": "2026-09-05T12:23:42.663188+00:00",
+      "stderr": {
+        "bytes": 0,
+        "path": "captures/01-version.stderr.txt",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "stdout": {
+        "bytes": 24,
+        "path": "captures/01-version.stdout.txt",
+        "sha256": "753d7df5c6e48e6f868459c69d2c7daf3b634e5eb062471cd23d4ea8bd427735"
+      }
+    },
+    {
+      "argv": [
+        "<LOCAL_BINARY>",
+        "--help"
+      ],
+      "capture_limit_exceeded": false,
+      "elapsed_ms": 15,
+      "exit_code": 0,
+      "finished_at": "2026-09-05T12:23:42.689190+00:00",
+      "invocation_id": "02-help",
+      "started_at": "2026-09-05T12:23:42.677188+00:00",
+      "stderr": {
+        "bytes": 0,
+        "path": "captures/02-help.stderr.txt",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "stdout": {
+        "bytes": 413,
+        "path": "captures/02-help.stdout.txt",
+        "sha256": "cf1566ff1c64f1f771772711951a653902167cc7c50bf472e4868993cd59ea4c"
+      }
+    },
+    {
+      "argv": [
+        "<LOCAL_BINARY>",
+        "scan",
+        "--help"
+      ],
+      "capture_limit_exceeded": false,
+      "elapsed_ms": 16,
+      "exit_code": 0,
+      "finished_at": "2026-09-05T12:23:42.703414+00:00",
+      "invocation_id": "03-scan-help",
+      "started_at": "2026-09-05T12:23:42.691399+00:00",
+      "stderr": {
+        "bytes": 0,
+        "path": "captures/03-scan-help.stderr.txt",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "stdout": {
+        "bytes": 4180,
+        "path": "captures/03-scan-help.stdout.txt",
+        "sha256": "56227599ee45858c48f9990f54ee6ecd4a9d5619dc03bf2c2a2102a5f54b1b3c"
+      }
+    },
+    {
+      "argv": [
+        "<LOCAL_BINARY>",
+        "scan",
+        "--format",
+        "json",
+        "http://127.0.0.1:55305/"
+      ],
+      "capture_limit_exceeded": false,
+      "elapsed_ms": 16,
+      "exit_code": 0,
+      "finished_at": "2026-09-05T12:23:42.724415+00:00",
+      "fixture_requests": {
+        "example": 0,
+        "invalid": 0,
+        "root": 1,
+        "unknown": 0,
+        "unsupported": 0
+      },
+      "invocation_id": "04-default",
+      "started_at": "2026-09-05T12:23:42.707437+00:00",
+      "stderr": {
+        "bytes": 139,
+        "path": "captures/04-default.stderr.txt",
+        "sha256": "afa5e17d4560307960831b4fd9b1640008a8b7ce893379596496dc46815ae0ec"
+      },
+      "stdout": {
+        "bytes": 2091,
+        "path": "captures/04-default.stdout.txt",
+        "sha256": "2fa7a085eb8463589db04c35b4f31603048ca288066c2fd194bc4bf3ee2fc6b8"
+      }
+    },
+    {
+      "argv": [
+        "<LOCAL_BINARY>",
+        "scan",
+        "--profile",
+        "web-review",
+        "--report-format",
+        "json",
+        "--report-output",
+        "assessment.json",
+        "http://127.0.0.1:55305/"
+      ],
+      "capture_limit_exceeded": false,
+      "elapsed_ms": 47,
+      "exit_code": 0,
+      "finished_at": "2026-09-05T12:23:42.764318+00:00",
+      "fixture_requests": {
+        "example": 0,
+        "invalid": 0,
+        "root": 3,
+        "unknown": 0,
+        "unsupported": 0
+      },
+      "invocation_id": "05-assessment-json",
+      "report": {
+        "bytes": 3907,
+        "path": "assessment.json",
+        "sha256": "b8e6d5c720bca98b629a7be11340092e0d02c0aea2c12f30afaeaee0d125477f"
+      },
+      "started_at": "2026-09-05T12:23:42.725415+00:00",
+      "stderr": {
+        "bytes": 139,
+        "path": "captures/05-assessment-json.stderr.txt",
+        "sha256": "afa5e17d4560307960831b4fd9b1640008a8b7ce893379596496dc46815ae0ec"
+      },
+      "stdout": {
+        "bytes": 0,
+        "path": "captures/05-assessment-json.stdout.txt",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    {
+      "argv": [
+        "<LOCAL_BINARY>",
+        "scan",
+        "--profile",
+        "web-review",
+        "--report-format",
+        "html",
+        "--report-output",
+        "assessment.html",
+        "http://127.0.0.1:55305/"
+      ],
+      "capture_limit_exceeded": false,
+      "elapsed_ms": 46,
+      "exit_code": 0,
+      "finished_at": "2026-09-05T12:23:42.809876+00:00",
+      "fixture_requests": {
+        "example": 0,
+        "invalid": 0,
+        "root": 3,
+        "unknown": 0,
+        "unsupported": 0
+      },
+      "invocation_id": "06-assessment-html",
+      "report": {
+        "bytes": 8000,
+        "path": "assessment.html",
+        "sha256": "b25c8145ecf825ba2dc8034da40b04791fc53f7c4d01604d3aec752104d7b568"
+      },
+      "started_at": "2026-09-05T12:23:42.767337+00:00",
+      "stderr": {
+        "bytes": 139,
+        "path": "captures/06-assessment-html.stderr.txt",
+        "sha256": "afa5e17d4560307960831b4fd9b1640008a8b7ce893379596496dc46815ae0ec"
+      },
+      "stdout": {
+        "bytes": 0,
+        "path": "captures/06-assessment-html.stdout.txt",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    {
+      "argv": [
+        "<LOCAL_BINARY>",
+        "scan",
+        "--profile",
+        "web-review",
+        "--report-format",
+        "json",
+        "--report-output",
+        "assessment.json",
+        "http://127.0.0.1:55305/"
+      ],
+      "capture_limit_exceeded": false,
+      "elapsed_ms": 16,
+      "exit_code": 1,
+      "finished_at": "2026-09-05T12:23:42.829876+00:00",
+      "fixture_requests": {
+        "example": 0,
+        "invalid": 0,
+        "root": 0,
+        "unknown": 0,
+        "unsupported": 0
+      },
+      "invocation_id": "07-existing-output",
+      "preserved_report_sha256": "b8e6d5c720bca98b629a7be11340092e0d02c0aea2c12f30afaeaee0d125477f",
+      "started_at": "2026-09-05T12:23:42.817875+00:00",
+      "stderr": {
+        "bytes": 77,
+        "path": "captures/07-existing-output.stderr.txt",
+        "sha256": "c3ec6626fb556ffec79e3a23555ea0a675c9f5f276edea32f37e672b93bfce2e"
+      },
+      "stdout": {
+        "bytes": 0,
+        "path": "captures/07-existing-output.stdout.txt",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    {
+      "argv": [
+        "<LOCAL_BINARY>",
+        "scan",
+        "--profile",
+        "baseline",
+        "--report-format",
+        "json",
+        "--report-output",
+        "preflight-must-not-exist.json",
+        "http://127.0.0.1:55305/"
+      ],
+      "capture_limit_exceeded": false,
+      "elapsed_ms": 16,
+      "exit_code": 2,
+      "finished_at": "2026-09-05T12:23:42.845880+00:00",
+      "fixture_requests": {
+        "example": 0,
+        "invalid": 0,
+        "root": 0,
+        "unknown": 0,
+        "unsupported": 0
+      },
+      "invocation_id": "08-preflight-failure",
+      "started_at": "2026-09-05T12:23:42.832876+00:00",
+      "stderr": {
+        "bytes": 121,
+        "path": "captures/08-preflight-failure.stderr.txt",
+        "sha256": "e117e0a4c796ffe03b9b96145a8dd1f54b0ecec99cd154f315f2e4fb67e047dc"
+      },
+      "stdout": {
+        "bytes": 0,
+        "path": "captures/08-preflight-failure.stdout.txt",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    {
+      "argv": [
+        "<LOCAL_BINARY>",
+        "scan",
+        "--profile",
+        "web-review",
+        "--format",
+        "json",
+        "--report-format",
+        "json",
+        "--report-output",
+        "incomplete-must-not-exist.json",
+        "http://127.0.0.1:55305/example"
+      ],
+      "capture_limit_exceeded": false,
+      "elapsed_ms": 47,
+      "exit_code": 1,
+      "finished_at": "2026-09-05T12:23:42.886905+00:00",
+      "fixture_requests": {
+        "example": 3,
+        "invalid": 0,
+        "root": 0,
+        "unknown": 0,
+        "unsupported": 0
+      },
+      "invocation_id": "09-begun-incomplete",
+      "started_at": "2026-09-05T12:23:42.845880+00:00",
+      "stderr": {
+        "bytes": 237,
+        "path": "captures/09-begun-incomplete.stderr.txt",
+        "sha256": "0b67ad3ead7b3a71b863731e77f57bcc13c651670d847ef113c5558273a76068"
+      },
+      "stdout": {
+        "bytes": 3566,
+        "path": "captures/09-begun-incomplete.stdout.txt",
+        "sha256": "0793a82a23b46047299b61176b83e1adb48f3a592498fc5c6e75cbec625fea4d"
+      }
+    }
+  ],
+  "limits": {
+    "capture_bytes_per_stream": 2097152,
+    "command_seconds": 60.0,
+    "report_bytes": 16777216
+  },
+  "normalization": [
+    {
+      "fields": [
+        "binary.path",
+        "invocations[*].argv[0]"
+      ],
+      "reason": "Remove the local executable path only; all other measured evidence is unchanged.",
+      "replacement": "<LOCAL_BINARY>"
+    }
+  ],
+  "schema": "termivar-first-use/v1",
+  "started_at": "2026-09-05T12:23:42.619370+00:00",
+  "status": "passed"
+}

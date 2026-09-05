@@ -1,0 +1,83 @@
+{
+  "schema_version": "decision-scan/v1",
+  "engine": "decision-preview",
+  "target_origin": "http://127.0.0.1:55305",
+  "summary": {
+    "bootstrap_evidence_writes": 17,
+    "planning_turns": 1,
+    "verification_outcomes": 0,
+    "conclusive_outcomes": 0,
+    "inconclusive_outcomes": 0,
+    "experience_records": 0
+  },
+  "executor_routes": {
+    "unavailable": [
+      "web.action.laravel.input-analysis"
+    ]
+  },
+  "hypotheses": [],
+  "planning_turns": [
+    {
+      "turn": 0,
+      "planned": [],
+      "excluded": [
+        {
+          "action_id": "web.action.apache.configuration",
+          "reason": "requirements_not_met"
+        },
+        {
+          "action_id": "web.action.http-basic.auth-boundary",
+          "reason": "requirements_not_met"
+        },
+        {
+          "action_id": "web.action.http-bearer.auth-boundary",
+          "reason": "requirements_not_met"
+        },
+        {
+          "action_id": "web.action.laravel.input-analysis",
+          "reason": "policy_suppressed"
+        },
+        {
+          "action_id": "web.action.laravel.route-discovery",
+          "reason": "requirements_not_met"
+        },
+        {
+          "action_id": "web.action.livewire.component-discovery",
+          "reason": "requirements_not_met"
+        },
+        {
+          "action_id": "web.action.nginx.configuration",
+          "reason": "requirements_not_met"
+        },
+        {
+          "action_id": "web.action.php.input-discovery",
+          "reason": "requirements_not_met"
+        },
+        {
+          "action_id": "web.action.sanctum.auth-boundary",
+          "reason": "requirements_not_met"
+        }
+      ]
+    }
+  ],
+  "dispatches": [
+    {
+      "sequence": 0,
+      "action_id": "web.action.bootstrap.http-evidence",
+      "stage": "passive",
+      "origin": "bootstrap"
+    }
+  ],
+  "verification_outcomes": [],
+  "terminal": {
+    "command": "halt",
+    "stop_reason": "no_eligible_action",
+    "runtime_limit": null
+  },
+  "usage": {
+    "total_requests": 1,
+    "active_verifications": 0,
+    "response_bytes": 310,
+    "elapsed_ms": 1
+  }
+}
