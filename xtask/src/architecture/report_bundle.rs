@@ -1011,8 +1011,8 @@ mod tests {
                 "manifest ceiling",
             ),
             (
-                "let _ = 1usize.checked_add(1);",
-                "let _ = 1usize.saturating_add(1);",
+                "const MAX_REPORT_BUNDLE_BYTES: usize = MAX_RENDERED_REPORT_BYTES * 2 + MAX_MANIFEST_BYTES;",
+                "const MAX_REPORT_BUNDLE_BYTES: usize = MAX_RENDERED_REPORT_BYTES * 2;",
                 "aggregate bound",
             ),
             (
@@ -1052,7 +1052,7 @@ mod tests {
             ),
             (
                 "let _html = render(report, ReportFormat::Html);",
-                "let _html = render(report, ReportFormat::Html); let _ = termivar_scanner::WebAssessmentRuntime;",
+                "let _html = render(report, ReportFormat::Html); let _: Option<termivar_scanner::WebAssessmentRuntime> = None;",
                 "may reference only the read-only assessment report",
             ),
             (
