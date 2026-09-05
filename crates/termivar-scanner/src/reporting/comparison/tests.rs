@@ -593,6 +593,7 @@ fn json_has_all_interpretation_limits_and_markdown_shares_unchanged_projection()
         compare_reports(&bytes(&value), &bytes(&value), ComparisonFormat::Markdown).unwrap();
     assert_eq!(markdown.matches("A bounded observation").count(), 1);
     assert!(markdown.contains("Shared comparable projection"));
+    assert!(!markdown.contains("Changed fields:"));
     let changed = compare_documents(
         import::parse(&bytes(&value)).unwrap(),
         import::parse(&bytes(&report(vec![item(2)]))).unwrap(),
@@ -600,6 +601,17 @@ fn json_has_all_interpretation_limits_and_markdown_shares_unchanged_projection()
     .unwrap();
     let markdown = render(&changed, ComparisonFormat::Markdown, 100_000).unwrap();
     assert_eq!(markdown.matches("Not present in this input.").count(), 2);
+    assert!(!markdown.contains("Changed fields:"));
+
+    let mut edited = item(1);
+    edited["title"] = json!("Edited display title");
+    let markdown = compare_reports(
+        &bytes(&value),
+        &bytes(&report(vec![edited])),
+        ComparisonFormat::Markdown,
+    )
+    .unwrap();
+    assert!(markdown.contains("- Changed fields: `title`"));
 }
 
 fn audit_fixtures() -> Vec<(&'static str, &'static str, Value)> {

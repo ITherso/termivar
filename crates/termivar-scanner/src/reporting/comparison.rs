@@ -305,8 +305,10 @@ Unchanged means equality of the compared projection, not proof of security.\n\n"
             write_markdown_code_span(&mut output, &item.fingerprint)?;
             output.push_str("\n- Capability: ")?;
             write_markdown_code_span(&mut output, &item.capability_id)?;
-            output.push_str("\n- Changed fields: ")?;
-            write_markdown_code_span(&mut output, &item.changed_fields.join(", "))?;
+            if !item.changed_fields.is_empty() {
+                output.push_str("\n- Changed fields: ")?;
+                write_markdown_code_span(&mut output, &item.changed_fields.join(", "))?;
+            }
             output.push_str("\n\n")?;
             if let (Some(before), Some(_)) = (&item.before, &item.after) {
                 if item.changed_fields.is_empty() {
