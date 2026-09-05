@@ -4,6 +4,8 @@ Uses Python's existing unittest harness and Node's built-in vm/assert modules.
 No HTML file is opened, no network is used, and this is not visual/keyboard QA.
 """
 
+import hashlib
+import json
 import pathlib
 import re
 import shutil
@@ -13,6 +15,7 @@ import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 HTML_SOURCE = ROOT / "crates/termivar-scanner/src/reporting/comparison/html.rs"
+EXAMPLE = ROOT / "docs/examples/report-compare"
 
 HARNESS = r"""
 const assert = require('node:assert/strict');
@@ -113,6 +116,23 @@ class ReportComparisonScriptTests(unittest.TestCase):
 
     def test_print_opens_details_then_restores_user_state(self):
         self.exercise("print")
+
+    def test_checked_in_cli_example_matches_recorded_bytes_and_counts(self):
+        provenance = json.loads((EXAMPLE / "provenance.json").read_text(encoding="utf-8"))
+        comparison = json.loads((EXAMPLE / "comparison.json").read_text(encoding="utf-8"))
+
+        for section in ("inputs", "outputs"):
+            for filename, expected in provenance[section].items():
+                actual = hashlib.sha256((EXAMPLE / filename).read_bytes()).hexdigest()
+                self.assertEqual(actual, expected, filename)
+
+        self.assertEqual(comparison["schema"], "termivar-report-comparison/v1")
+        for group, expected in provenance["expected_group_counts"].items():
+            self.assertEqual(len(comparison[group]), expected, group)
+
+        html = (EXAMPLE / "comparison.html").read_text(encoding="utf-8")
+        self.assertEqual(html.count('<article class="item"'), 4)
+        self.assertIn("Disappearance is not verified remediation.", html)
 
 
 if __name__ == "__main__":

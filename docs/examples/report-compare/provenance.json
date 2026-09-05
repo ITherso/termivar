@@ -1,0 +1,26 @@
+{
+  "schema": "termivar-report-comparison-example-provenance/v1",
+  "fixture_kind": "synthetic_document_processing_not_assessment_evidence",
+  "source_base_commit": "e19a2729e14d3cc142c94d07c0f6955d55d828dd",
+  "source_commit": "a9c730bc031bd8a84ab94bbefe3cbeaaffce0eeb",
+  "binary_version": "termivar 0.10.0-alpha.2",
+  "binary_sha256": "f0dda3ab7269e6463bfc58f349561c95f0108520ba42c90003ae8175016d806a",
+  "inputs": {
+    "before.json": "33f709237ffea142d892891d818815251c1cb35d888abe155f7175e15d7d481f",
+    "after.json": "5ea44cfd6dbab132aa96e62813c32c12e35f0bf32c09b43a102a16e9ff7bbe64"
+  },
+  "outputs": {
+    "comparison.json": "291f5e7b407a247cb786119a249fe6f3cb9f5526e6700605c4a0008bee91a1d0",
+    "comparison.html": "0566c97a7a149f2a565e1b2a35f446149898393f952010a373eeb9a9971e4cfa"
+  },
+  "expected_group_counts": {
+    "only_in_after": 1,
+    "only_in_before": 1,
+    "changed": 1,
+    "unchanged": 1
+  },
+  "commands": [
+    "target\\debug\\termivar.exe report compare --before docs/examples/report-compare/before.json --after docs/examples/report-compare/after.json --same-scope --format json --output docs/examples/report-compare/comparison.json",
+    "target\\debug\\termivar.exe report compare --before docs/examples/report-compare/before.json --after docs/examples/report-compare/after.json --same-scope --format html --output docs/examples/report-compare/comparison.html"
+  ]
+}
