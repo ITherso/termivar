@@ -265,9 +265,43 @@ fn build_features() -> Vec<BuildFeatureDescriptor> {
     .collect()
 }
 
+// This is a closed compile-time catalogue, not a runtime constructor API. Keep
+// each row as one declarative struct literal so adding descriptive fields does
+// not grow a positional function signature.
+macro_rules! surface {
+    (
+        $key:expr,
+        $label:expr,
+        $group:expr,
+        $kind:expr,
+        $compile_feature:expr,
+        $compiled:expr,
+        $maturity:expr,
+        $implementation_status:expr,
+        $prerequisites:expr,
+        $limitation:expr,
+        $documentation:expr $(,)?
+    ) => {
+        SurfaceDescriptor {
+            key: $key,
+            label: $label,
+            group: $group,
+            kind: $kind,
+            compile_feature: $compile_feature,
+            build_state: BuildState::from_compiled($compiled),
+            maturity: $maturity,
+            implementation_status: $implementation_status,
+            alias: None,
+            prerequisites: $prerequisites,
+            limitation: $limitation,
+            documentation: $documentation,
+        }
+    };
+}
+
 fn surfaces() -> Vec<SurfaceDescriptor> {
     vec![
-        surface(
+        surface!(
             "command.capabilities",
             "Compiled CLI capabilities",
             SurfaceGroup::Everyday,
@@ -280,7 +314,7 @@ fn surfaces() -> Vec<SurfaceDescriptor> {
             "Describes this binary only; it does not activate or test another surface.",
             "docs/GETTING_STARTED.md#inspect-compiled-cli-capabilities",
         ),
-        surface(
+        surface!(
             "command.scan",
             "Bounded deterministic scan",
             SurfaceGroup::Everyday,
@@ -299,7 +333,7 @@ fn surfaces() -> Vec<SurfaceDescriptor> {
             maturity: Maturity::Deprecated,
             relation: "compatibility_alias_same_engine",
         }),
-        surface(
+        surface!(
             "profile.baseline",
             "Baseline scan profile",
             SurfaceGroup::Everyday,
@@ -312,7 +346,7 @@ fn surfaces() -> Vec<SurfaceDescriptor> {
             "Selects the baseline profile without creating a second scanner.",
             "docs/internals/runtime-map.md",
         ),
-        surface(
+        surface!(
             "profile.web-review",
             "Web-review scan profile",
             SurfaceGroup::Everyday,
@@ -325,7 +359,7 @@ fn surfaces() -> Vec<SurfaceDescriptor> {
             "Runs the bounded passive, semantic, defense-observation, and native CORS, redirect, reflection, SQL, SSTI, and XSS review catalog; optional review flags remain separately compiled and selected.",
             "docs/internals/runtime-map.md",
         ),
-        surface(
+        surface!(
             "output.assessment-reports",
             "Assessment report formats",
             SurfaceGroup::Everyday,
@@ -342,7 +376,7 @@ fn surfaces() -> Vec<SurfaceDescriptor> {
             "Central rendering requires a completed assessment; incomplete runs retain diagnostics.",
             "docs/reporting.md",
         ),
-        surface(
+        surface!(
             "output.report-bundle",
             "Single-run report bundle",
             SurfaceGroup::Everyday,
@@ -355,7 +389,7 @@ fn surfaces() -> Vec<SurfaceDescriptor> {
             "Publishes HTML, JSON, and a manifest only after one completed assessment.",
             "docs/reporting.md#single-run-report-bundles",
         ),
-        surface(
+        surface!(
             "command.report-compare",
             "Offline report comparison",
             SurfaceGroup::Everyday,
@@ -368,7 +402,7 @@ fn surfaces() -> Vec<SurfaceDescriptor> {
             "The same-scope assertion is operator-declared; disappearance is not verified remediation.",
             "docs/reporting.md#offline-assessment-report-comparison",
         ),
-        surface(
+        surface!(
             "command.report-verify",
             "Offline report-bundle verification",
             SurfaceGroup::Everyday,
@@ -381,7 +415,7 @@ fn surfaces() -> Vec<SurfaceDescriptor> {
             "Checks supported structure and bytes, not authenticity, scope, remediation, or HTML safety.",
             "docs/reporting.md#offline-report-bundle-verification",
         ),
-        surface(
+        surface!(
             "option.root-authorization-context",
             "Root authorization-context input",
             SurfaceGroup::Everyday,
@@ -399,7 +433,7 @@ fn surfaces() -> Vec<SurfaceDescriptor> {
             "Credential values stay outside argv; hosts remain responsible for authorization and context meaning.",
             "docs/internals/credential-input.md",
         ),
-        surface(
+        surface!(
             "option.defense-enforcement",
             "Defense enforcement",
             SurfaceGroup::Everyday,
@@ -412,7 +446,7 @@ fn surfaces() -> Vec<SurfaceDescriptor> {
             "May suppress or narrow work; it cannot add actions, intensity, scope, or budget.",
             "docs/internals/defense-observation.md",
         ),
-        surface(
+        surface!(
             "command.artifact",
             "Bounded local artifact scan",
             SurfaceGroup::Optional,
@@ -425,7 +459,7 @@ fn surfaces() -> Vec<SurfaceDescriptor> {
             "Scans one explicit local file; it does not recurse, execute content, or issue a malware verdict.",
             "docs/artifact-signatures.md",
         ),
-        surface(
+        surface!(
             "option.normalization-resilience",
             "Normalization-resilience review",
             SurfaceGroup::Optional,
@@ -438,7 +472,7 @@ fn surfaces() -> Vec<SurfaceDescriptor> {
             "Uses bounded committed evidence and remains KnowledgeOnly; compilation does not enable it.",
             "docs/internals/normalization-resilience.md",
         ),
-        surface(
+        surface!(
             "option.graphql-review",
             "GraphQL surface review",
             SurfaceGroup::Optional,
@@ -451,7 +485,7 @@ fn surfaces() -> Vec<SurfaceDescriptor> {
             "Anonymous bounded structure review only; no mutation, authorization, or availability claim.",
             "docs/internals/graphql-review.md",
         ),
-        surface(
+        surface!(
             "option.openapi-review",
             "OpenAPI surface review",
             SurfaceGroup::Optional,
@@ -464,7 +498,7 @@ fn surfaces() -> Vec<SurfaceDescriptor> {
             "A discovered document is typed knowledge, not authority to execute described operations.",
             "docs/internals/openapi-surface-review.md",
         ),
-        surface(
+        surface!(
             "option.rest-review",
             "REST read-only review",
             SurfaceGroup::Optional,
@@ -481,7 +515,7 @@ fn surfaces() -> Vec<SurfaceDescriptor> {
             "Uses one eligible anonymous read-only operation; it does not establish a vulnerability.",
             "docs/internals/rest-readonly-review.md",
         ),
-        surface(
+        surface!(
             "option.resource-authorization-review",
             "Resource authorization review",
             SurfaceGroup::Optional,
@@ -500,7 +534,7 @@ fn surfaces() -> Vec<SurfaceDescriptor> {
             "Distinct principals are operator-provided; no identifier mutation or confirmed authorization claim.",
             "docs/internals/authorization-differential-review.md",
         ),
-        surface(
+        surface!(
             "option.ssrf-oast-review",
             "SSRF OAST query review",
             SurfaceGroup::Optional,
@@ -518,7 +552,7 @@ fn surfaces() -> Vec<SurfaceDescriptor> {
             "KnowledgeOnly maximum; corrective-maintenance F3 remains deferred, out of scope, and unresolved.",
             "docs/audits/native-oast-corrective-maintenance.md",
         ),
-        surface(
+        surface!(
             "command.legacy-scan",
             "Legacy scanner",
             SurfaceGroup::Optional,
@@ -534,7 +568,7 @@ fn surfaces() -> Vec<SurfaceDescriptor> {
             "The complete mixed-authority run remains Unmetered and is not the target scanner architecture.",
             "docs/internals/runtime-map.md#historical-mixed-authority-runner-surface-a",
         ),
-        surface(
+        surface!(
             "command.api",
             "HTTP API adapter",
             SurfaceGroup::Optional,
@@ -547,7 +581,7 @@ fn surfaces() -> Vec<SurfaceDescriptor> {
             "The command reports a typed nonzero unsupported error; no listener is implemented.",
             "docs/internals/runtime-map.md#optional-adapters-and-platform-shell-surface-c",
         ),
-        surface(
+        surface!(
             "command.proxy",
             "Fixed-upstream proxy adapter",
             SurfaceGroup::Optional,
@@ -561,35 +595,6 @@ fn surfaces() -> Vec<SurfaceDescriptor> {
             "docs/internals/runtime-map.md#optional-adapters-and-platform-shell-surface-c",
         ),
     ]
-}
-
-const fn surface(
-    key: &'static str,
-    label: &'static str,
-    group: SurfaceGroup,
-    kind: SurfaceKind,
-    compile_feature: Option<&'static str>,
-    compiled: bool,
-    maturity: Maturity,
-    implementation_status: ImplementationStatus,
-    prerequisites: &'static [&'static str],
-    limitation: &'static str,
-    documentation: &'static str,
-) -> SurfaceDescriptor {
-    SurfaceDescriptor {
-        key,
-        label,
-        group,
-        kind,
-        compile_feature,
-        build_state: BuildState::from_compiled(compiled),
-        maturity,
-        implementation_status,
-        alias: None,
-        prerequisites,
-        limitation,
-        documentation,
-    }
 }
 
 impl SurfaceDescriptor {
