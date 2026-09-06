@@ -107,6 +107,66 @@ source ref and feature set are **caller declarations**, not inferred or attested
 by `--version`. Record the real revision and build command; never relabel a
 source build as release-archive acceptance.
 
+## Inspect compiled CLI capabilities
+
+A development binary whose top-level help lists `capabilities` can describe
+its own fixed CLI surface without a target, credentials, repository, Cargo,
+Git, Python, or scanner startup:
+
+```bash
+termivar capabilities
+termivar capabilities --format json
+```
+
+The synchronous command reports the exact `termivar-cli` feature gates compiled
+into that executable. `compiled` does not mean selected, exercised,
+runtime-ready, production-ready, or officially released: profiles and review
+options still require their listed explicit inputs. The package version and
+feature states are self-reported build metadata, not source authentication.
+
+The CLI's default feature list is empty, while its unconditional scanner
+dependency still provides `scanning` and `reporting`. The `release-bundle`
+composition marker compiles `artifact-adapter`, `normalization-resilience`,
+`graphql-review`, `openapi-review`, `rest-review`, and
+`authorization-review`; it does not activate them. It excludes
+`ssrf-oast-review`, `legacy-scanner`, `api-adapter`, and `proxy-adapter`.
+Enabling the six member features individually can therefore produce the same
+member surface states while `release-bundle` remains `not_compiled`.
+
+These excerpts are from real Windows x86_64 development binaries built in
+separate directories from source implementation commit
+`da4aa432023ffc2af2767efddf5fdcc8f7db36a4` on 2026-09-06. Both reported
+`0.10.0-alpha.2`, 20 surface records, and
+`runtime_execution: not_performed`:
+
+```text
+# cargo build --locked -p termivar-cli
+# executable SHA-256: 5d0f0c875d2ef0d4e4aaade72c1f3592081e78b433fd24ebf61cfeb1b566f78e
+[compiled] Compiled CLI capabilities (command, preview; implemented)
+[compiled] Bounded deterministic scan (command, preview; implemented)
+[not_compiled] REST read-only review (scan_option, preview; implemented)
+[not_compiled] HTTP API adapter (command, unsupported; unsupported_stub)
+```
+
+```text
+# cargo build --locked -p termivar-cli --no-default-features --features release-bundle
+# executable SHA-256: 37fb4ef820364acaecddd0c3d0327cf738ce9fe65a202a61589e5c9d80ac0417
+release-bundle=compiled
+artifact-adapter=compiled
+authorization-review=compiled
+graphql-review=compiled
+normalization-resilience=compiled
+openapi-review=compiled
+rest-review=compiled
+ssrf-oast-review=not_compiled
+```
+
+The hashes identify the two files that were executed; they are not build
+attestations. The published `v0.10.0-alpha.1` archives and the earlier pinned
+`a29ba40c8cfdc7d0385431ea4d9e374e213ca4e0` source walkthrough predate this
+command. Compiling `ssrf-oast-review` separately does not close corrective-
+maintenance F3, which remains deferred, out of scope, and unresolved.
+
 ## Export one development assessment in two formats
 
 A development `0.10.0-alpha.2` binary whose `scan --help` includes

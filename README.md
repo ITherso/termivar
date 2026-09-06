@@ -34,6 +34,19 @@ download, build, install, or update a binary for you. The older release archives
 do not include maintenance from PRs #109–#111 and are not recommended for
 credentialed or production use.
 
+A newer development executable whose help lists `capabilities` can describe
+its compile-time CLI surface without starting a scan:
+
+```bash
+termivar capabilities
+termivar capabilities --format json
+```
+
+The output separates compile state, lifecycle, implementation status, and
+runtime prerequisites. It is not a readiness test or proof that the binary is
+an official release; the alpha.1 and pinned `a29ba40...` walkthrough binaries
+predate this command. See the [build-accurate inventory guide](docs/GETTING_STARTED.md#inspect-compiled-cli-capabilities).
+
 [Read the version-labelled example reports](docs/examples/first-use/README.md):
 [HTML](docs/examples/first-use/assessment.html) ·
 [JSON](docs/examples/first-use/assessment.json) ·
@@ -106,6 +119,10 @@ and unchanged groups. Disappearance is not verified remediation. See the
   from the same completed assessment, with a manifest published last.
 - Offline Markdown, JSON, or standalone HTML comparison of two supported,
   complete assessment JSON documents.
+- Offline strict V1 consistency verification of a saved three-file report
+  bundle; this does not authenticate its producer, scope, findings, or HTML.
+- Build-accurate text or JSON inventory of the CLI surfaces compiled into the
+  exact development executable, without starting scanner or provider runtime.
 - Source-level Rust evidence, reasoning, and reporting contracts for an explicit
   library host; see the [architecture](docs/architecture.md).
 

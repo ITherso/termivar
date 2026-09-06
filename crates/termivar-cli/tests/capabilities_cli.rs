@@ -24,6 +24,32 @@ const FEATURE_NAMES: &[&str] = &[
     "ssrf-oast-review",
 ];
 
+fn manifest_release_bundle_members() -> Vec<&'static str> {
+    let mut inside = false;
+    let mut members = Vec::new();
+    for line in include_str!("../Cargo.toml").lines() {
+        let line = line.trim();
+        if line == "release-bundle = [" {
+            inside = true;
+        } else if inside && line == "]" {
+            break;
+        } else if inside {
+            let member = line
+                .trim_end_matches(',')
+                .strip_prefix('"')
+                .and_then(|member| member.strip_suffix('"'))
+                .expect("release-bundle members must remain literal feature names");
+            members.push(member);
+        }
+    }
+    assert!(
+        inside,
+        "release-bundle feature is missing from the manifest"
+    );
+    assert!(!members.is_empty(), "release-bundle feature has no members");
+    members
+}
+
 fn binary() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_termivar"))
 }
@@ -281,14 +307,18 @@ fn matrix_case_proves_release_bundle_is_composition_not_origin() {
     assert_success(&output);
     let states = feature_states(&document);
     let compiled = |name: &str| states[name] == "compiled";
-    let release_members = [
-        "artifact-adapter",
-        "authorization-review",
-        "graphql-review",
-        "normalization-resilience",
-        "openapi-review",
-        "rest-review",
-    ];
+    let release_members = manifest_release_bundle_members();
+    assert_eq!(
+        release_members,
+        [
+            "artifact-adapter",
+            "normalization-resilience",
+            "graphql-review",
+            "openapi-review",
+            "rest-review",
+            "authorization-review",
+        ]
+    );
     let excluded = [
         "api-adapter",
         "legacy-scanner",

@@ -15,6 +15,16 @@ The CLI's default feature list is empty; its scanner dependency enables
 features does not opt into their runtime actions. The bundle excludes OAST,
 the legacy runner, the unsupported API listener, and the experimental proxy.
 
+Newer development builds whose top-level help lists `capabilities` can report
+their own compile-time CLI surface states with
+`termivar capabilities --format json`. This is exact for that executable's
+`termivar-cli` feature gates only. In particular, `release-bundle=compiled`
+means the Cargo composition feature was selected; it is not evidence of an
+official release artifact, tested source SHA, or trusted provenance. Member
+features are reported independently, and no compiled state activates a runtime
+review. The published alpha.1 binary and the pinned `a29ba40...` source binary
+in this guide predate the command, so do not add it to those walkthroughs.
+
 The alpha.1 archives predate PRs #109–#111. Do not use the older prerelease for
 credentialed or production evaluation. The walkthrough is credential-free and
 loopback-only. See the [maintenance record](audits/native-oast-corrective-maintenance.md)
@@ -219,6 +229,19 @@ The resulting path is
 (`termivar.exe` on Windows). PowerShell accepts the same command on one line.
 Label that source binary `release-bundle`, not a published-release binary.
 No optional runtime review flag is needed for the local example.
+
+For a later reviewed source revision that exposes the command, inspect each
+separately built executable directly:
+
+```bash
+path/to/default/termivar capabilities
+path/to/default/termivar capabilities --format json
+path/to/release-bundle/termivar capabilities --format json
+```
+
+Do not infer feature parity from matching package versions. The inventory is
+self-reported build metadata, while the executable hash and source/build
+records remain separate evidence.
 
 ## Verify the source-built binary
 
